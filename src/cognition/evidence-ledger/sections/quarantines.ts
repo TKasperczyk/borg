@@ -1,7 +1,7 @@
 import { isQuarantinedUserEntryMarker } from "../../../stream/index.js";
 import { stringifyPromptContent } from "../../../util/token-estimate.js";
-import { commitmentReconciliationReviewDisclosureLabel } from "../../../memory/semantic/index.js";
-import { correctionMemoryDisclosureLabel } from "../../disclosure-labels.js";
+import { commitmentReconciliationReviewDisclosureLabel } from "../../../memory/review-queue/index.js";
+import { correctionMemoryDisclosureLabel } from "../../../memory/common/disclosure-serializers.js";
 import {
   renderMemoryDisclosureLabelForModel,
   unknownMemoryDisclosureLabel,

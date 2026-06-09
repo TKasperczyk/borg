@@ -1,7 +1,7 @@
 import type {
   SharedStateArtifact,
   SharedStateEntry,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import {
   isSharedStateArtifactCanonicalizableCommitmentType,
   isTerminalActionState,

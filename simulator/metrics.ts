@@ -59,8 +59,8 @@ import { filterActiveStreamEntries } from "../src/stream/index.js";
 import type { ActionId } from "../src/util/ids.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
 import type { TraceRecord } from "../assessor/types.js";
-import { canonicalTraceEventName } from "../src/cognition/tracing/taxonomy.js";
-import { isExtractorMaxTokenLlmLabel } from "../src/cognition/tracing/extractor-labels.js";
+import { canonicalTraceEventName } from "../src/tracing/taxonomy.js";
+import { isExtractorMaxTokenLlmLabel } from "../src/tracing/extractor-labels.js";
 import { writeFileAtomic } from "../src/util/atomic-write.js";
 import type { EmbeddingCacheStats } from "../src/embeddings/cache.js";
 

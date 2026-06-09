@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { FixedClock } from "../../../util/clock.js";
 import type { ReviewHandlerContext, ReviewQueueItem } from "../review-queue.js";
-import type { SemanticEdge, SemanticNode } from "../types.js";
+import type { SemanticEdge, SemanticNode } from "../../semantic/types.js";
 import {
   createSemanticPairReviewQueueHandler,
   semanticPairReviewRefsSchema,

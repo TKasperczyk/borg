@@ -6,7 +6,7 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import {
   publicMemoryDisclosureLabel,
   relationshipPrivateMemoryDisclosureLabel,
@@ -40,7 +40,7 @@ import {
   type CreatorDirectiveReconciliationReviewRefs,
   type CreatorDirectiveReconciliationSubkind,
   type CreatorDirectiveScopeEquivalenceSnapshot,
-} from "../../memory/semantic/index.js";
+} from "../../memory/review-queue/index.js";
 import { sortStrings } from "../../util/collections.js";
 import { BudgetExceededError, LLMError, StorageError } from "../../util/errors.js";
 import type { EntityId } from "../../util/ids.js";

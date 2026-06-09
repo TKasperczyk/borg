@@ -33,7 +33,7 @@ import {
   commitmentMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
   relationalSlotMemoryDisclosureLabel,
-} from "../disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import {
   relationshipClaimSchema,
   type RelationshipClaim,
@@ -44,8 +44,8 @@ import {
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
-} from "../tracing/llm-call-trace.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+} from "../../tracing/llm-call-trace.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import {
   normalizeCommitmentClassification,
   type ClassificationNormalizationResult,

@@ -21,6 +21,46 @@ export type MemoryDisclosureLabel = {
   readonly publicToEntityIds: EntityId[];
 };
 
+export const MEMORY_DISCLOSURE_INTERNAL_USE_NOTE =
+  "I can use this internally; I do not disclose it to the current audience unless authorized";
+export const SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE =
+  "supported by private source episodes; I can use this internally; I do not reveal source details to the current audience unless authorized";
+
+export type MemoryDisclosureLabelRenderContext = "memory" | "semantic_source";
+
+export function memoryDisclosureInternalUseNote(
+  context: MemoryDisclosureLabelRenderContext = "memory",
+): string {
+  return context === "semantic_source"
+    ? SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE
+    : MEMORY_DISCLOSURE_INTERNAL_USE_NOTE;
+}
+
+export function renderMemoryDisclosureLabelForModel(
+  label: MemoryDisclosureLabel,
+  options: {
+    context?: MemoryDisclosureLabelRenderContext;
+  } = {},
+): string {
+  const fragments = [`disclosure_class=${label.disclosureClass}`];
+
+  if (label.originAudienceEntityIds.length > 0) {
+    fragments.push(`origin_audience=${label.originAudienceEntityIds.join(",")}`);
+  }
+
+  if (label.disclosureClass !== "public") {
+    const privateTo =
+      label.privateToEntityIds.length === 0 ? "unknown" : label.privateToEntityIds.join(",");
+    fragments.push(`private-to=${privateTo}; ${memoryDisclosureInternalUseNote(options.context)}`);
+  }
+
+  return fragments.join(" ");
+}
+
+export function renderSemanticSourceDisclosureLabelForModel(label: MemoryDisclosureLabel): string {
+  return renderMemoryDisclosureLabelForModel(label, { context: "semantic_source" });
+}
+
 const memoryDisclosureEntityIdSchema = z
   .string()
   .refine((value) => entityIdHelpers.is(value), {

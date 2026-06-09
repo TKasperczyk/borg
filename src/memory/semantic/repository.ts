@@ -30,7 +30,7 @@ import {
   type SemanticEdgeId,
   type SemanticNodeId,
 } from "../../util/ids.js";
-import type { ReviewQueueInsertInput } from "./review-queue.js";
+import type { ReviewQueueInsertInput } from "../review-queue/review-queue.js";
 import {
   SEMANTIC_NODE_STATUSES,
   invalidationProcessSchema,

@@ -1,6 +1,6 @@
-import type { LLMCompleteResult, LLMMessage, LLMToolDefinition } from "../../llm/index.js";
-import type { SessionId } from "../../util/ids.js";
-import type { JsonValue } from "../../util/json-value.js";
+import type { LLMCompleteResult, LLMMessage, LLMToolDefinition } from "../llm/index.js";
+import type { SessionId } from "../util/ids.js";
+import type { JsonValue } from "../util/json-value.js";
 import { buildUsageTraceBlock, type TurnTraceData, type TurnTracer } from "./tracer.js";
 
 type TracePayloadExtension = Omit<TurnTraceData, "turnId">;

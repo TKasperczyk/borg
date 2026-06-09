@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { CommitmentRecord } from "../commitments/types.js";
-import type { SharedStateEntry } from "../decision-artifacts/types.js";
+import type { SharedStateEntry } from "../shared-state/types.js";
 import type { OpenQuestion } from "../self/open-questions.js";
 import type { GoalRecord } from "../self/types.js";
 import type { LifecycleTraceData, LifecycleTraceEventName, LifecycleTracer } from "./types.js";

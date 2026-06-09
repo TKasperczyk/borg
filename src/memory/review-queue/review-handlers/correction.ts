@@ -11,7 +11,7 @@ import {
 } from "../../self/types.js";
 import { provenanceSchema } from "../../common/provenance.js";
 import { SemanticError } from "../../../util/errors.js";
-import { semanticEdgeIdSchema, semanticNodeIdSchema, semanticNodePatchSchema } from "../types.js";
+import { semanticEdgeIdSchema, semanticNodeIdSchema, semanticNodePatchSchema } from "../../semantic/types.js";
 import {
   reviewResolutionSchema,
   type ReviewQueueHandler,

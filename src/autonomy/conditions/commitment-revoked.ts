@@ -2,7 +2,7 @@ import type { CommitmentRecord, CommitmentRepository } from "../../memory/commit
 import {
   commitmentMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
-} from "../../cognition/disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import type { Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";

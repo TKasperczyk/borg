@@ -16,10 +16,10 @@ import type {
 } from "../../tools/dispatcher.js";
 import type { BorgRole } from "../../memory/commitments/index.js";
 import type { SessionAudienceRole } from "../../sessions/index.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import type { TurnOrigin } from "../types.js";
-import { buildUsageTraceBlock, toTraceJsonValue } from "../tracing/tracer.js";
-import { summarizeToolSchemas } from "../tracing/llm-call-trace.js";
+import { buildUsageTraceBlock, toTraceJsonValue } from "../../tracing/tracer.js";
+import { summarizeToolSchemas } from "../../tracing/llm-call-trace.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
 import { serializeJsonValue } from "../../util/json-value.js";

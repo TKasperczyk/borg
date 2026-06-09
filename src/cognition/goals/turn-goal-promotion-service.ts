@@ -13,7 +13,7 @@ import type {
   StreamEntryId,
 } from "../../util/ids.js";
 import type { ExtractCorrectivePreferenceInput } from "../commitments/corrective-preference-extractor.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import type { TemporalCue } from "../types.js";
 import {
   GoalPromotionExtractor,

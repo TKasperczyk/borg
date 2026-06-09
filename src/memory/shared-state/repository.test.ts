@@ -111,7 +111,7 @@ describe("SharedStateRepository", () => {
 
     db.prepare(
       `
-        INSERT INTO decision_artifacts (
+        INSERT INTO shared_state_artifacts (
           audience_entity_id, record_version, created_at, updated_at,
           last_compiled_at, last_compiled_stream_entry_id
         ) VALUES (?, ?, ?, ?, ?, ?)
@@ -119,7 +119,7 @@ describe("SharedStateRepository", () => {
     ).run(audience, 1, clock.now(), clock.now(), null, null);
     db.prepare(
       `
-        INSERT INTO decision_artifact_entries (
+        INSERT INTO shared_state_entries (
           id, audience_entity_id, state_key, kind, text, owner_entity_id,
           provenance_stream_entry_ids, last_updated_stream_entry_ids,
           created_at, last_updated_at, superseded_by_id, rank, canonicalizes
@@ -158,7 +158,7 @@ describe("SharedStateRepository", () => {
 
     db.prepare(
       `
-        INSERT INTO decision_artifacts (
+        INSERT INTO shared_state_artifacts (
           audience_entity_id, record_version, created_at, updated_at,
           last_compiled_at, last_compiled_stream_entry_id
         ) VALUES (?, ?, ?, ?, ?, ?)
@@ -166,7 +166,7 @@ describe("SharedStateRepository", () => {
     ).run(audience, 1, clock.now(), clock.now(), null, null);
     db.prepare(
       `
-        INSERT INTO decision_artifact_entries (
+        INSERT INTO shared_state_entries (
           id, audience_entity_id, state_key, kind, text, owner_entity_id,
           provenance_stream_entry_ids, last_updated_stream_entry_ids,
           created_at, last_updated_at, superseded_by_id, rank, canonicalizes
@@ -878,7 +878,7 @@ describe("SharedStateRepository", () => {
     repository.delete(audience);
 
     expect(repository.get(audience)).toBeNull();
-    const row = db.prepare("SELECT COUNT(*) AS count FROM decision_artifact_entries").get() as {
+    const row = db.prepare("SELECT COUNT(*) AS count FROM shared_state_entries").get() as {
       count: number;
     };
     expect(row.count).toBe(0);

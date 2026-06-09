@@ -24,7 +24,7 @@ import {
   type ReviewOpenQuestionExtractorLike,
 } from "../self/review-open-question-hook.js";
 import { deriveProceduralContextKey } from "../procedural/index.js";
-import { semanticMigrations } from "./migrations.js";
+import { semanticMigrations } from "../semantic/migrations.js";
 import {
   ReviewQueueRepository,
   type ReviewQueueHandler,
@@ -37,8 +37,8 @@ import {
   SemanticEdgeRepository,
   SemanticNodeRepository,
   createSemanticNodesTableSchema,
-} from "./repository.js";
-import { semanticNodeKindSchema } from "./types.js";
+} from "../semantic/repository.js";
+import { semanticNodeKindSchema } from "../semantic/types.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,

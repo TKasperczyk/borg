@@ -2,7 +2,7 @@ import { performance } from "node:perf_hooks";
 
 import type { Clock } from "../../../util/clock.js";
 import type { SessionId } from "../../../util/ids.js";
-import type { TurnTraceData, TurnTracer } from "../../tracing/tracer.js";
+import type { TurnTraceData, TurnTracer } from "../../../tracing/tracer.js";
 
 export type TurnPhaseName =
   | "ingest"

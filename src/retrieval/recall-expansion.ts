@@ -13,8 +13,8 @@ import {
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
-} from "../cognition/tracing/llm-call-trace.js";
-import type { TurnTracer } from "../cognition/tracing/tracer.js";
+} from "../tracing/llm-call-trace.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import type { SessionId } from "../util/ids.js";
 
 const recallExpansionFacetKindSchema = z.enum([

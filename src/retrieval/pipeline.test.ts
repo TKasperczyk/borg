@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SuppressionSet, computeWeights } from "../cognition/attention/index.js";
 import { summarizeRetrievedEpisodes } from "../cognition/deliberation/prompt/retrieval.js";
-import type { TurnTracer } from "../cognition/tracing/tracer.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import { EvidenceLedgerBuilder, renderEvidenceLedger } from "../cognition/evidence-ledger/index.js";
 import type { CommitmentRecord } from "../memory/commitments/index.js";
 import {

@@ -42,7 +42,7 @@ import {
 } from "./prompt/system-prompt.js";
 import { runS2Planner } from "./s2-planner.js";
 import { formatTurnPlanForThought, persistDeliberationThoughts } from "./thoughts.js";
-import { NOOP_TRACER, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
+import { NOOP_TRACER, toTraceJsonValue, type TurnTracer } from "../../tracing/tracer.js";
 import {
   buildCompactPlannerLedgerPrompt,
   renderEvidenceLedger,

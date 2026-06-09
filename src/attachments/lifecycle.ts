@@ -1,7 +1,7 @@
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import { AttachmentError } from "../util/errors.js";
 import type { AttachmentId } from "../util/ids.js";
-import type { TurnTracer } from "../cognition/tracing/tracer.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import type { AttachmentRepository } from "./repository.js";
 
 export type ImageAttachmentLifecycleServiceOptions = {

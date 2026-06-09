@@ -6,7 +6,7 @@ import type {
   SharedStateEntry,
   SharedStateEntryKind,
   SharedStateOperation,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import { dedupePreservingOrder } from "../../util/collections.js";
 import { SystemClock } from "../../util/clock.js";
 import type { StreamEntryId } from "../../util/ids.js";
@@ -56,7 +56,7 @@ import {
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
-} from "../tracing/llm-call-trace.js";
+} from "../../tracing/llm-call-trace.js";
 import {
   allowedCanonicalizationIds,
   dedupeCanonicalizesAcrossOperations,

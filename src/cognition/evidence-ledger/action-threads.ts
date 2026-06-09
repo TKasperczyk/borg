@@ -10,7 +10,7 @@ import type { EntityRepository } from "../../memory/commitments/index.js";
 import type { MemoryDisclosureLabel } from "../../retrieval/index.js";
 import { DisjointSet } from "../../util/disjoint-set.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
-import { actionMemoryDisclosureLabel } from "../disclosure-labels.js";
+import { actionMemoryDisclosureLabel } from "../../memory/common/disclosure-serializers.js";
 import type { ActiveParticipant } from "../participants.js";
 import type { ActionLedgerRepository } from "./builder-types.js";
 import { isActionVisibleForCurrentAudienceStanding } from "./audience-visibility.js";

@@ -5,7 +5,7 @@ import {
   type SharedStateEntryKind,
   type SharedStateOperation,
   type SharedStateSourceTrustValidator,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import {
   actionIdHelpers,
   commitmentIdHelpers,

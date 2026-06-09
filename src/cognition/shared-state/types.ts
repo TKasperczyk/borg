@@ -4,7 +4,7 @@ import type {
   SharedStateCanonicalizes,
   SharedStateEntryKind,
   SharedStateSourceTrustRejectionReason,
-} from "../../memory/decision-artifacts/types.js";
+} from "../../memory/shared-state/types.js";
 import type { MemoryDisclosureLabelMetadata } from "../../memory/common/disclosure-label.js";
 import type { RelationalSlot } from "../../memory/relational-slots/types.js";
 import type {

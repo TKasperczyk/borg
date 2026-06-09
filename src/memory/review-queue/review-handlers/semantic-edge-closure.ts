@@ -1,7 +1,7 @@
 import { SemanticError } from "../../../util/errors.js";
 import type { JsonValue } from "../../../util/json-value.js";
 import type { ReviewHandlerContext, ReviewQueueItem } from "../review-queue.js";
-import type { SemanticEdge } from "../types.js";
+import type { SemanticEdge } from "../../semantic/types.js";
 
 export type SemanticEdgeClosureRepair = {
   edgeId: SemanticEdge["id"];

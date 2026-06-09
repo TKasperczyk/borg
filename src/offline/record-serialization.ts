@@ -1,4 +1,4 @@
-import { memoryDisclosurePayloadFields } from "../cognition/disclosure-labels.js";
+import { memoryDisclosurePayloadFields } from "../memory/common/disclosure-serializers.js";
 import { unknownMemoryDisclosureLabel } from "../memory/common/disclosure-label.js";
 
 export function serializableRecord(value: unknown): unknown {

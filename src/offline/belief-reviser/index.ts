@@ -6,14 +6,16 @@ import {
   semanticEdgeIdSchema,
   semanticNodeCorrectionRefSchema,
   semanticNodeIdSchema,
-  type ReviewQueueItem,
-  type ReviewResolution,
-  type ReviewQueueInsertInput,
   type SemanticEdge,
   type SemanticNode,
   type SemanticNodeCorrectionRef,
   type SemanticNodeVectorSyncFailure,
 } from "../../memory/semantic/index.js";
+import {
+  type ReviewQueueItem,
+  type ReviewResolution,
+  type ReviewQueueInsertInput,
+} from "../../memory/review-queue/index.js";
 import { markSemanticContradicted } from "../../memory/lifecycle-ops/index.js";
 import type { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { dedupePreservingOrder } from "../../util/collections.js";
@@ -29,7 +31,7 @@ import {
   memoryDisclosurePayloadFields,
   semanticEdgeMemoryDisclosureLabel,
   semanticNodeMemoryDisclosureLabel,
-} from "../../cognition/disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import {
   resolveDisclosureLabelsByEpisodeId,
   type MemoryDisclosureLabel,

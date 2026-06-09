@@ -24,7 +24,7 @@ import {
   type RelationalSlot,
 } from "../../../memory/relational-slots/index.js";
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
-import type { ReviewQueueItem } from "../../../memory/semantic/index.js";
+import type { ReviewQueueItem } from "../../../memory/review-queue/index.js";
 import { createWorkingMemory, type WorkingMemory } from "../../../memory/working/index.js";
 import type { EvidenceLedgerEntry } from "../../evidence-ledger/types.js";
 import {
@@ -43,7 +43,7 @@ import {
   memoryDisclosureLabelFromMetadata,
   openQuestionMemoryDisclosureLabel,
   relationalSlotMemoryDisclosureLabel,
-} from "../../disclosure-labels.js";
+} from "../../../memory/common/disclosure-serializers.js";
 import { formatRelativeAge } from "../../../util/relative-time.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";

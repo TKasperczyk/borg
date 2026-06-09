@@ -5,7 +5,7 @@ import type {
   RetrievedEpisode,
 } from "../../retrieval/index.js";
 import type { SessionId } from "../../util/ids.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import type { CognitiveMode } from "../types.js";
 import type { ContradictionRoutingCooldown } from "./contradiction-routing-cooldown.js";
 import type {

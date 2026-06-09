@@ -4,7 +4,7 @@ import type {
   SharedStateArtifact,
   SharedStateEntry,
   SharedStateEntryKind,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import {
   createActionId,
   createCommitmentId,

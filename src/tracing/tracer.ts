@@ -2,9 +2,9 @@ import { closeSync, fsyncSync, mkdirSync, openSync, writeFileSync } from "node:f
 import { dirname } from "node:path";
 import { performance } from "node:perf_hooks";
 
-import { SystemClock, type Clock } from "../../util/clock.js";
-import { serializeJsonValue, type JsonValue } from "../../util/json-value.js";
-import type { SessionId } from "../../util/ids.js";
+import { SystemClock, type Clock } from "../util/clock.js";
+import { serializeJsonValue, type JsonValue } from "../util/json-value.js";
+import type { SessionId } from "../util/ids.js";
 
 export type TurnTraceEventName =
   | "attachment.write"

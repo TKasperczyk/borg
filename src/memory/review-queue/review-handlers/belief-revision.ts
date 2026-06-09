@@ -6,7 +6,7 @@ import {
   semanticEdgeIdSchema,
   semanticNodeCorrectionRefSchema,
   semanticNodeIdSchema,
-} from "../types.js";
+} from "../../semantic/types.js";
 import type { ReviewQueueHandler, ReviewResolution } from "../review-queue.js";
 
 const BELIEF_REVISION_REVIEW_RESOLUTIONS = new Set<ReviewResolution>(["dismiss"]);

@@ -12,7 +12,7 @@ import {
   type EntityRepository,
 } from "../../memory/commitments/index.js";
 import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import {
   hasAutonomousTriggerUntrustedContext,
   isAutonomousLikeTurnOrigin,

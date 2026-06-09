@@ -24,11 +24,11 @@ import {
   type CommitmentReconciliationReviewRefs,
   type CommitmentReconciliationScopeKey,
   type CommitmentReconciliationSubkind,
-} from "../../memory/semantic/index.js";
+} from "../../memory/review-queue/index.js";
 import {
   commitmentMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
-} from "../../cognition/disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import { combineMemoryDisclosureLabels } from "../../retrieval/recall-context.js";
 import { sortStrings } from "../../util/collections.js";
 import { BudgetExceededError, LLMError, StorageError } from "../../util/errors.js";

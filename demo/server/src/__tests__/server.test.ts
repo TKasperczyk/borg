@@ -38,7 +38,7 @@ import { IMAGE_PERCEPTION_TOOL_NAME } from "../../../../src/attachments/percepti
 import type { Episode, EpisodicRepository } from "../../../../src/memory/episodic/index.js";
 import type { CreatorDirectiveRepository } from "../../../../src/memory/creator-directives/index.js";
 import type { RelationalSlotRepository } from "../../../../src/memory/relational-slots/repository.js";
-import type { ReviewQueueRepository } from "../../../../src/memory/semantic/review-queue.js";
+import type { ReviewQueueRepository } from "../../../../src/memory/review-queue/review-queue.js";
 import { TestEmbeddingClient, createTestConfig } from "../../../../src/offline/test-support.js";
 import type { AuditLog } from "../../../../src/offline/audit-log.js";
 import type { StreamWriter } from "../../../../src/stream/index.js";

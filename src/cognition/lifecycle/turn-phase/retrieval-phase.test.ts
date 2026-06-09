@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_CONFIG } from "../../../config/index.js";
 import { FakeLLMClient } from "../../../llm/test-support/fake-client.js";
-import { sharedStateMigrations } from "../../../memory/decision-artifacts/index.js";
-import { SharedStateRepository } from "../../../memory/decision-artifacts/repository.js";
+import { sharedStateMigrations } from "../../../memory/shared-state/index.js";
+import { SharedStateRepository } from "../../../memory/shared-state/repository.js";
 import {
   CreatorDirectiveRepository,
   creatorDirectiveDisclosureBlocksPrivateOperation,

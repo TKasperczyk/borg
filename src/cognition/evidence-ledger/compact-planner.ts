@@ -1,6 +1,6 @@
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import { coercePositiveIntegerOrFallback } from "../../util/math.js";
-import type { SharedStateArtifact } from "../../memory/decision-artifacts/index.js";
+import type { SharedStateArtifact } from "../../memory/shared-state/index.js";
 import {
   renderSharedStateArtifact,
   summarizeSharedStateArtifactRender,

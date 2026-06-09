@@ -24,7 +24,7 @@ import type {
   SessionId,
 } from "../../util/ids.js";
 import type { ReflectionEffects } from "../reflection/index.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 
 export type TurnLifecycleTrackerOptions = {
   workingMemoryStore: Pick<WorkingMemoryStore, "recordPendingActionMerges" | "save">;

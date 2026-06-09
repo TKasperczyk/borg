@@ -11,7 +11,7 @@ import {
   TRACE_TAXONOMY_PHASES_WITH_OTHER,
   phaseForTraceEventName,
   type TracePhaseWithOther,
-} from "../../cognition/tracing/taxonomy.js";
+} from "../../tracing/taxonomy.js";
 
 type TraceRecord = {
   ts: number;

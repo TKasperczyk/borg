@@ -15,7 +15,7 @@ import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { CommitmentGuardRunner } from "../commitments/guard-runner.js";
 import type { DeliberationResult } from "../deliberation/types.js";
 import type { PendingTurnEmission } from "../generation/types.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import { TurnActionCoordinator } from "./turn-action-coordinator.js";
 
 type CommitmentViolationFixture = {

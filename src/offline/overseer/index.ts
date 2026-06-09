@@ -10,7 +10,7 @@ import {
   commitmentMemoryDisclosureLabel,
   goalMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
-} from "../../cognition/disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import { selfPrivateMemoryDisclosureLabel } from "../../retrieval/index.js";
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import {

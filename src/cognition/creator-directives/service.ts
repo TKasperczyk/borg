@@ -15,7 +15,7 @@ import { valueAppearsIn } from "../../util/text-presence.js";
 import { isCreatorInOperatorContext } from "../authority.js";
 import type { ParticipantRoster } from "../perception/index.js";
 import type { RecencyMessage } from "../recency/index.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import {
   CreatorDirectiveExtractor,
   type CreatorDirectiveCandidate,

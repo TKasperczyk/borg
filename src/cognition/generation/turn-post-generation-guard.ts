@@ -20,7 +20,7 @@ import {
 import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import { listActionCandidatesForCognition } from "../evidence-ledger/action-threads.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import type { ClosureLoopDialogueAct } from "./closure-loop.js";
 import { ClosurePressureGuard } from "./closure-pressure-guard.js";
 import type { PendingTurnEmission } from "./types.js";

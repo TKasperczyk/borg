@@ -24,15 +24,17 @@ import type {
   EntityRepository,
 } from "../memory/commitments/index.js";
 import {
-  correctionReviewRefsSchema,
-  type ReviewQueueItem,
-  type ReviewQueueRepository,
   semanticNodePatchSchema,
   type SemanticEdge,
   type SemanticEdgeRepository,
   type SemanticGraph,
   type SemanticNodeRepository,
 } from "../memory/semantic/index.js";
+import {
+  correctionReviewRefsSchema,
+  type ReviewQueueItem,
+  type ReviewQueueRepository,
+} from "../memory/review-queue/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
 import {
   memoryDisclosureLabelFromEpisodeAccess,
@@ -54,7 +56,7 @@ import {
   commitmentMemoryDisclosureLabel,
   goalMemoryDisclosureLabel,
   openQuestionMemoryDisclosureLabel,
-} from "../cognition/disclosure-labels.js";
+} from "../memory/common/disclosure-serializers.js";
 
 const MANUAL_PROVENANCE = {
   kind: "manual" as const,

@@ -14,7 +14,7 @@ import {
 } from "../open-question-handles.js";
 import { OPEN_QUESTION_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets.js";
 import { persistenceClassFromProvenance } from "../scope-resolver.js";
-import { openQuestionMemoryDisclosureLabel } from "../../disclosure-labels.js";
+import { openQuestionMemoryDisclosureLabel } from "../../../memory/common/disclosure-serializers.js";
 
 export function addOpenQuestionsSection(context: BuilderSectionContext): void {
   const questionsById = new Map(

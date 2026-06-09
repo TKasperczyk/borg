@@ -12,7 +12,7 @@ import type { ClosureLoopDialogueAct } from "../generation/closure-loop.js";
 import type { PendingTurnEmission } from "../generation/types.js";
 import type { TurnPostGenerationGuardRunner } from "../generation/turn-post-generation-guard.js";
 import { traceTurnPhase } from "../lifecycle/turn-phase/phase-trace.js";
-import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
+import { toTraceJsonValue, type TurnTracer } from "../../tracing/tracer.js";
 import type { PerceptionResult, TurnOrigin } from "../types.js";
 import {
   LLMPendingActionJudge,

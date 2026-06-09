@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type {
   SharedStateArtifact,
   SharedStateEntry,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import {
   createEntityId,
   createGoalId,
@@ -15,7 +15,7 @@ import {
 } from "../../util/ids.js";
 import { unknownMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import type { RelationshipClaim } from "../../memory/common/relationship-claims.js";
-import { memoryDisclosurePayloadFields } from "../disclosure-labels.js";
+import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import type { EmitSharedStatePatch, SharedStateCanonicalizationCandidates } from "./types.js";
 import { allowedCanonicalizationIds, normalizePatch } from "./patch-validation.js";
 

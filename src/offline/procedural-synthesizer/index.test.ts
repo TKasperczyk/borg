@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { DEFAULT_CONFIG } from "../../config/index.js";
 import { SkillSelector, deriveProceduralContextKey } from "../../memory/procedural/index.js";
-import { createSkillSplitReviewQueueHandler } from "../../memory/semantic/index.js";
+import { createSkillSplitReviewQueueHandler } from "../../memory/review-queue/index.js";
 import { createWorkingMemory, WorkingMemoryStore } from "../../memory/working/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { SuppressionSet } from "../../cognition/attention/index.js";

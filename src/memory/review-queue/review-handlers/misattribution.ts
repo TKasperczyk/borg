@@ -4,7 +4,7 @@ import { provenanceSchema } from "../../common/provenance.js";
 import { episodeIdSchema, episodePatchSchema } from "../../episodic/index.js";
 import { streamEntryIdSchema } from "../../../stream/index.js";
 import { SemanticError } from "../../../util/errors.js";
-import { semanticNodeIdSchema } from "../types.js";
+import { semanticNodeIdSchema } from "../../semantic/types.js";
 import {
   reviewResolutionSchema,
   type ReviewQueueHandler,

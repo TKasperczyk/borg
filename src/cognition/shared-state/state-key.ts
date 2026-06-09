@@ -1,4 +1,4 @@
-import type { SharedStateEntry } from "../../memory/decision-artifacts/index.js";
+import type { SharedStateEntry } from "../../memory/shared-state/index.js";
 
 export const LEGACY_SHARED_STATE_KEY = "legacy";
 // state_key values are machine-generated handles; this is structural parsing, not language interpretation.

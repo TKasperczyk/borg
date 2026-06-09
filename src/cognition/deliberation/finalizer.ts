@@ -9,7 +9,7 @@ import type { BorgRole } from "../../memory/commitments/index.js";
 import type { SessionAudienceRole } from "../../sessions/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { TurnOrigin } from "../types.js";
-import { emitTurnTokenFlushTrace, emitTurnTokenTrace, type TurnTracer } from "../tracing/tracer.js";
+import { emitTurnTokenFlushTrace, emitTurnTokenTrace, type TurnTracer } from "../../tracing/tracer.js";
 import { executeToolLoop, type ToolLoopResult } from "../turn-action/index.js";
 import {
   FINALIZER_NO_OUTPUT_PRIMARY_REASONS,

@@ -14,17 +14,17 @@ import type { JsonValue } from "../../util/json-value.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import { isPlainRecord } from "../../util/guards.js";
 import type { ActiveParticipant } from "../participants.js";
-import { memoryDisclosurePayloadFields } from "../disclosure-labels.js";
+import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { FRAME_ANOMALY_SYSTEM_PROMPT } from "../prompts/frame-anomaly.js";
 import type { RecencyMessage } from "../recency/index.js";
-import { summarizeTraceValueShape, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
+import { summarizeTraceValueShape, toTraceJsonValue, type TurnTracer } from "../../tracing/tracer.js";
 import {
   summarizeToolResponseShape,
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
-} from "../tracing/llm-call-trace.js";
+} from "../../tracing/llm-call-trace.js";
 import {
   type FrameAnomalyClassification,
   type FrameAnomalyKind,

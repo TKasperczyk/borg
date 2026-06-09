@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { NOOP_TRACER, type TurnTracer } from "../../cognition/tracing/tracer.js";
+import { NOOP_TRACER, type TurnTracer } from "../../tracing/tracer.js";
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { SemanticError } from "../../util/errors.js";
@@ -17,7 +17,7 @@ import {
   relationshipPrivateMemoryDisclosureLabel,
   unknownMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
-} from "../../retrieval/recall-context.js";
+} from "../common/disclosure-label.js";
 import { type IdentityEventRepository, type IdentityService } from "../identity/index.js";
 import type { AutobiographicalRepository } from "../self/autobiographical.js";
 import type { GoalsRepository } from "../self/goals-repository.js";
@@ -30,13 +30,13 @@ import {
   type CommitmentReconciliationReviewRefs,
   type CommitmentReconciliationSubkind,
 } from "./review-handlers/commitment-reconciliation.js";
-import type { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
+import type { SemanticEdgeRepository, SemanticNodeRepository } from "../semantic/repository.js";
 import {
   semanticEdgeIdSchema,
   semanticNodeIdSchema,
   type SemanticEdge,
   type SemanticNode,
-} from "./types.js";
+} from "../semantic/types.js";
 
 export const REVIEW_KINDS = [
   "contradiction",

@@ -23,8 +23,11 @@ import {
   type SkillContextStatsRecord,
   type SkillRecord,
 } from "../../memory/procedural/index.js";
-import type { ReviewQueueItem, SkillSplitReviewPayload } from "../../memory/semantic/index.js";
-import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import type {
+  ReviewQueueItem,
+  SkillSplitReviewPayload,
+} from "../../memory/review-queue/index.js";
+import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { combineMemoryDisclosureLabels } from "../../retrieval/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";

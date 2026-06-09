@@ -7,7 +7,7 @@ import { ConfigError } from "../../util/errors.js";
 import { DEFAULT_SESSION_ID, type SessionId, type StreamEntryId } from "../../util/ids.js";
 import { ManualClock } from "../../util/clock.js";
 import type { RecencyWindow } from "../recency/index.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import { PerceptionGateway } from "./gateway.js";
 
 function makeConfig(llmEnabled: boolean): Config {

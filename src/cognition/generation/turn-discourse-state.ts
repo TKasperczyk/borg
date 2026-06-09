@@ -3,7 +3,7 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import type { SessionId, StreamEntryId } from "../../util/ids.js";
 import type { ClosurePressureHistoryReason, WorkingMemory } from "../../memory/working/index.js";
 import { isUserTurnOrigin, type TurnOrigin } from "../types.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import {
   appendClosurePressureHistory,
   appendRecentSuppression,

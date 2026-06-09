@@ -1,15 +1,15 @@
-import type { ImagePerceptionRecord } from "../attachments/index.js";
-import type { CommitmentRecord } from "../memory/commitments/index.js";
-import type { Episode, EpisodicRepository } from "../memory/episodic/index.js";
+import type { ImagePerceptionRecord } from "../../attachments/index.js";
+import type { CommitmentRecord } from "../commitments/index.js";
+import type { Episode, EpisodicRepository } from "../episodic/index.js";
 import {
   parseIdentityEventDisclosureSources,
   type IdentityEvent,
-} from "../memory/identity/index.js";
-import type { SharedStateEntry } from "../memory/decision-artifacts/index.js";
-import type { RelationalSlot } from "../memory/relational-slots/index.js";
-import type { SemanticEdge, SemanticNode } from "../memory/semantic/index.js";
-import type { ActionRecord } from "../memory/actions/index.js";
-import type { GoalRecord, OpenQuestion } from "../memory/self/index.js";
+} from "../identity/index.js";
+import type { SharedStateEntry } from "../shared-state/index.js";
+import type { RelationalSlot } from "../relational-slots/index.js";
+import type { SemanticEdge, SemanticNode } from "../semantic/index.js";
+import type { ActionRecord } from "../actions/index.js";
+import type { GoalRecord, OpenQuestion } from "../self/index.js";
 import {
   combineDisclosureLabelForEpisodeIds,
   combineMemoryDisclosureLabels,
@@ -22,8 +22,8 @@ import {
   selfPrivateMemoryDisclosureLabel,
   unknownMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
-} from "../retrieval/recall-context.js";
-import type { EntityId } from "../util/ids.js";
+} from "./disclosure-label.js";
+import type { EntityId } from "../../util/ids.js";
 
 export { memoryDisclosureLabelFromMetadata };
 

@@ -23,7 +23,7 @@ import {
   DEFAULT_SESSION_ID,
 } from "../../util/ids.js";
 import { CommitmentGuardRunner } from "../commitments/guard-runner.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import {
   CLOSURE_RESPONSE_AUDIT_TOOL_NAME,
   type ClosureResponseAudit,

@@ -23,9 +23,9 @@ import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
 import {
   memoryDisclosureLabelFromMetadata,
   memoryDisclosurePayloadFields,
-} from "../disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import type { SelfSnapshot } from "../deliberation/deliberator.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import type { PerceptionResult } from "../types.js";
 import { listActiveGoalsForCognition as listActiveGoalRecordsForCognition } from "./active-goals.js";
 

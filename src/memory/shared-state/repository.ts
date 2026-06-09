@@ -280,7 +280,7 @@ export class SharedStateRepository {
       .prepare(
         `
           SELECT *
-          FROM decision_artifact_entries
+          FROM shared_state_entries
           WHERE audience_entity_id = ?
           ORDER BY
             CASE WHEN superseded_by_id IS NULL THEN 0 ELSE 1 END ASC,
@@ -296,7 +296,7 @@ export class SharedStateRepository {
 
   get(audienceEntityId: EntityId): SharedStateArtifact | null {
     const row = this.db
-      .prepare("SELECT * FROM decision_artifacts WHERE audience_entity_id = ?")
+      .prepare("SELECT * FROM shared_state_artifacts WHERE audience_entity_id = ?")
       .get(audienceEntityId) as Record<string, unknown> | undefined;
 
     if (row === undefined) {
@@ -327,7 +327,7 @@ export class SharedStateRepository {
       .prepare(
         `
           SELECT *
-          FROM decision_artifact_entries
+          FROM shared_state_entries
           WHERE superseded_by_id IS NULL
             ${audiencePredicate}
           ORDER BY
@@ -348,7 +348,7 @@ export class SharedStateRepository {
       .prepare(
         `
           SELECT *
-          FROM decision_artifact_entries
+          FROM shared_state_entries
           WHERE id = ? AND audience_entity_id = ?
         `,
       )
@@ -372,7 +372,7 @@ export class SharedStateRepository {
     this.db
       .prepare(
         `
-          INSERT INTO decision_artifacts (
+          INSERT INTO shared_state_artifacts (
             audience_entity_id, record_version, created_at, updated_at,
             last_compiled_at, last_compiled_stream_entry_id
           ) VALUES (?, ?, ?, ?, ?, ?)
@@ -398,7 +398,7 @@ export class SharedStateRepository {
     const result = this.db
       .prepare(
         `
-          UPDATE decision_artifacts
+          UPDATE shared_state_artifacts
           SET updated_at = ?,
               last_compiled_at = ?,
               last_compiled_stream_entry_id = ?,
@@ -432,7 +432,7 @@ export class SharedStateRepository {
     const result = this.db
       .prepare(
         `
-          UPDATE decision_artifacts
+          UPDATE shared_state_artifacts
           SET updated_at = ?,
               last_compiled_at = ?,
               last_compiled_stream_entry_id = ?,
@@ -462,7 +462,7 @@ export class SharedStateRepository {
     this.db
       .prepare(
         `
-          INSERT INTO decision_artifact_entries (
+          INSERT INTO shared_state_entries (
             id, audience_entity_id, state_key, kind, text, owner_entity_id,
             provenance_stream_entry_ids, last_updated_stream_entry_ids,
             created_at, last_updated_at, last_updated_turn_global, superseded_by_id, rank,
@@ -616,7 +616,7 @@ export class SharedStateRepository {
     this.db
       .prepare(
         `
-          UPDATE decision_artifact_entries
+          UPDATE shared_state_entries
           SET state_key = ?,
               kind = ?,
               text = ?,
@@ -694,7 +694,7 @@ export class SharedStateRepository {
     this.db
       .prepare(
         `
-          UPDATE decision_artifact_entries
+          UPDATE shared_state_entries
           SET superseded_by_id = ?,
               last_updated_at = ?,
               last_updated_stream_entry_ids = ?,
@@ -716,7 +716,7 @@ export class SharedStateRepository {
     const result = this.db
       .prepare(
         `
-          DELETE FROM decision_artifact_entries
+          DELETE FROM shared_state_entries
           WHERE id = ? AND audience_entity_id = ?
         `,
       )
@@ -742,7 +742,7 @@ export class SharedStateRepository {
     const result = this.db
       .prepare(
         `
-          UPDATE decision_artifact_entries
+          UPDATE shared_state_entries
           SET kind = ?
           WHERE id = ? AND audience_entity_id = ?
         `,
@@ -910,7 +910,7 @@ export class SharedStateRepository {
 
   delete(audienceEntityId: EntityId): void {
     this.db
-      .prepare("DELETE FROM decision_artifacts WHERE audience_entity_id = ?")
+      .prepare("DELETE FROM shared_state_artifacts WHERE audience_entity_id = ?")
       .run(audienceEntityId);
   }
 }

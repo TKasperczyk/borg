@@ -15,7 +15,7 @@ import {
   createScheduledWakeTrigger,
 } from "../autonomy/index.js";
 import type { TurnOrchestrator } from "../cognition/index.js";
-import type { TurnTracer } from "../cognition/tracing/tracer.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import type { Config } from "../config/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";

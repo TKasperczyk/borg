@@ -6,7 +6,7 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import type { ReviewQueueItem } from "../semantic/review-queue.js";
+import type { ReviewQueueItem } from "../review-queue/review-queue.js";
 import {
   episodeIdHelpers,
   parseEpisodeId,

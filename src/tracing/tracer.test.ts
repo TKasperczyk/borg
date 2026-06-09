@@ -4,16 +4,16 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { Borg } from "../../borg.js";
-import { DEFAULT_CONFIG } from "../../config/index.js";
-import { FakeEmbeddingClient } from "../../embeddings/index.js";
+import { Borg } from "../borg.js";
+import { DEFAULT_CONFIG } from "../config/index.js";
+import { FakeEmbeddingClient } from "../embeddings/index.js";
 import {
   FakeLLMClient,
   createFakeEmitAnswerResponse,
   createFakeStreamingResponse,
-} from "../../llm/test-support/fake-client.js";
-import { FixedClock, ManualClock } from "../../util/clock.js";
-import { createSessionId } from "../../util/ids.js";
+} from "../llm/test-support/fake-client.js";
+import { FixedClock, ManualClock } from "../util/clock.js";
+import { createSessionId } from "../util/ids.js";
 import {
   JsonlTracer,
   NoopTracer,

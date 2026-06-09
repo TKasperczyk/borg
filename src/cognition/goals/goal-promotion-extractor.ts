@@ -14,14 +14,14 @@ import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-v
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { GOAL_PROMOTION_SYSTEM_PROMPT } from "../prompts/goal-extraction.js";
 import type { RecencyMessage } from "../recency/index.js";
-import { goalMemoryDisclosureLabel, memoryDisclosurePayloadFields } from "../disclosure-labels.js";
+import { goalMemoryDisclosureLabel, memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import {
   summarizeToolResponseShape,
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
-} from "../tracing/llm-call-trace.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+} from "../../tracing/llm-call-trace.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 
 const CONFIDENCE_THRESHOLD = 0.85;
 const MAX_PROMOTIONS_PER_TURN = 3;

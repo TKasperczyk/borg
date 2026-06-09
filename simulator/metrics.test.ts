@@ -45,7 +45,8 @@ import {
   ValuesRepository,
   selfMigrations,
 } from "../src/memory/self/index.js";
-import { ReviewQueueRepository, semanticMigrations } from "../src/memory/semantic/index.js";
+import { semanticMigrations } from "../src/memory/semantic/index.js";
+import { ReviewQueueRepository } from "../src/memory/review-queue/index.js";
 import { WorkingMemoryStore } from "../src/memory/working/index.js";
 import { composeMigrations, openDatabase } from "../src/storage/sqlite/index.js";
 import { ABORTED_TURN_EVENT, type StreamEntry } from "../src/stream/index.js";

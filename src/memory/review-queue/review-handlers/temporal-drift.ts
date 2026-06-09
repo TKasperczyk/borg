@@ -3,7 +3,7 @@ import { z } from "zod";
 import { provenanceSchema } from "../../common/provenance.js";
 import { episodeIdSchema, episodePatchSchema } from "../../episodic/index.js";
 import { SemanticError } from "../../../util/errors.js";
-import { semanticEdgeIdSchema, semanticNodeIdSchema } from "../types.js";
+import { semanticEdgeIdSchema, semanticNodeIdSchema } from "../../semantic/types.js";
 import {
   reviewResolutionSchema,
   type ReviewQueueHandler,

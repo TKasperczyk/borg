@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createWorkingMemory } from "../../memory/working/index.js";
 import { DEFAULT_SESSION_ID, createStreamEntryId } from "../../util/ids.js";
-import { NOOP_TRACER } from "../tracing/tracer.js";
+import { NOOP_TRACER } from "../../tracing/tracer.js";
 import {
   clearClosureLoop,
   clearStopUntilSubstantiveContent,

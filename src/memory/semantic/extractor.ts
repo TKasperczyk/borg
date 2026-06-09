@@ -1,10 +1,12 @@
 import { z } from "zod";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
-import type { TurnTracer } from "../../cognition/tracing/tracer.js";
-import type { ParticipantRoster } from "../../cognition/perception/index.js";
-import { renderParticipantRoster } from "../common/participant-roster-rendering.js";
-import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
+import {
+  renderParticipantRoster,
+  type ParticipantRosterForRendering,
+} from "../common/participant-roster-rendering.js";
+import { memoryDisclosurePayloadFields } from "../common/disclosure-serializers.js";
 import {
   HEADCOUNT_SET_GROUNDING_PROMPT,
   RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
@@ -25,7 +27,7 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError, SemanticError, StorageError } from "../../util/errors.js";
 import { createSemanticNodeId, type EntityId, type StreamEntryId } from "../../util/ids.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
-import { memoryDisclosureLabelFromEpisodeAccess } from "../../retrieval/index.js";
+import { memoryDisclosureLabelFromEpisodeAccess } from "../common/disclosure-label.js";
 import {
   normalizeEpisodeAccess,
   type Episode,
@@ -37,7 +39,7 @@ import type {
 } from "../source-trust.js";
 import { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
 import type { SemanticReviewService } from "./review-service.js";
-import type { ReviewQueueInsertInput } from "./review-queue.js";
+import type { ReviewQueueInsertInput } from "../review-queue/review-queue.js";
 import { canonicalizeDomain } from "./domain.js";
 import {
   semanticNodeKindSchema,
@@ -116,7 +118,7 @@ export type SemanticExtractorOptions = {
   model: string;
   semanticReviewService?: Pick<SemanticReviewService, "queueDuplicateReview">;
   reviewEnqueue?: (input: ReviewQueueInsertInput) => unknown;
-  participantRoster?: ParticipantRoster | null;
+  participantRoster?: ParticipantRosterForRendering | null;
   selfEntityId?: EntityId | null;
   relationshipEvidenceStreamEntryTrust?: RelationshipEvidenceStreamEntryTrustValidator;
   clock?: Clock;
@@ -152,7 +154,7 @@ type SemanticInsertSkipReason =
 
 function buildPrompt(input: {
   episodes: readonly Episode[];
-  participantRoster?: ParticipantRoster | null;
+  participantRoster?: ParticipantRosterForRendering | null;
   selfEntityId?: EntityId | null;
   knownNodeKinds: readonly SemanticNodeKind[];
 }): string {

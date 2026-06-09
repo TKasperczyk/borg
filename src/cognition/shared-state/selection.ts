@@ -3,7 +3,7 @@ import {
   type SharedStateArtifact,
   type SharedStateEntry,
   type SharedStateEntryKind,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import type {
   ActionId,
   CommitmentId,

@@ -1,6 +1,6 @@
 import type { ActionId, CommitmentId, GoalId, OpenQuestionId } from "../../util/ids.js";
 import type { ActionRecord } from "../actions/types.js";
-import type { SharedStateEntry } from "../decision-artifacts/types.js";
+import type { SharedStateEntry } from "../shared-state/types.js";
 import type { Provenance } from "../common/provenance.js";
 import type { GoalRecord } from "../self/types.js";
 import type { GoalsRepository } from "../self/goals-repository.js";

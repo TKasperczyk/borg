@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import { entityIdSchema } from "../../memory/commitments/index.js";
 import {
   combineMemoryDisclosureLabels,
@@ -14,11 +14,11 @@ import {
   type Episode,
 } from "../../memory/episodic/index.js";
 import {
-  reviewKindSchema,
   semanticEdgeIdSchema,
   type SemanticEdge,
   type SemanticNode,
 } from "../../memory/semantic/index.js";
+import { reviewKindSchema } from "../../memory/review-queue/index.js";
 import { streamEntryIdSchema, type StreamEntry } from "../../stream/index.js";
 import { dedupePreservingOrder } from "../../util/collections.js";
 import type { EntityId, EpisodeId, StreamEntryId } from "../../util/ids.js";

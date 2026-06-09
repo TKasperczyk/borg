@@ -11,7 +11,7 @@ import {
 } from "../../util/ids.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { RelationshipClaim } from "../../memory/common/relationship-claims.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import { CorrectivePreferenceExtractor } from "./corrective-preference-extractor.js";
 
 function correctivePreferenceResponse(input: {

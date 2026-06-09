@@ -4,9 +4,9 @@ import {
   type SharedStateReconciliationResult,
   type SharedStateUnsettledReconciliation,
 } from "../../shared-state/index.js";
-import type { SharedStateSourceTrustValidator } from "../../../memory/decision-artifacts/index.js";
+import type { SharedStateSourceTrustValidator } from "../../../memory/shared-state/index.js";
 import type { SessionId } from "../../../util/ids.js";
-import { toTraceJsonValue, type TurnTracer } from "../../tracing/tracer.js";
+import { toTraceJsonValue, type TurnTracer } from "../../../tracing/tracer.js";
 
 function sharedStateReconciliationOutcomeCounts(
   result: SharedStateReconciliationResult,

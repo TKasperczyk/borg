@@ -8,7 +8,7 @@ import { DEFAULT_CONFIG } from "../config/index.js";
 import { FakeEmbeddingClient } from "../embeddings/index.js";
 import type { LLMCompleteResult } from "../llm/index.js";
 import { FakeLLMClient, createFakeEmitAnswerResponse } from "../llm/test-support/fake-client.js";
-import type { SharedStateArtifact } from "../memory/decision-artifacts/index.js";
+import type { SharedStateArtifact } from "../memory/shared-state/index.js";
 import { createWorkingMemory, type WorkingMemory } from "../memory/working/index.js";
 import type { RetrievedContext, RetrievalConfidence } from "../retrieval/index.js";
 import { StreamWriter, type StreamEntry, type StreamReader } from "../stream/index.js";

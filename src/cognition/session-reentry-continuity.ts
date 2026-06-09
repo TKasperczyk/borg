@@ -3,7 +3,7 @@ import {
   type SharedStateArtifact,
   type SharedStateEntry,
   type SharedStateEntryKind,
-} from "../memory/decision-artifacts/index.js";
+} from "../memory/shared-state/index.js";
 import type { EntityId, StreamEntryId } from "../util/ids.js";
 import { renderTaggedPromptBlock } from "./deliberation/prompt/sections.js";
 import { TRUSTED_GUIDANCE_PREAMBLE } from "./prompts/base-identity.js";

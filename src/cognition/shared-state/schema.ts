@@ -3,7 +3,7 @@ import {
   type SharedStateArtifact,
   type SharedStateRepository,
   type SharedStateSourceTrustValidator,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import type { SyncRelationshipEvidenceStreamEntryTrustValidator } from "../../memory/source-trust.js";
 import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
@@ -14,7 +14,7 @@ import type {
   SharedStateReconciliationRepositories,
   SharedStateSemanticBeliefRevisionDependencies,
 } from "./reconciliation.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import type { ParticipantRoster } from "../perception/index.js";
 import {
   DECISION_ARTIFACT_TOOL_NAME,

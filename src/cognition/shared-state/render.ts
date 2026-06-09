@@ -4,14 +4,14 @@ import {
   type SharedStateArtifact,
   type SharedStateEntry,
   type SharedStateEntryKind,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import {
   combineMemoryDisclosureLabels,
   renderMemoryDisclosureLabelForModel,
   type MemoryDisclosureLabel,
 } from "../../retrieval/index.js";
 import { coercePositiveIntegerOrFallback } from "../../util/math.js";
-import { sharedStateMemoryDisclosureLabel } from "../disclosure-labels.js";
+import { sharedStateMemoryDisclosureLabel } from "../../memory/common/disclosure-serializers.js";
 import {
   activeSharedStateArtifactEntries,
   compareSharedStateArtifactEntriesByRecency,

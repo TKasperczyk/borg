@@ -18,7 +18,7 @@ import type { ExecutiveFocus } from "../../executive/index.js";
 import type { PendingProceduralAttemptTracker } from "../procedural/pending-attempt-tracker.js";
 import { runsReflectionPersistence, type PerceptionResult, type TurnOrigin } from "../types.js";
 import type { ReflectionEffects, ReflectionResult, Reflector } from "./index.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
 
 const ACTION_RESPONSE_SUMMARY_LIMIT = 240;

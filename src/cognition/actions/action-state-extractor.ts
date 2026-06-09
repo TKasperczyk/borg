@@ -23,7 +23,7 @@ import {
   type ActionState,
   type ActionStateTimestampField,
 } from "../../memory/actions/index.js";
-import type { SharedStateEntry } from "../../memory/decision-artifacts/index.js";
+import type { SharedStateEntry } from "../../memory/shared-state/index.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import {
@@ -41,15 +41,15 @@ import {
   actionMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
   sharedStateMemoryDisclosureLabel,
-} from "../disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import type { RecencyMessage } from "../recency/index.js";
 import {
   summarizeToolResponseShape,
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
-} from "../tracing/llm-call-trace.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+} from "../../tracing/llm-call-trace.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 
 const ACTION_STATE_TOOL_NAME = "EmitActionStates";
 const ACTION_PERSISTENCE_DUPLICATE_SIMILARITY_THRESHOLD = 0.85;

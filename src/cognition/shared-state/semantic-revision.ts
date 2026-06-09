@@ -17,15 +17,15 @@ import type {
   SharedStateEntry,
   SharedStateOperation,
   SharedStateSourceTrustValidator,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import type { SharedStateEntryId, StreamEntryId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
-import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
+import { toTraceJsonValue, type TurnTracer } from "../../tracing/tracer.js";
 import {
   memoryDisclosurePayloadFields,
   semanticSourceDisclosurePayloadFields,
   sharedStateMemoryDisclosureLabel,
-} from "../disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import {
   combineDisclosureLabelForEpisodeIds,
   type MemoryDisclosureLabel,
@@ -34,7 +34,7 @@ import {
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
-} from "../tracing/llm-call-trace.js";
+} from "../../tracing/llm-call-trace.js";
 import {
   contaminatedSharedStateArtifactSources,
   errorMessage,

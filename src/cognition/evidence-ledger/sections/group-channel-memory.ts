@@ -37,7 +37,7 @@ import {
   actionMemoryDisclosureLabel,
   commitmentMemoryDisclosureLabel,
   goalMemoryDisclosureLabel,
-} from "../../disclosure-labels.js";
+} from "../../../memory/common/disclosure-serializers.js";
 import { relationshipPrivateMemoryDisclosureLabel } from "../../../retrieval/index.js";
 
 export function addGroupChannelMemorySection(context: BuilderSectionContext): void {

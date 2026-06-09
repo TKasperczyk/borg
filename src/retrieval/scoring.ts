@@ -1,6 +1,6 @@
 /* Episodic scoring and result construction for retrieval. */
 import { computeGoalRelevance, computeValueAlignment } from "./attention-relevance.js";
-import type { AttentionWeights } from "../cognition/cognitive-contracts.js";
+import type { AttentionWeights } from "../contracts/cognitive-contracts.js";
 import type { MoodState } from "../memory/affective/index.js";
 import { applyEpisodeDecay, type DecayOptions } from "../memory/episodic/decay.js";
 import { computeEpisodeHeat, RETRIEVAL_HEAT_CAP } from "../memory/episodic/heat.js";

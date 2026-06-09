@@ -153,20 +153,6 @@ export {
 } from "./generation/suppression-outcome.js";
 export { Reflector, type ReflectionContext, type ReflectorOptions } from "./reflection/index.js";
 export {
-  CompositeTracer,
-  JsonlTracer,
-  NOOP_TRACER,
-  NoopTracer,
-  compositeTracer,
-  createTurnTracer,
-  type CreateTurnTracerOptions,
-  type JsonlTracerOptions,
-  type TurnTraceData,
-  type TurnTraceEventName,
-  type TurnTerminalOutcome,
-  type TurnTracer,
-} from "./tracing/tracer.js";
-export {
   CHAT_RESPONSE_PROCESS_NAME,
   CHAT_RESPONSE_TERMINAL_KINDS,
   ChatResponseWatermarkCoordinator,

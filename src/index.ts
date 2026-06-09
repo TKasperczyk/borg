@@ -56,6 +56,20 @@ export type {
 } from "./borg/public-facade.js";
 export { PROMPT_KEYS, type PromptKey } from "./cognition/prompts/registry.js";
 export {
+  CompositeTracer,
+  JsonlTracer,
+  NOOP_TRACER,
+  NoopTracer,
+  compositeTracer,
+  createTurnTracer,
+  type CreateTurnTracerOptions,
+  type JsonlTracerOptions,
+  type TurnTraceData,
+  type TurnTraceEventName,
+  type TurnTerminalOutcome,
+  type TurnTracer,
+} from "./tracing/tracer.js";
+export {
   CONVERSATION_KINDS,
   SESSION_AUDIENCE_ROLES,
   SESSION_PRIVACY_LEVELS,
@@ -144,14 +158,12 @@ export {
   ACTION_CANDIDATE_CLASSIFICATIONS,
   COGNITIVE_MODES,
   TURN_ORIGINS,
-  CompositeTracer,
   FINALIZER_NO_OUTPUT_CATEGORIES,
   FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES,
   FINALIZER_NO_OUTPUT_STRUCTURAL_CATEGORIES,
   FRAME_ANOMALY_KINDS,
   GOAL_PROMOTION_CLASSIFICATIONS,
   actionCandidateClassificationSchema,
-  compositeTracer,
   goalPromotionClassificationSchema,
   evidenceLedgerSourceTypeSchema,
   classifySuppressionReason,
@@ -201,10 +213,6 @@ export {
   type TurnOrigin,
   type TurnResult,
   type TurnStakes,
-  type TurnTraceData,
-  type TurnTraceEventName,
-  type TurnTerminalOutcome,
-  type TurnTracer,
 } from "./cognition/index.js";
 export {
   AUTONOMY_CONDITION_NAMES,
@@ -421,18 +429,10 @@ export {
   type DisclosurePolicy,
 } from "./memory/creator-directives/index.js";
 export {
-  REVIEW_KINDS,
-  REVIEW_RESOLUTIONS,
-  creatorDirectiveReconciliationReviewRefsSchema,
   SEMANTIC_NODE_STATUSES,
   semanticEdgeIdSchema,
   semanticNodeIdSchema,
   type ExtractSemanticResult,
-  type ReviewKind,
-  type ReviewQueueItem,
-  type ReviewResolution,
-  type ReviewResolutionInput,
-  type StoredReviewKind,
   type SemanticContext,
   type SemanticEdge,
   type SemanticEdgeListOptions,
@@ -448,6 +448,16 @@ export {
   type SemanticWalkOptions,
   type SemanticWalkStep,
 } from "./memory/semantic/index.js";
+export {
+  REVIEW_KINDS,
+  REVIEW_RESOLUTIONS,
+  creatorDirectiveReconciliationReviewRefsSchema,
+  type ReviewKind,
+  type ReviewQueueItem,
+  type ReviewResolution,
+  type ReviewResolutionInput,
+  type StoredReviewKind,
+} from "./memory/review-queue/index.js";
 export { type WorkingMemory } from "./memory/working/index.js";
 export {
   ACTIVE_SHARED_STATE_ENTRY_KINDS,
@@ -460,7 +470,7 @@ export {
   type SharedStateEntryKind,
   type SharedStateSourceTrustRejectionReason,
   type SharedStateSourceTrustResult,
-} from "./memory/decision-artifacts/index.js";
+} from "./memory/shared-state/index.js";
 
 export {
   MEMORY_DISCLOSURE_CLASSES,

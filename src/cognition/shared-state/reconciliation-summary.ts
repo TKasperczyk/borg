@@ -10,7 +10,7 @@ import type {
   SharedStateOperation,
   SharedStateSourceTrustRejectionReason,
   SharedStateSourceTrustValidator,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import type { EpisodicRepository } from "../../memory/episodic/index.js";
 import type { SemanticNodeRepository } from "../../memory/semantic/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
@@ -20,7 +20,7 @@ import type { ActionId, CommitmentId, GoalId, OpenQuestionId } from "../../util/
 export { SHARED_STATE_RECONCILIATION_PROVENANCE as RECONCILIATION_PROVENANCE } from "../../memory/lifecycle-ops/index.js";
 import type { DroppedCanonicalizeId } from "./types.js";
 import type { SemanticRevisionVerdictCache } from "./semantic-revision-cache.js";
-import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
+import { toTraceJsonValue, type TurnTracer } from "../../tracing/tracer.js";
 
 export type SharedStateReconciliationRepositories = {
   goalsRepository?: Pick<GoalsRepository, "updateStatus"> & Partial<Pick<GoalsRepository, "get">>;

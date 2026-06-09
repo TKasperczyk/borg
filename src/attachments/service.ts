@@ -16,7 +16,7 @@ import type {
   StreamReader,
   StreamWriter,
 } from "../stream/index.js";
-import type { TurnTracer } from "../cognition/tracing/tracer.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import { AttachmentBlobStore } from "./blob-store.js";
 import { readImageDimensions } from "./image-info.js";
 import { validateImageForFinalizerRender } from "./render-validation.js";

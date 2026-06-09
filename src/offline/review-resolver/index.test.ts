@@ -6,12 +6,12 @@ import type {
   TurnTraceData,
   TurnTraceEventName,
   TurnTracer,
-} from "../../cognition/tracing/tracer.js";
+} from "../../tracing/tracer.js";
 import {
   relationshipPrivateMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
 } from "../../memory/common/disclosure-label.js";
-import type { ReviewQueueItem } from "../../memory/semantic/index.js";
+import type { ReviewQueueItem } from "../../memory/review-queue/index.js";
 import type { Episode } from "../../memory/episodic/index.js";
 import {
   createEntityId,

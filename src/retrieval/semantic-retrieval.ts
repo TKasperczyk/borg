@@ -12,7 +12,7 @@ import type {
   BeliefRevisionTarget,
   OpenBeliefRevisionStatus,
   ReviewQueueRepository,
-} from "../memory/semantic/review-queue.js";
+} from "../memory/review-queue/review-queue.js";
 import type {
   SemanticContext,
   SemanticEdge,

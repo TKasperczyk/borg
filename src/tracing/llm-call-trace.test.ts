@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { LLMCompleteResult, LLMMessage, LLMToolDefinition } from "../../llm/index.js";
+import type { LLMCompleteResult, LLMMessage, LLMToolDefinition } from "../llm/index.js";
 import type { TurnTracer } from "./tracer.js";
 import {
   countCompletePromptChars,

@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { type LLMClient, type LLMToolDefinition, toToolInputSchema } from "../../llm/index.js";
-import { memoryDisclosurePayloadFields } from "../disclosure-labels.js";
+import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import { unknownMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { IntentRecord } from "../types.js";

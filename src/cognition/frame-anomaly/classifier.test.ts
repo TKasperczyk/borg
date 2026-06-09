@@ -4,7 +4,7 @@ import { type LLMCompleteOptions, type LLMCompleteResult } from "../../llm/index
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createEntityId, createStreamEntryId } from "../../util/ids.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
-import type { TurnTracer, TurnTraceData, TurnTraceEventName } from "../tracing/tracer.js";
+import type { TurnTracer, TurnTraceData, TurnTraceEventName } from "../../tracing/tracer.js";
 import { FrameAnomalyClassifier } from "./classifier.js";
 import { isFrameAnomaly, type FrameAnomalyKind } from "./types.js";
 

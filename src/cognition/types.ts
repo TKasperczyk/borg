@@ -1,4 +1,4 @@
-import type { TurnOrigin } from "./cognitive-contracts.js";
+import type { TurnOrigin } from "../contracts/cognitive-contracts.js";
 
 export {
   COGNITIVE_MODES,
@@ -18,7 +18,7 @@ export {
   type PerceptionResult,
   type TemporalCue,
   type TurnOrigin,
-} from "./cognitive-contracts.js";
+} from "../contracts/cognitive-contracts.js";
 
 export function isUserTurnOrigin(origin: TurnOrigin | undefined): boolean {
   return origin === undefined || origin === "user";

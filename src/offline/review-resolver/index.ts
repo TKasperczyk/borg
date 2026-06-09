@@ -9,7 +9,7 @@ import {
 import {
   memoryDisclosurePayloadFields,
   semanticNodeMemoryDisclosureLabel,
-} from "../../cognition/disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import {
   combineMemoryDisclosureLabels,
   resolveDisclosureLabelsByEpisodeId,
@@ -17,21 +17,23 @@ import {
   type MemoryDisclosureLabel,
 } from "../../memory/common/disclosure-label.js";
 import {
-  misattributionReviewRefsSchema,
-  newInsightReviewRefsSchema,
-  reviewQueueItemSchema,
   semanticEdgeIdSchema,
   semanticNodeCorrectionRefSchema,
   semanticNodeIdSchema,
+  type SemanticNodeCorrectionRef,
+  type SemanticEdge,
+  type SemanticNode,
+} from "../../memory/semantic/index.js";
+import {
+  misattributionReviewRefsSchema,
+  newInsightReviewRefsSchema,
+  reviewQueueItemSchema,
   semanticPairReviewRefsSchema,
   temporalDriftReviewRefsSchema,
   type ReviewKind,
   type ReviewQueueItem,
   type ReviewResolution,
-  type SemanticNodeCorrectionRef,
-  type SemanticEdge,
-  type SemanticNode,
-} from "../../memory/semantic/index.js";
+} from "../../memory/review-queue/index.js";
 import { markSemanticSuperseded } from "../../memory/lifecycle-ops/index.js";
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import { streamEntryIdSchema, type StreamEntry } from "../../stream/index.js";

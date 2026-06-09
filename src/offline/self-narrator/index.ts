@@ -6,7 +6,7 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import {
   combineMemoryDisclosureLabels,

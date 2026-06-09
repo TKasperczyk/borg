@@ -31,7 +31,7 @@ import {
 } from "../../memory/self/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
 import { resolveOpenQuestionThroughIdentityService } from "../../memory/lifecycle-ops/index.js";
-import type { ReviewQueueRepository } from "../../memory/semantic/index.js";
+import type { ReviewQueueRepository } from "../../memory/review-queue/index.js";
 import { ProceduralEvidenceRepository, SkillRepository } from "../../memory/procedural/index.js";
 import {
   appendInternalFailureEvent,
@@ -73,12 +73,12 @@ import {
   type PerceptionResult,
   type TurnOrigin,
 } from "../types.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import {
   goalMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
   openQuestionMemoryDisclosureLabel,
-} from "../disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 export type ReflectionContext = {
   turnId?: string;
   sessionId?: SessionId;

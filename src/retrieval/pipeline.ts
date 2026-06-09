@@ -1,9 +1,9 @@
-import type { AttentionWeights, TemporalCue } from "../cognition/cognitive-contracts.js";
+import type { AttentionWeights, TemporalCue } from "../contracts/cognitive-contracts.js";
 import {
   commitmentMemoryDisclosureLabel,
   imagePerceptionMemoryDisclosureLabel,
   openQuestionMemoryDisclosureLabel,
-} from "../cognition/disclosure-labels.js";
+} from "../memory/common/disclosure-serializers.js";
 import type { ImagePerceptionRepository, ImagePerceptionSearchHit } from "../attachments/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
@@ -30,11 +30,11 @@ import type {
   SemanticEdgeRepository,
   SemanticNodeRepository,
 } from "../memory/semantic/repository.js";
-import type { ReviewQueueRepository } from "../memory/semantic/review-queue.js";
+import type { ReviewQueueRepository } from "../memory/review-queue/review-queue.js";
 import type { SemanticNode } from "../memory/semantic/types.js";
 import type { SocialProfile } from "../memory/social/index.js";
 import type { StreamEntry, StreamEntryIndexRepository } from "../stream/index.js";
-import { NOOP_TRACER, type TurnTracer } from "../cognition/tracing/tracer.js";
+import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { StorageError } from "../util/errors.js";
 import {

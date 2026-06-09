@@ -9,7 +9,7 @@ import { renderParticipantRoster, type ParticipantRoster } from "../perception/i
 import {
   memoryDisclosurePayloadFields,
   relationalSlotMemoryDisclosureLabel,
-} from "../disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import type { ExistingStateKeyRegistryEntry, SharedStatePromptSummary } from "./summary.js";
 import type {
   SharedStateArtifactAudienceContext,

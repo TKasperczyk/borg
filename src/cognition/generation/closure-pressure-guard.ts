@@ -11,7 +11,7 @@ import type { PostGenerationGuardMode } from "../../config/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
 import type { ClosureLoopState, ClosurePressureHistoryEntry } from "../../memory/working/index.js";
 import type { SessionId } from "../../util/ids.js";
-import type { TurnTraceData, TurnTracer } from "../tracing/tracer.js";
+import type { TurnTraceData, TurnTracer } from "../../tracing/tracer.js";
 import type { ClosureLoopDialogueAct } from "./closure-loop.js";
 import type { PendingTurnEmission } from "./types.js";
 

@@ -10,7 +10,7 @@ import { OFFLINE_REFLECTOR_PROMPT_PREAMBLE } from "../../cognition/prompts/refle
 import {
   goalMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
-} from "../../cognition/disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import { memoryDisclosureLabelSchema } from "../../memory/common/disclosure-label.js";
 import type { GoalRecord } from "../../memory/self/index.js";

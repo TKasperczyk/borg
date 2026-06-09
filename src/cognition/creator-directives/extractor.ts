@@ -37,8 +37,8 @@ import {
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallStarted,
-} from "../tracing/llm-call-trace.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+} from "../../tracing/llm-call-trace.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 
 export const CREATOR_DIRECTIVE_TOOL_NAME = "EmitCreatorDirectives";
 

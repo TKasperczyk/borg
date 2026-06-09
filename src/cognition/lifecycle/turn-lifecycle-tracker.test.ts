@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
+import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
 import { TurnLifecycleTracker } from "./turn-lifecycle-tracker.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import {

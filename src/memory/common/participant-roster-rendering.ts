@@ -4,6 +4,7 @@ type ParticipantRosterRenderMember = {
   known_relationships: readonly string[];
   audience_role: string;
   relationship_source: string | null;
+  relationship_sources?: readonly string[];
 };
 
 type ParticipantRosterRenderSubject = {
@@ -11,6 +12,7 @@ type ParticipantRosterRenderSubject = {
   display_name: string;
   known_relationships: readonly string[];
   relationship_source: string | null;
+  relationship_sources?: readonly string[];
 };
 
 type ParticipantRosterRenderUncertain = {
@@ -19,6 +21,7 @@ type ParticipantRosterRenderUncertain = {
   known_relationships: readonly string[];
   reason: string;
   relationship_source: string | null;
+  relationship_sources?: readonly string[];
 };
 
 export type ParticipantRosterForRendering = {

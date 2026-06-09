@@ -2,9 +2,9 @@ import type { LLMCompleteResult } from "../../llm/index.js";
 import type {
   SharedStateArtifact,
   SharedStateOperation,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
-import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
+import { toTraceJsonValue, type TurnTracer } from "../../tracing/tracer.js";
 import { summarizeSharedStateArtifactRender, type SharedStateRenderOptions } from "./render.js";
 import { similarStateKeyClusterCount } from "./state-key.js";
 import type {

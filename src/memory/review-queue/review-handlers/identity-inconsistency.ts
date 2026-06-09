@@ -15,7 +15,7 @@ import {
   valuePatchSchema,
 } from "../../self/types.js";
 import { SemanticError } from "../../../util/errors.js";
-import { semanticEdgeIdSchema, semanticNodeIdSchema } from "../types.js";
+import { semanticEdgeIdSchema, semanticNodeIdSchema } from "../../semantic/types.js";
 import type {
   ReviewHandlerContext,
   ReviewQueueHandler,

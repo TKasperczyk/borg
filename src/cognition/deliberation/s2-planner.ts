@@ -10,18 +10,18 @@ import {
   toToolInputSchema,
   willSendThinkingUnderAutoToolChoice,
 } from "../../llm/index.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import {
   buildUsageTraceBlock,
   emitTurnTokenFlushTrace,
   emitTurnTokenTrace,
   toTraceJsonValue,
-} from "../tracing/tracer.js";
+} from "../../tracing/tracer.js";
 import {
   summarizeToolResponseShape,
   traceLlmCallResponse,
   traceLlmCallStarted,
-} from "../tracing/llm-call-trace.js";
+} from "../../tracing/llm-call-trace.js";
 import { intentRecordSchema } from "../types.js";
 import type { EmissionRecommendation } from "../generation/types.js";
 import type { SessionId } from "../../util/ids.js";

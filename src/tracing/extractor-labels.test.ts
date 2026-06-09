@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { EXTRACTOR_MAX_TOKEN_LLM_LABELS, isExtractorMaxTokenLlmLabel } from "./extractor-labels.js";
 
-const COGNITION_ROOT = resolve(fileURLToPath(new URL("../", import.meta.url)));
+const COGNITION_ROOT = resolve(fileURLToPath(new URL("../cognition/", import.meta.url)));
 
 const EXTRACTOR_MAX_TOKEN_CONSUMER_LABELS = {
   "actions/action-state-extractor.ts": ["action-state-extractor", "action_state_extractor"],

@@ -36,7 +36,7 @@ import type {
   CreatorDirectiveQueueInput,
 } from "../memory/creator-directives/types.js";
 import type { Provenance } from "../memory/common/provenance.js";
-import type { SharedStateArtifact, SharedStateEntry } from "../memory/decision-artifacts/index.js";
+import type { SharedStateArtifact, SharedStateEntry } from "../memory/shared-state/index.js";
 import type {
   Episode,
   EpisodeListOptions,

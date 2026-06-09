@@ -12,7 +12,7 @@ import {
   parseReviewResolution,
 } from "../helpers/parsers.js";
 import type { CliCommandDeps, CommandOptions } from "../types.js";
-import type { ReviewQueueItem } from "../../memory/semantic/index.js";
+import type { ReviewQueueItem } from "../../memory/review-queue/index.js";
 
 function renderReviewItem(
   item: ReviewQueueItem,

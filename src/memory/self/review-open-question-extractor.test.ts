@@ -9,7 +9,7 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { parseEpisodeId, parseSemanticNodeId } from "../../util/ids.js";
-import type { ReviewQueueItem } from "../semantic/index.js";
+import type { ReviewQueueItem } from "../review-queue/index.js";
 import { OpenQuestionsRepository, selfMigrations } from "./index.js";
 import {
   REVIEW_OPEN_QUESTION_TOOL,

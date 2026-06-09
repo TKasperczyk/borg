@@ -3,7 +3,7 @@ import { z } from "zod";
 import {
   memoryDisclosurePayloadFields,
   openQuestionMemoryDisclosureLabel,
-} from "../../cognition/disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import { memoryDisclosureLabelMetadataSchema } from "../../memory/common/disclosure-label.js";
 import { type OpenQuestion, openQuestionSchema } from "../../memory/self/index.js";
 import { episodeIdSchema } from "../../memory/episodic/index.js";

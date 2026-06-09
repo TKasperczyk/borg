@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { ActionRecord } from "../../memory/actions/index.js";
-import { sharedStateMigrations } from "../../memory/decision-artifacts/migrations.js";
-import { SharedStateRepository } from "../../memory/decision-artifacts/repository.js";
-import type { SharedStateEntryKind } from "../../memory/decision-artifacts/types.js";
+import { sharedStateMigrations } from "../../memory/shared-state/migrations.js";
+import { SharedStateRepository } from "../../memory/shared-state/repository.js";
+import type { SharedStateEntryKind } from "../../memory/shared-state/types.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
@@ -36,13 +36,13 @@ import {
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
 import { renderSharedStateArtifact, renderEvidenceLedger } from "../evidence-ledger/index.js";
 import { summarizeSemanticContext } from "../deliberation/prompt/retrieval.js";
-import { memoryDisclosurePayloadFields } from "../disclosure-labels.js";
+import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import type { RelationshipClaim } from "../../memory/common/relationship-claims.js";
 import {
   advanceSharedStateCompileSkipAnchor,
   buildSharedStateLedgerPromptContext,
 } from "../lifecycle/turn-phase-coordinator.js";
-import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
+import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
 import {
   compileSharedStateArtifact,
   DECISION_ARTIFACT_TOOL_NAME,

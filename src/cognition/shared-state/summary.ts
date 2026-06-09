@@ -4,11 +4,11 @@ import {
   type SharedStateArtifact,
   type SharedStateEntry,
   type SharedStateEntryKind,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import {
   memoryDisclosurePayloadFields,
   sharedStateMemoryDisclosureLabel,
-} from "../disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import { coercePositiveIntegerOrFallback } from "../../util/math.js";
 import {
   activeSharedStateArtifactEntries,

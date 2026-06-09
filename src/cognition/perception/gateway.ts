@@ -10,7 +10,7 @@ import type { Clock } from "../../util/clock.js";
 import { ConfigError } from "../../util/errors.js";
 import type { SessionId, StreamEntryId } from "../../util/ids.js";
 import { TurnContextCompiler, type RecencyWindow } from "../recency/index.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import { detectAffectiveSignal } from "./affective-signal.js";
 import { Perceiver } from "./index.js";
 import { isAutonomousLikeTurnOrigin, type PerceptionResult, type TurnOrigin } from "../types.js";

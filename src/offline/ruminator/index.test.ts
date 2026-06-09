@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../cognition/index.js";
+import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
 import { computeWeights } from "../../cognition/attention/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { expectedRecordVersion } from "../../memory/common/cas.js";

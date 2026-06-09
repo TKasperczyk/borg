@@ -45,7 +45,7 @@ only shape that carries them. The naming convention encodes the boundary --
 cognition-recall functions are suffixed `*ForCognition` (global recall),
 audience-filtered disclosure/export functions `*ForDisclosure`. Disclosure
 labels are concrete primitives: `memoryDisclosurePayloadFields(label)`
-(`src/cognition/disclosure-labels.ts`) is the per-record serializer used across
+(`src/memory/common/disclosure-serializers.ts`) is the per-record serializer used across
 every band; `combineMemoryDisclosureLabels` (`src/memory/common/disclosure-label.ts`)
 merges to the most-restrictive class, fails closed to `unknown`, and never
 demotes a private/unknown source to public. Two `pnpm heuristics:guard` passes
@@ -895,9 +895,11 @@ the model ignore visible evidence?
 ### Shared State
 
 Shared State is a compact, audience-scoped record of what Borg and a specific
-audience currently share (entry point: `src/cognition/shared-state/index.ts`).
-It captures decisions, live threads, tentative understandings, invalidated
-claims, and locked canonical facts that matter for continuity.
+audience currently share. Its persistent memory-band store lives in
+`src/memory/shared-state/`; turn-time compilation, aging, reconciliation, and
+rendering live in `src/cognition/shared-state/`. It captures decisions, live
+threads, tentative understandings, invalidated claims, and locked canonical
+facts that matter for continuity.
 
 Shared State is audience-scoped because "what we know" depends on who "we" is.
 A private understanding with one person is not automatically shared with a
@@ -1310,9 +1312,9 @@ Action can resolve its linked Open Question, and it can also resolve Open
 Questions under a linked Goal through identity-governed resolution.
 
 The Review Queue holds bounded maintenance decisions that are uncertain,
-potentially destructive, authority-bearing, or semantically risky. Despite its
-historical placement in `src/memory/semantic/review-queue.ts`, it is a general
-maintenance review queue, not a semantic-memory-only queue. Reviews can cover
+potentially destructive, authority-bearing, or semantically risky. Its store
+and handlers live in `src/memory/review-queue/`; it is a general maintenance
+review queue, not a semantic-memory-only queue. Reviews can cover
 semantic contradiction and duplicate decisions, new insight, misattribution,
 temporal drift, identity inconsistency, correction, belief revision, skill
 splits, and creator-directive reconciliation. Queueing a review is preferred

@@ -30,7 +30,7 @@ import {
   RelationalSlotRepository,
   relationalSlotMigrations,
 } from "../memory/relational-slots/index.js";
-import { sharedStateMigrations } from "../memory/decision-artifacts/index.js";
+import { sharedStateMigrations } from "../memory/shared-state/index.js";
 import {
   EpisodicRepository,
   createEpisodesTableSchema,
@@ -68,20 +68,22 @@ import {
   type ReviewOpenQuestionExtractorLike,
 } from "../memory/self/review-open-question-hook.js";
 import {
-  ReviewQueueRepository,
   SemanticBeliefDependencyRepository,
   SemanticGraph,
   SemanticEdgeRepository,
   SemanticNodeRepository,
-  createCorrectionReviewHandler,
-  createSkillSplitReviewQueueHandler,
   createSemanticNodesTableSchema,
-  registerBuiltinReviewQueueHandlers,
   semanticMigrations,
-  type ReviewQueueItem,
   type SemanticEdge,
   type SemanticNode,
 } from "../memory/semantic/index.js";
+import {
+  ReviewQueueRepository,
+  createCorrectionReviewHandler,
+  createSkillSplitReviewQueueHandler,
+  registerBuiltinReviewQueueHandlers,
+  type ReviewQueueItem,
+} from "../memory/review-queue/index.js";
 import { SocialRepository, socialMigrations } from "../memory/social/index.js";
 import {
   RecallStateRepository,
@@ -504,7 +506,7 @@ export async function createOfflineTestHarness(
     embeddingDimensions?: number;
     configOverrides?: DeepPartial<Config>;
     reviewOpenQuestionExtractor?: ReviewOpenQuestionExtractorLike | null;
-    tracer?: import("../cognition/tracing/tracer.js").TurnTracer;
+    tracer?: import("../tracing/tracer.js").TurnTracer;
   } = {},
 ): Promise<OfflineTestHarness> {
   const tempDir = mkdtempSync(join(tmpdir(), "borg-"));

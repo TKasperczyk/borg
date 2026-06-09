@@ -9,7 +9,7 @@ import {
   createSessionId,
   createStreamEntryId,
 } from "../../util/ids.js";
-import { NOOP_TRACER } from "../tracing/tracer.js";
+import { NOOP_TRACER } from "../../tracing/tracer.js";
 import { ActionStateExtractor } from "./action-state-extractor.js";
 import { TurnActionStateService } from "./turn-action-state-service.js";
 

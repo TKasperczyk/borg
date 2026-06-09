@@ -1,6 +1,6 @@
 import type { Config } from "../src/index.js";
-import type { TracePhaseWithOther } from "../src/cognition/tracing/taxonomy.js";
-import type { TurnTraceEventName } from "../src/cognition/tracing/tracer.js";
+import type { TracePhaseWithOther } from "../src/tracing/taxonomy.js";
+import type { TurnTraceEventName } from "../src/tracing/tracer.js";
 import type { StreamEntry } from "../src/stream/index.js";
 
 export type DeepPartial<T> = {

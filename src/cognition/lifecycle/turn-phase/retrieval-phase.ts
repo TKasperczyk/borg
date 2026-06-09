@@ -26,7 +26,7 @@ import {
   goalMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
   openQuestionMemoryDisclosureLabel,
-} from "../../disclosure-labels.js";
+} from "../../../memory/common/disclosure-serializers.js";
 import {
   compileSharedStateArtifact,
   findUnsettledSharedStateReconciliation,
@@ -38,7 +38,7 @@ import {
   type SessionReentryContinuityPrompt,
 } from "../../session-reentry-continuity.js";
 import { AutobiographicalRecallService } from "../../autobiographical-recall.js";
-import { toTraceJsonValue } from "../../tracing/tracer.js";
+import { toTraceJsonValue } from "../../../tracing/tracer.js";
 import type { PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
 import {
@@ -68,7 +68,7 @@ import {
   DEFAULT_OBSERVED_EVENT_INTROSPECTION_RECENCY_WINDOW_MS,
   recallObservedEventsForCognition,
 } from "../../../memory/observed-events/index.js";
-import type { SharedStateArtifact } from "../../../memory/decision-artifacts/index.js";
+import type { SharedStateArtifact } from "../../../memory/shared-state/index.js";
 import { createLoadedUserStreamEntryRelationshipEvidenceTrustValidator } from "../../../memory/source-trust.js";
 import {
   SELF_RECALL_SCOPE,

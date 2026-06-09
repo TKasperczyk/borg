@@ -11,7 +11,7 @@ import {
   semanticNodeSchema,
   semanticNodeStatusSchema,
   type SemanticNode,
-} from "../types.js";
+} from "../../semantic/types.js";
 import {
   reviewResolutionSchema,
   type ReviewQueueHandler,

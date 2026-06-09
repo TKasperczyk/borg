@@ -10,7 +10,7 @@ import type {
   OpenCommitmentReconciliationStatus,
   ReviewQueueItem,
   ReviewQueueRepository,
-} from "../../memory/semantic/index.js";
+} from "../../memory/review-queue/index.js";
 import type {
   ProceduralContext,
   SkillSelectionResult,
@@ -32,12 +32,12 @@ import {
 import type { Clock } from "../../util/clock.js";
 import type { EntityId } from "../../util/ids.js";
 import type { LLMClient } from "../../llm/index.js";
-import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
+import { NOOP_TRACER, type TurnTracer } from "../../tracing/tracer.js";
 import { computeRetrievalLimit, computeWeights, type SuppressionSet } from "../attention/index.js";
 import type { SelfSnapshot } from "../deliberation/deliberator.js";
 import { deriveProceduralContext } from "../procedural/context-derivation.js";
 import type { PerceptionResult } from "../types.js";
-import { correctionMemoryDisclosureLabel } from "../disclosure-labels.js";
+import { correctionMemoryDisclosureLabel } from "../../memory/common/disclosure-serializers.js";
 
 function buildSkillSelectionQuery(userMessage: string, entities: readonly string[]): string {
   return [userMessage, ...entities]

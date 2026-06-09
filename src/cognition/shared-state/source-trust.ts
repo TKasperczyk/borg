@@ -1,7 +1,7 @@
 import {
   type SharedStateSourceTrustRejectionReason,
   type SharedStateSourceTrustValidator,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import { streamEntryIdHelpers, type StreamEntryId } from "../../util/ids.js";
 import type { PatchRejection } from "./types.js";
 
