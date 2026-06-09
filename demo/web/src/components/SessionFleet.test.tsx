@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { SessionRecord } from "../api/types";
@@ -109,5 +109,29 @@ describe("SessionFleet", () => {
     fireEvent.click(screen.getByRole("button", { name: "expand sessions" }));
 
     expect(screen.getByText("demo (default)")).toBeInTheDocument();
+  });
+
+  it("uses the session activity index for per-row recency", () => {
+    vi.spyOn(Date, "now").mockReturnValue(61_000);
+    render(
+      <SessionFleet
+        sessions={[
+          session({ session_id: "default", label: "demo (default)", last_activity_at: 1_000 }),
+          session({
+            session_id: "sess_planning",
+            label: "Slack #planning",
+            last_activity_at: 1_000,
+          }),
+        ]}
+        activeSessionId="default"
+        onSelect={() => undefined}
+        sessionActivity={new Map([["sess_planning", 61_000]])}
+      />,
+    );
+
+    const row = screen.getByRole("button", { name: /Slack #planning/ });
+
+    expect(within(row).getByText("now")).toBeInTheDocument();
+    expect(row.querySelector(".dot.alive")).not.toBeNull();
   });
 });

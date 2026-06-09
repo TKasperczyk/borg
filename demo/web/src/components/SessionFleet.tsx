@@ -6,6 +6,7 @@ export type SessionFleetProps = {
   sessions: readonly SessionRecord[];
   activeSessionId: string;
   onSelect: (sessionId: string) => void;
+  sessionActivity?: ReadonlyMap<string, number>;
   creator?: EntityRecord | null;
   operatorChatError?: string | null;
   onOpenOperatorChat?: () => Promise<void> | void;
@@ -13,6 +14,10 @@ export type SessionFleetProps = {
 };
 
 type GroupKey = "today" | "yesterday" | "earlier";
+type SessionRow = {
+  session: SessionRecord;
+  activityAt: number;
+};
 
 const GROUP_ORDER: readonly GroupKey[] = ["today", "yesterday", "earlier"];
 
@@ -103,6 +108,7 @@ export function SessionFleet({
   sessions,
   activeSessionId,
   onSelect,
+  sessionActivity,
   creator,
   operatorChatError,
   onOpenOperatorChat,
@@ -111,12 +117,13 @@ export function SessionFleet({
   const [collapsed, setCollapsed] = useState(false);
   const [creatorName, setCreatorName] = useState(creator?.canonical_name ?? "");
   const [creatorBusy, setCreatorBusy] = useState(false);
-  const grouped = new Map<GroupKey, SessionRecord[]>();
+  const grouped = new Map<GroupKey, SessionRow[]>();
   for (const key of GROUP_ORDER) {
     grouped.set(key, []);
   }
   for (const session of sessions) {
-    grouped.get(groupKey(session.last_activity_at))!.push(session);
+    const activityAt = sessionActivity?.get(session.session_id) ?? session.last_activity_at;
+    grouped.get(groupKey(activityAt))!.push({ session, activityAt });
   }
 
   const submitCreator = async (event: FormEvent<HTMLFormElement>) => {
@@ -167,8 +174,9 @@ export function SessionFleet({
               return (
                 <div key={key}>
                   <div className="session-group-label">{key}</div>
-                  {rows.map((session) => {
+                  {rows.map(({ session, activityAt }) => {
                     const active = session.session_id === activeSessionId;
+                    const recentlyActive = Date.now() - activityAt < 60_000;
                     return (
                       <button
                         key={session.session_id}
@@ -178,13 +186,11 @@ export function SessionFleet({
                       >
                         <span className="session-row-top">
                           <span className="session-label">{session.label}</span>
-                          <span className="session-time">
-                            {relativeTime(session.last_activity_at)}
-                          </span>
+                          <span className="session-time">{relativeTime(activityAt)}</span>
                         </span>
                         <span className="session-preview">{previewLine(session)}</span>
                         <span className="session-foot">
-                          <span className={`dot ${active ? "alive" : ""}`}></span>
+                          <span className={`dot ${active || recentlyActive ? "alive" : ""}`}></span>
                           <span>{shortId(session.session_id)}</span>
                           <span className="sep">·</span>
                           <span>{session.message_count.toLocaleString()} msg</span>

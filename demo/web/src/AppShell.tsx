@@ -1,14 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
-import {
-  ApiError,
-  getCreatorEntity,
-  getSessions,
-  getState,
-  openOperatorSession,
-  setCreatorByName,
-} from "./api/client";
-import type { MaintenanceTickFrame, StateSnapshot } from "./api/types";
+import { ApiError, getCreatorEntity, openOperatorSession, setCreatorByName } from "./api/client";
+import type { EntityRecord, StateSnapshot } from "./api/types";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { Inspector } from "./components/Inspector/Inspector";
 import { InspectorProvider } from "./components/Inspector/inspector-context";
@@ -19,6 +12,7 @@ import { StatusBar } from "./components/StatusBar";
 import { LiveEventsProvider } from "./hooks/live-context";
 import { useApi } from "./hooks/use-api";
 import { useLiveEvents } from "./hooks/use-live-events";
+import { LiveCacheProvider, useLiveCache } from "./hooks/use-live-cache";
 import { useSession } from "./hooks/use-session";
 import { useTurnStream } from "./hooks/use-turn-stream";
 import { useView } from "./hooks/use-view";
@@ -52,12 +46,12 @@ function countBadge(
   return { count, severity, label };
 }
 
-function railBadges(state: StateSnapshot | null): Partial<Record<RouteId, RailBadge>> {
+function railBadges(counts: StateSnapshot["counts"] | null): Partial<Record<RouteId, RailBadge>> {
   return {
-    identity: countBadge(state?.counts.open_qs, 1, "open questions"),
-    commit: countBadge(state?.counts.commitments, 1, "commitments"),
-    review: countBadge(state?.counts.open_reviews, 2, "open reviews"),
-    dream: countBadge(state?.counts.dream_audit_rows, 1, "dream audit rows"),
+    identity: countBadge(counts?.open_qs, 1, "open questions"),
+    commit: countBadge(counts?.commitments, 1, "commitments"),
+    review: countBadge(counts?.open_reviews, 2, "open reviews"),
+    dream: countBadge(counts?.dream_audit_rows, 1, "dream audit rows"),
   };
 }
 
@@ -65,20 +59,70 @@ export function AppShell() {
   const { view, setView } = useView();
   const [now, setNow] = useState(formatNow);
   const { sessionId, setSessionId } = useSession();
-  const stateApi = useApi(() => getState({ session: sessionId }), [sessionId]);
-  const sessionsApi = useApi(getSessions, []);
   const creatorApi = useApi(getCreatorEntity, []);
+  const [operatorChatError, setOperatorChatError] = useState<string | null>(null);
+  const live = useLiveEvents({ sessionId });
+  const turnStream = useTurnStream(live, { sessionId });
+  const refetchCreator = creatorApi.refetch;
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(formatNow()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return (
+    <LiveEventsProvider value={live}>
+      <LiveCacheProvider sessionId={sessionId}>
+        <AppShellContent
+          view={view}
+          setView={setView}
+          now={now}
+          sessionId={sessionId}
+          setSessionId={setSessionId}
+          creator={creatorApi.data ?? null}
+          refetchCreator={refetchCreator}
+          operatorChatError={operatorChatError}
+          setOperatorChatError={setOperatorChatError}
+          turnStream={turnStream}
+        />
+      </LiveCacheProvider>
+    </LiveEventsProvider>
+  );
+}
+
+type AppShellContentProps = {
+  view: RouteId;
+  setView: (view: RouteId) => void;
+  now: string;
+  sessionId: string;
+  setSessionId: (sessionId: string) => void;
+  creator: EntityRecord | null;
+  refetchCreator: () => Promise<void>;
+  operatorChatError: string | null;
+  setOperatorChatError: (error: string | null) => void;
+  turnStream: ReturnType<typeof useTurnStream>;
+};
+
+function AppShellContent({
+  view,
+  setView,
+  now,
+  sessionId,
+  setSessionId,
+  creator,
+  refetchCreator,
+  operatorChatError,
+  setOperatorChatError,
+  turnStream,
+}: AppShellContentProps) {
+  const { stateApi, counts, sessionsApi, sessionActivity, lastMaintenanceTick, wsState } =
+    useLiveCache();
   const refetchState = stateApi.refetch;
   const refetchSessions = sessionsApi.refetch;
-  const refetchCreator = creatorApi.refetch;
-  const [operatorChatError, setOperatorChatError] = useState<string | null>(null);
-  const [lastMaintenanceTick, setLastMaintenanceTick] = useState<MaintenanceTickFrame | null>(null);
-  const live = useLiveEvents({ onReconnected: refetchState, sessionId });
-  const turnStream = useTurnStream(live, { sessionId });
   const activeSession =
     sessionsApi.data?.sessions.find((session) => session.session_id === sessionId) ?? null;
   const activeAudience = activeSession?.audience_label ?? DEFAULT_AUDIENCE;
-  const badges = useMemo(() => railBadges(stateApi.data), [stateApi.data]);
+  const badges = useMemo(() => railBadges(counts), [counts]);
 
   const refetchSessionState = async () => {
     await Promise.all([refetchSessions(), refetchState()]);
@@ -105,90 +149,68 @@ export function AppShell() {
     await Promise.all([refetchCreator(), refetchSessions(), refetchState()]);
   };
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(formatNow()), 1_000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    return live.subscribe((frame) => {
-      if (frame.type === "stream:append") {
-        void refetchState();
-        void refetchSessions();
-      }
-      if (frame.type === "maintenance:tick") {
-        setLastMaintenanceTick(frame);
-        void refetchState();
-      }
-      if (frame.type === "borg:reset") {
-        window.location.reload();
-      }
-    });
-  }, [live, refetchSessions, refetchState]);
-
   return (
-    <LiveEventsProvider value={live}>
-      <InspectorProvider
-        setView={setView}
-        setSessionId={setSessionId}
-        sessionId={sessionId}
-        audience={activeAudience}
-      >
-        <div className="app">
-          <Rail route={view} setRoute={setView} badges={badges} />
-          <InstrumentStrip
-            sessionId={sessionId}
-            activeSession={activeSession}
-            audience={activeAudience}
-            creator={creatorApi.data ?? null}
-            state={stateApi.data}
-            wsState={live.wsState}
-            now={now}
-            route={view}
+    <InspectorProvider
+      setView={setView}
+      setSessionId={setSessionId}
+      sessionId={sessionId}
+      audience={activeAudience}
+    >
+      <div className="app">
+        <Rail route={view} setRoute={setView} badges={badges} />
+        <InstrumentStrip
+          sessionId={sessionId}
+          activeSession={activeSession}
+          audience={activeAudience}
+          creator={creator}
+          state={stateApi.data}
+          wsState={wsState}
+          now={now}
+          route={view}
+        />
+        <div className="main">
+          <SessionFleet
+            sessions={sessionsApi.data?.sessions ?? []}
+            activeSessionId={sessionId}
+            onSelect={setSessionId}
+            creator={creator}
+            operatorChatError={operatorChatError}
+            onOpenOperatorChat={openOperatorChat}
+            onSetCreatorByName={markCreatorByName}
+            sessionActivity={sessionActivity}
           />
-          <div className="main">
-            <SessionFleet
-              sessions={sessionsApi.data?.sessions ?? []}
-              activeSessionId={sessionId}
-              onSelect={setSessionId}
-              creator={creatorApi.data ?? null}
-              operatorChatError={operatorChatError}
-              onOpenOperatorChat={openOperatorChat}
-              onSetCreatorByName={markCreatorByName}
-            />
-            <div className="screen-shell">
-              <AppErrorBoundary resetKey={view}>
-                {view === "cognition" ? (
-                  <CognitionScreen
-                    sessionId={sessionId}
-                    audience={activeAudience}
-                    audienceEntityId={activeSession?.audience_entity_id ?? null}
-                    turnStream={turnStream}
-                    session={activeSession}
-                    onSessionPolicyChanged={refetchSessionState}
-                  />
-                ) : null}
-                {view === "stream" ? <StreamScreen sessionId={sessionId} /> : null}
-                {view === "memory" ? (
-                  <MemoryScreen sessionId={sessionId} onOpenReview={() => setView("review")} />
-                ) : null}
-                {view === "identity" ? <IdentityScreen /> : null}
-                {view === "commit" ? <CommitScreen /> : null}
-                {view === "directives" ? <DirectivesScreen sessionId={sessionId} /> : null}
-                {view === "review" ? <ReviewScreen /> : null}
-                {view === "dream" ? <DreamScreen onOpenReview={() => setView("review")} /> : null}
-                {view === "prompts" ? <PromptsScreen /> : null}
-              </AppErrorBoundary>
-            </div>
+          <div className="screen-shell">
+            <AppErrorBoundary resetKey={view}>
+              {view === "cognition" ? (
+                <CognitionScreen
+                  sessionId={sessionId}
+                  audience={activeAudience}
+                  audienceEntityId={activeSession?.audience_entity_id ?? null}
+                  turnStream={turnStream}
+                  session={activeSession}
+                  onSessionPolicyChanged={refetchSessionState}
+                />
+              ) : null}
+              {view === "stream" ? <StreamScreen sessionId={sessionId} /> : null}
+              {view === "memory" ? (
+                <MemoryScreen sessionId={sessionId} onOpenReview={() => setView("review")} />
+              ) : null}
+              {view === "identity" ? <IdentityScreen /> : null}
+              {view === "commit" ? <CommitScreen /> : null}
+              {view === "directives" ? <DirectivesScreen sessionId={sessionId} /> : null}
+              {view === "review" ? <ReviewScreen /> : null}
+              {view === "dream" ? <DreamScreen onOpenReview={() => setView("review")} /> : null}
+              {view === "prompts" ? <PromptsScreen /> : null}
+            </AppErrorBoundary>
           </div>
-          <StatusBar
-            state={stateApi.data}
-            lastPhase={turnStream.lastPhase}
-            lastMaintenanceTick={lastMaintenanceTick}
-          />
-          <Inspector />
         </div>
-      </InspectorProvider>
-    </LiveEventsProvider>
+        <StatusBar
+          state={stateApi.data}
+          lastPhase={turnStream.lastPhase}
+          lastMaintenanceTick={lastMaintenanceTick}
+        />
+        <Inspector />
+      </div>
+    </InspectorProvider>
   );
 }
