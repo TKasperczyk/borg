@@ -11,12 +11,16 @@ import {
   postSemanticEdgeInvalidate,
 } from "../../api/client";
 import type {
+  CommitmentItem,
   EpisodeMemoryItem,
   MemoryBandDetail,
   MemoryBandId,
   MemoryBandSummary,
+  ProceduralMemoryItem,
+  RelationalMemoryItem,
   SemanticGraphResponse,
   SemanticMemoryNode,
+  SocialMemoryItem,
 } from "../../api/types";
 import { IdRef } from "../../components/Inspector/IdRef";
 import { Modal } from "../../components/Modal";
@@ -29,6 +33,7 @@ import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
 import { formatTime } from "../../lib/stream-utils";
 import { dateLabel, jsonText, parseJsonPatch, shortId } from "../screen-utils";
+import { SocialTrustScatter, ValenceArousalPlane } from "./AtlasPlots";
 import { SemanticTopology } from "./SemanticTopology";
 
 const BAND_ORDER: MemoryBandId[] = [
@@ -57,7 +62,13 @@ const MEMORY_PAGE_LIMIT = 50;
 const SEMANTIC_TOPOLOGY_LIMIT = 300;
 const SEARCHABLE_BANDS = new Set<MemoryBandId>(["episodic", "semantic", "procedural"]);
 
-type SortMode = "backend" | "updated_desc" | "updated_asc" | "created_desc" | "created_asc";
+type SortMode =
+  | "backend"
+  | "updated_desc"
+  | "updated_asc"
+  | "created_desc"
+  | "created_asc"
+  | "audience_group";
 type SemanticViewMode = "browser" | "topology";
 
 type MemoryRow = {
@@ -73,6 +84,8 @@ type MemoryRow = {
   status?: string;
   state?: string;
   enforcement?: string;
+  contradictedCount?: number;
+  alternateCount?: number;
   updatedAt?: number;
   createdAt?: number;
   startTime?: number;
@@ -284,6 +297,8 @@ function detailRows(detail: MemoryBandDetail): MemoryRow[] {
         rowKind: "slot",
         state: slot.state,
         status: slot.state,
+        contradictedCount: slot.contradicted_count,
+        alternateCount: slot.alternate_count,
         createdAt: slot.created_at,
         updatedAt: slot.updated_at,
       }));
@@ -293,9 +308,13 @@ function detailRows(detail: MemoryBandDetail): MemoryRow[] {
 export function MemoryScreen({
   sessionId,
   onOpenReview,
+  onOpenIdentity,
+  onOpenCommitments,
 }: {
   sessionId: string;
   onOpenReview?: () => void;
+  onOpenIdentity?: () => void;
+  onOpenCommitments?: () => void;
 }) {
   const api = useApi(() => getMemoryBands({ session: sessionId }), [sessionId]);
   const [activeBand, setActiveBand] = useState<MemoryBandId | null>(null);
@@ -318,10 +337,14 @@ export function MemoryScreen({
     return (
       <MemoryDrill
         band={activeBand}
+        bands={bands}
         totalCount={activeSummary?.count ?? 0}
         totalIsLowerBound={activeSummary?.count_is_lower_bound ?? false}
         sessionId={sessionId}
         back={() => setActiveBand(null)}
+        onSelectBand={setActiveBand}
+        onOpenIdentity={onOpenIdentity}
+        onOpenCommitments={onOpenCommitments}
         onMemoryChanged={api.refetch}
       />
     );
@@ -336,18 +359,14 @@ export function MemoryScreen({
   }
 
   return (
-    <div className="bands">
+    <div className="bands memory-atlas">
       <div className="bands-head">
-        <h1>memory::bands</h1>
+        <h1>memory atlas</h1>
         <div className="desc">
           raw memory store browser · audience scoping applies during retrieval/evidence ledger
         </div>
       </div>
-      <div className="bands-grid">
-        {bands.map((band) => (
-          <BandCard key={band.id} band={band} onClick={() => setActiveBand(band.id)} />
-        ))}
-      </div>
+      <BandOverviewBar bands={bands} activeBand={null} onSelectBand={setActiveBand} />
       <div className="divider" style={{ marginTop: 22 }}>
         governance
       </div>
@@ -377,17 +396,52 @@ export function MemoryScreen({
   );
 }
 
-function BandCard({ band, onClick }: { band: MemoryBandSummary; onClick: () => void }) {
-  const countLabel = `${band.count.toLocaleString()}${band.count_is_lower_bound ? "+" : ""}`;
+function BandOverviewBar({
+  bands,
+  activeBand,
+  onSelectBand,
+}: {
+  bands: readonly MemoryBandSummary[];
+  activeBand: MemoryBandId | null;
+  onSelectBand: (band: MemoryBandId) => void;
+}) {
+  return (
+    <div className="band-overview-bar" aria-label="memory bands">
+      {bands.map((band) => (
+        <BandCard
+          key={band.id}
+          band={band}
+          active={activeBand === band.id}
+          onClick={() => onSelectBand(band.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function BandCard({
+  band,
+  active,
+  onClick,
+}: {
+  band: MemoryBandSummary;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const countLabel = `${band.count_is_lower_bound ? "≥" : ""}${band.count.toLocaleString()}`;
 
   return (
-    <div className="band-card" onClick={onClick}>
+    <button
+      type="button"
+      className={`band-card ${active ? "active" : ""}`}
+      aria-label={`open ${band.name} memory band`}
+      onClick={onClick}
+    >
       <div className="head">
         <span>band {band.n ?? "—"}</span>
         <span className="n">{countLabel}</span>
       </div>
       <div className="name">{band.name}</div>
-      <div className="desc-line">{band.desc ?? BAND_DESCRIPTIONS[band.id]}</div>
       <Spark data={band.growth ?? [1, 1, 1]} />
       <div className="stat-row">
         {band.stats.slice(0, 2).map((stat) => (
@@ -397,8 +451,7 @@ function BandCard({ band, onClick }: { band: MemoryBandSummary; onClick: () => v
           </div>
         ))}
       </div>
-      <div className="explore">browse ▸</div>
-    </div>
+    </button>
   );
 }
 
@@ -460,18 +513,15 @@ function structuralFilterRows(
   filters: Readonly<Record<string, string>>,
 ): MemoryRow[] {
   const rowKind = filters.rowKind ?? "all";
-  const audience = filters.audience ?? "all";
   const tag = filters.tag ?? "all";
   const kind = filters.kind ?? "all";
   const status = filters.status ?? "all";
   const state = filters.state ?? "all";
   const enforcement = filters.enforcement ?? "all";
+  const conflict = filters.conflict ?? "all";
 
   return rows.filter((row) => {
     if (rowKind !== "all" && row.rowKind !== rowKind) {
-      return false;
-    }
-    if (audience !== "all" && row.audience !== audience) {
       return false;
     }
     if (tag !== "all" && !row.tags?.includes(tag)) {
@@ -487,6 +537,14 @@ function structuralFilterRows(
       return false;
     }
     if (enforcement !== "all" && row.enforcement !== enforcement) {
+      return false;
+    }
+    if (
+      conflict === "conflicts" &&
+      row.state === "established" &&
+      (row.contradictedCount ?? 0) === 0 &&
+      (row.alternateCount ?? 0) === 0
+    ) {
       return false;
     }
     return true;
@@ -517,6 +575,12 @@ function sortedRows(rows: readonly MemoryRow[], sortMode: SortMode): MemoryRow[]
       (left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0) || left.order - right.order,
     );
   }
+  if (sortMode === "audience_group") {
+    return next.sort((left, right) => {
+      const audienceCompare = (left.audience ?? "global").localeCompare(right.audience ?? "global");
+      return audienceCompare || left.order - right.order;
+    });
+  }
   return next.sort(
     (left, right) => (left.createdAt ?? 0) - (right.createdAt ?? 0) || left.order - right.order,
   );
@@ -524,7 +588,7 @@ function sortedRows(rows: readonly MemoryRow[], sortMode: SortMode): MemoryRow[]
 
 function defaultFiltersForBand(_band: MemoryBandId): Record<string, string> {
   return {
-    audience: "all",
+    conflict: "all",
     enforcement: "all",
     kind: "all",
     rowKind: "all",
@@ -546,6 +610,9 @@ function sortLabel(sort: SortMode): string {
   }
   if (sort === "created_desc") {
     return "created new";
+  }
+  if (sort === "audience_group") {
+    return "group audience";
   }
   return "created old";
 }
@@ -573,11 +640,7 @@ function FilterPillGroup({
         <span className="dim" style={{ fontSize: 10.5 }}>
           {label}
         </span>
-        <select
-          aria-label={label}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-        >
+        <select aria-label={label} value={value} onChange={(event) => onChange(event.target.value)}>
           {options.map((option) => (
             <option key={option} value={option}>
               {option}
@@ -620,7 +683,6 @@ function MemoryStructuralControls({
   onFilter: (key: string, value: string) => void;
 }) {
   const rowKinds = ["all", ...uniqueSorted(rows.map((row) => row.rowKind))];
-  const audiences = ["all", ...uniqueSorted(rows.map((row) => row.audience))];
   const tags = ["all", ...uniqueSorted(rows.flatMap((row) => row.tags ?? []))];
   const kinds = ["all", ...uniqueSorted(rows.map((row) => row.kind))];
   const statuses = ["all", ...uniqueSorted(rows.map((row) => row.status))];
@@ -630,20 +692,12 @@ function MemoryStructuralControls({
 
   if (band === "episodic") {
     return (
-      <>
-        <FilterPillGroup
-          label="audience"
-          options={audiences}
-          value={selected("audience")}
-          onChange={(value) => onFilter("audience", value)}
-        />
-        <FilterPillGroup
-          label="tag"
-          options={tags}
-          value={selected("tag")}
-          onChange={(value) => onFilter("tag", value)}
-        />
-      </>
+      <FilterPillGroup
+        label="tag"
+        options={tags}
+        value={selected("tag")}
+        onChange={(value) => onFilter("tag", value)}
+      />
     );
   }
 
@@ -706,24 +760,26 @@ function MemoryStructuralControls({
           value={selected("enforcement")}
           onChange={(value) => onFilter("enforcement", value)}
         />
-        <FilterPillGroup
-          label="audience"
-          options={audiences}
-          value={selected("audience")}
-          onChange={(value) => onFilter("audience", value)}
-        />
       </>
     );
   }
 
   if (band === "relational") {
     return (
-      <FilterPillGroup
-        label="state"
-        options={states}
-        value={selected("state")}
-        onChange={(value) => onFilter("state", value)}
-      />
+      <>
+        <FilterPillGroup
+          label="state"
+          options={states}
+          value={selected("state")}
+          onChange={(value) => onFilter("state", value)}
+        />
+        <FilterPillGroup
+          label="lens"
+          options={["all", "conflicts"]}
+          value={selected("conflict")}
+          onChange={(value) => onFilter("conflict", value)}
+        />
+      </>
     );
   }
 
@@ -734,6 +790,571 @@ function MemoryStructuralControls({
       value={selected("status")}
       onChange={(value) => onFilter("status", value)}
     />
+  );
+}
+
+function audienceLabel(audience: string | null | undefined): string {
+  return audience ?? "global";
+}
+
+function timeRangeLabel(start: number, end: number): string {
+  if (start === end) {
+    return formatTime(start);
+  }
+  return `${formatTime(start)} - ${formatTime(end)}`;
+}
+
+function betaMean(skill: ProceduralMemoryItem): number {
+  const total = skill.alpha + skill.beta;
+  return total <= 0 ? 0 : skill.alpha / total;
+}
+
+function stateTagKind(state: string): "acc" | "warn" | "bad" | "info" | "" {
+  if (state === "established" || state === "active") {
+    return "acc";
+  }
+  if (state === "contested" || state === "superseded") {
+    return "warn";
+  }
+  if (state === "quarantined" || state === "revoked") {
+    return "bad";
+  }
+  return "";
+}
+
+function orderedByRows<T>(
+  rows: readonly MemoryRow[],
+  items: readonly T[],
+  itemId: (item: T) => string,
+): T[] {
+  const byId = new Map(items.map((item) => [itemId(item), item]));
+  return rows.map((row) => byId.get(row.id)).filter((item): item is T => item !== undefined);
+}
+
+function MemoryBandBrowser({
+  band,
+  detail,
+  rows,
+  filteredRows,
+  selectedId,
+  loading,
+  error,
+  loadedCount,
+  sortMode,
+  onSortMode,
+  filters,
+  onFilter,
+  onSelectRow,
+  nextCursor,
+  loadingMore,
+  onLoadMore,
+  onOpenIdentity,
+  onOpenCommitments,
+}: {
+  band: MemoryBandId;
+  detail: MemoryBandDetail | null;
+  rows: readonly MemoryRow[];
+  filteredRows: readonly MemoryRow[];
+  selectedId: string | null;
+  loading: boolean;
+  error: Error | null;
+  loadedCount: number;
+  sortMode: SortMode;
+  onSortMode: (mode: SortMode) => void;
+  filters: Record<string, string>;
+  onFilter: (key: string, value: string) => void;
+  onSelectRow: (id: string) => void;
+  nextCursor: string | null;
+  loadingMore: boolean;
+  onLoadMore: () => void;
+  onOpenIdentity?: () => void;
+  onOpenCommitments?: () => void;
+}) {
+  const sortModes: SortMode[] = rows.some((row) => row.audience !== undefined)
+    ? ["backend", "updated_desc", "updated_asc", "created_desc", "created_asc", "audience_group"]
+    : ["backend", "updated_desc", "updated_asc", "created_desc", "created_asc"];
+
+  return (
+    <div className={`list matlas-browser matlas-${band}-browser`}>
+      <div className="matlas-browser-toolbar">
+        <span>
+          {filteredRows.length} visible · {loadedCount} loaded
+        </span>
+        <span className="spacer"></span>
+        <div className="filter-pills" aria-label="memory sort">
+          {sortModes.map((mode) => (
+            <span
+              key={mode}
+              className={`pill ${sortMode === mode ? "on" : ""}`}
+              onClick={() => onSortMode(mode)}
+            >
+              {sortLabel(mode)}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="matlas-browser-filters">
+        <MemoryStructuralControls band={band} rows={rows} filters={filters} onFilter={onFilter} />
+      </div>
+      {loading && rows.length === 0 && detail === null ? (
+        <div className="notice">loading {band}</div>
+      ) : null}
+      {error !== null ? <div className="notice bad">{error.message}</div> : null}
+      {detail?.band === "episodic" ? (
+        <EpisodicTimeline
+          detail={detail}
+          rows={filteredRows}
+          selectedId={selectedId}
+          onSelect={onSelectRow}
+        />
+      ) : detail?.band === "procedural" ? (
+        <ProceduralSkillCards
+          detail={detail}
+          rows={filteredRows}
+          selectedId={selectedId}
+          onSelect={onSelectRow}
+        />
+      ) : detail?.band === "relational" ? (
+        <RelationalFactTable
+          detail={detail}
+          rows={filteredRows}
+          selectedId={selectedId}
+          onSelect={onSelectRow}
+        />
+      ) : detail?.band === "affective" ? (
+        <AffectiveAtlas
+          detail={detail}
+          rows={filteredRows}
+          selectedId={selectedId}
+          onSelect={onSelectRow}
+        />
+      ) : detail?.band === "social" ? (
+        <SocialAtlas
+          detail={detail}
+          rows={filteredRows}
+          selectedId={selectedId}
+          onSelect={onSelectRow}
+        />
+      ) : detail?.band === "self" ? (
+        <SelfAtlas
+          detail={detail}
+          rows={filteredRows}
+          selectedId={selectedId}
+          onSelect={onSelectRow}
+          onOpenIdentity={onOpenIdentity}
+        />
+      ) : detail?.band === "commitments" ? (
+        <CommitmentsAtlas
+          detail={detail}
+          rows={filteredRows}
+          selectedId={selectedId}
+          onSelect={onSelectRow}
+          onOpenCommitments={onOpenCommitments}
+        />
+      ) : (
+        <GenericMemoryRows rows={filteredRows} selectedId={selectedId} onSelect={onSelectRow} />
+      )}
+      {filteredRows.length === 0 && !loading && detail?.band !== "affective" ? (
+        <div className="notice">no records in current filter</div>
+      ) : null}
+      {nextCursor !== null ? (
+        <div style={{ padding: 12 }}>
+          <button className="btn sm ghost" disabled={loadingMore} onClick={onLoadMore}>
+            {loadingMore ? "loading" : "load more"}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function GenericMemoryRows({
+  rows,
+  selectedId,
+  onSelect,
+}: {
+  rows: readonly MemoryRow[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <>
+      {rows.map((row) => (
+        <div
+          key={row.id}
+          className={`list-row ${row.id === selectedId ? "selected" : ""}`}
+          onClick={() => onSelect(row.id)}
+        >
+          <div className="ttl">{row.title}</div>
+          <div className="meta">
+            <span>[{shortId(row.id)}]</span>
+            <span>·</span>
+            <span>{row.meta}</span>
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function EpisodicTimeline({
+  detail,
+  rows,
+  selectedId,
+  onSelect,
+}: {
+  detail: Extract<MemoryBandDetail, { band: "episodic" }>;
+  rows: readonly MemoryRow[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const items = orderedByRows(rows, detail.items, (item) => item.id);
+
+  return (
+    <div className="matlas-timeline">
+      {items.map((episode) => (
+        <article
+          key={episode.id}
+          className={`list-row matlas-timeline-card ${episode.id === selectedId ? "selected" : ""}`}
+          onClick={() => onSelect(episode.id)}
+        >
+          <div className="matlas-card-head">
+            <div className="ttl">{episode.title}</div>
+            <Tag kind="info">{audienceLabel(episode.audience)}</Tag>
+          </div>
+          <div className="matlas-card-body">{episode.narrative}</div>
+          <div className="matlas-chip-row">
+            <Tag>{timeRangeLabel(episode.start_time, episode.end_time)}</Tag>
+            {episode.participants.map((participant) => (
+              <Tag key={participant}>{participant}</Tag>
+            ))}
+            <Tag>sig {episode.significance.toFixed(2)}</Tag>
+            <Tag>conf {episode.confidence.toFixed(2)}</Tag>
+            <Tag>{episode.source_count} src</Tag>
+          </div>
+          {episode.tags.length === 0 ? null : (
+            <div className="matlas-tag-row">
+              {episode.tags.map((tag) => (
+                <span key={tag} className="pill">
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function ProceduralSkillCards({
+  detail,
+  rows,
+  selectedId,
+  onSelect,
+}: {
+  detail: Extract<MemoryBandDetail, { band: "procedural" }>;
+  rows: readonly MemoryRow[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const skills = orderedByRows(rows, detail.items, (item) => item.id);
+
+  return (
+    <div className="matlas-skill-grid">
+      {skills.map((skill) => {
+        const mean = betaMean(skill);
+        return (
+          <article
+            key={skill.id}
+            className={`list-row matlas-skill-card ${skill.id === selectedId ? "selected" : ""}`}
+            onClick={() => onSelect(skill.id)}
+          >
+            <div className="matlas-card-head">
+              <div className="ttl">{skill.applies_when}</div>
+              <Tag kind={stateTagKind(skill.status)}>{skill.status}</Tag>
+            </div>
+            <div className="matlas-card-body">{skill.approach}</div>
+            <div className="matlas-chip-row">
+              <Tag>{skill.successes} success</Tag>
+              <Tag>{skill.failures} failure</Tag>
+              <Tag>{skill.attempts} attempts</Tag>
+              {skill.requires_manual_review ? <Tag kind="warn">manual review</Tag> : null}
+            </div>
+            <div
+              className="matlas-beta-bar"
+              role="meter"
+              aria-label={`beta posterior ${skill.id}`}
+              aria-valuemin={0}
+              aria-valuemax={1}
+              aria-valuenow={Number(mean.toFixed(3))}
+            >
+              <span style={{ width: `${mean * 100}%` }}></span>
+            </div>
+            <div className="matlas-card-meta">
+              alpha {skill.alpha.toFixed(1)} · beta {skill.beta.toFixed(1)} · {skill.sample_count}{" "}
+              samples · last used {skill.last_used === null ? "never" : formatTime(skill.last_used)}{" "}
+              · last successful{" "}
+              {skill.last_successful === null ? "never" : formatTime(skill.last_successful)}
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function RelationalFactTable({
+  detail,
+  rows,
+  selectedId,
+  onSelect,
+}: {
+  detail: Extract<MemoryBandDetail, { band: "relational" }>;
+  rows: readonly MemoryRow[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const slots = orderedByRows(rows, detail.items, (item) => item.id);
+
+  return (
+    <div className="matlas-table-wrap">
+      <table className="matlas-rel-table">
+        <thead>
+          <tr>
+            <th>subject</th>
+            <th>slot</th>
+            <th>value</th>
+            <th>state</th>
+            <th>evidence</th>
+            <th>name provenance</th>
+          </tr>
+        </thead>
+        <tbody>
+          {slots.map((slot) => (
+            <tr
+              key={slot.id}
+              className={slot.id === selectedId ? "selected" : ""}
+              onClick={() => onSelect(slot.id)}
+            >
+              <td>{slot.subject ?? shortId(slot.subject_entity_id)}</td>
+              <td>{slot.slot_key}</td>
+              <td>{slot.value}</td>
+              <td>
+                <Tag kind={stateTagKind(slot.state)}>{slot.state}</Tag>
+              </td>
+              <td>
+                {slot.sources_count} src · {slot.contradicted_count} contra · {slot.alternate_count}{" "}
+                alt
+              </td>
+              <td>{slot.name_provenance}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function AffectiveAtlas({
+  detail,
+  rows,
+  selectedId,
+  onSelect,
+}: {
+  detail: Extract<MemoryBandDetail, { band: "affective" }>;
+  rows: readonly MemoryRow[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const points = orderedByRows(rows, detail.history, (item) => String(item.id));
+
+  return (
+    <div className="matlas-affective">
+      <ValenceArousalPlane current={detail.current} history={detail.history} />
+      <div className="props compact-props">
+        <div className="row">
+          <span className="k">half life</span>
+          <span className="v">{detail.current.half_life_hours}h</span>
+        </div>
+        <div className="row">
+          <span className="k">recent triggers</span>
+          <span className="v">
+            {detail.current.recent_triggers.length === 0
+              ? "none"
+              : detail.current.recent_triggers.join(", ")}
+          </span>
+        </div>
+      </div>
+      <div className="divider">history</div>
+      <div className="matlas-history-list">
+        {points.map((point) => (
+          <div
+            key={point.id}
+            className={`list-row ${String(point.id) === selectedId ? "selected" : ""}`}
+            onClick={() => onSelect(String(point.id))}
+          >
+            <div className="ttl">
+              {formatTime(point.ts)} · v {point.valence.toFixed(2)} / a {point.arousal.toFixed(2)}
+            </div>
+            <div className="meta">{point.trigger_reason ?? "no trigger"}</div>
+          </div>
+        ))}
+        {points.length === 0 ? <div className="notice">no mood history</div> : null}
+      </div>
+    </div>
+  );
+}
+
+function SocialAtlas({
+  detail,
+  rows,
+  selectedId,
+  onSelect,
+}: {
+  detail: Extract<MemoryBandDetail, { band: "social" }>;
+  rows: readonly MemoryRow[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const items = orderedByRows(rows, detail.items, (item) => item.entity_id);
+
+  return (
+    <div className="matlas-social">
+      <SocialTrustScatter items={items} selectedId={selectedId} onSelect={onSelect} />
+      <div className="matlas-entity-grid">
+        {items.map((profile) => (
+          <article
+            key={profile.entity_id}
+            className={`list-row matlas-entity-card ${
+              profile.entity_id === selectedId ? "selected" : ""
+            }`}
+            onClick={() => onSelect(profile.entity_id)}
+          >
+            <div className="ttl">{profile.name ?? profile.entity_id}</div>
+            <div className="matlas-chip-row">
+              <Tag>trust {profile.trust.toFixed(2)}</Tag>
+              <Tag>attachment {profile.attachment.toFixed(2)}</Tag>
+              <Tag>{profile.interaction_count} interactions</Tag>
+            </div>
+            <div className="matlas-card-meta">
+              {profile.history_count} history · {profile.commitment_count} commitments · updated{" "}
+              {formatTime(profile.updated_at)}
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SelfAtlas({
+  detail,
+  rows,
+  selectedId,
+  onSelect,
+  onOpenIdentity,
+}: {
+  detail: Extract<MemoryBandDetail, { band: "self" }>;
+  rows: readonly MemoryRow[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onOpenIdentity?: () => void;
+}) {
+  const recentRows = sortedRows(rows, "updated_desc").slice(0, 5);
+
+  return (
+    <div className="matlas-self">
+      <div className="matlas-snapshot-grid">
+        <MetricTile label="values" value={detail.values.length} />
+        <MetricTile label="goals" value={detail.goals.length} />
+        <MetricTile label="traits" value={detail.traits.length} />
+        <MetricTile label="open questions" value={detail.open_questions.length} />
+        <MetricTile label="growth" value={detail.growth_markers.length} />
+        <MetricTile label="periods" value={detail.periods.length} />
+      </div>
+      <div className="operator-actions">
+        <button
+          className="btn sm primary"
+          type="button"
+          disabled={onOpenIdentity === undefined}
+          onClick={onOpenIdentity}
+        >
+          open Identity Studio
+        </button>
+      </div>
+      <div className="divider">recent identity items</div>
+      <GenericMemoryRows rows={recentRows} selectedId={selectedId} onSelect={onSelect} />
+    </div>
+  );
+}
+
+function CommitmentsAtlas({
+  detail,
+  rows,
+  selectedId,
+  onSelect,
+  onOpenCommitments,
+}: {
+  detail: Extract<MemoryBandDetail, { band: "commitments" }>;
+  rows: readonly MemoryRow[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onOpenCommitments?: () => void;
+}) {
+  const items = orderedByRows(rows, detail.items, (item) => item.id);
+  const groups = new Map<string, CommitmentItem[]>();
+  for (const item of items) {
+    const key = `${item.enforcement_class} / ${item.state}`;
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  }
+
+  return (
+    <div className="matlas-commitments">
+      <div className="operator-actions">
+        <button
+          className="btn sm primary"
+          type="button"
+          disabled={onOpenCommitments === undefined}
+          onClick={onOpenCommitments}
+        >
+          open commitments
+        </button>
+      </div>
+      {[...groups.entries()].map(([group, groupItems]) => (
+        <section key={group} className="matlas-commit-group">
+          <div className="matlas-group-title">{group}</div>
+          {groupItems.map((commitment) => (
+            <article
+              key={commitment.id}
+              className={`list-row matlas-commit-card ${
+                commitment.id === selectedId ? "selected" : ""
+              }`}
+              onClick={() => onSelect(commitment.id)}
+            >
+              <div className="ttl">{commitment.text}</div>
+              <div className="matlas-chip-row">
+                <Tag kind={commitment.enforcement_class === "critical" ? "bad" : "warn"}>
+                  {commitment.enforcement_class}
+                </Tag>
+                <Tag kind={stateTagKind(commitment.state)}>{commitment.state}</Tag>
+                <Tag>{commitment.directive_family}</Tag>
+                <Tag kind="info">{audienceLabel(commitment.audience)}</Tag>
+              </div>
+            </article>
+          ))}
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function MetricTile({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="matlas-metric">
+      <div className="k">{label}</div>
+      <div className="v">{value}</div>
+    </div>
   );
 }
 
@@ -773,17 +1394,25 @@ function SemanticTopologyPanel({
 
 function MemoryDrill({
   band,
+  bands,
   totalCount,
   totalIsLowerBound,
   sessionId,
   back,
+  onSelectBand,
+  onOpenIdentity,
+  onOpenCommitments,
   onMemoryChanged,
 }: {
   band: MemoryBandId;
+  bands: readonly MemoryBandSummary[];
   totalCount: number;
   totalIsLowerBound: boolean;
   sessionId: string;
   back: () => void;
+  onSelectBand: (band: MemoryBandId) => void;
+  onOpenIdentity?: () => void;
+  onOpenCommitments?: () => void;
   onMemoryChanged: () => Promise<void>;
 }) {
   const [searchText, setSearchText] = useState("");
@@ -844,7 +1473,7 @@ function MemoryDrill({
   const displayTotal = Math.max(totalCount, loadedCount);
   const totalLabel =
     totalIsLowerBound && nextCursor !== null
-      ? `${displayTotal.toLocaleString()}+`
+      ? `≥${displayTotal.toLocaleString()}`
       : displayTotal.toLocaleString();
   const topologySelectedId =
     selectedId !== null && correctionActionKind(selectedId) === "semantic_node" ? selectedId : null;
@@ -903,6 +1532,7 @@ function MemoryDrill({
 
   function setFilter(key: string, value: string): void {
     setFilters((current) => ({ ...current, [key]: value }));
+    setSelectedId(null);
   }
 
   async function loadMore(): Promise<void> {
@@ -1025,7 +1655,7 @@ function MemoryDrill({
         <span className="btn sm ghost" style={{ cursor: "pointer" }} onClick={back}>
           ← memory
         </span>
-        <h1>{band} memory</h1>
+        <h1>memory atlas</h1>
         <span className="desc">{BAND_DESCRIPTIONS[band]}</span>
         <span className="spacer"></span>
         {band === "semantic" ? (
@@ -1050,6 +1680,7 @@ function MemoryDrill({
             : `loaded ${loadedCount.toLocaleString()} of ${totalLabel}`}
         </Tag>
       </div>
+      <BandOverviewBar bands={bands} activeBand={band} onSelectBand={onSelectBand} />
       {searchable ? (
         <form
           className="operator-actions"
@@ -1091,84 +1722,26 @@ function MemoryDrill({
             <SemanticTopologyPanel selectedId={topologySelectedId} onSelectNode={setSelectedId} />
           </div>
         ) : (
-          <div className="list">
-            <div
-              style={{
-                padding: "8px 14px",
-                borderBottom: "1px solid var(--line)",
-                display: "flex",
-                gap: 8,
-                alignItems: "center",
-                fontSize: 10.5,
-                color: "var(--text-mute)",
-              }}
-            >
-              <span>
-                {filteredRows.length} visible · {loadedCount} loaded
-              </span>
-              <span style={{ flex: 1 }}></span>
-              <div className="filter-pills">
-                {(
-                  ["backend", "updated_desc", "updated_asc", "created_desc", "created_asc"] as const
-                ).map((mode) => (
-                  <span
-                    key={mode}
-                    className={`pill ${sortMode === mode ? "on" : ""}`}
-                    onClick={() => setSortMode(mode)}
-                  >
-                    {sortLabel(mode)}
-                  </span>
-                ))}
-              </div>
-            </div>
-            <div
-              style={{
-                padding: "8px 14px",
-                borderBottom: "1px solid var(--line)",
-                display: "flex",
-                gap: 8,
-                alignItems: "center",
-                flexWrap: "wrap",
-              }}
-            >
-              <MemoryStructuralControls
-                band={band}
-                rows={rows}
-                filters={filters}
-                onFilter={setFilter}
-              />
-            </div>
-            {api.loading && rows.length === 0 ? <div className="notice">loading {band}</div> : null}
-            {api.error !== null ? <div className="notice bad">{api.error.message}</div> : null}
-            {filteredRows.map((row) => (
-              <div
-                key={row.id}
-                className={`list-row ${row.id === selected?.id ? "selected" : ""}`}
-                onClick={() => setSelectedId(row.id)}
-              >
-                <div className="ttl">{row.title}</div>
-                <div className="meta">
-                  <span>[{shortId(row.id)}]</span>
-                  <span>·</span>
-                  <span>{row.meta}</span>
-                </div>
-              </div>
-            ))}
-            {filteredRows.length === 0 && !api.loading ? (
-              <div className="notice">no records in current filter</div>
-            ) : null}
-            {nextCursor !== null ? (
-              <div style={{ padding: 12 }}>
-                <button
-                  className="btn sm ghost"
-                  disabled={loadingMore}
-                  onClick={() => void loadMore()}
-                >
-                  {loadingMore ? "loading" : "load more"}
-                </button>
-              </div>
-            ) : null}
-          </div>
+          <MemoryBandBrowser
+            band={band}
+            detail={detail}
+            rows={rows}
+            filteredRows={filteredRows}
+            selectedId={selected?.id ?? null}
+            loading={api.loading}
+            error={api.error}
+            loadedCount={loadedCount}
+            sortMode={sortMode}
+            onSortMode={setSortMode}
+            filters={filters}
+            onFilter={setFilter}
+            onSelectRow={setSelectedId}
+            nextCursor={nextCursor}
+            loadingMore={loadingMore}
+            onLoadMore={() => void loadMore()}
+            onOpenIdentity={onOpenIdentity}
+            onOpenCommitments={onOpenCommitments}
+          />
         )}
         <div className="detail">
           {selected === null ? (
@@ -1431,6 +2004,19 @@ function BandSpecificDetail({
   detail: MemoryBandDetail;
   selectedId: string;
 }) {
+  const renderIds = (ids: readonly string[], type?: "stream_entry") =>
+    ids.length === 0 ? (
+      <span className="dim" style={{ fontSize: 11 }}>
+        none
+      </span>
+    ) : (
+      <span className="matlas-id-list">
+        {ids.map((id) => (
+          <IdRef key={id} id={id} type={type} label={id} />
+        ))}
+      </span>
+    );
+
   if (detail.band === "episodic") {
     const episode = detail.items.find((item) => item.id === selectedId) as
       | EpisodeMemoryItem
@@ -1440,17 +2026,104 @@ function BandSpecificDetail({
     }
     return (
       <>
+        <div className="divider">episode fields</div>
+        <div className="props">
+          <div className="row">
+            <span className="k">time range</span>
+            <span className="v">{timeRangeLabel(episode.start_time, episode.end_time)}</span>
+          </div>
+          <div className="row">
+            <span className="k">audience</span>
+            <span className="v">{audienceLabel(episode.audience)}</span>
+          </div>
+          <div className="row">
+            <span className="k">participants</span>
+            <span className="v">
+              {episode.participants.length === 0 ? "none" : episode.participants.join(", ")}
+            </span>
+          </div>
+          <div className="row">
+            <span className="k">location</span>
+            <span className="v">{episode.location ?? "—"}</span>
+          </div>
+          <div className="row">
+            <span className="k">significance</span>
+            <span className="v">{episode.significance.toFixed(2)}</span>
+          </div>
+          <div className="row">
+            <span className="k">confidence</span>
+            <span className="v">{episode.confidence.toFixed(2)}</span>
+          </div>
+        </div>
         <div className="divider">citations</div>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {episode.source_stream_ids.map((id) => (
-            <IdRef key={id} id={id} type="stream_entry" label={id} />
-          ))}
+        {renderIds(episode.source_stream_ids, "stream_entry")}
+        <div className="divider">lineage</div>
+        <div className="props">
+          <div className="row">
+            <span className="k">derived from</span>
+            <span className="v">{renderIds(episode.lineage.derived_from)}</span>
+          </div>
+          <div className="row">
+            <span className="k">supersedes</span>
+            <span className="v">{renderIds(episode.lineage.supersedes)}</span>
+          </div>
         </div>
       </>
     );
   }
 
+  if (detail.band === "procedural") {
+    const skill = detail.items.find((item) => item.id === selectedId);
+    if (skill === undefined) {
+      return null;
+    }
+    const mean = betaMean(skill);
+    return (
+      <>
+        <div className="divider">skill evidence</div>
+        <div className="props">
+          <div className="row">
+            <span className="k">status</span>
+            <span className="v">{skill.status}</span>
+          </div>
+          <div className="row">
+            <span className="k">beta posterior</span>
+            <span className="v">
+              mean {mean.toFixed(3)} · alpha {skill.alpha.toFixed(1)} · beta {skill.beta.toFixed(1)}{" "}
+              · {skill.sample_count} samples
+            </span>
+          </div>
+          <div className="row">
+            <span className="k">outcomes</span>
+            <span className="v">
+              {skill.successes} success · {skill.failures} failure · {skill.attempts} attempts
+            </span>
+          </div>
+          <div className="row">
+            <span className="k">last used</span>
+            <span className="v">
+              {skill.last_used === null ? "never" : formatTime(skill.last_used)}
+            </span>
+          </div>
+          <div className="row">
+            <span className="k">last successful</span>
+            <span className="v">
+              {skill.last_successful === null ? "never" : formatTime(skill.last_successful)}
+            </span>
+          </div>
+          <div className="row">
+            <span className="k">manual review</span>
+            <span className="v">{skill.requires_manual_review ? "required" : "not required"}</span>
+          </div>
+        </div>
+        <div className="divider">source episodes</div>
+        {renderIds(skill.source_episode_ids)}
+      </>
+    );
+  }
+
   if (detail.band === "affective") {
+    const point = detail.history.find((item) => String(item.id) === selectedId);
     return (
       <>
         <div className="divider">current mood</div>
@@ -1467,14 +2140,246 @@ function BandSpecificDetail({
             <span className="k">updated</span>
             <span className="v">{formatTime(detail.current.updated_at)}</span>
           </div>
+          <div className="row">
+            <span className="k">half life</span>
+            <span className="v">{detail.current.half_life_hours}h</span>
+          </div>
+          <div className="row">
+            <span className="k">recent triggers</span>
+            <span className="v">
+              {detail.current.recent_triggers.length === 0
+                ? "none"
+                : detail.current.recent_triggers.join(", ")}
+            </span>
+          </div>
+        </div>
+        {point === undefined ? null : (
+          <>
+            <div className="divider">selected mood history</div>
+            <div className="props">
+              <div className="row">
+                <span className="k">trigger</span>
+                <span className="v">{point.trigger_reason ?? "none"}</span>
+              </div>
+              <div className="row">
+                <span className="k">provenance</span>
+                <span className="v">{jsonText(point.provenance)}</span>
+              </div>
+            </div>
+          </>
+        )}
+      </>
+    );
+  }
+
+  if (detail.band === "self") {
+    const value = detail.values.find((item) => item.id === selectedId);
+    const goal = detail.goals.find((item) => item.id === selectedId);
+    const trait = detail.traits.find((item) => item.id === selectedId);
+    const question = detail.open_questions.find((item) => item.id === selectedId);
+    return (
+      <>
+        <div className="divider">identity record</div>
+        <div className="props">
+          {value === undefined ? null : (
+            <>
+              <div className="row">
+                <span className="k">state</span>
+                <span className="v">{value.state}</span>
+              </div>
+              <div className="row">
+                <span className="k">support</span>
+                <span className="v">
+                  {value.support_count} support · {value.contradiction_count} contradiction
+                </span>
+              </div>
+              <div className="row">
+                <span className="k">evidence</span>
+                <span className="v">{renderIds(value.evidence_episode_ids)}</span>
+              </div>
+            </>
+          )}
+          {goal === undefined ? null : (
+            <>
+              <div className="row">
+                <span className="k">status</span>
+                <span className="v">{goal.status}</span>
+              </div>
+              <div className="row">
+                <span className="k">priority</span>
+                <span className="v">{goal.priority.toFixed(2)}</span>
+              </div>
+              <div className="row">
+                <span className="k">target</span>
+                <span className="v">
+                  {goal.target_at === null ? "none" : formatTime(goal.target_at)}
+                </span>
+              </div>
+            </>
+          )}
+          {trait === undefined ? null : (
+            <>
+              <div className="row">
+                <span className="k">strength</span>
+                <span className="v">{trait.strength.toFixed(2)}</span>
+              </div>
+              <div className="row">
+                <span className="k">confidence</span>
+                <span className="v">{trait.confidence.toFixed(2)}</span>
+              </div>
+              <div className="row">
+                <span className="k">evidence</span>
+                <span className="v">{renderIds(trait.evidence_episode_ids)}</span>
+              </div>
+            </>
+          )}
+          {question === undefined ? null : (
+            <>
+              <div className="row">
+                <span className="k">status</span>
+                <span className="v">{question.status}</span>
+              </div>
+              <div className="row">
+                <span className="k">urgency</span>
+                <span className="v">{question.urgency.toFixed(2)}</span>
+              </div>
+              <div className="row">
+                <span className="k">rumination ticks</span>
+                <span className="v">{question.unresolved_rumination_ticks}</span>
+              </div>
+            </>
+          )}
+        </div>
+      </>
+    );
+  }
+
+  if (detail.band === "commitments") {
+    const commitment = detail.items.find((item) => item.id === selectedId);
+    if (commitment === undefined) {
+      return null;
+    }
+    return (
+      <>
+        <div className="divider">commitment fields</div>
+        <div className="props">
+          <div className="row">
+            <span className="k">audience</span>
+            <span className="v">{audienceLabel(commitment.audience)}</span>
+          </div>
+          <div className="row">
+            <span className="k">directive family</span>
+            <span className="v">{commitment.directive_family}</span>
+          </div>
+          <div className="row">
+            <span className="k">priority</span>
+            <span className="v">{commitment.priority}</span>
+          </div>
+          <div className="row">
+            <span className="k">type / kind</span>
+            <span className="v">
+              {commitment.type} · {commitment.kind}
+            </span>
+          </div>
+          <div className="row">
+            <span className="k">sources</span>
+            <span className="v">
+              {renderIds(commitment.source_stream_entry_ids, "stream_entry")}
+            </span>
+          </div>
+          {commitment.superseded_by_id === null ? null : (
+            <div className="row">
+              <span className="k">superseded by</span>
+              <span className="v">{renderIds([commitment.superseded_by_id])}</span>
+            </div>
+          )}
+          {commitment.canonicalized_by_artifact_entry_id === null ? null : (
+            <div className="row">
+              <span className="k">canonicalized by</span>
+              <span className="v">
+                {renderIds([commitment.canonicalized_by_artifact_entry_id])}
+              </span>
+            </div>
+          )}
+        </div>
+      </>
+    );
+  }
+
+  if (detail.band === "social") {
+    const profile = detail.items.find((item) => item.entity_id === selectedId);
+    if (profile === undefined) {
+      return null;
+    }
+    return (
+      <>
+        <div className="divider">social entity</div>
+        <div className="props">
+          <div className="row">
+            <span className="k">entity</span>
+            <span className="v">
+              <IdRef id={profile.entity_id} label={profile.entity_id} hint={profile} />
+            </span>
+          </div>
+          <div className="row">
+            <span className="k">trust</span>
+            <span className="v">{profile.trust.toFixed(2)}</span>
+          </div>
+          <div className="row">
+            <span className="k">attachment</span>
+            <span className="v">{profile.attachment.toFixed(2)}</span>
+          </div>
+          <div className="row">
+            <span className="k">interactions</span>
+            <span className="v">
+              {profile.interaction_count} total · {profile.history_count} history
+            </span>
+          </div>
+          <div className="row">
+            <span className="k">last interaction</span>
+            <span className="v">
+              {profile.last_interaction_at === null
+                ? "none"
+                : formatTime(profile.last_interaction_at)}
+            </span>
+          </div>
         </div>
       </>
     );
   }
 
   if (detail.band === "relational") {
+    const slot = detail.items.find((item) => item.id === selectedId);
     return (
       <>
+        {slot === undefined ? null : (
+          <>
+            <div className="divider">fact evidence</div>
+            <div className="props">
+              <div className="row">
+                <span className="k">subject entity</span>
+                <span className="v">
+                  <IdRef id={slot.subject_entity_id} label={slot.subject_entity_id} hint={slot} />
+                </span>
+              </div>
+              <div className="row">
+                <span className="k">slot key</span>
+                <span className="v">{slot.slot_key}</span>
+              </div>
+              <div className="row">
+                <span className="k">evidence</span>
+                <span className="v">
+                  {slot.sources_count} source · {slot.contradicted_count} contradicted ·{" "}
+                  {slot.alternate_count} alternate
+                </span>
+              </div>
+              <div className="row">
+                <span className="k">name provenance</span>
+                <span className="v">{slot.name_provenance}</span>
+              </div>
+            </div>
+          </>
+        )}
         <div className="divider">state counts</div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {Object.entries(detail.counts).map(([state, count]) => (

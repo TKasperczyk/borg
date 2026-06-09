@@ -3211,23 +3211,47 @@ g.fc-regen-group.active .fc-regen-label-bg {
   grid-template-columns: repeat(4, 1fr);
   gap: 12px;
 }
+.band-overview-bar {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(118px, 1fr));
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-0);
+  overflow-x: auto;
+}
+
+.bands .band-overview-bar {
+  border: 1px solid var(--line);
+  background: var(--bg-0);
+}
+
 .band-card {
+  appearance: none;
+  font: inherit;
+  text-align: left;
+  color: inherit;
   background: var(--bg-1);
   border: 1px solid var(--line);
-  padding: 12px 14px;
+  padding: 9px 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   cursor: pointer;
   transition:
     background 0.1s,
     border-color 0.1s,
     transform 0.1s;
   position: relative;
+  min-width: 118px;
 }
 .band-card:hover {
   border-color: var(--acc-dim);
   background: var(--bg-2);
+}
+.band-card.active {
+  border-color: var(--acc);
+  background: var(--acc-tint);
 }
 .band-card:hover .explore {
   color: var(--acc);
@@ -3247,7 +3271,7 @@ g.fc-regen-group.active .fc-regen-label-bg {
   font-size: 11px;
 }
 .band-card .name {
-  font-size: 15px;
+  font-size: 13px;
   color: var(--text);
   font-weight: 500;
   line-height: 1.1;
@@ -3259,8 +3283,8 @@ g.fc-regen-group.active .fc-regen-label-bg {
 .band-card .stat-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-top: 2px;
+  gap: 6px;
+  min-height: 28px;
 }
 .band-card .stat .k {
   font-size: 9px;
@@ -3269,7 +3293,7 @@ g.fc-regen-group.active .fc-regen-label-bg {
   letter-spacing: 0.08em;
 }
 .band-card .stat .v {
-  font-size: 15px;
+  font-size: 12px;
   color: var(--text);
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
@@ -3303,7 +3327,7 @@ g.fc-regen-group.active .fc-regen-label-bg {
 .band-detail {
   height: 100%;
   display: grid;
-  grid-template-columns: 280px 1fr 320px;
+  grid-template-columns: minmax(360px, 0.95fr) minmax(340px, 1fr) 320px;
 }
 .band-detail.semantic-topology-mode {
   grid-template-columns: minmax(420px, 1fr) 360px 320px;
@@ -3342,6 +3366,7 @@ g.fc-regen-group.active .fc-regen-label-bg {
   color: var(--text-mute);
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .detail {
@@ -3388,6 +3413,259 @@ g.fc-regen-group.active .fc-regen-label-bg {
   min-width: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.matlas-browser-toolbar,
+.matlas-browser-filters {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.matlas-browser-toolbar {
+  font-size: 10.5px;
+  color: var(--text-mute);
+}
+
+.matlas-browser-toolbar .spacer {
+  flex: 1;
+}
+
+.matlas-timeline,
+.matlas-skill-grid,
+.matlas-social,
+.matlas-self,
+.matlas-commitments,
+.matlas-affective {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.matlas-timeline {
+  position: relative;
+}
+
+.matlas-timeline::before {
+  content: "";
+  position: absolute;
+  left: 22px;
+  top: 18px;
+  bottom: 18px;
+  width: 1px;
+  background: var(--line);
+}
+
+.matlas-timeline-card,
+.matlas-skill-card,
+.matlas-entity-card,
+.matlas-commit-card {
+  background: var(--bg-1);
+  border: 1px solid var(--line-soft);
+  padding: 11px 12px;
+}
+
+.matlas-timeline-card {
+  margin-left: 18px;
+}
+
+.matlas-card-head {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.matlas-card-body {
+  color: var(--text-dim);
+  font-size: 11.5px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.matlas-chip-row,
+.matlas-tag-row {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.matlas-card-meta,
+.matlas-group-title {
+  margin-top: 8px;
+  color: var(--text-mute);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.matlas-beta-bar {
+  height: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-0);
+  margin-top: 10px;
+  overflow: hidden;
+}
+
+.matlas-beta-bar span {
+  display: block;
+  height: 100%;
+  background: var(--acc);
+  opacity: 0.78;
+}
+
+.matlas-table-wrap {
+  overflow: auto;
+}
+
+.matlas-rel-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.matlas-rel-table th,
+.matlas-rel-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.matlas-rel-table th {
+  color: var(--text-mute);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: var(--bg-1);
+  position: sticky;
+  top: 0;
+}
+
+.matlas-rel-table tr {
+  cursor: pointer;
+}
+
+.matlas-rel-table tr:hover,
+.matlas-rel-table tr.selected {
+  background: var(--bg-2);
+}
+
+.matlas-plane,
+.matlas-social-scatter {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.matlas-plane-frame,
+.matlas-scatter-frame {
+  fill: var(--bg-0);
+  stroke: var(--line-soft);
+}
+
+.matlas-plane-axis,
+.matlas-scatter-axis {
+  stroke: var(--line);
+  stroke-dasharray: 3 3;
+}
+
+.matlas-plane-history-point {
+  fill: var(--text-dim);
+}
+
+.matlas-plane-current {
+  stroke: var(--acc);
+  stroke-width: 1.5;
+}
+
+.matlas-plane-trail {
+  fill: none;
+  stroke: var(--text-mute);
+  stroke-width: 1;
+  opacity: 0.45;
+}
+
+.matlas-plane-label,
+.matlas-scatter-label,
+.matlas-scatter-dot text {
+  fill: var(--text-mute);
+  font-size: 11px;
+  font-family: var(--sans);
+}
+
+.matlas-scatter-dot {
+  cursor: pointer;
+}
+
+.matlas-scatter-dot circle {
+  fill: var(--text-dim);
+  stroke: var(--bg-0);
+  stroke-width: 1;
+}
+
+.matlas-scatter-dot.selected circle {
+  fill: var(--acc);
+}
+
+.matlas-scatter-dot:focus {
+  outline: none;
+}
+
+.matlas-scatter-dot:focus circle {
+  stroke: var(--acc);
+  stroke-width: 2;
+}
+
+.matlas-entity-grid,
+.matlas-history-list {
+  display: grid;
+  gap: 8px;
+}
+
+.matlas-snapshot-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.matlas-metric {
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  padding: 8px;
+}
+
+.matlas-metric .k {
+  color: var(--text-mute);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.matlas-metric .v {
+  margin-top: 3px;
+  color: var(--text);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.matlas-commit-group {
+  display: grid;
+  gap: 6px;
+}
+
+.matlas-id-list {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 /* ─── semantic topology ─────────────────────────────────────────── */

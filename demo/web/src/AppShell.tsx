@@ -215,7 +215,12 @@ function AppShellContent({
               ) : null}
               {view === "stream" ? <StreamScreen sessionId={sessionId} /> : null}
               {view === "memory" ? (
-                <MemoryScreen sessionId={sessionId} onOpenReview={() => setView("review")} />
+                <MemoryScreen
+                  sessionId={sessionId}
+                  onOpenReview={() => setView("review")}
+                  onOpenIdentity={() => setView("identity")}
+                  onOpenCommitments={() => setView("commit")}
+                />
               ) : null}
               {view === "identity" ? <IdentityScreen /> : null}
               {view === "commit" ? <CommitScreen /> : null}
