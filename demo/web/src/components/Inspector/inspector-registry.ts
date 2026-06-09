@@ -37,7 +37,7 @@ import type {
   SharedStateEntry,
   StreamEntry,
 } from "../../api/types";
-import type { RouteId } from "../../routes";
+import type { GovernanceTabId, RouteId } from "../../routes";
 import { isRecord } from "../../screens/screen-utils";
 import { resolveObjectType, type ObjectType } from "./inspector-id";
 
@@ -71,10 +71,17 @@ export type RelatedObjectRef = {
   fieldLabel: string;
 };
 
+export type SourceRoute =
+  | RouteId
+  | {
+      route: RouteId;
+      governanceTab?: GovernanceTabId;
+    };
+
 export type ObjectModel = {
   label: string;
   reliability: InspectorReliability;
-  sourceRoute: RouteId | null;
+  sourceRoute: SourceRoute | null;
   tabs: readonly InspectorTab[];
   fetch: (id: string, ctx: InspectorFetchContext) => Promise<unknown | null>;
   pivots: (obj: unknown) => RelatedObjectRef[];
@@ -94,7 +101,7 @@ const CORRECTABLE_TABS: readonly InspectorTab[] = [
 
 const EMPTY_PIVOTS = () => [];
 
-function needsBackend(label: string, sourceRoute: RouteId | null = null): ObjectModel {
+function needsBackend(label: string, sourceRoute: SourceRoute | null = null): ObjectModel {
   return {
     label,
     reliability: "needs_backend",
@@ -776,7 +783,7 @@ export const objectRegistry = {
   commitment: {
     label: "Commitment",
     reliability: "in_list",
-    sourceRoute: "commit",
+    sourceRoute: { route: "governance", governanceTab: "commitments" },
     tabs: CORRECTABLE_TABS,
     fetch: findCommitment,
     pivots: commitmentPivots,
@@ -784,7 +791,7 @@ export const objectRegistry = {
   creator_directive: {
     label: "Creator directive",
     reliability: "in_list",
-    sourceRoute: "directives",
+    sourceRoute: { route: "governance", governanceTab: "shared_state" },
     tabs: ["summary", "relationships", "timeline", "actions", "raw"],
     fetch: findCreatorDirective,
     pivots: creatorDirectivePivots,
@@ -802,7 +809,7 @@ export const objectRegistry = {
   shared_state_entry: {
     label: "Shared-state entry",
     reliability: "in_list",
-    sourceRoute: "directives",
+    sourceRoute: { route: "governance", governanceTab: "shared_state" },
     tabs: ["summary", "relationships", "timeline", "raw"],
     fetch: findSharedStateEntry,
     pivots: sharedStatePivots,

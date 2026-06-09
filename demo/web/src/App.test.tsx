@@ -68,12 +68,10 @@ vi.mock("./screens/Identity", () => ({
   IdentityScreen: () => <div data-testid="identity-screen" />,
 }));
 
-vi.mock("./screens/Commit", () => ({
-  CommitScreen: () => <div data-testid="commit-screen" />,
-}));
-
-vi.mock("./screens/Directives", () => ({
-  DirectivesScreen: () => <div data-testid="directives-screen" />,
+vi.mock("./screens/Governance", () => ({
+  GovernanceScreen: ({ activeTab }: { activeTab: string }) => (
+    <div data-testid="governance-screen">{activeTab}</div>
+  ),
 }));
 
 vi.mock("./screens/Review", () => ({
@@ -187,7 +185,7 @@ describe("App", () => {
     );
     expect(screen.getByRole("button", { name: "prompts" })).toHaveAttribute(
       "title",
-      "prompts (⌘9)",
+      "prompts (⌘8)",
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "operator chat" }));
@@ -226,6 +224,33 @@ describe("App", () => {
 
     expect(await screen.findByTestId("review-screen")).toBeInTheDocument();
     expect(new URL(window.location.href).searchParams.get("view")).toBe("review");
+  });
+
+  it("normalizes legacy directive deep-links into the Governance directives tab", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+
+      if (url.pathname === "/api/state") {
+        return Promise.resolve(jsonResponse(stateSnapshot()));
+      }
+      if (url.pathname === "/api/sessions" && init?.method !== "POST") {
+        return Promise.resolve(jsonResponse({ sessions: [session()] }));
+      }
+      if (url.pathname === "/api/entities/creator") {
+        return Promise.resolve(jsonResponse(null));
+      }
+
+      return Promise.reject(new Error(`unexpected fetch ${url.pathname}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    window.history.replaceState(null, "", "/?view=directives");
+
+    render(<App />);
+
+    expect(await screen.findByTestId("governance-screen")).toHaveTextContent("shared_state");
+    const url = new URL(window.location.href);
+    expect(url.searchParams.get("view")).toBe("governance");
+    expect(url.searchParams.get("tab")).toBe("shared_state");
   });
 
   it("keeps chrome mounted and recovers from a screen crash when the view changes", async () => {

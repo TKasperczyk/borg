@@ -13,14 +13,14 @@ import { Tag, type TagKind } from "../../components/Tag";
 import { useInspector } from "../../components/Inspector/inspector-context";
 import { moodLabel } from "../../components/StatusBar";
 import { useLiveCache } from "../../hooks/use-live-cache";
-import type { RouteId } from "../../routes";
+import type { RouteId, RouteNavigationOptions } from "../../routes";
 import { shortId } from "../screen-utils";
 import { useAttentionData, type AttentionData } from "./useAttentionData";
 
 export type MissionControlScreenProps = {
   sessionId: string;
   turnStream: OrreryTurnInput;
-  onNavigate: (view: RouteId) => void;
+  onNavigate: (view: RouteId, options?: RouteNavigationOptions) => void;
 };
 
 type CardShellProps = {
@@ -152,7 +152,7 @@ function ReviewsCard({
   onInspectReview,
 }: {
   data: AttentionData["reviews"];
-  onNavigate: (view: RouteId) => void;
+  onNavigate: (view: RouteId, options?: RouteNavigationOptions) => void;
   onInspectReview: (row: ReviewRow) => void;
 }) {
   const showNotice = data.loading || data.error !== null || data.groups.length === 0;
@@ -195,7 +195,7 @@ function CommitmentsCard({
   onInspect,
 }: {
   data: AttentionData["commitments"];
-  onNavigate: (view: RouteId) => void;
+  onNavigate: (view: RouteId, options?: RouteNavigationOptions) => void;
   onInspect: (id: string, hint: unknown) => void;
 }) {
   const showNotice = data.loading || data.error !== null || data.groups.length === 0;
@@ -205,7 +205,7 @@ function CommitmentsCard({
       id="attention-commitments"
       title="commitments"
       badge="active"
-      onAction={() => onNavigate("commit")}
+      onAction={() => onNavigate("governance", { governanceTab: "commitments" })}
     >
       <div className="mc-card-body">
         <Headline
@@ -255,7 +255,7 @@ function DirectiveConflictsCard({
   onInspectReview,
 }: {
   data: AttentionData["directiveConflicts"];
-  onNavigate: (view: RouteId) => void;
+  onNavigate: (view: RouteId, options?: RouteNavigationOptions) => void;
   onInspectReview: (row: ReviewRow) => void;
 }) {
   const showNotice = data.loading || data.error !== null || data.count === 0;
@@ -265,7 +265,7 @@ function DirectiveConflictsCard({
       id="attention-directives"
       title="directive conflicts"
       badge="creator"
-      onAction={() => onNavigate("directives")}
+      onAction={() => onNavigate("governance", { governanceTab: "shared_state" })}
     >
       <div className="mc-card-body">
         <Headline

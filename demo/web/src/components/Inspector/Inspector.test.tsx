@@ -194,6 +194,20 @@ function OpenButton({ type, id }: { type: ObjectType; id: string }) {
   );
 }
 
+function OpenSourceProbe({ type, id }: { type: ObjectType; id: string }) {
+  const inspector = useInspector();
+  return (
+    <>
+      <button type="button" onClick={() => inspector.openObject({ type, id })}>
+        open {id}
+      </button>
+      <button type="button" onClick={inspector.openInSourceScreen}>
+        source
+      </button>
+    </>
+  );
+}
+
 function HintOpenButton({ type, id, hint }: { type: ObjectType; id: string; hint: unknown }) {
   const inspector = useInspector();
   return (
@@ -594,6 +608,50 @@ describe("InspectorProvider", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "close" }));
     expect(screen.getByTestId("stack")).toHaveTextContent("empty");
+  });
+
+  it("carries Governance tab intent when opening source screens", () => {
+    const { rerender, setView } = renderProviderOnly(
+      <OpenSourceProbe type="commitment" id="cmt_source111111" />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "open cmt_source111111" }));
+    fireEvent.click(screen.getByRole("button", { name: "source" }));
+    expect(setView).toHaveBeenLastCalledWith("governance", {
+      governanceTab: "commitments",
+    });
+
+    rerender(
+      <InspectorProvider
+        setView={setView}
+        setSessionId={vi.fn()}
+        sessionId="default"
+        audience="alice"
+      >
+        <OpenSourceProbe type="creator_directive" id="cdir_source111111" />
+      </InspectorProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "open cdir_source111111" }));
+    fireEvent.click(screen.getByRole("button", { name: "source" }));
+    expect(setView).toHaveBeenLastCalledWith("governance", {
+      governanceTab: "shared_state",
+    });
+
+    rerender(
+      <InspectorProvider
+        setView={setView}
+        setSessionId={vi.fn()}
+        sessionId="default"
+        audience="alice"
+      >
+        <OpenSourceProbe type="shared_state_entry" id="dart_source111111" />
+      </InspectorProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "open dart_source111111" }));
+    fireEvent.click(screen.getByRole("button", { name: "source" }));
+    expect(setView).toHaveBeenLastCalledWith("governance", {
+      governanceTab: "shared_state",
+    });
   });
 });
 

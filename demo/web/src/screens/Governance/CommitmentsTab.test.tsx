@@ -3,7 +3,7 @@ import { renderWithInspector } from "../../test/inspector";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { CommitmentItem } from "../../api/types";
-import { CommitScreen } from ".";
+import { CommitmentsTab } from "./CommitmentsTab";
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -98,7 +98,7 @@ describe("CommitScreen operator actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<CommitScreen />);
+    renderWithInspector(<CommitmentsTab />);
 
     expect((await screen.findAllByText("Active commitment.")).length).toBeGreaterThan(0);
     expect(screen.queryByText("Superseded predecessor.")).not.toBeInTheDocument();
@@ -165,7 +165,7 @@ describe("CommitScreen operator actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<CommitScreen />);
+    renderWithInspector(<CommitmentsTab />);
 
     expect((await screen.findAllByText("Surviving @handle commitment.")).length).toBeGreaterThan(0);
     const firstChain = await screen.findByLabelText("supersession chain");
@@ -216,7 +216,7 @@ describe("CommitScreen operator actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<CommitScreen />);
+    renderWithInspector(<CommitmentsTab />);
 
     expect((await screen.findAllByText("Alpha first.")).length).toBeGreaterThan(0);
     clickPill("family groups");
@@ -255,7 +255,7 @@ describe("CommitScreen operator actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<CommitScreen />);
+    renderWithInspector(<CommitmentsTab />);
 
     fireEvent.click(await screen.findByLabelText("add commitment"));
     expect(screen.getByText("marked as creator-authored advice")).toBeInTheDocument();
@@ -320,7 +320,7 @@ describe("CommitScreen operator actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<CommitScreen />);
+    renderWithInspector(<CommitmentsTab />);
 
     expect((await screen.findAllByText("Prefer direct answers.")).length).toBeGreaterThan(0);
     fireEvent.click((await screen.findAllByRole("button", { name: "revoke" }))[0]!);
@@ -363,7 +363,7 @@ describe("CommitScreen operator actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<CommitScreen />);
+    renderWithInspector(<CommitmentsTab />);
 
     expect((await screen.findAllByText("Prefer direct answers.")).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "correct" }));
@@ -409,7 +409,7 @@ describe("CommitScreen operator actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<CommitScreen />);
+    renderWithInspector(<CommitmentsTab />);
 
     expect((await screen.findAllByText("Prefer direct answers.")).length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "forget" })).not.toBeInTheDocument();

@@ -19,9 +19,8 @@ import { useSession } from "./hooks/use-session";
 import { useTurnStream } from "./hooks/use-turn-stream";
 import { useView } from "./hooks/use-view";
 import { CognitionScreen } from "./screens/Cognition";
-import { CommitScreen } from "./screens/Commit";
-import { DirectivesScreen } from "./screens/Directives";
 import { DreamScreen } from "./screens/Dream";
+import { GovernanceScreen } from "./screens/Governance";
 import { IdentityScreen } from "./screens/Identity";
 import { MemoryScreen } from "./screens/Memory";
 import { MissionControlScreen } from "./screens/MissionControl";
@@ -52,14 +51,14 @@ function countBadge(
 function railBadges(counts: StateSnapshot["counts"] | null): Partial<Record<RouteId, RailBadge>> {
   return {
     identity: countBadge(counts?.open_qs, 1, "open questions"),
-    commit: countBadge(counts?.commitments, 1, "commitments"),
+    governance: countBadge(counts?.commitments, 1, "commitments"),
     review: countBadge(counts?.open_reviews, 2, "open reviews"),
     dream: countBadge(counts?.dream_audit_rows, 1, "dream audit rows"),
   };
 }
 
 export function AppShell() {
-  const { view, setView } = useView();
+  const { view, governanceTab, setView, setGovernanceTab } = useView();
   const [now, setNow] = useState(formatNow);
   const { sessionId, setSessionId } = useSession();
   const creatorApi = useApi(getCreatorEntity, []);
@@ -78,7 +77,9 @@ export function AppShell() {
       <LiveCacheProvider sessionId={sessionId}>
         <AppShellContent
           view={view}
+          governanceTab={governanceTab}
           setView={setView}
+          setGovernanceTab={setGovernanceTab}
           now={now}
           sessionId={sessionId}
           setSessionId={setSessionId}
@@ -95,7 +96,9 @@ export function AppShell() {
 
 type AppShellContentProps = {
   view: RouteId;
-  setView: (view: RouteId) => void;
+  governanceTab: ReturnType<typeof useView>["governanceTab"];
+  setView: ReturnType<typeof useView>["setView"];
+  setGovernanceTab: ReturnType<typeof useView>["setGovernanceTab"];
   now: string;
   sessionId: string;
   setSessionId: (sessionId: string) => void;
@@ -108,7 +111,9 @@ type AppShellContentProps = {
 
 function AppShellContent({
   view,
+  governanceTab,
   setView,
+  setGovernanceTab,
   now,
   sessionId,
   setSessionId,
@@ -219,12 +224,26 @@ function AppShellContent({
                   sessionId={sessionId}
                   onOpenReview={() => setView("review")}
                   onOpenIdentity={() => setView("identity")}
-                  onOpenCommitments={() => setView("commit")}
+                  onOpenCommitments={() => setView("governance", { governanceTab: "commitments" })}
                 />
               ) : null}
               {view === "identity" ? <IdentityScreen /> : null}
-              {view === "commit" ? <CommitScreen /> : null}
-              {view === "directives" ? <DirectivesScreen sessionId={sessionId} /> : null}
+              {view === "governance" ? (
+                <GovernanceScreen
+                  sessionId={sessionId}
+                  activeSessionId={sessionId}
+                  activeTab={governanceTab}
+                  sessions={sessionsApi.data?.sessions ?? []}
+                  sessionsError={sessionsApi.error}
+                  creator={creator}
+                  operatorChatError={operatorChatError}
+                  onSelectSession={setSessionId}
+                  onOpenOperatorChat={openOperatorChat}
+                  onSetCreatorByName={markCreatorByName}
+                  onSessionPolicyChanged={refetchSessionState}
+                  onTabChange={setGovernanceTab}
+                />
+              ) : null}
               {view === "review" ? <ReviewScreen /> : null}
               {view === "dream" ? <DreamScreen onOpenReview={() => setView("review")} /> : null}
               {view === "prompts" ? <PromptsScreen /> : null}

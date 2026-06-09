@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 
-import type { RouteId } from "../../routes";
+import type { RouteId, RouteNavigationOptions } from "../../routes";
 import { objectRegistry, type InspectorTab } from "./inspector-registry";
 import type { ObjectType } from "./inspector-id";
 
@@ -25,7 +25,7 @@ export type InspectorContextValue = {
 
 type InspectorProviderProps = {
   children: ReactNode;
-  setView: (view: RouteId) => void;
+  setView: (view: RouteId, options?: RouteNavigationOptions) => void;
   setSessionId: (sessionId: string) => void;
   sessionId: string;
   audience: string;
@@ -77,7 +77,13 @@ export function InspectorProvider({
 
     const route = objectRegistry[currentTarget.type].sourceRoute;
     if (route !== null) {
-      setView(route);
+      if (typeof route === "string") {
+        setView(route);
+      } else if (route.governanceTab === undefined) {
+        setView(route.route);
+      } else {
+        setView(route.route, { governanceTab: route.governanceTab });
+      }
     }
   }, [setSessionId, setView, targets]);
 

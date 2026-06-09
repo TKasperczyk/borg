@@ -5,8 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LiveFrame, MaintenanceAuditRow, StreamEntry, WsState } from "../api/types";
 import { LiveEventsProvider } from "../hooks/live-context";
 import type { LiveEventHandler, LiveEvents } from "../hooks/use-live-events";
-import { CommitScreen } from "./Commit";
 import { DreamScreen } from "./Dream";
+import { CommitmentsTab } from "./Governance/CommitmentsTab";
 import { IdentityScreen } from "./Identity";
 import { MemoryScreen } from "./Memory";
 import { ReviewScreen } from "./Review";
@@ -811,7 +811,7 @@ describe("P2 screens", () => {
 
   it("filters commitment lifecycle rows", async () => {
     installFetch();
-    renderWithInspector(<CommitScreen />);
+    renderWithInspector(<CommitmentsTab />);
 
     expect((await screen.findAllByText("active rule")).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByText("revoked"));

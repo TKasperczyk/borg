@@ -11,6 +11,7 @@ import {
 } from "../../api/client";
 import type {
   CommitmentItem,
+  CreatorDirectivesResponse,
   CreatorDirectiveItem,
   CreatorDirectiveStatus,
   CreatorDirectiveStatusFilter,
@@ -21,7 +22,7 @@ import { resolveObjectType, type ObjectType } from "../../components/Inspector/i
 import { Modal } from "../../components/Modal";
 import { SupersededByChip } from "../../components/SupersededByChip";
 import { Tag } from "../../components/Tag";
-import { useApi } from "../../hooks/use-api";
+import { useApi, type ApiHookState } from "../../hooks/use-api";
 import { lifecycleLabel, tagKind } from "../../lib/shared-state-lifecycle";
 import { dateLabel, shortId } from "../screen-utils";
 
@@ -30,11 +31,11 @@ type SortMode = "priority_desc" | "priority_asc";
 type DirectiveModal =
   | { kind: "revoke"; directive: CreatorDirectiveItem; reason: string }
   | { kind: "supersede"; directive: CreatorDirectiveItem; replacementId: string };
-type SharedStateAudienceEntries = {
+export type SharedStateAudienceEntries = {
   audience: string;
   entries: SharedStateEntry[];
 };
-type DirectiveSupportData = {
+export type DirectiveSupportData = {
   audienceDiscoveryTruncated: boolean;
   commitments: CommitmentItem[];
   sharedAudiences: SharedStateAudienceEntries[];
@@ -57,7 +58,7 @@ type RelatedSharedStateEntry = {
 
 const STATUS_FILTERS: CreatorDirectiveStatusFilter[] = ["active", "revoked", "superseded", "all"];
 const SORT_MODES: SortMode[] = ["priority_desc", "priority_asc"];
-const SESSION_AUDIENCE_DISCOVERY_CAP = 1000;
+export const SESSION_AUDIENCE_DISCOVERY_CAP = 1000;
 
 function uniqueStrings(values: readonly string[]): string[] {
   const seen = new Set<string>();
@@ -85,19 +86,22 @@ function directiveSourceStreamIds(directive: CreatorDirectiveItem): string[] {
   ]);
 }
 
-async function loadDirectiveSupportData(sessionId: string): Promise<DirectiveSupportData> {
+export async function loadDirectiveSupportData(
+  sessionId: string,
+  commitments?: readonly CommitmentItem[],
+): Promise<DirectiveSupportData> {
   const [sessionsResponse, commitmentsResponse, stateResponse] = await Promise.all([
     getSessions(),
-    getCommitments({ state: "all" }),
+    commitments === undefined
+      ? getCommitments({ state: "all" })
+      : Promise.resolve({ commitments: [...commitments] }),
     getState({ session: sessionId }),
   ]);
-  const audienceLabels = uniqueStrings(
-    [
-      "self",
-      ...stateResponse.audiences,
-      ...sessionsResponse.sessions.map((session) => session.audience_label),
-    ],
-  );
+  const audienceLabels = uniqueStrings([
+    "self",
+    ...stateResponse.audiences,
+    ...sessionsResponse.sessions.map((session) => session.audience_label),
+  ]);
   const sharedAudiences = await Promise.all(
     audienceLabels.map(async (audience) => {
       const response = await getSharedState(audience);
@@ -130,13 +134,7 @@ function joinedIds(ids: readonly string[]): string {
   return ids.length === 0 ? "—" : ids.map(shortId).join(", ");
 }
 
-function InlineIdRefList({
-  ids,
-  type,
-}: {
-  ids: readonly string[];
-  type: ObjectType;
-}): ReactNode {
+function InlineIdRefList({ ids, type }: { ids: readonly string[]; type: ObjectType }): ReactNode {
   if (ids.length === 0) {
     return "—";
   }
@@ -291,10 +289,7 @@ function sharedStateRelationsForDirective(input: {
 
   const relations: SharedStateRelation[] = [];
   const sharedSourceIntersection = intersectStrings(
-    [
-      ...input.entry.provenance_stream_entry_ids,
-      ...input.entry.last_updated_stream_entry_ids,
-    ],
+    [...input.entry.provenance_stream_entry_ids, ...input.entry.last_updated_stream_entry_ids],
     directiveSourceIds,
   );
 
@@ -614,9 +609,7 @@ function SharedStateLifecycleRow({
   return (
     <div
       style={{
-        border: `1px solid ${
-          focusedSharedEntryId === entry.id ? "var(--acc-dim)" : "var(--line)"
-        }`,
+        border: `1px solid ${focusedSharedEntryId === entry.id ? "var(--acc-dim)" : "var(--line)"}`,
         background: "var(--bg-1)",
         padding: "10px 12px",
         marginBottom: 8,
@@ -730,11 +723,28 @@ function SharedStateLifecycleRow({
   );
 }
 
-export function DirectivesScreen({ sessionId = "default" }: { sessionId?: string }) {
-  const [statusFilter, setStatusFilter] = useState<CreatorDirectiveStatusFilter>("active");
-  const [sortMode, setSortMode] = useState<SortMode>("priority_desc");
+export type DirectivesTabProps = {
+  sessionId?: string;
+  embedded?: boolean;
+};
+
+export function DirectivesTab({ sessionId = "default", embedded = false }: DirectivesTabProps) {
   const api = useApi(() => getCreatorDirectives({ status: "all" }), []);
   const supportApi = useApi(() => loadDirectiveSupportData(sessionId), [sessionId]);
+  return <DirectivesPanel api={api} supportApi={supportApi} embedded={embedded} />;
+}
+
+export function DirectivesPanel({
+  api,
+  supportApi,
+  embedded = false,
+}: {
+  api: ApiHookState<CreatorDirectivesResponse>;
+  supportApi: ApiHookState<DirectiveSupportData>;
+  embedded?: boolean;
+}) {
+  const [statusFilter, setStatusFilter] = useState<CreatorDirectiveStatusFilter>("active");
+  const [sortMode, setSortMode] = useState<SortMode>("priority_desc");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [modal, setModal] = useState<DirectiveModal | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -818,10 +828,14 @@ export function DirectivesScreen({ sessionId = "default" }: { sessionId?: string
   }
 
   return (
-    <div className="full-page">
+    <div className={embedded ? "governance-panel" : "full-page"}>
       <div className="page-head">
-        <h1>creator directives</h1>
-        <span className="desc">identity · subject facts · disclosure · response policies</span>
+        {embedded ? null : (
+          <>
+            <h1>creator directives</h1>
+            <span className="desc">identity · subject facts · disclosure · response policies</span>
+          </>
+        )}
         <span className="spacer"></span>
         <div className="filter-pills">
           {STATUS_FILTERS.map((value) => (
@@ -1203,7 +1217,10 @@ function CreatorDirectiveDetail({
           <div className="row">
             <span className="k">content source</span>
             <span className="v">
-              <InlineIdRefList ids={directive.content_source_stream_entry_ids} type="stream_entry" />
+              <InlineIdRefList
+                ids={directive.content_source_stream_entry_ids}
+                type="stream_entry"
+              />
             </span>
           </div>
         </div>

@@ -425,7 +425,7 @@ describe("CommandPalette", () => {
 
     await openWithMeta();
     fireEvent.click(screen.getByText("Create commitment"));
-    expect(setView).toHaveBeenCalledWith("commit");
+    expect(setView).toHaveBeenCalledWith("governance", { governanceTab: "commitments" });
 
     await openWithMeta();
     fireEvent.click(screen.getByText("Run dream plan"));

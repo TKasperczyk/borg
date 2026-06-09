@@ -8,7 +8,7 @@ import type {
   SessionRecord,
   SharedStateEntry,
 } from "../../api/types";
-import { DirectivesScreen } from ".";
+import { DirectivesTab } from "./DirectivesTab";
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -198,7 +198,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("DirectivesScreen", () => {
+describe("DirectivesTab", () => {
   it("defaults to active creator directives", async () => {
     const active = directive();
     const revoked = directive({
@@ -223,7 +223,7 @@ describe("DirectivesScreen", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<DirectivesScreen />);
+    renderWithInspector(<DirectivesTab />);
 
     expect((await screen.findAllByText("Alice is the launch reviewer.")).length).toBeGreaterThan(0);
     expect(screen.queryByText("Retired directive.")).not.toBeInTheDocument();
@@ -285,7 +285,7 @@ describe("DirectivesScreen", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<DirectivesScreen />);
+    renderWithInspector(<DirectivesTab />);
 
     expect(await screen.findByText("Active directive.")).toBeInTheDocument();
     expect(screen.queryByText("Revoked directive.")).not.toBeInTheDocument();
@@ -335,7 +335,7 @@ describe("DirectivesScreen", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<DirectivesScreen />);
+    renderWithInspector(<DirectivesTab />);
 
     expect((await screen.findAllByText("Replacement directive.")).length).toBeGreaterThan(0);
     clickPill("superseded");
@@ -447,7 +447,7 @@ describe("DirectivesScreen", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<DirectivesScreen />, { inspector: true });
+    renderWithInspector(<DirectivesTab />, { inspector: true });
 
     expect(await screen.findByText("rule.botarena.language")).toBeInTheDocument();
     expect(screen.getByText(/related via canonicalized commitment/)).toHaveTextContent("revoked");
@@ -527,7 +527,7 @@ describe("DirectivesScreen", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<DirectivesScreen sessionId="sess_active111111" />);
+    renderWithInspector(<DirectivesTab sessionId="sess_active111111" />);
 
     expect(await screen.findByText("self.identity.row")).toBeInTheDocument();
     expect(screen.getByText("thread.active.row")).toBeInTheDocument();
@@ -598,7 +598,7 @@ describe("DirectivesScreen", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<DirectivesScreen />);
+    renderWithInspector(<DirectivesTab />);
 
     expect(await screen.findByText("rule.superseded")).toBeInTheDocument();
     expect(screen.getByText(/related via canonicalized commitment/)).toHaveTextContent(
@@ -640,7 +640,7 @@ describe("DirectivesScreen", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<DirectivesScreen />);
+    renderWithInspector(<DirectivesTab />);
 
     expect(
       await screen.findByText(/audience discovery reached the 1000-session server cap/),
@@ -678,7 +678,7 @@ describe("DirectivesScreen", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<DirectivesScreen />);
+    renderWithInspector(<DirectivesTab />);
 
     expect((await screen.findAllByText("Directive to revoke.")).length).toBeGreaterThan(0);
     fireEvent.click(screen.getAllByRole("button", { name: "revoke" })[0]!);
@@ -747,7 +747,7 @@ describe("DirectivesScreen", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<DirectivesScreen />);
+    renderWithInspector(<DirectivesTab />);
 
     expect((await screen.findAllByText("Directive to supersede.")).length).toBeGreaterThan(0);
     fireEvent.click(screen.getAllByRole("button", { name: "supersede" })[0]!);
@@ -798,7 +798,7 @@ describe("DirectivesScreen", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<DirectivesScreen />);
+    renderWithInspector(<DirectivesTab />);
 
     expect(await screen.findByText("no creator directives in filter")).toBeInTheDocument();
     clickPill("all");

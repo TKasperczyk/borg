@@ -1,6 +1,6 @@
 import { useId, type KeyboardEvent } from "react";
 
-import type { RouteId } from "../../routes";
+import type { RouteId, RouteNavigationOptions } from "../../routes";
 import { shortId } from "../../screens/screen-utils";
 import type { OrreryViewModel } from "./useOrreryData";
 
@@ -13,7 +13,7 @@ export type OrreryInspectTarget = {
 export type OrreryProps = {
   size: "full" | "compact";
   data: OrreryViewModel;
-  onNavigate: (view: RouteId) => void;
+  onNavigate: (view: RouteId, options?: RouteNavigationOptions) => void;
   onInspect: (target: OrreryInspectTarget) => void;
 };
 
@@ -281,8 +281,12 @@ export function Orrery({ size, data, onNavigate, onInspect }: OrreryProps) {
             tabIndex={0}
             aria-label={`${data.governance.commitments.total} active commitments`}
             data-testid="orr-governance-commitments"
-            onClick={() => onNavigate("commit")}
-            onKeyDown={(event) => onKeyboardActivate(event, () => onNavigate("commit"))}
+            onClick={() => onNavigate("governance", { governanceTab: "commitments" })}
+            onKeyDown={(event) =>
+              onKeyboardActivate(event, () =>
+                onNavigate("governance", { governanceTab: "commitments" }),
+              )
+            }
           >
             <path d={arcPath(246, 210, 310)} />
             <text className="orr-governance-label" x="70" y="315">
@@ -295,8 +299,12 @@ export function Orrery({ size, data, onNavigate, onInspect }: OrreryProps) {
             tabIndex={0}
             aria-label={`${data.governance.directives.active} active directives`}
             data-testid="orr-governance-directives"
-            onClick={() => onNavigate("directives")}
-            onKeyDown={(event) => onKeyboardActivate(event, () => onNavigate("directives"))}
+            onClick={() => onNavigate("governance", { governanceTab: "shared_state" })}
+            onKeyDown={(event) =>
+              onKeyboardActivate(event, () =>
+                onNavigate("governance", { governanceTab: "shared_state" }),
+              )
+            }
           >
             <path d={arcPath(228, 216, 304)} />
             <text className="orr-governance-label" x="78" y="336">

@@ -815,9 +815,9 @@ describe("Memory correction actions", () => {
     });
   });
 
-  it("routes self and commitments atlas deep-links through screen callbacks", async () => {
+  it("routes self and commitments atlas deep-links through identity/governance callbacks", async () => {
     const openIdentity = vi.fn();
-    const openCommitments = vi.fn();
+    const openGovernance = vi.fn();
     installMemoryFetch({
       self: {
         band: "self",
@@ -854,7 +854,7 @@ describe("Memory correction actions", () => {
       <MemoryScreen
         sessionId="default"
         onOpenIdentity={openIdentity}
-        onOpenCommitments={openCommitments}
+        onOpenCommitments={openGovernance}
       />,
     );
 
@@ -864,7 +864,7 @@ describe("Memory correction actions", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "open commitments memory band" }));
     fireEvent.click(await screen.findByRole("button", { name: "open commitments" }));
-    expect(openCommitments).toHaveBeenCalledTimes(1);
+    expect(openGovernance).toHaveBeenCalledTimes(1);
   });
 
   it("renders audience as labels without hiding episodic or commitment rows", async () => {

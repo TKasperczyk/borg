@@ -4196,6 +4196,127 @@ g.fc-regen-group.active .fc-regen-label-bg {
   color: var(--acc);
 }
 
+.governance-studio {
+  min-width: 0;
+}
+
+.governance-head {
+  align-items: center;
+}
+
+.governance-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.governance-tab {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text-mute);
+  font-family: var(--sans);
+  font-size: 11px;
+  line-height: 1.2;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+
+.governance-tab.active {
+  color: var(--acc);
+  border-color: var(--acc-dim);
+  background: var(--acc-tint);
+}
+
+.governance-tab:hover {
+  color: var(--text);
+}
+
+.governance-tab-shell,
+.governance-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.scope-matrix-body,
+.sessions-entities-body {
+  padding: 14px 16px 18px;
+}
+
+.scope-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.scope-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.scope-section-head h2 {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  text-transform: lowercase;
+}
+
+.scope-rollups,
+.known-entities {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.scope-rollup,
+.known-entity {
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  padding: 10px 12px;
+}
+
+.scope-rollup-head,
+.known-entity-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.scope-lifecycle-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.governance-creator-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.governance-creator-form input {
+  height: 26px;
+  min-width: 150px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text);
+  padding: 0 8px;
+  font-family: var(--sans);
+  font-size: 11px;
+}
+
 /* dream cycle */
 .dream-grid {
   display: grid;

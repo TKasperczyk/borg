@@ -9,7 +9,7 @@ import type {
   SemanticMemoryNode,
 } from "../../api/types";
 import { useLiveCache } from "../../hooks/use-live-cache";
-import { RAIL_ITEMS, type RouteId } from "../../routes";
+import { RAIL_ITEMS, type RouteId, type RouteNavigationOptions } from "../../routes";
 import { previewLine } from "../SessionFleet";
 import { shortId } from "../../screens/screen-utils";
 import { useInspector } from "../Inspector/inspector-context";
@@ -19,7 +19,7 @@ import { objectRegistry } from "../Inspector/inspector-registry";
 type CommandPaletteProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  setView: (view: RouteId) => void;
+  setView: (view: RouteId, options?: RouteNavigationOptions) => void;
   setSessionId: (sessionId: string) => void;
   onOpenReset: () => void;
 };
@@ -357,7 +357,7 @@ export function CommandPalette({
         subtitle: "open commitment flow",
         icon: "+",
         hint: "navigate",
-        run: () => setView("commit"),
+        run: () => setView("governance", { governanceTab: "commitments" }),
       },
       {
         id: "action:run-dream-plan",

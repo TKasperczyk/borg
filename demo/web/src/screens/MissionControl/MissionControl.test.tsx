@@ -450,8 +450,8 @@ describe("MissionControlScreen", () => {
     );
 
     expect(onNavigate).toHaveBeenCalledWith("review");
-    expect(onNavigate).toHaveBeenCalledWith("commit");
-    expect(onNavigate).toHaveBeenCalledWith("directives");
+    expect(onNavigate).toHaveBeenCalledWith("governance", { governanceTab: "commitments" });
+    expect(onNavigate).toHaveBeenCalledWith("governance", { governanceTab: "shared_state" });
     expect(onNavigate).toHaveBeenCalledWith("dream");
     expect(onNavigate).toHaveBeenCalledWith("stream");
     expect(onNavigate).toHaveBeenCalledWith("prompts");

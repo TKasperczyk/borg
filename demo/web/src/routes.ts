@@ -4,11 +4,16 @@ export type RouteId =
   | "stream"
   | "memory"
   | "identity"
-  | "commit"
-  | "directives"
+  | "governance"
   | "review"
   | "dream"
   | "prompts";
+
+export type GovernanceTabId = "commitments" | "shared_state" | "scope" | "sessions";
+
+export type RouteNavigationOptions = {
+  governanceTab?: GovernanceTabId;
+};
 
 export type RailItem = {
   id: RouteId;
@@ -20,6 +25,14 @@ export type RailItem = {
 };
 
 export const DEFAULT_ROUTE_ID: RouteId = "mission";
+export const DEFAULT_GOVERNANCE_TAB_ID: GovernanceTabId = "commitments";
+
+export const GOVERNANCE_TAB_IDS: readonly GovernanceTabId[] = [
+  "commitments",
+  "shared_state",
+  "scope",
+  "sessions",
+];
 
 export const RAIL_ITEMS: readonly RailItem[] = [
   { id: "mission", label: "mission", short: "MC", glyph: "⌂", num: 0 },
@@ -34,13 +47,16 @@ export const RAIL_ITEMS: readonly RailItem[] = [
   { id: "stream", label: "stream", short: "STR", glyph: "≣", num: 2 },
   { id: "memory", label: "memory", short: "MEM", glyph: "◇", num: 3 },
   { id: "identity", label: "identity", short: "IDN", glyph: "◐", num: 4 },
-  { id: "commit", label: "commit", short: "CMT", glyph: "↵", num: 5 },
-  { id: "directives", label: "directives", short: "DIR", glyph: "§", num: 6 },
-  { id: "review", label: "review", short: "REV", glyph: "?", num: 7 },
-  { id: "dream", label: "dream", short: "DRM", glyph: "☾", num: 8 },
-  { id: "prompts", label: "prompts", short: "PMT", glyph: "›", num: 9 },
+  { id: "governance", label: "governance", short: "GOV", glyph: "§", num: 5 },
+  { id: "review", label: "review", short: "REV", glyph: "?", num: 6 },
+  { id: "dream", label: "dream", short: "DRM", glyph: "☾", num: 7 },
+  { id: "prompts", label: "prompts", short: "PMT", glyph: "›", num: 8 },
 ];
 
 export function isRouteId(value: string): value is RouteId {
   return RAIL_ITEMS.some((item) => item.id === value);
+}
+
+export function isGovernanceTabId(value: string): value is GovernanceTabId {
+  return GOVERNANCE_TAB_IDS.some((item) => item === value);
 }

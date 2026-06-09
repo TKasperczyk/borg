@@ -383,10 +383,10 @@ describe("Orrery", () => {
     expect(onNavigate).toHaveBeenCalledWith("dream");
 
     fireEvent.click(screen.getByTestId("orr-governance-commitments"));
-    expect(onNavigate).toHaveBeenCalledWith("commit");
+    expect(onNavigate).toHaveBeenCalledWith("governance", { governanceTab: "commitments" });
 
     fireEvent.click(screen.getByTestId("orr-governance-directives"));
-    expect(onNavigate).toHaveBeenCalledWith("directives");
+    expect(onNavigate).toHaveBeenCalledWith("governance", { governanceTab: "shared_state" });
 
     fireEvent.click(screen.getByTestId("orr-fault-node"));
     expect(onNavigate).toHaveBeenCalledWith("review");

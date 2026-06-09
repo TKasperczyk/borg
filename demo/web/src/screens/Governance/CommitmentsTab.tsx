@@ -14,6 +14,7 @@ import {
   type CommitmentItem,
   type CommitmentKind,
   type CommitmentState,
+  type CommitmentsResponse,
   type CreateCommitmentRequest,
 } from "../../api/types";
 import { IdRef } from "../../components/Inspector/IdRef";
@@ -21,7 +22,7 @@ import { Modal } from "../../components/Modal";
 import { SupersededByChip } from "../../components/SupersededByChip";
 import { Tag } from "../../components/Tag";
 import { WhyDrawer } from "../../components/WhyDrawer";
-import { useApi } from "../../hooks/use-api";
+import { useApi, type ApiHookState } from "../../hooks/use-api";
 import { dateLabel, parseJsonPatch, shortId } from "../screen-utils";
 
 type CommitmentDisplayState = CommitmentState | "superseded";
@@ -244,8 +245,22 @@ function createCommitmentRequest(modal: Extract<CommitModal, { kind: "create" }>
   return input;
 }
 
-export function CommitScreen() {
+export type CommitmentsTabProps = {
+  embedded?: boolean;
+};
+
+export function CommitmentsTab({ embedded = false }: CommitmentsTabProps) {
   const api = useApi(() => getCommitments({ state: "all" }), []);
+  return <CommitmentsPanel api={api} embedded={embedded} />;
+}
+
+export function CommitmentsPanel({
+  api,
+  embedded = false,
+}: {
+  api: ApiHookState<CommitmentsResponse>;
+  embedded?: boolean;
+}) {
   const [state, setState] = useState<StateFilter>("active");
   const [enforcement, setEnforcement] = useState<EnforcementFilter>("all");
   const [audience, setAudience] = useState("all");
@@ -477,10 +492,14 @@ export function CommitScreen() {
   }
 
   return (
-    <div className="full-page">
+    <div className={embedded ? "governance-panel" : "full-page"}>
       <div className="page-head">
-        <h1>commitments</h1>
-        <span className="desc">scoped promises · rules · preferences · boundaries</span>
+        {embedded ? null : (
+          <>
+            <h1>commitments</h1>
+            <span className="desc">scoped promises · rules · preferences · boundaries</span>
+          </>
+        )}
         <span className="spacer"></span>
         <button
           className="btn sm primary"
