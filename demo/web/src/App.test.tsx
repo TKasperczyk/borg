@@ -33,6 +33,7 @@ vi.mock("./hooks/use-turn-stream", () => ({
     lastPhase: "idle",
     runTurn: mocks.runTurn,
     resetForReconnect: vi.fn(),
+    resetCaches: vi.fn(() => true),
     replaceTailFromEntries: vi.fn(),
   }),
 }));
@@ -187,6 +188,7 @@ describe("App", () => {
       "title",
       "prompts (⌘8)",
     );
+    expect(screen.getByRole("button", { name: "admin" })).toHaveAttribute("title", "admin (⌘9)");
 
     fireEvent.click(await screen.findByRole("button", { name: "operator chat" }));
 

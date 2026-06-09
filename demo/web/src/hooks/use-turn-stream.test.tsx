@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { LiveFrame, TurnPhaseName, WsState } from "../api/types";
+import type { EvidenceLedger, LiveFrame, TurnPhaseName, WsState } from "../api/types";
 import type { LiveEventHandler, LiveEvents } from "./use-live-events";
 import { TURN_SNAPSHOT_CACHE_LIMIT, useTurnStream } from "./use-turn-stream";
 
@@ -103,13 +104,7 @@ function DetailProbe({ live }: { live: LiveEvents }) {
   );
 }
 
-function StateProbe({
-  live,
-  sessionId = "default",
-}: {
-  live: LiveEvents;
-  sessionId?: string;
-}) {
+function StateProbe({ live, sessionId = "default" }: { live: LiveEvents; sessionId?: string }) {
   const turnStream = useTurnStream(live, { sessionId });
   const phaseStatus = (phase: TurnPhaseName) =>
     turnStream.phases.find((candidate) => candidate.id === phase)?.status ?? "missing";
@@ -133,9 +128,7 @@ function StateProbe({
       <output data-testid="running">{String(turnStream.running)}</output>
       <output data-testid="ingest-status">{phaseStatus("ingest")}</output>
       <output data-testid="retrieval-status">{phaseStatus("retrieval")}</output>
-      <output data-testid="token-text">
-        {[...turnStream.tokenTextByPhase.values()].join("")}
-      </output>
+      <output data-testid="token-text">{[...turnStream.tokenTextByPhase.values()].join("")}</output>
     </>
   );
 }
@@ -156,6 +149,37 @@ function SnapshotProbe({ live }: { live: LiveEvents }) {
       <output data-testid="snapshot-has-latest">
         {String(turnStream.flowSnapshotByTurn.has(`turn_${TURN_SNAPSHOT_CACHE_LIMIT}`))}
       </output>
+    </>
+  );
+}
+
+function emptyLedger(): EvidenceLedger {
+  return {
+    sections: [],
+    sharedState: null,
+    transcriptIncluded: false,
+    transcriptCompacted: false,
+    originalTranscriptTokenEstimate: 0,
+    compactedTranscriptEntryCount: 0,
+    rawPreservedUserTranscriptEntryCount: 0,
+    estimatedTokens: 0,
+  };
+}
+
+function CacheResetProbe({ live }: { live: LiveEvents }) {
+  const turnStream = useTurnStream(live, { sessionId: "default" });
+  const [result, setResult] = useState("none");
+
+  return (
+    <>
+      <button type="button" onClick={() => setResult(String(turnStream.resetCaches()))}>
+        reset caches
+      </button>
+      <output data-testid="reset-result">{result}</output>
+      <output data-testid="cache-running">{String(turnStream.running)}</output>
+      <output data-testid="cache-snapshots">{turnStream.flowSnapshotByTurn.size}</output>
+      <output data-testid="cache-tail">{turnStream.eventTail.length}</output>
+      <output data-testid="cache-ledgers">{turnStream.ledgerByTurn.size}</output>
     </>
   );
 }
@@ -338,5 +362,55 @@ describe("useTurnStream", () => {
     );
     expect(screen.getByTestId("snapshot-has-oldest")).toHaveTextContent("false");
     expect(screen.getByTestId("snapshot-has-latest")).toHaveTextContent("true");
+  });
+
+  it("does not reset retained caches during an active turn", () => {
+    const source = makeLiveSource();
+
+    render(<CacheResetProbe live={source.live()} />);
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "ingest", "turn_active", "default"));
+    });
+
+    expect(screen.getByTestId("cache-running")).toHaveTextContent("true");
+    expect(screen.getByTestId("cache-snapshots")).toHaveTextContent("1");
+    expect(screen.getByTestId("cache-tail")).toHaveTextContent("1");
+
+    fireEvent.click(screen.getByRole("button", { name: "reset caches" }));
+
+    expect(screen.getByTestId("reset-result")).toHaveTextContent("false");
+    expect(screen.getByTestId("cache-snapshots")).toHaveTextContent("1");
+    expect(screen.getByTestId("cache-tail")).toHaveTextContent("1");
+  });
+
+  it("resets retained turn caches when idle", () => {
+    const source = makeLiveSource();
+
+    render(<CacheResetProbe live={source.live()} />);
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "ingest", "turn_idle", "default"));
+      source.emit({
+        type: "evidence_ledger:built",
+        ts: Date.now(),
+        session_id: "default",
+        turn_id: "turn_idle",
+        ledger: emptyLedger(),
+      });
+      source.emit(terminalFrame("turn_idle", "default"));
+    });
+
+    expect(screen.getByTestId("cache-running")).toHaveTextContent("false");
+    expect(screen.getByTestId("cache-snapshots")).toHaveTextContent("1");
+    expect(screen.getByTestId("cache-tail")).toHaveTextContent("3");
+    expect(screen.getByTestId("cache-ledgers")).toHaveTextContent("1");
+
+    fireEvent.click(screen.getByRole("button", { name: "reset caches" }));
+
+    expect(screen.getByTestId("reset-result")).toHaveTextContent("true");
+    expect(screen.getByTestId("cache-snapshots")).toHaveTextContent("0");
+    expect(screen.getByTestId("cache-tail")).toHaveTextContent("0");
+    expect(screen.getByTestId("cache-ledgers")).toHaveTextContent("0");
   });
 });

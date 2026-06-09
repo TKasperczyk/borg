@@ -7,7 +7,8 @@ export type RouteId =
   | "governance"
   | "review"
   | "dream"
-  | "prompts";
+  | "prompts"
+  | "admin";
 
 export type GovernanceTabId = "commitments" | "shared_state" | "scope" | "sessions";
 
@@ -51,6 +52,7 @@ export const RAIL_ITEMS: readonly RailItem[] = [
   { id: "review", label: "review", short: "REV", glyph: "?", num: 6 },
   { id: "dream", label: "dream", short: "DRM", glyph: "☾", num: 7 },
   { id: "prompts", label: "prompts", short: "PMT", glyph: "›", num: 8 },
+  { id: "admin", label: "admin", short: "ADM", glyph: "⚙", num: 9 },
 ];
 
 export function isRouteId(value: string): value is RouteId {

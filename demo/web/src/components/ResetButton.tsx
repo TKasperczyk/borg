@@ -6,9 +6,18 @@ import { Modal } from "./Modal";
 export type ResetButtonProps = {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  showTrigger?: boolean;
+  triggerClassName?: string;
+  triggerLabel?: string;
 };
 
-export function ResetButton({ open, onOpenChange }: ResetButtonProps = {}) {
+export function ResetButton({
+  open,
+  onOpenChange,
+  showTrigger = true,
+  triggerClassName = "topbar-reset",
+  triggerLabel = "reset",
+}: ResetButtonProps = {}) {
   const [internalOpen, setInternalOpen] = useState(false);
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
@@ -50,14 +59,16 @@ export function ResetButton({ open, onOpenChange }: ResetButtonProps = {}) {
 
   return (
     <>
-      <button
-        type="button"
-        className="topbar-reset"
-        onClick={() => setDialogOpen(true)}
-        title="Wipe all borg state and restart with an empty substrate"
-      >
-        reset
-      </button>
+      {showTrigger ? (
+        <button
+          type="button"
+          className={triggerClassName}
+          onClick={() => setDialogOpen(true)}
+          title="Wipe all borg state and restart with an empty substrate"
+        >
+          {triggerLabel}
+        </button>
+      ) : null}
       <Modal
         open={dialogOpen}
         title={busy ? "resetting borg..." : "reset borg to clean slate"}

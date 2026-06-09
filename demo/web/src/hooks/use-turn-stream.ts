@@ -476,6 +476,7 @@ export type TurnStreamState = {
   lastPhase: string;
   runTurn: (input: TurnRequest) => Promise<TurnResponse | null>;
   resetForReconnect: () => void;
+  resetCaches: () => boolean;
   replaceTailFromEntries: (entries: readonly StreamEntry[]) => void;
 };
 
@@ -921,6 +922,17 @@ export function useTurnStream(
     setLastPhase("ws reconnected");
   }, []);
 
+  const resetCaches = useCallback(() => {
+    if (runningRef.current) {
+      return false;
+    }
+
+    setFlowSnapshotByTurn(new Map());
+    setEventTail([]);
+    setLedgerByTurn(new Map());
+    return true;
+  }, []);
+
   const replaceTailFromEntries = useCallback((entries: readonly StreamEntry[]) => {
     setEventTail(tailRowsFromEntries(entries));
   }, []);
@@ -941,6 +953,7 @@ export function useTurnStream(
       lastPhase,
       runTurn,
       resetForReconnect,
+      resetCaches,
       replaceTailFromEntries,
     }),
     [
@@ -956,6 +969,7 @@ export function useTurnStream(
       terminalOutcome,
       tokenTextByPhase,
       replaceTailFromEntries,
+      resetCaches,
       resetForReconnect,
       runTurn,
       running,

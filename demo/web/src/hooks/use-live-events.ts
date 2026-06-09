@@ -12,7 +12,7 @@ export type LiveEvents = {
   subscribe: (handler: LiveEventHandler) => () => void;
 };
 
-const DOWN_AFTER_FAILED_ATTEMPTS = 5;
+export const DOWN_AFTER_FAILED_ATTEMPTS = 5;
 const SOCKET_OPEN = 1;
 
 function isLiveFrame(value: unknown): value is LiveFrame {

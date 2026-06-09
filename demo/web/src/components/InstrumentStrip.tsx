@@ -2,7 +2,6 @@ import type { EntityRecord, SessionRecord, StateSnapshot, WsState } from "../api
 import type { DreamActivity } from "../hooks/use-live-cache";
 import type { RouteId } from "../routes";
 import { MiniOrrery } from "./orrery/MiniOrrery";
-import { ResetButton } from "./ResetButton";
 import { countValue, moodLabel } from "./StatusBar";
 import { formatTurns, wsLabel, wsToneClass } from "./Topbar";
 
@@ -16,8 +15,6 @@ export type InstrumentStripProps = {
   dreamActivity: DreamActivity | null;
   now: string;
   route: RouteId;
-  resetOpen?: boolean;
-  onResetOpenChange?: (open: boolean) => void;
 };
 
 function moodGlyph(state: StateSnapshot | null): string {
@@ -43,8 +40,6 @@ export function InstrumentStrip({
   dreamActivity,
   now,
   route,
-  resetOpen,
-  onResetOpenChange,
 }: InstrumentStripProps) {
   return (
     <div className="topbar instrument-strip">
@@ -116,9 +111,7 @@ export function InstrumentStrip({
           <span className={wsState === "live" ? "live-dot" : "dot warn"}></span>
         </span>
       </div>
-      <div className="topbar-end">
-        <ResetButton open={resetOpen} onOpenChange={onResetOpenChange} />
-      </div>
+      <div className="topbar-end"></div>
     </div>
   );
 }

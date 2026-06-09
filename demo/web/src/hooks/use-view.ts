@@ -15,7 +15,7 @@ type ViewState = {
   governanceTab: GovernanceTabId;
 };
 
-const LEGACY_VIEW_ALIASES: Record<string, ViewState> = {
+export const LEGACY_VIEW_ALIASES: Readonly<Record<string, ViewState>> = {
   commit: { view: "governance", governanceTab: "commitments" },
   directives: { view: "governance", governanceTab: "shared_state" },
 };

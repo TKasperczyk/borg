@@ -174,7 +174,7 @@ function PaletteHarness({
             setSessionId={setSessionId}
             onOpenReset={() => setResetOpen(true)}
           />
-          <ResetButton open={resetOpen} onOpenChange={setResetOpen} />
+          <ResetButton open={resetOpen} onOpenChange={setResetOpen} showTrigger={false} />
           <InspectorTargetProbe />
           <Inspector />
         </InspectorProvider>
@@ -297,6 +297,18 @@ describe("CommandPalette", () => {
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: "command palette" })).not.toBeInTheDocument();
     });
+  });
+
+  it("picks up the admin screen command from rail items", async () => {
+    setupFetch();
+    const setView = vi.fn();
+    renderPalette({ setView });
+
+    const input = await openWithMeta();
+    fireEvent.change(input, { target: { value: "admin" } });
+    fireEvent.click(await screen.findByText("Go to admin"));
+
+    expect(setView).toHaveBeenCalledWith("admin");
   });
 
   it("switches sessions from live cache rows", async () => {

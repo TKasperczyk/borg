@@ -88,6 +88,34 @@ export class ApiError extends Error {
   }
 }
 
+export type ClientFetchErrorEvent = {
+  endpoint: string;
+  status?: number;
+  message: string;
+  cause: unknown;
+};
+
+export type ClientFetchErrorListener = (event: ClientFetchErrorEvent) => void;
+
+const clientFetchErrorListeners = new Set<ClientFetchErrorListener>();
+
+export function subscribeClientFetchErrors(listener: ClientFetchErrorListener): () => void {
+  clientFetchErrorListeners.add(listener);
+  return () => {
+    clientFetchErrorListeners.delete(listener);
+  };
+}
+
+function emitClientFetchError(event: ClientFetchErrorEvent): void {
+  for (const listener of clientFetchErrorListeners) {
+    try {
+      listener(event);
+    } catch {
+      // Error observers must never alter fetchJson behavior.
+    }
+  }
+}
+
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
 }
@@ -153,28 +181,49 @@ async function fetchJson<T>(
   init?: RequestInit,
   params?: URLSearchParams,
 ): Promise<T> {
-  const response = await fetch(apiUrl(path, params), {
-    ...init,
-    headers: {
-      ...(init?.body === undefined || isFormDataBody(init.body)
-        ? {}
-        : { "Content-Type": "application/json" }),
-      ...init?.headers,
-    },
-  });
+  const endpoint = apiUrl(path, params);
 
-  if (!response.ok) {
-    let message = response.statusText;
-    try {
-      const body = (await response.json()) as { error?: { message?: string } };
-      message = body.error?.message ?? message;
-    } catch {
-      // Keep the status text when the body is not JSON.
+  try {
+    const response = await fetch(endpoint, {
+      ...init,
+      headers: {
+        ...(init?.body === undefined || isFormDataBody(init.body)
+          ? {}
+          : { "Content-Type": "application/json" }),
+        ...init?.headers,
+      },
+    });
+
+    if (!response.ok) {
+      let message = response.statusText;
+      try {
+        const body = (await response.json()) as { error?: { message?: string } };
+        message = body.error?.message ?? message;
+      } catch {
+        // Keep the status text when the body is not JSON.
+      }
+      throw new ApiError({ status: response.status, message });
     }
-    throw new ApiError({ status: response.status, message });
-  }
 
-  return (await response.json()) as T;
+    return (await response.json()) as T;
+  } catch (cause) {
+    if (cause instanceof ApiError) {
+      emitClientFetchError({
+        endpoint,
+        status: cause.status,
+        message: cause.message,
+        cause,
+      });
+      throw cause;
+    }
+
+    emitClientFetchError({
+      endpoint,
+      message: cause instanceof Error ? cause.message : String(cause),
+      cause,
+    });
+    throw cause;
+  }
 }
 
 export async function getState(input: { session?: string } = {}): Promise<StateSnapshot> {

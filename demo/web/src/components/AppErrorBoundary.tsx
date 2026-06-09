@@ -5,6 +5,7 @@ import { ErrorState } from "./ErrorState";
 type AppErrorBoundaryProps = {
   children: ReactNode;
   resetKey?: unknown;
+  onError?: (error: Error, errorInfo: ErrorInfo) => void;
 };
 
 type AppErrorBoundaryState = {
@@ -20,6 +21,7 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
     console.error(error, errorInfo);
+    this.props.onError?.(error, errorInfo);
   }
 
   componentDidUpdate(prevProps: AppErrorBoundaryProps): void {

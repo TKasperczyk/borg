@@ -9,9 +9,15 @@ import {
   getSessions,
   getStream,
   postTurn,
+  subscribeClientFetchErrors,
 } from "./client";
 
+const unsubscribers: Array<() => void> = [];
+
 afterEach(() => {
+  for (const unsubscribe of unsubscribers.splice(0)) {
+    unsubscribe();
+  }
   vi.unstubAllGlobals();
 });
 
@@ -199,6 +205,82 @@ describe("api client", () => {
     await expect(getStream({ kinds: ["user_msg"], limit: 10 })).rejects.toMatchObject({
       status: 400,
       payload: { status: 400, message: "kind rejected" },
+    });
+  });
+
+  it("emits ApiError fetch failures and stops after unsubscribe", async () => {
+    const events: unknown[] = [];
+    const unsubscribe = subscribeClientFetchErrors((event) => events.push(event));
+    unsubscribers.push(unsubscribe);
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: { message: "kind rejected" } }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getStream({ kinds: ["user_msg"], limit: 10 })).rejects.toMatchObject({
+      status: 400,
+      payload: { status: 400, message: "kind rejected" },
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      endpoint: "/api/stream?kind=user_msg&limit=10",
+      status: 400,
+      message: "kind rejected",
+    });
+
+    unsubscribe();
+    unsubscribers.pop();
+
+    await expect(getStream({ kinds: ["user_msg"], limit: 10 })).rejects.toMatchObject({
+      status: 400,
+    });
+    expect(events).toHaveLength(1);
+  });
+
+  it("keeps the original ApiError rejection when a subscriber throws", async () => {
+    unsubscribers.push(
+      subscribeClientFetchErrors(() => {
+        throw new Error("observer failed");
+      }),
+    );
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: { message: "server failed" } }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getSessions()).rejects.toMatchObject({
+      status: 500,
+      payload: { status: 500, message: "server failed" },
+    });
+  });
+
+  it("emits network failures without changing the rejection", async () => {
+    const cause = new Error("socket closed");
+    const events: unknown[] = [];
+    unsubscribers.push(subscribeClientFetchErrors((event) => events.push(event)));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw cause;
+      }),
+    );
+
+    await expect(getSessions()).rejects.toBe(cause);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      endpoint: "/api/sessions",
+      message: "socket closed",
+      cause,
     });
   });
 });

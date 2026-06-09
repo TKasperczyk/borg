@@ -8,6 +8,7 @@ import { Inspector } from "./components/Inspector/Inspector";
 import { InspectorProvider } from "./components/Inspector/inspector-context";
 import { InstrumentStrip } from "./components/InstrumentStrip";
 import { Rail, type RailBadge, type RouteId } from "./components/Rail";
+import { ResetButton } from "./components/ResetButton";
 import { SessionFleet } from "./components/SessionFleet";
 import { StatusBar } from "./components/StatusBar";
 import { LiveEventsProvider } from "./hooks/live-context";
@@ -18,6 +19,8 @@ import { usePaletteHotkey } from "./hooks/use-palette-hotkey";
 import { useSession } from "./hooks/use-session";
 import { useTurnStream } from "./hooks/use-turn-stream";
 import { useView } from "./hooks/use-view";
+import { recordClientError } from "./lib/client-error-log";
+import { AdminScreen } from "./screens/Admin";
 import { CognitionScreen } from "./screens/Cognition";
 import { DreamScreen } from "./screens/Dream";
 import { GovernanceScreen } from "./screens/Governance";
@@ -166,6 +169,11 @@ function AppShellContent({
     await Promise.all([refetchCreator(), refetchSessions(), refetchState()]);
   };
 
+  const refetchAll = async () => {
+    await Promise.all([refetchCreator(), refetchSessions(), refetchState()]);
+    return { turnCachesReset: turnStream.resetCaches() };
+  };
+
   return (
     <InspectorProvider
       setView={setView}
@@ -185,8 +193,6 @@ function AppShellContent({
           dreamActivity={dreamActivity}
           now={now}
           route={view}
-          resetOpen={resetOpen}
-          onResetOpenChange={setResetOpen}
         />
         <div className="main">
           <SessionFleet
@@ -200,7 +206,16 @@ function AppShellContent({
             sessionActivity={sessionActivity}
           />
           <div className="screen-shell">
-            <AppErrorBoundary resetKey={view}>
+            <AppErrorBoundary
+              resetKey={view}
+              onError={(error) => {
+                recordClientError({
+                  source: "boundary",
+                  boundarySource: `screen:${view}`,
+                  message: error.message,
+                });
+              }}
+            >
               {view === "cognition" ? (
                 <CognitionScreen
                   sessionId={sessionId}
@@ -247,6 +262,14 @@ function AppShellContent({
               {view === "review" ? <ReviewScreen /> : null}
               {view === "dream" ? <DreamScreen onOpenReview={() => setView("review")} /> : null}
               {view === "prompts" ? <PromptsScreen /> : null}
+              {view === "admin" ? (
+                <AdminScreen
+                  route={view}
+                  sessionId={sessionId}
+                  onRefetchAll={refetchAll}
+                  onOpenResetConfirm={() => setResetOpen(true)}
+                />
+              ) : null}
             </AppErrorBoundary>
           </div>
         </div>
@@ -262,6 +285,7 @@ function AppShellContent({
           setSessionId={setSessionId}
           onOpenReset={() => setResetOpen(true)}
         />
+        <ResetButton open={resetOpen} onOpenChange={setResetOpen} showTrigger={false} />
         <Inspector />
       </div>
     </InspectorProvider>
