@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMMessage,
   type LLMToolDefinition,
   toToolInputSchema,
@@ -16,9 +17,6 @@ import type { RecencyMessage } from "../recency/index.js";
 import { summarizeTraceValueShape, toTraceJsonValue, type TurnTracer } from "../../tracing/tracer.js";
 import {
   summarizeToolResponseShape,
-  traceLlmCallError,
-  traceLlmCallResponse,
-  traceLlmCallStarted,
 } from "../../tracing/llm-call-trace.js";
 
 export const CLOSURE_LOOP_DIALOGUE_ACTS = [
@@ -629,26 +627,17 @@ function traceClosureLoopPayloadNormalized(options: {
   });
 }
 
-function parseClosureLoopResponse(
-  result: LLMCompleteResult,
+function parseClosureLoopToolInput(
+  input: unknown,
   suppliedMessages: readonly ClosureLoopMessageForClassification[],
   traceOptions: {
     tracer?: TurnTracer;
     turnId?: string;
     sessionId?: SessionId;
   } = {},
+  rawToolInput: unknown = input,
 ): ClosureLoopClassification {
-  const call = result.tool_calls.find(
-    (toolCall) => toolCall.name === CLOSURE_LOOP_CLASSIFIER_TOOL_NAME,
-  );
-
-  if (call === undefined) {
-    throw new MissingClosureLoopToolCallError(
-      `Closure-loop classifier did not emit ${CLOSURE_LOOP_CLASSIFIER_TOOL_NAME}`,
-    );
-  }
-
-  const normalized = normalizeClosureLoopToolInput(call.input, suppliedMessages);
+  const normalized = normalizeClosureLoopToolInput(input, suppliedMessages);
   const parsed = closureLoopClassificationSchema.safeParse(normalized.payload);
 
   if (!parsed.success) {
@@ -657,7 +646,7 @@ function parseClosureLoopResponse(
 
   traceClosureLoopPayloadNormalized({
     ...traceOptions,
-    rawToolInput: call.input,
+    rawToolInput,
     normalizedPayload: normalized.payload,
     normalizations: normalized.normalizations,
   });
@@ -837,64 +826,72 @@ export class ClosureLoopClassifier {
 
     const messages = buildClosureLoopMessages(input);
 
-    traceLlmCallStarted({
-      tracer: this.options.tracer,
-      turnId: this.options.turnId,
-      sessionId: this.options.sessionId,
-      label: "closure_loop_classifier",
-      model: this.options.model,
-      systemPrompt: CLOSURE_LOOP_SYSTEM_PROMPT,
-      messages,
-    });
-
-    let response: LLMCompleteResult;
-
     try {
-      response = await this.options.llmClient.complete({
-        model: this.options.model,
-        system: CLOSURE_LOOP_SYSTEM_PROMPT,
-        messages,
-        tools: [CLOSURE_LOOP_CLASSIFIER_TOOL],
-        tool_choice: { type: "tool", name: CLOSURE_LOOP_CLASSIFIER_TOOL_NAME },
-        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
-        budget: "closure-loop-classifier",
-      });
+      return (
+        await callStructuredTool({
+          llmClient: this.options.llmClient,
+          request: {
+            model: this.options.model,
+            system: CLOSURE_LOOP_SYSTEM_PROMPT,
+            messages,
+            tools: [CLOSURE_LOOP_CLASSIFIER_TOOL],
+            tool_choice: { type: "tool", name: CLOSURE_LOOP_CLASSIFIER_TOOL_NAME },
+            max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
+            budget: "closure-loop-classifier",
+          },
+          toolName: CLOSURE_LOOP_CLASSIFIER_TOOL_NAME,
+          parse: (toolInput) =>
+            parseClosureLoopToolInput(
+              toolInput,
+              input.messages,
+              {
+                tracer: this.options.tracer,
+                turnId: this.options.turnId,
+                sessionId: this.options.sessionId,
+              },
+              toolInput,
+            ),
+          trace: {
+            tracer: this.options.tracer,
+            turnId: this.options.turnId,
+            sessionId: this.options.sessionId,
+            label: "closure_loop_classifier",
+            systemPrompt: CLOSURE_LOOP_SYSTEM_PROMPT,
+            messages,
+            includeToolSchemas: false,
+            responseShape: summarizeToolResponseShape,
+          },
+        })
+      ).parsed;
     } catch (error) {
-      traceLlmCallError({
-        tracer: this.options.tracer,
-        turnId: this.options.turnId,
-        sessionId: this.options.sessionId,
-        label: "closure_loop_classifier",
-        error,
-      });
+      if (isStructuredToolCallError(error, "llm_failed")) {
+        return this.degraded("llm_failed", error.cause ?? error);
+      }
 
-      return this.degraded("llm_failed", error);
-    }
+      if (isStructuredToolCallError(error, "missing_tool_call")) {
+        return this.degraded(
+          "missing_tool_call",
+          new MissingClosureLoopToolCallError(
+            `Closure-loop classifier did not emit ${CLOSURE_LOOP_CLASSIFIER_TOOL_NAME}`,
+          ),
+          { stopReason: error.stopReason },
+        );
+      }
 
-    traceLlmCallResponse({
-      tracer: this.options.tracer,
-      turnId: this.options.turnId,
-      sessionId: this.options.sessionId,
-      label: "closure_loop_classifier",
-      response,
-      responseShape: summarizeToolResponseShape(response),
-    });
-
-    try {
-      return parseClosureLoopResponse(response, input.messages, {
-        tracer: this.options.tracer,
-        turnId: this.options.turnId,
-        sessionId: this.options.sessionId,
-      });
-    } catch (error) {
       return this.degraded(
         error instanceof MissingClosureLoopToolCallError
           ? "missing_tool_call"
-          : error instanceof z.ZodError || error instanceof InvalidClosureLoopPayloadError
+          : isStructuredToolCallError(error, "invalid_payload") ||
+              error instanceof z.ZodError ||
+              error instanceof InvalidClosureLoopPayloadError
             ? "invalid_payload"
             : "llm_failed",
-        error,
-        { stopReason: response.stop_reason },
+        isStructuredToolCallError(error) ? (error.cause ?? error) : error,
+        {
+          stopReason: isStructuredToolCallError(error)
+            ? error.stopReason
+            : null,
+        },
       );
     }
   }

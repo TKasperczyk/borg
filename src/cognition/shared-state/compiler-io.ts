@@ -1,4 +1,3 @@
-import type { LLMCompleteResult } from "../../llm/index.js";
 import type {
   SharedStateArtifact,
   SharedStateOperation,
@@ -12,10 +11,8 @@ import type {
   SharedStateUnsettledReconciliationSummary,
 } from "./reconciliation.js";
 import { type SharedStateArtifactPromptBudget } from "./compiler-prompt.js";
-import { MissingSharedStateArtifactToolCallError } from "./schema.js";
 import {
   SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,
-  SHARED_STATE_ACCEPTED_TOOL_NAMES,
   SHARED_STATE_TOOL_NAME,
 } from "./constants.js";
 import {
@@ -36,17 +33,8 @@ import type {
 
 type PublicSharedStateOperation = Exclude<SharedStateOperation, { type: "transition_kind" }>;
 
-export function parseResponse(result: LLMCompleteResult): EmitSharedStatePatch {
-  const acceptedToolNames = new Set<string>(SHARED_STATE_ACCEPTED_TOOL_NAMES);
-  const call = result.tool_calls.find((toolCall) => acceptedToolNames.has(toolCall.name));
-
-  if (call === undefined) {
-    throw new MissingSharedStateArtifactToolCallError(
-      `Shared state compiler did not emit ${SHARED_STATE_TOOL_NAME}`,
-    );
-  }
-
-  const parsed = sharedStatePatchSchema.safeParse(call.input);
+export function parseResponse(input: unknown): EmitSharedStatePatch {
+  const parsed = sharedStatePatchSchema.safeParse(input);
 
   if (!parsed.success) {
     throw parsed.error;

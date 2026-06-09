@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
@@ -215,16 +216,25 @@ function buildPrompt(cluster: ReflectionCluster, activeGoals: readonly GoalRecor
   ].join("\n");
 }
 
-function parseInsight(result: LLMCompleteResult) {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === REFLECTOR_TOOL_NAME);
-
-  if (call === undefined) {
-    throw new SemanticError(`Reflector did not emit tool ${REFLECTOR_TOOL_NAME}`, {
+function invalidInsight(error: unknown): unknown {
+  if (isStructuredToolCallError(error, "missing_tool_call")) {
+    return new SemanticError(`Reflector did not emit tool ${REFLECTOR_TOOL_NAME}`, {
       code: "REFLECTOR_INVALID",
     });
   }
 
-  return insightResponseSchema.parse(call.input);
+  if (
+    isStructuredToolCallError(error, "invalid_payload") ||
+    isStructuredToolCallError(error, "llm_failed")
+  ) {
+    return error.cause ?? error;
+  }
+
+  return error;
+}
+
+function parseInsight(input: unknown) {
+  return insightResponseSchema.parse(input);
 }
 
 function collectReflectionClusters(
@@ -385,23 +395,35 @@ async function buildInsightCandidate(
   sourceEpisodeIds: Episode["id"][];
   embedding: Float32Array;
 }> {
-  const insight = parseInsight(
-    await llmClient.complete({
-      model: ctx.config.anthropic.models.background,
-      system:
-        "I propose low-confidence semantic propositions grounded in repeated episodic evidence.",
-      messages: [
-        {
-          role: "user",
-          content: buildPrompt(cluster, ctx.goalsRepository.list({ status: "active" })),
+  let insight: z.infer<typeof insightResponseSchema>;
+
+  try {
+    insight = (
+      await callStructuredTool({
+        llmClient,
+        request: {
+          model: ctx.config.anthropic.models.background,
+          system:
+            "I propose low-confidence semantic propositions grounded in repeated episodic evidence.",
+          messages: [
+            {
+              role: "user",
+              content: buildPrompt(cluster, ctx.goalsRepository.list({ status: "active" })),
+            },
+          ],
+          tools: [REFLECTOR_TOOL],
+          tool_choice: { type: "tool", name: REFLECTOR_TOOL_NAME },
+          max_tokens: 4_000,
+          budget: "offline-reflector",
         },
-      ],
-      tools: [REFLECTOR_TOOL],
-      tool_choice: { type: "tool", name: REFLECTOR_TOOL_NAME },
-      max_tokens: 4_000,
-      budget: "offline-reflector",
-    }),
-  );
+        toolName: REFLECTOR_TOOL_NAME,
+        parse: parseInsight,
+      })
+    ).parsed;
+  } catch (error) {
+    throw invalidInsight(error);
+  }
+
   const allowedIds = new Set(cluster.episodes.map((episode) => episode.id));
 
   if (

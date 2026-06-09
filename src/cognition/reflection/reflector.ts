@@ -4,7 +4,13 @@ import {
   memoryDisclosureLabelFromEpisodeAccess,
   unknownMemoryDisclosureLabel,
 } from "../../retrieval/index.js";
-import { type LLMClient, type LLMToolDefinition, toToolInputSchema } from "../../llm/index.js";
+import {
+  callStructuredTool,
+  isStructuredToolCallError,
+  type LLMClient,
+  type LLMToolDefinition,
+  toToolInputSchema,
+} from "../../llm/index.js";
 import { StreamWriter, streamEntryIdSchema } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
@@ -1607,71 +1613,82 @@ export class Reflector {
       return emptyReflectionOutput();
     }
 
-    const response = await this.llmClient.complete({
-      model: this.model,
-      system: TURN_REFLECTION_SYSTEM_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: JSON.stringify({
-            user_message: context.userMessage,
-            agent_response: context.actionResult.response,
-            retrieval_confidence: context.retrievalConfidence,
-            active_goals: context.selfSnapshot.goals.map((goal) => ({
-              goal_id: goal.id,
-              description: goal.description,
-              progress_notes: goal.progress_notes,
-              audience_entity_id: goal.audience_entity_id,
-              owner_entity_id: goal.owner_entity_id ?? null,
-              ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
-            })),
-            executive_focus: executiveFocusForReflection,
-            origin: context.origin ?? "user",
-            pending_procedural_attempts: pendingProceduralAttempts,
-            pending_actions: pendingActions,
-            active_open_questions: activeOpenQuestions.map((question) => ({
-              id: question.id,
-              question: question.question,
-              source: question.source,
-              urgency: question.urgency,
-              related_episode_ids: question.related_episode_ids,
-              related_semantic_node_ids: question.related_semantic_node_ids,
-              audience_entity_id: question.audience_entity_id,
-              ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
-            })),
-            current_turn_stream_entry_ids: context.currentTurnStreamEntryIds ?? [],
-            available_evidence_episodes: context.retrievedEpisodes.map((result) => ({
-              id: result.episode.id,
-              title: result.episode.title,
-              narrative: result.episode.narrative,
-              ...memoryDisclosurePayloadFields(
-                result.disclosureLabel ?? memoryDisclosureLabelFromEpisodeAccess(result.episode),
-              ),
-            })),
-          }),
-        },
-      ],
-      tools: [REFLECTION_TOOL],
-      tool_choice: { type: "tool", name: REFLECTION_TOOL_NAME },
-      max_tokens: this.maxTokens,
-      budget: "reflection",
-    });
-    const toolCall = response.tool_calls.find((call) => call.name === REFLECTION_TOOL_NAME);
+    try {
+      return (
+        await callStructuredTool({
+          llmClient: this.llmClient,
+          request: {
+            model: this.model,
+            system: TURN_REFLECTION_SYSTEM_PROMPT,
+            messages: [
+              {
+                role: "user",
+                content: JSON.stringify({
+                  user_message: context.userMessage,
+                  agent_response: context.actionResult.response,
+                  retrieval_confidence: context.retrievalConfidence,
+                  active_goals: context.selfSnapshot.goals.map((goal) => ({
+                    goal_id: goal.id,
+                    description: goal.description,
+                    progress_notes: goal.progress_notes,
+                    audience_entity_id: goal.audience_entity_id,
+                    owner_entity_id: goal.owner_entity_id ?? null,
+                    ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
+                  })),
+                  executive_focus: executiveFocusForReflection,
+                  origin: context.origin ?? "user",
+                  pending_procedural_attempts: pendingProceduralAttempts,
+                  pending_actions: pendingActions,
+                  active_open_questions: activeOpenQuestions.map((question) => ({
+                    id: question.id,
+                    question: question.question,
+                    source: question.source,
+                    urgency: question.urgency,
+                    related_episode_ids: question.related_episode_ids,
+                    related_semantic_node_ids: question.related_semantic_node_ids,
+                    audience_entity_id: question.audience_entity_id,
+                    ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
+                  })),
+                  current_turn_stream_entry_ids: context.currentTurnStreamEntryIds ?? [],
+                  available_evidence_episodes: context.retrievedEpisodes.map((result) => ({
+                    id: result.episode.id,
+                    title: result.episode.title,
+                    narrative: result.episode.narrative,
+                    ...memoryDisclosurePayloadFields(
+                      result.disclosureLabel ??
+                        memoryDisclosureLabelFromEpisodeAccess(result.episode),
+                    ),
+                  })),
+                }),
+              },
+            ],
+            tools: [REFLECTION_TOOL],
+            tool_choice: { type: "tool", name: REFLECTION_TOOL_NAME },
+            max_tokens: this.maxTokens,
+            budget: "reflection",
+          },
+          toolName: REFLECTION_TOOL_NAME,
+          parse: (input) => {
+            const parsed = strictReflectionOutputSchema.safeParse(input);
 
-    if (toolCall === undefined) {
-      return emptyReflectionOutput();
+            if (!parsed.success) {
+              throw new LLMError("Reflector returned invalid reflection payload", {
+                cause: parsed.error,
+                code: "REFLECTOR_OUTPUT_INVALID",
+              });
+            }
+
+            return parsed.data;
+          },
+        })
+      ).parsed;
+    } catch (error) {
+      if (isStructuredToolCallError(error, "missing_tool_call")) {
+        return emptyReflectionOutput();
+      }
+
+      throw isStructuredToolCallError(error) ? (error.cause ?? error) : error;
     }
-
-    const parsed = strictReflectionOutputSchema.safeParse(toolCall.input);
-
-    if (!parsed.success) {
-      throw new LLMError("Reflector returned invalid reflection payload", {
-        cause: parsed.error,
-        code: "REFLECTOR_OUTPUT_INVALID",
-      });
-    }
-
-    return parsed.data;
   }
 }
 

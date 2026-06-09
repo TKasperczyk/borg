@@ -1,6 +1,12 @@
 import { z } from "zod";
 
-import { type LLMClient, type LLMToolDefinition, toToolInputSchema } from "../../llm/index.js";
+import {
+  callStructuredTool,
+  isStructuredToolCallError,
+  type LLMClient,
+  type LLMToolDefinition,
+  toToolInputSchema,
+} from "../../llm/index.js";
 import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import { unknownMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
@@ -54,51 +60,53 @@ export class LLMPendingActionJudge implements PendingActionJudge {
     }
 
     try {
-      const result = await this.options.llmClient.complete({
-        model: this.options.model,
-        system: [
-          "You classify Borg planner follow-up items before they enter working memory.",
-          "Accept only unresolved operational follow-ups: concrete future tasks, reminders, checks, questions to ask, or actions to perform.",
-          "Reject factual claims, identity claims, relationship claims, biographical updates, interpretations of the user, and memory facts.",
-          "When uncertain, reject. Return only the required tool call.",
-        ].join("\n"),
-        messages: [
-          {
-            role: "user",
-            content: JSON.stringify({
-              description: record.description,
-              next_action: record.next_action,
-              ...memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel()),
-            }),
-          },
-        ],
-        tools: [PENDING_ACTION_JUDGE_TOOL],
-        tool_choice: { type: "tool", name: PENDING_ACTION_JUDGE_TOOL_NAME },
-        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
-        budget: "pending-action-judge",
+      const result = await callStructuredTool({
+        llmClient: this.options.llmClient,
+        request: {
+          model: this.options.model,
+          system: [
+            "You classify Borg planner follow-up items before they enter working memory.",
+            "Accept only unresolved operational follow-ups: concrete future tasks, reminders, checks, questions to ask, or actions to perform.",
+            "Reject factual claims, identity claims, relationship claims, biographical updates, interpretations of the user, and memory facts.",
+            "When uncertain, reject. Return only the required tool call.",
+          ].join("\n"),
+          messages: [
+            {
+              role: "user",
+              content: JSON.stringify({
+                description: record.description,
+                next_action: record.next_action,
+                ...memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel()),
+              }),
+            },
+          ],
+          tools: [PENDING_ACTION_JUDGE_TOOL],
+          tool_choice: { type: "tool", name: PENDING_ACTION_JUDGE_TOOL_NAME },
+          max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
+          budget: "pending-action-judge",
+        },
+        toolName: PENDING_ACTION_JUDGE_TOOL_NAME,
+        parse: (input) => pendingActionJudgmentSchema.parse(input),
       });
-      const call = result.tool_calls.find(
-        (toolCall) => toolCall.name === PENDING_ACTION_JUDGE_TOOL_NAME,
-      );
-
-      if (call === undefined) {
-        return rejectDegraded("pending_action_judge_missing_tool_call");
-      }
-
-      const parsed = pendingActionJudgmentSchema.safeParse(call.input);
-
-      if (!parsed.success) {
-        return rejectDegraded("pending_action_judge_invalid_payload");
-      }
+      const parsed = result.parsed;
 
       return {
-        accepted: parsed.data.classification === "action" && parsed.data.confidence >= 0.5,
-        reason: parsed.data.reason,
-        confidence: parsed.data.confidence,
+        accepted: parsed.classification === "action" && parsed.confidence >= 0.5,
+        reason: parsed.reason,
+        confidence: parsed.confidence,
         degraded: false,
       };
     } catch (error) {
-      return rejectDegraded(error instanceof Error ? error.message : String(error));
+      if (isStructuredToolCallError(error, "missing_tool_call")) {
+        return rejectDegraded("pending_action_judge_missing_tool_call");
+      }
+
+      if (isStructuredToolCallError(error, "invalid_payload")) {
+        return rejectDegraded("pending_action_judge_invalid_payload");
+      }
+
+      const cause = isStructuredToolCallError(error, "llm_failed") ? (error.cause ?? error) : error;
+      return rejectDegraded(cause instanceof Error ? cause.message : String(cause));
     }
   }
 }

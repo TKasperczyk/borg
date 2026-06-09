@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
@@ -24,16 +25,8 @@ export const MODE_FALLBACK_TOOL = {
   inputSchema: toToolInputSchema(modeFallbackSchema),
 } satisfies LLMToolDefinition;
 
-function parseModeFallback(result: LLMCompleteResult): ModeDetectionResult {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === MODE_FALLBACK_TOOL_NAME);
-
-  if (call === undefined) {
-    throw new CognitionError(`Mode fallback did not emit tool ${MODE_FALLBACK_TOOL_NAME}`, {
-      code: "MODE_FALLBACK_INVALID",
-    });
-  }
-
-  const parsed = modeFallbackSchema.safeParse(call.input);
+function parseModeFallback(input: unknown): ModeDetectionResult {
+  const parsed = modeFallbackSchema.safeParse(input);
 
   if (!parsed.success) {
     throw new CognitionError("Mode fallback returned invalid payload", {
@@ -89,37 +82,69 @@ export class ModeDetector {
     }
 
     try {
-      const response = await this.options.llmClient.complete({
-        model: this.options.model,
-        system: [
-          "Classify the user's message into exactly one cognitive mode. The mode steers retrieval weighting and deliberation depth downstream, so pick the one that fits best, not the safest one.",
-          "",
-          "- problem_solving: the user is working through a technical or practical problem -- errors, debugging, commands, code, tool output, configuration, troubleshooting a specific thing.",
-          "- relational: introductions, greetings by name, talk about specific people, emotional or interpersonal content, anything scoped to the person-to-person dynamic rather than a task.",
-          "- reflective: the user is thinking out loud, questioning themselves, asking meta or identity questions, exploring patterns in their own behavior, or asking open-ended questions about the being they are talking to.",
-          "- idle: trivial acknowledgments, filler, brief greetings with no topic, nothing substantive to engage with.",
-          "",
-          'When ambiguous, prefer the more engaged mode ("reflective" over "idle", "problem_solving" over "relational", etc.). "idle" is only for genuinely contentless input like "ok", "thanks", "hmm".',
-          "",
-          "Also set is_operational: true when the user's turn asks for one of: recap of current state, lock-in/confirmation of a decision, booking action, alignment check ('are we aligned'), or explicit operational summary.",
-          "Set is_operational: false for chit-chat, exploration, open-ended discussion, individual fact-sharing, or turns that add context without asking to align, confirm, recap, lock, book, or summarize current operational state.",
-        ].join("\n"),
-        messages: [
-          {
-            role: "user",
-            content: JSON.stringify({
-              text,
-              recentHistory,
-            }),
-          },
-        ],
-        tools: [MODE_FALLBACK_TOOL],
-        tool_choice: { type: "tool", name: MODE_FALLBACK_TOOL_NAME },
-        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
-        budget: "perception-mode-fallback",
+      const result = await callStructuredTool({
+        llmClient: this.options.llmClient,
+        request: {
+          model: this.options.model,
+          system: [
+            "Classify the user's message into exactly one cognitive mode. The mode steers retrieval weighting and deliberation depth downstream, so pick the one that fits best, not the safest one.",
+            "",
+            "- problem_solving: the user is working through a technical or practical problem -- errors, debugging, commands, code, tool output, configuration, troubleshooting a specific thing.",
+            "- relational: introductions, greetings by name, talk about specific people, emotional or interpersonal content, anything scoped to the person-to-person dynamic rather than a task.",
+            "- reflective: the user is thinking out loud, questioning themselves, asking meta or identity questions, exploring patterns in their own behavior, or asking open-ended questions about the being they are talking to.",
+            "- idle: trivial acknowledgments, filler, brief greetings with no topic, nothing substantive to engage with.",
+            "",
+            'When ambiguous, prefer the more engaged mode ("reflective" over "idle", "problem_solving" over "relational", etc.). "idle" is only for genuinely contentless input like "ok", "thanks", "hmm".',
+            "",
+            "Also set is_operational: true when the user's turn asks for one of: recap of current state, lock-in/confirmation of a decision, booking action, alignment check ('are we aligned'), or explicit operational summary.",
+            "Set is_operational: false for chit-chat, exploration, open-ended discussion, individual fact-sharing, or turns that add context without asking to align, confirm, recap, lock, book, or summarize current operational state.",
+          ].join("\n"),
+          messages: [
+            {
+              role: "user",
+              content: JSON.stringify({
+                text,
+                recentHistory,
+              }),
+            },
+          ],
+          tools: [MODE_FALLBACK_TOOL],
+          tool_choice: { type: "tool", name: MODE_FALLBACK_TOOL_NAME },
+          max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
+          budget: "perception-mode-fallback",
+        },
+        toolName: MODE_FALLBACK_TOOL_NAME,
+        parse: parseModeFallback,
       });
-      return parseModeFallback(response);
+
+      return result.parsed;
     } catch (error) {
+      if (isStructuredToolCallError(error, "missing_tool_call")) {
+        throw new CognitionError(`Mode fallback did not emit tool ${MODE_FALLBACK_TOOL_NAME}`, {
+          code: "MODE_FALLBACK_INVALID",
+        });
+      }
+
+      if (isStructuredToolCallError(error, "invalid_payload")) {
+        throw (error.cause instanceof CognitionError
+          ? error.cause
+          : new CognitionError("Mode fallback returned invalid payload", {
+              cause: error.cause ?? error,
+              code: "MODE_FALLBACK_INVALID",
+            }));
+      }
+
+      if (isStructuredToolCallError(error, "llm_failed")) {
+        if (error.cause instanceof LLMError) {
+          throw error.cause;
+        }
+
+        throw new CognitionError("Failed to detect cognitive mode", {
+          cause: error.cause ?? error,
+          code: "MODE_DETECTION_FAILED",
+        });
+      }
+
       if (error instanceof CognitionError || error instanceof LLMError) {
         throw error;
       }

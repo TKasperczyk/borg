@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
@@ -49,16 +50,25 @@ export const AFFECTIVE_FALLBACK_TOOL = {
   inputSchema: toToolInputSchema(affectiveFallbackSchema),
 } satisfies LLMToolDefinition;
 
-function parseFallbackResponse(result: LLMCompleteResult): AffectiveSignal {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === AFFECTIVE_FALLBACK_TOOL_NAME);
+function parseFallbackInput(input: unknown): AffectiveSignal {
+  return affectiveFallbackSchema.parse(input);
+}
 
-  if (call === undefined) {
-    throw new LLMError(`Affective extractor did not emit tool ${AFFECTIVE_FALLBACK_TOOL_NAME}`, {
+function fallbackError(error: unknown): unknown {
+  if (isStructuredToolCallError(error, "missing_tool_call")) {
+    return new LLMError(`Affective extractor did not emit tool ${AFFECTIVE_FALLBACK_TOOL_NAME}`, {
       code: "AFFECTIVE_OUTPUT_INVALID",
     });
   }
 
-  return affectiveFallbackSchema.parse(call.input);
+  if (
+    isStructuredToolCallError(error, "invalid_payload") ||
+    isStructuredToolCallError(error, "llm_failed")
+  ) {
+    return error.cause ?? error;
+  }
+
+  return error;
 }
 
 export type AffectiveExtractorOptions = {
@@ -100,27 +110,32 @@ export class AffectiveExtractor {
     }
 
     try {
-      const response = await this.options.llmClient.complete({
-        model: this.options.model,
-        system: AFFECTIVE_SYSTEM_PROMPT,
-        messages: [
-          {
-            role: "user",
-            content: JSON.stringify({
-              text,
-              recent_history: recentHistory.slice(-10),
-            }),
-          },
-        ],
-        tools: [AFFECTIVE_FALLBACK_TOOL],
-        tool_choice: { type: "tool", name: AFFECTIVE_FALLBACK_TOOL_NAME },
-        max_tokens: 256,
-        budget: "perception-affective",
+      const result = await callStructuredTool({
+        llmClient: this.options.llmClient,
+        request: {
+          model: this.options.model,
+          system: AFFECTIVE_SYSTEM_PROMPT,
+          messages: [
+            {
+              role: "user",
+              content: JSON.stringify({
+                text,
+                recent_history: recentHistory.slice(-10),
+              }),
+            },
+          ],
+          tools: [AFFECTIVE_FALLBACK_TOOL],
+          tool_choice: { type: "tool", name: AFFECTIVE_FALLBACK_TOOL_NAME },
+          max_tokens: 256,
+          budget: "perception-affective",
+        },
+        toolName: AFFECTIVE_FALLBACK_TOOL_NAME,
+        parse: parseFallbackInput,
       });
 
-      return parseFallbackResponse(response);
+      return result.parsed;
     } catch (error) {
-      return this.degraded("llm_failed", error);
+      return this.degraded("llm_failed", fallbackError(error));
     }
   }
 }

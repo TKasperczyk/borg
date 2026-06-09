@@ -2,8 +2,9 @@ import { z } from "zod";
 
 import { executiveStepKindSchema, type ExecutiveStepKind } from "../../executive/types.js";
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMMessage,
   type LLMToolDefinition,
   toToolInputSchema,
@@ -15,12 +16,6 @@ import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { GOAL_PROMOTION_SYSTEM_PROMPT } from "../prompts/goal-extraction.js";
 import type { RecencyMessage } from "../recency/index.js";
 import { goalMemoryDisclosureLabel, memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
-import {
-  summarizeToolResponseShape,
-  traceLlmCallError,
-  traceLlmCallResponse,
-  traceLlmCallStarted,
-} from "../../tracing/llm-call-trace.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 
 const CONFIDENCE_THRESHOLD = 0.85;
@@ -460,16 +455,8 @@ function parsePromotions(envelope: GoalPromotionEnvelopeInput): {
   };
 }
 
-function parseResponse(result: LLMCompleteResult): GoalPromotionParseResult {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === GOAL_PROMOTION_TOOL_NAME);
-
-  if (call === undefined) {
-    throw new MissingGoalPromotionToolCallError(
-      `Goal promotion extractor did not emit ${GOAL_PROMOTION_TOOL_NAME}`,
-    );
-  }
-
-  const parsed = goalPromotionEnvelopeSchema.safeParse(call.input);
+function parseResponse(input: unknown): GoalPromotionParseResult {
+  const parsed = goalPromotionEnvelopeSchema.safeParse(input);
 
   if (!parsed.success) {
     throw parsed.error;
@@ -521,6 +508,18 @@ function buildGoalPromotionMessages(input: ExtractGoalPromotionInput): LLMMessag
 }
 
 function degradedReasonForParseError(error: unknown): GoalPromotionExtractorDegradedReason {
+  if (isStructuredToolCallError(error, "missing_tool_call")) {
+    return "missing_tool_call";
+  }
+
+  if (isStructuredToolCallError(error, "invalid_payload")) {
+    return "invalid_payload";
+  }
+
+  if (isStructuredToolCallError(error, "llm_failed")) {
+    return "llm_failed";
+  }
+
   if (error instanceof MissingGoalPromotionToolCallError) {
     return "missing_tool_call";
   }
@@ -603,50 +602,32 @@ export class GoalPromotionExtractor {
   private async complete(input: {
     messages: readonly LLMMessage[];
     tools: readonly LLMToolDefinition[];
-  }): Promise<LLMCompleteResult> {
-    traceLlmCallStarted({
-      tracer: this.options.tracer,
-      turnId: this.options.turnId,
-      sessionId: this.options.sessionId,
-      label: "goal_promotion_extractor",
-      model: this.options.model as string,
-      systemPrompt: GOAL_PROMOTION_SYSTEM_PROMPT,
-      messages: input.messages,
-      tools: input.tools,
-    });
-
-    try {
-      const response = await (this.options.llmClient as LLMClient).complete({
-        model: this.options.model as string,
-        system: GOAL_PROMOTION_SYSTEM_PROMPT,
-        messages: input.messages,
+  }): Promise<GoalPromotionParseResult> {
+    return (
+      await callStructuredTool({
+        llmClient: this.options.llmClient as LLMClient,
+        request: {
+          model: this.options.model as string,
+          system: GOAL_PROMOTION_SYSTEM_PROMPT,
+          messages: input.messages,
         tools: input.tools,
-        tool_choice: { type: "tool", name: GOAL_PROMOTION_TOOL_NAME },
-        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
-        budget: "goal-promotion-extractor",
-      });
-
-      traceLlmCallResponse({
-        tracer: this.options.tracer,
-        turnId: this.options.turnId,
-        sessionId: this.options.sessionId,
-        label: "goal_promotion_extractor",
-        response,
-        responseShape: summarizeToolResponseShape(response),
-      });
-
-      return response;
-    } catch (error) {
-      traceLlmCallError({
-        tracer: this.options.tracer,
-        turnId: this.options.turnId,
-        sessionId: this.options.sessionId,
-        label: "goal_promotion_extractor",
-        error,
-      });
-
-      throw error;
-    }
+          tool_choice: { type: "tool", name: GOAL_PROMOTION_TOOL_NAME },
+          max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
+          budget: "goal-promotion-extractor",
+        },
+        toolName: GOAL_PROMOTION_TOOL_NAME,
+        parse: parseResponse,
+        trace: {
+          tracer: this.options.tracer,
+          turnId: this.options.turnId,
+          sessionId: this.options.sessionId,
+          label: "goal_promotion_extractor",
+          systemPrompt: GOAL_PROMOTION_SYSTEM_PROMPT,
+          messages: input.messages,
+          tools: input.tools,
+        },
+      })
+    ).parsed;
   }
 
   async extract(input: ExtractGoalPromotionInput): Promise<GoalPromotionCandidate[]> {
@@ -657,32 +638,31 @@ export class GoalPromotionExtractor {
     const messages = buildGoalPromotionMessages(input);
     const tools = [GOAL_PROMOTION_TOOL];
 
-    let response: LLMCompleteResult;
+    let parseResult: GoalPromotionParseResult;
 
     try {
-      response = await this.complete({
+      parseResult = await this.complete({
         messages,
         tools,
       });
     } catch (error) {
-      return this.degraded("llm_failed", error);
-    }
-
-    try {
-      const parseResult = parseResponse(response);
-
-      traceExtractorCompleted({
-        tracer: this.options.tracer,
-        turnId: this.options.turnId,
-        sessionId: this.options.sessionId,
-        parseResult,
-        degraded: false,
-      });
-
-      return parseResult.candidates;
-    } catch (error) {
       const reason = degradedReasonForParseError(error);
 
+      if (reason === "llm_failed") {
+        return this.degraded(
+          "llm_failed",
+          isStructuredToolCallError(error, "llm_failed") ? (error.cause ?? error) : error,
+        );
+      }
+
+      const degradedError =
+        isStructuredToolCallError(error, "missing_tool_call")
+          ? new MissingGoalPromotionToolCallError(
+              `Goal promotion extractor did not emit ${GOAL_PROMOTION_TOOL_NAME}`,
+            )
+          : isStructuredToolCallError(error, "invalid_payload")
+            ? (error.cause ?? error)
+            : error;
       traceExtractorCompleted({
         tracer: this.options.tracer,
         turnId: this.options.turnId,
@@ -691,8 +671,18 @@ export class GoalPromotionExtractor {
         fatalReason: reason,
       });
 
-      return this.degraded(reason, error);
+      return this.degraded(reason, degradedError);
     }
+
+    traceExtractorCompleted({
+      tracer: this.options.tracer,
+      turnId: this.options.turnId,
+      sessionId: this.options.sessionId,
+      parseResult,
+      degraded: false,
+    });
+
+    return parseResult.candidates;
   }
 }
 

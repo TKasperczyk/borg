@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMMessage,
   type LLMToolDefinition,
   toToolInputSchema,
@@ -32,12 +33,6 @@ import { renderParticipantRoster, type ParticipantRoster } from "../perception/i
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { CREATOR_DIRECTIVE_SYSTEM_PROMPT } from "../prompts/creator-directive.js";
 import type { RecencyMessage } from "../recency/index.js";
-import {
-  summarizeToolResponseShape,
-  traceLlmCallError,
-  traceLlmCallResponse,
-  traceLlmCallStarted,
-} from "../../tracing/llm-call-trace.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 
 export const CREATOR_DIRECTIVE_TOOL_NAME = "EmitCreatorDirectives";
@@ -267,16 +262,8 @@ function toCandidates(input: CreatorDirectiveToolInput): CreatorDirectiveCandida
   return input.candidates.map((candidate) => toCandidate(candidate));
 }
 
-function parseResponse(result: LLMCompleteResult): CreatorDirectiveCandidate[] {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === CREATOR_DIRECTIVE_TOOL_NAME);
-
-  if (call === undefined) {
-    throw new MissingCreatorDirectiveToolCallError(
-      `Creator directive extractor did not emit ${CREATOR_DIRECTIVE_TOOL_NAME}`,
-    );
-  }
-
-  const parsed = creatorDirectiveExtractionOutputSchema.safeParse(call.input);
+function parseResponse(input: unknown): CreatorDirectiveCandidate[] {
+  const parsed = creatorDirectiveExtractionOutputSchema.safeParse(input);
 
   if (!parsed.success) {
     throw parsed.error;
@@ -342,61 +329,50 @@ export class CreatorDirectiveExtractor {
     const messages = buildCreatorDirectiveMessages(input);
     const tools = [CREATOR_DIRECTIVE_TOOL];
 
-    traceLlmCallStarted({
-      tracer: this.options.tracer,
-      turnId: this.options.turnId,
-      sessionId: this.options.sessionId,
-      label: "creator_directive_extractor",
-      model: this.options.model,
-      systemPrompt: CREATOR_DIRECTIVE_SYSTEM_PROMPT,
-      messages,
-      tools,
-    });
-
-    let response: LLMCompleteResult;
-
     try {
-      response = await this.options.llmClient.complete({
-        model: this.options.model,
-        system: CREATOR_DIRECTIVE_SYSTEM_PROMPT,
-        messages,
-        tools,
-        tool_choice: { type: "tool", name: CREATOR_DIRECTIVE_TOOL_NAME },
-        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
-        budget: "creator-directive-extractor",
-      });
-    } catch (error) {
-      traceLlmCallError({
-        tracer: this.options.tracer,
-        turnId: this.options.turnId,
-        sessionId: this.options.sessionId,
-        label: "creator_directive_extractor",
-        error,
+      const result = await callStructuredTool({
+        llmClient: this.options.llmClient,
+        request: {
+          model: this.options.model,
+          system: CREATOR_DIRECTIVE_SYSTEM_PROMPT,
+          messages,
+          tools,
+          tool_choice: { type: "tool", name: CREATOR_DIRECTIVE_TOOL_NAME },
+          max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
+          budget: "creator-directive-extractor",
+        },
+        toolName: CREATOR_DIRECTIVE_TOOL_NAME,
+        parse: parseResponse,
+        trace: {
+          tracer: this.options.tracer,
+          turnId: this.options.turnId,
+          sessionId: this.options.sessionId,
+          label: "creator_directive_extractor",
+          systemPrompt: CREATOR_DIRECTIVE_SYSTEM_PROMPT,
+          messages,
+          tools,
+        },
       });
 
-      return this.degraded("llm_failed", error);
-    }
-
-    traceLlmCallResponse({
-      tracer: this.options.tracer,
-      turnId: this.options.turnId,
-      sessionId: this.options.sessionId,
-      label: "creator_directive_extractor",
-      response,
-      responseShape: summarizeToolResponseShape(response),
-    });
-
-    try {
-      return parseResponse(response);
+      return result.parsed;
     } catch (error) {
+      if (!isStructuredToolCallError(error) || error.kind === "llm_failed") {
+        return this.degraded(
+          "llm_failed",
+          isStructuredToolCallError(error, "llm_failed") ? (error.cause ?? error) : error,
+        );
+      }
+
+      const degradedError =
+        error.kind === "missing_tool_call"
+          ? new MissingCreatorDirectiveToolCallError(
+              `Creator directive extractor did not emit ${CREATOR_DIRECTIVE_TOOL_NAME}`,
+            )
+          : (error.cause ?? error);
       await this.degraded(
-        error instanceof MissingCreatorDirectiveToolCallError
-          ? "missing_tool_call"
-          : error instanceof z.ZodError
-            ? "invalid_payload"
-            : "llm_failed",
-        error,
-        { stopReason: response.stop_reason },
+        error.kind === "missing_tool_call" ? "missing_tool_call" : "invalid_payload",
+        degradedError,
+        { stopReason: error.stopReason },
       );
       return [];
     }

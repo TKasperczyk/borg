@@ -1909,6 +1909,13 @@ mechanical. The Internal-ID Guard is acceptable because it checks exact
 machine-generated identifiers that are already known to the turn. It is not
 deciding what the user meant.
 
+Single-shot structured extraction and judge calls go through
+`callStructuredTool` in `src/llm/`. That primitive owns one LLM completion,
+optional `llm_call` tracing, accepted tool-call selection, caller-supplied
+payload parsing, and typed structural errors. It does not own degradation
+policy: retry, fail-open, fail-closed, repair, neutral fallback, and emitted
+degraded shape remain explicit at each call site.
+
 ## Production-Policing Boundary
 
 Borg avoids production policing: an in-flight semantic judge that rewrites or

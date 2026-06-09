@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMMessage,
   type LLMToolDefinition,
   toToolInputSchema,
@@ -100,22 +101,22 @@ export type ClosurePressureGuardInput = {
   nowMs?: number;
 };
 
-function parseAuditResponse(result: LLMCompleteResult): ClosureResponseAudit {
-  const call = result.tool_calls.find(
-    (toolCall) => toolCall.name === CLOSURE_RESPONSE_AUDIT_TOOL_NAME,
-  );
-
-  if (call === undefined) {
-    throw new Error(`Closure response auditor did not emit ${CLOSURE_RESPONSE_AUDIT_TOOL_NAME}`);
-  }
-
-  const parsed = closureResponseAuditSchema.safeParse(call.input);
+function parseAuditResponse(input: unknown): ClosureResponseAudit {
+  const parsed = closureResponseAuditSchema.safeParse(input);
 
   if (!parsed.success) {
     throw parsed.error;
   }
 
   return parsed.data;
+}
+
+function closureAuditStructuredError(error: unknown): unknown {
+  if (isStructuredToolCallError(error, "missing_tool_call")) {
+    return new Error(`Closure response auditor did not emit ${CLOSURE_RESPONSE_AUDIT_TOOL_NAME}`);
+  }
+
+  return isStructuredToolCallError(error) ? (error.cause ?? error) : error;
 }
 
 function buildAuditMessages(response: string): LLMMessage[] {
@@ -285,17 +286,26 @@ export class ClosurePressureGuard {
   }
 
   private async audit(response: string): Promise<ClosureResponseAudit> {
-    const result = await this.options.llmClient.complete({
-      model: this.options.auditModel,
-      system: CLOSURE_RESPONSE_AUDIT_SYSTEM_PROMPT,
-      messages: buildAuditMessages(response),
-      tools: [CLOSURE_RESPONSE_AUDIT_TOOL],
-      tool_choice: { type: "tool", name: CLOSURE_RESPONSE_AUDIT_TOOL_NAME },
-      max_tokens: 512,
-      budget: "closure-response-auditor",
-    });
-
-    return parseAuditResponse(result);
+    try {
+      return (
+        await callStructuredTool({
+          llmClient: this.options.llmClient,
+          request: {
+            model: this.options.auditModel,
+            system: CLOSURE_RESPONSE_AUDIT_SYSTEM_PROMPT,
+            messages: buildAuditMessages(response),
+            tools: [CLOSURE_RESPONSE_AUDIT_TOOL],
+            tool_choice: { type: "tool", name: CLOSURE_RESPONSE_AUDIT_TOOL_NAME },
+            max_tokens: 512,
+            budget: "closure-response-auditor",
+          },
+          toolName: CLOSURE_RESPONSE_AUDIT_TOOL_NAME,
+          parse: parseAuditResponse,
+        })
+      ).parsed;
+    } catch (error) {
+      throw closureAuditStructuredError(error);
+    }
   }
 
   async run(input: ClosurePressureGuardInput): Promise<ClosurePressureGuardResult> {

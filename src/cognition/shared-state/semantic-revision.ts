@@ -7,6 +7,8 @@ import {
   markSemanticSuperseded,
 } from "../../memory/lifecycle-ops/index.js";
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMCompleteResult,
   type LLMMessage,
   type LLMToolDefinition,
@@ -30,11 +32,6 @@ import {
   combineDisclosureLabelForEpisodeIds,
   type MemoryDisclosureLabel,
 } from "../../memory/common/disclosure-label.js";
-import {
-  traceLlmCallError,
-  traceLlmCallResponse,
-  traceLlmCallStarted,
-} from "../../tracing/llm-call-trace.js";
 import {
   contaminatedSharedStateArtifactSources,
   errorMessage,
@@ -372,62 +369,8 @@ function summarizeSemanticRevisionResponseShape(response: LLMCompleteResult): Js
   };
 }
 
-function traceSemanticRevisionLlmCallStarted(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  model: string;
-  systemPrompt: string;
-  messages: readonly LLMMessage[];
-  tools: readonly LLMToolDefinition[];
-}): void {
-  traceLlmCallStarted({
-    tracer: options.tracer,
-    turnId: options.turnId,
-    label: SHARED_STATE_SEMANTIC_REVISION_LABEL,
-    model: options.model,
-    systemPrompt: options.systemPrompt,
-    messages: options.messages,
-    tools: options.tools,
-  });
-}
-
-function traceSemanticRevisionLlmCallResponse(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  response: LLMCompleteResult;
-}): void {
-  traceLlmCallResponse({
-    tracer: options.tracer,
-    turnId: options.turnId,
-    label: SHARED_STATE_SEMANTIC_REVISION_LABEL,
-    response: options.response,
-    responseShape: summarizeSemanticRevisionResponseShape(options.response),
-  });
-}
-
-function traceSemanticRevisionLlmCallError(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  error: unknown;
-}): void {
-  traceLlmCallError({
-    tracer: options.tracer,
-    turnId: options.turnId,
-    label: SHARED_STATE_SEMANTIC_REVISION_LABEL,
-    error: options.error,
-  });
-}
-
-function parseSemanticRevisionJudgeResult(result: LLMCompleteResult): SemanticRevisionVerdict[] {
-  const toolCall = result.tool_calls.find(
-    (call) => call.name === SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME,
-  );
-
-  if (toolCall === undefined) {
-    throw new Error("Semantic revision judge did not call EmitDecisionArtifactSemanticRevision");
-  }
-
-  const parsed = semanticRevisionJudgeSchema.safeParse(toolCall.input);
+function parseSemanticRevisionJudgeResult(input: unknown): SemanticRevisionVerdict[] {
+  const parsed = semanticRevisionJudgeSchema.safeParse(input);
 
   if (!parsed.success) {
     throw new Error("Semantic revision judge response failed schema validation", {
@@ -458,47 +401,43 @@ async function judgeSemanticRevision(input: {
   ];
   const tools = [SHARED_STATE_SEMANTIC_REVISION_TOOL];
 
-  traceSemanticRevisionLlmCallStarted({
-    tracer: input.tracer,
-    turnId: input.turnId,
-    model: input.dependencies.model,
-    systemPrompt,
-    messages,
-    tools,
-  });
-
-  let result: LLMCompleteResult;
-
   try {
-    result = await input.dependencies.llmClient.complete({
-      model: input.dependencies.model,
-      system: systemPrompt,
-      messages,
-      tools,
-      tool_choice: {
-        type: "tool",
-        name: SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME,
-      },
-      max_tokens: 1_500,
-      temperature: 0,
-      budget: "decision-artifact-semantic-revision",
-    });
+    return (
+      await callStructuredTool({
+        llmClient: input.dependencies.llmClient,
+        request: {
+          model: input.dependencies.model,
+          system: systemPrompt,
+          messages,
+          tools,
+          tool_choice: {
+            type: "tool",
+            name: SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME,
+          },
+          max_tokens: 1_500,
+          temperature: 0,
+          budget: "decision-artifact-semantic-revision",
+        },
+        toolName: SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME,
+        parse: parseSemanticRevisionJudgeResult,
+        trace: {
+          tracer: input.tracer,
+          turnId: input.turnId,
+          label: SHARED_STATE_SEMANTIC_REVISION_LABEL,
+          systemPrompt,
+          messages,
+          tools,
+          responseShape: summarizeSemanticRevisionResponseShape,
+        },
+      })
+    ).parsed;
   } catch (error) {
-    traceSemanticRevisionLlmCallError({
-      tracer: input.tracer,
-      turnId: input.turnId,
-      error,
-    });
-    throw error;
+    if (isStructuredToolCallError(error, "missing_tool_call")) {
+      throw new Error("Semantic revision judge did not call EmitDecisionArtifactSemanticRevision");
+    }
+
+    throw isStructuredToolCallError(error) ? (error.cause ?? error) : error;
   }
-
-  traceSemanticRevisionLlmCallResponse({
-    tracer: input.tracer,
-    turnId: input.turnId,
-    response: result,
-  });
-
-  return parseSemanticRevisionJudgeResult(result);
 }
 
 function emptySemanticBeliefRevisionResult(): Pick<

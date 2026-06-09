@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
@@ -446,16 +447,10 @@ function invalidReconciliationResponse(message: string, cause?: unknown): LLMErr
 }
 
 function parseReconciliationResponse(
-  result: LLMCompleteResult,
+  input: unknown,
   group: CommitmentGroup,
 ): CommitmentReconciliationJudgment[] {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === TOOL_NAME);
-
-  if (call === undefined) {
-    throw invalidReconciliationResponse(`Commitment reconciler did not emit tool ${TOOL_NAME}`);
-  }
-
-  const parsed = reconciliationToolInputSchema.safeParse(call.input);
+  const parsed = reconciliationToolInputSchema.safeParse(input);
 
   if (!parsed.success) {
     throw invalidReconciliationResponse(
@@ -491,29 +486,44 @@ function parseReconciliationResponse(
   });
 }
 
+function structuredReconciliationError(error: unknown): unknown {
+  if (isStructuredToolCallError(error, "missing_tool_call")) {
+    return invalidReconciliationResponse(`Commitment reconciler did not emit tool ${TOOL_NAME}`);
+  }
+
+  return isStructuredToolCallError(error) ? (error.cause ?? error) : error;
+}
+
 async function callReconciler(input: {
   ctx: OfflineContext;
   llmClient: LLMClient;
   group: CommitmentGroup;
   repairInstruction?: string;
-}): Promise<LLMCompleteResult> {
-  return input.llmClient.complete({
-    model: input.ctx.config.anthropic.models.background,
-    system: RECONCILER_SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: buildPromptPayload({
-          group: input.group,
-          repairInstruction: input.repairInstruction,
-        }),
+}): Promise<CommitmentReconciliationJudgment[]> {
+  return (
+    await callStructuredTool({
+      llmClient: input.llmClient,
+      request: {
+        model: input.ctx.config.anthropic.models.background,
+        system: RECONCILER_SYSTEM_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: buildPromptPayload({
+              group: input.group,
+              repairInstruction: input.repairInstruction,
+            }),
+          },
+        ],
+        tools: [COMMITMENT_RECONCILIATION_TOOL],
+        tool_choice: { type: "tool", name: TOOL_NAME },
+        max_tokens: MAX_RECONCILIATION_OUTPUT_TOKENS,
+        budget: LLM_BUDGET_LABEL,
       },
-    ],
-    tools: [COMMITMENT_RECONCILIATION_TOOL],
-    tool_choice: { type: "tool", name: TOOL_NAME },
-    max_tokens: MAX_RECONCILIATION_OUTPUT_TOKENS,
-    budget: LLM_BUDGET_LABEL,
-  });
+      toolName: TOOL_NAME,
+      parse: (toolInput) => parseReconciliationResponse(toolInput, input.group),
+    })
+  ).parsed;
 }
 
 async function callCrossScopeReconciler(input: {
@@ -521,24 +531,31 @@ async function callCrossScopeReconciler(input: {
   llmClient: LLMClient;
   group: CrossScopeCommitmentGroup;
   repairInstruction?: string;
-}): Promise<LLMCompleteResult> {
-  return input.llmClient.complete({
-    model: input.ctx.config.anthropic.models.background,
-    system: CROSS_SCOPE_AWARENESS_SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: buildCrossScopePromptPayload({
-          group: input.group,
-          repairInstruction: input.repairInstruction,
-        }),
+}): Promise<CommitmentReconciliationJudgment[]> {
+  return (
+    await callStructuredTool({
+      llmClient: input.llmClient,
+      request: {
+        model: input.ctx.config.anthropic.models.background,
+        system: CROSS_SCOPE_AWARENESS_SYSTEM_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: buildCrossScopePromptPayload({
+              group: input.group,
+              repairInstruction: input.repairInstruction,
+            }),
+          },
+        ],
+        tools: [CROSS_SCOPE_COMMITMENT_RECONCILIATION_TOOL],
+        tool_choice: { type: "tool", name: TOOL_NAME },
+        max_tokens: MAX_RECONCILIATION_OUTPUT_TOKENS,
+        budget: LLM_BUDGET_LABEL,
       },
-    ],
-    tools: [CROSS_SCOPE_COMMITMENT_RECONCILIATION_TOOL],
-    tool_choice: { type: "tool", name: TOOL_NAME },
-    max_tokens: MAX_RECONCILIATION_OUTPUT_TOKENS,
-    budget: LLM_BUDGET_LABEL,
-  });
+      toolName: TOOL_NAME,
+      parse: (toolInput) => parseReconciliationResponse(toolInput, input.group),
+    })
+  ).parsed;
 }
 
 async function judgeGroup(input: {
@@ -546,19 +563,29 @@ async function judgeGroup(input: {
   llmClient: LLMClient;
   group: CommitmentGroup;
 }): Promise<CommitmentReconciliationJudgment[]> {
-  const response = await callReconciler(input);
-
   try {
-    return parseReconciliationResponse(response, input.group);
+    return await callReconciler(input);
   } catch (error) {
-    const repairResponse = await callReconciler({
-      ...input,
-      repairInstruction: `Your previous tool payload was structurally invalid: ${parseErrorMessage(
-        error,
-      )}. Emit a corrected ${TOOL_NAME} payload using only commitment ids from this group.`,
-    });
+    if (error instanceof BudgetExceededError) {
+      throw error;
+    }
 
-    return parseReconciliationResponse(repairResponse, input.group);
+    if (isStructuredToolCallError(error, "llm_failed")) {
+      throw error.cause ?? error;
+    }
+
+    const parseError = structuredReconciliationError(error);
+
+    try {
+      return await callReconciler({
+        ...input,
+        repairInstruction: `Your previous tool payload was structurally invalid: ${parseErrorMessage(
+          parseError,
+        )}. Emit a corrected ${TOOL_NAME} payload using only commitment ids from this group.`,
+      });
+    } catch (repairError) {
+      throw structuredReconciliationError(repairError);
+    }
   }
 }
 
@@ -567,19 +594,29 @@ async function judgeCrossScopeGroup(input: {
   llmClient: LLMClient;
   group: CrossScopeCommitmentGroup;
 }): Promise<CommitmentReconciliationJudgment[]> {
-  const response = await callCrossScopeReconciler(input);
-
   try {
-    return parseReconciliationResponse(response, input.group);
+    return await callCrossScopeReconciler(input);
   } catch (error) {
-    const repairResponse = await callCrossScopeReconciler({
-      ...input,
-      repairInstruction: `Your previous tool payload was structurally invalid: ${parseErrorMessage(
-        error,
-      )}. Emit a corrected ${TOOL_NAME} payload using only commitment ids from this group.`,
-    });
+    if (error instanceof BudgetExceededError) {
+      throw error;
+    }
 
-    return parseReconciliationResponse(repairResponse, input.group);
+    if (isStructuredToolCallError(error, "llm_failed")) {
+      throw error.cause ?? error;
+    }
+
+    const parseError = structuredReconciliationError(error);
+
+    try {
+      return await callCrossScopeReconciler({
+        ...input,
+        repairInstruction: `Your previous tool payload was structurally invalid: ${parseErrorMessage(
+          parseError,
+        )}. Emit a corrected ${TOOL_NAME} payload using only commitment ids from this group.`,
+      });
+    } catch (repairError) {
+      throw structuredReconciliationError(repairError);
+    }
   }
 }
 

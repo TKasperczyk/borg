@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMMessage,
   type LLMToolDefinition,
   toToolInputSchema,
@@ -43,12 +44,6 @@ import {
   sharedStateMemoryDisclosureLabel,
 } from "../../memory/common/disclosure-serializers.js";
 import type { RecencyMessage } from "../recency/index.js";
-import {
-  summarizeToolResponseShape,
-  traceLlmCallError,
-  traceLlmCallResponse,
-  traceLlmCallStarted,
-} from "../../tracing/llm-call-trace.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 
 const ACTION_STATE_TOOL_NAME = "EmitActionStates";
@@ -398,16 +393,8 @@ function parseCandidates(envelope: ActionStateEnvelopeInput): {
   };
 }
 
-function parseResponse(result: LLMCompleteResult): ActionStateParseResult {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === ACTION_STATE_TOOL_NAME);
-
-  if (call === undefined) {
-    throw new MissingActionStateToolCallError(
-      `Action state extractor did not emit ${ACTION_STATE_TOOL_NAME}`,
-    );
-  }
-
-  const parsed = actionStateEnvelopeSchema.safeParse(call.input);
+function parseResponse(input: unknown): ActionStateParseResult {
+  const parsed = actionStateEnvelopeSchema.safeParse(input);
 
   if (!parsed.success) {
     throw parsed.error;
@@ -429,6 +416,18 @@ function parseResponse(result: LLMCompleteResult): ActionStateParseResult {
     classificationCounts: candidates.classificationCounts,
     rejectedCandidates: candidates.rejectedCandidates,
   };
+}
+
+function degradedReasonForStructuredToolError(error: unknown): ActionStateExtractorDegradedReason {
+  if (isStructuredToolCallError(error, "missing_tool_call")) {
+    return "missing_tool_call";
+  }
+
+  if (isStructuredToolCallError(error, "invalid_payload")) {
+    return "invalid_payload";
+  }
+
+  return "llm_failed";
 }
 
 function hasCurrentUserEvidence(
@@ -792,62 +791,54 @@ export class ActionStateExtractor {
     const messages = buildActionStateMessages(input);
     const tools = [ACTION_STATE_TOOL];
 
-    traceLlmCallStarted({
-      tracer: this.options.tracer,
-      turnId: this.options.turnId,
-      sessionId,
-      label: "action_state_extractor",
-      model: this.options.model,
-      systemPrompt: ACTION_STATE_SYSTEM_PROMPT,
-      messages,
-      tools,
-    });
-
-    let response: LLMCompleteResult;
-
-    try {
-      response = await this.options.llmClient.complete({
-        model: this.options.model,
-        system: ACTION_STATE_SYSTEM_PROMPT,
-        messages,
-        tools,
-        tool_choice: { type: "tool", name: ACTION_STATE_TOOL_NAME },
-        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
-        budget: "action-state-extractor",
-      });
-    } catch (error) {
-      traceLlmCallError({
-        tracer: this.options.tracer,
-        turnId: this.options.turnId,
-        sessionId,
-        label: "action_state_extractor",
-        error,
-      });
-
-      return this.degradedWithTrace("llm_failed", error, sessionId);
-    }
-
-    traceLlmCallResponse({
-      tracer: this.options.tracer,
-      turnId: this.options.turnId,
-      sessionId,
-      label: "action_state_extractor",
-      response,
-      responseShape: summarizeToolResponseShape(response),
-    });
-
     let parsed: ActionStateParseResult;
 
     try {
-      parsed = parseResponse(response);
+      parsed = (
+        await callStructuredTool({
+          llmClient: this.options.llmClient,
+          request: {
+            model: this.options.model,
+            system: ACTION_STATE_SYSTEM_PROMPT,
+            messages,
+            tools,
+            tool_choice: { type: "tool", name: ACTION_STATE_TOOL_NAME },
+            max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
+            budget: "action-state-extractor",
+          },
+          toolName: ACTION_STATE_TOOL_NAME,
+          parse: parseResponse,
+          trace: {
+            tracer: this.options.tracer,
+            turnId: this.options.turnId,
+            sessionId,
+            label: "action_state_extractor",
+            systemPrompt: ACTION_STATE_SYSTEM_PROMPT,
+            messages,
+            tools,
+          },
+        })
+      ).parsed;
     } catch (error) {
-      const reason =
-        error instanceof MissingActionStateToolCallError
-          ? "missing_tool_call"
-          : error instanceof z.ZodError
-            ? "invalid_payload"
-            : "llm_failed";
-      const result = await this.degraded(reason, error);
+      const reason = degradedReasonForStructuredToolError(error);
+
+      if (reason === "llm_failed") {
+        return this.degradedWithTrace(
+          "llm_failed",
+          isStructuredToolCallError(error, "llm_failed") ? (error.cause ?? error) : error,
+          sessionId,
+        );
+      }
+
+      const degradedError =
+        isStructuredToolCallError(error, "missing_tool_call")
+          ? new MissingActionStateToolCallError(
+              `Action state extractor did not emit ${ACTION_STATE_TOOL_NAME}`,
+            )
+          : isStructuredToolCallError(error, "invalid_payload")
+            ? (error.cause ?? error)
+            : error;
+      const result = await this.degraded(reason, degradedError);
 
       traceExtractorCompleted({
         tracer: this.options.tracer,

@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
@@ -158,14 +159,23 @@ type OverseerReversal = {
   reviewItemId?: number;
 };
 
-function parseFlags(result: LLMCompleteResult) {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === OVERSEER_TOOL_NAME);
-
-  if (call === undefined) {
-    throw new TypeError(`Overseer did not emit tool ${OVERSEER_TOOL_NAME}`);
+function invalidFlagsResponse(error: unknown): unknown {
+  if (isStructuredToolCallError(error, "missing_tool_call")) {
+    return new TypeError(`Overseer did not emit tool ${OVERSEER_TOOL_NAME}`);
   }
 
-  return overseerResponseSchema.parse(call.input);
+  if (
+    isStructuredToolCallError(error, "invalid_payload") ||
+    isStructuredToolCallError(error, "llm_failed")
+  ) {
+    return error.cause ?? error;
+  }
+
+  return error;
+}
+
+function parseFlags(input: unknown) {
+  return overseerResponseSchema.parse(input);
 }
 
 function isAssistantAuthoredReviewSource(entry: Pick<StreamEntry, "kind">): boolean {
@@ -522,23 +532,28 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
         for (const target of targets) {
           try {
             const sourceBundle = await resolveTargetSourceBundle(target, ctx);
-            const flags = parseFlags(
-              await llmClient.complete({
-                model: ctx.config.anthropic.models.background,
-                system:
-                  "You audit recently formed memories. Flag only grounded QA concerns and keep false positives low.",
-                messages: [
-                  {
-                    role: "user",
-                    content: await buildPrompt(target, ctx, sourceBundle),
-                  },
-                ],
-                tools: [OVERSEER_TOOL],
-                tool_choice: { type: "tool", name: OVERSEER_TOOL_NAME },
-                max_tokens: 4_000,
-                budget: "offline-overseer",
-              }),
-            ).flags;
+            const flags = (
+              await callStructuredTool({
+                llmClient,
+                request: {
+                  model: ctx.config.anthropic.models.background,
+                  system:
+                    "You audit recently formed memories. Flag only grounded QA concerns and keep false positives low.",
+                  messages: [
+                    {
+                      role: "user",
+                      content: await buildPrompt(target, ctx, sourceBundle),
+                    },
+                  ],
+                  tools: [OVERSEER_TOOL],
+                  tool_choice: { type: "tool", name: OVERSEER_TOOL_NAME },
+                  max_tokens: 4_000,
+                  budget: "offline-overseer",
+                },
+                toolName: OVERSEER_TOOL_NAME,
+                parse: parseFlags,
+              })
+            ).parsed.flags;
 
             for (const flag of flags) {
               candidateStats.proposed += 1;
@@ -632,7 +647,7 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
             }
 
             errors.push(
-              offlineProcessError(this.name, error, {
+              offlineProcessError(this.name, invalidFlagsResponse(error), {
                 target_type: target.type,
                 target_id: target.id,
               }),

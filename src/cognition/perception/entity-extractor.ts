@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
@@ -74,16 +75,8 @@ function isAcceptableEntity(value: string): boolean {
   return true;
 }
 
-function parseEntityFallback(result: LLMCompleteResult): EntityExtractionResult {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === ENTITY_FALLBACK_TOOL_NAME);
-
-  if (call === undefined) {
-    throw new CognitionError(`Entity fallback did not emit tool ${ENTITY_FALLBACK_TOOL_NAME}`, {
-      code: "ENTITY_FALLBACK_INVALID",
-    });
-  }
-
-  const parsed = entityFallbackSchema.safeParse(call.input);
+function parseEntityFallback(input: unknown): EntityExtractionResult {
+  const parsed = entityFallbackSchema.safeParse(input);
 
   if (!parsed.success) {
     throw new CognitionError("Entity fallback returned invalid payload", {
@@ -191,22 +184,54 @@ export class EntityExtractor {
     }
 
     try {
-      const response = await this.options.llmClient.complete({
-        model: this.options.model,
-        system: ENTITY_LLM_SYSTEM_PROMPT,
-        messages: [
-          {
-            role: "user",
-            content: normalizedText,
-          },
-        ],
-        tools: [ENTITY_FALLBACK_TOOL],
-        tool_choice: { type: "tool", name: ENTITY_FALLBACK_TOOL_NAME },
-        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
-        budget: "perception-entity-fallback",
+      const result = await callStructuredTool({
+        llmClient: this.options.llmClient,
+        request: {
+          model: this.options.model,
+          system: ENTITY_LLM_SYSTEM_PROMPT,
+          messages: [
+            {
+              role: "user",
+              content: normalizedText,
+            },
+          ],
+          tools: [ENTITY_FALLBACK_TOOL],
+          tool_choice: { type: "tool", name: ENTITY_FALLBACK_TOOL_NAME },
+          max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
+          budget: "perception-entity-fallback",
+        },
+        toolName: ENTITY_FALLBACK_TOOL_NAME,
+        parse: parseEntityFallback,
       });
-      return parseEntityFallback(response);
+
+      return result.parsed;
     } catch (error) {
+      if (isStructuredToolCallError(error, "missing_tool_call")) {
+        throw new CognitionError(`Entity fallback did not emit tool ${ENTITY_FALLBACK_TOOL_NAME}`, {
+          code: "ENTITY_FALLBACK_INVALID",
+        });
+      }
+
+      if (isStructuredToolCallError(error, "invalid_payload")) {
+        throw (error.cause instanceof CognitionError
+          ? error.cause
+          : new CognitionError("Entity fallback returned invalid payload", {
+              cause: error.cause ?? error,
+              code: "ENTITY_FALLBACK_INVALID",
+            }));
+      }
+
+      if (isStructuredToolCallError(error, "llm_failed")) {
+        if (error.cause instanceof LLMError) {
+          throw error.cause;
+        }
+
+        throw new CognitionError("Failed to extract entities", {
+          cause: error.cause ?? error,
+          code: "ENTITY_EXTRACTION_FAILED",
+        });
+      }
+
       if (error instanceof CognitionError || error instanceof LLMError) {
         throw error;
       }

@@ -523,11 +523,14 @@ describe("TurnTracer", () => {
       "llm_call.started",
       "llm_call.started",
       "llm_call.started",
+      // The three extraction calls run concurrently; awaiting callStructuredTool
+      // resolves each llm_call one microtask before the site emits its domain
+      // event, so completions land ahead of the domain events. Pairing is by label.
+      "llm_call.completed",
+      "llm_call.completed",
       "llm_call.completed",
       "extraction.commitments.degraded",
-      "llm_call.completed",
       "extraction.actions.completed",
-      "llm_call.completed",
       "extraction.goals.completed",
       "turn_phase.completed",
       "turn_phase.started",

@@ -9,8 +9,9 @@ import {
 } from "../../memory/procedural/index.js";
 import type { SocialProfile } from "../../memory/social/index.js";
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
@@ -69,20 +70,26 @@ function deriveAudienceScope(input: {
 }
 
 function parseResponse(
-  result: LLMCompleteResult,
+  input: unknown,
 ): z.infer<typeof proceduralContextExtractionSchema> {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === PROCEDURAL_CONTEXT_TOOL_NAME);
+  return proceduralContextExtractionSchema.parse(input);
+}
 
-  if (call === undefined) {
-    throw new LLMError(
-      `Procedural context extractor did not emit ${PROCEDURAL_CONTEXT_TOOL_NAME}`,
-      {
-        code: "PROCEDURAL_CONTEXT_INVALID",
-      },
-    );
+function proceduralContextError(error: unknown): unknown {
+  if (isStructuredToolCallError(error, "missing_tool_call")) {
+    return new LLMError(`Procedural context extractor did not emit ${PROCEDURAL_CONTEXT_TOOL_NAME}`, {
+      code: "PROCEDURAL_CONTEXT_INVALID",
+    });
   }
 
-  return proceduralContextExtractionSchema.parse(call.input);
+  if (
+    isStructuredToolCallError(error, "invalid_payload") ||
+    isStructuredToolCallError(error, "llm_failed")
+  ) {
+    return error.cause ?? error;
+  }
+
+  return error;
 }
 
 function buildPrompt(input: ExtractProceduralContextInput): string {
@@ -130,8 +137,10 @@ export class ProceduralContextExtractor {
     });
 
     try {
-      const extracted = parseResponse(
-        await this.options.llmClient.complete({
+      const extracted = (
+        await callStructuredTool({
+          llmClient: this.options.llmClient,
+          request: {
           model: this.options.model,
           system:
             "You extract concise procedural context. Return only grounded structured tool output.",
@@ -145,8 +154,11 @@ export class ProceduralContextExtractor {
           tool_choice: { type: "tool", name: PROCEDURAL_CONTEXT_TOOL_NAME },
           max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
           budget: "procedural-context",
-        }),
-      );
+          },
+          toolName: PROCEDURAL_CONTEXT_TOOL_NAME,
+          parse: parseResponse,
+        })
+      ).parsed;
 
       if (extracted.confidence < MIN_PROCEDURAL_CONTEXT_CONFIDENCE) {
         return this.degraded("low_confidence");
@@ -172,7 +184,7 @@ export class ProceduralContextExtractor {
 
       return context;
     } catch (error) {
-      return this.degraded("llm_failed", error);
+      return this.degraded("llm_failed", proceduralContextError(error));
     }
   }
 }

@@ -2,8 +2,9 @@ import { z } from "zod";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
@@ -64,20 +65,22 @@ export type GenerationGateInput = {
 
 type ParsedGateDecision = z.infer<typeof generationGateDecisionSchema>;
 
-function parseGateDecision(result: LLMCompleteResult): ParsedGateDecision {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === GATE_TOOL_NAME);
-
-  if (call === undefined) {
-    throw new Error(`Generation gate did not emit tool ${GATE_TOOL_NAME}`);
-  }
-
-  const parsed = generationGateDecisionSchema.safeParse(call.input);
+function parseGateDecision(input: unknown): ParsedGateDecision {
+  const parsed = generationGateDecisionSchema.safeParse(input);
 
   if (!parsed.success) {
     throw parsed.error;
   }
 
   return parsed.data;
+}
+
+function generationGateStructuredError(error: unknown): unknown {
+  if (isStructuredToolCallError(error, "missing_tool_call")) {
+    return new Error(`Generation gate did not emit tool ${GATE_TOOL_NAME}`);
+  }
+
+  return isStructuredToolCallError(error) ? (error.cause ?? error) : error;
 }
 
 export function isMinimalUserGenerationInput(text: string): boolean {
@@ -233,37 +236,43 @@ export class GenerationGate {
     }
 
     try {
-      const response = await this.options.llmClient.complete({
-        model: this.options.model,
-        system: [
-          "Decide whether the assistant should emit a response to the current user turn.",
-          "",
-          "Suppress only when the current turn is a loop probe, role-label trap, or non-substantive continuation under an active stop-until-substantive-content state.",
-          "Proceed when the user provides a real request, new information, or a legitimate brief reply that should receive a normal assistant response.",
-          "If an active stop state is present, clear it only by marking substantive=true for a current user turn with real content.",
-          "Do not treat ordinary first-time brief acknowledgments, direct answers, or minimal confirmations in any language as suppressible unless the context shows an active stop or sustained loop.",
-        ].join("\n"),
-        messages: [
-          {
-            role: "user",
-            content: JSON.stringify({
-              current_user_message: input.userMessage,
-              active_stop: activeStop,
-              structural_signals: signals,
-              recent_messages: input.recencyMessages.slice(-8).map((message) => ({
-                role: message.role,
-                content: message.content,
-                kind: message.kind ?? null,
-              })),
-            }),
+      const parsed = (
+        await callStructuredTool({
+          llmClient: this.options.llmClient,
+          request: {
+            model: this.options.model,
+            system: [
+              "Decide whether the assistant should emit a response to the current user turn.",
+              "",
+              "Suppress only when the current turn is a loop probe, role-label trap, or non-substantive continuation under an active stop-until-substantive-content state.",
+              "Proceed when the user provides a real request, new information, or a legitimate brief reply that should receive a normal assistant response.",
+              "If an active stop state is present, clear it only by marking substantive=true for a current user turn with real content.",
+              "Do not treat ordinary first-time brief acknowledgments, direct answers, or minimal confirmations in any language as suppressible unless the context shows an active stop or sustained loop.",
+            ].join("\n"),
+            messages: [
+              {
+                role: "user",
+                content: JSON.stringify({
+                  current_user_message: input.userMessage,
+                  active_stop: activeStop,
+                  structural_signals: signals,
+                  recent_messages: input.recencyMessages.slice(-8).map((message) => ({
+                    role: message.role,
+                    content: message.content,
+                    kind: message.kind ?? null,
+                  })),
+                }),
+              },
+            ],
+            tools: [GENERATION_GATE_TOOL],
+            tool_choice: { type: "tool", name: GATE_TOOL_NAME },
+            max_tokens: 512,
+            budget: "generation-gate",
           },
-        ],
-        tools: [GENERATION_GATE_TOOL],
-        tool_choice: { type: "tool", name: GATE_TOOL_NAME },
-        max_tokens: 512,
-        budget: "generation-gate",
-      });
-      const parsed = parseGateDecision(response);
+          toolName: GATE_TOOL_NAME,
+          parse: parseGateDecision,
+        })
+      ).parsed;
       const suppressReason: GenerationSuppressionReason =
         activeStop !== null && parsed.substantive !== true
           ? "active_discourse_stop"
@@ -280,7 +289,7 @@ export class GenerationGate {
         signals,
       };
     } catch (error) {
-      await this.options.onDegraded?.("llm_failed", error);
+      await this.options.onDegraded?.("llm_failed", generationGateStructuredError(error));
       return buildFallbackResult({
         activeDiscourseStop: activeStop !== null,
         signals,
