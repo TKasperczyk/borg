@@ -13,8 +13,10 @@ import type {
   MaintenanceTickFrame,
   MaintenanceAuditRow,
   DreamPlanResponse,
+  DreamPlanRequest,
   DreamProcessName,
   DreamProcessSummary,
+  DreamScheduleItem,
 } from "../../api/types";
 import { IdRef } from "../../components/Inspector/IdRef";
 import { resolveObjectType, type ObjectType } from "../../components/Inspector/inspector-id";
@@ -76,6 +78,34 @@ function maintenanceTickSummary(frame: MaintenanceTickFrame): string {
   return [`last ${frame.cadence}`, processLabel, changeLabel, pendingLabel]
     .filter((part): part is string => part !== null)
     .join(" / ");
+}
+
+function formatIntervalMs(milliseconds: number): string {
+  if (milliseconds < 1000) {
+    return `${milliseconds} ms`;
+  }
+
+  if (milliseconds < 60_000) {
+    const seconds = milliseconds / 1000;
+    return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)}s`;
+  }
+
+  const minutes = Math.floor(milliseconds / 60_000);
+  const seconds = Math.round((milliseconds % 60_000) / 1000);
+  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+}
+
+function formatDurationMs(milliseconds: number): string {
+  if (milliseconds < 1000) {
+    return `${milliseconds} ms`;
+  }
+
+  const seconds = milliseconds / 1000;
+  return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)}s`;
+}
+
+function processListTitle(label: string, processes: readonly DreamProcessName[]): string {
+  return `${label}: ${processes.length === 0 ? "none" : processes.join(", ")}`;
 }
 
 function auditHasReversal(row: MaintenanceAuditRow): boolean {
@@ -254,9 +284,16 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
   const refetch = api.refetch;
   const previousConnectionCountRef = useRef(live.connectionCount);
   const [selected, setSelected] = useState<DreamProcessName>("belief-reviser");
+  const [selectedPlanProcesses, setSelectedPlanProcesses] = useState<ReadonlySet<DreamProcessName>>(
+    () => new Set(PROCESS_NAMES),
+  );
+  const [budgetInput, setBudgetInput] = useState("");
   const [plan, setPlan] = useState<DreamPlanResponse | null>(null);
+  const [planStale, setPlanStale] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmApplyPlanId, setConfirmApplyPlanId] = useState<string | null>(null);
+  const [confirmApplyProcessCount, setConfirmApplyProcessCount] = useState<number | null>(null);
   const [applyResult, setApplyResult] = useState<DreamApplyResponse | null>(null);
   const [busy, setBusy] = useState<"plan" | "apply" | "revert" | null>(null);
   const [operatorError, setOperatorError] = useState<string | null>(null);
@@ -277,6 +314,9 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
         frame.type === "stream:append" &&
         frame.entries.some((entry) => entry.kind === "dream_report")
       ) {
+        if (plan !== null) {
+          setPlanStale(true);
+        }
         void refetch();
         return;
       }
@@ -307,6 +347,9 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
       }
 
       if (frame.type === "maintenance:tick") {
+        if (plan !== null) {
+          setPlanStale(true);
+        }
         setLastMaintenanceTick(frame);
         setRunStatus((current) => {
           const next = new Map(current);
@@ -322,7 +365,7 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
         return;
       }
     });
-  }, [live, refetch]);
+  }, [live, plan, refetch]);
 
   useEffect(() => {
     const previousConnectionCount = previousConnectionCountRef.current;
@@ -332,8 +375,11 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
       return;
     }
 
+    if (plan !== null) {
+      setPlanStale(true);
+    }
     void refetch();
-  }, [live.connectionCount, refetch]);
+  }, [live.connectionCount, plan, refetch]);
 
   const state = api.data;
   const processes = PROCESS_NAMES.map(
@@ -357,19 +403,72 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
     () => auditRunGroups(state?.audit_rows ?? []),
     [state?.audit_rows],
   );
+  const selectedPlanProcessNames = useMemo(
+    () => PROCESS_NAMES.filter((name) => selectedPlanProcesses.has(name)),
+    [selectedPlanProcesses],
+  );
+  const schedulerTitle =
+    state === null
+      ? ""
+      : [
+          processListTitle("light", state.scheduler.light_processes),
+          processListTitle("heavy", state.scheduler.heavy_processes),
+        ].join("\n");
+  const recentErrorCount = processes.filter((process) => process.last_status === "error").length;
+  const applyingPlan = confirmApplyPlanId !== null && plan !== null;
 
-  async function loadPlan(openConfirm: boolean): Promise<void> {
+  function setAllPlanProcesses(selected: boolean): void {
+    setSelectedPlanProcesses(selected ? new Set(PROCESS_NAMES) : new Set());
+  }
+
+  function togglePlanProcess(name: DreamProcessName): void {
+    setSelectedPlanProcesses((current) => {
+      const next = new Set(current);
+      if (next.has(name)) {
+        next.delete(name);
+      } else {
+        next.add(name);
+      }
+      return next;
+    });
+  }
+
+  function buildPlanRequest(): DreamPlanRequest | null {
+    if (selectedPlanProcessNames.length === 0) {
+      setOperatorError("Select at least one process to plan.");
+      return null;
+    }
+
+    const trimmedBudget = budgetInput.trim();
+    const budget = trimmedBudget.length === 0 ? undefined : Number.parseInt(trimmedBudget, 10);
+
+    if (budget !== undefined) {
+      if (!Number.isFinite(budget) || String(budget) !== trimmedBudget || budget <= 0) {
+        setOperatorError("Budget must be a positive integer.");
+        return null;
+      }
+    }
+
+    return {
+      processes: selectedPlanProcessNames,
+      ...(budget === undefined ? {} : { budget }),
+    };
+  }
+
+  async function loadPlan(): Promise<void> {
+    const request = buildPlanRequest();
+    if (request === null) {
+      return;
+    }
+
     setBusy("plan");
     setOperatorError(null);
     setApplyResult(null);
     try {
-      const nextPlan = await postDreamPlan({});
+      const nextPlan = await postDreamPlan(request);
       setPlan(nextPlan);
-      if (openConfirm) {
-        setConfirmOpen(true);
-      } else {
-        setPlanOpen(true);
-      }
+      setPlanStale(false);
+      setPlanOpen(true);
     } catch (caught) {
       setOperatorError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -381,15 +480,36 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
     // Apply opens the confirm modal immediately — no upstream plan call.
     // A dream cycle runs all 12 offline processes (~30-120s); making the
     // user wait that long for the confirm dialog to appear is bad UX.
-    // Users who want a preview can hit the `plan` button first; the
-    // cached plan_id (if any) is passed through, otherwise the server
-    // runs a fresh dry-run inside the apply path.
+    // Users who want a preview can hit the `plan` button first and apply
+    // from the plan modal; this direct apply path remains unplanned.
     setOperatorError(null);
     setApplyResult(null);
+    setConfirmApplyPlanId(null);
+    setConfirmApplyProcessCount(null);
+    setConfirmOpen(true);
+  }
+
+  function openPlanApplyConfirm(): void {
+    if (plan === null || planStale) {
+      return;
+    }
+
+    setOperatorError(null);
+    setApplyResult(null);
+    setConfirmApplyPlanId(plan.plan_id);
+    setConfirmApplyProcessCount(plan.processes.length);
     setConfirmOpen(true);
   }
 
   async function applyDreamPlan(): Promise<void> {
+    if (confirmApplyPlanId !== null && planStale) {
+      setOperatorError("state changed since this plan -- re-plan to apply");
+      setConfirmOpen(false);
+      setConfirmApplyPlanId(null);
+      setConfirmApplyProcessCount(null);
+      return;
+    }
+
     setBusy("apply");
     setOperatorError(null);
     // Close the modal immediately so the user can see per-process progress
@@ -400,12 +520,16 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
     // Reset previous run's tile state so progress on this run starts clean.
     setRunStatus(new Map());
     try {
-      const result = await postDreamApply(plan === null ? {} : { plan_id: plan.plan_id });
+      const result = await postDreamApply(
+        confirmApplyPlanId === null ? {} : { plan_id: confirmApplyPlanId },
+      );
       setApplyResult(result);
       await Promise.all([refetch(), getDreamAudit()]);
     } catch (caught) {
       setOperatorError(caught instanceof Error ? caught.message : String(caught));
     } finally {
+      setConfirmApplyPlanId(null);
+      setConfirmApplyProcessCount(null);
       setBusy(null);
     }
   }
@@ -452,41 +576,9 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
   return (
     <div className="full-page">
       <div className="page-head">
-        <h1>dream cycle</h1>
-        <span className="desc">synthesized from audit log · dream reports · review queue</span>
+        <h1>dream ops</h1>
+        <span className="desc">maintenance planning · schedule · audit</span>
         <span className="spacer"></span>
-        <span
-          style={{
-            fontSize: 10.5,
-            color: "var(--text-mute)",
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            whiteSpace: "nowrap",
-          }}
-        >
-          <span className={state?.scheduler.enabled === true ? "live-dot" : "dot mute"}></span>
-          <span className="acc upper">
-            {state?.scheduler.enabled === true ? "scheduler enabled" : "scheduler disabled"}
-          </span>
-        </span>
-        {lastMaintenanceTick === null ? null : (
-          <span
-            className={`dream-live-note ${maintenanceTickTone(lastMaintenanceTick)}`}
-            aria-live="polite"
-          >
-            <span className="dot" aria-hidden="true"></span>
-            {maintenanceTickSummary(lastMaintenanceTick)}
-          </span>
-        )}
-        <button
-          className="btn sm"
-          disabled={busy !== null}
-          aria-label="plan dream"
-          onClick={() => void loadPlan(false)}
-        >
-          {busy === "plan" ? "planning" : "plan"}
-        </button>
         <button
           className="btn sm primary"
           disabled={busy !== null}
@@ -500,7 +592,7 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
                   (s) => s === "planned" || s === "running" || s === "done" || s === "fail",
                 ).length;
                 const applied = states.filter((s) => s === "done" || s === "fail").length;
-                const total = processes.length;
+                const total = confirmApplyProcessCount ?? processes.length;
                 // Two sweeps: plan then apply. Show whichever sweep is in flight.
                 if (planned < total) {
                   return `planning ${planned}/${total}`;
@@ -513,83 +605,131 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
 
       <div className="page-body">
         {operatorError === null ? null : <div className="notice bad">{operatorError}</div>}
-        <div style={{ padding: "14px 20px 16px 20px", borderBottom: "1px solid var(--line)" }}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: 10,
-            }}
-          >
-            <div className="upper dim">schedule · recent synthesized rows</div>
-            <div className="dim" style={{ fontSize: 10.5 }}>
-              {state?.schedule.length ?? 0} rows · {state?.audit_rows.length ?? 0} audit ·{" "}
-              {state?.belief_revision_rows.length ?? 0} belief-revision reviews
+        <div className="dream-ops-strip">
+          <div className="dream-health-grid">
+            <div className="dream-health-card" title={schedulerTitle}>
+              <div className="upper dim">scheduler</div>
+              <div className={state?.scheduler.enabled === true ? "value acc" : "value dim"}>
+                {state?.scheduler.enabled === true ? "enabled" : "disabled"}
+              </div>
+              <div className="sub">
+                light {formatIntervalMs(state?.scheduler.light_interval_ms ?? 0)} / heavy{" "}
+                {formatIntervalMs(state?.scheduler.heavy_interval_ms ?? 0)}
+              </div>
             </div>
-          </div>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "150px 1fr",
-              gap: 14,
-              alignItems: "center",
-              rowGap: 5,
-            }}
-          >
-            {processes.slice(0, 6).map((process) => {
-              const runs = (state?.schedule ?? [])
-                .filter((item) => item.process === process.name)
-                .slice(0, 6);
-              return (
-                <Fragment key={process.name}>
-                  <div style={{ fontSize: 11, color: "var(--text-dim)" }}>{process.name}</div>
-                  <div
-                    style={{
-                      position: "relative",
-                      height: 12,
-                      background: "var(--bg-1)",
-                      border: "1px solid var(--line-soft)",
-                    }}
-                  >
-                    {[1, 2, 3, 4, 5].map((index) => (
-                      <div
-                        key={index}
-                        style={{
-                          position: "absolute",
-                          top: 0,
-                          bottom: 0,
-                          left: `${(index / 6) * 100}%`,
-                          width: 1,
-                          background: "var(--line-soft)",
-                        }}
-                      ></div>
-                    ))}
-                    {runs.map((run, index) => (
-                      <div
-                        key={`${run.process}-${run.scheduled_at}-${index}`}
-                        title={`${run.source} · ${formatTime(run.scheduled_at)}`}
-                        style={{
-                          position: "absolute",
-                          left: `${Math.max(0, 95 - index * 15)}%`,
-                          width: "4%",
-                          top: 1,
-                          bottom: 1,
-                          background: run.source === "audit" ? "var(--acc)" : "var(--purple)",
-                          opacity: 0.75,
-                        }}
-                      ></div>
-                    ))}
+            <div className="dream-health-card">
+              <div className="upper dim">pending extraction</div>
+              <div className="value">{state?.pending_extraction_episodes ?? "—"}</div>
+              <div className="sub">episodes</div>
+            </div>
+            <div className="dream-health-card">
+              <div className="upper dim">belief revision</div>
+              <div className="value">{state?.belief_revision_rows.length ?? 0}</div>
+              <div className="sub">open reviews</div>
+            </div>
+            <div
+              className="dream-health-card"
+              title={
+                lastMaintenanceTick === null
+                  ? "No maintenance tick observed in this browser session"
+                  : `Observed at ${formatTime(lastMaintenanceTick.ts)}`
+              }
+            >
+              <div className="upper dim">last tick this session</div>
+              {lastMaintenanceTick === null ? (
+                <>
+                  <div className="value dim">none</div>
+                  <div className="sub">live frame only</div>
+                </>
+              ) : (
+                <>
+                  <div className={`value ${maintenanceTickTone(lastMaintenanceTick)}`}>
+                    {maintenanceTickSummary(lastMaintenanceTick)}
                   </div>
-                </Fragment>
-              );
-            })}
-          </div>
-          {(state?.schedule.length ?? 0) === 0 ? (
-            <div className="dim" style={{ fontSize: 10.5, marginTop: 8 }}>
-              no scheduled runs synthesized yet
+                  <div className="sub">live frame only</div>
+                </>
+              )}
             </div>
-          ) : null}
+            <div className="dream-health-card">
+              <div className="upper dim">recent errors</div>
+              <div className={recentErrorCount > 0 ? "value bad" : "value"}>
+                {recentErrorCount}
+              </div>
+              <div className="sub">process statuses</div>
+            </div>
+          </div>
+
+          <div className="dream-workbench panel">
+            <div className="panel-header">
+              <span className="title">plan/apply workbench</span>
+              <span className="badge">{selectedPlanProcessNames.length}/12 selected</span>
+            </div>
+            <div className="panel-body pad">
+              <div className="dream-workbench-controls">
+                <div className="dream-process-picker" aria-label="dream process subset">
+                  {PROCESS_NAMES.map((name) => (
+                    <label
+                      key={name}
+                      className={`dream-process-toggle${
+                        selectedPlanProcesses.has(name) ? " on" : ""
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedPlanProcesses.has(name)}
+                        aria-label={`include ${name}`}
+                        onChange={() => togglePlanProcess(name)}
+                      />
+                      <span>{name}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="dream-budget-control">
+                  <label className="modal-field">
+                    <span>budget</span>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      step={1}
+                      placeholder="optional"
+                      value={budgetInput}
+                      onChange={(event) => setBudgetInput(event.target.value)}
+                    />
+                  </label>
+                  <div className="operator-actions">
+                    <button
+                      type="button"
+                      className="btn sm ghost"
+                      disabled={busy !== null}
+                      onClick={() => setAllPlanProcesses(true)}
+                    >
+                      all
+                    </button>
+                    <button
+                      type="button"
+                      className="btn sm ghost"
+                      disabled={busy !== null}
+                      onClick={() => setAllPlanProcesses(false)}
+                    >
+                      clear
+                    </button>
+                    <button
+                      className="btn sm"
+                      disabled={busy !== null}
+                      aria-label="plan dream"
+                      onClick={() => void loadPlan()}
+                    >
+                      {busy === "plan" ? "planning" : "plan"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <DreamScheduleLane schedule={state?.schedule ?? []} />
+          {applyResult === null ? null : <DreamApplyResultPanel result={applyResult} />}
         </div>
 
         <div className="dream-grid">
@@ -609,7 +749,7 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
             selected process
           </div>
           {selectedProcess === undefined ? null : (
-            <div className="panel" style={{ marginBottom: 14 }}>
+            <div className="panel dream-selected-process" style={{ marginBottom: 14 }}>
               <div className="panel-header">
                 <span className="title">{selectedProcess.name}</span>
                 <span className="badge">{selectedProcess.last_status ?? "never"}</span>
@@ -772,10 +912,10 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
             </button>
             <button
               className="btn sm primary"
-              disabled={busy !== null || plan === null}
-              onClick={() => setConfirmOpen(true)}
+              disabled={busy !== null || plan === null || planStale}
+              onClick={() => openPlanApplyConfirm()}
             >
-              apply
+              apply plan
             </button>
           </>
         }
@@ -784,53 +924,53 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
           <div className="dim">no plan loaded</div>
         ) : (
           <div className="modal-form">
-            <div className="dim">
-              {plan.changes} proposed changes · {plan.total_budget_used} tokens ·{" "}
-              {plan.processes.length} processes
+            {planStale ? (
+              <div className="notice warn">
+                state changed since this plan -- re-plan to apply
+              </div>
+            ) : null}
+            <div className="dream-plan-summary">
+              <Tag kind={plan.changes > 0 ? "acc" : ""}>{plan.changes} changes</Tag>
+              <Tag>{plan.total_budget_used} budget used</Tag>
+              <Tag>{plan.processes.length} processes</Tag>
             </div>
+            <div className="dim">total budget used: {plan.total_budget_used}</div>
             {plan.processes.map((process) => (
-              <div key={process.name} className="item">
-                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
-                  <span className="acc">{process.name}</span>
-                  <Tag kind={process.would_change ? "acc" : ""}>{process.summary}</Tag>
-                  <span className="dim tab-num">{process.budget_used} tok</span>
-                </div>
-                {process.changes.length === 0 ? (
-                  <div className="dim">no proposed changes</div>
-                ) : (
-                  <div className="props">
-                    {process.changes.map((change, index) => (
-                      <div key={`${process.name}-${change.action}-${index}`} className="row">
-                        <span className="k">{change.action}</span>
-                        <span className="v">
-                          {displayTargetSummary(change.targets)}
-                          <AuditTargetRefs targets={change.targets} />
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <DreamPlanProcessResult key={process.name} process={process} />
             ))}
-            {applyResult === null ? null : (
-              <div className="dim">
-                applied {applyResult.applied.length} processes · {applyResult.duration_ms} ms
-              </div>
-            )}
           </div>
         )}
       </Modal>
       <Modal
         open={confirmOpen}
         title={busy === "apply" ? "running dream cycle..." : "apply dream cycle"}
-        onClose={busy === "apply" ? () => undefined : () => setConfirmOpen(false)}
+        onClose={
+          busy === "apply"
+            ? () => undefined
+            : () => {
+                setConfirmOpen(false);
+                setConfirmApplyPlanId(null);
+                setConfirmApplyProcessCount(null);
+              }
+        }
         footer={
           busy === "apply" ? null : (
             <>
-              <button className="btn sm ghost" onClick={() => setConfirmOpen(false)}>
+              <button
+                className="btn sm ghost"
+                onClick={() => {
+                  setConfirmOpen(false);
+                  setConfirmApplyPlanId(null);
+                  setConfirmApplyProcessCount(null);
+                }}
+              >
                 cancel
               </button>
-              <button className="btn sm primary" onClick={() => void applyDreamPlan()}>
+              <button
+                className="btn sm primary"
+                disabled={confirmApplyPlanId !== null && planStale}
+                onClick={() => void applyDreamPlan()}
+              >
                 apply
               </button>
             </>
@@ -854,8 +994,13 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
           </div>
         ) : (
           <div className="modal-form">
+            {confirmApplyPlanId !== null && planStale ? (
+              <div className="notice warn">
+                state changed since this plan -- re-plan to apply
+              </div>
+            ) : null}
             <div style={{ color: "var(--text)", fontFamily: "var(--sans)", lineHeight: 1.5 }}>
-              {plan === null ? (
+              {!applyingPlan ? (
                 <>
                   Run the dream cycle? This executes all 12 offline maintenance processes
                   (consolidator, reflector, semantic extractor, curator, overseer, review resolver,
@@ -924,10 +1069,282 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
                 </span>
               </div>
             </div>
-            <AuditPayloadDetail row={revertCandidate} compact />
+            <RevertPayloadComparison row={revertCandidate} />
           </div>
         )}
       </Modal>
+    </div>
+  );
+}
+
+function DreamScheduleLane({ schedule }: { schedule: readonly DreamScheduleItem[] }) {
+  return (
+    <div className="panel dream-schedule-panel">
+      <div className="panel-header">
+        <span className="title">schedule lane</span>
+        <span className="badge">{schedule.length} rows</span>
+      </div>
+      <div className="panel-body">
+        {schedule.length === 0 ? (
+          <div className="dim" style={{ padding: 12 }}>
+            no scheduled runs synthesized yet
+          </div>
+        ) : (
+          <table className="tbl dream-schedule-table">
+            <thead>
+              <tr>
+                <th>process</th>
+                <th>scheduled</th>
+                <th>source</th>
+                <th>related ids</th>
+              </tr>
+            </thead>
+            <tbody>
+              {schedule.map((item, index) => (
+                <tr key={`${item.process}-${item.scheduled_at}-${item.source}-${index}`}>
+                  <td>
+                    <span className="purple">{item.process}</span>
+                  </td>
+                  <td className="dim">{formatTime(item.scheduled_at)}</td>
+                  <td>
+                    <Tag kind={item.source === "audit" ? "acc" : "info"}>{item.source}</Tag>
+                  </td>
+                  <td>
+                    <ScheduleRelatedRefs item={item} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ScheduleRelatedRefs({ item }: { item: DreamScheduleItem }) {
+  const streamEntryType =
+    item.stream_entry_id === undefined ? null : resolveObjectType(item.stream_entry_id);
+
+  if (item.audit_id === undefined && item.stream_entry_id === undefined) {
+    return <span className="dim">—</span>;
+  }
+
+  return (
+    <div className="dream-ref-list">
+      {item.audit_id === undefined ? null : (
+        <IdRef
+          id={String(item.audit_id)}
+          type="dream_audit"
+          label={`audit ${item.audit_id}`}
+          ariaLabel={`jump to audit ${item.audit_id}`}
+        />
+      )}
+      {item.stream_entry_id === undefined ? null : streamEntryType === null ? (
+        <span className="dim">{item.stream_entry_id}</span>
+      ) : (
+        <IdRef id={item.stream_entry_id} type={streamEntryType} />
+      )}
+    </div>
+  );
+}
+
+function DreamApplyResultPanel({ result }: { result: DreamApplyResponse }) {
+  return (
+    <div className="panel dream-apply-result">
+      <div className="panel-header">
+        <span className="title">apply result</span>
+        <span className="badge">{formatDurationMs(result.duration_ms)}</span>
+      </div>
+      <div className="panel-body pad">
+        <div className="dream-plan-summary">
+          <Tag kind="info">
+            <IdRef
+              id={result.run_id}
+              type="maintenance_run"
+              label={`run ${shortId(result.run_id)}`}
+              hint={result}
+            />
+          </Tag>
+          <Tag kind={result.applied.length > 0 ? "acc" : ""}>
+            {result.applied.length} applied
+          </Tag>
+          <Tag kind={result.failed.length > 0 ? "bad" : "acc"}>{result.failed.length} failed</Tag>
+          <Tag>{result.total_budget_used} budget used</Tag>
+          <Tag>{result.duration_ms} ms</Tag>
+        </div>
+        <div className="dream-result-grid">
+          <div>
+            <div className="upper dim" style={{ marginBottom: 6 }}>
+              applied
+            </div>
+            {result.applied.length === 0 ? (
+              <div className="dim">no processes applied</div>
+            ) : (
+              <div className="props">
+                {result.applied.map((entry) => (
+                  <div key={entry.name} className="row">
+                    <span className="k">{entry.name}</span>
+                    <span className="v">
+                      {entry.changes} changes
+                      <span className="dream-ref-list">
+                        {entry.audit_id === null ? null : (
+                          <IdRef
+                            id={String(entry.audit_id)}
+                            type="dream_audit"
+                            label={`audit ${entry.audit_id}`}
+                            ariaLabel={`jump to audit ${entry.audit_id}`}
+                          />
+                        )}
+                        {entry.audit_ids
+                          .filter((auditId) => auditId !== entry.audit_id)
+                          .map((auditId) => (
+                            <IdRef
+                              key={`${entry.name}-${auditId}`}
+                              id={String(auditId)}
+                              type="dream_audit"
+                              label={`audit ${auditId}`}
+                              ariaLabel={`jump to audit ${auditId}`}
+                            />
+                          ))}
+                      </span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div>
+            <div className="upper dim" style={{ marginBottom: 6 }}>
+              failed
+            </div>
+            {result.failed.length === 0 ? (
+              <div className="dim">no process failures</div>
+            ) : (
+              <div className="props">
+                {result.failed.map((entry, index) => (
+                  <div key={`${entry.name}-${index}`} className="row">
+                    <span className="k">{entry.name}</span>
+                    <span className="v">
+                      {entry.message}
+                      {entry.code === undefined ? null : (
+                        <span className="dim"> · code {entry.code}</span>
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DreamPlanProcessResult({
+  process,
+}: {
+  process: DreamPlanResponse["processes"][number];
+}) {
+  return (
+    <div className="item dream-plan-process">
+      <div className="dream-plan-process-head">
+        <span className="acc">{process.name}</span>
+        <Tag kind={process.would_change ? "acc" : ""}>
+          {process.would_change ? "would change" : "no change"}
+        </Tag>
+        <Tag kind={process.budget_exhausted ? "warn" : ""}>
+          {process.budget_exhausted ? "budget exhausted" : "budget ok"}
+        </Tag>
+        <span className="dim tab-num">{process.budget_used} budget used</span>
+      </div>
+      <div className="dim" style={{ marginBottom: 8 }}>
+        {process.summary}
+      </div>
+      <div className="props">
+        <div className="row">
+          <span className="k">would change</span>
+          <span className="v">{process.would_change ? "true" : "false"}</span>
+        </div>
+        <div className="row">
+          <span className="k">budget used</span>
+          <span className="v">{process.budget_used}</span>
+        </div>
+        <div className="row">
+          <span className="k">budget exhausted</span>
+          <span className="v">{process.budget_exhausted ? "true" : "false"}</span>
+        </div>
+      </div>
+      <div className="upper dim" style={{ marginTop: 10, marginBottom: 6 }}>
+        changes
+      </div>
+      {process.changes.length === 0 ? (
+        <div className="dim">no proposed changes</div>
+      ) : (
+        <div className="props">
+          {process.changes.map((change, index) => (
+            <div key={`${process.name}-${change.action}-${index}`} className="row">
+              <span className="k">{change.action}</span>
+              <div className="v">
+                {displayTargetSummary(change.targets)}
+                <AuditTargetRefs targets={change.targets} />
+                {change.preview === undefined ? null : (
+                  <RawJsonDisclosure label="preview JSON" value={change.preview} />
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="upper dim" style={{ marginTop: 10, marginBottom: 6 }}>
+        errors
+      </div>
+      {process.errors.length === 0 ? (
+        <div className="dim">no errors</div>
+      ) : (
+        <div className="props">
+          {process.errors.map((error, index) => (
+            <div key={`${process.name}-error-${index}`} className="row">
+              <span className="k">{error.code ?? "error"}</span>
+              <span className="v">
+                {error.message}
+                {error.target_type === undefined && error.target_id === undefined ? null : (
+                  <span className="dim">
+                    {" "}
+                    · target {error.target_type ?? "unknown"} {error.target_id ?? "—"}
+                  </span>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RevertPayloadComparison({ row }: { row: MaintenanceAuditRow }) {
+  return (
+    <div className="dream-revert-compare">
+      <div className="dim" style={{ fontSize: 10.5, lineHeight: 1.45 }}>
+        Current shows the audited target row. After revert shows the recorded reversal payload the
+        server will apply; opaque process-specific shapes are shown as payload panels.
+      </div>
+      <div className="dream-diff-grid">
+        <PayloadPanel
+          title="current / audited target"
+          value={row.targets}
+          rawLabel="raw current target JSON"
+          emptyText="empty target payload"
+        />
+        <PayloadPanel
+          title="after revert / reversal payload"
+          value={row.reversal}
+          rawLabel="raw after-revert JSON"
+          emptyText="empty reversal payload"
+        />
+      </div>
     </div>
   );
 }

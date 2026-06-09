@@ -405,6 +405,10 @@ describe("operator actions", () => {
         true,
       );
     });
+    const applyCall = fetchMock.mock.calls.find(
+      (call) => requestPath(call[0]) === "/api/dream/apply",
+    );
+    expect(JSON.parse(String((applyCall?.[1] as RequestInit | undefined)?.body))).toEqual({});
     // The plan endpoint must NOT have been hit by the apply-from-header path.
     expect(fetchMock.mock.calls.some((call) => requestPath(call[0]) === "/api/dream/plan")).toBe(
       false,

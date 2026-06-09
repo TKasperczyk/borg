@@ -4721,6 +4721,159 @@ g.fc-regen-group.active .fc-regen-label-bg {
   background: var(--bad);
 }
 
+.dream-ops-strip {
+  display: grid;
+  gap: 12px;
+  padding: 14px 20px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dream-health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.dream-health-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  padding: 9px 10px;
+}
+
+.dream-health-card .value {
+  margin-top: 4px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.dream-health-card .value.acc {
+  color: var(--acc);
+}
+
+.dream-health-card .value.warn {
+  color: var(--warn);
+}
+
+.dream-health-card .value.bad {
+  color: var(--bad);
+}
+
+.dream-health-card .value.dim {
+  color: var(--text-dim);
+}
+
+.dream-health-card .sub {
+  margin-top: 2px;
+  color: var(--text-mute);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.dream-workbench .panel-body.pad {
+  padding: 10px;
+}
+
+.dream-workbench-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 210px);
+  gap: 12px;
+  align-items: start;
+}
+
+.dream-process-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.dream-process-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--text-mute);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.dream-process-toggle.on {
+  color: var(--acc);
+  border-color: var(--acc-dim);
+  background: var(--acc-tint);
+}
+
+.dream-process-toggle input {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: var(--acc);
+}
+
+.dream-budget-control {
+  display: grid;
+  gap: 8px;
+}
+
+.dream-schedule-panel .panel-body {
+  overflow-x: auto;
+}
+
+.dream-schedule-table td {
+  vertical-align: middle;
+}
+
+.dream-ref-list,
+.dream-plan-summary,
+.dream-plan-process-head {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.dream-ref-list {
+  margin-left: 6px;
+}
+
+.dream-plan-summary {
+  display: flex;
+}
+
+.dream-result-grid,
+.dream-diff-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.dream-plan-process {
+  padding: 12px;
+  border: 1px solid var(--line);
+}
+
+.dream-plan-process-head {
+  display: flex;
+  margin-bottom: 6px;
+}
+
+.dream-revert-compare {
+  display: grid;
+  gap: 10px;
+}
+
+@media (max-width: 760px) {
+  .dream-workbench-controls {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* progress */
 .bar-meter {
   height: 4px;

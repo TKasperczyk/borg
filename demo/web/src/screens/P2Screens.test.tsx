@@ -891,12 +891,16 @@ describe("P2 screens", () => {
     );
 
     const targetCard = (await screen.findByText("audit click target")).closest(".dream-card");
-    expect(container.querySelector(".panel-header .title")).toHaveTextContent("belief-reviser");
+    expect(
+      container.querySelector(".dream-selected-process .panel-header .title"),
+    ).toHaveTextContent("belief-reviser");
     expect(targetCard).not.toBeNull();
 
     fireEvent.click(within(targetCard as HTMLElement).getByText("2"));
 
-    expect(container.querySelector(".panel-header .title")).toHaveTextContent("curator");
+    expect(
+      container.querySelector(".dream-selected-process .panel-header .title"),
+    ).toHaveTextContent("curator");
   });
 
   it("reverts only reversible unreverted dream audit rows", async () => {
