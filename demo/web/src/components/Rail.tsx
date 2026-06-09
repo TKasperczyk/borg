@@ -1,61 +1,53 @@
-export type RouteId =
-  | "cognition"
-  | "stream"
-  | "memory"
-  | "identity"
-  | "commit"
-  | "directives"
-  | "review"
-  | "dream"
-  | "prompts";
+import { RAIL_ITEMS, type RouteId } from "../routes";
+import { CountBadge } from "./CountBadge";
+import type { SeverityRank } from "./SeverityChip";
 
-export type RailItem = {
-  id: RouteId;
-  label: string;
-  short: string;
-  glyph: string;
-  num: number;
+export type { RouteId } from "../routes";
+
+export type RailBadge = {
+  count: number;
+  severity?: SeverityRank;
+  label?: string;
 };
-
-export const RAIL_ITEMS: readonly RailItem[] = [
-  { id: "cognition", label: "cognition", short: "COG", glyph: "ψ", num: 1 },
-  { id: "stream", label: "stream", short: "STR", glyph: "≣", num: 2 },
-  { id: "memory", label: "memory", short: "MEM", glyph: "◇", num: 3 },
-  { id: "identity", label: "identity", short: "IDN", glyph: "◐", num: 4 },
-  { id: "commit", label: "commit", short: "CMT", glyph: "↵", num: 5 },
-  { id: "directives", label: "directives", short: "DIR", glyph: "§", num: 6 },
-  { id: "review", label: "review", short: "REV", glyph: "?", num: 7 },
-  { id: "dream", label: "dream", short: "DRM", glyph: "☾", num: 8 },
-  { id: "prompts", label: "prompts", short: "PMT", glyph: "›", num: 9 },
-];
 
 export type RailProps = {
   route: RouteId;
   setRoute: (route: RouteId) => void;
+  badges?: Partial<Record<RouteId, RailBadge>>;
 };
 
-export function Rail({ route, setRoute }: RailProps) {
+export function Rail({ route, setRoute, badges = {} }: RailProps) {
   return (
     <div className="rail">
       <div className="rail-brand">b</div>
       <div className="rail-list">
-        {RAIL_ITEMS.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            className={`rail-btn ${route === item.id ? "active" : ""}`}
-            onClick={() => setRoute(item.id)}
-            title={`${item.label} (⌘${item.num})`}
-            aria-label={item.label}
-            aria-current={route === item.id ? "page" : undefined}
-          >
-            <span className="num">{item.num}</span>
-            <span className="glyph" aria-hidden="true">
-              {item.glyph}
-            </span>
-            <span className="label">{item.short}</span>
-          </button>
-        ))}
+        {RAIL_ITEMS.map((item) => {
+          const badge = badges[item.id];
+          return (
+            <button
+              key={item.id}
+              type="button"
+              className={`rail-btn ${route === item.id ? "active" : ""}`}
+              onClick={() => setRoute(item.id)}
+              title={`${item.label} (⌘${item.num})`}
+              aria-label={item.label}
+              aria-current={route === item.id ? "page" : undefined}
+            >
+              <span className="num">{item.num}</span>
+              {badge === undefined ? null : (
+                <CountBadge
+                  count={badge.count}
+                  severity={badge.severity}
+                  label={badge.label ?? item.label}
+                />
+              )}
+              <span className="glyph" aria-hidden="true">
+                {item.glyph}
+              </span>
+              <span className="label">{item.short}</span>
+            </button>
+          );
+        })}
       </div>
       <div className="rail-spacer"></div>
     </div>

@@ -6,7 +6,7 @@ export type StatusBarProps = {
   lastMaintenanceTick?: MaintenanceTickFrame | null;
 };
 
-function moodLabel(state: StateSnapshot | null): string {
+export function moodLabel(state: StateSnapshot | null): string {
   if (state === null) {
     return "neutral";
   }
@@ -16,11 +16,11 @@ function moodLabel(state: StateSnapshot | null): string {
   return `v ${valence} · a ${arousal}`;
 }
 
-function countValue(count: number | undefined): string {
+export function countValue(count: number | undefined): string {
   return count === undefined ? "—" : count.toString();
 }
 
-function maintenanceTickLabel(frame: MaintenanceTickFrame | null | undefined): string | null {
+export function maintenanceTickLabel(frame: MaintenanceTickFrame | null | undefined): string | null {
   if (frame === null || frame === undefined) {
     return null;
   }
@@ -28,7 +28,7 @@ function maintenanceTickLabel(frame: MaintenanceTickFrame | null | undefined): s
   return `${frame.cadence} ${frame.processes.length}p ${frame.changes}chg`;
 }
 
-function maintenanceTickTone(frame: MaintenanceTickFrame): "ok" | "warn" | "bad" {
+export function maintenanceTickTone(frame: MaintenanceTickFrame): "ok" | "warn" | "bad" {
   if (frame.status === "error" || frame.errors > 0) {
     return "bad";
   }

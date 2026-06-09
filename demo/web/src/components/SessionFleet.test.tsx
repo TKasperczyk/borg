@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { SessionRecord } from "../api/types";
 import { useSession } from "../hooks/use-session";
-import { SessionsSidebar } from "./SessionsSidebar";
+import { SessionFleet } from "./SessionFleet";
 
 function session(
   input: Partial<SessionRecord> & Pick<SessionRecord, "session_id" | "label">,
@@ -29,9 +29,7 @@ function session(
 
 function Harness({ sessions }: { sessions: readonly SessionRecord[] }) {
   const { sessionId, setSessionId } = useSession();
-  return (
-    <SessionsSidebar sessions={sessions} activeSessionId={sessionId} onSelect={setSessionId} />
-  );
+  return <SessionFleet sessions={sessions} activeSessionId={sessionId} onSelect={setSessionId} />;
 }
 
 afterEach(() => {
@@ -39,7 +37,7 @@ afterEach(() => {
   window.history.replaceState(null, "", "/");
 });
 
-describe("SessionsSidebar", () => {
+describe("SessionFleet", () => {
   it("renders sessions and switches the URL session when clicked", () => {
     vi.spyOn(Date, "now").mockReturnValue(61_000);
     window.history.replaceState(null, "", "/");
@@ -76,7 +74,7 @@ describe("SessionsSidebar", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(
-      <SessionsSidebar
+      <SessionFleet
         sessions={[session({ session_id: "default", label: "demo (default)" })]}
         activeSessionId="default"
         onSelect={() => undefined}
@@ -93,5 +91,23 @@ describe("SessionsSidebar", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/sessions/operator", {
       method: "POST",
     });
+  });
+
+  it("can collapse and expand the session list", () => {
+    render(
+      <SessionFleet
+        sessions={[session({ session_id: "default", label: "demo (default)" })]}
+        activeSessionId="default"
+        onSelect={() => undefined}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "collapse sessions" }));
+
+    expect(screen.queryByText("demo (default)")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "expand sessions" }));
+
+    expect(screen.getByText("demo (default)")).toBeInTheDocument();
   });
 });

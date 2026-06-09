@@ -1,6 +1,17 @@
 import type { ReactNode } from "react";
 
-export type TagKind = "acc" | "warn" | "bad" | "info" | "purple" | "solid" | "";
+export type TagKind =
+  | "acc"
+  | "warn"
+  | "bad"
+  | "info"
+  | "purple"
+  | "solid"
+  | "sev-1"
+  | "sev-2"
+  | "sev-3"
+  | "sev-4"
+  | "";
 
 export type TagProps = {
   kind?: TagKind;

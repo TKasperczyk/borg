@@ -6,6 +6,7 @@ import type { SessionRecord, StateSnapshot } from "./api/types";
 const mocks = vi.hoisted(() => ({
   liveSubscribe: vi.fn(() => () => undefined),
   runTurn: vi.fn(),
+  crashMemory: false,
 }));
 
 vi.mock("./hooks/use-live-events", () => ({
@@ -38,6 +39,55 @@ vi.mock("./hooks/use-turn-stream", () => ({
 
 vi.mock("./screens/Cognition", () => ({
   CognitionScreen: () => <div data-testid="cognition-screen" />,
+}));
+
+vi.mock("./screens/Stream", () => ({
+  StreamScreen: () => <div data-testid="stream-screen" />,
+}));
+
+vi.mock("./screens/Memory", () => ({
+  MemoryScreen: ({ onOpenReview }: { onOpenReview: () => void }) => {
+    if (mocks.crashMemory) {
+      throw new Error("memory exploded");
+    }
+    return (
+      <div data-testid="memory-screen">
+        <button type="button" onClick={onOpenReview}>
+          open review
+        </button>
+      </div>
+    );
+  },
+}));
+
+vi.mock("./screens/Identity", () => ({
+  IdentityScreen: () => <div data-testid="identity-screen" />,
+}));
+
+vi.mock("./screens/Commit", () => ({
+  CommitScreen: () => <div data-testid="commit-screen" />,
+}));
+
+vi.mock("./screens/Directives", () => ({
+  DirectivesScreen: () => <div data-testid="directives-screen" />,
+}));
+
+vi.mock("./screens/Review", () => ({
+  ReviewScreen: () => <div data-testid="review-screen" />,
+}));
+
+vi.mock("./screens/Dream", () => ({
+  DreamScreen: ({ onOpenReview }: { onOpenReview: () => void }) => (
+    <div data-testid="dream-screen">
+      <button type="button" onClick={onOpenReview}>
+        open review
+      </button>
+    </div>
+  ),
+}));
+
+vi.mock("./screens/Prompts", () => ({
+  PromptsScreen: () => <div data-testid="prompts-screen" />,
 }));
 
 import { App } from "./App";
@@ -97,6 +147,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  mocks.crashMemory = false;
   window.history.replaceState(null, "", "/");
 });
 
@@ -142,5 +193,74 @@ describe("App", () => {
       "/api/sessions/operator",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("deep-links the shell view and updates the view URL", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+
+      if (url.pathname === "/api/state") {
+        return Promise.resolve(jsonResponse(stateSnapshot()));
+      }
+      if (url.pathname === "/api/sessions" && init?.method !== "POST") {
+        return Promise.resolve(jsonResponse({ sessions: [session()] }));
+      }
+      if (url.pathname === "/api/entities/creator") {
+        return Promise.resolve(jsonResponse(null));
+      }
+
+      return Promise.reject(new Error(`unexpected fetch ${url.pathname}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    window.history.replaceState(null, "", "/?view=memory");
+
+    render(<App />);
+
+    expect(await screen.findByTestId("memory-screen")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "review" }));
+
+    expect(await screen.findByTestId("review-screen")).toBeInTheDocument();
+    expect(new URL(window.location.href).searchParams.get("view")).toBe("review");
+  });
+
+  it("keeps chrome mounted and recovers from a screen crash when the view changes", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const preventExpectedErrorReport = (event: ErrorEvent) => event.preventDefault();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+
+      if (url.pathname === "/api/state") {
+        return Promise.resolve(jsonResponse(stateSnapshot()));
+      }
+      if (url.pathname === "/api/sessions" && init?.method !== "POST") {
+        return Promise.resolve(jsonResponse({ sessions: [session()] }));
+      }
+      if (url.pathname === "/api/entities/creator") {
+        return Promise.resolve(jsonResponse(null));
+      }
+
+      return Promise.reject(new Error(`unexpected fetch ${url.pathname}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    mocks.crashMemory = true;
+    window.history.replaceState(null, "", "/?view=memory");
+    window.addEventListener("error", preventExpectedErrorReport);
+
+    render(<App />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("screen crashed");
+    expect(screen.getByRole("button", { name: "reload" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "retry" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "review" })).toBeInTheDocument();
+
+    mocks.crashMemory = false;
+    fireEvent.click(screen.getByRole("button", { name: "review" }));
+
+    expect(screen.getByTestId("review-screen")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(new URL(window.location.href).searchParams.get("view")).toBe("review");
+    window.removeEventListener("error", preventExpectedErrorReport);
+    consoleError.mockRestore();
   });
 });

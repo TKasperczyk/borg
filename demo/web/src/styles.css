@@ -35,6 +35,44 @@
   --info: oklch(0.78 0.115 232); /* blue, sparingly */
   --info-dim: oklch(0.55 0.075 232);
   --purple: oklch(0.74 0.135 305);
+  --purple-dim: oklch(0.55 0.085 305);
+
+  --acc-tint: oklch(0.84 0.155 142 / 0.08);
+  --acc-tint-soft: oklch(0.84 0.155 142 / 0.06);
+  --acc-tint-strong: oklch(0.84 0.155 142 / 0.18);
+  --warn-tint: oklch(0.835 0.135 85 / 0.08);
+  --warn-tint-strong: oklch(0.835 0.135 85 / 0.18);
+  --bad-tint: oklch(0.7 0.195 26 / 0.08);
+  --bad-tint-strong: oklch(0.7 0.195 26 / 0.18);
+  --info-tint: oklch(0.78 0.115 232 / 0.08);
+  --purple-tint: oklch(0.74 0.135 305 / 0.08);
+
+  --sev-1: var(--info);
+  --sev-2: var(--warn);
+  --sev-3: var(--bad);
+  --sev-4: var(--purple);
+  --sev-1-dim: var(--info-dim);
+  --sev-2-dim: var(--warn-dim);
+  --sev-3-dim: var(--bad-dim);
+  --sev-4-dim: var(--purple-dim);
+  --sev-1-tint: var(--info-tint);
+  --sev-2-tint: var(--warn-tint);
+  --sev-3-tint: var(--bad-tint);
+  --sev-4-tint: var(--purple-tint);
+
+  --line-strong: oklch(0.46 0.008 80);
+
+  --dur-fast: 80ms;
+  --dur: 120ms;
+  --dur-slow: 240ms;
+  --ease: ease;
+
+  --sp-1: 4px;
+  --sp-2: 6px;
+  --sp-3: 8px;
+  --sp-4: 12px;
+  --sp-5: 16px;
+  --sp-6: 24px;
 
   /* type */
   --mono: "JetBrains Mono", "Fira Code", "IBM Plex Mono", ui-monospace, monospace;
@@ -47,6 +85,7 @@
   --fs-lg: 13.5px;
   --fs-xl: 18px;
   --fs-2xl: 22px;
+  --fs-3xl: 30px;
 
   --rail: 60px;
   --topbar: 44px;
@@ -256,16 +295,19 @@ body {
 }
 .topbar-key {
   color: var(--text-mute);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
 .topbar-val {
   color: var(--text);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 .topbar-sep {
   color: var(--text-faint);
+}
+.instrument-mood-glyph {
+  color: var(--purple);
 }
 .prompts-screen {
   padding: 18px 22px;
@@ -394,7 +436,7 @@ body {
   font-size: 12px;
   line-height: 1.5;
   border: 1px solid var(--warn-dim);
-  background: oklch(0.835 0.135 85 / 0.08);
+  background: var(--warn-tint);
   padding: 10px;
 }
 .prompt-freeze-diff {
@@ -432,11 +474,11 @@ body {
 }
 .prompt-freeze-diff-line.added {
   color: var(--acc);
-  background: oklch(0.84 0.155 142 / 0.08);
+  background: var(--acc-tint);
 }
 .prompt-freeze-diff-line.removed {
   color: var(--bad);
-  background: oklch(0.7 0.195 26 / 0.08);
+  background: var(--bad-tint);
 }
 .prompt-freeze-diff-marker {
   color: inherit;
@@ -453,12 +495,12 @@ body {
   cursor: pointer;
   border-radius: 3px;
   transition:
-    color 120ms,
-    background 120ms;
+    color var(--dur) var(--ease),
+    background var(--dur) var(--ease);
 }
 .topbar-reset:hover {
-  color: var(--warn, #e0a050);
-  background: rgba(224, 160, 80, 0.08);
+  color: var(--warn);
+  background: var(--warn-tint);
 }
 
 .live-dot {
@@ -520,8 +562,8 @@ body {
   border: 0;
   cursor: pointer;
   transition:
-    color 120ms,
-    background 120ms;
+    color var(--dur) var(--ease),
+    background var(--dur) var(--ease);
 }
 .rail-btn .glyph {
   font-size: 16px;
@@ -542,6 +584,11 @@ body {
   font-size: 8px;
   color: var(--text-ghost);
   font-variant-numeric: tabular-nums;
+}
+.rail-btn .count-badge {
+  position: absolute;
+  top: 4px;
+  left: 4px;
 }
 .rail-btn:hover {
   color: var(--text);
@@ -582,6 +629,9 @@ body {
   overflow: hidden;
   position: relative;
 }
+.main:has(.session-fleet.collapsed) {
+  grid-template-columns: 44px minmax(0, 1fr);
+}
 .screen-shell {
   min-width: 0;
   overflow: hidden;
@@ -598,8 +648,9 @@ body {
   align-items: center;
   justify-content: space-between;
   height: 32px;
-  padding: 0 14px;
+  padding: 0 8px 0 14px;
   border-bottom: 1px solid var(--line-soft);
+  gap: 8px;
 }
 .sessions-head .title {
   font-size: var(--fs-micro);
@@ -613,6 +664,33 @@ body {
   font-variant-numeric: tabular-nums;
   text-transform: uppercase;
   letter-spacing: var(--eyebrow-ls);
+}
+.session-fleet-toggle {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text-mute);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+.session-fleet-toggle:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+.session-fleet.collapsed .sessions-head {
+  padding: 0;
+  justify-content: center;
+  flex-direction: column;
+  height: 100%;
+  border-bottom: 0;
+}
+.session-fleet.collapsed .sessions-head .title {
+  writing-mode: vertical-rl;
+}
+.session-fleet.collapsed .sessions-head .count {
+  letter-spacing: 0;
 }
 .sessions-presets {
   padding: 8px;
@@ -668,7 +746,7 @@ body {
   color: var(--text);
 }
 .session-row.active {
-  background: oklch(0.84 0.155 142 / 0.06);
+  background: var(--acc-tint-soft);
 }
 .session-row.active::before {
   content: "";
@@ -934,32 +1012,68 @@ body {
 .tag.acc {
   color: var(--acc);
   border-color: var(--acc-dim);
-  background: oklch(0.84 0.155 142 / 0.08);
+  background: var(--acc-tint);
 }
 .tag.warn {
   color: var(--warn);
   border-color: var(--warn-dim);
-  background: oklch(0.835 0.135 85 / 0.08);
+  background: var(--warn-tint);
 }
 .tag.bad {
   color: var(--bad);
   border-color: var(--bad-dim);
-  background: oklch(0.7 0.195 26 / 0.08);
+  background: var(--bad-tint);
 }
 .tag.info {
   color: var(--info);
   border-color: var(--info-dim);
-  background: oklch(0.78 0.115 232 / 0.08);
+  background: var(--info-tint);
 }
 .tag.purple {
   color: var(--purple);
-  border-color: oklch(0.55 0.085 305);
-  background: oklch(0.74 0.135 305 / 0.08);
+  border-color: var(--purple-dim);
+  background: var(--purple-tint);
 }
 .tag.solid {
   background: var(--bg-3);
   color: var(--text);
   border-color: var(--bg-3);
+}
+.tag.sev-1,
+.count-badge.sev-1 {
+  color: var(--sev-1);
+  border-color: var(--sev-1-dim);
+  background: var(--sev-1-tint);
+}
+.tag.sev-2,
+.count-badge.sev-2 {
+  color: var(--sev-2);
+  border-color: var(--sev-2-dim);
+  background: var(--sev-2-tint);
+}
+.tag.sev-3,
+.count-badge.sev-3 {
+  color: var(--sev-3);
+  border-color: var(--sev-3-dim);
+  background: var(--sev-3-tint);
+}
+.tag.sev-4,
+.count-badge.sev-4 {
+  color: var(--sev-4);
+  border-color: var(--sev-4-dim);
+  background: var(--sev-4-tint);
+}
+.count-badge {
+  display: inline-flex;
+  min-width: 15px;
+  height: 14px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+  border: 1px solid var(--line);
+  font-size: 8px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 /* keyboard chord */
@@ -1226,7 +1340,7 @@ body {
 .participation-policy-badge.active {
   color: var(--acc);
   border-color: var(--acc-dim);
-  background: oklch(0.84 0.155 142 / 0.08);
+  background: var(--acc-tint);
 }
 .participation-policy-badge.warn {
   color: var(--warn);
@@ -1428,18 +1542,18 @@ input:not([type])::placeholder {
   font-family: var(--mono);
   font-size: 11.5px;
   color: var(--acc);
-  background: oklch(0.84 0.155 142 / 0.08);
+  background: var(--acc-tint);
   padding: 1px 4px;
   border: 1px solid var(--acc-dim);
   cursor: pointer;
 }
 .chat-msg .body .ref:hover {
-  background: oklch(0.84 0.155 142 / 0.18);
+  background: var(--acc-tint-strong);
 }
 .chat-msg .body .ref.bad {
   color: var(--bad);
   border-color: var(--bad-dim);
-  background: oklch(0.7 0.195 26 / 0.08);
+  background: var(--bad-tint);
 }
 
 .chat-msg .thought {
@@ -1512,7 +1626,7 @@ input:not([type])::placeholder {
   background: var(--bg-1);
   border: 1px solid var(--line);
   padding: 10px 12px;
-  transition: border-color 120ms;
+  transition: border-color var(--dur) var(--ease);
 }
 .chat-input-bar:focus-within {
   border-color: var(--acc-dim);
@@ -3514,7 +3628,7 @@ g.fc-regen-group.active .fc-regen-label-bg {
 .pill.on {
   color: var(--acc);
   border-color: var(--acc-dim);
-  background: oklch(0.84 0.155 142 / 0.08);
+  background: var(--acc-tint);
 }
 .pill:hover {
   color: var(--text);
@@ -3687,7 +3801,7 @@ g.fc-regen-group.active .fc-regen-label-bg {
   gap: 8px;
   padding: 10px;
   border: 1px solid var(--warn-dim);
-  background: oklch(0.835 0.135 85 / 0.08);
+  background: var(--warn-tint);
   color: var(--text-dim);
   font-family: var(--sans);
   font-size: 12px;

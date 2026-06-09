@@ -10,7 +10,7 @@ export type TopbarProps = {
   route?: string;
 };
 
-function wsLabel(state: WsState): string {
+export function wsLabel(state: WsState): string {
   if (state === "live") {
     return "live";
   }
@@ -20,7 +20,7 @@ function wsLabel(state: WsState): string {
   return "down";
 }
 
-function wsToneClass(state: WsState): string {
+export function wsToneClass(state: WsState): string {
   if (state === "live") {
     return "acc";
   }
@@ -30,7 +30,7 @@ function wsToneClass(state: WsState): string {
   return "bad";
 }
 
-function formatTurns(turns: number): string {
+export function formatTurns(turns: number): string {
   return turns.toString().padStart(3, "0");
 }
 
