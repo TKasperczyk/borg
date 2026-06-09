@@ -117,6 +117,8 @@ function installFetch(): ReturnType<typeof vi.fn> {
               id: "strm_att",
               timestamp: 3,
               kind: "user_image_attachment",
+              sender_entity_id: "ent_sender11111111",
+              reply_target_entity_id: "ent_reply111111111",
               content: { attachment_id: "att_1", media_type: "image/png" },
             }),
             streamEntry({
@@ -648,6 +650,35 @@ describe("P2 screens", () => {
     });
   });
 
+  it("opens inspector refs from stream provenance rows", async () => {
+    const live = makeLiveSource();
+    installFetch();
+    const { container } = renderWithInspector(
+      <LiveEventsProvider value={live.live()}>
+        <StreamScreen sessionId="default" />
+      </LiveEventsProvider>,
+      { inspector: true },
+    );
+
+    expect(await screen.findByText("quarantined screenshot")).toBeInTheDocument();
+    const provenance = container.querySelector(".stream-detail .det-body .props");
+    expect(provenance).not.toBeNull();
+    const provenanceView = within(provenance as HTMLElement);
+
+    fireEvent.click(provenanceView.getByRole("button", { name: "jump to default" }));
+    expect(await screen.findByRole("dialog", { name: "Session inspector" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "close inspector" }));
+
+    fireEvent.click(provenanceView.getByRole("button", { name: "jump to turn_1" }));
+    expect(
+      await screen.findByRole("dialog", { name: "Turn evidence inspector" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "close inspector" }));
+
+    fireEvent.click(provenanceView.getByRole("button", { name: "jump to ent_sender11111111" }));
+    expect(await screen.findByRole("dialog", { name: "Entity inspector" })).toBeInTheDocument();
+  });
+
   it("renders compact stream row summaries for object content", async () => {
     const live = makeLiveSource();
     installFetch();
@@ -1035,6 +1066,180 @@ describe("P2 screens", () => {
     expect(await screen.findByText("no open review rows")).toBeInTheDocument();
   });
 
+  it("opens review ref-list ids and keeps review select refs in sync", async () => {
+    const live = makeLiveSource();
+    const leftNodeId = "semn_selectleft1111";
+    const rightNodeId = "semn_selectright111";
+    const edgeId = "seme_selectedge1111";
+    const episodeId = "ep_selectepisode11";
+    const firstDirectiveId = "cdir_selectone1111";
+    const secondDirectiveId = "cdir_selecttwo1111";
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = new URL(String(request), "http://test.invalid");
+      if (url.pathname === "/api/reviews") {
+        return Promise.resolve(
+          jsonResponse({
+            rows: [
+              {
+                id: 61,
+                kind: "contradiction",
+                refs: {
+                  node_ids: [leftNodeId, rightNodeId],
+                  node_labels: ["Left selectable", "Right selectable"],
+                  edge_id: edgeId,
+                  episode_ids: [episodeId],
+                },
+                reason: "select a semantic winner",
+                created_at: 4,
+                resolved_at: null,
+                resolution: null,
+              },
+              {
+                id: 62,
+                kind: "creator_directive_reconciliation",
+                refs: {
+                  subkind: "scope_equivalence",
+                  directive_ids: [firstDirectiveId, secondDirectiveId],
+                  members: [
+                    {
+                      id: firstDirectiveId,
+                      scope_equivalence: {
+                        disclosure_policy: {
+                          content_scope: "allow_list",
+                          mention_policy: "answer_if_asked",
+                          allowed_entity_ids: ["ent_scopeallowed111"],
+                          excluded_entity_ids: [],
+                        },
+                        activation_policy: {
+                          scope: "allow_list",
+                          allowed_entity_ids: ["ent_activation111"],
+                          excluded_entity_ids: [],
+                        },
+                      },
+                    },
+                    {
+                      id: secondDirectiveId,
+                      scope_equivalence: {
+                        disclosure_policy: {
+                          content_scope: "public",
+                          mention_policy: "answer_if_asked",
+                          allowed_entity_ids: [],
+                          excluded_entity_ids: [],
+                        },
+                        activation_policy: {
+                          scope: "public",
+                          allowed_entity_ids: [],
+                          excluded_entity_ids: [],
+                        },
+                      },
+                    },
+                  ],
+                  judgment: { rationale: "merge matching directive scopes" },
+                },
+                reason: "directive scopes need reconciliation",
+                created_at: 5,
+                resolved_at: null,
+                resolution: null,
+              },
+            ],
+          }),
+        );
+      }
+      if (url.pathname === "/api/creator-directives") {
+        return Promise.resolve(
+          jsonResponse({
+            directives: [
+              {
+                id: firstDirectiveId,
+                kind: "subject_fact",
+                text: "First directive.",
+                source_session_id: "default",
+                authorization_stream_entry_ids: [],
+                content_source_stream_entry_ids: [],
+                canonical_fact: "First directive.",
+                operational_directive: null,
+                activation_scope: "allow_list",
+                activation_allowed_entity_ids: ["ent_activation111"],
+                activation_excluded_entity_ids: [],
+                content_scope: "allow_list",
+                mention_policy: "answer_if_asked",
+                status: "active",
+                subject_kind: "entity",
+                subject_entity_id: null,
+                subject_entity_name: null,
+                priority: 1,
+                superseded_by_id: null,
+                revoked_reason: null,
+                created_at: 1,
+                updated_at: 1,
+              },
+              {
+                id: secondDirectiveId,
+                kind: "subject_fact",
+                text: "Second directive.",
+                source_session_id: "default",
+                authorization_stream_entry_ids: [],
+                content_source_stream_entry_ids: [],
+                canonical_fact: "Second directive.",
+                operational_directive: null,
+                activation_scope: "public",
+                activation_allowed_entity_ids: [],
+                activation_excluded_entity_ids: [],
+                content_scope: "public",
+                mention_policy: "answer_if_asked",
+                status: "active",
+                subject_kind: "entity",
+                subject_entity_id: null,
+                subject_entity_name: null,
+                priority: 1,
+                superseded_by_id: null,
+                revoked_reason: null,
+                created_at: 1,
+                updated_at: 1,
+              },
+            ],
+          }),
+        );
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithInspector(
+      <LiveEventsProvider value={live.live()}>
+        <ReviewScreen />
+      </LiveEventsProvider>,
+      { inspector: true },
+    );
+
+    const winnerSelect = (await screen.findByLabelText("winner node")) as HTMLSelectElement;
+    const winnerControl = winnerSelect.parentElement as HTMLElement;
+    expect(
+      within(winnerControl).getByRole("button", { name: `jump to ${leftNodeId}` }),
+    ).toBeInTheDocument();
+    fireEvent.change(winnerSelect, { target: { value: rightNodeId } });
+    expect(
+      within(winnerControl).getByRole("button", { name: `jump to ${rightNodeId}` }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: `jump to ${edgeId}` }));
+    expect(
+      await screen.findByRole("dialog", { name: "Semantic edge inspector" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "close inspector" }));
+
+    const survivorSelect = (await screen.findByLabelText("scope survivor")) as HTMLSelectElement;
+    const survivorControl = survivorSelect.parentElement as HTMLElement;
+    expect(
+      within(survivorControl).getByRole("button", { name: `jump to ${firstDirectiveId}` }),
+    ).toBeInTheDocument();
+    fireEvent.change(survivorSelect, { target: { value: secondDirectiveId } });
+    expect(
+      within(survivorControl).getByRole("button", { name: `jump to ${secondDirectiveId}` }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "jump to ent_scopeallowed111" })).toBeInTheDocument();
+  });
+
   it("drills into contradiction reviews with both semantic nodes and the edge", async () => {
     const live = makeLiveSource();
     const leftNodeId = "semn_aaaaaaaaaaaaaaaa";
@@ -1323,7 +1528,7 @@ describe("P2 screens", () => {
     expect(await screen.findByText("Left semantic node description.")).toBeInTheDocument();
     expect(screen.getByText("Right semantic node description.")).toBeInTheDocument();
     expect(screen.getByText("semantic edge unavailable")).toBeInTheDocument();
-    expect(screen.getByText(edgeId)).toBeInTheDocument();
+    expect(screen.getAllByText(edgeId).length).toBeGreaterThan(0);
     expect(screen.getByText("semantic edge missing")).toBeInTheDocument();
   });
 
@@ -1414,8 +1619,10 @@ describe("P2 screens", () => {
     expect(text).toContain("3");
     expect(text).toContain("2");
     expect(text).not.toContain("vector(");
-    expect(text).not.toContain("semn_");
-    expect(text).not.toContain("ep_");
+    expect(
+      screen.getByRole("button", { name: "jump to semn_abcdefghijklmnop" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "jump to ep_abcdefghijklmnop" })).toBeInTheDocument();
     expect(text).not.toContain("ent_");
   });
 

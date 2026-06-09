@@ -17,6 +17,7 @@ import type {
   SemanticMemoryNode,
 } from "../../api/types";
 import { IdRef } from "../../components/Inspector/IdRef";
+import { resolveObjectType, type ObjectType } from "../../components/Inspector/inspector-id";
 import { SemanticEdgeDetail } from "../../components/SemanticEdgeDetail";
 import { SemanticNodeDetail } from "../../components/SemanticNodeDetail";
 import { Tag } from "../../components/Tag";
@@ -82,6 +83,20 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+function typedTargetType(value: unknown): ObjectType | null {
+  switch (value) {
+    case "semantic_node":
+    case "semantic_edge":
+    case "episode":
+    case "creator_directive":
+    case "commitment":
+    case "entity":
+      return value;
+    default:
+      return null;
+  }
 }
 
 type DetailField = [string, unknown];
@@ -314,6 +329,149 @@ function pairEpisodeRefGroups(refs: Record<string, unknown>): EpisodeRefGroup[] 
   return groups.filter((group) => group.ids.length > 0);
 }
 
+type ReviewRefGroup = {
+  label: string;
+  type: ObjectType;
+  ids: string[];
+};
+
+function addReviewStringRef(
+  groups: ReviewRefGroup[],
+  label: string,
+  type: ObjectType,
+  value: unknown,
+): void {
+  const id = firstString(value);
+  if (id !== null) {
+    groups.push({ label, type, ids: [id] });
+  }
+}
+
+function addReviewArrayRefs(
+  groups: ReviewRefGroup[],
+  label: string,
+  type: ObjectType,
+  value: unknown,
+): void {
+  const ids = stringArray(value);
+  if (ids.length > 0) {
+    groups.push({ label, type, ids });
+  }
+}
+
+function reviewRefGroups(refs: Record<string, unknown>): ReviewRefGroup[] {
+  const groups: ReviewRefGroup[] = [];
+  addReviewArrayRefs(groups, "refs.node_ids", "semantic_node", recordValue(refs, "node_ids"));
+  addReviewStringRef(groups, "refs.edge_id", "semantic_edge", recordValue(refs, "edge_id"));
+  addReviewArrayRefs(
+    groups,
+    "refs.directive_ids",
+    "creator_directive",
+    recordValue(refs, "directive_ids"),
+  );
+  addReviewArrayRefs(
+    groups,
+    "refs.commitment_ids",
+    "commitment",
+    recordValue(refs, "commitment_ids"),
+  );
+
+  const targetId = firstString(recordValue(refs, "target_id"));
+  if (targetId !== null) {
+    const targetType =
+      typedTargetType(recordValue(refs, "target_type")) ?? resolveObjectType(targetId);
+    if (targetType !== null) {
+      groups.push({ label: "refs.target_id", type: targetType, ids: [targetId] });
+    }
+  }
+
+  addReviewStringRef(
+    groups,
+    "refs.invalidated_edge_id",
+    "semantic_edge",
+    recordValue(refs, "invalidated_edge_id"),
+  );
+  addReviewArrayRefs(
+    groups,
+    "refs.dependency_path_edge_ids",
+    "semantic_edge",
+    recordValue(refs, "dependency_path_edge_ids"),
+  );
+  addReviewArrayRefs(
+    groups,
+    "refs.surviving_support_edge_ids",
+    "semantic_edge",
+    recordValue(refs, "surviving_support_edge_ids"),
+  );
+  addReviewArrayRefs(groups, "refs.episode_ids", "episode", recordValue(refs, "episode_ids"));
+  addReviewArrayRefs(
+    groups,
+    "refs.evidence_episode_ids",
+    "episode",
+    recordValue(refs, "evidence_episode_ids"),
+  );
+
+  const sourceOverlap = recordValue(refs, "source_overlap");
+  if (isRecord(sourceOverlap)) {
+    addReviewArrayRefs(
+      groups,
+      "refs.source_overlap.candidate_source_episode_ids",
+      "episode",
+      recordValue(sourceOverlap, "candidate_source_episode_ids"),
+    );
+    addReviewArrayRefs(
+      groups,
+      "refs.source_overlap.matched_source_episode_ids",
+      "episode",
+      recordValue(sourceOverlap, "matched_source_episode_ids"),
+    );
+    addReviewArrayRefs(
+      groups,
+      "refs.source_overlap.overlapping_source_episode_ids",
+      "episode",
+      recordValue(sourceOverlap, "overlapping_source_episode_ids"),
+    );
+  }
+
+  return groups;
+}
+
+function ReviewRefList({ group }: { group: ReviewRefGroup }) {
+  return (
+    <>
+      {group.ids.map((id, index) => (
+        <span key={id}>
+          {index === 0 ? null : ", "}
+          <IdRef id={id} type={group.type} label={id} />
+        </span>
+      ))}
+    </>
+  );
+}
+
+function ReviewReferenceSections({ refs }: { refs: Record<string, unknown> }) {
+  const groups = reviewRefGroups(refs);
+  if (groups.length === 0) {
+    return null;
+  }
+
+  return (
+    <div>
+      <div className="divider">refs</div>
+      <div className="props">
+        {groups.map((group) => (
+          <div className="row" key={group.label}>
+            <span className="k">{group.label}</span>
+            <span className="v">
+              <ReviewRefList group={group} />
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function repairDetailFields(refs: Record<string, unknown>): DetailField[] {
   const fields: DetailField[] = [];
 
@@ -454,6 +612,46 @@ function scopeFieldDisplayValue(member: unknown, field: ScopeField): unknown {
   return value;
 }
 
+function isEntityScopeField(field: ScopeField): boolean {
+  return (
+    field === "disclosure_allowed" ||
+    field === "disclosure_excluded" ||
+    field === "activation_allowed" ||
+    field === "activation_excluded"
+  );
+}
+
+function ScopeFieldRenderedValue({ member, field }: { member: unknown; field: ScopeField }) {
+  const value = scopeFieldValue(member, field);
+
+  if (!isEntityScopeField(field)) {
+    return <>{displayValue(scopeFieldDisplayValue(member, field))}</>;
+  }
+
+  const ids =
+    typeof value === "string"
+      ? [value]
+      : Array.isArray(value)
+        ? value.filter((item): item is string => typeof item === "string")
+        : [];
+
+  if (ids.length === 0) {
+    return <>{displayValue(scopeFieldDisplayValue(member, field))}</>;
+  }
+
+  return (
+    <>
+      {ids.length} {ids.length === 1 ? "entity" : "entities"}{" "}
+      {ids.map((id, index) => (
+        <span key={id}>
+          {index === 0 ? null : ", "}
+          <IdRef id={id} type="entity" label={shortId(id)} />
+        </span>
+      ))}
+    </>
+  );
+}
+
 function scopeDifferences(members: readonly unknown[]): Set<ScopeField> {
   const fields: ScopeField[] = [
     "content_scope",
@@ -491,6 +689,7 @@ function ReviewDetail({ row }: { row: ReviewRow }) {
           </div>
         ))}
       </div>
+      <ReviewReferenceSections refs={row.refs} />
       {diagnostics.length === 0 ? null : (
         <div>
           <div className="divider">resolver diagnostic</div>
@@ -739,16 +938,25 @@ function GenericReviewActions({
         <input value={note} onChange={(event) => onNote(event.target.value)} />
       </label>
       {hasWinnerPicker ? (
-        <label className="modal-field">
+        <div className="modal-field">
           <span>winner node</span>
-          <select value={winner} onChange={(event) => onWinner(event.target.value)}>
-            {ids.map((id, index) => (
-              <option value={id} key={id}>
-                {nodeOptionLabel(row, id, index)}
-              </option>
-            ))}
-          </select>
-        </label>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <select
+              aria-label="winner node"
+              value={winner}
+              onChange={(event) => onWinner(event.target.value)}
+            >
+              {ids.map((id, index) => (
+                <option value={id} key={id}>
+                  {nodeOptionLabel(row, id, index)}
+                </option>
+              ))}
+            </select>
+            {winner.length === 0 ? null : (
+              <IdRef id={winner} type="semantic_node" label={shortId(winner)} />
+            )}
+          </div>
+        </div>
       ) : null}
       <div className="operator-actions">
         {actions.map((action) => {
@@ -811,6 +1019,7 @@ function ReconciliationReview({
           <span className="v">{displayValue(judgment.rationale)}</span>
         </div>
       </div>
+      <ReviewReferenceSections refs={refs} />
 
       <div
         style={{
@@ -843,19 +1052,33 @@ function ReconciliationReview({
           alignItems: "end",
         }}
       >
-        <label className="modal-field">
+        <div className="modal-field">
           <span>scope survivor</span>
-          <select value={survivor} onChange={(event) => onSurvivor(event.target.value)}>
-            {ids.map((id, index) => {
-              const directive = directivesById.get(id);
-              return (
-                <option value={id} key={id}>
-                  member {index + 1} {directive?.content_scope ?? ""}
-                </option>
-              );
-            })}
-          </select>
-        </label>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <select
+              aria-label="scope survivor"
+              value={survivor}
+              onChange={(event) => onSurvivor(event.target.value)}
+            >
+              {ids.map((id, index) => {
+                const directive = directivesById.get(id);
+                return (
+                  <option value={id} key={id}>
+                    member {index + 1} {directive?.content_scope ?? ""}
+                  </option>
+                );
+              })}
+            </select>
+            {survivor.length === 0 ? null : (
+              <IdRef
+                id={survivor}
+                type="creator_directive"
+                label={shortId(survivor)}
+                hint={directivesById.get(survivor)}
+              />
+            )}
+          </div>
+        </div>
         <div className="operator-actions">
           <button
             type="button"
@@ -917,7 +1140,7 @@ function DirectiveMemberCard({
           <div className="row" key={field}>
             <span className={`k ${differences.has(field) ? "warn" : ""}`}>{label}</span>
             <span className={`v ${differences.has(field) ? "warn" : ""}`}>
-              {displayValue(scopeFieldDisplayValue(member, field))}
+              <ScopeFieldRenderedValue member={member} field={field} />
             </span>
           </div>
         ))}

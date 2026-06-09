@@ -447,6 +447,80 @@ function attachmentSummary(entry: StreamEntry): string {
   return parts.join(" · ");
 }
 
+function streamAttachmentPerceptionId(
+  entry: StreamEntry,
+  attachment?: AttachmentMetadataResponse | null,
+): string | undefined {
+  if (
+    attachment?.attachment.perception_id !== null &&
+    attachment?.attachment.perception_id !== undefined
+  ) {
+    return attachment.attachment.perception_id;
+  }
+
+  const content: Record<string, unknown> = isRecord(entry.content) ? entry.content : {};
+  return optionalString(content.perception_id);
+}
+
+function StreamProvenanceRows({ entry, status }: { entry: StreamEntry; status: string }) {
+  return (
+    <div className="props">
+      <div className="row">
+        <span className="k">kind</span>
+        <span className="v">{entry.kind}</span>
+      </div>
+      <div className="row">
+        <span className="k">session_id</span>
+        <span className="v">
+          <IdRef id={entry.session_id} type="session" label={entry.session_id} />
+        </span>
+      </div>
+      <div className="row">
+        <span className="k">turn_id</span>
+        <span className="v">
+          {entry.turn_id === undefined ? (
+            "—"
+          ) : (
+            <IdRef id={entry.turn_id} type="turn" label={entry.turn_id} />
+          )}
+        </span>
+      </div>
+      <div className="row">
+        <span className="k">audience</span>
+        <span className="v">{entry.audience ?? "global"}</span>
+      </div>
+      <div className="row">
+        <span className="k">sender_entity_id</span>
+        <span className="v">
+          {entry.sender_entity_id === null ? (
+            "—"
+          ) : (
+            <IdRef id={entry.sender_entity_id} type="entity" label={entry.sender_entity_id} />
+          )}
+        </span>
+      </div>
+      <div className="row">
+        <span className="k">reply_target_entity_id</span>
+        <span className="v">
+          {entry.reply_target_entity_id === null ? (
+            "—"
+          ) : (
+            <IdRef
+              id={entry.reply_target_entity_id}
+              type="entity"
+              label={entry.reply_target_entity_id}
+            />
+          )}
+        </span>
+      </div>
+      <div className="row">
+        <span className="k">status</span>
+        <span className="v">{status}</span>
+      </div>
+    </div>
+  );
+}
+
 function StreamRowSummary({ entry }: { entry: StreamEntry }): ReactNode {
   switch (entry.kind) {
     case "user_msg":
@@ -658,6 +732,9 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
       ) as Record<string, number>,
     [entries, windowAudiences],
   );
+  const selectedStatus = selected === null ? null : summarizeStatus(selected, attachmentApi.data);
+  const selectedAttachmentPerceptionId =
+    selected === null ? undefined : streamAttachmentPerceptionId(selected, attachmentApi.data);
 
   const toggleKind = (kind: StreamEntryKind) => {
     setKinds((current) => {
@@ -824,11 +901,8 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
                 {selected.audience ?? "global"}
               </div>
               <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                <Tag
-                  kind={summarizeStatus(selected, attachmentApi.data) === "active" ? "acc" : "bad"}
-                  dot
-                >
-                  {summarizeStatus(selected, attachmentApi.data)}
+                <Tag kind={selectedStatus === "active" ? "acc" : "bad"} dot>
+                  {selectedStatus}
                 </Tag>
                 <Tag>
                   <IdRef id={selected.session_id} type="session" label={selected.session_id} />
@@ -858,7 +932,22 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
                       quarantined={attachmentApi.data?.status.quarantined === true}
                     />
                     <div className="att-card-meta">
-                      <div className="att-card-id">{selectedAttachmentId}</div>
+                      <div className="att-card-id">
+                        <IdRef
+                          id={selectedAttachmentId}
+                          type="attachment"
+                          label={selectedAttachmentId}
+                          hint={attachmentApi.data?.attachment}
+                        />
+                        {selectedAttachmentPerceptionId === undefined ? null : (
+                          <IdRef
+                            id={selectedAttachmentPerceptionId}
+                            type="image_perception"
+                            label={`perception ${selectedAttachmentPerceptionId}`}
+                            hint={attachmentApi.data?.perception}
+                          />
+                        )}
+                      </div>
                       <div className="att-card-caption">
                         {attachmentApi.data?.perception?.caption ?? "perception unavailable"}
                       </div>
@@ -889,13 +978,7 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
               <div className="upper dim" style={{ marginTop: 16, marginBottom: 6 }}>
                 provenance
               </div>
-              <pre>{`source_kind:   ${selected.kind}
-session:       ${selected.session_id}
-turn:          ${selected.turn_id ?? "—"}
-audience:      ${selected.audience ?? "global"}
-sender:        ${selected.sender_entity_id ?? "—"}
-reply_target:  ${selected.reply_target_entity_id ?? "—"}
-status:        ${summarizeStatus(selected, attachmentApi.data)}`}</pre>
+              <StreamProvenanceRows entry={selected} status={selectedStatus ?? "active"} />
             </div>
           </>
         )}

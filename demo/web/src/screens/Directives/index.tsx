@@ -17,6 +17,7 @@ import type {
   SharedStateEntry,
 } from "../../api/types";
 import { IdRef } from "../../components/Inspector/IdRef";
+import { resolveObjectType, type ObjectType } from "../../components/Inspector/inspector-id";
 import { Modal } from "../../components/Modal";
 import { SupersededByChip } from "../../components/SupersededByChip";
 import { Tag } from "../../components/Tag";
@@ -127,6 +128,25 @@ function emptyLabel(value: string | null): string {
 
 function joinedIds(ids: readonly string[]): string {
   return ids.length === 0 ? "—" : ids.map(shortId).join(", ");
+}
+
+function InlineIdRefList({
+  ids,
+  type,
+}: {
+  ids: readonly string[];
+  type: ObjectType;
+}): ReactNode {
+  if (ids.length === 0) {
+    return "—";
+  }
+
+  return ids.map((id, index) => (
+    <span key={id}>
+      {index === 0 ? null : ", "}
+      <IdRef id={id} type={type} label={shortId(id)} />
+    </span>
+  ));
 }
 
 function sortLabel(sort: SortMode): string {
@@ -377,7 +397,7 @@ function commitmentStatusLabel(commitment: CommitmentItem | undefined): string {
 function canonicalTargetRows(
   entry: SharedStateEntry,
   commitmentsById: ReadonlyMap<string, CommitmentItem>,
-): Array<{ channel: string; id: string; status: string }> {
+): Array<{ channel: string; id: string; status: string; hint?: unknown }> {
   return [
     ...entry.canonicalizes.goal_ids.map((id) => ({
       channel: "goal",
@@ -388,6 +408,7 @@ function canonicalTargetRows(
       channel: "commitment",
       id,
       status: commitmentStatusLabel(commitmentsById.get(id)),
+      hint: commitmentsById.get(id),
     })),
     ...entry.canonicalizes.action_ids.map((id) => ({
       channel: "action",
@@ -410,6 +431,40 @@ function relationLabel(relation: SharedStateRelation): string {
   }
 
   return `related via shared source ${relation.streamIds.map(shortId).join(", ")}`;
+}
+
+function StructuredRelationLabel({ relation }: { relation: SharedStateRelation }) {
+  if (relation.kind === "canonicalized_commitment") {
+    return (
+      <>
+        related via canonicalized commitment{" "}
+        <IdRef
+          id={relation.commitment.id}
+          type="commitment"
+          label={shortId(relation.commitment.id)}
+          hint={relation.commitment}
+        />{" "}
+        ({commitmentStatusLabel(relation.commitment)}) source{" "}
+        <InlineIdRefList ids={relation.streamIds} type="stream_entry" />
+      </>
+    );
+  }
+
+  return (
+    <>
+      related via shared source <InlineIdRefList ids={relation.streamIds} type="stream_entry" />
+    </>
+  );
+}
+
+function canonicalTargetInspectType(id: string): ObjectType | undefined {
+  const type = resolveObjectType(id);
+  return type === "goal" ||
+    type === "commitment" ||
+    type === "action_record" ||
+    type === "open_question"
+    ? type
+    : undefined;
 }
 
 function canonicalizedCommitmentWarningState(
@@ -634,26 +689,35 @@ function SharedStateLifecycleRow({
                 relation.kind === "canonicalized_commitment" ? relation.commitment.id : "source"
               }`}
               className="dim"
+              title={relationLabel(relation)}
               style={{ fontSize: 10.5, lineHeight: 1.45 }}
             >
-              {relationLabel(relation)}
+              <StructuredRelationLabel relation={relation} />
             </div>
           ))}
         </div>
       )}
       {canonicalTargets.length === 0 ? null : (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
-          {canonicalTargets.map((target) => (
-            <SupersededByChip
-              key={`${target.channel}:${target.id}`}
-              id={target.id}
-              label={`${target.channel} ${shortId(target.id)} · ${target.status}`}
-              active={focusedCanonicalTargetId === target.id}
-              title={`Inspect canonical target ${target.id}`}
-              ariaLabel={`inspect canonical target ${target.id}`}
-              onOpen={onOpenCanonicalTarget}
-            />
-          ))}
+          {canonicalTargets.map((target) => {
+            const inspectType = canonicalTargetInspectType(target.id);
+            return (
+              <SupersededByChip
+                key={`${target.channel}:${target.id}`}
+                id={target.id}
+                label={`${target.channel} ${shortId(target.id)} · ${target.status}`}
+                active={focusedCanonicalTargetId === target.id}
+                title={`Focus canonical target ${target.id}`}
+                ariaLabel={`focus canonical target ${target.id}`}
+                onOpen={onOpenCanonicalTarget}
+                inspectType={inspectType}
+                inspectHint={target.hint}
+                inspectAriaLabel={
+                  inspectType === undefined ? undefined : `inspect canonical target ${target.id}`
+                }
+              />
+            );
+          })}
         </div>
       )}
       {canonicalCommitmentWarningState === null ? null : (
@@ -1128,6 +1192,22 @@ function CreatorDirectiveDetail({
           )}
         </div>
 
+        <div className="divider">sources</div>
+        <div className="props">
+          <div className="row">
+            <span className="k">authorization</span>
+            <span className="v">
+              <InlineIdRefList ids={directive.authorization_stream_entry_ids} type="stream_entry" />
+            </span>
+          </div>
+          <div className="row">
+            <span className="k">content source</span>
+            <span className="v">
+              <InlineIdRefList ids={directive.content_source_stream_entry_ids} type="stream_entry" />
+            </span>
+          </div>
+        </div>
+
         <div className="divider">activation</div>
         <div className="props">
           <div className="row">
@@ -1136,11 +1216,15 @@ function CreatorDirectiveDetail({
           </div>
           <div className="row">
             <span className="k">allowed ids</span>
-            <span className="v">{joinedIds(directive.activation_allowed_entity_ids)}</span>
+            <span className="v">
+              <InlineIdRefList ids={directive.activation_allowed_entity_ids} type="entity" />
+            </span>
           </div>
           <div className="row">
             <span className="k">excluded ids</span>
-            <span className="v">{joinedIds(directive.activation_excluded_entity_ids)}</span>
+            <span className="v">
+              <InlineIdRefList ids={directive.activation_excluded_entity_ids} type="entity" />
+            </span>
           </div>
         </div>
 

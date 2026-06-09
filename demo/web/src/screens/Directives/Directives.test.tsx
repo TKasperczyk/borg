@@ -359,8 +359,10 @@ describe("DirectivesScreen", () => {
       canonical_fact: null,
       operational_directive: "Selected policy.",
       source_session_id: "sess_tom111111111",
-      authorization_stream_entry_ids: ["strm_rule_source"],
+      authorization_stream_entry_ids: ["strm_auth_source"],
       content_source_stream_entry_ids: ["strm_rule_source"],
+      activation_allowed_entity_ids: ["ent_allowed1111111"],
+      activation_excluded_entity_ids: ["ent_excluded111111"],
       priority: 80,
     });
     const retiredCommitment = commitment({
@@ -445,13 +447,37 @@ describe("DirectivesScreen", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithInspector(<DirectivesScreen />);
+    renderWithInspector(<DirectivesScreen />, { inspector: true });
 
     expect(await screen.findByText("rule.botarena.language")).toBeInTheDocument();
     expect(screen.getByText(/related via canonicalized commitment/)).toHaveTextContent("revoked");
     expect(
+      screen.getByRole("button", { name: `jump to ${retiredCommitment.id}` }),
+    ).toBeInTheDocument();
+    const canonicalFocus = screen.getByRole("button", {
+      name: `focus canonical target ${retiredCommitment.id}`,
+    });
+    expect(canonicalFocus).toHaveTextContent("revoked");
+    fireEvent.click(canonicalFocus);
+    expect(canonicalFocus).toHaveAttribute("aria-current", "true");
+    fireEvent.click(
       screen.getByRole("button", { name: `inspect canonical target ${retiredCommitment.id}` }),
-    ).toHaveTextContent("revoked");
+    );
+    expect(await screen.findByRole("dialog", { name: "Commitment inspector" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "close inspector" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "jump to ent_allowed1111111" }));
+    expect(await screen.findByRole("dialog", { name: "Entity inspector" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "close inspector" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "jump to strm_auth_source" }));
+    expect(
+      await screen.findByRole("dialog", { name: "Stream entry inspector" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "close inspector" }));
+
+    fireEvent.click(screen.getByRole("button", { name: `jump to ${retiredCommitment.id}` }));
+    expect(await screen.findByRole("dialog", { name: "Commitment inspector" })).toBeInTheDocument();
     expect(screen.getByText("rule.shared-source-only")).toBeInTheDocument();
     expect(screen.getByText(/related via shared source/)).toBeInTheDocument();
     expect(
