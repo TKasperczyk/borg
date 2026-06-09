@@ -3971,6 +3971,418 @@ g.fc-regen-group.active .fc-regen-label-bg {
     transform: rotate(360deg);
   }
 }
+
+/* ─── cognitive orrery ──────────────────────────────────────────── */
+
+.orr-mission {
+  display: grid;
+  grid-template-columns: minmax(104px, 16%) minmax(420px, 1fr) minmax(104px, 16%);
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-0);
+  overflow: hidden;
+}
+
+.orr-mission-column {
+  min-width: 0;
+  border-inline: 1px solid var(--line-soft);
+  background: var(--bg-0);
+}
+
+.orr-mission-main {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.orr-shell {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  background: var(--bg-0);
+  color: var(--text);
+}
+
+.orr-full {
+  padding: 18px;
+}
+
+.orr-compact {
+  width: 220px;
+  height: 220px;
+  padding: 6px;
+}
+
+.orr-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.orr-field {
+  fill: var(--bg-0);
+}
+
+.orr-outer-grid {
+  fill: none;
+  stroke: var(--line-ghost);
+  stroke-width: 1;
+  stroke-dasharray: 2 8;
+}
+
+.orr-outer-grid-soft {
+  opacity: 0.56;
+}
+
+.orr-memory-band,
+.orr-dream-satellite,
+.orr-governance-arc,
+.orr-fault-system,
+.orr-stream-system {
+  cursor: pointer;
+  outline: none;
+}
+
+.orr-memory-ring {
+  fill: none;
+  stroke: var(--info-dim);
+  opacity: 0.74;
+  transition:
+    stroke var(--dur) var(--ease),
+    opacity var(--dur) var(--ease),
+    filter var(--dur) var(--ease);
+}
+
+.orr-memory-band:hover .orr-memory-ring,
+.orr-memory-band:focus-visible .orr-memory-ring {
+  stroke: var(--info);
+  opacity: 1;
+  filter: drop-shadow(0 0 3px oklch(0.78 0.115 232 / 0.32));
+}
+
+.orr-memory-label,
+.orr-memory-count,
+.orr-dream-label,
+.orr-governance-label,
+.orr-fault-label,
+.orr-stream-phase,
+.orr-stream-turn,
+.orr-core-label,
+.orr-core-health,
+.orr-state-note {
+  font-family: var(--mono);
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.orr-memory-label {
+  fill: var(--text-mid);
+  font-size: 10px;
+}
+
+.orr-memory-count {
+  fill: var(--text-faint);
+  font-size: 9px;
+}
+
+.orr-core-glow {
+  opacity: 0.9;
+}
+
+.orr-core-body {
+  fill: var(--bg-1);
+  stroke: var(--line-strong);
+  stroke-width: 1.2;
+}
+
+.orr-core-dot {
+  fill: var(--text-faint);
+}
+
+.orr-core-live .orr-core-dot,
+.orr-core-active .orr-core-dot {
+  fill: var(--acc);
+  filter: drop-shadow(0 0 6px var(--acc));
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.orr-core-live .orr-core-body,
+.orr-core-active .orr-core-body {
+  stroke: var(--acc-dim);
+}
+
+.orr-core-warn .orr-core-dot {
+  fill: var(--warn);
+}
+
+.orr-core-warn .orr-core-body {
+  stroke: var(--warn-dim);
+}
+
+.orr-core-bad .orr-core-dot {
+  fill: var(--bad);
+}
+
+.orr-core-bad .orr-core-body {
+  stroke: var(--bad-dim);
+}
+
+.orr-core-label {
+  fill: var(--text-faint);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: var(--eyebrow-ls);
+}
+
+.orr-core-health {
+  fill: var(--text-mute);
+  font-size: 10px;
+}
+
+.orr-dream-orbit {
+  fill: none;
+  stroke: var(--purple-dim);
+  stroke-width: 1;
+  stroke-dasharray: 3 7;
+  opacity: 0.58;
+}
+
+.orr-dream-tether {
+  stroke: var(--line-ghost);
+  stroke-width: 0.7;
+  opacity: 0.5;
+}
+
+.orr-dream-orbit-mark {
+  fill: var(--bg-1);
+  stroke: var(--purple-dim);
+  stroke-width: 1.2;
+}
+
+.orr-dream-dot {
+  fill: var(--purple);
+}
+
+.orr-dream-satellite-enabled .orr-dream-orbit-mark {
+  stroke: var(--purple);
+}
+
+.orr-dream-satellite-muted {
+  opacity: 0.54;
+}
+
+.orr-dream-satellite-running .orr-dream-orbit-mark {
+  stroke: var(--warn);
+  filter: drop-shadow(0 0 6px oklch(0.835 0.135 85 / 0.46));
+  animation: dreamSpin 1.6s linear infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.orr-dream-satellite-running .orr-dream-dot {
+  fill: var(--warn);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.orr-dream-satellite-bad .orr-dream-orbit-mark {
+  stroke: var(--bad);
+}
+
+.orr-dream-satellite-bad .orr-dream-dot {
+  fill: var(--bad);
+}
+
+.orr-dream-label {
+  fill: var(--text-faint);
+  font-size: 8.5px;
+}
+
+.orr-governance-arc path {
+  fill: none;
+  stroke-width: 5;
+  stroke-linecap: round;
+  opacity: 0.78;
+  transition:
+    stroke-width var(--dur) var(--ease),
+    opacity var(--dur) var(--ease);
+}
+
+.orr-governance-arc:hover path,
+.orr-governance-arc:focus-visible path {
+  stroke-width: 7;
+  opacity: 1;
+}
+
+.orr-governance-critical path {
+  stroke: var(--bad);
+}
+
+.orr-governance-advisory path {
+  stroke: var(--warn);
+}
+
+.orr-governance-directives path {
+  stroke: var(--purple);
+}
+
+.orr-governance-label {
+  fill: var(--text-mute);
+  font-size: 10px;
+}
+
+.orr-fault-node {
+  fill: var(--warn);
+  stroke: var(--bg-0);
+  stroke-width: 1.5;
+}
+
+.orr-fault-warn .orr-fault-node {
+  fill: var(--warn);
+  filter: drop-shadow(0 0 5px oklch(0.835 0.135 85 / 0.38));
+}
+
+.orr-fault-bad .orr-fault-node {
+  fill: var(--bad);
+  filter: drop-shadow(0 0 5px oklch(0.7 0.195 26 / 0.42));
+}
+
+.orr-fault-label {
+  fill: var(--text-faint);
+  font-size: 10px;
+}
+
+.orr-fault-warn .orr-fault-label {
+  fill: var(--warn);
+}
+
+.orr-fault-bad .orr-fault-label {
+  fill: var(--bad);
+}
+
+.orr-stream-spine {
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+.orr-spine-arrow {
+  fill: var(--purple);
+}
+
+.orr-turn-pulse {
+  fill: var(--text-faint);
+  stroke: var(--bg-0);
+  stroke-width: 1.5;
+}
+
+.orr-stream-active .orr-turn-pulse {
+  fill: var(--acc);
+  filter: drop-shadow(0 0 7px var(--acc));
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.orr-stream-warn .orr-turn-pulse {
+  fill: var(--warn);
+}
+
+.orr-stream-bad .orr-turn-pulse {
+  fill: var(--bad);
+}
+
+.orr-stream-phase {
+  fill: var(--text-dim);
+  font-size: 10.5px;
+}
+
+.orr-stream-turn {
+  fill: var(--text-faint);
+  font-size: 9px;
+}
+
+.orr-state-note {
+  fill: var(--text-faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: var(--eyebrow-ls);
+}
+
+.orr-state-note-bad {
+  fill: var(--bad);
+}
+
+.orr-compact .orr-memory-label,
+.orr-compact .orr-memory-count,
+.orr-compact .orr-dream-label,
+.orr-compact .orr-governance-label,
+.orr-compact .orr-fault-label,
+.orr-compact .orr-stream-phase,
+.orr-compact .orr-stream-turn,
+.orr-compact .orr-core-label,
+.orr-compact .orr-core-health {
+  display: none;
+}
+
+.orr-mini {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 24px;
+  flex: 0 0 auto;
+}
+
+.orr-mini-svg {
+  width: 42px;
+  height: 24px;
+  display: block;
+}
+
+.orr-mini-ring {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.orr-mini-core {
+  fill: var(--text-faint);
+}
+
+.orr-mini-live .orr-mini-core {
+  fill: var(--acc);
+  filter: drop-shadow(0 0 5px var(--acc));
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.orr-mini-warn .orr-mini-core {
+  fill: var(--warn);
+}
+
+.orr-mini-bad .orr-mini-core {
+  fill: var(--bad);
+}
+
+.orr-mini-dream {
+  fill: var(--purple-dim);
+}
+
+.orr-mini-dream-running .orr-mini-dream {
+  fill: var(--warn);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.orr-mini-review {
+  fill: var(--text-ghost);
+}
+
+.orr-mini-has-reviews .orr-mini-review {
+  fill: var(--warn);
+}
+
+.orr-mini-bad.orr-mini-has-reviews .orr-mini-review {
+  fill: var(--bad);
+}
 .modal-field {
   display: grid;
   gap: 5px;

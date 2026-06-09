@@ -22,6 +22,7 @@ import { DirectivesScreen } from "./screens/Directives";
 import { DreamScreen } from "./screens/Dream";
 import { IdentityScreen } from "./screens/Identity";
 import { MemoryScreen } from "./screens/Memory";
+import { MissionControlScreen } from "./screens/MissionControl";
 import { PromptsScreen } from "./screens/Prompts";
 import { ReviewScreen } from "./screens/Review";
 import { StreamScreen } from "./screens/Stream";
@@ -115,8 +116,15 @@ function AppShellContent({
   setOperatorChatError,
   turnStream,
 }: AppShellContentProps) {
-  const { stateApi, counts, sessionsApi, sessionActivity, lastMaintenanceTick, wsState } =
-    useLiveCache();
+  const {
+    stateApi,
+    counts,
+    sessionsApi,
+    sessionActivity,
+    lastMaintenanceTick,
+    dreamActivity,
+    wsState,
+  } = useLiveCache();
   const refetchState = stateApi.refetch;
   const refetchSessions = sessionsApi.refetch;
   const activeSession =
@@ -165,6 +173,7 @@ function AppShellContent({
           creator={creator}
           state={stateApi.data}
           wsState={wsState}
+          dreamActivity={dreamActivity}
           now={now}
           route={view}
         />
@@ -190,6 +199,9 @@ function AppShellContent({
                   session={activeSession}
                   onSessionPolicyChanged={refetchSessionState}
                 />
+              ) : null}
+              {view === "mission" ? (
+                <MissionControlScreen turnStream={turnStream} onNavigate={setView} />
               ) : null}
               {view === "stream" ? <StreamScreen sessionId={sessionId} /> : null}
               {view === "memory" ? (

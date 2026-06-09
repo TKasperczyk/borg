@@ -1,5 +1,7 @@
 import type { EntityRecord, SessionRecord, StateSnapshot, WsState } from "../api/types";
+import type { DreamActivity } from "../hooks/use-live-cache";
 import type { RouteId } from "../routes";
+import { MiniOrrery } from "./orrery/MiniOrrery";
 import { ResetButton } from "./ResetButton";
 import { countValue, moodLabel } from "./StatusBar";
 import { formatTurns, wsLabel, wsToneClass } from "./Topbar";
@@ -11,6 +13,7 @@ export type InstrumentStripProps = {
   creator: EntityRecord | null;
   state: StateSnapshot | null;
   wsState: WsState;
+  dreamActivity: DreamActivity | null;
   now: string;
   route: RouteId;
 };
@@ -35,6 +38,7 @@ export function InstrumentStrip({
   creator,
   state,
   wsState,
+  dreamActivity,
   now,
   route,
 }: InstrumentStripProps) {
@@ -74,6 +78,11 @@ export function InstrumentStrip({
           <span className="k">ws</span>
           <span className={`v ${wsToneClass(wsState)}`}>{wsLabel(wsState)}</span>
         </div>
+        <MiniOrrery
+          wsState={wsState}
+          dreamRunning={dreamActivity !== null}
+          openReviews={state?.counts.open_reviews ?? 0}
+        />
         <div className="topbar-pill">
           <span className="k">mood</span>
           <span className="v">

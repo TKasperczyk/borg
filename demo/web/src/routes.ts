@@ -1,4 +1,5 @@
 export type RouteId =
+  | "mission"
   | "cognition"
   | "stream"
   | "memory"
@@ -20,6 +21,7 @@ export type RailItem = {
 export const DEFAULT_ROUTE_ID: RouteId = "cognition";
 
 export const RAIL_ITEMS: readonly RailItem[] = [
+  { id: "mission", label: "mission", short: "MC", glyph: "⌂", num: 0 },
   { id: "cognition", label: "cognition", short: "COG", glyph: "ψ", num: 1 },
   { id: "stream", label: "stream", short: "STR", glyph: "≣", num: 2 },
   { id: "memory", label: "memory", short: "MEM", glyph: "◇", num: 3 },
