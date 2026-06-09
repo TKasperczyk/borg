@@ -97,7 +97,7 @@ describe("lifecycle ops", () => {
     expect(updateStatus).toHaveBeenCalledWith(
       goalId,
       "done",
-      { kind: "online", process: "decision_artifact_reconciliation" },
+      { kind: "online", process: "shared_state_reconciliation" },
       { canonicalizedByArtifactEntryId: entry.id },
     );
   });
@@ -154,7 +154,7 @@ describe("lifecycle ops", () => {
     expect(revoke).toHaveBeenCalledWith(
       commitmentId,
       `canonicalized_by_artifact_entry_id=${entry.id}`,
-      { kind: "online", process: "decision_artifact_reconciliation" },
+      { kind: "online", process: "shared_state_reconciliation" },
       undefined,
       { canonicalizedByArtifactEntryId: entry.id },
     );
@@ -282,7 +282,7 @@ describe("lifecycle ops", () => {
       },
       tracer,
       turnId: "turn_1",
-      traceSource: "decision_artifact_semantic_revision",
+      traceSource: "shared_state_semantic_revision",
     });
 
     expect(result.status).toBe("success");
@@ -295,7 +295,7 @@ describe("lifecycle ops", () => {
           fromStatus: "active",
           toStatus: "superseded",
           correctedBy,
-          source: "decision_artifact_semantic_revision",
+          source: "shared_state_semantic_revision",
         },
       },
     ]);
@@ -819,7 +819,7 @@ describe("lifecycle ops", () => {
         repository: {
           markSuperseded: vi.fn(async () => null),
         },
-        traceSource: "decision_artifact_semantic_revision",
+        traceSource: "shared_state_semantic_revision",
       }),
     ).resolves.toMatchObject({ status: "no_op", reason: "missing" });
 

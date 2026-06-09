@@ -33,17 +33,34 @@ import {
   topSharedStateEntryKeysByCount,
 } from "./state-key.js";
 
+// Tunes the default maximum number of shared-state entries rendered.
 const DEFAULT_SHARED_STATE_MAX_ENTRIES = 40;
+
+// Tunes the default token budget for rendered shared-state content.
 const DEFAULT_SHARED_STATE_MAX_TOKENS = 5_000;
+
+// Tunes reserved render slots by shared-state entry kind.
 const DEFAULT_SHARED_STATE_RESERVED_SLOTS = {
   live: 8,
   invalidated: 3,
 } as const satisfies Partial<Record<SharedStateEntryKind, number>>;
+
+// Tunes the maximum locked shared-state entries rendered.
 const DEFAULT_SHARED_STATE_LOCKED_CAP = 14;
+
+// Tunes newest-state-change entries protected during shared-state rendering.
 const DEFAULT_NEWEST_STATE_CHANGE_RESERVED_SLOTS = 3;
+
+// Tunes the minimum token floor needed to render one shared-state entry.
 const SHARED_STATE_SINGLE_ENTRY_FLOOR_TOKENS = 200;
+
+// Tunes the marker appended when shared-state text is truncated.
 const SHARED_STATE_TEXT_TRUNCATION_MARKER = " ... [text truncated]";
+
+// Tunes compact-index excerpt length for shared-state render summaries.
 export const SHARED_STATE_COMPACT_INDEX_EXCERPT_CHAR_LIMIT = 80;
+
+// Tunes when shared-state render summaries classify durable turn age as recent.
 export const SHARED_STATE_RECENT_TURN_THRESHOLD = 5;
 
 export type SharedStateArtifactRenderSummary = {

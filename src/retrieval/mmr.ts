@@ -1,5 +1,8 @@
 import { cosineSimilarity } from "./embedding-similarity.js";
 
+// Tunes the default balance between relevance and diversity in MMR selection.
+export const DEFAULT_MMR_LAMBDA = 0.7;
+
 export type MmrCandidate<T> = {
   item: T;
   vector: Float32Array;
@@ -16,7 +19,7 @@ export function applyMmr<T>(
     return [];
   }
 
-  const lambda = options.lambda ?? 0.7;
+  const lambda = options.lambda ?? DEFAULT_MMR_LAMBDA;
   const remaining = [...candidates];
   const selected: MmrCandidate<T>[] = [];
 

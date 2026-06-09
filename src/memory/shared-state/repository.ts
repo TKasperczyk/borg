@@ -416,7 +416,7 @@ export class SharedStateRepository {
 
     assertIdentityCasUpdated({
       result,
-      recordType: "decision_artifact",
+      recordType: "shared_state_artifact",
       recordId: input.current.audience_entity_id,
       expectedVersion: input.expectedVersion,
     });
@@ -450,7 +450,7 @@ export class SharedStateRepository {
 
     assertIdentityCasUpdated({
       result,
-      recordType: "decision_artifact",
+      recordType: "shared_state_artifact",
       recordId: input.current.audience_entity_id,
       expectedVersion: input.expectedVersion,
     });
@@ -775,7 +775,7 @@ export class SharedStateRepository {
         if (options.expectedVersion !== undefined) {
           assertIdentityCasUpdated({
             result: { changes: 0 },
-            recordType: "decision_artifact",
+            recordType: "shared_state_artifact",
             recordId: audienceEntityId,
             expectedVersion: options.expectedVersion,
           });
@@ -822,7 +822,7 @@ export class SharedStateRepository {
     if (current === null && options.expectedVersion !== undefined) {
       assertIdentityCasUpdated({
         result: { changes: 0 },
-        recordType: "decision_artifact",
+        recordType: "shared_state_artifact",
         recordId: audienceEntityId,
         expectedVersion: options.expectedVersion,
       });

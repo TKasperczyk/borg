@@ -1,4 +1,5 @@
 import type { MetricsRow, OverseerVerdict, SimulatorHealthWarning } from "./types.js";
+import { normalizeMetricsRowLegacyFields } from "./legacy-metric-aliases.js";
 
 // Existing goal thresholds: high enough to catch runaway promotion without
 // flagging ordinary long-running planning scenarios.
@@ -182,9 +183,10 @@ function degradedRate(input: { completed: number; degraded: number }): number | 
 }
 
 export function simulatorHealthWarningsForRows(
-  rows: readonly MetricsRow[],
+  inputRows: readonly MetricsRow[],
   options: SimulatorHealthWarningOptions = {},
 ): SimulatorHealthWarning[] {
+  const rows = inputRows.map((row) => normalizeMetricsRowLegacyFields(row));
   const latest = rows.at(-1);
 
   if (latest === undefined) {
@@ -351,7 +353,7 @@ export function simulatorHealthWarningsForRows(
   }
 
   const semanticRevisionCalls = rows.reduce(
-    (sum, row) => sum + row.decision_artifact_semantic_revisions_attempted,
+    (sum, row) => sum + row.shared_state_semantic_revisions_attempted,
     0,
   );
 
@@ -370,8 +372,8 @@ export function simulatorHealthWarningsForRows(
     const semanticTransitions = rows.reduce(
       (sum, row) =>
         sum +
-        row.decision_artifact_semantic_nodes_marked_superseded +
-        row.decision_artifact_semantic_nodes_marked_contradicted,
+        row.shared_state_semantic_nodes_marked_superseded +
+        row.shared_state_semantic_nodes_marked_contradicted,
       0,
     );
     const transitionYield = semanticTransitions / semanticRevisionCalls;
@@ -498,7 +500,7 @@ export function simulatorHealthWarningsForRows(
         kind: "shared_state_compiler_max_tokens_high",
         threshold: SHARED_STATE_COMPILER_MAX_TOKENS_HIGH_THRESHOLD,
         observedValue: latest.shared_state_compiler_max_tokens_total,
-        label: "decision_artifact_compiler",
+        label: "shared_state_compiler",
       }),
     );
   }

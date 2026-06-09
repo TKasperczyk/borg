@@ -169,6 +169,7 @@ export const TRACE_TAXONOMY_PHASES_WITH_OTHER: readonly TracePhaseWithOther[] = 
   "other",
 ];
 
+// Permanent compatibility layer for persisted traces emitted before the shared-state rename.
 export const TRACE_EVENT_DEPRECATION_ALIASES = {
   decision_artifact_compile: "shared_state.compile.completed",
   "decision_artifact_compile.completed": "shared_state.compile.completed",

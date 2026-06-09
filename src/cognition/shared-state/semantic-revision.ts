@@ -45,8 +45,13 @@ import {
   semanticRevisionVerdictCache,
 } from "./semantic-revision-cache.js";
 
-const SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME = "EmitDecisionArtifactSemanticRevision";
-const SHARED_STATE_SEMANTIC_REVISION_LABEL = "decision_artifact_semantic_revision";
+const SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME = "EmitSharedStateSemanticRevision";
+const LEGACY_SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME = "EmitDecisionArtifactSemanticRevision";
+const SHARED_STATE_SEMANTIC_REVISION_ACCEPTED_TOOL_NAMES = [
+  SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME,
+  LEGACY_SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME,
+] as const;
+const SHARED_STATE_SEMANTIC_REVISION_LABEL = "shared_state_semantic_revision";
 const DEFAULT_SEMANTIC_REVISION_CANDIDATE_LIMIT = 10;
 const MAX_SEMANTIC_REVISION_CANDIDATE_LIMIT = 10;
 const MAX_SEMANTIC_REVISION_JUDGE_CANDIDATE_LIMIT = 10;
@@ -416,9 +421,10 @@ async function judgeSemanticRevision(input: {
           },
           max_tokens: 1_500,
           temperature: 0,
-          budget: "decision-artifact-semantic-revision",
+          budget: "shared-state-semantic-revision",
         },
         toolName: SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME,
+        acceptedToolNames: SHARED_STATE_SEMANTIC_REVISION_ACCEPTED_TOOL_NAMES,
         parse: parseSemanticRevisionJudgeResult,
         trace: {
           tracer: input.tracer,
@@ -433,7 +439,7 @@ async function judgeSemanticRevision(input: {
     ).parsed;
   } catch (error) {
     if (isStructuredToolCallError(error, "missing_tool_call")) {
-      throw new Error("Semantic revision judge did not call EmitDecisionArtifactSemanticRevision");
+      throw new Error("Semantic revision judge did not call EmitSharedStateSemanticRevision");
     }
 
     throw isStructuredToolCallError(error) ? (error.cause ?? error) : error;
@@ -684,7 +690,7 @@ export async function reconcileSemanticBeliefRevision(
             repository: input.dependencies.semanticNodeRepository,
             tracer: input.tracer,
             turnId: input.turnId,
-            traceSource: "decision_artifact_semantic_revision",
+            traceSource: "shared_state_semantic_revision",
           });
           if (transitionResult.status === "success") {
             supersededCount += 1;
@@ -710,7 +716,7 @@ export async function reconcileSemanticBeliefRevision(
           repository: input.dependencies.semanticNodeRepository,
           tracer: input.tracer,
           turnId: input.turnId,
-          traceSource: "decision_artifact_semantic_revision",
+          traceSource: "shared_state_semantic_revision",
         });
         if (transitionResult.status === "success") {
           contradictedCount += 1;

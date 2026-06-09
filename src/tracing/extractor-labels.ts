@@ -8,6 +8,8 @@ export const EXTRACTOR_MAX_TOKEN_LLM_LABELS = [
   "creator_directive_extractor",
   "creator_directive_rendered",
   "creator-directive-extractor",
+  "decision_artifact_compiler",
+  "decision_artifact_semantic_revision",
   "entity_extractor",
   "frame_anomaly_classifier",
   "frame-anomaly-classifier",
@@ -21,6 +23,8 @@ export const EXTRACTOR_MAX_TOKEN_LLM_LABELS = [
   "perception-temporal-cue",
   "procedural_context_extractor",
   "procedural-context",
+  "shared_state_compiler",
+  "shared_state_semantic_revision",
   "temporal_cue_extractor",
 ] as const;
 

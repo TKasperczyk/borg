@@ -1076,10 +1076,10 @@ async function buildEvidenceLedgerFinalizerContextInternal(input: {
       raw_preserved_user_entry_count: traceSummary.rawPreservedUserEntryCount,
       total_estimated_tokens: traceSummary.totalEstimatedTokens,
       estimated_tokens_by_section: toTraceJsonValue(traceSummary.estimatedTokensBySection),
-      decision_artifact_entry_count: sharedStateSummary.renderedEntryCount,
-      decision_artifact_rendered_token_estimate: sharedStateSummary.estimatedTokens,
-      decision_artifact_rendered_by_kind: toTraceJsonValue(sharedStateSummary.renderedByKind),
-      decision_artifact_newest_entries_reserved: sharedStateSummary.newestReservedEntryCount,
+      shared_state_entry_count: sharedStateSummary.renderedEntryCount,
+      shared_state_rendered_token_estimate: sharedStateSummary.estimatedTokens,
+      shared_state_rendered_by_kind: toTraceJsonValue(sharedStateSummary.renderedByKind),
+      shared_state_newest_entries_reserved: sharedStateSummary.newestReservedEntryCount,
     });
 
     input.options.tracer.emit("evidence_ledger.built", {

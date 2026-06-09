@@ -18,7 +18,7 @@ import type { LifecycleOperationResult, LifecycleTracer } from "./types.js";
 
 export const SHARED_STATE_RECONCILIATION_PROVENANCE = {
   kind: "online",
-  process: "decision_artifact_reconciliation",
+  process: "shared_state_reconciliation",
 } as const satisfies Provenance;
 
 const SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPE_SET = new Set<CommitmentType>(

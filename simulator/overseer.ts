@@ -24,7 +24,11 @@ import {
 import type { StreamEntry } from "../src/stream/index.js";
 
 import { appendJsonlLine } from "./jsonl.js";
-import { stripLegacyAliases, type OverseerMetricsRow } from "./legacy-metric-aliases.js";
+import {
+  normalizeMetricsRowLegacyFields,
+  stripLegacyAliases,
+  type OverseerMetricsRow,
+} from "./legacy-metric-aliases.js";
 import { statusFromSeverity, statusImpactSeverity, statusSeverity } from "./status-severity.js";
 import type {
   MetricsRow,
@@ -345,7 +349,7 @@ function readMetrics(path: string): MetricsRow[] {
   return readFileSync(path, "utf8")
     .split(/\r?\n/)
     .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as MetricsRow);
+    .map((line) => normalizeMetricsRowLegacyFields(JSON.parse(line) as MetricsRow));
 }
 
 function entryContent(entry: StreamEntry): string {

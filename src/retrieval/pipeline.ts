@@ -56,6 +56,7 @@ import {
   projectSemantic,
   type EpisodeProjectionSource,
 } from "./evidence-projections.js";
+import { DEFAULT_MMR_LAMBDA } from "./mmr.js";
 import { retrieveOpenQuestionsForQuery as retrieveOpenQuestionsForQueryFromRepository } from "./open-questions.js";
 import { RawStreamAdapter } from "./raw-stream-adapter.js";
 import {
@@ -83,6 +84,7 @@ import type {
 import {
   buildRetrievedEpisode,
   clamp,
+  DEFAULT_EPISODE_SCORE_WEIGHTS,
   participantEntityResolutionKey,
   scoreCandidate,
   type EpisodeScoreDefaults,
@@ -295,9 +297,62 @@ type WarmRecallCandidate = {
   stateHandle: RecallStateHandle;
 };
 
+// Tunes the minimum similarity for commitment evidence admission.
 const DEFAULT_COMMITMENT_EVIDENCE_SIMILARITY_THRESHOLD = 0.3;
+
+// Tunes concurrent fanout across independent retrieval intent searches.
 const RETRIEVAL_FANOUT_CONCURRENCY = 5;
+
+// Names warm recall evidence so recurrence state can be traced separately from fresh recall.
 const WARM_RECALL_INTENT_ID = "warm_recall";
+
+// Tunes how much known-term intents lift exact episodic matches.
+const KNOWN_TERM_INTENT_SCORE_BOOST = 0.25;
+
+// Tunes how much recent intents lift recent episodic matches.
+const RECENT_INTENT_SCORE_BOOST = 0.05;
+
+// Tunes priority for episode handles retained in recall state.
+const RECALL_HANDLE_EPISODE_RETENTION_RANK = 6;
+
+// Tunes priority for raw stream handles with a parent episode retained in recall state.
+const RECALL_HANDLE_PARENTED_RAW_STREAM_RETENTION_RANK = 5;
+
+// Tunes priority for commitment handles retained in recall state.
+const RECALL_HANDLE_COMMITMENT_RETENTION_RANK = 4;
+
+// Tunes priority for open question handles retained in recall state.
+const RECALL_HANDLE_OPEN_QUESTION_RETENTION_RANK = 3;
+
+// Tunes priority for semantic and other secondary handles retained in recall state.
+const RECALL_HANDLE_SECONDARY_RETENTION_RANK = 2;
+
+// Tunes priority for orphan raw stream handles retained in recall state.
+const RECALL_HANDLE_ORPHAN_RAW_STREAM_RETENTION_RANK = 1;
+
+// Tunes the baseline score for warm recall evidence.
+const WARM_RECALL_BASE_SCORE = 0.12;
+
+// Tunes the maximum reinforcement bonus for warm recall evidence.
+const WARM_RECALL_MAX_REINFORCEMENT_BONUS = 0.18;
+
+// Tunes the per-reinforcement score increment for warm recall evidence.
+const WARM_RECALL_REINFORCEMENT_STEP = 0.03;
+
+// Tunes the maximum score allowed for warm recall evidence.
+const WARM_RECALL_SCORE_CAP = 0.3;
+
+// Tunes the default confidence for semantic evidence without an edge path.
+const SEMANTIC_EVIDENCE_EMPTY_EDGE_PATH_CONFIDENCE = 0.3;
+
+// Tunes provenance strength rendered for image perception evidence.
+const IMAGE_PERCEPTION_PROVENANCE_SCORE = 0.7;
+
+// Tunes raw stream evidence score for recent-turn recall intents.
+const RECENT_RAW_STREAM_EVIDENCE_SCORE = 0.2;
+
+// Tunes raw stream evidence score for non-recency recall intents.
+const DEFAULT_RAW_STREAM_EVIDENCE_SCORE = 1;
 
 export class RetrievalPipeline {
   private readonly clock: Clock;
@@ -309,11 +364,8 @@ export class RetrievalPipeline {
   constructor(private readonly options: RetrievalPipelineOptions) {
     this.clock = options.clock ?? new SystemClock();
     this.tracer = options.tracer ?? NOOP_TRACER;
-    this.scoreWeights = options.scoreWeights ?? {
-      similarity: 0.7,
-      salience: 0.3,
-    };
-    this.mmrLambda = options.mmrLambda ?? 0.7;
+    this.scoreWeights = options.scoreWeights ?? { ...DEFAULT_EPISODE_SCORE_WEIGHTS };
+    this.mmrLambda = options.mmrLambda ?? DEFAULT_MMR_LAMBDA;
     this.decayOptions = options.decayOptions;
   }
 
@@ -1357,8 +1409,8 @@ export class RetrievalPipeline {
       intentTimeRange,
       this.scoringDefaults(),
     );
-    const exactBoost = entry.intent.kind === "known_term" ? 0.25 : 0;
-    const recencyBoost = entry.intent.kind === "recent" ? 0.05 : 0;
+    const exactBoost = entry.intent.kind === "known_term" ? KNOWN_TERM_INTENT_SCORE_BOOST : 0;
+    const recencyBoost = entry.intent.kind === "recent" ? RECENT_INTENT_SCORE_BOOST : 0;
 
     return {
       ...score,
@@ -1923,22 +1975,24 @@ function compareRecallStateRetentionPriority(
 
 function sourceRetentionRank(handle: RecallEvidenceHandle): number {
   if (handle.source === "episode") {
-    return 6;
+    return RECALL_HANDLE_EPISODE_RETENTION_RANK;
   }
 
   if (handle.source === "raw_stream") {
-    return handle.parentEpisodeId === undefined ? 1 : 5;
+    return handle.parentEpisodeId === undefined
+      ? RECALL_HANDLE_ORPHAN_RAW_STREAM_RETENTION_RANK
+      : RECALL_HANDLE_PARENTED_RAW_STREAM_RETENTION_RANK;
   }
 
   if (handle.source === "commitment") {
-    return 4;
+    return RECALL_HANDLE_COMMITMENT_RETENTION_RANK;
   }
 
   if (handle.source === "open_question") {
-    return 3;
+    return RECALL_HANDLE_OPEN_QUESTION_RETENTION_RANK;
   }
 
-  return 2;
+  return RECALL_HANDLE_SECONDARY_RETENTION_RANK;
 }
 
 function compareStableText(left: string, right: string): number {
@@ -1988,7 +2042,15 @@ function normalizeRecallStateBound(value: number | undefined, fallback: number):
 }
 
 function warmRecallScore(stateHandle: RecallStateHandle): number {
-  return clamp(0.12 + Math.min(0.18, stateHandle.reinforcementCount * 0.03), 0, 0.3);
+  return clamp(
+    WARM_RECALL_BASE_SCORE +
+      Math.min(
+        WARM_RECALL_MAX_REINFORCEMENT_BONUS,
+        stateHandle.reinforcementCount * WARM_RECALL_REINFORCEMENT_STEP,
+      ),
+    0,
+    WARM_RECALL_SCORE_CAP,
+  );
 }
 
 function episodeVisibilityOptions(options: RetrievalExecutionOptions): EpisodeSearchOptions {
@@ -2347,7 +2409,7 @@ function averageEdgeConfidence(
   edgePath: ResolvedSemanticRetrieval["supportHits"][number]["edgePath"],
 ) {
   if (edgePath.length === 0) {
-    return 0.3;
+    return SEMANTIC_EVIDENCE_EMPTY_EDGE_PATH_CONFIDENCE;
   }
 
   return clamp(edgePath.reduce((sum, edge) => sum + edge.confidence, 0) / edgePath.length, 0, 1);
@@ -2411,7 +2473,7 @@ function imagePerceptionToEvidence(item: ImagePerceptionEvidenceCandidate): Evid
     score: clamp(item.hit.similarity, 0, 1),
     scoreBreakdown: {
       vector: item.hit.similarity,
-      provenance: 0.7,
+      provenance: IMAGE_PERCEPTION_PROVENANCE_SCORE,
     },
     imageAttachmentId: record.attachment_id,
     imageLabel,
@@ -2470,7 +2532,10 @@ function streamEntryToEvidence(
     },
     recallIntentId: intent.id,
     matchedTerms: [],
-    score: intent.kind === "recent" ? 0.2 : 1,
+    score:
+      intent.kind === "recent"
+        ? RECENT_RAW_STREAM_EVIDENCE_SCORE
+        : DEFAULT_RAW_STREAM_EVIDENCE_SCORE,
     scoreBreakdown: {
       provenance: 1,
       recency: intent.kind === "recent" ? 1 : undefined,

@@ -154,8 +154,8 @@ function emitSemanticRevisionResponse(input: {
     stop_reason: "tool_use",
     tool_calls: [
       {
-        id: "toolu_decision_artifact_semantic_revision",
-        name: "EmitDecisionArtifactSemanticRevision",
+        id: "toolu_shared_state_semantic_revision",
+        name: "EmitSharedStateSemanticRevision",
         input: {
           verdicts: input.verdicts,
         },
@@ -613,7 +613,7 @@ describe("compileSharedStateArtifact", () => {
     expect(llmClient.requests[0]).toMatchObject({
       model: "claude-haiku-test",
       max_tokens: 8_000,
-      budget: "decision-artifact-compiler",
+      budget: "shared-state-compiler",
       tool_choice: { type: "tool", name: SHARED_STATE_TOOL_NAME },
     });
   });

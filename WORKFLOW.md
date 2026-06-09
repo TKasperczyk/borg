@@ -179,13 +179,14 @@ That's your input for the next cross-verification cycle.
 Family + compaction in parallel is the standard validation pair:
 
 ```bash
-cd /home/luth/Programming/borg
-pnpm sim:family-aging-parent --prefix vN.1 &
-pnpm sim:shared-state-compaction --prefix vN.1 &
+cd "$REPO_ROOT"
+pnpm simulate --scenario family-aging-parent --prefix vN.1 &
+pnpm simulate --scenario shared-state-compaction --prefix vN.1 &
 wait
 ```
 
-(Check `package.json` for exact script names if they've moved.)
+Set `REPO_ROOT` to the worktree or checkout you are validating. Check
+`simulator/cli.ts` and `package.json` if simulator flags move.
 
 Sims write to `simulator-runs/` with the prefix. The overseer audit jsonl and the report.md are the most-useful artifacts for the review draft.
 

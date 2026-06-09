@@ -527,6 +527,52 @@ Identity Governance bounds changes to Borg's own self-model. Standing operator
 instructions about how to disclose facts to particular audiences are a separate
 authority; see Creator Directives.
 
+## Time And Aging
+
+Borg deliberately runs more than one clock. The clocks answer different
+questions, and collapsing them would make either physical decay, durable shared
+state, or per-session continuity lie about what it knows.
+
+Wall-clock milliseconds are the elapsed-time clock. `SystemClock.now()`
+(`src/util/clock.ts`) returns wall time, and `halfLifeDecay`
+(`src/util/math.ts`) is the shared decay primitive. Episodic salience decay
+(`src/memory/episodic/decay.ts`), episodic heat recency
+(`src/memory/episodic/heat.ts`), and affective mood decay
+(`src/memory/affective/mood.ts`) use this clock because they model physical
+time passing. Wall-clock time is not authoritative for shared-state lifecycle
+age, action-reference windows, or turn-count TTLs.
+
+Durable global turn age is the shared-state aging clock. Shared State stores
+`last_updated_turn_global` on each entry (`src/memory/shared-state/types.ts`),
+the compiler writes it when operations materialize entries, and lifecycle aging
+(`src/cognition/shared-state/lifecycle-aging.ts`) compares it with the current
+global turn counter. This is the only authoritative age for shared-state
+demotion from live to low-salience or dormant. If an entry has no durable turn
+age, its age is unknown. Borg does not reconstruct a pseudo-age from sparse
+source-trust facts or indexed stream handles, because those handles are valid
+for trust lookups but not a complete turn sequence.
+
+Per-session turn counters are the local continuity clock. Working Memory stores
+the session turn counter (`src/memory/working/types.ts`), and the live turn path
+increments it for the current session. That counter is authoritative for
+session-local references: nearby action state, discourse continuity, prompt
+state, and other "this conversation's recent turns" behavior. It is not a
+global age, and values from two sessions are not comparable.
+
+Turn-count TTLs are bounded-recurrence clocks. Suppression state
+(`src/cognition/attention/suppression-set.ts`), warm recall and recall-handle
+retention (`src/retrieval/recall-state.ts`), and pending procedural attempt
+state (`src/memory/working/types.ts`) expire by turns because they are meant to
+prevent immediate repetition or keep a short-lived handle warm. These TTLs do
+not claim that a memory is semantically old or physically stale. They only say
+how many relevant turns a transient control state should survive.
+
+The plurality is intentional. Wall time answers "how long ago in the world?";
+global turn age answers "how many durable Borg turns since this shared-state
+fact changed?"; session counters answer "where are we in this conversation?";
+and TTLs answer "how long should this temporary control state keep affecting
+nearby turns?" Each clock is authoritative only inside that boundary.
+
 ## Visual Attachments
 
 Images are first-class durable sources, not inline text inside the Stream. The

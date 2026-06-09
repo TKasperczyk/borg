@@ -189,12 +189,12 @@ const TURN_METRICS_KEY_ORDER = [
   "goal_promotion_classifications_per_turn",
   "goal_promotion_rejected_classification",
   "goal_promotion_cap_rejections",
-  "decision_artifact_semantic_revisions_attempted",
-  "decision_artifact_semantic_revisions_completed_succeeded",
-  "decision_artifact_semantic_nodes_marked_superseded",
-  "decision_artifact_semantic_nodes_marked_contradicted",
-  "decision_artifact_semantic_revision_cache_hits",
-  "decision_artifact_semantic_revision_cache_size",
+  "shared_state_semantic_revisions_attempted",
+  "shared_state_semantic_revisions_completed_succeeded",
+  "shared_state_semantic_nodes_marked_superseded",
+  "shared_state_semantic_nodes_marked_contradicted",
+  "shared_state_semantic_revision_cache_hits",
+  "shared_state_semantic_revision_cache_size",
   "embedding_cache_pending_overflow_total",
   "ledger_reverse_scan_entries_total",
   "ledger_reverse_scan_bytes_total",
@@ -738,7 +738,7 @@ describe("MetricsCapture", () => {
           ts: 136,
           turnId: "other-turn",
           event: "llm_call.completed",
-          label: "decision_artifact_semantic_revision",
+          label: "shared_state_semantic_revision",
           stopReason: "tool_use",
         },
         {
@@ -986,12 +986,12 @@ describe("MetricsCapture", () => {
     expect(row.capability_overclaim_count).toBe(0);
     expect(row.capability_ambiguity_count).toBe(0);
     expect(row.capability_boundary_refusal_count).toBe(0);
-    expect(row.decision_artifact_semantic_revisions_attempted).toBe(2);
-    expect(row.decision_artifact_semantic_revisions_completed_succeeded).toBe(1);
-    expect(row.decision_artifact_semantic_nodes_marked_superseded).toBe(2);
-    expect(row.decision_artifact_semantic_nodes_marked_contradicted).toBe(1);
-    expect(row.decision_artifact_semantic_revision_cache_hits).toBe(1);
-    expect(row.decision_artifact_semantic_revision_cache_size).toBe(17);
+    expect(row.shared_state_semantic_revisions_attempted).toBe(2);
+    expect(row.shared_state_semantic_revisions_completed_succeeded).toBe(1);
+    expect(row.shared_state_semantic_nodes_marked_superseded).toBe(2);
+    expect(row.shared_state_semantic_nodes_marked_contradicted).toBe(1);
+    expect(row.shared_state_semantic_revision_cache_hits).toBe(1);
+    expect(row.shared_state_semantic_revision_cache_size).toBe(17);
     expect(row.semantic_revision_error_count).toBe(1);
     expect(row.semantic_revision_skipped_due_to_error).toBe(1);
     expect(row.semantic_revision_error_total_by_reason).toEqual({
@@ -1387,7 +1387,7 @@ describe("MetricsCapture", () => {
           ts: 100,
           turnId: "turn-compiler-1",
           event: "llm_call.completed",
-          label: "decision_artifact_compiler",
+          label: "shared_state_compiler",
           stopReason: "max_tokens",
         },
         {

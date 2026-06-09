@@ -10,6 +10,7 @@ export type SemanticStatusRepository = Pick<
 
 export type SemanticLifecycleTraceSource =
   | "belief_reviser"
+  | "shared_state_semantic_revision"
   | "decision_artifact_semantic_revision"
   | "review_handler"
   | "review_resolver";

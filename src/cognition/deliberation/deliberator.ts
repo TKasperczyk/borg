@@ -921,10 +921,10 @@ export class Deliberator {
         estimated_tokens_by_section: toTraceJsonValue(
           compactPlannerLedger.traceSummary.estimatedTokensBySection,
         ),
-        decision_artifact_entry_count: compactPlannerLedger.traceSummary.sharedStateEntryCount,
-        decision_artifact_rendered_token_estimate:
+        shared_state_entry_count: compactPlannerLedger.traceSummary.sharedStateEntryCount,
+        shared_state_rendered_token_estimate:
           compactPlannerLedger.traceSummary.sharedStateRenderedTokens,
-        decision_artifact_rendered_by_kind: toTraceJsonValue(
+        shared_state_rendered_by_kind: toTraceJsonValue(
           compactPlannerLedger.traceSummary.sharedStateRenderedByKind,
         ),
         total_estimated_tokens: compactPlannerLedger.traceSummary.totalEstimatedTokens,

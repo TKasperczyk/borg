@@ -1,5 +1,29 @@
 import type { EvidenceItem } from "./recall-types.js";
 
+// Tunes truth priority for raw stream evidence.
+const RAW_STREAM_TRUTH_RANK = 60;
+
+// Tunes truth priority for episodes with direct stream provenance.
+const EPISODE_WITH_SOURCE_TRUTH_RANK = 50;
+
+// Tunes truth priority for episodes without direct stream provenance.
+const EPISODE_WITHOUT_SOURCE_TRUTH_RANK = 40;
+
+// Tunes truth priority for durable action-state evidence.
+const DURABLE_STATE_TRUTH_RANK = 30;
+
+// Tunes truth priority for semantic graph evidence.
+const SEMANTIC_TRUTH_RANK = 20;
+
+// Tunes truth priority for uncategorized evidence.
+const DEFAULT_EVIDENCE_TRUTH_RANK = 10;
+
+// Tunes truth priority for recent raw stream evidence.
+const RECENT_RAW_STREAM_TRUTH_RANK = 5;
+
+// Tunes truth priority for warm recall evidence.
+const WARM_RECALL_TRUTH_RANK = 3;
+
 export function rankEvidenceItems(items: readonly EvidenceItem[]): EvidenceItem[] {
   return [...dedupeEvidenceItems(items)].sort(compareEvidenceItems);
 }
@@ -59,30 +83,30 @@ function compareEvidenceItems(left: EvidenceItem, right: EvidenceItem): number {
 
 function evidenceTruthRank(item: EvidenceItem): number {
   if (item.source === "raw_stream") {
-    return 60;
+    return RAW_STREAM_TRUTH_RANK;
   }
 
   if (item.source === "episode") {
     return item.provenance?.streamIds === undefined || item.provenance.streamIds.length === 0
-      ? 40
-      : 50;
+      ? EPISODE_WITHOUT_SOURCE_TRUTH_RANK
+      : EPISODE_WITH_SOURCE_TRUTH_RANK;
   }
 
   if (item.source === "commitment" || item.source === "open_question") {
-    return 30;
+    return DURABLE_STATE_TRUTH_RANK;
   }
 
   if (item.source === "semantic_node" || item.source === "semantic_edge") {
-    return 20;
+    return SEMANTIC_TRUTH_RANK;
   }
 
   if (item.source === "recent_raw_stream") {
-    return 5;
+    return RECENT_RAW_STREAM_TRUTH_RANK;
   }
 
   if (item.source === "warm_recall") {
-    return 3;
+    return WARM_RECALL_TRUTH_RANK;
   }
 
-  return 10;
+  return DEFAULT_EVIDENCE_TRUTH_RANK;
 }

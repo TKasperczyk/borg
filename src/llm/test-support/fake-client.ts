@@ -392,8 +392,15 @@ function isActionStateExtractorFallbackRequest(options: LLMCompleteOptions): boo
   return options.budget === "action-state-extractor";
 }
 
+const SHARED_STATE_ARTIFACT_COMPILER_BUDGETS = new Set([
+  "shared-state-compiler",
+  "decision-artifact-compiler",
+]);
+
 function isSharedStateArtifactCompilerFallbackRequest(options: LLMCompleteOptions): boolean {
-  return options.budget === "decision-artifact-compiler";
+  return (
+    typeof options.budget === "string" && SHARED_STATE_ARTIFACT_COMPILER_BUDGETS.has(options.budget)
+  );
 }
 
 function isFrameAnomalyClassifierFallbackRequest(options: LLMCompleteOptions): boolean {
@@ -969,7 +976,7 @@ export class FakeLLMClient implements LLMClient {
     if (
       isSharedStateArtifactCompilerFallbackRequest(options) &&
       typeof response !== "function" &&
-      scriptedResponseBudget(response) !== "decision-artifact-compiler" &&
+      !SHARED_STATE_ARTIFACT_COMPILER_BUDGETS.has(scriptedResponseBudget(response) ?? "") &&
       !isSharedStateArtifactResponse(response)
     ) {
       return defaultSharedStateArtifactResponse();

@@ -38,7 +38,7 @@ Borg may use deterministic code to **move already-known source handles
 around**. Borg may not use deterministic code to **interpret language**.
 
 This rule applies to `src/cognition/`, `src/retrieval/`, `src/memory/`,
-`src/offline/`, and `src/simulator/overseer*` whenever code is inferring:
+`src/offline/`, and `simulator/overseer*` whenever code is inferring:
 
 - entities, topics, relationships, facts
 - intent, salience, memory relevance
@@ -144,8 +144,8 @@ The principle from v86 P0 still applies: durable `last_updated_turn_global` is t
 
 These are real maintainability items but do not extend the v82-v87 arc:
 
-- split `src/retrieval/pipeline.ts` (2200+ lines)
-- split `simulator/metrics.ts` (4365 lines)
+- split large retrieval pipeline modules such as `src/retrieval/pipeline.ts`
+- split large simulator metrics modules such as `simulator/metrics.ts`
 - migration helper or test/checklist for `_next` table swaps
 - broader pure schema/type extraction beyond the v89 public-consumer cleanup
 - possible dedicated `StreamFactsRepository` shell that wraps `StreamEntryIndex`
@@ -171,8 +171,10 @@ src/
     working/
     common/       shared memory primitives (provenance, identity-events, ...)
   cognition/      perception, attention, deliberation, turn-action, reflection
-  offline/        consolidator, reflector, curator, overseer, ruminator,
-                  self-narrator, procedural-synthesizer, belief-reviser
+  offline/        consolidator, reflector, semantic-extractor, curator,
+                  overseer, review-resolver, ruminator, self-narrator,
+                  procedural-synthesizer, belief-reviser,
+                  creator-directive-reconciler, commitment-reconciler
   retrieval/      unified context-aware retrieval pipeline
   correction/     `borg.correction.forget` / why / invalidate-edge service
   executive/      executive focus selection (goal stickiness, step rendering)
