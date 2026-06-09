@@ -15,7 +15,7 @@ const borg = await Borg.open({
   onStreamAppend: live.onStreamAppend,
   liveExtraction: false,
 });
-const { app } = createDemoServerApp({ borg, live });
+const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
 
 try {
   const response = await app.request("/api/state");
