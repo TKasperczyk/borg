@@ -36,6 +36,7 @@ import type { StreamEntry, StreamEntryKind, StreamReader } from "../stream/index
 import { OUTBOUND_POST_TOOL_NAME } from "../tools/internal/outbound-post-name.js";
 import type { Clock } from "../util/clock.js";
 import type { EntityId, EpisodeId, SessionId, StreamEntryId } from "../util/ids.js";
+import { stripToolCallScaffolding } from "../util/prompt-tags.js";
 import { formatRelativeAge } from "../util/relative-time.js";
 
 const DEFAULT_AUTOBIOGRAPHICAL_RECALL_WINDOW_MS = 7 * 24 * 60 * 60_000;
@@ -150,7 +151,7 @@ function stableGroupLabel(groupId: string): string {
 
 function sanitizePromptText(value: unknown, maxChars = 520): string {
   const raw = typeof value === "string" ? value : JSON.stringify(value ?? null);
-  const normalized = raw.replace(/\s+/g, " ").trim();
+  const normalized = stripToolCallScaffolding(raw).replace(/\s+/g, " ").trim();
 
   if (normalized.length <= maxChars) {
     return normalized;
