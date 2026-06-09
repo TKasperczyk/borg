@@ -16,6 +16,7 @@ import type {
   CreatorDirectiveStatusFilter,
   SharedStateEntry,
 } from "../../api/types";
+import { IdRef } from "../../components/Inspector/IdRef";
 import { Modal } from "../../components/Modal";
 import { SupersededByChip } from "../../components/SupersededByChip";
 import { Tag } from "../../components/Tag";
@@ -179,10 +180,12 @@ function CreatorDirectiveSupersededByChip({
   id,
   directivesById,
   onOpen,
+  inspect = false,
 }: {
   id: string;
   directivesById: ReadonlyMap<string, CreatorDirectiveItem>;
   onOpen: (id: string) => void;
+  inspect?: boolean;
 }) {
   return (
     <SupersededByChip
@@ -191,6 +194,9 @@ function CreatorDirectiveSupersededByChip({
       title={`Jump to directive ${id}`}
       ariaLabel={`jump to directive ${id}`}
       onOpen={onOpen}
+      inspectType={inspect ? "creator_directive" : undefined}
+      inspectHint={inspect ? directivesById.get(id) : undefined}
+      inspectAriaLabel={inspect ? `inspect directive ${id}` : undefined}
     />
   );
 }
@@ -565,9 +571,7 @@ function SharedStateLifecycleRow({
         <Tag kind={tagKind(entry.kind)} dot>
           {lifecycleLabel(entry.kind)}
         </Tag>
-        <span className="acc" style={{ fontSize: 10.5 }}>
-          {shortId(entry.id)}
-        </span>
+        <IdRef id={entry.id} type="shared_state_entry" label={shortId(entry.id)} hint={entry} />
         <span className="dim" style={{ fontSize: 10.5 }}>
           audience {row.audience}
         </span>
@@ -596,9 +600,11 @@ function SharedStateLifecycleRow({
                 id={entry.superseded_by_id}
                 label={shortId(entry.superseded_by_id)}
                 active={focusedSharedEntryId === entry.superseded_by_id}
-                title={`Inspect shared-state entry ${entry.superseded_by_id}`}
-                ariaLabel={`inspect shared-state entry ${entry.superseded_by_id}`}
+                title={`Focus shared-state entry ${entry.superseded_by_id}`}
+                ariaLabel={`focus shared-state entry ${entry.superseded_by_id}`}
                 onOpen={onOpenSharedEntry}
+                inspectType="shared_state_entry"
+                inspectAriaLabel={`inspect shared-state entry ${entry.superseded_by_id}`}
               />
             </span>
           </div>
@@ -1054,7 +1060,14 @@ function CreatorDirectiveDetail({
         <div className="props">
           <div className="row">
             <span className="k">id</span>
-            <span className="v acc">{directive.id}</span>
+            <span className="v acc">
+              <IdRef
+                id={directive.id}
+                type="creator_directive"
+                label={directive.id}
+                hint={directive}
+              />
+            </span>
           </div>
           <div className="row">
             <span className="k">subject</span>
@@ -1062,7 +1075,17 @@ function CreatorDirectiveDetail({
           </div>
           <div className="row">
             <span className="k">subject id</span>
-            <span className="v">{directive.subject_entity_id ?? "—"}</span>
+            <span className="v">
+              {directive.subject_entity_id === null ? (
+                "—"
+              ) : (
+                <IdRef
+                  id={directive.subject_entity_id}
+                  type="entity"
+                  label={directive.subject_entity_id}
+                />
+              )}
+            </span>
           </div>
           <div className="row">
             <span className="k">content scope</span>
@@ -1098,6 +1121,7 @@ function CreatorDirectiveDetail({
                   id={directive.superseded_by_id}
                   directivesById={directivesById}
                   onOpen={onOpenDirective}
+                  inspect
                 />
               </span>
             </div>

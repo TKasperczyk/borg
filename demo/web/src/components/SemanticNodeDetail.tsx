@@ -1,4 +1,5 @@
 import type { SemanticMemoryNode } from "../api/types";
+import { IdRef } from "./Inspector/IdRef";
 import { Tag } from "./Tag";
 
 type SemanticNodeDetailProps = {
@@ -58,7 +59,9 @@ export function SemanticNodeDetail({ node, label }: SemanticNodeDetailProps) {
       <div className="props" style={{ marginTop: 10 }}>
         <div className="row">
           <span className="k">id</span>
-          <span className="v">{node.id}</span>
+          <span className="v">
+            <IdRef id={node.id} type="semantic_node" label={node.id} hint={node} />
+          </span>
         </div>
         <div className="row">
           <span className="k">domain</span>
@@ -70,7 +73,16 @@ export function SemanticNodeDetail({ node, label }: SemanticNodeDetailProps) {
         </div>
         <div className="row">
           <span className="k">source episodes</span>
-          <span className="v">{emptyFallback(node.source_episode_ids, "none")}</span>
+          <span className="v">
+            {node.source_episode_ids.length === 0
+              ? "none"
+              : node.source_episode_ids.map((id, index) => (
+                  <span key={id}>
+                    {index === 0 ? null : ", "}
+                    <IdRef id={id} type="episode" label={id} />
+                  </span>
+                ))}
+          </span>
         </div>
       </div>
     </div>

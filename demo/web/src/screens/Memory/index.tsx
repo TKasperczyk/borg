@@ -18,6 +18,7 @@ import type {
   SemanticGraphResponse,
   SemanticMemoryNode,
 } from "../../api/types";
+import { IdRef } from "../../components/Inspector/IdRef";
 import { Modal } from "../../components/Modal";
 import { Panel } from "../../components/Panel";
 import { SemanticNodeDetail } from "../../components/SemanticNodeDetail";
@@ -1182,7 +1183,9 @@ function MemoryDrill({
             <>
               <h2>{selected.title}</h2>
               <div className="meta-line">
-                <span>[{selected.id}]</span>
+                <span>
+                  <IdRef id={selected.id} label={`[${selected.id}]`} />
+                </span>
                 <span>·</span>
                 <span>{selected.meta}</span>
               </div>
@@ -1225,7 +1228,16 @@ function MemoryDrill({
               </div>
               <div className="row">
                 <span className="k">id</span>
-                <span className="v">{selected?.id ?? selectedId ?? "—"}</span>
+                <span className="v">
+                  {selected?.id === undefined && selectedId === null ? (
+                    "—"
+                  ) : (
+                    <IdRef
+                      id={selected?.id ?? selectedId ?? ""}
+                      hint={selectedSemanticNode ?? undefined}
+                    />
+                  )}
+                </span>
               </div>
               <div className="row">
                 <span className="k">rows</span>
@@ -1431,9 +1443,7 @@ function BandSpecificDetail({
         <div className="divider">citations</div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {episode.source_stream_ids.map((id) => (
-            <span key={id} className="tag info">
-              {id}
-            </span>
+            <IdRef key={id} id={id} type="stream_entry" label={id} />
           ))}
         </div>
       </>

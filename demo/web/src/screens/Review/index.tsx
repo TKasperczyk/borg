@@ -16,6 +16,7 @@ import type {
   SemanticMemoryEdge,
   SemanticMemoryNode,
 } from "../../api/types";
+import { IdRef } from "../../components/Inspector/IdRef";
 import { SemanticEdgeDetail } from "../../components/SemanticEdgeDetail";
 import { SemanticNodeDetail } from "../../components/SemanticNodeDetail";
 import { Tag } from "../../components/Tag";
@@ -521,7 +522,14 @@ function PairEpisodeRefs({ groups }: { groups: readonly EpisodeRefGroup[] }) {
         {groups.map((group) => (
           <div className="row" key={group.label}>
             <span className="k">{group.label}</span>
-            <span className="v">{group.ids.join(", ")}</span>
+            <span className="v">
+              {group.ids.map((id, index) => (
+                <span key={id}>
+                  {index === 0 ? null : ", "}
+                  <IdRef id={id} type="episode" label={id} />
+                </span>
+              ))}
+            </span>
           </div>
         ))}
       </div>
@@ -576,7 +584,11 @@ function SemanticNodeUnavailable({
     <div className="notice bad">
       <div>{label} semantic node unavailable</div>
       <div style={{ marginTop: 6, overflowWrap: "anywhere" }}>
-        {result?.id ?? "missing node id"}
+        {result?.id === undefined ? (
+          "missing node id"
+        ) : (
+          <IdRef id={result.id} type="semantic_node" label={result.id} />
+        )}
       </div>
       {result?.error === null || result?.error === undefined ? null : (
         <div style={{ marginTop: 4, overflowWrap: "anywhere" }}>{result.error}</div>
@@ -614,7 +626,9 @@ function SemanticEdgeDrillSlot({
     return (
       <div className="notice bad">
         <div>semantic edge unavailable</div>
-        <div style={{ marginTop: 6, overflowWrap: "anywhere" }}>{result.id}</div>
+        <div style={{ marginTop: 6, overflowWrap: "anywhere" }}>
+          <IdRef id={result.id} type="semantic_edge" label={result.id} />
+        </div>
         {result.error === null ? null : (
           <div style={{ marginTop: 4, overflowWrap: "anywhere" }}>{result.error}</div>
         )}
@@ -1092,7 +1106,12 @@ export function ReviewScreen() {
                                 flexWrap: "wrap",
                               }}
                             >
-                              <span className="acc">review {row.id}</span>
+                              <IdRef
+                                id={String(row.id)}
+                                type="review"
+                                label={`review ${row.id}`}
+                                hint={row}
+                              />
                               <Tag>{kindLabel(row.kind)}</Tag>
                               <span className="dim">{formatTime(row.created_at)}</span>
                             </div>

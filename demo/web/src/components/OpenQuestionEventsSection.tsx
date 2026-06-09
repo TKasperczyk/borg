@@ -4,6 +4,7 @@ import type { IdentityEvent } from "../api/types";
 import { formatTime } from "../lib/stream-utils";
 import { dateLabel, displayValue, isRecord, shortId } from "../screens/screen-utils";
 import { Empty } from "./Empty";
+import { IdRef } from "./Inspector/IdRef";
 import { Tag } from "./Tag";
 
 function eventActionTag(event: IdentityEvent) {
@@ -101,14 +102,22 @@ export function OpenQuestionEventsSection({ events }: { events: readonly Identit
                     <Tag kind="bad">without review gate</Tag>
                   ) : null}
                   {event.review_item_id === null ? null : (
-                    <Tag kind="info">review {event.review_item_id}</Tag>
+                    <Tag kind="info">
+                      <IdRef
+                        id={String(event.review_item_id)}
+                        type="review"
+                        label={`review ${event.review_item_id}`}
+                      />
+                    </Tag>
                   )}
                   <span className="dim tab-num">{eventTimestamp(event.ts)}</span>
                 </div>
                 <div className="identity-event-record">
-                  <span className="acc" title={event.record_id}>
-                    {shortId(event.record_id)}
-                  </span>
+                  <IdRef
+                    id={event.record_id}
+                    label={shortId(event.record_id)}
+                    title={event.record_id}
+                  />
                   <span className="dim"> · {provenanceLabel(event.provenance)}</span>
                 </div>
                 <div className="identity-event-change">

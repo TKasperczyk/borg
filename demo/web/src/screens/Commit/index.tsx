@@ -16,6 +16,7 @@ import {
   type CommitmentState,
   type CreateCommitmentRequest,
 } from "../../api/types";
+import { IdRef } from "../../components/Inspector/IdRef";
 import { Modal } from "../../components/Modal";
 import { SupersededByChip } from "../../components/SupersededByChip";
 import { Tag } from "../../components/Tag";
@@ -848,6 +849,9 @@ function CommitmentSupersessionChain({
                   title={`Jump to commitment ${item.id}`}
                   ariaLabel={`jump to commitment ${item.id}`}
                   onOpen={onOpenCommitment}
+                  inspectType="commitment"
+                  inspectHint={item}
+                  inspectAriaLabel={`inspect commitment ${item.id}`}
                 />
                 {index === branch.length - 1 ? null : (
                   <span className="dim" aria-hidden="true">
@@ -914,7 +918,9 @@ function CommitmentDetail({
         <div className="props">
           <div className="row">
             <span className="k">id</span>
-            <span className="v acc">{commitment.id}</span>
+            <span className="v acc">
+              <IdRef id={commitment.id} type="commitment" label={commitment.id} hint={commitment} />
+            </span>
           </div>
           <div className="row">
             <span className="k">family</span>
@@ -966,6 +972,9 @@ function CommitmentDetail({
                   title={`Jump to commitment ${commitment.superseded_by_id}`}
                   ariaLabel={`jump to commitment ${commitment.superseded_by_id}`}
                   onOpen={onOpenCommitment}
+                  inspectType="commitment"
+                  inspectHint={commitmentsById.get(commitment.superseded_by_id)}
+                  inspectAriaLabel={`inspect commitment ${commitment.superseded_by_id}`}
                 />
               </span>
             </div>
@@ -1006,7 +1015,7 @@ function CommitmentDetail({
           ) : (
             commitment.source_stream_entry_ids.map((id) => (
               <div key={id}>
-                <span className="acc">[{id}]</span> source stream entry
+                <IdRef id={id} type="stream_entry" label={`[${id}]`} /> source stream entry
               </div>
             ))
           )}

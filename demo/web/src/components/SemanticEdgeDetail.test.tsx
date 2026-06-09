@@ -1,11 +1,12 @@
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
+import { renderWithInspector } from "../test/inspector";
 import { SemanticEdgeDetail } from "./SemanticEdgeDetail";
 
 describe("SemanticEdgeDetail", () => {
   it("renders semantic edge content and provenance fields", () => {
-    render(
+    renderWithInspector(
       <SemanticEdgeDetail
         nodes={[
           {

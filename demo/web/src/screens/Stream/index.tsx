@@ -8,6 +8,7 @@ import type {
   StreamEntryKind,
 } from "../../api/types";
 import { ImagePlaceholder } from "../../components/ImagePlaceholder";
+import { IdRef } from "../../components/Inspector/IdRef";
 import { Tag, type TagKind } from "../../components/Tag";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
@@ -810,7 +811,14 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
         {selected === null ? null : (
           <>
             <div className="det-head">
-              <div className="id">[{selected.id}]</div>
+              <div className="id">
+                <IdRef
+                  id={selected.id}
+                  type="stream_entry"
+                  label={`[${selected.id}]`}
+                  hint={selected}
+                />
+              </div>
               <div className="ts">
                 {new Date(selected.timestamp).toISOString()} · {selected.kind} ·{" "}
                 {selected.audience ?? "global"}
@@ -822,8 +830,14 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
                 >
                   {summarizeStatus(selected, attachmentApi.data)}
                 </Tag>
-                <Tag>{selected.session_id}</Tag>
-                {selected.turn_id === undefined ? null : <Tag>turn {selected.turn_id}</Tag>}
+                <Tag>
+                  <IdRef id={selected.session_id} type="session" label={selected.session_id} />
+                </Tag>
+                {selected.turn_id === undefined ? null : (
+                  <Tag>
+                    <IdRef id={selected.turn_id} type="turn" label={`turn ${selected.turn_id}`} />
+                  </Tag>
+                )}
                 {selected.kind === "agent_suppressed" || selected.kind === "agent_observed" ? (
                   <Tag kind="warn">turn-action visible</Tag>
                 ) : null}

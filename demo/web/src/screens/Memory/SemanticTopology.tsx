@@ -7,6 +7,7 @@ import type {
   SemanticGraphNodeStatus,
   SemanticGraphResponse,
 } from "../../api/types";
+import { IdRef } from "../../components/Inspector/IdRef";
 import { Tag } from "../../components/Tag";
 import { shortId } from "../screen-utils";
 
@@ -572,7 +573,11 @@ export function SemanticTopology({ graph, selectedId, onSelectNode }: SemanticTo
           <Tag kind="info">
             showing {graph.rendered.nodes.toLocaleString()} of {graph.total_nodes.toLocaleString()}
           </Tag>
-          {selectedId === null ? null : <Tag kind="acc">selected {shortId(selectedId)}</Tag>}
+          {selectedId === null ? null : (
+            <Tag kind="acc">
+              selected <IdRef id={selectedId} type="semantic_node" label={shortId(selectedId)} />
+            </Tag>
+          )}
         </div>
         <svg
           ref={svgRef}

@@ -1,11 +1,12 @@
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
+import { renderWithInspector } from "../test/inspector";
 import { SemanticNodeDetail } from "./SemanticNodeDetail";
 
 describe("SemanticNodeDetail", () => {
   it("renders semantic node content and provenance fields", () => {
-    render(
+    renderWithInspector(
       <SemanticNodeDetail
         label="candidate 1"
         node={{

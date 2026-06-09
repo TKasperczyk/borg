@@ -1,4 +1,5 @@
 import { AttachmentChip } from "../../components/AttachmentChip";
+import { IdRef } from "../../components/Inspector/IdRef";
 import { formatTime } from "../../lib/stream-utils";
 import type { ChatTurn } from "./chat-utils";
 
@@ -33,7 +34,8 @@ function shortTurnId(turnId: string | undefined): string | null {
 export function ChatMessage({ turn, audience }: ChatMessageProps) {
   const initial = turn.role === "borg" ? "ψ" : userInitial(audience);
   const name = roleName(turn, audience);
-  const turnShort = shortTurnId(turn.entry.turn_id);
+  const turnId = turn.entry.turn_id;
+  const turnShort = shortTurnId(turnId);
   const deliveryStatus = turn.entry.optimistic_status;
 
   return (
@@ -47,10 +49,12 @@ export function ChatMessage({ turn, audience }: ChatMessageProps) {
       <div className="content">
         <div className="meta">
           <span className={`role ${turn.role}`}>{name}</span>
-          {turnShort === null ? null : (
+          {turnShort === null || turnId === undefined ? null : (
             <>
               <span className="sep">·</span>
-              <span className="turn">turn {turnShort}</span>
+              <span className="turn">
+                <IdRef id={turnId} type="turn" label={`turn ${turnShort}`} />
+              </span>
             </>
           )}
           <span className="sep">·</span>

@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SemanticGraphResponse } from "../../api/types";
+import { renderWithInspector } from "../../test/inspector";
 import { SemanticTopology, edgeClass } from "./SemanticTopology";
 
 function graphResponse(): SemanticGraphResponse {
@@ -68,7 +69,7 @@ describe("SemanticTopology", () => {
   });
 
   it("uses distinct classes for semantic relations that the old graph bucketed as other", async () => {
-    const { container } = render(
+    const { container } = renderWithInspector(
       <SemanticTopology graph={graphResponse()} selectedId={null} onSelectNode={vi.fn()} />,
     );
 
@@ -85,7 +86,7 @@ describe("SemanticTopology", () => {
 
   it("selects nodes by click and keyboard and highlights the selected node", async () => {
     const onSelectNode = vi.fn();
-    const { container, rerender } = render(
+    const { container, rerender } = renderWithInspector(
       <SemanticTopology
         graph={graphResponse()}
         selectedId="semn_beta000000000"
@@ -123,7 +124,7 @@ describe("SemanticTopology", () => {
   });
 
   it("disambiguates duplicate labels with ordinal badges and a cluster legend", async () => {
-    const { container } = render(
+    const { container } = renderWithInspector(
       <SemanticTopology graph={graphResponse()} selectedId={null} onSelectNode={vi.fn()} />,
     );
 

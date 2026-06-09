@@ -1,6 +1,7 @@
 import type { SemanticMemoryEdge, SemanticMemoryNode } from "../api/types";
 import { formatTime } from "../lib/stream-utils";
 import { shortId } from "../screens/screen-utils";
+import { IdRef } from "./Inspector/IdRef";
 import { Tag } from "./Tag";
 
 function edgeEndpointLabel(id: string, nodes: readonly SemanticMemoryNode[]): string {
@@ -38,15 +39,21 @@ export function SemanticEdgeDetail({
       <div className="props" style={{ marginTop: 10 }}>
         <div className="row">
           <span className="k">edge id</span>
-          <span className="v">{edge.id}</span>
+          <span className="v">
+            <IdRef id={edge.id} type="semantic_edge" label={edge.id} hint={edge} />
+          </span>
         </div>
         <div className="row">
           <span className="k">from</span>
-          <span className="v">{edge.from_node_id}</span>
+          <span className="v">
+            <IdRef id={edge.from_node_id} type="semantic_node" label={edge.from_node_id} />
+          </span>
         </div>
         <div className="row">
           <span className="k">to</span>
-          <span className="v">{edge.to_node_id}</span>
+          <span className="v">
+            <IdRef id={edge.to_node_id} type="semantic_node" label={edge.to_node_id} />
+          </span>
         </div>
         <div className="row">
           <span className="k">valid from</span>
@@ -59,7 +66,14 @@ export function SemanticEdgeDetail({
         <div className="row">
           <span className="k">evidence episodes</span>
           <span className="v">
-            {edge.evidence_episode_ids.length === 0 ? "none" : edge.evidence_episode_ids.join(", ")}
+            {edge.evidence_episode_ids.length === 0
+              ? "none"
+              : edge.evidence_episode_ids.map((id, index) => (
+                  <span key={id}>
+                    {index === 0 ? null : ", "}
+                    <IdRef id={id} type="episode" label={id} />
+                  </span>
+                ))}
           </span>
         </div>
       </div>

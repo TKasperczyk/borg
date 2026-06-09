@@ -1,9 +1,16 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 
 import { ApiError, getLedger } from "../../api/client";
-import type { EvidenceLedger, EvidenceLedgerEntry, EvidenceLedgerSection } from "../../api/types";
+import type {
+  EvidenceLedger,
+  EvidenceLedgerEntry,
+  EvidenceLedgerSection,
+  EvidenceLedgerSourceType,
+} from "../../api/types";
 import { AttachmentChip } from "../../components/AttachmentChip";
 import { Empty } from "../../components/Empty";
+import { IdRef } from "../../components/Inspector/IdRef";
+import { resolveObjectType, type ObjectType } from "../../components/Inspector/inspector-id";
 import { Tag, type TagKind } from "../../components/Tag";
 
 export type LedgerViewProps = {
@@ -43,6 +50,108 @@ function trustKind(entry: EvidenceLedgerEntry): TagKind {
     return "acc";
   }
   return "";
+}
+
+const LEDGER_SOURCE_OBJECT_TYPES: Partial<Record<EvidenceLedgerSourceType, ObjectType>> = {
+  current_session_stream: "stream_entry",
+  prior_session_stream: "stream_entry",
+  episode: "episode",
+  semantic_node: "semantic_node",
+  semantic_edge: "semantic_edge",
+  action_record: "action_record",
+  relational_slot: "relational_slot",
+  commitment: "commitment",
+  shared_state: "shared_state_entry",
+  image_attachment: "attachment",
+  assistant_stream: "stream_entry",
+};
+
+const LEDGER_SOURCE_OBJECT_METADATA_KEYS: Partial<Record<ObjectType, readonly string[]>> = {
+  stream_entry: [
+    "stream_id",
+    "stream_entry_id",
+    "source_stream_id",
+    "parent_entry_id",
+    "stream_ids",
+    "source_stream_ids",
+    "source_stream_entry_ids",
+    "provenance_stream_entry_ids",
+    "last_updated_stream_entry_ids",
+  ],
+  episode: ["episode_id"],
+  semantic_node: ["node_id"],
+  semantic_edge: ["edge_id"],
+  action_record: ["action_id", "current_action_id", "record_ids"],
+  relational_slot: ["relational_slot_id", "slot_id"],
+  commitment: ["commitment_id"],
+  shared_state_entry: ["shared_state_entry_id", "artifact_entry_id"],
+  attachment: ["attachment_id"],
+};
+
+function ledgerSourceObjectType(sourceType: EvidenceLedgerSourceType): ObjectType | null {
+  return LEDGER_SOURCE_OBJECT_TYPES[sourceType] ?? null;
+}
+
+function isExpectedObjectId(id: string, type: ObjectType): boolean {
+  return resolveObjectType(id) === type;
+}
+
+function addExpectedObjectId(candidates: Set<string>, id: string, type: ObjectType): void {
+  if (isExpectedObjectId(id, type)) {
+    candidates.add(id);
+  }
+}
+
+function ledgerHandleObjectId(handle: string, type: ObjectType): string | null {
+  const separatorIndex = handle.lastIndexOf(":");
+  if (separatorIndex < 0 || separatorIndex === handle.length - 1) {
+    return null;
+  }
+
+  const rawId = handle.slice(separatorIndex + 1);
+  return isExpectedObjectId(rawId, type) ? rawId : null;
+}
+
+function metadataStringValues(metadata: Record<string, unknown>, key: string): string[] {
+  const value = metadata[key];
+  if (typeof value === "string") {
+    return [value];
+  }
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string");
+  }
+  return [];
+}
+
+function ledgerSourceObjectId(entry: EvidenceLedgerEntry, type: ObjectType): string | null {
+  const candidates = new Set<string>();
+  const handleId = ledgerHandleObjectId(entry.id, type);
+
+  if (handleId !== null) {
+    candidates.add(handleId);
+  }
+
+  if (entry.state_metadata !== undefined) {
+    for (const key of LEDGER_SOURCE_OBJECT_METADATA_KEYS[type] ?? []) {
+      for (const value of metadataStringValues(entry.state_metadata, key)) {
+        addExpectedObjectId(candidates, value, type);
+      }
+    }
+  }
+
+  for (const citation of entry.citations ?? []) {
+    addExpectedObjectId(candidates, citation, type);
+  }
+
+  if (candidates.size !== 1) {
+    return null;
+  }
+
+  for (const candidate of candidates) {
+    return candidate;
+  }
+
+  return null;
 }
 
 export function LedgerView({ turnId, cachedLedger, active, audience }: LedgerViewProps) {
@@ -132,26 +241,51 @@ export function LedgerView({ turnId, cachedLedger, active, audience }: LedgerVie
           {group.entries.length === 0 ? (
             <div className="lgr-empty">— none —</div>
           ) : null}
-          {group.entries.map((entry) => (
-            <div key={entry.id} className="lgr-item">
-              <div className="head">
-                <span className="id">
-                  [{group.id}:{entry.id}]
-                </span>
-                {entry.state === undefined ? null : (
-                  <Tag kind={trustKind(entry)}>{entry.state}</Tag>
+          {group.entries.map((entry) => {
+            const sourceObjectType = ledgerSourceObjectType(entry.source_type);
+            const sourceObjectId =
+              sourceObjectType === null ? null : ledgerSourceObjectId(entry, sourceObjectType);
+            return (
+              <div key={entry.id} className="lgr-item">
+                <div className="head">
+                  <span className="id">
+                    {sourceObjectType === null || sourceObjectId === null ? (
+                      <>[{group.id}:{entry.id}]</>
+                    ) : (
+                      <IdRef
+                        id={sourceObjectId}
+                        type={sourceObjectType}
+                        label={`[${group.id}:${entry.id}]`}
+                      />
+                    )}
+                  </span>
+                  {entry.state === undefined ? null : (
+                    <Tag kind={trustKind(entry)}>{entry.state}</Tag>
+                  )}
+                  {entry.taint === undefined || entry.taint === "none" ? null : (
+                    <Tag kind={trustKind(entry)}>{entry.taint}</Tag>
+                  )}
+                  <span className="trust">trust {entry.trust_rank}</span>
+                </div>
+                <div className="text">{entry.text ?? entry.value ?? "(no text)"}</div>
+                {entry.citations === undefined || entry.citations.length === 0 ? null : (
+                  <div className="cite">
+                    citations ·{" "}
+                    {entry.citations.map((citation, index) => (
+                      <Fragment key={`${citation}:${index}`}>
+                        {index === 0 ? null : ", "}
+                        {resolveObjectType(citation) === null ? (
+                          citation
+                        ) : (
+                          <IdRef id={citation} />
+                        )}
+                      </Fragment>
+                    ))}
+                  </div>
                 )}
-                {entry.taint === undefined || entry.taint === "none" ? null : (
-                  <Tag kind={trustKind(entry)}>{entry.taint}</Tag>
-                )}
-                <span className="trust">trust {entry.trust_rank}</span>
               </div>
-              <div className="text">{entry.text ?? entry.value ?? "(no text)"}</div>
-              {entry.citations === undefined || entry.citations.length === 0 ? null : (
-                <div className="cite">citations · {entry.citations.join(", ")}</div>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       ))}
 

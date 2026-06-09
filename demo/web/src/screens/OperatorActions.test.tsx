@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { renderWithInspector } from "../test/inspector";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { LiveEvents, LiveEventHandler } from "../hooks/use-live-events";
@@ -137,7 +138,7 @@ describe("operator actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<IdentityScreen />);
+    renderWithInspector(<IdentityScreen />);
 
     fireEvent.click(await screen.findByLabelText("add value"));
     fireEvent.change(screen.getByLabelText("name"), { target: { value: "care" } });
@@ -236,7 +237,7 @@ describe("operator actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<IdentityScreen />);
+    renderWithInspector(<IdentityScreen />);
 
     const eventSection = await screen.findByLabelText("open question events history");
     const rows = within(eventSection).getAllByTestId("identity-event-row");
@@ -281,7 +282,7 @@ describe("operator actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<IdentityScreen />);
+    renderWithInspector(<IdentityScreen />);
 
     fireEvent.click((await screen.findAllByRole("button", { name: "correct" }))[0]!);
     expect(screen.queryByLabelText(/acknowledge this direct live self-band write/i)).toBeNull();
@@ -313,7 +314,7 @@ describe("operator actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<IdentityScreen />);
+    renderWithInspector(<IdentityScreen />);
 
     fireEvent.click(await screen.findByRole("button", { name: "bump" }));
 
@@ -383,7 +384,7 @@ describe("operator actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(
+    renderWithInspector(
       <LiveEventsProvider value={liveSource()}>
         <DreamScreen />
       </LiveEventsProvider>,

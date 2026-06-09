@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -13,6 +13,7 @@ import type {
 import { LiveEventsProvider } from "../../hooks/live-context";
 import type { LiveEventHandler, LiveEvents } from "../../hooks/use-live-events";
 import { useTurnStream } from "../../hooks/use-turn-stream";
+import { renderWithInspector } from "../../test/inspector";
 import { ChatStream } from "./ChatStream";
 import { CognitionScreen } from "./index";
 import { LedgerView } from "./LedgerView";
@@ -310,7 +311,9 @@ describe("cognition screen", () => {
       }),
     ];
 
-    render(<ChatStream entries={entries} sessionId="default" audience="alice" running={false} />);
+    renderWithInspector(
+      <ChatStream entries={entries} sessionId="default" audience="alice" running={false} />,
+    );
 
     expect(screen.getByText("see this")).toBeInTheDocument();
     expect(screen.getByText("[att:att_123]")).toBeInTheDocument();
@@ -319,7 +322,7 @@ describe("cognition screen", () => {
   it("does not render a stale cached ledger after switching turns", () => {
     const fetchMock = vi.fn(() => new Promise<Response>(() => undefined));
     vi.stubGlobal("fetch", fetchMock);
-    const { rerender } = render(
+    const { rerender } = renderWithInspector(
       <LedgerView
         turnId="turn_a"
         cachedLedger={ledgerWithText("ledger A")}
@@ -337,7 +340,7 @@ describe("cognition screen", () => {
   });
 
   it("renders every backend ledger section dynamically", () => {
-    render(
+    renderWithInspector(
       <LedgerView
         turnId="turn_sections"
         cachedLedger={{
@@ -416,6 +419,112 @@ describe("cognition screen", () => {
     expect(screen.getByText("question kept")).toBeInTheDocument();
   });
 
+  it("opens the inspector from a namespaced ledger source handle raw id", async () => {
+    const episodeId = "ep_ledger111111111";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((request: RequestInfo | URL) => {
+        const url = new URL(String(request), "http://test.invalid");
+        if (url.pathname === "/api/memory/bands/episodic") {
+          return Promise.resolve(
+            jsonResponse({
+              band: "episodic",
+              items: [
+                {
+                  id: episodeId,
+                  title: "Ledger-linked episode",
+                  narrative: "Opened through the ledger source handle.",
+                  participants: [],
+                  location: null,
+                  start_time: 1,
+                  end_time: 2,
+                  audience: "alice",
+                  significance: 0.5,
+                  confidence: 0.8,
+                  tags: [],
+                  source_stream_ids: ["strm_ledger111111"],
+                  source_count: 1,
+                  lineage: { derived_from: [], supersedes: [] },
+                  emotional_arc: null,
+                  vector_dims: 4,
+                  created_at: 1,
+                  updated_at: 2,
+                },
+              ],
+              next_cursor: null,
+            }),
+          );
+        }
+        return Promise.resolve(new Response("not found", { status: 404 }));
+      }),
+    );
+
+    renderWithInspector(
+      <LedgerView
+        turnId="turn_ledger"
+        cachedLedger={{
+          ...ledgerWithText("episode source kept"),
+          sections: [
+            {
+              id: "episodes",
+              label: "episodes",
+              entries: [
+                {
+                  id: `episode:${episodeId}`,
+                  source_type: "episode",
+                  session_scope: "current_session",
+                  actor: "memory",
+                  trust_rank: 1,
+                  text: "episode source kept",
+                },
+              ],
+            },
+          ],
+        }}
+        active
+        audience="alice"
+      />,
+      { inspector: true },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: `jump to ${episodeId}` }));
+
+    expect(await screen.findByRole("dialog", { name: "Episode inspector" })).toBeInTheDocument();
+    expect(await screen.findByText("Ledger-linked episode")).toBeInTheDocument();
+  });
+
+  it("keeps ledger source handles inert when no single raw id is recoverable", () => {
+    renderWithInspector(
+      <LedgerView
+        turnId="turn_ledger"
+        cachedLedger={{
+          ...ledgerWithText("unrecoverable source kept"),
+          sections: [
+            {
+              id: "episodes",
+              label: "episodes",
+              entries: [
+                {
+                  id: "retrieved_evidence:not_prefixed",
+                  source_type: "episode",
+                  session_scope: "current_session",
+                  actor: "memory",
+                  trust_rank: 1,
+                  text: "unrecoverable source kept",
+                },
+              ],
+            },
+          ],
+        }}
+        active
+        audience="alice"
+      />,
+    );
+
+    expect(screen.getByText("[episodes:retrieved_evidence:not_prefixed]")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /retrieved_evidence:not_prefixed/ })).toBeNull();
+  });
+
   it("shows an optimistic queued user bubble immediately and marks it sent after ack", async () => {
     const source = makeLiveSource();
     const pendingTurn = deferredResponse();
@@ -423,7 +532,7 @@ describe("cognition screen", () => {
       turnResponse: pendingTurn.promise,
     });
 
-    render(<Harness live={source.live()} />);
+    renderWithInspector(<Harness live={source.live()} />);
 
     fireEvent.change(screen.getByPlaceholderText("send a turn"), {
       target: { value: "hello queued" },
@@ -457,7 +566,7 @@ describe("cognition screen", () => {
       }),
     });
 
-    render(<Harness live={source.live()} />);
+    renderWithInspector(<Harness live={source.live()} />);
 
     fireEvent.change(screen.getByPlaceholderText("send a turn"), {
       target: { value: "hello batch" },
@@ -500,7 +609,7 @@ describe("cognition screen", () => {
       ],
     });
 
-    render(<Harness live={source.live()} />);
+    renderWithInspector(<Harness live={source.live()} />);
 
     fireEvent.change(screen.getByPlaceholderText("send a turn"), {
       target: { value: "message A" },
@@ -565,7 +674,7 @@ describe("cognition screen", () => {
       ],
     });
 
-    render(<Harness live={source.live()} />);
+    renderWithInspector(<Harness live={source.live()} />);
 
     fireEvent.change(screen.getByPlaceholderText("send a turn"), {
       target: { value: "hello once" },
@@ -578,14 +687,12 @@ describe("cognition screen", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "send" }));
 
-    await waitFor(
-      () =>
-        expect(
-          fetchMock.mock.calls.filter(
-            ([request, init]) =>
-              String(request).endsWith("/api/turn") && init?.method === "POST",
-          ),
-        ).toHaveLength(2),
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(
+          ([request, init]) => String(request).endsWith("/api/turn") && init?.method === "POST",
+        ),
+      ).toHaveLength(2),
     );
 
     expect(document.querySelectorAll(".chat-msg.user")).toHaveLength(1);
@@ -600,7 +707,7 @@ describe("cognition screen", () => {
       turnResponse: pendingTurn.promise,
     });
 
-    render(<Harness live={source.live()} />);
+    renderWithInspector(<Harness live={source.live()} />);
 
     fireEvent.change(screen.getByPlaceholderText("send a turn"), {
       target: { value: "same draft" },
@@ -639,7 +746,7 @@ describe("cognition screen", () => {
       turnResponses: [firstTurn.promise, secondTurn.promise],
     });
 
-    render(<Harness live={source.live()} />);
+    renderWithInspector(<Harness live={source.live()} />);
 
     fireEvent.change(screen.getByPlaceholderText("send a turn"), {
       target: { value: "first queued" },
@@ -658,14 +765,12 @@ describe("cognition screen", () => {
     expect(sendButton).toBeEnabled();
     fireEvent.click(sendButton);
 
-    await waitFor(
-      () =>
-        expect(
-          fetchMock.mock.calls.filter(
-            ([request, init]) =>
-              String(request).endsWith("/api/turn") && init?.method === "POST",
-          ),
-        ).toHaveLength(2),
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(
+          ([request, init]) => String(request).endsWith("/api/turn") && init?.method === "POST",
+        ),
+      ).toHaveLength(2),
     );
     expect(chatUserBodies()).toContain("second queued");
 
@@ -698,7 +803,7 @@ describe("cognition screen", () => {
       }),
     });
 
-    render(<Harness live={source.live()} />);
+    renderWithInspector(<Harness live={source.live()} />);
 
     fireEvent.change(screen.getByPlaceholderText("send a turn"), {
       target: { value: "hello borg" },
@@ -731,7 +836,7 @@ describe("cognition screen", () => {
       }),
     });
 
-    render(<Harness live={source.live()} sessionId="sess_custom" />);
+    renderWithInspector(<Harness live={source.live()} sessionId="sess_custom" />);
 
     await waitFor(() => {
       const streamCall = fetchMock.mock.calls.find(([request]) =>
@@ -766,7 +871,7 @@ describe("cognition screen", () => {
     const source = makeLiveSource();
     installCognitionFetch();
 
-    render(
+    renderWithInspector(
       <Harness live={source.live()} session={sessionRecord({ participation_policy: "muted" })} />,
     );
 
@@ -780,7 +885,9 @@ describe("cognition screen", () => {
     const { fetchMock } = installCognitionFetch();
     const onSessionPolicyChanged = vi.fn(async () => undefined);
 
-    render(<Harness live={source.live()} onSessionPolicyChanged={onSessionPolicyChanged} />);
+    renderWithInspector(
+      <Harness live={source.live()} onSessionPolicyChanged={onSessionPolicyChanged} />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "participation policy active" }));
     fireEvent.change(screen.getByLabelText("participation policy selection"), {
@@ -814,7 +921,7 @@ describe("cognition screen", () => {
     });
     const file = new File([new Uint8Array([1, 2, 3])], "pixel.png", { type: "image/png" });
 
-    render(<Harness live={source.live()} />);
+    renderWithInspector(<Harness live={source.live()} />);
 
     fireEvent.click(screen.getByRole("button", { name: "+ attach" }));
     fireEvent.change(screen.getByTestId("attachment-file-input"), {
@@ -856,7 +963,7 @@ describe("cognition screen", () => {
       }),
     });
 
-    render(<Harness live={source.live()} />);
+    renderWithInspector(<Harness live={source.live()} />);
 
     fireEvent.change(screen.getByPlaceholderText("send a turn"), {
       target: { value: "hello borg" },
@@ -897,7 +1004,7 @@ describe("cognition screen", () => {
     const source = makeLiveSource();
     installCognitionFetch();
 
-    render(<Harness live={source.live()} />);
+    renderWithInspector(<Harness live={source.live()} />);
 
     expect(screen.getByTestId("phase-ingest")).toHaveClass("fc-node-queue");
     expect(screen.getByTestId("phase-audience")).toHaveClass("fc-node-queue");
@@ -929,7 +1036,7 @@ describe("cognition screen", () => {
     const source = makeLiveSource();
     installCognitionFetch();
 
-    render(<Harness live={source.live()} />);
+    renderWithInspector(<Harness live={source.live()} />);
 
     fireEvent.change(screen.getByPlaceholderText("send a turn"), {
       target: { value: "hello borg" },
@@ -960,7 +1067,7 @@ describe("cognition screen", () => {
     const source = makeLiveSource();
     installCognitionFetch();
 
-    render(<Harness live={source.live()} />);
+    renderWithInspector(<Harness live={source.live()} />);
 
     fireEvent.change(screen.getByPlaceholderText("send a turn"), {
       target: { value: "hello borg" },
@@ -999,7 +1106,7 @@ describe("cognition screen", () => {
     const source = makeLiveSource();
     installCognitionFetch();
 
-    render(<Harness live={source.live()} />);
+    renderWithInspector(<Harness live={source.live()} />);
 
     fireEvent.change(screen.getByPlaceholderText("send a turn"), {
       target: { value: "hello borg" },
@@ -1034,7 +1141,7 @@ describe("cognition screen", () => {
       }),
     });
 
-    render(<Harness live={source.live()} />);
+    renderWithInspector(<Harness live={source.live()} />);
 
     fireEvent.change(screen.getByPlaceholderText("send a turn"), {
       target: { value: "hello borg" },
@@ -1095,7 +1202,7 @@ describe("cognition screen", () => {
       content: "live kept",
     });
 
-    render(<Harness live={source.live()} />);
+    renderWithInspector(<Harness live={source.live()} />);
 
     await act(async () => {
       await Promise.resolve();
@@ -1136,7 +1243,7 @@ describe("cognition screen", () => {
     const source = makeLiveSource();
     const { streamCalls } = installCognitionFetch();
 
-    const { rerender } = render(<Harness live={source.live(0, "reconnecting")} />);
+    const { rerender } = renderWithInspector(<Harness live={source.live(0, "reconnecting")} />);
 
     await waitFor(() => expect(streamCalls()).toBe(1));
 
@@ -1162,7 +1269,7 @@ describe("cognition screen", () => {
       streamEntries: [[], [rebuiltEntry]],
     });
 
-    const { rerender } = render(<Harness live={source.live(1, "live")} />);
+    const { rerender } = renderWithInspector(<Harness live={source.live(1, "live")} />);
 
     await waitFor(() => expect(streamCalls()).toBe(1));
 

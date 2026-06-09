@@ -16,6 +16,7 @@ import type {
   DreamProcessName,
   DreamProcessSummary,
 } from "../../api/types";
+import { IdRef } from "../../components/Inspector/IdRef";
 import { Modal } from "../../components/Modal";
 import { Tag } from "../../components/Tag";
 import { useLiveEventsContext } from "../../hooks/live-context";
@@ -579,7 +580,17 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
                   </div>
                   <div className="row">
                     <span className="k">last audit</span>
-                    <span className="v">{selectedProcess.last_audit_id ?? "—"}</span>
+                    <span className="v">
+                      {selectedProcess.last_audit_id === null ? (
+                        "—"
+                      ) : (
+                        <IdRef
+                          id={String(selectedProcess.last_audit_id)}
+                          type="dream_audit"
+                          label={String(selectedProcess.last_audit_id)}
+                        />
+                      )}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -867,7 +878,14 @@ function AuditRunHeader({ group, report }: { group: AuditRunGroup; report?: Drea
       <td colSpan={8} style={{ background: "var(--bg-0)" }}>
         <div style={{ display: "grid", gap: 7 }}>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <Tag kind="info">run {shortId(group.runId)}</Tag>
+            <Tag kind="info">
+              <IdRef
+                id={group.runId}
+                type="maintenance_run"
+                label={`run ${shortId(group.runId)}`}
+                hint={group}
+              />
+            </Tag>
             <span className="dim" style={{ fontSize: 10.5 }}>
               {group.rows.length} rows
             </span>

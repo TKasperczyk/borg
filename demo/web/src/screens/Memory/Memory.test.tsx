@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { renderWithInspector } from "../../test/inspector";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LiveEventsProvider } from "../../hooks/live-context";
@@ -198,7 +199,7 @@ describe("Memory correction actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<MemoryScreen sessionId="default" />);
+    renderWithInspector(<MemoryScreen sessionId="default" />);
 
     const episodicLabels = await screen.findAllByText("episodic");
     fireEvent.click(episodicLabels[0]?.closest(".band-card") ?? episodicLabels[0]!);
@@ -263,7 +264,7 @@ describe("Memory correction actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<MemoryScreen sessionId="default" />);
+    renderWithInspector(<MemoryScreen sessionId="default" />);
 
     const episodicLabels = await screen.findAllByText("episodic");
     fireEvent.click(episodicLabels[0]?.closest(".band-card") ?? episodicLabels[0]!);
@@ -306,7 +307,7 @@ describe("Memory correction actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<MemoryScreen sessionId="default" />);
+    renderWithInspector(<MemoryScreen sessionId="default" />);
 
     expect(await screen.findByText("500+")).toBeInTheDocument();
     const episodicLabels = await screen.findAllByText("episodic");
@@ -337,7 +338,7 @@ describe("Memory correction actions", () => {
       return Promise.resolve(new Response("not found", { status: 404 }));
     });
     vi.stubGlobal("fetch", fetchMock);
-    const { container } = render(<MemoryScreen sessionId="default" />);
+    const { container } = renderWithInspector(<MemoryScreen sessionId="default" />);
 
     const episodicLabels = await screen.findAllByText("episodic");
     fireEvent.click(episodicLabels[0]?.closest(".band-card") ?? episodicLabels[0]!);
@@ -400,7 +401,7 @@ describe("Memory correction actions", () => {
       return Promise.resolve(new Response("not found", { status: 404 }));
     });
     vi.stubGlobal("fetch", fetchMock);
-    const { container } = render(<MemoryScreen sessionId="default" />);
+    const { container } = renderWithInspector(<MemoryScreen sessionId="default" />);
 
     const episodicLabels = await screen.findAllByText("episodic");
     fireEvent.click(episodicLabels[0]?.closest(".band-card") ?? episodicLabels[0]!);
@@ -422,6 +423,45 @@ describe("Memory correction actions", () => {
     );
     expect(filteredTitles).toEqual(["Beta episode"]);
     expect(screen.queryByText("Alpha episode")).not.toBeInTheDocument();
+  });
+
+  it("keeps list-row selection working after detail ids become inspector refs", async () => {
+    const first = episodeItem("ep_select111111111", "Selectable one", { ts: 20 });
+    const second = episodeItem("ep_select222222222", "Selectable two", { ts: 10 });
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = requestUrl(request);
+      if (url.pathname === "/api/memory/bands") {
+        const bands = memoryBandsResponse();
+        bands.bands[0]!.count = 2;
+        return Promise.resolve(jsonResponse(bands));
+      }
+      if (url.pathname === "/api/reviews") {
+        return Promise.resolve(jsonResponse({ rows: [] }));
+      }
+      if (url.pathname === "/api/memory/bands/episodic") {
+        return Promise.resolve(
+          jsonResponse({
+            band: "episodic",
+            mode: "browse",
+            items: [first, second],
+            next_cursor: null,
+          }),
+        );
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithInspector(<MemoryScreen sessionId="default" />);
+
+    const episodicLabels = await screen.findAllByText("episodic");
+    fireEvent.click(episodicLabels[0]?.closest(".band-card") ?? episodicLabels[0]!);
+    expect(await screen.findByText("Selectable one narrative")).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByText("Selectable two"));
+
+    expect(await screen.findByText("Selectable two narrative")).toBeInTheDocument();
+    expect(screen.queryByText("Selectable one narrative")).not.toBeInTheDocument();
   });
 
   it("renders server-ranked search results from the band detail query path", async () => {
@@ -465,7 +505,7 @@ describe("Memory correction actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<MemoryScreen sessionId="default" />);
+    renderWithInspector(<MemoryScreen sessionId="default" />);
 
     const episodicLabels = await screen.findAllByText("episodic");
     fireEvent.click(episodicLabels[0]?.closest(".band-card") ?? episodicLabels[0]!);
@@ -568,7 +608,7 @@ describe("Memory correction actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(
+    renderWithInspector(
       <LiveEventsProvider value={testLiveEvents()}>
         <MemoryScreen sessionId="default" />
       </LiveEventsProvider>,
@@ -683,7 +723,7 @@ describe("Memory correction actions", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(
+    renderWithInspector(
       <LiveEventsProvider value={testLiveEvents()}>
         <MemoryScreen sessionId="default" />
       </LiveEventsProvider>,
@@ -732,7 +772,7 @@ describe("Memory correction actions", () => {
     vi.stubGlobal("fetch", fetchMock);
     const openReview = vi.fn();
 
-    render(<MemoryScreen sessionId="default" onOpenReview={openReview} />);
+    renderWithInspector(<MemoryScreen sessionId="default" onOpenReview={openReview} />);
 
     expect(await screen.findByText("1 pending correction review rows.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "open review" }));

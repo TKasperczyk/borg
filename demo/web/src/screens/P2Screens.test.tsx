@@ -1,4 +1,5 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { renderWithInspector } from "../test/inspector";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { LiveFrame, StreamEntry, WsState } from "../api/types";
@@ -604,7 +605,7 @@ describe("P2 screens", () => {
   it("renders stream live tail and attachment quarantine detail", async () => {
     const live = makeLiveSource();
     installFetch();
-    render(
+    renderWithInspector(
       <LiveEventsProvider value={live.live()}>
         <StreamScreen sessionId="default" />
       </LiveEventsProvider>,
@@ -650,7 +651,7 @@ describe("P2 screens", () => {
   it("renders compact stream row summaries for object content", async () => {
     const live = makeLiveSource();
     installFetch();
-    render(
+    renderWithInspector(
       <LiveEventsProvider value={live.live()}>
         <StreamScreen sessionId="default" />
       </LiveEventsProvider>,
@@ -678,7 +679,7 @@ describe("P2 screens", () => {
   it("refetches stream rows on WebSocket reconnect after the initial connection", async () => {
     const live = makeLiveSource();
     const fetchMock = installFetch();
-    const { rerender } = render(
+    const { rerender } = renderWithInspector(
       <LiveEventsProvider value={live.live(1)}>
         <StreamScreen sessionId="default" />
       </LiveEventsProvider>,
@@ -705,7 +706,7 @@ describe("P2 screens", () => {
 
   it("drills from memory overview into procedural records", async () => {
     installFetch();
-    render(<MemoryScreen sessionId="default" />);
+    renderWithInspector(<MemoryScreen sessionId="default" />);
 
     const proceduralLabels = await screen.findAllByText("procedural");
     fireEvent.click(proceduralLabels[0]?.closest(".band-card") ?? proceduralLabels[0]!);
@@ -716,7 +717,7 @@ describe("P2 screens", () => {
 
   it("renders full open-question lifecycle in identity", async () => {
     installFetch();
-    render(<IdentityScreen />);
+    renderWithInspector(<IdentityScreen />);
 
     expect(await screen.findByText("what remains unresolved?")).toBeInTheDocument();
     expect(screen.getAllByText("abandoned")[0]).toBeInTheDocument();
@@ -725,7 +726,7 @@ describe("P2 screens", () => {
 
   it("filters commitment lifecycle rows", async () => {
     installFetch();
-    render(<CommitScreen />);
+    renderWithInspector(<CommitScreen />);
 
     expect((await screen.findAllByText("active rule")).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByText("revoked"));
@@ -740,7 +741,7 @@ describe("P2 screens", () => {
     const live = makeLiveSource();
     installFetch();
     const openReview = vi.fn();
-    render(
+    renderWithInspector(
       <LiveEventsProvider value={live.live()}>
         <DreamScreen onOpenReview={openReview} />
       </LiveEventsProvider>,
@@ -750,6 +751,67 @@ describe("P2 screens", () => {
     expect(screen.getByText("1 open")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "open review" }));
     expect(openReview).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps dream card audit text selecting its card", async () => {
+    const live = makeLiveSource();
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = new URL(String(request), "http://test.invalid");
+      if (url.pathname === "/api/dream/state") {
+        return Promise.resolve(
+          jsonResponse({
+            processes: [
+              {
+                name: "belief-reviser",
+                description: "default selected process",
+                last_run_at: 4,
+                last_status: "ok",
+                last_audit_id: 1,
+                budget: null,
+                enabled: true,
+              },
+              {
+                name: "curator",
+                description: "audit click target",
+                last_run_at: 5,
+                last_status: "ok",
+                last_audit_id: 2,
+                budget: null,
+                enabled: true,
+              },
+            ],
+            schedule: [],
+            audit_rows: [],
+            dream_reports: [],
+            belief_revision_rows: [],
+            scheduler: {
+              enabled: true,
+              light_interval_ms: 1,
+              heavy_interval_ms: 1,
+              light_processes: [],
+              heavy_processes: ["belief-reviser"],
+              process_budgets: {},
+            },
+          }),
+        );
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = renderWithInspector(
+      <LiveEventsProvider value={live.live()}>
+        <DreamScreen />
+      </LiveEventsProvider>,
+    );
+
+    const targetCard = (await screen.findByText("audit click target")).closest(".dream-card");
+    expect(container.querySelector(".panel-header .title")).toHaveTextContent("belief-reviser");
+    expect(targetCard).not.toBeNull();
+
+    fireEvent.click(within(targetCard as HTMLElement).getByText("2"));
+
+    expect(container.querySelector(".panel-header .title")).toHaveTextContent("curator");
   });
 
   it("reverts only reversible unreverted dream audit rows", async () => {
@@ -843,7 +905,7 @@ describe("P2 screens", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(
+    renderWithInspector(
       <LiveEventsProvider value={live.live()}>
         <DreamScreen />
       </LiveEventsProvider>,
@@ -953,7 +1015,7 @@ describe("P2 screens", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(
+    renderWithInspector(
       <LiveEventsProvider value={live.live()}>
         <ReviewScreen />
       </LiveEventsProvider>,
@@ -1072,7 +1134,7 @@ describe("P2 screens", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(
+    renderWithInspector(
       <LiveEventsProvider value={live.live()}>
         <ReviewScreen />
       </LiveEventsProvider>,
@@ -1172,7 +1234,7 @@ describe("P2 screens", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(
+    renderWithInspector(
       <LiveEventsProvider value={live.live()}>
         <ReviewScreen />
       </LiveEventsProvider>,
@@ -1250,7 +1312,7 @@ describe("P2 screens", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(
+    renderWithInspector(
       <LiveEventsProvider value={live.live()}>
         <ReviewScreen />
       </LiveEventsProvider>,
@@ -1337,7 +1399,7 @@ describe("P2 screens", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const { container } = render(
+    const { container } = renderWithInspector(
       <LiveEventsProvider value={live.live()}>
         <ReviewScreen />
       </LiveEventsProvider>,
@@ -1360,7 +1422,7 @@ describe("P2 screens", () => {
   it("refetches dream state on WebSocket reconnect after the initial connection", async () => {
     const live = makeLiveSource();
     const fetchMock = installFetch();
-    const { rerender } = render(
+    const { rerender } = renderWithInspector(
       <LiveEventsProvider value={live.live(1)}>
         <DreamScreen />
       </LiveEventsProvider>,
@@ -1388,7 +1450,7 @@ describe("P2 screens", () => {
   it("refetches dream state and shows the maintenance tick indicator", async () => {
     const live = makeLiveSource();
     const fetchMock = installFetch();
-    render(
+    renderWithInspector(
       <LiveEventsProvider value={live.live()}>
         <DreamScreen />
       </LiveEventsProvider>,
