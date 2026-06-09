@@ -10,6 +10,8 @@ import {
 } from "./api/client";
 import type { MaintenanceTickFrame, StateSnapshot } from "./api/types";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
+import { Inspector } from "./components/Inspector/Inspector";
+import { InspectorProvider } from "./components/Inspector/inspector-context";
 import { InstrumentStrip } from "./components/InstrumentStrip";
 import { Rail, type RailBadge, type RouteId } from "./components/Rail";
 import { SessionFleet } from "./components/SessionFleet";
@@ -126,59 +128,67 @@ export function AppShell() {
 
   return (
     <LiveEventsProvider value={live}>
-      <div className="app">
-        <Rail route={view} setRoute={setView} badges={badges} />
-        <InstrumentStrip
-          sessionId={sessionId}
-          activeSession={activeSession}
-          audience={activeAudience}
-          creator={creatorApi.data ?? null}
-          state={stateApi.data}
-          wsState={live.wsState}
-          now={now}
-          route={view}
-        />
-        <div className="main">
-          <SessionFleet
-            sessions={sessionsApi.data?.sessions ?? []}
-            activeSessionId={sessionId}
-            onSelect={setSessionId}
+      <InspectorProvider
+        setView={setView}
+        setSessionId={setSessionId}
+        sessionId={sessionId}
+        audience={activeAudience}
+      >
+        <div className="app">
+          <Rail route={view} setRoute={setView} badges={badges} />
+          <InstrumentStrip
+            sessionId={sessionId}
+            activeSession={activeSession}
+            audience={activeAudience}
             creator={creatorApi.data ?? null}
-            operatorChatError={operatorChatError}
-            onOpenOperatorChat={openOperatorChat}
-            onSetCreatorByName={markCreatorByName}
+            state={stateApi.data}
+            wsState={live.wsState}
+            now={now}
+            route={view}
           />
-          <div className="screen-shell">
-            <AppErrorBoundary resetKey={view}>
-              {view === "cognition" ? (
-                <CognitionScreen
-                  sessionId={sessionId}
-                  audience={activeAudience}
-                  audienceEntityId={activeSession?.audience_entity_id ?? null}
-                  turnStream={turnStream}
-                  session={activeSession}
-                  onSessionPolicyChanged={refetchSessionState}
-                />
-              ) : null}
-              {view === "stream" ? <StreamScreen sessionId={sessionId} /> : null}
-              {view === "memory" ? (
-                <MemoryScreen sessionId={sessionId} onOpenReview={() => setView("review")} />
-              ) : null}
-              {view === "identity" ? <IdentityScreen /> : null}
-              {view === "commit" ? <CommitScreen /> : null}
-              {view === "directives" ? <DirectivesScreen sessionId={sessionId} /> : null}
-              {view === "review" ? <ReviewScreen /> : null}
-              {view === "dream" ? <DreamScreen onOpenReview={() => setView("review")} /> : null}
-              {view === "prompts" ? <PromptsScreen /> : null}
-            </AppErrorBoundary>
+          <div className="main">
+            <SessionFleet
+              sessions={sessionsApi.data?.sessions ?? []}
+              activeSessionId={sessionId}
+              onSelect={setSessionId}
+              creator={creatorApi.data ?? null}
+              operatorChatError={operatorChatError}
+              onOpenOperatorChat={openOperatorChat}
+              onSetCreatorByName={markCreatorByName}
+            />
+            <div className="screen-shell">
+              <AppErrorBoundary resetKey={view}>
+                {view === "cognition" ? (
+                  <CognitionScreen
+                    sessionId={sessionId}
+                    audience={activeAudience}
+                    audienceEntityId={activeSession?.audience_entity_id ?? null}
+                    turnStream={turnStream}
+                    session={activeSession}
+                    onSessionPolicyChanged={refetchSessionState}
+                  />
+                ) : null}
+                {view === "stream" ? <StreamScreen sessionId={sessionId} /> : null}
+                {view === "memory" ? (
+                  <MemoryScreen sessionId={sessionId} onOpenReview={() => setView("review")} />
+                ) : null}
+                {view === "identity" ? <IdentityScreen /> : null}
+                {view === "commit" ? <CommitScreen /> : null}
+                {view === "directives" ? <DirectivesScreen sessionId={sessionId} /> : null}
+                {view === "review" ? <ReviewScreen /> : null}
+                {view === "dream" ? <DreamScreen onOpenReview={() => setView("review")} /> : null}
+                {view === "prompts" ? <PromptsScreen /> : null}
+              </AppErrorBoundary>
+            </div>
           </div>
+          <StatusBar
+            state={stateApi.data}
+            lastPhase={turnStream.lastPhase}
+            lastMaintenanceTick={lastMaintenanceTick}
+          />
+          <Inspector />
         </div>
-        <StatusBar
-          state={stateApi.data}
-          lastPhase={turnStream.lastPhase}
-          lastMaintenanceTick={lastMaintenanceTick}
-        />
-      </div>
+      </InspectorProvider>
     </LiveEventsProvider>
   );
 }

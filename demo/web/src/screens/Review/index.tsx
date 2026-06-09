@@ -38,7 +38,7 @@ const REVIEW_KIND_ORDER: ReviewKind[] = [
   "skill_split",
 ];
 
-const GENERIC_REVIEW_ACTIONS: Record<ReviewKind, ReviewResolution[]> = {
+export const GENERIC_REVIEW_ACTIONS: Record<ReviewKind, ReviewResolution[]> = {
   contradiction: ["keep_both", "supersede", "invalidate", "dismiss"],
   duplicate: ["keep_both", "supersede", "invalidate", "dismiss"],
   new_insight: ["accept", "invalidate", "dismiss"],
