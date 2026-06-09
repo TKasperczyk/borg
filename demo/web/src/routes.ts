@@ -18,7 +18,7 @@ export type RailItem = {
   num: number;
 };
 
-export const DEFAULT_ROUTE_ID: RouteId = "cognition";
+export const DEFAULT_ROUTE_ID: RouteId = "mission";
 
 export const RAIL_ITEMS: readonly RailItem[] = [
   { id: "mission", label: "mission", short: "MC", glyph: "⌂", num: 0 },

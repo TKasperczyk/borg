@@ -274,6 +274,12 @@ function installFetch(
     if (path === "/api/creator-directives") {
       return Promise.resolve(jsonResponse({ directives: [directive()] }));
     }
+    if (path === "/api/stream") {
+      return Promise.resolve(jsonResponse({ entries: [], next_cursor: null }));
+    }
+    if (path === "/api/prompts") {
+      return Promise.resolve(jsonResponse({ blocks: [] }));
+    }
 
     return Promise.reject(new Error(`unexpected fetch ${path}`));
   });
@@ -533,7 +539,7 @@ describe("Orrery", () => {
     renderWithInspector(
       <LiveEventsProvider value={live.live()}>
         <LiveCacheProvider sessionId="default">
-          <MissionControlScreen turnStream={idleTurn} onNavigate={vi.fn()} />
+          <MissionControlScreen sessionId="default" turnStream={idleTurn} onNavigate={vi.fn()} />
         </LiveCacheProvider>
       </LiveEventsProvider>,
     );

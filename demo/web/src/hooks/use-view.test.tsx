@@ -11,8 +11,11 @@ function Probe() {
       <button type="button" onClick={() => setView("memory")}>
         switch
       </button>
-      <button type="button" onClick={() => setView("cognition")}>
+      <button type="button" onClick={() => setView("mission")}>
         default
+      </button>
+      <button type="button" onClick={() => setView("cognition")}>
+        cognition
       </button>
     </div>
   );
@@ -47,7 +50,7 @@ describe("useView", () => {
 
     render(<Probe />);
 
-    expect(screen.getByTestId("view")).toHaveTextContent("cognition");
+    expect(screen.getByTestId("view")).toHaveTextContent("mission");
     expect(new URL(window.location.href).searchParams.has("view")).toBe(false);
   });
 
@@ -58,8 +61,19 @@ describe("useView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "default" }));
 
-    expect(screen.getByTestId("view")).toHaveTextContent("cognition");
+    expect(screen.getByTestId("view")).toHaveTextContent("mission");
     expect(new URL(window.location.href).searchParams.has("view")).toBe(false);
+  });
+
+  it("keeps cognition as an explicit view query parameter", () => {
+    window.history.replaceState(null, "", "/");
+
+    render(<Probe />);
+
+    fireEvent.click(screen.getByRole("button", { name: "cognition" }));
+
+    expect(screen.getByTestId("view")).toHaveTextContent("cognition");
+    expect(new URL(window.location.href).searchParams.get("view")).toBe("cognition");
   });
 
   it("re-reads the view on popstate", () => {

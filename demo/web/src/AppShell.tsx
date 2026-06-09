@@ -201,7 +201,11 @@ function AppShellContent({
                 />
               ) : null}
               {view === "mission" ? (
-                <MissionControlScreen turnStream={turnStream} onNavigate={setView} />
+                <MissionControlScreen
+                  sessionId={sessionId}
+                  turnStream={turnStream}
+                  onNavigate={setView}
+                />
               ) : null}
               {view === "stream" ? <StreamScreen sessionId={sessionId} /> : null}
               {view === "memory" ? (

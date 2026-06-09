@@ -60,6 +60,10 @@ vi.mock("./screens/Memory", () => ({
   },
 }));
 
+vi.mock("./screens/MissionControl", () => ({
+  MissionControlScreen: () => <div data-testid="mission-screen" />,
+}));
+
 vi.mock("./screens/Identity", () => ({
   IdentityScreen: () => <div data-testid="identity-screen" />,
 }));
