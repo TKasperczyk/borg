@@ -392,6 +392,7 @@ export type AnthropicLLMClientOptions = {
   client?: AnthropicClientLike;
   usageSink?: TokenUsageSink;
   clock?: Clock;
+  oauthSseInactivityTimeoutMs?: number;
   attachmentResolver?: (attachmentId: AttachmentId) => {
     mediaType: string;
     bytes: Buffer | Uint8Array;
@@ -763,6 +764,96 @@ function transformSseEvent(
 
 type RequestBodyInit = NonNullable<RequestInit["body"]>;
 
+// Healthy streams deliver chunks/pings continuously; a fully silent stream is
+// the documented Anthropic-side stall signature.
+const SSE_INACTIVITY_TIMEOUT_MS = 120_000;
+
+type OAuthFetchOptions = {
+  sseInactivityTimeoutMs?: number;
+};
+
+type SseReadResult = Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>>;
+const LLM_STREAM_STALLED_CODE = "LLM_STREAM_STALLED";
+
+function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
+  (timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+}
+
+function createSseStalledError(timeoutMs: number): LLMError {
+  return new LLMError(`Anthropic SSE stream stalled after ${timeoutMs}ms without a chunk`, {
+    code: LLM_STREAM_STALLED_CODE,
+  });
+}
+
+function causeOf(error: unknown): unknown {
+  if ((typeof error !== "object" && typeof error !== "function") || error === null) {
+    return undefined;
+  }
+
+  return (error as { cause?: unknown }).cause;
+}
+
+function findSseStalledError(error: unknown): LLMError | undefined {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+
+  while (current !== undefined && current !== null && !seen.has(current)) {
+    seen.add(current);
+
+    if (current instanceof LLMError && current.code === LLM_STREAM_STALLED_CODE) {
+      return current;
+    }
+
+    current = causeOf(current);
+  }
+
+  return undefined;
+}
+
+function rethrowSseStalledErrorAtTopLevel(error: unknown): void {
+  const stalledError = findSseStalledError(error);
+
+  if (stalledError !== undefined) {
+    throw new LLMError(stalledError.message, {
+      code: LLM_STREAM_STALLED_CODE,
+      cause: error,
+    });
+  }
+}
+
+async function readSseChunkWithInactivityTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+): Promise<SseReadResult> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timeoutError: LLMError | undefined;
+  const readPromise = reader.read();
+  readPromise.catch(() => undefined);
+
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        timeoutError = createSseStalledError(timeoutMs);
+        reject(timeoutError);
+        void reader.cancel(timeoutError).catch(() => undefined);
+      }, timeoutMs);
+      unrefTimer(timer);
+    });
+
+    const result = await Promise.race([readPromise, timeoutPromise]);
+
+    if (timeoutError !== undefined) {
+      throw timeoutError;
+    }
+
+    return result;
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 function requestHasBody(request: Request): boolean {
   const method = request.method.toUpperCase();
   return method !== "GET" && method !== "HEAD" && request.body !== null;
@@ -800,7 +891,9 @@ function withBodyAndFreshLength(init: RequestInit, body: RequestBodyInit): Reque
   };
 }
 
-export function createOAuthFetch(): typeof fetch {
+export function createOAuthFetch(options: OAuthFetchOptions = {}): typeof fetch {
+  const sseInactivityTimeoutMs = options.sseInactivityTimeoutMs ?? SSE_INACTIVITY_TIMEOUT_MS;
+
   return async (
     input: Parameters<typeof fetch>[0],
     init?: Parameters<typeof fetch>[1],
@@ -937,37 +1030,54 @@ export function createOAuthFetch(): typeof fetch {
       const encoder = new TextEncoder();
       let buffer = "";
 
-      const stream = new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          const { done, value } = await reader.read();
+      const stream = new ReadableStream<Uint8Array>(
+        {
+          async pull(controller) {
+            let result: SseReadResult;
 
-          if (done) {
-            if (buffer.length > 0) {
-              controller.enqueue(
-                encoder.encode(transformSseEvent(buffer, originalNamesByTransformed)),
-              );
+            try {
+              result = await readSseChunkWithInactivityTimeout(reader, sseInactivityTimeoutMs);
+            } catch (error) {
               buffer = "";
+              controller.error(error);
+              return;
             }
 
-            controller.close();
-            return;
-          }
+            const { done, value } = result;
 
-          buffer += decoder.decode(value, { stream: true });
-          const events = buffer.split(/\r?\n\r?\n/);
-          buffer = events.pop() ?? "";
+            if (done) {
+              if (buffer.length > 0) {
+                controller.enqueue(
+                  encoder.encode(transformSseEvent(buffer, originalNamesByTransformed)),
+                );
+                buffer = "";
+              }
 
-          if (events.length > 0) {
-            controller.enqueue(
-              encoder.encode(
-                `${events
-                  .map((event) => transformSseEvent(event, originalNamesByTransformed))
-                  .join("\n\n")}\n\n`,
-              ),
-            );
-          }
+              controller.close();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const events = buffer.split(/\r?\n\r?\n/);
+            buffer = events.pop() ?? "";
+
+            if (events.length > 0) {
+              controller.enqueue(
+                encoder.encode(
+                  `${events
+                    .map((event) => transformSseEvent(event, originalNamesByTransformed))
+                    .join("\n\n")}\n\n`,
+                ),
+              );
+            }
+          },
+          async cancel(reason) {
+            buffer = "";
+            await reader.cancel(reason);
+          },
         },
-      });
+        { highWaterMark: 0 },
+      );
 
       return new Response(stream, {
         status: response.status,
@@ -1129,6 +1239,7 @@ async function resolveAnthropicAuth(
 function buildAnthropicClient(
   auth: ResolvedAnthropicAuth,
   env: NodeJS.ProcessEnv = process.env,
+  oauthSseInactivityTimeoutMs?: number,
 ): AnthropicClientLike {
   const baseURL = env.ANTHROPIC_BASE_URL?.trim() || undefined;
 
@@ -1145,7 +1256,7 @@ function buildAnthropicClient(
       "anthropic-beta": OAUTH_BETAS,
       "user-agent": OAUTH_USER_AGENT,
     },
-    fetch: createOAuthFetch(),
+    fetch: createOAuthFetch({ sseInactivityTimeoutMs: oauthSseInactivityTimeoutMs }),
     ...(baseURL ? { baseURL } : {}),
   });
 }
@@ -1171,7 +1282,11 @@ export class AnthropicLLMClient implements LLMClient {
     if (this.initialization === undefined) {
       const initialization = (async () => {
         this.auth = await resolveAnthropicAuth(this.options);
-        this.client = buildAnthropicClient(this.auth, this.options.env);
+        this.client = buildAnthropicClient(
+          this.auth,
+          this.options.env,
+          this.options.oauthSseInactivityTimeoutMs,
+        );
       })();
       this.initialization = initialization;
     }
@@ -1260,7 +1375,11 @@ export class AnthropicLLMClient implements LLMClient {
       authToken: credentials.accessToken,
       source: "credentials-file",
     };
-    this.client = buildAnthropicClient(this.auth, this.options.env);
+    this.client = buildAnthropicClient(
+      this.auth,
+      this.options.env,
+      this.options.oauthSseInactivityTimeoutMs,
+    );
     this.initialization = Promise.resolve();
   }
 
@@ -1280,6 +1399,8 @@ export class AnthropicLLMClient implements LLMClient {
     try {
       return await client.messages.create(this.rawMessageParams(options, messages));
     } catch (error) {
+      rethrowSseStalledErrorAtTopLevel(error);
+
       if (!retrying && this.auth?.kind === "oauth" && isAuthenticationFailure(error)) {
         try {
           await this.refreshOauthClient();
@@ -1406,6 +1527,8 @@ export class AnthropicLLMClient implements LLMClient {
 
       return await stream.finalMessage();
     } catch (error) {
+      rethrowSseStalledErrorAtTopLevel(error);
+
       if (!retrying && this.auth?.kind === "oauth" && isAuthenticationFailure(error)) {
         try {
           await this.refreshOauthClient();

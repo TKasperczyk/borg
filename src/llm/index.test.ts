@@ -8,7 +8,7 @@ import { z } from "zod";
 import type { Message } from "@anthropic-ai/sdk/resources/messages/messages.js";
 
 import { writeJsonFileAtomic } from "../util/atomic-write.js";
-import { AuthError } from "../util/errors.js";
+import { AuthError, LLMError } from "../util/errors.js";
 import {
   AnthropicLLMClient,
   CLAUDE_CODE_IDENTITY_BLOCK_TEXT,
@@ -80,10 +80,51 @@ function createSseResponse(events: readonly string[]): Response {
   });
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createChunkedSseResponse(
+  chunks: readonly string[],
+  options: { close?: boolean; delayMs?: number } = {},
+): Response {
+  const encoder = new TextEncoder();
+  let index = 0;
+
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (index >= chunks.length) {
+        if (options.close !== false) {
+          controller.close();
+          return;
+        }
+
+        await new Promise(() => undefined);
+        return;
+      }
+
+      if (options.delayMs !== undefined) {
+        await delay(options.delayMs);
+      }
+
+      controller.enqueue(encoder.encode(chunks[index] ?? ""));
+      index += 1;
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "content-type": "text/event-stream",
+    },
+  });
+}
+
 describe("llm", () => {
   const tempDirs: string[] = [];
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
 
@@ -553,6 +594,140 @@ describe("llm", () => {
     expect(text).toContain('"name":"EmitEpisodeCandidates"');
     expect(text).toContain('"name":"lookup"');
     expect(text).not.toContain('"name":"Lookup"');
+  });
+
+  it("fails OAuth SSE consumption when the byte stream stalls", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        createChunkedSseResponse(
+          [
+            'data: {"type":"message_start","message":{"id":"msg_1"}}\n\n',
+            "event: ping\ndata: {}\n\n",
+          ],
+          { close: false },
+        ),
+      ),
+    );
+
+    const oauthFetch = createOAuthFetch({ sseInactivityTimeoutMs: 20 });
+    const response = await oauthFetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] }),
+    });
+
+    await expect(response.text()).rejects.toMatchObject({
+      code: "LLM_STREAM_STALLED",
+      message: "Anthropic SSE stream stalled after 20ms without a chunk",
+    });
+  });
+
+  it("allows OAuth SSE chunks that arrive before the inactivity deadline", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        createChunkedSseResponse(
+          [
+            'data: {"type":"message_start","message":{"id":"msg_1"}}\n\n',
+            "event: ping\ndata: {}\n\n",
+            "data: [DONE]\n\n",
+          ],
+          { close: true, delayMs: 5 },
+        ),
+      ),
+    );
+
+    const oauthFetch = createOAuthFetch({ sseInactivityTimeoutMs: 50 });
+    const response = await oauthFetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] }),
+    });
+
+    await expect(response.text()).resolves.toBe(
+      'data: {"type":"message_start","message":{"id":"msg_1"}}\n\n' +
+        "event: ping\ndata: {}\n\n" +
+        "data: [DONE]\n\n",
+    );
+  });
+
+  it("clears OAuth SSE inactivity timers after normal completion", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        createChunkedSseResponse([
+          'data: {"type":"message_start","message":{"id":"msg_1"}}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+      ),
+    );
+
+    const oauthFetch = createOAuthFetch({ sseInactivityTimeoutMs: 20 });
+    const response = await oauthFetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] }),
+    });
+
+    await expect(response.text()).resolves.toBe(
+      'data: {"type":"message_start","message":{"id":"msg_1"}}\n\n' + "data: [DONE]\n\n",
+    );
+    expect(vi.getTimerCount()).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(25);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("surfaces OAuth SSE stalls at top level through the real SDK stream path", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        createChunkedSseResponse(
+          [
+            `event: message_start\ndata: ${JSON.stringify({
+              type: "message_start",
+              message: createMessageBody({
+                content: [],
+                stop_reason: null,
+                usage: {
+                  cache_creation: null,
+                  cache_creation_input_tokens: null,
+                  cache_read_input_tokens: null,
+                  input_tokens: 12,
+                  output_tokens: 0,
+                  server_tool_use: null,
+                },
+              } as unknown as Partial<Message>),
+            })}\n\n`,
+            "event: ping\ndata: {}\n\n",
+          ],
+          { close: false },
+        ),
+      ),
+    );
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+      oauthSseInactivityTimeoutMs: 20,
+    });
+
+    let caught: unknown;
+    try {
+      await client.streamComplete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({
+      code: "LLM_STREAM_STALLED",
+      message: "Anthropic SSE stream stalled after 20ms without a chunk",
+    });
+    expect(caught).toHaveProperty("cause");
   });
 
   it("preserves Request method, headers, and body in the OAuth fetch wrapper", async () => {
@@ -1237,6 +1412,40 @@ describe("llm", () => {
     expect(deltas.join("")).toBe("I am steady");
     expect(deltas.join("")).not.toContain("{");
     expect(deltas.join("")).not.toContain("self_report");
+  });
+
+  it("lifts stalled stream errors from the Anthropic request failure cause", async () => {
+    const stalledError = new LLMError("Anthropic SSE stream stalled after 20ms without a chunk", {
+      code: "LLM_STREAM_STALLED",
+    });
+    const stream = {
+      async *[Symbol.asyncIterator]() {
+        throw stalledError;
+      },
+      finalMessage: vi.fn(),
+    };
+    const client = new AnthropicLLMClient({
+      client: {
+        messages: {
+          create: vi.fn(),
+          stream: vi.fn(() => stream as never),
+        },
+      },
+    });
+
+    await expect(
+      client.streamComplete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      }),
+    ).rejects.toMatchObject({
+      code: "LLM_STREAM_STALLED",
+      cause: {
+        code: "LLM_STREAM_STALLED",
+      },
+    });
   });
 
   it("supports scripted fake llm responses", async () => {
