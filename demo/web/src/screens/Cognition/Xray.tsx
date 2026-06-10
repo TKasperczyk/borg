@@ -10,6 +10,7 @@ import type {
   PromptAssembledResponse,
   SharedStateEntry,
   SharedStateResponse,
+  TurnPhaseName,
   TurnHistoryOutcomeClass,
   TurnHistoryRow,
   TurnTerminalOutcome,
@@ -45,7 +46,7 @@ const XRAY_TABS: readonly { id: XrayTabId; label: string }[] = [
   { id: "memory", label: "memory" },
   { id: "shared", label: "shared state" },
   { id: "commitments", label: "commitments" },
-  { id: "open_qs", label: "open qs" },
+  { id: "open_qs", label: "open questions" },
   { id: "prompt", label: "prompt" },
   { id: "raw", label: "raw" },
 ];
@@ -121,6 +122,19 @@ function urgencyKind(urgency: number): TagKind {
     return "warn";
   }
   return "info";
+}
+
+function tabForFlowPhase(phase: TurnPhaseName): XrayTabId | null {
+  if (phase === "retrieval") {
+    return "memory";
+  }
+  if (phase === "ledger") {
+    return "ledger";
+  }
+  if (phase === "shared") {
+    return "shared";
+  }
+  return null;
 }
 
 function ApiPanel<T>({
@@ -213,7 +227,7 @@ function SharedStateTab({ state }: { state: ApiDataState<SharedStateResponse> })
               <div className="xray-card-head">
                 <IdRef id={entry.id} type="shared_state_entry" label={shortId(entry.id)} />
                 <Tag kind={lifecycleTagKind(entry.kind)}>{lifecycleLabel(entry.kind)}</Tag>
-                <Tag>rank {entry.rank}</Tag>
+                <Tag>attention tier {entry.rank}</Tag>
               </div>
               <div className="xray-card-text">{entry.text}</div>
               <div className="xray-fields">
@@ -446,6 +460,16 @@ export function Xray({
               terminalOutcome={terminalOutcome}
               delibPath={delibPath}
               finalAttempt={finalAttempt}
+              compact={activeTurnId === null && replayTurn === null}
+              onPhaseActivate={(phase) => {
+                if (replayTurn === null) {
+                  return;
+                }
+                const tab = tabForFlowPhase(phase);
+                if (tab !== null) {
+                  onTabChange(tab);
+                }
+              }}
               particleEnabled={particleEnabled}
             />
           )

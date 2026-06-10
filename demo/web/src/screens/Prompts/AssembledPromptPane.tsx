@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, type ReactNode } from "react";
 
-import type { PromptAssembledResponse } from "../../api/types";
+import type { PromptAssembledResponse, PromptAssembledSegment } from "../../api/types";
 import { Empty } from "../../components/Empty";
 import { ErrorState } from "../../components/ErrorState";
 import { Loading } from "../../components/Loading";
@@ -13,10 +13,7 @@ type TextRange = {
   kind: "search" | "section";
 };
 
-type FocusedSection = {
-  section: string;
-  index: number;
-};
+type FocusedSection = Pick<PromptAssembledSegment, "id" | "start" | "end">;
 
 function findMatchRanges(text: string, query: string): TextRange[] {
   if (query.length === 0) {
@@ -70,6 +67,22 @@ function highlightedText(text: string, ranges: TextRange[]): ReactNode {
   });
 }
 
+function rangesForSlice(ranges: TextRange[], start: number, end: number): TextRange[] {
+  return ranges
+    .filter((range) => range.start < end && range.end > start)
+    .map((range) => ({
+      start: Math.max(range.start, start) - start,
+      end: Math.min(range.end, end) - start,
+      kind: range.kind,
+    }));
+}
+
+function sortedSegments(data: PromptAssembledResponse): PromptAssembledSegment[] {
+  return [...data.segments]
+    .filter((segment) => segment.start >= 0 && segment.end >= segment.start)
+    .sort((left, right) => left.start - right.start);
+}
+
 export function AssembledPromptPane({
   data,
   error,
@@ -79,7 +92,7 @@ export function AssembledPromptPane({
   error: Error | null;
   loading: boolean;
 }) {
-  const textRef = useRef<HTMLPreElement | null>(null);
+  const segmentRefs = useRef(new Map<string, HTMLSpanElement>());
   const [search, setSearch] = useState("");
   const [focusedSection, setFocusedSection] = useState<FocusedSection | null>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
@@ -91,28 +104,79 @@ export function AssembledPromptPane({
       return null;
     }
     return {
-      start: focusedSection.index,
-      end: focusedSection.index + focusedSection.section.length,
+      start: focusedSection.start,
+      end: focusedSection.end,
       kind: "section",
     };
   }, [focusedSection]);
   const highlightRanges = sectionRange === null ? searchRanges : [...searchRanges, sectionRange];
   const tokenEstimate = Math.ceil(text.length / 4);
 
-  function focusSection(section: string): void {
-    const index = text.indexOf(section);
-    if (index < 0) {
-      setFocusedSection(null);
-      return;
+  function focusSection(segment: PromptAssembledSegment): void {
+    setFocusedSection({ id: segment.id, start: segment.start, end: segment.end });
+    window.requestAnimationFrame(() => {
+      segmentRefs.current.get(segment.id)?.scrollIntoView({ block: "start", inline: "nearest" });
+    });
+  }
+
+  function renderPreviewText(prompt: PromptAssembledResponse): ReactNode {
+    const segments = sortedSegments(prompt);
+    if (segments.length === 0) {
+      return highlightedText(prompt.text, highlightRanges);
     }
 
-    setFocusedSection({ section, index });
-    window.requestAnimationFrame(() => {
-      const line = text.slice(0, index).split("\n").length - 1;
-      if (textRef.current !== null) {
-        textRef.current.scrollTop = Math.max(0, line * 18 - 18);
+    const nodes: ReactNode[] = [];
+    let cursor = 0;
+    for (const segment of segments) {
+      const start = Math.min(segment.start, prompt.text.length);
+      const end = Math.min(segment.end, prompt.text.length);
+      if (start > cursor) {
+        nodes.push(
+          <span key={`gap-${cursor}-${start}`}>
+            {highlightedText(
+              prompt.text.slice(cursor, start),
+              rangesForSlice(highlightRanges, cursor, start),
+            )}
+          </span>,
+        );
       }
-    });
+
+      nodes.push(
+        <span
+          key={segment.id}
+          ref={(node) => {
+            if (node === null) {
+              segmentRefs.current.delete(segment.id);
+            } else {
+              segmentRefs.current.set(segment.id, node);
+            }
+          }}
+          className={`prompt-preview-segment ${
+            focusedSection?.id === segment.id ? "active" : ""
+          }`.trim()}
+          data-segment-id={segment.id}
+        >
+          {highlightedText(
+            prompt.text.slice(start, end),
+            rangesForSlice(highlightRanges, start, end),
+          )}
+        </span>,
+      );
+      cursor = Math.max(cursor, end);
+    }
+
+    if (cursor < prompt.text.length) {
+      nodes.push(
+        <span key={`gap-${cursor}-${prompt.text.length}`}>
+          {highlightedText(
+            prompt.text.slice(cursor),
+            rangesForSlice(highlightRanges, cursor, prompt.text.length),
+          )}
+        </span>,
+      );
+    }
+
+    return nodes;
   }
 
   async function copyAll(): Promise<void> {
@@ -165,6 +229,7 @@ export function AssembledPromptPane({
         <span data-testid="assembled-token-estimate">
           <Tag kind="info">approximate ~{tokenEstimate} tokens (chars/4, rough)</Tag>
         </span>
+        {data === null ? null : <Tag>{data.segments.length} assembled sections</Tag>}
         {copyStatus === null ? null : <span className="prompt-copy-status">{copyStatus}</span>}
       </div>
       <div className="prompt-preview-body">
@@ -177,22 +242,20 @@ export function AssembledPromptPane({
         ) : (
           <>
             <div className="prompt-preview-sections" aria-label="assembled prompt sections">
-              {data.sections.map((section) => (
+              {sortedSegments(data).map((segment) => (
                 <button
-                  key={section}
+                  key={segment.id}
                   type="button"
                   className={`prompt-outline-chip ${
-                    focusedSection?.section === section ? "active" : ""
+                    focusedSection?.id === segment.id ? "active" : ""
                   }`}
-                  onClick={() => focusSection(section)}
+                  onClick={() => focusSection(segment)}
                 >
-                  {section}
+                  {segment.label}
                 </button>
               ))}
             </div>
-            <pre ref={textRef} className="prompt-preview-text">
-              {highlightedText(data.text, highlightRanges)}
-            </pre>
+            <pre className="prompt-preview-text">{renderPreviewText(data)}</pre>
           </>
         )}
       </div>

@@ -94,7 +94,7 @@ export function ChatMessage({ turn, audienceLabel = null }: ChatMessageProps) {
             <>
               <span className="sep">·</span>
               <span className="response-refs">
-                src{" "}
+                sources{" "}
                 {turn.sourceEntryIds.map((entryId, index) => (
                   <span key={entryId}>
                     {index === 0 ? null : ", "}

@@ -18,10 +18,11 @@ import type {
 import { LiveEventsProvider } from "../../hooks/live-context";
 import type { LiveEventHandler, LiveEvents } from "../../hooks/use-live-events";
 import { LiveCacheProvider } from "../../hooks/use-live-cache";
+import { DREAM_PROCESS_NAMES } from "../../routes";
 import { MissionControlScreen } from "../../screens/MissionControl";
 import { renderWithInspector } from "../../test/inspector";
 import { MiniOrrery } from "./MiniOrrery";
-import { Orrery, type OrreryProps } from "./Orrery";
+import { Orrery, layoutOrreryLabels, type OrreryLaidOutLabel, type OrreryProps } from "./Orrery";
 import { useOrreryData, type OrreryTurnInput, type OrreryViewModel } from "./useOrreryData";
 
 const realLocation = window.location;
@@ -350,6 +351,15 @@ function emptyViewModel(input: Partial<OrreryViewModel> = {}): OrreryViewModel {
   };
 }
 
+function boxesOverlap(left: OrreryLaidOutLabel["box"], right: OrreryLaidOutLabel["box"]): boolean {
+  return (
+    left.left < right.right &&
+    left.right > right.left &&
+    left.top < right.bottom &&
+    left.bottom > right.top
+  );
+}
+
 afterEach(() => {
   Object.defineProperty(window, "location", {
     configurable: true,
@@ -377,10 +387,10 @@ describe("Orrery", () => {
     expect(screen.getByTestId("orr-fault-node")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("orr-memory-ring-episodic"));
-    expect(onNavigate).toHaveBeenCalledWith("memory");
+    expect(onNavigate).toHaveBeenCalledWith("memory", { memoryBand: "episodic" });
 
     fireEvent.click(screen.getByTestId("orr-dream-satellite-consolidator"));
-    expect(onNavigate).toHaveBeenCalledWith("dream");
+    expect(onNavigate).toHaveBeenCalledWith("dream", { dreamProcess: "consolidator" });
 
     fireEvent.click(screen.getByTestId("orr-governance-commitments"));
     expect(onNavigate).toHaveBeenCalledWith("governance", { governanceTab: "commitments" });
@@ -402,8 +412,9 @@ describe("Orrery", () => {
 
     expect(screen.queryByTestId("orr-governance-commitments")).not.toBeInTheDocument();
     expect(screen.queryByTestId("orr-governance-directives")).not.toBeInTheDocument();
-    expect(screen.getByText("cmt none")).toBeInTheDocument();
-    expect(screen.getByText("dir none")).toBeInTheDocument();
+    expect(screen.getByText("commitments")).toBeInTheDocument();
+    expect(screen.getAllByText("none active")).toHaveLength(2);
+    expect(screen.getByText("directives")).toBeInTheDocument();
   });
 
   it("scales governance arcs from active counts and marks only critical commitments as red", () => {
@@ -447,8 +458,62 @@ describe("Orrery", () => {
     const scaledPath = scaledCommitments.querySelector("path");
     expect(scaledCommitments).toHaveClass("orr-governance-critical");
     expect(scaledPath?.getAttribute("d")).not.toBe(initialPathD);
-    expect(screen.getByText("cmt 2/6")).toBeInTheDocument();
-    expect(screen.getByText("dir 5/7")).toBeInTheDocument();
+    expect(screen.getByText("2 critical / 6 advisory")).toBeInTheDocument();
+    expect(screen.getByText("5 active / 7 total")).toBeInTheDocument();
+  });
+
+  it("lays out the real twelve-process label fixture without overlap or clipping", () => {
+    const labels = layoutOrreryLabels(
+      emptyViewModel({
+        memoryBands: BAND_IDS.map((id, index) => ({
+          id,
+          name: id,
+          count: (index + 1) * 23,
+          countIsLowerBound: id === "semantic",
+        })),
+        dream: {
+          runningCount: 0,
+          satellites: DREAM_PROCESS_NAMES.map((name) => ({
+            name,
+            label: name.replaceAll("-", " "),
+            enabled: true,
+            lastStatus: null,
+            running: false,
+            phase: null,
+          })),
+        },
+        governance: {
+          commitments: { critical: 2, advisory: 6, total: 8 },
+          directives: { active: 5, total: 7 },
+        },
+        reviews: { openCount: 5, severity: "bad", faults: [] },
+      }),
+    );
+
+    expect(labels.find((label) => label.id === "memory:semantic")?.subtext).toBe("46+ records");
+
+    for (const label of labels) {
+      expect(label.box.left).toBeGreaterThanOrEqual(0);
+      expect(label.box.top).toBeGreaterThanOrEqual(0);
+      expect(label.box.right).toBeLessThanOrEqual(560);
+      expect(label.box.bottom).toBeLessThanOrEqual(560);
+    }
+
+    for (let index = 0; index < labels.length; index += 1) {
+      for (let otherIndex = index + 1; otherIndex < labels.length; otherIndex += 1) {
+        expect(boxesOverlap(labels[index]!.box, labels[otherIndex]!.box)).toBe(false);
+      }
+    }
+
+    for (const label of labels.filter((item) => item.kind === "satellite")) {
+      const markBox = {
+        left: label.anchor.x - 17,
+        right: label.anchor.x + 17,
+        top: label.anchor.y - 17,
+        bottom: label.anchor.y + 17,
+      };
+      expect(boxesOverlap(label.box, markBox)).toBe(false);
+    }
   });
 
   it("marks the active turn pulse and inspects the active turn", async () => {

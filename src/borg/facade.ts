@@ -11,7 +11,16 @@ import {
   getPromptBlockSpec,
   type PromptKey,
 } from "../cognition/prompts/registry.js";
-import { buildAssembledFramingPromptPreview } from "../cognition/deliberation/prompt/system-prompt.js";
+import {
+  buildCacheableBaseSystemPromptParts,
+  buildBaseSystemPromptSections,
+  createAssembledFramingPreviewContext,
+  createBasePromptSurfaceRenderContext,
+} from "../cognition/deliberation/prompt/system-prompt.js";
+import {
+  PROMPT_SURFACES,
+  promptSurfaceBlocksForSurface,
+} from "../cognition/prompts/prompt-surface-registry.js";
 import type { BorgPromptBlockView, BorgPromptsFacade } from "./facade-types.js";
 import { OFFLINE_PROCESS_NAMES, revalidateReviewQueue } from "../offline/index.js";
 import type { MaintenancePlan, OfflineProcessName, OrchestratorResult } from "../offline/index.js";
@@ -961,13 +970,45 @@ function createPromptsFacade(deps: BorgDependencies): BorgPromptsFacade {
     },
     previewAssembledFraming: () => {
       const promptBlocks = promptBlockOverrides();
-      return buildAssembledFramingPromptPreview({
+      const options = {
         retrievalContextBudget: 0,
         semanticContextBudget: 0,
         hostCapabilities: deps.config.host_capabilities,
         nowMs: deps.clock.now(),
         ...(promptBlocks === undefined ? {} : { promptBlocks }),
+      };
+      const parts = buildCacheableBaseSystemPromptParts(
+        createAssembledFramingPreviewContext(options.nowMs),
+        options,
+      );
+      const context = createAssembledFramingPreviewContext(options.nowMs);
+      const sections = buildBaseSystemPromptSections(context, options);
+      const renderContext = createBasePromptSurfaceRenderContext(context, sections);
+      const renderedBlocks = promptSurfaceBlocksForSurface(PROMPT_SURFACES.cacheableStaticPrefix)
+        .map((block) => {
+          const content = block.render(renderContext);
+          return content === null ? null : { block, content };
+        })
+        .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+      let offset = 0;
+      const segments = renderedBlocks.map(({ block, content }, index) => {
+        const start = offset;
+        const end = start + content.length;
+        offset = end + (index === renderedBlocks.length - 1 ? 0 : 2);
+        return {
+          id: block.id,
+          label: block.id,
+          editable_key: block.editableKey ?? null,
+          start,
+          end,
+        };
       });
+
+      return {
+        text: parts.staticPrefix,
+        sections: [...parts.staticPrefixSections],
+        segments,
+      };
     },
   };
 }

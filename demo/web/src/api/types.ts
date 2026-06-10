@@ -1280,9 +1280,11 @@ export type WsState = "live" | "reconnecting" | "down";
 
 export type PromptKey =
   | "base_identity_preamble"
+  | "self_architecture"
   | "voice_and_posture"
   | "epistemic_posture"
   | "identity_posture"
+  | "participation_posture"
   | "host_capabilities";
 
 export type PromptBlockView = {
@@ -1303,4 +1305,13 @@ export type PromptBlocksResponse = {
 export type PromptAssembledResponse = {
   text: string;
   sections: string[];
+  segments: PromptAssembledSegment[];
+};
+
+export type PromptAssembledSegment = {
+  id: string;
+  label: string;
+  editable_key: PromptKey | null;
+  start: number;
+  end: number;
 };

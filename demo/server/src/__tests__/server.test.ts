@@ -3959,7 +3959,11 @@ describe("demo server", () => {
 
     const response = await app.request("/api/prompts/assembled");
     expect(response.status).toBe(200);
-    const body = (await response.json()) as { text: string; sections: string[] };
+    const body = (await response.json()) as {
+      text: string;
+      sections: string[];
+      segments: Array<{ id: string; label: string; start: number; end: number }>;
+    };
 
     expect(body.sections).toEqual([
       "base_identity_preamble",
@@ -3972,6 +3976,12 @@ describe("demo server", () => {
       "trusted_guidance_preamble",
       "borg_host_capabilities",
     ]);
+    expect(body.segments.map((segment) => segment.id)).toEqual(body.sections);
+    const hostSegment = body.segments.find((segment) => segment.id === "borg_host_capabilities");
+    expect(hostSegment).toBeDefined();
+    expect(body.text.slice(hostSegment!.start, hostSegment!.end)).toContain(
+      "<borg_host_capabilities>",
+    );
     expect(body.text).toContain("<borg_host_capabilities>");
     expect(body.text).toContain("</borg_host_capabilities>");
     expect(body.text).toContain(

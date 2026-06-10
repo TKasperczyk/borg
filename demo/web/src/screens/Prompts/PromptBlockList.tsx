@@ -2,6 +2,7 @@ import type { PromptBlockView, PromptKey } from "../../api/types";
 import { Tag } from "../../components/Tag";
 import { useInspector } from "../../components/Inspector/inspector-context";
 import { dateLabel } from "../screen-utils";
+import { promptTextKindLabel } from "./labels";
 
 export function PromptBlockList({
   blocks,
@@ -33,11 +34,9 @@ export function PromptBlockList({
               <span className="ttl">{block.label}</span>
               <span className="meta">
                 <span>{block.key}</span>
-                <Tag>{block.current_text_kind}</Tag>
+                <Tag>{promptTextKindLabel(block.current_text_kind)}</Tag>
                 {block.overridden ? <Tag kind="warn">overridden</Tag> : null}
-                <span>
-                  updated_at {block.updated_at === null ? "-" : dateLabel(block.updated_at)}
-                </span>
+                <span>updated {block.updated_at === null ? "-" : dateLabel(block.updated_at)}</span>
               </span>
             </button>
             <button

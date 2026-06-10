@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type Ref } from "react";
 
 import {
   getDreamAudit,
@@ -27,7 +27,9 @@ import { Tag } from "../../components/Tag";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
 import { activateOnEnterOrSpace } from "../../lib/keyboard";
+import { useReducedMotion } from "../../hooks/use-reduced-motion";
 import { formatTimestamp } from "../../lib/stream-utils";
+import { DREAM_PROCESS_NAMES } from "../../routes";
 import {
   displayTargetSummary,
   displayValue,
@@ -37,20 +39,7 @@ import {
   shortId,
 } from "../screen-utils";
 
-const PROCESS_NAMES: DreamProcessName[] = [
-  "consolidator",
-  "reflector",
-  "semantic-extractor",
-  "curator",
-  "overseer",
-  "review-resolver",
-  "ruminator",
-  "self-narrator",
-  "procedural-synthesizer",
-  "belief-reviser",
-  "creator-directive-reconciler",
-  "commitment-reconciler",
-];
+const PROCESS_NAMES: readonly DreamProcessName[] = DREAM_PROCESS_NAMES;
 
 function statusTag(status: DreamProcessSummary["last_status"]) {
   if (status === "ok") {
@@ -278,11 +267,19 @@ function auditObjectRefsFromRecord(
   return refs;
 }
 
-export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
+export function DreamScreen({
+  initialProcess = null,
+  onOpenReview,
+}: {
+  initialProcess?: DreamProcessName | null;
+  onOpenReview?: () => void;
+}) {
   const live = useLiveEventsContext();
   const api = useApi(getDreamState, []);
   const refetch = api.refetch;
+  const reducedMotion = useReducedMotion();
   const previousConnectionCountRef = useRef(live.connectionCount);
+  const processCardRefs = useRef(new Map<DreamProcessName, HTMLDivElement>());
   const [selected, setSelected] = useState<DreamProcessName>("belief-reviser");
   const [selectedPlanProcesses, setSelectedPlanProcesses] = useState<ReadonlySet<DreamProcessName>>(
     () => new Set(PROCESS_NAMES),
@@ -415,6 +412,31 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
           processListTitle("heavy", state.scheduler.heavy_processes),
         ].join("\n");
   const recentErrorCount = processes.filter((process) => process.last_status === "error").length;
+
+  useEffect(() => {
+    if (initialProcess !== null) {
+      setSelected(initialProcess);
+      if (api.loading) {
+        return;
+      }
+
+      const card = processCardRefs.current.get(initialProcess);
+      card?.scrollIntoView({
+        block: "center",
+        inline: "nearest",
+        behavior: reducedMotion ? "auto" : "smooth",
+      });
+      card?.focus({ preventScroll: true });
+    }
+  }, [api.loading, initialProcess, reducedMotion]);
+
+  function setProcessCardRef(name: DreamProcessName, node: HTMLDivElement | null): void {
+    if (node === null) {
+      processCardRefs.current.delete(name);
+      return;
+    }
+    processCardRefs.current.set(name, node);
+  }
   const applyingPlan = confirmApplyPlanId !== null && plan !== null;
 
   function setAllPlanProcesses(selected: boolean): void {
@@ -734,6 +756,7 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
           {processes.map((process) => (
             <DreamCard
               key={process.name}
+              cardRef={(node) => setProcessCardRef(process.name, node)}
               process={process}
               selected={process.name === selectedProcess?.name}
               onSelect={() => setSelected(process.name)}
@@ -1683,11 +1706,13 @@ function StructuredValue({ value }: { value: unknown }) {
 }
 
 function DreamCard({
+  cardRef,
   process,
   selected,
   onSelect,
   runStatus,
 }: {
+  cardRef?: Ref<HTMLDivElement>;
   process: DreamProcessSummary;
   selected: boolean;
   onSelect: () => void;
@@ -1712,7 +1737,9 @@ function DreamCard({
 
   return (
     <div
+      ref={cardRef}
       className={`dream-card${activeRun ? " dream-card-running" : ""}`}
+      data-testid={`dream-process-card-${process.name}`}
       role="button"
       tabIndex={0}
       aria-pressed={selected}

@@ -126,7 +126,7 @@ export type BuildBaseSystemPromptOptions = {
   nowMs?: number;
 };
 
-type ResolvedPromptBlocks = Record<PromptKey, string>;
+export type ResolvedPromptBlocks = Record<PromptKey, string>;
 
 export type AssembledFramingPromptPreview = {
   text: string;
@@ -154,17 +154,17 @@ export type CacheableBaseSystemPromptParts = {
   dynamicContent: string;
 };
 
-type CacheableStaticPrefixSection = {
+export type CacheableStaticPrefixSection = {
   label: string;
   content: string | null;
 };
 
-type BaseSystemPromptSections = {
+export type BaseSystemPromptSections = {
   promptSectionsById: ReadonlyMap<string, PromptSection>;
   resolvedBlocks: ResolvedPromptBlocks;
 };
 
-type PromptSection = TaggedPromptSection | string | null | undefined;
+export type PromptSection = TaggedPromptSection | string | null | undefined;
 
 function renderPromptSection(section: PromptSection): string | null {
   if (section === null || section === undefined) {
@@ -987,7 +987,7 @@ export function buildStandingWithAudienceSection(context: DeliberationContext): 
   return lines.join("\n");
 }
 
-function buildBaseSystemPromptSections(
+export function buildBaseSystemPromptSections(
   context: DeliberationContext,
   options: BuildBaseSystemPromptOptions,
 ): BaseSystemPromptSections {
@@ -1165,7 +1165,7 @@ function groupChatSenderScopingReminder(context: DeliberationContext): string | 
   return GROUP_CHAT_SENDER_SCOPING_REMINDER;
 }
 
-function createBasePromptSurfaceRenderContext(
+export function createBasePromptSurfaceRenderContext(
   context: DeliberationContext,
   sections: BaseSystemPromptSections,
 ): PromptSurfaceRenderContext {
@@ -1253,7 +1253,7 @@ export function buildCacheableBaseSystemPromptParts(
   };
 }
 
-function createAssembledFramingPreviewContext(nowMs: number): DeliberationContext {
+export function createAssembledFramingPreviewContext(nowMs: number): DeliberationContext {
   return {
     sessionId: DEFAULT_SESSION_ID,
     userMessage: "",

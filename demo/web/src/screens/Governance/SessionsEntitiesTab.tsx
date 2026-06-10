@@ -162,7 +162,7 @@ export function SessionsEntitiesTab({
         <section className="scope-section" aria-label="sessions table">
           <div className="scope-section-head">
             <h2>sessions</h2>
-            <span className="dim">{sessions.length.toLocaleString()} rows from getSessions</span>
+            <span className="dim">{sessions.length.toLocaleString()} loaded sessions</span>
           </div>
           <div style={{ overflow: "auto" }}>
             <table className="tbl">

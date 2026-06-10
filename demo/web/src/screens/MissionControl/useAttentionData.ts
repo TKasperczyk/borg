@@ -354,7 +354,7 @@ export function useAttentionData(sessionId: string): AttentionData {
       attachments: {
         degraded: true,
         severity: 2,
-        note: "needs backend: add a list/count endpoint for quarantined or inactive attachments; current status lookup requires explicit attachment ids",
+        note: "Attachment status is not measurable yet; status lookup requires explicit attachment ids.",
       },
     };
   }, [

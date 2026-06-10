@@ -1,3 +1,5 @@
+import type { DreamProcessName, MemoryBandId } from "./api/types";
+
 export type RouteId =
   | "mission"
   | "cognition"
@@ -13,7 +15,9 @@ export type RouteId =
 export type GovernanceTabId = "commitments" | "shared_state" | "scope" | "sessions";
 
 export type RouteNavigationOptions = {
+  dreamProcess?: DreamProcessName;
   governanceTab?: GovernanceTabId;
+  memoryBand?: MemoryBandId;
 };
 
 export type RailItem = {
@@ -33,6 +37,32 @@ export const GOVERNANCE_TAB_IDS: readonly GovernanceTabId[] = [
   "shared_state",
   "scope",
   "sessions",
+];
+
+export const MEMORY_BAND_IDS: readonly MemoryBandId[] = [
+  "episodic",
+  "semantic",
+  "procedural",
+  "affective",
+  "self",
+  "commitments",
+  "social",
+  "relational",
+];
+
+export const DREAM_PROCESS_NAMES: readonly DreamProcessName[] = [
+  "consolidator",
+  "reflector",
+  "semantic-extractor",
+  "curator",
+  "overseer",
+  "review-resolver",
+  "ruminator",
+  "self-narrator",
+  "procedural-synthesizer",
+  "belief-reviser",
+  "creator-directive-reconciler",
+  "commitment-reconciler",
 ];
 
 export const RAIL_ITEMS: readonly RailItem[] = [
@@ -70,4 +100,12 @@ export function isRouteId(value: string): value is RouteId {
 
 export function isGovernanceTabId(value: string): value is GovernanceTabId {
   return GOVERNANCE_TAB_IDS.some((item) => item === value);
+}
+
+export function isMemoryBandId(value: string): value is MemoryBandId {
+  return MEMORY_BAND_IDS.some((item) => item === value);
+}
+
+export function isDreamProcessName(value: string): value is DreamProcessName {
+  return DREAM_PROCESS_NAMES.some((item) => item === value);
 }

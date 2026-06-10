@@ -100,6 +100,67 @@ afterEach(() => {
 });
 
 describe("DreamScreen Dream Ops", () => {
+  it("scrolls and focuses the process selected by the route", async () => {
+    const live = makeLiveSource();
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = window.HTMLElement.prototype.scrollIntoView;
+    Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((query: string) => ({
+        matches: query === "(prefers-reduced-motion: reduce)",
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    );
+    installDreamFetch(
+      dreamState({
+        processes: [
+          {
+            name: "curator",
+            description: "Curates stale memories.",
+            last_run_at: null,
+            last_status: "ok",
+            last_audit_id: null,
+            budget: null,
+            enabled: true,
+          },
+        ],
+      }),
+    );
+
+    try {
+      renderWithInspector(
+        <LiveEventsProvider value={live.live()}>
+          <DreamScreen initialProcess="curator" />
+        </LiveEventsProvider>,
+      );
+
+      const card = await screen.findByTestId("dream-process-card-curator");
+      await waitFor(() =>
+        expect(scrollIntoView).toHaveBeenCalledWith({
+          block: "center",
+          inline: "nearest",
+          behavior: "auto",
+        }),
+      );
+      expect(card).toHaveFocus();
+    } finally {
+      Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+        configurable: true,
+        value: originalScrollIntoView,
+      });
+    }
+  });
+
   it("plans a selected process subset with budget, applies the plan id, and renders apply results", async () => {
     const live = makeLiveSource();
     const fetchMock = installDreamFetch(dreamState(), (url, init) => {

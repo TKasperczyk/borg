@@ -27,7 +27,9 @@ describe("SupersededByChip", () => {
       await screen.findByRole("dialog", { name: "Maintenance run inspector" }),
     ).toBeInTheDocument();
     expect(
-      await screen.findByText("Maintenance run needs a backend resolver for run_superseded1111."),
+      await screen.findByText(
+        "Maintenance run does not have a direct resolver for run_superseded1111.",
+      ),
     ).toBeInTheDocument();
   });
 });

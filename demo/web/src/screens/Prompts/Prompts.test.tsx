@@ -27,6 +27,16 @@ function defaultPrompts() {
         updated_at: null,
       },
       {
+        key: "self_architecture",
+        label: "Self architecture",
+        description: "Memory architecture.",
+        default_text: "DEFAULT SELF ARCH",
+        current_text: "DEFAULT SELF ARCH",
+        current_text_kind: "static_default",
+        overridden: false,
+        updated_at: null,
+      },
+      {
         key: "voice_and_posture",
         label: "Voice and posture",
         description: "Speaking style.",
@@ -57,6 +67,16 @@ function defaultPrompts() {
         updated_at: null,
       },
       {
+        key: "participation_posture",
+        label: "Participation posture",
+        description: "Participation stance.",
+        default_text: "DEFAULT PARTICIPATION",
+        current_text: "DEFAULT PARTICIPATION",
+        current_text_kind: "static_default",
+        overridden: false,
+        updated_at: null,
+      },
+      {
         key: "host_capabilities",
         label: "Host capabilities",
         description: "Runtime capabilities.",
@@ -70,23 +90,70 @@ function defaultPrompts() {
   };
 }
 
-function assembledPrompt() {
+function promptBlock(key: string) {
+  const block = defaultPrompts().blocks.find((item) => item.key === key);
+  if (block === undefined) {
+    throw new Error(`missing prompt block fixture ${key}`);
+  }
+  return block;
+}
+
+function assembledFromParts(parts: readonly string[], sections: readonly string[]) {
+  let offset = 0;
+  const editable = new Set([
+    "base_identity_preamble",
+    "self_architecture",
+    "voice_and_posture",
+    "epistemic_posture",
+    "identity_posture",
+    "participation_posture",
+    "borg_host_capabilities",
+  ]);
+  const segments = sections.map((section, index) => {
+    const content = parts[index] ?? "";
+    const start = offset;
+    const end = start + content.length;
+    offset = end + (index === sections.length - 1 ? 0 : 2);
+    return {
+      id: section,
+      label: section,
+      editable_key: editable.has(section) ? section : null,
+      start,
+      end,
+    };
+  });
   return {
-    text: [
+    text: parts.join("\n\n"),
+    sections: [...sections],
+    segments,
+  };
+}
+
+function assembledPrompt() {
+  return assembledFromParts(
+    [
       "DEFAULT PREAMBLE",
+      "DEFAULT SELF ARCH",
       "DEFAULT VOICE",
+      "DEFAULT EPISTEMIC",
+      "DEFAULT IDENTITY",
+      "DEFAULT PARTICIPATION",
+      "Loop breaking guidance.",
       "The following tagged blocks mix substrate-owned guidance with memory-derived self-model records.",
-      "<borg_host_capabilities>",
-      "HOST CAPABILITIES",
-      "</borg_host_capabilities>",
-    ].join("\n\n"),
-    sections: [
+      "<borg_host_capabilities>\nHOST CAPABILITIES\n</borg_host_capabilities>",
+    ],
+    [
       "base_identity_preamble",
+      "self_architecture",
       "voice_and_posture",
+      "epistemic_posture",
+      "identity_posture",
+      "participation_posture",
+      "loop_breaking_posture",
       "trusted_guidance_preamble",
       "borg_host_capabilities",
     ],
-  };
+  );
 }
 
 function requestPath(request: RequestInfo | URL): string {
@@ -160,7 +227,10 @@ describe("PromptsScreen", () => {
 
     await screen.findByRole("heading", { name: "Base identity preamble" });
 
-    expect(screen.getAllByTestId("prompt-block-row")).toHaveLength(5);
+    expect(screen.getAllByTestId("prompt-block-row")).toHaveLength(7);
+    expect(
+      screen.getByText("Edit the 7 static framing blocks that shape borg's system prompt."),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "save" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "reset to default" })).not.toBeInTheDocument();
   });
@@ -224,7 +294,7 @@ describe("PromptsScreen", () => {
     const overriddenPrompts = {
       blocks: [
         {
-          ...defaultPrompts().blocks[1]!,
+          ...promptBlock("voice_and_posture"),
           current_text: "CUSTOM VOICE",
           current_text_kind: "stored_override",
           overridden: true,
@@ -361,7 +431,7 @@ describe("PromptsScreen", () => {
       within(dialog).getByText(/Saving freezes the current live connector-composed/),
     ).toBeInTheDocument();
     expect(
-      within(dialog).getByLabelText("static default versus saved override diff"),
+      within(dialog).getByLabelText("static default versus pending static override diff"),
     ).toBeInTheDocument();
     expect(within(dialog).getByText("STATIC HOST DEFAULT")).toBeInTheDocument();
     expect(within(dialog).getByText("EDITED HOST CAPABILITIES")).toBeInTheDocument();
@@ -508,6 +578,8 @@ describe("PromptsScreen", () => {
     fireEvent.change(screen.getByLabelText("edited override"), {
       target: { value: "UNSAVED PREAMBLE DRAFT" },
     });
+    expect(screen.getByText("1 unsaved draft")).toBeInTheDocument();
+    expect(screen.getByText("unsaved draft")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Voice and posture/ }));
     expect(screen.getByLabelText("edited override")).toHaveValue("DEFAULT VOICE");
 
@@ -519,7 +591,7 @@ describe("PromptsScreen", () => {
     const prompts = {
       blocks: [
         {
-          ...defaultPrompts().blocks[0]!,
+          ...promptBlock("base_identity_preamble"),
           default_text: "DEFAULT FIRST",
           current_text: "SAME CURRENT",
           current_text_kind: "static_default",
@@ -527,7 +599,7 @@ describe("PromptsScreen", () => {
           updated_at: null,
         },
         {
-          ...defaultPrompts().blocks[1]!,
+          ...promptBlock("voice_and_posture"),
           default_text: "DEFAULT SECOND",
           current_text: "SAME CURRENT",
           current_text_kind: "static_default",
@@ -577,9 +649,11 @@ describe("PromptsScreen", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderPromptsScreen();
-    const rows = await screen.findAllByTestId("prompt-block-row");
+    await screen.findAllByTestId("prompt-block-row");
+    const voiceRow = screen.getByRole("button", { name: /Voice and posture/ }).closest(".list-row");
+    expect(voiceRow).not.toBeNull();
 
-    fireEvent.click(within(rows[1]!).getByRole("button", { name: "inspect" }));
+    fireEvent.click(within(voiceRow as HTMLElement).getByRole("button", { name: "inspect" }));
 
     const dialog = await screen.findByRole("dialog", { name: "Prompt block inspector" });
     expect(within(dialog).getByText("voice_and_posture")).toBeInTheDocument();
@@ -589,7 +663,7 @@ describe("PromptsScreen", () => {
     const prompts = {
       blocks: [
         {
-          ...defaultPrompts().blocks[0]!,
+          ...promptBlock("base_identity_preamble"),
           current_text: "CURRENT PREAMBLE",
           current_text_kind: "stored_override",
           overridden: true,
@@ -654,7 +728,7 @@ describe("PromptsScreen", () => {
         return Promise.resolve(jsonResponse(defaultPrompts()));
       }
       if (path === "/api/prompts/assembled" && (init?.method ?? "GET") === "GET") {
-        return Promise.resolve(jsonResponse({ text: "aaa", sections: ["overlap"] }));
+        return Promise.resolve(jsonResponse(assembledFromParts(["aaa"], ["overlap"])));
       }
       return Promise.resolve(jsonResponse({ error: { message: "unhandled" } }, 404));
     });
@@ -679,7 +753,7 @@ describe("PromptsScreen", () => {
       }
       if (path === "/api/prompts/assembled" && (init?.method ?? "GET") === "GET") {
         return Promise.resolve(
-          jsonResponse({ text: "Alpha alpha ALPHA", sections: ["case_test"] }),
+          jsonResponse(assembledFromParts(["Alpha alpha ALPHA"], ["case_test"])),
         );
       }
       return Promise.resolve(jsonResponse({ error: { message: "unhandled" } }, 404));
@@ -715,9 +789,15 @@ describe("PromptsScreen", () => {
     expect(screen.getByTestId("assembled-token-estimate")).toHaveTextContent(
       /approximate ~\d+ tokens \(chars\/4, rough\)/,
     );
+    expect(screen.getByText("9 assembled sections")).toBeInTheDocument();
   });
 
-  it("renders the assembled section outline", async () => {
+  it("renders the assembled section outline and scrolls structural anchors", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
     const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
       const path = requestPath(request);
       if (path === "/api/prompts" && (init?.method ?? "GET") === "GET") {
@@ -741,5 +821,10 @@ describe("PromptsScreen", () => {
     expect(
       within(outline).getByRole("button", { name: "borg_host_capabilities" }),
     ).toBeInTheDocument();
+
+    fireEvent.click(within(outline).getByRole("button", { name: "voice_and_posture" }));
+    await waitFor(() =>
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "start", inline: "nearest" }),
+    );
   });
 });

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { SessionRecord, StateSnapshot } from "./api/types";
@@ -90,7 +90,13 @@ vi.mock("./screens/Dream", () => ({
 }));
 
 vi.mock("./screens/Prompts", () => ({
-  PromptsScreen: () => <div data-testid="prompts-screen" />,
+  PromptsScreen: ({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void }) => (
+    <div data-testid="prompts-screen">
+      <button type="button" onClick={() => onDirtyChange?.(true)}>
+        dirty prompts
+      </button>
+    </div>
+  ),
 }));
 
 import { App } from "./App";
@@ -253,6 +259,94 @@ describe("App", () => {
     const url = new URL(window.location.href);
     expect(url.searchParams.get("view")).toBe("governance");
     expect(url.searchParams.get("tab")).toBe("shared_state");
+  });
+
+  it("guards route changes away from dirty prompt drafts", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+
+      if (url.pathname === "/api/state") {
+        return Promise.resolve(jsonResponse(stateSnapshot()));
+      }
+      if (url.pathname === "/api/sessions" && init?.method !== "POST") {
+        return Promise.resolve(jsonResponse({ sessions: [session()] }));
+      }
+      if (url.pathname === "/api/entities/creator") {
+        return Promise.resolve(jsonResponse(null));
+      }
+
+      return Promise.reject(new Error(`unexpected fetch ${url.pathname}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    window.history.replaceState(null, "", "/?view=prompts");
+
+    render(<App />);
+
+    expect(await screen.findByTestId("prompts-screen")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "dirty prompts" }));
+    fireEvent.click(screen.getByRole("button", { name: "review" }));
+
+    expect(await screen.findByRole("dialog")).toHaveTextContent("discard prompt drafts?");
+    expect(screen.getByTestId("prompts-screen")).toBeInTheDocument();
+    expect(screen.queryByTestId("review-screen")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "stay" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByTestId("prompts-screen")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "review" }));
+    fireEvent.click(await screen.findByRole("button", { name: "discard drafts" }));
+
+    expect(await screen.findByTestId("review-screen")).toBeInTheDocument();
+    expect(new URL(window.location.href).searchParams.get("view")).toBe("review");
+  });
+
+  it("guards browser history changes away from dirty prompt drafts", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+
+      if (url.pathname === "/api/state") {
+        return Promise.resolve(jsonResponse(stateSnapshot()));
+      }
+      if (url.pathname === "/api/sessions" && init?.method !== "POST") {
+        return Promise.resolve(jsonResponse({ sessions: [session()] }));
+      }
+      if (url.pathname === "/api/entities/creator") {
+        return Promise.resolve(jsonResponse(null));
+      }
+
+      return Promise.reject(new Error(`unexpected fetch ${url.pathname}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    window.history.replaceState(null, "", "/?view=prompts");
+
+    render(<App />);
+
+    expect(await screen.findByTestId("prompts-screen")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "dirty prompts" }));
+
+    act(() => {
+      window.history.pushState(null, "", "/?view=review");
+      window.dispatchEvent(new Event("popstate"));
+    });
+
+    expect(await screen.findByRole("dialog")).toHaveTextContent("discard prompt drafts?");
+    expect(new URL(window.location.href).searchParams.get("view")).toBe("prompts");
+    expect(screen.getByTestId("prompts-screen")).toBeInTheDocument();
+    expect(screen.queryByTestId("review-screen")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "stay" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(new URL(window.location.href).searchParams.get("view")).toBe("prompts");
+
+    act(() => {
+      window.history.pushState(null, "", "/?view=review");
+      window.dispatchEvent(new Event("popstate"));
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "discard drafts" }));
+
+    expect(await screen.findByTestId("review-screen")).toBeInTheDocument();
+    expect(new URL(window.location.href).searchParams.get("view")).toBe("review");
   });
 
   it("keeps chrome mounted and recovers from a screen crash when the view changes", async () => {

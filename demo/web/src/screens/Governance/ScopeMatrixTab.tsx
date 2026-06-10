@@ -244,7 +244,7 @@ export function ScopeMatrixTab({
         {supportData?.audienceDiscoveryTruncated ? (
           <Tag kind="warn">audience discovery hit 1000-session cap</Tag>
         ) : (
-          <Tag>current getSessions window</Tag>
+          <Tag>current sessions window</Tag>
         )}
       </div>
       <div className="page-body scope-matrix-body">

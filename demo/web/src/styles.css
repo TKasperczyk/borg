@@ -593,6 +593,9 @@ select {
   outline: 1px solid var(--acc-dim);
   background: var(--acc-tint);
 }
+.prompt-preview-segment.active {
+  background: var(--acc-tint-soft);
+}
 .prompt-preview-panel {
   border: 1px solid var(--line);
   background: var(--bg-1);
@@ -2527,7 +2530,7 @@ input:not([type])::placeholder {
 }
 .flow-legend .leg.queue::before {
   background: transparent;
-  border: 1px solid var(--line);
+  border: 1px solid oklch(0.505 0.006 80);
 }
 .flow-legend .leg.run::before {
   background: var(--acc);
@@ -2539,6 +2542,70 @@ input:not([type])::placeholder {
 .flow-legend .leg.fail::before {
   background: var(--bad);
   box-shadow: 0 0 6px var(--bad);
+}
+
+.flow-shell-compact {
+  min-height: 0;
+}
+
+.flow-compact-strip {
+  display: grid;
+  grid-template-columns: minmax(118px, max-content) minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  min-height: 46px;
+  padding: 0 2px;
+  overflow: hidden;
+}
+
+.flow-compact-state {
+  color: var(--text-mid);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.flow-compact-phases {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.flow-compact-phase-wrap {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.flow-compact-arrow {
+  color: oklch(0.505 0.006 80);
+  font-size: 10px;
+}
+
+.flow-compact-phase {
+  overflow: hidden;
+  max-width: 78px;
+  color: var(--text-mute);
+  font-family: var(--mono);
+  font-size: var(--fs-micro);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-compact-phase.running {
+  color: var(--acc);
+}
+
+.flow-compact-phase.done {
+  color: var(--text);
+}
+
+.flow-compact-phase.fail {
+  color: var(--bad);
 }
 
 /* === Canvas === */
@@ -2624,7 +2691,8 @@ input:not([type])::placeholder {
   stroke-linecap: round;
 }
 .fc-edge.dim {
-  opacity: 0.55;
+  stroke: oklch(0.505 0.006 80);
+  opacity: 0.9;
 }
 .fc-edge.done {
   stroke: oklch(0.55 0.1 142 / 0.75);
@@ -2679,8 +2747,8 @@ input:not([type])::placeholder {
 /* Branch dashed (thorns) and regen arc */
 .fc-edge.branch {
   stroke-dasharray: 2 4;
-  stroke: var(--line);
-  opacity: 0.55;
+  stroke: oklch(0.505 0.006 80);
+  opacity: 0.85;
   stroke-width: 1;
 }
 .fc-edge.branch.fire {
@@ -2786,18 +2854,28 @@ input:not([type])::placeholder {
 
 /* Node state: queue */
 .fc-node[data-status="queue"] .fc-node-body {
-  stroke: var(--line-soft);
+  stroke: oklch(0.505 0.006 80);
 }
 .fc-node[data-status="queue"] .fc-node-core {
-  fill: var(--bg-3);
-  opacity: 0.6;
+  fill: oklch(0.505 0.006 80);
+  opacity: 0.85;
 }
 .fc-node[data-status="queue"] .fc-node-halo {
-  stroke: var(--line-ghost);
-  opacity: 0.3;
+  stroke: oklch(0.505 0.006 80);
+  opacity: 0.42;
 }
 .fc-node[data-status="queue"] .fc-node-label {
-  fill: var(--text-mute);
+  fill: var(--text-mid);
+}
+
+.fc-node.selected .fc-node-halo {
+  stroke: var(--text);
+  opacity: 0.75;
+}
+
+.fc-node.selected .fc-node-body {
+  stroke-width: 1.8;
+  filter: drop-shadow(0 0 4px oklch(0.98 0.004 90 / 0.25));
 }
 
 /* Node state: running */
@@ -6471,6 +6549,7 @@ tr[role="button"]:focus-visible {
 .orr-memory-label,
 .orr-memory-count,
 .orr-dream-label,
+.orr-dream-status,
 .orr-governance-label,
 .orr-fault-label,
 .orr-stream-phase,
@@ -6491,6 +6570,24 @@ tr[role="button"]:focus-visible {
 .orr-memory-count {
   fill: var(--text-faint);
   font-size: 9px;
+}
+
+.orr-label-leader {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 0.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.orr-label-badge {
+  fill: var(--bg-1);
+  stroke: var(--line-soft);
+  stroke-width: 0.6;
+  opacity: 0.86;
+  pointer-events: none;
 }
 
 .orr-core-glow {
@@ -6640,10 +6737,15 @@ tr[role="button"]:focus-visible {
 
 .orr-dream-label {
   fill: var(--text-faint);
+  font-size: 8.8px;
+}
+
+.orr-dream-status {
+  fill: var(--text-ghost);
   font-size: 8.5px;
 }
 
-.orr-governance-arc path {
+.orr-governance-arc > path {
   fill: none;
   stroke-width: 5;
   stroke-linecap: round;
@@ -6653,27 +6755,32 @@ tr[role="button"]:focus-visible {
     opacity var(--dur) var(--ease);
 }
 
-.orr-governance-arc:hover path,
-.orr-governance-arc:focus-visible path {
+.orr-governance-arc:hover > path,
+.orr-governance-arc:focus-visible > path {
   stroke-width: 7;
   opacity: 1;
 }
 
-.orr-governance-critical path {
+.orr-governance-critical > path {
   stroke: var(--bad);
 }
 
-.orr-governance-advisory path {
+.orr-governance-advisory > path {
   stroke: var(--warn);
 }
 
-.orr-governance-directives path {
+.orr-governance-directives > path {
   stroke: var(--info);
 }
 
 .orr-governance-label {
   fill: var(--text-mute);
   font-size: 10px;
+}
+
+.orr-label-subtext {
+  fill: var(--text-faint);
+  font-size: 9px;
 }
 
 .orr-governance-label-muted {
@@ -6790,12 +6897,15 @@ tr[role="button"]:focus-visible {
 .orr-compact .orr-memory-label,
 .orr-compact .orr-memory-count,
 .orr-compact .orr-dream-label,
+.orr-compact .orr-dream-status,
 .orr-compact .orr-governance-label,
 .orr-compact .orr-fault-label,
 .orr-compact .orr-stream-phase,
 .orr-compact .orr-stream-turn,
 .orr-compact .orr-core-label,
-.orr-compact .orr-core-health {
+.orr-compact .orr-core-health,
+.orr-compact .orr-label-leader,
+.orr-compact .orr-label-badge {
   display: none;
 }
 

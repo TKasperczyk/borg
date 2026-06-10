@@ -195,7 +195,9 @@ function installCognitionFetch(
       );
     }
     if (url.pathname === "/api/prompts/assembled") {
-      return Promise.resolve(jsonResponse(input.prompt ?? { sections: [], text: "" }));
+      return Promise.resolve(
+        jsonResponse(input.prompt ?? { sections: [], text: "", segments: [] }),
+      );
     }
     if (
       url.pathname.includes("/api/sessions/") &&
@@ -577,7 +579,7 @@ describe("cognition screen", () => {
 
     renderWithInspector(<Harness live={source.live()} />);
 
-    expect(await screen.findByText("waiting for a running phase")).toBeInTheDocument();
+    expect(await screen.findByTestId("flow-compact-strip")).toBeInTheDocument();
     expect(document.querySelector(".fc-particles")).toBeNull();
 
     act(() => {
@@ -1528,7 +1530,7 @@ describe("cognition screen", () => {
     fireEvent.click(screen.getByRole("tab", { name: "commitments" }));
     await waitFor(() => expect(fetchPathCalls(fetchMock, "/api/commitments")).toHaveLength(1));
 
-    fireEvent.click(screen.getByRole("tab", { name: "open qs" }));
+    fireEvent.click(screen.getByRole("tab", { name: "open questions" }));
     await waitFor(() => expect(fetchPathCalls(fetchMock, "/api/identity")).toHaveLength(1));
 
     fireEvent.click(screen.getByRole("tab", { name: "prompt" }));
@@ -1795,9 +1797,8 @@ describe("cognition screen", () => {
 
     renderWithInspector(<Harness live={source.live()} />);
 
-    expect(screen.getByTestId("phase-ingest")).toHaveClass("fc-node-queue");
-    expect(screen.getByTestId("phase-audience")).toHaveClass("fc-node-queue");
-    expect(screen.getByTestId("phase-final")).toHaveClass("fc-node-queue");
+    expect(screen.getByTestId("flow-compact-strip")).toBeInTheDocument();
+    expect(screen.queryByTestId("phase-ingest")).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText("send a turn"), {
       target: { value: "hello borg" },
@@ -1808,7 +1809,9 @@ describe("cognition screen", () => {
     act(() => {
       source.emit(phaseFrame("turn:phase:started", "ingest"));
     });
-    expect(screen.getByTestId("phase-ingest")).toHaveClass("fc-node-running");
+    expect(await screen.findByTestId("phase-ingest")).toHaveClass("fc-node-running");
+    expect(screen.getByTestId("phase-audience")).toHaveClass("fc-node-queue");
+    expect(screen.getByTestId("phase-final")).toHaveClass("fc-node-queue");
 
     act(() => {
       source.emit(phaseFrame("turn:phase:completed", "ingest"));

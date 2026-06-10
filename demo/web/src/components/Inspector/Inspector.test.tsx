@@ -785,7 +785,7 @@ describe("Inspector drawer", () => {
     fireEvent.click(screen.getByRole("button", { name: "open ent_missing11111111" }));
 
     expect(
-      await screen.findByText("Entity needs a backend resolver for ent_missing11111111."),
+      await screen.findByText("Entity does not have a direct resolver for ent_missing11111111."),
     ).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -848,7 +848,9 @@ describe("Inspector drawer", () => {
     fireEvent.click(screen.getByRole("button", { name: "open 42" }));
 
     expect(
-      await screen.findByText("Review is list-scoped; 42 was not found in the loaded list."),
+      await screen.findByText(
+        "Review is available only from the currently loaded list; 42 was not found.",
+      ),
     ).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Evidence" })).not.toBeInTheDocument();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));

@@ -487,8 +487,8 @@ function SharedStateLifecyclePanel({
           className="notice"
           style={{ fontSize: "var(--fs-sm)", lineHeight: 1.55, marginBottom: 8 }}
         >
-          audience discovery reached the 1000-session server cap; shared-state lifecycle rows from
-          older audiences may be missing
+          audience discovery reached the 1000-session limit; older audience lifecycle entries may be
+          missing
         </div>
       ) : null}
       {!loading && sharedAudiences.length === 0 ? (

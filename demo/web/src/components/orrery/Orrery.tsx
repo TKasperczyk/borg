@@ -1,6 +1,6 @@
 import { useId, type KeyboardEvent } from "react";
 
-import type { RouteId, RouteNavigationOptions } from "../../routes";
+import { isDreamProcessName, type RouteId, type RouteNavigationOptions } from "../../routes";
 import { shortId } from "../../screens/screen-utils";
 import type { OrreryViewModel } from "./useOrreryData";
 
@@ -29,6 +29,15 @@ const MEMORY_RING_STEP = 18;
 const MEMORY_LABEL_ANGLE_START = -126;
 const DREAM_ORBIT_RADIUS = 232;
 const FAULT_LIMIT = 5;
+const LABEL_PAD = 14;
+const LABEL_GAP = 7;
+
+type Box = {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+};
 
 function classNames(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(" ");
@@ -57,7 +66,8 @@ function onKeyboardActivate(event: KeyboardEvent<SVGGElement>, action: () => voi
 }
 
 function countLabel(count: number, lowerBound: boolean): string {
-  return `${lowerBound ? ">" : ""}${count.toLocaleString()}`;
+  const formatted = count.toLocaleString();
+  return lowerBound ? `${formatted}+` : formatted;
 }
 
 function memoryStrokeWidth(count: number, maxCount: number): number {
@@ -84,6 +94,414 @@ function governanceStrokeWidth(count: number): number {
   return 2.5 + countScale * 4.5;
 }
 
+function estimateTextWidth(text: string, fontSize: number): number {
+  return text.length * fontSize * 0.62;
+}
+
+function boxOverlaps(left: Box, right: Box): boolean {
+  return (
+    left.left < right.right &&
+    left.right > right.left &&
+    left.top < right.bottom &&
+    left.bottom > right.top
+  );
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+type LabelSide = "left" | "right" | "top" | "bottom";
+
+export type OrreryLaidOutLabel = {
+  id: string;
+  kind: "memory" | "satellite" | "governance" | "fault";
+  text: string;
+  subtext?: string;
+  anchor: Point;
+  side: LabelSide;
+  x: number;
+  y: number;
+  textAnchor: "start" | "middle" | "end";
+  box: Box;
+  leader: string;
+  badge?: Box;
+};
+
+type LabelCandidate = Omit<OrreryLaidOutLabel, "box" | "leader" | "textAnchor" | "x" | "y"> & {
+  preferredX: number;
+  preferredY: number;
+  width: number;
+  height: number;
+};
+
+type PlacedLabelCandidate = LabelCandidate &
+  Pick<OrreryLaidOutLabel, "box" | "textAnchor" | "x" | "y">;
+
+function labelBoxFor(
+  candidate: LabelCandidate,
+  crossAxis: number,
+): Pick<OrreryLaidOutLabel, "box" | "textAnchor" | "x" | "y"> {
+  if (candidate.side === "left") {
+    const right = clamp(
+      Math.min(candidate.preferredX, candidate.anchor.x - 18),
+      LABEL_PAD + candidate.width,
+      CENTER - 34,
+    );
+    return {
+      x: right,
+      y: crossAxis,
+      textAnchor: "end",
+      box: {
+        left: right - candidate.width,
+        right,
+        top: crossAxis - candidate.height / 2,
+        bottom: crossAxis + candidate.height / 2,
+      },
+    };
+  }
+
+  if (candidate.side === "right") {
+    const left = clamp(
+      Math.max(candidate.preferredX, candidate.anchor.x + 18),
+      CENTER + 34,
+      VIEW_SIZE - LABEL_PAD - candidate.width,
+    );
+    return {
+      x: left,
+      y: crossAxis,
+      textAnchor: "start",
+      box: {
+        left,
+        right: left + candidate.width,
+        top: crossAxis - candidate.height / 2,
+        bottom: crossAxis + candidate.height / 2,
+      },
+    };
+  }
+
+  const centerX = clamp(
+    crossAxis,
+    LABEL_PAD + candidate.width / 2,
+    VIEW_SIZE - LABEL_PAD - candidate.width / 2,
+  );
+  const centerY =
+    candidate.side === "top"
+      ? clamp(candidate.preferredY, LABEL_PAD + candidate.height / 2, CENTER - 42)
+      : clamp(candidate.preferredY, CENTER + 42, VIEW_SIZE - LABEL_PAD - candidate.height / 2);
+  return {
+    x: centerX,
+    y: centerY,
+    textAnchor: "middle",
+    box: {
+      left: centerX - candidate.width / 2,
+      right: centerX + candidate.width / 2,
+      top: centerY - candidate.height / 2,
+      bottom: centerY + candidate.height / 2,
+    },
+  };
+}
+
+function leaderPath(anchor: Point, box: Box, side: LabelSide): string {
+  if (side === "left") {
+    const y = clamp(anchor.y, box.top + 4, box.bottom - 4);
+    const elbowX = box.right + 8;
+    return `M ${anchor.x.toFixed(1)} ${anchor.y.toFixed(1)} L ${elbowX.toFixed(1)} ${y.toFixed(1)} L ${box.right.toFixed(1)} ${y.toFixed(1)}`;
+  }
+  if (side === "right") {
+    const y = clamp(anchor.y, box.top + 4, box.bottom - 4);
+    const elbowX = box.left - 8;
+    return `M ${anchor.x.toFixed(1)} ${anchor.y.toFixed(1)} L ${elbowX.toFixed(1)} ${y.toFixed(1)} L ${box.left.toFixed(1)} ${y.toFixed(1)}`;
+  }
+  if (side === "top") {
+    const x = clamp(anchor.x, box.left + 4, box.right - 4);
+    const elbowY = box.bottom + 8;
+    return `M ${anchor.x.toFixed(1)} ${anchor.y.toFixed(1)} L ${x.toFixed(1)} ${elbowY.toFixed(1)} L ${x.toFixed(1)} ${box.bottom.toFixed(1)}`;
+  }
+  const x = clamp(anchor.x, box.left + 4, box.right - 4);
+  const elbowY = box.top - 8;
+  return `M ${anchor.x.toFixed(1)} ${anchor.y.toFixed(1)} L ${x.toFixed(1)} ${elbowY.toFixed(1)} L ${x.toFixed(1)} ${box.top.toFixed(1)}`;
+}
+
+function placeLane(
+  candidates: readonly LabelCandidate[],
+  side: LabelSide,
+  avoidBoxes: readonly Box[],
+): OrreryLaidOutLabel[] {
+  const vertical = side === "left" || side === "right";
+  const sorted = [...candidates].sort((left, right) =>
+    vertical ? left.preferredY - right.preferredY : left.preferredX - right.preferredX,
+  );
+  const placed: PlacedLabelCandidate[] = [];
+
+  if (!vertical) {
+    for (const candidate of sorted) {
+      const crossMin = LABEL_PAD + candidate.width / 2;
+      const crossMax = VIEW_SIZE - LABEL_PAD - candidate.width / 2;
+      let crossAxis = clamp(candidate.preferredX, crossMin, crossMax);
+
+      for (let attempts = 0; attempts < 32; attempts += 1) {
+        const proposed = labelBoxFor(candidate, crossAxis);
+        const overlap = placed
+          .map((item) => item.box)
+          .concat(avoidBoxes)
+          .find((box) => boxOverlaps(proposed.box, box));
+        if (overlap === undefined) {
+          placed.push({ ...candidate, ...proposed });
+          break;
+        }
+
+        const gap = (candidate.width + (overlap.right - overlap.left)) / 2 + LABEL_GAP;
+        const overlapCenter = (overlap.left + overlap.right) / 2;
+        const direction = candidate.preferredX >= overlapCenter ? 1 : -1;
+        crossAxis = clamp(overlapCenter + direction * gap, crossMin, crossMax);
+
+        if (attempts === 31) {
+          placed.push({ ...candidate, ...proposed });
+        }
+      }
+    }
+
+    return finalizePlacedLabels(placed);
+  }
+
+  let cursor = LABEL_PAD;
+
+  for (const candidate of sorted) {
+    const minCenter = LABEL_PAD + candidate.height / 2;
+    const maxCenter = VIEW_SIZE - LABEL_PAD - candidate.height / 2;
+    const crossMin = LABEL_PAD + candidate.width / 2;
+    const crossMax = VIEW_SIZE - LABEL_PAD - candidate.width / 2;
+    const half = vertical ? candidate.height / 2 : candidate.width / 2;
+    const min = vertical ? minCenter : crossMin;
+    const max = vertical ? maxCenter : crossMax;
+    const preferred = vertical ? candidate.preferredY : candidate.preferredX;
+    let crossAxis = Math.max(clamp(preferred, min, max), cursor + half);
+    let proposed = labelBoxFor(candidate, crossAxis);
+
+    for (let attempts = 0; attempts < 24; attempts += 1) {
+      const overlap = avoidBoxes.find((box) => boxOverlaps(proposed.box, box));
+      if (overlap === undefined) {
+        break;
+      }
+      crossAxis = vertical
+        ? overlap.bottom + LABEL_GAP + candidate.height / 2
+        : overlap.right + LABEL_GAP + candidate.width / 2;
+      if (crossAxis > max) {
+        crossAxis = max;
+        proposed = labelBoxFor(candidate, crossAxis);
+        break;
+      }
+      proposed = labelBoxFor(candidate, crossAxis);
+    }
+
+    placed.push({ ...candidate, ...proposed });
+    cursor = vertical ? proposed.box.bottom + LABEL_GAP : proposed.box.right + LABEL_GAP;
+  }
+
+  const last = placed.at(-1);
+  if (last !== undefined) {
+    const overflow = vertical
+      ? last.box.bottom - (VIEW_SIZE - LABEL_PAD)
+      : last.box.right - (VIEW_SIZE - LABEL_PAD);
+    const first = placed[0]!;
+    const headroom = vertical ? first.box.top - LABEL_PAD : first.box.left - LABEL_PAD;
+    const shift = Math.max(0, Math.min(overflow, headroom));
+    if (shift > 0) {
+      for (const item of placed) {
+        if (vertical) {
+          item.y -= shift;
+          item.box.top -= shift;
+          item.box.bottom -= shift;
+        } else {
+          item.x -= shift;
+          item.box.left -= shift;
+          item.box.right -= shift;
+        }
+      }
+    }
+  }
+
+  return finalizePlacedLabels(placed);
+}
+
+function finalizePlacedLabels(placed: readonly PlacedLabelCandidate[]): OrreryLaidOutLabel[] {
+  return placed.map((item) => ({
+    id: item.id,
+    kind: item.kind,
+    text: item.text,
+    subtext: item.subtext,
+    anchor: item.anchor,
+    side: item.side,
+    x: item.x,
+    y: item.y,
+    textAnchor: item.textAnchor,
+    box: item.box,
+    leader: leaderPath(item.anchor, item.box, item.side),
+    badge:
+      item.subtext === undefined
+        ? undefined
+        : {
+            left:
+              item.textAnchor === "end"
+                ? item.x - estimateTextWidth(item.subtext, 9) - 8
+                : item.textAnchor === "middle"
+                  ? item.x - estimateTextWidth(item.subtext, 9) / 2 - 4
+                  : item.x - 4,
+            right:
+              item.textAnchor === "end"
+                ? item.x + 4
+                : item.textAnchor === "middle"
+                  ? item.x + estimateTextWidth(item.subtext, 9) / 2 + 4
+                  : item.x + estimateTextWidth(item.subtext, 9) + 8,
+            top: item.y + 2,
+            bottom: item.y + 15,
+          },
+  }));
+}
+
+function labelSideForPoint(point: Point): LabelSide {
+  const dx = point.x - CENTER;
+  const dy = point.y - CENTER;
+  if (Math.abs(dx) >= Math.abs(dy) * 0.72) {
+    return dx < 0 ? "left" : "right";
+  }
+  return dy < 0 ? "top" : "bottom";
+}
+
+export function layoutOrreryLabels(data: OrreryViewModel): OrreryLaidOutLabel[] {
+  const candidates: LabelCandidate[] = [];
+  const avoidBoxes: Box[] = [
+    { left: CENTER - 78, right: CENTER + 78, top: CENTER - 72, bottom: CENTER + 92 },
+  ];
+
+  data.memoryBands.forEach((band, index) => {
+    const radius = MEMORY_RING_START + index * MEMORY_RING_STEP;
+    const angle = MEMORY_LABEL_ANGLE_START + index * 31;
+    const anchor = polarPoint(radius, angle);
+    const preferred = polarPoint(radius + 42, angle);
+    const side = labelSideForPoint(preferred);
+    const subtext = `${countLabel(band.count, band.countIsLowerBound)} records`;
+    candidates.push({
+      id: `memory:${band.id}`,
+      kind: "memory",
+      text: band.name,
+      subtext,
+      anchor,
+      side,
+      preferredX: preferred.x,
+      preferredY: preferred.y,
+      width: Math.max(estimateTextWidth(band.name, 10), estimateTextWidth(subtext, 9)) + 10,
+      height: 25,
+    });
+  });
+
+  data.dream.satellites.forEach((satellite, index) => {
+    const angle = -154 + (index * 360) / Math.max(1, data.dream.satellites.length);
+    const point = polarPoint(DREAM_ORBIT_RADIUS, angle);
+    const preferred = polarPoint(DREAM_ORBIT_RADIUS + 36, angle);
+    avoidBoxes.push({
+      left: point.x - 17,
+      right: point.x + 17,
+      top: point.y - 17,
+      bottom: point.y + 17,
+    });
+    candidates.push({
+      id: `satellite:${satellite.name}`,
+      kind: "satellite",
+      text: satellite.label,
+      subtext: satellite.lastStatus ?? (satellite.enabled ? "enabled" : "off"),
+      anchor: point,
+      side: labelSideForPoint(preferred),
+      preferredX: preferred.x,
+      preferredY: preferred.y,
+      width:
+        Math.max(
+          estimateTextWidth(satellite.label, 8.8),
+          estimateTextWidth(satellite.lastStatus ?? (satellite.enabled ? "enabled" : "off"), 8.5),
+        ) + 10,
+      height: 24,
+    });
+  });
+
+  if (data.governance.commitments.total > 0) {
+    candidates.push({
+      id: "governance:commitments",
+      kind: "governance",
+      text: "commitments",
+      subtext: `${data.governance.commitments.critical} critical / ${data.governance.commitments.advisory} advisory`,
+      anchor: polarPoint(246, 232),
+      side: "left",
+      preferredX: 92,
+      preferredY: 318,
+      width: 156,
+      height: 25,
+    });
+  } else {
+    candidates.push({
+      id: "governance:commitments",
+      kind: "governance",
+      text: "commitments",
+      subtext: "none active",
+      anchor: polarPoint(246, 232),
+      side: "left",
+      preferredX: 92,
+      preferredY: 318,
+      width: 112,
+      height: 25,
+    });
+  }
+
+  candidates.push({
+    id: "governance:directives",
+    kind: "governance",
+    text: "directives",
+    subtext:
+      data.governance.directives.active > 0
+        ? `${data.governance.directives.active} active / ${data.governance.directives.total} total`
+        : data.governance.directives.total > 0
+          ? `0 active / ${data.governance.directives.total} total`
+          : "none active",
+    anchor: polarPoint(228, 238),
+    side: "left",
+    preferredX: 88,
+    preferredY: 352,
+    width: 138,
+    height: 25,
+  });
+
+  const faultAnchor = polarPoint(242, 55);
+  avoidBoxes.push({
+    left: faultAnchor.x - 45,
+    right: faultAnchor.x + 20,
+    top: faultAnchor.y - 35,
+    bottom: faultAnchor.y + 20,
+  });
+  candidates.push({
+    id: "fault:reviews",
+    kind: "fault",
+    text: "reviews",
+    subtext: `${data.reviews.openCount} open`,
+    anchor: faultAnchor,
+    side: "right",
+    preferredX: 430,
+    preferredY: 58,
+    width: 76,
+    height: 24,
+  });
+
+  const placed: OrreryLaidOutLabel[] = [];
+  for (const side of ["left", "right", "top", "bottom"] as const) {
+    const lane = placeLane(
+      candidates.filter((candidate) => candidate.side === side),
+      side,
+      avoidBoxes.concat(placed.map((label) => label.box)),
+    );
+    placed.push(...lane);
+  }
+  return placed;
+}
+
 function wsTone(wsState: OrreryViewModel["runtime"]["wsState"]): "live" | "warn" | "bad" {
   if (wsState === "live") {
     return "live";
@@ -107,6 +525,53 @@ function turnTone(data: OrreryViewModel["stream"]): "active" | "idle" | "warn" |
   return "idle";
 }
 
+function GovernanceLabel({
+  label,
+  muted = false,
+}: {
+  label: OrreryLaidOutLabel | undefined;
+  muted?: boolean;
+}) {
+  if (label === undefined) {
+    return null;
+  }
+
+  return (
+    <g className={classNames("orr-laidout-label", muted && "orr-governance-label-muted")}>
+      <path className="orr-label-leader" d={label.leader} />
+      {label.badge === undefined ? null : (
+        <rect
+          className="orr-label-badge"
+          x={label.badge.left}
+          y={label.badge.top}
+          width={label.badge.right - label.badge.left}
+          height={label.badge.bottom - label.badge.top}
+          rx="3"
+        />
+      )}
+      <text
+        className={label.kind === "fault" ? "orr-fault-label" : "orr-governance-label"}
+        x={label.x}
+        y={label.y - 3}
+        textAnchor={label.textAnchor}
+      >
+        {label.text}
+      </text>
+      <text
+        className={classNames(
+          label.kind === "fault" ? "orr-fault-label" : "orr-governance-label",
+          "orr-label-subtext",
+        )}
+        x={label.x}
+        y={label.y + 10}
+        textAnchor={label.textAnchor}
+      >
+        {label.subtext}
+      </text>
+    </g>
+  );
+}
+
 export function Orrery({ size, data, onNavigate, onInspect }: OrreryProps) {
   const rawId = useId().replaceAll(":", "");
   const coreGradientId = `orr-core-${rawId}`;
@@ -115,6 +580,7 @@ export function Orrery({ size, data, onNavigate, onInspect }: OrreryProps) {
   const maxBandCount = Math.max(1, ...data.memoryBands.map((band) => band.count));
   const healthTone = wsTone(data.runtime.wsState);
   const streamTone = turnTone(data.stream);
+  const labelMap = new Map(layoutOrreryLabels(data).map((label) => [label.id, label]));
   const activeTurnLabel =
     data.stream.activeTurnId === null ? "no active turn" : shortId(data.stream.activeTurnId);
 
@@ -175,10 +641,8 @@ export function Orrery({ size, data, onNavigate, onInspect }: OrreryProps) {
         <g className="orr-memory-system" aria-label="memory bands">
           {data.memoryBands.map((band, index) => {
             const radius = MEMORY_RING_START + index * MEMORY_RING_STEP;
-            const angle = MEMORY_LABEL_ANGLE_START + index * 31;
-            const label = polarPoint(radius + 12, angle);
-            const anchor = label.x < CENTER - 8 ? "end" : label.x > CENTER + 8 ? "start" : "middle";
-            const activate = () => onNavigate("memory");
+            const label = labelMap.get(`memory:${band.id}`);
+            const activate = () => onNavigate("memory", { memoryBand: band.id });
 
             return (
               <g
@@ -201,12 +665,37 @@ export function Orrery({ size, data, onNavigate, onInspect }: OrreryProps) {
                   r={radius}
                   strokeWidth={memoryStrokeWidth(band.count, maxBandCount)}
                 />
-                <text className="orr-memory-label" x={label.x} y={label.y} textAnchor={anchor}>
-                  {band.name}
-                </text>
-                <text className="orr-memory-count" x={label.x} y={label.y + 12} textAnchor={anchor}>
-                  {countLabel(band.count, band.countIsLowerBound)}
-                </text>
+                {label === undefined ? null : (
+                  <>
+                    <path className="orr-label-leader" d={label.leader} />
+                    {label.badge === undefined ? null : (
+                      <rect
+                        className="orr-label-badge"
+                        x={label.badge.left}
+                        y={label.badge.top}
+                        width={label.badge.right - label.badge.left}
+                        height={label.badge.bottom - label.badge.top}
+                        rx="3"
+                      />
+                    )}
+                    <text
+                      className="orr-memory-label"
+                      x={label.x}
+                      y={label.y - 3}
+                      textAnchor={label.textAnchor}
+                    >
+                      {label.text}
+                    </text>
+                    <text
+                      className="orr-memory-count"
+                      x={label.x}
+                      y={label.y + 11}
+                      textAnchor={label.textAnchor}
+                    >
+                      {label.subtext}
+                    </text>
+                  </>
+                )}
               </g>
             );
           })}
@@ -245,7 +734,7 @@ export function Orrery({ size, data, onNavigate, onInspect }: OrreryProps) {
           {data.dream.satellites.map((satellite, index) => {
             const angle = -154 + (index * 360) / Math.max(1, data.dream.satellites.length);
             const point = polarPoint(DREAM_ORBIT_RADIUS, angle);
-            const label = polarPoint(DREAM_ORBIT_RADIUS + 18, angle);
+            const label = labelMap.get(`satellite:${satellite.name}`);
             const statusClass =
               satellite.lastStatus === "error"
                 ? "orr-dream-satellite-bad"
@@ -254,7 +743,13 @@ export function Orrery({ size, data, onNavigate, onInspect }: OrreryProps) {
                   : satellite.enabled
                     ? "orr-dream-satellite-enabled"
                     : "orr-dream-satellite-muted";
-            const activate = () => onNavigate("dream");
+            const activate = () => {
+              if (isDreamProcessName(satellite.name)) {
+                onNavigate("dream", { dreamProcess: satellite.name });
+                return;
+              }
+              onNavigate("dream");
+            };
 
             return (
               <g
@@ -280,9 +775,37 @@ export function Orrery({ size, data, onNavigate, onInspect }: OrreryProps) {
                 <circle className="orr-dream-orbit-glow" cx={point.x} cy={point.y} r="12" />
                 <circle className="orr-dream-orbit-mark" cx={point.x} cy={point.y} r="12" />
                 <circle className="orr-dream-dot" cx={point.x} cy={point.y} r="4.5" />
-                <text className="orr-dream-label" x={label.x} y={label.y} textAnchor="middle">
-                  {satellite.label}
-                </text>
+                {label === undefined ? null : (
+                  <>
+                    <path className="orr-label-leader" d={label.leader} />
+                    {label.badge === undefined ? null : (
+                      <rect
+                        className="orr-label-badge orr-label-badge-dream"
+                        x={label.badge.left}
+                        y={label.badge.top}
+                        width={label.badge.right - label.badge.left}
+                        height={label.badge.bottom - label.badge.top}
+                        rx="3"
+                      />
+                    )}
+                    <text
+                      className="orr-dream-label"
+                      x={label.x}
+                      y={label.y - 3}
+                      textAnchor={label.textAnchor}
+                    >
+                      {label.text}
+                    </text>
+                    <text
+                      className="orr-dream-status"
+                      x={label.x}
+                      y={label.y + 10}
+                      textAnchor={label.textAnchor}
+                    >
+                      {label.subtext}
+                    </text>
+                  </>
+                )}
               </g>
             );
           })}
@@ -320,14 +843,10 @@ export function Orrery({ size, data, onNavigate, onInspect }: OrreryProps) {
                 )}
                 style={{ strokeWidth: governanceStrokeWidth(data.governance.commitments.total) }}
               />
-              <text className="orr-governance-label" x="70" y="315">
-                cmt {data.governance.commitments.critical}/{data.governance.commitments.advisory}
-              </text>
+              <GovernanceLabel label={labelMap.get("governance:commitments")} />
             </g>
           ) : (
-            <text className="orr-governance-label orr-governance-label-muted" x="70" y="315">
-              cmt none
-            </text>
+            <GovernanceLabel muted label={labelMap.get("governance:commitments")} />
           )}
           {data.governance.directives.active > 0 ? (
             <g
@@ -347,16 +866,10 @@ export function Orrery({ size, data, onNavigate, onInspect }: OrreryProps) {
                 d={arcPath(228, 216, 216 + governanceSweep(data.governance.directives.active))}
                 style={{ strokeWidth: governanceStrokeWidth(data.governance.directives.active) }}
               />
-              <text className="orr-governance-label" x="78" y="336">
-                dir {data.governance.directives.active}/{data.governance.directives.total}
-              </text>
+              <GovernanceLabel label={labelMap.get("governance:directives")} />
             </g>
           ) : (
-            <text className="orr-governance-label orr-governance-label-muted" x="78" y="336">
-              {data.governance.directives.total > 0
-                ? `dir 0/${data.governance.directives.total}`
-                : "dir none"}
-            </text>
+            <GovernanceLabel muted label={labelMap.get("governance:directives")} />
           )}
         </g>
 
@@ -386,9 +899,7 @@ export function Orrery({ size, data, onNavigate, onInspect }: OrreryProps) {
               />
             );
           })}
-          <text className="orr-fault-label" x="430" y="92" textAnchor="middle">
-            review {data.reviews.openCount}
-          </text>
+          <GovernanceLabel label={labelMap.get("fault:reviews")} />
         </g>
 
         <g

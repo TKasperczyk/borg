@@ -4,13 +4,21 @@ import { afterEach, describe, expect, it } from "vitest";
 import { useView } from "./use-view";
 
 function Probe() {
-  const { view, governanceTab, setView, setGovernanceTab } = useView();
+  const { view, governanceTab, memoryBand, dreamProcess, setView, setGovernanceTab } = useView();
   return (
     <div>
       <span data-testid="view">{view}</span>
       <span data-testid="governance-tab">{governanceTab}</span>
+      <span data-testid="memory-band">{memoryBand ?? ""}</span>
+      <span data-testid="dream-process">{dreamProcess ?? ""}</span>
       <button type="button" onClick={() => setView("memory")}>
         switch
+      </button>
+      <button type="button" onClick={() => setView("memory", { memoryBand: "semantic" })}>
+        semantic band
+      </button>
+      <button type="button" onClick={() => setView("dream", { dreamProcess: "ruminator" })}>
+        ruminator process
       </button>
       <button type="button" onClick={() => setView("mission")}>
         default
@@ -129,6 +137,46 @@ describe("useView", () => {
     expect(screen.getByTestId("view")).toHaveTextContent("mission");
     expect(new URL(window.location.href).searchParams.has("view")).toBe(false);
     expect(new URL(window.location.href).searchParams.has("tab")).toBe(false);
+  });
+
+  it("writes memory band and dream process route options", () => {
+    window.history.replaceState(null, "", "/");
+
+    render(<Probe />);
+
+    fireEvent.click(screen.getByRole("button", { name: "semantic band" }));
+
+    expect(screen.getByTestId("view")).toHaveTextContent("memory");
+    expect(screen.getByTestId("memory-band")).toHaveTextContent("semantic");
+    expect(new URL(window.location.href).searchParams.get("view")).toBe("memory");
+    expect(new URL(window.location.href).searchParams.get("band")).toBe("semantic");
+
+    fireEvent.click(screen.getByRole("button", { name: "ruminator process" }));
+
+    expect(screen.getByTestId("view")).toHaveTextContent("dream");
+    expect(screen.getByTestId("dream-process")).toHaveTextContent("ruminator");
+    expect(new URL(window.location.href).searchParams.get("view")).toBe("dream");
+    expect(new URL(window.location.href).searchParams.get("process")).toBe("ruminator");
+    expect(new URL(window.location.href).searchParams.has("band")).toBe(false);
+  });
+
+  it("reads valid route options and clears invalid route options", () => {
+    window.history.replaceState(null, "", "/?view=memory&band=episodic&process=not-real");
+
+    const { unmount } = render(<Probe />);
+
+    expect(screen.getByTestId("memory-band")).toHaveTextContent("episodic");
+    expect(new URL(window.location.href).searchParams.get("band")).toBe("episodic");
+    expect(new URL(window.location.href).searchParams.has("process")).toBe(false);
+
+    unmount();
+    window.history.replaceState(null, "", "/?view=dream&process=commitment-reconciler&band=bad");
+
+    render(<Probe />);
+
+    expect(screen.getByTestId("dream-process")).toHaveTextContent("commitment-reconciler");
+    expect(new URL(window.location.href).searchParams.get("process")).toBe("commitment-reconciler");
+    expect(new URL(window.location.href).searchParams.has("band")).toBe(false);
   });
 
   it("re-reads the view on popstate", () => {

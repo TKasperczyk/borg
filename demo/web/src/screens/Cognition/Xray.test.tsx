@@ -8,6 +8,7 @@ import type {
   IdentityResponse,
   PromptAssembledResponse,
   SharedStateResponse,
+  TurnHistoryRow,
 } from "../../api/types";
 import type { ApiHookState } from "../../hooks/use-api";
 import { initialPhases } from "../../hooks/use-turn-stream";
@@ -103,6 +104,8 @@ function renderXray(
     commitmentsApi: ApiDataState<CommitmentsResponse>;
     identityApi: ApiDataState<IdentityResponse>;
     promptApi: ApiDataState<PromptAssembledResponse>;
+    activeTurnId: string | null;
+    replayTurn: TurnHistoryRow | null;
   }> = {},
 ) {
   function XrayHarness() {
@@ -111,7 +114,7 @@ function renderXray(
     return (
       <Xray
         phases={initialPhases()}
-        activeTurnId="turn_xray"
+        activeTurnId={"activeTurnId" in overrides ? (overrides.activeTurnId ?? null) : "turn_xray"}
         tokenTextByPhase={new Map()}
         detailByPhase={new Map()}
         terminalOutcome={null}
@@ -119,6 +122,7 @@ function renderXray(
         finalAttempt={1}
         cachedLedger={overrides.ledger ?? baseLedger()}
         audience="alice"
+        replayTurn={overrides.replayTurn ?? null}
         sharedStateApi={
           overrides.sharedStateApi ??
           apiState({
@@ -186,6 +190,15 @@ function renderXray(
           apiState({
             sections: ["identity", "working memory"],
             text: "assembled prompt text",
+            segments: [
+              {
+                id: "identity",
+                label: "identity",
+                editable_key: null,
+                start: 0,
+                end: 8,
+              },
+            ],
           })
         }
         activeTab={activeTab}
@@ -210,7 +223,7 @@ describe("Xray workbench tabs", () => {
     expect(screen.getByText("critical")).toBeInTheDocument();
     expect(screen.getByText("global")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "open qs" }));
+    fireEvent.click(screen.getByRole("tab", { name: "open questions" }));
     expect(screen.getByText("What should Borg clarify next?")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "jump to goal_workbench111111" }),
@@ -239,7 +252,7 @@ describe("Xray workbench tabs", () => {
       sharedStateApi: loadingState(),
       commitmentsApi: errorState("commitments failed"),
       identityApi: apiState(identity(false)),
-      promptApi: apiState({ sections: [], text: "" }),
+      promptApi: apiState({ sections: [], text: "", segments: [] }),
     });
 
     fireEvent.click(screen.getByRole("tab", { name: "shared state" }));
@@ -248,10 +261,44 @@ describe("Xray workbench tabs", () => {
     fireEvent.click(screen.getByRole("tab", { name: "commitments" }));
     expect(screen.getByText("commitments failed")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "open qs" }));
+    fireEvent.click(screen.getByRole("tab", { name: "open questions" }));
     expect(screen.getByText("no open questions")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "prompt" }));
     expect(screen.getByText("assembled prompt unavailable")).toBeInTheDocument();
+  });
+
+  it("renders the compact flow strip while idle outside replay", () => {
+    renderXray({ activeTurnId: null, replayTurn: null });
+
+    expect(screen.getByTestId("flow-compact-strip")).toBeInTheDocument();
+    expect(screen.queryByLabelText("cognitive turn flow chart")).not.toBeInTheDocument();
+  });
+
+  it("focuses honest X-ray tabs from replay FlowChart nodes", () => {
+    renderXray({
+      replayTurn: {
+        turn_id: "turn_replay",
+        started_at: 1,
+        audience: "alice",
+        outcome: "emitted",
+        suppression_reason: null,
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("phase-retrieval"));
+    expect(screen.getByText("retrieved memory kept")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "flow" }));
+    fireEvent.click(screen.getByTestId("phase-shared"));
+    expect(screen.getByText("Borg saw shared state text.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "flow" }));
+    fireEvent.click(screen.getByTestId("phase-ledger"));
+    expect(screen.getByText("transcript-only hidden from memory tab")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "flow" }));
+    fireEvent.click(screen.getByTestId("phase-delib"));
+    expect(screen.getByLabelText("cognitive turn flow chart")).toBeInTheDocument();
   });
 });

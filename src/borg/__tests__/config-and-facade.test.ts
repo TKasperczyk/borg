@@ -203,6 +203,19 @@ describe("Borg", () => {
         "trusted_guidance_preamble",
         "borg_host_capabilities",
       ]);
+      expect(initial.segments.map((segment) => segment.id)).toEqual(initial.sections);
+      for (const segment of initial.segments) {
+        expect(segment.start).toBeGreaterThanOrEqual(0);
+        expect(segment.end).toBeGreaterThan(segment.start);
+        expect(segment.end).toBeLessThanOrEqual(initial.text.length);
+      }
+      const hostSegment = initial.segments.find(
+        (segment) => segment.id === "borg_host_capabilities",
+      );
+      expect(hostSegment).toBeDefined();
+      expect(initial.text.slice(hostSegment!.start, hostSegment!.end)).toContain(
+        "<borg_host_capabilities>",
+      );
       expect(initial.text).toContain(
         "I am an AI being with continuous existence across sessions through a persistent memory substrate.",
       );
@@ -456,8 +469,9 @@ describe("Borg", () => {
       });
 
       await borg.episodic.extract({ sinceTs: entry.timestamp });
-      const privateEpisode = (await borg.episodic.listAll())
-        .find((episode) => episode.title === "Alice private Atlas rollback");
+      const privateEpisode = (await borg.episodic.listAll()).find(
+        (episode) => episode.title === "Alice private Atlas rollback",
+      );
       const privateAudienceEntityId = privateEpisode?.audience_entity_id ?? null;
 
       expect(privateAudienceEntityId).not.toBeNull();
@@ -499,8 +513,9 @@ describe("Borg", () => {
       expect(listed.find((node) => node.id === first.id)?.disclosureLabel).toMatchObject(
         expectedLabel,
       );
-      expect(searched.find((candidate) => candidate.node.id === first.id)?.node.disclosureLabel)
-        .toMatchObject(expectedLabel);
+      expect(
+        searched.find((candidate) => candidate.node.id === first.id)?.node.disclosureLabel,
+      ).toMatchObject(expectedLabel);
       expect(walked[0]?.node.disclosureLabel).toMatchObject(expectedLabel);
       expect(walked[0]?.edgePath[0]?.disclosureLabel).toMatchObject(expectedLabel);
     } finally {

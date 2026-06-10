@@ -1235,6 +1235,15 @@ export type BorgPromptBlockView = {
 export type BorgAssembledFramingPromptPreview = {
   text: string;
   sections: readonly string[];
+  segments: readonly BorgAssembledFramingPromptPreviewSegment[];
+};
+
+export type BorgAssembledFramingPromptPreviewSegment = {
+  id: string;
+  label: string;
+  editable_key: PromptKey | null;
+  start: number;
+  end: number;
 };
 
 export type BorgPromptsFacade = {

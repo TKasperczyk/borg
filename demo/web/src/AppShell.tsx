@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { ApiError, getCreatorEntity, openOperatorSession, setCreatorByName } from "./api/client";
 import type { EntityRecord, SessionRecord, StateSnapshot } from "./api/types";
@@ -7,6 +7,7 @@ import { CommandPalette } from "./components/CommandPalette/CommandPalette";
 import { Inspector } from "./components/Inspector/Inspector";
 import { InspectorProvider } from "./components/Inspector/inspector-context";
 import { InstrumentStrip } from "./components/InstrumentStrip";
+import { Modal } from "./components/Modal";
 import { Rail, type RailBadge, type RouteId } from "./components/Rail";
 import { ResetButton } from "./components/ResetButton";
 import { SessionFleet } from "./components/SessionFleet";
@@ -19,9 +20,10 @@ import { LiveCacheProvider, useLiveCache } from "./hooks/use-live-cache";
 import { usePaletteHotkey } from "./hooks/use-palette-hotkey";
 import { useSession } from "./hooks/use-session";
 import { useTurnStream } from "./hooks/use-turn-stream";
-import { useView } from "./hooks/use-view";
+import { useView, type ViewState } from "./hooks/use-view";
 import type { AudienceDisplayIdentity } from "./lib/audience-identity";
 import { recordClientError } from "./lib/client-error-log";
+import type { RouteNavigationOptions } from "./routes";
 import { AdminScreen } from "./screens/Admin";
 import { CognitionScreen } from "./screens/Cognition";
 import { DreamScreen } from "./screens/Dream";
@@ -50,6 +52,27 @@ function railBadges(counts: StateSnapshot["counts"] | null): Partial<Record<Rout
     identity: countBadge(counts?.open_qs, 1, "open questions"),
     review: countBadge(counts?.open_reviews, 2, "open reviews"),
   };
+}
+
+type PendingRoute = {
+  route: RouteId;
+  options?: RouteNavigationOptions;
+};
+
+function routeOptionsForViewState(state: ViewState): RouteNavigationOptions | undefined {
+  const options: RouteNavigationOptions = {};
+
+  if (state.view === "governance") {
+    options.governanceTab = state.governanceTab;
+  }
+  if (state.view === "memory" && state.memoryBand !== null) {
+    options.memoryBand = state.memoryBand;
+  }
+  if (state.view === "dream" && state.dreamProcess !== null) {
+    options.dreamProcess = state.dreamProcess;
+  }
+
+  return Object.keys(options).length === 0 ? undefined : options;
 }
 
 type AudienceTransportIdentity = {
@@ -82,13 +105,46 @@ function audienceIdentity(
 }
 
 export function AppShell() {
-  const { view, governanceTab, setView, setGovernanceTab } = useView();
+  const [promptsDirty, setPromptsDirty] = useState(false);
+  const [pendingRoute, setPendingRoute] = useState<PendingRoute | null>(null);
+  const shouldBlockPromptPopState = useCallback(
+    (current: ViewState, next: ViewState) =>
+      current.view === "prompts" && promptsDirty && next.view !== "prompts",
+    [promptsDirty],
+  );
+  const onBlockedPromptPopState = useCallback((next: ViewState) => {
+    setPendingRoute({ route: next.view, options: routeOptionsForViewState(next) });
+  }, []);
+  const { view, governanceTab, memoryBand, dreamProcess, setView, setGovernanceTab } = useView({
+    shouldBlockPopState: shouldBlockPromptPopState,
+    onBlockedPopState: onBlockedPromptPopState,
+  });
   const { sessionId, setSessionId } = useSession();
   const creatorApi = useApi(getCreatorEntity, []);
   const [operatorChatError, setOperatorChatError] = useState<string | null>(null);
   const live = useLiveEvents({ sessionId });
   const turnStream = useTurnStream(live, { sessionId });
   const refetchCreator = creatorApi.refetch;
+  const requestView = useCallback(
+    (route: RouteId, options?: RouteNavigationOptions) => {
+      if (view === "prompts" && promptsDirty && route !== "prompts") {
+        setPendingRoute({ route, options });
+        return;
+      }
+      setView(route, options);
+    },
+    [promptsDirty, setView, view],
+  );
+  const cancelRouteChange = useCallback(() => setPendingRoute(null), []);
+  const confirmRouteChange = useCallback(() => {
+    if (pendingRoute === null) {
+      return;
+    }
+    const next = pendingRoute;
+    setPendingRoute(null);
+    setPromptsDirty(false);
+    setView(next.route, next.options);
+  }, [pendingRoute, setView]);
 
   return (
     <LiveEventsProvider value={live}>
@@ -96,7 +152,9 @@ export function AppShell() {
         <AppShellContent
           view={view}
           governanceTab={governanceTab}
-          setView={setView}
+          memoryBand={memoryBand}
+          dreamProcess={dreamProcess}
+          setView={requestView}
           setGovernanceTab={setGovernanceTab}
           sessionId={sessionId}
           setSessionId={setSessionId}
@@ -105,6 +163,10 @@ export function AppShell() {
           operatorChatError={operatorChatError}
           setOperatorChatError={setOperatorChatError}
           turnStream={turnStream}
+          pendingRoute={pendingRoute}
+          onCancelRouteChange={cancelRouteChange}
+          onConfirmRouteChange={confirmRouteChange}
+          onPromptsDirtyChange={setPromptsDirty}
         />
       </LiveCacheProvider>
     </LiveEventsProvider>
@@ -114,7 +176,9 @@ export function AppShell() {
 type AppShellContentProps = {
   view: RouteId;
   governanceTab: ReturnType<typeof useView>["governanceTab"];
-  setView: ReturnType<typeof useView>["setView"];
+  memoryBand: ReturnType<typeof useView>["memoryBand"];
+  dreamProcess: ReturnType<typeof useView>["dreamProcess"];
+  setView: (view: RouteId, options?: RouteNavigationOptions) => void;
   setGovernanceTab: ReturnType<typeof useView>["setGovernanceTab"];
   sessionId: string;
   setSessionId: (sessionId: string) => void;
@@ -123,11 +187,17 @@ type AppShellContentProps = {
   operatorChatError: string | null;
   setOperatorChatError: (error: string | null) => void;
   turnStream: ReturnType<typeof useTurnStream>;
+  pendingRoute: PendingRoute | null;
+  onCancelRouteChange: () => void;
+  onConfirmRouteChange: () => void;
+  onPromptsDirtyChange: (dirty: boolean) => void;
 };
 
 function AppShellContent({
   view,
   governanceTab,
+  memoryBand,
+  dreamProcess,
   setView,
   setGovernanceTab,
   sessionId,
@@ -137,6 +207,10 @@ function AppShellContent({
   operatorChatError,
   setOperatorChatError,
   turnStream,
+  pendingRoute,
+  onCancelRouteChange,
+  onConfirmRouteChange,
+  onPromptsDirtyChange,
 }: AppShellContentProps) {
   const { stateApi, counts, sessionsApi, sessionActivity, dreamActivity, wsState } = useLiveCache();
   const refetchState = stateApi.refetch;
@@ -249,6 +323,7 @@ function AppShellContent({
               {view === "memory" ? (
                 <MemoryScreen
                   sessionId={sessionId}
+                  initialBand={memoryBand}
                   onOpenWorkbench={() => setView("cognition")}
                   onOpenReview={() => setView("review")}
                   onOpenIdentity={() => setView("identity")}
@@ -273,8 +348,10 @@ function AppShellContent({
                 />
               ) : null}
               {view === "review" ? <ReviewScreen /> : null}
-              {view === "dream" ? <DreamScreen onOpenReview={() => setView("review")} /> : null}
-              {view === "prompts" ? <PromptsScreen /> : null}
+              {view === "dream" ? (
+                <DreamScreen initialProcess={dreamProcess} onOpenReview={() => setView("review")} />
+              ) : null}
+              {view === "prompts" ? <PromptsScreen onDirtyChange={onPromptsDirtyChange} /> : null}
               {view === "admin" ? (
                 <AdminScreen
                   route={view}
@@ -296,6 +373,23 @@ function AppShellContent({
         />
         <ShortcutLegend open={shortcutLegendOpen} onClose={() => setShortcutLegendOpen(false)} />
         <ResetButton open={resetOpen} onOpenChange={setResetOpen} showTrigger={false} />
+        <Modal
+          open={pendingRoute !== null}
+          title="discard prompt drafts?"
+          onClose={onCancelRouteChange}
+          footer={
+            <>
+              <button type="button" className="btn sm ghost" onClick={onCancelRouteChange}>
+                stay
+              </button>
+              <button type="button" className="btn sm danger" onClick={onConfirmRouteChange}>
+                discard drafts
+              </button>
+            </>
+          }
+        >
+          <p>Leaving Prompt Lab will discard unsaved prompt drafts.</p>
+        </Modal>
         <Inspector />
       </div>
     </InspectorProvider>

@@ -645,7 +645,7 @@ describe("DirectivesTab", () => {
     renderWithInspector(<DirectivesTab />);
 
     expect(
-      await screen.findByText(/audience discovery reached the 1000-session server cap/),
+      await screen.findByText(/audience discovery reached the 1000-session limit/),
     ).toBeInTheDocument();
   });
 

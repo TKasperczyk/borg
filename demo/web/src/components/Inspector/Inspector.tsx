@@ -67,9 +67,11 @@ import { useApi } from "../../hooks/use-api";
 
 const PROMPT_KEYS: readonly PromptKey[] = [
   "base_identity_preamble",
+  "self_architecture",
   "voice_and_posture",
   "epistemic_posture",
   "identity_posture",
+  "participation_posture",
   "host_capabilities",
 ];
 
@@ -93,10 +95,10 @@ function tabLabel(tab: InspectorTab): string {
 
 function objectUnavailableMessage(target: InspectorTarget, model: ObjectModel): string {
   if (model.reliability === "needs_backend") {
-    return `${model.label} needs a backend resolver for ${target.id}.`;
+    return `${model.label} does not have a direct resolver for ${target.id}.`;
   }
   if (model.reliability === "in_list") {
-    return `${model.label} is list-scoped; ${target.id} was not found in the loaded list.`;
+    return `${model.label} is available only from the currently loaded list; ${target.id} was not found.`;
   }
   return `${model.label} was not found.`;
 }

@@ -1,4 +1,4 @@
-import { useMemo, type CSSProperties, type ReactNode } from "react";
+import { useMemo, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 
 import type { TurnPhaseName, TurnTerminalOutcome } from "../../api/types";
 import type { PhaseState } from "../../hooks/use-turn-stream";
@@ -24,6 +24,8 @@ export type FlowChartProps = {
   terminalOutcome: TurnTerminalOutcome | null;
   delibPath: "system_1" | "system_2" | null;
   finalAttempt: number;
+  compact?: boolean;
+  onPhaseActivate?: (phase: TurnPhaseName) => void;
   particleEnabled?: boolean;
   particleDensity?: number;
 };
@@ -86,8 +88,7 @@ const TERMINAL_NODE: EndpointNode = {
 };
 
 // Phase IDs are the canonical names from use-turn-stream's PHASES list. The
-// design prototype shortened a few labels (e.g. "gen?"), but the ids must stay
-// stable -- they are the live-data binding keys.
+// labels are operator copy; the ids stay stable as the live-data binding keys.
 const PHASE_IDS = [
   "ingest",
   "audience",
@@ -113,16 +114,16 @@ const PHASES_LAYOUT: readonly PhaseNode[] = [
   { id: "perception", kind: "phase", x: 460, y: TIER_Y[1], label: "perception" },
   { id: "frame", kind: "phase", x: 595, y: TIER_Y[1], label: "frame" },
   { id: "extract", kind: "phase", x: 730, y: TIER_Y[1], label: "extract" },
-  { id: "closure_loop", kind: "gate", x: 865, y: TIER_Y[1], label: "closure?" },
-  { id: "generation_gate", kind: "gate", x: 1000, y: TIER_Y[1], label: "gen?" },
+  { id: "closure_loop", kind: "gate", x: 865, y: TIER_Y[1], label: "closure" },
+  { id: "generation_gate", kind: "gate", x: 1000, y: TIER_Y[1], label: "generation" },
   // tier 2 -- right -> left
   { id: "retrieval", kind: "phase", x: 1000, y: TIER_Y[2], label: "retrieval" },
-  { id: "ledger", kind: "phase", x: 800, y: TIER_Y[2], label: "ev. ledger" },
+  { id: "ledger", kind: "phase", x: 800, y: TIER_Y[2], label: "ledger" },
   { id: "shared", kind: "phase", x: 600, y: TIER_Y[2], label: "shared" },
   { id: "delib", kind: "phase", x: 400, y: TIER_Y[2], label: "deliberation" },
   // tier 3 -- left -> right
   { id: "final", kind: "phase", x: 200, y: TIER_Y[3], label: "finalizer" },
-  { id: "guards", kind: "gate", x: 370, y: TIER_Y[3], label: "guards?" },
+  { id: "guards", kind: "gate", x: 370, y: TIER_Y[3], label: "guards" },
   { id: "persist", kind: "phase", x: 540, y: TIER_Y[3], label: "persist" },
   { id: "reflect", kind: "phase", x: 720, y: TIER_Y[3], label: "reflection" },
 ];
@@ -289,6 +290,13 @@ function tokenKey(turnId: string, phaseId: string): string {
   return `${turnId}:${phaseId}`;
 }
 
+function onKeyboardActivate(event: KeyboardEvent<SVGGElement>, action: () => void) {
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    action();
+  }
+}
+
 function deriveActiveStreamPhase(
   phases: PhasesRecord,
   activeTurnId: string | null,
@@ -324,11 +332,15 @@ function Ganglion({
   status,
   sub,
   duration,
+  selected,
+  onActivate,
 }: {
   node: PhaseNode;
   status: PhaseStatus;
   sub?: string;
   duration?: number;
+  selected: boolean;
+  onActivate: () => void;
 }) {
   const { x, y, label, kind } = node;
   const isGate = kind === "gate";
@@ -345,11 +357,18 @@ function Ganglion({
 
   return (
     <g
-      className={`fc-node fc-node-${status}`}
+      className={`fc-node fc-node-${status} ${selected ? "selected" : ""}`.trim()}
       data-status={status}
       data-testid={`phase-${node.id}`}
+      role="button"
+      tabIndex={0}
+      aria-label={`focus ${label} phase`}
+      aria-pressed={selected}
       transform={`translate(${x} ${y})`}
+      onClick={onActivate}
+      onKeyDown={(event) => onKeyboardActivate(event, onActivate)}
     >
+      <title>{`Focus ${label} phase`}</title>
       <circle className="fc-node-halo" r={r + 8} />
       <circle className="fc-pulse-ring" r={r} />
       <circle className="fc-pulse-ring b" r={r} />
@@ -385,6 +404,37 @@ function Ganglion({
         </text>
       ) : null}
     </g>
+  );
+}
+
+function CompactFlowStrip({
+  phases,
+  activeTurnId,
+  terminalOutcome,
+}: {
+  phases: PhasesRecord;
+  activeTurnId: string | null;
+  terminalOutcome: TurnTerminalOutcome | null;
+}) {
+  const outcomeLabel = terminalOutcome === null ? "waiting" : terminalOutcome.replace(/_/g, " ");
+  return (
+    <div className="flow-compact-strip" data-testid="flow-compact-strip">
+      <span className="flow-compact-state">
+        {activeTurnId === null ? "idle" : activeTurnId} · {outcomeLabel}
+      </span>
+      <div className="flow-compact-phases" aria-label="pipeline phases">
+        {PHASE_IDS.map((phase, index) => {
+          const status = phases[phase]?.status ?? "queue";
+          const label = PHASE_LABELS[phase] ?? phase;
+          return (
+            <span key={phase} className="flow-compact-phase-wrap">
+              {index === 0 ? null : <span className="flow-compact-arrow">→</span>}
+              <span className={`flow-compact-phase ${status}`.trim()}>{label}</span>
+            </span>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -551,9 +601,9 @@ function ActiveStream({
   const tokenPhase = phase === "delib" || phase === "final";
   const delibMeta =
     delibPath === "system_2"
-      ? "S2 · plan"
+      ? "System 2 planning"
       : delibPath === "system_1"
-        ? "S1 · fast"
+        ? "System 1 fast path"
         : "path pending";
   // Detail lines are stored and rendered oldest-to-newest so the latest phase
   // update lands at the bottom, matching token stream reading order.
@@ -589,7 +639,9 @@ function ActiveStream({
                 attempt {finalAttempt}
               </span>
               {delibPath ? (
-                <span className="chip">{delibPath === "system_2" ? "via S2" : "via S1"}</span>
+                <span className="chip">
+                  {delibPath === "system_2" ? "via System 2" : "via System 1"}
+                </span>
               ) : null}
             </>
           ) : phase === "delib" ? (
@@ -627,10 +679,13 @@ export function FlowChart({
   terminalOutcome,
   delibPath,
   finalAttempt,
+  compact = false,
+  onPhaseActivate,
   particleEnabled = true,
   particleDensity = 320,
 }: FlowChartProps) {
   const phasesRecord = useMemo(() => buildPhaseRecord(phases), [phases]);
+  const [selectedPhase, setSelectedPhase] = useState<TurnPhaseName | null>(null);
   const activeStreamPhase = useMemo(
     () => deriveActiveStreamPhase(phasesRecord, activeTurnId, tokenTextByPhase, detailByPhase),
     [phasesRecord, activeTurnId, tokenTextByPhase, detailByPhase],
@@ -694,6 +749,11 @@ export function FlowChart({
   })();
   const outcomeLabel = terminalOutcome === null ? "waiting" : terminalOutcome.replace(/_/g, " ");
 
+  const activatePhase = (phase: TurnPhaseName) => {
+    setSelectedPhase(phase);
+    onPhaseActivate?.(phase);
+  };
+
   // Subtle background dots -- sparser than the original (every 50px).
   const dots = useMemo(() => {
     const out: ReactNode[] = [];
@@ -723,7 +783,7 @@ export function FlowChart({
   }, [phasesRecord]);
 
   return (
-    <div className="flow-shell">
+    <div className={`flow-shell ${compact ? "flow-shell-compact" : ""}`.trim()}>
       <div className="flow-topline">
         <div className="left">
           <span className="eyebrow">turn</span>
@@ -737,7 +797,7 @@ export function FlowChart({
           <span className="eyebrow">outcome</span>
           <span className={`flow-topline-status ${outcomeTone}`.trim()}>{outcomeLabel}</span>
           {finalAttempt > 1 ? (
-            <span className="flow-topline-status warn">regen · attempt {finalAttempt}</span>
+            <span className="flow-topline-status warn">retry · attempt {finalAttempt}</span>
           ) : null}
         </div>
         <div className="right">
@@ -750,254 +810,280 @@ export function FlowChart({
         </div>
       </div>
 
-      <div className="fc-canvas">
-        <ParticleField
-          target={particleTarget}
-          viewW={VIEW_W}
-          viewH={VIEW_H}
-          density={particleDensity}
-          enabled={particleEnabled}
+      {compact ? (
+        <CompactFlowStrip
+          phases={phasesRecord}
+          activeTurnId={activeTurnId}
+          terminalOutcome={terminalOutcome}
         />
-        <svg
-          className="fc-svg fc-style-synaptic"
-          viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
-          preserveAspectRatio="xMidYMid meet"
-          role="img"
-          aria-label="cognitive turn flow chart"
-        >
-          <defs>
-            <radialGradient id="bg-glow-a" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="oklch(0.84 0.155 142 / 0.07)" />
-              <stop offset="100%" stopColor="oklch(0.84 0.155 142 / 0)" />
-            </radialGradient>
-            <radialGradient id="bg-glow-b" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="oklch(0.78 0.115 232 / 0.05)" />
-              <stop offset="100%" stopColor="oklch(0.78 0.115 232 / 0)" />
-            </radialGradient>
-
-            <marker
-              id="arrow-active"
-              viewBox="0 0 10 10"
-              refX="8.5"
-              refY="5"
-              markerWidth="6"
-              markerHeight="6"
-              orient="auto-start-reverse"
-            >
-              <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="oklch(0.84 0.155 142)" />
-            </marker>
-            <marker
-              id="arrow-done"
-              viewBox="0 0 10 10"
-              refX="8.5"
-              refY="5"
-              markerWidth="6"
-              markerHeight="6"
-              orient="auto-start-reverse"
-            >
-              <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="oklch(0.55 0.1 142 / 0.85)" />
-            </marker>
-            <marker
-              id="arrow-queue"
-              viewBox="0 0 10 10"
-              refX="8.5"
-              refY="5"
-              markerWidth="6"
-              markerHeight="6"
-              orient="auto-start-reverse"
-            >
-              <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="oklch(0.37 0.006 80)" />
-            </marker>
-            <marker
-              id="arrow-warn"
-              viewBox="0 0 10 10"
-              refX="8.5"
-              refY="5"
-              markerWidth="6"
-              markerHeight="6"
-              orient="auto-start-reverse"
-            >
-              <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="oklch(0.835 0.135 85)" />
-            </marker>
-            <marker
-              id="arrow-warn-dim"
-              viewBox="0 0 10 10"
-              refX="8.5"
-              refY="5"
-              markerWidth="6"
-              markerHeight="6"
-              orient="auto-start-reverse"
-            >
-              <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="oklch(0.55 0.085 85)" />
-            </marker>
-          </defs>
-
-          {/* Background bands */}
-          {TIERS.map((t) => (
-            <rect
-              key={`band-${t.id}`}
-              className={`fc-band ${t.id === 2 ? "alt" : ""}`.trim()}
-              x={0}
-              y={BAND[t.id][0]}
-              width={VIEW_W}
-              height={BAND[t.id][1] - BAND[t.id][0]}
+      ) : (
+        <>
+          <div className="fc-canvas">
+            <ParticleField
+              target={particleTarget}
+              viewW={VIEW_W}
+              viewH={VIEW_H}
+              density={particleDensity}
+              enabled={particleEnabled}
             />
-          ))}
+            <svg
+              className="fc-svg fc-style-synaptic"
+              viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
+              preserveAspectRatio="xMidYMid meet"
+              role="img"
+              aria-label="cognitive turn flow chart"
+            >
+              <defs>
+                <radialGradient id="bg-glow-a" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stopColor="oklch(0.84 0.155 142 / 0.07)" />
+                  <stop offset="100%" stopColor="oklch(0.84 0.155 142 / 0)" />
+                </radialGradient>
+                <radialGradient id="bg-glow-b" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stopColor="oklch(0.78 0.115 232 / 0.05)" />
+                  <stop offset="100%" stopColor="oklch(0.78 0.115 232 / 0)" />
+                </radialGradient>
 
-          {/* Soft glows by tier */}
-          <circle cx={550} cy={TIER_Y[1]} r={340} fill="url(#bg-glow-b)" />
-          <circle cx={650} cy={TIER_Y[2]} r={380} fill="url(#bg-glow-a)" />
-          <circle cx={500} cy={TIER_Y[3]} r={340} fill="url(#bg-glow-a)" />
+                <marker
+                  id="arrow-active"
+                  viewBox="0 0 10 10"
+                  refX="8.5"
+                  refY="5"
+                  markerWidth="6"
+                  markerHeight="6"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="oklch(0.84 0.155 142)" />
+                </marker>
+                <marker
+                  id="arrow-done"
+                  viewBox="0 0 10 10"
+                  refX="8.5"
+                  refY="5"
+                  markerWidth="6"
+                  markerHeight="6"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="oklch(0.55 0.1 142 / 0.85)" />
+                </marker>
+                <marker
+                  id="arrow-queue"
+                  viewBox="0 0 10 10"
+                  refX="8.5"
+                  refY="5"
+                  markerWidth="6"
+                  markerHeight="6"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="oklch(0.505 0.006 80)" />
+                </marker>
+                <marker
+                  id="arrow-warn"
+                  viewBox="0 0 10 10"
+                  refX="8.5"
+                  refY="5"
+                  markerWidth="6"
+                  markerHeight="6"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="oklch(0.835 0.135 85)" />
+                </marker>
+                <marker
+                  id="arrow-warn-dim"
+                  viewBox="0 0 10 10"
+                  refX="8.5"
+                  refY="5"
+                  markerWidth="6"
+                  markerHeight="6"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M 1 1.5 L 9 5 L 1 8.5 z" fill="oklch(0.55 0.085 85)" />
+                </marker>
+              </defs>
 
-          {/* Band dividers */}
-          <line className="fc-band-divider" x1={0} y1={BAND[2][0]} x2={VIEW_W} y2={BAND[2][0]} />
-          <line className="fc-band-divider" x1={0} y1={BAND[3][0]} x2={VIEW_W} y2={BAND[3][0]} />
+              {/* Background bands */}
+              {TIERS.map((t) => (
+                <rect
+                  key={`band-${t.id}`}
+                  className={`fc-band ${t.id === 2 ? "alt" : ""}`.trim()}
+                  x={0}
+                  y={BAND[t.id][0]}
+                  width={VIEW_W}
+                  height={BAND[t.id][1] - BAND[t.id][0]}
+                />
+              ))}
 
-          {dots}
+              {/* Soft glows by tier */}
+              <circle cx={550} cy={TIER_Y[1]} r={340} fill="url(#bg-glow-b)" />
+              <circle cx={650} cy={TIER_Y[2]} r={380} fill="url(#bg-glow-a)" />
+              <circle cx={500} cy={TIER_Y[3]} r={340} fill="url(#bg-glow-a)" />
 
-          {/* Tier headers (top-left of each band) */}
-          {TIERS.map((t) => (
-            <TierHeader key={`tier-${t.id}`} tier={t} band={BAND[t.id]} />
-          ))}
-
-          {/* Spine edges */}
-          {SPINE_EDGES.map(([fromId, toId]) => {
-            const isDescent = NODES[fromId]!.y !== NODES[toId]!.y;
-            const state =
-              isDescent && fromId === "generation_gate" && toId === "retrieval"
-                ? wrapState
-                : edgeState(fromId, toId);
-            return (
-              <Edge
-                key={`${fromId}-${toId}`}
-                d={spinePath(fromId, toId)}
-                state={state}
-                descent={isDescent}
+              {/* Band dividers */}
+              <line
+                className="fc-band-divider"
+                x1={0}
+                y1={BAND[2][0]}
+                x2={VIEW_W}
+                y2={BAND[2][0]}
               />
-            );
-          })}
-
-          {/* S1/S2 fork (delib -> final) */}
-          {(() => {
-            const s1Active = forkActive("s1") || (forkChosen("s1") === true && finalDone);
-            const s2Active = forkActive("s2") || (forkChosen("s2") === true && finalDone);
-            const s1Cls = `fc-fork-lane ${s1Active ? "active" : ""} ${forkChosen("s1") === true ? "chosen" : ""} ${forkChosen("s1") === false ? "unchosen" : ""}`;
-            const s2Cls = `fc-fork-lane ${s2Active ? "active" : ""} ${forkChosen("s2") === true ? "chosen" : ""} ${forkChosen("s2") === false ? "unchosen" : ""}`;
-            const laneMarker = (lane: "s1" | "s2") => {
-              if (forkActive(lane)) return "url(#arrow-active)";
-              if (forkChosen(lane) === true) return "url(#arrow-done)";
-              return "url(#arrow-queue)";
-            };
-            return (
-              <>
-                <g className={s1Cls}>
-                  <path
-                    d={forkPath("s1")}
-                    className="fc-fork-lane-path"
-                    markerEnd={laneMarker("s1")}
-                  />
-                  <g transform="translate(305 421)">
-                    <rect
-                      className="fc-fork-tag-bg"
-                      x={-30}
-                      y={-13}
-                      width={60}
-                      height={26}
-                      rx={3}
-                    />
-                    <text className="fc-fork-tag" x={0} y={-2}>
-                      S1
-                    </text>
-                    <text className="fc-fork-desc" x={0} y={9}>
-                      fast
-                    </text>
-                  </g>
-                </g>
-                <g className={s2Cls}>
-                  <path
-                    d={forkPath("s2")}
-                    className="fc-fork-lane-path"
-                    markerEnd={laneMarker("s2")}
-                  />
-                  <g transform="translate(257 370)">
-                    <rect
-                      className="fc-fork-tag-bg"
-                      x={-30}
-                      y={-13}
-                      width={60}
-                      height={26}
-                      rx={3}
-                    />
-                    <text className="fc-fork-tag" x={0} y={-2}>
-                      S2
-                    </text>
-                    <text className="fc-fork-desc" x={0} y={9}>
-                      plan
-                    </text>
-                  </g>
-                </g>
-              </>
-            );
-          })()}
-
-          {/* Regen arc */}
-          {(() => {
-            const active = finalAttempt > 1;
-            const cls = `fc-edge regen ${active ? "fire" : ""}`;
-            const marker = active ? "url(#arrow-warn)" : "url(#arrow-warn-dim)";
-            return (
-              <g className={`fc-regen-group ${active ? "active" : ""}`}>
-                {active ? <path d={regenPath()} className="fc-edge regen-glow" /> : null}
-                <path d={regenPath()} className={cls} markerEnd={marker} />
-                <g transform={`translate(${(NODES.guards!.x + NODES.final!.x) / 2} 624)`}>
-                  <rect
-                    className="fc-regen-label-bg"
-                    x={-38}
-                    y={-9}
-                    width={76}
-                    height={16}
-                    rx={2}
-                  />
-                  <text className={`fc-regen-label ${active ? "active" : ""}`} x={0} y={3}>
-                    regen ↻
-                  </text>
-                </g>
-              </g>
-            );
-          })()}
-
-          {/* Suppression thorns */}
-          <ThornUp nodeId="closure_loop" label="suppress closure" active={closureSuppressed} />
-          <ThornUp nodeId="generation_gate" label="suppress gen" active={gateSuppressed} />
-          <ThornSidecar nodeId="guards" label="guards trip" active={guardsSuppressed} />
-
-          {/* Endpoints + nodes */}
-          <Endpoint node={INPUT_NODE} outcome={null} />
-          {PHASE_IDS.map((id) => {
-            const n = NODES[id];
-            if (!n || n.kind === "endpoint") return null;
-            return (
-              <Ganglion
-                key={id}
-                node={n}
-                status={phStatus(id)}
-                sub={phasesRecord[id]?.sub}
-                duration={phasesRecord[id]?.durationMs}
+              <line
+                className="fc-band-divider"
+                x1={0}
+                y1={BAND[3][0]}
+                x2={VIEW_W}
+                y2={BAND[3][0]}
               />
-            );
-          })}
-          <Endpoint node={TERMINAL_NODE} outcome={terminalOutcome} />
-        </svg>
-      </div>
 
-      <ActiveStream
-        phases={phasesRecord}
-        tokenText={streamTokenText}
-        detailLines={streamDetailLines}
-        delibPath={delibPath}
-        finalAttempt={finalAttempt}
-        activeStreamPhase={activeStreamPhase}
-      />
+              {dots}
+
+              {/* Tier headers (top-left of each band) */}
+              {TIERS.map((t) => (
+                <TierHeader key={`tier-${t.id}`} tier={t} band={BAND[t.id]} />
+              ))}
+
+              {/* Spine edges */}
+              {SPINE_EDGES.map(([fromId, toId]) => {
+                const isDescent = NODES[fromId]!.y !== NODES[toId]!.y;
+                const state =
+                  isDescent && fromId === "generation_gate" && toId === "retrieval"
+                    ? wrapState
+                    : edgeState(fromId, toId);
+                return (
+                  <Edge
+                    key={`${fromId}-${toId}`}
+                    d={spinePath(fromId, toId)}
+                    state={state}
+                    descent={isDescent}
+                  />
+                );
+              })}
+
+              {/* S1/S2 fork (delib -> final) */}
+              {(() => {
+                const s1Active = forkActive("s1") || (forkChosen("s1") === true && finalDone);
+                const s2Active = forkActive("s2") || (forkChosen("s2") === true && finalDone);
+                const s1Cls = `fc-fork-lane ${s1Active ? "active" : ""} ${forkChosen("s1") === true ? "chosen" : ""} ${forkChosen("s1") === false ? "unchosen" : ""}`;
+                const s2Cls = `fc-fork-lane ${s2Active ? "active" : ""} ${forkChosen("s2") === true ? "chosen" : ""} ${forkChosen("s2") === false ? "unchosen" : ""}`;
+                const laneMarker = (lane: "s1" | "s2") => {
+                  if (forkActive(lane)) return "url(#arrow-active)";
+                  if (forkChosen(lane) === true) return "url(#arrow-done)";
+                  return "url(#arrow-queue)";
+                };
+                return (
+                  <>
+                    <g className={s1Cls}>
+                      <title>System 1 fast path</title>
+                      <path
+                        d={forkPath("s1")}
+                        className="fc-fork-lane-path"
+                        markerEnd={laneMarker("s1")}
+                      />
+                      <g transform="translate(305 421)">
+                        <rect
+                          className="fc-fork-tag-bg"
+                          x={-30}
+                          y={-13}
+                          width={60}
+                          height={26}
+                          rx={3}
+                        />
+                        <text className="fc-fork-tag" x={0} y={-2}>
+                          S1
+                        </text>
+                        <text className="fc-fork-desc" x={0} y={9}>
+                          fast
+                        </text>
+                      </g>
+                    </g>
+                    <g className={s2Cls}>
+                      <title>System 2 planning path</title>
+                      <path
+                        d={forkPath("s2")}
+                        className="fc-fork-lane-path"
+                        markerEnd={laneMarker("s2")}
+                      />
+                      <g transform="translate(257 370)">
+                        <rect
+                          className="fc-fork-tag-bg"
+                          x={-30}
+                          y={-13}
+                          width={60}
+                          height={26}
+                          rx={3}
+                        />
+                        <text className="fc-fork-tag" x={0} y={-2}>
+                          S2
+                        </text>
+                        <text className="fc-fork-desc" x={0} y={9}>
+                          plan
+                        </text>
+                      </g>
+                    </g>
+                  </>
+                );
+              })()}
+
+              {/* Regen arc */}
+              {(() => {
+                const active = finalAttempt > 1;
+                const cls = `fc-edge regen ${active ? "fire" : ""}`;
+                const marker = active ? "url(#arrow-warn)" : "url(#arrow-warn-dim)";
+                return (
+                  <g className={`fc-regen-group ${active ? "active" : ""}`}>
+                    {active ? <path d={regenPath()} className="fc-edge regen-glow" /> : null}
+                    <path d={regenPath()} className={cls} markerEnd={marker} />
+                    <g transform={`translate(${(NODES.guards!.x + NODES.final!.x) / 2} 624)`}>
+                      <rect
+                        className="fc-regen-label-bg"
+                        x={-38}
+                        y={-9}
+                        width={76}
+                        height={16}
+                        rx={2}
+                      />
+                      <text className={`fc-regen-label ${active ? "active" : ""}`} x={0} y={3}>
+                        retry ↻
+                      </text>
+                    </g>
+                  </g>
+                );
+              })()}
+
+              {/* Suppression thorns */}
+              <ThornUp nodeId="closure_loop" label="suppress closure" active={closureSuppressed} />
+              <ThornUp nodeId="generation_gate" label="suppress gen" active={gateSuppressed} />
+              <ThornSidecar nodeId="guards" label="guards trip" active={guardsSuppressed} />
+
+              {/* Endpoints + nodes */}
+              <Endpoint node={INPUT_NODE} outcome={null} />
+              {PHASE_IDS.map((id) => {
+                const n = NODES[id];
+                if (!n || n.kind === "endpoint") return null;
+                return (
+                  <Ganglion
+                    key={id}
+                    node={n}
+                    status={phStatus(id)}
+                    sub={phasesRecord[id]?.sub}
+                    duration={phasesRecord[id]?.durationMs}
+                    selected={selectedPhase === id}
+                    onActivate={() => activatePhase(id)}
+                  />
+                );
+              })}
+              <Endpoint node={TERMINAL_NODE} outcome={terminalOutcome} />
+            </svg>
+          </div>
+
+          <ActiveStream
+            phases={phasesRecord}
+            tokenText={streamTokenText}
+            detailLines={streamDetailLines}
+            delibPath={delibPath}
+            finalAttempt={finalAttempt}
+            activeStreamPhase={activeStreamPhase}
+          />
+        </>
+      )}
     </div>
   );
 }

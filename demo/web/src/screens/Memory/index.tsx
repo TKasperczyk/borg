@@ -156,7 +156,7 @@ function semanticNodeRow(node: SemanticMemoryNode, order: number): MemoryRow {
   return {
     id: node.id,
     title,
-    meta: `${scoreMeta(node.search_score)}${node.kind} · ${node.status} · ${node.source_count} src`,
+    meta: `${scoreMeta(node.search_score)}${node.kind} · ${node.status} · ${node.source_count} sources`,
     body: node.description,
     order,
     rowKind: "node",
@@ -174,7 +174,7 @@ function detailRows(detail: MemoryBandDetail): MemoryRow[] {
       return detail.items.map((item, order) => ({
         id: item.id,
         title: item.title,
-        meta: `${scoreMeta(item.search_score)}${formatTimestamp(item.start_time)} · ${item.audience ?? "global"} · ${item.source_count} src`,
+        meta: `${scoreMeta(item.search_score)}${formatTimestamp(item.start_time)} · ${item.audience ?? "global"} · ${item.source_count} sources`,
         body: item.narrative,
         order,
         rowKind: "episode",
@@ -191,7 +191,7 @@ function detailRows(detail: MemoryBandDetail): MemoryRow[] {
         ...detail.edges.map((edge, index) => ({
           id: edge.id,
           title: `${edge.from_node_id} --${edge.relation}-> ${edge.to_node_id}`,
-          meta: `edge · confidence ${edge.confidence.toFixed(2)} · ${edge.source_count} src`,
+          meta: `edge · confidence ${edge.confidence.toFixed(2)} · ${edge.source_count} sources`,
           body: edge.invalidated_reason ?? "active edge",
           order: detail.nodes.length + index,
           rowKind: "edge",
@@ -300,7 +300,7 @@ function detailRows(detail: MemoryBandDetail): MemoryRow[] {
       return detail.items.map((slot, order) => ({
         id: slot.id,
         title: slot.slot,
-        meta: `${slot.state} · ${slot.sources_count} src · ${slot.alternate_count} alternates`,
+        meta: `${slot.state} · ${slot.sources_count} sources · ${slot.alternate_count} alternates`,
         body: slot.value,
         order,
         rowKind: "slot",
@@ -316,12 +316,14 @@ function detailRows(detail: MemoryBandDetail): MemoryRow[] {
 
 export function MemoryScreen({
   sessionId,
+  initialBand = null,
   onOpenWorkbench,
   onOpenReview,
   onOpenIdentity,
   onOpenCommitments,
 }: {
   sessionId: string;
+  initialBand?: MemoryBandId | null;
   onOpenWorkbench?: () => void;
   onOpenReview?: () => void;
   onOpenIdentity?: () => void;
@@ -345,6 +347,14 @@ export function MemoryScreen({
   const totalMemories = bands.reduce((total, band) => total + band.count, 0);
   const defaultPreviewBand = bands.find((band) => band.count > 0)?.id ?? bands[0]?.id ?? "episodic";
   const selectedPreviewBand = previewBand ?? defaultPreviewBand;
+
+  useEffect(() => {
+    if (initialBand === null) {
+      return;
+    }
+    setActiveBand(initialBand);
+    setPreviewBand(initialBand);
+  }, [initialBand]);
 
   if (activeBand !== null) {
     const activeSummary = bands.find((item) => item.id === activeBand);
@@ -803,7 +813,7 @@ function defaultFiltersForBand(_band: MemoryBandId): Record<string, string> {
 
 function sortLabel(sort: SortMode): string {
   if (sort === "backend") {
-    return "backend";
+    return "source order";
   }
   if (sort === "updated_desc") {
     return "newest";
@@ -1287,9 +1297,9 @@ function EpisodicTimeline({
                 <ParticipantLabel participant={participant} />
               </Tag>
             ))}
-            <Tag>sig {episode.significance.toFixed(2)}</Tag>
-            <Tag>conf {episode.confidence.toFixed(2)}</Tag>
-            <Tag>{episode.source_count} src</Tag>
+            <Tag>significance {episode.significance.toFixed(2)}</Tag>
+            <Tag>confidence {episode.confidence.toFixed(2)}</Tag>
+            <Tag>{episode.source_count} sources</Tag>
           </div>
           {episode.tags.length === 0 ? null : (
             <div className="matlas-tag-row">
@@ -1410,8 +1420,8 @@ function RelationalFactTable({
                 <Tag kind={stateTagKind(slot.state)}>{slot.state}</Tag>
               </td>
               <td>
-                {slot.sources_count} src · {slot.contradicted_count} contra · {slot.alternate_count}{" "}
-                alt
+                {slot.sources_count} sources · {slot.contradicted_count} contradicted ·{" "}
+                {slot.alternate_count} alternates
               </td>
               <td>{slot.name_provenance}</td>
             </tr>

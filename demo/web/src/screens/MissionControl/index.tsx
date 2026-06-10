@@ -113,7 +113,7 @@ function Headline({
       ) : (
         <CountBadge count={count} severity={severity} label={countLabel} />
       )}
-      <SeverityChip rank={severity}>{`rank ${severity}`}</SeverityChip>
+      <SeverityChip rank={severity}>{`attention tier ${severity}`}</SeverityChip>
       <span className="mc-attention-note">{note}</span>
     </div>
   );
@@ -516,7 +516,7 @@ function AttachmentsCard({ data }: { data: AttentionData["attachments"] }) {
       id="attention-attachments"
       title="attachments"
       badge="degraded"
-      action="needs backend"
+      action="not measurable"
     >
       <div className="mc-card-body">
         <Headline

@@ -6,6 +6,7 @@ import { Modal } from "../../components/Modal";
 import { Tag } from "../../components/Tag";
 import { copyText } from "../../lib/clipboard";
 import { dateLabel } from "../screen-utils";
+import { promptTextKindLabel } from "./labels";
 
 type PromptDiffLine = {
   id: string;
@@ -68,12 +69,22 @@ function diffPromptLines(before: string, after: string): PromptDiffLine[] {
   return lines;
 }
 
-function PromptDiff({ before, after }: { before: string; after: string }) {
+function PromptDiff({
+  before,
+  after,
+  beforeLabel,
+  afterLabel,
+}: {
+  before: string;
+  after: string;
+  beforeLabel: string;
+  afterLabel: string;
+}) {
   return (
-    <div className="prompt-freeze-diff" aria-label="static default versus saved override diff">
+    <div className="prompt-freeze-diff" aria-label={`${beforeLabel} versus ${afterLabel} diff`}>
       <div className="prompt-freeze-diff-head">
-        <span>static default</span>
-        <span>saved static override</span>
+        <span>{beforeLabel}</span>
+        <span>{afterLabel}</span>
       </div>
       <div className="prompt-freeze-diff-lines">
         {diffPromptLines(before, after).map((line) => (
@@ -91,12 +102,17 @@ function PromptDiff({ before, after }: { before: string; after: string }) {
 
 export function PromptEditor({
   block,
+  draft,
+  onDraftChange,
+  onDraftClear,
   refetch,
 }: {
   block: PromptBlockView;
+  draft: string;
+  onDraftChange: (key: PromptKey, text: string) => void;
+  onDraftClear: (key: PromptKey) => void;
   refetch: () => Promise<void>;
 }) {
-  const [drafts, setDrafts] = useState<Partial<Record<PromptKey, string>>>({});
   const [busy, setBusy] = useState<"save" | "reset" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmDraft, setConfirmDraft] = useState<string | null>(null);
@@ -108,26 +124,10 @@ export function PromptEditor({
     setConfirmDraft(null);
   }, [block.key]);
 
-  const draft = drafts[block.key] ?? block.current_text;
   const runtimeComposed = isRuntimeComposedHostBlock(block);
   const dirty = draft !== block.current_text;
   const canSave = dirty && draft.trim().length > 0 && busy === null;
   const canReset = block.overridden && busy === null;
-
-  function setBlockDraft(text: string): void {
-    setDrafts((current) => ({ ...current, [block.key]: text }));
-  }
-
-  function clearBlockDraft(key: PromptKey): void {
-    setDrafts((current) => {
-      if (current[key] === undefined) {
-        return current;
-      }
-      const next = { ...current };
-      delete next[key];
-      return next;
-    });
-  }
 
   async function save(text: string): Promise<boolean> {
     const key = block.key;
@@ -136,7 +136,7 @@ export function PromptEditor({
     try {
       await putPrompt(key, text);
       await refetch();
-      clearBlockDraft(key);
+      onDraftClear(key);
       return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Save failed");
@@ -184,7 +184,7 @@ export function PromptEditor({
     try {
       await deletePrompt(key);
       await refetch();
-      clearBlockDraft(key);
+      onDraftClear(key);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Reset failed");
     } finally {
@@ -210,7 +210,8 @@ export function PromptEditor({
             <h2>{block.label}</h2>
             <div className="meta-line">
               <span>{block.key}</span>
-              <Tag>{block.current_text_kind}</Tag>
+              <Tag>{promptTextKindLabel(block.current_text_kind)}</Tag>
+              {dirty ? <Tag kind="warn">unsaved draft</Tag> : null}
               {block.overridden ? (
                 <Tag kind="warn">overridden · {dateLabel(block.updated_at)}</Tag>
               ) : runtimeComposed ? (
@@ -257,7 +258,7 @@ export function PromptEditor({
           id={`prompt-editor-${block.key}`}
           className="prompt-card-text"
           value={draft}
-          onChange={(event) => setBlockDraft(event.target.value)}
+          onChange={(event) => onDraftChange(block.key, event.target.value)}
           spellCheck={false}
           rows={Math.min(20, Math.max(6, draft.split("\n").length + 1))}
         />
@@ -289,7 +290,12 @@ export function PromptEditor({
         </div>
         <div className="prompt-editor-diff">
           <div className="prompt-reference-label">default to edited diff</div>
-          <PromptDiff before={block.default_text} after={draft} />
+          <PromptDiff
+            before={block.default_text}
+            after={draft}
+            beforeLabel="static default"
+            afterLabel="live draft"
+          />
         </div>
       </section>
       <Modal
@@ -323,7 +329,12 @@ export function PromptEditor({
             override; future connector/outbound-capability injection will no longer update this
             block. Reset removes the override and restores live injection.
           </div>
-          <PromptDiff before={block.default_text} after={confirmDraft ?? ""} />
+          <PromptDiff
+            before={block.default_text}
+            after={confirmDraft ?? ""}
+            beforeLabel="static default"
+            afterLabel="pending static override"
+          />
         </div>
       </Modal>
     </>
