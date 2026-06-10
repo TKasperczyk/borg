@@ -29,7 +29,6 @@ import { Loading } from "../../components/Loading";
 import { Modal } from "../../components/Modal";
 import { Panel } from "../../components/Panel";
 import { SemanticNodeDetail } from "../../components/SemanticNodeDetail";
-import { Spark } from "../../components/Spark";
 import { Tag } from "../../components/Tag";
 import { WhyDrawer } from "../../components/WhyDrawer";
 import { useLiveEventsContext } from "../../hooks/live-context";
@@ -331,7 +330,6 @@ export function MemoryScreen({
         desc: BAND_DESCRIPTIONS[id],
         count: 0,
         count_is_lower_bound: false,
-        growth: [1, 1, 1],
         stats: [],
       },
   );
@@ -446,7 +444,6 @@ function BandCard({
         <span className="n">{countLabel}</span>
       </div>
       <div className="name">{band.name}</div>
-      <Spark data={band.growth ?? [1, 1, 1]} />
       <div className="stat-row">
         {band.stats.slice(0, 2).map((stat) => (
           <div key={stat.k} className="stat">

@@ -55,6 +55,15 @@ export const RAIL_ITEMS: readonly RailItem[] = [
   { id: "admin", label: "admin", short: "ADM", glyph: "⚙", num: 9 },
 ];
 
+export function routeChordLabel(item: Pick<RailItem, "num">): string {
+  return `alt+${item.num}`;
+}
+
+export function routeIdForDigitKey(code: string): RouteId | null {
+  const item = RAIL_ITEMS.find((candidate) => `Digit${candidate.num}` === code);
+  return item?.id ?? null;
+}
+
 export function isRouteId(value: string): value is RouteId {
   return RAIL_ITEMS.some((item) => item.id === value);
 }

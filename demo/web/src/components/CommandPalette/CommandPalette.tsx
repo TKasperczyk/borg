@@ -9,7 +9,12 @@ import type {
   SemanticMemoryNode,
 } from "../../api/types";
 import { useLiveCache } from "../../hooks/use-live-cache";
-import { RAIL_ITEMS, type RouteId, type RouteNavigationOptions } from "../../routes";
+import {
+  RAIL_ITEMS,
+  routeChordLabel,
+  type RouteId,
+  type RouteNavigationOptions,
+} from "../../routes";
 import { previewLine } from "../SessionFleet";
 import { shortId } from "../../screens/screen-utils";
 import { useInspector } from "../Inspector/inspector-context";
@@ -259,7 +264,7 @@ export function CommandPalette({
       title: `Go to ${item.title ?? item.label}`,
       subtitle: `${item.glyph} ${item.short}`,
       icon: item.glyph,
-      hint: `⌘${item.num}`,
+      hint: routeChordLabel(item),
       run: () => setView(item.id),
     }));
 

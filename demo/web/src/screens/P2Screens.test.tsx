@@ -276,7 +276,6 @@ function installFetch(): ReturnType<typeof vi.fn> {
               name: "episodic",
               desc: "what happened",
               count: 0,
-              growth: [1],
               stats: [],
             },
             {
@@ -285,7 +284,6 @@ function installFetch(): ReturnType<typeof vi.fn> {
               name: "semantic",
               desc: "beliefs",
               count: 0,
-              growth: [1],
               stats: [],
             },
             {
@@ -294,7 +292,6 @@ function installFetch(): ReturnType<typeof vi.fn> {
               name: "procedural",
               desc: "skills",
               count: 1,
-              growth: [1],
               stats: [{ k: "skills", v: 1 }],
             },
             {
@@ -303,7 +300,6 @@ function installFetch(): ReturnType<typeof vi.fn> {
               name: "affective",
               desc: "mood",
               count: 0,
-              growth: [1],
               stats: [],
             },
             {
@@ -312,7 +308,6 @@ function installFetch(): ReturnType<typeof vi.fn> {
               name: "self",
               desc: "identity",
               count: 0,
-              growth: [1],
               stats: [],
             },
             {
@@ -321,7 +316,6 @@ function installFetch(): ReturnType<typeof vi.fn> {
               name: "commitments",
               desc: "rules",
               count: 0,
-              growth: [1],
               stats: [],
             },
             {
@@ -330,7 +324,6 @@ function installFetch(): ReturnType<typeof vi.fn> {
               name: "social",
               desc: "people",
               count: 0,
-              growth: [1],
               stats: [],
             },
             {
@@ -339,7 +332,6 @@ function installFetch(): ReturnType<typeof vi.fn> {
               name: "relational",
               desc: "slots",
               count: 0,
-              growth: [1],
               stats: [],
             },
           ],

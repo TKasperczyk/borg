@@ -447,7 +447,7 @@ describe("DreamScreen Dream Ops", () => {
     expect(planBodies).toEqual([{ processes: ["consolidator"] }]);
   });
 
-  it("renders maintenance health cards and the schedule lane with related IdRefs", async () => {
+  it("renders maintenance health cards and recent runs with related IdRefs", async () => {
     const live = makeLiveSource();
     installDreamFetch(
       dreamState({
@@ -536,7 +536,8 @@ describe("DreamScreen Dream Ops", () => {
     expect(screen.getByText("last tick this session")).toBeInTheDocument();
     expect(screen.getByText("live frame only")).toBeInTheDocument();
 
-    expect(screen.getByText("schedule lane")).toBeInTheDocument();
+    expect(screen.getByText("recent runs")).toBeInTheDocument();
+    expect(screen.getByText("ran at")).toBeInTheDocument();
     expect(screen.getAllByText("curator").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "jump to strm_sched111111" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "jump to audit 9" })).toBeInTheDocument();

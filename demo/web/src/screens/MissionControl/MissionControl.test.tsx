@@ -418,7 +418,8 @@ describe("MissionControlScreen", () => {
     expect(prompts.getByText("Voice")).toBeInTheDocument();
 
     const attachments = within(screen.getByTestId("attention-attachments"));
-    expect(attachments.getByText(/needs backend/i)).toBeInTheDocument();
+    expect(attachments.getByText("needs backend")).toHaveClass("action-note");
+    expect(attachments.getByText("unavailable")).toBeInTheDocument();
     expect(attachments.getByText(/requires explicit attachment ids/i)).toBeInTheDocument();
   });
 

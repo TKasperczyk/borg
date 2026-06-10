@@ -1,4 +1,4 @@
-import { RAIL_ITEMS, type RouteId } from "../routes";
+import { RAIL_ITEMS, routeChordLabel, type RouteId } from "../routes";
 import { CountBadge } from "./CountBadge";
 import type { SeverityRank } from "./SeverityChip";
 
@@ -29,7 +29,7 @@ export function Rail({ route, setRoute, badges = {} }: RailProps) {
               type="button"
               className={`rail-btn ${route === item.id ? "active" : ""}`}
               onClick={() => setRoute(item.id)}
-              title={`${item.title ?? item.label} (⌘${item.num})`}
+              title={`${item.title ?? item.label} (${routeChordLabel(item)})`}
               aria-label={item.label}
               aria-current={route === item.id ? "page" : undefined}
             >

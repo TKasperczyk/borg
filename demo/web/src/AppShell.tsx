@@ -36,7 +36,7 @@ const DEFAULT_AUDIENCE = "alice";
 function formatNow(): string {
   const date = new Date();
   const pad = (value: number) => String(value).padStart(2, "0");
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  return `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
 }
 
 function countBadge(
@@ -126,15 +126,7 @@ function AppShellContent({
   setOperatorChatError,
   turnStream,
 }: AppShellContentProps) {
-  const {
-    stateApi,
-    counts,
-    sessionsApi,
-    sessionActivity,
-    lastMaintenanceTick,
-    dreamActivity,
-    wsState,
-  } = useLiveCache();
+  const { stateApi, counts, sessionsApi, sessionActivity, dreamActivity, wsState } = useLiveCache();
   const refetchState = stateApi.refetch;
   const refetchSessions = sessionsApi.refetch;
   const activeSession =
@@ -142,7 +134,7 @@ function AppShellContent({
   const activeAudience = activeSession?.audience_label ?? DEFAULT_AUDIENCE;
   const badges = useMemo(() => railBadges(counts), [counts]);
   const [resetOpen, setResetOpen] = useState(false);
-  const palette = usePaletteHotkey({ disabled: resetOpen });
+  const palette = usePaletteHotkey({ disabled: resetOpen, onRouteChord: setView });
 
   const refetchSessionState = async () => {
     await Promise.all([refetchSessions(), refetchState()]);
@@ -273,11 +265,7 @@ function AppShellContent({
             </AppErrorBoundary>
           </div>
         </div>
-        <StatusBar
-          state={stateApi.data}
-          lastPhase={turnStream.lastPhase}
-          lastMaintenanceTick={lastMaintenanceTick}
-        />
+        <StatusBar state={stateApi.data} wsState={wsState} />
         <CommandPalette
           open={palette.open}
           onOpenChange={palette.setOpen}

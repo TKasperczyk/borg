@@ -67,6 +67,23 @@ function memoryStrokeWidth(count: number, maxCount: number): number {
   return 1.2 + (Math.log1p(count) / Math.log1p(maxCount)) * 4.2;
 }
 
+function governanceSweep(count: number, criticalCount = 0): number {
+  if (count <= 0) {
+    return 0;
+  }
+  const countScale = Math.log1p(Math.min(count, 24)) / Math.log1p(24);
+  const criticalBoost = criticalCount > 0 ? Math.min(18, criticalCount * 3) : 0;
+  return Math.min(128, 28 + countScale * 82 + criticalBoost);
+}
+
+function governanceStrokeWidth(count: number): number {
+  if (count <= 0) {
+    return 0;
+  }
+  const countScale = Math.log1p(Math.min(count, 24)) / Math.log1p(24);
+  return 2.5 + countScale * 4.5;
+}
+
 function wsTone(wsState: OrreryViewModel["runtime"]["wsState"]): "live" | "warn" | "bad" {
   if (wsState === "live") {
     return "live";
@@ -270,47 +287,75 @@ export function Orrery({ size, data, onNavigate, onInspect }: OrreryProps) {
         </g>
 
         <g className="orr-governance-system" aria-label="governance constraints">
-          <g
-            className={classNames(
-              "orr-governance-arc",
-              data.governance.commitments.critical > 0
-                ? "orr-governance-critical"
-                : "orr-governance-advisory",
-            )}
-            role="button"
-            tabIndex={0}
-            aria-label={`${data.governance.commitments.total} active commitments`}
-            data-testid="orr-governance-commitments"
-            onClick={() => onNavigate("governance", { governanceTab: "commitments" })}
-            onKeyDown={(event) =>
-              onKeyboardActivate(event, () =>
-                onNavigate("governance", { governanceTab: "commitments" }),
-              )
-            }
-          >
-            <path d={arcPath(246, 210, 310)} />
-            <text className="orr-governance-label" x="70" y="315">
-              cmt {data.governance.commitments.critical}/{data.governance.commitments.advisory}
+          {data.governance.commitments.total > 0 ? (
+            <g
+              className={classNames(
+                "orr-governance-arc",
+                data.governance.commitments.critical > 0
+                  ? "orr-governance-critical"
+                  : "orr-governance-advisory",
+              )}
+              role="button"
+              tabIndex={0}
+              aria-label={`${data.governance.commitments.total} active commitments`}
+              data-testid="orr-governance-commitments"
+              onClick={() => onNavigate("governance", { governanceTab: "commitments" })}
+              onKeyDown={(event) =>
+                onKeyboardActivate(event, () =>
+                  onNavigate("governance", { governanceTab: "commitments" }),
+                )
+              }
+            >
+              <path
+                d={arcPath(
+                  246,
+                  210,
+                  210 +
+                    governanceSweep(
+                      data.governance.commitments.total,
+                      data.governance.commitments.critical,
+                    ),
+                )}
+                style={{ strokeWidth: governanceStrokeWidth(data.governance.commitments.total) }}
+              />
+              <text className="orr-governance-label" x="70" y="315">
+                cmt {data.governance.commitments.critical}/{data.governance.commitments.advisory}
+              </text>
+            </g>
+          ) : (
+            <text className="orr-governance-label orr-governance-label-muted" x="70" y="315">
+              cmt none
             </text>
-          </g>
-          <g
-            className="orr-governance-arc orr-governance-directives"
-            role="button"
-            tabIndex={0}
-            aria-label={`${data.governance.directives.active} active directives`}
-            data-testid="orr-governance-directives"
-            onClick={() => onNavigate("governance", { governanceTab: "shared_state" })}
-            onKeyDown={(event) =>
-              onKeyboardActivate(event, () =>
-                onNavigate("governance", { governanceTab: "shared_state" }),
-              )
-            }
-          >
-            <path d={arcPath(228, 216, 304)} />
-            <text className="orr-governance-label" x="78" y="336">
-              dir {data.governance.directives.active}/{data.governance.directives.total}
+          )}
+          {data.governance.directives.active > 0 ? (
+            <g
+              className="orr-governance-arc orr-governance-directives"
+              role="button"
+              tabIndex={0}
+              aria-label={`${data.governance.directives.active} active directives`}
+              data-testid="orr-governance-directives"
+              onClick={() => onNavigate("governance", { governanceTab: "shared_state" })}
+              onKeyDown={(event) =>
+                onKeyboardActivate(event, () =>
+                  onNavigate("governance", { governanceTab: "shared_state" }),
+                )
+              }
+            >
+              <path
+                d={arcPath(228, 216, 216 + governanceSweep(data.governance.directives.active))}
+                style={{ strokeWidth: governanceStrokeWidth(data.governance.directives.active) }}
+              />
+              <text className="orr-governance-label" x="78" y="336">
+                dir {data.governance.directives.active}/{data.governance.directives.total}
+              </text>
+            </g>
+          ) : (
+            <text className="orr-governance-label orr-governance-label-muted" x="78" y="336">
+              {data.governance.directives.total > 0
+                ? `dir 0/${data.governance.directives.total}`
+                : "dir none"}
             </text>
-          </g>
+          )}
         </g>
 
         <g

@@ -16,7 +16,9 @@ export function Panel({ title, badge, action, onAction, children, className }: P
         <span className="title">{title}</span>
         {badge === undefined ? null : <span className="badge">{badge}</span>}
         <span className="spacer"></span>
-        {action === undefined ? null : (
+        {action === undefined ? null : onAction === undefined ? (
+          <span className="action action-note">{action}</span>
+        ) : (
           <button type="button" className="action" onClick={onAction}>
             {action}
           </button>

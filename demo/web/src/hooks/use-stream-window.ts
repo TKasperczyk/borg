@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getStream } from "../api/client";
-import type { StreamEntry, StreamEntryKind } from "../api/types";
+import type { StreamEntry, StreamEntryKind, WsState } from "../api/types";
 import { mergeStreamEntriesForTurnGrouping, streamEntryAttachmentId } from "../lib/stream-grouping";
 import { useLiveEventsContext } from "./live-context";
 
@@ -21,6 +21,7 @@ export type UseStreamWindowResult = {
   loadingOlder: boolean;
   error: Error | null;
   nextCursor: string | null;
+  wsState: WsState;
   refetch: () => Promise<void>;
   loadOlder: () => Promise<void>;
 };
@@ -241,6 +242,7 @@ export function useStreamWindow({
     loadingOlder,
     error,
     nextCursor,
+    wsState: live.wsState,
     refetch: fetchTop,
     loadOlder,
   };

@@ -35,7 +35,6 @@ function memoryBandsResponse() {
         desc: "what happened",
         count: 1,
         count_is_lower_bound: false,
-        growth: [1],
         stats: [{ k: "items", v: 1 }],
       },
       {
@@ -44,7 +43,6 @@ function memoryBandsResponse() {
         name: "semantic",
         desc: "beliefs",
         count: 0,
-        growth: [1],
         stats: [],
       },
       {
@@ -53,7 +51,6 @@ function memoryBandsResponse() {
         name: "procedural",
         desc: "skills",
         count: 0,
-        growth: [1],
         stats: [],
       },
       {
@@ -62,7 +59,6 @@ function memoryBandsResponse() {
         name: "affective",
         desc: "mood",
         count: 0,
-        growth: [1],
         stats: [],
       },
       {
@@ -71,7 +67,6 @@ function memoryBandsResponse() {
         name: "self",
         desc: "identity",
         count: 0,
-        growth: [1],
         stats: [],
       },
       {
@@ -80,7 +75,6 @@ function memoryBandsResponse() {
         name: "commitments",
         desc: "rules",
         count: 0,
-        growth: [1],
         stats: [],
       },
       {
@@ -89,7 +83,6 @@ function memoryBandsResponse() {
         name: "social",
         desc: "people",
         count: 0,
-        growth: [1],
         stats: [],
       },
       {
@@ -98,7 +91,6 @@ function memoryBandsResponse() {
         name: "relational",
         desc: "slots",
         count: 0,
-        growth: [1],
         stats: [],
       },
     ],

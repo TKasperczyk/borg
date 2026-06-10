@@ -156,7 +156,7 @@ function PaletteHarness({
   setView?: (view: RouteId) => void;
   setSessionId?: (sessionId: string) => void;
 }) {
-  const palette = usePaletteHotkey();
+  const palette = usePaletteHotkey({ onRouteChord: setView });
   const [resetOpen, setResetOpen] = useState(false);
 
   return (
@@ -175,6 +175,7 @@ function PaletteHarness({
             setSessionId={setSessionId}
             onOpenReset={() => setResetOpen(true)}
           />
+          <input aria-label="editable target" />
           <ResetButton open={resetOpen} onOpenChange={setResetOpen} showTrigger={false} />
           <InspectorTargetProbe />
           <Inspector />
@@ -247,6 +248,37 @@ describe("CommandPalette", () => {
         screen.queryByRole("searchbox", { name: "Command palette search" }),
       ).not.toBeInTheDocument();
     });
+  });
+
+  it("routes implemented alt-digit chords only when the palette is closed", async () => {
+    setupFetch();
+    const setView = vi.fn();
+    renderPalette({ setView });
+
+    fireEvent.keyDown(window, { key: "x", code: "Digit3", altKey: true });
+    expect(setView).toHaveBeenCalledWith("memory");
+
+    fireEvent.keyDown(window, { key: "x", code: "Digit4", altKey: true, ctrlKey: true });
+    expect(setView).not.toHaveBeenCalledWith("identity");
+
+    await openWithMeta();
+    expect(await screen.findByText("alt+3")).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "x", code: "Digit9", altKey: true });
+    expect(setView).not.toHaveBeenCalledWith("admin");
+  });
+
+  it("does not route alt-digit chords from editable targets", () => {
+    setupFetch();
+    const setView = vi.fn();
+    renderPalette({ setView });
+
+    fireEvent.keyDown(screen.getByLabelText("editable target"), {
+      key: "x",
+      code: "Digit3",
+      altKey: true,
+    });
+
+    expect(setView).not.toHaveBeenCalled();
   });
 
   it("closes on Escape and backdrop mouse down", async () => {

@@ -213,7 +213,6 @@ export type MemoryBandSummary = {
   desc?: string;
   count: number;
   count_is_lower_bound?: boolean;
-  growth?: number[];
   stats: Array<{ k: string; v: number | string }>;
 };
 
@@ -1007,6 +1006,13 @@ export type StateSnapshot = {
     dream_audit_rows: number;
   };
   current_mood: MoodSnapshot;
+  runtime?: {
+    model: string | null;
+    embedding: {
+      model: string | null;
+      dims: number | null;
+    };
+  };
   version: string;
 };
 

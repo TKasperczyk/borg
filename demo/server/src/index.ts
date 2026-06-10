@@ -1,11 +1,12 @@
 import { pathToFileURL } from "node:url";
 
 import { serve } from "@hono/node-server";
-import { Borg, DemoMessageConnector, type MessageConnector } from "borg";
+import { Borg, DemoMessageConnector, loadConfig, type MessageConnector } from "borg";
 
 import {
   createDemoServerApp,
   ensureDemoDefaultSession,
+  runtimeConfigFromConfig,
   wireMaintenanceSchedulerLiveObserver,
 } from "./app.js";
 import { createLiveBridge } from "./live.js";
@@ -62,7 +63,9 @@ function readCorsOrigins(): string[] {
     .filter((origin) => origin.length > 0);
 }
 
-const dataDir = process.env.BORG_DATA_DIR ?? ".borg-data/demo";
+const configuredDataDir = process.env.BORG_DATA_DIR ?? ".borg-data/demo";
+const demoConfig = loadConfig({ dataDir: configuredDataDir });
+const dataDir = demoConfig.dataDir;
 const demoCreatorEntityName = process.env.DEMO_CREATOR_ENTITY_NAME ?? undefined;
 const port = readPort();
 const live = createLiveBridge();
@@ -70,7 +73,7 @@ const connectorPlugin = await loadExternalConnectorPlugin();
 
 async function openDemoBorg(): Promise<Borg> {
   const borg = await Borg.open({
-    dataDir,
+    config: demoConfig,
     tracer: live.tracer,
     onStreamAppend: live.onStreamAppend,
     outboundConnectors: [
@@ -115,6 +118,7 @@ const { app, injectWebSocket } = createDemoServerApp({
   corsOrigins: readCorsOrigins(),
   resetBorg,
   demoCreatorEntityName,
+  runtimeConfig: runtimeConfigFromConfig(demoConfig),
 });
 const server = serve({
   fetch: app.fetch,

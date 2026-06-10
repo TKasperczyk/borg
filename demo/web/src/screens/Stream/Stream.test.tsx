@@ -154,6 +154,28 @@ describe("Stream & Provenance", () => {
     expect(screen.getAllByText("1 entries").length).toBeGreaterThanOrEqual(2);
   });
 
+  it("labels stream tailing from the live connection state", async () => {
+    const live = makeLiveSource();
+    streamFetch([]);
+    const renderStream = (wsState: WsState) => (
+      <LiveEventsProvider value={live.live(1, wsState)}>
+        <StreamScreen sessionId="default" />
+      </LiveEventsProvider>
+    );
+
+    const { rerender } = renderWithInspector(renderStream("reconnecting"));
+
+    expect(await screen.findByText("reconnecting")).toBeInTheDocument();
+    expect(screen.queryByText("tailing")).not.toBeInTheDocument();
+
+    rerender(renderStream("down"));
+    expect(await screen.findByText("offline")).toBeInTheDocument();
+    expect(screen.queryByText("tailing")).not.toBeInTheDocument();
+
+    rerender(renderStream("live"));
+    expect(await screen.findByText("tailing")).toBeInTheDocument();
+  });
+
   it("keeps a collapsed group collapsed when a live append extends it", async () => {
     const live = makeLiveSource();
     streamFetch([

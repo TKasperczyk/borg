@@ -20,6 +20,7 @@ import {
   type Borg,
   type CommitmentEnforcementClass,
   type CommitmentRecord,
+  type Config,
   type CreatorDirective,
   type EntityId,
   type Episode,
@@ -186,16 +187,18 @@ const optionalNonEmptyQueryString = z
     return trimmed.length === 0 ? undefined : trimmed;
   });
 
-const memoryBandDetailQuerySchema = z.object({
-  session: z
-    .string()
-    .min(1)
-    .optional()
-    .transform((value, ctx) => parseOptionalSessionQuery(value, ctx)),
-  limit: limitSchema.default(50),
-  cursor: optionalNonEmptyQueryString,
-  query: optionalNonEmptyQueryString,
-}).strict();
+const memoryBandDetailQuerySchema = z
+  .object({
+    session: z
+      .string()
+      .min(1)
+      .optional()
+      .transform((value, ctx) => parseOptionalSessionQuery(value, ctx)),
+    limit: limitSchema.default(50),
+    cursor: optionalNonEmptyQueryString,
+    query: optionalNonEmptyQueryString,
+  })
+  .strict();
 
 const sessionParamSchema = z.object({
   id: z.string().transform((value, ctx) => {
@@ -1383,16 +1386,6 @@ function sumRecord(record: Record<string, number>): number {
   return Object.values(record).reduce((sum, value) => sum + value, 0);
 }
 
-function sparkFrom(count: number): number[] {
-  if (count <= 0) {
-    return Array.from({ length: 15 }, () => 0);
-  }
-  const base = Math.max(1, Math.min(12, count));
-  return Array.from({ length: 15 }, (_, index) =>
-    Math.max(1, Math.round(base * (0.45 + index / 20))),
-  );
-}
-
 function entityLabel(borg: Borg, id: EntityId | string | null | undefined): string | null {
   if (id === null || id === undefined) {
     return null;
@@ -1781,6 +1774,7 @@ function processDescription(name: OfflineProcessName): string {
     "semantic-extractor": "extract graph facts",
     curator: "salience, heat, archive, decay",
     overseer: "flag substrate issues",
+    associator: "link related memory records",
     "review-resolver": "process review queue items",
     "creator-directive-reconciler": "reconcile redundant or conflicting creator directives",
     ruminator: "open-question rumination",
@@ -1999,7 +1993,6 @@ async function memoryBands(borg: Borg, sessionId: SessionId) {
       desc: "what happened",
       count: episodes.items.length,
       count_is_lower_bound: episodicCountIsLowerBound,
-      growth: sparkFrom(episodes.items.length),
       stats: [
         {
           k: "items",
@@ -2013,7 +2006,6 @@ async function memoryBands(borg: Borg, sessionId: SessionId) {
       name: "semantic",
       desc: "what Borg believes",
       count: sumRecord(semanticCounts),
-      growth: sparkFrom(sumRecord(semanticCounts)),
       stats: Object.entries(semanticCounts).map(([k, v]) => ({ k, v })),
     },
     {
@@ -2022,7 +2014,6 @@ async function memoryBands(borg: Borg, sessionId: SessionId) {
       name: "procedural",
       desc: "how Borg solves things",
       count: procedural.length,
-      growth: sparkFrom(procedural.length),
       stats: [{ k: "skills", v: procedural.length }],
     },
     {
@@ -2031,7 +2022,6 @@ async function memoryBands(borg: Borg, sessionId: SessionId) {
       name: "affective",
       desc: "mood and trajectory",
       count: moodHistory.length,
-      growth: sparkFrom(moodHistory.length),
       stats: [{ k: "points", v: moodHistory.length }],
     },
     {
@@ -2046,7 +2036,6 @@ async function memoryBands(borg: Borg, sessionId: SessionId) {
         openQuestions.length +
         growthMarkers.length +
         periods.length,
-      growth: sparkFrom(values.length + goals.length + traits.length + openQuestions.length),
       stats: [
         { k: "values", v: values.length },
         { k: "goals", v: goals.length },
@@ -2062,7 +2051,6 @@ async function memoryBands(borg: Borg, sessionId: SessionId) {
       name: "commitments",
       desc: "scoped promises and boundaries",
       count: borg.commitments.countActive(),
-      growth: sparkFrom(borg.commitments.countActive()),
       stats: [
         { k: "active", v: borg.commitments.countActive() },
         { k: "revoked", v: borg.commitments.countRevoked() },
@@ -2074,7 +2062,6 @@ async function memoryBands(borg: Borg, sessionId: SessionId) {
       name: "social",
       desc: "per-entity trust and history",
       count: borg.social.list(500).length,
-      growth: sparkFrom(borg.social.list(500).length),
       stats: [{ k: "profiles", v: borg.social.list(500).length }],
     },
     {
@@ -2083,7 +2070,6 @@ async function memoryBands(borg: Borg, sessionId: SessionId) {
       name: "relational",
       desc: "evidence-backed relationship facts",
       count: sumRecord(relationalCounts),
-      growth: sparkFrom(sumRecord(relationalCounts)),
       stats: Object.entries(relationalCounts).map(([k, v]) => ({ k, v })),
     },
   ];
@@ -2277,7 +2263,26 @@ export type DemoServerAppInput = {
   resetBorg?: () => Promise<void>;
   requestGate?: BorgRequestGate;
   demoCreatorEntityName?: string;
+  runtimeConfig?: DemoRuntimeConfig;
 };
+
+export type DemoRuntimeConfig = {
+  model: string;
+  embedding: {
+    model: string;
+    dims: number;
+  };
+};
+
+export function runtimeConfigFromConfig(config: Config): DemoRuntimeConfig {
+  return {
+    model: config.anthropic.models.cognition,
+    embedding: {
+      model: config.embedding.model,
+      dims: config.embedding.dims,
+    },
+  };
+}
 
 type BorgRequestGateLease = {
   release(): void;
@@ -2346,6 +2351,7 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     resetBorg: args.resetBorg,
     requestGate: args.requestGate ?? new BorgRequestGate(),
     demoCreatorEntityName: args.demoCreatorEntityName ?? DEMO_DEFAULT_CREATOR_ENTITY_NAME,
+    runtimeConfig: args.runtimeConfig,
   };
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
@@ -2434,6 +2440,7 @@ export function createDemoServerApp(args: DemoServerAppInput) {
         dream_audit_rows: auditRows.length,
       },
       current_mood: input.borg.mood.current(query.session),
+      ...(input.runtimeConfig === undefined ? {} : { runtime: input.runtimeConfig }),
       version: VERSION,
     });
   });

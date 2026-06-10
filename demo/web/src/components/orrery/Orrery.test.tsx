@@ -392,6 +392,65 @@ describe("Orrery", () => {
     expect(onNavigate).toHaveBeenCalledWith("review");
   });
 
+  it("omits governance arcs when there are no active constraints", () => {
+    const onNavigate = vi.fn();
+    const onInspect = vi.fn();
+
+    renderWithInspector(
+      <Orrery data={emptyViewModel()} size="full" onNavigate={onNavigate} onInspect={onInspect} />,
+    );
+
+    expect(screen.queryByTestId("orr-governance-commitments")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("orr-governance-directives")).not.toBeInTheDocument();
+    expect(screen.getByText("cmt none")).toBeInTheDocument();
+    expect(screen.getByText("dir none")).toBeInTheDocument();
+  });
+
+  it("scales governance arcs from active counts and marks only critical commitments as red", () => {
+    const onNavigate = vi.fn();
+    const onInspect = vi.fn();
+    const { rerender } = renderWithInspector(
+      <Orrery
+        data={emptyViewModel({
+          governance: {
+            commitments: { critical: 0, advisory: 1, total: 1 },
+            directives: { active: 1, total: 1 },
+          },
+        })}
+        size="full"
+        onNavigate={onNavigate}
+        onInspect={onInspect}
+      />,
+    );
+
+    const initialCommitments = screen.getByTestId("orr-governance-commitments");
+    const initialPath = initialCommitments.querySelector("path");
+    expect(initialCommitments).toHaveClass("orr-governance-advisory");
+    expect(initialCommitments).not.toHaveClass("orr-governance-critical");
+    const initialPathD = initialPath?.getAttribute("d");
+
+    rerender(
+      <Orrery
+        data={emptyViewModel({
+          governance: {
+            commitments: { critical: 2, advisory: 6, total: 8 },
+            directives: { active: 5, total: 7 },
+          },
+        })}
+        size="full"
+        onNavigate={onNavigate}
+        onInspect={onInspect}
+      />,
+    );
+
+    const scaledCommitments = screen.getByTestId("orr-governance-commitments");
+    const scaledPath = scaledCommitments.querySelector("path");
+    expect(scaledCommitments).toHaveClass("orr-governance-critical");
+    expect(scaledPath?.getAttribute("d")).not.toBe(initialPathD);
+    expect(screen.getByText("cmt 2/6")).toBeInTheDocument();
+    expect(screen.getByText("dir 5/7")).toBeInTheDocument();
+  });
+
   it("marks the active turn pulse and inspects the active turn", async () => {
     installFetch();
     const live = makeLiveSource();

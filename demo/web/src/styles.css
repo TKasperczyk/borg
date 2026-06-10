@@ -1184,6 +1184,14 @@ select {
   color: var(--text);
   background: var(--bg-2);
 }
+.panel-header .action-note {
+  color: var(--text-faint);
+  cursor: default;
+}
+.panel-header .action-note:hover {
+  color: var(--text-faint);
+  background: transparent;
+}
 
 .panel-body {
   flex: 1;
@@ -3604,22 +3612,6 @@ g.fc-regen-group.active .fc-regen-label-bg {
   margin-top: 2px;
 }
 
-.spark {
-  height: 18px;
-  display: flex;
-  align-items: flex-end;
-  gap: 1px;
-}
-.spark .bar {
-  flex: 1;
-  background: var(--acc);
-  opacity: 0.55;
-  min-height: 2px;
-}
-.band-card:hover .spark .bar {
-  opacity: 0.75;
-}
-
 /* memory band detail */
 .band-detail {
   height: 100%;
@@ -5910,7 +5902,7 @@ tr[role="button"]:focus-visible {
 
 .mc-attention-headline {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) 56px;
+  grid-template-columns: auto auto minmax(0, 1fr);
   align-items: center;
   gap: 7px;
 }
@@ -5970,10 +5962,6 @@ tr[role="button"]:focus-visible {
 
   .mc-attention-headline {
     grid-template-columns: auto auto minmax(0, 1fr);
-  }
-
-  .mc-attention-headline .spark {
-    display: none;
   }
 }
 
@@ -6223,6 +6211,10 @@ tr[role="button"]:focus-visible {
 .orr-governance-label {
   fill: var(--text-mute);
   font-size: 10px;
+}
+
+.orr-governance-label-muted {
+  fill: var(--text-faint);
 }
 
 .orr-fault-node {

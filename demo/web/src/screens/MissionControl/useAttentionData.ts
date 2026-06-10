@@ -59,7 +59,6 @@ export type AttentionData = {
     severity: SeverityRank;
     groups: AttentionReviewGroup[];
     previewRows: ReviewRow[];
-    spark: number[];
   };
   commitments: SourceState & {
     headlineCount: number | null;
@@ -67,13 +66,11 @@ export type AttentionData = {
     severity: SeverityRank;
     groups: AttentionCommitmentGroup[];
     previewRows: CommitmentItem[];
-    spark: number[];
   };
   directiveConflicts: SourceState & {
     count: number;
     severity: SeverityRank;
     conflicts: AttentionDirectiveConflict[];
-    spark: number[];
   };
   dream: SourceState & {
     pendingExtractionEpisodes: number;
@@ -82,7 +79,6 @@ export type AttentionData = {
     severity: SeverityRank;
     beliefRevisionRows: ReviewRow[];
     previewRows: ReviewRow[];
-    spark: number[];
   };
   outcomes: SourceState & {
     count: number;
@@ -90,14 +86,12 @@ export type AttentionData = {
     severity: SeverityRank;
     groups: AttentionOutcomeGroup[];
     previewRows: AttentionOutcomeItem[];
-    spark: number[];
   };
   prompts: SourceState & {
     count: number;
     severity: SeverityRank;
     blocks: PromptBlockView[];
     previewRows: PromptBlockView[];
-    spark: number[];
   };
   attachments: {
     degraded: true;
@@ -299,7 +293,6 @@ export function useAttentionData(sessionId: string): AttentionData {
         severity: severityForCount(counts?.open_reviews ?? reviewRows.length),
         groups: reviewGroups,
         previewRows: reviewRows.slice(0, 3),
-        spark: reviewGroups.map((group) => group.count),
       },
       commitments: {
         ...sourceState(commitmentsApi),
@@ -312,14 +305,12 @@ export function useAttentionData(sessionId: string): AttentionData {
           : severityForCount(counts?.commitments ?? activeCommitments.length),
         groups: commitmentGroups,
         previewRows: activeCommitments.slice(0, 3),
-        spark: commitmentGroups.map((group) => group.count),
       },
       directiveConflicts: {
         ...sourceState(directiveReviewsApi),
         count: conflicts.length,
         severity: conflicts.length > 0 ? 4 : 1,
         conflicts: conflicts.slice(0, 4),
-        spark: [conflicts.length],
       },
       dream: {
         ...sourceState(dreamApi),
@@ -329,7 +320,6 @@ export function useAttentionData(sessionId: string): AttentionData {
         severity: severityForCount(pendingExtractionEpisodes + beliefRevisionRows.length),
         beliefRevisionRows,
         previewRows: beliefRevisionRows.slice(0, 3),
-        spark: [pendingExtractionEpisodes, beliefRevisionRows.length],
       },
       outcomes: {
         ...sourceState(outcomesApi),
@@ -341,7 +331,6 @@ export function useAttentionData(sessionId: string): AttentionData {
           : severityForCount(outcomeRows.length),
         groups: outcomeGroups,
         previewRows: outcomeRows.slice(0, 3),
-        spark: outcomeGroups.map((group) => group.count),
       },
       prompts: {
         ...sourceState(promptsApi),
@@ -349,7 +338,6 @@ export function useAttentionData(sessionId: string): AttentionData {
         severity: severityForCount(promptBlocks.length),
         blocks: promptBlocks,
         previewRows: promptBlocks.slice(0, 3),
-        spark: [promptBlocks.length],
       },
       attachments: {
         degraded: true,

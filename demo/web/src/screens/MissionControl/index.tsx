@@ -8,7 +8,6 @@ import { Orrery } from "../../components/orrery/Orrery";
 import { useOrreryData, type OrreryTurnInput } from "../../components/orrery/useOrreryData";
 import { Panel } from "../../components/Panel";
 import { SeverityChip } from "../../components/SeverityChip";
-import { Spark } from "../../components/Spark";
 import { Tag, type TagKind } from "../../components/Tag";
 import { useInspector } from "../../components/Inspector/inspector-context";
 import { moodLabel } from "../../components/StatusBar";
@@ -38,7 +37,7 @@ function CardShell({ id, title, badge, action = "open", onAction, children }: Ca
       <Panel
         title={title}
         badge={badge}
-        action={onAction === undefined ? undefined : action}
+        action={onAction === undefined && action === "open" ? undefined : action}
         onAction={onAction}
       >
         {children}
@@ -75,24 +74,21 @@ function Headline({
   countLabel,
   severity,
   note,
-  spark,
 }: {
   count: number | null;
   countLabel: string;
   severity: 1 | 2 | 3 | 4;
   note: string;
-  spark: readonly number[];
 }) {
   return (
     <div className="mc-attention-headline">
       {count === null ? (
-        <Tag kind="info">syncing</Tag>
+        <Tag>unavailable</Tag>
       ) : (
         <CountBadge count={count} severity={severity} label={countLabel} />
       )}
       <SeverityChip rank={severity}>{`rank ${severity}`}</SeverityChip>
       <span className="mc-attention-note">{note}</span>
-      {spark.length === 0 ? null : <Spark data={spark} />}
     </div>
   );
 }
@@ -170,7 +166,6 @@ function ReviewsCard({
           countLabel="open reviews"
           severity={data.severity}
           note={`${data.observedCount.toLocaleString()} rows by kind`}
-          spark={data.spark}
         />
         {showNotice ? (
           <CardNotice loading={data.loading} error={data.error} empty={data.groups.length === 0}>
@@ -213,7 +208,6 @@ function CommitmentsCard({
           countLabel="active commitments"
           severity={data.severity}
           note={`${data.observedCount.toLocaleString()} active rows`}
-          spark={data.spark}
         />
         {showNotice ? (
           <CardNotice loading={data.loading} error={data.error} empty={data.groups.length === 0}>
@@ -273,7 +267,6 @@ function DirectiveConflictsCard({
           countLabel="creator-directive conflicts"
           severity={data.severity}
           note="open reconciliation conflicts"
-          spark={data.spark}
         />
         {showNotice ? (
           <CardNotice loading={data.loading} error={data.error} empty={data.count === 0}>
@@ -319,7 +312,6 @@ function DreamCard({
           countLabel="dream extraction and belief revision work"
           severity={data.severity}
           note="pending extraction + belief revision"
-          spark={data.spark}
         />
         {showNotice ? (
           <CardNotice loading={data.loading} error={data.error} empty={data.total === 0}>
@@ -369,7 +361,6 @@ function OutcomesCard({
           countLabel="recent suppressed and observed outcomes"
           severity={data.severity}
           note={data.windowed ? `${data.count.toLocaleString()}+ recent window` : "recent window"}
-          spark={data.spark}
         />
         {showNotice ? (
           <CardNotice loading={data.loading} error={data.error} empty={data.groups.length === 0}>
@@ -427,7 +418,6 @@ function PromptsCard({
           countLabel="prompt overrides"
           severity={data.severity}
           note="stored prompt blocks"
-          spark={data.spark}
         />
         {showNotice ? (
           <CardNotice loading={data.loading} error={data.error} empty={data.count === 0}>
@@ -463,7 +453,6 @@ function AttachmentsCard({ data }: { data: AttentionData["attachments"] }) {
           countLabel="quarantined or inactive attachments"
           severity={data.severity}
           note="quarantined/inactive status unavailable"
-          spark={[]}
         />
         <Empty>{data.note}</Empty>
       </div>

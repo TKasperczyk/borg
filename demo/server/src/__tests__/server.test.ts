@@ -42,7 +42,11 @@ import type { ReviewQueueRepository } from "../../../../src/memory/review-queue/
 import { TestEmbeddingClient, createTestConfig } from "../../../../src/offline/test-support.js";
 import type { AuditLog } from "../../../../src/offline/audit-log.js";
 import type { StreamWriter } from "../../../../src/stream/index.js";
-import { createDemoServerApp, wireMaintenanceSchedulerLiveObserver } from "../app.js";
+import {
+  createDemoServerApp,
+  runtimeConfigFromConfig,
+  wireMaintenanceSchedulerLiveObserver,
+} from "../app.js";
 import { LiveBroadcaster, createLiveBridge, type LiveFrame } from "../live.js";
 import { createResetBorgController, type BorgHandle } from "../reset.js";
 
@@ -1043,7 +1047,25 @@ describe("demo server", () => {
       { kind: "manual" },
       { throughReview: true },
     );
-    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const runtimeConfig = runtimeConfigFromConfig(
+      createTestConfig({
+        dataDir: tempDir,
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "state-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "state-cognition",
+          },
+        },
+      }),
+    );
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live, runtimeConfig });
     const customSessionId = createSessionId();
     borg.sessions.ensure({
       session_id: customSessionId,
@@ -1064,6 +1086,13 @@ describe("demo server", () => {
         open_reviews: expect.any(Number),
         dream_audit_rows: expect.any(Number),
       }),
+      runtime: {
+        model: "state-cognition",
+        embedding: {
+          model: "state-embed",
+          dims: 4,
+        },
+      },
       version: expect.any(String),
     });
 
@@ -3859,11 +3888,20 @@ describe("demo server", () => {
     vi.doMock("borg", () => ({
       Borg: { open },
       DemoMessageConnector: class DemoMessageConnector {},
+      loadConfig: vi.fn(() => ({
+        dataDir: ".borg-data/test-entry",
+        anthropic: { models: { cognition: "entry-cognition" } },
+        embedding: { model: "entry-embed", dims: 4 },
+      })),
     }));
     vi.doMock("@hono/node-server", () => ({ serve: serveMock }));
     vi.doMock("../app.js", () => ({
       createDemoServerApp: createDemoServerAppMock,
       ensureDemoDefaultSession: vi.fn(),
+      runtimeConfigFromConfig: vi.fn(() => ({
+        model: "entry-cognition",
+        embedding: { model: "entry-embed", dims: 4 },
+      })),
       wireMaintenanceSchedulerLiveObserver: wireMaintenanceSchedulerLiveObserverMock,
     }));
     vi.doMock("../live.js", () => ({

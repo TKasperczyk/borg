@@ -7,6 +7,7 @@ import type {
   ImagePerceptionRecord,
   StreamEntry,
   StreamEntryKind,
+  WsState,
 } from "../../api/types";
 import { Empty } from "../../components/Empty";
 import { ErrorState } from "../../components/ErrorState";
@@ -76,6 +77,26 @@ function kindTag(kind: StreamEntryKind): TagKind {
     case "internal_event":
       return "";
   }
+}
+
+function streamConnectionTagKind(wsState: WsState): TagKind {
+  if (wsState === "live") {
+    return "acc";
+  }
+  if (wsState === "reconnecting") {
+    return "warn";
+  }
+  return "bad";
+}
+
+function streamConnectionLabel(wsState: WsState): string {
+  if (wsState === "live") {
+    return "tailing";
+  }
+  if (wsState === "reconnecting") {
+    return "reconnecting";
+  }
+  return "offline";
 }
 
 function mediaType(entry: StreamEntry): string | undefined {
@@ -1269,8 +1290,9 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
           <span>{groups.length} groups</span>
           <span>{honestyLabel}</span>
           <span className="spacer"></span>
-          <span className="live-dot"></span>
-          <span className="acc upper">tailing</span>
+          <Tag kind={streamConnectionTagKind(streamWindow.wsState)} dot>
+            {streamConnectionLabel(streamWindow.wsState)}
+          </Tag>
         </div>
         {streamWindow.loading && entries.length === 0 ? <Loading>loading stream</Loading> : null}
         {streamWindow.error !== null ? <ErrorState>{streamWindow.error.message}</ErrorState> : null}

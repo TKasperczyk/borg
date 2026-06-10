@@ -182,13 +182,13 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: "shared" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "identity" })).toHaveAttribute(
       "title",
-      "identity (⌘4)",
+      "identity (alt+4)",
     );
     expect(screen.getByRole("button", { name: "prompts" })).toHaveAttribute(
       "title",
-      "prompts (⌘8)",
+      "prompts (alt+8)",
     );
-    expect(screen.getByRole("button", { name: "admin" })).toHaveAttribute("title", "admin (⌘9)");
+    expect(screen.getByRole("button", { name: "admin" })).toHaveAttribute("title", "admin (alt+9)");
 
     fireEvent.click(await screen.findByRole("button", { name: "operator chat" }));
 

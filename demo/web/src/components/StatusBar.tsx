@@ -1,9 +1,9 @@
-import type { MaintenanceTickFrame, StateSnapshot } from "../api/types";
+import type { MaintenanceTickFrame, StateSnapshot, WsState } from "../api/types";
+import { wsLabel, wsToneClass } from "./Topbar";
 
 export type StatusBarProps = {
   state: StateSnapshot | null;
-  lastPhase?: string;
-  lastMaintenanceTick?: MaintenanceTickFrame | null;
+  wsState: WsState;
 };
 
 export function moodLabel(state: StateSnapshot | null): string {
@@ -38,55 +38,37 @@ export function maintenanceTickTone(frame: MaintenanceTickFrame): "ok" | "warn" 
   return frame.changed ? "ok" : "warn";
 }
 
-export function StatusBar({ state, lastPhase, lastMaintenanceTick }: StatusBarProps) {
-  const maintenanceLabel = maintenanceTickLabel(lastMaintenanceTick);
+function embeddingLabel(state: StateSnapshot | null): string {
+  const embedding = state?.runtime?.embedding;
+  if (embedding === undefined || embedding.model === null) {
+    return "—";
+  }
+  if (embedding.dims === null) {
+    return embedding.model;
+  }
+  return `${embedding.model} · ${embedding.dims}d`;
+}
 
+export function StatusBar({ state, wsState }: StatusBarProps) {
   return (
     <div className="statusbar">
       <span className="seg">
-        <span className="v ok">●</span>
-        <span className="k">branch</span>
-        <span className="v">borg/main</span>
+        <span className={wsState === "live" ? "live-dot" : `dot ${wsToneClass(wsState)}`}></span>
+        <span className="k">ws</span>
+        <span className={`v ${wsToneClass(wsState)}`}>{wsLabel(wsState)}</span>
       </span>
       <span className="seg">
-        <span className="k">dream</span>
-        <span className="v">{state === null ? "—" : `${state.counts.dream_audit_rows} audit`}</span>
-        {maintenanceLabel === null ||
-        lastMaintenanceTick === null ||
-        lastMaintenanceTick === undefined ? null : (
-          <span className={`v ${maintenanceTickTone(lastMaintenanceTick)}`}>
-            {maintenanceLabel}
-          </span>
-        )}
-      </span>
-      <span className="seg">
-        <span className="k">mood</span>
-        <span className="v">{moodLabel(state)}</span>
-      </span>
-      <span className="seg">
-        <span className="k">review</span>
-        <span className="v">{countValue(state?.counts.open_reviews)}</span>
-      </span>
-      <span className="seg">
-        <span className="k">questions</span>
-        <span className="v">{countValue(state?.counts.open_qs)}</span>
-      </span>
-      <span className="seg">
-        <span className="k">commit</span>
-        <span className="v">{countValue(state?.counts.commitments)}</span>
-      </span>
-      <span className="seg">
-        <span className="k">last</span>
-        <span className="v">{lastPhase ?? "idle"}</span>
+        <span className="k">ver</span>
+        <span className="v">{state?.version ?? "—"}</span>
       </span>
       <span className="seg grow"></span>
       <span className="seg">
         <span className="k">model</span>
-        <span className="v">opus-4.7</span>
+        <span className="v">{state?.runtime?.model ?? "—"}</span>
       </span>
       <span className="seg">
         <span className="k">emb</span>
-        <span className="v">qwen3-8b · 4096d</span>
+        <span className="v">{embeddingLabel(state)}</span>
       </span>
     </div>
   );

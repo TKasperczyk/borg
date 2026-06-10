@@ -280,7 +280,7 @@ describe("AdminScreen", () => {
     expect(screen.getByText("down after 5 failed reconnect attempts")).toBeInTheDocument();
     expect(screen.getByText("none this session")).toBeInTheDocument();
     expect(screen.getByText("none")).toBeInTheDocument();
-    expect(screen.getByText("⌘9")).toBeInTheDocument();
+    expect(screen.getByText("alt+9")).toBeInTheDocument();
     expect(screen.getByText("commit")).toBeInTheDocument();
     expect(screen.getByText("directives")).toBeInTheDocument();
 

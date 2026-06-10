@@ -1075,20 +1075,20 @@ function DreamScheduleLane({ schedule }: { schedule: readonly DreamScheduleItem[
   return (
     <div className="panel dream-schedule-panel">
       <div className="panel-header">
-        <span className="title">schedule lane</span>
+        <span className="title">recent runs</span>
         <span className="badge">{schedule.length} rows</span>
       </div>
       <div className="panel-body">
         {schedule.length === 0 ? (
           <div className="dim" style={{ padding: 12 }}>
-            no scheduled runs synthesized yet
+            no recent maintenance runs recorded
           </div>
         ) : (
           <table className="tbl dream-schedule-table">
             <thead>
               <tr>
                 <th>process</th>
-                <th>scheduled</th>
+                <th>ran at</th>
                 <th>source</th>
                 <th>related ids</th>
               </tr>

@@ -15,7 +15,7 @@ import {
   subscribeClientErrorLog,
   type ClientErrorLogEntry,
 } from "../../lib/client-error-log";
-import { RAIL_ITEMS, type RouteId } from "../../routes";
+import { RAIL_ITEMS, routeChordLabel, type RouteId } from "../../routes";
 
 export type AdminRefetchResult = {
   turnCachesReset: boolean;
@@ -237,7 +237,7 @@ function RouteDiagnosticsPanel({ route, sessionId }: { route: RouteId; sessionId
                 </td>
                 <td>{item.label}</td>
                 <td className="tab-num">{item.num}</td>
-                <td className="tab-num">⌘{item.num}</td>
+                <td className="tab-num">{routeChordLabel(item)}</td>
                 <td>{route === item.id ? <Tag kind="acc">current</Tag> : "—"}</td>
               </tr>
             ))}
