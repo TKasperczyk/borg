@@ -43,6 +43,7 @@ import {
   shortId,
 } from "../../screens/screen-utils";
 import { AttachmentChip } from "../AttachmentChip";
+import { DisclosureLabel } from "../DisclosureLabel";
 import { Empty } from "../Empty";
 import { ErrorState } from "../ErrorState";
 import { JsonValueView } from "../JsonValueView";
@@ -160,18 +161,74 @@ function TimestampLabel({ ts }: { ts: number }) {
   return <>{formatTimestamp(ts)}</>;
 }
 
+type SummaryDisclosureLabel = {
+  key: string;
+  value: unknown;
+};
+
+const SUMMARY_DISCLOSURE_LABEL_FIELDS = [
+  "disclosure_label",
+  "source_disclosure_label",
+  "resolution_disclosure_label",
+  "goal_disclosure_label",
+] as const;
+
+function disclosureClassFromMetadata(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return value.disclosure_class;
+}
+
+function summaryDisclosureLabels(value: Record<string, unknown>): SummaryDisclosureLabel[] {
+  const labels: SummaryDisclosureLabel[] = [];
+  const primaryDisclosureClass = disclosureClassFromMetadata(value.disclosure_label);
+
+  if (primaryDisclosureClass !== undefined) {
+    labels.push({ key: "disclosure", value: primaryDisclosureClass });
+  } else if (typeof value.disclosure_class === "string") {
+    labels.push({ key: "disclosure", value: value.disclosure_class });
+  }
+
+  for (const field of SUMMARY_DISCLOSURE_LABEL_FIELDS) {
+    if (field === "disclosure_label") {
+      continue;
+    }
+    const disclosureClass = disclosureClassFromMetadata(value[field]);
+    if (disclosureClass !== undefined) {
+      labels.push({ key: fieldLabel(field), value: disclosureClass });
+    }
+  }
+
+  return labels;
+}
+
 function GenericSummary({ value }: { value: unknown }) {
   if (!isRecord(value)) {
     return <JsonValueView value={value} />;
   }
 
   const entries = Object.entries(value);
-  if (entries.length === 0) {
+  const labels = summaryDisclosureLabels(value);
+  if (entries.length === 0 && labels.length === 0) {
     return <Empty>no summary fields</Empty>;
   }
 
   return (
     <div className="props">
+      {labels.length === 0 ? null : (
+        <div className="row">
+          <span className="k">labels</span>
+          <span className="v">
+            {labels.map((label, index) => (
+              <span key={`${label.key}:${index}`}>
+                {index === 0 ? null : " "}
+                <span className="dim">{label.key}</span> <DisclosureLabel value={label.value} />
+              </span>
+            ))}
+          </span>
+        </div>
+      )}
       {entries.map(([key, entry]) => (
         <div className="row" key={key}>
           <span className="k">{fieldLabel(key)}</span>

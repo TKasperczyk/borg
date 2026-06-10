@@ -17,6 +17,7 @@ import { IdChip } from "../../components/Inspector/IdChip";
 import { IdRef } from "../../components/Inspector/IdRef";
 import { resolveObjectType, type ObjectType } from "../../components/Inspector/inspector-id";
 import { Modal } from "../../components/Modal";
+import { PolicyValue } from "../../components/PolicyValue";
 import { SupersededByChip } from "../../components/SupersededByChip";
 import { Tag } from "../../components/Tag";
 import { useApi, type ApiHookState } from "../../hooks/use-api";
@@ -913,9 +914,15 @@ export function DirectivesPanel({
                           </div>
                         )}
                       </td>
-                      <td>{item.activation_scope}</td>
-                      <td>{item.content_scope}</td>
-                      <td>{item.mention_policy}</td>
+                      <td>
+                        <PolicyValue domain="activation_scope" value={item.activation_scope} />
+                      </td>
+                      <td>
+                        <PolicyValue domain="content_scope" value={item.content_scope} />
+                      </td>
+                      <td>
+                        <PolicyValue domain="mention_policy" value={item.mention_policy} />
+                      </td>
                       <td>
                         <Tag kind={statusTag(item.status)} dot>
                           {item.status}
@@ -1123,7 +1130,7 @@ function CreatorDirectiveDetail({
             {directive.status}
           </Tag>
           <Tag>{directive.kind}</Tag>
-          <Tag>{directive.activation_scope}</Tag>
+          <PolicyValue domain="activation_scope" value={directive.activation_scope} />
         </div>
       </div>
       <div style={{ padding: 16 }}>
@@ -1151,11 +1158,15 @@ function CreatorDirectiveDetail({
           </div>
           <div className="row">
             <span className="k">content scope</span>
-            <span className="v">{directive.content_scope}</span>
+            <span className="v">
+              <PolicyValue domain="content_scope" value={directive.content_scope} />
+            </span>
           </div>
           <div className="row">
             <span className="k">mention policy</span>
-            <span className="v">{directive.mention_policy}</span>
+            <span className="v">
+              <PolicyValue domain="mention_policy" value={directive.mention_policy} />
+            </span>
           </div>
           <div className="row">
             <span className="k">priority</span>
@@ -1213,7 +1224,9 @@ function CreatorDirectiveDetail({
         <div className="props">
           <div className="row">
             <span className="k">scope</span>
-            <span className="v">{directive.activation_scope}</span>
+            <span className="v">
+              <PolicyValue domain="activation_scope" value={directive.activation_scope} />
+            </span>
           </div>
           <div className="row">
             <span className="k">allowed ids</span>

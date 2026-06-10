@@ -13,6 +13,7 @@ import {
 import type {
   CommitmentItem,
   EpisodeMemoryItem,
+  LabelRef,
   MemoryBandDetail,
   MemoryBandId,
   MemoryBandSummary,
@@ -22,6 +23,7 @@ import type {
   SemanticMemoryNode,
   SocialMemoryItem,
 } from "../../api/types";
+import { DisclosureLabel } from "../../components/DisclosureLabel";
 import { Empty } from "../../components/Empty";
 import { ErrorState } from "../../components/ErrorState";
 import { IdChip } from "../../components/Inspector/IdChip";
@@ -1010,6 +1012,17 @@ function participantRefs(episode: EpisodeMemoryItem) {
   );
 }
 
+function originAudienceRefs(episode: EpisodeMemoryItem): LabelRef[] {
+  return (
+    episode.origin_audience_refs ??
+    (episode.origin_audience_entity_ids ?? []).map((id) => ({
+      value: id,
+      id,
+      label: null,
+    }))
+  );
+}
+
 function ParticipantLabel({
   participant,
 }: {
@@ -1019,6 +1032,15 @@ function ParticipantLabel({
     <span className="identity-inline">
       <span>{participant.label ?? "unknown"}</span>
       {participant.id === null ? null : <IdChip id={participant.id} type="entity" />}
+    </span>
+  );
+}
+
+function OriginAudienceLabel({ origin }: { origin: LabelRef }) {
+  return (
+    <span className="identity-inline">
+      <span>{origin.label ?? origin.value}</span>
+      {origin.id === null ? null : <IdChip id={origin.id} type="entity" />}
     </span>
   );
 }
@@ -1253,6 +1275,9 @@ function EpisodicTimeline({
           <div className="matlas-card-head">
             <div className="ttl">{episode.title}</div>
             <Tag kind="info">{audienceLabel(episode.audience)}</Tag>
+            <DisclosureLabel
+              value={episode.disclosure_class ?? episode.disclosure_label?.disclosure_class}
+            />
           </div>
           <div className="matlas-card-body">{episode.narrative}</div>
           <div className="matlas-chip-row">
@@ -2295,6 +2320,33 @@ function BandSpecificDetail({
           <div className="row">
             <span className="k">audience</span>
             <span className="v">{audienceLabel(episode.audience)}</span>
+          </div>
+          <div className="row">
+            <span className="k">disclosure</span>
+            <span className="v">
+              <DisclosureLabel
+                value={episode.disclosure_class ?? episode.disclosure_label?.disclosure_class}
+              />
+            </span>
+          </div>
+          <div className="row">
+            <span className="k">origin audiences</span>
+            <span className="v">
+              {originAudienceRefs(episode).length === 0
+                ? "none"
+                : originAudienceRefs(episode).map((origin, index) => (
+                    <span key={origin.value}>
+                      {index === 0 ? null : ", "}
+                      <OriginAudienceLabel origin={origin} />
+                    </span>
+                  ))}
+            </span>
+          </div>
+          <div className="row">
+            <span className="k">shared</span>
+            <span className="v">
+              {episode.shared === undefined ? "unknown" : String(episode.shared)}
+            </span>
           </div>
           <div className="row">
             <span className="k">participants</span>

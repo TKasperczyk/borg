@@ -1520,6 +1520,20 @@ describe("P2 screens", () => {
               status: "active",
               source_episode_ids: [episodeId],
               source_count: 1,
+              disclosure_class: "relationship_private",
+              disclosure_label: {
+                disclosure_class: "relationship_private",
+                origin_audience_entity_ids: ["ent_aaaaaaaaaaaaaaaa"],
+                private_to_entity_ids: ["ent_aaaaaaaaaaaaaaaa"],
+                public_to_entity_ids: [],
+              },
+              origin_audience_refs: [
+                {
+                  value: "ent_aaaaaaaaaaaaaaaa",
+                  id: "ent_aaaaaaaaaaaaaaaa",
+                  label: "Review audience",
+                },
+              ],
               created_at: 1,
               updated_at: 2,
             },
@@ -1586,6 +1600,8 @@ describe("P2 screens", () => {
     expect(
       await screen.findByText("The substrate is expected to stay online during the demo."),
     ).toBeInTheDocument();
+    expect(screen.getByText("private")).toBeInTheDocument();
+    expect(screen.getByText("Review audience")).toBeInTheDocument();
     expect(
       screen.getByText("The runtime should be treated as offline for the demo."),
     ).toBeInTheDocument();

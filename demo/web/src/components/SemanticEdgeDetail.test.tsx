@@ -46,6 +46,16 @@ describe("SemanticEdgeDetail", () => {
           confidence: 0.76,
           evidence_episode_ids: ["ep_source000000000"],
           source_count: 1,
+          disclosure_class: "operator_private",
+          disclosure_label: {
+            disclosure_class: "operator_private",
+            origin_audience_entity_ids: ["ent_bbbbbbbbbbbbbbbb"],
+            private_to_entity_ids: ["ent_bbbbbbbbbbbbbbbb"],
+            public_to_entity_ids: [],
+          },
+          origin_audience_refs: [
+            { value: "ent_bbbbbbbbbbbbbbbb", id: "ent_bbbbbbbbbbbbbbbb", label: "Operator" },
+          ],
           valid_from: 1,
           valid_to: null,
           invalidated_at: null,
@@ -58,6 +68,8 @@ describe("SemanticEdgeDetail", () => {
     );
 
     expect(screen.getByText("contradicts")).toBeInTheDocument();
+    expect(screen.getByText("operator")).toHaveClass("tag", "warn");
+    expect(screen.getByText("Operator")).toBeInTheDocument();
     expect(screen.getByText("confidence 0.76")).toBeInTheDocument();
     expect(screen.getByText(/Source node/)).toBeInTheDocument();
     expect(screen.getByText(/Target node/)).toBeInTheDocument();
@@ -66,5 +78,31 @@ describe("SemanticEdgeDetail", () => {
     expect(screen.getByRole("button", { name: "jump to semn_to000000000" })).toBeInTheDocument();
     expect(screen.getByText("open")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "jump to ep_source000000000" })).toBeInTheDocument();
+  });
+
+  it("fails closed to an unknown chip when semantic edge disclosure fields are absent", () => {
+    renderWithInspector(
+      <SemanticEdgeDetail
+        nodes={[]}
+        edge={{
+          id: "seme_unknown000000",
+          from_node_id: "semn_from00000000",
+          to_node_id: "semn_to000000000",
+          relation: "supports",
+          confidence: 0.5,
+          evidence_episode_ids: [],
+          source_count: 0,
+          valid_from: 1,
+          valid_to: null,
+          invalidated_at: null,
+          invalidated_by_edge_id: null,
+          invalidated_by_review_id: null,
+          invalidated_by_process: null,
+          invalidated_reason: null,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("unknown")).toHaveClass("tag", "solid");
   });
 });

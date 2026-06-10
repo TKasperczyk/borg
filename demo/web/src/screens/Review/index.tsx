@@ -29,6 +29,7 @@ import { isWhySupported } from "../../components/Inspector/inspector-registry";
 import { JsonValueView } from "../../components/JsonValueView";
 import { Loading } from "../../components/Loading";
 import { Modal } from "../../components/Modal";
+import { PolicyValue } from "../../components/PolicyValue";
 import { SemanticEdgeDetail } from "../../components/SemanticEdgeDetail";
 import { SemanticNodeDetail } from "../../components/SemanticNodeDetail";
 import { Tag } from "../../components/Tag";
@@ -774,58 +775,27 @@ function scopeFieldValue(member: unknown, field: ScopeField): unknown {
   }
 }
 
-function scopeFieldDisplayValue(member: unknown, field: ScopeField): unknown {
-  const value = scopeFieldValue(member, field);
-
-  if (
-    field === "disclosure_allowed" ||
-    field === "disclosure_excluded" ||
-    field === "activation_allowed" ||
-    field === "activation_excluded"
-  ) {
-    return Array.isArray(value) ? `${value.length} entities` : value;
-  }
-
-  return value;
-}
-
-function isEntityScopeField(field: ScopeField): boolean {
-  return (
-    field === "disclosure_allowed" ||
-    field === "disclosure_excluded" ||
-    field === "activation_allowed" ||
-    field === "activation_excluded"
-  );
-}
-
 function ScopeFieldRenderedValue({ member, field }: { member: unknown; field: ScopeField }) {
   const value = scopeFieldValue(member, field);
 
-  if (!isEntityScopeField(field)) {
-    return <>{displayValue(scopeFieldDisplayValue(member, field))}</>;
+  if (field === "content_scope") {
+    return <PolicyValue domain="content_scope" value={value} />;
   }
-
-  const ids =
-    typeof value === "string"
-      ? [value]
-      : Array.isArray(value)
-        ? value.filter((item): item is string => typeof item === "string")
-        : [];
-
-  if (ids.length === 0) {
-    return <>{displayValue(scopeFieldDisplayValue(member, field))}</>;
+  if (field === "mention_policy") {
+    return <PolicyValue domain="mention_policy" value={value} />;
+  }
+  if (field === "activation_scope") {
+    return <PolicyValue domain="activation_scope" value={value} />;
   }
 
   return (
-    <>
-      {ids.length} {ids.length === 1 ? "entity" : "entities"}{" "}
-      {ids.map((id, index) => (
-        <span key={id}>
-          {index === 0 ? null : ", "}
-          <IdRef id={id} type="entity" label={shortId(id)} />
-        </span>
-      ))}
-    </>
+    <PolicyValue
+      domain="entity-list"
+      value={value}
+      mode={
+        field === "disclosure_excluded" || field === "activation_excluded" ? "excluded" : "allowed"
+      }
+    />
   );
 }
 

@@ -1,5 +1,6 @@
-import type { SemanticMemoryNode } from "../api/types";
+import type { LabelRef, SemanticMemoryNode } from "../api/types";
 import { isInternalId } from "../screens/screen-utils";
+import { DisclosureLabel } from "./DisclosureLabel";
 import { IdChip } from "./Inspector/IdChip";
 import { Tag } from "./Tag";
 
@@ -22,7 +23,21 @@ function emptyFallback(values: readonly string[], fallback: string): string {
   return values.length === 0 ? fallback : values.join(", ");
 }
 
+function originAudienceRefs(node: SemanticMemoryNode): LabelRef[] {
+  return (
+    node.origin_audience_refs ??
+    (node.origin_audience_entity_ids ?? []).map((id) => ({
+      value: id,
+      id,
+      label: null,
+    }))
+  );
+}
+
 export function SemanticNodeDetail({ node, label }: SemanticNodeDetailProps) {
+  const disclosureClass = node.disclosure_class ?? node.disclosure_label?.disclosure_class;
+  const origins = originAudienceRefs(node);
+
   return (
     <div className="item" style={{ padding: 12, border: "1px solid var(--line)" }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -31,6 +46,7 @@ export function SemanticNodeDetail({ node, label }: SemanticNodeDetailProps) {
         <Tag kind={statusTagKind(node.status)} dot>
           {node.status}
         </Tag>
+        <DisclosureLabel value={disclosureClass} />
         <Tag>confidence {node.confidence.toFixed(2)}</Tag>
       </div>
       <div
@@ -78,6 +94,25 @@ export function SemanticNodeDetail({ node, label }: SemanticNodeDetailProps) {
           <span className="k">aliases</span>
           <span className="v">{emptyFallback(node.aliases, "none")}</span>
         </div>
+        {origins.length === 0 ? null : (
+          <div className="row">
+            <span className="k">origin audiences</span>
+            <span className="v">
+              {origins.map((origin, index) => (
+                <span key={origin.value}>
+                  {index === 0 ? null : ", "}
+                  <span>{origin.label ?? origin.value}</span>
+                  {origin.id === null ? null : (
+                    <>
+                      {" "}
+                      <IdChip id={origin.id} type="entity" />
+                    </>
+                  )}
+                </span>
+              ))}
+            </span>
+          </div>
+        )}
         <div className="row">
           <span className="k">source episodes</span>
           <span className="v">

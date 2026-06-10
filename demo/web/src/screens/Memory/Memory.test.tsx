@@ -116,9 +116,20 @@ function episodeBandResponse() {
 function episodeItem(
   id: string,
   title: string,
-  input: { audience?: string | null; tags?: string[]; ts?: number; search_score?: number } = {},
+  input: {
+    audience?: string | null;
+    tags?: string[];
+    ts?: number;
+    search_score?: number;
+    disclosure_class?: string;
+    origin_audience_entity_ids?: string[];
+    origin_audience_refs?: Array<{ value: string; id: string | null; label: string | null }>;
+    shared?: boolean;
+  } = {},
 ) {
   const ts = input.ts ?? 1;
+  const disclosureClass = input.disclosure_class ?? "public";
+  const originAudienceEntityIds = input.origin_audience_entity_ids ?? [];
   return {
     id,
     title,
@@ -128,6 +139,16 @@ function episodeItem(
     start_time: ts,
     end_time: ts,
     audience: input.audience ?? null,
+    origin_audience_entity_ids: originAudienceEntityIds,
+    origin_audience_refs: input.origin_audience_refs ?? [],
+    shared: input.shared ?? true,
+    disclosure_class: disclosureClass,
+    disclosure_label: {
+      disclosure_class: disclosureClass,
+      origin_audience_entity_ids: originAudienceEntityIds,
+      private_to_entity_ids: originAudienceEntityIds,
+      public_to_entity_ids: [],
+    },
     significance: 0.5,
     confidence: 0.8,
     tags: input.tags ?? ["test"],
@@ -659,6 +680,12 @@ describe("Memory correction actions", () => {
             audience: "Bob",
             tags: ["ops"],
             ts: 20,
+            disclosure_class: "relationship_private",
+            origin_audience_entity_ids: ["ent_bbbbbbbbbbbbbbbb"],
+            origin_audience_refs: [
+              { value: "ent_bbbbbbbbbbbbbbbb", id: "ent_bbbbbbbbbbbbbbbb", label: "Review room" },
+            ],
+            shared: false,
           }),
         ],
         next_cursor: null,
@@ -671,6 +698,8 @@ describe("Memory correction actions", () => {
     expect((await screen.findAllByText("Timeline one")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Alice").length).toBeGreaterThan(0);
     expect(container.querySelectorAll(".matlas-timeline-card")).toHaveLength(2);
+    const card = screen.getByText("Timeline two").closest(".matlas-timeline-card") as HTMLElement;
+    expect(within(card).getByText("private")).toHaveClass("tag", "purple");
 
     fireEvent.click(screen.getByText("Timeline two"));
 
@@ -681,6 +710,10 @@ describe("Memory correction actions", () => {
         ),
       ).toBeInTheDocument();
     });
+    const detail = within(container.querySelector(".detail") as HTMLElement);
+    expect(detail.getByText("private")).toHaveClass("tag", "purple");
+    expect(detail.getByText("Review room")).toBeInTheDocument();
+    expect(detail.getByText("false")).toBeInTheDocument();
   });
 
   it("renders procedural skill cards with a beta posterior meter", async () => {

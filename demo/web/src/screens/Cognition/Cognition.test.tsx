@@ -972,6 +972,48 @@ describe("cognition screen", () => {
     expect(screen.getByText("question kept")).toBeInTheDocument();
   });
 
+  it("renders disclosure labels lifted from ledger state metadata", () => {
+    renderWithInspector(
+      <LedgerView
+        turnId="turn_disclosure"
+        cachedLedger={{
+          ...ledgerWithText("private ledger entry"),
+          sections: [
+            {
+              id: "shared_state",
+              label: "shared state",
+              entries: [
+                {
+                  id: "ledger_disclosure",
+                  source_type: "shared_state",
+                  session_scope: "global",
+                  actor: "memory",
+                  trust_rank: 1,
+                  text: "private ledger entry",
+                  state_metadata: {
+                    disclosure_label: {
+                      disclosure_class: "relationship_private",
+                      origin_audience_entity_ids: ["ent_aaaaaaaaaaaaaaaa"],
+                      private_to_entity_ids: ["ent_aaaaaaaaaaaaaaaa"],
+                      public_to_entity_ids: [],
+                    },
+                    disclosure_note: "source-labeled private",
+                    current_audience_entity_id: "ent_aaaaaaaaaaaaaaaa",
+                  },
+                },
+              ],
+            },
+          ],
+        }}
+        active
+        audience="alice"
+      />,
+    );
+
+    expect(screen.getByText("private ledger entry")).toBeInTheDocument();
+    expect(screen.getByText("private")).toHaveClass("tag", "purple");
+  });
+
   it("opens the inspector from a namespaced ledger source handle raw id", async () => {
     const episodeId = "ep_ledger111111111";
     vi.stubGlobal(

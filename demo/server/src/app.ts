@@ -16,6 +16,7 @@ import {
   STREAM_ENTRY_KINDS,
   VERSION,
   classifySuppressionReason,
+  memoryDisclosureLabelFromEpisodeAccess,
   type AttachmentId,
   type Borg,
   type CommitmentEnforcementClass,
@@ -30,6 +31,7 @@ import {
   type MaintenanceAuditRecord,
   type MaintenanceTickResult,
   type MaintenancePlan,
+  type MemoryDisclosureLabel,
   type OfflineProcessName,
   type OrchestratorResult,
   type RelationalSlotState,
@@ -1449,6 +1451,42 @@ function createLabelResolver(borg: Borg) {
 
 type LabelResolver = ReturnType<typeof createLabelResolver>;
 
+type SemanticDisclosurePayload = {
+  disclosureLabel?: MemoryDisclosureLabel | null;
+};
+
+type SerializedDisclosureLabel = {
+  disclosure_class: MemoryDisclosureLabel["disclosureClass"];
+  origin_audience_entity_ids: string[];
+  private_to_entity_ids: string[];
+  public_to_entity_ids: string[];
+};
+
+function serializeDisclosureLabel(
+  label: MemoryDisclosureLabel,
+  labels: LabelResolver,
+): {
+  origin_audience_entity_ids: string[];
+  origin_audience_refs: LabelRef[];
+  disclosure_class: SerializedDisclosureLabel["disclosure_class"];
+  disclosure_label: SerializedDisclosureLabel;
+} {
+  const metadata: SerializedDisclosureLabel = {
+    disclosure_class: label.disclosureClass,
+    origin_audience_entity_ids: [...label.originAudienceEntityIds],
+    private_to_entity_ids: [...label.privateToEntityIds],
+    public_to_entity_ids: [...label.publicToEntityIds],
+  };
+  return {
+    origin_audience_entity_ids: metadata.origin_audience_entity_ids,
+    origin_audience_refs: metadata.origin_audience_entity_ids.map((id) =>
+      labels.participantRef(id),
+    ),
+    disclosure_class: metadata.disclosure_class,
+    disclosure_label: metadata,
+  };
+}
+
 export function serializeStreamEntries(
   borg: Borg,
   entries: readonly StreamEntry[],
@@ -1551,6 +1589,8 @@ function mapEpisode(
   item: Awaited<ReturnType<Borg["episodic"]["list"]>>["items"][number],
   labels: LabelResolver = createLabelResolver(borg),
 ) {
+  const disclosure = serializeDisclosureLabel(memoryDisclosureLabelFromEpisodeAccess(item), labels);
+
   return {
     id: item.id,
     title: item.title,
@@ -1561,6 +1601,11 @@ function mapEpisode(
     start_time: item.start_time,
     end_time: item.end_time,
     audience: entityLabel(borg, item.audience_entity_id ?? null),
+    origin_audience_entity_ids: disclosure.origin_audience_entity_ids,
+    origin_audience_refs: disclosure.origin_audience_refs,
+    shared: disclosure.disclosure_class === "public",
+    disclosure_class: disclosure.disclosure_class,
+    disclosure_label: disclosure.disclosure_label,
     significance: item.significance,
     confidence: item.confidence,
     tags: item.tags,
@@ -1574,10 +1619,18 @@ function mapEpisode(
   };
 }
 
-function mapSemanticMemoryNode(node: SemanticNode, searchScore?: number, labels?: LabelResolver) {
+function mapSemanticMemoryNode(
+  node: SemanticNode & SemanticDisclosurePayload,
+  searchScore?: number,
+  labels?: LabelResolver,
+) {
   const displayLabel = ENTITY_ID_SHAPE.test(node.label)
     ? (labels?.entityName(node.label) ?? null)
     : node.label;
+  const disclosure =
+    node.disclosureLabel === undefined || node.disclosureLabel === null || labels === undefined
+      ? {}
+      : serializeDisclosureLabel(node.disclosureLabel, labels);
 
   return {
     id: node.id,
@@ -1591,13 +1644,22 @@ function mapSemanticMemoryNode(node: SemanticNode, searchScore?: number, labels?
     status: node.status,
     source_episode_ids: node.source_episode_ids,
     source_count: node.source_episode_ids.length,
+    ...disclosure,
     created_at: node.created_at,
     updated_at: node.updated_at,
     ...(searchScore === undefined ? {} : { search_score: searchScore }),
   };
 }
 
-function mapSemanticMemoryEdge(edge: SemanticEdge) {
+function mapSemanticMemoryEdge(
+  edge: SemanticEdge & SemanticDisclosurePayload,
+  labels?: LabelResolver,
+) {
+  const disclosure =
+    edge.disclosureLabel === undefined || edge.disclosureLabel === null || labels === undefined
+      ? {}
+      : serializeDisclosureLabel(edge.disclosureLabel, labels);
+
   return {
     id: edge.id,
     from_node_id: edge.from_node_id,
@@ -1606,6 +1668,7 @@ function mapSemanticMemoryEdge(edge: SemanticEdge) {
     confidence: edge.confidence,
     evidence_episode_ids: edge.evidence_episode_ids,
     source_count: edge.evidence_episode_ids.length,
+    ...disclosure,
     valid_from: edge.valid_from,
     valid_to: edge.valid_to,
     invalidated_at: edge.invalidated_at,
@@ -2667,7 +2730,7 @@ export function createDemoServerApp(args: DemoServerAppInput) {
         throw new HTTPException(404, { message: `semantic edge ${id} not found` });
       }
 
-      return c.json({ edge: mapSemanticMemoryEdge(edge) });
+      return c.json({ edge: mapSemanticMemoryEdge(edge, createLabelResolver(input.borg)) });
     } catch (error) {
       mapBorgErrorToHttp(error);
     }
@@ -2736,7 +2799,7 @@ export function createDemoServerApp(args: DemoServerAppInput) {
           band,
           mode: "browse",
           nodes: nodes.items.map((node) => mapSemanticMemoryNode(node, undefined, labels)),
-          edges: edges.map((edge) => mapSemanticMemoryEdge(edge)),
+          edges: edges.map((edge) => mapSemanticMemoryEdge(edge, labels)),
           next_cursor: nodes.nextCursor ?? null,
         });
       }

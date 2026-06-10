@@ -67,6 +67,7 @@ import type {
   TurnsResponse,
   WhyResponse,
 } from "./types";
+import { normalizeLedgerResponse } from "./ledger-normalize";
 
 const DEFAULT_API_BASE = "";
 export const RESET_CONFIRM_TOKEN = "RESET";
@@ -326,7 +327,9 @@ export async function getTurns(
 }
 
 export async function getLedger(turnId: string): Promise<LedgerResponse> {
-  return fetchJson<LedgerResponse>(`api/turns/${encodeURIComponent(turnId)}/ledger`);
+  return normalizeLedgerResponse(
+    await fetchJson<LedgerResponse>(`api/turns/${encodeURIComponent(turnId)}/ledger`),
+  );
 }
 
 export async function getSharedState(audience: string): Promise<SharedStateResponse> {

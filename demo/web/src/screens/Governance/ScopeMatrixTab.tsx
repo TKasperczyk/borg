@@ -7,6 +7,7 @@ import type {
   SharedStateEntryKind,
 } from "../../api/types";
 import { IdRef } from "../../components/Inspector/IdRef";
+import { PolicyValue } from "../../components/PolicyValue";
 import { Tag } from "../../components/Tag";
 import { lifecycleLabel, tagKind } from "../../lib/shared-state-lifecycle";
 import { shortId } from "../screen-utils";
@@ -90,12 +91,28 @@ function linkedReviewCount(reviews: readonly ReviewRow[], ids: readonly string[]
   }).length;
 }
 
-function policyDistribution(policyCounts: ReadonlyMap<SessionParticipationPolicy, number>): string {
+function PolicyDistribution({
+  policyCounts,
+}: {
+  policyCounts: ReadonlyMap<SessionParticipationPolicy, number>;
+}) {
   const labels = POLICY_ORDER.flatMap((policy) => {
     const count = policyCounts.get(policy) ?? 0;
-    return count === 0 ? [] : [`${policy}:${count}`];
+    return count === 0 ? [] : [{ policy, count }];
   });
-  return labels.length === 0 ? "none" : labels.join(" · ");
+  if (labels.length === 0) {
+    return <>none</>;
+  }
+  return (
+    <span style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      {labels.map(({ policy, count }) => (
+        <span key={policy}>
+          <PolicyValue domain="participation_policy" value={policy} />{" "}
+          <span className="dim">x{count}</span>
+        </span>
+      ))}
+    </span>
+  );
 }
 
 function lifecycleCounts(
@@ -309,9 +326,10 @@ export function ScopeMatrixTab({
                         <span title={session.audience_label}>{session.audience_label}</span>
                       </td>
                       <td>
-                        <Tag kind={session.participation_policy === "active" ? "acc" : "warn"}>
-                          {session.participation_policy}
-                        </Tag>
+                        <PolicyValue
+                          domain="participation_policy"
+                          value={session.participation_policy}
+                        />
                       </td>
                       <td>{session.audience_role}</td>
                       <td>
@@ -380,7 +398,9 @@ export function ScopeMatrixTab({
                   <div className="props">
                     <div className="row">
                       <span className="k">policies</span>
-                      <span className="v">{policyDistribution(rollup.policyCounts)}</span>
+                      <span className="v">
+                        <PolicyDistribution policyCounts={rollup.policyCounts} />
+                      </span>
                     </div>
                     <div className="row">
                       <span className="k">commitments</span>

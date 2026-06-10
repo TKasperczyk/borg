@@ -223,17 +223,39 @@ export type MemoryBandsResponse = {
   bands: MemoryBandSummary[];
 };
 
+export type LabelRef = { value: string; id: string | null; label: string | null };
+
+export type MemoryDisclosureClass =
+  | "public"
+  | "relationship_private"
+  | "operator_private"
+  | "self_private"
+  | "sensitive"
+  | "unknown";
+
+export type MemoryDisclosureLabelMetadata = {
+  disclosure_class: MemoryDisclosureClass;
+  origin_audience_entity_ids: string[];
+  private_to_entity_ids: string[];
+  public_to_entity_ids: string[];
+};
+
 export type EpisodeMemoryItem = {
   id: string;
   title: string;
   narrative: string;
   search_score?: number;
   participants: string[];
-  participant_refs?: Array<{ value: string; id: string | null; label: string | null }>;
+  participant_refs?: LabelRef[];
   location: string | null;
   start_time: number;
   end_time: number;
   audience: string | null;
+  origin_audience_entity_ids?: string[];
+  origin_audience_refs?: LabelRef[];
+  shared?: boolean;
+  disclosure_class?: MemoryDisclosureClass;
+  disclosure_label?: MemoryDisclosureLabelMetadata;
   significance: number;
   confidence: number;
   tags: string[];
@@ -259,6 +281,10 @@ export type SemanticMemoryNode = {
   status: "active" | "superseded" | "contradicted" | "quarantined";
   source_episode_ids: string[];
   source_count: number;
+  origin_audience_entity_ids?: string[];
+  origin_audience_refs?: LabelRef[];
+  disclosure_class?: MemoryDisclosureClass;
+  disclosure_label?: MemoryDisclosureLabelMetadata;
   created_at: number;
   updated_at: number;
 };
@@ -271,6 +297,10 @@ export type SemanticMemoryEdge = {
   confidence: number;
   evidence_episode_ids: string[];
   source_count: number;
+  origin_audience_entity_ids?: string[];
+  origin_audience_refs?: LabelRef[];
+  disclosure_class?: MemoryDisclosureClass;
+  disclosure_label?: MemoryDisclosureLabelMetadata;
   valid_from: number;
   valid_to: number | null;
   invalidated_at: number | null;
@@ -950,6 +980,9 @@ export type EvidenceLedgerEntry = {
   state?: string;
   salience_class?: string;
   state_metadata?: Record<string, unknown>;
+  disclosure_label?: MemoryDisclosureLabelMetadata;
+  disclosure_note?: string;
+  current_audience_entity_id?: string | null;
   taint?: "none" | "assistant_seeded" | "quarantined" | "contested";
   persistence_class?: "assistant_self_report";
   via_retrieval?: boolean;

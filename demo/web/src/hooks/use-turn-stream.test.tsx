@@ -153,6 +153,23 @@ function SnapshotProbe({ live }: { live: LiveEvents }) {
   );
 }
 
+function LedgerProbe({ live }: { live: LiveEvents }) {
+  const turnStream = useTurnStream(live, { sessionId: "default" });
+  const entry = turnStream.ledgerByTurn.get("turn_private")?.sections[0]?.entries[0];
+
+  return (
+    <>
+      <output data-testid="ledger-class">
+        {entry?.disclosure_label?.disclosure_class ?? "missing"}
+      </output>
+      <output data-testid="ledger-note">{entry?.disclosure_note ?? "missing"}</output>
+      <output data-testid="ledger-audience">
+        {entry?.current_audience_entity_id ?? "missing"}
+      </output>
+    </>
+  );
+}
+
 function emptyLedger(): EvidenceLedger {
   return {
     sections: [],
@@ -412,5 +429,53 @@ describe("useTurnStream", () => {
     expect(screen.getByTestId("cache-snapshots")).toHaveTextContent("0");
     expect(screen.getByTestId("cache-tail")).toHaveTextContent("0");
     expect(screen.getByTestId("cache-ledgers")).toHaveTextContent("0");
+  });
+
+  it("normalizes disclosure metadata on live cached ledgers", () => {
+    const source = makeLiveSource();
+
+    render(<LedgerProbe live={source.live()} />);
+
+    act(() => {
+      source.emit({
+        type: "evidence_ledger:built",
+        ts: Date.now(),
+        session_id: "default",
+        turn_id: "turn_private",
+        ledger: {
+          ...emptyLedger(),
+          sections: [
+            {
+              id: "shared_state",
+              label: "shared state",
+              entries: [
+                {
+                  id: "entry_private",
+                  source_type: "shared_state",
+                  session_scope: "global",
+                  actor: "memory",
+                  trust_rank: 1,
+                  text: "private state",
+                  state_metadata: {
+                    disclosure_label: {
+                      disclosure_class: "relationship_private",
+                      origin_audience_entity_ids: ["ent_aaaaaaaaaaaaaaaa"],
+                      private_to_entity_ids: ["ent_aaaaaaaaaaaaaaaa"],
+                      public_to_entity_ids: [],
+                    },
+                    disclosure_note: "live private",
+                    current_audience_entity_id: "ent_aaaaaaaaaaaaaaaa",
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      });
+    });
+
+    expect(screen.getByTestId("ledger-class")).toHaveTextContent("relationship_private");
+    expect(screen.getByTestId("ledger-note")).toHaveTextContent("live private");
+    expect(screen.getByTestId("ledger-audience")).toHaveTextContent("ent_aaaaaaaaaaaaaaaa");
   });
 });

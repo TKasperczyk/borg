@@ -5,6 +5,7 @@ import {
   attachmentBytesUrl,
   getSemanticGraph,
   getSemanticEdge,
+  getLedger,
   getSemanticNode,
   getSessions,
   getStream,
@@ -92,6 +93,62 @@ describe("api client", () => {
     await getSessions();
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/sessions");
+  });
+
+  it("normalizes disclosure metadata on fetched ledger entries", async () => {
+    mockFetch(
+      new Response(
+        JSON.stringify({
+          turn_id: "turn_ledger",
+          ledger: {
+            sections: [
+              {
+                id: "shared_state",
+                label: "shared state",
+                entries: [
+                  {
+                    id: "entry_private",
+                    source_type: "shared_state",
+                    session_scope: "global",
+                    actor: "memory",
+                    trust_rank: 1,
+                    text: "private state",
+                    state_metadata: {
+                      disclosure_label: {
+                        disclosure_class: "relationship_private",
+                        origin_audience_entity_ids: ["ent_aaaaaaaaaaaaaaaa"],
+                        private_to_entity_ids: ["ent_aaaaaaaaaaaaaaaa"],
+                        public_to_entity_ids: [],
+                      },
+                      disclosure_note: "private source",
+                      current_audience_entity_id: "ent_aaaaaaaaaaaaaaaa",
+                    },
+                  },
+                ],
+              },
+            ],
+            sharedState: null,
+            transcriptIncluded: false,
+            transcriptCompacted: false,
+            originalTranscriptTokenEstimate: 0,
+            compactedTranscriptEntryCount: 0,
+            rawPreservedUserTranscriptEntryCount: 0,
+            estimatedTokens: 0,
+          },
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+    );
+
+    const response = await getLedger("turn_ledger");
+    const entry = response.ledger.sections[0]?.entries[0];
+
+    expect(entry?.disclosure_label?.disclosure_class).toBe("relationship_private");
+    expect(entry?.disclosure_note).toBe("private source");
+    expect(entry?.current_audience_entity_id).toBe("ent_aaaaaaaaaaaaaaaa");
   });
 
   it("constructs semantic graph query strings", async () => {

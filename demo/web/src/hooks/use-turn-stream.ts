@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { postTurn } from "../api/client";
+import { normalizeEvidenceLedger } from "../api/ledger-normalize";
 import type {
   EvidenceLedger,
   LiveFrame,
@@ -782,7 +783,7 @@ export function useTurnStream(
       pushTail(tailRowsFromFrame(frame));
 
       if (frame.type === "evidence_ledger:built" && frame.ledger !== null) {
-        const ledger = frame.ledger;
+        const ledger = normalizeEvidenceLedger(frame.ledger);
         setLedgerByTurn((current) => {
           const next = new Map(current);
           next.set(frame.turn_id, ledger);

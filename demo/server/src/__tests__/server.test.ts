@@ -377,6 +377,9 @@ async function seedCorrectionEpisode(
     title?: string;
     narrative?: string;
     participants?: string[];
+    audienceEntityId?: Episode["audience_entity_id"];
+    originAudienceEntityIds?: Episode["origin_audience_entity_ids"];
+    shared?: boolean;
   } = {},
 ): Promise<Episode> {
   const internal = borg as unknown as BorgTestInternals;
@@ -404,8 +407,9 @@ async function seedCorrectionEpisode(
       supersedes: [],
     },
     emotional_arc: null,
-    audience_entity_id: null,
-    shared: false,
+    audience_entity_id: input.audienceEntityId ?? null,
+    origin_audience_entity_ids: input.originAudienceEntityIds,
+    shared: input.shared ?? false,
     embedding: new Float32Array([0.1, 0.2, 0.3, 0.4]),
     created_at: now,
     updated_at: now,
@@ -1580,6 +1584,67 @@ describe("demo server", () => {
     expect(body.items.find((item) => item.id === episode.id)).toMatchObject({
       participants: [participantId],
       participant_refs: [{ value: participantId, id: participantId, label: "Dana" }],
+    });
+  });
+
+  it("serializes episodic disclosure labels and origin audience refs additively", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-memory-disclosure-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const audienceId = borg.entities.resolve("Dana");
+    const unknownEpisode = await seedCorrectionEpisode(borg, clock, {
+      title: "Unknown disclosure episode",
+    });
+    const privateEpisode = await seedCorrectionEpisode(borg, clock, {
+      title: "Private disclosure episode",
+      audienceEntityId: audienceId,
+      originAudienceEntityIds: [audienceId],
+      shared: false,
+    });
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const response = await app.request("/api/memory/bands/episodic?limit=5");
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      items: Array<{
+        id: string;
+        origin_audience_entity_ids?: string[];
+        origin_audience_refs?: Array<{ value: string; id: string | null; label: string | null }>;
+        shared?: boolean;
+        disclosure_class?: string;
+        disclosure_label?: {
+          disclosure_class?: string;
+          origin_audience_entity_ids?: string[];
+          private_to_entity_ids?: string[];
+          public_to_entity_ids?: string[];
+        };
+      }>;
+    };
+    expect(body.items.find((item) => item.id === unknownEpisode.id)).toMatchObject({
+      origin_audience_entity_ids: [],
+      origin_audience_refs: [],
+      shared: false,
+      disclosure_class: "unknown",
+      disclosure_label: {
+        disclosure_class: "unknown",
+        origin_audience_entity_ids: [],
+        private_to_entity_ids: [],
+        public_to_entity_ids: [],
+      },
+    });
+    expect(body.items.find((item) => item.id === privateEpisode.id)).toMatchObject({
+      origin_audience_entity_ids: [audienceId],
+      origin_audience_refs: [{ value: audienceId, id: audienceId, label: "Dana" }],
+      shared: false,
+      disclosure_class: "relationship_private",
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        origin_audience_entity_ids: [audienceId],
+        private_to_entity_ids: [audienceId],
+        public_to_entity_ids: [],
+      },
     });
   });
 
@@ -3521,6 +3586,13 @@ describe("demo server", () => {
         display_label: "Detail node",
         description: "Detail node description",
         source_count: 1,
+        disclosure_class: "unknown",
+        disclosure_label: {
+          disclosure_class: "unknown",
+          origin_audience_entity_ids: [],
+          private_to_entity_ids: [],
+          public_to_entity_ids: [],
+        },
       },
     });
 
@@ -3549,6 +3621,13 @@ describe("demo server", () => {
         confidence: 0.7,
         evidence_episode_ids: [sourceEpisodeId],
         source_count: 1,
+        disclosure_class: "unknown",
+        disclosure_label: {
+          disclosure_class: "unknown",
+          origin_audience_entity_ids: [],
+          private_to_entity_ids: [],
+          public_to_entity_ids: [],
+        },
       },
     });
 

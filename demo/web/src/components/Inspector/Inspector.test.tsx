@@ -84,6 +84,18 @@ function episodeFixture(id: string) {
     start_time: 1,
     end_time: 2,
     audience: "alice",
+    origin_audience_entity_ids: ["ent_aaaaaaaaaaaaaaaa"],
+    origin_audience_refs: [
+      { value: "ent_aaaaaaaaaaaaaaaa", id: "ent_aaaaaaaaaaaaaaaa", label: "Alice" },
+    ],
+    shared: false,
+    disclosure_class: "relationship_private",
+    disclosure_label: {
+      disclosure_class: "relationship_private",
+      origin_audience_entity_ids: ["ent_aaaaaaaaaaaaaaaa"],
+      private_to_entity_ids: ["ent_aaaaaaaaaaaaaaaa"],
+      public_to_entity_ids: [],
+    },
     significance: 0.5,
     confidence: 0.8,
     tags: [],
@@ -714,6 +726,33 @@ describe("Inspector drawer", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Raw JSON" }));
     expect(await screen.findByText("source_episode_ids")).toBeInTheDocument();
+  });
+
+  it("renders disclosure labels in generic summary rows", async () => {
+    const episode = episodeFixture("ep_drawer111111111");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((request: RequestInfo | URL) => {
+        if (requestUrl(request).pathname === "/api/memory/bands/episodic") {
+          return Promise.resolve(
+            jsonResponse({
+              band: "episodic",
+              items: [episode],
+              next_cursor: null,
+            }),
+          );
+        }
+        return Promise.reject(new Error(`unexpected fetch ${requestUrl(request).pathname}`));
+      }),
+    );
+
+    renderWithInspector(<OpenButton type="episode" id={episode.id} />);
+    fireEvent.click(screen.getByRole("button", { name: `open ${episode.id}` }));
+
+    expect(await screen.findByRole("dialog", { name: "Episode inspector" })).toBeInTheDocument();
+    expect(await screen.findByText("Global episode")).toBeInTheDocument();
+    expect(screen.getByText("labels")).toBeInTheDocument();
+    expect(screen.getByText("private")).toHaveClass("tag", "purple");
   });
 
   it("renders a list-scoped commitment and its schema-known relationship chips", async () => {

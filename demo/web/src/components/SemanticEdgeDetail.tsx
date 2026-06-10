@@ -1,11 +1,23 @@
-import type { SemanticMemoryEdge, SemanticMemoryNode } from "../api/types";
+import type { LabelRef, SemanticMemoryEdge, SemanticMemoryNode } from "../api/types";
 import { formatTimestamp } from "../lib/stream-utils";
 import { shortId } from "../screens/screen-utils";
+import { DisclosureLabel } from "./DisclosureLabel";
 import { IdChip } from "./Inspector/IdChip";
 import { Tag } from "./Tag";
 
 function edgeEndpointLabel(id: string, nodes: readonly SemanticMemoryNode[]): string {
   return nodes.find((node) => node.id === id)?.label ?? shortId(id);
+}
+
+function originAudienceRefs(edge: SemanticMemoryEdge): LabelRef[] {
+  return (
+    edge.origin_audience_refs ??
+    (edge.origin_audience_entity_ids ?? []).map((id) => ({
+      value: id,
+      id,
+      label: null,
+    }))
+  );
 }
 
 export function SemanticEdgeDetail({
@@ -15,10 +27,14 @@ export function SemanticEdgeDetail({
   edge: SemanticMemoryEdge;
   nodes: readonly SemanticMemoryNode[];
 }) {
+  const disclosureClass = edge.disclosure_class ?? edge.disclosure_label?.disclosure_class;
+  const origins = originAudienceRefs(edge);
+
   return (
     <div className="item" style={{ padding: 12, border: "1px solid var(--line)" }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <Tag kind={edge.relation === "contradicts" ? "warn" : "info"}>{edge.relation}</Tag>
+        <DisclosureLabel value={disclosureClass} />
         <Tag>confidence {edge.confidence.toFixed(2)}</Tag>
         <Tag>{edge.invalidated_at === null ? "active" : "invalidated"}</Tag>
       </div>
@@ -65,6 +81,25 @@ export function SemanticEdgeDetail({
             {edge.valid_to === null ? "open" : formatTimestamp(edge.valid_to)}
           </span>
         </div>
+        {origins.length === 0 ? null : (
+          <div className="row">
+            <span className="k">origin audiences</span>
+            <span className="v">
+              {origins.map((origin, index) => (
+                <span key={origin.value}>
+                  {index === 0 ? null : ", "}
+                  <span>{origin.label ?? origin.value}</span>
+                  {origin.id === null ? null : (
+                    <>
+                      {" "}
+                      <IdChip id={origin.id} type="entity" />
+                    </>
+                  )}
+                </span>
+              ))}
+            </span>
+          </div>
+        )}
         <div className="row">
           <span className="k">evidence episodes</span>
           <span className="v">

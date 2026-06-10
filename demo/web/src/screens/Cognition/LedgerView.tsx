@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 
 import { ApiError, getLedger } from "../../api/client";
+import { normalizeEvidenceLedger } from "../../api/ledger-normalize";
 import type {
   EvidenceLedger,
   EvidenceLedgerEntry,
@@ -8,6 +9,7 @@ import type {
   EvidenceLedgerSourceType,
 } from "../../api/types";
 import { AttachmentChip } from "../../components/AttachmentChip";
+import { DisclosureLabel } from "../../components/DisclosureLabel";
 import { Empty } from "../../components/Empty";
 import { IdRef } from "../../components/Inspector/IdRef";
 import { resolveObjectType, type ObjectType } from "../../components/Inspector/inspector-id";
@@ -51,7 +53,9 @@ export function useLedgerLoadState({
     promise: Promise<EvidenceLedger>;
   } | null>(null);
   const [ledgerState, setLedgerState] = useState<LedgerState | null>(() =>
-    turnId === null || cachedLedger === undefined ? null : { turnId, ledger: cachedLedger },
+    turnId === null || cachedLedger === undefined
+      ? null
+      : { turnId, ledger: normalizeEvidenceLedger(cachedLedger) },
   );
   const [error, setError] = useState<string | null>(null);
 
@@ -71,7 +75,7 @@ export function useLedgerLoadState({
     }
 
     if (cachedLedger !== undefined) {
-      setLedgerState({ turnId, ledger: cachedLedger });
+      setLedgerState({ turnId, ledger: normalizeEvidenceLedger(cachedLedger) });
       return;
     }
 
@@ -331,6 +335,11 @@ export function LedgerView({
                   )}
                   {entry.taint === undefined || entry.taint === "none" ? null : (
                     <Tag kind={trustKind(entry)}>{entry.taint}</Tag>
+                  )}
+                  {entry.disclosure_label === undefined ? null : (
+                    <span title={entry.disclosure_note}>
+                      <DisclosureLabel value={entry.disclosure_label.disclosure_class} />
+                    </span>
                   )}
                   <span className="trust">trust {entry.trust_rank}</span>
                 </div>

@@ -459,6 +459,7 @@ export {
   type StoredReviewKind,
 } from "./memory/review-queue/index.js";
 export { type WorkingMemory } from "./memory/working/index.js";
+export { normalizeEpisodeAccess, type EpisodeAccessLike } from "./memory/episodic/index.js";
 export {
   ACTIVE_SHARED_STATE_ENTRY_KINDS,
   CANONICAL_SHARED_STATE_ENTRY_KINDS,
@@ -476,12 +477,14 @@ export {
   MEMORY_DISCLOSURE_CLASSES,
   SELF_RECALL_SCOPE,
   memoryDisclosureLabelFromEpisodeAccess,
+  memoryDisclosureLabelMetadata,
   type CognitionRecallContext,
   type DisclosureContext,
   type EvidenceItem,
   type EvidencePool,
   type MemoryDisclosureClass,
   type MemoryDisclosureLabel,
+  type MemoryDisclosureLabelMetadata,
   type RecallEvidenceHandle,
   type RecallIntent,
   type RetrievedContext,

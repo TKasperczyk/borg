@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import type { CreatorDirectiveItem, EntityRecord, SessionRecord } from "../../api/types";
 import { IdRef } from "../../components/Inspector/IdRef";
 import { ParticipationPolicyControl } from "../../components/ParticipationPolicyControl";
+import { PolicyValue } from "../../components/PolicyValue";
 import { Tag } from "../../components/Tag";
 import { sourceLabel } from "../../components/SessionFleet";
 import { isInteractiveDescendantEvent } from "../../lib/keyboard";
@@ -229,7 +230,9 @@ export function SessionsEntitiesTab({
                       </div>
                     </td>
                     <td>{session.audience_role}</td>
-                    <td>{session.privacy_level}</td>
+                    <td>
+                      <PolicyValue domain="privacy_level" value={session.privacy_level} />
+                    </td>
                     <td>
                       <Tag kind={session.status === "active" ? "acc" : ""}>{session.status}</Tag>
                     </td>
