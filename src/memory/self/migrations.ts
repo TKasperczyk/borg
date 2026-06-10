@@ -236,4 +236,31 @@ export const selfMigrations = [
       }
     },
   },
+  {
+    id: 3,
+    name: "open_question_ruminations",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS open_question_ruminations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          open_question_id TEXT NOT NULL,
+          note TEXT NOT NULL,
+          tensions TEXT NOT NULL DEFAULT '[]',
+          connected_open_question_ids TEXT NOT NULL DEFAULT '[]',
+          evidence_episode_ids TEXT NOT NULL DEFAULT '[]',
+          evidence_stream_entry_ids TEXT NOT NULL DEFAULT '[]',
+          source_process TEXT NOT NULL,
+          source_run_id TEXT,
+          source_turn_id TEXT,
+          provenance_kind TEXT NOT NULL,
+          provenance_episode_ids TEXT NOT NULL DEFAULT '[]',
+          provenance_process TEXT,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY (open_question_id) REFERENCES open_questions(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_open_question_ruminations_question_created
+          ON open_question_ruminations (open_question_id, created_at DESC, id DESC);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

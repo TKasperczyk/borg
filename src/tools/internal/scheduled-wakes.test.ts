@@ -106,6 +106,24 @@ describe("scheduled wake tools", () => {
     expect(result.scheduledWake).toBeNull();
   });
 
+  it("cancel labels a returned wake as self-private", async () => {
+    const wake = sampleWake();
+    const tool = createScheduledWakesCancelTool({
+      cancelScheduledWake: () => wake,
+    });
+
+    const result = await tool.invoke({ scheduled_wake_id: wake.id }, context);
+
+    expect(result.scheduledWake).toMatchObject({
+      id: wake.id,
+      note: wake.note,
+      disclosure: expect.stringContaining("disclosure_class=self_private"),
+      disclosure_label: {
+        disclosure_class: "self_private",
+      },
+    });
+  });
+
   it("cancel rejects an invalid id at the schema", () => {
     const tool = createScheduledWakesCancelTool({ cancelScheduledWake: () => null });
     expect(tool.inputSchema.safeParse({ scheduled_wake_id: "not-an-id" }).success).toBe(false);

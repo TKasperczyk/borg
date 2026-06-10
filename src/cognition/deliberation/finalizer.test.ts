@@ -3,20 +3,24 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import { FakeLLMClient, createFakeStreamingResponse } from "../../llm/test-support/fake-client.js";
 import { StreamWriter } from "../../stream/index.js";
-import { ToolDispatcher } from "../../tools/index.js";
+import { ToolDispatcher, type ToolDefinition, type ToolOrigin } from "../../tools/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, createEntityId } from "../../util/ids.js";
 import { runFinalizer, type CacheableFinalizerSystemPrompt } from "./finalizer.js";
 
-function createDispatcher(tempDirs: string[]): ToolDispatcher {
+function createDispatcher(
+  tempDirs: string[],
+  registeredTools: readonly ToolDefinition[] = [],
+): ToolDispatcher {
   const tempDir = mkdtempSync(join(tmpdir(), "borg-finalizer-"));
   tempDirs.push(tempDir);
   const clock = new FixedClock(0);
 
-  return new ToolDispatcher({
+  const dispatcher = new ToolDispatcher({
     clock,
     createStreamWriter: (sessionId) =>
       new StreamWriter({
@@ -25,6 +29,12 @@ function createDispatcher(tempDirs: string[]): ToolDispatcher {
         clock,
       }),
   });
+
+  for (const tool of registeredTools) {
+    dispatcher.register(tool);
+  }
+
+  return dispatcher;
 }
 
 async function runEmissionFinalizer(
@@ -38,11 +48,12 @@ async function runEmissionFinalizer(
     structuralNoOutputFlags?: Parameters<typeof runFinalizer>[0]["structuralNoOutputFlags"];
     allowedEmissions?: Parameters<typeof runFinalizer>[0]["allowedEmissions"];
     turnOrigin?: Parameters<typeof runFinalizer>[0]["turnOrigin"];
+    registeredTools?: readonly ToolDefinition[];
   } = {},
 ) {
   return runFinalizer({
     llmClient: llm,
-    dispatcher: createDispatcher(tempDirs),
+    dispatcher: createDispatcher(tempDirs, options.registeredTools),
     sessionId: DEFAULT_SESSION_ID,
     model: "fake",
     baseSystemPrompt: "Legacy base dynamic prompt.",
@@ -77,6 +88,20 @@ async function runEmissionFinalizer(
     ...(options.tracer === undefined ? {} : { tracer: options.tracer }),
     ...(options.turnId === undefined ? {} : { turnId: options.turnId }),
   });
+}
+
+function fakeTool(name: string, allowedOrigins: readonly ToolOrigin[]): ToolDefinition {
+  return {
+    name,
+    description: `Description for ${name}.`,
+    allowedOrigins,
+    writeScope: "read",
+    inputSchema: z.object({}).passthrough(),
+    outputSchema: z.object({}).strict(),
+    async invoke() {
+      return {};
+    },
+  };
 }
 
 function requestSystemText(system: unknown): string {
@@ -197,6 +222,81 @@ describe("runFinalizer emission tools", () => {
       text: "Hold the unresolved question about continuity.",
     });
     expect(result.text).toBe("");
+  });
+
+  it("does not expose registered interior tools on user-origin finalizer calls", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_answer",
+              name: "EmitAnswer",
+              input: { text: "Answer." },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+
+    await runEmissionFinalizer(llm, tempDirs, {
+      registeredTools: [
+        fakeTool("tool.episodic.search", ["autonomous", "deliberator"]),
+        fakeTool("tool.openQuestions.create", ["autonomous", "deliberator"]),
+      ],
+    });
+
+    expect(llm.requests[0]?.tools?.map((tool) => tool.name)).toEqual([
+      "EmitAnswer",
+      "EmitObserve",
+      "EmitNoOutput",
+      "EmitSelfReport",
+    ]);
+  });
+
+  it("exposes the registered autonomous interior tool set by exact name", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_continue_thought",
+              name: "EmitContinueThought",
+              input: { text: "Hold the unresolved question about continuity." },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+
+    await runEmissionFinalizer(llm, tempDirs, {
+      turnOrigin: "autonomous",
+      registeredTools: [
+        fakeTool("tool.unlisted.autonomous", ["autonomous"]),
+        fakeTool("tool.openQuestions.create", ["autonomous", "deliberator"]),
+        fakeTool("tool.journal.append", ["autonomous"]),
+        fakeTool("tool.episodic.search", ["autonomous", "deliberator"]),
+      ],
+    });
+
+    expect(llm.requests[0]?.tools?.map((tool) => tool.name)).toEqual([
+      "EmitAnswer",
+      "EmitObserve",
+      "EmitNoOutput",
+      "EmitSelfReport",
+      "EmitContinueThought",
+      "tool.journal.append",
+      "tool.openQuestions.create",
+      "tool.episodic.search",
+    ]);
   });
 
   it("parses EmitContinueThought as a private terminal decision", async () => {

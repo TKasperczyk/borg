@@ -34,6 +34,9 @@ export {
   OpenQuestionsRepository,
   type OpenQuestionEmbeddingBackfillReport,
   type OpenQuestionEmbeddingFailureDetails,
+  type OpenQuestionRumination,
+  type OpenQuestionRuminationInput,
+  type OpenQuestionRuminationListOptions,
   type OpenQuestionResolveOptions,
   type OpenQuestionsRepositoryOptions,
 } from "./open-questions.js";
@@ -73,6 +76,7 @@ export {
   openQuestionAudienceEntityIdSchema,
   openQuestionIdSchema,
   openQuestionPatchSchema,
+  openQuestionResolutionStreamEntryIdSchema,
   openQuestionSchema,
   openQuestionSourceSchema,
   openQuestionStatusSchema,

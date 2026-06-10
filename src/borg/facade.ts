@@ -442,6 +442,10 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         add: (...args) => deps.identityService.addGrowthMarker(...args),
         summarize: (...args) => deps.growthMarkersRepository.summarize(...args),
       },
+      journal: {
+        latest: () => deps.trainOfThoughtRepository.latest(),
+        list: (...args) => deps.trainOfThoughtRepository.list(...args),
+      },
       openQuestions: {
         list: (...args) => deps.openQuestionsRepository.list(...args),
         add: (...args) => deps.identityService.addOpenQuestion(...args),

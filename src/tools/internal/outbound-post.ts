@@ -135,6 +135,7 @@ export function createOutboundPostTool(
     name: OUTBOUND_POST_TOOL_NAME,
     description:
       "Post a proactive outbound message into another Borg session. Provide target_session_id from the operator session snapshot and an instruction for what the target-scoped composition turn should convey. This tool requires creator authority in an operator session, or autonomous policy authorization. It starts a separate target-scoped turn; it does not send my current draft text directly.",
+    menuSummary: "Post outbound only to a structurally authorized target session.",
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "write",
     inputSchema: outboundPostInputSchema,

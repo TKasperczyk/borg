@@ -131,6 +131,7 @@ export type TurnTraceEventName =
   | "open_question_resolution.started"
   | "open_question_resolution.transitioned"
   | "open_question_resolution.rejected"
+  | "open_question_rumination.connected_ids_dropped"
   | "reflector.intent_update.rejected"
   | "reflector.intent_update.completed"
   | "offline_process.started"

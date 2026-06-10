@@ -22,6 +22,7 @@ function createRuminatorResponse() {
         id: "toolu_v101_1_ruminator",
         name: RUMINATOR_TOOL_NAME,
         input: {
+          outcome: "resolved",
           resolution_note: "Bob-private evidence resolved the self/global open question.",
           growth_marker: null,
         },

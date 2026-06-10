@@ -22,11 +22,13 @@ import { ProvenanceError, StorageError } from "../../util/errors.js";
 import { clamp } from "../../util/math.js";
 import {
   createOpenQuestionId,
+  maintenanceRunIdHelpers,
   openQuestionIdHelpers,
   parseOpenQuestionId,
   type EntityId,
   type SharedStateEntryId,
   type GoalId,
+  type MaintenanceRunId,
   type OpenQuestionId,
 } from "../../util/ids.js";
 import { serializeJsonValue } from "../../util/json-value.js";
@@ -47,6 +49,7 @@ import {
   parseStoredProvenance,
   provenanceSchema,
   toStoredProvenance,
+  type Provenance,
 } from "../common/provenance.js";
 import {
   OPEN_QUESTION_SOURCES,
@@ -112,6 +115,39 @@ export type OpenQuestionResolveOptions = IdentityCasOptions & {
   resolvedByArtifactEntryId?: SharedStateEntryId | null;
 };
 
+export type OpenQuestionRumination = {
+  id: number;
+  open_question_id: OpenQuestionId;
+  note: string;
+  tensions: string[];
+  connected_open_question_ids: OpenQuestionId[];
+  evidence_episode_ids: z.infer<typeof episodeIdSchema>[];
+  evidence_stream_entry_ids: z.infer<typeof openQuestionResolutionStreamEntryIdSchema>[];
+  source_process: string;
+  source_run_id: MaintenanceRunId | null;
+  source_turn_id: string | null;
+  provenance: Provenance;
+  created_at: number;
+};
+
+export type OpenQuestionRuminationInput = {
+  open_question_id: OpenQuestionId;
+  note: string;
+  tensions?: readonly string[];
+  connected_open_question_ids?: readonly OpenQuestionId[];
+  evidence_episode_ids?: readonly z.infer<typeof episodeIdSchema>[];
+  evidence_stream_entry_ids?: readonly z.infer<typeof openQuestionResolutionStreamEntryIdSchema>[];
+  source_process: string;
+  source_run_id?: MaintenanceRunId | null;
+  source_turn_id?: string | null;
+  provenance: Provenance;
+  created_at?: number;
+};
+
+export type OpenQuestionRuminationListOptions = {
+  limit?: number;
+};
+
 type OpenQuestionVectorRow = {
   id: string;
   question: string;
@@ -124,6 +160,13 @@ type OpenQuestionVectorRow = {
   embedding: number[];
   _distance?: number;
 };
+
+const maintenanceRunIdSchema = z
+  .string()
+  .refine((value) => maintenanceRunIdHelpers.is(value), {
+    message: "Invalid maintenance run id",
+  })
+  .transform((value) => value as MaintenanceRunId);
 
 export type OpenQuestionsRepositoryOptions = {
   db: SqliteDatabase;
@@ -324,6 +367,71 @@ function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
     throw new StorageError("Open question row failed validation", {
       cause: parsed.error,
       code: "OPEN_QUESTION_INVALID",
+    });
+  }
+
+  return parsed.data;
+}
+
+function mapOpenQuestionRuminationRow(row: Record<string, unknown>): OpenQuestionRumination {
+  const parsed = z
+    .object({
+      id: z.number().int().positive(),
+      open_question_id: openQuestionIdSchema,
+      note: z.string().min(1),
+      tensions: z.array(z.string()),
+      connected_open_question_ids: z.array(openQuestionIdSchema),
+      evidence_episode_ids: z.array(episodeIdSchema),
+      evidence_stream_entry_ids: z.array(openQuestionResolutionStreamEntryIdSchema),
+      source_process: z.string().min(1),
+      source_run_id: maintenanceRunIdSchema.nullable(),
+      source_turn_id: z.string().min(1).nullable(),
+      provenance: provenanceSchema,
+      created_at: z.number().int().nonnegative(),
+    })
+    .safeParse({
+      id: Number(row.id),
+      open_question_id: row.open_question_id,
+      note: row.note,
+      tensions: parseIdArray(
+        String(row.tensions ?? "[]"),
+        z.string(),
+        "open question rumination tensions",
+      ),
+      connected_open_question_ids: parseIdArray(
+        String(row.connected_open_question_ids ?? "[]"),
+        openQuestionIdSchema,
+        "open question rumination connected_open_question_ids",
+      ),
+      evidence_episode_ids: parseIdArray(
+        String(row.evidence_episode_ids ?? "[]"),
+        episodeIdSchema,
+        "open question rumination evidence_episode_ids",
+      ),
+      evidence_stream_entry_ids: parseIdArray(
+        String(row.evidence_stream_entry_ids ?? "[]"),
+        openQuestionResolutionStreamEntryIdSchema,
+        "open question rumination evidence_stream_entry_ids",
+      ),
+      source_process: row.source_process,
+      source_run_id:
+        row.source_run_id === null || row.source_run_id === undefined ? null : row.source_run_id,
+      source_turn_id:
+        row.source_turn_id === null || row.source_turn_id === undefined
+          ? null
+          : row.source_turn_id,
+      provenance: parseStoredProvenance({
+        provenance_kind: row.provenance_kind,
+        provenance_episode_ids: row.provenance_episode_ids,
+        provenance_process: row.provenance_process,
+      }),
+      created_at: Number(row.created_at),
+    });
+
+  if (!parsed.success) {
+    throw new StorageError("Open question rumination row failed validation", {
+      cause: parsed.error,
+      code: "OPEN_QUESTION_RUMINATION_INVALID",
     });
   }
 
@@ -968,6 +1076,112 @@ export class OpenQuestionsRepository {
       | undefined;
 
     return row === undefined ? null : mapOpenQuestionRow(row);
+  }
+
+  recordRumination(input: OpenQuestionRuminationInput): OpenQuestionRumination {
+    const openQuestionId = openQuestionIdSchema.parse(input.open_question_id);
+    const existing = this.get(openQuestionId);
+
+    if (existing === null) {
+      throw new StorageError(`Unknown open question id: ${openQuestionId}`, {
+        code: "OPEN_QUESTION_NOT_FOUND",
+      });
+    }
+
+    const note = z.string().min(1).parse(input.note.trim());
+    const tensions = uniqueNonEmptyStrings(input.tensions);
+    const connectedOpenQuestionIds = [
+      ...new Set(z.array(openQuestionIdSchema).parse(input.connected_open_question_ids ?? [])),
+    ].filter((connectedId) => {
+      const connected = this.get(connectedId);
+
+      return connectedId !== openQuestionId && connected?.status === "open";
+    });
+    const evidenceEpisodeIds = [
+      ...new Set(z.array(episodeIdSchema).parse(input.evidence_episode_ids ?? [])),
+    ];
+    const evidenceStreamEntryIds = [
+      ...new Set(
+        z
+          .array(openQuestionResolutionStreamEntryIdSchema)
+          .parse(input.evidence_stream_entry_ids ?? []),
+      ),
+    ];
+    const sourceProcess = z.string().min(1).parse(input.source_process);
+    const sourceRunId =
+      input.source_run_id === null || input.source_run_id === undefined
+        ? null
+        : maintenanceRunIdSchema.parse(input.source_run_id);
+    const sourceTurnId =
+      input.source_turn_id === null || input.source_turn_id === undefined
+        ? null
+        : z.string().min(1).parse(input.source_turn_id);
+    const provenance = provenanceSchema.parse(input.provenance);
+    const storedProvenance = toStoredProvenance(provenance);
+    const createdAt = z.number().int().nonnegative().parse(input.created_at ?? this.clock.now());
+    const result = this.db
+      .prepare(
+        `
+          INSERT INTO open_question_ruminations (
+            open_question_id, note, tensions, connected_open_question_ids,
+            evidence_episode_ids, evidence_stream_entry_ids, source_process,
+            source_run_id, source_turn_id, provenance_kind, provenance_episode_ids,
+            provenance_process, created_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        openQuestionId,
+        note,
+        serializeJsonValue(tensions),
+        serializeJsonValue(connectedOpenQuestionIds),
+        serializeJsonValue(evidenceEpisodeIds),
+        serializeJsonValue(evidenceStreamEntryIds),
+        sourceProcess,
+        sourceRunId,
+        sourceTurnId,
+        storedProvenance.provenance_kind,
+        storedProvenance.provenance_episode_ids,
+        storedProvenance.provenance_process,
+        createdAt,
+      );
+
+    return {
+      id: Number(result.lastInsertRowid),
+      open_question_id: openQuestionId,
+      note,
+      tensions,
+      connected_open_question_ids: connectedOpenQuestionIds,
+      evidence_episode_ids: evidenceEpisodeIds,
+      evidence_stream_entry_ids: evidenceStreamEntryIds,
+      source_process: sourceProcess,
+      source_run_id: sourceRunId,
+      source_turn_id: sourceTurnId,
+      provenance,
+      created_at: createdAt,
+    };
+  }
+
+  listRecentRuminations(
+    openQuestionId: OpenQuestionId,
+    options: OpenQuestionRuminationListOptions = {},
+  ): OpenQuestionRumination[] {
+    const parsedId = openQuestionIdSchema.parse(openQuestionId);
+    const limit = Math.max(1, Math.min(50, Math.floor(options.limit ?? 5)));
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM open_question_ruminations
+          WHERE open_question_id = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?
+        `,
+      )
+      .all(parsedId, limit) as Record<string, unknown>[];
+
+    return rows.map((row) => mapOpenQuestionRuminationRow(row));
   }
 
   update(

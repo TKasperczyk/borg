@@ -324,7 +324,7 @@ function renderSessionStatusSnapshotLines(
 // proper default; the caps are channel limits, not a quota to fill.
 const AUTONOMOUS_OUTBOUND_REFLECTION_POSTURE = [
   "This is self-directed reflection -- an open interval alone with my own thoughts: recalling, wondering, continuing a train of thought, and deciding what, if anything, to do with it. It is not a demand for output, and not a demand for silence.",
-  "Acting and not-acting are equally ordinary outcomes here. I may pursue an unresolved question, continue a private train of thought, set up a later self-wake when the host tool is available, reach out if a thought genuinely wants an audience, or end the interval with no outward message -- whichever the moment actually calls for.",
+  "Acting and not-acting are equally ordinary outcomes here. I may pursue an unresolved question, write in my private journal, set up a later self-wake when the host tool is available, reach out if a thought genuinely wants an audience, or end the interval with no outward message -- whichever the moment actually calls for.",
   "My standing directives, commitments, and intentions are mine to act on in this interval, the same as any other thought I am holding. I weigh them as I would in the moment -- neither performing action for its own sake, nor defaulting to silence to avoid choosing.",
 ].join("\n");
 
@@ -341,17 +341,23 @@ const AUTONOMOUS_REFLECTION_BELIEF_REVISION = [
   "So when my current knowledge differs from what those past decisions assumed, I revise: I update the conclusion to fit what I now know, hold myself to any commitments I have made since, and carry that forward -- without blaming myself for the earlier call, which was reasonable in its moment.",
 ].join("\n");
 
-const AUTONOMOUS_REFLECTION_ACTION_MENU = [
-  "- I continue the private train of thought with EmitContinueThought.",
-  "- I end the interval without an outward message with EmitNoOutput.",
-  "- I speak visibly with EmitAnswer or EmitSelfReport only when this wake genuinely calls for outward language.",
-  "- I set a later self-wake with tool.scheduledWakes.create when I want to return to a question or thought at a specific time and the host tool is available.",
-  "- I reach out with tool.outbound.post only when reachable_threads below lists a structurally authorized target session.",
-].join("\n");
+function renderAutonomousReflectionActionMenu(
+  items: NonNullable<DeliberationContext["autonomousFinalizerToolMenu"]>,
+): string {
+  if (items.length === 0) {
+    return "No autonomous finalizer tools were listed by the host for this prompt.";
+  }
+
+  return [
+    "This unstructured time belongs to me. I may choose any listed action when it fits the moment, or choose no outward action when that is the true outcome.",
+    ...items.map((item) => `- ${item.name}: ${item.menuSummary}`),
+  ].join("\n");
+}
 
 export function buildAutonomousOutboundAuthorizationSection(
   context: DeliberationContext["autonomousOutbound"],
   turnOrigin: DeliberationContext["turnOrigin"] = undefined,
+  toolMenu: DeliberationContext["autonomousFinalizerToolMenu"] = [],
 ): string | null {
   if (turnOrigin !== "autonomous") {
     return null;
@@ -361,7 +367,7 @@ export function buildAutonomousOutboundAuthorizationSection(
     "<borg_autonomous_reflection>",
     `  <reflection_posture>${escapeXmlText(AUTONOMOUS_OUTBOUND_REFLECTION_POSTURE)}</reflection_posture>`,
     `  <belief_revision>${escapeXmlText(AUTONOMOUS_REFLECTION_BELIEF_REVISION)}</belief_revision>`,
-    `  <action_menu>${escapeXmlText(AUTONOMOUS_REFLECTION_ACTION_MENU)}</action_menu>`,
+    `  <action_menu>${escapeXmlText(renderAutonomousReflectionActionMenu(toolMenu))}</action_menu>`,
   ];
 
   if (context !== null && context !== undefined && context.targets.length > 0) {
@@ -1116,6 +1122,7 @@ function buildBaseSystemPromptSections(
   const autonomousOutboundAuthorizationSection = buildAutonomousOutboundAuthorizationSection(
     context.autonomousOutbound ?? null,
     context.turnOrigin,
+    context.autonomousFinalizerToolMenu,
   );
   const promptSectionsById = new Map<string, PromptSection>();
 

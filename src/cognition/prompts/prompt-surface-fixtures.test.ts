@@ -606,6 +606,69 @@ function makeAutonomousRelationalContext(): DeliberationContext {
         },
       ],
     },
+    autonomousFinalizerToolMenu: [
+      {
+        name: "EmitAnswer",
+        menuSummary: "Speak visibly for the current turn.",
+      },
+      {
+        name: "EmitObserve",
+        menuSummary: "Stay present without a visible message in a multi-participant exchange.",
+      },
+      {
+        name: "EmitNoOutput",
+        menuSummary: "End the turn with no visible message.",
+      },
+      {
+        name: "EmitSelfReport",
+        menuSummary: "Speak visibly as a first-person interior self-report.",
+      },
+      {
+        name: "EmitContinueThought",
+        menuSummary:
+          "Append the carryover thought to the private journal and end the autonomous interval.",
+      },
+      {
+        name: "tool.journal.append",
+        menuSummary: "Append a self-private journal entry without ending the turn.",
+      },
+      {
+        name: "tool.openQuestions.create",
+        menuSummary: "Create a self-memory open question.",
+      },
+      {
+        name: "tool.openQuestions.resolve",
+        menuSummary: "Resolve an open question with evidence, or surface identity review.",
+      },
+      {
+        name: "tool.episodic.recent",
+        menuSummary: "Read the most recent episodic memories.",
+      },
+      {
+        name: "tool.episodic.search",
+        menuSummary: "Search episodic memory by relevance.",
+      },
+      {
+        name: "tool.semantic.walk",
+        menuSummary: "Walk semantic memory from a known node.",
+      },
+      {
+        name: "tool.scheduledWakes.create",
+        menuSummary: "Schedule a one-time wake for my future self.",
+      },
+      {
+        name: "tool.scheduledWakes.list",
+        menuSummary: "List scheduled self-wakes before adding or cancelling one.",
+      },
+      {
+        name: "tool.scheduledWakes.cancel",
+        menuSummary: "Cancel a pending scheduled self-wake.",
+      },
+      {
+        name: "tool.outbound.post",
+        menuSummary: "Post outbound only to a structurally authorized target session.",
+      },
+    ],
     workingMemory: makeWorkingMemory({
       discourse_state: { stop_until_substantive_content: null },
       mode: "relational",

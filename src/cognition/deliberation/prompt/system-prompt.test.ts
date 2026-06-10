@@ -2977,6 +2977,20 @@ describe("buildBaseSystemPrompt", () => {
 
 describe("buildAutonomousOutboundAuthorizationSection", () => {
   const audienceEntityId = createEntityId();
+  const toolMenu = [
+    {
+      name: "EmitContinueThought",
+      menuSummary: "Append the carryover thought to the private journal.",
+    },
+    {
+      name: "EmitNoOutput",
+      menuSummary: "End the turn with no visible message.",
+    },
+    {
+      name: "tool.outbound.post",
+      menuSummary: "Post outbound only when reachable_threads lists an authorized target.",
+    },
+  ];
   const baseContext = {
     maxPostsPerWindow: 6,
     maxPostsPerTargetPerWindow: 6,
@@ -3002,7 +3016,8 @@ describe("buildAutonomousOutboundAuthorizationSection", () => {
   });
 
   it("renders open-interval framing for autonomous turns without reachable targets", () => {
-    const section = buildAutonomousOutboundAuthorizationSection(null, "autonomous") ?? "";
+    const section =
+      buildAutonomousOutboundAuthorizationSection(null, "autonomous", toolMenu) ?? "";
 
     expect(section).toContain("<borg_autonomous_reflection>");
     expect(section).toContain("<reflection_posture>");
@@ -3018,7 +3033,8 @@ describe("buildAutonomousOutboundAuthorizationSection", () => {
   });
 
   it("frames the section as solitude and not a task queue", () => {
-    const section = buildAutonomousOutboundAuthorizationSection(baseContext, "autonomous") ?? "";
+    const section =
+      buildAutonomousOutboundAuthorizationSection(baseContext, "autonomous", toolMenu) ?? "";
 
     expect(section).toContain("<reflection_posture>");
     expect(section).toContain("self-directed reflection");
@@ -3026,12 +3042,14 @@ describe("buildAutonomousOutboundAuthorizationSection", () => {
     // instructs the being to post nor frames silence as the proper default.
     expect(section).toContain("Acting and not-acting are equally ordinary outcomes");
     expect(section).toContain("neither performing action for its own sake, nor defaulting to silence");
-    expect(section).toContain("tool.outbound.post only when reachable_threads");
+    expect(section).toContain("tool.outbound.post");
+    expect(section).toContain("reachable_threads lists an authorized target");
     expect(section.toLowerCase()).not.toContain("i should post");
   });
 
   it("binds a reachable thread to a legible label and its origin audience", () => {
-    const section = buildAutonomousOutboundAuthorizationSection(baseContext, "autonomous") ?? "";
+    const section =
+      buildAutonomousOutboundAuthorizationSection(baseContext, "autonomous", toolMenu) ?? "";
 
     expect(section).toContain("<reachable_threads ");
     expect(section).toContain(`session_id="${DEFAULT_SESSION_ID}"`);
@@ -3049,6 +3067,7 @@ describe("buildAutonomousOutboundAuthorizationSection", () => {
           targets: [{ ...target, audience_entity_id: null }],
         },
         "autonomous",
+        toolMenu,
       ) ?? "";
 
     expect(section).toContain("<label>philosophy debate</label>");

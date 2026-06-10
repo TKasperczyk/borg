@@ -103,7 +103,7 @@ describe("runPostGenerationPhase", () => {
     }
   });
 
-  it("upserts EmitContinueThought into the singleton and appends only a minimal marker", async () => {
+  it("appends EmitContinueThought to the journal and appends only a minimal marker", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-post-generation-continue-thought-"));
     cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
     const db = openDatabase(join(tempDir, "borg.db"), {
@@ -287,8 +287,12 @@ describe("runPostGenerationPhase", () => {
 
     expect(marker?.content).toMatchObject({
       kind: "train_of_thought_continued",
+      journal_entry_id: expect.any(Number),
       self_entity_id: selfEntityId,
       text_length: carriedText.length,
+    });
+    expect(trainOfThoughtRepository.latest()).toMatchObject({
+      source_turn_id: turnId,
     });
     expect(JSON.stringify(marker?.content)).not.toContain(carriedText);
   });

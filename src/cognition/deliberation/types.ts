@@ -43,6 +43,7 @@ import type {
 } from "../../retrieval/index.js";
 import type { ToolDispatcher } from "../../tools/dispatcher.js";
 import type { AutonomousOutboundPromptContext } from "../../outbound/autonomous-policy.js";
+import type { AutonomousFinalizerToolMenuItem } from "./autonomous-finalizer-tools.js";
 import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { ToolLoopCallRecord } from "../turn-action/index.js";
@@ -186,6 +187,7 @@ export type DeliberationContext = {
   creatorContext?: TrustedCreatorContext | null;
   creatorDirectiveBriefing?: CreatorDirectiveBriefing | null;
   autonomousOutbound?: AutonomousOutboundPromptContext | null;
+  autonomousFinalizerToolMenu?: readonly AutonomousFinalizerToolMenuItem[];
   operatorSessionSnapshot?: OperatorSessionSnapshot | null;
   turnId?: string;
   turnOrigin?: TurnOrigin;

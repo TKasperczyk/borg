@@ -42,6 +42,7 @@ export function createScheduledWakesCreateTool(
     name: "tool.scheduledWakes.create",
     description:
       "Schedule a one-time wake for my future self, firing once after delay_seconds from now. I use note to tell my future self why I am waking and what to revisit or do. The wake runs as a private self-turn, not a message to anyone.",
+    menuSummary: "Schedule a one-time wake for my future self.",
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "write",
     inputSchema: scheduledWakesCreateInputSchema,

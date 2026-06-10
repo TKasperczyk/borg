@@ -2,12 +2,23 @@ import type { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
 import type { EntityId } from "../../util/ids.js";
-import { trainOfThoughtSchema, type TrainOfThought } from "./types.js";
+import {
+  trainOfThoughtJournalEntrySchema,
+  trainOfThoughtSchema,
+  type TrainOfThought,
+  type TrainOfThoughtJournalEntry,
+} from "./types.js";
 
-export type TrainOfThoughtUpsertInput = {
+export type TrainOfThoughtAppendInput = {
   text: string;
   selfEntityId: EntityId;
+  sourceTurnId?: string | null;
+  markerStreamEntryId?: string | null;
   now?: number;
+};
+
+export type TrainOfThoughtListOptions = {
+  limit?: number;
 };
 
 export type TrainOfThoughtRepositoryOptions = {
@@ -34,6 +45,34 @@ function mapTrainOfThoughtRow(row: Record<string, unknown>): TrainOfThought {
   return parsed.data;
 }
 
+function mapTrainOfThoughtJournalEntryRow(
+  row: Record<string, unknown>,
+): TrainOfThoughtJournalEntry {
+  const parsed = trainOfThoughtJournalEntrySchema.safeParse({
+    id: Number(row.id),
+    self_entity_id: row.self_entity_id,
+    text: row.text,
+    disclosure_class: row.disclosure_class,
+    created_at: Number(row.created_at),
+    updated_at: Number(row.updated_at),
+    source_turn_id: row.source_turn_id,
+    marker_stream_entry_id: row.marker_stream_entry_id,
+  });
+
+  if (!parsed.success) {
+    throw new StorageError("Train of thought journal row failed validation", {
+      cause: parsed.error,
+      code: "TRAIN_OF_THOUGHT_JOURNAL_ROW_INVALID",
+    });
+  }
+
+  return parsed.data;
+}
+
+function trainOfThoughtFromJournalEntry(entry: TrainOfThoughtJournalEntry): TrainOfThought {
+  return mapTrainOfThoughtRow(entry);
+}
+
 export class TrainOfThoughtRepository {
   private readonly clock: Clock;
 
@@ -45,46 +84,120 @@ export class TrainOfThoughtRepository {
     return this.options.db;
   }
 
-  get(): TrainOfThought | null {
+  latest(): TrainOfThoughtJournalEntry | null {
     const row = this.db
       .prepare(
         `
-          SELECT self_entity_id, text, disclosure_class, created_at, updated_at
-          FROM train_of_thought
-          WHERE id = 1
+          SELECT
+            id,
+            self_entity_id,
+            text,
+            disclosure_class,
+            created_at,
+            updated_at,
+            source_turn_id,
+            marker_stream_entry_id
+          FROM train_of_thought_journal_entries
+          ORDER BY updated_at DESC, id DESC
+          LIMIT 1
         `,
       )
       .get() as Record<string, unknown> | undefined;
 
-    return row === undefined ? null : mapTrainOfThoughtRow(row);
+    return row === undefined ? null : mapTrainOfThoughtJournalEntryRow(row);
   }
 
-  upsert(input: TrainOfThoughtUpsertInput): TrainOfThought {
-    const now = input.now ?? this.clock.now();
+  list(options: TrainOfThoughtListOptions = {}): TrainOfThoughtJournalEntry[] {
+    const limit = options.limit ?? 20;
 
-    this.db
+    if (!Number.isInteger(limit) || limit <= 0) {
+      throw new StorageError("Train of thought journal list limit must be a positive integer", {
+        code: "TRAIN_OF_THOUGHT_LIST_LIMIT_INVALID",
+      });
+    }
+
+    const rows = this.db
       .prepare(
         `
-          INSERT INTO train_of_thought (
-            id, self_entity_id, text, disclosure_class, created_at, updated_at
-          ) VALUES (1, ?, ?, 'self_private', ?, ?)
-          ON CONFLICT(id) DO UPDATE SET
-            self_entity_id = excluded.self_entity_id,
-            text = excluded.text,
-            disclosure_class = 'self_private',
-            updated_at = excluded.updated_at
+          SELECT
+            id,
+            self_entity_id,
+            text,
+            disclosure_class,
+            created_at,
+            updated_at,
+            source_turn_id,
+            marker_stream_entry_id
+          FROM train_of_thought_journal_entries
+          ORDER BY updated_at DESC, id DESC
+          LIMIT ?
         `,
       )
-      .run(input.selfEntityId, input.text, now, now);
+      .all(limit) as Record<string, unknown>[];
 
-    const stored = this.get();
+    return rows.map(mapTrainOfThoughtJournalEntryRow);
+  }
 
-    if (stored === null) {
-      throw new StorageError("Train of thought row was not stored", {
+  get(): TrainOfThought | null {
+    const latest = this.latest();
+
+    return latest === null ? null : trainOfThoughtFromJournalEntry(latest);
+  }
+
+  append(input: TrainOfThoughtAppendInput): TrainOfThoughtJournalEntry {
+    const now = input.now ?? this.clock.now();
+
+    const result = this.db
+      .prepare(
+        `
+          INSERT INTO train_of_thought_journal_entries (
+            self_entity_id,
+            text,
+            disclosure_class,
+            created_at,
+            updated_at,
+            source_turn_id,
+            marker_stream_entry_id
+          ) VALUES (?, ?, 'self_private', ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        input.selfEntityId,
+        input.text,
+        now,
+        now,
+        input.sourceTurnId ?? null,
+        input.markerStreamEntryId ?? null,
+      );
+
+    const row = this.db
+      .prepare(
+        `
+          SELECT
+            id,
+            self_entity_id,
+            text,
+            disclosure_class,
+            created_at,
+            updated_at,
+            source_turn_id,
+            marker_stream_entry_id
+          FROM train_of_thought_journal_entries
+          WHERE id = ?
+        `,
+      )
+      .get(Number(result.lastInsertRowid)) as Record<string, unknown> | undefined;
+
+    if (row === undefined) {
+      throw new StorageError("Train of thought journal entry was not stored", {
         code: "TRAIN_OF_THOUGHT_STORE_FAILED",
       });
     }
 
-    return stored;
+    return mapTrainOfThoughtJournalEntryRow(row);
+  }
+
+  upsert(input: TrainOfThoughtAppendInput): TrainOfThought {
+    return trainOfThoughtFromJournalEntry(this.append(input));
   }
 }

@@ -168,6 +168,68 @@ describe("OpenQuestionsRepository", () => {
     }
   });
 
+  it("appends and lists recent rumination notes", () => {
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      const evidenceEpisodeId = createEpisodeId();
+      const connected = repository.add({
+        question: "Which related uncertainty moved?",
+        urgency: 0.3,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const question = repository.add({
+        question: "What remains unsettled?",
+        urgency: 0.6,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      repository.recordRumination({
+        open_question_id: question.id,
+        note: "The first pass kept the question open.",
+        tensions: ["One line of evidence moved; another resisted."],
+        connected_open_question_ids: [connected.id],
+        evidence_episode_ids: [evidenceEpisodeId],
+        source_process: "test",
+        provenance: manualProvenance,
+        created_at: 11_000,
+      });
+      repository.recordRumination({
+        open_question_id: question.id,
+        note: "The second pass narrowed the live tension.",
+        tensions: ["The remaining tension is narrower."],
+        connected_open_question_ids: [connected.id],
+        source_process: "test",
+        provenance: manualProvenance,
+        created_at: 12_000,
+      });
+
+      expect(repository.listRecentRuminations(question.id, { limit: 1 })).toEqual([
+        expect.objectContaining({
+          note: "The second pass narrowed the live tension.",
+          tensions: ["The remaining tension is narrower."],
+          connected_open_question_ids: [connected.id],
+          evidence_episode_ids: [],
+        }),
+      ]);
+      expect(
+        repository.listRecentRuminations(question.id, { limit: 5 }).map((item) => item.note),
+      ).toEqual([
+        "The second pass narrowed the live tension.",
+        "The first pass kept the question open.",
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("CAS-protects open question deletion", async () => {
     const clock = new FixedClock(10_000);
     const db = openDatabase(":memory:", {

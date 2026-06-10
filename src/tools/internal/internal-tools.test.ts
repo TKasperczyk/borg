@@ -10,6 +10,7 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { buildToolDispatcher } from "../../borg/tools-setup.js";
 import { deriveProceduralContextKey } from "../../memory/procedural/index.js";
 import { SemanticGraph } from "../../memory/semantic/index.js";
+import { TrainOfThoughtRepository } from "../../memory/train-of-thought/index.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
@@ -83,8 +84,10 @@ function createHarnessToolDispatcher(
     semanticNodeRepository: harness.semanticNodeRepository,
     semanticGraph,
     commitmentRepository: harness.commitmentRepository,
+    entityRepository: harness.entityRepository,
     identityService: harness.identityService,
     skillRepository: harness.skillRepository,
+    trainOfThoughtRepository: new TrainOfThoughtRepository({ db: harness.db, clock }),
     scheduledWakesRepository: new ScheduledWakesRepository({ db: harness.db, clock }),
     createStreamWriter: (sessionId) =>
       new StreamWriter({

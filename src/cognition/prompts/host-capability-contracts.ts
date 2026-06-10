@@ -119,7 +119,7 @@ export const DEFAULT_HOST_CAPABILITIES_SECTION = [
   "- EmitAnswer: I speak visibly to the current speaker or audience when engagement is warranted",
   "- EmitObserve: in multi-participant conversations, I stay present without a visible message when other participants are carrying the conversation with each other",
   "- EmitSelfReport: I express interior reflection (persisted differently; not user-facing world-fact)",
-  "- EmitContinueThought: I continue a private in-progress train of thought for a later autonomous wake",
+  "- EmitContinueThought: I append a private carryover thought to the journal for a later autonomous wake",
   "- EmitNoOutput: conversation closure / natural ending",
   "",
   "Capabilities NOT available unless the host has declared them otherwise:",

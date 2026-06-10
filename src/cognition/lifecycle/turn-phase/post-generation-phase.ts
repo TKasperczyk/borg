@@ -204,9 +204,10 @@ async function persistContinueThoughtEmission(input: {
     kind: "self",
     provenance: "assistant_seeded",
   });
-  const stored = input.options.trainOfThoughtRepository.upsert({
+  const stored = input.options.trainOfThoughtRepository.append({
     text: input.actionEmission.text,
     selfEntityId,
+    sourceTurnId: input.turnId,
   });
   const entry = await input.streamWriter.append({
     kind: "internal_event",
@@ -215,6 +216,7 @@ async function persistContinueThoughtEmission(input: {
     content: {
       kind: "train_of_thought_continued",
       turn_id: input.turnId,
+      journal_entry_id: stored.id,
       self_entity_id: stored.self_entity_id,
       updated_at: stored.updated_at,
       text_length: stored.text.length,

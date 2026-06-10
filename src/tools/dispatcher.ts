@@ -29,6 +29,7 @@ export type ToolInvocationContext = {
 export type ToolDefinition<Input = unknown, Output = unknown> = {
   name: string;
   description: string;
+  menuSummary?: string;
   allowedOrigins: readonly ToolOrigin[];
   writeScope: "read" | "write";
   inputSchema: z.ZodType<Input>;

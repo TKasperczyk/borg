@@ -128,7 +128,7 @@ export type TurnPhaseCoordinatorOptions = {
   activityRepository?: Pick<ActivityRepository, "record" | "listRecentOtherActiveSessionEvents"> &
     Partial<Pick<ActivityRepository, "listRecentGlobalEvents">>;
   selfDecisionRepository?: Pick<SelfDecisionRepository, "listRecentAutonomousSelfPrivate">;
-  trainOfThoughtRepository?: Pick<TrainOfThoughtRepository, "upsert">;
+  trainOfThoughtRepository?: Pick<TrainOfThoughtRepository, "append">;
   observedEventRepository?: Pick<
     ObservedEventRepository,
     | "record"

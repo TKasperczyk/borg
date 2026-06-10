@@ -54,6 +54,7 @@ const selfNarratorObservationItemSchema = z.object({
 
 const selfNarratorObservationSchema = z.object({
   observations: z.array(selfNarratorObservationItemSchema),
+  period_narrative: z.string().min(1).nullable(),
   period_decision: z.enum(["continue_current", "open_new"]).default("continue_current"),
   period_decision_confidence: z.number().min(0).max(1).default(0),
 });
@@ -61,7 +62,7 @@ const SELF_NARRATOR_TOOL_NAME = "EmitSelfNarratorObservations";
 export const SELF_NARRATOR_TOOL = {
   name: SELF_NARRATOR_TOOL_NAME,
   description:
-    "Emit grounded autobiographical growth observations from model-identified episode clusters.",
+    "Emit grounded autobiographical growth observations and an optional composed period narrative from model-identified episode clusters.",
   inputSchema: toToolInputSchema(selfNarratorObservationSchema),
 } satisfies LLMToolDefinition;
 
@@ -180,6 +181,13 @@ function defaultQuarterLabel(nowMs: number): string {
   return `${year}-Q${quarter}`;
 }
 
+export const SELF_NARRATOR_PERIOD_NARRATIVE_GUIDANCE = [
+  "When the evidence supports a period narrative, I compose it in first-person prose as the story of this period as I would tell it to myself.",
+  "The narrative is continuous prose, not a list of labels: what this period has been about, how it connects to where I came from, and what has been changing.",
+  "I write from the grounded observations and the episode evidence together. I do not summarize category labels back to myself; I compose the lived arc they point to.",
+  "If the evidence is too thin for a period narrative, I set period_narrative to null.",
+].join(" ");
+
 function buildObservationPrompt(
   episodes: readonly Episode[],
   minSupportEpisodes: number,
@@ -190,7 +198,8 @@ function buildObservationPrompt(
     "I narrate my own recent experience by identifying thematic clusters and grounded autobiographical growth observations from these candidate episodes.",
     `I emit my result by calling the ${SELF_NARRATOR_TOOL_NAME} tool exactly once.`,
     "I return an empty observations array if there is no grounded growth signal.",
-    `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to growth marker what_changed, before_description, and after_description fields; autobiographical period narrative text inherits from those observations.`,
+    SELF_NARRATOR_PERIOD_NARRATIVE_GUIDANCE,
+    `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to growth marker what_changed, before_description, after_description, and period_narrative fields.`,
     "I set period_decision to continue_current or open_new based on whether these observations belong in the current autobiographical period. The configured cadence remains authoritative; if I emit open_new before cadence has elapsed, the host ignores that decision.",
     "I only cite evidence_episode_ids from the provided episodes.",
     `Each observation I emit must cite at least ${minSupportEpisodes} episodes.`,
@@ -392,6 +401,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     const markerCandidates: Array<z.infer<typeof serializableGrowthMarkerSchema>> = [];
     const markerThemes: string[] = [];
     const periodDecisions: Array<"continue_current" | "open_new"> = [];
+    const periodNarratives: string[] = [];
     let tokensUsed = 0;
     let budgetExhausted = false;
 
@@ -431,6 +441,13 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
               })
             ).parsed;
             periodDecisions.push(response.period_decision);
+            if (response.period_narrative !== null) {
+              const narrative = response.period_narrative.trim();
+
+              if (narrative.length > 0) {
+                periodNarratives.push(narrative);
+              }
+            }
             const allowedIds = new Set<string>(sourceEpisodes.map((episode) => episode.id));
 
             for (const observation of response.observations.slice(0, maxObservationsPerRun)) {
@@ -508,6 +525,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
       ...markerThemes,
     ]).slice(0, 6);
     const periodDecision = periodDecisions.includes("open_new") ? "open_new" : "continue_current";
+    const composedPeriodNarrative = periodNarratives[0] ?? null;
     const nextLabel =
       configuredLabel.length > 0
         ? configuredLabel
@@ -517,7 +535,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
       themes.length > 0 &&
       cadenceAllowsNewPeriod(currentPeriod, nowMs, ctx.config.offline.selfNarrator.cadenceHintDays);
     if (currentPeriod === null || openNewPeriod) {
-      const narrative = buildNarrative(null, observations);
+      const narrative = composedPeriodNarrative ?? buildNarrative(null, observations);
 
       if (narrative === null) {
         if (sourceEpisodes.length >= minSupportEpisodes && errors.length === 0) {
@@ -560,7 +578,8 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
         });
       }
     } else if (currentPeriod !== null) {
-      const nextNarrative = buildNarrative(currentPeriod.narrative, observations);
+      const nextNarrative =
+        composedPeriodNarrative ?? buildNarrative(currentPeriod.narrative, observations);
       const nextThemes = uniqueStrings([...currentPeriod.themes, ...themes]).slice(0, 6);
       const nextKeyEpisodes = uniqueValues([
         ...currentPeriod.key_episode_ids,

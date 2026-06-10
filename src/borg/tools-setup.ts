@@ -3,13 +3,19 @@
 import type { Clock } from "../util/clock.js";
 import type { ScheduledWakesRepository } from "../autonomy/index.js";
 import {
+  combineMemoryDisclosureLabels,
+  unknownMemoryDisclosureLabel,
+} from "../memory/common/index.js";
+import {
   commitmentMemoryDisclosureLabel,
   identityEventMemoryDisclosureLabel,
 } from "../memory/common/disclosure-serializers.js";
 import type { CommitmentRepository } from "../memory/commitments/index.js";
+import type { EntityRepository } from "../memory/commitments/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import type { SkillRepository } from "../memory/procedural/index.js";
+import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
 import {
   SELF_RECALL_SCOPE,
   resolveMemoryDisclosureLabelForEpisodeIds,
@@ -26,9 +32,12 @@ import type {
 import {
   ToolDispatcher,
   createCommitmentsListTool,
+  createEpisodicRecentTool,
   createEpisodicSearchTool,
   createIdentityEventsListForCognitionTool,
+  createJournalAppendTool,
   createOpenQuestionsCreateTool,
+  createOpenQuestionsResolveTool,
   createScheduledWakesCancelTool,
   createScheduledWakesCreateTool,
   createScheduledWakesListTool,
@@ -43,8 +52,10 @@ export type BuildToolDispatcherOptions = {
   semanticNodeRepository: SemanticNodeRepository;
   semanticGraph: SemanticGraph;
   commitmentRepository: CommitmentRepository;
+  entityRepository: EntityRepository;
   identityService: IdentityService;
   skillRepository: SkillRepository;
+  trainOfThoughtRepository: TrainOfThoughtRepository;
   scheduledWakesRepository: ScheduledWakesRepository;
   createStreamWriter: BorgStreamWriterFactory;
   clock: Clock;
@@ -110,6 +121,11 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
       }),
     )
     .register(
+      createEpisodicRecentTool({
+        listRecentEpisodes: (limit) => options.episodicRepository.listRecentForCognition({ limit }),
+      }),
+    )
+    .register(
       createSemanticWalkTool({
         walkGraph: async (fromId, walkOptions) => {
           const root = await options.semanticNodeRepository.get(fromId);
@@ -138,6 +154,28 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     .register(
       createOpenQuestionsCreateTool({
         createOpenQuestion: (input) => options.identityService.addOpenQuestion(input),
+      }),
+    )
+    .register(
+      createOpenQuestionsResolveTool({
+        identityService: options.identityService,
+        disclosureLabelForEvidence: async (episodeIds, streamEntryIds) =>
+          combineMemoryDisclosureLabels([
+            ...(episodeIds.length === 0
+              ? []
+              : [await resolveMemoryDisclosureLabelForEpisodeIds(options.episodicRepository, episodeIds)]),
+            ...streamEntryIds.map(() => unknownMemoryDisclosureLabel()),
+          ]),
+      }),
+    )
+    .register(
+      createJournalAppendTool({
+        resolveSelfEntityId: () =>
+          options.entityRepository.resolve("self", {
+            kind: "self",
+            provenance: "assistant_seeded",
+          }),
+        appendJournalEntry: (input) => options.trainOfThoughtRepository.append(input),
       }),
     )
     .register(
