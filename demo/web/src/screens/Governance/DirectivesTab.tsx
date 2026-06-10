@@ -17,12 +17,14 @@ import type {
   CreatorDirectiveStatusFilter,
   SharedStateEntry,
 } from "../../api/types";
+import { IdChip } from "../../components/Inspector/IdChip";
 import { IdRef } from "../../components/Inspector/IdRef";
 import { resolveObjectType, type ObjectType } from "../../components/Inspector/inspector-id";
 import { Modal } from "../../components/Modal";
 import { SupersededByChip } from "../../components/SupersededByChip";
 import { Tag } from "../../components/Tag";
 import { useApi, type ApiHookState } from "../../hooks/use-api";
+import { isInteractiveDescendantEvent } from "../../lib/keyboard";
 import { lifecycleLabel, tagKind } from "../../lib/shared-state-lifecycle";
 import { dateLabel, shortId } from "../screen-utils";
 
@@ -142,7 +144,7 @@ function InlineIdRefList({ ids, type }: { ids: readonly string[]; type: ObjectTy
   return ids.map((id, index) => (
     <span key={id}>
       {index === 0 ? null : ", "}
-      <IdRef id={id} type={type} label={shortId(id)} />
+      <IdChip id={id} type={type} />
     </span>
   ));
 }
@@ -519,28 +521,37 @@ function SharedStateLifecyclePanel({
       <div className="divider">shared-state lifecycle</div>
       {loading ? <div className="notice">loading shared-state lifecycle</div> : null}
       {!loading && audienceDiscoveryTruncated ? (
-        <div className="notice" style={{ fontSize: 11.5, lineHeight: 1.55, marginBottom: 8 }}>
+        <div
+          className="notice"
+          style={{ fontSize: "var(--fs-sm)", lineHeight: 1.55, marginBottom: 8 }}
+        >
           audience discovery reached the 1000-session server cap; shared-state lifecycle rows from
           older audiences may be missing
         </div>
       ) : null}
       {!loading && sharedAudiences.length === 0 ? (
-        <div className="dim" style={{ fontSize: 11.5, lineHeight: 1.55 }}>
+        <div className="dim" style={{ fontSize: "var(--fs-sm)", lineHeight: 1.55 }}>
           no shared-state audiences returned for lookup
         </div>
       ) : null}
       {!loading && emptyAudiences.length > 0 ? (
-        <div className="dim" style={{ fontSize: 11.5, lineHeight: 1.55, marginBottom: 8 }}>
+        <div
+          className="dim"
+          style={{ fontSize: "var(--fs-sm)", lineHeight: 1.55, marginBottom: 8 }}
+        >
           empty shared-state audiences: {emptyAudiences.join(", ")}
         </div>
       ) : null}
       {!loading && totalEntryCount === 0 && sharedAudiences.length > 0 ? (
-        <div className="dim" style={{ fontSize: 11.5, lineHeight: 1.55 }}>
+        <div className="dim" style={{ fontSize: "var(--fs-sm)", lineHeight: 1.55 }}>
           no shared-state rows across discovered audiences
         </div>
       ) : null}
       {!loading && totalEntryCount > 0 && relatedRows.length === 0 ? (
-        <div className="dim" style={{ fontSize: 11.5, lineHeight: 1.55, marginBottom: 8 }}>
+        <div
+          className="dim"
+          style={{ fontSize: "var(--fs-sm)", lineHeight: 1.55, marginBottom: 8 }}
+        >
           no shared-state rows structurally relate to this directive's source stream ids
         </div>
       ) : null}
@@ -559,12 +570,12 @@ function SharedStateLifecyclePanel({
 
       <div className="divider">uncorrelated shared lifecycle</div>
       {!loading && totalEntryCount === 0 ? (
-        <div className="dim" style={{ fontSize: 11.5, lineHeight: 1.55 }}>
+        <div className="dim" style={{ fontSize: "var(--fs-sm)", lineHeight: 1.55 }}>
           no uncorrelated rows because no shared-state rows were returned
         </div>
       ) : null}
       {!loading && totalEntryCount > 0 && uncorrelatedRows.length === 0 ? (
-        <div className="dim" style={{ fontSize: 11.5, lineHeight: 1.55 }}>
+        <div className="dim" style={{ fontSize: "var(--fs-sm)", lineHeight: 1.55 }}>
           all non-empty shared-state rows have at least one structural directive relation
         </div>
       ) : null}
@@ -620,7 +631,7 @@ function SharedStateLifecycleRow({
           {lifecycleLabel(entry.kind)}
         </Tag>
         <IdRef id={entry.id} type="shared_state_entry" label={shortId(entry.id)} hint={entry} />
-        <span className="dim" style={{ fontSize: 10.5 }}>
+        <span className="dim" style={{ fontSize: "var(--fs-xs)" }}>
           audience {row.audience}
         </span>
       </div>
@@ -671,7 +682,7 @@ function SharedStateLifecycleRow({
         {entry.text}
       </div>
       {row.relations.length === 0 ? (
-        <div className="dim" style={{ fontSize: 10.5, marginTop: 8 }}>
+        <div className="dim" style={{ fontSize: "var(--fs-xs)", marginTop: 8 }}>
           no structural relation to any creator directive source stream id
         </div>
       ) : (
@@ -683,7 +694,7 @@ function SharedStateLifecycleRow({
               }`}
               className="dim"
               title={relationLabel(relation)}
-              style={{ fontSize: 10.5, lineHeight: 1.45 }}
+              style={{ fontSize: "var(--fs-xs)", lineHeight: 1.45 }}
             >
               <StructuredRelationLabel relation={relation} />
             </div>
@@ -714,7 +725,7 @@ function SharedStateLifecycleRow({
         </div>
       )}
       {canonicalCommitmentWarningState === null ? null : (
-        <div className="warn" style={{ fontSize: 10.5, marginTop: 8, lineHeight: 1.45 }}>
+        <div className="warn" style={{ fontSize: "var(--fs-xs)", marginTop: 8, lineHeight: 1.45 }}>
           canonicalized commitment is {canonicalCommitmentWarningState} while selected directive is
           active
         </div>
@@ -839,25 +850,27 @@ export function DirectivesPanel({
         <span className="spacer"></span>
         <div className="filter-pills">
           {STATUS_FILTERS.map((value) => (
-            <span
+            <button
               key={value}
+              type="button"
               className={`pill ${statusFilter === value ? "on" : ""}`}
               onClick={() => setStatusFilter(value)}
             >
               {value}
-            </span>
+            </button>
           ))}
         </div>
         <span className="sep">|</span>
         <div className="filter-pills">
           {SORT_MODES.map((value) => (
-            <span
+            <button
               key={value}
+              type="button"
               className={`pill ${sortMode === value ? "on" : ""}`}
               onClick={() => setSortMode(value)}
             >
               {sortLabel(value)}
-            </span>
+            </button>
           ))}
         </div>
       </div>
@@ -899,12 +912,27 @@ export function DirectivesPanel({
                 return (
                   <tr
                     key={item.id}
-                    onClick={() => setSelectedId(item.id)}
+                    onClick={(event) => {
+                      if (!isInteractiveDescendantEvent(event.currentTarget, event.target)) {
+                        setSelectedId(item.id);
+                      }
+                    }}
                     className={item.id === selected?.id ? "selected" : ""}
                     style={{ cursor: "pointer" }}
                   >
                     <td>
-                      <span className="acc">{shortId(item.id)}</span>
+                      <button
+                        type="button"
+                        className="row-select-button"
+                        aria-pressed={item.id === selected?.id}
+                        aria-label={`select creator directive ${item.id}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedId(item.id);
+                        }}
+                      >
+                        {shortId(item.id)}
+                      </button>
                     </td>
                     <td>
                       <Tag>{item.kind}</Tag>
@@ -914,11 +942,11 @@ export function DirectivesPanel({
                       style={{ fontFamily: "var(--sans)", fontSize: "12px", lineHeight: 1.45 }}
                     >
                       {emptyLabel(item.text)}
-                      <div className="dim" style={{ fontSize: 10, marginTop: 2 }}>
+                      <div className="dim" style={{ fontSize: "var(--fs-xs)", marginTop: 2 }}>
                         subject:{item.subject_entity_name ?? item.subject_kind}
                       </div>
                       {inactive === null ? null : (
-                        <div className="dim" style={{ fontSize: 10, marginTop: 2 }}>
+                        <div className="dim" style={{ fontSize: "var(--fs-xs)", marginTop: 2 }}>
                           {inactive}
                         </div>
                       )}
@@ -935,19 +963,19 @@ export function DirectivesPanel({
                       className="tab-num"
                       style={{
                         textAlign: "right",
-                        color: item.priority >= 80 ? "var(--bad)" : "var(--text-dim)",
+                        color: item.priority >= 80 ? "var(--warn)" : "var(--text-dim)",
                       }}
                     >
                       {item.priority}
                     </td>
-                    <td className="dim" style={{ fontSize: 11 }}>
+                    <td className="dim" style={{ fontSize: "var(--fs-xs)" }}>
                       {dateLabel(item.created_at)}
                     </td>
                     <td>
                       {item.status === "active" ? (
                         <div style={{ display: "flex", gap: 6 }}>
                           <button
-                            className="btn sm primary"
+                            className="btn sm danger"
                             disabled={busy !== null}
                             onClick={(event) => {
                               event.stopPropagation();
@@ -957,7 +985,7 @@ export function DirectivesPanel({
                             revoke
                           </button>
                           <button
-                            className="btn sm ghost"
+                            className="btn sm danger"
                             disabled={
                               busy !== null ||
                               directives.every((candidate) => !canReplaceWith(candidate, item))
@@ -1013,7 +1041,7 @@ export function DirectivesPanel({
         }}
         footer={
           <>
-            <span className="dim" style={{ fontSize: 10.5, marginRight: "auto" }}>
+            <span className="dim" style={{ fontSize: "var(--fs-xs)", marginRight: "auto" }}>
               {modal?.kind === "revoke" ? "reason required" : ""}
             </span>
             <button
@@ -1024,7 +1052,7 @@ export function DirectivesPanel({
               cancel
             </button>
             <button
-              className="btn sm primary"
+              className="btn sm danger"
               disabled={busy !== null || !canSubmitModal(modal, directivesById)}
               onClick={() => void submitModal()}
             >
@@ -1113,7 +1141,7 @@ function CreatorDirectiveDetail({
   return (
     <>
       <div style={{ padding: "16px 16px 10px 16px", borderBottom: "1px solid var(--line)" }}>
-        <div style={{ fontSize: 10.5, color: "var(--text-mute)" }}>creator directive</div>
+        <div style={{ fontSize: "var(--fs-xs)", color: "var(--text-mute)" }}>creator directive</div>
         <div
           style={{
             fontSize: 14,
@@ -1139,12 +1167,7 @@ function CreatorDirectiveDetail({
           <div className="row">
             <span className="k">id</span>
             <span className="v acc">
-              <IdRef
-                id={directive.id}
-                type="creator_directive"
-                label={directive.id}
-                hint={directive}
-              />
+              <IdChip id={directive.id} type="creator_directive" hint={directive} />
             </span>
           </div>
           <div className="row">
@@ -1157,11 +1180,7 @@ function CreatorDirectiveDetail({
               {directive.subject_entity_id === null ? (
                 "—"
               ) : (
-                <IdRef
-                  id={directive.subject_entity_id}
-                  type="entity"
-                  label={directive.subject_entity_id}
-                />
+                <IdChip id={directive.subject_entity_id} type="entity" />
               )}
             </span>
           </div>
@@ -1269,11 +1288,11 @@ function CreatorDirectiveDetail({
         <div className="divider">operations</div>
         {directive.status === "active" ? (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            <button className="btn sm primary" disabled={busy} onClick={() => onRevoke(directive)}>
+            <button className="btn sm danger" disabled={busy} onClick={() => onRevoke(directive)}>
               revoke
             </button>
             <button
-              className="btn sm ghost"
+              className="btn sm danger"
               disabled={busy || !hasReplacement}
               onClick={() => onSupersede(directive)}
             >
@@ -1281,7 +1300,7 @@ function CreatorDirectiveDetail({
             </button>
           </div>
         ) : (
-          <div className="dim" style={{ fontSize: 11.5 }}>
+          <div className="dim" style={{ fontSize: "var(--fs-sm)" }}>
             no active operations for {directive.status} directives
           </div>
         )}

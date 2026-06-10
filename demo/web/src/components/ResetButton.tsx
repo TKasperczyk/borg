@@ -15,7 +15,7 @@ export function ResetButton({
   open,
   onOpenChange,
   showTrigger = true,
-  triggerClassName = "topbar-reset",
+  triggerClassName = "topbar-reset danger",
   triggerLabel = "reset",
 }: ResetButtonProps = {}) {
   const [internalOpen, setInternalOpen] = useState(false);
@@ -81,7 +81,7 @@ export function ResetButton({
               </button>
               <button
                 type="button"
-                className="btn sm primary"
+                className="btn sm danger"
                 disabled={!canConfirm}
                 onClick={() => void confirm()}
               >

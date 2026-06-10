@@ -1595,7 +1595,7 @@ describe("P2 screens", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("contradicts")).toBeInTheDocument();
     expect(screen.getByText("confidence 0.72")).toBeInTheDocument();
-    expect(screen.getAllByText(episodeId).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: `copy ${episodeId}` }).length).toBeGreaterThan(0);
 
     await waitFor(() => {
       expect(
@@ -1686,7 +1686,9 @@ describe("P2 screens", () => {
     expect(await screen.findByText("Available semantic node description.")).toBeInTheDocument();
     expect(screen.getByText("contradicts")).toBeInTheDocument();
     expect(screen.getByText("candidate 2 semantic node unavailable")).toBeInTheDocument();
-    expect(screen.getAllByText(missingNodeId).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: `copy ${missingNodeId}` }).length).toBeGreaterThan(
+      0,
+    );
     expect(screen.getByText("semantic node missing")).toBeInTheDocument();
   });
 
@@ -1765,7 +1767,7 @@ describe("P2 screens", () => {
     expect(await screen.findByText("Left semantic node description.")).toBeInTheDocument();
     expect(screen.getByText("Right semantic node description.")).toBeInTheDocument();
     expect(screen.getByText("semantic edge unavailable")).toBeInTheDocument();
-    expect(screen.getAllByText(edgeId).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: `copy ${edgeId}` }).length).toBeGreaterThan(0);
     expect(screen.getByText("semantic edge missing")).toBeInTheDocument();
   });
 

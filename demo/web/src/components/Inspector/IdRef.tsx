@@ -1,7 +1,6 @@
-import { shortId } from "../../screens/screen-utils";
-import { useInspector } from "./inspector-context";
 import { resolveObjectType, type ObjectType } from "./inspector-id";
 import type { InspectorTab } from "./inspector-registry";
+import { IdChip } from "./IdChip";
 
 export type IdRefProps = {
   id: string;
@@ -24,26 +23,20 @@ export function IdRef({
   presetTab,
   hint,
 }: IdRefProps) {
-  const inspector = useInspector();
   const resolvedType = type ?? resolveObjectType(id);
-  const disabled = resolvedType === null;
 
   return (
-    <button
-      type="button"
-      className={`btn sm superseded-by-chip ${active ? "primary" : "ghost"}`}
-      title={title ?? (disabled ? `Unknown object type for ${id}` : `Jump to ${id}`)}
-      aria-label={ariaLabel ?? (disabled ? `unknown object ${id}` : `jump to ${id}`)}
-      aria-current={active ? "true" : undefined}
-      disabled={disabled}
-      onClick={(event) => {
-        event.stopPropagation();
-        if (resolvedType !== null) {
-          inspector.openObject({ type: resolvedType, id, presetTab, hint });
-        }
-      }}
-    >
-      {label ?? shortId(id)}
-    </button>
+    <IdChip
+      id={id}
+      type={resolvedType}
+      label={label}
+      active={active}
+      ariaLabel={ariaLabel}
+      title={title}
+      presetTab={presetTab}
+      hint={hint}
+      copy={false}
+      className={`superseded-by-chip ${active ? "primary" : "ghost"}`}
+    />
   );
 }

@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 
 import { getAssembledPrompt, getPrompts } from "../../api/client";
 import type { PromptKey } from "../../api/types";
+import { Empty } from "../../components/Empty";
+import { ErrorState } from "../../components/ErrorState";
+import { Loading } from "../../components/Loading";
 import { useApi } from "../../hooks/use-api";
 import { AssembledPromptPane } from "./AssembledPromptPane";
 import { PromptBlockList } from "./PromptBlockList";
@@ -29,13 +32,13 @@ export function PromptsScreen() {
   }, [api.data]);
 
   if (api.loading && api.data === null) {
-    return <div className="notice">loading prompts</div>;
+    return <Loading>loading prompts</Loading>;
   }
   if (api.error !== null) {
-    return <div className="notice bad">{api.error.message}</div>;
+    return <ErrorState onRetry={() => void api.refetch()}>{api.error.message}</ErrorState>;
   }
   if (api.data === null || api.data.blocks.length === 0) {
-    return <div className="notice">no prompts available</div>;
+    return <Empty>no prompts available</Empty>;
   }
 
   const selectedBlock =
@@ -50,7 +53,7 @@ export function PromptsScreen() {
           Edit the 5 voice/posture/capabilities blocks that frame borg's system prompt.
         </span>
       </div>
-      <div className="prompt-lab band-detail page-body">
+      <div className="prompt-lab-layout page-body">
         <PromptBlockList
           blocks={api.data.blocks}
           selectedKey={selectedBlock.key}

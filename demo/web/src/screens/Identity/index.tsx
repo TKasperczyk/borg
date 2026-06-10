@@ -220,7 +220,7 @@ function IdentityCorrectionButtons({
         why
       </button>
       <button
-        className="btn sm ghost"
+        className="btn sm danger"
         disabled={busy}
         onClick={() => onModal({ kind: "forget", id, label })}
       >
@@ -1248,7 +1248,11 @@ export function IdentityScreen() {
               cancel
             </button>
             <button
-              className={`btn sm primary${isDirectCreateModal(modal) ? " live-write" : ""}`}
+              className={`btn sm ${
+                modal?.kind === "forget"
+                  ? "danger"
+                  : `primary${isDirectCreateModal(modal) ? " live-write" : ""}`
+              }`}
               disabled={!canSubmitModal()}
               onClick={() => void submitModal()}
             >

@@ -11,11 +11,14 @@ import type {
 import { Empty } from "../../components/Empty";
 import { ErrorState } from "../../components/ErrorState";
 import { ImagePlaceholder } from "../../components/ImagePlaceholder";
+import { IdChip } from "../../components/Inspector/IdChip";
 import { IdRef } from "../../components/Inspector/IdRef";
 import { Loading } from "../../components/Loading";
 import { Tag, type TagKind } from "../../components/Tag";
 import { useApi } from "../../hooks/use-api";
 import { useStreamWindow } from "../../hooks/use-stream-window";
+import { copyText } from "../../lib/clipboard";
+import { activateOnEnterOrSpace } from "../../lib/keyboard";
 import {
   UNCLAIMED_STREAM_GROUP_LABEL,
   applyStreamStructuralFilters,
@@ -309,7 +312,7 @@ function InternalEventSummary({ entry }: { entry: StreamEntry }) {
   if (wake !== null) {
     return (
       <>
-        <Tag kind="purple" dot>
+        <Tag kind="info" dot>
           {fieldLabel(wake.sourceName)}
         </Tag>
         {wake.triggerType === undefined ? null : <Tag>{fieldLabel(wake.triggerType)}</Tag>}
@@ -466,17 +469,13 @@ function StreamProvenanceRows({ entry, status }: { entry: StreamEntry; status: s
       <div className="row">
         <span className="k">session_id</span>
         <span className="v">
-          <IdRef id={entry.session_id} type="session" label={entry.session_id} />
+          <IdChip id={entry.session_id} type="session" />
         </span>
       </div>
       <div className="row">
         <span className="k">turn_id</span>
         <span className="v">
-          {entry.turn_id === undefined ? (
-            "—"
-          ) : (
-            <IdRef id={entry.turn_id} type="turn" label={entry.turn_id} />
-          )}
+          {entry.turn_id === undefined ? "—" : <IdChip id={entry.turn_id} type="turn" />}
         </span>
       </div>
       <div className="row">
@@ -489,7 +488,7 @@ function StreamProvenanceRows({ entry, status }: { entry: StreamEntry; status: s
           {entry.sender_entity_id === null ? (
             "—"
           ) : (
-            <IdRef id={entry.sender_entity_id} type="entity" label={entry.sender_entity_id} />
+            <IdChip id={entry.sender_entity_id} type="entity" />
           )}
         </span>
       </div>
@@ -499,11 +498,7 @@ function StreamProvenanceRows({ entry, status }: { entry: StreamEntry; status: s
           {entry.reply_target_entity_id === null ? (
             "—"
           ) : (
-            <IdRef
-              id={entry.reply_target_entity_id}
-              type="entity"
-              label={entry.reply_target_entity_id}
-            />
+            <IdChip id={entry.reply_target_entity_id} type="entity" />
           )}
         </span>
       </div>
@@ -547,7 +542,7 @@ function StreamProvenanceRows({ entry, status }: { entry: StreamEntry; status: s
           <span className="k">response_to</span>
           <span className="v idref-list">
             {responseSourceEntryIds.map((id) => (
-              <IdRef key={id} id={id} type="stream_entry" label={id} />
+              <IdChip key={id} id={id} type="stream_entry" />
             ))}
           </span>
         </div>
@@ -662,7 +657,7 @@ function CopyableHash({ value }: { value: string | undefined }) {
         className="btn sm ghost"
         aria-label="copy attachment sha256"
         onClick={() => {
-          void navigator.clipboard?.writeText(value);
+          void copyText(value);
         }}
       >
         copy
@@ -932,10 +927,15 @@ function StreamTimelineRow({
   return (
     <div
       className={`stream-row ${selected ? "selected " : ""}${isAttachment ? "kind-attachment" : ""}`}
+      role="button"
+      tabIndex={0}
+      aria-label={`select stream entry ${entry.id}`}
+      aria-pressed={selected}
       onClick={() => onSelect(entry.id)}
+      onKeyDown={(event) => activateOnEnterOrSpace(event, () => onSelect(entry.id))}
     >
       <span className="t">{formatTime(entry.timestamp)}</span>
-      <span className={`k ${wake !== null ? "purple" : kindTag(entry.kind)}`}>
+      <span className={`k ${wake !== null ? "info" : kindTag(entry.kind)}`}>
         {wake !== null ? "wake" : entry.kind}
       </span>
       <span
@@ -1197,14 +1197,14 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
       <div className="stream-filters" style={{ overflowY: "auto" }}>
         <div className="group">
           <div className="label">stream</div>
-          <div style={{ fontSize: 10.5, color: "var(--text-mute)" }}>
+          <div style={{ fontSize: "var(--fs-xs)", color: "var(--text-mute)" }}>
             append-only · {entries.length} window events · limit 120
           </div>
           <div className="stream-honesty">{honestyLabel}</div>
         </div>
         <div className="group">
           <div className="label">server filters</div>
-          <div style={{ fontSize: 10.5, color: "var(--text-mute)", marginBottom: 6 }}>
+          <div style={{ fontSize: "var(--fs-xs)", color: "var(--text-mute)", marginBottom: 6 }}>
             counts are loaded window counts
           </div>
         </div>
@@ -1324,10 +1324,10 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
           <>
             <div className="det-head">
               <div className="id">
-                <IdRef
+                <IdChip
                   id={selected.id}
                   type="stream_entry"
-                  label={`[${selected.id}]`}
+                  label={`[${shortId(selected.id)}]`}
                   hint={selected}
                 />
               </div>
@@ -1340,11 +1340,15 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
                   {selectedStatus}
                 </Tag>
                 <Tag>
-                  <IdRef id={selected.session_id} type="session" label={selected.session_id} />
+                  <IdChip id={selected.session_id} type="session" />
                 </Tag>
                 {selected.turn_id === undefined ? null : (
                   <Tag>
-                    <IdRef id={selected.turn_id} type="turn" label={`turn ${selected.turn_id}`} />
+                    <IdChip
+                      id={selected.turn_id}
+                      type="turn"
+                      label={`turn ${shortId(selected.turn_id)}`}
+                    />
                   </Tag>
                 )}
                 {selected.kind === "agent_suppressed" || selected.kind === "agent_observed" ? (

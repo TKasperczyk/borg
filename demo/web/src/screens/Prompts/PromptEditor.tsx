@@ -4,8 +4,8 @@ import { deletePrompt, putPrompt } from "../../api/client";
 import type { PromptBlockView, PromptKey } from "../../api/types";
 import { Modal } from "../../components/Modal";
 import { Tag } from "../../components/Tag";
+import { copyText } from "../../lib/clipboard";
 import { dateLabel } from "../screen-utils";
-import { copyText } from "./clipboard";
 
 type PromptDiffLine = {
   id: string;
@@ -273,7 +273,7 @@ export function PromptEditor({
           {block.overridden ? (
             <button
               type="button"
-              className="btn sm ghost"
+              className="btn sm danger"
               disabled={!canReset}
               onClick={() => void reset()}
             >

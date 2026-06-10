@@ -5,6 +5,7 @@ import { IdRef } from "../../components/Inspector/IdRef";
 import { ParticipationPolicyControl } from "../../components/ParticipationPolicyControl";
 import { Tag } from "../../components/Tag";
 import { sourceLabel } from "../../components/SessionFleet";
+import { isInteractiveDescendantEvent } from "../../lib/keyboard";
 import { dateLabel, shortId } from "../screen-utils";
 
 type SessionsEntitiesTabProps = {
@@ -182,18 +183,34 @@ export function SessionsEntitiesTab({
                   <tr
                     key={session.session_id}
                     className={session.session_id === activeSessionId ? "selected" : ""}
-                    onClick={() => onSelectSession(session.session_id)}
+                    onClick={(event) => {
+                      if (!isInteractiveDescendantEvent(event.currentTarget, event.target)) {
+                        onSelectSession(session.session_id);
+                      }
+                    }}
                     style={{ cursor: "pointer" }}
                   >
                     <td>
                       <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                        <button
+                          type="button"
+                          className="row-select-button"
+                          aria-pressed={session.session_id === activeSessionId}
+                          aria-label={`select session ${session.session_id}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onSelectSession(session.session_id);
+                          }}
+                        >
+                          {session.label}
+                        </button>
                         <IdRef
                           id={session.session_id}
                           type="session"
-                          label={session.label}
+                          label={shortId(session.session_id)}
                           hint={session}
                         />
-                        <span className="dim" style={{ fontSize: 10.5 }}>
+                        <span className="dim" style={{ fontSize: "var(--fs-xs)" }}>
                           {dateLabel(session.last_activity_at)}
                         </span>
                       </div>

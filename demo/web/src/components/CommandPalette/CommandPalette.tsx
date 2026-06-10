@@ -172,6 +172,7 @@ export function CommandPalette({
   onOpenReset,
 }: CommandPaletteProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const optionRefs = useRef<Array<HTMLDivElement | null>>([]);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const [memorySearch, setMemorySearch] = useState<MemorySearchState>({
@@ -423,6 +424,13 @@ export function CommandPalette({
     });
   }, [results.length]);
 
+  useEffect(() => {
+    const activeOption = optionRefs.current[activeIndex];
+    if (typeof activeOption?.scrollIntoView === "function") {
+      activeOption.scrollIntoView({ block: "nearest" });
+    }
+  }, [activeIndex, results.length]);
+
   function runResult(result: CommandResult | undefined): void {
     if (result === undefined || result.disabled || result.run === undefined) {
       return;
@@ -515,6 +523,9 @@ export function CommandPalette({
                   return (
                     <div
                       key={result.id}
+                      ref={(element) => {
+                        optionRefs.current[index] = element;
+                      }}
                       id={activeOptionId(index)}
                       role="option"
                       aria-selected={active}

@@ -255,8 +255,14 @@ describe("Memory correction actions", () => {
     fireEvent.click(episodicLabels[0]?.closest(".band-card") ?? episodicLabels[0]!);
     expect((await screen.findAllByText("Episode one")).length).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByRole("button", { name: "forget" }));
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "forget" }));
+    const forgetButton = screen.getByRole("button", { name: "forget" });
+    expect(forgetButton).toHaveClass("danger");
+    fireEvent.click(forgetButton);
+    const confirmForget = within(screen.getByRole("dialog")).getByRole("button", {
+      name: "forget",
+    });
+    expect(confirmForget).toHaveClass("danger");
+    fireEvent.click(confirmForget);
 
     await waitFor(() => {
       expect(
@@ -810,8 +816,10 @@ describe("Memory correction actions", () => {
 
     await waitFor(() => {
       expect(
-        within(container.querySelector(".detail") as HTMLElement).getByText("ent_bob"),
-      ).toBeInTheDocument();
+        within(container.querySelector(".detail") as HTMLElement).getAllByRole("button", {
+          name: "jump to ent_bob",
+        }).length,
+      ).toBeGreaterThan(0);
     });
   });
 

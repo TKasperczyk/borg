@@ -18,12 +18,15 @@ import type {
   DreamProcessSummary,
   DreamScheduleItem,
 } from "../../api/types";
+import { ErrorState } from "../../components/ErrorState";
 import { IdRef } from "../../components/Inspector/IdRef";
+import { Loading } from "../../components/Loading";
 import { resolveObjectType, type ObjectType } from "../../components/Inspector/inspector-id";
 import { Modal } from "../../components/Modal";
 import { Tag } from "../../components/Tag";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
+import { activateOnEnterOrSpace } from "../../lib/keyboard";
 import { formatTime } from "../../lib/stream-utils";
 import {
   displayTargetSummary,
@@ -129,9 +132,7 @@ function auditRevertTitle(row: MaintenanceAuditRow): string {
     return "No reversal payload was recorded for this audit row";
   }
 
-  return row.reverted_at === null
-    ? "Revert this audited maintenance change"
-    : "Already reverted";
+  return row.reverted_at === null ? "Revert this audited maintenance change" : "Already reverted";
 }
 
 function auditStatusLabel(row: MaintenanceAuditRow): string {
@@ -141,8 +142,7 @@ function auditStatusLabel(row: MaintenanceAuditRow): string {
 
   if (
     auditHasReversal(row) &&
-    (row.process === "creator-directive-reconciler" ||
-      row.process === "commitment-reconciler")
+    (row.process === "creator-directive-reconciler" || row.process === "commitment-reconciler")
   ) {
     return "auto-resolved";
   }
@@ -566,11 +566,11 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
   }
 
   if (api.loading && state === null) {
-    return <div className="notice">loading dream cycle</div>;
+    return <Loading>loading dream cycle</Loading>;
   }
 
   if (api.error !== null) {
-    return <div className="notice bad">{api.error.message}</div>;
+    return <ErrorState onRetry={api.refetch}>{api.error.message}</ErrorState>;
   }
 
   return (
@@ -604,7 +604,7 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
       </div>
 
       <div className="page-body">
-        {operatorError === null ? null : <div className="notice bad">{operatorError}</div>}
+        {operatorError === null ? null : <ErrorState>{operatorError}</ErrorState>}
         <div className="dream-ops-strip">
           <div className="dream-health-grid">
             <div className="dream-health-card" title={schedulerTitle}>
@@ -652,9 +652,7 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
             </div>
             <div className="dream-health-card">
               <div className="upper dim">recent errors</div>
-              <div className={recentErrorCount > 0 ? "value bad" : "value"}>
-                {recentErrorCount}
-              </div>
+              <div className={recentErrorCount > 0 ? "value bad" : "value"}>{recentErrorCount}</div>
               <div className="sub">process statuses</div>
             </div>
           </div>
@@ -925,9 +923,7 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
         ) : (
           <div className="modal-form">
             {planStale ? (
-              <div className="notice warn">
-                state changed since this plan -- re-plan to apply
-              </div>
+              <div className="notice warn">state changed since this plan -- re-plan to apply</div>
             ) : null}
             <div className="dream-plan-summary">
               <Tag kind={plan.changes > 0 ? "acc" : ""}>{plan.changes} changes</Tag>
@@ -995,9 +991,7 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
         ) : (
           <div className="modal-form">
             {confirmApplyPlanId !== null && planStale ? (
-              <div className="notice warn">
-                state changed since this plan -- re-plan to apply
-              </div>
+              <div className="notice warn">state changed since this plan -- re-plan to apply</div>
             ) : null}
             <div style={{ color: "var(--text)", fontFamily: "var(--sans)", lineHeight: 1.5 }}>
               {!applyingPlan ? (
@@ -1166,9 +1160,7 @@ function DreamApplyResultPanel({ result }: { result: DreamApplyResponse }) {
               hint={result}
             />
           </Tag>
-          <Tag kind={result.applied.length > 0 ? "acc" : ""}>
-            {result.applied.length} applied
-          </Tag>
+          <Tag kind={result.applied.length > 0 ? "acc" : ""}>{result.applied.length} applied</Tag>
           <Tag kind={result.failed.length > 0 ? "bad" : "acc"}>{result.failed.length} failed</Tag>
           <Tag>{result.total_budget_used} budget used</Tag>
           <Tag>{result.duration_ms} ms</Tag>
@@ -1242,11 +1234,7 @@ function DreamApplyResultPanel({ result }: { result: DreamApplyResponse }) {
   );
 }
 
-function DreamPlanProcessResult({
-  process,
-}: {
-  process: DreamPlanResponse["processes"][number];
-}) {
+function DreamPlanProcessResult({ process }: { process: DreamPlanResponse["processes"][number] }) {
   return (
     <div className="item dream-plan-process">
       <div className="dream-plan-process-head">
@@ -1327,7 +1315,7 @@ function DreamPlanProcessResult({
 function RevertPayloadComparison({ row }: { row: MaintenanceAuditRow }) {
   return (
     <div className="dream-revert-compare">
-      <div className="dim" style={{ fontSize: 10.5, lineHeight: 1.45 }}>
+      <div className="dim" style={{ fontSize: "var(--fs-xs)", lineHeight: 1.45 }}>
         Current shows the audited target row. After revert shows the recorded reversal payload the
         server will apply; opaque process-specific shapes are shown as payload panels.
       </div>
@@ -1363,15 +1351,13 @@ function AuditRunHeader({ group, report }: { group: AuditRunGroup; report?: Drea
                 hint={group}
               />
             </Tag>
-            <span className="dim" style={{ fontSize: 10.5 }}>
+            <span className="dim" style={{ fontSize: "var(--fs-xs)" }}>
               {group.rows.length} rows
             </span>
-            <span className="dim" style={{ fontSize: 10.5 }}>
+            <span className="dim" style={{ fontSize: "var(--fs-xs)" }}>
               {group.processes.join(", ")}
             </span>
-            <Tag kind={group.revertedCount > 0 ? "warn" : ""}>
-              {group.revertedCount} reverted
-            </Tag>
+            <Tag kind={group.revertedCount > 0 ? "warn" : ""}>{group.revertedCount} reverted</Tag>
           </div>
           <DreamReportInlineSummary report={report} />
         </div>
@@ -1383,7 +1369,7 @@ function AuditRunHeader({ group, report }: { group: AuditRunGroup; report?: Drea
 function DreamReportInlineSummary({ report }: { report?: DreamReport }) {
   if (report === undefined) {
     return (
-      <div className="dim" style={{ fontSize: 10.5 }}>
+      <div className="dim" style={{ fontSize: "var(--fs-xs)" }}>
         no matching dream_report in state window
       </div>
     );
@@ -1405,7 +1391,11 @@ function DreamReportInlineSummary({ report }: { report?: DreamReport }) {
         <Tag kind="warn">budget {report.budget_exhausted_processes.join(", ")}</Tag>
       ) : null}
       {report.notes.map((note, index) => (
-        <span key={`${report.run_id}-note-${index}`} className="dim" style={{ fontSize: 10.5 }}>
+        <span
+          key={`${report.run_id}-note-${index}`}
+          className="dim"
+          style={{ fontSize: "var(--fs-xs)" }}
+        >
           {note}
         </span>
       ))}
@@ -1469,7 +1459,7 @@ function AuditPayloadDetail({
         background: compact ? undefined : "var(--bg-0)",
       }}
     >
-      <div className="dim" style={{ fontSize: 10.5, lineHeight: 1.45 }}>
+      <div className="dim" style={{ fontSize: "var(--fs-xs)", lineHeight: 1.45 }}>
         Reversal payloads are process-specific restore data. Explicit old/new machine fields are
         highlighted; raw JSON remains available below.
       </div>
@@ -1551,7 +1541,7 @@ function PayloadPanel({
 function RawJsonDisclosure({ label, value }: { label: string; value: unknown }) {
   return (
     <details style={{ marginTop: 10 }}>
-      <summary className="dim" style={{ cursor: "pointer", fontSize: 10.5 }}>
+      <summary className="dim" style={{ cursor: "pointer", fontSize: "var(--fs-xs)" }}>
         {label}
       </summary>
       <pre style={{ marginTop: 8, maxHeight: 260, overflow: "auto" }}>{jsonText(value)}</pre>
@@ -1708,7 +1698,11 @@ function DreamCard({
   return (
     <div
       className={`dream-card${activeRun ? " dream-card-running" : ""}`}
+      role="button"
+      tabIndex={0}
+      aria-pressed={selected}
       onClick={onSelect}
+      onKeyDown={(event) => activateOnEnterOrSpace(event, onSelect)}
       style={{ borderColor: selected ? "var(--acc-dim)" : undefined, cursor: "pointer" }}
     >
       <div className="h">
@@ -1756,7 +1750,7 @@ function DreamCard({
             </div>
           </div>
         </div>
-        <div className="dim" style={{ fontSize: 10.5, lineHeight: 1.4 }}>
+        <div className="dim" style={{ fontSize: "var(--fs-xs)", lineHeight: 1.4 }}>
           synthesized state; live budget metering ships in v2
         </div>
         <div style={{ display: "flex", gap: 6, marginTop: 10, alignItems: "center" }}>

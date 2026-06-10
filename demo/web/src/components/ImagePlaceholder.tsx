@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import { attachmentBytesUrl } from "../api/client";
+import { activateOnEnterOrSpace } from "../lib/keyboard";
 
 const IMG_SIZES = {
   xs: [28, 28],
@@ -108,6 +109,11 @@ export function ImagePlaceholder({
       <div
         className={`img-ph ${quarantined ? "quarantined" : ""}`}
         onClick={onClick}
+        role={onClick === undefined ? undefined : "button"}
+        tabIndex={onClick === undefined ? undefined : 0}
+        onKeyDown={
+          onClick === undefined ? undefined : (event) => activateOnEnterOrSpace(event, onClick)
+        }
         style={{ width, height, cursor: onClick === undefined ? "default" : "pointer", ...style }}
         title={attachmentId}
       >
@@ -142,6 +148,11 @@ export function ImagePlaceholder({
     <div
       className={`img-ph ${quarantined ? "quarantined" : ""}`}
       onClick={onClick}
+      role={onClick === undefined ? undefined : "button"}
+      tabIndex={onClick === undefined ? undefined : 0}
+      onKeyDown={
+        onClick === undefined ? undefined : (event) => activateOnEnterOrSpace(event, onClick)
+      }
       style={{ width, height, cursor: onClick === undefined ? "default" : "pointer", ...style }}
       title={short}
     >

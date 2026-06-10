@@ -303,7 +303,9 @@ describe("Review & Repair", () => {
     renderReview();
 
     expect(await screen.findByText("destructive confirm route")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "invalidate" }));
+    const invalidateButton = screen.getByRole("button", { name: "invalidate" });
+    expect(invalidateButton).toHaveClass("danger");
+    fireEvent.click(invalidateButton);
 
     expect(
       fetchMock.mock.calls.some(
@@ -311,7 +313,9 @@ describe("Review & Repair", () => {
       ),
     ).toBe(false);
 
-    fireEvent.click(screen.getByRole("button", { name: "confirm invalidate" }));
+    const confirmInvalidate = screen.getByRole("button", { name: "confirm invalidate" });
+    expect(confirmInvalidate).toHaveClass("danger");
+    fireEvent.click(confirmInvalidate);
 
     await waitFor(() => {
       const call = fetchMock.mock.calls.find(
@@ -325,13 +329,57 @@ describe("Review & Repair", () => {
     });
   });
 
+  it("treats reject as a non-destructive review disposition", async () => {
+    const row = reviewRow({
+      id: 12,
+      kind: "correction",
+      reason: "reject direct route",
+    });
+    const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(request), "http://test.invalid");
+      if (url.pathname === "/api/reviews" && init?.method === undefined) {
+        return Promise.resolve(jsonResponse({ rows: [row] }));
+      }
+      if (url.pathname === "/api/creator-directives") {
+        return Promise.resolve(jsonResponse({ directives: [] }));
+      }
+      if (url.pathname === "/api/commitments") {
+        return Promise.resolve(jsonResponse({ commitments: [] }));
+      }
+      if (url.pathname === "/api/correction/reviews/12" && init?.method === "PATCH") {
+        return Promise.resolve(
+          jsonResponse({ ...row, resolved_at: Date.now(), resolution: "reject" }),
+        );
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderReview();
+
+    expect(await screen.findByText("reject direct route")).toBeInTheDocument();
+    const rejectButton = screen.getByRole("button", { name: "reject" });
+    expect(rejectButton).not.toHaveClass("danger");
+    fireEvent.click(rejectButton);
+
+    expect(screen.queryByText(/Confirm reject for review 12/)).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          ([request, init]) =>
+            requestPath(request) === "/api/correction/reviews/12" && init?.method === "PATCH",
+        ),
+      ).toBe(true);
+    });
+  });
+
   it("keeps the Inspector open when Escape closes a Review confirmation modal", async () => {
     const nodeId = "semn_escape11111111";
     const row = reviewRow({
       id: 11,
-      kind: "correction",
+      kind: "contradiction",
       reason: "escape confirm route",
-      refs: { target_id: nodeId, target_type: "semantic_node" },
+      refs: { node_ids: [nodeId, "semn_escape22222222"] },
     });
     const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(request), "http://test.invalid");
@@ -371,18 +419,18 @@ describe("Review & Repair", () => {
     renderReview(makeLiveSource(), { inspector: true });
 
     expect(await screen.findByText("escape confirm route")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: `jump to ${nodeId}` }));
+    fireEvent.click(screen.getAllByRole("button", { name: `jump to ${nodeId}` })[0]!);
     expect(
       await screen.findByRole("dialog", { name: "Semantic node inspector" }),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "reject" }));
-    expect(screen.getByText(/Confirm reject for review 11/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "invalidate" }));
+    expect(screen.getByText(/Confirm invalidate for review 11/)).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "Escape" });
 
     await waitFor(() =>
-      expect(screen.queryByText(/Confirm reject for review 11/)).not.toBeInTheDocument(),
+      expect(screen.queryByText(/Confirm invalidate for review 11/)).not.toBeInTheDocument(),
     );
     expect(screen.getByRole("dialog", { name: "Semantic node inspector" })).toBeInTheDocument();
   });

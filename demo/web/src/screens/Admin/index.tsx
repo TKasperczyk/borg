@@ -310,7 +310,7 @@ function DangerZonePanel({
             Deletes the borg substrate through the sanctioned admin reset endpoint and requires the
             RESET confirmation token.
           </div>
-          <button type="button" className="btn sm live-write" onClick={onOpenResetConfirm}>
+          <button type="button" className="btn sm danger" onClick={onOpenResetConfirm}>
             reset
           </button>
         </div>

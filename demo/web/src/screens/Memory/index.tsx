@@ -22,7 +22,10 @@ import type {
   SemanticMemoryNode,
   SocialMemoryItem,
 } from "../../api/types";
-import { IdRef } from "../../components/Inspector/IdRef";
+import { Empty } from "../../components/Empty";
+import { ErrorState } from "../../components/ErrorState";
+import { IdChip } from "../../components/Inspector/IdChip";
+import { Loading } from "../../components/Loading";
 import { Modal } from "../../components/Modal";
 import { Panel } from "../../components/Panel";
 import { SemanticNodeDetail } from "../../components/SemanticNodeDetail";
@@ -31,6 +34,7 @@ import { Tag } from "../../components/Tag";
 import { WhyDrawer } from "../../components/WhyDrawer";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
+import { activateOnEnterOrSpace } from "../../lib/keyboard";
 import { formatTime } from "../../lib/stream-utils";
 import { dateLabel, jsonText, parseJsonPatch, shortId } from "../screen-utils";
 import { SocialTrustScatter, ValenceArousalPlane } from "./AtlasPlots";
@@ -351,11 +355,11 @@ export function MemoryScreen({
   }
 
   if (api.loading && api.data === null) {
-    return <div className="notice">loading memory bands</div>;
+    return <Loading>loading memory bands</Loading>;
   }
 
   if (api.error !== null) {
-    return <div className="notice bad">{api.error.message}</div>;
+    return <ErrorState onRetry={api.refetch}>{api.error.message}</ErrorState>;
   }
 
   return (
@@ -637,7 +641,7 @@ function FilterPillGroup({
   if (options.length > 8) {
     return (
       <>
-        <span className="dim" style={{ fontSize: 10.5 }}>
+        <span className="dim" style={{ fontSize: "var(--fs-xs)" }}>
           {label}
         </span>
         <select aria-label={label} value={value} onChange={(event) => onChange(event.target.value)}>
@@ -653,18 +657,19 @@ function FilterPillGroup({
 
   return (
     <>
-      <span className="dim" style={{ fontSize: 10.5 }}>
+      <span className="dim" style={{ fontSize: "var(--fs-xs)" }}>
         {label}
       </span>
       <div className="filter-pills">
         {options.map((option) => (
-          <span
+          <button
             key={option}
+            type="button"
             className={`pill ${value === option ? "on" : ""}`}
             onClick={() => onChange(option)}
           >
             {option}
-          </span>
+          </button>
         ))}
       </div>
     </>
@@ -848,6 +853,7 @@ function MemoryBandBrowser({
   nextCursor,
   loadingMore,
   onLoadMore,
+  onRetry,
   onOpenIdentity,
   onOpenCommitments,
 }: {
@@ -867,6 +873,7 @@ function MemoryBandBrowser({
   nextCursor: string | null;
   loadingMore: boolean;
   onLoadMore: () => void;
+  onRetry?: () => void;
   onOpenIdentity?: () => void;
   onOpenCommitments?: () => void;
 }) {
@@ -883,23 +890,22 @@ function MemoryBandBrowser({
         <span className="spacer"></span>
         <div className="filter-pills" aria-label="memory sort">
           {sortModes.map((mode) => (
-            <span
+            <button
               key={mode}
+              type="button"
               className={`pill ${sortMode === mode ? "on" : ""}`}
               onClick={() => onSortMode(mode)}
             >
               {sortLabel(mode)}
-            </span>
+            </button>
           ))}
         </div>
       </div>
       <div className="matlas-browser-filters">
         <MemoryStructuralControls band={band} rows={rows} filters={filters} onFilter={onFilter} />
       </div>
-      {loading && rows.length === 0 && detail === null ? (
-        <div className="notice">loading {band}</div>
-      ) : null}
-      {error !== null ? <div className="notice bad">{error.message}</div> : null}
+      {loading && rows.length === 0 && detail === null ? <Loading>loading {band}</Loading> : null}
+      {error !== null ? <ErrorState onRetry={onRetry}>{error.message}</ErrorState> : null}
       {detail?.band === "episodic" ? (
         <EpisodicTimeline
           detail={detail}
@@ -955,7 +961,7 @@ function MemoryBandBrowser({
         <GenericMemoryRows rows={filteredRows} selectedId={selectedId} onSelect={onSelectRow} />
       )}
       {filteredRows.length === 0 && !loading && detail?.band !== "affective" ? (
-        <div className="notice">no records in current filter</div>
+        <Empty>no records in current filter</Empty>
       ) : null}
       {nextCursor !== null ? (
         <div style={{ padding: 12 }}>
@@ -983,7 +989,11 @@ function GenericMemoryRows({
         <div
           key={row.id}
           className={`list-row ${row.id === selectedId ? "selected" : ""}`}
+          role="button"
+          tabIndex={0}
+          aria-pressed={row.id === selectedId}
           onClick={() => onSelect(row.id)}
+          onKeyDown={(event) => activateOnEnterOrSpace(event, () => onSelect(row.id))}
         >
           <div className="ttl">{row.title}</div>
           <div className="meta">
@@ -1016,7 +1026,11 @@ function EpisodicTimeline({
         <article
           key={episode.id}
           className={`list-row matlas-timeline-card ${episode.id === selectedId ? "selected" : ""}`}
+          role="button"
+          tabIndex={0}
+          aria-pressed={episode.id === selectedId}
           onClick={() => onSelect(episode.id)}
+          onKeyDown={(event) => activateOnEnterOrSpace(event, () => onSelect(episode.id))}
         >
           <div className="matlas-card-head">
             <div className="ttl">{episode.title}</div>
@@ -1035,9 +1049,7 @@ function EpisodicTimeline({
           {episode.tags.length === 0 ? null : (
             <div className="matlas-tag-row">
               {episode.tags.map((tag) => (
-                <span key={tag} className="pill">
-                  {tag}
-                </span>
+                <Tag key={tag}>{tag}</Tag>
               ))}
             </div>
           )}
@@ -1068,7 +1080,11 @@ function ProceduralSkillCards({
           <article
             key={skill.id}
             className={`list-row matlas-skill-card ${skill.id === selectedId ? "selected" : ""}`}
+            role="button"
+            tabIndex={0}
+            aria-pressed={skill.id === selectedId}
             onClick={() => onSelect(skill.id)}
+            onKeyDown={(event) => activateOnEnterOrSpace(event, () => onSelect(skill.id))}
           >
             <div className="matlas-card-head">
               <div className="ttl">{skill.applies_when}</div>
@@ -1135,7 +1151,11 @@ function RelationalFactTable({
             <tr
               key={slot.id}
               className={slot.id === selectedId ? "selected" : ""}
+              role="button"
+              tabIndex={0}
+              aria-pressed={slot.id === selectedId}
               onClick={() => onSelect(slot.id)}
+              onKeyDown={(event) => activateOnEnterOrSpace(event, () => onSelect(slot.id))}
             >
               <td>{slot.subject ?? shortId(slot.subject_entity_id)}</td>
               <td>{slot.slot_key}</td>
@@ -1192,7 +1212,11 @@ function AffectiveAtlas({
           <div
             key={point.id}
             className={`list-row ${String(point.id) === selectedId ? "selected" : ""}`}
+            role="button"
+            tabIndex={0}
+            aria-pressed={String(point.id) === selectedId}
             onClick={() => onSelect(String(point.id))}
+            onKeyDown={(event) => activateOnEnterOrSpace(event, () => onSelect(String(point.id)))}
           >
             <div className="ttl">
               {formatTime(point.ts)} · v {point.valence.toFixed(2)} / a {point.arousal.toFixed(2)}
@@ -1200,7 +1224,7 @@ function AffectiveAtlas({
             <div className="meta">{point.trigger_reason ?? "no trigger"}</div>
           </div>
         ))}
-        {points.length === 0 ? <div className="notice">no mood history</div> : null}
+        {points.length === 0 ? <Empty>no mood history</Empty> : null}
       </div>
     </div>
   );
@@ -1229,7 +1253,11 @@ function SocialAtlas({
             className={`list-row matlas-entity-card ${
               profile.entity_id === selectedId ? "selected" : ""
             }`}
+            role="button"
+            tabIndex={0}
+            aria-pressed={profile.entity_id === selectedId}
             onClick={() => onSelect(profile.entity_id)}
+            onKeyDown={(event) => activateOnEnterOrSpace(event, () => onSelect(profile.entity_id))}
           >
             <div className="ttl">{profile.name ?? profile.entity_id}</div>
             <div className="matlas-chip-row">
@@ -1330,11 +1358,15 @@ function CommitmentsAtlas({
               className={`list-row matlas-commit-card ${
                 commitment.id === selectedId ? "selected" : ""
               }`}
+              role="button"
+              tabIndex={0}
+              aria-pressed={commitment.id === selectedId}
               onClick={() => onSelect(commitment.id)}
+              onKeyDown={(event) => activateOnEnterOrSpace(event, () => onSelect(commitment.id))}
             >
               <div className="ttl">{commitment.text}</div>
               <div className="matlas-chip-row">
-                <Tag kind={commitment.enforcement_class === "critical" ? "bad" : "warn"}>
+                <Tag kind={commitment.enforcement_class === "critical" ? "warn" : ""}>
                   {commitment.enforcement_class}
                 </Tag>
                 <Tag kind={stateTagKind(commitment.state)}>{commitment.state}</Tag>
@@ -1378,15 +1410,15 @@ function SemanticTopologyPanel({
   }, [live, refetch]);
 
   if (api.loading && api.data === null) {
-    return <div className="notice">loading semantic topology</div>;
+    return <Loading>loading semantic topology</Loading>;
   }
 
   if (api.error !== null) {
-    return <div className="notice bad">{api.error.message}</div>;
+    return <ErrorState onRetry={api.refetch}>{api.error.message}</ErrorState>;
   }
 
   if (api.data === null) {
-    return <div className="notice">semantic topology unavailable</div>;
+    return <Empty>semantic topology unavailable</Empty>;
   }
 
   return <SemanticTopology graph={api.data} selectedId={selectedId} onSelectNode={onSelectNode} />;
@@ -1652,9 +1684,9 @@ function MemoryDrill({
   return (
     <div className="full-page">
       <div className="page-head">
-        <span className="btn sm ghost" style={{ cursor: "pointer" }} onClick={back}>
+        <button className="btn sm ghost" type="button" onClick={back}>
           ← memory
-        </span>
+        </button>
         <h1>memory atlas</h1>
         <span className="desc">{BAND_DESCRIPTIONS[band]}</span>
         <span className="spacer"></span>
@@ -1706,11 +1738,7 @@ function MemoryDrill({
           ) : null}
         </form>
       ) : null}
-      {operatorError === null ? null : (
-        <div className="notice bad" style={{ padding: 12 }}>
-          {operatorError}
-        </div>
-      )}
+      {operatorError === null ? null : <ErrorState>{operatorError}</ErrorState>}
       <div
         className={`band-detail ${
           band === "semantic" && semanticViewMode === "topology" ? "semantic-topology-mode" : ""
@@ -1739,6 +1767,7 @@ function MemoryDrill({
             nextCursor={nextCursor}
             loadingMore={loadingMore}
             onLoadMore={() => void loadMore()}
+            onRetry={api.refetch}
             onOpenIdentity={onOpenIdentity}
             onOpenCommitments={onOpenCommitments}
           />
@@ -1746,18 +1775,18 @@ function MemoryDrill({
         <div className="detail">
           {selected === null ? (
             fetchedSemanticNodeLoading ? (
-              <div className="notice">loading selected semantic node</div>
+              <Loading>loading selected semantic node</Loading>
             ) : fetchedSemanticNodeError !== null ? (
-              <div className="notice bad">{fetchedSemanticNodeError}</div>
+              <ErrorState>{fetchedSemanticNodeError}</ErrorState>
             ) : (
-              <div className="notice">no records in this band</div>
+              <Empty>no records in this band</Empty>
             )
           ) : selectedSemanticNode === null ? (
             <>
               <h2>{selected.title}</h2>
               <div className="meta-line">
                 <span>
-                  <IdRef id={selected.id} label={`[${selected.id}]`} />
+                  <IdChip id={selected.id} />
                 </span>
                 <span>·</span>
                 <span>{selected.meta}</span>
@@ -1805,7 +1834,7 @@ function MemoryDrill({
                   {selected?.id === undefined && selectedId === null ? (
                     "—"
                   ) : (
-                    <IdRef
+                    <IdChip
                       id={selected?.id ?? selectedId ?? ""}
                       hint={selectedSemanticNode ?? undefined}
                     />
@@ -1836,7 +1865,7 @@ function MemoryDrill({
                   </button>
                   {selectedCorrectionKind === "semantic_edge" ? (
                     <button
-                      className="btn sm ghost"
+                      className="btn sm danger"
                       disabled={busy !== null}
                       onClick={() =>
                         setAction({
@@ -1853,7 +1882,7 @@ function MemoryDrill({
                   ) : (
                     <>
                       <button
-                        className="btn sm ghost"
+                        className="btn sm danger"
                         disabled={busy !== null}
                         onClick={() =>
                           setAction({ kind: "forget", id: selected.id, title: selected.title })
@@ -1880,7 +1909,7 @@ function MemoryDrill({
                   )}
                 </>
               ) : (
-                <span className="dim" style={{ fontSize: 11 }}>
+                <span className="dim" style={{ fontSize: "var(--fs-xs)" }}>
                   no correction actions for this row
                 </span>
               )}
@@ -1907,7 +1936,11 @@ function MemoryDrill({
               cancel
             </button>
             <button
-              className="btn sm primary"
+              className={`btn sm ${
+                action?.kind === "forget" || action?.kind === "invalidate-edge"
+                  ? "danger"
+                  : "primary"
+              }`}
               disabled={busy !== null}
               onClick={() => void submitMemoryAction()}
             >
@@ -1976,11 +2009,11 @@ function CorrectionReviewSummaryPanel({ onOpenReview }: { onOpenReview?: () => v
   const count = api.data?.rows.length ?? 0;
 
   if (api.loading && api.data === null) {
-    return <div className="notice">loading corrections</div>;
+    return <Loading>loading corrections</Loading>;
   }
 
   if (api.error !== null) {
-    return <div className="notice bad">{api.error.message}</div>;
+    return <ErrorState onRetry={api.refetch}>{api.error.message}</ErrorState>;
   }
 
   return (
@@ -2006,13 +2039,13 @@ function BandSpecificDetail({
 }) {
   const renderIds = (ids: readonly string[], type?: "stream_entry") =>
     ids.length === 0 ? (
-      <span className="dim" style={{ fontSize: 11 }}>
+      <span className="dim" style={{ fontSize: "var(--fs-xs)" }}>
         none
       </span>
     ) : (
       <span className="matlas-id-list">
         {ids.map((id) => (
-          <IdRef key={id} id={id} type={type} label={id} />
+          <IdChip key={id} id={id} type={type} />
         ))}
       </span>
     );
@@ -2318,7 +2351,7 @@ function BandSpecificDetail({
           <div className="row">
             <span className="k">entity</span>
             <span className="v">
-              <IdRef id={profile.entity_id} label={profile.entity_id} hint={profile} />
+              <IdChip id={profile.entity_id} hint={profile} />
             </span>
           </div>
           <div className="row">
@@ -2359,7 +2392,7 @@ function BandSpecificDetail({
               <div className="row">
                 <span className="k">subject entity</span>
                 <span className="v">
-                  <IdRef id={slot.subject_entity_id} label={slot.subject_entity_id} hint={slot} />
+                  <IdChip id={slot.subject_entity_id} hint={slot} />
                 </span>
               </div>
               <div className="row">

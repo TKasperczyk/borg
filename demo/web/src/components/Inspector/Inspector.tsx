@@ -26,13 +26,19 @@ import type {
   SemanticMemoryNode,
   SessionParticipationPolicy,
 } from "../../api/types";
-import { GENERIC_REVIEW_ACTIONS, resolveReviewAction } from "../../lib/review-actions";
+import { copyText } from "../../lib/clipboard";
+import {
+  DESTRUCTIVE_REVIEW_ACTIONS,
+  GENERIC_REVIEW_ACTIONS,
+  resolveReviewAction,
+} from "../../lib/review-actions";
 import { formatTime } from "../../lib/stream-utils";
 import { LedgerView } from "../../screens/Cognition/LedgerView";
 import {
   dateLabel,
   displayValue,
   fieldLabel,
+  isInternalId,
   isRecord,
   parseJsonPatch,
   shortId,
@@ -46,6 +52,7 @@ import { Modal } from "../Modal";
 import { SemanticEdgeDetail } from "../SemanticEdgeDetail";
 import { SemanticNodeDetail } from "../SemanticNodeDetail";
 import { Tag } from "../Tag";
+import { IdChip } from "./IdChip";
 import { IdRef } from "./IdRef";
 import { useInspector, type InspectorTarget } from "./inspector-context";
 import {
@@ -173,11 +180,35 @@ function GenericSummary({ value }: { value: unknown }) {
       {entries.map(([key, entry]) => (
         <div className="row" key={key}>
           <span className="k">{fieldLabel(key)}</span>
-          <span className="v">{displayValue(entry)}</span>
+          <span className="v">
+            <SummaryValue value={entry} />
+          </span>
         </div>
       ))}
     </div>
   );
+}
+
+function SummaryValue({ value }: { value: unknown }) {
+  if (typeof value === "string" && isInternalId(value)) {
+    return <IdChip id={value} />;
+  }
+
+  if (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((item) => typeof item === "string" && isInternalId(item))
+  ) {
+    return (
+      <span className="id-chip-list">
+        {value.map((id) => (
+          <IdChip key={id} id={id} />
+        ))}
+      </span>
+    );
+  }
+
+  return <>{displayValue(value)}</>;
 }
 
 function AttachmentSummary({ metadata }: { metadata: AttachmentMetadataResponse }) {
@@ -278,18 +309,20 @@ function RelationshipsTab({ model, data }: { model: ObjectModel; data: unknown }
 
   return (
     <div className="inspector-rel-list">
-      {refs.map((ref, index) => (
-        <div className="props row" key={`${ref.fieldLabel}:${ref.id}:${index}`}>
-          <span className="k">{ref.fieldLabel}</span>
-          <span className="v">
-            <IdRef
-              id={ref.id}
-              type={ref.type}
-              label={`${objectRegistry[ref.type].label} ${shortId(ref.id)}`}
-            />
-          </span>
-        </div>
-      ))}
+      <div className="props">
+        {refs.map((ref, index) => (
+          <div className="row" key={`${ref.fieldLabel}:${ref.id}:${index}`}>
+            <span className="k">{ref.fieldLabel}</span>
+            <span className="v">
+              <IdRef
+                id={ref.id}
+                type={ref.type}
+                label={`${objectRegistry[ref.type].label} ${shortId(ref.id)}`}
+              />
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -329,6 +362,7 @@ type ConfirmAction = {
   confirmLabel: string;
   reasonLabel?: string;
   requireReason?: boolean;
+  danger?: boolean;
   run: (reason: string) => Promise<unknown>;
 };
 
@@ -338,6 +372,7 @@ type TextAction = {
   initialValue: string;
   requireValue?: boolean;
   trimValue?: boolean;
+  danger?: boolean;
   run: (value: string) => Promise<unknown>;
 };
 
@@ -489,63 +524,87 @@ function ActionsTab({
           title: `forget ${target.id}`,
           body: "Queue a sanctioned correction forget for this stored object.",
           confirmLabel: "forget",
+          danger: true,
           run: () => postCorrectionForget(target.id),
         }),
-      "btn sm live-write",
+      "btn sm danger",
     );
   }
 
   if (target.type === "semantic_edge") {
-    addButton("invalidate", "invalidate edge", () =>
-      openConfirm({
-        title: `invalidate ${target.id}`,
-        body: "Invalidate this semantic edge through the correction governance endpoint.",
-        confirmLabel: "invalidate",
-        reasonLabel: "reason",
-        run: (inputReason) =>
-          postSemanticEdgeInvalidate(target.id, {
-            ...(optionalText(inputReason) === undefined
-              ? {}
-              : { reason: optionalText(inputReason) }),
-          }),
-      }),
+    addButton(
+      "invalidate",
+      "invalidate edge",
+      () =>
+        openConfirm({
+          title: `invalidate ${target.id}`,
+          body: "Invalidate this semantic edge through the correction governance endpoint.",
+          confirmLabel: "invalidate",
+          reasonLabel: "reason",
+          danger: true,
+          run: (inputReason) =>
+            postSemanticEdgeInvalidate(target.id, {
+              ...(optionalText(inputReason) === undefined
+                ? {}
+                : { reason: optionalText(inputReason) }),
+            }),
+        }),
+      "btn sm danger",
     );
   }
 
   if (target.type === "commitment") {
-    addButton("revoke", "revoke commitment", () =>
-      openConfirm({
-        title: `revoke ${target.id}`,
-        body: "Revoke this commitment through the commitment governance endpoint.",
-        confirmLabel: "revoke",
-        reasonLabel: "reason",
-        run: (inputReason) => {
-          const trimmed = optionalText(inputReason);
-          return postCommitmentRevoke(target.id, trimmed === undefined ? {} : { reason: trimmed });
-        },
-      }),
+    addButton(
+      "revoke",
+      "revoke commitment",
+      () =>
+        openConfirm({
+          title: `revoke ${target.id}`,
+          body: "Revoke this commitment through the commitment governance endpoint.",
+          confirmLabel: "revoke",
+          reasonLabel: "reason",
+          danger: true,
+          run: (inputReason) => {
+            const trimmed = optionalText(inputReason);
+            return postCommitmentRevoke(
+              target.id,
+              trimmed === undefined ? {} : { reason: trimmed },
+            );
+          },
+        }),
+      "btn sm danger",
     );
   }
 
   if (target.type === "creator_directive") {
-    addButton("revoke-directive", "revoke directive", () =>
-      openConfirm({
-        title: `revoke ${target.id}`,
-        body: "Revoke this creator directive. Creator directives are not correction targets.",
-        confirmLabel: "revoke",
-        reasonLabel: "reason",
-        requireReason: true,
-        run: (inputReason) => revokeCreatorDirective(target.id, inputReason),
-      }),
+    addButton(
+      "revoke-directive",
+      "revoke directive",
+      () =>
+        openConfirm({
+          title: `revoke ${target.id}`,
+          body: "Revoke this creator directive. Creator directives are not correction targets.",
+          confirmLabel: "revoke",
+          reasonLabel: "reason",
+          requireReason: true,
+          danger: true,
+          run: (inputReason) => revokeCreatorDirective(target.id, inputReason),
+        }),
+      "btn sm danger",
     );
-    addButton("supersede-directive", "supersede directive", () =>
-      openText({
-        title: `supersede ${target.id}`,
-        label: "replacement directive id",
-        initialValue: "",
-        requireValue: true,
-        run: (replacementId) => supersedeCreatorDirective(target.id, replacementId.trim()),
-      }),
+    addButton(
+      "supersede-directive",
+      "supersede directive",
+      () =>
+        openText({
+          title: `supersede ${target.id}`,
+          label: "replacement directive id",
+          initialValue: "",
+          requireValue: true,
+          danger: true,
+          run: (replacementId) => supersedeCreatorDirective(target.id, replacementId.trim()),
+        }),
+      "btn sm danger",
     );
   }
 
@@ -634,19 +693,24 @@ function ActionsTab({
       const row = kind === null ? null : reviewRowForAction(data, id, kind);
       if (kind === "creator_directive_reconciliation") {
         const directiveIds = reviewDirectiveIds(data);
-        addButton("creator-reconcile-supersede", "supersede directive", () =>
-          openText({
-            title: `supersede directive review ${target.id}`,
-            label: "survivor directive id",
-            initialValue: directiveIds[0] ?? "",
-            requireValue: true,
-            run: (survivorId) =>
-              resolveReviewAction({
-                row: row ?? reviewRowForAction(data, id, "creator_directive_reconciliation"),
-                action: "supersede",
-                survivorId,
-              }),
-          }),
+        addButton(
+          "creator-reconcile-supersede",
+          "supersede directive",
+          () =>
+            openText({
+              title: `supersede directive review ${target.id}`,
+              label: "survivor directive id",
+              initialValue: directiveIds[0] ?? "",
+              requireValue: true,
+              danger: true,
+              run: (survivorId) =>
+                resolveReviewAction({
+                  row: row ?? reviewRowForAction(data, id, "creator_directive_reconciliation"),
+                  action: "supersede",
+                  survivorId,
+                }),
+            }),
+          "btn sm danger",
         );
         addButton("creator-reconcile-keep", "keep directives", () =>
           openConfirm({
@@ -667,25 +731,30 @@ function ActionsTab({
       } else if (kind !== null && row !== null) {
         const ids = reviewNodeIds(data);
         for (const action of GENERIC_REVIEW_ACTIONS[kind]) {
-          addButton(`review-${action}`, reviewActionLabel(action), () =>
-            openConfirm({
-              title: `${reviewActionLabel(action)} review ${target.id}`,
-              body: `Resolve this ${kind.replaceAll("_", " ")} review as ${reviewActionLabel(action)}.`,
-              confirmLabel: reviewActionLabel(action),
-              reasonLabel: "note",
-              run: (note) => {
-                const trimmed = optionalText(note);
-                return resolveReviewAction({
-                  row,
-                  action,
-                  note: trimmed,
-                  winnerNodeId:
-                    ids.length > 0 && (action === "supersede" || action === "invalidate")
-                      ? ids[0]
-                      : undefined,
-                });
-              },
-            }),
+          addButton(
+            `review-${action}`,
+            reviewActionLabel(action),
+            () =>
+              openConfirm({
+                title: `${reviewActionLabel(action)} review ${target.id}`,
+                body: `Resolve this ${kind.replaceAll("_", " ")} review as ${reviewActionLabel(action)}.`,
+                confirmLabel: reviewActionLabel(action),
+                reasonLabel: "note",
+                danger: DESTRUCTIVE_REVIEW_ACTIONS.has(action),
+                run: (note) => {
+                  const trimmed = optionalText(note);
+                  return resolveReviewAction({
+                    row,
+                    action,
+                    note: trimmed,
+                    winnerNodeId:
+                      ids.length > 0 && (action === "supersede" || action === "invalidate")
+                        ? ids[0]
+                        : undefined,
+                  });
+                },
+              }),
+            DESTRUCTIVE_REVIEW_ACTIONS.has(action) ? "btn sm danger" : "btn sm",
           );
         }
       }
@@ -733,9 +802,10 @@ function ActionsTab({
           title: `reset ${target.id}`,
           body: "Delete the stored override and return this prompt block to its default/runtime text.",
           confirmLabel: "reset",
+          danger: true,
           run: () => deletePrompt(promptKey),
         }),
-      "btn sm live-write",
+      "btn sm danger",
     );
   }
 
@@ -805,7 +875,7 @@ function ActionsTab({
             </button>
             <button
               type="button"
-              className="btn sm live-write"
+              className={`btn sm ${confirmAction?.danger === true ? "danger" : "live-write"}`}
               onClick={submitConfirm}
               disabled={
                 busy || (confirmAction?.requireReason === true && reason.trim().length === 0)
@@ -838,7 +908,7 @@ function ActionsTab({
             </button>
             <button
               type="button"
-              className="btn sm live-write"
+              className={`btn sm ${textAction?.danger === true ? "danger" : "live-write"}`}
               onClick={submitText}
               disabled={
                 busy ||
@@ -1084,7 +1154,7 @@ export function Inspector() {
               type="button"
               className="btn sm ghost"
               onClick={() => {
-                void navigator.clipboard?.writeText(target.id);
+                void copyText(target.id);
               }}
             >
               copy id

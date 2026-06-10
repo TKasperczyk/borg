@@ -61,10 +61,10 @@ describe("SemanticEdgeDetail", () => {
     expect(screen.getByText("confidence 0.76")).toBeInTheDocument();
     expect(screen.getByText(/Source node/)).toBeInTheDocument();
     expect(screen.getByText(/Target node/)).toBeInTheDocument();
-    expect(screen.getByText("seme_detail000000")).toBeInTheDocument();
-    expect(screen.getByText("semn_from00000000")).toBeInTheDocument();
-    expect(screen.getByText("semn_to000000000")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "jump to seme_detail000000" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "jump to semn_from00000000" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "jump to semn_to000000000" })).toBeInTheDocument();
     expect(screen.getByText("open")).toBeInTheDocument();
-    expect(screen.getByText("ep_source000000000")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "jump to ep_source000000000" })).toBeInTheDocument();
   });
 });

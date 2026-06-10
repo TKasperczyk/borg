@@ -20,6 +20,11 @@ export const GENERIC_REVIEW_ACTIONS: Record<ReviewKind, ReviewResolution[]> = {
   commitment_reconciliation: ["accept", "reject", "dismiss", "keep"],
 };
 
+export const DESTRUCTIVE_REVIEW_ACTIONS: ReadonlySet<ReviewResolution> = new Set([
+  "invalidate",
+  "supersede",
+]);
+
 export type ResolveReviewActionInput = {
   row: ReviewRow;
   action: ReviewResolution;

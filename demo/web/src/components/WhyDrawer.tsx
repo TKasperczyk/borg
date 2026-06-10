@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { getWhy } from "../api/client";
 import type { WhyResponse } from "../api/types";
 import { ErrorState } from "./ErrorState";
+import { Empty } from "./Empty";
 import { JsonValueView } from "./JsonValueView";
 import { Loading } from "./Loading";
 import { Modal } from "./Modal";
@@ -62,7 +63,7 @@ export function WhyDrawer({ open, id, onClose }: WhyDrawerProps) {
         {error === null ? null : <ErrorState>{error.message}</ErrorState>}
         {!loading && error === null && data !== null ? (
           entries.length === 0 ? (
-            <Loading>no provenance fields</Loading>
+            <Empty>no provenance fields</Empty>
           ) : (
             entries.map(([key, value]) => (
               <details key={key} className="why-section" open>

@@ -345,7 +345,9 @@ describe("DirectivesTab", () => {
       screen.getAllByRole("button", { name: `jump to directive ${replacement.id}` })[0]!,
     );
 
-    expect(await screen.findByText(replacement.id)).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: `jump to ${replacement.id}` }),
+    ).toBeInTheDocument();
     expect(screen.getAllByText("all").some((element) => element.classList.contains("on"))).toBe(
       true,
     );
@@ -681,14 +683,20 @@ describe("DirectivesTab", () => {
     renderWithInspector(<DirectivesTab />);
 
     expect((await screen.findAllByText("Directive to revoke.")).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getAllByRole("button", { name: "revoke" })[0]!);
+    const revokeButton = screen.getAllByRole("button", { name: "revoke" })[0]!;
+    expect(revokeButton).toHaveClass("danger");
+    fireEvent.click(revokeButton);
     expect(
       within(screen.getByRole("dialog")).getByRole("button", { name: "revoke" }),
     ).toBeDisabled();
     fireEvent.change(screen.getByLabelText("reason"), {
       target: { value: "creator retired obsolete guidance" },
     });
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "revoke" }));
+    const confirmRevoke = within(screen.getByRole("dialog")).getByRole("button", {
+      name: "revoke",
+    });
+    expect(confirmRevoke).toHaveClass("danger");
+    fireEvent.click(confirmRevoke);
 
     await waitFor(() => {
       expect(

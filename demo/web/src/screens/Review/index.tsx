@@ -21,17 +21,26 @@ import type {
   SemanticMemoryEdge,
   SemanticMemoryNode,
 } from "../../api/types";
+import { Empty } from "../../components/Empty";
+import { ErrorState } from "../../components/ErrorState";
 import { IdRef } from "../../components/Inspector/IdRef";
 import { resolveObjectType, type ObjectType } from "../../components/Inspector/inspector-id";
 import { isWhySupported } from "../../components/Inspector/inspector-registry";
 import { JsonValueView } from "../../components/JsonValueView";
+import { Loading } from "../../components/Loading";
 import { Modal } from "../../components/Modal";
 import { SemanticEdgeDetail } from "../../components/SemanticEdgeDetail";
 import { SemanticNodeDetail } from "../../components/SemanticNodeDetail";
 import { Tag } from "../../components/Tag";
+import { IdChip } from "../../components/Inspector/IdChip";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
-import { GENERIC_REVIEW_ACTIONS, resolveReviewAction } from "../../lib/review-actions";
+import {
+  DESTRUCTIVE_REVIEW_ACTIONS,
+  GENERIC_REVIEW_ACTIONS,
+  resolveReviewAction,
+} from "../../lib/review-actions";
+import { isInteractiveDescendantEvent } from "../../lib/keyboard";
 import { formatTime } from "../../lib/stream-utils";
 import { displayValue, fieldLabel, isRecord, parseJsonPatch, shortId } from "../screen-utils";
 
@@ -100,8 +109,6 @@ const AGE_FILTERS: readonly { value: AgeBucket; label: string }[] = [
   { value: "week", label: "last week" },
   { value: "older", label: "older" },
 ];
-
-const DESTRUCTIVE_REVIEW_ACTIONS = new Set<ReviewResolution>(["invalidate", "supersede", "reject"]);
 
 function recordValue(record: Record<string, unknown>, key: string): unknown {
   return Object.hasOwn(record, key) ? record[key] : undefined;
@@ -612,7 +619,7 @@ function ReviewRefList({ group }: { group: ReviewRefGroup }) {
       {group.ids.map((id, index) => (
         <span key={id}>
           {index === 0 ? null : ", "}
-          <IdRef id={id} type={group.type} label={id} />
+          <IdChip id={id} type={group.type} />
         </span>
       ))}
     </>
@@ -895,7 +902,7 @@ function PairEpisodeRefs({ groups }: { groups: readonly EpisodeRefGroup[] }) {
               {group.ids.map((id, index) => (
                 <span key={id}>
                   {index === 0 ? null : ", "}
-                  <IdRef id={id} type="episode" label={id} />
+                  <IdChip id={id} type="episode" />
                 </span>
               ))}
             </span>
@@ -956,7 +963,7 @@ function SemanticNodeUnavailable({
         {result?.id === undefined ? (
           "missing node id"
         ) : (
-          <IdRef id={result.id} type="semantic_node" label={result.id} />
+          <IdChip id={result.id} type="semantic_node" />
         )}
       </div>
       {result?.error === null || result?.error === undefined ? null : (
@@ -996,7 +1003,7 @@ function SemanticEdgeDrillSlot({
       <div className="notice bad">
         <div>semantic edge unavailable</div>
         <div style={{ marginTop: 6, overflowWrap: "anywhere" }}>
-          <IdRef id={result.id} type="semantic_edge" label={result.id} />
+          <IdChip id={result.id} type="semantic_edge" />
         </div>
         {result.error === null ? null : (
           <div style={{ marginTop: 4, overflowWrap: "anywhere" }}>{result.error}</div>
@@ -1134,7 +1141,11 @@ function GenericReviewActions({
           return (
             <button
               className={
-                action === "accept" || action === "supersede" ? "btn sm primary" : "btn sm ghost"
+                DESTRUCTIVE_REVIEW_ACTIONS.has(action)
+                  ? "btn sm danger"
+                  : action === "accept"
+                    ? "btn sm primary"
+                    : "btn sm ghost"
               }
               disabled={busy !== null || (needsWinner && winner.length === 0)}
               key={action}
@@ -1360,7 +1371,7 @@ function MaybeIdValue({ value }: { value: unknown }) {
     return <>{value}</>;
   }
 
-  return <IdRef id={value} type={type} label={value} />;
+  return <IdChip id={value} type={type} />;
 }
 
 function CommitmentMemberCard({
@@ -1378,7 +1389,7 @@ function CommitmentMemberCard({
     return (
       <div className="item" style={{ padding: 12, border: "1px solid var(--line)" }}>
         <div className="notice bad">
-          commitment unavailable <IdRef id={id} type="commitment" label={id} />
+          commitment unavailable <IdChip id={id} type="commitment" />
         </div>
       </div>
     );
@@ -1471,21 +1482,21 @@ function InlineWhyEvidence({ id }: { id: string }) {
   const api = useApi(() => getWhy(id), [id]);
 
   if (api.loading) {
-    return <div className="notice">loading provenance</div>;
+    return <Loading>loading provenance</Loading>;
   }
   if (api.error !== null) {
     if (api.error instanceof ApiError && api.error.status === 404) {
-      return <div className="notice">no provenance retained</div>;
+      return <Empty>no provenance retained</Empty>;
     }
-    return <div className="notice bad">{api.error.message}</div>;
+    return <ErrorState>{api.error.message}</ErrorState>;
   }
   if (api.data === null) {
-    return <div className="notice">no provenance fields</div>;
+    return <Empty>no provenance fields</Empty>;
   }
 
   const entries = Object.entries(api.data);
   if (entries.length === 0) {
-    return <div className="notice">no provenance fields</div>;
+    return <Empty>no provenance fields</Empty>;
   }
 
   return (
@@ -1512,7 +1523,7 @@ function ReviewQueuePane({
   onSelect: (row: ReviewRow) => void;
 }) {
   if (groups.length === 0) {
-    return <div className="notice">{emptyMessage}</div>;
+    return <Empty>{emptyMessage}</Empty>;
   }
 
   return (
@@ -1530,21 +1541,16 @@ function ReviewQueuePane({
               return (
                 <div
                   key={row.id}
-                  role="button"
-                  tabIndex={0}
                   className={`review-queue-row${selected ? " selected" : ""}`}
-                  aria-pressed={selected}
-                  onClick={() => onSelect(row)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
+                  onClick={(event) => {
+                    if (!isInteractiveDescendantEvent(event.currentTarget, event.target)) {
                       onSelect(row);
                     }
                   }}
                 >
                   <span className="review-row-top">
                     <span>
-                      <IdRef
+                      <IdChip
                         id={String(row.id)}
                         type="review"
                         label={`review ${row.id}`}
@@ -1553,7 +1559,17 @@ function ReviewQueuePane({
                     </span>
                     <span className="dim">{formatTime(row.created_at)}</span>
                   </span>
-                  <span className="review-row-reason">{row.reason}</span>
+                  <button
+                    type="button"
+                    className="review-row-reason review-row-select"
+                    aria-pressed={selected}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onSelect(row);
+                    }}
+                  >
+                    {row.reason}
+                  </button>
                   <span className="review-row-meta">
                     {reviewIsOpen(row) ? (
                       <Tag>open</Tag>
@@ -1596,7 +1612,7 @@ function ReviewEvidencePane({
   onSurvivor: (value: string) => void;
 }) {
   if (row === null) {
-    return <div className="notice">select a review row</div>;
+    return <Empty>select a review row</Empty>;
   }
 
   return (
@@ -1657,7 +1673,7 @@ function CreatorDirectiveResolutionPanel({
       <div className="operator-actions">
         <button
           type="button"
-          className="btn sm primary"
+          className="btn sm danger"
           disabled={busy !== null || survivor.length === 0}
           onClick={onSupersede}
         >
@@ -1695,7 +1711,7 @@ function ReviewResolutionPanel({
   onCdrKeep: () => void;
 }) {
   if (row === null) {
-    return <div className="notice">select a review row to repair</div>;
+    return <Empty>select a review row to repair</Empty>;
   }
 
   if (!reviewIsOpen(row)) {
@@ -1830,7 +1846,7 @@ function CorrectionLab({
                   </button>
                   <button
                     type="button"
-                    className="btn sm ghost"
+                    className="btn sm danger"
                     disabled={busy !== null}
                     onClick={onForget}
                   >
@@ -1839,7 +1855,7 @@ function CorrectionLab({
                   {objectType === "semantic_edge" ? (
                     <button
                       type="button"
-                      className="btn sm ghost"
+                      className="btn sm danger"
                       disabled={busy !== null}
                       onClick={onInvalidate}
                     >
@@ -2137,7 +2153,7 @@ export function ReviewScreen() {
       : "no review rows match filters";
 
   if (api.loading && api.data === null && mode === "queue") {
-    return <div className="notice">loading reviews</div>;
+    return <Loading>loading reviews</Loading>;
   }
 
   return (
@@ -2364,7 +2380,12 @@ export function ReviewScreen() {
             </button>
             <button
               type="button"
-              className="btn sm live-write"
+              className={`btn sm ${
+                pendingReviewAction !== null &&
+                DESTRUCTIVE_REVIEW_ACTIONS.has(pendingReviewAction.action)
+                  ? "danger"
+                  : "live-write"
+              }`}
               disabled={busy !== null}
               onClick={() => void submitPendingReviewAction()}
             >
@@ -2405,7 +2426,7 @@ export function ReviewScreen() {
             </button>
             <button
               type="button"
-              className="btn sm live-write"
+              className="btn sm danger"
               disabled={labBusy !== null}
               onClick={() => void submitPendingLabAction()}
             >

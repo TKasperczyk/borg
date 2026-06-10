@@ -14,6 +14,7 @@ import { ResetButton } from "../ResetButton";
 import { CommandPalette } from "./CommandPalette";
 
 const realLocation = window.location;
+const realScrollIntoView = window.HTMLElement.prototype.scrollIntoView;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -202,6 +203,14 @@ afterEach(() => {
     configurable: true,
     value: realLocation,
   });
+  if (realScrollIntoView === undefined) {
+    Reflect.deleteProperty(window.HTMLElement.prototype, "scrollIntoView");
+  } else {
+    Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: realScrollIntoView,
+    });
+  }
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -297,6 +306,21 @@ describe("CommandPalette", () => {
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: "command palette" })).not.toBeInTheDocument();
     });
+  });
+
+  it("keeps the active row scrolled into view during arrow navigation", async () => {
+    setupFetch();
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    renderPalette();
+
+    const input = await openWithMeta();
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
   });
 
   it("picks up the admin screen command from rail items", async () => {

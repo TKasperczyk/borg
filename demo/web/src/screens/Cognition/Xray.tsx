@@ -100,7 +100,7 @@ function commitmentStateKind(state: CommitmentItem["state"]): TagKind {
 }
 
 function enforcementKind(enforcement: CommitmentItem["enforcement_class"]): TagKind {
-  return enforcement === "critical" ? "bad" : "info";
+  return enforcement === "critical" ? "warn" : "info";
 }
 
 function questionStatusKind(status: OpenQuestion["status"]): TagKind {

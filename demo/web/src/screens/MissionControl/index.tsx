@@ -225,14 +225,14 @@ function CommitmentsCard({
               rows={data.groups.map((group) => ({
                 label: group.label,
                 count: group.count,
-                kind: group.enforcement === "critical" ? "bad" : "warn",
+                kind: group.enforcement === "critical" ? "warn" : "",
               }))}
             />
             <div className="mc-preview-list">
               {data.previewRows.map((commitment) => (
                 <div className="mc-preview-row" key={commitment.id}>
                   <span className="mc-preview-title">{shortId(commitment.id)}</span>
-                  <Tag kind={commitment.enforcement_class === "critical" ? "bad" : "warn"}>
+                  <Tag kind={commitment.enforcement_class === "critical" ? "warn" : ""}>
                     {commitment.enforcement_class}
                   </Tag>
                   <InspectButton

@@ -21,6 +21,7 @@ describe("ResetButton", () => {
 
     const confirm = screen.getByRole("button", { name: "reset borg" });
     expect(confirm).toBeDisabled();
+    expect(confirm).toHaveClass("danger");
 
     const field = screen.getByPlaceholderText(RESET_CONFIRM_TOKEN);
     fireEvent.change(field, { target: { value: "reset" } });

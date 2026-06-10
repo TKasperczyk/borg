@@ -1,8 +1,11 @@
 import { useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { PromptAssembledResponse } from "../../api/types";
+import { Empty } from "../../components/Empty";
+import { ErrorState } from "../../components/ErrorState";
+import { Loading } from "../../components/Loading";
 import { Tag } from "../../components/Tag";
-import { copyText } from "./clipboard";
+import { copyText } from "../../lib/clipboard";
 
 type TextRange = {
   start: number;
@@ -165,11 +168,11 @@ export function AssembledPromptPane({
         {copyStatus === null ? null : <span className="prompt-copy-status">{copyStatus}</span>}
       </div>
       <div className="prompt-preview-body">
-        {loading && data === null ? <div className="notice">loading assembled prompt</div> : null}
-        {error === null ? null : <div className="notice bad">{error.message}</div>}
+        {loading && data === null ? <Loading>loading assembled prompt</Loading> : null}
+        {error === null ? null : <ErrorState>{error.message}</ErrorState>}
         {data === null ? (
           loading ? null : (
-            <div className="notice">assembled prompt unavailable</div>
+            <Empty>assembled prompt unavailable</Empty>
           )
         ) : (
           <>

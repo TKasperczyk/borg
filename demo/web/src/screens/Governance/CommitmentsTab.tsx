@@ -17,12 +17,17 @@ import {
   type CommitmentsResponse,
   type CreateCommitmentRequest,
 } from "../../api/types";
+import { Empty } from "../../components/Empty";
+import { ErrorState } from "../../components/ErrorState";
+import { IdChip } from "../../components/Inspector/IdChip";
 import { IdRef } from "../../components/Inspector/IdRef";
+import { Loading } from "../../components/Loading";
 import { Modal } from "../../components/Modal";
 import { SupersededByChip } from "../../components/SupersededByChip";
 import { Tag } from "../../components/Tag";
 import { WhyDrawer } from "../../components/WhyDrawer";
 import { useApi, type ApiHookState } from "../../hooks/use-api";
+import { isInteractiveDescendantEvent } from "../../lib/keyboard";
 import { dateLabel, parseJsonPatch, shortId } from "../screen-utils";
 
 type CommitmentDisplayState = CommitmentState | "superseded";
@@ -409,19 +414,34 @@ export function CommitmentsPanel({
     return (
       <tr
         key={item.id}
-        onClick={() => setSelectedId(item.id)}
+        onClick={(event) => {
+          if (!isInteractiveDescendantEvent(event.currentTarget, event.target)) {
+            setSelectedId(item.id);
+          }
+        }}
         className={item.id === selected?.id ? "selected" : ""}
         style={{ cursor: "pointer" }}
       >
         <td>
-          <span className="acc">{shortId(item.id)}</span>
+          <button
+            type="button"
+            className="row-select-button"
+            aria-pressed={item.id === selected?.id}
+            aria-label={`select commitment ${item.id}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              setSelectedId(item.id);
+            }}
+          >
+            {shortId(item.id)}
+          </button>
         </td>
         <td
           className="wrap"
           style={{ fontFamily: "var(--sans)", fontSize: "12px", lineHeight: 1.45 }}
         >
           {item.text}
-          <div className="dim" style={{ fontSize: 10, marginTop: 2 }}>
+          <div className="dim" style={{ fontSize: "var(--fs-xs)", marginTop: 2 }}>
             {item.type} · {item.kind}
             {item.about === null ? "" : ` · about:${item.about}`}
           </div>
@@ -444,7 +464,7 @@ export function CommitmentsPanel({
           </span>
         </td>
         <td>
-          <Tag kind={item.enforcement_class === "critical" ? "bad" : ""} dot>
+          <Tag kind={item.enforcement_class === "critical" ? "warn" : ""} dot>
             {item.enforcement_class}
           </Tag>
         </td>
@@ -457,18 +477,18 @@ export function CommitmentsPanel({
           className="tab-num"
           style={{
             textAlign: "right",
-            color: item.priority >= 8 ? "var(--bad)" : "var(--text-dim)",
+            color: item.priority >= 8 ? "var(--warn)" : "var(--text-dim)",
           }}
         >
           {item.priority}
         </td>
-        <td className="dim" style={{ fontSize: 11 }}>
+        <td className="dim" style={{ fontSize: "var(--fs-xs)" }}>
           {dateLabel(item.created_at)}
         </td>
         <td>
           {item.state === "active" ? (
             <button
-              className="btn sm ghost"
+              className="btn sm danger"
               disabled={busy !== null}
               onClick={(event) => {
                 event.stopPropagation();
@@ -484,11 +504,11 @@ export function CommitmentsPanel({
   }
 
   if (api.loading && api.data === null) {
-    return <div className="notice">loading commitments</div>;
+    return <Loading>loading commitments</Loading>;
   }
 
   if (api.error !== null) {
-    return <div className="notice bad">{api.error.message}</div>;
+    return <ErrorState onRetry={api.refetch}>{api.error.message}</ErrorState>;
   }
 
   return (
@@ -511,70 +531,71 @@ export function CommitmentsPanel({
         </button>
         <div className="filter-pills">
           {STATE_FILTERS.map((value) => (
-            <span
+            <button
               key={value}
+              type="button"
               className={`pill ${state === value ? "on" : ""}`}
               onClick={() => setState(value)}
             >
               {value}
-            </span>
+            </button>
           ))}
         </div>
         <span className="sep">|</span>
         <div className="filter-pills">
           {(["all", "critical", "advisory"] as const).map((value) => (
-            <span
+            <button
               key={value}
+              type="button"
               className={`pill ${enforcement === value ? "on" : ""}`}
               onClick={() => setEnforcement(value)}
             >
               {value}
-            </span>
+            </button>
           ))}
         </div>
         <span className="sep">|</span>
         <div className="filter-pills">
           {audiences.map((value) => (
-            <span
+            <button
               key={value}
+              type="button"
               className={`pill ${audience === value ? "on" : ""}`}
               onClick={() => setAudience(value)}
             >
               {value}
-            </span>
+            </button>
           ))}
         </div>
         <span className="sep">|</span>
         <div className="filter-pills">
           {families.map((value) => (
-            <span
+            <button
               key={value}
+              type="button"
               className={`pill ${family === value ? "on" : ""}`}
               onClick={() => setFamily(value)}
             >
               {value}
-            </span>
+            </button>
           ))}
         </div>
         <span className="sep">|</span>
         <div className="filter-pills">
           {GROUP_MODES.map((mode) => (
-            <span
+            <button
               key={mode.value}
+              type="button"
               className={`pill ${groupMode === mode.value ? "on" : ""}`}
               onClick={() => setGroupMode(mode.value)}
             >
               {mode.label}
-            </span>
+            </button>
           ))}
         </div>
       </div>
 
-      {operatorError === null ? null : (
-        <div className="notice bad" style={{ padding: 12 }}>
-          {operatorError}
-        </div>
-      )}
+      {operatorError === null ? null : <ErrorState>{operatorError}</ErrorState>}
 
       <div
         className="page-body"
@@ -603,7 +624,7 @@ export function CommitmentsPanel({
                         <td colSpan={9} style={{ background: "var(--bg-0)" }}>
                           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                             <Tag kind="info">{group.family}</Tag>
-                            <span className="dim" style={{ fontSize: 10.5 }}>
+                            <span className="dim" style={{ fontSize: "var(--fs-xs)" }}>
                               {familyGroupSummary(group.items)}
                             </span>
                           </div>
@@ -619,7 +640,7 @@ export function CommitmentsPanel({
 
         <div style={{ overflowY: "auto", background: "var(--bg-0)" }}>
           {selected === null ? (
-            <div className="notice">no commitments in filter</div>
+            <Empty>no commitments in filter</Empty>
           ) : (
             <CommitmentDetail
               commitment={selected}
@@ -658,7 +679,7 @@ export function CommitmentsPanel({
         }}
         footer={
           <>
-            <span className="dim" style={{ fontSize: 10.5, marginRight: "auto" }}>
+            <span className="dim" style={{ fontSize: "var(--fs-xs)", marginRight: "auto" }}>
               {modal?.kind === "create" ? "marked as creator-authored advice" : ""}
             </span>
             <button
@@ -669,7 +690,7 @@ export function CommitmentsPanel({
               cancel
             </button>
             <button
-              className="btn sm primary"
+              className={`btn sm ${modal?.kind === "revoke" ? "danger" : "primary"}`}
               disabled={busy !== null || !canSubmitModal(modal)}
               onClick={() => void submitModal()}
             >
@@ -910,7 +931,7 @@ function CommitmentDetail({
   return (
     <>
       <div style={{ padding: "16px 16px 10px 16px", borderBottom: "1px solid var(--line)" }}>
-        <div style={{ fontSize: 10.5, color: "var(--text-mute)" }}>commitment</div>
+        <div style={{ fontSize: "var(--fs-xs)", color: "var(--text-mute)" }}>commitment</div>
         <div
           style={{
             fontSize: 14,
@@ -922,7 +943,7 @@ function CommitmentDetail({
           {commitment.text}
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          <Tag kind={commitment.enforcement_class === "critical" ? "bad" : ""} dot>
+          <Tag kind={commitment.enforcement_class === "critical" ? "warn" : ""} dot>
             {commitment.enforcement_class}
           </Tag>
           <Tag kind={stateTag(displayState)} dot>
@@ -938,7 +959,7 @@ function CommitmentDetail({
           <div className="row">
             <span className="k">id</span>
             <span className="v acc">
-              <IdRef id={commitment.id} type="commitment" label={commitment.id} hint={commitment} />
+              <IdChip id={commitment.id} type="commitment" hint={commitment} />
             </span>
           </div>
           <div className="row">
@@ -1008,11 +1029,11 @@ function CommitmentDetail({
         />
 
         <div className="divider">enforcement</div>
-        <div style={{ fontSize: 11.5, color: "var(--text-dim)", lineHeight: 1.55 }}>
+        <div style={{ fontSize: "var(--fs-sm)", color: "var(--text-dim)", lineHeight: 1.55 }}>
           {commitment.enforcement_class === "critical" ? (
             <>
               checked as a hard constraint. critical domain:{" "}
-              <span className="bad">{commitment.critical_domain ?? "unspecified"}</span>.
+              <span className="warn">{commitment.critical_domain ?? "unspecified"}</span>.
             </>
           ) : (
             <>tracked as advisory context and surfaced before generation.</>
@@ -1022,7 +1043,7 @@ function CommitmentDetail({
         <div className="divider">provenance</div>
         <div
           style={{
-            fontSize: 11,
+            fontSize: "var(--fs-xs)",
             color: "var(--text-dim)",
             display: "flex",
             flexDirection: "column",
@@ -1034,7 +1055,7 @@ function CommitmentDetail({
           ) : (
             commitment.source_stream_entry_ids.map((id) => (
               <div key={id}>
-                <IdRef id={id} type="stream_entry" label={`[${id}]`} /> source stream entry
+                <IdChip id={id} type="stream_entry" /> source stream entry
               </div>
             ))
           )}
@@ -1046,7 +1067,7 @@ function CommitmentDetail({
             why
           </button>
           <button
-            className="btn sm ghost"
+            className="btn sm danger"
             disabled={busy || commitment.state !== "active"}
             onClick={() => onRevoke(commitment)}
           >

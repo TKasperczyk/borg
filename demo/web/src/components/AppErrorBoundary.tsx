@@ -42,7 +42,7 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
     if (this.state.error !== null) {
       return (
         <ErrorState>
-          <div role="alert" className="app-error-boundary">
+          <div className="app-error-boundary">
             <div>screen crashed</div>
             <div className="dim">{this.state.error.message}</div>
             <div className="operator-actions" style={{ marginTop: 10 }}>

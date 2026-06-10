@@ -32,6 +32,7 @@ describe("SemanticNodeDetail", () => {
     expect(screen.getByText("confidence 0.83")).toBeInTheDocument();
     expect(screen.getByText("project")).toBeInTheDocument();
     expect(screen.getByText("Detailed alias")).toBeInTheDocument();
-    expect(screen.getByText("ep_source000000000")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "jump to ep_source000000000" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "copy ep_source000000000" })).toBeInTheDocument();
   });
 });

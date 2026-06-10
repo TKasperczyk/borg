@@ -1,7 +1,7 @@
 import type { SemanticMemoryEdge, SemanticMemoryNode } from "../api/types";
 import { formatTime } from "../lib/stream-utils";
 import { shortId } from "../screens/screen-utils";
-import { IdRef } from "./Inspector/IdRef";
+import { IdChip } from "./Inspector/IdChip";
 import { Tag } from "./Tag";
 
 function edgeEndpointLabel(id: string, nodes: readonly SemanticMemoryNode[]): string {
@@ -40,19 +40,19 @@ export function SemanticEdgeDetail({
         <div className="row">
           <span className="k">edge id</span>
           <span className="v">
-            <IdRef id={edge.id} type="semantic_edge" label={edge.id} hint={edge} />
+            <IdChip id={edge.id} type="semantic_edge" hint={edge} />
           </span>
         </div>
         <div className="row">
           <span className="k">from</span>
           <span className="v">
-            <IdRef id={edge.from_node_id} type="semantic_node" label={edge.from_node_id} />
+            <IdChip id={edge.from_node_id} type="semantic_node" />
           </span>
         </div>
         <div className="row">
           <span className="k">to</span>
           <span className="v">
-            <IdRef id={edge.to_node_id} type="semantic_node" label={edge.to_node_id} />
+            <IdChip id={edge.to_node_id} type="semantic_node" />
           </span>
         </div>
         <div className="row">
@@ -71,7 +71,7 @@ export function SemanticEdgeDetail({
               : edge.evidence_episode_ids.map((id, index) => (
                   <span key={id}>
                     {index === 0 ? null : ", "}
-                    <IdRef id={id} type="episode" label={id} />
+                    <IdChip id={id} type="episode" />
                   </span>
                 ))}
           </span>

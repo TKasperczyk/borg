@@ -181,7 +181,9 @@ describe("CommitScreen operator actions", () => {
       fireEvent.click(
         within(chain).getAllByRole("button", { name: `jump to commitment ${target.id}` })[0]!,
       );
-      expect(await screen.findByText(target.id)).toBeInTheDocument();
+      expect(
+        await screen.findByRole("button", { name: `jump to ${target.id}` }),
+      ).toBeInTheDocument();
     }
 
     expect(screen.getAllByText("all").some((element) => element.classList.contains("on"))).toBe(
@@ -323,11 +325,17 @@ describe("CommitScreen operator actions", () => {
     renderWithInspector(<CommitmentsTab />);
 
     expect((await screen.findAllByText("Prefer direct answers.")).length).toBeGreaterThan(0);
-    fireEvent.click((await screen.findAllByRole("button", { name: "revoke" }))[0]!);
+    const revokeButton = (await screen.findAllByRole("button", { name: "revoke" }))[0]!;
+    expect(revokeButton).toHaveClass("danger");
+    fireEvent.click(revokeButton);
     fireEvent.change(screen.getByLabelText("reason"), {
       target: { value: "creator changed the instruction" },
     });
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "revoke" }));
+    const confirmRevoke = within(screen.getByRole("dialog")).getByRole("button", {
+      name: "revoke",
+    });
+    expect(confirmRevoke).toHaveClass("danger");
+    fireEvent.click(confirmRevoke);
 
     await waitFor(() => {
       expect(
