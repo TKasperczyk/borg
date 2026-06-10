@@ -140,6 +140,7 @@ export const selfMigrations = [
               'contradiction',
               'ruminator',
               'overseer',
+              'associator',
               'autonomy',
               'deliberator'
             )
@@ -158,6 +159,7 @@ export const selfMigrations = [
           provenance_episode_ids TEXT,
           provenance_process TEXT,
           audience_entity_id TEXT,
+          disclosure_label TEXT,
           unresolved_rumination_ticks INTEGER NOT NULL DEFAULT 0,
           last_ruminated_at INTEGER
         , resolved_by_artifact_entry_id TEXT NULL);
@@ -261,6 +263,123 @@ export const selfMigrations = [
         CREATE INDEX IF NOT EXISTS idx_open_question_ruminations_question_created
           ON open_question_ruminations (open_question_id, created_at DESC, id DESC);
       `);
+    },
+  },
+  {
+    id: 4,
+    name: "open_question_associator_source",
+    up: (db) => {
+      db.exec(`
+        PRAGMA legacy_alter_table = ON;
+        ALTER TABLE open_questions RENAME TO open_questions_old;
+        CREATE TABLE open_questions (
+          id TEXT PRIMARY KEY,
+          record_version INTEGER NOT NULL DEFAULT 1,
+          question TEXT NOT NULL,
+          urgency REAL NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('open', 'resolved', 'abandoned')),
+          goal_id TEXT,
+          related_episode_ids TEXT NOT NULL,
+          related_semantic_node_ids TEXT NOT NULL,
+          source TEXT NOT NULL CHECK (
+            source IN (
+              'user',
+              'reflection',
+              'contradiction',
+              'ruminator',
+              'overseer',
+              'associator',
+              'autonomy',
+              'deliberator'
+            )
+          ),
+          created_at INTEGER NOT NULL,
+          last_touched INTEGER NOT NULL,
+          resolution_evidence_episode_ids TEXT NOT NULL DEFAULT '[]',
+          resolution_evidence_stream_entry_ids TEXT NOT NULL DEFAULT '[]',
+          resolution_disclosure_label TEXT,
+          resolution_note TEXT,
+          resolved_at INTEGER,
+          abandoned_reason TEXT,
+          abandoned_at INTEGER,
+          dedupe_key TEXT,
+          provenance_kind TEXT,
+          provenance_episode_ids TEXT,
+          provenance_process TEXT,
+          audience_entity_id TEXT,
+          unresolved_rumination_ticks INTEGER NOT NULL DEFAULT 0,
+          last_ruminated_at INTEGER,
+          resolved_by_artifact_entry_id TEXT NULL
+        );
+        INSERT INTO open_questions (
+          id, record_version, question, urgency, status, goal_id,
+          related_episode_ids, related_semantic_node_ids, source, created_at,
+          last_touched, resolution_evidence_episode_ids, resolution_evidence_stream_entry_ids,
+          resolution_disclosure_label, resolution_note, resolved_at, abandoned_reason,
+          abandoned_at, dedupe_key, provenance_kind, provenance_episode_ids, provenance_process,
+          audience_entity_id, unresolved_rumination_ticks, last_ruminated_at,
+          resolved_by_artifact_entry_id
+        )
+        SELECT
+          id, record_version, question, urgency, status, goal_id,
+          related_episode_ids, related_semantic_node_ids, source, created_at,
+          last_touched, resolution_evidence_episode_ids, resolution_evidence_stream_entry_ids,
+          resolution_disclosure_label, resolution_note, resolved_at, abandoned_reason,
+          abandoned_at, dedupe_key, provenance_kind, provenance_episode_ids, provenance_process,
+          audience_entity_id, unresolved_rumination_ticks, last_ruminated_at,
+          resolved_by_artifact_entry_id
+        FROM open_questions_old;
+        DROP TABLE open_questions_old;
+        CREATE INDEX idx_open_questions_audience_status_urgency
+          ON open_questions (audience_entity_id, status, urgency DESC, last_touched DESC);
+        CREATE UNIQUE INDEX idx_open_questions_dedupe_key
+          ON open_questions (dedupe_key);
+        CREATE INDEX idx_open_questions_status_urgency
+          ON open_questions (status, urgency DESC, last_touched DESC);
+        ALTER TABLE open_question_ruminations RENAME TO open_question_ruminations_old;
+        CREATE TABLE open_question_ruminations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          open_question_id TEXT NOT NULL,
+          note TEXT NOT NULL,
+          tensions TEXT NOT NULL DEFAULT '[]',
+          connected_open_question_ids TEXT NOT NULL DEFAULT '[]',
+          evidence_episode_ids TEXT NOT NULL DEFAULT '[]',
+          evidence_stream_entry_ids TEXT NOT NULL DEFAULT '[]',
+          source_process TEXT NOT NULL,
+          source_run_id TEXT,
+          source_turn_id TEXT,
+          provenance_kind TEXT NOT NULL,
+          provenance_episode_ids TEXT NOT NULL DEFAULT '[]',
+          provenance_process TEXT,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY (open_question_id) REFERENCES open_questions(id) ON DELETE CASCADE
+        );
+        INSERT INTO open_question_ruminations (
+          id, open_question_id, note, tensions, connected_open_question_ids,
+          evidence_episode_ids, evidence_stream_entry_ids, source_process,
+          source_run_id, source_turn_id, provenance_kind, provenance_episode_ids,
+          provenance_process, created_at
+        )
+        SELECT
+          id, open_question_id, note, tensions, connected_open_question_ids,
+          evidence_episode_ids, evidence_stream_entry_ids, source_process,
+          source_run_id, source_turn_id, provenance_kind, provenance_episode_ids,
+          provenance_process, created_at
+        FROM open_question_ruminations_old;
+        DROP TABLE open_question_ruminations_old;
+        CREATE INDEX IF NOT EXISTS idx_open_question_ruminations_question_created
+          ON open_question_ruminations (open_question_id, created_at DESC, id DESC);
+        PRAGMA legacy_alter_table = OFF;
+      `);
+    },
+  },
+  {
+    id: 5,
+    name: "open_question_disclosure_label",
+    up: (db) => {
+      if (!tableHasColumn(db, "open_questions", "disclosure_label")) {
+        db.exec("ALTER TABLE open_questions ADD COLUMN disclosure_label TEXT");
+      }
     },
   },
 ] as const satisfies readonly Migration[];

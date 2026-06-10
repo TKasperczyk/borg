@@ -160,6 +160,10 @@ export function resolveBorgConfig(options: {
         ...DEFAULT_CONFIG.offline.reflector,
         ...rawConfig.offline?.reflector,
       },
+      associator: {
+        ...DEFAULT_CONFIG.offline.associator,
+        ...rawConfig.offline?.associator,
+      },
       proceduralSynthesizer: {
         ...DEFAULT_CONFIG.offline.proceduralSynthesizer,
         ...rawConfig.offline?.proceduralSynthesizer,
@@ -187,6 +191,18 @@ export function resolveBorgConfig(options: {
       beliefReviser: {
         ...DEFAULT_CONFIG.offline.beliefReviser,
         ...rawConfig.offline?.beliefReviser,
+      },
+      creatorDirectiveReconciler: {
+        ...DEFAULT_CONFIG.offline.creatorDirectiveReconciler,
+        ...rawConfig.offline?.creatorDirectiveReconciler,
+      },
+      commitmentReconciler: {
+        ...DEFAULT_CONFIG.offline.commitmentReconciler,
+        ...rawConfig.offline?.commitmentReconciler,
+      },
+      semanticExtractor: {
+        ...DEFAULT_CONFIG.offline.semanticExtractor,
+        ...rawConfig.offline?.semanticExtractor,
       },
     },
     autonomy: {

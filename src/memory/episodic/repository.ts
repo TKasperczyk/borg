@@ -188,6 +188,7 @@ const EPISODE_LIFECYCLE_AUDIT_PROCESSES = [
   "semantic-extractor",
   "curator",
   "overseer",
+  "associator",
   "review-resolver",
   "ruminator",
   "self-narrator",

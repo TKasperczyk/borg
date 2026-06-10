@@ -149,7 +149,8 @@ function openQuestionCreationProvenance(
     input.source === "reflection" ||
     input.source === "contradiction" ||
     input.source === "ruminator" ||
-    input.source === "overseer"
+    input.source === "overseer" ||
+    input.source === "associator"
   ) {
     return {
       kind: "offline",

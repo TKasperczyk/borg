@@ -40,6 +40,7 @@ export const OFFLINE_PROCESS_NAMES = [
   "semantic-extractor",
   "curator",
   "overseer",
+  "associator",
   "review-resolver",
   "ruminator",
   "self-narrator",
@@ -77,6 +78,7 @@ export type OfflineResult = {
     proposed: number;
     accepted: number;
     rejected: number;
+    truncated?: number;
   };
   pending_episode_count?: number;
   pending_family_count?: number;

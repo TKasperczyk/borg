@@ -1761,6 +1761,25 @@ review carrying the proposed node and its candidate support edges, and the
 Review Resolver materializes them on acceptance. Confidence is kept conservative
 so a proposed pattern stays reviewable rather than asserted.
 
+### Associator
+
+The Associator consumes episodes sampled deliberately across time and context,
+not because they are already similar. It gives the model room to notice
+cross-domain structure that the hygiene processes would never put in the same
+cluster.
+
+It does not treat association as truth. Each finding is either an Open
+Question, when the connection is a weak hypothesis worth carrying, or a
+new-insight review item, when the model proposes a stronger pattern. The
+strong path reuses the Reflector's review-gated payload: proposed semantic
+node, candidate support edges, cited episode ids, and conservative confidence.
+Review Resolver acceptance is still what materializes semantic memory.
+
+The sampler is structural rather than interpretive. It mixes high-salience
+anchors with low-heat long-tail episodes across autobiographical periods or
+fallback time buckets, persists the sampled episode ids in the plan, and never
+resamples at apply time.
+
 ### Semantic Extractor
 
 The Semantic Extractor consumes episodes not yet represented in the semantic

@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { associatorPlanSchema } from "./associator/index.js";
 import { beliefReviserPlanSchema } from "./belief-reviser/index.js";
 import { commitmentReconcilerPlanSchema } from "./commitment-reconciler/index.js";
 import { consolidatorPlanSchema } from "./consolidator/index.js";
@@ -19,6 +20,7 @@ export const offlineProcessPlanSchema = z.discriminatedUnion("process", [
   semanticExtractorProcessPlanSchema,
   curatorPlanSchema,
   overseerPlanSchema,
+  associatorPlanSchema,
   reviewResolverPlanSchema,
   ruminatorPlanSchema,
   selfNarratorPlanSchema,

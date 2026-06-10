@@ -14,6 +14,14 @@ export {
 } from "./budget.js";
 export { extractedEpisodeIds, isEpisodeExtracted } from "./extracted-episodes.js";
 export {
+  ASSOCIATOR_PROMPT,
+  ASSOCIATOR_TOOL,
+  AssociatorProcess,
+  associatorPlanSchema,
+  type AssociatorPlan,
+  type AssociatorProcessOptions,
+} from "./associator/index.js";
+export {
   BeliefReviserProcess,
   beliefReviserPlanSchema,
   type BeliefReviserPlan,

@@ -279,6 +279,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     processBudgets: {
       consolidator: deps.config.offline.consolidator.budget,
       reflector: deps.config.offline.reflector.budget,
+      associator: deps.config.offline.associator.budget,
       "semantic-extractor": deps.config.offline.semanticExtractor.budget,
       curator: null,
       overseer: deps.config.offline.overseer.budget,
@@ -771,6 +772,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         apply: (plan: MaintenancePlan) => deps.maintenanceOrchestrator.apply(plan),
         consolidate: (options = {}) => runDream(["consolidator"], options),
         reflect: (options = {}) => runDream(["reflector"], options),
+        associate: (options = {}) => runDream(["associator"], options),
         extractSemantics: (options = {}) => runDream(["semantic-extractor"], options),
         curate: (options = {}) => runDream(["curator"], options),
         oversee: (options = {}) => runDream(["overseer"], options),

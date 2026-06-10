@@ -76,6 +76,7 @@ export {
   openQuestionAudienceEntityIdSchema,
   openQuestionIdSchema,
   openQuestionPatchSchema,
+  openQuestionRecordSchema,
   openQuestionResolutionStreamEntryIdSchema,
   openQuestionSchema,
   openQuestionSourceSchema,

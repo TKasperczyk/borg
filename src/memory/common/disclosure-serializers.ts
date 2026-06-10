@@ -59,8 +59,14 @@ export function goalMemoryDisclosureLabel(
 }
 
 export function openQuestionMemoryDisclosureLabel(
-  question: Pick<OpenQuestion, "audience_entity_id">,
+  question: Pick<OpenQuestion, "audience_entity_id"> & {
+    disclosure_label?: MemoryDisclosureLabel | null;
+  },
 ): MemoryDisclosureLabel {
+  if (question.disclosure_label !== null && question.disclosure_label !== undefined) {
+    return question.disclosure_label;
+  }
+
   const entityIds = uniqueDisclosureEntityIds([question.audience_entity_id]);
 
   return entityIds.length === 0

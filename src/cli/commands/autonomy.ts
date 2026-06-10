@@ -99,15 +99,17 @@ export function registerAutonomyCommands(cli: CAC, deps: CliCommandDeps): void {
             ? ["consolidator"]
             : action === "reflect"
               ? ["reflector"]
-              : action === "curate"
-                ? ["curator"]
-                : action === "oversee"
-                  ? ["overseer"]
-                  : action === "ruminate"
-                    ? ["ruminator"]
-                    : action === "narrate"
-                      ? ["self-narrator"]
-                      : undefined;
+              : action === "associate"
+                ? ["associator"]
+                : action === "curate"
+                  ? ["curator"]
+                  : action === "oversee"
+                    ? ["overseer"]
+                    : action === "ruminate"
+                      ? ["ruminator"]
+                      : action === "narrate"
+                        ? ["self-narrator"]
+                        : undefined;
 
       if (selectedProcesses === undefined) {
         throw new CliError(`Unknown dream action: ${action}`);

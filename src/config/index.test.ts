@@ -54,6 +54,13 @@ describe("config", () => {
       maxInputTokensPerRun: 150_000,
       budget: 60_000,
     });
+    expect(config.offline.associator).toEqual({
+      episodesPerSample: 8,
+      maxSamplesPerRun: 2,
+      maxFindingsPerRun: 4,
+      ceilingConfidence: 0.5,
+      budget: 60_000,
+    });
     expect(config.offline.creatorDirectiveReconciler).toEqual({
       maxFamiliesPerRun: 8,
       budget: 60_000,
@@ -71,6 +78,7 @@ describe("config", () => {
     expect(config.maintenance.heavyProcesses).toEqual([
       "reflector",
       "overseer",
+      "associator",
       "review-resolver",
       "ruminator",
       "self-narrator",
@@ -230,6 +238,52 @@ describe("config", () => {
     ).toThrow();
   });
 
+  it("treats associator volume settings as hard caps", () => {
+    expect(
+      configSchema.parse({
+        offline: {
+          associator: {
+            episodesPerSample: 8,
+            maxSamplesPerRun: 2,
+            maxFindingsPerRun: 4,
+          },
+        },
+      }).offline.associator,
+    ).toMatchObject({
+      episodesPerSample: 8,
+      maxSamplesPerRun: 2,
+      maxFindingsPerRun: 4,
+    });
+
+    expect(() =>
+      configSchema.parse({
+        offline: {
+          associator: {
+            episodesPerSample: 9,
+          },
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      configSchema.parse({
+        offline: {
+          associator: {
+            maxSamplesPerRun: 3,
+          },
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      configSchema.parse({
+        offline: {
+          associator: {
+            maxFindingsPerRun: 5,
+          },
+        },
+      }),
+    ).toThrow();
+  });
+
   it("keeps schema defaults when only one env var is set", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -375,6 +429,9 @@ describe("config", () => {
         creatorDirectiveReconciler: {
           maxFamiliesPerRun: 4,
         },
+        associator: {
+          maxFindingsPerRun: 2,
+        },
         semanticExtractor: {
           maxEpisodesPerRun: 3,
         },
@@ -429,6 +486,8 @@ describe("config", () => {
         BORG_OFFLINE_BELIEF_REVISER_MAX_LLM_CALLS: "7",
         BORG_OFFLINE_CREATOR_DIRECTIVE_RECONCILER_MAX_FAMILIES_PER_RUN: "6",
         BORG_OFFLINE_CREATOR_DIRECTIVE_RECONCILER_BUDGET: "14000",
+        BORG_OFFLINE_ASSOCIATOR_MAX_FINDINGS_PER_RUN: "3",
+        BORG_OFFLINE_ASSOCIATOR_BUDGET: "13000",
         BORG_OFFLINE_SEMANTIC_EXTRACTOR_MAX_INPUT_TOKENS_PER_RUN: "90000",
         BORG_OFFLINE_SEMANTIC_EXTRACTOR_BUDGET: "12000",
         BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD: "0.6",
@@ -508,6 +567,8 @@ describe("config", () => {
     expect(config.offline.beliefReviser.maxLlmCalls).toBe(7);
     expect(config.offline.creatorDirectiveReconciler.maxFamiliesPerRun).toBe(6);
     expect(config.offline.creatorDirectiveReconciler.budget).toBe(14_000);
+    expect(config.offline.associator.maxFindingsPerRun).toBe(3);
+    expect(config.offline.associator.budget).toBe(13_000);
     expect(config.offline.semanticExtractor.maxEpisodesPerRun).toBe(3);
     expect(config.offline.semanticExtractor.maxInputTokensPerRun).toBe(90_000);
     expect(config.offline.semanticExtractor.budget).toBe(12_000);

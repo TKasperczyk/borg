@@ -58,6 +58,7 @@ import {
   openQuestionAudienceEntityIdSchema,
   openQuestionIdSchema,
   openQuestionPatchSchema,
+  openQuestionRecordSchema,
   openQuestionResolvedByArtifactEntryIdSchema,
   openQuestionResolutionStreamEntryIdSchema,
   openQuestionSchema,
@@ -80,6 +81,7 @@ export {
   openQuestionAudienceEntityIdSchema,
   openQuestionIdSchema,
   openQuestionPatchSchema,
+  openQuestionRecordSchema,
   openQuestionResolvedByArtifactEntryIdSchema,
   openQuestionResolutionStreamEntryIdSchema,
   openQuestionSchema,
@@ -294,7 +296,11 @@ export function buildOpenQuestionDedupeKey(input: {
 }
 
 function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
-  const parsed = openQuestionSchema.safeParse({
+  const disclosureLabel =
+    row.disclosure_label === null || row.disclosure_label === undefined || row.disclosure_label === ""
+      ? undefined
+      : parseMemoryDisclosureLabel(row.disclosure_label);
+  const parsed = openQuestionRecordSchema.safeParse({
     id: row.id,
     record_version: Number(row.record_version ?? 1),
     question: row.question,
@@ -315,6 +321,7 @@ function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
       semanticNodeIdSchema,
       "open question related_semantic_node_ids",
     ),
+    ...(disclosureLabel === undefined ? {} : { disclosure_label: disclosureLabel }),
     provenance:
       row.provenance_kind === null || row.provenance_kind === undefined
         ? null
@@ -797,6 +804,7 @@ export class OpenQuestionsRepository {
     related_semantic_node_ids?: readonly z.infer<typeof semanticNodeIdSchema>[];
     goal_id?: GoalId | null;
     audience_entity_id?: EntityId | null;
+    disclosure_label?: MemoryDisclosureLabel | null;
     provenance?: z.infer<typeof provenanceSchema> | null;
     source: OpenQuestionSource;
     created_at?: number;
@@ -814,7 +822,7 @@ export class OpenQuestionsRepository {
       });
     }
     const nowMs = this.clock.now();
-    const question = openQuestionSchema.parse({
+    const question = openQuestionRecordSchema.parse({
       id: input.id ?? createOpenQuestionId(),
       record_version: 1,
       question: input.question,
@@ -824,6 +832,7 @@ export class OpenQuestionsRepository {
       audience_entity_id: input.audience_entity_id ?? null,
       related_episode_ids: relatedEpisodeIds,
       related_semantic_node_ids: relatedSemanticNodeIds,
+      ...(input.disclosure_label == null ? {} : { disclosure_label: input.disclosure_label }),
       provenance: input.provenance ?? null,
       source: input.source,
       created_at: input.created_at ?? nowMs,
@@ -859,11 +868,11 @@ export class OpenQuestionsRepository {
           INSERT INTO open_questions (
             id, question, dedupe_key, urgency, status, goal_id, audience_entity_id,
             related_episode_ids, related_semantic_node_ids, provenance_kind,
-            provenance_episode_ids, provenance_process, source, created_at, last_touched,
+            provenance_episode_ids, provenance_process, source, disclosure_label, created_at, last_touched,
             resolution_evidence_episode_ids, resolution_evidence_stream_entry_ids,
             resolution_disclosure_label, resolution_note, resolved_at, abandoned_reason, abandoned_at,
             resolved_by_artifact_entry_id, unresolved_rumination_ticks, last_ruminated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -880,6 +889,9 @@ export class OpenQuestionsRepository {
         storedProvenance?.provenance_episode_ids ?? null,
         storedProvenance?.provenance_process ?? null,
         question.source,
+        question.disclosure_label === undefined
+          ? null
+          : serializeJsonValue(question.disclosure_label),
         question.created_at,
         question.last_touched,
         serializeJsonValue(question.resolution_evidence_episode_ids),
@@ -1199,7 +1211,7 @@ export class OpenQuestionsRepository {
 
     const parsedPatch = openQuestionPatchSchema.parse(patch);
     const expectedVersion = expectedRecordVersion(existing, options);
-    const next = openQuestionSchema.parse({
+    const next = openQuestionRecordSchema.parse({
       ...existing,
       ...parsedPatch,
       record_version: nextRecordVersion(expectedVersion),
@@ -1220,7 +1232,7 @@ export class OpenQuestionsRepository {
           SET question = ?, urgency = ?, status = ?, goal_id = ?, audience_entity_id = ?,
               related_episode_ids = ?, related_semantic_node_ids = ?, provenance_kind = ?,
               provenance_episode_ids = ?, provenance_process = ?, source = ?, last_touched = ?,
-              resolution_evidence_episode_ids = ?, resolution_evidence_stream_entry_ids = ?,
+              disclosure_label = ?, resolution_evidence_episode_ids = ?, resolution_evidence_stream_entry_ids = ?,
               resolution_disclosure_label = ?, resolution_note = ?, resolved_at = ?, abandoned_reason = ?, abandoned_at = ?,
               resolved_by_artifact_entry_id = ?, dedupe_key = ?,
               unresolved_rumination_ticks = ?, last_ruminated_at = ?,
@@ -1241,6 +1253,7 @@ export class OpenQuestionsRepository {
         storedProvenance?.provenance_process ?? null,
         next.source,
         next.last_touched,
+        next.disclosure_label === undefined ? null : serializeJsonValue(next.disclosure_label),
         serializeJsonValue(next.resolution_evidence_episode_ids),
         serializeJsonValue(next.resolution_evidence_stream_entry_ids),
         serializeJsonValue(next.resolution_disclosure_label),
@@ -1271,7 +1284,7 @@ export class OpenQuestionsRepository {
   }
 
   restore(question: OpenQuestion): OpenQuestion {
-    const parsed = openQuestionSchema.parse(question);
+    const parsed = openQuestionRecordSchema.parse(question);
     const dedupeKey = buildOpenQuestionDedupeKey({
       question: parsed.question,
       relatedEpisodeIds: parsed.related_episode_ids,
@@ -1289,7 +1302,7 @@ export class OpenQuestionsRepository {
               audience_entity_id = ?,
               related_episode_ids = ?, related_semantic_node_ids = ?, provenance_kind = ?,
               provenance_episode_ids = ?, provenance_process = ?, source = ?, created_at = ?,
-              last_touched = ?, resolution_evidence_episode_ids = ?,
+              disclosure_label = ?, last_touched = ?, resolution_evidence_episode_ids = ?,
               resolution_evidence_stream_entry_ids = ?, resolution_disclosure_label = ?,
               resolution_note = ?, resolved_at = ?,
               abandoned_reason = ?, abandoned_at = ?, resolved_by_artifact_entry_id = ?,
@@ -1311,6 +1324,7 @@ export class OpenQuestionsRepository {
         storedProvenance?.provenance_process ?? null,
         parsed.source,
         parsed.created_at,
+        parsed.disclosure_label === undefined ? null : serializeJsonValue(parsed.disclosure_label),
         parsed.last_touched,
         serializeJsonValue(parsed.resolution_evidence_episode_ids),
         serializeJsonValue(parsed.resolution_evidence_stream_entry_ids),
