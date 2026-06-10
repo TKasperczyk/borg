@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
 
+import { useReducedMotion } from "../../hooks/use-reduced-motion";
+
 // Particle cloud -- a wide swarm of green wisps across the entire background
 // that bends inward toward the active node like light around a gravity well.
 //
@@ -54,6 +56,8 @@ export function ParticleField({
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const targetRef = useRef<ParticleTarget>(target);
+  const reducedMotion = useReducedMotion();
+  const active = enabled && !reducedMotion && target !== null;
 
   useEffect(() => {
     targetRef.current = target;
@@ -63,7 +67,7 @@ export function ParticleField({
   }, [target ? target.x : null, target ? target.y : null]);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!active) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const context = canvas.getContext("2d");
@@ -164,23 +168,16 @@ export function ParticleField({
       }
 
       const tgt = targetRef.current;
-      if (tgt) {
-        const pp = svgToCanvas(tgt.x, tgt.y);
-        // Focal point itself drifts smoothly toward the target node
-        const moveK = Math.min(1, dt * 2.4);
-        focalX += (pp.x - focalX) * moveK;
-        focalY += (pp.y - focalY) * moveK;
-        focusStrength += (1 - focusStrength) * Math.min(1, dt * 1.4);
-      } else {
-        // Gentle sway around canvas-center when nothing is highlighted --
-        // the field still "breathes" with no lensing.
-        const swayX = Math.sin(t * 0.13) * 30 + Math.sin(t * 0.31) * 10;
-        const swayY = Math.cos(t * 0.17) * 20 + Math.sin(t * 0.27) * 7;
-        const moveK = Math.min(1, dt * 0.6);
-        focalX += (W / 2 + swayX - focalX) * moveK;
-        focalY += (H / 2 + swayY - focalY) * moveK;
-        focusStrength += (0 - focusStrength) * Math.min(1, dt * 1.2);
+      if (tgt === null) {
+        running = false;
+        return;
       }
+      const pp = svgToCanvas(tgt.x, tgt.y);
+      // Focal point itself drifts smoothly toward the target node.
+      const moveK = Math.min(1, dt * 2.4);
+      focalX += (pp.x - focalX) * moveK;
+      focalY += (pp.y - focalY) * moveK;
+      focusStrength += (1 - focusStrength) * Math.min(1, dt * 1.4);
 
       // Lens parameters: sigma controls how wide the "well" is; alphaMax
       // controls how aggressively particles bend inward at the lens peak.
@@ -283,8 +280,8 @@ export function ParticleField({
       ro.disconnect();
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [density, viewW, viewH, enabled]);
+  }, [density, viewW, viewH, active]);
 
-  if (!enabled) return null;
+  if (!active) return null;
   return <canvas ref={canvasRef} className="fc-particles" aria-hidden="true" />;
 }

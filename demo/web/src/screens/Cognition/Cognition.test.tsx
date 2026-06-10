@@ -570,6 +570,33 @@ describe("cognition screen", () => {
     expect(chatUserBodies()[0]).toBe("older message");
   });
 
+  it("mounts the particle field only during live turn activity", async () => {
+    const source = makeLiveSource();
+    installCognitionFetch();
+    vi.spyOn(window.HTMLCanvasElement.prototype, "getContext").mockImplementation(() => null);
+
+    renderWithInspector(<Harness live={source.live()} />);
+
+    expect(await screen.findByText("waiting for a running phase")).toBeInTheDocument();
+    expect(document.querySelector(".fc-particles")).toBeNull();
+
+    act(() => {
+      source.emit(phaseFrame("turn:phase:started", "ingest"));
+    });
+
+    await waitFor(() => {
+      expect(document.querySelector(".fc-particles")).toBeInTheDocument();
+    });
+
+    act(() => {
+      source.emit(terminalFrame("turn_abc", "reflected"));
+    });
+
+    await waitFor(() => {
+      expect(document.querySelector(".fc-particles")).toBeNull();
+    });
+  });
+
   it("preserves the transcript scroll anchor when older chat is prepended", async () => {
     let scrollHeight = 100;
     let rowTops: Record<string, number> = {

@@ -388,22 +388,12 @@ function Ganglion({
   );
 }
 
-function Endpoint({
-  node,
-  outcome,
-}: {
-  node: EndpointNode;
-  outcome: TurnTerminalOutcome | null;
-}) {
+function Endpoint({ node, outcome }: { node: EndpointNode; outcome: TurnTerminalOutcome | null }) {
   const { x, y, w, label, id, side } = node;
   const h = ENDPOINT_H;
   const r = h / 2;
   const isTerminal = id === "terminal";
-  const display = isTerminal
-    ? outcome === null
-      ? "waiting"
-      : outcome.replace(/_/g, " ")
-    : label;
+  const display = isTerminal ? (outcome === null ? "waiting" : outcome.replace(/_/g, " ")) : label;
   return (
     <g
       className={`fc-endpoint ${isTerminal ? "terminal" : "input"}`}
@@ -432,15 +422,7 @@ function thornPillW(label: string): number {
   return Math.round(THORN_LABEL_X + label.length * THORN_CHAR_W + THORN_PAD_R);
 }
 
-function ThornUp({
-  nodeId,
-  label,
-  active,
-}: {
-  nodeId: string;
-  label: string;
-  active: boolean;
-}) {
+function ThornUp({ nodeId, label, active }: { nodeId: string; label: string; active: boolean }) {
   const n = NODES[nodeId]!;
   const top = topAnchor(n);
   const pillY = top.y - 50;
@@ -563,9 +545,9 @@ function ActiveStream({
   activeStreamPhase: TurnPhaseName | null;
 }) {
   const phase = activeStreamPhase;
-  const status: PhaseStatus | "idle" = phase ? phases[phase]?.status ?? "queue" : "idle";
+  const status: PhaseStatus | "idle" = phase ? (phases[phase]?.status ?? "queue") : "idle";
   const isRunning = status === "running";
-  const phaseName = phase ? phases[phase]?.name ?? PHASE_LABELS[phase] ?? phase : null;
+  const phaseName = phase ? (phases[phase]?.name ?? PHASE_LABELS[phase] ?? phase) : null;
   const tokenPhase = phase === "delib" || phase === "final";
   const delibMeta =
     delibPath === "system_2"
@@ -656,11 +638,11 @@ export function FlowChart({
   const streamTokenText =
     activeTurnId === null || activeStreamPhase === null
       ? ""
-      : tokenTextByPhase.get(tokenKey(activeTurnId, activeStreamPhase)) ?? "";
+      : (tokenTextByPhase.get(tokenKey(activeTurnId, activeStreamPhase)) ?? "");
   const streamDetailLines =
     activeTurnId === null || activeStreamPhase === null
       ? []
-      : detailByPhase.get(tokenKey(activeTurnId, activeStreamPhase)) ?? [];
+      : (detailByPhase.get(tokenKey(activeTurnId, activeStreamPhase)) ?? []);
 
   const phStatus = (id: string): PhaseStatus => phasesRecord[id]?.status ?? "queue";
 
@@ -700,8 +682,7 @@ export function FlowChart({
   const forkChosen = (lane: "s1" | "s2"): boolean | null => {
     if (delibPath === null) return null;
     return (
-      (lane === "s1" && delibPath === "system_1") ||
-      (lane === "s2" && delibPath === "system_2")
+      (lane === "s1" && delibPath === "system_1") || (lane === "s2" && delibPath === "system_2")
     );
   };
 
@@ -711,8 +692,7 @@ export function FlowChart({
     if (terminalOutcome === "aborted") return "warn";
     return "bad";
   })();
-  const outcomeLabel =
-    terminalOutcome === null ? "waiting" : terminalOutcome.replace(/_/g, " ");
+  const outcomeLabel = terminalOutcome === null ? "waiting" : terminalOutcome.replace(/_/g, " ");
 
   // Subtle background dots -- sparser than the original (every 50px).
   const dots = useMemo(() => {
@@ -911,9 +891,20 @@ export function FlowChart({
             return (
               <>
                 <g className={s1Cls}>
-                  <path d={forkPath("s1")} className="fc-fork-lane-path" markerEnd={laneMarker("s1")} />
+                  <path
+                    d={forkPath("s1")}
+                    className="fc-fork-lane-path"
+                    markerEnd={laneMarker("s1")}
+                  />
                   <g transform="translate(305 421)">
-                    <rect className="fc-fork-tag-bg" x={-30} y={-13} width={60} height={26} rx={3} />
+                    <rect
+                      className="fc-fork-tag-bg"
+                      x={-30}
+                      y={-13}
+                      width={60}
+                      height={26}
+                      rx={3}
+                    />
                     <text className="fc-fork-tag" x={0} y={-2}>
                       S1
                     </text>
@@ -923,9 +914,20 @@ export function FlowChart({
                   </g>
                 </g>
                 <g className={s2Cls}>
-                  <path d={forkPath("s2")} className="fc-fork-lane-path" markerEnd={laneMarker("s2")} />
+                  <path
+                    d={forkPath("s2")}
+                    className="fc-fork-lane-path"
+                    markerEnd={laneMarker("s2")}
+                  />
                   <g transform="translate(257 370)">
-                    <rect className="fc-fork-tag-bg" x={-30} y={-13} width={60} height={26} rx={3} />
+                    <rect
+                      className="fc-fork-tag-bg"
+                      x={-30}
+                      y={-13}
+                      width={60}
+                      height={26}
+                      rx={3}
+                    />
                     <text className="fc-fork-tag" x={0} y={-2}>
                       S2
                     </text>
@@ -945,9 +947,17 @@ export function FlowChart({
             const marker = active ? "url(#arrow-warn)" : "url(#arrow-warn-dim)";
             return (
               <g className={`fc-regen-group ${active ? "active" : ""}`}>
+                {active ? <path d={regenPath()} className="fc-edge regen-glow" /> : null}
                 <path d={regenPath()} className={cls} markerEnd={marker} />
                 <g transform={`translate(${(NODES.guards!.x + NODES.final!.x) / 2} 624)`}>
-                  <rect className="fc-regen-label-bg" x={-38} y={-9} width={76} height={16} rx={2} />
+                  <rect
+                    className="fc-regen-label-bg"
+                    x={-38}
+                    y={-9}
+                    width={76}
+                    height={16}
+                    rx={2}
+                  />
                   <text className={`fc-regen-label ${active ? "active" : ""}`} x={0} y={3}>
                     regen ↻
                   </text>

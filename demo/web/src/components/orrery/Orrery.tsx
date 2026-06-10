@@ -230,6 +230,7 @@ export function Orrery({ size, data, onNavigate, onInspect }: OrreryProps) {
             fill={`url(#${coreGradientId})`}
           />
           <circle className="orr-core-body" cx={CENTER} cy={CENTER} r="31" />
+          <circle className="orr-core-dot-glow" cx={CENTER} cy={CENTER} r="8.5" />
           <circle className="orr-core-dot" cx={CENTER} cy={CENTER} r="5" />
           <text className="orr-core-label" x={CENTER} y={CENTER - 43} textAnchor="middle">
             runtime
@@ -276,6 +277,7 @@ export function Orrery({ size, data, onNavigate, onInspect }: OrreryProps) {
                   x2={point.x}
                   y2={point.y}
                 />
+                <circle className="orr-dream-orbit-glow" cx={point.x} cy={point.y} r="12" />
                 <circle className="orr-dream-orbit-mark" cx={point.x} cy={point.y} r="12" />
                 <circle className="orr-dream-dot" cx={point.x} cy={point.y} r="4.5" />
                 <text className="orr-dream-label" x={label.x} y={label.y} textAnchor="middle">
@@ -408,6 +410,7 @@ export function Orrery({ size, data, onNavigate, onInspect }: OrreryProps) {
             stroke={`url(#${spineGradientId})`}
             markerEnd={`url(#${arrowMarkerId})`}
           />
+          <circle className="orr-turn-glow" cx="280" cy="360" r="13" />
           <circle
             className="orr-turn-pulse"
             cx="280"

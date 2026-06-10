@@ -9,6 +9,7 @@ import type {
 } from "../../api/types";
 import { IdRef } from "../../components/Inspector/IdRef";
 import { Tag } from "../../components/Tag";
+import { useReducedMotion } from "../../hooks/use-reduced-motion";
 import { isInternalId, shortId } from "../screen-utils";
 
 const VIEWBOX_WIDTH = 1000;
@@ -18,15 +19,24 @@ const CENTER_Y = VIEWBOX_HEIGHT / 2;
 const NODE_MIN_RADIUS = 4;
 const NODE_MAX_RADIUS = 14;
 const INITIAL_RING_RADIUS = 230;
-const SETTLE_MS = 4_200;
+const BASE_SETTLE_MS = 4_200;
+const MAX_SETTLE_EXTRA_MS = 6_000;
+const SETTLE_NODE_MS = 14;
+const SETTLE_EDGE_MS = 8;
+const BASE_ALPHA_DECAY = 0.035;
+const ALPHA_GRAPH_SCALE = 80;
+const ALPHA_MIN = 0.01;
+const SETTLED_DISPLACEMENT = 0.04;
+const REQUIRED_STABLE_FRAMES = 18;
+const LINK_STRAIN_EPSILON = 0.004;
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 export const SEMANTIC_TOPOLOGY_EDGE_CLASSES = {
   is_a: "semantic-topology-edge-is-a",
   part_of: "semantic-topology-edge-part-of",
-  causes: "semantic-topology-edge-causes semantic-topology-edge-flow",
+  causes: "semantic-topology-edge-causes",
   prevents: "semantic-topology-edge-prevents",
-  supports: "semantic-topology-edge-supports semantic-topology-edge-flow",
+  supports: "semantic-topology-edge-supports",
   contradicts: "semantic-topology-edge-contradicts",
   related_to: "semantic-topology-edge-related-to",
   instance_of: "semantic-topology-edge-instance-of",
@@ -34,6 +44,10 @@ export const SEMANTIC_TOPOLOGY_EDGE_CLASSES = {
 
 export function edgeClass(type: SemanticRelation): string {
   return SEMANTIC_TOPOLOGY_EDGE_CLASSES[type];
+}
+
+function edgeCanFlow(type: SemanticRelation): boolean {
+  return type === "causes" || type === "supports";
 }
 
 type DuplicateInfo = {
@@ -71,6 +85,15 @@ type MountedEdge = {
   line: SVGLineElement;
 };
 
+type IntegrationMetrics = {
+  maxDisplacement: number;
+};
+
+type StructuralMetrics = {
+  maxLinkStrain: number;
+  overlapCount: number;
+};
+
 export type SemanticTopologyProps = {
   graph: SemanticGraphResponse;
   selectedId: string | null;
@@ -84,6 +107,25 @@ function nodeRadius(edgeCount: number): number {
 function edgeWidth(weight: number | undefined): number {
   const normalized = Math.min(1, Math.max(0, weight ?? 0.5));
   return 0.6 + normalized * 0.6;
+}
+
+function settleMsForGraph(nodeCount: number, edgeCount: number): number {
+  const graphExtra = Math.min(
+    MAX_SETTLE_EXTRA_MS,
+    nodeCount * SETTLE_NODE_MS + edgeCount * SETTLE_EDGE_MS,
+  );
+
+  return BASE_SETTLE_MS + graphExtra;
+}
+
+function alphaDecayForGraph(nodeCount: number, edgeCount: number): number {
+  const graphScale = Math.sqrt(Math.max(1, nodeCount + edgeCount) / ALPHA_GRAPH_SCALE);
+
+  return BASE_ALPHA_DECAY / Math.max(1, graphScale);
+}
+
+function desiredEdgeDistance(source: SimNode, target: SimNode): number {
+  return 56 + source.radius + target.radius + Math.min(34, source.edge_count + target.edge_count);
 }
 
 function statusColor(status: SemanticGraphNodeStatus): string {
@@ -246,6 +288,7 @@ function appendMountedNode(
   layer: SVGGElement,
   node: SimNode,
   onSelectNode: (nodeId: string) => void,
+  onHoverNode: (nodeId: string | null) => void,
 ): MountedNode {
   const color = statusColor(node.status);
   const group = createSvgElement("g");
@@ -254,6 +297,7 @@ function appendMountedNode(
     `semantic-topology-node semantic-topology-node-status-${node.status}`,
   );
   group.setAttribute("data-node-id", node.id);
+  group.setAttribute("data-radius", node.radius.toFixed(2));
   group.setAttribute("tabindex", "0");
   group.setAttribute("focusable", "true");
   group.setAttribute("role", "button");
@@ -261,6 +305,8 @@ function appendMountedNode(
   group.setAttribute("aria-pressed", "false");
 
   const activate = () => onSelectNode(node.id);
+  const setHovered = () => onHoverNode(node.id);
+  const clearHovered = () => onHoverNode(null);
   group.addEventListener("click", activate);
   group.addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") {
@@ -268,6 +314,10 @@ function appendMountedNode(
       activate();
     }
   });
+  group.addEventListener("pointerenter", setHovered);
+  group.addEventListener("pointerleave", clearHovered);
+  group.addEventListener("focus", setHovered);
+  group.addEventListener("blur", clearHovered);
 
   const glow = createSvgElement("circle");
   glow.setAttribute("class", "semantic-topology-node-glow");
@@ -325,6 +375,9 @@ function appendMountedEdge(layer: SVGGElement, edge: SimEdge): MountedEdge {
   line.setAttribute("class", `semantic-topology-edge ${edgeClass(edge.type)}`);
   line.setAttribute("stroke-width", edgeWidth(edge.weight).toFixed(2));
   line.setAttribute("data-edge-id", edge.id);
+  line.setAttribute("data-source-id", edge.sourceNode.id);
+  line.setAttribute("data-target-id", edge.targetNode.id);
+  line.setAttribute("data-flowable", edgeCanFlow(edge.type) ? "true" : "false");
   layer.appendChild(line);
 
   return { edge, line };
@@ -358,8 +411,7 @@ function applyLinkForce(edges: readonly SimEdge[], alpha: number, dt: number): v
     const dx = target.x - source.x;
     const dy = target.y - source.y;
     const distance = Math.hypot(dx, dy) || 1;
-    const desired =
-      56 + source.radius + target.radius + Math.min(34, source.edge_count + target.edge_count);
+    const desired = desiredEdgeDistance(source, target);
     const force = (distance - desired) * 0.01 * alpha * dt;
     const fx = (dx / distance) * force;
     const fy = (dy / distance) * force;
@@ -371,7 +423,12 @@ function applyLinkForce(edges: readonly SimEdge[], alpha: number, dt: number): v
   }
 }
 
-function applyChargeAndCollision(nodes: readonly SimNode[], alpha: number, dt: number): void {
+function applyChargeAndCollision(
+  nodes: readonly SimNode[],
+  alpha: number,
+  collisionAlpha: number,
+  dt: number,
+): void {
   for (let leftIndex = 0; leftIndex < nodes.length; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < nodes.length; rightIndex += 1) {
       const left = nodes[leftIndex]!;
@@ -398,7 +455,7 @@ function applyChargeAndCollision(nodes: readonly SimNode[], alpha: number, dt: n
       const collisionDistance = (left.radius + right.radius) * 1.2;
 
       if (distance < collisionDistance) {
-        const overlap = (collisionDistance - distance) * 0.055 * alpha * dt;
+        const overlap = (collisionDistance - distance) * 0.055 * collisionAlpha * dt;
         left.vx -= ux * overlap;
         left.vy -= uy * overlap;
         right.vx += ux * overlap;
@@ -408,26 +465,21 @@ function applyChargeAndCollision(nodes: readonly SimNode[], alpha: number, dt: n
   }
 }
 
-function applyCenterAndDrift(
-  nodes: readonly SimNode[],
-  alpha: number,
-  dt: number,
-  elapsed: number,
-): void {
+function applyCenterForce(nodes: readonly SimNode[], alpha: number, dt: number): void {
   for (const node of nodes) {
-    const drift = elapsed > SETTLE_MS ? Math.sin(elapsed / 1300 + node.index * 1.7) * 0.018 : 0;
-
     node.vx += (CENTER_X - node.x) * 0.0022 * alpha * dt;
     node.vy += (CENTER_Y - node.y) * 0.0022 * alpha * dt;
-    node.vx += Math.cos(node.index * 2.11) * drift;
-    node.vy += Math.sin(node.index * 1.73) * drift;
   }
 }
 
-function integrateNodes(nodes: readonly SimNode[], dt: number): void {
+function integrateNodes(nodes: readonly SimNode[], dt: number): IntegrationMetrics {
   const margin = 28;
+  let maxDisplacement = 0;
 
   for (const node of nodes) {
+    const previousX = node.x;
+    const previousY = node.y;
+
     node.vx *= 0.86;
     node.vy *= 0.86;
     node.x += node.vx * dt;
@@ -448,16 +500,82 @@ function integrateNodes(nodes: readonly SimNode[], dt: number): void {
       node.y = VIEWBOX_HEIGHT - margin;
       node.vy *= -0.25;
     }
+
+    maxDisplacement = Math.max(maxDisplacement, Math.hypot(node.x - previousX, node.y - previousY));
   }
+
+  return { maxDisplacement };
 }
 
-function syncSelectedNodes(svg: SVGSVGElement, selectedId: string | null): void {
+function measureStructuralMetrics(
+  nodes: readonly SimNode[],
+  edges: readonly SimEdge[],
+): StructuralMetrics {
+  let maxLinkStrain = 0;
+  let overlapCount = 0;
+
+  for (const edge of edges) {
+    const source = edge.sourceNode;
+    const target = edge.targetNode;
+    const distance = Math.hypot(target.x - source.x, target.y - source.y);
+    const desired = desiredEdgeDistance(source, target);
+    maxLinkStrain = Math.max(maxLinkStrain, Math.abs(distance - desired) / desired);
+  }
+
+  for (let leftIndex = 0; leftIndex < nodes.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < nodes.length; rightIndex += 1) {
+      const left = nodes[leftIndex]!;
+      const right = nodes[rightIndex]!;
+      const bodyDistance = left.radius + right.radius;
+      const distance = Math.hypot(right.x - left.x, right.y - left.y);
+
+      if (distance < bodyDistance) {
+        overlapCount += 1;
+      }
+    }
+  }
+
+  return { maxLinkStrain, overlapCount };
+}
+
+function structuralMetricsHavePlateaued(
+  current: StructuralMetrics,
+  previous: StructuralMetrics | null,
+): boolean {
+  if (previous === null) {
+    return false;
+  }
+
+  return (
+    current.overlapCount >= previous.overlapCount &&
+    current.maxLinkStrain >= previous.maxLinkStrain - LINK_STRAIN_EPSILON
+  );
+}
+
+function edgeTouchesNode(edge: SVGLineElement, nodeId: string | null): boolean {
+  return nodeId !== null && (edge.dataset.sourceId === nodeId || edge.dataset.targetId === nodeId);
+}
+
+function syncTopologyState(
+  svg: SVGSVGElement,
+  selectedId: string | null,
+  hoveredId: string | null,
+): void {
   const nodes = svg.querySelectorAll<SVGGElement>(".semantic-topology-node");
 
   for (const node of nodes) {
     const active = node.dataset.nodeId === selectedId;
     node.classList.toggle("selected", active);
     node.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+
+  const edges = svg.querySelectorAll<SVGLineElement>(".semantic-topology-edge");
+  for (const edge of edges) {
+    const connected =
+      edge.dataset.flowable === "true" &&
+      (edgeTouchesNode(edge, selectedId) || edgeTouchesNode(edge, hoveredId));
+    edge.classList.toggle("semantic-topology-edge-connected", connected);
+    edge.classList.toggle("semantic-topology-edge-flow", connected);
   }
 }
 
@@ -466,6 +584,8 @@ function mountGraph(
   data: SemanticGraphResponse,
   duplicateInfo: ReadonlyMap<string, DuplicateInfo>,
   onSelectNode: (nodeId: string) => void,
+  onHoverNode: (nodeId: string | null) => void,
+  reducedMotion: boolean,
 ): () => void {
   clearSvg(svg);
   svg.setAttribute("viewBox", `0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`);
@@ -481,10 +601,16 @@ function mountGraph(
   const nodes = createSimNodes(data, duplicateInfo);
   const edges = createSimEdges(data, nodes);
   const mountedEdges = edges.map((edge) => appendMountedEdge(edgeLayer, edge));
-  const mountedNodes = nodes.map((node) => appendMountedNode(nodeLayer, node, onSelectNode));
+  const mountedNodes = nodes.map((node) =>
+    appendMountedNode(nodeLayer, node, onSelectNode, onHoverNode),
+  );
   const startedAt = performance.now();
+  const settleMs = settleMsForGraph(nodes.length, edges.length);
+  const alphaDecay = alphaDecayForGraph(nodes.length, edges.length);
   let alpha = 1;
   let previousTick = startedAt;
+  let previousStructuralMetrics: StructuralMetrics | null = null;
+  let stableFrames = 0;
   let frame = 0;
   let stopped = false;
 
@@ -504,25 +630,45 @@ function mountGraph(
 
     const elapsed = now - startedAt;
     const dt = Math.min(2, Math.max(0.5, (now - previousTick) / 16.67));
-    const targetAlpha = elapsed > SETTLE_MS ? 0.05 : 0.012;
     previousTick = now;
-    alpha += (targetAlpha - alpha) * 0.024 * dt;
+    alpha += (0 - alpha) * alphaDecay * dt;
+
+    const resolvingOverlap = (previousStructuralMetrics?.overlapCount ?? 0) > 0;
+    const collisionAlpha = resolvingOverlap ? Math.max(alpha, 0.08) : alpha;
 
     applyLinkForce(edges, alpha, dt);
-    applyChargeAndCollision(nodes, alpha, dt);
-    applyCenterAndDrift(nodes, alpha, dt, elapsed);
-    integrateNodes(nodes, dt);
+    applyChargeAndCollision(nodes, alpha, collisionAlpha, dt);
+    applyCenterForce(nodes, alpha, dt);
+    const integrationMetrics = integrateNodes(nodes, dt);
+    const structuralMetrics = measureStructuralMetrics(nodes, edges);
+    const stableFrame =
+      integrationMetrics.maxDisplacement <= SETTLED_DISPLACEMENT &&
+      structuralMetrics.overlapCount === 0 &&
+      structuralMetricsHavePlateaued(structuralMetrics, previousStructuralMetrics);
+
+    stableFrames = stableFrame ? stableFrames + 1 : 0;
+    previousStructuralMetrics = structuralMetrics;
     update();
+
+    if (elapsed >= settleMs && alpha <= ALPHA_MIN && stableFrames >= REQUIRED_STABLE_FRAMES) {
+      stopped = true;
+      frame = 0;
+      return;
+    }
 
     frame = window.requestAnimationFrame(tick);
   };
 
   update();
-  frame = window.requestAnimationFrame(tick);
+  if (!reducedMotion) {
+    frame = window.requestAnimationFrame(tick);
+  }
 
   return () => {
     stopped = true;
-    window.cancelAnimationFrame(frame);
+    if (frame !== 0) {
+      window.cancelAnimationFrame(frame);
+    }
     clearSvg(svg);
   };
 }
@@ -530,6 +676,9 @@ function mountGraph(
 export function SemanticTopology({ graph, selectedId, onSelectNode }: SemanticTopologyProps) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const onSelectRef = useRef(onSelectNode);
+  const selectedIdRef = useRef(selectedId);
+  const hoveredIdRef = useRef<string | null>(null);
+  const reducedMotion = useReducedMotion();
   const duplicateInfo = useMemo(() => duplicateInfoForNodes(graph.nodes), [graph.nodes]);
   const duplicateClusters = useMemo(() => duplicateClustersForNodes(graph.nodes), [graph.nodes]);
 
@@ -542,14 +691,26 @@ export function SemanticTopology({ graph, selectedId, onSelectNode }: SemanticTo
       return undefined;
     }
 
-    return mountGraph(svgRef.current, graph, duplicateInfo, (nodeId) =>
-      onSelectRef.current(nodeId),
+    hoveredIdRef.current = null;
+    return mountGraph(
+      svgRef.current,
+      graph,
+      duplicateInfo,
+      (nodeId) => onSelectRef.current(nodeId),
+      (nodeId) => {
+        hoveredIdRef.current = nodeId;
+        if (svgRef.current !== null) {
+          syncTopologyState(svgRef.current, selectedIdRef.current, hoveredIdRef.current);
+        }
+      },
+      reducedMotion,
     );
-  }, [duplicateInfo, graph]);
+  }, [duplicateInfo, graph, reducedMotion]);
 
   useEffect(() => {
+    selectedIdRef.current = selectedId;
     if (svgRef.current !== null) {
-      syncSelectedNodes(svgRef.current, selectedId);
+      syncTopologyState(svgRef.current, selectedId, hoveredIdRef.current);
     }
   }, [graph, selectedId]);
 

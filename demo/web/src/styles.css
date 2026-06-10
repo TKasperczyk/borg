@@ -775,7 +775,7 @@ select {
   border-radius: 50%;
   background: var(--acc);
   box-shadow: 0 0 8px var(--acc);
-  animation: pulse 1.4s ease-in-out infinite;
+  animation: pulse 2.8s ease-in-out infinite;
   display: inline-block;
 }
 @keyframes pulse {
@@ -1079,7 +1079,7 @@ select {
 .session-foot .dot.alive {
   background: var(--acc);
   box-shadow: 0 0 5px var(--acc);
-  animation: pulse 1.4s ease-in-out infinite;
+  animation: pulse 2.8s ease-in-out infinite;
 }
 .session-foot .sep {
   color: var(--text-ghost);
@@ -2650,7 +2650,6 @@ input:not([type])::placeholder {
 .fc-pulse {
   fill: var(--acc);
   opacity: 0;
-  filter: drop-shadow(0 0 5px var(--acc));
 }
 .fc-edge-wrap.active .fc-pulse {
   opacity: 1;
@@ -2700,8 +2699,15 @@ input:not([type])::placeholder {
   stroke: var(--warn);
   stroke-dasharray: 5 4;
   opacity: 1;
-  filter: drop-shadow(0 0 4px oklch(0.835 0.135 85 / 0.45));
   animation: fc-regen-march 1.2s linear infinite;
+}
+.fc-edge.regen-glow {
+  stroke: var(--warn);
+  stroke-dasharray: 5 4;
+  opacity: 0.55;
+  stroke-width: 1.6;
+  filter: drop-shadow(0 0 4px oklch(0.835 0.135 85 / 0.45));
+  pointer-events: none;
 }
 @keyframes fc-regen-march {
   to {
@@ -4469,6 +4475,10 @@ g.fc-regen-group.active .fc-regen-label-bg {
 }
 .semantic-topology-edge-flow {
   animation: semantic-topology-edge-flow 6s linear infinite;
+}
+.semantic-topology-edge-connected {
+  opacity: 0.86;
+  stroke-width: 1.9;
 }
 @keyframes semantic-topology-edge-flow {
   to {
@@ -6463,11 +6473,26 @@ tr[role="button"]:focus-visible {
   fill: var(--text-faint);
 }
 
+.orr-core-dot-glow {
+  fill: var(--acc);
+  opacity: 0;
+  filter: drop-shadow(0 0 6px var(--acc));
+  pointer-events: none;
+}
+
+.orr-core-live .orr-core-dot-glow,
+.orr-core-active .orr-core-dot-glow {
+  opacity: 0.72;
+}
+
 .orr-core-live .orr-core-dot,
 .orr-core-active .orr-core-dot {
   fill: var(--acc);
-  filter: drop-shadow(0 0 6px var(--acc));
-  animation: pulse 1.4s ease-in-out infinite;
+  animation: pulse 2.8s ease-in-out infinite;
+}
+
+.orr-core-active .orr-core-dot {
+  animation-duration: 1.6s;
 }
 
 .orr-core-live .orr-core-body,
@@ -6523,6 +6548,15 @@ tr[role="button"]:focus-visible {
   stroke-width: 1.2;
 }
 
+.orr-dream-orbit-glow {
+  fill: none;
+  stroke: var(--warn);
+  stroke-width: 1.2;
+  opacity: 0;
+  filter: drop-shadow(0 0 6px oklch(0.835 0.135 85 / 0.46));
+  pointer-events: none;
+}
+
 .orr-dream-dot {
   fill: var(--purple);
 }
@@ -6548,10 +6582,13 @@ tr[role="button"]:focus-visible {
 
 .orr-dream-satellite-running .orr-dream-orbit-mark {
   stroke: var(--warn);
-  filter: drop-shadow(0 0 6px oklch(0.835 0.135 85 / 0.46));
   animation: dreamSpin 1.6s linear infinite;
   transform-box: fill-box;
   transform-origin: center;
+}
+
+.orr-dream-satellite-running .orr-dream-orbit-glow {
+  opacity: 0.7;
 }
 
 .orr-dream-satellite-running .orr-dream-dot {
@@ -6660,9 +6697,19 @@ tr[role="button"]:focus-visible {
   stroke-width: 1.5;
 }
 
+.orr-turn-glow {
+  fill: var(--acc);
+  opacity: 0;
+  filter: drop-shadow(0 0 7px var(--acc));
+  pointer-events: none;
+}
+
+.orr-stream-active .orr-turn-glow {
+  opacity: 0.68;
+}
+
 .orr-stream-active .orr-turn-pulse {
   fill: var(--acc);
-  filter: drop-shadow(0 0 7px var(--acc));
   animation: pulse 1.2s ease-in-out infinite;
 }
 
@@ -6750,6 +6797,28 @@ tr[role="button"]:focus-visible {
 .orr-mini-dream-running .orr-mini-dream {
   fill: var(--warn);
   animation: pulse 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-dot,
+  .session-foot .dot.alive,
+  .fc-edge-wrap.active .fc-pulse,
+  .fc-edge.regen.fire,
+  .fc-node[data-status="running"] .fc-node-halo,
+  .fc-node[data-status="running"] .fc-pulse-ring,
+  .flow-active-stream[data-status="running"] .flow-active-head .pin::before,
+  .flow-active-body .caret,
+  .semantic-topology-edge-flow,
+  .dream-card.dream-card-running,
+  .dream-running-spinner,
+  .orr-core-live .orr-core-dot,
+  .orr-core-active .orr-core-dot,
+  .orr-dream-satellite-running .orr-dream-orbit-mark,
+  .orr-dream-satellite-running .orr-dream-dot,
+  .orr-stream-active .orr-turn-pulse,
+  .orr-mini-dream-running .orr-mini-dream {
+    animation: none;
+  }
 }
 .modal-field {
   display: grid;

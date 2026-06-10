@@ -19,6 +19,7 @@ import type {
 } from "../../api/types";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi, type ApiHookState } from "../../hooks/use-api";
+import { useReducedMotion } from "../../hooks/use-reduced-motion";
 import type { TurnStreamState } from "../../hooks/use-turn-stream";
 import type { AudienceDisplayIdentity } from "../../lib/audience-identity";
 import {
@@ -336,6 +337,7 @@ export function CognitionScreen({
   );
   const previousConnectionCountRef = useRef(live.connectionCount);
   const olderChatRequestSeqRef = useRef(0);
+  const reducedMotion = useReducedMotion();
   const chatFilterKey = `${sessionId}\n${audienceValue ?? ""}`;
   const chatFilterKeyRef = useRef(chatFilterKey);
   chatFilterKeyRef.current = chatFilterKey;
@@ -668,7 +670,7 @@ export function CognitionScreen({
         cachedLedger={xrayLedger}
         audience={audienceValue}
         tracePlaceholder={tracePlaceholder}
-        particleEnabled={replayTurnId === null}
+        particleEnabled={replayTurnId === null && turnStream.running && !reducedMotion}
         replayTurn={replayTurn}
         sharedStateApi={sharedStateApi}
         commitmentsApi={commitmentsApi}
