@@ -640,7 +640,9 @@ export function CommitmentsPanel({
 
         <div style={{ overflowY: "auto", background: "var(--bg-0)" }}>
           {selected === null ? (
-            <Empty>no commitments in filter</Empty>
+            <Empty>
+              {commitments.length === 0 ? "no commitments yet" : "none match this filter"}
+            </Empty>
           ) : (
             <CommitmentDetail
               commitment={selected}

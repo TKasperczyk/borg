@@ -808,11 +808,56 @@ describe("DirectivesTab", () => {
 
     renderWithInspector(<DirectivesTab />);
 
-    expect(await screen.findByText("no creator directives in filter")).toBeInTheDocument();
+    expect(await screen.findByText("none match this filter")).toBeInTheDocument();
     clickPill("all");
 
     expect((await screen.findAllByText("Revoked directive.")).length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "revoke" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "supersede" })).not.toBeInTheDocument();
+  });
+
+  it("distinguishes an empty directive store from a filter miss", async () => {
+    const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(request);
+      const method = requestMethod(init);
+      if (path === "/api/creator-directives" && method === "GET") {
+        return Promise.resolve(jsonResponse({ directives: [] }));
+      }
+      const support = supportResponse(request);
+      if (support !== null) {
+        return Promise.resolve(support);
+      }
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = renderWithInspector(<DirectivesTab />);
+
+    expect(await screen.findByText("no creator directives yet")).toBeInTheDocument();
+    first.unmount();
+
+    const revoked = directive({
+      id: "cdir_revoked111111",
+      text: "Revoked directive.",
+      status: "revoked",
+      revoked_reason: "old",
+      updated_at: 2,
+    });
+    fetchMock.mockImplementation((request: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(request);
+      const method = requestMethod(init);
+      if (path === "/api/creator-directives" && method === "GET") {
+        return Promise.resolve(jsonResponse({ directives: [revoked] }));
+      }
+      const support = supportResponse(request);
+      if (support !== null) {
+        return Promise.resolve(support);
+      }
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    });
+
+    renderWithInspector(<DirectivesTab />);
+
+    expect(await screen.findByText("none match this filter")).toBeInTheDocument();
   });
 });

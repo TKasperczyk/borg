@@ -265,9 +265,7 @@ export function SessionsEntitiesTab({
         <section className="scope-section" aria-label="known entities">
           <div className="scope-section-head">
             <h2>entities known from sessions/directives</h2>
-            <span className="dim">
-              no generic entity create: the web client currently has no postEntity binding
-            </span>
+            <span className="capability-note">entity creation not available from this console</span>
           </div>
           {entities.length === 0 ? (
             <div className="notice">no entity ids surfaced by sessions or directives</div>

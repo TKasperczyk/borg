@@ -299,6 +299,35 @@ describe("Identity Studio", () => {
     expect(within(header).getByLabelText("recent open-question event")).toHaveTextContent("create");
   });
 
+  it("distinguishes an empty open-question store from a filter miss", async () => {
+    const emptyIdentity = identityStudioResponse();
+    emptyIdentity.open_questions = [];
+    emptyIdentity.open_question_events = [];
+    installIdentityFetch(emptyIdentity);
+
+    const first = renderWithInspector(<IdentityScreen />);
+
+    expect(await screen.findAllByText("no questions yet")).toHaveLength(2);
+    first.unmount();
+
+    const resolvedIdentity = identityStudioResponse();
+    resolvedIdentity.open_questions = [
+      {
+        ...resolvedIdentity.open_questions[0]!,
+        status: "resolved",
+        resolved_at: 60,
+        resolution_note: "answered",
+      },
+    ];
+    resolvedIdentity.open_question_events = [];
+    installIdentityFetch(resolvedIdentity);
+
+    renderWithInspector(<IdentityScreen />);
+    fireEvent.click(await screen.findByRole("button", { name: "open" }));
+
+    expect(await screen.findAllByText("none match this filter")).toHaveLength(2);
+  });
+
   it("groups values and traits by state and places goals in status lanes", async () => {
     installIdentityFetch();
     renderWithInspector(<IdentityScreen />);

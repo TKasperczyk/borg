@@ -313,11 +313,13 @@ function detailRows(detail: MemoryBandDetail): MemoryRow[] {
 
 export function MemoryScreen({
   sessionId,
+  onOpenWorkbench,
   onOpenReview,
   onOpenIdentity,
   onOpenCommitments,
 }: {
   sessionId: string;
+  onOpenWorkbench?: () => void;
   onOpenReview?: () => void;
   onOpenIdentity?: () => void;
   onOpenCommitments?: () => void;
@@ -336,6 +338,7 @@ export function MemoryScreen({
         stats: [],
       },
   );
+  const totalMemories = bands.reduce((total, band) => total + band.count, 0);
 
   if (activeBand !== null) {
     const activeSummary = bands.find((item) => item.id === activeBand);
@@ -372,6 +375,16 @@ export function MemoryScreen({
         </div>
       </div>
       <BandOverviewBar bands={bands} activeBand={null} onSelectBand={setActiveBand} />
+      {api.data !== null && totalMemories === 0 ? (
+        <div className="memory-zero-state">
+          <span>no memories yet -- memory forms automatically as turns are ingested</span>
+          {onOpenWorkbench === undefined ? null : (
+            <button type="button" className="btn sm ghost" onClick={onOpenWorkbench}>
+              open workbench
+            </button>
+          )}
+        </div>
+      ) : null}
       <div className="divider" style={{ marginTop: 22 }}>
         governance
       </div>

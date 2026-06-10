@@ -259,13 +259,18 @@ describe("GovernanceScreen", () => {
     expect(screen.getByText("1 rows")).toBeInTheDocument();
     expect(screen.getAllByText("1 linked open").length).toBeGreaterThan(0);
     expect(screen.getByText(/not recall gates or output controls/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/dream-impact and full entity inventory not shown here/i),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "Sessions & entities" }));
     expect(await screen.findByText("entities known from sessions/directives")).toBeInTheDocument();
     expect(
       screen.getAllByRole("button", { name: "jump to ent_alice111111" }).length,
     ).toBeGreaterThan(0);
-    expect(screen.getByText(/no generic entity create/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/entity creation not available from this console/i),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "participation policy active" }));
     fireEvent.change(screen.getByLabelText("participation policy selection"), {

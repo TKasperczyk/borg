@@ -1219,6 +1219,11 @@ export function StreamScreen({
   const honestyLabel = hasOlder ? "loaded window only · older entries available" : "loaded window";
   const showRowAudience = audience === "all" && windowAudiences.length > 1;
   const streamSessionLabel = activeSession?.label ?? entries[0]?.session_label ?? "unknown session";
+  const primaryEmpty = groups.length === 0 && !streamWindow.loading;
+  const primaryEmptyMessage =
+    entries.length === 0
+      ? "no entries in window; entries appear as turns are ingested"
+      : "no entries match filters";
 
   const toggleKind = (kind: StreamEntryKind) => {
     setSelectedKinds((current) => {
@@ -1339,7 +1344,7 @@ export function StreamScreen({
         </div>
         {streamWindow.loading && entries.length === 0 ? <Loading>loading stream</Loading> : null}
         {streamWindow.error !== null ? <ErrorState>{streamWindow.error.message}</ErrorState> : null}
-        {groups.length === 0 && !streamWindow.loading ? <Empty>no entries in window</Empty> : null}
+        {primaryEmpty ? <Empty>{primaryEmptyMessage}</Empty> : null}
         {groups.map((group) => {
           const collapsed = collapsedGroupIds.has(group.id);
           return (
@@ -1365,26 +1370,28 @@ export function StreamScreen({
             </div>
           );
         })}
-        <div className="stream-load-older">
-          {hasOlder ? (
-            <button
-              type="button"
-              className="btn sm"
-              onClick={() => {
-                void streamWindow.loadOlder();
-              }}
-              disabled={streamWindow.loadingOlder}
-            >
-              {streamWindow.loadingOlder ? "loading older" : "load older"}
-            </button>
-          ) : (
-            <span className="dim">end of loaded stream window</span>
-          )}
-        </div>
+        {primaryEmpty ? null : (
+          <div className="stream-load-older">
+            {hasOlder ? (
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => {
+                  void streamWindow.loadOlder();
+                }}
+                disabled={streamWindow.loadingOlder}
+              >
+                {streamWindow.loadingOlder ? "loading older" : "load older"}
+              </button>
+            ) : (
+              <span className="dim">end of loaded stream window</span>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="stream-detail">
-        {selected === null ? (
+        {selected === null && primaryEmpty ? null : selected === null ? (
           <Empty>select a stream entry</Empty>
         ) : (
           <>

@@ -17,6 +17,8 @@ export type InstrumentStripProps = {
   dreamActivity: DreamActivity | null;
   now: string;
   route: RouteId;
+  onOpenPalette?: () => void;
+  onOpenHelp?: () => void;
 };
 
 function SessionCrumb({
@@ -74,6 +76,8 @@ export function InstrumentStrip({
   dreamActivity,
   now,
   route,
+  onOpenPalette,
+  onOpenHelp,
 }: InstrumentStripProps) {
   return (
     <div className="topbar instrument-strip">
@@ -147,6 +151,26 @@ export function InstrumentStrip({
           <span className="k">local</span>
           <span className="v">{now}</span>
         </div>
+        {onOpenPalette === undefined ? null : (
+          <button
+            type="button"
+            className="topbar-shortcut-chip"
+            onClick={onOpenPalette}
+            aria-label="open command palette"
+          >
+            ctrl+K
+          </button>
+        )}
+        {onOpenHelp === undefined ? null : (
+          <button
+            type="button"
+            className="topbar-shortcut-chip icon"
+            onClick={onOpenHelp}
+            aria-label="open shortcut legend"
+          >
+            ?
+          </button>
+        )}
         <span className="topbar-live" aria-hidden="true">
           <span className={wsState === "live" ? "live-dot" : "dot warn"}></span>
         </span>

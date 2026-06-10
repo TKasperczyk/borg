@@ -233,11 +233,13 @@ export function ScopeMatrixTab({
       <div className="page-body scope-matrix-body">
         <div className="notice" style={{ marginBottom: 12 }}>
           disclosure scope, participation policy, and commitment audience are labels for operator
-          review. They are not recall gates or output controls. Dream impact and full entity
-          inventory are omitted because the web client has no read endpoint for those datasets.
+          review. They are not recall gates or output controls.
           {reviewsError === null
             ? ""
             : " Linked open reviews are omitted because reviews failed to load."}
+        </div>
+        <div className="capability-note" style={{ marginBottom: 12 }}>
+          dream-impact and full entity inventory not shown here
         </div>
 
         <section className="scope-section" aria-label="session scope matrix">

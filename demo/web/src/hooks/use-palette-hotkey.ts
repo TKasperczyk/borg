@@ -5,6 +5,7 @@ import { routeIdForDigitKey, type RouteId } from "../routes";
 type UsePaletteHotkeyOptions = {
   disabled?: boolean;
   onRouteChord?: (route: RouteId) => void;
+  onHelpChord?: () => void;
 };
 
 export type PaletteHotkeyState = {
@@ -13,9 +14,25 @@ export type PaletteHotkeyState = {
   close: () => void;
 };
 
+export function isEditableShortcutTarget(target: EventTarget | null): boolean {
+  if (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  ) {
+    return true;
+  }
+  return target instanceof HTMLElement && target.isContentEditable;
+}
+
+function modalOpen(): boolean {
+  return document.querySelector('[role="dialog"]') !== null;
+}
+
 export function usePaletteHotkey({
   disabled = false,
   onRouteChord,
+  onHelpChord,
 }: UsePaletteHotkeyOptions = {}): PaletteHotkeyState {
   const [open, setOpenState] = useState(false);
 
@@ -32,22 +49,26 @@ export function usePaletteHotkey({
       return;
     }
 
-    function isEditableTarget(target: EventTarget | null): boolean {
-      if (
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement
-      ) {
-        return true;
-      }
-      return target instanceof HTMLElement && target.isContentEditable;
-    }
-
-    function modalOpen(): boolean {
-      return document.querySelector('[role="dialog"]') !== null;
-    }
-
     function onKeyDown(event: KeyboardEvent): void {
+      if (
+        event.code === "Slash" &&
+        event.shiftKey &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey
+      ) {
+        if (
+          onHelpChord !== undefined &&
+          !open &&
+          !modalOpen() &&
+          !isEditableShortcutTarget(event.target)
+        ) {
+          event.preventDefault();
+          onHelpChord();
+        }
+        return;
+      }
+
       if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
         const route = routeIdForDigitKey(event.code);
         if (
@@ -55,7 +76,7 @@ export function usePaletteHotkey({
           onRouteChord !== undefined &&
           !open &&
           !modalOpen() &&
-          !isEditableTarget(event.target)
+          !isEditableShortcutTarget(event.target)
         ) {
           event.preventDefault();
           onRouteChord(route);
@@ -71,7 +92,7 @@ export function usePaletteHotkey({
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [disabled, onRouteChord, open]);
+  }, [disabled, onHelpChord, onRouteChord, open]);
 
   return { open, setOpen, close };
 }

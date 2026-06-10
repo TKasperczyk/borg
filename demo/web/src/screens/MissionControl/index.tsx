@@ -3,6 +3,7 @@ import { useMemo, type ReactNode } from "react";
 import type { PromptBlockView, ReviewRow } from "../../api/types";
 import { CountBadge } from "../../components/CountBadge";
 import { Empty } from "../../components/Empty";
+import { ErrorState } from "../../components/ErrorState";
 import { IdRef } from "../../components/Inspector/IdRef";
 import { Orrery } from "../../components/orrery/Orrery";
 import { useOrreryData, type OrreryTurnInput } from "../../components/orrery/useOrreryData";
@@ -49,24 +50,50 @@ function CardShell({ id, title, badge, action = "open", onAction, children }: Ca
 function CardNotice({
   loading,
   error,
+  isStale,
+  retry,
   empty,
   children,
 }: {
   loading: boolean;
   error: string | null;
+  isStale: boolean;
+  retry: () => Promise<void>;
   empty: boolean;
   children: ReactNode;
 }) {
   if (loading) {
     return <Empty>loading</Empty>;
   }
-  if (error !== null) {
-    return <Empty>error: {error}</Empty>;
+  if (error !== null && !isStale) {
+    return <ErrorState onRetry={() => void retry()}>{error}</ErrorState>;
   }
   if (empty) {
     return <Empty>{children}</Empty>;
   }
   return null;
+}
+
+function CardDegraded({
+  error,
+  degraded,
+  retrying,
+}: {
+  error: string | null;
+  degraded: boolean;
+  retrying: boolean;
+}) {
+  if (error === null || !degraded) {
+    return null;
+  }
+
+  return (
+    <div className="mc-card-degraded" title={error}>
+      <Tag kind="warn" dot>
+        {retrying ? "retrying" : "refresh failed"}
+      </Tag>
+    </div>
+  );
 }
 
 function Headline({
@@ -151,7 +178,8 @@ function ReviewsCard({
   onNavigate: (view: RouteId, options?: RouteNavigationOptions) => void;
   onInspectReview: (row: ReviewRow) => void;
 }) {
-  const showNotice = data.loading || data.error !== null || data.groups.length === 0;
+  const showNotice =
+    data.loading || (data.error !== null && !data.isStale) || data.groups.length === 0;
 
   return (
     <CardShell
@@ -167,8 +195,15 @@ function ReviewsCard({
           severity={data.severity}
           note={`${data.observedCount.toLocaleString()} rows by kind`}
         />
+        <CardDegraded error={data.error} degraded={data.degraded} retrying={data.retrying} />
         {showNotice ? (
-          <CardNotice loading={data.loading} error={data.error} empty={data.groups.length === 0}>
+          <CardNotice
+            loading={data.loading}
+            error={data.error}
+            isStale={data.isStale}
+            retry={data.retry}
+            empty={data.groups.length === 0}
+          >
             no open reviews
           </CardNotice>
         ) : (
@@ -193,7 +228,8 @@ function CommitmentsCard({
   onNavigate: (view: RouteId, options?: RouteNavigationOptions) => void;
   onInspect: (id: string, hint: unknown) => void;
 }) {
-  const showNotice = data.loading || data.error !== null || data.groups.length === 0;
+  const showNotice =
+    data.loading || (data.error !== null && !data.isStale) || data.groups.length === 0;
 
   return (
     <CardShell
@@ -209,8 +245,15 @@ function CommitmentsCard({
           severity={data.severity}
           note={`${data.observedCount.toLocaleString()} active rows`}
         />
+        <CardDegraded error={data.error} degraded={data.degraded} retrying={data.retrying} />
         {showNotice ? (
-          <CardNotice loading={data.loading} error={data.error} empty={data.groups.length === 0}>
+          <CardNotice
+            loading={data.loading}
+            error={data.error}
+            isStale={data.isStale}
+            retry={data.retry}
+            empty={data.groups.length === 0}
+          >
             no active commitments
           </CardNotice>
         ) : (
@@ -252,7 +295,7 @@ function DirectiveConflictsCard({
   onNavigate: (view: RouteId, options?: RouteNavigationOptions) => void;
   onInspectReview: (row: ReviewRow) => void;
 }) {
-  const showNotice = data.loading || data.error !== null || data.count === 0;
+  const showNotice = data.loading || (data.error !== null && !data.isStale) || data.count === 0;
 
   return (
     <CardShell
@@ -268,8 +311,15 @@ function DirectiveConflictsCard({
           severity={data.severity}
           note="open reconciliation conflicts"
         />
+        <CardDegraded error={data.error} degraded={data.degraded} retrying={data.retrying} />
         {showNotice ? (
-          <CardNotice loading={data.loading} error={data.error} empty={data.count === 0}>
+          <CardNotice
+            loading={data.loading}
+            error={data.error}
+            isStale={data.isStale}
+            retry={data.retry}
+            empty={data.count === 0}
+          >
             no creator-directive conflicts
           </CardNotice>
         ) : (
@@ -297,7 +347,7 @@ function DreamCard({
   onNavigate: (view: RouteId) => void;
   onInspectReview: (row: ReviewRow) => void;
 }) {
-  const showNotice = data.loading || data.error !== null || data.total === 0;
+  const showNotice = data.loading || (data.error !== null && !data.isStale) || data.total === 0;
 
   return (
     <CardShell
@@ -313,8 +363,15 @@ function DreamCard({
           severity={data.severity}
           note="pending extraction + belief revision"
         />
+        <CardDegraded error={data.error} degraded={data.degraded} retrying={data.retrying} />
         {showNotice ? (
-          <CardNotice loading={data.loading} error={data.error} empty={data.total === 0}>
+          <CardNotice
+            loading={data.loading}
+            error={data.error}
+            isStale={data.isStale}
+            retry={data.retry}
+            empty={data.total === 0}
+          >
             no pending dream work
           </CardNotice>
         ) : (
@@ -346,7 +403,8 @@ function OutcomesCard({
   onNavigate: (view: RouteId) => void;
   onInspect: (id: string, hint: unknown) => void;
 }) {
-  const showNotice = data.loading || data.error !== null || data.groups.length === 0;
+  const showNotice =
+    data.loading || (data.error !== null && !data.isStale) || data.groups.length === 0;
 
   return (
     <CardShell
@@ -362,8 +420,15 @@ function OutcomesCard({
           severity={data.severity}
           note={data.windowed ? `${data.count.toLocaleString()}+ recent window` : "recent window"}
         />
+        <CardDegraded error={data.error} degraded={data.degraded} retrying={data.retrying} />
         {showNotice ? (
-          <CardNotice loading={data.loading} error={data.error} empty={data.groups.length === 0}>
+          <CardNotice
+            loading={data.loading}
+            error={data.error}
+            isStale={data.isStale}
+            retry={data.retry}
+            empty={data.groups.length === 0}
+          >
             no recent suppressed or observed outcomes
           </CardNotice>
         ) : (
@@ -403,7 +468,7 @@ function PromptsCard({
   onNavigate: (view: RouteId) => void;
   onInspect: (block: PromptBlockView) => void;
 }) {
-  const showNotice = data.loading || data.error !== null || data.count === 0;
+  const showNotice = data.loading || (data.error !== null && !data.isStale) || data.count === 0;
 
   return (
     <CardShell
@@ -419,8 +484,15 @@ function PromptsCard({
           severity={data.severity}
           note="stored prompt blocks"
         />
+        <CardDegraded error={data.error} degraded={data.degraded} retrying={data.retrying} />
         {showNotice ? (
-          <CardNotice loading={data.loading} error={data.error} empty={data.count === 0}>
+          <CardNotice
+            loading={data.loading}
+            error={data.error}
+            isStale={data.isStale}
+            retry={data.retry}
+            empty={data.count === 0}
+          >
             no prompt overrides
           </CardNotice>
         ) : (
@@ -503,6 +575,21 @@ function StatusStrip({ turnStream }: { turnStream: OrreryTurnInput }) {
   );
 }
 
+function ZeroTurnPrompt({
+  onNavigate,
+}: {
+  onNavigate: (view: RouteId, options?: RouteNavigationOptions) => void;
+}) {
+  return (
+    <div className="mc-zero-prompt">
+      <span>no turns yet; open Workbench and send a turn</span>
+      <button type="button" className="btn sm ghost" onClick={() => onNavigate("cognition")}>
+        open workbench
+      </button>
+    </div>
+  );
+}
+
 export function MissionControlScreen({
   sessionId,
   turnStream,
@@ -520,6 +607,9 @@ export function MissionControlScreen({
   );
   const data = useOrreryData(turn);
   const attention = useAttentionData(sessionId);
+  const { counts } = useLiveCache();
+  const showZeroTurnPrompt =
+    counts !== null && counts.turns === 0 && turn.activeTurnId === null && !turn.running;
 
   const inspectReview = (row: ReviewRow) => {
     inspector.openObject({ type: "review", id: String(row.id), hint: row });
@@ -529,6 +619,7 @@ export function MissionControlScreen({
     <div className="orr-mission" data-testid="mission-control-screen">
       <main className="orr-mission-main">
         <Orrery size="full" data={data} onNavigate={onNavigate} onInspect={inspector.openObject} />
+        {showZeroTurnPrompt ? <ZeroTurnPrompt onNavigate={onNavigate} /> : null}
         <StatusStrip turnStream={turn} />
       </main>
       <aside className="mc-attention-queue" aria-label="attention queue">

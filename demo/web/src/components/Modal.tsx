@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useId, type ReactNode } from "react";
 
 export type ModalProps = {
   open: boolean;
@@ -9,6 +9,8 @@ export type ModalProps = {
 };
 
 export function Modal({ open, title, onClose, children, footer }: ModalProps) {
+  const titleId = useId();
+
   useEffect(() => {
     if (!open) {
       return;
@@ -37,9 +39,12 @@ export function Modal({ open, title, onClose, children, footer }: ModalProps) {
         className="modal-card"
         role="dialog"
         aria-modal="true"
+        aria-labelledby={titleId}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <div className="modal-title">{title}</div>
+        <div className="modal-title" id={titleId}>
+          {title}
+        </div>
         <div className="modal-body">{children}</div>
         {footer === undefined ? null : <div className="modal-footer">{footer}</div>}
       </div>

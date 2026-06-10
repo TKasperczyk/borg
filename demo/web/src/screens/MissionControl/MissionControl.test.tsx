@@ -30,6 +30,14 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
+function errorResponse(status: number, message: string): Response {
+  return new Response(JSON.stringify({ error: { message } }), {
+    status,
+    statusText: message,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 function requestPath(request: RequestInfo | URL): string {
   return new URL(String(request), "http://test.invalid").pathname;
 }
@@ -373,6 +381,7 @@ function installFetch(): ReturnType<typeof vi.fn> {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -559,5 +568,123 @@ describe("MissionControlScreen", () => {
     });
 
     await waitFor(() => expect(callsFor(fetchMock, "/api/prompts")).toBeGreaterThanOrEqual(3));
+  });
+
+  it("renders stale non-retryable card failures without retrying copy", async () => {
+    installFetch();
+    const baseFetch = globalThis.fetch as (request: RequestInfo | URL) => Promise<Response>;
+    let promptCalls = 0;
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = new URL(String(request), "http://test.invalid");
+      if (url.pathname === "/api/prompts") {
+        promptCalls += 1;
+        if (promptCalls === 2) {
+          return Promise.resolve(errorResponse(404, "Prompt blocks not found"));
+        }
+      }
+      return baseFetch(request);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const live = makeLiveSource();
+
+    renderWithInspector(<MissionHarness live={live} />);
+
+    const prompts = within(await screen.findByTestId("attention-prompts"));
+    expect(prompts.getByText("Voice")).toBeInTheDocument();
+
+    act(() => {
+      live.emit({
+        type: "maintenance:tick",
+        ts: 2_000,
+        cadence: "light",
+        status: "ok",
+        processes: ["belief-reviser"],
+        changed: true,
+        changes: 1,
+        errors: 0,
+      });
+    });
+
+    expect(await prompts.findByText("refresh failed")).toBeInTheDocument();
+    expect(prompts.getByText("Voice")).toBeInTheDocument();
+    expect(prompts.queryByText("retrying")).not.toBeInTheDocument();
+  });
+
+  it("recovers an attention card after a transport error without reload", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    installFetch();
+    const baseFetch = globalThis.fetch as (request: RequestInfo | URL) => Promise<Response>;
+    let promptFailureRemaining = true;
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = new URL(String(request), "http://test.invalid");
+      if (url.pathname === "/api/prompts" && promptFailureRemaining) {
+        promptFailureRemaining = false;
+        return Promise.resolve(errorResponse(502, "Bad Gateway"));
+      }
+      return baseFetch(request);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const live = makeLiveSource();
+
+    renderWithInspector(<MissionHarness live={live} />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const prompts = within(screen.getByTestId("attention-prompts"));
+    expect(prompts.getByRole("alert")).toHaveTextContent("Bad Gateway");
+    expect(prompts.getByRole("button", { name: "retry" })).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(prompts.getByText("Voice")).toBeInTheDocument();
+    expect(prompts.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("recovers a no-stale attention card from the visible retry action", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    installFetch();
+    const baseFetch = globalThis.fetch as (request: RequestInfo | URL) => Promise<Response>;
+    let promptFailureRemaining = true;
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = new URL(String(request), "http://test.invalid");
+      if (url.pathname === "/api/prompts" && promptFailureRemaining) {
+        promptFailureRemaining = false;
+        return Promise.resolve(errorResponse(502, "Bad Gateway"));
+      }
+      return baseFetch(request);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const live = makeLiveSource();
+
+    renderWithInspector(<MissionHarness live={live} />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const prompts = within(screen.getByTestId("attention-prompts"));
+    expect(prompts.getByRole("alert")).toHaveTextContent("Bad Gateway");
+
+    await act(async () => {
+      fireEvent.click(prompts.getByRole("button", { name: "retry" }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(prompts.getByText("Voice")).toBeInTheDocument();
+    expect(prompts.queryByRole("alert")).not.toBeInTheDocument();
+    expect(callsFor(fetchMock, "/api/prompts")).toBe(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(callsFor(fetchMock, "/api/prompts")).toBe(2);
   });
 });

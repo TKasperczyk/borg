@@ -483,12 +483,14 @@ function OpenQuestionQueueItem({
 
 function OpenQuestionDetail({
   question,
+  emptyLabel,
   busy,
   onPatch,
   onWhy,
   onModal,
 }: {
   question: OpenQuestion | null;
+  emptyLabel: string;
   busy: boolean;
   onPatch: (label: string, action: () => Promise<void>) => void;
   onWhy: (id: string) => void;
@@ -497,7 +499,7 @@ function OpenQuestionDetail({
   if (question === null) {
     return (
       <div className="identity-empty-band">
-        <Empty>no questions match this filter</Empty>
+        <Empty>{emptyLabel}</Empty>
       </div>
     );
   }
@@ -706,6 +708,8 @@ export function IdentityScreen() {
     queuedQuestions.find((question) => question.id === selectedQuestionId) ??
     queuedQuestions[0] ??
     null;
+  const questionEmptyLabel =
+    identity?.open_questions.length === 0 ? "no questions yet" : "none match this filter";
 
   const scopedEvents =
     eventScope === "all"
@@ -1103,7 +1107,7 @@ export function IdentityScreen() {
               ))}
               {queuedQuestions.length === 0 ? (
                 <div className="identity-empty-band">
-                  <Empty>no {questionFilter === "all" ? "" : `${questionFilter} `}questions</Empty>
+                  <Empty>{questionEmptyLabel}</Empty>
                 </div>
               ) : null}
             </div>
@@ -1121,6 +1125,7 @@ export function IdentityScreen() {
             <div className="body">
               <OpenQuestionDetail
                 question={selectedQuestion}
+                emptyLabel={questionEmptyLabel}
                 busy={busy !== null}
                 onPatch={(label, action) => void runAction(label, action)}
                 onWhy={setWhyId}

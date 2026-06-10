@@ -1283,7 +1283,11 @@ describe("P2 screens", () => {
         ),
       ).toBe(true);
     });
-    expect(await screen.findByText("no open review rows")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "no open review rows; review rows are filed by extraction and overseer audits",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("opens review ref-list ids and keeps review select refs in sync", async () => {

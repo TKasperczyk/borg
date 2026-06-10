@@ -543,7 +543,7 @@ describe("Orrery", () => {
       live.emit({ type: "borg:reset", ts: 2_003 });
     });
 
-    await waitFor(() => expect(callsFor(fetchMock, "/api/memory/bands")).toBeGreaterThanOrEqual(5));
+    await waitFor(() => expect(callsFor(fetchMock, "/api/memory/bands")).toBeGreaterThanOrEqual(3));
     expect(reload).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId("orrery")).toBeInTheDocument();
   });

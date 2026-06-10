@@ -308,6 +308,30 @@ select {
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
+.topbar-shortcut-chip {
+  appearance: none;
+  align-self: center;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-mute);
+  font: inherit;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  line-height: 1;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+.topbar-shortcut-chip.icon {
+  min-width: 22px;
+  padding-inline: 0;
+}
+.topbar-shortcut-chip:hover,
+.topbar-shortcut-chip:focus-visible {
+  color: var(--text);
+  border-color: var(--line-strong);
+  background: var(--bg-2);
+  outline: none;
+}
 .topbar-val {
   color: var(--text);
   font-size: var(--fs-sm);
@@ -1205,6 +1229,10 @@ select {
   font-size: var(--fs-sm);
   color: var(--text-dim);
   margin-bottom: 10px;
+}
+.capability-note {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
 }
 
 /* tags / chips */
@@ -3561,6 +3589,19 @@ g.fc-regen-group.active .fc-regen-label-bg {
   background: var(--bg-0);
 }
 
+.memory-zero-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  color: var(--text-mute);
+  font-size: var(--fs-sm);
+  border: 1px solid var(--line);
+  background: var(--bg-0);
+}
+
 .band-card {
   appearance: none;
   font: inherit;
@@ -3758,6 +3799,13 @@ g.fc-regen-group.active .fc-regen-label-bg {
 .review-evidence {
   display: grid;
   gap: 10px;
+}
+
+.review-quiet-pane {
+  min-height: 160px;
+  display: grid;
+  place-items: center;
+  color: var(--text-faint);
 }
 
 .review-kind-head {
@@ -5646,6 +5694,44 @@ tr[role="button"]:focus-visible {
   gap: 6px;
   min-width: 0;
 }
+.shortcut-legend {
+  display: grid;
+  gap: 16px;
+  min-width: min(420px, calc(100vw - 80px));
+}
+.shortcut-section {
+  display: grid;
+  gap: 8px;
+}
+.shortcut-section-title {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--eyebrow-ls);
+}
+.shortcut-list {
+  display: grid;
+  gap: 4px;
+}
+.shortcut-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+.shortcut-route {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.shortcut-glyph {
+  width: 18px;
+  color: var(--text-mute);
+  text-align: center;
+}
 .modal-body {
   padding: 14px;
   overflow-y: auto;
@@ -5866,9 +5952,22 @@ tr[role="button"]:focus-visible {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto auto;
   overflow: hidden;
   border-right: 1px solid var(--line);
+}
+
+.mc-zero-prompt {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-0);
+  color: var(--text-mute);
+  font-size: var(--fs-sm);
 }
 
 .mc-status-strip {
@@ -5947,6 +6046,11 @@ tr[role="button"]:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.mc-card-degraded {
+  display: flex;
+  justify-content: flex-start;
 }
 
 .mc-breakdown {

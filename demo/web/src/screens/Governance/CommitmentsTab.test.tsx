@@ -423,4 +423,35 @@ describe("CommitScreen operator actions", () => {
     expect(screen.queryByRole("button", { name: "forget" })).not.toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "revoke" })).toHaveLength(2);
   });
+
+  it("distinguishes an empty commitment store from a filter miss", async () => {
+    const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(request);
+      const method = requestMethod(init);
+      if (path === "/api/commitments" && method === "GET") {
+        return Promise.resolve(jsonResponse({ commitments: [] }));
+      }
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = renderWithInspector(<CommitmentsTab />);
+
+    expect(await screen.findByText("no commitments yet")).toBeInTheDocument();
+    first.unmount();
+
+    const revoked = commitment({ state: "revoked", revoked_at: 2, revoked_reason: "retired" });
+    fetchMock.mockImplementation((request: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(request);
+      const method = requestMethod(init);
+      if (path === "/api/commitments" && method === "GET") {
+        return Promise.resolve(jsonResponse({ commitments: [revoked] }));
+      }
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    });
+
+    renderWithInspector(<CommitmentsTab />);
+
+    expect(await screen.findByText("none match this filter")).toBeInTheDocument();
+  });
 });

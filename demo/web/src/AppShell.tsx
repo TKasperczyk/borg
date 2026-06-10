@@ -10,6 +10,7 @@ import { InstrumentStrip } from "./components/InstrumentStrip";
 import { Rail, type RailBadge, type RouteId } from "./components/Rail";
 import { ResetButton } from "./components/ResetButton";
 import { SessionFleet } from "./components/SessionFleet";
+import { ShortcutLegend } from "./components/ShortcutLegend";
 import { StatusBar } from "./components/StatusBar";
 import { LiveEventsProvider } from "./hooks/live-context";
 import { useApi } from "./hooks/use-api";
@@ -162,7 +163,12 @@ function AppShellContent({
   const activeAudience = audienceIdentity(sessionId, activeSession);
   const badges = useMemo(() => railBadges(counts), [counts]);
   const [resetOpen, setResetOpen] = useState(false);
-  const palette = usePaletteHotkey({ disabled: resetOpen, onRouteChord: setView });
+  const [shortcutLegendOpen, setShortcutLegendOpen] = useState(false);
+  const palette = usePaletteHotkey({
+    disabled: resetOpen,
+    onRouteChord: setView,
+    onHelpChord: () => setShortcutLegendOpen(true),
+  });
 
   const refetchSessionState = async () => {
     await Promise.all([refetchSessions(), refetchState()]);
@@ -213,6 +219,8 @@ function AppShellContent({
           dreamActivity={dreamActivity}
           now={now}
           route={view}
+          onOpenPalette={() => palette.setOpen(true)}
+          onOpenHelp={() => setShortcutLegendOpen(true)}
         />
         <div className="main">
           <SessionFleet
@@ -260,6 +268,7 @@ function AppShellContent({
               {view === "memory" ? (
                 <MemoryScreen
                   sessionId={sessionId}
+                  onOpenWorkbench={() => setView("cognition")}
                   onOpenReview={() => setView("review")}
                   onOpenIdentity={() => setView("identity")}
                   onOpenCommitments={() => setView("governance", { governanceTab: "commitments" })}
@@ -304,6 +313,7 @@ function AppShellContent({
           setSessionId={setSessionId}
           onOpenReset={() => setResetOpen(true)}
         />
+        <ShortcutLegend open={shortcutLegendOpen} onClose={() => setShortcutLegendOpen(false)} />
         <ResetButton open={resetOpen} onOpenChange={setResetOpen} showTrigger={false} />
         <Inspector />
       </div>

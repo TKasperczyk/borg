@@ -20,6 +20,10 @@ const OUTCOME_LIMIT = 24;
 type SourceState = {
   loading: boolean;
   error: string | null;
+  isStale: boolean;
+  degraded: boolean;
+  retrying: boolean;
+  retry: () => Promise<void>;
 };
 
 export type AttentionReviewGroup = {
@@ -104,6 +108,10 @@ function sourceState<T>(api: ApiHookState<T>): SourceState {
   return {
     loading: api.loading && api.data === null,
     error: api.error?.message ?? null,
+    isStale: api.isStale,
+    degraded: api.degraded,
+    retrying: api.retrying,
+    retry: api.retry,
   };
 }
 
@@ -213,13 +221,16 @@ function groupOutcomes(rows: readonly AttentionOutcomeItem[]): AttentionOutcomeG
 export function useAttentionData(sessionId: string): AttentionData {
   const live = useLiveEventsContext();
   const { counts } = useLiveCache();
-  const reviewsApi = useApi(() => getReviews({ openOnly: true }), []);
-  const commitmentsApi = useApi(() => getCommitments({ state: "active" }), []);
+  const revalidateKey = live.connectionCount > 1 ? live.connectionCount : null;
+  const resilientOptions = { retry: true, revalidateKey };
+  const reviewsApi = useApi(() => getReviews({ openOnly: true }), [], resilientOptions);
+  const commitmentsApi = useApi(() => getCommitments({ state: "active" }), [], resilientOptions);
   const directiveReviewsApi = useApi(
     () => getReviews({ openOnly: true, kind: "creator_directive_reconciliation" }),
     [],
+    resilientOptions,
   );
-  const dreamApi = useApi(getDreamState, []);
+  const dreamApi = useApi(getDreamState, [], resilientOptions);
   const outcomesApi = useApi(
     () =>
       getStream({
@@ -228,8 +239,9 @@ export function useAttentionData(sessionId: string): AttentionData {
         limit: OUTCOME_LIMIT,
       }),
     [sessionId],
+    resilientOptions,
   );
-  const promptsApi = useApi(getPrompts, []);
+  const promptsApi = useApi(getPrompts, [], resilientOptions);
   const refetchReviews = reviewsApi.refetch;
   const refetchCommitments = commitmentsApi.refetch;
   const refetchDirectiveReviews = directiveReviewsApi.refetch;

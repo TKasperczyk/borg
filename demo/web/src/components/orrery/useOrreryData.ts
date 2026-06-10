@@ -112,11 +112,13 @@ function processLabel(name: string): string {
 export function useOrreryData(turn: OrreryTurnInput): OrreryViewModel {
   const live = useLiveEventsContext();
   const { counts, dreamActivity, lastMaintenanceTick, wsState, connectionCount } = useLiveCache();
-  const memoryApi = useApi(() => getMemoryBands(), []);
-  const dreamApi = useApi(getDreamState, []);
-  const reviewsApi = useApi(() => getReviews({ openOnly: true }), []);
-  const commitmentsApi = useApi(() => getCommitments(), []);
-  const directivesApi = useApi(() => getCreatorDirectives(), []);
+  const revalidateKey = live.connectionCount > 1 ? live.connectionCount : null;
+  const resilientOptions = { retry: true, revalidateKey };
+  const memoryApi = useApi(() => getMemoryBands(), [], resilientOptions);
+  const dreamApi = useApi(getDreamState, [], resilientOptions);
+  const reviewsApi = useApi(() => getReviews({ openOnly: true }), [], resilientOptions);
+  const commitmentsApi = useApi(() => getCommitments(), [], resilientOptions);
+  const directivesApi = useApi(() => getCreatorDirectives(), [], resilientOptions);
   const refetchMemory = memoryApi.refetch;
   const refetchDream = dreamApi.refetch;
   const refetchReviews = reviewsApi.refetch;

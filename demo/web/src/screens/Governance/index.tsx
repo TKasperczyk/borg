@@ -93,6 +93,10 @@ function useLazyApi<T>(
     loading: enabled && !startedRef.current && data === null && error === null ? true : loading,
     error,
     refetch,
+    retry: refetch,
+    isStale: data !== null && (loading || error !== null),
+    degraded: error !== null,
+    retrying: false,
   };
 }
 

@@ -1009,7 +1009,9 @@ export function DirectivesPanel({
 
         <div style={{ overflowY: "auto", background: "var(--bg-0)" }}>
           {selected === null ? (
-            <div className="notice">no creator directives in filter</div>
+            <div className="notice">
+              {rawDirectives.length === 0 ? "no creator directives yet" : "none match this filter"}
+            </div>
           ) : (
             <CreatorDirectiveDetail
               directive={selected}

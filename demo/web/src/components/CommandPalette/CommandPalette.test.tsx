@@ -11,6 +11,7 @@ import type { RouteId } from "../../routes";
 import { Inspector } from "../Inspector/Inspector";
 import { InspectorProvider, useInspector } from "../Inspector/inspector-context";
 import { ResetButton } from "../ResetButton";
+import { ShortcutLegend } from "../ShortcutLegend";
 import { CommandPalette } from "./CommandPalette";
 
 const realLocation = window.location;
@@ -156,7 +157,11 @@ function PaletteHarness({
   setView?: (view: RouteId) => void;
   setSessionId?: (sessionId: string) => void;
 }) {
-  const palette = usePaletteHotkey({ onRouteChord: setView });
+  const [legendOpen, setLegendOpen] = useState(false);
+  const palette = usePaletteHotkey({
+    onRouteChord: setView,
+    onHelpChord: () => setLegendOpen(true),
+  });
   const [resetOpen, setResetOpen] = useState(false);
 
   return (
@@ -176,6 +181,7 @@ function PaletteHarness({
             onOpenReset={() => setResetOpen(true)}
           />
           <input aria-label="editable target" />
+          <ShortcutLegend open={legendOpen} onClose={() => setLegendOpen(false)} />
           <ResetButton open={resetOpen} onOpenChange={setResetOpen} showTrigger={false} />
           <InspectorTargetProbe />
           <Inspector />
@@ -279,6 +285,36 @@ describe("CommandPalette", () => {
     });
 
     expect(setView).not.toHaveBeenCalled();
+  });
+
+  it("opens the shortcut legend on question mark and closes it with Escape", async () => {
+    setupFetch();
+    renderPalette();
+
+    fireEvent.keyDown(window, { key: "?", code: "Slash", shiftKey: true });
+
+    expect(await screen.findByRole("dialog", { name: "shortcuts" })).toBeInTheDocument();
+    expect(screen.getByText("command palette")).toBeInTheDocument();
+    expect(screen.getByText("ctrl+K")).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "shortcuts" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("does not open the shortcut legend from editable targets", () => {
+    setupFetch();
+    renderPalette();
+
+    fireEvent.keyDown(screen.getByLabelText("editable target"), {
+      key: "?",
+      code: "Slash",
+      shiftKey: true,
+    });
+
+    expect(screen.queryByRole("dialog", { name: "shortcuts" })).not.toBeInTheDocument();
   });
 
   it("closes on Escape and backdrop mouse down", async () => {

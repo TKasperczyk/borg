@@ -1598,20 +1598,33 @@ function ReviewQueuePane({
   );
 }
 
+function ReviewQuietPane() {
+  return (
+    <div className="review-quiet-pane" aria-hidden="true">
+      —
+    </div>
+  );
+}
+
 function ReviewEvidencePane({
   row,
+  queueEmpty,
   directivesById,
   commitmentsById,
   survivor,
   onSurvivor,
 }: {
   row: ReviewRow | null;
+  queueEmpty: boolean;
   directivesById: Map<string, CreatorDirectiveItem>;
   commitmentsById: Map<string, CommitmentItem>;
   survivor: string;
   onSurvivor: (value: string) => void;
 }) {
   if (row === null) {
+    if (queueEmpty) {
+      return <ReviewQuietPane />;
+    }
     return <Empty>select a review row</Empty>;
   }
 
@@ -1689,6 +1702,7 @@ function CreatorDirectiveResolutionPanel({
 
 function ReviewResolutionPanel({
   row,
+  queueEmpty,
   busy,
   note,
   winner,
@@ -1700,6 +1714,7 @@ function ReviewResolutionPanel({
   onCdrKeep,
 }: {
   row: ReviewRow | null;
+  queueEmpty: boolean;
   busy: BusyState;
   note: string;
   winner: string;
@@ -1711,6 +1726,9 @@ function ReviewResolutionPanel({
   onCdrKeep: () => void;
 }) {
   if (row === null) {
+    if (queueEmpty) {
+      return <ReviewQuietPane />;
+    }
     return <Empty>select a review row to repair</Empty>;
   }
 
@@ -2148,9 +2166,12 @@ export function ReviewScreen() {
     selectedRow === null ? "" : (survivors[selectedRow.id] ?? selectedDirectiveIds[0] ?? "");
   const selectedNote = selectedRow === null ? "" : (notes[selectedRow.id] ?? "");
   const emptyQueueMessage =
-    rows.length === 0 && openOnly && kindFilter === "all" && ageFilter === "all"
-      ? "no open review rows"
-      : "no review rows match filters";
+    rows.length === 0
+      ? openOnly
+        ? "no open review rows; review rows are filed by extraction and overseer audits"
+        : "no review rows yet; review rows are filed by extraction and overseer audits"
+      : "none match this filter";
+  const queueEmpty = filteredRows.length === 0;
 
   if (api.loading && api.data === null && mode === "queue") {
     return <Loading>loading reviews</Loading>;
@@ -2309,6 +2330,7 @@ export function ReviewScreen() {
               <div className="panel-body pad">
                 <ReviewEvidencePane
                   row={selectedRow}
+                  queueEmpty={queueEmpty}
                   directivesById={directivesById}
                   commitmentsById={commitmentsById}
                   survivor={selectedSurvivor}
@@ -2328,6 +2350,7 @@ export function ReviewScreen() {
               <div className="panel-body pad">
                 <ReviewResolutionPanel
                   row={selectedRow}
+                  queueEmpty={queueEmpty}
                   busy={busy}
                   note={selectedNote}
                   winner={selectedWinner}
