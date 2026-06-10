@@ -9,7 +9,7 @@ import type {
 } from "../../api/types";
 import { IdRef } from "../../components/Inspector/IdRef";
 import { Tag } from "../../components/Tag";
-import { shortId } from "../screen-utils";
+import { isInternalId, shortId } from "../screen-utils";
 
 const VIEWBOX_WIDTH = 1000;
 const VIEWBOX_HEIGHT = 640;
@@ -103,6 +103,10 @@ function compactLabel(label: string): string {
   return label.length > 28 ? `${label.slice(0, 25)}...` : label;
 }
 
+function graphNodeLabel(node: SemanticGraphNode): string {
+  return node.display_label ?? (isInternalId(node.label) ? shortId(node.label) : node.label);
+}
+
 function createSvgElement<K extends keyof SVGElementTagNameMap>(
   tagName: K,
 ): SVGElementTagNameMap[K] {
@@ -121,13 +125,15 @@ function duplicateInfoForNodes(nodes: readonly SemanticGraphNode[]): Map<string,
   const info = new Map<string, DuplicateInfo>();
 
   for (const node of nodes) {
-    counts.set(node.label, (counts.get(node.label) ?? 0) + 1);
+    const label = graphNodeLabel(node);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
   }
 
   for (const node of nodes) {
-    const count = counts.get(node.label) ?? 1;
-    const ordinal = (seen.get(node.label) ?? 0) + 1;
-    seen.set(node.label, ordinal);
+    const label = graphNodeLabel(node);
+    const count = counts.get(label) ?? 1;
+    const ordinal = (seen.get(label) ?? 0) + 1;
+    seen.set(label, ordinal);
     info.set(node.id, { count, ordinal });
   }
 
@@ -138,7 +144,8 @@ function duplicateClustersForNodes(nodes: readonly SemanticGraphNode[]): Duplica
   const counts = new Map<string, number>();
 
   for (const node of nodes) {
-    counts.set(node.label, (counts.get(node.label) ?? 0) + 1);
+    const label = graphNodeLabel(node);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
   }
 
   return [...counts.entries()]
@@ -186,7 +193,7 @@ function createSimEdges(data: SemanticGraphResponse, nodes: readonly SimNode[]):
 }
 
 function nodeDisplayLabel(node: SimNode): string {
-  const label = compactLabel(node.label);
+  const label = compactLabel(graphNodeLabel(node));
   return node.duplicate.count > 1 ? `${label} #${node.duplicate.ordinal}` : label;
 }
 
@@ -195,7 +202,7 @@ function nodeAccessibleLabel(node: SimNode): string {
     node.duplicate.count > 1
       ? ` duplicate ${node.duplicate.ordinal} of ${node.duplicate.count}`
       : "";
-  return `${node.label}${duplicate}, ${node.kind ?? "node"}, ${node.status}, ${node.edge_count} edges, ${shortId(node.id)}`;
+  return `${graphNodeLabel(node)}${duplicate}, ${node.kind ?? "node"}, ${node.status}, ${node.edge_count} edges, ${shortId(node.id)}`;
 }
 
 function appendNodeShape(group: SVGGElement, node: SimNode, color: string): void {
@@ -306,7 +313,7 @@ function appendMountedNode(
   group.appendChild(label);
 
   const title = createSvgElement("title");
-  title.textContent = `${node.label} [${shortId(node.id)}] - ${node.edge_count} edges`;
+  title.textContent = `${graphNodeLabel(node)} [${shortId(node.id)}] - ${node.edge_count} edges`;
   group.appendChild(title);
 
   layer.appendChild(group);

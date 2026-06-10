@@ -8,6 +8,14 @@ import { JsonValueView } from "./JsonValueView";
 import { Loading } from "./Loading";
 import { Modal } from "./Modal";
 
+function StaticIdChip({ id }: { id: string }) {
+  return (
+    <span className="id-chip">
+      <span className="id-chip-main id-chip-static">{id}</span>
+    </span>
+  );
+}
+
 type WhyDrawerProps = {
   open: boolean;
   id: string | null;
@@ -57,7 +65,16 @@ export function WhyDrawer({ open, id, onClose }: WhyDrawerProps) {
   const entries = data === null ? [] : Object.entries(data);
 
   return (
-    <Modal open={open} title={id === null ? "why" : `why ${id}`} onClose={onClose}>
+    <Modal
+      open={open}
+      title={
+        <span className="identity-inline">
+          <span>why</span>
+          {id === null ? null : <StaticIdChip id={id} />}
+        </span>
+      }
+      onClose={onClose}
+    >
       <div className="why-drawer">
         {loading ? <Loading>loading provenance</Loading> : null}
         {error === null ? null : <ErrorState>{error.message}</ErrorState>}

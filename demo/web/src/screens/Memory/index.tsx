@@ -34,8 +34,8 @@ import { WhyDrawer } from "../../components/WhyDrawer";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
 import { activateOnEnterOrSpace } from "../../lib/keyboard";
-import { formatTime } from "../../lib/stream-utils";
-import { dateLabel, jsonText, parseJsonPatch, shortId } from "../screen-utils";
+import { formatTimestamp, formatTimestampRange } from "../../lib/stream-utils";
+import { isInternalId, jsonText, parseJsonPatch, shortId } from "../screen-utils";
 import { SocialTrustScatter, ValenceArousalPlane } from "./AtlasPlots";
 import { SemanticTopology } from "./SemanticTopology";
 
@@ -147,9 +147,12 @@ function scoreMeta(score: number | undefined): string {
 }
 
 function semanticNodeRow(node: SemanticMemoryNode, order: number): MemoryRow {
+  const title =
+    node.display_label ?? (isInternalId(node.label) ? `${node.kind} memory` : node.label);
+
   return {
     id: node.id,
-    title: node.label,
+    title,
     meta: `${scoreMeta(node.search_score)}${node.kind} · ${node.status} · ${node.source_count} src`,
     body: node.description,
     order,
@@ -168,7 +171,7 @@ function detailRows(detail: MemoryBandDetail): MemoryRow[] {
       return detail.items.map((item, order) => ({
         id: item.id,
         title: item.title,
-        meta: `${scoreMeta(item.search_score)}${dateLabel(item.start_time)} · ${item.audience ?? "global"} · ${item.source_count} src`,
+        meta: `${scoreMeta(item.search_score)}${formatTimestamp(item.start_time)} · ${item.audience ?? "global"} · ${item.source_count} src`,
         body: item.narrative,
         order,
         rowKind: "episode",
@@ -211,7 +214,7 @@ function detailRows(detail: MemoryBandDetail): MemoryRow[] {
     case "affective":
       return detail.history.map((point, order) => ({
         id: String(point.id),
-        title: `${formatTime(point.ts)} · valence ${point.valence.toFixed(2)}`,
+        title: `${formatTimestamp(point.ts)} · valence ${point.valence.toFixed(2)}`,
         meta: `arousal ${point.arousal.toFixed(2)} · ${point.trigger_reason ?? "no trigger"}`,
         body: jsonText(point.provenance),
         order,
@@ -799,11 +802,32 @@ function audienceLabel(audience: string | null | undefined): string {
   return audience ?? "global";
 }
 
+function participantRefs(episode: EpisodeMemoryItem) {
+  return (
+    episode.participant_refs ??
+    episode.participants.map((participant) => ({
+      value: participant,
+      id: null,
+      label: participant,
+    }))
+  );
+}
+
+function ParticipantLabel({
+  participant,
+}: {
+  participant: ReturnType<typeof participantRefs>[number];
+}) {
+  return (
+    <span className="identity-inline">
+      <span>{participant.label ?? "unknown"}</span>
+      {participant.id === null ? null : <IdChip id={participant.id} type="entity" />}
+    </span>
+  );
+}
+
 function timeRangeLabel(start: number, end: number): string {
-  if (start === end) {
-    return formatTime(start);
-  }
-  return `${formatTime(start)} - ${formatTime(end)}`;
+  return formatTimestampRange(start, end);
 }
 
 function betaMean(skill: ProceduralMemoryItem): number {
@@ -1036,8 +1060,10 @@ function EpisodicTimeline({
           <div className="matlas-card-body">{episode.narrative}</div>
           <div className="matlas-chip-row">
             <Tag>{timeRangeLabel(episode.start_time, episode.end_time)}</Tag>
-            {episode.participants.map((participant) => (
-              <Tag key={participant}>{participant}</Tag>
+            {participantRefs(episode).map((participant) => (
+              <Tag key={participant.value}>
+                <ParticipantLabel participant={participant} />
+              </Tag>
             ))}
             <Tag>sig {episode.significance.toFixed(2)}</Tag>
             <Tag>conf {episode.confidence.toFixed(2)}</Tag>
@@ -1106,9 +1132,10 @@ function ProceduralSkillCards({
             </div>
             <div className="matlas-card-meta">
               alpha {skill.alpha.toFixed(1)} · beta {skill.beta.toFixed(1)} · {skill.sample_count}{" "}
-              samples · last used {skill.last_used === null ? "never" : formatTime(skill.last_used)}{" "}
-              · last successful{" "}
-              {skill.last_successful === null ? "never" : formatTime(skill.last_successful)}
+              samples · last used{" "}
+              {skill.last_used === null ? "never" : formatTimestamp(skill.last_used)} · last
+              successful{" "}
+              {skill.last_successful === null ? "never" : formatTimestamp(skill.last_successful)}
             </div>
           </article>
         );
@@ -1216,7 +1243,8 @@ function AffectiveAtlas({
             onKeyDown={(event) => activateOnEnterOrSpace(event, () => onSelect(String(point.id)))}
           >
             <div className="ttl">
-              {formatTime(point.ts)} · v {point.valence.toFixed(2)} / a {point.arousal.toFixed(2)}
+              {formatTimestamp(point.ts)} · v {point.valence.toFixed(2)} / a{" "}
+              {point.arousal.toFixed(2)}
             </div>
             <div className="meta">{point.trigger_reason ?? "no trigger"}</div>
           </div>
@@ -1264,7 +1292,7 @@ function SocialAtlas({
             </div>
             <div className="matlas-card-meta">
               {profile.history_count} history · {profile.commitment_count} commitments · updated{" "}
-              {formatTime(profile.updated_at)}
+              {formatTimestamp(profile.updated_at)}
             </div>
           </article>
         ))}
@@ -1917,7 +1945,12 @@ function MemoryDrill({
       <WhyDrawer open={whyId !== null} id={whyId} onClose={() => setWhyId(null)} />
       <Modal
         open={action !== null}
-        title={action === null ? "correction" : `${action.kind} ${action.id}`}
+        title={
+          <span className="identity-inline">
+            <span>{action === null ? "correction" : action.kind}</span>
+            {action === null ? null : <IdChip id={action.id} />}
+          </span>
+        }
         onClose={() => {
           if (busy === null) {
             setAction(null);
@@ -2069,7 +2102,14 @@ function BandSpecificDetail({
           <div className="row">
             <span className="k">participants</span>
             <span className="v">
-              {episode.participants.length === 0 ? "none" : episode.participants.join(", ")}
+              {participantRefs(episode).length === 0
+                ? "none"
+                : participantRefs(episode).map((participant, index) => (
+                    <span key={participant.value}>
+                      {index === 0 ? null : ", "}
+                      <ParticipantLabel participant={participant} />
+                    </span>
+                  ))}
             </span>
           </div>
           <div className="row">
@@ -2132,13 +2172,13 @@ function BandSpecificDetail({
           <div className="row">
             <span className="k">last used</span>
             <span className="v">
-              {skill.last_used === null ? "never" : formatTime(skill.last_used)}
+              {skill.last_used === null ? "never" : formatTimestamp(skill.last_used)}
             </span>
           </div>
           <div className="row">
             <span className="k">last successful</span>
             <span className="v">
-              {skill.last_successful === null ? "never" : formatTime(skill.last_successful)}
+              {skill.last_successful === null ? "never" : formatTimestamp(skill.last_successful)}
             </span>
           </div>
           <div className="row">
@@ -2168,7 +2208,7 @@ function BandSpecificDetail({
           </div>
           <div className="row">
             <span className="k">updated</span>
-            <span className="v">{formatTime(detail.current.updated_at)}</span>
+            <span className="v">{formatTimestamp(detail.current.updated_at)}</span>
           </div>
           <div className="row">
             <span className="k">half life</span>
@@ -2242,7 +2282,7 @@ function BandSpecificDetail({
               <div className="row">
                 <span className="k">target</span>
                 <span className="v">
-                  {goal.target_at === null ? "none" : formatTime(goal.target_at)}
+                  {goal.target_at === null ? "none" : formatTimestamp(goal.target_at)}
                 </span>
               </div>
             </>
@@ -2370,7 +2410,7 @@ function BandSpecificDetail({
             <span className="v">
               {profile.last_interaction_at === null
                 ? "none"
-                : formatTime(profile.last_interaction_at)}
+                : formatTimestamp(profile.last_interaction_at)}
             </span>
           </div>
         </div>

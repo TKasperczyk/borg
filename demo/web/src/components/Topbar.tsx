@@ -71,7 +71,7 @@ export function Topbar({
           <span className={`v ${wsToneClass(ws_state)}`}>{wsLabel(ws_state)}</span>
         </div>
         <div className="topbar-pill">
-          <span className="k">utc</span>
+          <span className="k">local</span>
           <span className="v">{now}</span>
         </div>
         <span className="topbar-live" aria-hidden="true">

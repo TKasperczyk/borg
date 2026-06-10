@@ -54,6 +54,9 @@ type BufferedLiveFrame = {
 };
 
 type StreamAppendObserver = (entries: readonly StreamEntry[]) => void;
+type StreamEntrySerializer = (
+  entries: readonly StreamEntry[],
+) => readonly Record<string, unknown>[];
 
 const RING_BUFFER_MAX = 64;
 const RING_BUFFER_MAX_AGE_MS = 60_000;
@@ -316,12 +319,12 @@ export class LiveBroadcaster {
     }
   }
 
-  streamAppend(entries: readonly StreamEntry[]): void {
+  streamAppend(entries: readonly Record<string, unknown>[]): void {
     const sessionId = entries[0]?.session_id;
     this.broadcast({
       type: "stream:append",
       ts: Date.now(),
-      ...(sessionId === undefined ? {} : { session_id: sessionId }),
+      ...(typeof sessionId === "string" ? { session_id: sessionId } : {}),
       entries,
     });
   }
@@ -519,6 +522,7 @@ export type LiveBridge = {
   tracer: TurnTracer;
   ledgerCache: Map<string, unknown>;
   resetTraceState(): void;
+  setStreamEntrySerializer(serializer: StreamEntrySerializer): void;
   observeStreamAppend(observer: StreamAppendObserver): () => void;
   onStreamAppend(entries: readonly StreamEntry[]): void;
 };
@@ -528,6 +532,7 @@ export function createLiveBridge(): LiveBridge {
   const ledgerCache = new Map<string, unknown>();
   const tracer = new WsBridgeTracer(broadcaster, ledgerCache);
   const streamAppendObservers = new Set<StreamAppendObserver>();
+  let streamEntrySerializer: StreamEntrySerializer = (entries) => entries;
 
   return {
     broadcaster,
@@ -536,6 +541,9 @@ export function createLiveBridge(): LiveBridge {
     resetTraceState: () => {
       tracer.resetTraceState();
     },
+    setStreamEntrySerializer: (serializer) => {
+      streamEntrySerializer = serializer;
+    },
     observeStreamAppend: (observer) => {
       streamAppendObservers.add(observer);
       return () => {
@@ -543,7 +551,17 @@ export function createLiveBridge(): LiveBridge {
       };
     },
     onStreamAppend: (entries) => {
-      broadcaster.streamAppend(entries);
+      let broadcastEntries: readonly Record<string, unknown>[];
+      try {
+        broadcastEntries = streamEntrySerializer(entries);
+      } catch (error) {
+        console.error("Live stream append serialization failed; broadcasting raw entries", {
+          cause: error instanceof Error ? error.message : String(error),
+        });
+        broadcastEntries = entries.map((entry) => ({ ...entry }));
+      }
+
+      broadcaster.streamAppend(broadcastEntries);
 
       for (const observer of streamAppendObservers) {
         try {

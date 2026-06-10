@@ -1,8 +1,8 @@
 import { useMemo } from "react";
 
 import type { IdentityEvent } from "../api/types";
-import { formatTime } from "../lib/stream-utils";
-import { dateLabel, displayValue, isRecord, shortId } from "../screens/screen-utils";
+import { formatTimestamp } from "../lib/stream-utils";
+import { displayValue, isRecord, shortId } from "../screens/screen-utils";
 import { Empty } from "./Empty";
 import { IdRef } from "./Inspector/IdRef";
 import { Tag } from "./Tag";
@@ -27,7 +27,7 @@ function eventActionTag(event: IdentityEvent) {
 }
 
 function eventTimestamp(ts: number): string {
-  return `${dateLabel(ts)} ${formatTime(ts)}`;
+  return formatTimestamp(ts);
 }
 
 function provenanceLabel(provenance: IdentityEvent["provenance"]): string {

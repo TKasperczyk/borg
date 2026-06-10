@@ -1,6 +1,8 @@
 import type { EntityRecord, SessionRecord, StateSnapshot, WsState } from "../api/types";
 import type { DreamActivity } from "../hooks/use-live-cache";
+import type { AudienceDisplayIdentity } from "../lib/audience-identity";
 import type { RouteId } from "../routes";
+import { IdChip } from "./Inspector/IdChip";
 import { MiniOrrery } from "./orrery/MiniOrrery";
 import { countValue, moodLabel } from "./StatusBar";
 import { formatTurns, wsLabel, wsToneClass } from "./Topbar";
@@ -8,7 +10,7 @@ import { formatTurns, wsLabel, wsToneClass } from "./Topbar";
 export type InstrumentStripProps = {
   sessionId: string;
   activeSession: SessionRecord | null;
-  audience: string;
+  audienceDisplay: AudienceDisplayIdentity;
   creator: EntityRecord | null;
   state: StateSnapshot | null;
   wsState: WsState;
@@ -16,6 +18,38 @@ export type InstrumentStripProps = {
   now: string;
   route: RouteId;
 };
+
+function SessionCrumb({
+  sessionId,
+  activeSession,
+}: Pick<InstrumentStripProps, "sessionId" | "activeSession">) {
+  return (
+    <span className="seg session-crumb">
+      <span>{activeSession?.label ?? "unknown session"}</span>
+      <IdChip id={sessionId} type="session" />
+    </span>
+  );
+}
+
+function AudiencePillValue({
+  sessionId,
+  activeSession,
+  audienceDisplay,
+}: Pick<InstrumentStripProps, "sessionId" | "activeSession" | "audienceDisplay">) {
+  const fallbackId = audienceDisplay.fallbackId ?? sessionId;
+  const entityId = audienceDisplay.entityId;
+
+  return (
+    <span className="identity-inline">
+      <span>{audienceDisplay.label ?? "unknown"}</span>
+      {entityId !== null ? (
+        <IdChip id={entityId} type="entity" />
+      ) : (
+        <IdChip id={fallbackId} type={activeSession === null ? "session" : null} />
+      )}
+    </span>
+  );
+}
 
 function moodGlyph(state: StateSnapshot | null): string {
   if (state === null) {
@@ -33,7 +67,7 @@ function moodGlyph(state: StateSnapshot | null): string {
 export function InstrumentStrip({
   sessionId,
   activeSession,
-  audience,
+  audienceDisplay,
   creator,
   state,
   wsState,
@@ -51,7 +85,7 @@ export function InstrumentStrip({
       <div className="topbar-crumb">
         <span className="seg">console</span>
         <span className="sep">›</span>
-        <span className="seg">{sessionId}</span>
+        <SessionCrumb sessionId={sessionId} activeSession={activeSession} />
         <span className="sep">›</span>
         <span className="seg here">{route}</span>
       </div>
@@ -59,7 +93,13 @@ export function InstrumentStrip({
       <div className="topbar-pills">
         <div className="topbar-pill">
           <span className="k">audience</span>
-          <span className="v">{audience}</span>
+          <span className="v">
+            <AudiencePillValue
+              sessionId={sessionId}
+              activeSession={activeSession}
+              audienceDisplay={audienceDisplay}
+            />
+          </span>
         </div>
         <div className="topbar-pill">
           <span className="k">role</span>
@@ -104,7 +144,7 @@ export function InstrumentStrip({
           <span className="v">{state?.version ?? "—"}</span>
         </div>
         <div className="topbar-pill">
-          <span className="k">utc</span>
+          <span className="k">local</span>
           <span className="v">{now}</span>
         </div>
         <span className="topbar-live" aria-hidden="true">

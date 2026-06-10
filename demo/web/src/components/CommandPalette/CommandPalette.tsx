@@ -117,11 +117,12 @@ function memoryHitSubtitle(
 }
 
 function semanticNodeHit(node: SemanticMemoryNode): MemoryHit {
+  const displayLabel = node.display_label?.trim() || null;
   return {
     id: node.id,
     band: "semantic",
     type: "semantic_node",
-    title: node.label,
+    title: displayLabel ?? `${node.kind} memory`,
     subtitle: memoryHitSubtitle("semantic", "node", node.id, `${node.kind} · ${node.status}`),
   };
 }

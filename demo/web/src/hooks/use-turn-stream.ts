@@ -16,7 +16,7 @@ import type {
   TurnRequest,
   TurnResponse,
 } from "../api/types";
-import { formatTime, sortStreamEntries, streamContentText } from "../lib/stream-utils";
+import { formatTimestamp, sortStreamEntries, streamContentText } from "../lib/stream-utils";
 import type { LiveEvents } from "./use-live-events";
 
 export type PhaseStatus = "queue" | "running" | "done" | "fail";
@@ -189,7 +189,7 @@ function tailRowsFromFrame(frame: LiveFrame): TailEvent[] {
   if (frame.type === "stream:append") {
     return frame.entries.map((entry) => ({
       id: `${frame.type}:${entry.id}`,
-      ts: formatTime(frame.ts),
+      ts: formatTimestamp(frame.ts),
       kind: tailKindForEntry(entry),
       body: `${entry.kind} · ${streamContentText(entry.content)}`,
       isNew: true,
@@ -202,7 +202,7 @@ function tailRowsFromFrame(frame: LiveFrame): TailEvent[] {
     return [
       {
         id: `${frame.type}:${frame.turn_id}:${frame.ts}`,
-        ts: formatTime(frame.ts),
+        ts: formatTimestamp(frame.ts),
         kind: "tool",
         body: `evidence ledger built · turn ${frame.turn_id} · ${count} entries`,
         isNew: true,
@@ -215,7 +215,7 @@ function tailRowsFromFrame(frame: LiveFrame): TailEvent[] {
     return [
       {
         id: `${frame.type}:${turnId}:${frame.ts}`,
-        ts: formatTime(frame.ts),
+        ts: formatTimestamp(frame.ts),
         kind: "internal",
         body: `terminal · turn ${turnId} · ${frame.data.outcome}`,
         isNew: true,
@@ -227,7 +227,7 @@ function tailRowsFromFrame(frame: LiveFrame): TailEvent[] {
     return [
       {
         id: `${frame.type}:${frame.turn_id}:${frame.ts}`,
-        ts: formatTime(frame.ts),
+        ts: formatTimestamp(frame.ts),
         kind: "thought",
         body: `deliberation path · ${frame.path}`,
         isNew: true,
@@ -239,7 +239,7 @@ function tailRowsFromFrame(frame: LiveFrame): TailEvent[] {
     return [
       {
         id: `${frame.type}:${frame.turn_id}:${frame.attempt}:${frame.ts}`,
-        ts: formatTime(frame.ts),
+        ts: formatTimestamp(frame.ts),
         kind: "internal",
         body: `finalizer re-attempt · #${frame.attempt}`,
         isNew: true,
@@ -251,7 +251,7 @@ function tailRowsFromFrame(frame: LiveFrame): TailEvent[] {
     return [
       {
         id: `detail:${frame.turn_id}:${frame.event}:${frame.ts}`,
-        ts: formatTime(frame.ts),
+        ts: formatTimestamp(frame.ts),
         kind: frame.event.split(".")[0] ?? frame.event,
         body: `${frame.event} · ${frame.summary}`,
         isNew: true,
@@ -267,7 +267,7 @@ function tailRowsFromFrame(frame: LiveFrame): TailEvent[] {
     return [
       {
         id: `${frame.type}:${frame.process}:${frame.ts}`,
-        ts: formatTime(frame.ts),
+        ts: formatTimestamp(frame.ts),
         kind: "dream",
         body: `dream process started · ${frame.process}`,
         isNew: true,
@@ -279,7 +279,7 @@ function tailRowsFromFrame(frame: LiveFrame): TailEvent[] {
     return [
       {
         id: `${frame.type}:${frame.process}:${frame.ts}`,
-        ts: formatTime(frame.ts),
+        ts: formatTimestamp(frame.ts),
         kind: "dream",
         body: `dream process ${frame.errors > 0 ? "failed" : "completed"} · ${frame.process}${
           frame.duration_ms === undefined ? "" : ` · ${Math.round(frame.duration_ms)}ms`
@@ -297,7 +297,7 @@ function tailRowsFromFrame(frame: LiveFrame): TailEvent[] {
     return [
       {
         id: `${frame.type}:${turnIdFromPhase(frame.data)}:${frame.data.phase ?? "unknown"}:${frame.ts}`,
-        ts: formatTime(frame.ts),
+        ts: formatTimestamp(frame.ts),
         kind: phaseTailKind(frame),
         body: `${frame.type.replace("turn:phase:", "")} · ${frame.data.phase ?? "unknown"}${frame.data.sub === undefined ? "" : ` · ${frame.data.sub}`}`,
         isNew: true,
@@ -314,7 +314,7 @@ function tailRowsFromEntries(entries: readonly StreamEntry[]): TailEvent[] {
     .reverse()
     .map((entry) => ({
       id: `stream:append:${entry.id}`,
-      ts: formatTime(entry.timestamp),
+      ts: formatTimestamp(entry.timestamp),
       kind: tailKindForEntry(entry),
       body: `${entry.kind} · ${streamContentText(entry.content)}`,
       isNew: false,

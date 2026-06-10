@@ -1394,6 +1394,87 @@ function entityLabel(borg: Borg, id: EntityId | string | null | undefined): stri
   return borg.entities.get(id as EntityId)?.canonical_name ?? String(id);
 }
 
+const ENTITY_ID_SHAPE = /^ent_[a-z0-9]{16}$/;
+
+type LabelRef = {
+  value: string;
+  id: string | null;
+  label: string | null;
+};
+
+function createLabelResolver(borg: Borg) {
+  const entityLabels = new Map<string, string | null>();
+  const sessions = new Map<SessionId, ReturnType<Borg["sessions"]["get"]>>();
+
+  function entityName(id: EntityId | string | null | undefined): string | null {
+    if (id === null || id === undefined) {
+      return null;
+    }
+
+    const raw = String(id);
+    if (entityLabels.has(raw)) {
+      return entityLabels.get(raw) ?? null;
+    }
+
+    const label = borg.entities.get(raw as EntityId)?.canonical_name ?? null;
+    entityLabels.set(raw, label);
+    return label;
+  }
+
+  function sessionRecord(sessionId: SessionId) {
+    const cached = sessions.get(sessionId);
+    if (cached !== undefined || sessions.has(sessionId)) {
+      return cached ?? null;
+    }
+
+    const session = borg.sessions.get(sessionId);
+    sessions.set(sessionId, session);
+    return session;
+  }
+
+  function participantRef(value: string): LabelRef {
+    if (ENTITY_ID_SHAPE.test(value)) {
+      return { value, id: value, label: entityName(value) };
+    }
+
+    return { value, id: null, label: value };
+  }
+
+  return {
+    entityName,
+    sessionRecord,
+    participantRef,
+  };
+}
+
+type LabelResolver = ReturnType<typeof createLabelResolver>;
+
+export function serializeStreamEntries(
+  borg: Borg,
+  entries: readonly StreamEntry[],
+): Array<
+  StreamEntry & {
+    sender_label: string | null;
+    session_label: string | null;
+    audience_label: string | null;
+  }
+> {
+  const labels = createLabelResolver(borg);
+
+  return entries.map((entry) => {
+    const session = labels.sessionRecord(entry.session_id);
+    const senderLabel = labels.entityName(entry.sender_entity_id);
+    const audienceEntityLabel = labels.entityName(session?.audience_entity_id ?? null);
+
+    return {
+      ...entry,
+      sender_label: senderLabel,
+      session_label: session?.label ?? null,
+      audience_label: audienceEntityLabel,
+    };
+  });
+}
+
 function commitmentState(record: CommitmentRecord): "active" | "revoked" | "expired" {
   if (record.expired_at !== null) {
     return "expired";
@@ -1468,12 +1549,14 @@ function mapCreatorDirective(borg: Borg, record: CreatorDirective) {
 function mapEpisode(
   borg: Borg,
   item: Awaited<ReturnType<Borg["episodic"]["list"]>>["items"][number],
+  labels: LabelResolver = createLabelResolver(borg),
 ) {
   return {
     id: item.id,
     title: item.title,
     narrative: item.narrative,
     participants: item.participants,
+    participant_refs: item.participants.map((participant) => labels.participantRef(participant)),
     location: item.location,
     start_time: item.start_time,
     end_time: item.end_time,
@@ -1491,11 +1574,16 @@ function mapEpisode(
   };
 }
 
-function mapSemanticMemoryNode(node: SemanticNode, searchScore?: number) {
+function mapSemanticMemoryNode(node: SemanticNode, searchScore?: number, labels?: LabelResolver) {
+  const displayLabel = ENTITY_ID_SHAPE.test(node.label)
+    ? (labels?.entityName(node.label) ?? null)
+    : node.label;
+
   return {
     id: node.id,
     kind: node.kind,
     label: node.label,
+    display_label: displayLabel,
     description: node.description,
     domain: node.domain,
     aliases: node.aliases,
@@ -1709,6 +1797,7 @@ function mapSemanticGraphStatus(status: SemanticNodeStatus): SemanticGraphNodeSt
 }
 
 async function semanticGraphSnapshot(borg: Borg, limit: number) {
+  const labels = createLabelResolver(borg);
   const statusCounts = borg.semantic.nodes.countByStatus();
   const totalNodes = sumRecord(statusCounts);
   const nodes = totalNodes === 0 ? [] : await borg.semantic.nodes.list({ limit: totalNodes });
@@ -1736,7 +1825,9 @@ async function semanticGraphSnapshot(borg: Borg, limit: number) {
   );
 
   return {
-    nodes: selectedNodes.map(({ node, edgeCount }) => mapSemanticGraphNode(node, edgeCount)),
+    nodes: selectedNodes.map(({ node, edgeCount }) =>
+      mapSemanticGraphNode(node, edgeCount, labels),
+    ),
     edges: selectedEdges.map((edge) => mapSemanticGraphEdge(edge)),
     total_nodes: totalNodes,
     total_edges: edges.length,
@@ -1747,10 +1838,15 @@ async function semanticGraphSnapshot(borg: Borg, limit: number) {
   };
 }
 
-function mapSemanticGraphNode(node: SemanticNode, edgeCount: number) {
+function mapSemanticGraphNode(node: SemanticNode, edgeCount: number, labels: LabelResolver) {
+  const displayLabel = ENTITY_ID_SHAPE.test(node.label)
+    ? labels.entityName(node.label)
+    : node.label;
+
   return {
     id: node.id,
     label: node.label,
+    display_label: displayLabel,
     status: mapSemanticGraphStatus(node.status),
     kind: node.kind,
     edge_count: edgeCount,
@@ -2358,6 +2454,7 @@ export function createDemoServerApp(args: DemoServerAppInput) {
   ensureDemoDefaultSession(input.borg, {
     demoCreatorEntityName: input.demoCreatorEntityName,
   });
+  input.live.setStreamEntrySerializer((entries) => serializeStreamEntries(input.borg, entries));
   input.live.observeStreamAppend((entries) => {
     updateDemoSessionLastTurnIds(input.borg, entries);
   });
@@ -2501,16 +2598,18 @@ export function createDemoServerApp(args: DemoServerAppInput) {
 
   app.get("/api/stream", async (c) => {
     const query = parseRequest(streamQuerySchema, c.req.query());
-    return c.json(
-      await readStream({
-        borg: input.borg,
-        sessionId: query.session,
-        kinds: query.kind,
-        audience: query.audience,
-        limit: query.limit,
-        before: query.before,
-      }),
-    );
+    const result = await readStream({
+      borg: input.borg,
+      sessionId: query.session,
+      kinds: query.kind,
+      audience: query.audience,
+      limit: query.limit,
+      before: query.before,
+    });
+    return c.json({
+      ...result,
+      entries: serializeStreamEntries(input.borg, result.entries),
+    });
   });
 
   app.get("/api/turns", async (c) => {
@@ -2554,7 +2653,9 @@ export function createDemoServerApp(args: DemoServerAppInput) {
       throw new HTTPException(404, { message: `semantic node ${id} not found` });
     }
 
-    return c.json({ node: mapSemanticMemoryNode(node) });
+    return c.json({
+      node: mapSemanticMemoryNode(node, undefined, createLabelResolver(input.borg)),
+    });
   });
 
   app.get("/api/semantic/edges/:id", async (c) => {
@@ -2578,6 +2679,7 @@ export function createDemoServerApp(args: DemoServerAppInput) {
       const query = parseRequest(memoryBandDetailQuerySchema, c.req.query());
 
       if (band === "episodic") {
+        const labels = createLabelResolver(input.borg);
         if (query.query !== undefined) {
           const results = await input.borg.episodic.search(query.query, {
             limit: query.limit,
@@ -2588,7 +2690,7 @@ export function createDemoServerApp(args: DemoServerAppInput) {
             mode: "search",
             query: query.query,
             items: results.map((result) => ({
-              ...mapEpisode(input.borg, result.episode),
+              ...mapEpisode(input.borg, result.episode, labels),
               search_score: result.score,
             })),
             next_cursor: null,
@@ -2602,12 +2704,13 @@ export function createDemoServerApp(args: DemoServerAppInput) {
         return c.json({
           band,
           mode: "browse",
-          items: result.items.map((item) => mapEpisode(input.borg, item)),
+          items: result.items.map((item) => mapEpisode(input.borg, item, labels)),
           next_cursor: result.nextCursor ?? null,
         });
       }
 
       if (band === "semantic") {
+        const labels = createLabelResolver(input.borg);
         if (query.query !== undefined) {
           const nodes = await input.borg.semantic.nodes.search(query.query, { limit: query.limit });
           return c.json({
@@ -2615,7 +2718,7 @@ export function createDemoServerApp(args: DemoServerAppInput) {
             mode: "search",
             query: query.query,
             nodes: nodes.map((candidate) =>
-              mapSemanticMemoryNode(candidate.node, candidate.similarity),
+              mapSemanticMemoryNode(candidate.node, candidate.similarity, labels),
             ),
             edges: [],
             next_cursor: null,
@@ -2632,7 +2735,7 @@ export function createDemoServerApp(args: DemoServerAppInput) {
         return c.json({
           band,
           mode: "browse",
-          nodes: nodes.items.map((node) => mapSemanticMemoryNode(node)),
+          nodes: nodes.items.map((node) => mapSemanticMemoryNode(node, undefined, labels)),
           edges: edges.map((edge) => mapSemanticMemoryEdge(edge)),
           next_cursor: nodes.nextCursor ?? null,
         });
@@ -3498,8 +3601,10 @@ export function createDemoServerApp(args: DemoServerAppInput) {
 
     try {
       const existingSession = input.borg.sessions.get(sessionId);
-      const audienceLabel =
-        body.audience ?? existingSession?.audience_label ?? DEMO_DEFAULT_AUDIENCE_LABEL;
+      const audienceLabel = body.audience ?? existingSession?.audience_label;
+      if (audienceLabel === undefined) {
+        throw new HTTPException(400, { message: "audience is required for unknown sessions" });
+      }
       const audienceEntityId = resolveTurnAudienceEntityId(input.borg, {
         audienceLabel,
         explicitAudienceEntityId: body.audience_entity_id,

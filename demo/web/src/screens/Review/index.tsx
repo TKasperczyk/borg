@@ -41,7 +41,7 @@ import {
   resolveReviewAction,
 } from "../../lib/review-actions";
 import { isInteractiveDescendantEvent } from "../../lib/keyboard";
-import { formatTime } from "../../lib/stream-utils";
+import { formatTimestamp } from "../../lib/stream-utils";
 import { displayValue, fieldLabel, isRecord, parseJsonPatch, shortId } from "../screen-utils";
 
 export { GENERIC_REVIEW_ACTIONS } from "../../lib/review-actions";
@@ -1557,7 +1557,7 @@ function ReviewQueuePane({
                         hint={row}
                       />
                     </span>
-                    <span className="dim">{formatTime(row.created_at)}</span>
+                    <span className="dim">{formatTimestamp(row.created_at)}</span>
                   </span>
                   <button
                     type="button"
@@ -1626,7 +1626,7 @@ function ReviewEvidencePane({
             {reviewIsOpen(row) ? <Tag>open</Tag> : <Tag>{row.resolution ?? "resolved"}</Tag>}
           </div>
         </div>
-        <span className="dim">{formatTime(row.created_at)}</span>
+        <span className="dim">{formatTimestamp(row.created_at)}</span>
       </div>
       <div className="review-reason">{row.reason}</div>
 
@@ -2409,9 +2409,10 @@ export function ReviewScreen() {
       <Modal
         open={pendingLabAction !== null}
         title={
-          pendingLabAction === null
-            ? "confirm lab action"
-            : `${pendingLabAction.kind} ${pendingLabAction.id}`
+          <span className="identity-inline">
+            <span>{pendingLabAction?.kind ?? "confirm lab action"}</span>
+            {pendingLabAction === null ? null : <IdChip id={pendingLabAction.id} />}
+          </span>
         }
         onClose={() => setPendingLabAction(null)}
         footer={

@@ -7,6 +7,7 @@ import {
   createDemoServerApp,
   ensureDemoDefaultSession,
   runtimeConfigFromConfig,
+  serializeStreamEntries,
   wireMaintenanceSchedulerLiveObserver,
 } from "./app.js";
 import { createLiveBridge } from "./live.js";
@@ -88,6 +89,7 @@ async function openDemoBorg(): Promise<Borg> {
 const borgHandle: BorgHandle = {
   current: await openDemoBorg(),
 };
+live.setStreamEntrySerializer((entries) => serializeStreamEntries(borgHandle.current, entries));
 borgHandle.current.inbox.catchUp.start();
 // Run as a full autonomous runtime: the scheduler fires self-initiated wakes on its triggers
 // (expiring commitments, dormant open questions, due goals, executive focus). Without this

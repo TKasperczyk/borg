@@ -17,7 +17,7 @@ export type LedgerViewProps = {
   turnId: string | null;
   cachedLedger?: EvidenceLedger;
   active: boolean;
-  audience: string;
+  audience: string | null;
   entryFilter?: (entry: EvidenceLedgerEntry) => boolean;
   emptyMessage?: string;
 };
@@ -318,7 +318,7 @@ export function LedgerView({
               <AttachmentChip
                 key={image.attachment_id}
                 attachmentId={image.attachment_id}
-                audience={audience}
+                audience={audience ?? undefined}
                 expanded
               />
             ))}

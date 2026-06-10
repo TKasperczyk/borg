@@ -27,7 +27,7 @@ import { Tag } from "../../components/Tag";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
 import { activateOnEnterOrSpace } from "../../lib/keyboard";
-import { formatTime } from "../../lib/stream-utils";
+import { formatTimestamp } from "../../lib/stream-utils";
 import {
   displayTargetSummary,
   displayValue,
@@ -632,7 +632,7 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
               title={
                 lastMaintenanceTick === null
                   ? "No maintenance tick observed in this browser session"
-                  : `Observed at ${formatTime(lastMaintenanceTick.ts)}`
+                  : `Observed at ${formatTimestamp(lastMaintenanceTick.ts)}`
               }
             >
               <div className="upper dim">last tick this session</div>
@@ -760,7 +760,7 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
                   </div>
                   <div className="row">
                     <span className="k">last run</span>
-                    <span className="v">{formatTime(selectedProcess.last_run_at)}</span>
+                    <span className="v">{formatTimestamp(selectedProcess.last_run_at)}</span>
                   </div>
                   <div className="row">
                     <span className="k">budget cap</span>
@@ -829,7 +829,7 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
                     return (
                       <Fragment key={row.id}>
                         <tr>
-                          <td className="dim">{formatTime(row.applied_at)}</td>
+                          <td className="dim">{formatTimestamp(row.applied_at)}</td>
                           <td>
                             <span className="purple">{row.process}</span>
                           </td>
@@ -1099,7 +1099,7 @@ function DreamScheduleLane({ schedule }: { schedule: readonly DreamScheduleItem[
                   <td>
                     <span className="purple">{item.process}</span>
                   </td>
-                  <td className="dim">{formatTime(item.scheduled_at)}</td>
+                  <td className="dim">{formatTimestamp(item.scheduled_at)}</td>
                   <td>
                     <Tag kind={item.source === "audit" ? "acc" : "info"}>{item.source}</Tag>
                   </td>
@@ -1746,7 +1746,7 @@ function DreamCard({
           <div>
             <div className="upper dim">last</div>
             <div style={{ color: "var(--text-dim)", fontSize: 12 }}>
-              {formatTime(process.last_run_at)}
+              {formatTimestamp(process.last_run_at)}
             </div>
           </div>
         </div>

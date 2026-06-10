@@ -5,6 +5,7 @@ import type {
   AttachmentMetadataResponse,
   AttachmentStatusItem,
   ImagePerceptionRecord,
+  SessionRecord,
   StreamEntry,
   StreamEntryKind,
   WsState,
@@ -33,7 +34,12 @@ import {
   type StreamTurnGroup,
 } from "../../lib/stream-grouping";
 import { streamOutcomeSummary, type StreamOutcomeSummary } from "../../lib/stream-outcomes";
-import { compactStreamText, formatTime, streamContentText } from "../../lib/stream-utils";
+import {
+  compactStreamText,
+  formatTimestamp,
+  formatTimestampRange,
+  streamContentText,
+} from "../../lib/stream-utils";
 import {
   contentField,
   displayValue,
@@ -637,10 +643,7 @@ function groupStatusTagKind(status: StreamTurnGroup["status"]): TagKind {
 }
 
 function groupTimeRange(group: StreamTurnGroup): string {
-  if (group.startTimestamp === group.endTimestamp) {
-    return formatTime(group.endTimestamp);
-  }
-  return `${formatTime(group.startTimestamp)}-${formatTime(group.endTimestamp)}`;
+  return formatTimestampRange(group.startTimestamp, group.endTimestamp);
 }
 
 function sourceEntryIds(entry: StreamEntry): string[] {
@@ -662,7 +665,7 @@ function formatBytes(value: number | undefined): string {
 }
 
 function formatIsoTimestamp(value: number | undefined): string {
-  return value === undefined ? "-" : new Date(value).toISOString();
+  return formatTimestamp(value, "-");
 }
 
 function CopyableHash({ value }: { value: string | undefined }) {
@@ -933,11 +936,13 @@ function StreamTimelineRow({
   entry,
   selected,
   attachmentStatus,
+  showAudience,
   onSelect,
 }: {
   entry: StreamEntry;
   selected: boolean;
   attachmentStatus?: AttachmentStatusItem["status"];
+  showAudience: boolean;
   onSelect: (id: string) => void;
 }) {
   const attId = streamEntryAttachmentId(entry);
@@ -955,7 +960,7 @@ function StreamTimelineRow({
       onClick={() => onSelect(entry.id)}
       onKeyDown={(event) => activateOnEnterOrSpace(event, () => onSelect(entry.id))}
     >
-      <span className="t">{formatTime(entry.timestamp)}</span>
+      <span className="t">{formatTimestamp(entry.timestamp)}</span>
       <span className={`k ${wake !== null ? "info" : kindTag(entry.kind)}`}>
         {wake !== null ? "wake" : entry.kind}
       </span>
@@ -986,7 +991,20 @@ function StreamTimelineRow({
           <StreamRowSummary entry={entry} />
         )}
       </span>
-      <span className="aud">{entry.audience ?? "global"}</span>
+      <span className="aud">
+        {showAudience ? (
+          entry.audience === undefined ? (
+            "global"
+          ) : entry.audience_label !== null && entry.audience_label !== undefined ? (
+            entry.audience_label
+          ) : (
+            <span className="identity-inline">
+              <span>unknown</span>
+              <IdChip id={entry.audience} type={null} />
+            </span>
+          )
+        ) : null}
+      </span>
     </div>
   );
 }
@@ -1015,7 +1033,10 @@ function StreamGroupHeader({
         {group.turnId === null ? (
           UNCLAIMED_STREAM_GROUP_LABEL
         ) : (
-          <IdRef id={group.turnId} type="turn" label={group.turnId} />
+          <>
+            <span>turn</span>{" "}
+            <IdChip id={group.turnId} type="turn" label={`turn ${shortId(group.turnId)}`} />
+          </>
         )}
       </span>
       <span className="stream-group-meta">{groupTimeRange(group)}</span>
@@ -1025,7 +1046,13 @@ function StreamGroupHeader({
   );
 }
 
-export function StreamScreen({ sessionId }: { sessionId: string }) {
+export function StreamScreen({
+  sessionId,
+  activeSession = null,
+}: {
+  sessionId: string;
+  activeSession?: SessionRecord | null;
+}) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectionSeeded, setSelectionSeeded] = useState(false);
   const [selectedKinds, setSelectedKinds] = useState<Set<StreamEntryKind>>(
@@ -1165,6 +1192,16 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
       ) as Record<string, number>,
     [entries, windowAudiences],
   );
+  const audienceLabels = useMemo(
+    () =>
+      Object.fromEntries(
+        windowAudiences.map((audience) => {
+          const label = entries.find((entry) => entry.audience === audience)?.audience_label;
+          return [audience, label ?? "unknown"];
+        }),
+      ) as Record<string, string>,
+    [entries, windowAudiences],
+  );
   const structuralCounts = useMemo(
     () => ({
       aborted: entries.filter(isAbortedTurnEntry).length,
@@ -1180,6 +1217,8 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
     selected === null ? undefined : streamAttachmentPerceptionId(selected, attachmentApi.data);
   const hasOlder = streamWindow.nextCursor !== null;
   const honestyLabel = hasOlder ? "loaded window only · older entries available" : "loaded window";
+  const showRowAudience = audience === "all" && windowAudiences.length > 1;
+  const streamSessionLabel = activeSession?.label ?? entries[0]?.session_label ?? "unknown session";
 
   const toggleKind = (kind: StreamEntryKind) => {
     setSelectedKinds((current) => {
@@ -1255,7 +1294,7 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
             <option value="all">all audiences ({entries.length} window)</option>
             {windowAudiences.map((item) => (
               <option key={item} value={item}>
-                {item} ({audienceCounts[item] ?? 0} window)
+                {audienceLabels[item]} ({audienceCounts[item] ?? 0} window)
               </option>
             ))}
           </select>
@@ -1286,6 +1325,10 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
 
       <div className="stream-main">
         <div className="stream-main-head">
+          <span className="identity-inline">
+            <span>{streamSessionLabel}</span>
+            <IdChip id={sessionId} type="session" />
+          </span>
           <span>{filtered.length} window events</span>
           <span>{groups.length} groups</span>
           <span>{honestyLabel}</span>
@@ -1314,6 +1357,7 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
                         attachmentStatus={
                           attId === undefined ? undefined : attachmentStatusById[attId]
                         }
+                        showAudience={showRowAudience}
                         onSelect={setSelectedId}
                       />
                     );
@@ -1354,15 +1398,19 @@ export function StreamScreen({ sessionId }: { sessionId: string }) {
                 />
               </div>
               <div className="ts">
-                {new Date(selected.timestamp).toISOString()} · {selected.kind} ·{" "}
-                {selected.audience ?? "global"}
+                {formatTimestamp(selected.timestamp)} · {selected.kind} ·{" "}
+                {selected.audience_label ??
+                  (selected.audience === undefined ? "global" : "unknown")}
               </div>
               <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <Tag kind={selectedStatus === "active" ? "acc" : "bad"} dot>
                   {selectedStatus}
                 </Tag>
                 <Tag>
-                  <IdChip id={selected.session_id} type="session" />
+                  <span className="identity-inline">
+                    <span>{selected.session_label ?? streamSessionLabel}</span>
+                    <IdChip id={selected.session_id} type="session" />
+                  </span>
                 </Tag>
                 {selected.turn_id === undefined ? null : (
                   <Tag>

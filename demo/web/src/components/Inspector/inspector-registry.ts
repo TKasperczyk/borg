@@ -62,7 +62,7 @@ export type InspectorReliability = "direct" | "in_list" | "needs_backend";
 
 export type InspectorFetchContext = {
   sessionId: string;
-  audience: string;
+  audience: string | null;
 };
 
 export type RelatedObjectRef = {

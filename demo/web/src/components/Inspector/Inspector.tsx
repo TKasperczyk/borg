@@ -32,10 +32,9 @@ import {
   GENERIC_REVIEW_ACTIONS,
   resolveReviewAction,
 } from "../../lib/review-actions";
-import { formatTime } from "../../lib/stream-utils";
+import { formatTimestamp, formatTimestampForKey } from "../../lib/stream-utils";
 import { LedgerView } from "../../screens/Cognition/LedgerView";
 import {
-  dateLabel,
   displayValue,
   fieldLabel,
   isInternalId,
@@ -158,11 +157,7 @@ function timelineEvents(value: unknown): TimelineEvent[] {
 }
 
 function TimestampLabel({ ts }: { ts: number }) {
-  return (
-    <>
-      {dateLabel(ts)} {formatTime(ts)}
-    </>
-  );
+  return <>{formatTimestamp(ts)}</>;
 }
 
 function GenericSummary({ value }: { value: unknown }) {
@@ -181,7 +176,7 @@ function GenericSummary({ value }: { value: unknown }) {
         <div className="row" key={key}>
           <span className="k">{fieldLabel(key)}</span>
           <span className="v">
-            <SummaryValue value={entry} />
+            <SummaryValue fieldKey={key} value={entry} />
           </span>
         </div>
       ))}
@@ -189,7 +184,12 @@ function GenericSummary({ value }: { value: unknown }) {
   );
 }
 
-function SummaryValue({ value }: { value: unknown }) {
+function SummaryValue({ fieldKey, value }: { fieldKey: string; value: unknown }) {
+  const timestamp = formatTimestampForKey(fieldKey, value);
+  if (timestamp !== null) {
+    return <>{timestamp}</>;
+  }
+
   if (typeof value === "string" && isInternalId(value)) {
     return <IdChip id={value} />;
   }
@@ -288,7 +288,7 @@ function WhyEvidence({ id }: { id: string }) {
   );
 }
 
-function EvidenceTab({ target, audience }: { target: InspectorTarget; audience: string }) {
+function EvidenceTab({ target, audience }: { target: InspectorTarget; audience: string | null }) {
   if (target.type === "turn") {
     return <LedgerView turnId={target.id} active audience={audience} />;
   }
@@ -356,8 +356,14 @@ function RawJsonTab({ data }: { data: unknown }) {
   return <JsonValueView value={data} />;
 }
 
+type ActionTitle = {
+  action: string;
+  id: string | null;
+  type: ObjectType | null;
+};
+
 type ConfirmAction = {
-  title: string;
+  title: ActionTitle;
   body: string;
   confirmLabel: string;
   reasonLabel?: string;
@@ -367,7 +373,7 @@ type ConfirmAction = {
 };
 
 type TextAction = {
-  title: string;
+  title: ActionTitle;
   label: string;
   initialValue: string;
   requireValue?: boolean;
@@ -437,6 +443,23 @@ function reviewDirectiveIds(value: unknown): string[] {
 
 function reviewActionLabel(action: ReviewResolution): string {
   return action.replaceAll("_", " ");
+}
+
+function targetActionTitle(action: string, target: InspectorTarget): ActionTitle {
+  return { action, id: target.id, type: target.type };
+}
+
+function ActionModalTitle({ title, fallback }: { title: ActionTitle | null; fallback: string }) {
+  if (title === null) {
+    return <span>{fallback}</span>;
+  }
+
+  return (
+    <span className="identity-inline">
+      <span>{title.action}</span>
+      {title.id === null ? null : <IdChip id={title.id} type={title.type} />}
+    </span>
+  );
 }
 
 function recordString(value: unknown, key: string): string | null {
@@ -521,7 +544,7 @@ function ActionsTab({
       "forget",
       () =>
         openConfirm({
-          title: `forget ${target.id}`,
+          title: targetActionTitle("forget", target),
           body: "Queue a sanctioned correction forget for this stored object.",
           confirmLabel: "forget",
           danger: true,
@@ -537,7 +560,7 @@ function ActionsTab({
       "invalidate edge",
       () =>
         openConfirm({
-          title: `invalidate ${target.id}`,
+          title: targetActionTitle("invalidate", target),
           body: "Invalidate this semantic edge through the correction governance endpoint.",
           confirmLabel: "invalidate",
           reasonLabel: "reason",
@@ -559,7 +582,7 @@ function ActionsTab({
       "revoke commitment",
       () =>
         openConfirm({
-          title: `revoke ${target.id}`,
+          title: targetActionTitle("revoke", target),
           body: "Revoke this commitment through the commitment governance endpoint.",
           confirmLabel: "revoke",
           reasonLabel: "reason",
@@ -582,7 +605,7 @@ function ActionsTab({
       "revoke directive",
       () =>
         openConfirm({
-          title: `revoke ${target.id}`,
+          title: targetActionTitle("revoke", target),
           body: "Revoke this creator directive. Creator directives are not correction targets.",
           confirmLabel: "revoke",
           reasonLabel: "reason",
@@ -597,7 +620,7 @@ function ActionsTab({
       "supersede directive",
       () =>
         openText({
-          title: `supersede ${target.id}`,
+          title: targetActionTitle("supersede", target),
           label: "replacement directive id",
           initialValue: "",
           requireValue: true,
@@ -611,7 +634,7 @@ function ActionsTab({
   if (target.type === "goal") {
     addButton("goal-complete", "complete", () =>
       openConfirm({
-        title: `complete ${target.id}`,
+        title: targetActionTitle("complete", target),
         body: "Mark this goal complete.",
         confirmLabel: "complete",
         reasonLabel: "note",
@@ -626,7 +649,7 @@ function ActionsTab({
     );
     addButton("goal-block", "block", () =>
       openConfirm({
-        title: `block ${target.id}`,
+        title: targetActionTitle("block", target),
         body: "Mark this goal blocked.",
         confirmLabel: "block",
         reasonLabel: "note",
@@ -641,7 +664,7 @@ function ActionsTab({
     );
     addButton("goal-progress", "progress", () =>
       openConfirm({
-        title: `progress ${target.id}`,
+        title: targetActionTitle("progress", target),
         body: "Append progress notes to this goal.",
         confirmLabel: "save progress",
         reasonLabel: "note",
@@ -659,7 +682,7 @@ function ActionsTab({
   if (target.type === "open_question") {
     addButton("question-resolve", "resolve", () =>
       openText({
-        title: `resolve ${target.id}`,
+        title: targetActionTitle("resolve", target),
         label: "resolution",
         initialValue: "",
         requireValue: true,
@@ -668,7 +691,7 @@ function ActionsTab({
     );
     addButton("question-abandon", "abandon", () =>
       openText({
-        title: `abandon ${target.id}`,
+        title: targetActionTitle("abandon", target),
         label: "reason",
         initialValue: "",
         requireValue: true,
@@ -678,7 +701,7 @@ function ActionsTab({
     );
     addButton("question-bump", "bump", () =>
       openConfirm({
-        title: `bump ${target.id}`,
+        title: targetActionTitle("bump", target),
         body: "Increase this open question urgency.",
         confirmLabel: "bump",
         run: () => patchOpenQuestion(target.id, { action: "bump" }),
@@ -698,7 +721,7 @@ function ActionsTab({
           "supersede directive",
           () =>
             openText({
-              title: `supersede directive review ${target.id}`,
+              title: targetActionTitle("supersede directive review", target),
               label: "survivor directive id",
               initialValue: directiveIds[0] ?? "",
               requireValue: true,
@@ -714,7 +737,7 @@ function ActionsTab({
         );
         addButton("creator-reconcile-keep", "keep directives", () =>
           openConfirm({
-            title: `keep directive review ${target.id}`,
+            title: targetActionTitle("keep directive review", target),
             body: "Resolve this creator-directive reconciliation by keeping the member directives.",
             confirmLabel: "keep",
             reasonLabel: "reason",
@@ -736,7 +759,7 @@ function ActionsTab({
             reviewActionLabel(action),
             () =>
               openConfirm({
-                title: `${reviewActionLabel(action)} review ${target.id}`,
+                title: targetActionTitle(`${reviewActionLabel(action)} review`, target),
                 body: `Resolve this ${kind.replaceAll("_", " ")} review as ${reviewActionLabel(action)}.`,
                 confirmLabel: reviewActionLabel(action),
                 reasonLabel: "note",
@@ -773,7 +796,7 @@ function ActionsTab({
         "revert audit",
         () =>
           openConfirm({
-            title: `revert audit ${target.id}`,
+            title: targetActionTitle("revert audit", target),
             body: "Apply the stored reversal payload for this dream audit row.",
             confirmLabel: "revert",
             run: () => revertDreamAudit(id),
@@ -788,7 +811,7 @@ function ActionsTab({
     const currentText = recordString(data, "current_text") ?? "";
     addButton("prompt-save", "save prompt", () =>
       openText({
-        title: `save ${target.id}`,
+        title: targetActionTitle("save", target),
         label: "prompt text",
         initialValue: currentText,
         run: (text) => putPrompt(promptKey, text),
@@ -799,7 +822,7 @@ function ActionsTab({
       "reset prompt",
       () =>
         openConfirm({
-          title: `reset ${target.id}`,
+          title: targetActionTitle("reset", target),
           body: "Delete the stored override and return this prompt block to its default/runtime text.",
           confirmLabel: "reset",
           danger: true,
@@ -813,7 +836,7 @@ function ActionsTab({
     for (const policy of SESSION_POLICIES) {
       addButton(`policy-${policy}`, `set ${policy}`, () =>
         openConfirm({
-          title: `set session ${policy}`,
+          title: targetActionTitle(`set session ${policy}`, target),
           body: `Set participation policy for ${target.id} to ${policy}.`,
           confirmLabel: `set ${policy}`,
           reasonLabel: "reason",
@@ -866,7 +889,7 @@ function ActionsTab({
 
       <Modal
         open={confirmAction !== null}
-        title={confirmAction?.title ?? "confirm action"}
+        title={<ActionModalTitle title={confirmAction?.title ?? null} fallback="confirm action" />}
         onClose={() => setConfirmAction(null)}
         footer={
           <>
@@ -899,7 +922,7 @@ function ActionsTab({
 
       <Modal
         open={textAction !== null}
-        title={textAction?.title ?? "edit action"}
+        title={<ActionModalTitle title={textAction?.title ?? null} fallback="edit action" />}
         onClose={() => setTextAction(null)}
         footer={
           <>
@@ -932,7 +955,12 @@ function ActionsTab({
 
       <Modal
         open={correctOpen}
-        title={`correct ${target.id}`}
+        title={
+          <span className="identity-inline">
+            <span>correct</span>
+            <IdChip id={target.id} type={target.type} />
+          </span>
+        }
         onClose={() => setCorrectOpen(false)}
         footer={
           <>
@@ -985,7 +1013,7 @@ function TabContent({
   model: ObjectModel;
   data: unknown;
   onRefresh: () => Promise<void>;
-  audience: string;
+  audience: string | null;
   onActionModalOpenChange: (open: boolean) => void;
 }) {
   if (data === null) {

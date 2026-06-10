@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef } from "react";
 
 import { Empty } from "../../components/Empty";
+import { IdChip } from "../../components/Inspector/IdChip";
 import { IdRef } from "../../components/Inspector/IdRef";
 import { Tag } from "../../components/Tag";
-import { formatTime } from "../../lib/stream-utils";
+import type { SessionRecord } from "../../api/types";
+import type { AudienceDisplayIdentity } from "../../lib/audience-identity";
+import { formatTimestamp } from "../../lib/stream-utils";
 import { shortId } from "../screen-utils";
 import { streamEntriesToChatTurns, type ChatMarker, type ChatStreamEntry } from "./chat-utils";
 import { ChatMessage } from "./ChatMessage";
@@ -11,16 +14,11 @@ import { ChatMessage } from "./ChatMessage";
 export type ChatStreamProps = {
   entries: readonly ChatStreamEntry[];
   sessionId: string;
-  audience: string;
+  session?: SessionRecord | null;
+  audienceValue: string | null;
+  audienceDisplay: AudienceDisplayIdentity;
   running: boolean;
 };
-
-function shortSession(sessionId: string): string {
-  if (sessionId.length <= 10) {
-    return sessionId;
-  }
-  return sessionId.slice(0, 10);
-}
 
 function IdRefList({ ids, type }: { ids: readonly string[]; type: "stream_entry" | "turn" }) {
   if (ids.length === 0) {
@@ -50,7 +48,7 @@ function ChatMarkerRow({ marker }: { marker: ChatMarker }) {
         {marker.reason === null ? null : (
           <span className="chat-marker-reason">{marker.reason}</span>
         )}
-        <span className="chat-marker-time">{formatTime(marker.entry.timestamp)}</span>
+        <span className="chat-marker-time">{formatTimestamp(marker.entry.timestamp)}</span>
       </summary>
       <div className="chat-marker-details">
         <div>
@@ -104,9 +102,18 @@ function ChatMarkerRow({ marker }: { marker: ChatMarker }) {
   );
 }
 
-export function ChatStream({ entries, sessionId, audience, running }: ChatStreamProps) {
+export function ChatStream({
+  entries,
+  sessionId,
+  session,
+  audienceValue,
+  audienceDisplay,
+  running,
+}: ChatStreamProps) {
   const chatRef = useRef<HTMLDivElement | null>(null);
   const turns = useMemo(() => streamEntriesToChatTurns(entries), [entries]);
+  const audienceEntityId = audienceDisplay.entityId;
+  const audienceLabel = audienceDisplay.label ?? "unknown";
 
   useEffect(() => {
     if (chatRef.current !== null) {
@@ -117,10 +124,16 @@ export function ChatStream({ entries, sessionId, audience, running }: ChatStream
   return (
     <>
       <div className="chat-head">
-        <span className="title">transcript · {shortSession(sessionId)}</span>
+        <span className="title transcript-title">
+          transcript · {session?.label ?? "unknown session"}{" "}
+          <IdChip id={sessionId} type="session" />
+        </span>
         <span className="chat-audience">
           <span className="label">audience</span>
-          <span className="val">{audience}</span>
+          <span className="val identity-inline">
+            <span>{audienceLabel}</span>
+            {audienceEntityId === null ? null : <IdChip id={audienceEntityId} type="entity" />}
+          </span>
         </span>
       </div>
       <div className="chat-stream" ref={chatRef}>
@@ -129,7 +142,12 @@ export function ChatStream({ entries, sessionId, audience, running }: ChatStream
           turn.itemType === "marker" ? (
             <ChatMarkerRow key={turn.entry.id} marker={turn} />
           ) : (
-            <ChatMessage key={turn.entry.id} turn={turn} audience={audience} />
+            <ChatMessage
+              key={turn.entry.id}
+              turn={turn}
+              audience={audienceValue ?? ""}
+              audienceLabel={audienceDisplay.label}
+            />
           ),
         )}
         {running ? (

@@ -376,6 +376,7 @@ async function seedCorrectionEpisode(
   input: {
     title?: string;
     narrative?: string;
+    participants?: string[];
   } = {},
 ): Promise<Episode> {
   const internal = borg as unknown as BorgTestInternals;
@@ -390,7 +391,7 @@ async function seedCorrectionEpisode(
     id: createEpisodeId(),
     title: input.title ?? "Correction seed episode",
     narrative: input.narrative ?? "A correction endpoint seed episode.",
-    participants: ["operator"],
+    participants: input.participants ?? ["operator"],
     location: null,
     start_time: now,
     end_time: now,
@@ -641,10 +642,11 @@ async function seedP2EndpointRecords(borg: Borg, clock: ManualClock) {
 
 async function seedSemanticGraph(borg: Borg, clock: ManualClock) {
   const sourceEpisodeId = createEpisodeId();
+  const aliceEntityId = borg.entities.resolve("Alice");
   const nodes: Array<Awaited<ReturnType<Borg["semantic"]["nodes"]["add"]>>> = [];
 
   for (const input of [
-    { kind: "entity" as const, label: "alice", description: "Alice entity" },
+    { kind: "entity" as const, label: aliceEntityId, description: "Alice entity" },
     { kind: "entity" as const, label: "borg", description: "Borg entity" },
     { kind: "concept" as const, label: "semantic graph", description: "Semantic graph concept" },
     { kind: "proposition" as const, label: "supports memory", description: "Memory support claim" },
@@ -677,6 +679,8 @@ async function seedSemanticGraph(borg: Borg, clock: ManualClock) {
       last_verified_at: clock.now(),
     });
   }
+
+  return { aliceEntityId };
 }
 
 describe("demo server", () => {
@@ -874,6 +878,50 @@ describe("demo server", () => {
     expect(detailFrame?.summary).toContain("candidates=[2]");
     expect(detailFrame?.summary).toContain("metrics={2}");
     expect(detailFrame?.summary).toContain("empty=null");
+  });
+
+  it("broadcasts raw stream entries and notifies observers when append serialization fails", () => {
+    const live = createLiveBridge();
+    const { frames } = collectLiveFrames(live);
+    const observed: Array<readonly StreamEntry[]> = [];
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const entry: StreamEntry = {
+      id: createStreamEntryId(),
+      timestamp: 1,
+      entry_index: 0,
+      kind: "user_msg",
+      content: "raw kept",
+      turn_id: "turn_live_serializer_failure",
+      audience: "alice",
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+      session_id: DEFAULT_SESSION_ID,
+      compressed: false,
+    };
+
+    try {
+      live.setStreamEntrySerializer(() => {
+        throw new Error("serializer failed");
+      });
+      live.observeStreamAppend((entries) => observed.push(entries));
+
+      live.onStreamAppend([entry]);
+
+      expect(consoleError).toHaveBeenCalledWith(
+        "Live stream append serialization failed; broadcasting raw entries",
+        { cause: "serializer failed" },
+      );
+      expect(frames).toEqual([
+        expect.objectContaining({
+          type: "stream:append",
+          session_id: DEFAULT_SESSION_ID,
+          entries: [expect.objectContaining({ id: entry.id, content: "raw kept" })],
+        }),
+      ]);
+      expect(observed).toEqual([[entry]]);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("attributes unhandled turn-scoped trace events to the current phase", () => {
@@ -1425,6 +1473,54 @@ describe("demo server", () => {
     });
   });
 
+  it("enriches stream entries consistently for REST and live append frames", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-stream-labels-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const collected = collectLiveFrames(live);
+
+    const ack = await enqueueTextTurn(app, {
+      message: "hello labels",
+      external_message_id: "demo-labels-1",
+      audience: "Alice",
+    });
+
+    const streamResponse = await app.request("/api/stream?limit=5");
+    expect(streamResponse.status).toBe(200);
+    const stream = (await streamResponse.json()) as {
+      entries: Array<{
+        id: string;
+        sender_label: string | null;
+        session_label: string | null;
+        audience_label: string | null;
+      }>;
+    };
+    expect(stream.entries.find((entry) => entry.id === ack.stream_entry_id)).toMatchObject({
+      sender_label: "Alice",
+      session_label: "demo (default)",
+      audience_label: "Alice",
+    });
+
+    await waitFor(() =>
+      collected.frames.some(
+        (frame) =>
+          frame.type === "stream:append" &&
+          Array.isArray(frame.entries) &&
+          frame.entries.some(
+            (entry) =>
+              typeof entry === "object" &&
+              entry !== null &&
+              "id" in entry &&
+              entry.id === ack.stream_entry_id &&
+              "sender_label" in entry &&
+              entry.sender_label === "Alice",
+          ),
+      ),
+    );
+  });
+
   it("pages episodic memory band details with next_cursor", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-memory-episodic-"));
     tempDirs.push(tempDir);
@@ -1457,6 +1553,34 @@ describe("demo server", () => {
     };
     expect(second.items.map((item) => item.id)).toEqual([oldest.id]);
     expect(second.next_cursor).toBeNull();
+  });
+
+  it("adds resolved participant label refs to episodic memory payloads", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-memory-participants-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const participantId = borg.entities.resolve("Dana");
+    const episode = await seedCorrectionEpisode(borg, clock, {
+      title: "Participant label episode",
+      participants: [participantId],
+    });
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const response = await app.request("/api/memory/bands/episodic?limit=5");
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      items: Array<{
+        id: string;
+        participants: string[];
+        participant_refs?: Array<{ value: string; id: string | null; label: string | null }>;
+      }>;
+    };
+    expect(body.items.find((item) => item.id === episode.id)).toMatchObject({
+      participants: [participantId],
+      participant_refs: [{ value: participantId, id: participantId, label: "Dana" }],
+    });
   });
 
   it("pages semantic memory nodes with next_cursor", async () => {
@@ -3307,7 +3431,7 @@ describe("demo server", () => {
     const { borg, clock, live } = await openHarness({ tempDir });
     closers.push(() => borg.close());
     const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
-    await seedSemanticGraph(borg, clock);
+    const seeded = await seedSemanticGraph(borg, clock);
 
     const response = await app.request("/api/semantic/graph?limit=3");
 
@@ -3317,9 +3441,15 @@ describe("demo server", () => {
         expect.objectContaining({
           id: expect.any(String),
           label: expect.any(String),
+          display_label: expect.any(String),
           status: "active",
           kind: expect.any(String),
           edge_count: expect.any(Number),
+        }),
+        expect.objectContaining({
+          label: seeded.aliceEntityId,
+          display_label: "Alice",
+          kind: "entity",
         }),
       ]),
       edges: expect.arrayContaining([
@@ -3363,6 +3493,13 @@ describe("demo server", () => {
       description: "Target node description",
       sourceEpisodeIds: [sourceEpisodeId],
     });
+    const entityId = borg.entities.resolve("Dana");
+    const entityNode = await borg.semantic.nodes.add({
+      kind: "entity",
+      label: entityId,
+      description: "Entity id backed node",
+      sourceEpisodeIds: [sourceEpisodeId],
+    });
     const edge = borg.semantic.edges.add({
       from_node_id: node.id,
       to_node_id: target.id,
@@ -3381,8 +3518,19 @@ describe("demo server", () => {
       node: {
         id: node.id,
         label: "Detail node",
+        display_label: "Detail node",
         description: "Detail node description",
         source_count: 1,
+      },
+    });
+
+    const entityNodeResponse = await app.request(`/api/semantic/nodes/${entityNode.id}`);
+    expect(entityNodeResponse.status).toBe(200);
+    expect(await entityNodeResponse.json()).toMatchObject({
+      node: {
+        id: entityNode.id,
+        label: entityId,
+        display_label: "Dana",
       },
     });
 
@@ -3876,6 +4024,7 @@ describe("demo server", () => {
       broadcaster: { closeAll: vi.fn() },
       tracer: {},
       ledgerCache: new Map(),
+      setStreamEntrySerializer: vi.fn(),
       observeStreamAppend: vi.fn(),
       onStreamAppend: vi.fn(),
     };
@@ -3902,6 +4051,7 @@ describe("demo server", () => {
         model: "entry-cognition",
         embedding: { model: "entry-embed", dims: 4 },
       })),
+      serializeStreamEntries: vi.fn((_borg, entries) => entries),
       wireMaintenanceSchedulerLiveObserver: wireMaintenanceSchedulerLiveObserverMock,
     }));
     vi.doMock("../live.js", () => ({

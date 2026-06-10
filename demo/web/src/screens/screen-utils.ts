@@ -18,11 +18,41 @@ export function shortId(id: string | null | undefined): string {
   return `${id.slice(0, 8)}…${id.slice(-4)}`;
 }
 
-const INTERNAL_ID_SHAPE = /^[a-z]+_[a-z0-9]{6,}$/;
+const NANO_ID_PREFIXES = [
+  "strm",
+  "sess",
+  "ep",
+  "goal",
+  "val",
+  "trt",
+  "abp",
+  "grw",
+  "oq",
+  "semn",
+  "seme",
+  "cmt",
+  "cdir",
+  "ent",
+  "act",
+  "rslot",
+  "dart",
+  "cfam",
+  "actevt",
+  "selfdec",
+  "obsevt",
+  "swake",
+  "skl",
+  "run",
+  "exstep",
+  "att",
+  "imgp",
+] as const;
+const NANO_ID_SHAPE = new RegExp(`^(${NANO_ID_PREFIXES.join("|")})_[a-z0-9]{16}$`);
+const HEX_ID_SHAPE = /^(procevi|autonomy_wake)_[a-f0-9]{16}$/;
 const VECTOR_ARRAY_LENGTH = 16;
 
 export function isInternalId(value: string): boolean {
-  return INTERNAL_ID_SHAPE.test(value);
+  return value === "default" || NANO_ID_SHAPE.test(value) || HEX_ID_SHAPE.test(value);
 }
 
 export function fieldLabel(key: string): string {

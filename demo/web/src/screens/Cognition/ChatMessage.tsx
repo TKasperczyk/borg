@@ -1,44 +1,37 @@
 import { AttachmentChip } from "../../components/AttachmentChip";
+import { IdChip } from "../../components/Inspector/IdChip";
 import { IdRef } from "../../components/Inspector/IdRef";
-import { formatTime } from "../../lib/stream-utils";
+import { formatTimestamp } from "../../lib/stream-utils";
 import { shortId } from "../screen-utils";
 import type { ChatTurn } from "./chat-utils";
 
 export type ChatMessageProps = {
   turn: ChatTurn;
   audience: string;
+  audienceLabel?: string | null;
 };
 
-function userInitial(audience: string): string {
-  if (audience.length === 0) {
+function userInitial(label: string): string {
+  if (label.length === 0) {
     return "?";
   }
-  const first = audience.trim()[0];
+  const first = label.trim()[0];
   if (first === undefined) {
     return "?";
   }
   return first.toUpperCase();
 }
 
-function roleName(turn: ChatTurn, audience: string): string {
-  return turn.role === "borg" ? "borg" : audience;
-}
-
-function shortTurnId(turnId: string | undefined): string | null {
-  if (typeof turnId !== "string" || turnId.length === 0) {
-    return null;
-  }
-  const trimmed = turnId.replace(/^turn[-_]?/i, "");
-  return trimmed.slice(0, 6);
-}
-
-export function ChatMessage({ turn, audience }: ChatMessageProps) {
-  const initial = turn.role === "borg" ? "ψ" : userInitial(audience);
-  const name = roleName(turn, audience);
+export function ChatMessage({ turn, audienceLabel = null }: ChatMessageProps) {
+  const senderLabel =
+    turn.entry.sender_label?.trim() ||
+    (turn.entry.sender_entity_id === null ? audienceLabel : null);
+  const name = turn.role === "borg" ? "borg" : (senderLabel ?? "unknown speaker");
+  const initial = turn.role === "borg" ? "ψ" : userInitial(name);
   const turnId = turn.entry.turn_id;
-  const turnShort = shortTurnId(turnId);
   const deliveryStatus = turn.entry.optimistic_status;
   const messageAudience = turn.entry.audience;
+  const messageAudienceLabel = turn.entry.audience_label ?? audienceLabel;
 
   return (
     <div
@@ -51,22 +44,36 @@ export function ChatMessage({ turn, audience }: ChatMessageProps) {
       <div className="content">
         <div className="meta">
           <span className={`role ${turn.role}`}>{name}</span>
+          {turn.role === "borg" || turn.entry.sender_entity_id === null ? null : (
+            <>
+              <span className="sep">·</span>
+              <IdChip id={turn.entry.sender_entity_id} type="entity" />
+            </>
+          )}
           {messageAudience === undefined ? null : (
             <>
               <span className="sep">·</span>
-              <span className="chat-chip">aud {messageAudience}</span>
+              <span className="chat-chip">
+                aud {messageAudienceLabel ?? "unknown"}
+                {messageAudienceLabel === null ? (
+                  <>
+                    {" "}
+                    <IdChip id={messageAudience} type={null} />
+                  </>
+                ) : null}
+              </span>
             </>
           )}
-          {turnShort === null || turnId === undefined ? null : (
+          {turnId === undefined ? null : (
             <>
               <span className="sep">·</span>
               <span className="turn">
-                <IdRef id={turnId} type="turn" label={`turn ${turnShort}`} />
+                <IdRef id={turnId} type="turn" label={`turn ${shortId(turnId)}`} />
               </span>
             </>
           )}
           <span className="sep">·</span>
-          <span className="when">{formatTime(turn.entry.timestamp)}</span>
+          <span className="when">{formatTimestamp(turn.entry.timestamp)}</span>
           {deliveryStatus === undefined ? null : (
             <>
               <span className="sep">·</span>

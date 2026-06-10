@@ -9,17 +9,24 @@ import {
   getTurns,
 } from "../../api/client";
 import type {
+  SharedStateResponse,
   SessionRecord,
   StreamEntry,
   StreamEntryKind,
+  StreamResponse,
   TurnHistoryOutcomeClass,
   TurnHistoryRow,
 } from "../../api/types";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi, type ApiHookState } from "../../hooks/use-api";
 import type { TurnStreamState } from "../../hooks/use-turn-stream";
-import { mergeEntries, sortStreamEntries, streamContentText } from "../../lib/stream-utils";
-import { formatTime } from "../../lib/stream-utils";
+import type { AudienceDisplayIdentity } from "../../lib/audience-identity";
+import {
+  formatTimestamp,
+  mergeEntries,
+  sortStreamEntries,
+  streamContentText,
+} from "../../lib/stream-utils";
 import { ParticipationPolicyControl } from "../../components/ParticipationPolicyControl";
 import { Tag, type TagKind } from "../../components/Tag";
 import { shortId } from "../screen-utils";
@@ -63,7 +70,8 @@ function makeClientMessageId(): string {
 
 export type CognitionScreenProps = {
   sessionId: string;
-  audience: string;
+  audienceValue: string | null;
+  audienceDisplay: AudienceDisplayIdentity;
   audienceEntityId?: string | null;
   turnStream: TurnStreamState;
   session?: SessionRecord | null;
@@ -113,6 +121,8 @@ function optimisticUserEntry(input: {
   message: string;
   sessionId: string;
   audience: string;
+  audienceEntityId?: string | null;
+  senderLabel?: string | null;
   status: ChatDeliveryStatus;
 }): ChatStreamEntry {
   return {
@@ -121,7 +131,8 @@ function optimisticUserEntry(input: {
     kind: "user_msg",
     content: input.message,
     audience: input.audience,
-    sender_entity_id: null,
+    sender_entity_id: input.audienceEntityId ?? null,
+    sender_label: input.senderLabel ?? null,
     reply_target_entity_id: null,
     session_id: input.sessionId,
     compressed: false,
@@ -232,6 +243,14 @@ function turnOutcomeKind(outcome: TurnHistoryOutcomeClass): TagKind {
   return "";
 }
 
+function StaticIdChip({ label }: { label: string }) {
+  return (
+    <span className="id-chip static-id-chip">
+      <span className="id-chip-main id-chip-static">{label}</span>
+    </span>
+  );
+}
+
 function TurnHistoryStrip({
   rows,
   selectedTurnId,
@@ -279,12 +298,12 @@ function TurnHistoryStrip({
             aria-pressed={selectedTurnId === row.turn_id}
           >
             <span className="turn-history-row-top">
-              <span className="turn-history-turn">{shortId(row.turn_id)}</span>
+              <span className="turn-history-turn">{formatTimestamp(row.started_at)}</span>
+              <StaticIdChip label={shortId(row.turn_id)} />
               <Tag kind={turnOutcomeKind(row.outcome)}>{row.outcome}</Tag>
             </span>
             <span className="turn-history-meta">
-              <span>{formatTime(row.started_at)}</span>
-              <span>{row.audience ?? "global"}</span>
+              <span>{row.audience === null ? "global audience" : "session audience"}</span>
             </span>
             {row.suppression_reason === null ? null : (
               <span className="turn-history-reason">{row.suppression_reason}</span>
@@ -298,7 +317,8 @@ function TurnHistoryStrip({
 
 export function CognitionScreen({
   sessionId,
-  audience,
+  audienceValue,
+  audienceDisplay,
   audienceEntityId,
   turnStream,
   session = null,
@@ -317,17 +337,23 @@ export function CognitionScreen({
   const participationPolicyLocked = session?.audience_role === "operator";
 
   const streamApi = useApi(
-    () => getStream({ session: sessionId, audience, kinds: CHAT_KINDS, limit: 50 }),
-    [audience, sessionId],
+    () =>
+      audienceValue === null
+        ? Promise.resolve({ entries: [], next_cursor: null } satisfies StreamResponse)
+        : getStream({ session: sessionId, audience: audienceValue, kinds: CHAT_KINDS, limit: 50 }),
+    [audienceValue, sessionId],
   );
   const turnsApi = useApi(
     () => getTurns({ session: sessionId, limit: TURN_HISTORY_LIMIT }),
     [sessionId],
   );
   const sharedStateApi = useLazyScreenApi(
-    () => getSharedState(audience),
-    [audience],
-    activatedXrayTabs.has("shared"),
+    () =>
+      audienceValue === null
+        ? Promise.resolve({ audience: "", entries: [] } satisfies SharedStateResponse)
+        : getSharedState(audienceValue),
+    [audienceValue],
+    audienceValue !== null && activatedXrayTabs.has("shared"),
   );
   const commitmentsApi = useLazyScreenApi(
     () => getCommitments(),
@@ -344,7 +370,7 @@ export function CognitionScreen({
     setChatEntries([]);
     setOptimisticEntries([]);
     setReplayTurnId(null);
-  }, [audience, sessionId]);
+  }, [audienceValue, sessionId]);
 
   useEffect(() => {
     if (turnStream.activeTurnId === null || turnStream.terminalOutcome === null) {
@@ -363,12 +389,14 @@ export function CognitionScreen({
       );
       setChatEntries((current) =>
         mergeEntries(
-          current.filter((entry) => entry.session_id === sessionId && entry.audience === audience),
+          current.filter(
+            (entry) => entry.session_id === sessionId && entry.audience === audienceValue,
+          ),
           streamData.entries,
         ),
       );
     }
-  }, [audience, sessionId, streamApi.data]);
+  }, [audienceValue, sessionId, streamApi.data]);
 
   useEffect(() => {
     return live.subscribe((frame) => {
@@ -376,13 +404,19 @@ export function CognitionScreen({
         return;
       }
 
-      const matching = frame.entries.filter((entry) => isChatEntry(entry, sessionId, audience));
+      if (audienceValue === null) {
+        return;
+      }
+
+      const matching = frame.entries.filter((entry) =>
+        isChatEntry(entry, sessionId, audienceValue),
+      );
       if (matching.length > 0) {
         setOptimisticEntries((current) => withoutReconciledOptimisticEntries(current, matching));
         setChatEntries((current) => mergeEntries(current, matching));
       }
     });
-  }, [audience, live, sessionId]);
+  }, [audienceValue, live, sessionId]);
 
   useEffect(() => {
     const previousConnectionCount = previousConnectionCountRef.current;
@@ -394,10 +428,15 @@ export function CognitionScreen({
 
     let cancelled = false;
     void (async () => {
+      if (audienceValue === null) {
+        resetForReconnect();
+        return;
+      }
+
       try {
         const stream = await getStream({
           session: sessionId,
-          audience,
+          audience: audienceValue,
           kinds: CHAT_KINDS,
           limit: 50,
         });
@@ -409,7 +448,7 @@ export function CognitionScreen({
         setChatEntries((current) =>
           mergeEntries(
             current.filter(
-              (entry) => entry.session_id === sessionId && entry.audience === audience,
+              (entry) => entry.session_id === sessionId && entry.audience === audienceValue,
             ),
             stream.entries,
           ),
@@ -430,7 +469,7 @@ export function CognitionScreen({
     return () => {
       cancelled = true;
     };
-  }, [audience, live.connectionCount, replaceTailFromEntries, resetForReconnect, sessionId]);
+  }, [audienceValue, live.connectionCount, replaceTailFromEntries, resetForReconnect, sessionId]);
 
   const visibleChatEntries = useMemo(
     () =>
@@ -470,12 +509,18 @@ export function CognitionScreen({
       : null;
 
   const send = async (input: { message: string; attachments?: readonly File[] }) => {
+    if (audienceValue === null) {
+      return false;
+    }
+
     const externalMessageId = makeClientMessageId();
     const optimisticEntry = optimisticUserEntry({
       externalMessageId,
       message: input.message,
       sessionId,
-      audience,
+      audience: audienceValue,
+      audienceEntityId,
+      senderLabel: audienceDisplay.label,
       status: "queued",
     });
 
@@ -484,7 +529,7 @@ export function CognitionScreen({
     const result = await turnStream.runTurn({
       ...input,
       external_message_id: externalMessageId,
-      audience,
+      audience: audienceValue,
       audience_entity_id: audienceEntityId,
       session: sessionId,
     });
@@ -518,7 +563,9 @@ export function CognitionScreen({
         <ChatStream
           entries={visibleChatEntries}
           sessionId={sessionId}
-          audience={audience}
+          session={session}
+          audienceValue={audienceValue}
+          audienceDisplay={audienceDisplay}
           running={turnStream.running}
         />
         <ParticipationPolicyControl
@@ -527,7 +574,11 @@ export function CognitionScreen({
           onChanged={onSessionPolicyChanged ?? (async () => undefined)}
           locked={participationPolicyLocked}
         />
-        <ChatInput audience={audience} onSend={send} />
+        <ChatInput
+          audience={audienceDisplay.label ?? "unknown"}
+          onSend={send}
+          disabled={audienceValue === null}
+        />
         <TurnHistoryStrip
           rows={turnsApi.data?.rows ?? []}
           selectedTurnId={replayTurnId}
@@ -547,7 +598,7 @@ export function CognitionScreen({
         delibPath={xrayState.delibPath}
         finalAttempt={xrayState.finalAttempt}
         cachedLedger={xrayLedger}
-        audience={audience}
+        audience={audienceValue}
         tracePlaceholder={tracePlaceholder}
         particleEnabled={replayTurnId === null}
         replayTurn={replayTurn}

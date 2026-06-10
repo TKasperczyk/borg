@@ -24,7 +24,7 @@ import { Tag, type TagKind } from "../../components/Tag";
 import type { ApiHookState } from "../../hooks/use-api";
 import type { PhaseState } from "../../hooks/use-turn-stream";
 import { lifecycleLabel, tagKind as lifecycleTagKind } from "../../lib/shared-state-lifecycle";
-import { formatTime } from "../../lib/stream-utils";
+import { formatTimestamp } from "../../lib/stream-utils";
 import { shortId } from "../screen-utils";
 import { FlowChart } from "./FlowChart";
 import { LedgerView } from "./LedgerView";
@@ -61,7 +61,7 @@ export type XrayProps = {
   delibPath: "system_1" | "system_2" | null;
   finalAttempt: number;
   cachedLedger?: EvidenceLedger;
-  audience: string;
+  audience: string | null;
   tracePlaceholder?: string | null;
   particleEnabled?: boolean;
   replayTurn?: TurnHistoryRow | null;
@@ -172,7 +172,7 @@ function ReplayContext({ turn }: { turn: TurnHistoryRow | null | undefined }) {
     <div className="xray-context" aria-label="Replay turn metadata">
       <span className="xray-context-label">replay</span>
       <IdRef id={turn.turn_id} type="turn" label={shortId(turn.turn_id)} />
-      <span className="dim">{formatTime(turn.started_at)}</span>
+      <span className="dim">{formatTimestamp(turn.started_at)}</span>
       <Tag kind={outcomeKind(turn.outcome)}>{turn.outcome}</Tag>
       <Tag>{turn.audience ?? "global"}</Tag>
       {turn.suppression_reason === null ? null : (

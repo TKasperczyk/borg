@@ -980,12 +980,12 @@ describe("Inspector drawer", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Actions" }));
     fireEvent.click(await screen.findByRole("button", { name: "revoke commitment" }));
 
-    expect(await screen.findByText(`revoke ${commitment.id}`)).toBeInTheDocument();
+    await waitFor(() => expect(document.querySelector(".modal-title")).toBeInTheDocument());
+    expect(document.querySelector(".modal-title")?.textContent).toContain("revoke");
+    expect(document.querySelector(".modal-title")?.textContent).not.toContain(commitment.id);
     fireEvent.keyDown(window, { key: "Escape" });
 
-    await waitFor(() =>
-      expect(screen.queryByText(`revoke ${commitment.id}`)).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(document.querySelector(".modal-title")).not.toBeInTheDocument());
     expect(screen.getByRole("dialog", { name: "Commitment inspector" })).toBeInTheDocument();
   });
 

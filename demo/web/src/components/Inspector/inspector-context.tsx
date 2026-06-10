@@ -20,7 +20,7 @@ export type InspectorContextValue = {
   openInSourceScreen: () => void;
   canBack: boolean;
   sessionId: string;
-  audience: string;
+  audience: string | null;
 };
 
 type InspectorProviderProps = {
@@ -28,7 +28,7 @@ type InspectorProviderProps = {
   setView: (view: RouteId, options?: RouteNavigationOptions) => void;
   setSessionId: (sessionId: string) => void;
   sessionId: string;
-  audience: string;
+  audience: string | null;
 };
 
 const InspectorContext = createContext<InspectorContextValue | null>(null);

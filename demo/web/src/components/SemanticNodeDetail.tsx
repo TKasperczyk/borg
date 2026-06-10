@@ -1,4 +1,5 @@
 import type { SemanticMemoryNode } from "../api/types";
+import { isInternalId } from "../screens/screen-utils";
 import { IdChip } from "./Inspector/IdChip";
 import { Tag } from "./Tag";
 
@@ -42,7 +43,13 @@ export function SemanticNodeDetail({ node, label }: SemanticNodeDetailProps) {
           overflowWrap: "anywhere",
         }}
       >
-        {node.label}
+        {node.display_label ?? (isInternalId(node.label) ? "unknown entity" : node.label)}
+        {node.display_label === null && isInternalId(node.label) ? (
+          <>
+            {" "}
+            <IdChip id={node.label} type="entity" />
+          </>
+        ) : null}
       </div>
       <div
         style={{

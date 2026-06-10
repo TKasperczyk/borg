@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { ApiError, getCreatorEntity, openOperatorSession, setCreatorByName } from "./api/client";
-import type { EntityRecord, StateSnapshot } from "./api/types";
+import type { EntityRecord, SessionRecord, StateSnapshot } from "./api/types";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { CommandPalette } from "./components/CommandPalette/CommandPalette";
 import { Inspector } from "./components/Inspector/Inspector";
@@ -19,6 +19,7 @@ import { usePaletteHotkey } from "./hooks/use-palette-hotkey";
 import { useSession } from "./hooks/use-session";
 import { useTurnStream } from "./hooks/use-turn-stream";
 import { useView } from "./hooks/use-view";
+import type { AudienceDisplayIdentity } from "./lib/audience-identity";
 import { recordClientError } from "./lib/client-error-log";
 import { AdminScreen } from "./screens/Admin";
 import { CognitionScreen } from "./screens/Cognition";
@@ -31,12 +32,10 @@ import { PromptsScreen } from "./screens/Prompts";
 import { ReviewScreen } from "./screens/Review";
 import { StreamScreen } from "./screens/Stream";
 
-const DEFAULT_AUDIENCE = "alice";
-
 function formatNow(): string {
   const date = new Date();
   const pad = (value: number) => String(value).padStart(2, "0");
-  return `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function countBadge(
@@ -57,6 +56,35 @@ function railBadges(counts: StateSnapshot["counts"] | null): Partial<Record<Rout
     governance: countBadge(counts?.commitments, 1, "commitments"),
     review: countBadge(counts?.open_reviews, 2, "open reviews"),
     dream: countBadge(counts?.dream_audit_rows, 1, "dream audit rows"),
+  };
+}
+
+type AudienceTransportIdentity = {
+  audienceValue: string | null;
+  display: AudienceDisplayIdentity;
+};
+
+function audienceIdentity(
+  sessionId: string,
+  activeSession: SessionRecord | null,
+): AudienceTransportIdentity {
+  if (activeSession === null) {
+    return {
+      audienceValue: null,
+      display: { label: null, entityId: null, fallbackId: sessionId },
+    };
+  }
+
+  const entityId = activeSession.audience_entity_id;
+  const hasTrustedDisplayLabel = entityId !== null || activeSession.source_type === "demo";
+
+  return {
+    audienceValue: activeSession.audience_label,
+    display: {
+      label: hasTrustedDisplayLabel ? activeSession.audience_label : null,
+      entityId,
+      fallbackId: activeSession.source_external_id ?? sessionId,
+    },
   };
 }
 
@@ -131,7 +159,7 @@ function AppShellContent({
   const refetchSessions = sessionsApi.refetch;
   const activeSession =
     sessionsApi.data?.sessions.find((session) => session.session_id === sessionId) ?? null;
-  const activeAudience = activeSession?.audience_label ?? DEFAULT_AUDIENCE;
+  const activeAudience = audienceIdentity(sessionId, activeSession);
   const badges = useMemo(() => railBadges(counts), [counts]);
   const [resetOpen, setResetOpen] = useState(false);
   const palette = usePaletteHotkey({ disabled: resetOpen, onRouteChord: setView });
@@ -171,14 +199,14 @@ function AppShellContent({
       setView={setView}
       setSessionId={setSessionId}
       sessionId={sessionId}
-      audience={activeAudience}
+      audience={activeAudience.audienceValue}
     >
       <div className="app">
         <Rail route={view} setRoute={setView} badges={badges} />
         <InstrumentStrip
           sessionId={sessionId}
           activeSession={activeSession}
-          audience={activeAudience}
+          audienceDisplay={activeAudience.display}
           creator={creator}
           state={stateApi.data}
           wsState={wsState}
@@ -211,7 +239,8 @@ function AppShellContent({
               {view === "cognition" ? (
                 <CognitionScreen
                   sessionId={sessionId}
-                  audience={activeAudience}
+                  audienceValue={activeAudience.audienceValue}
+                  audienceDisplay={activeAudience.display}
                   audienceEntityId={activeSession?.audience_entity_id ?? null}
                   turnStream={turnStream}
                   session={activeSession}
@@ -225,7 +254,9 @@ function AppShellContent({
                   onNavigate={setView}
                 />
               ) : null}
-              {view === "stream" ? <StreamScreen sessionId={sessionId} /> : null}
+              {view === "stream" ? (
+                <StreamScreen sessionId={sessionId} activeSession={activeSession} />
+              ) : null}
               {view === "memory" ? (
                 <MemoryScreen
                   sessionId={sessionId}

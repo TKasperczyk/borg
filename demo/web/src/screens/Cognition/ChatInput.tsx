@@ -4,10 +4,8 @@ import { ImagePlaceholder } from "../../components/ImagePlaceholder";
 
 export type ChatInputProps = {
   audience: string;
-  onSend: (input: {
-    message: string;
-    attachments?: readonly File[];
-  }) => Promise<boolean>;
+  disabled?: boolean;
+  onSend: (input: { message: string; attachments?: readonly File[] }) => Promise<boolean>;
 };
 
 type StagedAttachment = {
@@ -28,7 +26,7 @@ function formatAttachmentBytes(bytes: number): string {
   return `${(bytes / BYTES_PER_MIB).toFixed(1)} MiB`;
 }
 
-export function ChatInput({ audience, onSend }: ChatInputProps) {
+export function ChatInput({ audience, disabled = false, onSend }: ChatInputProps) {
   const [input, setInput] = useState("");
   const [staged, setStaged] = useState<StagedAttachment[]>([]);
   const [draggingOver, setDraggingOver] = useState(false);
@@ -64,6 +62,9 @@ export function ChatInput({ audience, onSend }: ChatInputProps) {
     const trimmed = input.trim();
     const message = trimmed.length === 0 ? "(attached image)" : trimmed;
     if (trimmed.length === 0 && staged.length === 0) {
+      return;
+    }
+    if (disabled) {
       return;
     }
     const stagedSnapshot = staged;
@@ -121,10 +122,7 @@ export function ChatInput({ audience, onSend }: ChatInputProps) {
         <div className="composer-staged">
           {staged.map((attachment) => (
             <div key={attachment.id} className="staged-att">
-              <ImagePlaceholder
-                mediaType={attachment.file.type}
-                size="xs"
-              />
+              <ImagePlaceholder mediaType={attachment.file.type} size="xs" />
               <div className="meta">
                 <span className="h">{attachment.file.name}</span>
                 <span>
@@ -149,6 +147,7 @@ export function ChatInput({ audience, onSend }: ChatInputProps) {
         <textarea
           placeholder="send a turn"
           value={input}
+          disabled={disabled}
           onChange={(event) => setInput(event.target.value)}
           onPaste={(event) => {
             const files = Array.from(event.clipboardData.items)
@@ -177,8 +176,7 @@ export function ChatInput({ audience, onSend }: ChatInputProps) {
       </div>
       <div className="chat-input-flags">
         <span className="flag">
-          <span className="k">--audience</span>{" "}
-          <span className="v acc">{audience}</span>
+          <span className="k">--audience</span> <span className="v acc">{audience}</span>
         </span>
         <span className="flag">
           <span className="k">--mode</span> <span className="v">auto</span>
@@ -202,13 +200,14 @@ export function ChatInput({ audience, onSend }: ChatInputProps) {
           className="btn sm ghost"
           onClick={() => fileInputRef.current?.click()}
           type="button"
+          disabled={disabled}
         >
           + attach
         </button>
         <button
           className="btn sm primary"
           onClick={send}
-          disabled={input.trim().length === 0 && staged.length === 0}
+          disabled={disabled || (input.trim().length === 0 && staged.length === 0)}
           type="button"
         >
           send

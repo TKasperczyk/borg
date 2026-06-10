@@ -38,8 +38,11 @@ export type StreamEntry = {
   token_estimate?: number;
   tool_calls?: unknown[];
   audience?: string;
+  audience_label?: string | null;
   sender_entity_id: string | null;
+  sender_label?: string | null;
   reply_target_entity_id: string | null;
+  session_label?: string | null;
   source_message_key?: {
     source_type: string;
     source_external_id: string;
@@ -226,6 +229,7 @@ export type EpisodeMemoryItem = {
   narrative: string;
   search_score?: number;
   participants: string[];
+  participant_refs?: Array<{ value: string; id: string | null; label: string | null }>;
   location: string | null;
   start_time: number;
   end_time: number;
@@ -246,6 +250,7 @@ export type SemanticMemoryNode = {
   id: string;
   kind: "concept" | "entity" | "proposition";
   label: string;
+  display_label?: string | null;
   description: string;
   search_score?: number;
   domain: string | null;
@@ -280,6 +285,7 @@ export type SemanticGraphNodeStatus = "active" | "contested" | "contradicted" | 
 export type SemanticGraphNode = {
   id: string;
   label: string;
+  display_label?: string | null;
   status: SemanticGraphNodeStatus;
   kind?: string;
   salience?: number;

@@ -1,5 +1,5 @@
 import type { SemanticMemoryEdge, SemanticMemoryNode } from "../api/types";
-import { formatTime } from "../lib/stream-utils";
+import { formatTimestamp } from "../lib/stream-utils";
 import { shortId } from "../screens/screen-utils";
 import { IdChip } from "./Inspector/IdChip";
 import { Tag } from "./Tag";
@@ -57,11 +57,13 @@ export function SemanticEdgeDetail({
         </div>
         <div className="row">
           <span className="k">valid from</span>
-          <span className="v">{formatTime(edge.valid_from)}</span>
+          <span className="v">{formatTimestamp(edge.valid_from)}</span>
         </div>
         <div className="row">
           <span className="k">valid to</span>
-          <span className="v">{edge.valid_to === null ? "open" : formatTime(edge.valid_to)}</span>
+          <span className="v">
+            {edge.valid_to === null ? "open" : formatTimestamp(edge.valid_to)}
+          </span>
         </div>
         <div className="row">
           <span className="k">evidence episodes</span>

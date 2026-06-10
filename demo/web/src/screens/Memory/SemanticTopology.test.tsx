@@ -8,7 +8,14 @@ import { SemanticTopology, edgeClass } from "./SemanticTopology";
 function graphResponse(): SemanticGraphResponse {
   return {
     nodes: [
-      { id: "semn_alpha00000000", label: "Sol", status: "active", kind: "entity", edge_count: 3 },
+      {
+        id: "semn_alpha00000000",
+        label: "ent_abcdefghijklmnop",
+        display_label: "Sol",
+        status: "active",
+        kind: "entity",
+        edge_count: 3,
+      },
       { id: "semn_beta000000000", label: "Sol", status: "active", kind: "entity", edge_count: 2 },
       {
         id: "semn_gamma00000000",

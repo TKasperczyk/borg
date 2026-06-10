@@ -98,6 +98,12 @@ function sessionRecord(input: Partial<SessionRecord> = {}): SessionRecord {
   };
 }
 
+const aliceAudienceDisplay = {
+  label: "alice",
+  entityId: null,
+  fallbackId: "default",
+};
+
 function turnRow(input: Partial<TurnHistoryRow> & Pick<TurnHistoryRow, "turn_id">): TurnHistoryRow {
   return {
     started_at: 1,
@@ -337,7 +343,8 @@ function Harness({
     <LiveEventsProvider value={live}>
       <CognitionScreen
         sessionId={sessionId}
-        audience="alice"
+        audienceValue="alice"
+        audienceDisplay={aliceAudienceDisplay}
         turnStream={turnStream}
         session={session}
         onSessionPolicyChanged={onSessionPolicyChanged}
@@ -377,7 +384,13 @@ describe("cognition screen", () => {
     ];
 
     renderWithInspector(
-      <ChatStream entries={entries} sessionId="default" audience="alice" running={false} />,
+      <ChatStream
+        entries={entries}
+        sessionId="default"
+        audienceValue="alice"
+        audienceDisplay={aliceAudienceDisplay}
+        running={false}
+      />,
     );
 
     expect(screen.getByText("see this")).toBeInTheDocument();
@@ -426,7 +439,13 @@ describe("cognition screen", () => {
     ];
 
     renderWithInspector(
-      <ChatStream entries={entries} sessionId="default" audience="alice" running={false} />,
+      <ChatStream
+        entries={entries}
+        sessionId="default"
+        audienceValue="alice"
+        audienceDisplay={aliceAudienceDisplay}
+        running={false}
+      />,
     );
 
     expect(screen.getByText("deliberate silence")).toBeInTheDocument();
@@ -468,7 +487,13 @@ describe("cognition screen", () => {
     ];
 
     renderWithInspector(
-      <ChatStream entries={entries} sessionId="default" audience="alice" running={false} />,
+      <ChatStream
+        entries={entries}
+        sessionId="default"
+        audienceValue="alice"
+        audienceDisplay={aliceAudienceDisplay}
+        running={false}
+      />,
     );
 
     expect(screen.getAllByText("aud alice").length).toBeGreaterThan(0);

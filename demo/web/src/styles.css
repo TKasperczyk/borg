@@ -1454,6 +1454,33 @@ select {
   flex-wrap: wrap;
   gap: 4px;
 }
+.identity-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: nowrap;
+  vertical-align: middle;
+}
+.identity-inline > span:not(.id-chip) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.identity-inline .id-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.topbar-pill .identity-inline,
+.stream-row .aud .identity-inline {
+  justify-content: flex-end;
+}
+.session-crumb.identity-inline,
+.topbar-crumb .session-crumb {
+  max-width: 28ch;
+}
 .btn:disabled,
 .btn:disabled:hover {
   color: var(--text-faint);
@@ -3430,7 +3457,7 @@ g.fc-regen-group.active .fc-regen-label-bg {
 
 .stream-row {
   display: grid;
-  grid-template-columns: 80px 120px 1fr 64px;
+  grid-template-columns: minmax(80px, 132px) 120px minmax(0, 1fr) minmax(0, 96px);
   gap: 10px;
   padding: 6px 14px;
   border-bottom: 1px solid var(--line-soft);
@@ -3447,6 +3474,9 @@ g.fc-regen-group.active .fc-regen-label-bg {
 .stream-row .t {
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .stream-row .k {
   color: var(--text-mute);
@@ -5609,9 +5639,12 @@ tr[role="button"]:focus-visible {
   color: var(--text-mute);
   font-family: var(--mono);
   font-size: var(--fs-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   background: var(--bg-0);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 .modal-body {
   padding: 14px;
