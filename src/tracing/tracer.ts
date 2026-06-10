@@ -147,6 +147,7 @@ export type TurnTraceEventName =
   | "semantic_insert.skipped"
   | "semantic_node.status.transitioned"
   | "maintenance_snapshot.completed"
+  | "storage.optimize.completed"
   | "commitment_guard.shadow_observation"
   | "commitment_guard.advisory_violation_observed"
   | "commitment_guard.enforce_suppression"

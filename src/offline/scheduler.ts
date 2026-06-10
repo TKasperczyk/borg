@@ -2,8 +2,15 @@
 // Separate from the autonomy scheduler: maintenance is housekeeping, not cognition,
 // so it runs on its own interval loop with a busy-detection hook.
 
+import { performance } from "node:perf_hooks";
+
 import { SystemClock, type Clock } from "../util/clock.js";
 import { ConfigError } from "../util/errors.js";
+import {
+  normalizeOptimizeError,
+  type LanceDbOptimizeStorageResult,
+} from "../storage/lancedb/index.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 
 import type { MaintenanceOrchestrator } from "./orchestrator.js";
 import type { OfflineProcess, OfflineProcessName, OrchestratorResult } from "./types.js";
@@ -18,6 +25,7 @@ export type MaintenanceTickResult = {
   ts: number;
   processes: OfflineProcessName[];
   result: OrchestratorResult | null;
+  storageOptimization?: LanceDbOptimizeStorageResult | null;
   reason?: string;
 };
 
@@ -38,6 +46,9 @@ export type MaintenanceSchedulerOptions = {
   heavyProcesses: readonly OfflineProcessName[];
   orchestrator: MaintenanceOrchestrator;
   processRegistry: Record<OfflineProcessName, OfflineProcess>;
+  optimizeStorage?: boolean;
+  storageOptimizer?: () => Promise<LanceDbOptimizeStorageResult>;
+  tracer?: TurnTracer;
   clock?: Clock;
   isBusy?: () => boolean;
   setIntervalFn?: typeof setInterval;
@@ -144,9 +155,122 @@ export class MaintenanceScheduler {
     return cadence === "light" ? this.options.lightProcesses : this.options.heavyProcesses;
   }
 
+  private shouldOptimizeStorage(cadence: MaintenanceCadence): boolean {
+    return (
+      cadence === "heavy" &&
+      this.options.optimizeStorage === true &&
+      this.options.storageOptimizer !== undefined
+    );
+  }
+
+  private emitStorageOptimizationCompleted(input: {
+    cadence: MaintenanceCadence;
+    ts: number;
+    runId?: string;
+    result: LanceDbOptimizeStorageResult;
+  }): void {
+    if (this.options.tracer?.enabled !== true) {
+      return;
+    }
+
+    const successfulTables = input.result.tables.filter((table) => table.status === "ok");
+    const errorCount =
+      input.result.tables.length -
+      successfulTables.length +
+      (input.result.error === undefined ? 0 : 1);
+    const tables: Array<Record<string, number | string>> = input.result.tables.map((table) => {
+      if (table.status === "ok") {
+        return {
+          table: table.table,
+          status: table.status,
+          fragments_removed: table.fragmentsRemoved,
+          fragments_added: table.fragmentsAdded,
+          versions_pruned: table.versionsPruned,
+          bytes_removed: table.bytesRemoved,
+          duration_ms: table.durationMs,
+        };
+      }
+
+      const errorTable: Record<string, number | string> = {
+        table: table.table,
+        status: table.status,
+        duration_ms: table.durationMs,
+        error_message: table.error.message,
+      };
+
+      if (table.error.code !== undefined) {
+        errorTable.error_code = table.error.code;
+      }
+
+      return errorTable;
+    });
+
+    this.options.tracer.emit("storage.optimize.completed", {
+      turnId: input.runId ?? `maintenance_storage_${input.cadence}_${input.ts}`,
+      cadence: input.cadence,
+      table_count: input.result.tables.length,
+      errors: errorCount,
+      fragments_removed: successfulTables.reduce((sum, table) => sum + table.fragmentsRemoved, 0),
+      fragments_added: successfulTables.reduce((sum, table) => sum + table.fragmentsAdded, 0),
+      versions_pruned: successfulTables.reduce((sum, table) => sum + table.versionsPruned, 0),
+      duration_ms: input.result.durationMs,
+      tables,
+      ...(input.result.error === undefined
+        ? {}
+        : {
+            optimizer_error_message: input.result.error.message,
+            ...(input.result.error.code === undefined
+              ? {}
+              : { optimizer_error_code: input.result.error.code }),
+          }),
+    });
+  }
+
+  private createStorageOptimizationFailureResult(input: {
+    error: unknown;
+    startedAt: number;
+  }): LanceDbOptimizeStorageResult {
+    return {
+      durationMs: Math.round(performance.now() - input.startedAt),
+      tables: [],
+      error: normalizeOptimizeError(input.error),
+    };
+  }
+
+  private async optimizeStorageAfterHeavy(input: {
+    cadence: MaintenanceCadence;
+    ts: number;
+    runId?: string;
+  }): Promise<LanceDbOptimizeStorageResult | null> {
+    if (!this.shouldOptimizeStorage(input.cadence)) {
+      return null;
+    }
+
+    const startedAt = performance.now();
+    let result: LanceDbOptimizeStorageResult;
+
+    try {
+      result = await this.options.storageOptimizer!();
+    } catch (error) {
+      result = this.createStorageOptimizationFailureResult({
+        error,
+        startedAt,
+      });
+    }
+
+    this.emitStorageOptimizationCompleted({
+      cadence: input.cadence,
+      ts: input.ts,
+      runId: input.runId,
+      result,
+    });
+    return result;
+  }
+
   private async tickOnce(cadence: MaintenanceCadence): Promise<MaintenanceTickResult> {
     const ts = this.clock.now();
     const processes = this.processNamesFor(cadence);
+    const shouldOptimizeStorage = this.shouldOptimizeStorage(cadence);
 
     if (!this.options.enabled) {
       return {
@@ -155,17 +279,19 @@ export class MaintenanceScheduler {
         ts,
         processes: [...processes],
         result: null,
+        storageOptimization: null,
         reason: "Maintenance scheduler is disabled.",
       };
     }
 
-    if (processes.length === 0) {
+    if (processes.length === 0 && !shouldOptimizeStorage) {
       return {
         status: "skipped_empty",
         cadence,
         ts,
         processes: [],
         result: null,
+        storageOptimization: null,
         reason: `No processes configured for the ${cadence} cadence.`,
       };
     }
@@ -177,16 +303,40 @@ export class MaintenanceScheduler {
         ts,
         processes: [...processes],
         result: null,
+        storageOptimization: null,
         reason: "Skipped because the system is busy.",
       };
     }
 
-    const offlineProcesses = processes
-      .map((name) => this.options.processRegistry[name])
-      .filter((process): process is OfflineProcess => process !== undefined);
-    const result = await this.options.orchestrator.run({
-      processes: offlineProcesses,
-    });
+    let result: OrchestratorResult | null = null;
+    let storageOptimization: LanceDbOptimizeStorageResult | null = null;
+
+    if (processes.length > 0) {
+      const offlineProcesses = processes
+        .map((name) => this.options.processRegistry[name])
+        .filter((process): process is OfflineProcess => process !== undefined);
+      result = await this.options.orchestrator.run({
+        processes: offlineProcesses,
+        ...(shouldOptimizeStorage
+          ? {
+              afterRun: async (runResult) => {
+                storageOptimization = await this.optimizeStorageAfterHeavy({
+                  cadence,
+                  ts,
+                  runId: runResult.run_id,
+                });
+              },
+            }
+          : {}),
+      });
+    } else if (shouldOptimizeStorage) {
+      storageOptimization = await this.options.orchestrator.runMechanicalMaintenance(() =>
+        this.optimizeStorageAfterHeavy({
+          cadence,
+          ts,
+        }),
+      );
+    }
 
     return {
       status: "ok",
@@ -194,6 +344,7 @@ export class MaintenanceScheduler {
       ts,
       processes: [...processes],
       result,
+      storageOptimization,
     };
   }
 

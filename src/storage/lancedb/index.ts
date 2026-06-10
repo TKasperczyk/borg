@@ -1,11 +1,15 @@
+import { performance } from "node:perf_hooks";
+
 import {
   connect,
   makeArrowTable,
   type AddColumnsSql,
   type Connection,
   type IntoVector,
+  type OptimizeStats,
   type SchemaLike,
   type Table,
+  type TableStatistics,
   type VectorQuery,
 } from "@lancedb/lancedb";
 import {
@@ -21,9 +25,13 @@ import {
   Utf8,
 } from "apache-arrow";
 
-import { StorageError } from "../../util/errors.js";
+import { BorgError, StorageError } from "../../util/errors.js";
 
 export type LanceDbRow = Record<string, unknown>;
+
+// Keep recent versions available for in-flight same-process readers that began
+// before compaction. Fragment compaction still runs; only version pruning waits.
+export const LANCEDB_OPTIMIZE_CLEANUP_GRACE_MS = 15 * 60 * 1_000;
 
 export type LanceDbOpenTableOptions = {
   name: string;
@@ -51,6 +59,42 @@ export type LanceDbListOptions = {
 export type LanceDbStoreOptions = {
   uri: string;
   connection?: Connection | Promise<Connection>;
+};
+
+export type LanceDbOptimizeStorageOptions = {
+  now?: number | Date;
+  cleanupGraceMs?: number;
+};
+
+export type LanceDbOptimizeErrorDetails = {
+  message: string;
+  code?: string;
+};
+
+export type LanceDbOptimizeTableSuccess = {
+  table: string;
+  status: "ok";
+  fragmentsRemoved: number;
+  fragmentsAdded: number;
+  versionsPruned: number;
+  bytesRemoved: number;
+  durationMs: number;
+};
+
+export type LanceDbOptimizeTableError = {
+  table: string;
+  status: "error";
+  durationMs: number;
+  error: LanceDbOptimizeErrorDetails;
+};
+
+export type LanceDbOptimizeTableResult = LanceDbOptimizeTableSuccess | LanceDbOptimizeTableError;
+
+export type LanceDbOptimizeStorageResult = {
+  cleanupOlderThan?: number;
+  durationMs: number;
+  tables: LanceDbOptimizeTableResult[];
+  error?: LanceDbOptimizeErrorDetails;
 };
 
 function normalizeRows(rows: unknown): LanceDbRow[] {
@@ -179,8 +223,35 @@ async function ensureSchemaCompatibility(
   }
 }
 
+export function normalizeOptimizeError(error: unknown): LanceDbOptimizeErrorDetails {
+  return {
+    message: error instanceof Error ? error.message : String(error),
+    ...(error instanceof BorgError ? { code: error.code } : {}),
+  };
+}
+
+function durationSince(startedAt: number): number {
+  return Math.round(performance.now() - startedAt);
+}
+
+function resolveOptimizeNowMs(now: number | Date | undefined): number {
+  return now instanceof Date ? now.getTime() : (now ?? Date.now());
+}
+
 export class LanceDbTable {
-  constructor(private readonly table: Table) {}
+  constructor(
+    private readonly table: Table,
+    private readonly onClose?: () => void,
+  ) {}
+
+  get name(): string {
+    return this.table.name;
+  }
+
+  isOpen(): boolean {
+    const table = this.table as Table & { isOpen?: () => boolean };
+    return table.isOpen?.() ?? true;
+  }
 
   async checkoutLatest(): Promise<void> {
     try {
@@ -304,13 +375,43 @@ export class LanceDbTable {
     }
   }
 
+  async stats(): Promise<TableStatistics> {
+    try {
+      return await this.table.stats();
+    } catch (error) {
+      throw new StorageError(`Failed to read LanceDB stats for table ${this.table.name}`, {
+        cause: error,
+      });
+    }
+  }
+
+  async optimize(options: { cleanupOlderThan: Date }): Promise<OptimizeStats> {
+    try {
+      await this.table.checkoutLatest();
+      const stats = await this.table.optimize({
+        cleanupOlderThan: options.cleanupOlderThan,
+      });
+      await this.table.checkoutLatest();
+      return stats;
+    } catch (error) {
+      throw new StorageError(`Failed to optimize LanceDB table ${this.table.name}`, {
+        cause: error,
+      });
+    }
+  }
+
   close(): void {
-    this.table.close();
+    try {
+      this.table.close();
+    } finally {
+      this.onClose?.();
+    }
   }
 }
 
 export class LanceDbStore {
   private readonly connectionPromise: Promise<Connection>;
+  private readonly openTablesByName = new Map<string, Set<LanceDbTable>>();
 
   constructor(options: LanceDbStoreOptions) {
     this.connectionPromise =
@@ -327,6 +428,98 @@ export class LanceDbStore {
     }
   }
 
+  private registerTable(table: LanceDbTable): void {
+    const tables = this.openTablesByName.get(table.name) ?? new Set<LanceDbTable>();
+    tables.add(table);
+    this.openTablesByName.set(table.name, tables);
+  }
+
+  private unregisterTable(table: LanceDbTable): void {
+    const tables = this.openTablesByName.get(table.name);
+
+    if (tables === undefined) {
+      return;
+    }
+
+    tables.delete(table);
+
+    if (tables.size === 0) {
+      this.openTablesByName.delete(table.name);
+    }
+  }
+
+  private wrapTable(table: Table): LanceDbTable {
+    let wrapped: LanceDbTable;
+    wrapped = new LanceDbTable(table, () => this.unregisterTable(wrapped));
+    this.registerTable(wrapped);
+    return wrapped;
+  }
+
+  private openTablesFor(name: string): LanceDbTable[] {
+    const tables = this.openTablesByName.get(name);
+
+    if (tables === undefined) {
+      return [];
+    }
+
+    const openTables = [...tables].filter((table) => table.isOpen());
+
+    if (openTables.length !== tables.size) {
+      this.openTablesByName.set(name, new Set(openTables));
+    }
+
+    if (openTables.length === 0) {
+      this.openTablesByName.delete(name);
+    }
+
+    return openTables;
+  }
+
+  private async optimizeTable(
+    connection: Connection,
+    tableName: string,
+    cleanupOlderThan: Date,
+  ): Promise<LanceDbOptimizeTableResult> {
+    const startedAt = performance.now();
+    const openTables = this.openTablesFor(tableName);
+    let temporaryTable: LanceDbTable | null = null;
+
+    try {
+      const table = openTables[0] ?? new LanceDbTable(await connection.openTable(tableName));
+
+      if (openTables.length === 0) {
+        temporaryTable = table;
+      }
+
+      const stats = await table.optimize({ cleanupOlderThan });
+
+      for (const openTable of openTables) {
+        if (openTable !== table && openTable.isOpen()) {
+          await openTable.checkoutLatest();
+        }
+      }
+
+      return {
+        table: tableName,
+        status: "ok",
+        fragmentsRemoved: stats.compaction.fragmentsRemoved,
+        fragmentsAdded: stats.compaction.fragmentsAdded,
+        versionsPruned: stats.prune.oldVersionsRemoved,
+        bytesRemoved: stats.prune.bytesRemoved,
+        durationMs: durationSince(startedAt),
+      };
+    } catch (error) {
+      return {
+        table: tableName,
+        status: "error",
+        durationMs: durationSince(startedAt),
+        error: normalizeOptimizeError(error),
+      };
+    } finally {
+      temporaryTable?.close();
+    }
+  }
+
   async openTable(options: LanceDbOpenTableOptions): Promise<LanceDbTable> {
     const connection = await this.getConnection();
 
@@ -337,7 +530,7 @@ export class LanceDbStore {
         table.close();
         const reopenedTable = await connection.openTable(options.name);
         await reopenedTable.checkoutLatest();
-        return new LanceDbTable(reopenedTable);
+        return this.wrapTable(reopenedTable);
       } catch (error) {
         if (error instanceof StorageError) {
           throw error;
@@ -382,6 +575,36 @@ export class LanceDbStore {
         });
       }
     }
+  }
+
+  async optimizeStorage(
+    options: LanceDbOptimizeStorageOptions = {},
+  ): Promise<LanceDbOptimizeStorageResult> {
+    const startedAt = performance.now();
+    const cleanupGraceMs = options.cleanupGraceMs ?? LANCEDB_OPTIMIZE_CLEANUP_GRACE_MS;
+    const cleanupOlderThan = new Date(resolveOptimizeNowMs(options.now) - cleanupGraceMs);
+    const connection = await this.getConnection();
+    let tableNames: string[];
+
+    try {
+      tableNames = await connection.tableNames();
+    } catch (error) {
+      throw new StorageError("Failed to list LanceDB tables for storage optimization", {
+        cause: error,
+      });
+    }
+
+    const tables: LanceDbOptimizeTableResult[] = [];
+
+    for (const tableName of tableNames) {
+      tables.push(await this.optimizeTable(connection, tableName, cleanupOlderThan));
+    }
+
+    return {
+      cleanupOlderThan: cleanupOlderThan.getTime(),
+      durationMs: durationSince(startedAt),
+      tables,
+    };
   }
 
   async close(): Promise<void> {

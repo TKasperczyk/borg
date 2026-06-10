@@ -75,6 +75,7 @@ describe("config", () => {
       "semantic-extractor",
       "curator",
     ]);
+    expect(config.maintenance.optimizeStorage).toBe(true);
     expect(config.maintenance.heavyProcesses).toEqual([
       "reflector",
       "overseer",
@@ -506,6 +507,7 @@ describe("config", () => {
         BORG_STREAM_INGESTION_MAX_SETTLE_MS: "30000",
         BORG_GENERATION_COGNITION_THINKING_ENABLED: "true",
         BORG_GENERATION_COGNITION_THINKING_BUDGET_TOKENS: "8192",
+        BORG_MAINTENANCE_OPTIMIZE_STORAGE: "false",
         BORG_MODEL_RECALL_EXPANSION: "env-recall",
         ANTHROPIC_API_KEY: "secret",
       },
@@ -562,6 +564,7 @@ describe("config", () => {
       effort: "high",
       budget_tokens: 8192,
     });
+    expect(config.maintenance.optimizeStorage).toBe(false);
     expect(config.cognition.actionLifecycle.archiveStaleAfterInactiveTurns).toBe(18);
     expect(config.offline.curator.retrievalLogRetentionDays).toBe(45);
     expect(config.offline.beliefReviser.maxLlmCalls).toBe(7);

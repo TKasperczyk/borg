@@ -1129,12 +1129,43 @@ export type BorgAutonomyFacade = {
 
 export type BorgMaintenanceCadence = "light" | "heavy";
 
+export type BorgStorageOptimizationTableResult =
+  | {
+      table: string;
+      status: "ok";
+      fragmentsRemoved: number;
+      fragmentsAdded: number;
+      versionsPruned: number;
+      bytesRemoved: number;
+      durationMs: number;
+    }
+  | {
+      table: string;
+      status: "error";
+      durationMs: number;
+      error: {
+        message: string;
+        code?: string;
+      };
+    };
+
+export type BorgStorageOptimizationResult = {
+  cleanupOlderThan?: number;
+  durationMs: number;
+  tables: BorgStorageOptimizationTableResult[];
+  error?: {
+    message: string;
+    code?: string;
+  };
+};
+
 export type BorgMaintenanceTickResult = {
   status: "ok" | "skipped_busy" | "skipped_empty" | "disabled";
   cadence: BorgMaintenanceCadence;
   ts: number;
   processes: string[];
   result: BorgOrchestratorResult | null;
+  storageOptimization?: BorgStorageOptimizationResult | null;
   reason?: string;
 };
 
@@ -1157,6 +1188,7 @@ export type BorgMaintenanceFacade = {
     enabled: boolean;
     lightIntervalMs: number;
     heavyIntervalMs: number;
+    optimizeStorage: boolean;
     lightProcesses: readonly string[];
     heavyProcesses: readonly string[];
     processBudgets: Partial<Record<string, number | null>>;

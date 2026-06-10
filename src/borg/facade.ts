@@ -274,6 +274,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     enabled: deps.config.maintenance.enabled,
     lightIntervalMs: deps.config.maintenance.lightIntervalMs,
     heavyIntervalMs: deps.config.maintenance.heavyIntervalMs,
+    optimizeStorage: deps.config.maintenance.optimizeStorage,
     lightProcesses: deps.config.maintenance.lightProcesses,
     heavyProcesses: deps.config.maintenance.heavyProcesses,
     processBudgets: {

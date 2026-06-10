@@ -8,13 +8,17 @@ import {
   type OfflineProcess,
   type OfflineProcessName,
 } from "../offline/index.js";
+import type { LanceDbStore } from "../storage/lancedb/index.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import type { Clock } from "../util/clock.js";
 
 export type BuildMaintenanceSchedulerOptions = {
   config: Config;
+  lance: LanceDbStore;
   orchestrator: MaintenanceOrchestrator;
   processRegistry: Record<OfflineProcessName, OfflineProcess>;
   clock: Clock;
+  tracer?: TurnTracer;
   isBusy?: () => boolean;
 };
 
@@ -29,6 +33,9 @@ export function buildMaintenanceScheduler(
     heavyProcesses: options.config.maintenance.heavyProcesses,
     orchestrator: options.orchestrator,
     processRegistry: options.processRegistry,
+    optimizeStorage: options.config.maintenance.optimizeStorage,
+    storageOptimizer: () => options.lance.optimizeStorage(),
+    tracer: options.tracer,
     clock: options.clock,
     isBusy: options.isBusy,
   });

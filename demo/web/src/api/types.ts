@@ -808,6 +808,7 @@ export type DreamStateResponse = {
     enabled: boolean;
     light_interval_ms: number;
     heavy_interval_ms: number;
+    optimize_storage?: boolean;
     light_processes: DreamProcessName[];
     heavy_processes: DreamProcessName[];
     process_budgets: Partial<Record<DreamProcessName, number | null>>;

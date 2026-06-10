@@ -2197,6 +2197,7 @@ async function dreamState(borg: Borg) {
       enabled: borg.maintenance.scheduler.isEnabled(),
       light_interval_ms: config.lightIntervalMs,
       heavy_interval_ms: config.heavyIntervalMs,
+      optimize_storage: config.optimizeStorage,
       light_processes: config.lightProcesses,
       heavy_processes: config.heavyProcesses,
       process_budgets: config.processBudgets,

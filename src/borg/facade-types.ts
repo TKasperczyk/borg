@@ -524,6 +524,7 @@ export type BorgMaintenanceFacade = {
     enabled: boolean;
     lightIntervalMs: number;
     heavyIntervalMs: number;
+    optimizeStorage: boolean;
     lightProcesses: readonly OfflineProcessName[];
     heavyProcesses: readonly OfflineProcessName[];
     processBudgets: Partial<Record<OfflineProcessName, number | null>>;

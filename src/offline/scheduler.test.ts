@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { StreamWriter } from "../stream/index.js";
+import type { LanceDbOptimizeStorageResult } from "../storage/lancedb/index.js";
 import { ManualClock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
 
@@ -28,26 +29,35 @@ function createFakeOrchestrator(
   const run = async (options: MaintenanceRunOptions): Promise<OrchestratorResult> => {
     runCalls.push(options);
 
+    let result: OrchestratorResult;
+
     if (runImpl !== undefined) {
-      return runImpl(options);
+      result = await runImpl(options);
+    } else {
+      result = {
+        run_id: "mrun_fake",
+        dryRun: false,
+        results: [],
+        changes: [],
+        tokens_used: 0,
+        errors: [],
+      } as unknown as OrchestratorResult;
     }
 
-    return {
-      run_id: "mrun_fake",
-      dryRun: false,
-      results: [],
-      changes: [],
-      tokens_used: 0,
-      errors: [],
-    } as unknown as OrchestratorResult;
+    await options.afterRun?.(result);
+    return result;
   };
 
   const orchestrator = {
     plan: async () => ({}) as MaintenancePlan,
     preview: () => ({}) as OrchestratorResult,
     apply: async () => ({}) as OrchestratorResult,
+    runMechanicalMaintenance: async <T>(operation: () => Promise<T>) => operation(),
     run,
-  } satisfies Pick<MaintenanceOrchestrator, "plan" | "preview" | "apply" | "run">;
+  } satisfies Pick<
+    MaintenanceOrchestrator,
+    "plan" | "preview" | "apply" | "run" | "runMechanicalMaintenance"
+  >;
 
   return {
     orchestrator: orchestrator as unknown as MaintenanceOrchestrator,
@@ -85,6 +95,24 @@ function createFakeProcessRegistry(): Record<OfflineProcessName, OfflineProcess>
     },
     {} as Record<OfflineProcessName, OfflineProcess>,
   );
+}
+
+function createStorageOptimizationResult(): LanceDbOptimizeStorageResult {
+  return {
+    cleanupOlderThan: 1_000,
+    durationMs: 12,
+    tables: [
+      {
+        table: "episodes",
+        status: "ok",
+        fragmentsRemoved: 4,
+        fragmentsAdded: 1,
+        versionsPruned: 3,
+        bytesRemoved: 128,
+        durationMs: 11,
+      },
+    ],
+  };
 }
 
 describe("MaintenanceScheduler", () => {
@@ -147,6 +175,178 @@ describe("MaintenanceScheduler", () => {
       "overseer",
       "self-narrator",
     ]);
+  });
+
+  it("runs storage optimization after enabled heavy maintenance", async () => {
+    const clock = new ManualClock(1_000);
+    const events: string[] = [];
+    const traceEvents: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const spy = createFakeOrchestrator(async () => {
+      events.push("orchestrator");
+
+      return {
+        run_id: "mrun_storage",
+        dryRun: false,
+        results: [],
+        changes: [],
+        tokens_used: 0,
+        errors: [],
+      } as unknown as OrchestratorResult;
+    });
+    const scheduler = new MaintenanceScheduler({
+      enabled: true,
+      lightIntervalMs: 10_000,
+      heavyIntervalMs: 60_000,
+      lightProcesses: ["consolidator"],
+      heavyProcesses: ["reflector"],
+      orchestrator: spy.orchestrator,
+      processRegistry: createFakeProcessRegistry(),
+      optimizeStorage: true,
+      storageOptimizer: async () => {
+        events.push("storage");
+        return createStorageOptimizationResult();
+      },
+      tracer: {
+        enabled: true,
+        includePayloads: true,
+        emit: (event, data) => {
+          traceEvents.push({ event, data });
+        },
+      },
+      clock,
+    });
+
+    const result = await scheduler.tick("heavy");
+
+    expect(events).toEqual(["orchestrator", "storage"]);
+    expect(result.status).toBe("ok");
+    expect(result.storageOptimization).toMatchObject({
+      tables: [
+        {
+          table: "episodes",
+          status: "ok",
+          fragmentsRemoved: 4,
+          fragmentsAdded: 1,
+          versionsPruned: 3,
+        },
+      ],
+    });
+    expect(traceEvents).toEqual([
+      {
+        event: "storage.optimize.completed",
+        data: expect.objectContaining({
+          turnId: "mrun_storage",
+          cadence: "heavy",
+          table_count: 1,
+          errors: 0,
+          fragments_removed: 4,
+          fragments_added: 1,
+          versions_pruned: 3,
+          duration_ms: 12,
+        }),
+      },
+    ]);
+  });
+
+  it("skips storage optimization when disabled", async () => {
+    const clock = new ManualClock(1_000);
+    const spy = createFakeOrchestrator();
+    const storageOptimizer = vi.fn(async () => createStorageOptimizationResult());
+    const scheduler = new MaintenanceScheduler({
+      enabled: true,
+      lightIntervalMs: 10_000,
+      heavyIntervalMs: 60_000,
+      lightProcesses: ["consolidator"],
+      heavyProcesses: ["reflector"],
+      orchestrator: spy.orchestrator,
+      processRegistry: createFakeProcessRegistry(),
+      optimizeStorage: false,
+      storageOptimizer,
+      clock,
+    });
+
+    const result = await scheduler.tick("heavy");
+
+    expect(storageOptimizer).not.toHaveBeenCalled();
+    expect(result.status).toBe("ok");
+    expect(result.storageOptimization).toBeNull();
+  });
+
+  it("reports optimizer-wide failures without failing the heavy tick", async () => {
+    const clock = new ManualClock(1_000);
+    const traceEvents: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const spy = createFakeOrchestrator();
+    const scheduler = new MaintenanceScheduler({
+      enabled: true,
+      lightIntervalMs: 10_000,
+      heavyIntervalMs: 60_000,
+      lightProcesses: ["consolidator"],
+      heavyProcesses: ["reflector"],
+      orchestrator: spy.orchestrator,
+      processRegistry: createFakeProcessRegistry(),
+      optimizeStorage: true,
+      storageOptimizer: async () => {
+        throw new Error("table enumeration failed");
+      },
+      tracer: {
+        enabled: true,
+        includePayloads: true,
+        emit: (event, data) => {
+          traceEvents.push({ event, data });
+        },
+      },
+      clock,
+    });
+
+    const result = await scheduler.tick("heavy");
+
+    expect(result.status).toBe("ok");
+    expect(result.result).not.toBeNull();
+    expect(result.storageOptimization).toMatchObject({
+      tables: [],
+      error: {
+        message: "table enumeration failed",
+      },
+    });
+    expect(traceEvents).toEqual([
+      {
+        event: "storage.optimize.completed",
+        data: expect.objectContaining({
+          turnId: "mrun_fake",
+          cadence: "heavy",
+          table_count: 0,
+          errors: 1,
+          optimizer_error_message: "table enumeration failed",
+        }),
+      },
+    ]);
+  });
+
+  it("runs heavy storage optimization without adding an offline process", async () => {
+    const clock = new ManualClock(1_000);
+    const spy = createFakeOrchestrator();
+    const storageOptimizer = vi.fn(async () => createStorageOptimizationResult());
+    const scheduler = new MaintenanceScheduler({
+      enabled: true,
+      lightIntervalMs: 10_000,
+      heavyIntervalMs: 60_000,
+      lightProcesses: ["consolidator"],
+      heavyProcesses: [],
+      orchestrator: spy.orchestrator,
+      processRegistry: createFakeProcessRegistry(),
+      optimizeStorage: true,
+      storageOptimizer,
+      clock,
+    });
+
+    const result = await scheduler.tick("heavy");
+
+    expect(result.status).toBe("ok");
+    expect(result.processes).toEqual([]);
+    expect(result.result).toBeNull();
+    expect(result.storageOptimization).toEqual(createStorageOptimizationResult());
+    expect(spy.runCalls).toHaveLength(0);
+    expect(storageOptimizer).toHaveBeenCalledTimes(1);
   });
 
   it("reports disabled when the scheduler is off", async () => {

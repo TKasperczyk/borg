@@ -175,7 +175,8 @@ describe("Sprint 28 integration", () => {
           lightIntervalMs: 60_000,
           heavyIntervalMs: 600_000,
           lightProcesses: ["curator"],
-          // Empty heavy set → skipped_empty, which still proves the heavy
+          optimizeStorage: false,
+          // Empty heavy set -> skipped_empty, which still proves the heavy
           // tick is scheduled independently of the light tick.
           heavyProcesses: [],
         },

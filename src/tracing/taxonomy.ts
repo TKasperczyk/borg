@@ -156,7 +156,7 @@ export const TRACE_EVENT_TAXONOMY = {
     "semantic_node.status.transitioned",
   ],
   offline: ["offline_process.started", "offline_process.completed"],
-  maintenance: ["maintenance_snapshot.completed"],
+  maintenance: ["maintenance_snapshot.completed", "storage.optimize.completed"],
   session: ["session.completed", "turn.rollback_incomplete", "turn.rejected", "turn.terminal"],
 } as const satisfies Record<string, readonly TurnTraceEventName[]>;
 

@@ -415,9 +415,11 @@ export async function openBorgDependencies(
     });
     const maintenanceScheduler = buildMaintenanceScheduler({
       config,
+      lance,
       orchestrator: offline.maintenanceOrchestrator,
       processRegistry: offline.offlineProcesses,
       clock,
+      tracer,
       isBusy: () => sessionLock.isHeld(),
     });
 

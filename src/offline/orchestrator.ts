@@ -25,6 +25,7 @@ export type MaintenanceOrchestratorOptions = {
 
 export type MaintenanceRunOptions = {
   processes: OfflineProcess[];
+  afterRun?: (result: OrchestratorResult) => Promise<void>;
   opts?: {
     dryRun?: boolean;
     budget?: number;
@@ -299,10 +300,17 @@ export class MaintenanceOrchestrator {
     return this.runExclusive(() => this.applyUnlocked(rawPlan));
   }
 
+  async runMechanicalMaintenance<T>(operation: () => Promise<T>): Promise<T> {
+    return this.runExclusive(operation);
+  }
+
   async run(input: MaintenanceRunOptions): Promise<OrchestratorResult> {
     return this.runExclusive(async () => {
       const plan = await this.planUnlocked(input);
-      return input.opts?.dryRun === true ? this.preview(plan) : this.applyUnlocked(plan);
+      const result =
+        input.opts?.dryRun === true ? this.preview(plan) : await this.applyUnlocked(plan);
+      await input.afterRun?.(result);
+      return result;
     });
   }
 }
