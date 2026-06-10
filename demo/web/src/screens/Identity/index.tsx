@@ -21,10 +21,12 @@ import type {
 } from "../../api/types";
 import { Empty } from "../../components/Empty";
 import { IdRef } from "../../components/Inspector/IdRef";
+import { useInspector } from "../../components/Inspector/inspector-context";
+import { resolveObjectType } from "../../components/Inspector/inspector-id";
+import { isWhySupported } from "../../components/Inspector/inspector-registry";
 import { Modal } from "../../components/Modal";
 import { OpenQuestionEventsSection } from "../../components/OpenQuestionEventsSection";
 import { Tag } from "../../components/Tag";
-import { WhyDrawer } from "../../components/WhyDrawer";
 import { useApi } from "../../hooks/use-api";
 import { clamp01, dateLabel, parseJsonPatch, shortId } from "../screen-utils";
 
@@ -647,15 +649,23 @@ function PeriodEvent({ period, current }: { period: AutobiographicalPeriod; curr
 
 export function IdentityScreen() {
   const api = useApi(getIdentity, []);
+  const inspector = useInspector();
   const [questionFilter, setQuestionFilter] = useState<QuestionFilter>("all");
   const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(null);
   const [eventScope, setEventScope] = useState<EventScope>("selected");
   const [modal, setModal] = useState<IdentityModal | null>(null);
-  const [whyId, setWhyId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [operatorError, setOperatorError] = useState<string | null>(null);
   const [directWriteAcknowledged, setDirectWriteAcknowledged] = useState(false);
   const identity = api.data;
+
+  function openWhy(id: string): void {
+    const type = resolveObjectType(id);
+    if (type === null || !isWhySupported(type)) {
+      return;
+    }
+    inspector.openObject({ type, id, presetTab: "evidence" });
+  }
 
   const valueCounts = useMemo(() => {
     const values = identity?.values ?? [];
@@ -958,7 +968,7 @@ export function IdentityScreen() {
                       key={value.id}
                       value={value}
                       busy={busy !== null}
-                      onWhy={setWhyId}
+                      onWhy={openWhy}
                       onModal={openModal}
                     />
                   ))}
@@ -998,7 +1008,7 @@ export function IdentityScreen() {
                       key={trait.id}
                       trait={trait}
                       busy={busy !== null}
-                      onWhy={setWhyId}
+                      onWhy={openWhy}
                       onModal={openModal}
                     />
                   ))}
@@ -1048,7 +1058,7 @@ export function IdentityScreen() {
                       goal={goal}
                       busy={busy !== null}
                       onPatch={(label, action) => void runAction(label, action)}
-                      onWhy={setWhyId}
+                      onWhy={openWhy}
                       onModal={openModal}
                     />
                   ))}
@@ -1128,7 +1138,7 @@ export function IdentityScreen() {
                 emptyLabel={questionEmptyLabel}
                 busy={busy !== null}
                 onPatch={(label, action) => void runAction(label, action)}
-                onWhy={setWhyId}
+                onWhy={openWhy}
                 onModal={openModal}
               />
             </div>
@@ -1416,7 +1426,6 @@ export function IdentityScreen() {
           </div>
         ) : null}
       </Modal>
-      <WhyDrawer open={whyId !== null} id={whyId} onClose={() => setWhyId(null)} />
     </div>
   );
 }

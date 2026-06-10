@@ -1293,7 +1293,7 @@ function DreamPlanProcessResult({ process }: { process: DreamPlanResponse["proce
                 {displayTargetSummary(change.targets)}
                 <AuditTargetRefs targets={change.targets} />
                 {change.preview === undefined ? null : (
-                  <RawJsonDisclosure label="preview JSON" value={change.preview} />
+                  <RawJsonDetails label="preview JSON" value={change.preview} />
                 )}
               </div>
             </div>
@@ -1521,7 +1521,7 @@ function AuditTargetPanel({ row }: { row: MaintenanceAuditRow }) {
       ) : (
         <div className="dim">empty payload</div>
       )}
-      <RawJsonDisclosure label="raw target JSON" value={row.targets} />
+      <RawJsonDetails label="raw target JSON" value={row.targets} />
     </div>
   );
 }
@@ -1548,12 +1548,12 @@ function PayloadPanel({
       ) : (
         <div className="dim">{emptyText ?? "empty payload"}</div>
       )}
-      <RawJsonDisclosure label={rawLabel} value={value} />
+      <RawJsonDetails label={rawLabel} value={value} />
     </div>
   );
 }
 
-function RawJsonDisclosure({ label, value }: { label: string; value: unknown }) {
+function RawJsonDetails({ label, value }: { label: string; value: unknown }) {
   return (
     <details style={{ marginTop: 10 }}>
       <summary className="dim" style={{ cursor: "pointer", fontSize: "var(--fs-xs)" }}>

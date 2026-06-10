@@ -53,6 +53,27 @@ function createHarnessCorrectionService(
   });
 }
 
+function expectNoWhyVectors(value: unknown): void {
+  if (value === null || typeof value !== "object") {
+    return;
+  }
+
+  expect(ArrayBuffer.isView(value)).toBe(false);
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      expectNoWhyVectors(entry);
+    }
+    return;
+  }
+
+  for (const [key, entry] of Object.entries(value)) {
+    expect(key).not.toBe("embedding");
+    expect(key).not.toBe("vector");
+    expectNoWhyVectors(entry);
+  }
+}
+
 describe("correction service", () => {
   const tempDirs: string[] = [];
 
@@ -300,6 +321,71 @@ describe("correction service", () => {
           }),
         ]),
       );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("strips vector data from why payload records and nested semantic nodes", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(3_000),
+    });
+
+    try {
+      const correction = createHarnessCorrectionService(harness);
+      const episode = await harness.episodicRepository.createEpisode(
+        createEpisodeFixture(
+          {
+            title: "Vector payload fixture",
+            narrative: "The why payload should not ship raw embeddings.",
+          },
+          [0.1, 0.2, 0.3, 0.4],
+        ),
+      );
+      const first = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture(
+          {
+            label: "why sanitizer source",
+            description: "Source node for why payload sanitizer coverage.",
+            source_episode_ids: [episode.id],
+          },
+          [0.5, 0.6, 0.7, 0.8],
+        ),
+      );
+      const second = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture(
+          {
+            label: "why sanitizer target",
+            description: "Target node for nested semantic why payload coverage.",
+            source_episode_ids: [episode.id],
+          },
+          [0.9, 1, 0.1, 0.2],
+        ),
+      );
+      const edge = harness.semanticEdgeRepository.addEdge({
+        from_node_id: first.id,
+        to_node_id: second.id,
+        relation: "supports",
+        confidence: 0.8,
+        evidence_episode_ids: [episode.id],
+        created_at: 3_000,
+        last_verified_at: 3_000,
+      });
+
+      const episodeWhy = await correction.why(episode.id);
+      const nodeWhy = await correction.why(first.id);
+      const edgeWhy = await correction.why(edge.id);
+
+      expectNoWhyVectors(episodeWhy);
+      expectNoWhyVectors(nodeWhy);
+      expectNoWhyVectors(edgeWhy);
+      expect(episodeWhy.record).not.toHaveProperty("embedding");
+      expect(nodeWhy.record).not.toHaveProperty("embedding");
+      expect((nodeWhy.walked_edges as Array<{ node?: unknown }>)[0]?.node).not.toHaveProperty(
+        "embedding",
+      );
+      expect(edgeWhy.from_node).not.toHaveProperty("embedding");
+      expect(edgeWhy.to_node).not.toHaveProperty("embedding");
     } finally {
       await harness.cleanup();
     }

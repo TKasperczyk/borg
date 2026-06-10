@@ -62,6 +62,9 @@ const MANUAL_PROVENANCE = {
   kind: "manual" as const,
 };
 
+const WHY_VECTOR_FIELD_NAMES = new Set(["embedding", "vector"]);
+const OMIT_WHY_VALUE = Symbol("omit why payload value");
+
 type CorrectionTargetDescriptor = (typeof correctionTargetIdKindDescriptors)[number];
 
 type CorrectionTargetType = CorrectionTargetDescriptor["kind"];
@@ -89,6 +92,38 @@ function parseTarget(id: string): ParsedCorrectionTarget {
   throw new StorageError(`Unsupported correction target id: ${id}`, {
     code: "CORRECTION_TARGET_UNSUPPORTED",
   });
+}
+
+function sanitizeWhyPayloadValue(value: unknown): unknown | typeof OMIT_WHY_VALUE {
+  if (ArrayBuffer.isView(value)) {
+    return OMIT_WHY_VALUE;
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => {
+      const sanitized = sanitizeWhyPayloadValue(entry);
+      return sanitized === OMIT_WHY_VALUE ? [] : [sanitized];
+    });
+  }
+
+  if (isPlainRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).flatMap(([key, entry]) => {
+        if (WHY_VECTOR_FIELD_NAMES.has(key)) {
+          return [];
+        }
+        const sanitized = sanitizeWhyPayloadValue(entry);
+        return sanitized === OMIT_WHY_VALUE ? [] : [[key, sanitized]];
+      }),
+    );
+  }
+
+  return value;
+}
+
+function sanitizeWhyPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const sanitized = sanitizeWhyPayloadValue(payload);
+  return isPlainRecord(sanitized) ? sanitized : {};
 }
 
 function truncate(text: string, max = 120): string {
@@ -613,7 +648,10 @@ export class CorrectionService {
 
   async why(id: string): Promise<Record<string, unknown>> {
     const target = parseTarget(id);
+    return sanitizeWhyPayload(await this.whyPayload(target));
+  }
 
+  private async whyPayload(target: ParsedCorrectionTarget): Promise<Record<string, unknown>> {
     switch (target.type) {
       case "episode": {
         const result = await this.options.retrievalPipeline.getEpisode(target.id, {

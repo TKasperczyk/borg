@@ -42,8 +42,21 @@ export function Modal({ open, title, onClose, children, footer }: ModalProps) {
         aria-labelledby={titleId}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <div className="modal-title" id={titleId}>
-          {title}
+        <div className="modal-title">
+          <div className="modal-title-main" id={titleId}>
+            {title}
+          </div>
+          <div className="modal-title-actions">
+            <span className="modal-esc-hint">esc</span>
+            <button
+              type="button"
+              className="modal-close"
+              aria-label="close dialog"
+              onClick={onClose}
+            >
+              [x]
+            </button>
+          </div>
         </div>
         <div className="modal-body">{children}</div>
         {footer === undefined ? null : <div className="modal-footer">{footer}</div>}

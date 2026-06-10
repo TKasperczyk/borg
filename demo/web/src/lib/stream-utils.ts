@@ -139,6 +139,7 @@ function normalizedKey(key: string): string {
 function keyLooksLikeTimestamp(key: string): boolean {
   const normalized = normalizedKey(key);
   return (
+    normalized === "ts" ||
     normalized === "timestamp" ||
     normalized === "created" ||
     normalized === "updated" ||

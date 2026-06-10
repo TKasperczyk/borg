@@ -208,7 +208,10 @@ function commitmentItem(id: string, text: string, input: { audience?: string | n
   };
 }
 
-function installMemoryFetch(detailsByBand: Record<string, unknown>) {
+function installMemoryFetch(
+  detailsByBand: Record<string, unknown>,
+  whyById: Record<string, unknown> = {},
+) {
   const fetchMock = vi.fn((request: RequestInfo | URL) => {
     const url = requestUrl(request);
     if (url.pathname === "/api/memory/bands") {
@@ -222,6 +225,14 @@ function installMemoryFetch(detailsByBand: Record<string, unknown>) {
       const band = url.pathname.slice(prefix.length);
       if (band in detailsByBand) {
         return Promise.resolve(jsonResponse(detailsByBand[band]));
+      }
+    }
+    const whyPrefix = "/api/correction/";
+    const whySuffix = "/why";
+    if (url.pathname.startsWith(whyPrefix) && url.pathname.endsWith(whySuffix)) {
+      const id = decodeURIComponent(url.pathname.slice(whyPrefix.length, -whySuffix.length));
+      if (id in whyById) {
+        return Promise.resolve(jsonResponse(whyById[id]));
       }
     }
     return Promise.resolve(new Response("not found", { status: 404 }));
@@ -303,6 +314,38 @@ describe("Memory correction actions", () => {
           ([request]) => requestPath(request) === "/api/memory/bands/episodic",
         ),
       ).toHaveLength(3);
+    });
+  });
+
+  it("opens episode provenance in the Inspector evidence tab", async () => {
+    const fetchMock = installMemoryFetch(
+      { episodic: episodeBandResponse() },
+      {
+        [EPISODE_ID]: {
+          target_type: "episode",
+          record: { id: EPISODE_ID, title: "Episode one" },
+          source_stream_ids: ["strm_one"],
+          citation_chain: [],
+        },
+      },
+    );
+
+    renderWithInspector(<MemoryScreen sessionId="default" />, { inspector: true });
+
+    const episodicLabels = await screen.findAllByText("episodic");
+    fireEvent.click(episodicLabels[0]?.closest(".band-card") ?? episodicLabels[0]!);
+    expect((await screen.findAllByText("Episode one")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "why" }));
+
+    expect(await screen.findByRole("dialog", { name: "Episode inspector" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Evidence" })).toHaveAttribute("aria-selected", "true");
+    expect((await screen.findAllByText("episode")).length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          ([request]) => requestPath(request) === `/api/correction/${EPISODE_ID}/why`,
+        ),
+      ).toBe(true);
     });
   });
 

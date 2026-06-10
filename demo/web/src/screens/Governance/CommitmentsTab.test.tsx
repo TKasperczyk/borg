@@ -424,6 +424,46 @@ describe("CommitScreen operator actions", () => {
     expect(screen.getAllByRole("button", { name: "revoke" })).toHaveLength(2);
   });
 
+  it("opens commitment provenance in the Inspector evidence tab", async () => {
+    const item = commitment();
+    const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(request);
+      const method = requestMethod(init);
+      if (path === "/api/commitments" && method === "GET") {
+        return Promise.resolve(jsonResponse({ commitments: [item] }));
+      }
+      if (path === `/api/correction/${item.id}/why` && method === "GET") {
+        return Promise.resolve(
+          jsonResponse({
+            target_type: "commitment",
+            record: item,
+            identity_events: [
+              {
+                id: 1,
+                action: "create",
+                record_type: "commitment",
+                record_id: item.id,
+                new_value: item,
+              },
+            ],
+          }),
+        );
+      }
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithInspector(<CommitmentsTab />, { inspector: true });
+
+    expect((await screen.findAllByText("Prefer direct answers.")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "why" }));
+
+    expect(await screen.findByRole("dialog", { name: "Commitment inspector" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Evidence" })).toHaveAttribute("aria-selected", "true");
+    expect((await screen.findAllByText("commitment")).length).toBeGreaterThan(0);
+    expect(await screen.findByText("identity events")).toBeInTheDocument();
+  });
+
   it("distinguishes an empty commitment store from a filter miss", async () => {
     const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
       const path = requestPath(request);

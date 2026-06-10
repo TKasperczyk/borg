@@ -2358,6 +2358,33 @@ describe("demo server", () => {
       citation_chain: expect.any(Array),
     });
 
+    const malformedWhy = await app.request("/api/correction/ep_short/why");
+    expect(malformedWhy.status).toBe(400);
+    expect(await malformedWhy.json()).toMatchObject({
+      error: {
+        status: 400,
+        message: "Invalid ep identifier: ep_short",
+      },
+    });
+
+    const absentWhy = await app.request("/api/correction/ep_aaaaaaaaaaaaaaaa/why");
+    expect(absentWhy.status).toBe(404);
+    expect(await absentWhy.json()).toMatchObject({
+      error: {
+        status: 404,
+        message: "Unknown episode id: ep_aaaaaaaaaaaaaaaa",
+      },
+    });
+
+    const unsupportedWhy = await app.request("/api/correction/unknown_abc/why");
+    expect(unsupportedWhy.status).toBe(400);
+    expect(await unsupportedWhy.json()).toMatchObject({
+      error: {
+        status: 400,
+        message: "Unsupported correction target id: unknown_abc",
+      },
+    });
+
     const firstNode = await borg.semantic.nodes.add({
       kind: "concept",
       label: "correction endpoint source",

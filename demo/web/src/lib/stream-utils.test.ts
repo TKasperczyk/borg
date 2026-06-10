@@ -31,6 +31,7 @@ describe("timestamp formatting", () => {
     vi.setSystemTime(new Date(2026, 5, 10, 12, 0, 0));
 
     const ts = new Date(2026, 5, 10, 8, 9, 5).getTime();
+    expect(formatTimestampForKey("ts", ts)).toBe("08:09:05");
     expect(formatTimestampForKey("created_at", ts)).toBe("08:09:05");
     expect(formatTimestampForKey("created", ts)).toBe("08:09:05");
     expect(formatTimestampForKey("score", ts)).toBeNull();

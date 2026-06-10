@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  ApiError,
   getCommitments,
   getCreatorDirectives,
-  getWhy,
   getSemanticEdge,
   getSemanticNode,
   getReviews,
@@ -26,10 +24,10 @@ import { ErrorState } from "../../components/ErrorState";
 import { IdRef } from "../../components/Inspector/IdRef";
 import { resolveObjectType, type ObjectType } from "../../components/Inspector/inspector-id";
 import { isWhySupported } from "../../components/Inspector/inspector-registry";
-import { JsonValueView } from "../../components/JsonValueView";
 import { Loading } from "../../components/Loading";
 import { Modal } from "../../components/Modal";
 import { PolicyValue } from "../../components/PolicyValue";
+import { ProvenanceEvidence } from "../../components/ProvenanceEvidence";
 import { SemanticEdgeDetail } from "../../components/SemanticEdgeDetail";
 import { SemanticNodeDetail } from "../../components/SemanticNodeDetail";
 import { Tag } from "../../components/Tag";
@@ -1444,36 +1442,7 @@ function CommitmentReconciliationComparison({
 }
 
 function InlineWhyEvidence({ id }: { id: string }) {
-  const api = useApi(() => getWhy(id), [id]);
-
-  if (api.loading) {
-    return <Loading>loading provenance</Loading>;
-  }
-  if (api.error !== null) {
-    if (api.error instanceof ApiError && api.error.status === 404) {
-      return <Empty>no provenance retained</Empty>;
-    }
-    return <ErrorState>{api.error.message}</ErrorState>;
-  }
-  if (api.data === null) {
-    return <Empty>no provenance fields</Empty>;
-  }
-
-  const entries = Object.entries(api.data);
-  if (entries.length === 0) {
-    return <Empty>no provenance fields</Empty>;
-  }
-
-  return (
-    <div className="why-drawer">
-      {entries.map(([key, value]) => (
-        <details key={key} className="why-section" open>
-          <summary>{key}</summary>
-          <JsonValueView value={value} />
-        </details>
-      ))}
-    </div>
-  );
+  return <ProvenanceEvidence id={id} />;
 }
 
 function ReviewQueuePane({

@@ -50,9 +50,14 @@ import {
   creatorDirectiveReconciliationReviewRefsSchema,
   parseCommitmentId,
   parseEntityId,
+  parseEpisodeId,
   parseGoalId,
   parseOpenQuestionId,
+  parseSemanticEdgeId,
+  parseSemanticNodeId,
   parseSessionId,
+  parseTraitId,
+  parseValueId,
   PROMPT_KEYS,
   semanticEdgeIdSchema,
   semanticNodeIdSchema,
@@ -617,6 +622,20 @@ const DEMO_DEFAULT_SESSION_LABEL = "demo (default)";
 const DEMO_OPERATOR_SESSION_EXTERNAL_ID = "operator";
 const DEMO_OPERATOR_SESSION_LABEL = "operator chat";
 
+const CORRECTION_TARGET_ROUTE_PARSERS: readonly {
+  prefix: string;
+  parse: (value: string) => string;
+}[] = [
+  { prefix: "ep_", parse: parseEpisodeId },
+  { prefix: "semn_", parse: parseSemanticNodeId },
+  { prefix: "seme_", parse: parseSemanticEdgeId },
+  { prefix: "val_", parse: parseValueId },
+  { prefix: "goal_", parse: parseGoalId },
+  { prefix: "trt_", parse: parseTraitId },
+  { prefix: "cmt_", parse: parseCommitmentId },
+  { prefix: "oq_", parse: parseOpenQuestionId },
+];
+
 const promptKeyParamSchema = z.enum(PROMPT_KEYS);
 const promptPutBodySchema = z
   .object({
@@ -649,6 +668,25 @@ function parseOptionalSessionQuery(value: string | undefined, ctx: z.RefinementC
   } catch {
     ctx.addIssue({ code: "custom", message: "Invalid session id" });
     return z.NEVER;
+  }
+}
+
+function validateCorrectionWhyRouteId(id: string): void {
+  const parser = CORRECTION_TARGET_ROUTE_PARSERS.find((candidate) =>
+    id.startsWith(candidate.prefix),
+  );
+
+  if (parser === undefined) {
+    return;
+  }
+
+  try {
+    parser.parse(id);
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new HTTPException(400, { message: error.message });
+    }
+    throw error;
   }
 }
 
@@ -3236,7 +3274,9 @@ export function createDemoServerApp(args: DemoServerAppInput) {
 
   app.get("/api/correction/:id/why", async (c) => {
     try {
-      return c.json(await input.borg.correction.why(c.req.param("id")));
+      const id = c.req.param("id");
+      validateCorrectionWhyRouteId(id);
+      return c.json(await input.borg.correction.why(id));
     } catch (error) {
       mapBorgErrorToHttp(error);
     }

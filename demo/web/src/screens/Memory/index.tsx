@@ -27,12 +27,12 @@ import { DisclosureLabel } from "../../components/DisclosureLabel";
 import { Empty } from "../../components/Empty";
 import { ErrorState } from "../../components/ErrorState";
 import { IdChip } from "../../components/Inspector/IdChip";
+import { useInspector } from "../../components/Inspector/inspector-context";
 import { Loading } from "../../components/Loading";
 import { Modal } from "../../components/Modal";
 import { Panel } from "../../components/Panel";
 import { SemanticNodeDetail } from "../../components/SemanticNodeDetail";
 import { Tag } from "../../components/Tag";
-import { WhyDrawer } from "../../components/WhyDrawer";
 import { useLiveEventsContext } from "../../hooks/live-context";
 import { useApi } from "../../hooks/use-api";
 import { activateOnEnterOrSpace } from "../../lib/keyboard";
@@ -1704,6 +1704,7 @@ function MemoryDrill({
   const [fetchedSemanticNode, setFetchedSemanticNode] = useState<SemanticMemoryNode | null>(null);
   const [fetchedSemanticNodeLoading, setFetchedSemanticNodeLoading] = useState(false);
   const [fetchedSemanticNodeError, setFetchedSemanticNodeError] = useState<string | null>(null);
+  const inspector = useInspector();
   const api = useApi(
     () =>
       getMemoryBand(band, {
@@ -1719,7 +1720,6 @@ function MemoryDrill({
     [filters, rows, sortMode],
   );
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [whyId, setWhyId] = useState<string | null>(null);
   const [action, setAction] = useState<MemoryCorrectionAction | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [operatorError, setOperatorError] = useState<string | null>(null);
@@ -2106,7 +2106,14 @@ function MemoryDrill({
                   <button
                     className="btn sm"
                     disabled={busy !== null}
-                    onClick={() => setWhyId(selected.id)}
+                    onClick={() =>
+                      inspector.openObject({
+                        type: selectedCorrectionKind,
+                        id: selected.id,
+                        presetTab: "evidence",
+                        hint: selectedSemanticNode ?? selected,
+                      })
+                    }
                   >
                     why
                   </button>
@@ -2164,7 +2171,6 @@ function MemoryDrill({
           </div>
         </div>
       </div>
-      <WhyDrawer open={whyId !== null} id={whyId} onClose={() => setWhyId(null)} />
       <Modal
         open={action !== null}
         title={

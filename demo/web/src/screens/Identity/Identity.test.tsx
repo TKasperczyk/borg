@@ -254,7 +254,10 @@ function identityStudioResponse(): IdentityResponse {
   };
 }
 
-function installIdentityFetch(identity = identityStudioResponse()) {
+function installIdentityFetch(
+  identity = identityStudioResponse(),
+  whyById: Record<string, unknown> = {},
+) {
   const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
     const path = requestPath(request);
     if (path === "/api/identity" && init?.method === undefined) {
@@ -262,6 +265,14 @@ function installIdentityFetch(identity = identityStudioResponse()) {
     }
     if (path === "/api/memory/bands/episodic" && init?.method === undefined) {
       return Promise.resolve(jsonResponse(episodeBandResponse()));
+    }
+    const whyPrefix = "/api/correction/";
+    const whySuffix = "/why";
+    if (path.startsWith(whyPrefix) && path.endsWith(whySuffix) && init?.method === undefined) {
+      const id = decodeURIComponent(path.slice(whyPrefix.length, -whySuffix.length));
+      if (id in whyById) {
+        return Promise.resolve(jsonResponse(whyById[id]));
+      }
     }
     return Promise.resolve(new Response("{}", { status: 404 }));
   });
@@ -443,6 +454,41 @@ describe("Identity Studio", () => {
     expect(periods[0]).toHaveTextContent("identity");
     expect(periods[0]).toHaveTextContent("studio");
     expect(periods[1]).toHaveTextContent("old arc");
+  });
+
+  it("opens value provenance in the Inspector evidence tab", async () => {
+    const identity = identityStudioResponse();
+    const value = identity.values[0]!;
+    const fetchMock = installIdentityFetch(identity, {
+      [value.id]: {
+        target_type: "value",
+        record: value,
+        identity_events: [
+          {
+            id: 1,
+            action: "create",
+            record_type: "value",
+            record_id: value.id,
+            new_value: value,
+          },
+        ],
+      },
+    });
+    renderWithInspector(<IdentityScreen />, { inspector: true });
+
+    const valueCard = (await screen.findAllByTestId("identity-value-card"))[0]!;
+    fireEvent.click(within(valueCard).getByRole("button", { name: "why" }));
+
+    expect(await screen.findByRole("dialog", { name: "Value inspector" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Evidence" })).toHaveAttribute("aria-selected", "true");
+    expect((await screen.findAllByText("value")).length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          ([request]) => requestPath(request) === `/api/correction/${value.id}/why`,
+        ),
+      ).toBe(true);
+    });
   });
 
   it("opens the inspector from evidence IdRefs", async () => {

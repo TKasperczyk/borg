@@ -21,11 +21,11 @@ import { Empty } from "../../components/Empty";
 import { ErrorState } from "../../components/ErrorState";
 import { IdChip } from "../../components/Inspector/IdChip";
 import { IdRef } from "../../components/Inspector/IdRef";
+import { useInspector } from "../../components/Inspector/inspector-context";
 import { Loading } from "../../components/Loading";
 import { Modal } from "../../components/Modal";
 import { SupersededByChip } from "../../components/SupersededByChip";
 import { Tag } from "../../components/Tag";
-import { WhyDrawer } from "../../components/WhyDrawer";
 import { useApi, type ApiHookState } from "../../hooks/use-api";
 import { isInteractiveDescendantEvent } from "../../lib/keyboard";
 import { dateLabel, parseJsonPatch, shortId } from "../screen-utils";
@@ -266,6 +266,7 @@ export function CommitmentsPanel({
   api: ApiHookState<CommitmentsResponse>;
   embedded?: boolean;
 }) {
+  const inspector = useInspector();
   const [state, setState] = useState<StateFilter>("active");
   const [enforcement, setEnforcement] = useState<EnforcementFilter>("all");
   const [audience, setAudience] = useState("all");
@@ -273,7 +274,6 @@ export function CommitmentsPanel({
   const [groupMode, setGroupMode] = useState<GroupMode>("flat");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [modal, setModal] = useState<CommitModal | null>(null);
-  const [whyId, setWhyId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [operatorError, setOperatorError] = useState<string | null>(null);
   const commitments = api.data?.commitments ?? [];
@@ -669,7 +669,14 @@ export function CommitmentsPanel({
               busy={busy !== null}
               onOpenCommitment={openCommitmentReference}
               onRevoke={(commitment) => setModal({ kind: "revoke", commitment, reason: "" })}
-              onWhy={(commitment) => setWhyId(commitment.id)}
+              onWhy={(commitment) =>
+                inspector.openObject({
+                  type: "commitment",
+                  id: commitment.id,
+                  presetTab: "evidence",
+                  hint: commitment,
+                })
+              }
               onCorrect={(commitment) =>
                 setModal({
                   kind: "correct",
@@ -857,7 +864,6 @@ export function CommitmentsPanel({
           </div>
         ) : null}
       </Modal>
-      <WhyDrawer open={whyId !== null} id={whyId} onClose={() => setWhyId(null)} />
     </div>
   );
 }

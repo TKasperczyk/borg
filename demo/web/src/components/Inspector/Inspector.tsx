@@ -3,7 +3,6 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ApiError,
   deletePrompt,
-  getWhy,
   patchGoal,
   patchOpenQuestion,
   postCommitmentRevoke,
@@ -49,6 +48,7 @@ import { ErrorState } from "../ErrorState";
 import { JsonValueView } from "../JsonValueView";
 import { Loading } from "../Loading";
 import { Modal } from "../Modal";
+import { ProvenanceEvidence } from "../ProvenanceEvidence";
 import { SemanticEdgeDetail } from "../SemanticEdgeDetail";
 import { SemanticNodeDetail } from "../SemanticNodeDetail";
 import { Tag } from "../Tag";
@@ -312,39 +312,6 @@ function SummaryTab({ target, data }: { target: InspectorTarget; data: unknown }
   return <GenericSummary value={data} />;
 }
 
-function WhyEvidence({ id }: { id: string }) {
-  const api = useApi(() => getWhy(id), [id]);
-
-  if (api.loading) {
-    return <Loading>loading provenance</Loading>;
-  }
-  if (api.error !== null) {
-    if (api.error instanceof ApiError && api.error.status === 404) {
-      return <Empty>no provenance retained</Empty>;
-    }
-    return <ErrorState>{api.error.message}</ErrorState>;
-  }
-  if (api.data === null) {
-    return <Empty>no provenance fields</Empty>;
-  }
-
-  const entries = Object.entries(api.data);
-  if (entries.length === 0) {
-    return <Empty>no provenance fields</Empty>;
-  }
-
-  return (
-    <div className="why-drawer">
-      {entries.map(([key, value]) => (
-        <details key={key} className="why-section" open>
-          <summary>{key}</summary>
-          <JsonValueView value={value} />
-        </details>
-      ))}
-    </div>
-  );
-}
-
 function EvidenceTab({ target, audience }: { target: InspectorTarget; audience: string | null }) {
   if (target.type === "turn") {
     return <LedgerView turnId={target.id} active audience={audience} />;
@@ -354,7 +321,7 @@ function EvidenceTab({ target, audience }: { target: InspectorTarget; audience: 
     return <Empty>no evidence resolver for this object type</Empty>;
   }
 
-  return <WhyEvidence id={target.id} />;
+  return <ProvenanceEvidence id={target.id} />;
 }
 
 function RelationshipsTab({ model, data }: { model: ObjectModel; data: unknown }) {
