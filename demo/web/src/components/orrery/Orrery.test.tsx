@@ -575,20 +575,14 @@ describe("Orrery", () => {
     expect(screen.getByTestId("orr-error")).toHaveTextContent("substrate unavailable");
   });
 
-  it("reflects mini status states", () => {
-    const { rerender } = renderWithInspector(
-      <MiniOrrery wsState="live" dreamRunning={false} openReviews={0} />,
-    );
+  it("reflects mini dream state", () => {
+    const { rerender } = renderWithInspector(<MiniOrrery dreamRunning={false} />);
 
-    expect(screen.getByTestId("mini-orrery")).toHaveAttribute("data-ws-state", "live");
     expect(screen.getByTestId("mini-orrery")).toHaveAttribute("data-dream-running", "false");
-    expect(screen.getByTestId("mini-orrery")).toHaveAttribute("data-open-reviews", "0");
 
-    rerender(<MiniOrrery wsState="down" dreamRunning={true} openReviews={3} />);
+    rerender(<MiniOrrery dreamRunning={true} />);
 
-    expect(screen.getByTestId("mini-orrery")).toHaveAttribute("data-ws-state", "down");
     expect(screen.getByTestId("mini-orrery")).toHaveAttribute("data-dream-running", "true");
-    expect(screen.getByTestId("mini-orrery")).toHaveAttribute("data-open-reviews", "3");
   });
 
   it("renders the Mission Control screen Orrery", async () => {

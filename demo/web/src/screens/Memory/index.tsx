@@ -62,6 +62,7 @@ const BAND_DESCRIPTIONS: Record<MemoryBandId, string> = {
 };
 
 const MEMORY_PAGE_LIMIT = 50;
+const MEMORY_PREVIEW_LIMIT = 15;
 const SEMANTIC_TOPOLOGY_LIMIT = 300;
 const SEARCHABLE_BANDS = new Set<MemoryBandId>(["episodic", "semantic", "procedural"]);
 
@@ -326,6 +327,7 @@ export function MemoryScreen({
 }) {
   const api = useApi(() => getMemoryBands({ session: sessionId }), [sessionId]);
   const [activeBand, setActiveBand] = useState<MemoryBandId | null>(null);
+  const [previewBand, setPreviewBand] = useState<MemoryBandId | null>(null);
   const bands = BAND_ORDER.map(
     (id, index) =>
       api.data?.bands.find((band) => band.id === id) ?? {
@@ -339,6 +341,8 @@ export function MemoryScreen({
       },
   );
   const totalMemories = bands.reduce((total, band) => total + band.count, 0);
+  const defaultPreviewBand = bands.find((band) => band.count > 0)?.id ?? bands[0]?.id ?? "episodic";
+  const selectedPreviewBand = previewBand ?? defaultPreviewBand;
 
   if (activeBand !== null) {
     const activeSummary = bands.find((item) => item.id === activeBand);
@@ -374,7 +378,12 @@ export function MemoryScreen({
           raw memory store browser · audience scoping applies during retrieval/evidence ledger
         </div>
       </div>
-      <BandOverviewBar bands={bands} activeBand={null} onSelectBand={setActiveBand} />
+      <BandOverviewBar
+        bands={bands}
+        activeBand={selectedPreviewBand}
+        statLimit={4}
+        onSelectBand={setActiveBand}
+      />
       {api.data !== null && totalMemories === 0 ? (
         <div className="memory-zero-state">
           <span>no memories yet -- memory forms automatically as turns are ingested</span>
@@ -384,7 +393,17 @@ export function MemoryScreen({
             </button>
           )}
         </div>
-      ) : null}
+      ) : (
+        <MemoryAtlasPreview
+          bands={bands}
+          band={selectedPreviewBand}
+          sessionId={sessionId}
+          onPreviewBand={setPreviewBand}
+          onOpenBand={setActiveBand}
+          onOpenIdentity={onOpenIdentity}
+          onOpenCommitments={onOpenCommitments}
+        />
+      )}
       <div className="divider" style={{ marginTop: 22 }}>
         governance
       </div>
@@ -417,10 +436,12 @@ export function MemoryScreen({
 function BandOverviewBar({
   bands,
   activeBand,
+  statLimit = 2,
   onSelectBand,
 }: {
   bands: readonly MemoryBandSummary[];
   activeBand: MemoryBandId | null;
+  statLimit?: number;
   onSelectBand: (band: MemoryBandId) => void;
 }) {
   return (
@@ -430,6 +451,7 @@ function BandOverviewBar({
           key={band.id}
           band={band}
           active={activeBand === band.id}
+          statLimit={statLimit}
           onClick={() => onSelectBand(band.id)}
         />
       ))}
@@ -440,10 +462,12 @@ function BandOverviewBar({
 function BandCard({
   band,
   active,
+  statLimit,
   onClick,
 }: {
   band: MemoryBandSummary;
   active: boolean;
+  statLimit: number;
   onClick: () => void;
 }) {
   const countLabel = `${band.count_is_lower_bound ? "≥" : ""}${band.count.toLocaleString()}`;
@@ -460,16 +484,176 @@ function BandCard({
         <span className="n">{countLabel}</span>
       </div>
       <div className="name">{band.name}</div>
+      <div className="desc-line">{band.desc}</div>
       <div className="stat-row">
-        {band.stats.slice(0, 2).map((stat) => (
+        {band.stats.slice(0, statLimit).map((stat) => (
           <div key={stat.k} className="stat">
             <div className="k">{stat.k}</div>
             <div className="v">{stat.v}</div>
           </div>
         ))}
+        {band.stats.length === 0 ? (
+          <div className="stat empty-stat">
+            <div className="k">records</div>
+            <div className="v">{countLabel}</div>
+          </div>
+        ) : null}
       </div>
     </button>
   );
+}
+
+function MemoryAtlasPreview({
+  bands,
+  band,
+  sessionId,
+  onPreviewBand,
+  onOpenBand,
+  onOpenIdentity,
+  onOpenCommitments,
+}: {
+  bands: readonly MemoryBandSummary[];
+  band: MemoryBandId;
+  sessionId: string;
+  onPreviewBand: (band: MemoryBandId) => void;
+  onOpenBand: (band: MemoryBandId) => void;
+  onOpenIdentity?: () => void;
+  onOpenCommitments?: () => void;
+}) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const api = useApi(
+    () => getMemoryBand(band, { session: sessionId, limit: MEMORY_PREVIEW_LIMIT }),
+    [band, sessionId],
+  );
+  const previewDetail = api.data?.band === band ? api.data : null;
+  const rows = useMemo(
+    () => (previewDetail === null ? [] : detailRows(previewDetail)),
+    [previewDetail],
+  );
+  const previewRows = rows.slice(0, MEMORY_PREVIEW_LIMIT);
+  const summary = bands.find((item) => item.id === band);
+  const waitingForBand = previewDetail === null && api.error === null;
+
+  useEffect(() => {
+    setSelectedId(null);
+  }, [band]);
+
+  return (
+    <Panel
+      title="band preview"
+      badge={summary === undefined ? band : `${band} · ${summary.count.toLocaleString()}`}
+      action="open band"
+      onAction={() => onOpenBand(band)}
+      className="memory-atlas-preview"
+    >
+      <div className="memory-preview-selector" role="tablist" aria-label="preview memory band">
+        {bands.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={item.id === band}
+            className={`pill ${item.id === band ? "on" : ""}`}
+            onClick={() => onPreviewBand(item.id)}
+          >
+            {item.name}
+          </button>
+        ))}
+      </div>
+      <div className="memory-preview-body">
+        {waitingForBand ? <Loading>loading {band} preview</Loading> : null}
+        {api.error !== null ? (
+          <ErrorState onRetry={api.refetch}>{api.error.message}</ErrorState>
+        ) : null}
+        {previewDetail === null ? null : (
+          <MemoryAtlasPreviewContent
+            detail={previewDetail}
+            rows={previewRows}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            onOpenIdentity={onOpenIdentity}
+            onOpenCommitments={onOpenCommitments}
+          />
+        )}
+        {previewDetail !== null && previewRows.length === 0 ? (
+          <Empty>no records in this band</Empty>
+        ) : null}
+      </div>
+    </Panel>
+  );
+}
+
+function MemoryAtlasPreviewContent({
+  detail,
+  rows,
+  selectedId,
+  onSelect,
+  onOpenIdentity,
+  onOpenCommitments,
+}: {
+  detail: MemoryBandDetail;
+  rows: readonly MemoryRow[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onOpenIdentity?: () => void;
+  onOpenCommitments?: () => void;
+}) {
+  if (detail.band === "episodic") {
+    return (
+      <EpisodicTimeline detail={detail} rows={rows} selectedId={selectedId} onSelect={onSelect} />
+    );
+  }
+  if (detail.band === "procedural") {
+    return (
+      <ProceduralSkillCards
+        detail={detail}
+        rows={rows}
+        selectedId={selectedId}
+        onSelect={onSelect}
+      />
+    );
+  }
+  if (detail.band === "relational") {
+    return (
+      <RelationalFactTable
+        detail={detail}
+        rows={rows}
+        selectedId={selectedId}
+        onSelect={onSelect}
+      />
+    );
+  }
+  if (detail.band === "affective") {
+    return (
+      <AffectiveAtlas detail={detail} rows={rows} selectedId={selectedId} onSelect={onSelect} />
+    );
+  }
+  if (detail.band === "social") {
+    return <SocialAtlas detail={detail} rows={rows} selectedId={selectedId} onSelect={onSelect} />;
+  }
+  if (detail.band === "self") {
+    return (
+      <SelfAtlas
+        detail={detail}
+        rows={rows}
+        selectedId={selectedId}
+        onSelect={onSelect}
+        onOpenIdentity={onOpenIdentity}
+      />
+    );
+  }
+  if (detail.band === "commitments") {
+    return (
+      <CommitmentsAtlas
+        detail={detail}
+        rows={rows}
+        selectedId={selectedId}
+        onSelect={onSelect}
+        onOpenCommitments={onOpenCommitments}
+      />
+    );
+  }
+  return <GenericMemoryRows rows={rows} selectedId={selectedId} onSelect={onSelect} />;
 }
 
 function detailNextCursor(detail: MemoryBandDetail | null): string | null {

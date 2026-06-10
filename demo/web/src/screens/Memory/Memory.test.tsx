@@ -17,6 +17,14 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
+function deferredResponse(): { promise: Promise<Response>; resolve: (response: Response) => void } {
+  let resolve!: (response: Response) => void;
+  const promise = new Promise<Response>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+}
+
 function requestPath(request: RequestInfo | URL): string {
   return new URL(String(request), "http://test.invalid").pathname;
 }
@@ -273,7 +281,7 @@ describe("Memory correction actions", () => {
         fetchMock.mock.calls.filter(
           ([request]) => requestPath(request) === "/api/memory/bands/episodic",
         ),
-      ).toHaveLength(2);
+      ).toHaveLength(3);
     });
   });
 
@@ -327,6 +335,59 @@ describe("Memory correction actions", () => {
         ([request]) => requestUrl(request).searchParams.get("cursor") === "cursor-1",
       ),
     ).toBe(true);
+  });
+
+  it("does not render stale preview rows after switching bands", async () => {
+    const semanticDeferred = deferredResponse();
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = requestUrl(request);
+      if (url.pathname === "/api/memory/bands") {
+        const bands = memoryBandsResponse();
+        bands.bands[1]!.count = 1;
+        return Promise.resolve(jsonResponse(bands));
+      }
+      if (url.pathname === "/api/reviews") {
+        return Promise.resolve(jsonResponse({ rows: [] }));
+      }
+      if (url.pathname === "/api/memory/bands/episodic") {
+        return Promise.resolve(
+          jsonResponse({
+            band: "episodic",
+            items: [episodeItem(EPISODE_ID, "Stale episodic preview")],
+            next_cursor: null,
+          }),
+        );
+      }
+      if (url.pathname === "/api/memory/bands/semantic") {
+        return semanticDeferred.promise;
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = renderWithInspector(<MemoryScreen sessionId="default" />);
+
+    expect(await screen.findByText("Stale episodic preview")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "semantic" }));
+
+    const preview = container.querySelector(".memory-preview-body") as HTMLElement;
+    await waitFor(() => {
+      expect(within(preview).queryByText("Stale episodic preview")).not.toBeInTheDocument();
+    });
+    expect(within(preview).getByText("loading semantic preview")).toBeInTheDocument();
+
+    semanticDeferred.resolve(
+      jsonResponse({
+        band: "semantic",
+        mode: "browse",
+        nodes: [semanticNode(LOADED_SEMANTIC_NODE_ID, "Fresh semantic preview", "fresh detail")],
+        edges: [],
+        next_cursor: null,
+      }),
+    );
+
+    expect(await screen.findByText("Fresh semantic preview")).toBeInTheDocument();
+    expect(within(preview).queryByText("Stale episodic preview")).not.toBeInTheDocument();
   });
 
   it("shows capped band totals as a lower bound", async () => {

@@ -1,11 +1,11 @@
-import type { EntityRecord, SessionRecord, StateSnapshot, WsState } from "../api/types";
+import type { EntityRecord, SessionRecord, StateSnapshot } from "../api/types";
 import type { DreamActivity } from "../hooks/use-live-cache";
 import type { AudienceDisplayIdentity } from "../lib/audience-identity";
 import type { RouteId } from "../routes";
 import { IdChip } from "./Inspector/IdChip";
 import { MiniOrrery } from "./orrery/MiniOrrery";
-import { countValue, moodLabel } from "./StatusBar";
-import { formatTurns, wsLabel, wsToneClass } from "./Topbar";
+import { moodLabel } from "./StatusBar";
+import { formatTurns } from "./Topbar";
 
 export type InstrumentStripProps = {
   sessionId: string;
@@ -13,9 +13,7 @@ export type InstrumentStripProps = {
   audienceDisplay: AudienceDisplayIdentity;
   creator: EntityRecord | null;
   state: StateSnapshot | null;
-  wsState: WsState;
   dreamActivity: DreamActivity | null;
-  now: string;
   route: RouteId;
   onOpenPalette?: () => void;
   onOpenHelp?: () => void;
@@ -72,9 +70,7 @@ export function InstrumentStrip({
   audienceDisplay,
   creator,
   state,
-  wsState,
   dreamActivity,
-  now,
   route,
   onOpenPalette,
   onOpenHelp,
@@ -117,15 +113,7 @@ export function InstrumentStrip({
           <span className="k">creator</span>
           <span className="v">{creator?.canonical_name ?? "unset"}</span>
         </div>
-        <div className="topbar-pill">
-          <span className="k">ws</span>
-          <span className={`v ${wsToneClass(wsState)}`}>{wsLabel(wsState)}</span>
-        </div>
-        <MiniOrrery
-          wsState={wsState}
-          dreamRunning={dreamActivity !== null}
-          openReviews={state?.counts.open_reviews ?? 0}
-        />
+        <MiniOrrery dreamRunning={dreamActivity !== null} />
         <div className="topbar-pill">
           <span className="k">mood</span>
           <span className="v">
@@ -133,23 +121,8 @@ export function InstrumentStrip({
           </span>
         </div>
         <div className="topbar-pill">
-          <span className="k">counts</span>
-          <span className="v">
-            r {countValue(state?.counts.open_reviews)} · q {countValue(state?.counts.open_qs)} · c{" "}
-            {countValue(state?.counts.commitments)}
-          </span>
-        </div>
-        <div className="topbar-pill">
           <span className="k">turn</span>
           <span className="v">{formatTurns(state?.counts.turns ?? 0)}</span>
-        </div>
-        <div className="topbar-pill">
-          <span className="k">ver</span>
-          <span className="v">{state?.version ?? "—"}</span>
-        </div>
-        <div className="topbar-pill">
-          <span className="k">local</span>
-          <span className="v">{now}</span>
         </div>
         {onOpenPalette === undefined ? null : (
           <button
@@ -171,9 +144,6 @@ export function InstrumentStrip({
             ?
           </button>
         )}
-        <span className="topbar-live" aria-hidden="true">
-          <span className={wsState === "live" ? "live-dot" : "dot warn"}></span>
-        </span>
       </div>
       <div className="topbar-end"></div>
     </div>

@@ -1072,13 +1072,28 @@ export function DreamScreen({ onOpenReview }: { onOpenReview?: () => void }) {
 }
 
 function DreamScheduleLane({ schedule }: { schedule: readonly DreamScheduleItem[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const visibleSchedule = expanded ? schedule : schedule.slice(0, 15);
+
   return (
     <div className="panel dream-schedule-panel">
       <div className="panel-header">
         <span className="title">recent runs</span>
-        <span className="badge">{schedule.length} rows</span>
+        <span className="badge">
+          {visibleSchedule.length}/{schedule.length} rows
+        </span>
+        {schedule.length > visibleSchedule.length || expanded ? (
+          <button
+            type="button"
+            className="btn sm ghost"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((current) => !current)}
+          >
+            {expanded ? "show fewer" : `show all ${schedule.length}`}
+          </button>
+        ) : null}
       </div>
-      <div className="panel-body">
+      <div className={`panel-body ${expanded ? "expanded" : ""}`}>
         {schedule.length === 0 ? (
           <div className="dim" style={{ padding: 12 }}>
             no recent maintenance runs recorded
@@ -1094,7 +1109,7 @@ function DreamScheduleLane({ schedule }: { schedule: readonly DreamScheduleItem[
               </tr>
             </thead>
             <tbody>
-              {schedule.map((item, index) => (
+              {visibleSchedule.map((item, index) => (
                 <tr key={`${item.process}-${item.scheduled_at}-${item.source}-${index}`}>
                   <td>
                     <span className="purple">{item.process}</span>

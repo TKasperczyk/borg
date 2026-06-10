@@ -510,7 +510,7 @@ describe("MissionControlScreen", () => {
     );
   });
 
-  it("renders turn, mood, and dream status in the strip", async () => {
+  it("renders turn, phase, terminal, and dream status in the strip", async () => {
     installFetch();
     const live = makeLiveSource();
 
@@ -520,7 +520,6 @@ describe("MissionControlScreen", () => {
     expect(strip.getByRole("button", { name: "jump to turn_status111111" })).toBeInTheDocument();
     expect(strip.getByText("retrieval")).toBeInTheDocument();
     expect(strip.getByText("reflected")).toBeInTheDocument();
-    expect(await strip.findByText(/v 0.25 · a 0.75/)).toBeInTheDocument();
 
     act(() => {
       live.emit({

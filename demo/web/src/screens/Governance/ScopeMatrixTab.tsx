@@ -10,7 +10,7 @@ import { IdRef } from "../../components/Inspector/IdRef";
 import { Tag } from "../../components/Tag";
 import { lifecycleLabel, tagKind } from "../../lib/shared-state-lifecycle";
 import { shortId } from "../screen-utils";
-import type { DirectiveSupportData } from "./DirectivesTab";
+import type { DirectiveSupportData } from "./directive-support";
 
 type ScopeMatrixTabProps = {
   sessions: readonly SessionRecord[];

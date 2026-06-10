@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { ApiError, getCreatorEntity, openOperatorSession, setCreatorByName } from "./api/client";
 import type { EntityRecord, SessionRecord, StateSnapshot } from "./api/types";
@@ -33,18 +33,12 @@ import { PromptsScreen } from "./screens/Prompts";
 import { ReviewScreen } from "./screens/Review";
 import { StreamScreen } from "./screens/Stream";
 
-function formatNow(): string {
-  const date = new Date();
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-}
-
 function countBadge(
   count: number | undefined,
   severity: RailBadge["severity"],
   label: string,
 ): RailBadge | undefined {
-  if (count === undefined) {
+  if (count === undefined || count <= 0) {
     return undefined;
   }
 
@@ -54,9 +48,7 @@ function countBadge(
 function railBadges(counts: StateSnapshot["counts"] | null): Partial<Record<RouteId, RailBadge>> {
   return {
     identity: countBadge(counts?.open_qs, 1, "open questions"),
-    governance: countBadge(counts?.commitments, 1, "commitments"),
     review: countBadge(counts?.open_reviews, 2, "open reviews"),
-    dream: countBadge(counts?.dream_audit_rows, 1, "dream audit rows"),
   };
 }
 
@@ -91,18 +83,12 @@ function audienceIdentity(
 
 export function AppShell() {
   const { view, governanceTab, setView, setGovernanceTab } = useView();
-  const [now, setNow] = useState(formatNow);
   const { sessionId, setSessionId } = useSession();
   const creatorApi = useApi(getCreatorEntity, []);
   const [operatorChatError, setOperatorChatError] = useState<string | null>(null);
   const live = useLiveEvents({ sessionId });
   const turnStream = useTurnStream(live, { sessionId });
   const refetchCreator = creatorApi.refetch;
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(formatNow()), 1_000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   return (
     <LiveEventsProvider value={live}>
@@ -112,7 +98,6 @@ export function AppShell() {
           governanceTab={governanceTab}
           setView={setView}
           setGovernanceTab={setGovernanceTab}
-          now={now}
           sessionId={sessionId}
           setSessionId={setSessionId}
           creator={creatorApi.data ?? null}
@@ -131,7 +116,6 @@ type AppShellContentProps = {
   governanceTab: ReturnType<typeof useView>["governanceTab"];
   setView: ReturnType<typeof useView>["setView"];
   setGovernanceTab: ReturnType<typeof useView>["setGovernanceTab"];
-  now: string;
   sessionId: string;
   setSessionId: (sessionId: string) => void;
   creator: EntityRecord | null;
@@ -146,7 +130,6 @@ function AppShellContent({
   governanceTab,
   setView,
   setGovernanceTab,
-  now,
   sessionId,
   setSessionId,
   creator,
@@ -215,9 +198,7 @@ function AppShellContent({
           audienceDisplay={activeAudience.display}
           creator={creator}
           state={stateApi.data}
-          wsState={wsState}
           dreamActivity={dreamActivity}
-          now={now}
           route={view}
           onOpenPalette={() => palette.setOpen(true)}
           onOpenHelp={() => setShortcutLegendOpen(true)}

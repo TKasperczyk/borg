@@ -5,9 +5,10 @@ import type { EntityRecord, SessionRecord } from "../../api/types";
 import { useApi, type ApiHookState } from "../../hooks/use-api";
 import type { GovernanceTabId } from "../../routes";
 import { CommitmentsPanel } from "./CommitmentsTab";
-import { DirectivesPanel, loadDirectiveSupportData } from "./DirectivesTab";
+import { DirectivesPanel } from "./DirectivesTab";
 import { ScopeMatrixTab } from "./ScopeMatrixTab";
 import { SessionsEntitiesTab } from "./SessionsEntitiesTab";
+import { loadDirectiveSupportData } from "./directive-support";
 
 type GovernanceScreenProps = {
   sessionId: string;

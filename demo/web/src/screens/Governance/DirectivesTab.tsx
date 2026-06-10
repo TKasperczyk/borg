@@ -1,11 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 
 import {
-  getCommitments,
   getCreatorDirectives,
-  getSessions,
-  getSharedState,
-  getState,
   revokeCreatorDirective,
   supersedeCreatorDirective,
 } from "../../api/client";
@@ -27,21 +23,17 @@ import { useApi, type ApiHookState } from "../../hooks/use-api";
 import { isInteractiveDescendantEvent } from "../../lib/keyboard";
 import { lifecycleLabel, tagKind } from "../../lib/shared-state-lifecycle";
 import { dateLabel, shortId } from "../screen-utils";
+import {
+  loadDirectiveSupportData,
+  type DirectiveSupportData,
+  type SharedStateAudienceEntries,
+} from "./directive-support";
 
 type SortMode = "priority_desc" | "priority_asc";
 
 type DirectiveModal =
   | { kind: "revoke"; directive: CreatorDirectiveItem; reason: string }
   | { kind: "supersede"; directive: CreatorDirectiveItem; replacementId: string };
-export type SharedStateAudienceEntries = {
-  audience: string;
-  entries: SharedStateEntry[];
-};
-export type DirectiveSupportData = {
-  audienceDiscoveryTruncated: boolean;
-  commitments: CommitmentItem[];
-  sharedAudiences: SharedStateAudienceEntries[];
-};
 type SharedStateRelation =
   | {
       kind: "canonicalized_commitment";
@@ -60,7 +52,6 @@ type RelatedSharedStateEntry = {
 
 const STATUS_FILTERS: CreatorDirectiveStatusFilter[] = ["active", "revoked", "superseded", "all"];
 const SORT_MODES: SortMode[] = ["priority_desc", "priority_asc"];
-export const SESSION_AUDIENCE_DISCOVERY_CAP = 1000;
 
 function uniqueStrings(values: readonly string[]): string[] {
   const seen = new Set<string>();
@@ -86,36 +77,6 @@ function directiveSourceStreamIds(directive: CreatorDirectiveItem): string[] {
     ...directive.authorization_stream_entry_ids,
     ...directive.content_source_stream_entry_ids,
   ]);
-}
-
-export async function loadDirectiveSupportData(
-  sessionId: string,
-  commitments?: readonly CommitmentItem[],
-): Promise<DirectiveSupportData> {
-  const [sessionsResponse, commitmentsResponse, stateResponse] = await Promise.all([
-    getSessions(),
-    commitments === undefined
-      ? getCommitments({ state: "all" })
-      : Promise.resolve({ commitments: [...commitments] }),
-    getState({ session: sessionId }),
-  ]);
-  const audienceLabels = uniqueStrings([
-    "self",
-    ...stateResponse.audiences,
-    ...sessionsResponse.sessions.map((session) => session.audience_label),
-  ]);
-  const sharedAudiences = await Promise.all(
-    audienceLabels.map(async (audience) => {
-      const response = await getSharedState(audience);
-      return { audience: response.audience, entries: response.entries };
-    }),
-  );
-
-  return {
-    audienceDiscoveryTruncated: sessionsResponse.sessions.length === SESSION_AUDIENCE_DISCOVERY_CAP,
-    commitments: commitmentsResponse.commitments,
-    sharedAudiences,
-  };
 }
 
 function statusTag(status: CreatorDirectiveStatus) {
@@ -886,128 +847,130 @@ export function DirectivesPanel({
         </div>
       )}
 
-      <div
-        className="page-body"
-        style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px" }}
-      >
-        <div style={{ overflow: "auto", borderRight: "1px solid var(--line)" }}>
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th style={{ width: 92 }}>id</th>
-                <th style={{ width: 150 }}>kind</th>
-                <th style={{ minWidth: 260 }}>text</th>
-                <th style={{ width: 132 }}>scope</th>
-                <th style={{ width: 126 }}>content</th>
-                <th style={{ width: 142 }}>mention</th>
-                <th style={{ width: 84 }}>status</th>
-                <th style={{ width: 50, textAlign: "right" }}>p</th>
-                <th style={{ width: 100 }}>since</th>
-                <th style={{ width: 150 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {directives.map((item) => {
-                const inactive = inactiveSummary(item, directivesById, openDirectiveReference);
-                return (
-                  <tr
-                    key={item.id}
-                    onClick={(event) => {
-                      if (!isInteractiveDescendantEvent(event.currentTarget, event.target)) {
-                        setSelectedId(item.id);
-                      }
-                    }}
-                    className={item.id === selected?.id ? "selected" : ""}
-                    style={{ cursor: "pointer" }}
-                  >
-                    <td>
-                      <button
-                        type="button"
-                        className="row-select-button"
-                        aria-pressed={item.id === selected?.id}
-                        aria-label={`select creator directive ${item.id}`}
-                        onClick={(event) => {
-                          event.stopPropagation();
+      <div className="page-body governance-detail-layout governance-directives-layout">
+        <div className="governance-table-frame">
+          <div className="governance-scroll-hint" aria-hidden="true">
+            scroll columns
+          </div>
+          <div className="governance-table-scroll">
+            <table className="tbl governance-directives-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 92 }}>id</th>
+                  <th style={{ width: 150 }}>kind</th>
+                  <th style={{ minWidth: 260 }}>text</th>
+                  <th style={{ width: 132 }}>scope</th>
+                  <th style={{ width: 126 }}>content</th>
+                  <th style={{ width: 142 }}>mention</th>
+                  <th style={{ width: 84 }}>status</th>
+                  <th style={{ width: 50, textAlign: "right" }}>p</th>
+                  <th style={{ width: 100 }}>since</th>
+                  <th style={{ width: 150 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {directives.map((item) => {
+                  const inactive = inactiveSummary(item, directivesById, openDirectiveReference);
+                  return (
+                    <tr
+                      key={item.id}
+                      onClick={(event) => {
+                        if (!isInteractiveDescendantEvent(event.currentTarget, event.target)) {
                           setSelectedId(item.id);
+                        }
+                      }}
+                      className={item.id === selected?.id ? "selected" : ""}
+                      style={{ cursor: "pointer" }}
+                    >
+                      <td>
+                        <button
+                          type="button"
+                          className="row-select-button"
+                          aria-pressed={item.id === selected?.id}
+                          aria-label={`select creator directive ${item.id}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSelectedId(item.id);
+                          }}
+                        >
+                          {shortId(item.id)}
+                        </button>
+                      </td>
+                      <td>
+                        <Tag>{item.kind}</Tag>
+                      </td>
+                      <td
+                        className="wrap"
+                        style={{ fontFamily: "var(--sans)", fontSize: "12px", lineHeight: 1.45 }}
+                      >
+                        {emptyLabel(item.text)}
+                        <div className="dim" style={{ fontSize: "var(--fs-xs)", marginTop: 2 }}>
+                          subject:{item.subject_entity_name ?? item.subject_kind}
+                        </div>
+                        {inactive === null ? null : (
+                          <div className="dim" style={{ fontSize: "var(--fs-xs)", marginTop: 2 }}>
+                            {inactive}
+                          </div>
+                        )}
+                      </td>
+                      <td>{item.activation_scope}</td>
+                      <td>{item.content_scope}</td>
+                      <td>{item.mention_policy}</td>
+                      <td>
+                        <Tag kind={statusTag(item.status)} dot>
+                          {item.status}
+                        </Tag>
+                      </td>
+                      <td
+                        className="tab-num"
+                        style={{
+                          textAlign: "right",
+                          color: item.priority >= 80 ? "var(--warn)" : "var(--text-dim)",
                         }}
                       >
-                        {shortId(item.id)}
-                      </button>
-                    </td>
-                    <td>
-                      <Tag>{item.kind}</Tag>
-                    </td>
-                    <td
-                      className="wrap"
-                      style={{ fontFamily: "var(--sans)", fontSize: "12px", lineHeight: 1.45 }}
-                    >
-                      {emptyLabel(item.text)}
-                      <div className="dim" style={{ fontSize: "var(--fs-xs)", marginTop: 2 }}>
-                        subject:{item.subject_entity_name ?? item.subject_kind}
-                      </div>
-                      {inactive === null ? null : (
-                        <div className="dim" style={{ fontSize: "var(--fs-xs)", marginTop: 2 }}>
-                          {inactive}
-                        </div>
-                      )}
-                    </td>
-                    <td>{item.activation_scope}</td>
-                    <td>{item.content_scope}</td>
-                    <td>{item.mention_policy}</td>
-                    <td>
-                      <Tag kind={statusTag(item.status)} dot>
-                        {item.status}
-                      </Tag>
-                    </td>
-                    <td
-                      className="tab-num"
-                      style={{
-                        textAlign: "right",
-                        color: item.priority >= 80 ? "var(--warn)" : "var(--text-dim)",
-                      }}
-                    >
-                      {item.priority}
-                    </td>
-                    <td className="dim" style={{ fontSize: "var(--fs-xs)" }}>
-                      {dateLabel(item.created_at)}
-                    </td>
-                    <td>
-                      {item.status === "active" ? (
-                        <div style={{ display: "flex", gap: 6 }}>
-                          <button
-                            className="btn sm danger"
-                            disabled={busy !== null}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              openRevoke(item);
-                            }}
-                          >
-                            revoke
-                          </button>
-                          <button
-                            className="btn sm danger"
-                            disabled={
-                              busy !== null ||
-                              directives.every((candidate) => !canReplaceWith(candidate, item))
-                            }
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              openSupersede(item);
-                            }}
-                          >
-                            supersede
-                          </button>
-                        </div>
-                      ) : null}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                        {item.priority}
+                      </td>
+                      <td className="dim" style={{ fontSize: "var(--fs-xs)" }}>
+                        {dateLabel(item.created_at)}
+                      </td>
+                      <td>
+                        {item.status === "active" ? (
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <button
+                              className="btn sm danger"
+                              disabled={busy !== null}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openRevoke(item);
+                              }}
+                            >
+                              revoke
+                            </button>
+                            <button
+                              className="btn sm danger"
+                              disabled={
+                                busy !== null ||
+                                directives.every((candidate) => !canReplaceWith(candidate, item))
+                              }
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openSupersede(item);
+                              }}
+                            >
+                              supersede
+                            </button>
+                          </div>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
 
-        <div style={{ overflowY: "auto", background: "var(--bg-0)" }}>
+        <div className="governance-detail-rail">
           {selected === null ? (
             <div className="notice">
               {rawDirectives.length === 0 ? "no creator directives yet" : "none match this filter"}

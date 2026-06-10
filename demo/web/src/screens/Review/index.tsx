@@ -1064,16 +1064,11 @@ function ReviewPairDrillthrough({ row, open }: { row: ReviewRow; open: boolean }
   }
 
   return (
-    <div style={{ display: "grid", gap: 10, marginBottom: 14 }}>
+    <div className="review-pair-drillthrough">
       {loading ? <div className="notice">loading semantic drill-through</div> : null}
       {nodeResults === null ? null : (
         <div
-          style={{
-            display: "grid",
-            gridTemplateColumns:
-              edgeId === null ? "repeat(2, minmax(220px, 1fr))" : "1fr minmax(220px, 300px) 1fr",
-            gap: 10,
-          }}
+          className={`review-pair-grid ${edgeId === null ? "review-pair-grid-two" : "review-pair-grid-three"}`}
         >
           <SemanticNodeDrillSlot result={nodeResults[0]} label="candidate 1" />
           {edgeId === null ? null : (

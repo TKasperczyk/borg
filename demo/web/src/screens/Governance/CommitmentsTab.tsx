@@ -422,7 +422,7 @@ export function CommitmentsPanel({
         className={item.id === selected?.id ? "selected" : ""}
         style={{ cursor: "pointer" }}
       >
-        <td>
+        <td className="commit-col-id">
           <button
             type="button"
             className="row-select-button"
@@ -437,7 +437,7 @@ export function CommitmentsPanel({
           </button>
         </td>
         <td
-          className="wrap"
+          className="wrap commit-col-text"
           style={{ fontFamily: "var(--sans)", fontSize: "12px", lineHeight: 1.45 }}
         >
           {item.text}
@@ -446,10 +446,10 @@ export function CommitmentsPanel({
             {item.about === null ? "" : ` · about:${item.about}`}
           </div>
         </td>
-        <td>
+        <td className="commit-col-family">
           <Tag kind="info">{item.directive_family}</Tag>
         </td>
-        <td>
+        <td className="commit-col-audience">
           <span
             className={item.audience === null ? "mute" : "acc"}
             title={item.audience ?? "global"}
@@ -463,18 +463,18 @@ export function CommitmentsPanel({
             {item.audience === null ? "global" : shortId(item.audience)}
           </span>
         </td>
-        <td>
+        <td className="commit-col-enforce">
           <Tag kind={item.enforcement_class === "critical" ? "warn" : ""} dot>
             {item.enforcement_class}
           </Tag>
         </td>
-        <td>
+        <td className="commit-col-state">
           <Tag kind={stateTag(displayState)} dot>
             {displayState}
           </Tag>
         </td>
         <td
-          className="tab-num"
+          className="tab-num commit-col-priority"
           style={{
             textAlign: "right",
             color: item.priority >= 8 ? "var(--warn)" : "var(--text-dim)",
@@ -482,10 +482,10 @@ export function CommitmentsPanel({
         >
           {item.priority}
         </td>
-        <td className="dim" style={{ fontSize: "var(--fs-xs)" }}>
+        <td className="dim commit-col-since" style={{ fontSize: "var(--fs-xs)" }}>
           {dateLabel(item.created_at)}
         </td>
-        <td>
+        <td className="commit-col-actions">
           {item.state === "active" ? (
             <button
               className="btn sm danger"
@@ -597,48 +597,66 @@ export function CommitmentsPanel({
 
       {operatorError === null ? null : <ErrorState>{operatorError}</ErrorState>}
 
-      <div
-        className="page-body"
-        style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px" }}
-      >
-        <div style={{ overflow: "auto", borderRight: "1px solid var(--line)" }}>
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th style={{ width: 92 }}>id</th>
-                <th style={{ minWidth: 240 }}>text</th>
-                <th style={{ width: 160 }}>family</th>
-                <th style={{ width: 96 }}>audience</th>
-                <th style={{ width: 96 }}>enforce</th>
-                <th style={{ width: 84 }}>state</th>
-                <th style={{ width: 50, textAlign: "right" }}>p</th>
-                <th style={{ width: 100 }}>since</th>
-                <th style={{ width: 86 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {groupMode === "family"
-                ? groupedFiltered.map((group) => (
-                    <Fragment key={group.family}>
-                      <tr aria-label={`family group ${group.family}`}>
-                        <td colSpan={9} style={{ background: "var(--bg-0)" }}>
-                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                            <Tag kind="info">{group.family}</Tag>
-                            <span className="dim" style={{ fontSize: "var(--fs-xs)" }}>
-                              {familyGroupSummary(group.items)}
-                            </span>
-                          </div>
-                        </td>
-                      </tr>
-                      {group.items.map((item) => renderCommitmentRow(item))}
-                    </Fragment>
-                  ))
-                : filtered.map((item) => renderCommitmentRow(item))}
-            </tbody>
-          </table>
+      <div className="page-body governance-detail-layout governance-commitments-layout">
+        <div className="governance-table-frame">
+          <div className="governance-scroll-hint" aria-hidden="true">
+            scroll columns
+          </div>
+          <div className="governance-table-scroll">
+            <table className="tbl governance-commitments-table">
+              <thead>
+                <tr>
+                  <th className="commit-col-id" style={{ width: 92 }}>
+                    id
+                  </th>
+                  <th className="commit-col-text" style={{ minWidth: 240 }}>
+                    text
+                  </th>
+                  <th className="commit-col-family" style={{ width: 160 }}>
+                    family
+                  </th>
+                  <th className="commit-col-audience" style={{ width: 96 }}>
+                    audience
+                  </th>
+                  <th className="commit-col-enforce" style={{ width: 96 }}>
+                    enforce
+                  </th>
+                  <th className="commit-col-state" style={{ width: 84 }}>
+                    state
+                  </th>
+                  <th className="commit-col-priority" style={{ width: 50, textAlign: "right" }}>
+                    p
+                  </th>
+                  <th className="commit-col-since" style={{ width: 100 }}>
+                    since
+                  </th>
+                  <th className="commit-col-actions" style={{ width: 86 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {groupMode === "family"
+                  ? groupedFiltered.map((group) => (
+                      <Fragment key={group.family}>
+                        <tr aria-label={`family group ${group.family}`}>
+                          <td colSpan={9} style={{ background: "var(--bg-0)" }}>
+                            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                              <Tag kind="info">{group.family}</Tag>
+                              <span className="dim" style={{ fontSize: "var(--fs-xs)" }}>
+                                {familyGroupSummary(group.items)}
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                        {group.items.map((item) => renderCommitmentRow(item))}
+                      </Fragment>
+                    ))
+                  : filtered.map((item) => renderCommitmentRow(item))}
+              </tbody>
+            </table>
+          </div>
         </div>
 
-        <div style={{ overflowY: "auto", background: "var(--bg-0)" }}>
+        <div className="governance-detail-rail">
           {selected === null ? (
             <Empty>
               {commitments.length === 0 ? "no commitments yet" : "none match this filter"}

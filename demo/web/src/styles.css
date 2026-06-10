@@ -126,6 +126,15 @@ body {
   overflow: hidden;
 }
 
+@media (max-width: 900px) {
+  html,
+  body,
+  #root {
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+}
+
 input,
 textarea,
 select {
@@ -301,6 +310,36 @@ select {
   display: inline-flex;
   align-items: center;
   gap: 12px;
+}
+
+@media (max-width: 1366px) {
+  .topbar {
+    gap: 14px;
+    padding-inline: 12px;
+  }
+
+  .topbar-pills {
+    gap: 10px;
+  }
+
+  .topbar-pill {
+    min-width: 0;
+  }
+
+  .topbar-pill .v {
+    max-width: 18ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .topbar-pill .identity-inline {
+    max-width: 26ch;
+  }
+
+  .instrument-strip .orr-mini {
+    display: none;
+  }
 }
 .topbar-key {
   color: var(--text-mute);
@@ -861,6 +900,7 @@ select {
 }
 .screen-shell {
   min-width: 0;
+  height: 100%;
   overflow: hidden;
   border-left: 1px solid var(--line);
 }
@@ -1617,8 +1657,11 @@ select {
 
 .cog {
   display: grid;
-  grid-template-columns: minmax(320px, 38%) 1px minmax(0, 1fr);
+  grid-template-columns: minmax(420px, 1.25fr) 1px minmax(320px, 0.75fr);
   height: 100%;
+}
+.cog.cog-xray-idle {
+  grid-template-columns: minmax(460px, 1.45fr) 1px minmax(280px, 0.55fr);
 }
 .cog-divider {
   background: var(--line);
@@ -3614,6 +3657,10 @@ g.fc-regen-group.active .fc-regen-label-bg {
 .bands .band-overview-bar {
   border: 1px solid var(--line);
   background: var(--bg-0);
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  align-items: stretch;
+  overflow-x: visible;
+  margin-bottom: 14px;
 }
 
 .memory-zero-state {
@@ -3647,6 +3694,10 @@ g.fc-regen-group.active .fc-regen-label-bg {
     transform 0.1s;
   position: relative;
   min-width: 118px;
+}
+
+.memory-atlas .band-card {
+  min-height: 132px;
 }
 .band-card:hover {
   border-color: var(--acc-dim);
@@ -3685,7 +3736,7 @@ g.fc-regen-group.active .fc-regen-label-bg {
 }
 .band-card .stat-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   min-height: 28px;
 }
@@ -3701,6 +3752,35 @@ g.fc-regen-group.active .fc-regen-label-bg {
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
   margin-top: 1px;
+}
+
+.band-card .empty-stat {
+  grid-column: 1 / -1;
+}
+
+.memory-atlas-preview {
+  min-height: 0;
+}
+
+.memory-preview-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.memory-preview-body {
+  max-height: min(48vh, 520px);
+  overflow: auto;
+  padding: 10px;
+}
+
+.memory-preview-body .matlas-affective,
+.memory-preview-body .matlas-social,
+.memory-preview-body .matlas-self,
+.memory-preview-body .matlas-commitments {
+  max-height: none;
 }
 .band-card .explore {
   font-size: var(--fs-xs);
@@ -3778,11 +3858,15 @@ g.fc-regen-group.active .fc-regen-label-bg {
 
 /* review & repair */
 .review-repair-page {
+  flex: 1 1 0;
+  height: 100%;
   padding: 18px;
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
+  container-type: inline-size;
+  overflow-y: auto;
 }
 
 .review-wide-notice {
@@ -3812,7 +3896,8 @@ g.fc-regen-group.active .fc-regen-label-bg {
   display: grid;
   grid-template-columns: minmax(240px, 0.78fr) minmax(380px, 1.45fr) minmax(260px, 0.82fr);
   gap: 12px;
-  min-height: 0;
+  min-height: 100%;
+  min-width: 0;
 }
 
 .review-pane {
@@ -3826,6 +3911,42 @@ g.fc-regen-group.active .fc-regen-label-bg {
 .review-evidence {
   display: grid;
   gap: 10px;
+}
+
+.review-pair-drillthrough {
+  container-type: inline-size;
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  min-width: 0;
+}
+
+.review-pair-grid {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.review-pair-grid-two {
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+}
+
+.review-pair-grid-three {
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 300px) minmax(220px, 1fr);
+}
+
+@container (max-width: 1100px) {
+  .review-repair-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(180px, max-content) minmax(320px, 1fr) minmax(220px, max-content);
+  }
+}
+
+@container (max-width: 760px) {
+  .review-pair-grid-two,
+  .review-pair-grid-three {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .review-quiet-pane {
@@ -4444,6 +4565,7 @@ g.fc-regen-group.active .fc-regen-label-bg {
   grid-template-columns: repeat(12, 1fr);
   gap: 14px;
   align-content: start;
+  align-items: start;
 }
 .id-card {
   background: var(--bg-1);
@@ -4652,6 +4774,17 @@ g.fc-regen-group.active .fc-regen-label-bg {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+  align-items: start;
+}
+
+.identity-values-board,
+.identity-traits-board {
+  align-self: start;
+}
+
+.identity-values-board .body,
+.identity-traits-board .body {
+  flex: 0 1 auto;
 }
 
 .identity-state-column,
@@ -5042,7 +5175,8 @@ g.fc-regen-group.active .fc-regen-label-bg {
 }
 
 .page-body {
-  flex: 1;
+  flex: 1 1 0;
+  min-height: 0;
   overflow-y: auto;
 }
 
@@ -5131,6 +5265,90 @@ tr[role="button"]:focus-visible {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.governance-panel {
+  container-type: inline-size;
+}
+
+.governance-detail-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, clamp(260px, 24vw, 320px));
+  min-width: 0;
+}
+
+.governance-table-frame {
+  position: relative;
+  min-width: 0;
+  border-right: 1px solid var(--line);
+  background: var(--bg-0);
+}
+
+.governance-table-frame::after {
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 28px;
+  background: linear-gradient(90deg, transparent, var(--bg-0));
+}
+
+.governance-scroll-hint {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 3;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text-mute);
+  font-size: var(--fs-xs);
+  letter-spacing: var(--eyebrow-ls);
+  text-transform: uppercase;
+}
+
+.governance-table-scroll {
+  height: 100%;
+  overflow: auto;
+}
+
+.governance-detail-rail {
+  min-width: 0;
+  overflow-y: auto;
+  background: var(--bg-0);
+}
+
+.governance-commitments-table .commit-col-actions {
+  position: sticky;
+  right: 0;
+  background: var(--bg-0);
+  z-index: 2;
+}
+
+@container (max-width: 1040px) {
+  .governance-commitments-table .commit-col-family,
+  .governance-commitments-table .commit-col-audience,
+  .governance-commitments-table .commit-col-priority,
+  .governance-commitments-table .commit-col-since {
+    display: none;
+  }
+}
+
+@container (max-width: 960px) {
+  .governance-detail-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .governance-table-frame {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .governance-detail-rail {
+    min-height: 260px;
+  }
 }
 
 .scope-matrix-body,
@@ -5226,9 +5444,12 @@ tr[role="button"]:focus-visible {
   gap: 14px;
   padding: 16px 20px 22px;
   align-items: start;
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
 }
 .admin-panel {
-  min-height: 260px;
+  min-height: 0;
 }
 .admin-danger-panel {
   border-color: var(--bad-dim);
@@ -5498,7 +5719,12 @@ tr[role="button"]:focus-visible {
 }
 
 .dream-schedule-panel .panel-body {
-  overflow-x: auto;
+  max-height: 430px;
+  overflow: auto;
+}
+
+.dream-schedule-panel .panel-body.expanded {
+  max-height: min(72vh, 760px);
 }
 
 .dream-schedule-table td {
@@ -6517,20 +6743,6 @@ tr[role="button"]:focus-visible {
   fill: var(--text-faint);
 }
 
-.orr-mini-live .orr-mini-core {
-  fill: var(--acc);
-  filter: drop-shadow(0 0 5px var(--acc));
-  animation: pulse 1.4s ease-in-out infinite;
-}
-
-.orr-mini-warn .orr-mini-core {
-  fill: var(--warn);
-}
-
-.orr-mini-bad .orr-mini-core {
-  fill: var(--bad);
-}
-
 .orr-mini-dream {
   fill: var(--purple-dim);
 }
@@ -6538,18 +6750,6 @@ tr[role="button"]:focus-visible {
 .orr-mini-dream-running .orr-mini-dream {
   fill: var(--warn);
   animation: pulse 1.2s ease-in-out infinite;
-}
-
-.orr-mini-review {
-  fill: var(--text-ghost);
-}
-
-.orr-mini-has-reviews .orr-mini-review {
-  fill: var(--warn);
-}
-
-.orr-mini-bad.orr-mini-has-reviews .orr-mini-review {
-  fill: var(--bad);
 }
 .modal-field {
   display: grid;

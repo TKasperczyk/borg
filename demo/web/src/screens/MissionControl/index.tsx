@@ -11,7 +11,6 @@ import { Panel } from "../../components/Panel";
 import { SeverityChip } from "../../components/SeverityChip";
 import { Tag, type TagKind } from "../../components/Tag";
 import { useInspector } from "../../components/Inspector/inspector-context";
-import { moodLabel } from "../../components/StatusBar";
 import { useLiveCache } from "../../hooks/use-live-cache";
 import type { RouteId, RouteNavigationOptions } from "../../routes";
 import { shortId } from "../screen-utils";
@@ -533,8 +532,7 @@ function AttachmentsCard({ data }: { data: AttentionData["attachments"] }) {
 }
 
 function StatusStrip({ turnStream }: { turnStream: OrreryTurnInput }) {
-  const { stateApi, dreamActivity } = useLiveCache();
-  const state = stateApi.data;
+  const { dreamActivity } = useLiveCache();
   const dreamLabel =
     dreamActivity === null ? "idle" : `${dreamActivity.process} ${dreamActivity.phase}`;
 
@@ -560,12 +558,6 @@ function StatusStrip({ turnStream }: { turnStream: OrreryTurnInput }) {
       <span className="mc-status-seg">
         <span className="k">terminal</span>
         <span className="v">{turnStream.terminalOutcome ?? "—"}</span>
-      </span>
-      <span className="mc-status-seg">
-        <span className="k">mood</span>
-        <span className="v">
-          <span className="instrument-mood-glyph">◐</span> {moodLabel(state)}
-        </span>
       </span>
       <span className="mc-status-seg">
         <span className="k">dream</span>

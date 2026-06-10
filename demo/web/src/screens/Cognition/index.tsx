@@ -622,7 +622,7 @@ export function CognitionScreen({
   };
 
   return (
-    <div className="cog">
+    <div className={`cog ${turnStream.running ? "" : "cog-xray-idle"}`}>
       <div className="chat">
         <ChatStream
           entries={visibleChatEntries}
