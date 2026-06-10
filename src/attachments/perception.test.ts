@@ -9,7 +9,7 @@ import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import type { LanceDbRow, LanceDbTable } from "../storage/lancedb/index.js";
 import { composeMigrations, openDatabase, type SqliteDatabase } from "../storage/sqlite/index.js";
 import { createAttachmentId, type StreamEntryId } from "../util/ids.js";
-import { imagePerceptionMemoryDisclosureLabel } from "../cognition/disclosure-labels.js";
+import { imagePerceptionMemoryDisclosureLabel } from "../memory/common/disclosure-serializers.js";
 import { AttachmentRepository, attachmentMigrations } from "./repository.js";
 import {
   IMAGE_PERCEPTION_TOOL_NAME,

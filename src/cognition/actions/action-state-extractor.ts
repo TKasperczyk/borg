@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMMessage,
   type LLMToolDefinition,
   toToolInputSchema,
@@ -23,7 +24,12 @@ import {
   type ActionState,
   type ActionStateTimestampField,
 } from "../../memory/actions/index.js";
-import type { SharedStateEntry } from "../../memory/decision-artifacts/index.js";
+import {
+  completeAction,
+  markActionNotDone,
+  type LifecycleOperationResult,
+} from "../../memory/lifecycle-ops/index.js";
+import type { SharedStateEntry } from "../../memory/shared-state/index.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import {
@@ -41,15 +47,9 @@ import {
   actionMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
   sharedStateMemoryDisclosureLabel,
-} from "../disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import type { RecencyMessage } from "../recency/index.js";
-import {
-  summarizeToolResponseShape,
-  traceLlmCallError,
-  traceLlmCallResponse,
-  traceLlmCallStarted,
-} from "../tracing/llm-call-trace.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 
 const ACTION_STATE_TOOL_NAME = "EmitActionStates";
 const ACTION_PERSISTENCE_DUPLICATE_SIMILARITY_THRESHOLD = 0.85;
@@ -137,6 +137,8 @@ type ParsedActionStateCandidateWithIndex = {
 type ActionStateSkippedReason =
   | "missing_current_user_evidence"
   | "repository_failed"
+  | "lifecycle_no_op"
+  | "lifecycle_conflict"
   | "invalid_classification"
   | "invalid_candidate"
   | "non_concrete_classification"
@@ -185,7 +187,7 @@ export type ActionStateExtractorOptions = {
   llmClient?: LLMClient;
   model?: string;
   actionRepository?: Pick<ActionRepository, "add"> &
-    Partial<Pick<ActionRepository, "list" | "update">>;
+    Partial<Pick<ActionRepository, "get" | "list" | "update">>;
   embeddingClient?: EmbeddingClient;
   clock?: Clock;
   tracer?: TurnTracer;
@@ -398,16 +400,8 @@ function parseCandidates(envelope: ActionStateEnvelopeInput): {
   };
 }
 
-function parseResponse(result: LLMCompleteResult): ActionStateParseResult {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === ACTION_STATE_TOOL_NAME);
-
-  if (call === undefined) {
-    throw new MissingActionStateToolCallError(
-      `Action state extractor did not emit ${ACTION_STATE_TOOL_NAME}`,
-    );
-  }
-
-  const parsed = actionStateEnvelopeSchema.safeParse(call.input);
+function parseResponse(input: unknown): ActionStateParseResult {
+  const parsed = actionStateEnvelopeSchema.safeParse(input);
 
   if (!parsed.success) {
     throw parsed.error;
@@ -429,6 +423,18 @@ function parseResponse(result: LLMCompleteResult): ActionStateParseResult {
     classificationCounts: candidates.classificationCounts,
     rejectedCandidates: candidates.rejectedCandidates,
   };
+}
+
+function degradedReasonForStructuredToolError(error: unknown): ActionStateExtractorDegradedReason {
+  if (isStructuredToolCallError(error, "missing_tool_call")) {
+    return "missing_tool_call";
+  }
+
+  if (isStructuredToolCallError(error, "invalid_payload")) {
+    return "invalid_payload";
+  }
+
+  return "llm_failed";
 }
 
 function hasCurrentUserEvidence(
@@ -575,6 +581,40 @@ function isActiveTerminalTransitionTarget(state: ActionState): boolean {
 
 function mergeUniqueIds<T extends string>(left: readonly T[], right: readonly T[]): T[] {
   return [...new Set([...left, ...right])];
+}
+
+type TerminalClosureState = "completed" | "not_done";
+type TerminalClosurePatch = Omit<ActionRecordPatch, "state">;
+type TerminalClosureRepository = Pick<ActionRepository, "update"> &
+  Partial<Pick<ActionRepository, "get">>;
+type TerminalClosureLifecycleResult = LifecycleOperationResult<{
+  actionId: ActionId;
+  previous: ActionRecord | null;
+}>;
+
+function closeActionThroughLifecycle(input: {
+  actionId: ActionId;
+  state: TerminalClosureState;
+  repository: TerminalClosureRepository;
+  patch: TerminalClosurePatch;
+}): TerminalClosureLifecycleResult {
+  return input.state === "completed"
+    ? completeAction({
+        actionId: input.actionId,
+        repository: input.repository,
+        patch: input.patch,
+      })
+    : markActionNotDone({
+        actionId: input.actionId,
+        repository: input.repository,
+        patch: input.patch,
+      });
+}
+
+function skippedReasonFromLifecycleResult(
+  result: Exclude<TerminalClosureLifecycleResult, { status: "success" }>,
+): ActionStateSkippedReason {
+  return result.status === "conflict" ? "lifecycle_conflict" : "lifecycle_no_op";
 }
 
 function traceExtractorCompleted(options: {
@@ -792,62 +832,54 @@ export class ActionStateExtractor {
     const messages = buildActionStateMessages(input);
     const tools = [ACTION_STATE_TOOL];
 
-    traceLlmCallStarted({
-      tracer: this.options.tracer,
-      turnId: this.options.turnId,
-      sessionId,
-      label: "action_state_extractor",
-      model: this.options.model,
-      systemPrompt: ACTION_STATE_SYSTEM_PROMPT,
-      messages,
-      tools,
-    });
-
-    let response: LLMCompleteResult;
-
-    try {
-      response = await this.options.llmClient.complete({
-        model: this.options.model,
-        system: ACTION_STATE_SYSTEM_PROMPT,
-        messages,
-        tools,
-        tool_choice: { type: "tool", name: ACTION_STATE_TOOL_NAME },
-        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
-        budget: "action-state-extractor",
-      });
-    } catch (error) {
-      traceLlmCallError({
-        tracer: this.options.tracer,
-        turnId: this.options.turnId,
-        sessionId,
-        label: "action_state_extractor",
-        error,
-      });
-
-      return this.degradedWithTrace("llm_failed", error, sessionId);
-    }
-
-    traceLlmCallResponse({
-      tracer: this.options.tracer,
-      turnId: this.options.turnId,
-      sessionId,
-      label: "action_state_extractor",
-      response,
-      responseShape: summarizeToolResponseShape(response),
-    });
-
     let parsed: ActionStateParseResult;
 
     try {
-      parsed = parseResponse(response);
+      parsed = (
+        await callStructuredTool({
+          llmClient: this.options.llmClient,
+          request: {
+            model: this.options.model,
+            system: ACTION_STATE_SYSTEM_PROMPT,
+            messages,
+            tools,
+            tool_choice: { type: "tool", name: ACTION_STATE_TOOL_NAME },
+            max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
+            budget: "action-state-extractor",
+          },
+          toolName: ACTION_STATE_TOOL_NAME,
+          parse: parseResponse,
+          trace: {
+            tracer: this.options.tracer,
+            turnId: this.options.turnId,
+            sessionId,
+            label: "action_state_extractor",
+            systemPrompt: ACTION_STATE_SYSTEM_PROMPT,
+            messages,
+            tools,
+          },
+        })
+      ).parsed;
     } catch (error) {
-      const reason =
-        error instanceof MissingActionStateToolCallError
-          ? "missing_tool_call"
-          : error instanceof z.ZodError
-            ? "invalid_payload"
-            : "llm_failed";
-      const result = await this.degraded(reason, error);
+      const reason = degradedReasonForStructuredToolError(error);
+
+      if (reason === "llm_failed") {
+        return this.degradedWithTrace(
+          "llm_failed",
+          isStructuredToolCallError(error, "llm_failed") ? (error.cause ?? error) : error,
+          sessionId,
+        );
+      }
+
+      const degradedError =
+        isStructuredToolCallError(error, "missing_tool_call")
+          ? new MissingActionStateToolCallError(
+              `Action state extractor did not emit ${ACTION_STATE_TOOL_NAME}`,
+            )
+          : isStructuredToolCallError(error, "invalid_payload")
+            ? (error.cause ?? error)
+            : error;
+      const result = await this.degraded(reason, degradedError);
 
       traceExtractorCompleted({
         tracer: this.options.tracer,
@@ -989,7 +1021,6 @@ export class ActionStateExtractor {
 
         if (activeBorgAction !== undefined && this.options.actionRepository.update !== undefined) {
           const patch = {
-            state: candidate.state,
             confidence: Math.max(activeBorgAction.confidence, candidate.confidence),
             provenance_stream_entry_ids: mergeUniqueIds(
               activeBorgAction.provenance_stream_entry_ids,
@@ -1000,10 +1031,24 @@ export class ActionStateExtractor {
             last_referenced_turn_counter: turnCounter,
             last_referenced_turn_global: turnCounter,
             ...stateTimestampPatch(candidate.state, nowMs),
-          } satisfies ActionRecordPatch;
+          } satisfies TerminalClosurePatch;
 
           try {
-            this.options.actionRepository.update(matchedExistingActionId, patch);
+            const lifecycleResult = closeActionThroughLifecycle({
+              actionId: matchedExistingActionId,
+              state: candidate.state,
+              repository: this.options.actionRepository as TerminalClosureRepository,
+              patch,
+            });
+
+            if (lifecycleResult.status !== "success") {
+              const reason = skippedReasonFromLifecycleResult(lifecycleResult);
+
+              incrementSkippedReason(skippedReasons, reason);
+              incrementSkippedCandidate(skippedCandidates, parsedCandidate.candidateIndex, reason);
+              continue;
+            }
+
             selfPerformanceClosures += 1;
             terminalEmissionClosures += 1;
             traceBorgSelfPerformanceClosure({
@@ -1102,7 +1147,6 @@ export class ActionStateExtractor {
                 persistTerminalWithoutUpdate = true;
               } else {
                 const patch = {
-                  state: record.state,
                   confidence: Math.max(bestMatch.record.confidence, record.confidence),
                   provenance_episode_ids: mergeUniqueIds(
                     bestMatch.record.provenance_episode_ids,
@@ -1117,11 +1161,29 @@ export class ActionStateExtractor {
                   last_referenced_turn_counter: turnCounter,
                   last_referenced_turn_global: turnCounter,
                   ...stateTimestampPatch(record.state, nowMs),
-                } satisfies ActionRecordPatch;
+                } satisfies TerminalClosurePatch;
 
                 try {
-                  this.options.actionRepository.update(bestMatch.actionId, patch);
-                  Object.assign(bestMatch.record, patch);
+                  const lifecycleResult = closeActionThroughLifecycle({
+                    actionId: bestMatch.actionId,
+                    state: record.state,
+                    repository: this.options.actionRepository as TerminalClosureRepository,
+                    patch,
+                  });
+
+                  if (lifecycleResult.status !== "success") {
+                    const reason = skippedReasonFromLifecycleResult(lifecycleResult);
+
+                    incrementSkippedReason(skippedReasons, reason);
+                    incrementSkippedCandidate(
+                      skippedCandidates,
+                      parsedCandidate.candidateIndex,
+                      reason,
+                    );
+                    continue;
+                  }
+
+                  Object.assign(bestMatch.record, patch, { state: record.state });
                   terminalEmissionClosures += 1;
                   traceTerminalEmissionClosure({
                     tracer: this.options.tracer,

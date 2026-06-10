@@ -1,4 +1,4 @@
-import { sharedStateMemoryDisclosureLabel } from "../../disclosure-labels.js";
+import { sharedStateMemoryDisclosureLabel } from "../../../memory/common/disclosure-serializers.js";
 import type { BuilderSectionContext } from "../builder-context.js";
 import {
   appendMemoryDisclosureState,

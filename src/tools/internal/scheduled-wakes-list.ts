@@ -6,7 +6,7 @@ import {
   type ScheduledWake,
   type ScheduledWakeStatus,
 } from "../../autonomy/index.js";
-import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import {
   memoryDisclosureLabelMetadataSchema,
   selfPrivateMemoryDisclosureLabel,

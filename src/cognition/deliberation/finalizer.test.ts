@@ -32,7 +32,7 @@ async function runEmissionFinalizer(
   tempDirs: string[],
   options: {
     cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
-    additionalPromptSections?: readonly (string | null)[];
+    additionalPromptSections?: Parameters<typeof runFinalizer>[0]["additionalPromptSections"];
     tracer?: Parameters<typeof runFinalizer>[0]["tracer"];
     turnId?: string;
     structuralNoOutputFlags?: Parameters<typeof runFinalizer>[0]["structuralNoOutputFlags"];
@@ -495,14 +495,14 @@ describe("runFinalizer emission tools", () => {
         staticPrefix: "Stable static prompt.",
         dynamicContent: "Dynamic context one.",
       },
-      additionalPromptSections: ["Evidence ledger one."],
+      additionalPromptSections: [{ blockId: "borg_evidence_ledger", text: "Evidence ledger one." }],
     });
     await runEmissionFinalizer(secondLlm, tempDirs, {
       cacheableSystemPrompt: {
         staticPrefix: "Stable static prompt.",
         dynamicContent: "Dynamic context two.",
       },
-      additionalPromptSections: ["Evidence ledger two."],
+      additionalPromptSections: [{ blockId: "borg_evidence_ledger", text: "Evidence ledger two." }],
     });
 
     const firstSystem = firstLlm.requests[0]?.system as readonly { text: string }[];

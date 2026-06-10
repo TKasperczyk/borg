@@ -2,8 +2,9 @@ import { z } from "zod";
 
 import { computeWeights } from "../../cognition/attention/index.js";
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
@@ -27,7 +28,7 @@ import {
 import {
   memoryDisclosurePayloadFields,
   openQuestionMemoryDisclosureLabel,
-} from "../../cognition/disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import {
   combineMemoryDisclosureLabels,
   memoryDisclosureLabelFromEpisodeAccess,
@@ -189,16 +190,25 @@ function buildResolutionPrompt(question: OpenQuestion, evidence: string): string
   ].join("\n\n");
 }
 
-function parseResolutionResponse(result: LLMCompleteResult) {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === RUMINATOR_TOOL_NAME);
-
-  if (call === undefined) {
-    throw new StorageError(`Ruminator did not emit tool ${RUMINATOR_TOOL_NAME}`, {
+function invalidResolutionResponse(error: unknown): unknown {
+  if (isStructuredToolCallError(error, "missing_tool_call")) {
+    return new StorageError(`Ruminator did not emit tool ${RUMINATOR_TOOL_NAME}`, {
       code: "RUMINATOR_INVALID",
     });
   }
 
-  return resolutionResponseSchema.parse(call.input);
+  if (
+    isStructuredToolCallError(error, "invalid_payload") ||
+    isStructuredToolCallError(error, "llm_failed")
+  ) {
+    return error.cause ?? error;
+  }
+
+  return error;
+}
+
+function parseResolutionResponse(input: unknown) {
+  return resolutionResponseSchema.parse(input);
 }
 
 function isOfflineChange(change: OfflineChange | null): change is OfflineChange {
@@ -610,22 +620,34 @@ async function planResolution(
       ),
     )
     .join("\n");
-  const response = parseResolutionResponse(
-    await llmClient.complete({
-      model: ctx.config.anthropic.models.background,
-      system: "I update my open questions conservatively and only from grounded evidence.",
-      messages: [
-        {
-          role: "user",
-          content: buildResolutionPrompt(question, evidenceBlock),
+  let response: z.infer<typeof resolutionResponseSchema>;
+
+  try {
+    response = (
+      await callStructuredTool({
+        llmClient,
+        request: {
+          model: ctx.config.anthropic.models.background,
+          system: "I update my open questions conservatively and only from grounded evidence.",
+          messages: [
+            {
+              role: "user",
+              content: buildResolutionPrompt(question, evidenceBlock),
+            },
+          ],
+          tools: [RUMINATOR_TOOL],
+          tool_choice: { type: "tool", name: RUMINATOR_TOOL_NAME },
+          max_tokens: 4_000,
+          budget: "offline-ruminator",
         },
-      ],
-      tools: [RUMINATOR_TOOL],
-      tool_choice: { type: "tool", name: RUMINATOR_TOOL_NAME },
-      max_tokens: 4_000,
-      budget: "offline-ruminator",
-    }),
-  );
+        toolName: RUMINATOR_TOOL_NAME,
+        parse: parseResolutionResponse,
+      })
+    ).parsed;
+  } catch (error) {
+    throw invalidResolutionResponse(error);
+  }
+
   const growthMarker =
     response.growth_marker === null
       ? null

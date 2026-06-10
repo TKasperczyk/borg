@@ -6,7 +6,7 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createEntityId, createGoalId, createSessionId } from "../../util/ids.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import {
   GOAL_PROMOTION_CLASSIFICATIONS,
   GoalPromotionExtractor,

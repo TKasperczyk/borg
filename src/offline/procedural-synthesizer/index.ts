@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
@@ -23,8 +24,11 @@ import {
   type SkillContextStatsRecord,
   type SkillRecord,
 } from "../../memory/procedural/index.js";
-import type { ReviewQueueItem, SkillSplitReviewPayload } from "../../memory/semantic/index.js";
-import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import type {
+  ReviewQueueItem,
+  SkillSplitReviewPayload,
+} from "../../memory/review-queue/index.js";
+import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { combineMemoryDisclosureLabels } from "../../retrieval/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
@@ -314,28 +318,28 @@ function buildPrompt(cluster: EvidenceCluster): string {
   ].join("\n");
 }
 
-function parseSkillCandidate(result: LLMCompleteResult) {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === SYNTHESIZER_TOOL_NAME);
-
-  if (call === undefined) {
-    throw new StorageError(`Procedural synthesizer did not emit tool ${SYNTHESIZER_TOOL_NAME}`, {
-      code: "PROCEDURAL_SYNTHESIZER_INVALID",
-    });
-  }
-
-  return skillCandidateSchema.parse(call.input);
+function parseSkillCandidate(input: unknown) {
+  return skillCandidateSchema.parse(input);
 }
 
-function parseSkillSplitProposal(result: LLMCompleteResult) {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === SKILL_SPLIT_TOOL_NAME);
+function parseSkillSplitProposal(input: unknown) {
+  return skillSplitProposalSchema.parse(input);
+}
 
-  if (call === undefined) {
-    throw new StorageError(`Procedural synthesizer did not emit tool ${SKILL_SPLIT_TOOL_NAME}`, {
-      code: "PROCEDURAL_SKILL_SPLIT_INVALID",
+function proceduralSynthesizerStructuredError(
+  error: unknown,
+  toolName: typeof SYNTHESIZER_TOOL_NAME | typeof SKILL_SPLIT_TOOL_NAME,
+): unknown {
+  if (isStructuredToolCallError(error, "missing_tool_call")) {
+    return new StorageError(`Procedural synthesizer did not emit tool ${toolName}`, {
+      code:
+        toolName === SYNTHESIZER_TOOL_NAME
+          ? "PROCEDURAL_SYNTHESIZER_INVALID"
+          : "PROCEDURAL_SKILL_SPLIT_INVALID",
     });
   }
 
-  return skillSplitProposalSchema.parse(call.input);
+  return isStructuredToolCallError(error) ? (error.cause ?? error) : error;
 }
 
 function isSkillSplitParseFailure(error: unknown): boolean {
@@ -791,23 +795,28 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
 
         for (const cluster of candidateClusters) {
           try {
-            const candidate = parseSkillCandidate(
-              await llmClient.complete({
-                model: ctx.config.anthropic.models.background,
-                system:
-                  "You synthesize reusable procedural memory from successful evidence clusters. Be conservative and reject narrow or generic candidates.",
-                messages: [
-                  {
-                    role: "user",
-                    content: buildPrompt(cluster),
-                  },
-                ],
-                tools: [PROCEDURAL_SYNTHESIZER_TOOL],
-                tool_choice: { type: "tool", name: SYNTHESIZER_TOOL_NAME },
-                max_tokens: 1_500,
-                budget: "offline-procedural-synthesizer",
-              }),
-            );
+            const candidate = (
+              await callStructuredTool({
+                llmClient,
+                request: {
+                  model: ctx.config.anthropic.models.background,
+                  system:
+                    "You synthesize reusable procedural memory from successful evidence clusters. Be conservative and reject narrow or generic candidates.",
+                  messages: [
+                    {
+                      role: "user",
+                      content: buildPrompt(cluster),
+                    },
+                  ],
+                  tools: [PROCEDURAL_SYNTHESIZER_TOOL],
+                  tool_choice: { type: "tool", name: SYNTHESIZER_TOOL_NAME },
+                  max_tokens: 1_500,
+                  budget: "offline-procedural-synthesizer",
+                },
+                toolName: SYNTHESIZER_TOOL_NAME,
+                parse: parseSkillCandidate,
+              })
+            ).parsed;
             const rejectionReason =
               candidate.abstraction_fit !== "usable"
                 ? "unusable_abstraction"
@@ -837,7 +846,12 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
               throw error;
             }
 
-            errors.push(offlineProcessError(this.name, error));
+            errors.push(
+              offlineProcessError(
+                this.name,
+                proceduralSynthesizerStructuredError(error, SYNTHESIZER_TOOL_NAME),
+              ),
+            );
           }
         }
 
@@ -867,23 +881,28 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
           try {
             const labeledCandidate = await labeledSplitCandidate(ctx, candidate);
 
-            const proposal = parseSkillSplitProposal(
-              await llmClient.complete({
-                model: ctx.config.anthropic.models.background,
-                system:
-                  "You refactor procedural memory only when context-conditioned outcomes clearly show that one skill is hiding different reusable procedures. Be conservative.",
-                messages: [
-                  {
-                    role: "user",
-                    content: buildSplitPrompt(labeledCandidate),
-                  },
-                ],
-                tools: [PROCEDURAL_SKILL_SPLIT_TOOL],
-                tool_choice: { type: "tool", name: SKILL_SPLIT_TOOL_NAME },
-                max_tokens: 1_500,
-                budget: "offline-procedural-synthesizer",
-              }),
-            );
+            const proposal = (
+              await callStructuredTool({
+                llmClient,
+                request: {
+                  model: ctx.config.anthropic.models.background,
+                  system:
+                    "You refactor procedural memory only when context-conditioned outcomes clearly show that one skill is hiding different reusable procedures. Be conservative.",
+                  messages: [
+                    {
+                      role: "user",
+                      content: buildSplitPrompt(labeledCandidate),
+                    },
+                  ],
+                  tools: [PROCEDURAL_SKILL_SPLIT_TOOL],
+                  tool_choice: { type: "tool", name: SKILL_SPLIT_TOOL_NAME },
+                  max_tokens: 1_500,
+                  budget: "offline-procedural-synthesizer",
+                },
+                toolName: SKILL_SPLIT_TOOL_NAME,
+                parse: parseSkillSplitProposal,
+              })
+            ).parsed;
             const splitItem = {
               skill: labeledCandidate.skill,
               buckets: labeledCandidate.buckets,
@@ -935,8 +954,9 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
               throw error;
             }
 
-            const message = error instanceof Error ? error.message : String(error);
-            const failedSkill = isSkillSplitParseFailure(error)
+            const splitError = proceduralSynthesizerStructuredError(error, SKILL_SPLIT_TOOL_NAME);
+            const message = splitError instanceof Error ? splitError.message : String(splitError);
+            const failedSkill = isSkillSplitParseFailure(splitError)
               ? ctx.skillRepository.recordSplitFailureAndClearClaim({
                   skillId: candidate.skill.id,
                   attemptedAt: this.clock.now(),
@@ -953,7 +973,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
                 claimedAt,
               });
             }
-            errors.push(offlineProcessError(this.name, error));
+            errors.push(offlineProcessError(this.name, splitError));
             await appendSkillSplitInternalEvent(
               ctx,
               {

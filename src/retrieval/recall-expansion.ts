@@ -1,20 +1,14 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMMessage,
-  type LLMToolCall,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../llm/index.js";
-import {
-  summarizeToolResponseShape,
-  traceLlmCallError,
-  traceLlmCallResponse,
-  traceLlmCallStarted,
-} from "../cognition/tracing/llm-call-trace.js";
-import type { TurnTracer } from "../cognition/tracing/tracer.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import type { SessionId } from "../util/ids.js";
 
 const recallExpansionFacetKindSchema = z.enum([
@@ -89,57 +83,48 @@ export async function expandRecall(
   ];
   const tools = [RECALL_EXPANSION_TOOL];
 
-  traceLlmCallStarted({
-    tracer: options.tracer,
-    turnId: options.turnId,
-    sessionId: options.sessionId,
-    label: "recall_expansion",
-    model: options.model,
-    systemPrompt: RECALL_EXPANSION_SYSTEM_PROMPT,
-    messages,
-    tools,
-  });
-
-  let response: LLMCompleteResult;
+  let parsed: z.infer<typeof recallExpansionParserSchema>;
 
   try {
-    response = await options.llmClient.complete({
-      model: options.model,
-      system: RECALL_EXPANSION_SYSTEM_PROMPT,
-      messages,
-      tools,
-      tool_choice: { type: "tool", name: RECALL_EXPANSION_TOOL_NAME },
-      max_tokens: 512,
-      budget: "recall-expansion",
-    });
+    parsed = (
+      await callStructuredTool({
+        llmClient: options.llmClient,
+        request: {
+          model: options.model,
+          system: RECALL_EXPANSION_SYSTEM_PROMPT,
+          messages,
+          tools,
+          tool_choice: { type: "tool", name: RECALL_EXPANSION_TOOL_NAME },
+          max_tokens: 512,
+          budget: "recall-expansion",
+        },
+        toolName: RECALL_EXPANSION_TOOL_NAME,
+        parse: (input) => recallExpansionParserSchema.parse(input),
+        trace: {
+          tracer: options.tracer,
+          turnId: options.turnId,
+          sessionId: options.sessionId,
+          label: "recall_expansion",
+          systemPrompt: RECALL_EXPANSION_SYSTEM_PROMPT,
+          messages,
+          tools,
+        },
+      })
+    ).parsed;
   } catch (error) {
-    traceLlmCallError({
-      tracer: options.tracer,
-      turnId: options.turnId,
-      sessionId: options.sessionId,
-      label: "recall_expansion",
-      error,
-    });
+    if (isStructuredToolCallError(error, "missing_tool_call")) {
+      throw new Error("Recall expansion did not emit the required tool call");
+    }
+
+    if (
+      isStructuredToolCallError(error, "invalid_payload") ||
+      isStructuredToolCallError(error, "llm_failed")
+    ) {
+      throw error.cause ?? error;
+    }
 
     throw error;
   }
-
-  traceLlmCallResponse({
-    tracer: options.tracer,
-    turnId: options.turnId,
-    sessionId: options.sessionId,
-    label: "recall_expansion",
-    response,
-    responseShape: summarizeToolResponseShape(response),
-  });
-
-  const toolCall = response.tool_calls.find(isRecallExpansionToolCall);
-
-  if (toolCall === undefined) {
-    throw new Error("Recall expansion did not emit the required tool call");
-  }
-
-  const parsed = recallExpansionParserSchema.parse(toolCall.input);
 
   if (parsed.facets.length <= MAX_RECALL_EXPANSION_FACETS) {
     return parsed;
@@ -173,8 +158,4 @@ export async function expandRecall(
     ...parsed,
     facets: retainedFacets.map((item) => item.facet),
   };
-}
-
-function isRecallExpansionToolCall(call: LLMToolCall): boolean {
-  return call.name === RECALL_EXPANSION_TOOL_NAME;
 }

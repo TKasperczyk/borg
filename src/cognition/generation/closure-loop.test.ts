@@ -5,7 +5,7 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createStreamEntryId, type StreamEntryId } from "../../util/ids.js";
 import { shouldSkipSharedStateCompile } from "../lifecycle/turn-phase-coordinator.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
-import type { TurnTracer, TurnTraceData, TurnTraceEventName } from "../tracing/tracer.js";
+import type { TurnTracer, TurnTraceData, TurnTraceEventName } from "../../tracing/tracer.js";
 import {
   CLOSURE_LOOP_CLASSIFIER_TOOL_NAME,
   ClosureLoopClassifier,

@@ -4,7 +4,7 @@ import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
 import type { CommitmentId } from "../../util/ids.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import { CommitmentGuardRunner } from "./guard-runner.js";
 
 const commitmentId = "cmt_abcdefghijklmnop" as CommitmentId;

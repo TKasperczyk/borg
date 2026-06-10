@@ -16,7 +16,7 @@ import {
   MessageEnqueuer,
   type ChatResponseCatchUpWorkerConfig,
 } from "../cognition/ingestion/index.js";
-import { compositeTracer, createTurnTracer } from "../cognition/tracing/tracer.js";
+import { compositeTracer, createTurnTracer } from "../tracing/tracer.js";
 import type { LanceDbStore } from "../storage/lancedb/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import {

@@ -20,7 +20,7 @@ import {
 import {
   actionMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
-} from "../../disclosure-labels.js";
+} from "../../../memory/common/disclosure-serializers.js";
 import {
   ACTIVE_ACTION_STATES,
   type ActionRecord,
@@ -32,7 +32,7 @@ import type {
   SharedStateEntryKind,
   SharedStateRepository,
   SharedStateSourceTrustValidator,
-} from "../../../memory/decision-artifacts/index.js";
+} from "../../../memory/shared-state/index.js";
 import {
   collectInactiveStreamEntryRefs,
   getStreamDirectory,

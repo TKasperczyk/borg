@@ -4,9 +4,12 @@ import type { SessionAudienceRole } from "../sessions/index.js";
 import type { EntityId, SessionId } from "../util/ids.js";
 
 export {
+  MEMORY_DISCLOSURE_INTERNAL_USE_NOTE,
   MEMORY_DISCLOSURE_CLASSES,
+  SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE,
   combineDisclosureLabelForEpisodeIds,
   combineMemoryDisclosureLabels,
+  memoryDisclosureInternalUseNote,
   memoryDisclosureLabelFromEpisodeAccess,
   memoryDisclosureLabelFromMetadata,
   memoryDisclosureLabelMetadata,
@@ -14,11 +17,14 @@ export {
   memoryDisclosureLabelSchema,
   publicMemoryDisclosureLabel,
   relationshipPrivateMemoryDisclosureLabel,
+  renderMemoryDisclosureLabelForModel,
+  renderSemanticSourceDisclosureLabelForModel,
   resolveDisclosureLabelsByEpisodeId,
   selfPrivateMemoryDisclosureLabel,
   unknownMemoryDisclosureLabel,
   type MemoryDisclosureClass,
   type MemoryDisclosureLabel,
+  type MemoryDisclosureLabelRenderContext,
   type MemoryDisclosureLabelMetadata,
 } from "../memory/common/disclosure-label.js";
 
@@ -34,10 +40,6 @@ export {
  */
 export const SELF_RECALL_SCOPE = "self" as const;
 
-export const MEMORY_DISCLOSURE_INTERNAL_USE_NOTE =
-  "I can use this internally; I do not disclose it to the current audience unless authorized";
-export const SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE =
-  "supported by private source episodes; I can use this internally; I do not reveal source details to the current audience unless authorized";
 export const MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL = [
   "Memory disclosure labels are input-side guidance for my reasoning with recalled memory.",
   "Some entries may be labeled relationship_private, operator_private, self_private, sensitive, or unknown, with private-to=<ids> and origin_audience=<ids> metadata.",
@@ -49,41 +51,6 @@ export const MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL = [
   "When disclosure is permitted but the current audience likely does not know a memory, I introduce it as new information rather than presuming it is shared.",
   "For a group audience, origin_audience means a memory was shared in that venue, not that every current participant saw it; if a participant's presence or prior exposure is uncertain, I do not assume it is common ground for them -- I introduce it as new or qualify the framing.",
 ].join("\n");
-
-export type MemoryDisclosureLabelRenderContext = "memory" | "semantic_source";
-
-export function memoryDisclosureInternalUseNote(
-  context: MemoryDisclosureLabelRenderContext = "memory",
-): string {
-  return context === "semantic_source"
-    ? SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE
-    : MEMORY_DISCLOSURE_INTERNAL_USE_NOTE;
-}
-
-export function renderMemoryDisclosureLabelForModel(
-  label: MemoryDisclosureLabel,
-  options: {
-    context?: MemoryDisclosureLabelRenderContext;
-  } = {},
-): string {
-  const fragments = [`disclosure_class=${label.disclosureClass}`];
-
-  if (label.originAudienceEntityIds.length > 0) {
-    fragments.push(`origin_audience=${label.originAudienceEntityIds.join(",")}`);
-  }
-
-  if (label.disclosureClass !== "public") {
-    const privateTo =
-      label.privateToEntityIds.length === 0 ? "unknown" : label.privateToEntityIds.join(",");
-    fragments.push(`private-to=${privateTo}; ${memoryDisclosureInternalUseNote(options.context)}`);
-  }
-
-  return fragments.join(" ");
-}
-
-export function renderSemanticSourceDisclosureLabelForModel(label: MemoryDisclosureLabel): string {
-  return renderMemoryDisclosureLabelForModel(label, { context: "semantic_source" });
-}
 
 export type CognitionRecallContext = {
   readonly reader: typeof SELF_RECALL_SCOPE;

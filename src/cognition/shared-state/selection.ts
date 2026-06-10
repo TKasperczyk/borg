@@ -3,7 +3,7 @@ import {
   type SharedStateArtifact,
   type SharedStateEntry,
   type SharedStateEntryKind,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import type {
   ActionId,
   CommitmentId,
@@ -126,6 +126,27 @@ export type SharedStateRenderSelection = {
 
 export type SharedStateTokenDropTier = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
+// Tunes render salience for entries updated by the current turn.
+const SHARED_STATE_CURRENT_TURN_SALIENCE_SCORE = 600;
+
+// Tunes render salience for entries overlapping the evidence ledger.
+const SHARED_STATE_LEDGER_OVERLAP_SALIENCE_SCORE = 500;
+
+// Tunes render salience for entries recently returned by retrieval.
+const SHARED_STATE_RECENT_RETRIEVAL_SALIENCE_SCORE = 500;
+
+// Tunes render salience for entries reserved by newest state change.
+const SHARED_STATE_NEWEST_RESERVED_SALIENCE_SCORE = 400;
+
+// Tunes render salience for invalidated entries that should remain visible.
+const SHARED_STATE_INVALIDATED_SALIENCE_SCORE = 300;
+
+// Tunes render salience for locked entries tied to active critical commitments.
+const SHARED_STATE_CRITICAL_COMMITMENT_SALIENCE_SCORE = 250;
+
+// Tunes render salience for entries tied to active operational structures.
+const SHARED_STATE_OPERATIONAL_CANONICALIZER_SALIENCE_SCORE = 200;
+
 function idSet<TId extends string>(values: readonly TId[] | undefined): Set<TId> {
   return new Set(values ?? []);
 }
@@ -208,33 +229,33 @@ function sharedStateEntrySalienceScore(
   newestReservedIds: ReadonlySet<SharedStateEntry["id"]> = new Set(),
 ): number {
   if (sharedStateEntryHasCurrentTurnUpdate(entry, options.currentUserStreamEntryId)) {
-    return 600;
+    return SHARED_STATE_CURRENT_TURN_SALIENCE_SCORE;
   }
 
   if (sharedStateEntryHasLedgerOverlap(entry, options.ledgerStreamEntryIds)) {
-    return 500;
+    return SHARED_STATE_LEDGER_OVERLAP_SALIENCE_SCORE;
   }
 
   if (sharedStateEntryWasRecentlyRetrieved(entry, options.recentlyRetrievedEntryIds)) {
-    return 500;
+    return SHARED_STATE_RECENT_RETRIEVAL_SALIENCE_SCORE;
   }
 
   if (newestReservedIds.has(entry.id)) {
-    return 400;
+    return SHARED_STATE_NEWEST_RESERVED_SALIENCE_SCORE;
   }
 
   if (entry.kind === "invalidated") {
-    return 300;
+    return SHARED_STATE_INVALIDATED_SALIENCE_SCORE;
   }
 
   if (
     sharedStateEntryHasCriticalCommitmentCanonicalizer(entry, options.activeCriticalCommitmentIds)
   ) {
-    return 250;
+    return SHARED_STATE_CRITICAL_COMMITMENT_SALIENCE_SCORE;
   }
 
   if (sharedStateEntryHasOperationalCanonicalizer(entry, options)) {
-    return 200;
+    return SHARED_STATE_OPERATIONAL_CANONICALIZER_SALIENCE_SCORE;
   }
 
   return 0;

@@ -1,6 +1,6 @@
 // Summarizes episodic and semantic retrieval results for deliberation prompts.
 import type { SemanticNode } from "../../../memory/semantic/index.js";
-import { openQuestionMemoryDisclosureLabel } from "../../disclosure-labels.js";
+import { openQuestionMemoryDisclosureLabel } from "../../../memory/common/disclosure-serializers.js";
 import {
   memoryDisclosureLabelFromEpisodeAccess,
   renderMemoryDisclosureLabelForModel,

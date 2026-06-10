@@ -3,7 +3,7 @@ import {
   openQuestionMemoryDisclosureLabel,
   goalMemoryDisclosureLabel,
   observedEventMemoryDisclosureLabel,
-} from "./disclosure-labels.js";
+} from "../memory/common/disclosure-serializers.js";
 import type { PerceptionResult, TemporalCue } from "./types.js";
 import type {
   ActivityAutobiographicalSourceEvent,

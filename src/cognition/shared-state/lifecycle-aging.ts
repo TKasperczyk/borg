@@ -4,7 +4,7 @@ import type {
   SharedStateEntry,
   SharedStateEntryKind,
   SharedStateOperation,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import type {
   ActionId,
   CommitmentId,
@@ -21,6 +21,11 @@ import {
 } from "./selection.js";
 
 // DELIBERATE: shared-state lifecycle aging is a separate integer-turn clock; see the episodic heat note in src/memory/episodic/decay.ts (Tier-3 review).
+
+// Tunes when live shared-state entries become eligible for low-salience demotion.
+export const DEFAULT_SHARED_STATE_RECENT_TURN_THRESHOLD = 5;
+
+// Tunes when low-salience shared-state entries become eligible for dormant demotion.
 export const DEFAULT_SHARED_STATE_DORMANT_TURN_THRESHOLD = 15;
 
 export type SharedStateLifecycleTransitionKind = "demoted" | "reactivated";
@@ -603,7 +608,10 @@ export function applyLifecycleAging(input: ApplyLifecycleAgingInput): {
   const blockerCountsLowSalienceToDormant = emptyLifecycleAgingBlockerCounts();
   const blockedSamples: LifecycleAgingBlockedSampleEntry[] = [];
   const unknownAgeSamples: LifecycleAgingUnknownAgeSampleEntry[] = [];
-  const recentTurnThreshold = normalizedThreshold(input.recentTurnThreshold, 5);
+  const recentTurnThreshold = normalizedThreshold(
+    input.recentTurnThreshold,
+    DEFAULT_SHARED_STATE_RECENT_TURN_THRESHOLD,
+  );
   const dormantTurnThreshold = normalizedThreshold(
     input.dormantTurnThreshold,
     DEFAULT_SHARED_STATE_DORMANT_TURN_THRESHOLD,

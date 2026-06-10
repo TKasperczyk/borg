@@ -19,7 +19,7 @@ import type {
 } from "../cognition/ingestion/index.js";
 import type { TurnOrchestrator } from "../cognition/index.js";
 import type { PromptOverrideRepository } from "../cognition/prompts/override-repository.js";
-import type { TurnTracer } from "../cognition/tracing/tracer.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import type { Config } from "../config/index.js";
 import type { CorrectionService } from "../correction/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
@@ -30,7 +30,7 @@ import type { ActivityRepository } from "../memory/activity/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { CreatorDirectiveRepository } from "../memory/creator-directives/index.js";
-import type { SharedStateRepository } from "../memory/decision-artifacts/index.js";
+import type { SharedStateRepository } from "../memory/shared-state/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityEventRepository, IdentityService } from "../memory/identity/index.js";
 import type { ObservedEventRepository } from "../memory/observed-events/index.js";
@@ -52,13 +52,13 @@ import type {
   ValuesRepository,
 } from "../memory/self/index.js";
 import type {
-  ReviewQueueRepository,
   SemanticBeliefDependencyRepository,
   SemanticEdgeRepository,
   SemanticGraph,
   SemanticNodeRepository,
   SemanticReviewService,
 } from "../memory/semantic/index.js";
+import type { ReviewQueueRepository } from "../memory/review-queue/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemoryStore } from "../memory/working/index.js";
 import type {

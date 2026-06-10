@@ -1,5 +1,5 @@
 import type { Config } from "../config/index.js";
-import type { TurnTracer } from "../cognition/tracing/tracer.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
@@ -19,11 +19,11 @@ import type {
 } from "../memory/self/index.js";
 import type {
   SemanticBeliefDependencyRepository,
-  ReviewQueueRepository,
   SemanticEdgeRepository,
   SemanticNodeRepository,
   SemanticReviewService,
 } from "../memory/semantic/index.js";
+import type { ReviewQueueRepository } from "../memory/review-queue/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemoryStore } from "../memory/working/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";

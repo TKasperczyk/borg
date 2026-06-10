@@ -4,7 +4,7 @@ import {
   type SharedStateEntry,
   type SharedStateEntryKind,
   type SharedStateOperation,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import { createSharedStateEntryId, type SharedStateEntryId } from "../../util/ids.js";
 import type { SharedStateLifecycleOptions } from "./types.js";
 

@@ -59,8 +59,8 @@ import { filterActiveStreamEntries } from "../src/stream/index.js";
 import type { ActionId } from "../src/util/ids.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
 import type { TraceRecord } from "../assessor/types.js";
-import { canonicalTraceEventName } from "../src/cognition/tracing/taxonomy.js";
-import { isExtractorMaxTokenLlmLabel } from "../src/cognition/tracing/extractor-labels.js";
+import { canonicalTraceEventName } from "../src/tracing/taxonomy.js";
+import { isExtractorMaxTokenLlmLabel } from "../src/tracing/extractor-labels.js";
 import { writeFileAtomic } from "../src/util/atomic-write.js";
 import type { EmbeddingCacheStats } from "../src/embeddings/cache.js";
 
@@ -103,8 +103,18 @@ const ACTION_DUPLICATE_PRESSURE_CHECK_EVERY_TURNS = 10;
 const ACTION_DORMANT_AFTER_INACTIVE_TURNS = 15;
 const ACTION_ARCHIVE_AFTER_INACTIVE_TURNS = 20;
 const ACTION_INACTIVE_TURN_BUCKETS = ["0-15", "15-20", "20-30", "30+"] as const;
-const SHARED_STATE_COMPILER_LABEL = "decision_artifact_compiler";
-const SHARED_STATE_SEMANTIC_REVISION_LABEL = "decision_artifact_semantic_revision";
+const SHARED_STATE_COMPILER_LABEL = "shared_state_compiler";
+const LEGACY_SHARED_STATE_COMPILER_LABEL = "decision_artifact_compiler";
+const SHARED_STATE_SEMANTIC_REVISION_LABEL = "shared_state_semantic_revision";
+const LEGACY_SHARED_STATE_SEMANTIC_REVISION_LABEL = "decision_artifact_semantic_revision";
+const SHARED_STATE_COMPILER_LABELS = new Set([
+  SHARED_STATE_COMPILER_LABEL,
+  LEGACY_SHARED_STATE_COMPILER_LABEL,
+]);
+const SHARED_STATE_SEMANTIC_REVISION_LABELS = new Set([
+  SHARED_STATE_SEMANTIC_REVISION_LABEL,
+  LEGACY_SHARED_STATE_SEMANTIC_REVISION_LABEL,
+]);
 const SHARED_STATE_COMPILER_OPERATION_KINDS = ["add", "update", "supersede", "prune"] as const;
 const GOAL_PROMOTION_CLASSIFICATION_METRIC_KEYS = [
   ...GOAL_PROMOTION_CLASSIFICATIONS,
@@ -221,11 +231,11 @@ type GoalPromotionMetricCounts = Pick<
 
 type SharedStateArtifactSemanticRevisionMetricCounts = Pick<
   MetricsRow,
-  | "decision_artifact_semantic_revisions_attempted"
-  | "decision_artifact_semantic_revisions_completed_succeeded"
-  | "decision_artifact_semantic_nodes_marked_superseded"
-  | "decision_artifact_semantic_nodes_marked_contradicted"
-  | "decision_artifact_semantic_revision_cache_hits"
+  | "shared_state_semantic_revisions_attempted"
+  | "shared_state_semantic_revisions_completed_succeeded"
+  | "shared_state_semantic_nodes_marked_superseded"
+  | "shared_state_semantic_nodes_marked_contradicted"
+  | "shared_state_semantic_revision_cache_hits"
 >;
 
 type CommitmentRegenerationMetricCounts = Pick<
@@ -569,6 +579,16 @@ function traceLabel(record: TraceRecord): string | null {
   return typeof record.label === "string" ? record.label : null;
 }
 
+function traceLabelMatches(record: TraceRecord, labels: string | ReadonlySet<string>): boolean {
+  const label = traceLabel(record);
+
+  if (label === null) {
+    return false;
+  }
+
+  return typeof labels === "string" ? label === labels : labels.has(label);
+}
+
 function traceStatus(record: TraceRecord): string | null {
   return typeof record.status === "string" ? record.status : null;
 }
@@ -865,17 +885,17 @@ function sharedStateSemanticRevisionMetrics(
   );
 
   return {
-    decision_artifact_semantic_revisions_attempted: attemptedArtifactEntryIds.size,
-    decision_artifact_semantic_revisions_completed_succeeded: completed.length,
-    decision_artifact_semantic_nodes_marked_superseded: completed.reduce(
+    shared_state_semantic_revisions_attempted: attemptedArtifactEntryIds.size,
+    shared_state_semantic_revisions_completed_succeeded: completed.length,
+    shared_state_semantic_nodes_marked_superseded: completed.reduce(
       (sum, record) => sum + traceNumber(record, "superseded_count"),
       0,
     ),
-    decision_artifact_semantic_nodes_marked_contradicted: completed.reduce(
+    shared_state_semantic_nodes_marked_contradicted: completed.reduce(
       (sum, record) => sum + traceNumber(record, "contradicted_count"),
       0,
     ),
-    decision_artifact_semantic_revision_cache_hits: cacheHits.length,
+    shared_state_semantic_revision_cache_hits: cacheHits.length,
   };
 }
 
@@ -1024,7 +1044,7 @@ function semanticRevisionCumulativeMetrics(
   return {
     semantic_revision_calls_total: llmCompletedCount(
       cumulativeTraceRecords,
-      SHARED_STATE_SEMANTIC_REVISION_LABEL,
+      SHARED_STATE_SEMANTIC_REVISION_LABELS,
     ),
     semantic_revision_candidates_reviewed_total: completed.reduce(
       (sum, record) => sum + traceNumber(record, "candidates_enumerated"),
@@ -1795,7 +1815,7 @@ function sharedStateCompilerHealthMetrics(
     shared_state_compiler_max_tokens_total: traceRecords.filter(
       (record) =>
         record.event === "llm_call.completed" &&
-        traceLabel(record) === SHARED_STATE_COMPILER_LABEL &&
+        traceLabelMatches(record, SHARED_STATE_COMPILER_LABELS) &&
         traceStopReason(record) === "max_tokens",
     ).length,
     shared_state_compiler_degraded_total: traceRecords.filter(
@@ -1945,9 +1965,12 @@ function reviewResolverMetrics(traceRecords: readonly TraceRecord[]): ReviewReso
   };
 }
 
-function llmCompletedCount(traceRecords: readonly TraceRecord[], label: string): number {
+function llmCompletedCount(
+  traceRecords: readonly TraceRecord[],
+  label: string | ReadonlySet<string>,
+): number {
   return traceRecords.filter(
-    (record) => record.event === "llm_call.completed" && traceLabel(record) === label,
+    (record) => record.event === "llm_call.completed" && traceLabelMatches(record, label),
   ).length;
 }
 
@@ -3658,17 +3681,17 @@ export class MetricsCapture {
       goal_promotion_rejected_classification:
         goalPromotionMetricCounts.goal_promotion_rejected_classification,
       goal_promotion_cap_rejections: goalPromotionMetricCounts.goal_promotion_cap_rejections,
-      decision_artifact_semantic_revisions_attempted:
-        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revisions_attempted,
-      decision_artifact_semantic_revisions_completed_succeeded:
-        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revisions_completed_succeeded,
-      decision_artifact_semantic_nodes_marked_superseded:
-        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_superseded,
-      decision_artifact_semantic_nodes_marked_contradicted:
-        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_contradicted,
-      decision_artifact_semantic_revision_cache_hits:
-        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revision_cache_hits,
-      decision_artifact_semantic_revision_cache_size: this.semanticRevisionVerdictCacheSize(),
+      shared_state_semantic_revisions_attempted:
+        sharedStateSemanticRevisionMetricCounts.shared_state_semantic_revisions_attempted,
+      shared_state_semantic_revisions_completed_succeeded:
+        sharedStateSemanticRevisionMetricCounts.shared_state_semantic_revisions_completed_succeeded,
+      shared_state_semantic_nodes_marked_superseded:
+        sharedStateSemanticRevisionMetricCounts.shared_state_semantic_nodes_marked_superseded,
+      shared_state_semantic_nodes_marked_contradicted:
+        sharedStateSemanticRevisionMetricCounts.shared_state_semantic_nodes_marked_contradicted,
+      shared_state_semantic_revision_cache_hits:
+        sharedStateSemanticRevisionMetricCounts.shared_state_semantic_revision_cache_hits,
+      shared_state_semantic_revision_cache_size: this.semanticRevisionVerdictCacheSize(),
       embedding_cache_pending_overflow_total: this.embeddingCacheStats?.()?.pending_overflow ?? 0,
       ledger_reverse_scan_entries_total:
         evidenceLedgerReverseScanMetricCounts.ledger_reverse_scan_entries_total,
@@ -4189,17 +4212,17 @@ export class MetricsCapture {
       goal_promotion_rejected_classification:
         goalPromotionMetricCounts.goal_promotion_rejected_classification,
       goal_promotion_cap_rejections: goalPromotionMetricCounts.goal_promotion_cap_rejections,
-      decision_artifact_semantic_revisions_attempted:
-        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revisions_attempted,
-      decision_artifact_semantic_revisions_completed_succeeded:
-        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revisions_completed_succeeded,
-      decision_artifact_semantic_nodes_marked_superseded:
-        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_superseded,
-      decision_artifact_semantic_nodes_marked_contradicted:
-        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_contradicted,
-      decision_artifact_semantic_revision_cache_hits:
-        sharedStateSemanticRevisionMetricCounts.decision_artifact_semantic_revision_cache_hits,
-      decision_artifact_semantic_revision_cache_size: this.semanticRevisionVerdictCacheSize(),
+      shared_state_semantic_revisions_attempted:
+        sharedStateSemanticRevisionMetricCounts.shared_state_semantic_revisions_attempted,
+      shared_state_semantic_revisions_completed_succeeded:
+        sharedStateSemanticRevisionMetricCounts.shared_state_semantic_revisions_completed_succeeded,
+      shared_state_semantic_nodes_marked_superseded:
+        sharedStateSemanticRevisionMetricCounts.shared_state_semantic_nodes_marked_superseded,
+      shared_state_semantic_nodes_marked_contradicted:
+        sharedStateSemanticRevisionMetricCounts.shared_state_semantic_nodes_marked_contradicted,
+      shared_state_semantic_revision_cache_hits:
+        sharedStateSemanticRevisionMetricCounts.shared_state_semantic_revision_cache_hits,
+      shared_state_semantic_revision_cache_size: this.semanticRevisionVerdictCacheSize(),
       embedding_cache_pending_overflow_total: this.embeddingCacheStats?.()?.pending_overflow ?? 0,
       ledger_reverse_scan_entries_total:
         evidenceLedgerReverseScanMetricCounts.ledger_reverse_scan_entries_total,

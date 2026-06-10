@@ -1,7 +1,8 @@
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
@@ -464,16 +465,8 @@ function subjectForPrompt(subject: RelationalSlotSubject): RelationalSlotSubject
   };
 }
 
-function parseLlmResponse(result: LLMCompleteResult): ExtractorResponse {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === EXTRACT_EPISODES_TOOL_NAME);
-
-  if (call === undefined) {
-    throw new LLMError(`Extractor did not emit tool ${EXTRACT_EPISODES_TOOL_NAME}`, {
-      code: "EXTRACTOR_OUTPUT_INVALID",
-    });
-  }
-
-  const parsed = extractorResponseSchema.safeParse(call.input);
+function parseLlmResponse(input: unknown): ExtractorResponse {
+  const parsed = extractorResponseSchema.safeParse(input);
 
   if (!parsed.success) {
     throw new LLMError("Extractor returned invalid episode payload", {
@@ -1002,26 +995,44 @@ export class EpisodicExtractor {
         activeContextEntries,
       );
       const relationalSlotSubjects = this.relationalSlotSubjectsForChunk(chunk);
-      const result = await this.options.llmClient.complete({
-        model: this.options.model,
-        system: "Extract episodic memories grounded only in the provided stream chunk.",
-        messages: [
-          {
-            role: "user",
-            content: buildExtractorPrompt(
-              chunk,
-              perceptionContextEntries,
-              relationalSlotSubjects,
-              selfEntity,
-            ),
-          },
-        ],
-        tools: [EXTRACT_EPISODES_TOOL],
-        tool_choice: { type: "tool", name: EXTRACT_EPISODES_TOOL_NAME },
-        max_tokens: this.maxTokens,
-        budget: "episodic-extraction",
-      });
-      const extracted = parseLlmResponse(result);
+      let extracted: ExtractorResponse;
+
+      try {
+        extracted = (
+          await callStructuredTool({
+            llmClient: this.options.llmClient,
+            request: {
+              model: this.options.model,
+              system: "Extract episodic memories grounded only in the provided stream chunk.",
+              messages: [
+                {
+                  role: "user",
+                  content: buildExtractorPrompt(
+                    chunk,
+                    perceptionContextEntries,
+                    relationalSlotSubjects,
+                    selfEntity,
+                  ),
+                },
+              ],
+              tools: [EXTRACT_EPISODES_TOOL],
+              tool_choice: { type: "tool", name: EXTRACT_EPISODES_TOOL_NAME },
+              max_tokens: this.maxTokens,
+              budget: "episodic-extraction",
+            },
+            toolName: EXTRACT_EPISODES_TOOL_NAME,
+            parse: parseLlmResponse,
+          })
+        ).parsed;
+      } catch (error) {
+        if (isStructuredToolCallError(error, "missing_tool_call")) {
+          throw new LLMError(`Extractor did not emit tool ${EXTRACT_EPISODES_TOOL_NAME}`, {
+            code: "EXTRACTOR_OUTPUT_INVALID",
+          });
+        }
+
+        throw isStructuredToolCallError(error) ? (error.cause ?? error) : error;
+      }
       const candidates = extracted.episodes;
 
       for (const candidate of candidates) {

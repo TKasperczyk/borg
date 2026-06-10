@@ -290,12 +290,12 @@ function metricsRow(turn: number): MetricsRow {
     },
     goal_promotion_rejected_classification: 0,
     goal_promotion_cap_rejections: 0,
-    decision_artifact_semantic_revisions_attempted: 0,
-    decision_artifact_semantic_revisions_completed_succeeded: 0,
-    decision_artifact_semantic_nodes_marked_superseded: 0,
-    decision_artifact_semantic_nodes_marked_contradicted: 0,
-    decision_artifact_semantic_revision_cache_hits: 0,
-    decision_artifact_semantic_revision_cache_size: 0,
+    shared_state_semantic_revisions_attempted: 0,
+    shared_state_semantic_revisions_completed_succeeded: 0,
+    shared_state_semantic_nodes_marked_superseded: 0,
+    shared_state_semantic_nodes_marked_contradicted: 0,
+    shared_state_semantic_revision_cache_hits: 0,
+    shared_state_semantic_revision_cache_size: 0,
     embedding_cache_pending_overflow_total: 0,
     ledger_reverse_scan_entries_total: 0,
     ledger_reverse_scan_bytes_total: 0,
@@ -1146,6 +1146,14 @@ describe("simulator overseer", () => {
   it("filters legacy metric aliases from overseer-facing context only", async () => {
     const dir = mkdtempSync(join(tmpdir(), "borg-overseer-legacy-metrics-"));
     const metricsPath = join(dir, "metrics.jsonl");
+    const legacySharedStateSemanticMetricKeys = [
+      "shared_state_semantic_revisions_attempted",
+      "shared_state_semantic_revisions_completed_succeeded",
+      "shared_state_semantic_nodes_marked_superseded",
+      "shared_state_semantic_nodes_marked_contradicted",
+      "shared_state_semantic_revision_cache_hits",
+      "shared_state_semantic_revision_cache_size",
+    ] as const satisfies readonly (keyof MetricsRow)[];
     const rawRow = {
       ...metricsRow(9),
       shared_state_omitted_recent_entries: 624,
@@ -1173,9 +1181,21 @@ describe("simulator overseer", () => {
       ledger_image_bytes_attached_total: 0,
       ledger_image_refs_omitted_inactive_total: 0,
     } satisfies MetricsRow;
+    const legacyPersistedRow: Record<string, unknown> = { ...rawRow };
+
+    for (const key of legacySharedStateSemanticMetricKeys) {
+      delete legacyPersistedRow[key];
+    }
+
+    legacyPersistedRow.decision_artifact_semantic_revisions_attempted = 3;
+    legacyPersistedRow.decision_artifact_semantic_revisions_completed_succeeded = 2;
+    legacyPersistedRow.decision_artifact_semantic_nodes_marked_superseded = 1;
+    legacyPersistedRow.decision_artifact_semantic_nodes_marked_contradicted = 1;
+    legacyPersistedRow.decision_artifact_semantic_revision_cache_hits = 4;
+    legacyPersistedRow.decision_artifact_semantic_revision_cache_size = 5;
 
     try {
-      writeFileSync(metricsPath, `${JSON.stringify(rawRow)}\n`, "utf8");
+      writeFileSync(metricsPath, `${JSON.stringify(legacyPersistedRow)}\n`, "utf8");
 
       const auditContext = await buildOverseerAuditContext({
         transport: transportFor([]),
@@ -1189,6 +1209,10 @@ describe("simulator overseer", () => {
       const promptJson = JSON.stringify(auditContext);
 
       expect(auditContext.metrics_window).toHaveLength(1);
+      expect(diskRow).toHaveProperty("decision_artifact_semantic_revisions_attempted", 3);
+      expect(diskRow).not.toHaveProperty("shared_state_semantic_revisions_attempted");
+      expect(overseerRow).toHaveProperty("shared_state_semantic_revisions_attempted", 3);
+      expect(overseerRow).toHaveProperty("shared_state_semantic_revision_cache_size", 5);
       for (const alias of LEGACY_METRIC_ALIAS_KEYS) {
         expect(diskRow).toHaveProperty(alias);
         expect(overseerRow).not.toHaveProperty(alias);

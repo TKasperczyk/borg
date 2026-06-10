@@ -1,12 +1,13 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import {
   combineMemoryDisclosureLabels,
@@ -216,16 +217,25 @@ function buildObservationPrompt(
   ].join("\n");
 }
 
-function parseObservationResponse(result: LLMCompleteResult) {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === SELF_NARRATOR_TOOL_NAME);
-
-  if (call === undefined) {
-    throw new StorageError(`Self-narrator did not emit tool ${SELF_NARRATOR_TOOL_NAME}`, {
+function invalidObservationResponse(error: unknown): unknown {
+  if (isStructuredToolCallError(error, "missing_tool_call")) {
+    return new StorageError(`Self-narrator did not emit tool ${SELF_NARRATOR_TOOL_NAME}`, {
       code: "SELF_NARRATOR_INVALID",
     });
   }
 
-  return selfNarratorObservationSchema.parse(call.input);
+  if (
+    isStructuredToolCallError(error, "invalid_payload") ||
+    isStructuredToolCallError(error, "llm_failed")
+  ) {
+    return error.cause ?? error;
+  }
+
+  return error;
+}
+
+function parseObservationResponse(input: unknown) {
+  return selfNarratorObservationSchema.parse(input);
 }
 
 function cadenceAllowsNewPeriod(
@@ -391,30 +401,35 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
           const llmClient: LLMClient = wrapClient(ctx.llm.background);
 
           try {
-            const response = parseObservationResponse(
-              await llmClient.complete({
-                model: ctx.config.anthropic.models.background,
-                system: [
-                  "I identify grounded autobiographical growth markers by clustering candidate episodes thematically. I return no observations when the evidence is weak.",
-                  SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
-                ].join("\n"),
-                messages: [
-                  {
-                    role: "user",
-                    content: buildObservationPrompt(
-                      sourceEpisodes,
-                      minSupportEpisodes,
-                      maxObservationsPerRun,
-                      currentPeriod,
-                    ),
-                  },
-                ],
-                tools: [SELF_NARRATOR_TOOL],
-                tool_choice: { type: "tool", name: SELF_NARRATOR_TOOL_NAME },
-                max_tokens: 8_000,
-                budget: "offline-self-narrator",
-              }),
-            );
+            const response = (
+              await callStructuredTool({
+                llmClient,
+                request: {
+                  model: ctx.config.anthropic.models.background,
+                  system: [
+                    "I identify grounded autobiographical growth markers by clustering candidate episodes thematically. I return no observations when the evidence is weak.",
+                    SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
+                  ].join("\n"),
+                  messages: [
+                    {
+                      role: "user",
+                      content: buildObservationPrompt(
+                        sourceEpisodes,
+                        minSupportEpisodes,
+                        maxObservationsPerRun,
+                        currentPeriod,
+                      ),
+                    },
+                  ],
+                  tools: [SELF_NARRATOR_TOOL],
+                  tool_choice: { type: "tool", name: SELF_NARRATOR_TOOL_NAME },
+                  max_tokens: 8_000,
+                  budget: "offline-self-narrator",
+                },
+                toolName: SELF_NARRATOR_TOOL_NAME,
+                parse: parseObservationResponse,
+              })
+            ).parsed;
             periodDecisions.push(response.period_decision);
             const allowedIds = new Set<string>(sourceEpisodes.map((episode) => episode.id));
 
@@ -465,7 +480,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
               throw error;
             }
 
-            errors.push(offlineProcessError(this.name, error));
+            errors.push(offlineProcessError(this.name, invalidObservationResponse(error)));
           }
         });
 

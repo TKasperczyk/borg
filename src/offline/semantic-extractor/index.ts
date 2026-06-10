@@ -9,10 +9,10 @@ import {
   semanticEdgeSchema,
   semanticNodeIdSchema,
   semanticNodeSchema,
-  type ReviewQueueInsertInput,
   type SemanticEdge,
   type SemanticNode,
 } from "../../memory/semantic/index.js";
+import { type ReviewQueueInsertInput } from "../../memory/review-queue/index.js";
 import { StreamReader } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";

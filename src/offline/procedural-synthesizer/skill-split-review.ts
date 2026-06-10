@@ -9,7 +9,7 @@ import type {
   SkillSplitReviewApplyResult,
   SkillSplitReviewHandler,
   SkillSplitReviewPayload,
-} from "../../memory/semantic/index.js";
+} from "../../memory/review-queue/index.js";
 import type { WorkingMemoryStore } from "../../memory/working/index.js";
 import type { Clock } from "../../util/clock.js";
 import { createMaintenanceRunId, DEFAULT_SESSION_ID } from "../../util/ids.js";

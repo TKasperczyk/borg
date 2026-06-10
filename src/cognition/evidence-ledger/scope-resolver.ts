@@ -1,7 +1,7 @@
 import type { ActionRecord } from "../../memory/actions/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
 import type { RelationalSlot } from "../../memory/relational-slots/index.js";
-import type { ReviewQueueItem } from "../../memory/semantic/index.js";
+import type { ReviewQueueItem } from "../../memory/review-queue/index.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
 import type { StreamEntry } from "../../stream/index.js";
 import type { EpisodeId, SessionId, StreamEntryId } from "../../util/ids.js";

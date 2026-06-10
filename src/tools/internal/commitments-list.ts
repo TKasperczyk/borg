@@ -6,7 +6,7 @@ import type { MemoryDisclosureLabel } from "../../memory/common/disclosure-label
 import {
   commitmentMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
-} from "../../cognition/disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import type { ToolDefinition, ToolInvocationContext } from "../dispatcher.js";
 
 const commitmentsListInputSchema = z.object({}).strict();

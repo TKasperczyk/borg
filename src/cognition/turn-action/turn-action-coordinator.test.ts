@@ -15,7 +15,7 @@ import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { CommitmentGuardRunner } from "../commitments/guard-runner.js";
 import type { DeliberationResult } from "../deliberation/types.js";
 import type { PendingTurnEmission } from "../generation/types.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import { TurnActionCoordinator } from "./turn-action-coordinator.js";
 
 type CommitmentViolationFixture = {
@@ -202,7 +202,7 @@ describe("TurnActionCoordinator commitment regeneration", () => {
     expect(result.deliberation.response).toBe(cleanDraft);
     expect(regenerateFinalResponse).toHaveBeenCalledTimes(1);
     const regenerationPromptSection =
-      regenerateFinalResponse.mock.calls[0]?.[0].additionalPromptSections[0] ?? "";
+      regenerateFinalResponse.mock.calls[0]?.[0].additionalPromptSections[0]?.text ?? "";
     expect(regenerationPromptSection).toContain("ORCHID-17");
     expect(regenerationPromptSection).toContain("Do not disclose the private deployment codename");
     expect(

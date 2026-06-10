@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../cognition/index.js";
+import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import { StreamReader, StreamWriter } from "../stream/index.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
 

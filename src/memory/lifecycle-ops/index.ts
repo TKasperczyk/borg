@@ -15,7 +15,9 @@ export {
 export {
   completeAction,
   isTerminalActionState,
+  markActionNotDone,
   type CompleteActionRepository,
+  type MarkActionNotDoneRepository,
 } from "./complete.js";
 export { archiveStaleAction, type ArchiveStaleActionRepository } from "./archive.js";
 export {

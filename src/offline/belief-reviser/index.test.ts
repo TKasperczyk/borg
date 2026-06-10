@@ -5,9 +5,9 @@ import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import {
   SemanticGraph,
-  type ReviewQueueItem,
   type SemanticEdge,
 } from "../../memory/semantic/index.js";
+import { type ReviewQueueItem } from "../../memory/review-queue/index.js";
 import { resolveSemanticContext, toRetrievedSemantic } from "../../retrieval/semantic-retrieval.js";
 import { StreamReader } from "../../stream/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";

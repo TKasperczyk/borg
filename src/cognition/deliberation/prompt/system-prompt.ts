@@ -24,7 +24,7 @@ import {
   type RelationalSlot,
 } from "../../../memory/relational-slots/index.js";
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
-import type { ReviewQueueItem } from "../../../memory/semantic/index.js";
+import type { ReviewQueueItem } from "../../../memory/review-queue/index.js";
 import { createWorkingMemory, type WorkingMemory } from "../../../memory/working/index.js";
 import type { EvidenceLedgerEntry } from "../../evidence-ledger/types.js";
 import {
@@ -43,7 +43,7 @@ import {
   memoryDisclosureLabelFromMetadata,
   openQuestionMemoryDisclosureLabel,
   relationalSlotMemoryDisclosureLabel,
-} from "../../disclosure-labels.js";
+} from "../../../memory/common/disclosure-serializers.js";
 import { formatRelativeAge } from "../../../util/relative-time.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
@@ -59,6 +59,12 @@ import {
   GROUP_CHAT_SENDER_SCOPING_REMINDER,
   LOOP_BREAKING_POSTURE_SECTION,
 } from "../../prompts/participation.js";
+import {
+  PROMPT_SURFACES,
+  promptSurfaceBlocksForSurface,
+  renderPromptSurface,
+  type PromptSurfaceRenderContext,
+} from "../../prompts/prompt-surface-registry.js";
 import { PROMPT_BLOCKS, type PromptKey } from "../../prompts/registry.js";
 import type {
   CreatorDirectiveBriefingContentDirective,
@@ -154,10 +160,7 @@ type CacheableStaticPrefixSection = {
 };
 
 type BaseSystemPromptSections = {
-  untrustedSections: readonly PromptSection[];
-  trustedGuidanceSections: readonly PromptSection[];
-  trustedDynamicGuidanceSections: readonly PromptSection[];
-  hostCapabilitiesSection: TaggedPromptSection;
+  promptSectionsById: ReadonlyMap<string, PromptSection>;
   resolvedBlocks: ResolvedPromptBlocks;
 };
 
@@ -175,16 +178,17 @@ function renderPromptSection(section: PromptSection): string | null {
   return renderTaggedPromptSection(section.tag, section.content);
 }
 
-function renderPromptSections(sections: readonly PromptSection[]): string | null {
-  const rendered = sections
-    .map((section) => renderPromptSection(section))
-    .filter((section): section is string => section !== null);
-
-  return rendered.length === 0 ? null : rendered.join("\n\n");
-}
-
-function renderPromptBlock(preamble: string, sections: readonly PromptSection[]): string | null {
-  const rendered = renderPromptSections(sections);
+function renderPromptSurfaceBlock(
+  preamble: string,
+  surfaceContext: {
+    surface: keyof typeof PROMPT_SURFACES;
+    renderContext: PromptSurfaceRenderContext;
+  },
+): string | null {
+  const rendered = renderPromptSurface(
+    PROMPT_SURFACES[surfaceContext.surface],
+    surfaceContext.renderContext,
+  );
 
   return rendered === null ? null : [preamble, rendered].join("\n\n");
 }
@@ -1113,34 +1117,30 @@ function buildBaseSystemPromptSections(
     context.autonomousOutbound ?? null,
     context.turnOrigin,
   );
-  const trustedDynamicGuidanceSections: PromptSection[] = [
+  const promptSectionsById = new Map<string, PromptSection>();
+
+  for (const section of untrustedSections) {
+    promptSectionsById.set(section.tag, section);
+  }
+
+  for (const section of [
     participationPolicySection,
     creatorIdentitySection,
     memoryDisclosureGuidanceSection,
-    standingWithAudienceSection,
-    autonomousOutboundAuthorizationSection,
     heldPreferencesSection,
+    hostCapabilitiesSection,
     proceduralGuidanceSection,
     discourseControlSection,
     frameAnomalyGateSection,
-  ];
+  ]) {
+    promptSectionsById.set(section.tag, section);
+  }
+
+  promptSectionsById.set("borg_standing_with_audience", standingWithAudienceSection);
+  promptSectionsById.set("borg_autonomous_reflection", autonomousOutboundAuthorizationSection);
 
   return {
-    untrustedSections,
-    trustedGuidanceSections: [
-      participationPolicySection,
-      creatorIdentitySection,
-      memoryDisclosureGuidanceSection,
-      standingWithAudienceSection,
-      autonomousOutboundAuthorizationSection,
-      heldPreferencesSection,
-      hostCapabilitiesSection,
-      proceduralGuidanceSection,
-      discourseControlSection,
-      frameAnomalyGateSection,
-    ],
-    trustedDynamicGuidanceSections,
-    hostCapabilitiesSection,
+    promptSectionsById,
     resolvedBlocks,
   };
 }
@@ -1158,35 +1158,65 @@ function groupChatSenderScopingReminder(context: DeliberationContext): string | 
   return GROUP_CHAT_SENDER_SCOPING_REMINDER;
 }
 
+function createBasePromptSurfaceRenderContext(
+  context: DeliberationContext,
+  sections: BaseSystemPromptSections,
+): PromptSurfaceRenderContext {
+  const renderContext: PromptSurfaceRenderContext = {
+    renderBlock: (id) => {
+      switch (id) {
+        case "base_identity_preamble":
+          return sections.resolvedBlocks.base_identity_preamble;
+        case "self_architecture":
+          return sections.resolvedBlocks.self_architecture;
+        case "voice_and_posture":
+          return sections.resolvedBlocks.voice_and_posture;
+        case "epistemic_posture":
+          return sections.resolvedBlocks.epistemic_posture;
+        case "identity_posture":
+          return sections.resolvedBlocks.identity_posture;
+        case "participation_posture":
+          return sections.resolvedBlocks.participation_posture;
+        case "loop_breaking_posture":
+          return LOOP_BREAKING_POSTURE_SECTION;
+        case "trusted_guidance_preamble":
+          return TRUSTED_GUIDANCE_PREAMBLE;
+        case "current_user_message_reminder":
+          return CURRENT_USER_MESSAGE_REMINDER;
+        case "group_chat_sender_scoping_reminder":
+          return groupChatSenderScopingReminder(context);
+        case "base_untrusted_data_block":
+          return renderPromptSurfaceBlock(UNTRUSTED_DATA_PREAMBLE, {
+            surface: "baseUntrustedSections",
+            renderContext,
+          });
+        case "base_trusted_guidance_block":
+          return renderPromptSurfaceBlock(TRUSTED_GUIDANCE_PREAMBLE, {
+            surface: "baseTrustedGuidanceSections",
+            renderContext,
+          });
+        case "base_trusted_dynamic_guidance_block":
+          return renderPromptSurface(
+            PROMPT_SURFACES.cacheableTrustedDynamicSections,
+            renderContext,
+          );
+        default:
+          return renderPromptSection(sections.promptSectionsById.get(id));
+      }
+    },
+  };
+
+  return renderContext;
+}
+
 export function buildBaseSystemPrompt(
   context: DeliberationContext,
   options: BuildBaseSystemPromptOptions,
 ): string {
   const sections = buildBaseSystemPromptSections(context, options);
-  const untrustedDynamicBlock = renderPromptBlock(
-    UNTRUSTED_DATA_PREAMBLE,
-    sections.untrustedSections,
-  );
-  const trustedGuidanceBlock = renderPromptBlock(
-    TRUSTED_GUIDANCE_PREAMBLE,
-    sections.trustedGuidanceSections,
-  );
+  const renderContext = createBasePromptSurfaceRenderContext(context, sections);
 
-  return [
-    sections.resolvedBlocks.base_identity_preamble,
-    sections.resolvedBlocks.self_architecture,
-    sections.resolvedBlocks.voice_and_posture,
-    sections.resolvedBlocks.epistemic_posture,
-    sections.resolvedBlocks.identity_posture,
-    sections.resolvedBlocks.participation_posture,
-    LOOP_BREAKING_POSTURE_SECTION,
-    untrustedDynamicBlock,
-    trustedGuidanceBlock,
-    CURRENT_USER_MESSAGE_REMINDER,
-    groupChatSenderScopingReminder(context),
-  ]
-    .filter((section): section is string => section !== null)
-    .join("\n\n");
+  return renderPromptSurface(PROMPT_SURFACES.baseDirect, renderContext) ?? "";
 }
 
 export function buildCacheableBaseSystemPromptParts(
@@ -1194,52 +1224,12 @@ export function buildCacheableBaseSystemPromptParts(
   options: BuildBaseSystemPromptOptions,
 ): CacheableBaseSystemPromptParts {
   const sections = buildBaseSystemPromptSections(context, options);
-  const trustedDynamicGuidanceBlock = renderPromptSections(sections.trustedDynamicGuidanceSections);
-  const untrustedDynamicBlock = renderPromptBlock(
-    UNTRUSTED_DATA_PREAMBLE,
-    sections.untrustedSections,
-  );
-  const staticPrefixSections: readonly CacheableStaticPrefixSection[] = [
-    {
-      label: "base_identity_preamble",
-      content: sections.resolvedBlocks.base_identity_preamble,
-    },
-    {
-      label: "self_architecture",
-      content: sections.resolvedBlocks.self_architecture,
-    },
-    {
-      label: "voice_and_posture",
-      content: sections.resolvedBlocks.voice_and_posture,
-    },
-    {
-      label: "epistemic_posture",
-      content: sections.resolvedBlocks.epistemic_posture,
-    },
-    {
-      label: "identity_posture",
-      content: sections.resolvedBlocks.identity_posture,
-    },
-    {
-      label: "participation_posture",
-      content: sections.resolvedBlocks.participation_posture,
-    },
-    {
-      label: "loop_breaking_posture",
-      content: LOOP_BREAKING_POSTURE_SECTION,
-    },
-    {
-      label: "trusted_guidance_preamble",
-      content: TRUSTED_GUIDANCE_PREAMBLE,
-    },
-    {
-      label: "borg_host_capabilities",
-      content: renderTaggedPromptSection(
-        sections.hostCapabilitiesSection.tag,
-        sections.hostCapabilitiesSection.content,
-      ),
-    },
-  ];
+  const renderContext = createBasePromptSurfaceRenderContext(context, sections);
+  const staticPrefixSections: readonly CacheableStaticPrefixSection[] =
+    promptSurfaceBlocksForSurface(PROMPT_SURFACES.cacheableStaticPrefix).map((section) => ({
+      label: section.id,
+      content: section.render(renderContext),
+    }));
 
   return {
     staticPrefix: staticPrefixSections
@@ -1252,14 +1242,7 @@ export function buildCacheableBaseSystemPromptParts(
           section.content !== null,
       )
       .map((section) => section.label),
-    dynamicContent: [
-      trustedDynamicGuidanceBlock,
-      untrustedDynamicBlock,
-      CURRENT_USER_MESSAGE_REMINDER,
-      groupChatSenderScopingReminder(context),
-    ]
-      .filter((section): section is string => section !== null)
-      .join("\n\n"),
+    dynamicContent: renderPromptSurface(PROMPT_SURFACES.cacheableDynamic, renderContext) ?? "",
   };
 }
 

@@ -18,9 +18,9 @@ import {
   type EpisodeId,
 } from "../../util/ids.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
-import type { ParticipantRoster } from "../../cognition/perception/index.js";
+import type { ParticipantRosterForRendering } from "../common/participant-roster-rendering.js";
 import type { RelationshipClaim } from "../common/relationship-claims.js";
-import type { TurnTracer } from "../../cognition/tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import type { Episode } from "../episodic/types.js";
 import { SemanticExtractor } from "./extractor.js";
 import { semanticMigrations } from "./migrations.js";
@@ -204,7 +204,7 @@ describe("semantic extractor", () => {
         participants: [
           {
             entity_id:
-              "ent_noraaaaaaaaaaaa" as ParticipantRoster["participants"][number]["entity_id"],
+              "ent_noraaaaaaaaaaaa" as ParticipantRosterForRendering["participants"][number]["entity_id"],
             display_name: "Nora",
             known_relationships: ["spouse:Priya"],
             audience_role: "speaker",
@@ -212,7 +212,7 @@ describe("semantic extractor", () => {
           },
           {
             entity_id:
-              "ent_selfaaaaaaaaaaa" as ParticipantRoster["participants"][number]["entity_id"],
+              "ent_selfaaaaaaaaaaa" as ParticipantRosterForRendering["participants"][number]["entity_id"],
             display_name: "self",
             known_relationships: [],
             audience_role: "active_participant",
@@ -429,7 +429,7 @@ describe("semantic extractor", () => {
         participants: [
           {
             entity_id:
-              "ent_noraaaaaaaaaaaa" as ParticipantRoster["participants"][number]["entity_id"],
+              "ent_noraaaaaaaaaaaa" as ParticipantRosterForRendering["participants"][number]["entity_id"],
             display_name: "Nora",
             known_relationships: ["sibling:Julian"],
             audience_role: "speaker",

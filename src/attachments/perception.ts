@@ -17,7 +17,7 @@ import {
   type ImagePerceptionId,
   type StreamEntryId,
 } from "../util/ids.js";
-import type { TurnTracer } from "../cognition/tracing/tracer.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import type { ImageMediaType, StoredAttachmentRecord } from "./types.js";
 import type { AttachmentRepository } from "./repository.js";
 

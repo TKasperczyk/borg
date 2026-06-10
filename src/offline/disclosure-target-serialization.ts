@@ -2,7 +2,7 @@ import {
   memoryDisclosurePayloadFields,
   semanticEdgeMemoryDisclosureLabel,
   semanticNodeMemoryDisclosureLabel,
-} from "../cognition/disclosure-labels.js";
+} from "../memory/common/disclosure-serializers.js";
 import {
   memoryDisclosureLabelFromEpisodeAccess,
   resolveDisclosureLabelsByEpisodeId,

@@ -171,7 +171,7 @@ describe("reconcileSemanticBeliefRevision", () => {
       expect.objectContaining({
         event: "llm_call.started",
         data: expect.objectContaining({
-          label: "decision_artifact_semantic_revision",
+          label: "shared_state_semantic_revision",
         }),
       }),
     );
@@ -179,7 +179,7 @@ describe("reconcileSemanticBeliefRevision", () => {
       expect.objectContaining({
         event: "llm_call.completed",
         data: expect.objectContaining({
-          label: "decision_artifact_semantic_revision",
+          label: "shared_state_semantic_revision",
           usage: {
             inputTokens: 5,
             outputTokens: 5,
@@ -1200,7 +1200,7 @@ describe("reconcileSharedStateCanonicalizations", () => {
       "done",
       {
         kind: "online",
-        process: "decision_artifact_reconciliation",
+        process: "shared_state_reconciliation",
       },
       {
         canonicalizedByArtifactEntryId: entry.id,
@@ -1211,7 +1211,7 @@ describe("reconcileSharedStateCanonicalizations", () => {
       `canonicalized_by_artifact_entry_id=${entry.id}`,
       {
         kind: "online",
-        process: "decision_artifact_reconciliation",
+        process: "shared_state_reconciliation",
       },
       undefined,
       {
@@ -1573,7 +1573,7 @@ describe("reconcileSharedStateCanonicalizations", () => {
           `canonicalized_by_artifact_entry_id=${entry.id}`,
           {
             kind: "online",
-            process: "decision_artifact_reconciliation",
+            process: "shared_state_reconciliation",
           },
           undefined,
           {

@@ -26,7 +26,7 @@ import {
   goalMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
   openQuestionMemoryDisclosureLabel,
-} from "../../disclosure-labels.js";
+} from "../../../memory/common/disclosure-serializers.js";
 import {
   compileSharedStateArtifact,
   findUnsettledSharedStateReconciliation,
@@ -38,7 +38,7 @@ import {
   type SessionReentryContinuityPrompt,
 } from "../../session-reentry-continuity.js";
 import { AutobiographicalRecallService } from "../../autobiographical-recall.js";
-import { toTraceJsonValue } from "../../tracing/tracer.js";
+import { toTraceJsonValue } from "../../../tracing/tracer.js";
 import type { PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
 import {
@@ -68,7 +68,7 @@ import {
   DEFAULT_OBSERVED_EVENT_INTROSPECTION_RECENCY_WINDOW_MS,
   recallObservedEventsForCognition,
 } from "../../../memory/observed-events/index.js";
-import type { SharedStateArtifact } from "../../../memory/decision-artifacts/index.js";
+import type { SharedStateArtifact } from "../../../memory/shared-state/index.js";
 import { createLoadedUserStreamEntryRelationshipEvidenceTrustValidator } from "../../../memory/source-trust.js";
 import {
   SELF_RECALL_SCOPE,
@@ -1076,10 +1076,10 @@ async function buildEvidenceLedgerFinalizerContextInternal(input: {
       raw_preserved_user_entry_count: traceSummary.rawPreservedUserEntryCount,
       total_estimated_tokens: traceSummary.totalEstimatedTokens,
       estimated_tokens_by_section: toTraceJsonValue(traceSummary.estimatedTokensBySection),
-      decision_artifact_entry_count: sharedStateSummary.renderedEntryCount,
-      decision_artifact_rendered_token_estimate: sharedStateSummary.estimatedTokens,
-      decision_artifact_rendered_by_kind: toTraceJsonValue(sharedStateSummary.renderedByKind),
-      decision_artifact_newest_entries_reserved: sharedStateSummary.newestReservedEntryCount,
+      shared_state_entry_count: sharedStateSummary.renderedEntryCount,
+      shared_state_rendered_token_estimate: sharedStateSummary.estimatedTokens,
+      shared_state_rendered_by_kind: toTraceJsonValue(sharedStateSummary.renderedByKind),
+      shared_state_newest_entries_reserved: sharedStateSummary.newestReservedEntryCount,
     });
 
     input.options.tracer.emit("evidence_ledger.built", {

@@ -1,5 +1,5 @@
 import type { ActionRepository } from "../../memory/actions/index.js";
-import type { SharedStateEntry } from "../../memory/decision-artifacts/index.js";
+import type { SharedStateEntry } from "../../memory/shared-state/index.js";
 import {
   canonicalizeActionWithSharedStateEntry,
   type LifecycleTracer,

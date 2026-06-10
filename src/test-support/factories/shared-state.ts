@@ -4,7 +4,7 @@ import type {
   SharedStateCanonicalizes,
   SharedStateEntry,
   SharedStateEntryKind,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import { createEntityId, createSharedStateEntryId, createStreamEntryId } from "../../util/ids.js";
 
 function definedOverrides<T extends object>(overrides: Partial<T>): Partial<T> {

@@ -345,6 +345,7 @@ export {
   type AnthropicAttachmentResolver,
   type AnthropicContentBlockOptions,
 } from "./anthropic-content-blocks.js";
+export * from "./structured-tool-call.js";
 
 type AnthropicClientLike = {
   messages: {

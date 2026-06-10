@@ -7,7 +7,7 @@ import type { ExecutiveStep, ExecutiveStepsRepository } from "../../executive/in
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { EpisodicRepository } from "../../memory/episodic/index.js";
 import type { GoalRecord, GoalsRepository } from "../../memory/self/index.js";
-import { goalMemoryDisclosureLabel } from "../../cognition/disclosure-labels.js";
+import { goalMemoryDisclosureLabel } from "../../memory/common/disclosure-serializers.js";
 import { listActiveGoalsForCognition } from "../../cognition/self/active-goals.js";
 import {
   combineMemoryDisclosureLabels,
@@ -22,7 +22,7 @@ import {
   type GoalScoringVector,
 } from "../../retrieval/scoring-features.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
-import type { TurnTracer } from "../../cognition/tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type EpisodeId, type SessionId } from "../../util/ids.js";
 import type { AutonomyTrigger, DueEvent } from "../types.js";

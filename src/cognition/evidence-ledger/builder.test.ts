@@ -18,10 +18,10 @@ import {
   type GoalTreeNode,
   type OpenQuestion,
 } from "../../memory/self/index.js";
-import type { OpenCommitmentReconciliationStatus } from "../../memory/semantic/index.js";
+import type { OpenCommitmentReconciliationStatus } from "../../memory/review-queue/index.js";
 import { selfMigrations } from "../../memory/self/migrations.js";
 import type { EvidenceItem, RetrievedEpisode, RetrievedSemantic } from "../../retrieval/index.js";
-import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
+import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
 import { renderInboundBatch, type HydratedInboundMessage } from "../turn-input.js";
 import {
   createEpisodeFixture,

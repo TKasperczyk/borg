@@ -1,5 +1,5 @@
 import { StreamWriter } from "../../stream/index.js";
-import type { ReviewQueueItem } from "../semantic/review-queue.js";
+import type { ReviewQueueItem } from "../review-queue/review-queue.js";
 import {
   entityIdHelpers,
   episodeIdHelpers,

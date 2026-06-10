@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import {
   TRACE_TAXONOMY_PHASES_WITH_OTHER,
   phaseForTraceEventName,
-} from "../src/cognition/tracing/taxonomy.js";
+} from "../src/tracing/taxonomy.js";
 import type { TracePhase, TraceRecord } from "./types.js";
 
 export const TRACE_PHASES: readonly TracePhase[] = TRACE_TAXONOMY_PHASES_WITH_OTHER;

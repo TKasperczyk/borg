@@ -29,10 +29,6 @@ import type {
   ValuesRepository,
 } from "../memory/self/index.js";
 import type {
-  ReviewKind,
-  ReviewQueueItem,
-  ReviewResolveOptions,
-  ReviewResolutionInput,
   SemanticEdge,
   SemanticEdgeRepository,
   SemanticGraph,
@@ -41,6 +37,12 @@ import type {
   SemanticNodeSearchCandidate,
   SemanticWalkStep,
 } from "../memory/semantic/index.js";
+import type {
+  ReviewKind,
+  ReviewQueueItem,
+  ReviewResolveOptions,
+  ReviewResolutionInput,
+} from "../memory/review-queue/index.js";
 import type { SemanticExtractor } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../memory/working/index.js";

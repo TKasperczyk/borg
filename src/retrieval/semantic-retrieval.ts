@@ -12,7 +12,7 @@ import type {
   BeliefRevisionTarget,
   OpenBeliefRevisionStatus,
   ReviewQueueRepository,
-} from "../memory/semantic/review-queue.js";
+} from "../memory/review-queue/review-queue.js";
 import type {
   SemanticContext,
   SemanticEdge,
@@ -30,19 +30,44 @@ import {
   type MemoryDisclosureLabel,
 } from "../memory/common/disclosure-label.js";
 
+// Tunes the score retained for semantic nodes currently under review.
 const DEFAULT_UNDER_REVIEW_MULTIPLIER = 0.5;
+
+// Tunes the default overfetch multiplier before semantic result trimming.
 const DEFAULT_SEMANTIC_OVERFETCH_MULTIPLIER = 3;
+
+// Tunes the maximum semantic overfetch multiplier accepted from options.
 const MAX_SEMANTIC_OVERFETCH_MULTIPLIER = 10;
+
+// Tunes the maximum semantic candidates fetched before graph expansion.
 const MAX_SEMANTIC_CANDIDATE_FETCH_LIMIT = 50;
+
+// Tunes the default number of vector semantic matches.
 const DEFAULT_VECTOR_MATCH_LIMIT = 3;
+
+// Tunes the default number of exact-term semantic matches.
 const DEFAULT_EXACT_MATCH_LIMIT = 5;
+
+// Tunes the multiplier for active semantic nodes.
+const ACTIVE_SEMANTIC_STATUS_MULTIPLIER = 1;
+
+// Tunes the multiplier for superseded semantic nodes.
+const SUPERSEDED_SEMANTIC_STATUS_MULTIPLIER = 0.5;
+
+// Tunes the multiplier for contradicted semantic nodes.
+const CONTRADICTED_SEMANTIC_STATUS_MULTIPLIER = 0.3;
+
+// Tunes the multiplier for quarantined semantic nodes.
+const QUARANTINED_SEMANTIC_STATUS_MULTIPLIER = 0.2;
 export const DEFAULT_SEMANTIC_STATUS_MULTIPLIERS = {
-  active: 1,
-  superseded: 0.5,
-  contradicted: 0.3,
-  quarantined: 0.2,
+  active: ACTIVE_SEMANTIC_STATUS_MULTIPLIER,
+  superseded: SUPERSEDED_SEMANTIC_STATUS_MULTIPLIER,
+  contradicted: CONTRADICTED_SEMANTIC_STATUS_MULTIPLIER,
+  quarantined: QUARANTINED_SEMANTIC_STATUS_MULTIPLIER,
 } as const satisfies Record<SemanticNodeStatus, number>;
 export type SemanticStatusMultipliers = Record<SemanticNodeStatus, number>;
+
+// Tunes the minimum semantic node similarity for candidate admission.
 const DEFAULT_SEMANTIC_NODE_MIN_SIMILARITY = 0.01;
 
 export type RetrievedSemanticUnderReview = {

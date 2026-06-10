@@ -42,8 +42,8 @@ export function makeSemanticRevisionResponse(input: {
   outputTokens?: number;
 }): LLMCompleteResult {
   return makeToolUseCompleteResult({
-    toolId: "toolu_decision_artifact_semantic_revision",
-    toolName: "EmitDecisionArtifactSemanticRevision",
+    toolId: "toolu_shared_state_semantic_revision",
+    toolName: "EmitSharedStateSemanticRevision",
     toolInput: {
       verdicts: input.verdicts,
     },

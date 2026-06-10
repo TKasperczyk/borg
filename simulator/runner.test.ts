@@ -501,12 +501,12 @@ function metricsRow(turnCounter: number): MetricsRow {
     },
     goal_promotion_rejected_classification: 0,
     goal_promotion_cap_rejections: 0,
-    decision_artifact_semantic_revisions_attempted: 0,
-    decision_artifact_semantic_revisions_completed_succeeded: 0,
-    decision_artifact_semantic_nodes_marked_superseded: 0,
-    decision_artifact_semantic_nodes_marked_contradicted: 0,
-    decision_artifact_semantic_revision_cache_hits: 0,
-    decision_artifact_semantic_revision_cache_size: 0,
+    shared_state_semantic_revisions_attempted: 0,
+    shared_state_semantic_revisions_completed_succeeded: 0,
+    shared_state_semantic_nodes_marked_superseded: 0,
+    shared_state_semantic_nodes_marked_contradicted: 0,
+    shared_state_semantic_revision_cache_hits: 0,
+    shared_state_semantic_revision_cache_size: 0,
     embedding_cache_pending_overflow_total: 0,
     ledger_reverse_scan_entries_total: 0,
     ledger_reverse_scan_bytes_total: 0,
@@ -690,6 +690,32 @@ function metricsRow(turnCounter: number): MetricsRow {
     finalizer_no_output_closure_with_open_question_total: 0,
     borg_aborted_turns: 0,
   };
+}
+
+function legacyOnlySemanticRevisionMetrics(row: MetricsRow): MetricsRow {
+  const legacyRow: Record<string, unknown> = { ...row };
+
+  legacyRow.decision_artifact_semantic_revisions_attempted =
+    row.shared_state_semantic_revisions_attempted;
+  legacyRow.decision_artifact_semantic_revisions_completed_succeeded =
+    row.shared_state_semantic_revisions_completed_succeeded;
+  legacyRow.decision_artifact_semantic_nodes_marked_superseded =
+    row.shared_state_semantic_nodes_marked_superseded;
+  legacyRow.decision_artifact_semantic_nodes_marked_contradicted =
+    row.shared_state_semantic_nodes_marked_contradicted;
+  legacyRow.decision_artifact_semantic_revision_cache_hits =
+    row.shared_state_semantic_revision_cache_hits;
+  legacyRow.decision_artifact_semantic_revision_cache_size =
+    row.shared_state_semantic_revision_cache_size;
+
+  delete legacyRow.shared_state_semantic_revisions_attempted;
+  delete legacyRow.shared_state_semantic_revisions_completed_succeeded;
+  delete legacyRow.shared_state_semantic_nodes_marked_superseded;
+  delete legacyRow.shared_state_semantic_nodes_marked_contradicted;
+  delete legacyRow.shared_state_semantic_revision_cache_hits;
+  delete legacyRow.shared_state_semantic_revision_cache_size;
+
+  return legacyRow as MetricsRow;
 }
 
 describe("SimulatorRunner", () => {
@@ -1432,8 +1458,8 @@ describe("SimulatorRunner", () => {
         rows: [
           {
             ...metricsRow(12),
-            decision_artifact_semantic_revisions_attempted: 41,
-            decision_artifact_semantic_nodes_marked_superseded: 41,
+            shared_state_semantic_revisions_attempted: 41,
+            shared_state_semantic_nodes_marked_superseded: 41,
           },
         ],
         expectedKinds: ["semantic_revision_llm_calls_high"],
@@ -1443,8 +1469,8 @@ describe("SimulatorRunner", () => {
         rows: [
           {
             ...metricsRow(12),
-            decision_artifact_semantic_revisions_attempted: 40,
-            decision_artifact_semantic_nodes_marked_superseded: 40,
+            shared_state_semantic_revisions_attempted: 40,
+            shared_state_semantic_nodes_marked_superseded: 40,
           },
         ],
         expectedKinds: [],
@@ -1454,8 +1480,8 @@ describe("SimulatorRunner", () => {
         rows: [
           {
             ...metricsRow(12),
-            decision_artifact_semantic_revisions_attempted: 6,
-            decision_artifact_semantic_nodes_marked_superseded: 1,
+            shared_state_semantic_revisions_attempted: 6,
+            shared_state_semantic_nodes_marked_superseded: 1,
           },
         ],
         expectedKinds: ["semantic_revision_transition_yield_low"],
@@ -1465,9 +1491,9 @@ describe("SimulatorRunner", () => {
         rows: [
           {
             ...metricsRow(12),
-            decision_artifact_semantic_revisions_attempted: 0,
-            decision_artifact_semantic_nodes_marked_superseded: 0,
-            decision_artifact_semantic_nodes_marked_contradicted: 0,
+            shared_state_semantic_revisions_attempted: 0,
+            shared_state_semantic_nodes_marked_superseded: 0,
+            shared_state_semantic_nodes_marked_contradicted: 0,
           },
         ],
         expectedKinds: [],
@@ -1802,6 +1828,29 @@ describe("SimulatorRunner", () => {
         label: "closure_loop_classifier",
         observed_value: 2,
       }),
+    ]);
+  });
+
+  it("normalizes legacy-only semantic revision metric fields for direct health warnings", () => {
+    const newFieldRow = {
+      ...metricsRow(12),
+      shared_state_semantic_revisions_attempted: 41,
+      shared_state_semantic_revisions_completed_succeeded: 1,
+      shared_state_semantic_nodes_marked_superseded: 1,
+      shared_state_semantic_nodes_marked_contradicted: 0,
+      shared_state_semantic_revision_cache_hits: 2,
+      shared_state_semantic_revision_cache_size: 3,
+    } satisfies MetricsRow;
+    const legacyFieldRow = legacyOnlySemanticRevisionMetrics(newFieldRow);
+
+    expect(legacyFieldRow).not.toHaveProperty("shared_state_semantic_revisions_attempted");
+    expect(legacyFieldRow).toHaveProperty("decision_artifact_semantic_revisions_attempted", 41);
+    expect(simulatorHealthWarningsForRows([legacyFieldRow])).toEqual(
+      simulatorHealthWarningsForRows([newFieldRow]),
+    );
+    expect(simulatorHealthWarningsForRows([legacyFieldRow]).map((warning) => warning.kind)).toEqual([
+      "semantic_revision_llm_calls_high",
+      "semantic_revision_transition_yield_low",
     ]);
   });
 

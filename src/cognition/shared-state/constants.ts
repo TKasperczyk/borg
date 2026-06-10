@@ -1,4 +1,4 @@
-import { CANONICAL_SHARED_STATE_ENTRY_KINDS } from "../../memory/decision-artifacts/types.js";
+import { CANONICAL_SHARED_STATE_ENTRY_KINDS } from "../../memory/shared-state/types.js";
 
 export const SHARED_STATE_TOOL_NAME = "EmitSharedStatePatch";
 export const DECISION_ARTIFACT_TOOL_NAME = "EmitDecisionArtifactPatch";

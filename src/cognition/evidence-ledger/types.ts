@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { SharedStateArtifact } from "../../memory/decision-artifacts/types.js";
+import type { SharedStateArtifact } from "../../memory/shared-state/types.js";
 import type { StreamEntryPersistenceClass } from "../../stream/index.js";
 
 export const evidenceLedgerSourceTypeSchema = z.enum([

@@ -26,6 +26,7 @@ export {
   ACTION_STATE_METADATA,
   ACTION_STATES,
   ACTION_SESSION_SCOPES,
+  isActionTerminalClosureGuardState,
   actionActorSchema,
   actionEntityIdSchema,
   actionEpisodeIdSchema,

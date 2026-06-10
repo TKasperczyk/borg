@@ -1,7 +1,7 @@
 import type { LLMClient } from "../../llm/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { ACTIVE_ACTION_STATES, type ActionRepository } from "../../memory/actions/index.js";
-import type { SharedStateEntry } from "../../memory/decision-artifacts/index.js";
+import type { SharedStateEntry } from "../../memory/shared-state/index.js";
 import type { Clock } from "../../util/clock.js";
 import type {
   ActionId,
@@ -14,7 +14,7 @@ import type {
 import type { ExtractCorrectivePreferenceInput } from "../commitments/corrective-preference-extractor.js";
 import { listActionCandidatesForCognition } from "../evidence-ledger/action-threads.js";
 import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import type { CurrentTurnUserInputSenderAttribution } from "../turn-input.js";
 import { ActionStateExtractor } from "./action-state-extractor.js";
 

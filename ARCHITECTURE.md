@@ -45,7 +45,7 @@ only shape that carries them. The naming convention encodes the boundary --
 cognition-recall functions are suffixed `*ForCognition` (global recall),
 audience-filtered disclosure/export functions `*ForDisclosure`. Disclosure
 labels are concrete primitives: `memoryDisclosurePayloadFields(label)`
-(`src/cognition/disclosure-labels.ts`) is the per-record serializer used across
+(`src/memory/common/disclosure-serializers.ts`) is the per-record serializer used across
 every band; `combineMemoryDisclosureLabels` (`src/memory/common/disclosure-label.ts`)
 merges to the most-restrictive class, fails closed to `unknown`, and never
 demotes a private/unknown source to public. Two `pnpm heuristics:guard` passes
@@ -527,6 +527,52 @@ Identity Governance bounds changes to Borg's own self-model. Standing operator
 instructions about how to disclose facts to particular audiences are a separate
 authority; see Creator Directives.
 
+## Time And Aging
+
+Borg deliberately runs more than one clock. The clocks answer different
+questions, and collapsing them would make either physical decay, durable shared
+state, or per-session continuity lie about what it knows.
+
+Wall-clock milliseconds are the elapsed-time clock. `SystemClock.now()`
+(`src/util/clock.ts`) returns wall time, and `halfLifeDecay`
+(`src/util/math.ts`) is the shared decay primitive. Episodic salience decay
+(`src/memory/episodic/decay.ts`), episodic heat recency
+(`src/memory/episodic/heat.ts`), and affective mood decay
+(`src/memory/affective/mood.ts`) use this clock because they model physical
+time passing. Wall-clock time is not authoritative for shared-state lifecycle
+age, action-reference windows, or turn-count TTLs.
+
+Durable global turn age is the shared-state aging clock. Shared State stores
+`last_updated_turn_global` on each entry (`src/memory/shared-state/types.ts`),
+the compiler writes it when operations materialize entries, and lifecycle aging
+(`src/cognition/shared-state/lifecycle-aging.ts`) compares it with the current
+global turn counter. This is the only authoritative age for shared-state
+demotion from live to low-salience or dormant. If an entry has no durable turn
+age, its age is unknown. Borg does not reconstruct a pseudo-age from sparse
+source-trust facts or indexed stream handles, because those handles are valid
+for trust lookups but not a complete turn sequence.
+
+Per-session turn counters are the local continuity clock. Working Memory stores
+the session turn counter (`src/memory/working/types.ts`), and the live turn path
+increments it for the current session. That counter is authoritative for
+session-local references: nearby action state, discourse continuity, prompt
+state, and other "this conversation's recent turns" behavior. It is not a
+global age, and values from two sessions are not comparable.
+
+Turn-count TTLs are bounded-recurrence clocks. Suppression state
+(`src/cognition/attention/suppression-set.ts`), warm recall and recall-handle
+retention (`src/retrieval/recall-state.ts`), and pending procedural attempt
+state (`src/memory/working/types.ts`) expire by turns because they are meant to
+prevent immediate repetition or keep a short-lived handle warm. These TTLs do
+not claim that a memory is semantically old or physically stale. They only say
+how many relevant turns a transient control state should survive.
+
+The plurality is intentional. Wall time answers "how long ago in the world?";
+global turn age answers "how many durable Borg turns since this shared-state
+fact changed?"; session counters answer "where are we in this conversation?";
+and TTLs answer "how long should this temporary control state keep affecting
+nearby turns?" Each clock is authoritative only inside that boundary.
+
 ## Visual Attachments
 
 Images are first-class durable sources, not inline text inside the Stream. The
@@ -895,9 +941,11 @@ the model ignore visible evidence?
 ### Shared State
 
 Shared State is a compact, audience-scoped record of what Borg and a specific
-audience currently share (entry point: `src/cognition/shared-state/index.ts`).
-It captures decisions, live threads, tentative understandings, invalidated
-claims, and locked canonical facts that matter for continuity.
+audience currently share. Its persistent memory-band store lives in
+`src/memory/shared-state/`; turn-time compilation, aging, reconciliation, and
+rendering live in `src/cognition/shared-state/`. It captures decisions, live
+threads, tentative understandings, invalidated claims, and locked canonical
+facts that matter for continuity.
 
 Shared State is audience-scoped because "what we know" depends on who "we" is.
 A private understanding with one person is not automatically shared with a
@@ -1010,6 +1058,15 @@ commitments, selected skill, executive focus, affective trajectory, participant
 context, and host capabilities. It is instructed that memory-derived guidance
 is evidence about Borg's substrate, while host-capability boundaries and tool
 protocols are direct runtime constraints.
+
+The standing prompt surface is enumerated in
+`src/cognition/prompts/prompt-surface-registry.ts`. That registry records the
+owner, render condition, source file, tag, and per-surface order for the direct
+base prompt, cacheable finalizer split, S2 planner, ledger framing, and smaller
+out-of-band prompt sections. The rendered text remains in the existing prompt
+constants and builders; fixture tests pin representative assembled outputs
+byte-for-byte so structural prompt refactors cannot silently change prompt
+copy.
 
 ### Closure-Loop State
 
@@ -1310,9 +1367,9 @@ Action can resolve its linked Open Question, and it can also resolve Open
 Questions under a linked Goal through identity-governed resolution.
 
 The Review Queue holds bounded maintenance decisions that are uncertain,
-potentially destructive, authority-bearing, or semantically risky. Despite its
-historical placement in `src/memory/semantic/review-queue.ts`, it is a general
-maintenance review queue, not a semantic-memory-only queue. Reviews can cover
+potentially destructive, authority-bearing, or semantically risky. Its store
+and handlers live in `src/memory/review-queue/`; it is a general maintenance
+review queue, not a semantic-memory-only queue. Reviews can cover
 semantic contradiction and duplicate decisions, new insight, misattribution,
 temporal drift, identity inconsistency, correction, belief revision, skill
 splits, and creator-directive reconciliation. Queueing a review is preferred
@@ -1347,6 +1404,30 @@ Lifecycle operations use compare-and-set when identity-bearing records are
 involved, and terminal records are treated as no-ops rather than overwritten.
 Conflicts surface as operation results or errors instead of silently rewriting
 history.
+
+### Status Vocabulary
+
+Status words are shared across bands, but they do not all mean the same storage
+operation. The common vocabulary is:
+
+- `archived`: retained as history but removed from ordinary active operation; used by Sessions, Actions, and archived Semantic nodes.
+- `inactive`: present in the Stream/index but excluded from ordinary retrieval, citation, or source-trust use; used by Stream turn status and source-trust filters.
+- `revoked`: an authority or relationship constraint was withdrawn with provenance; used by Commitments, Relational Slots, and Creator Directives.
+- `superseded`: replaced by newer evidence or a successor record without erasure; used by Semantic Memory, Shared State, Procedural Memory, Commitments, and identity history.
+- `invalidated`: source support or shared-state content was judged no longer usable as current evidence; used by Semantic edges and Shared State.
+- `quarantined`: preserved as tainted or unsafe-to-promote evidence rather than deleted; used by Stream source trust, Semantic Memory, Relational Slots, and Shared State artifact filtering.
+- `expired`: time or session scope ended without making a final assertion; used by Actions and Commitments.
+- `abandoned`: an identity-bearing goal or open question was intentionally stopped without being completed or resolved; used by Goals and Open Questions.
+- `not_done`: an action-specific final outcome that says the concrete task did not happen; used by Actions.
+- `dormant`: still retained but demoted for age or inactivity rather than retired; used by Shared State salience and Open Question wake triggers.
+
+Transition ownership follows the same split. Identity-bearing records transition
+through Identity Governance. Durable non-identity transitions and cross-pillar
+canonicalization go through lifecycle operations. Repository-internal
+maintenance -- aging, caps, decay, and reversal protocols -- stays inside the
+repositories. This split is deliberate: governance owns identity mutation,
+lifecycle ops own shared durable transition semantics, and repositories own
+local maintenance invariants.
 
 ## Audience And Disclosure Scoping
 
@@ -1906,6 +1987,13 @@ The only deterministic string checks in semantic-adjacent paths must be
 mechanical. The Internal-ID Guard is acceptable because it checks exact
 machine-generated identifiers that are already known to the turn. It is not
 deciding what the user meant.
+
+Single-shot structured extraction and judge calls go through
+`callStructuredTool` in `src/llm/`. That primitive owns one LLM completion,
+optional `llm_call` tracing, accepted tool-call selection, caller-supplied
+payload parsing, and typed structural errors. It does not own degradation
+policy: retry, fail-open, fail-closed, repair, neutral fallback, and emitted
+degraded shape remain explicit at each call site.
 
 ## Production-Policing Boundary
 

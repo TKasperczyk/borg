@@ -1,6 +1,12 @@
 import { z } from "zod";
 
-import { toToolInputSchema, type LLMClient, type LLMToolDefinition } from "../../llm/index.js";
+import {
+  callStructuredTool,
+  isStructuredToolCallError,
+  toToolInputSchema,
+  type LLMClient,
+  type LLMToolDefinition,
+} from "../../llm/index.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { TemporalCue } from "../types.js";
 
@@ -47,38 +53,37 @@ export async function detectTemporalCue(
   }
 
   try {
-    const response = await options.llmClient.complete({
-      model: options.model,
-      system:
-        "Identify whether the user's message contains a temporal reference -- a specific past or future time window. Examples: 'yesterday', 'last Tuesday', 'earlier today', 'this morning', 'a week ago', 'tonight', 'next month'. If there is no concrete time window being referenced, return has_cue=false. When a cue is present, compute since_ts and until_ts as Unix milliseconds relative to the supplied 'now' timestamp (also in ms). Prefer narrower ranges when the phrase is specific (e.g. 'yesterday' is a 24h window, not a week). Label should be a short human-readable form of the phrase.",
-      messages: [
-        {
-          role: "user",
-          content: JSON.stringify({
-            text,
-            now_ms: nowMs,
-          }),
-        },
-      ],
-      tools: [TEMPORAL_CUE_TOOL],
-      tool_choice: { type: "tool", name: TEMPORAL_CUE_TOOL_NAME },
-      max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
-      budget: "perception-temporal-cue",
+    const result = await callStructuredTool({
+      llmClient: options.llmClient,
+      request: {
+        model: options.model,
+        system:
+          "Identify whether the user's message contains a temporal reference -- a specific past or future time window. Examples: 'yesterday', 'last Tuesday', 'earlier today', 'this morning', 'a week ago', 'tonight', 'next month'. If there is no concrete time window being referenced, return has_cue=false. When a cue is present, compute since_ts and until_ts as Unix milliseconds relative to the supplied 'now' timestamp (also in ms). Prefer narrower ranges when the phrase is specific (e.g. 'yesterday' is a 24h window, not a week). Label should be a short human-readable form of the phrase.",
+        messages: [
+          {
+            role: "user",
+            content: JSON.stringify({
+              text,
+              now_ms: nowMs,
+            }),
+          },
+        ],
+        tools: [TEMPORAL_CUE_TOOL],
+        tool_choice: { type: "tool", name: TEMPORAL_CUE_TOOL_NAME },
+        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
+        budget: "perception-temporal-cue",
+      },
+      toolName: TEMPORAL_CUE_TOOL_NAME,
+      parse: (input) => temporalCueJudgeSchema.parse(input),
     });
-
-    const call = response.tool_calls.find((toolCall) => toolCall.name === TEMPORAL_CUE_TOOL_NAME);
-    if (call === undefined) {
+    const parsed = result.parsed;
+    if (!parsed.has_cue) {
       return null;
     }
 
-    const parsed = temporalCueJudgeSchema.safeParse(call.input);
-    if (!parsed.success || !parsed.data.has_cue) {
-      return null;
-    }
-
-    const sinceTs = parsed.data.since_ts ?? undefined;
-    const untilTs = parsed.data.until_ts ?? undefined;
-    const label = parsed.data.label ?? undefined;
+    const sinceTs = parsed.since_ts ?? undefined;
+    const untilTs = parsed.until_ts ?? undefined;
+    const label = parsed.label ?? undefined;
 
     // If the judge returns no actionable window, treat as no cue.
     if (sinceTs === undefined && untilTs === undefined) {
@@ -97,9 +102,19 @@ export async function detectTemporalCue(
     }
     return cue;
   } catch (error) {
+    if (
+      isStructuredToolCallError(error, "missing_tool_call") ||
+      isStructuredToolCallError(error, "invalid_payload")
+    ) {
+      return null;
+    }
+
     // Any failure on this cheap enrichment path degrades gracefully to
     // "no temporal filter" rather than breaking the turn.
-    await options.onDegraded?.("llm_failed", error);
+    await options.onDegraded?.(
+      "llm_failed",
+      isStructuredToolCallError(error, "llm_failed") ? (error.cause ?? error) : error,
+    );
     return null;
   }
 }

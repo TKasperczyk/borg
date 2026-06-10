@@ -38,12 +38,38 @@ export type LegacyMetricAlias = (typeof LEGACY_METRIC_ALIAS_KEYS)[number];
 export type OverseerOmittedMetric = (typeof OVERSEER_OMITTED_METRIC_KEYS)[number];
 export type OverseerMetricsRow = Omit<MetricsRow, OverseerOmittedMetric>;
 
+const LEGACY_SHARED_STATE_SEMANTIC_FIELD_ALIASES = {
+  decision_artifact_semantic_revisions_attempted: "shared_state_semantic_revisions_attempted",
+  decision_artifact_semantic_revisions_completed_succeeded:
+    "shared_state_semantic_revisions_completed_succeeded",
+  decision_artifact_semantic_nodes_marked_superseded:
+    "shared_state_semantic_nodes_marked_superseded",
+  decision_artifact_semantic_nodes_marked_contradicted:
+    "shared_state_semantic_nodes_marked_contradicted",
+  decision_artifact_semantic_revision_cache_hits: "shared_state_semantic_revision_cache_hits",
+  decision_artifact_semantic_revision_cache_size: "shared_state_semantic_revision_cache_size",
+} as const;
+
 export const LEGACY_METRIC_ALIASES: ReadonlySet<LegacyMetricAlias> = new Set(
   LEGACY_METRIC_ALIAS_KEYS,
 );
 const OVERSEER_OMITTED_METRICS: ReadonlySet<OverseerOmittedMetric> = new Set(
   OVERSEER_OMITTED_METRIC_KEYS,
 );
+
+export function normalizeMetricsRowLegacyFields(row: MetricsRow): MetricsRow {
+  const normalized: Record<string, unknown> = { ...row };
+
+  for (const [legacyKey, currentKey] of Object.entries(
+    LEGACY_SHARED_STATE_SEMANTIC_FIELD_ALIASES,
+  )) {
+    if (normalized[currentKey] === undefined && normalized[legacyKey] !== undefined) {
+      normalized[currentKey] = normalized[legacyKey];
+    }
+  }
+
+  return normalized as MetricsRow;
+}
 
 export function stripLegacyAliases<T extends object>(
   row: T,

@@ -43,10 +43,29 @@ export type ComputeRetrievalConfidenceInput = {
   topN?: number;
 };
 
+// Tunes the expected evidence count for full retrieval coverage.
 const DEFAULT_EXPECTED_COUNT = 5;
+
+// Tunes how many top ranked episodes contribute to confidence strength.
 const DEFAULT_TOP_N = 5;
+
+// Tunes the multiplicative confidence retained when valid contradiction exists.
 const CONTRADICTION_PENALTY = 0.7;
+
+// Tunes the minimum semantic node confidence admitted into confidence support.
 const SEMANTIC_CONFIDENCE_THRESHOLD = 0.6;
+
+// Tunes how strongly semantic support can raise evidence strength.
+const SEMANTIC_EVIDENCE_STRENGTH_SCALE = 0.3;
+
+// Tunes the confidence modulation floor before coverage and diversity are applied.
+const CONFIDENCE_MODULATION_BASE = 0.7;
+
+// Tunes coverage's contribution to confidence modulation.
+const CONFIDENCE_COVERAGE_MODULATION_WEIGHT = 0.2;
+
+// Tunes source diversity's contribution to confidence modulation.
+const CONFIDENCE_DIVERSITY_MODULATION_WEIGHT = 0.1;
 
 function clamp01(value: number): number {
   if (Number.isNaN(value)) {
@@ -139,7 +158,9 @@ function computeSemanticEvidence(input: ComputeRetrievalConfidenceInput): {
   );
 
   return {
-    strength: clamp01(0.3 * sigmoid(meanConfidence * positiveHitCount)),
+    strength: clamp01(
+      SEMANTIC_EVIDENCE_STRENGTH_SCALE * sigmoid(meanConfidence * positiveHitCount),
+    ),
     count: supportedMatches.length,
     sourceSignatures: supportedMatches.map((node) => [...node.source_episode_ids].sort().join("|")),
   };
@@ -211,7 +232,10 @@ export function computeRetrievalConfidence(
   // up to low epistemic confidence, not high. The modulation factor ranges
   // from 0.7 (no coverage, no diversity) to 1.0 (full coverage + diversity).
   // Contradiction multiplicatively penalizes the final number further.
-  const modulation = 0.7 + 0.2 * coverage + 0.1 * sourceDiversity;
+  const modulation =
+    CONFIDENCE_MODULATION_BASE +
+    CONFIDENCE_COVERAGE_MODULATION_WEIGHT * coverage +
+    CONFIDENCE_DIVERSITY_MODULATION_WEIGHT * sourceDiversity;
   const rawOverall = evidenceStrength * modulation;
   const contradictionFactor = contradictionPresent ? CONTRADICTION_PENALTY : 1;
 

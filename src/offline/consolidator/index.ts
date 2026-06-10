@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
@@ -279,16 +280,25 @@ function episodeAccessFromCombinedDisclosureLabel(
   });
 }
 
-function parseMergeResponse(result: LLMCompleteResult) {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === MERGE_TOOL_NAME);
-
-  if (call === undefined) {
-    throw new StorageError(`Consolidator did not emit tool ${MERGE_TOOL_NAME}`, {
+function invalidMergeResponse(error: unknown): unknown {
+  if (isStructuredToolCallError(error, "missing_tool_call")) {
+    return new StorageError(`Consolidator did not emit tool ${MERGE_TOOL_NAME}`, {
       code: "CONSOLIDATOR_INVALID",
     });
   }
 
-  return mergeResponseSchema.parse(call.input);
+  if (
+    isStructuredToolCallError(error, "invalid_payload") ||
+    isStructuredToolCallError(error, "llm_failed")
+  ) {
+    return error.cause ?? error;
+  }
+
+  return error;
+}
+
+function parseMergeResponse(input: unknown) {
+  return mergeResponseSchema.parse(input);
 }
 
 function buildMergePrompt(
@@ -653,23 +663,35 @@ async function buildMergedEpisode(
   candidate: ConsolidationCandidate,
 ): Promise<{ episode: Episode; inheritedTier: EpisodeTier }> {
   const selfEntity = ctx.entityRepository.getSelf();
-  const merged = parseMergeResponse(
-    await llmClient.complete({
-      model: ctx.config.anthropic.models.background,
-      system:
-        "I merge overlapping autobiographical episodes in my own memory. I keep only grounded facts from the raw inputs.",
-      messages: [
-        {
-          role: "user",
-          content: buildMergePrompt(candidate, selfEntity),
+  let merged: z.infer<typeof mergeResponseSchema>;
+
+  try {
+    merged = (
+      await callStructuredTool({
+        llmClient,
+        request: {
+          model: ctx.config.anthropic.models.background,
+          system:
+            "I merge overlapping autobiographical episodes in my own memory. I keep only grounded facts from the raw inputs.",
+          messages: [
+            {
+              role: "user",
+              content: buildMergePrompt(candidate, selfEntity),
+            },
+          ],
+          tools: [MERGE_TOOL],
+          tool_choice: { type: "tool", name: MERGE_TOOL_NAME },
+          max_tokens: 6_000,
+          budget: "offline-consolidator",
         },
-      ],
-      tools: [MERGE_TOOL],
-      tool_choice: { type: "tool", name: MERGE_TOOL_NAME },
-      max_tokens: 6_000,
-      budget: "offline-consolidator",
-    }),
-  );
+        toolName: MERGE_TOOL_NAME,
+        parse: parseMergeResponse,
+      })
+    ).parsed;
+  } catch (error) {
+    throw invalidMergeResponse(error);
+  }
+
   const rawEpisodes = [...candidate.rawEpisodes].sort(compareEpisodesOldestFirst);
   const participants = uniqueStrings(rawEpisodes.flatMap((episode) => episode.participants));
   const sourceStreamIds = sourceStreamIdsForEpisodes(rawEpisodes);

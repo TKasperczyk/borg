@@ -30,7 +30,7 @@ import {
   createStreamEntryId,
 } from "../../util/ids.js";
 import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
-import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
+import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,

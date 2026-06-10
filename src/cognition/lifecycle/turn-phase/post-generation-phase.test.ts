@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_CONFIG } from "../../../config/index.js";
-import { sharedStateMigrations } from "../../../memory/decision-artifacts/index.js";
-import { SharedStateRepository } from "../../../memory/decision-artifacts/repository.js";
+import { sharedStateMigrations } from "../../../memory/shared-state/index.js";
+import { SharedStateRepository } from "../../../memory/shared-state/repository.js";
 import {
   TrainOfThoughtRepository,
   trainOfThoughtMigrations,

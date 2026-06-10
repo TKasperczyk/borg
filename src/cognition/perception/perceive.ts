@@ -2,7 +2,7 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import type { LLMClient } from "../../llm/index.js";
 import type { AffectiveExtractorDegradedReason } from "../../memory/affective/index.js";
 import type { SessionId } from "../../util/ids.js";
-import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
+import { NOOP_TRACER, type TurnTracer } from "../../tracing/tracer.js";
 import { perceptionResultSchema, type PerceptionResult } from "../types.js";
 import {
   createNeutralAffectiveSignal,

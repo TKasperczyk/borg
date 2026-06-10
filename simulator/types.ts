@@ -172,12 +172,12 @@ export type MetricsRow = {
   goal_promotion_classifications_per_turn: Record<GoalPromotionClassificationMetricKey, number>;
   goal_promotion_rejected_classification: number;
   goal_promotion_cap_rejections: number;
-  decision_artifact_semantic_revisions_attempted: number;
-  decision_artifact_semantic_revisions_completed_succeeded: number;
-  decision_artifact_semantic_nodes_marked_superseded: number;
-  decision_artifact_semantic_nodes_marked_contradicted: number;
-  decision_artifact_semantic_revision_cache_hits: number;
-  decision_artifact_semantic_revision_cache_size: number;
+  shared_state_semantic_revisions_attempted: number;
+  shared_state_semantic_revisions_completed_succeeded: number;
+  shared_state_semantic_nodes_marked_superseded: number;
+  shared_state_semantic_nodes_marked_contradicted: number;
+  shared_state_semantic_revision_cache_hits: number;
+  shared_state_semantic_revision_cache_size: number;
   embedding_cache_pending_overflow_total: number;
   ledger_reverse_scan_entries_total: number;
   ledger_reverse_scan_bytes_total: number;

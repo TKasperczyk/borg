@@ -1,7 +1,8 @@
 import { z } from "zod";
 
 import { episodeIdSchema } from "../../memory/episodic/index.js";
-import { semanticNodeIdSchema, type ReviewQueueItem } from "../../memory/semantic/index.js";
+import { semanticNodeIdSchema } from "../../memory/semantic/index.js";
+import { type ReviewQueueItem } from "../../memory/review-queue/index.js";
 import type { StreamEntry } from "../../stream/index.js";
 import { DEFAULT_SESSION_ID, type EpisodeId, type StreamEntryId } from "../../util/ids.js";
 import type { OfflineContext } from "../types.js";

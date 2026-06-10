@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { TurnOrigin } from "../cognition/cognitive-contracts.js";
+import type { TurnOrigin } from "../contracts/cognitive-contracts.js";
 import type { BorgRole } from "../memory/commitments/index.js";
 import type { SessionAudienceRole } from "../sessions/index.js";
 import { StreamWriter } from "../stream/index.js";

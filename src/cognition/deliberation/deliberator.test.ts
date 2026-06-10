@@ -12,7 +12,7 @@ import {
   EntityRepository,
   commitmentMigrations,
 } from "../../memory/commitments/index.js";
-import type { SharedStateArtifact } from "../../memory/decision-artifacts/index.js";
+import type { SharedStateArtifact } from "../../memory/shared-state/index.js";
 import type { OpenQuestion } from "../../memory/self/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
@@ -35,7 +35,7 @@ import { createEpisodeFixture, createRetrievalScoreFixture } from "../../offline
 import type { EvidenceLedger } from "../evidence-ledger/index.js";
 import { renderEvidenceLedger } from "../evidence-ledger/index.js";
 import type { CognitionThinkingConfig } from "./types.js";
-import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
+import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
 import { buildInvalidToolFinalizerRetryPromptSection, Deliberator } from "./deliberator.js";
 
 function makeRetrievedEpisode(id: string, score: number, tags: string[] = []): RetrievedEpisode {

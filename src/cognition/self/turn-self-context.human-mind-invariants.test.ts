@@ -15,9 +15,9 @@ import {
   createValueId,
   DEFAULT_SESSION_ID,
 } from "../../util/ids.js";
-import { memoryDisclosurePayloadFields } from "../disclosure-labels.js";
+import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import { buildBaseSystemPrompt } from "../deliberation/prompt/system-prompt.js";
-import { NOOP_TRACER } from "../tracing/tracer.js";
+import { NOOP_TRACER } from "../../tracing/tracer.js";
 import { TurnSelfContextBuilder } from "./turn-self-context.js";
 
 const embeddingClient: EmbeddingClient = {

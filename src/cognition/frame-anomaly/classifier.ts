@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMMessage,
   type LLMToolDefinition,
   toToolInputSchema,
@@ -14,17 +15,14 @@ import type { JsonValue } from "../../util/json-value.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import { isPlainRecord } from "../../util/guards.js";
 import type { ActiveParticipant } from "../participants.js";
-import { memoryDisclosurePayloadFields } from "../disclosure-labels.js";
+import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { FRAME_ANOMALY_SYSTEM_PROMPT } from "../prompts/frame-anomaly.js";
 import type { RecencyMessage } from "../recency/index.js";
-import { summarizeTraceValueShape, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
+import { summarizeTraceValueShape, toTraceJsonValue, type TurnTracer } from "../../tracing/tracer.js";
 import {
   summarizeToolResponseShape,
-  traceLlmCallError,
-  traceLlmCallResponse,
-  traceLlmCallStarted,
-} from "../tracing/llm-call-trace.js";
+} from "../../tracing/llm-call-trace.js";
 import {
   type FrameAnomalyClassification,
   type FrameAnomalyKind,
@@ -375,24 +373,15 @@ function traceFrameAnomalyClassified(options: {
   options.tracer.emit("frame_anomaly.completed", payload);
 }
 
-function parseResponse(
-  result: LLMCompleteResult,
+function parseToolInput(
+  input: unknown,
   traceOptions: {
     tracer?: TurnTracer;
     turnId?: string;
   } = {},
+  rawToolInput: unknown = input,
 ): FrameAnomalyClassification {
-  const call = result.tool_calls.find(
-    (toolCall) => toolCall.name === FRAME_ANOMALY_CLASSIFIER_TOOL_NAME,
-  );
-
-  if (call === undefined) {
-    throw new MissingFrameAnomalyToolCallError(
-      `Frame anomaly classifier did not emit ${FRAME_ANOMALY_CLASSIFIER_TOOL_NAME}`,
-    );
-  }
-
-  const normalized = normalizeFrameAnomalyToolInput(call.input);
+  const normalized = normalizeFrameAnomalyToolInput(input);
   const parsed = frameAnomalyClassificationSchema.safeParse(normalized.payload);
 
   if (!parsed.success) {
@@ -409,7 +398,7 @@ function parseResponse(
   traceFrameAnomalyClassified({
     ...traceOptions,
     classification,
-    rawToolInput: call.input,
+    rawToolInput,
     normalizations: normalized.normalizations,
   });
 
@@ -449,63 +438,60 @@ export class FrameAnomalyClassifier {
     const messages = buildFrameAnomalyMessages(input);
     const tools = [FRAME_ANOMALY_CLASSIFIER_TOOL];
 
-    traceLlmCallStarted({
-      tracer: this.options.tracer,
-      turnId: this.options.turnId,
-      sessionId: this.options.sessionId,
-      label: "frame_anomaly_classifier",
-      model: this.options.model,
-      systemPrompt: FRAME_ANOMALY_SYSTEM_PROMPT,
-      messages,
-      tools,
-    });
-
-    let response: LLMCompleteResult;
-
     try {
-      response = await this.options.llmClient.complete({
-        model: this.options.model,
-        system: FRAME_ANOMALY_SYSTEM_PROMPT,
-        messages,
-        tools,
-        tool_choice: { type: "tool", name: FRAME_ANOMALY_CLASSIFIER_TOOL_NAME },
-        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
-        budget: "frame-anomaly-classifier",
-      });
+      return (
+        await callStructuredTool({
+          llmClient: this.options.llmClient,
+          request: {
+            model: this.options.model,
+            system: FRAME_ANOMALY_SYSTEM_PROMPT,
+            messages,
+            tools,
+            tool_choice: { type: "tool", name: FRAME_ANOMALY_CLASSIFIER_TOOL_NAME },
+            max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
+            budget: "frame-anomaly-classifier",
+          },
+          toolName: FRAME_ANOMALY_CLASSIFIER_TOOL_NAME,
+          parse: (input) =>
+            parseToolInput(
+              input,
+              {
+                tracer: this.options.tracer,
+                turnId: this.options.turnId,
+              },
+              input,
+            ),
+          trace: {
+            tracer: this.options.tracer,
+            turnId: this.options.turnId,
+            sessionId: this.options.sessionId,
+            label: "frame_anomaly_classifier",
+            systemPrompt: FRAME_ANOMALY_SYSTEM_PROMPT,
+            messages,
+            tools,
+            responseShape: summarizeToolResponseShape,
+          },
+        })
+      ).parsed;
     } catch (error) {
-      traceLlmCallError({
-        tracer: this.options.tracer,
-        turnId: this.options.turnId,
-        sessionId: this.options.sessionId,
-        label: "frame_anomaly_classifier",
-        error,
-      });
+      if (isStructuredToolCallError(error, "missing_tool_call")) {
+        return this.degraded(
+          "missing_tool_call",
+          new MissingFrameAnomalyToolCallError(
+            `Frame anomaly classifier did not emit ${FRAME_ANOMALY_CLASSIFIER_TOOL_NAME}`,
+          ),
+        );
+      }
 
-      return this.degraded("llm_failed", error);
-    }
-
-    traceLlmCallResponse({
-      tracer: this.options.tracer,
-      turnId: this.options.turnId,
-      sessionId: this.options.sessionId,
-      label: "frame_anomaly_classifier",
-      response,
-      responseShape: summarizeToolResponseShape(response),
-    });
-
-    try {
-      return parseResponse(response, {
-        tracer: this.options.tracer,
-        turnId: this.options.turnId,
-      });
-    } catch (error) {
       return this.degraded(
         error instanceof MissingFrameAnomalyToolCallError
           ? "missing_tool_call"
-          : error instanceof z.ZodError || error instanceof InvalidFrameAnomalyPayloadError
+          : isStructuredToolCallError(error, "invalid_payload") ||
+              error instanceof z.ZodError ||
+              error instanceof InvalidFrameAnomalyPayloadError
             ? "invalid_payload"
             : "llm_failed",
-        error,
+        isStructuredToolCallError(error) ? (error.cause ?? error) : error,
       );
     }
   }

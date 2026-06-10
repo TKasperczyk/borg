@@ -1,12 +1,13 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import {
   publicMemoryDisclosureLabel,
   relationshipPrivateMemoryDisclosureLabel,
@@ -40,7 +41,7 @@ import {
   type CreatorDirectiveReconciliationReviewRefs,
   type CreatorDirectiveReconciliationSubkind,
   type CreatorDirectiveScopeEquivalenceSnapshot,
-} from "../../memory/semantic/index.js";
+} from "../../memory/review-queue/index.js";
 import { sortStrings } from "../../util/collections.js";
 import { BudgetExceededError, LLMError, StorageError } from "../../util/errors.js";
 import type { EntityId } from "../../util/ids.js";
@@ -437,16 +438,10 @@ function invalidReconciliationResponse(message: string, cause?: unknown): LLMErr
 }
 
 function parseReconciliationResponse(
-  result: LLMCompleteResult,
+  input: unknown,
   family: DirectiveFamily,
 ): CreatorDirectiveReconciliationJudgment[] {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === TOOL_NAME);
-
-  if (call === undefined) {
-    throw invalidReconciliationResponse(`Directive reconciler did not emit tool ${TOOL_NAME}`);
-  }
-
-  const parsed = reconciliationToolInputSchema.safeParse(call.input);
+  const parsed = reconciliationToolInputSchema.safeParse(input);
 
   if (!parsed.success) {
     throw invalidReconciliationResponse(
@@ -487,29 +482,44 @@ function parseReconciliationResponse(
   });
 }
 
+function structuredReconciliationError(error: unknown): unknown {
+  if (isStructuredToolCallError(error, "missing_tool_call")) {
+    return invalidReconciliationResponse(`Directive reconciler did not emit tool ${TOOL_NAME}`);
+  }
+
+  return isStructuredToolCallError(error) ? (error.cause ?? error) : error;
+}
+
 async function callReconciler(input: {
   ctx: OfflineContext;
   llmClient: LLMClient;
   family: DirectiveFamily;
   repairInstruction?: string;
-}): Promise<LLMCompleteResult> {
-  return input.llmClient.complete({
-    model: input.ctx.config.anthropic.models.background,
-    system: RECONCILER_SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: buildPromptPayload({
-          family: input.family,
-          repairInstruction: input.repairInstruction,
-        }),
+}): Promise<CreatorDirectiveReconciliationJudgment[]> {
+  return (
+    await callStructuredTool({
+      llmClient: input.llmClient,
+      request: {
+        model: input.ctx.config.anthropic.models.background,
+        system: RECONCILER_SYSTEM_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: buildPromptPayload({
+              family: input.family,
+              repairInstruction: input.repairInstruction,
+            }),
+          },
+        ],
+        tools: [DIRECTIVE_RECONCILIATION_TOOL],
+        tool_choice: { type: "tool", name: TOOL_NAME },
+        max_tokens: MAX_RECONCILIATION_OUTPUT_TOKENS,
+        budget: LLM_BUDGET_LABEL,
       },
-    ],
-    tools: [DIRECTIVE_RECONCILIATION_TOOL],
-    tool_choice: { type: "tool", name: TOOL_NAME },
-    max_tokens: MAX_RECONCILIATION_OUTPUT_TOKENS,
-    budget: LLM_BUDGET_LABEL,
-  });
+      toolName: TOOL_NAME,
+      parse: (toolInput) => parseReconciliationResponse(toolInput, input.family),
+    })
+  ).parsed;
 }
 
 async function judgeFamily(input: {
@@ -517,19 +527,29 @@ async function judgeFamily(input: {
   llmClient: LLMClient;
   family: DirectiveFamily;
 }): Promise<CreatorDirectiveReconciliationJudgment[]> {
-  const response = await callReconciler(input);
-
   try {
-    return parseReconciliationResponse(response, input.family);
+    return await callReconciler(input);
   } catch (error) {
-    const repairResponse = await callReconciler({
-      ...input,
-      repairInstruction: `Your previous tool payload was structurally invalid: ${parseErrorMessage(
-        error,
-      )}. Emit a corrected ${TOOL_NAME} payload using only directive ids from this family.`,
-    });
+    if (error instanceof BudgetExceededError) {
+      throw error;
+    }
 
-    return parseReconciliationResponse(repairResponse, input.family);
+    if (isStructuredToolCallError(error, "llm_failed")) {
+      throw error.cause ?? error;
+    }
+
+    const parseError = structuredReconciliationError(error);
+
+    try {
+      return await callReconciler({
+        ...input,
+        repairInstruction: `Your previous tool payload was structurally invalid: ${parseErrorMessage(
+          parseError,
+        )}. Emit a corrected ${TOOL_NAME} payload using only directive ids from this family.`,
+      });
+    } catch (repairError) {
+      throw structuredReconciliationError(repairError);
+    }
   }
 }
 

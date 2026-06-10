@@ -5,7 +5,7 @@ import type { ScheduledWakesRepository } from "../autonomy/index.js";
 import {
   commitmentMemoryDisclosureLabel,
   identityEventMemoryDisclosureLabel,
-} from "../cognition/disclosure-labels.js";
+} from "../memory/common/disclosure-serializers.js";
 import type { CommitmentRepository } from "../memory/commitments/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";

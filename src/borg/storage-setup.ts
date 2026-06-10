@@ -16,7 +16,7 @@ import { affectiveMigrations } from "../memory/affective/index.js";
 import { activityMigrations } from "../memory/activity/index.js";
 import { commitmentMigrations } from "../memory/commitments/index.js";
 import { creatorDirectiveMigrations } from "../memory/creator-directives/index.js";
-import { sharedStateMigrations } from "../memory/decision-artifacts/index.js";
+import { sharedStateMigrations } from "../memory/shared-state/index.js";
 import { createEpisodesTableSchema, episodicMigrations } from "../memory/episodic/index.js";
 import { identityMigrations } from "../memory/identity/index.js";
 import { createSkillsTableSchema, proceduralMigrations } from "../memory/procedural/index.js";

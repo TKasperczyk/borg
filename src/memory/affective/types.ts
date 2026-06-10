@@ -20,6 +20,9 @@ export const DOMINANT_EMOTIONS = [
   "neutral",
 ] as const;
 
+// Tunes when mood signals are active enough to affect retrieval ranking.
+export const MOOD_ACTIVITY_THRESHOLD = 0.3;
+
 export const dominantEmotionSchema = z.enum(DOMINANT_EMOTIONS);
 
 export const affectiveSignalSchema = z.object({

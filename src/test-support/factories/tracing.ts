@@ -2,7 +2,7 @@ import type {
   TurnTraceData,
   TurnTraceEventName,
   TurnTracer,
-} from "../../cognition/tracing/tracer.js";
+} from "../../tracing/tracer.js";
 
 export type TestTurnTraceRecorder = TurnTracer & {
   events: Array<{ event: TurnTraceEventName; data: TurnTraceData }>;

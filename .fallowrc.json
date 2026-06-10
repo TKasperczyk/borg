@@ -55,7 +55,7 @@
           "src/auth/**",
           "src/sessions/**",
           "src/attachments/**",
-          "src/cognition/tracing/**"
+          "src/tracing/**"
         ]
       },
       {
@@ -73,12 +73,9 @@
       {
         "name": "shared_contracts",
         "patterns": [
-          // deferred relocation: belongs in a lower shared disclosure layer,
-          // tracked for a future move.
-          "src/cognition/disclosure-labels.ts",
           // shared contract: cognitive mode, turn origin, perception, intent,
           // temporal cue, and attention-weight domain schemas.
-          "src/cognition/cognitive-contracts.ts",
+          "src/contracts/**",
           // shared contract: evidence-ledger source schema, section constants,
           // and result types.
           "src/cognition/evidence-ledger/types.ts",

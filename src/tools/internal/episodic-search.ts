@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import {
   MEMORY_DISCLOSURE_CLASSES,
   memoryDisclosureLabelFromEpisodeAccess,

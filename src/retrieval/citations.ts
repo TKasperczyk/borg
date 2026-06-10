@@ -26,7 +26,7 @@ import {
   type SessionId,
   type StreamEntryId,
 } from "../util/ids.js";
-import { NOOP_TRACER, type TurnTracer } from "../cognition/tracing/tracer.js";
+import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
 
 const INDEXED_CITATION_READ_CHUNK_SIZE_BYTES = 64 * 1024;
 const NEWLINE_BYTE = 0x0a;

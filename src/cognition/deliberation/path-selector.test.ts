@@ -5,7 +5,7 @@ import type {
   RetrievedContradictionRouting,
   RetrievedEpisode,
 } from "../../retrieval/index.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 
 import { ContradictionRoutingCooldown } from "./contradiction-routing-cooldown.js";
 import { chooseDeliberationPath } from "./path-selector.js";

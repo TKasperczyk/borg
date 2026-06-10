@@ -6,7 +6,7 @@ import type { BorgRole, CommitmentRecord, EntityRecord } from "../../memory/comm
 import type {
   OpenCommitmentReconciliationStatus,
   ReviewQueueItem,
-} from "../../memory/semantic/index.js";
+} from "../../memory/review-queue/index.js";
 import type { SkillSelectionResult } from "../../memory/procedural/index.js";
 import type { SocialProfile } from "../../memory/social/index.js";
 import { createWorkingMemory } from "../../memory/working/index.js";

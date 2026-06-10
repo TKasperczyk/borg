@@ -10,7 +10,7 @@ import { memoryDisclosureLabelMetadataSchema } from "../../memory/common/disclos
 import {
   identityEventMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
-} from "../../cognition/disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import type { MemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import type { ToolDefinition, ToolInvocationContext } from "../dispatcher.js";
 

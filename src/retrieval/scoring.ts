@@ -1,7 +1,7 @@
 /* Episodic scoring and result construction for retrieval. */
 import { computeGoalRelevance, computeValueAlignment } from "./attention-relevance.js";
-import type { AttentionWeights } from "../cognition/cognitive-contracts.js";
-import type { MoodState } from "../memory/affective/index.js";
+import type { AttentionWeights } from "../contracts/cognitive-contracts.js";
+import { MOOD_ACTIVITY_THRESHOLD, type MoodState } from "../memory/affective/index.js";
 import { applyEpisodeDecay, type DecayOptions } from "../memory/episodic/decay.js";
 import { computeEpisodeHeat, RETRIEVAL_HEAT_CAP } from "../memory/episodic/heat.js";
 import type { Episode, EpisodeSearchCandidate } from "../memory/episodic/types.js";
@@ -30,6 +30,27 @@ export type ScoreWeights = {
   similarity: number;
   salience: number;
 };
+
+// Tunes the legacy/base retrieval blend between vector similarity and decayed salience.
+export const DEFAULT_EPISODE_SCORE_WEIGHTS: ScoreWeights = {
+  similarity: 0.7,
+  salience: 0.3,
+};
+
+// Tunes how much active values can lift base-path episode scores.
+const BASE_VALUE_ALIGNMENT_WEIGHT = 0.15;
+
+// Tunes how much exact entity mentions can lift base-path episode scores.
+const BASE_ENTITY_RELEVANCE_WEIGHT = 0.15;
+
+// Tunes the trust cutoff for the higher social relevance bonus.
+const SOCIAL_RELEVANCE_HIGH_TRUST_THRESHOLD = 0.7;
+
+// Tunes social relevance when the audience is a trusted participant in the episode.
+const SOCIAL_RELEVANCE_HIGH_TRUST_SCORE = 0.25;
+
+// Tunes social relevance when the audience is a participant without high trust.
+const SOCIAL_RELEVANCE_DEFAULT_SCORE = 0.2;
 
 export type RetrievalMoodState = Pick<MoodState, "valence" | "arousal">;
 
@@ -87,6 +108,23 @@ export type EpisodeScore = {
   score: number;
 };
 
+type EpisodeScoreFormulaSignals = Omit<EpisodeScore, "score"> & {
+  similarity: number;
+};
+
+type EpisodeScoreFormulaWeights = {
+  similarity: number;
+  salience: number;
+  goalRelevance: number;
+  valueAlignment: number;
+  mood: number;
+  social: number;
+  entity: number;
+  time: number;
+  heat: number;
+  suppressionPenalty: number;
+};
+
 function defaultDecayOptions(nowMs: number): DecayOptions {
   return {
     nowMs,
@@ -115,6 +153,58 @@ function normalizeAttentionWeights(weights: AttentionWeights): AttentionWeights 
   };
 }
 
+// Used by live turns via attention modes; preserves semantic as independent similarity/salience weights.
+function attentionScoreFormulaWeights(weights: AttentionWeights): EpisodeScoreFormulaWeights {
+  const normalized = normalizeAttentionWeights(weights);
+
+  return {
+    similarity: normalized.semantic,
+    salience: 1 - normalized.semantic,
+    goalRelevance: normalized.goal_relevance,
+    valueAlignment: normalized.value_alignment,
+    mood: normalized.mood,
+    social: normalized.social,
+    entity: normalized.entity,
+    time: normalized.time,
+    heat: normalized.heat,
+    suppressionPenalty: normalized.suppression_penalty,
+  };
+}
+
+// Used by non-turn facade/disclosure/export search; preserves independent scoreWeights and implicit base bonuses.
+function baseScoreFormulaWeights(weights: ScoreWeights): EpisodeScoreFormulaWeights {
+  return {
+    similarity: weights.similarity,
+    salience: weights.salience,
+    goalRelevance: 0,
+    valueAlignment: BASE_VALUE_ALIGNMENT_WEIGHT,
+    mood: 0,
+    social: 0,
+    entity: BASE_ENTITY_RELEVANCE_WEIGHT,
+    time: 0,
+    heat: 0,
+    suppressionPenalty: 0,
+  };
+}
+
+function computeEpisodeScoreFormula(
+  signals: EpisodeScoreFormulaSignals,
+  weights: EpisodeScoreFormulaWeights,
+): number {
+  return (
+    weights.similarity * signals.similarity +
+    weights.salience * signals.decayedSalience +
+    weights.goalRelevance * signals.goalRelevance +
+    weights.valueAlignment * signals.valueAlignment +
+    weights.mood * signals.moodBoost +
+    weights.social * signals.socialRelevance +
+    weights.entity * signals.entityRelevance +
+    weights.time * signals.timeRelevance +
+    weights.heat * normalizeHeat(signals.heat) -
+    weights.suppressionPenalty * signals.suppressionPenalty
+  );
+}
+
 function normalizeTerm(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -130,7 +220,7 @@ function computeMoodBoost(
   if (
     moodState === null ||
     moodState === undefined ||
-    Math.abs(moodState.valence) + Math.abs(moodState.arousal) <= 0.3 ||
+    Math.abs(moodState.valence) + Math.abs(moodState.arousal) <= MOOD_ACTIVITY_THRESHOLD ||
     episode.emotional_arc === null
   ) {
     return 0;
@@ -175,9 +265,9 @@ function computeSocialRelevance(
       if (resolvedParticipantEntityId === audienceEntityId) {
         return audienceProfile !== null &&
           audienceProfile !== undefined &&
-          audienceProfile.trust > 0.7
-          ? 0.25
-          : 0.2;
+          audienceProfile.trust > SOCIAL_RELEVANCE_HIGH_TRUST_THRESHOLD
+          ? SOCIAL_RELEVANCE_HIGH_TRUST_SCORE
+          : SOCIAL_RELEVANCE_DEFAULT_SCORE;
       }
 
       if (resolvedParticipantEntityId === null || resolvedParticipantEntityId === undefined) {
@@ -204,9 +294,11 @@ function computeSocialRelevance(
     return 0;
   }
 
-  return audienceProfile !== null && audienceProfile !== undefined && audienceProfile.trust > 0.7
-    ? 0.25
-    : 0.2;
+  return audienceProfile !== null &&
+    audienceProfile !== undefined &&
+    audienceProfile.trust > SOCIAL_RELEVANCE_HIGH_TRUST_THRESHOLD
+    ? SOCIAL_RELEVANCE_HIGH_TRUST_SCORE
+    : SOCIAL_RELEVANCE_DEFAULT_SCORE;
 }
 
 function computeExactEntityMentionBonus(
@@ -281,38 +373,12 @@ export function scoreCandidate(
   );
   const suppressionPenalty =
     searchOptions.suppressionSet?.isSuppressed(candidate.episode.id) === true ? 1 : 0;
-
-  if (searchOptions.attentionWeights !== undefined) {
-    const weights = normalizeAttentionWeights(searchOptions.attentionWeights);
-    const semanticScore =
-      weights.semantic * candidate.similarity + (1 - weights.semantic) * decay.decayedSalience;
-
-    return {
-      decayedSalience: decay.decayedSalience,
-      heat,
-      goalRelevance,
-      valueAlignment,
-      timeRelevance,
-      moodBoost,
-      socialRelevance,
-      entityRelevance,
-      suppressionPenalty,
-      score:
-        semanticScore +
-        weights.goal_relevance * goalRelevance +
-        weights.value_alignment * valueAlignment +
-        weights.mood * moodBoost +
-        weights.social * socialRelevance +
-        weights.entity * entityRelevance +
-        weights.time * timeRelevance +
-        weights.heat * normalizeHeat(heat) -
-        weights.suppression_penalty * suppressionPenalty,
-    };
-  }
-
-  const weights = searchOptions.scoreWeights ?? defaults.scoreWeights;
-
-  return {
+  const weights =
+    searchOptions.attentionWeights === undefined
+      ? baseScoreFormulaWeights(searchOptions.scoreWeights ?? defaults.scoreWeights)
+      : attentionScoreFormulaWeights(searchOptions.attentionWeights);
+  const signals = {
+    similarity: candidate.similarity,
     decayedSalience: decay.decayedSalience,
     heat,
     goalRelevance,
@@ -322,11 +388,19 @@ export function scoreCandidate(
     socialRelevance,
     entityRelevance,
     suppressionPenalty,
-    score:
-      weights.similarity * candidate.similarity +
-      weights.salience * decay.decayedSalience +
-      valueAlignment * 0.15 +
-      entityRelevance * 0.15,
+  };
+
+  return {
+    decayedSalience: signals.decayedSalience,
+    heat: signals.heat,
+    goalRelevance: signals.goalRelevance,
+    valueAlignment: signals.valueAlignment,
+    timeRelevance: signals.timeRelevance,
+    moodBoost: signals.moodBoost,
+    socialRelevance: signals.socialRelevance,
+    entityRelevance: signals.entityRelevance,
+    suppressionPenalty: signals.suppressionPenalty,
+    score: computeEpisodeScoreFormula(signals, weights),
   };
 }
 

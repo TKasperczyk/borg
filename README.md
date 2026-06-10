@@ -97,6 +97,13 @@ Commitments are injected into the prompt as context, not bolted on as a filter
 -- the agent knows its promises before it speaks. A post-hoc check with revision
 catches real violations without misfiring on compliant refusals.
 
+Several newer pieces are load-bearing: the Evidence Ledger turns retrieved
+records into cited prompt evidence; Shared State keeps compact durable audience
+state across turns; the prompt-surface registry pins fixture-backed prompt
+contracts; `callStructuredTool` centralizes structured LLM tool calls; and the
+observability taxonomy keeps trace names stable while old persisted traces stay
+readable.
+
 > The full turn lifecycle -- catch-up, audience resolution, perception,
 > retrieval, evidence ledger, deliberation, guards, reflection -- is documented
 > in [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -125,10 +132,12 @@ import { Borg } from "borg";
 
 const borg = await Borg.open();
 
-const { text } = await borg.turn({
+const { response } = await borg.turn({
   userMessage: "I take my coffee black -- remember that.",
   audience: "participant",
 });
+
+console.log(response);
 
 await borg.close();
 ```
@@ -202,18 +211,19 @@ borg turn "<message>" [--session] [--audience] [--stakes low|medium|high]
 borg workmem show|clear [--session]
 
 borg semantic node add|show|search|list
-borg semantic edge add|list
+borg semantic edge add|list|invalidate
 borg semantic walk <node-id> [--depth 2]
 borg commitment add|list|revoke [--audience]
 borg review list|resolve
 borg correction forget|why|correct|about-me|events
 
-borg dream [--process ...] [--dry-run] [--budget N] [--output plan.json]
-borg dream {consolidate,reflect,curate,oversee,ruminate,narrate}
+borg dream [--process <names>] [--dry-run] [--budget N] [--output plan.json]
+borg dream {consolidate,reflect,curate,oversee,ruminate,narrate} [--dry-run]
+borg dream ruminate [--max-questions N]
 borg dream apply --plan plan.json
 borg audit list|revert
 borg maintenance tick [--cadence light|heavy]
-borg trace <action> [path]
+borg trace inspect <path>
 
 borg period current|list|open|close|show
 borg growth list|add
@@ -258,9 +268,9 @@ local sessions. It is not part of the shipped `borg` CLI.
 ## Status
 
 > [!WARNING]
-> Under active development and not yet used in anger. No stability guarantees --
-> schemas, storage layout, and the public API may still shift as the library
-> gets exercised.
+> Under active development and already exercised in a live long-running
+> deployment. No stability guarantees -- schemas, storage layout, and the
+> public API may still shift as the library is hardened.
 
 ## License
 

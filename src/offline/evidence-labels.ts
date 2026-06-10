@@ -1,4 +1,4 @@
-import { memoryDisclosurePayloadFields } from "../cognition/disclosure-labels.js";
+import { memoryDisclosurePayloadFields } from "../memory/common/disclosure-serializers.js";
 import type { EpisodicRepository, Episode } from "../memory/episodic/index.js";
 import {
   memoryDisclosureLabelFromEpisodeAccess,

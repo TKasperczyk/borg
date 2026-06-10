@@ -25,7 +25,7 @@ import type { CognitiveMode } from "../../types.js";
 import type { DiscourseStopProvenance, WorkingMemory } from "../../../memory/working/index.js";
 import type { ActivityEventStatus } from "../../../memory/activity/index.js";
 import { CognitionError } from "../../../util/errors.js";
-import type { SharedStateEntry } from "../../../memory/decision-artifacts/index.js";
+import type { SharedStateEntry } from "../../../memory/shared-state/index.js";
 import type { OutboundDeliveryReceipt, OutboundDeliveryResult } from "../../../outbound/types.js";
 import {
   ACTION_ARCHIVE_ACTIVE_STATES,

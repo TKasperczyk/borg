@@ -7,6 +7,7 @@ export { affectiveMigrations } from "./migrations.js";
 export { MoodRepository, type MoodRepositoryOptions } from "./mood.js";
 export {
   DOMINANT_EMOTIONS,
+  MOOD_ACTIVITY_THRESHOLD,
   affectiveSignalSchema,
   createNeutralAffectiveSignal,
   createNeutralEmotionalArc,

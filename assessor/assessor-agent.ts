@@ -16,7 +16,7 @@ import {
   type LLMToolResultBlock,
 } from "../src/llm/index.js";
 import { getFreshCredentials } from "../src/auth/claude-oauth.js";
-import { TRACE_TAXONOMY_PHASES_WITH_OTHER } from "../src/cognition/tracing/taxonomy.js";
+import { TRACE_TAXONOMY_PHASES_WITH_OTHER } from "../src/tracing/taxonomy.js";
 
 import type { ChatWithBorgResult } from "./borg-transport.js";
 import type {

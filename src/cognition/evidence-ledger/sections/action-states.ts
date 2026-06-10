@@ -25,7 +25,7 @@ import {
 import { ACTION_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets.js";
 import { persistenceClassFromProvenance } from "../scope-resolver.js";
 import { combineMemoryDisclosureLabels } from "../../../retrieval/index.js";
-import { actionMemoryDisclosureLabel } from "../../disclosure-labels.js";
+import { actionMemoryDisclosureLabel } from "../../../memory/common/disclosure-serializers.js";
 
 export async function addActionStatesSection(context: BuilderSectionContext): Promise<void> {
   const sourceRecordLimit = clampPositiveIntegerOrFallback(

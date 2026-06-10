@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMMessage,
   type LLMToolDefinition,
   toToolInputSchema,
@@ -33,19 +34,13 @@ import {
   commitmentMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
   relationalSlotMemoryDisclosureLabel,
-} from "../disclosure-labels.js";
+} from "../../memory/common/disclosure-serializers.js";
 import {
   relationshipClaimSchema,
   type RelationshipClaim,
 } from "../../memory/common/relationship-claims.js";
 import type { RecencyMessage } from "../recency/index.js";
-import {
-  summarizeToolResponseShape,
-  traceLlmCallError,
-  traceLlmCallResponse,
-  traceLlmCallStarted,
-} from "../tracing/llm-call-trace.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import {
   normalizeCommitmentClassification,
   type ClassificationNormalizationResult,
@@ -431,20 +426,10 @@ function toExtractionResult(
 }
 
 function parseResponse(
-  result: LLMCompleteResult,
+  input: unknown,
   traceOptions: Pick<CorrectivePreferenceExtractorOptions, "tracer" | "turnId" | "sessionId"> = {},
 ): CorrectivePreferenceExtractionResult {
-  const call = result.tool_calls.find(
-    (toolCall) => toolCall.name === CORRECTIVE_PREFERENCE_TOOL_NAME,
-  );
-
-  if (call === undefined) {
-    throw new MissingCorrectivePreferenceToolCallError(
-      `Corrective preference extractor did not emit ${CORRECTIVE_PREFERENCE_TOOL_NAME}`,
-    );
-  }
-
-  const parsed = correctivePreferenceSchema.safeParse(call.input);
+  const parsed = correctivePreferenceSchema.safeParse(input);
 
   if (!parsed.success) {
     throw parsed.error;
@@ -569,71 +554,61 @@ export class CorrectivePreferenceExtractor {
     const messages = buildCorrectivePreferenceMessages(input);
     const tools = [CORRECTIVE_PREFERENCE_TOOL];
 
-    traceLlmCallStarted({
-      tracer: this.options.tracer,
-      turnId: this.options.turnId,
-      sessionId: this.options.sessionId,
-      label: "corrective_preference_extractor",
-      model: this.options.model,
-      systemPrompt: CORRECTIVE_PREFERENCE_SYSTEM_PROMPT,
-      messages,
-      tools,
-    });
-
-    let response: LLMCompleteResult;
-
     try {
-      response = await this.options.llmClient.complete({
-        model: this.options.model,
-        system: CORRECTIVE_PREFERENCE_SYSTEM_PROMPT,
-        messages,
-        tools,
-        tool_choice: { type: "tool", name: CORRECTIVE_PREFERENCE_TOOL_NAME },
-        max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
-        budget: "corrective-preference-extractor",
+      const result = await callStructuredTool({
+        llmClient: this.options.llmClient,
+        request: {
+          model: this.options.model,
+          system: CORRECTIVE_PREFERENCE_SYSTEM_PROMPT,
+          messages,
+          tools,
+          tool_choice: { type: "tool", name: CORRECTIVE_PREFERENCE_TOOL_NAME },
+          max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
+          budget: "corrective-preference-extractor",
+        },
+        toolName: CORRECTIVE_PREFERENCE_TOOL_NAME,
+        parse: (toolInput) =>
+          parseResponse(toolInput, {
+            tracer: this.options.tracer,
+            turnId: this.options.turnId,
+            sessionId: this.options.sessionId,
+          }),
+        trace: {
+          tracer: this.options.tracer,
+          turnId: this.options.turnId,
+          sessionId: this.options.sessionId,
+          label: "corrective_preference_extractor",
+          systemPrompt: CORRECTIVE_PREFERENCE_SYSTEM_PROMPT,
+          messages,
+          tools,
+        },
       });
+
+      return result.parsed;
     } catch (error) {
-      traceLlmCallError({
-        tracer: this.options.tracer,
-        turnId: this.options.turnId,
-        sessionId: this.options.sessionId,
-        label: "corrective_preference_extractor",
-        error,
-      });
+      if (!isStructuredToolCallError(error) || error.kind === "llm_failed") {
+        return (
+          (await this.degraded(
+            "llm_failed",
+            isStructuredToolCallError(error, "llm_failed") ? (error.cause ?? error) : error,
+          )) ?? {
+            preference: null,
+            retirement: null,
+            slot_negations: [],
+          }
+        );
+      }
 
-      return (
-        (await this.degraded("llm_failed", error)) ?? {
-          preference: null,
-          retirement: null,
-          slot_negations: [],
-        }
-      );
-    }
-
-    traceLlmCallResponse({
-      tracer: this.options.tracer,
-      turnId: this.options.turnId,
-      sessionId: this.options.sessionId,
-      label: "corrective_preference_extractor",
-      response,
-      responseShape: summarizeToolResponseShape(response),
-    });
-
-    try {
-      return parseResponse(response, {
-        tracer: this.options.tracer,
-        turnId: this.options.turnId,
-        sessionId: this.options.sessionId,
-      });
-    } catch (error) {
+      const degradedError =
+        error.kind === "missing_tool_call"
+          ? new MissingCorrectivePreferenceToolCallError(
+              `Corrective preference extractor did not emit ${CORRECTIVE_PREFERENCE_TOOL_NAME}`,
+            )
+          : (error.cause ?? error);
       await this.degraded(
-        error instanceof MissingCorrectivePreferenceToolCallError
-          ? "missing_tool_call"
-          : error instanceof z.ZodError
-            ? "invalid_payload"
-            : "llm_failed",
-        error,
-        { stopReason: response.stop_reason },
+        error.kind === "missing_tool_call" ? "missing_tool_call" : "invalid_payload",
+        degradedError,
+        { stopReason: error.stopReason },
       );
       return {
         preference: null,

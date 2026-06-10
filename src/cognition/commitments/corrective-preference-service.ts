@@ -25,7 +25,7 @@ import {
   type SessionId,
   type StreamEntryId,
 } from "../../util/ids.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import { isCreatorInOperatorContext } from "../authority.js";
 import type { ParticipantRoster } from "../perception/index.js";
 import { checkRelationshipClaimGrounding } from "../../memory/common/relationship-claim-grounding.js";

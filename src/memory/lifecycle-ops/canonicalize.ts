@@ -1,6 +1,6 @@
 import type { ActionId, CommitmentId, GoalId, OpenQuestionId } from "../../util/ids.js";
 import type { ActionRecord } from "../actions/types.js";
-import type { SharedStateEntry } from "../decision-artifacts/types.js";
+import type { SharedStateEntry } from "../shared-state/types.js";
 import type { Provenance } from "../common/provenance.js";
 import type { GoalRecord } from "../self/types.js";
 import type { GoalsRepository } from "../self/goals-repository.js";
@@ -18,7 +18,7 @@ import type { LifecycleOperationResult, LifecycleTracer } from "./types.js";
 
 export const SHARED_STATE_RECONCILIATION_PROVENANCE = {
   kind: "online",
-  process: "decision_artifact_reconciliation",
+  process: "shared_state_reconciliation",
 } as const satisfies Provenance;
 
 const SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPE_SET = new Set<CommitmentType>(
@@ -26,7 +26,7 @@ const SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPE_SET = new Set<CommitmentType
 );
 
 export function isTerminalGoalStatus(status: string): boolean {
-  return status === "done" || status === "abandoned" || status === "superseded";
+  return status === "done" || status === "abandoned";
 }
 
 export function isTerminalCommitment(commitment: CommitmentRecord, nowMs: number): boolean {

@@ -1,5 +1,5 @@
 import type { GoalId } from "../../util/ids.js";
-import type { SharedStateEntry } from "../../memory/decision-artifacts/index.js";
+import type { SharedStateEntry } from "../../memory/shared-state/index.js";
 import type { GoalsRepository } from "../../memory/self/index.js";
 import {
   canonicalizeGoalWithSharedStateEntry,

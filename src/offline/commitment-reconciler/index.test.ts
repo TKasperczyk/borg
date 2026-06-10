@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { LLMCompleteOptions } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
-import type { CommitmentReconciliationReviewRefs } from "../../memory/semantic/index.js";
+import type { CommitmentReconciliationReviewRefs } from "../../memory/review-queue/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { createEntityId, createStreamEntryId } from "../../util/ids.js";
 import { createOfflineTestHarness, type OfflineTestHarness } from "../test-support.js";

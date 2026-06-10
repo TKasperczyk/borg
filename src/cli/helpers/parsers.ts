@@ -7,11 +7,13 @@ import {
   openQuestionStatusSchema,
 } from "../../memory/self/index.js";
 import {
-  reviewKindSchema,
-  reviewResolutionSchema,
   semanticNodeKindSchema,
   semanticRelationSchema,
 } from "../../memory/semantic/index.js";
+import {
+  reviewKindSchema,
+  reviewResolutionSchema,
+} from "../../memory/review-queue/index.js";
 import { OFFLINE_PROCESS_NAMES, type OfflineProcessName } from "../../offline/index.js";
 import { clamp } from "../../util/math.js";
 import { positiveIntegerValue } from "../../util/parse.js";

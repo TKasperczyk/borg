@@ -30,7 +30,7 @@ import type {
   RelationalSlot,
   RelationalSlotRepository,
 } from "../../memory/relational-slots/index.js";
-import type { ReviewQueueItem } from "../../memory/semantic/index.js";
+import type { ReviewQueueItem } from "../../memory/review-queue/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type {
   EvidenceItem,
@@ -54,10 +54,11 @@ import type { SharedStateRenderOptions, EvidenceLedger } from "../evidence-ledge
 import type { ActiveParticipant, ParticipantProfileContext } from "../participants.js";
 import type { ParticipantRoster } from "../perception/index.js";
 import type { RecencyMessage } from "../recency/index.js";
+import type { PromptSurfaceAdditionalSection } from "../prompts/prompt-surface-registry.js";
 import type { PromptKey } from "../prompts/registry.js";
 import type { SessionAudienceRole, SessionParticipationPolicy } from "../../sessions/index.js";
 import type { OperatorSessionSnapshot } from "../lifecycle/turn-phase/session-snapshot.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import type { IntentRecord, PerceptionResult, TurnOrigin } from "../types.js";
 import type { ContradictionRoutingCooldown } from "./contradiction-routing-cooldown.js";
 
@@ -299,7 +300,7 @@ export type DeliberationUsage = {
 };
 
 export type DeliberationRegenerationInput = {
-  additionalPromptSections: readonly (string | null)[];
+  additionalPromptSections: readonly PromptSurfaceAdditionalSection[];
 };
 
 export type CognitionThinkingConfig = {

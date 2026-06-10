@@ -1,12 +1,17 @@
 import { z } from "zod";
 
-import type { LLMCompleteResult } from "../../llm/index.js";
+import {
+  callStructuredTool,
+  isStructuredToolCallError,
+  type LLMCompleteResult,
+  type LLMMessage,
+} from "../../llm/index.js";
 import type {
   SharedStateArtifact,
   SharedStateEntry,
   SharedStateEntryKind,
   SharedStateOperation,
-} from "../../memory/decision-artifacts/index.js";
+} from "../../memory/shared-state/index.js";
 import { dedupePreservingOrder } from "../../util/collections.js";
 import { SystemClock } from "../../util/clock.js";
 import type { StreamEntryId } from "../../util/ids.js";
@@ -29,7 +34,11 @@ import {
   SHARED_STATE_TOOLS,
   type CompileSharedStateArtifactInput,
 } from "./schema.js";
-import { MAX_PATCH_OUTPUT_TOKENS, SHARED_STATE_TOOL_NAME } from "./constants.js";
+import {
+  MAX_PATCH_OUTPUT_TOKENS,
+  SHARED_STATE_ACCEPTED_TOOL_NAMES,
+  SHARED_STATE_TOOL_NAME,
+} from "./constants.js";
 import {
   type EmptyUpdateDrop,
   type EmitSharedStatePatch,
@@ -51,12 +60,7 @@ import {
   traceClaimUngrounded,
   traceReconciliationCompleted,
 } from "./compiler-io.js";
-import {
-  summarizeToolResponseShape,
-  traceLlmCallError,
-  traceLlmCallResponse,
-  traceLlmCallStarted,
-} from "../tracing/llm-call-trace.js";
+import { summarizeToolResponseShape } from "../../tracing/llm-call-trace.js";
 import {
   allowedCanonicalizationIds,
   dedupeCanonicalizesAcrossOperations,
@@ -600,6 +604,8 @@ export async function compileSharedStateArtifact(
   if (input.llmClient === undefined || input.model === undefined) {
     return degraded(input, "llm_unavailable");
   }
+  const llmClient = input.llmClient;
+  const model = input.model;
 
   if (input.repository === undefined) {
     return degraded(input, "repository_unavailable");
@@ -706,189 +712,67 @@ export async function compileSharedStateArtifact(
     traceEmptyUpdateDrops(input, normalizedPatch.emptyUpdateDrops);
   };
 
-  traceLlmCallStarted({
-    tracer: input.tracer,
-    turnId: input.turnId,
-    sessionId: input.sessionId,
-    label: "decision_artifact_compiler",
-    model: input.model,
-    systemPrompt,
-    messages,
-    tools,
-  });
+  const missingToolError = (): MissingSharedStateArtifactToolCallError =>
+    new MissingSharedStateArtifactToolCallError(
+      `Shared state compiler did not emit ${SHARED_STATE_TOOL_NAME}`,
+    );
+  const structuredToolErrorCause = (error: unknown): unknown => {
+    if (isStructuredToolCallError(error, "missing_tool_call")) {
+      return missingToolError();
+    }
 
-  let response: LLMCompleteResult;
-
-  try {
-    response = await input.llmClient.complete({
-      model: input.model,
-      system: systemPrompt,
-      messages,
-      tools,
-      tool_choice: { type: "tool", name: SHARED_STATE_TOOL_NAME },
-      max_tokens: MAX_PATCH_OUTPUT_TOKENS,
-      budget: "decision-artifact-compiler",
+    return isStructuredToolCallError(error) ? (error.cause ?? error) : error;
+  };
+  const structuredToolDegradedReason = (
+    error: unknown,
+  ): Extract<SharedStateCompileDegradedReason, "llm_failed" | "missing_tool_call" | "invalid_payload"> =>
+    isStructuredToolCallError(error, "missing_tool_call")
+      ? "missing_tool_call"
+      : isStructuredToolCallError(error, "invalid_payload")
+        ? "invalid_payload"
+        : "llm_failed";
+  const callCompilerTool = async (
+    toolMessages: readonly LLMMessage[],
+  ): Promise<{ response: LLMCompleteResult; parsed: EmitSharedStatePatch }> => {
+    const result = await callStructuredTool({
+      llmClient,
+      request: {
+        model,
+        system: systemPrompt,
+        messages: toolMessages,
+        tools,
+        tool_choice: { type: "tool", name: SHARED_STATE_TOOL_NAME },
+        max_tokens: MAX_PATCH_OUTPUT_TOKENS,
+        budget: "shared-state-compiler",
+      },
+      toolName: SHARED_STATE_TOOL_NAME,
+      acceptedToolNames: SHARED_STATE_ACCEPTED_TOOL_NAMES,
+      parse: parseResponse,
+      trace: {
+        tracer: input.tracer,
+        turnId: input.turnId,
+        sessionId: input.sessionId,
+        label: "shared_state_compiler",
+        systemPrompt,
+        messages: toolMessages,
+        tools,
+        responseShape: summarizeToolResponseShape,
+      },
     });
-  } catch (error) {
-    traceLlmCallError({
-      tracer: input.tracer,
-      turnId: input.turnId,
-      sessionId: input.sessionId,
-      label: "decision_artifact_compiler",
-      error,
-    });
-    traceCompileCompleted({
-      ...compileCompletedTraceBase,
-      operationCount: 0,
-      rejected: [],
-      applied: false,
-      artifact: previousArtifact,
-      prunedEntryCountThisTurn: 0,
-      supersededEntryCountThisTurn: 0,
-    });
 
-    return degraded(input, "llm_failed", error);
-  }
-
-  traceLlmCallResponse({
-    tracer: input.tracer,
-    turnId: input.turnId,
-    sessionId: input.sessionId,
-    label: "decision_artifact_compiler",
-    response,
-    responseShape: summarizeToolResponseShape(response),
-  });
+    return {
+      response: result.response,
+      parsed: result.parsed,
+    };
+  };
 
   let parsed: EmitSharedStatePatch | undefined;
   let repairAttempted = false;
 
   try {
-    parsed = parseResponse(response);
+    parsed = (await callCompilerTool(messages)).parsed;
   } catch (error) {
-    if (error instanceof z.ZodError) {
-      if (response.stop_reason === "max_tokens") {
-        traceCompileCompleted({
-          ...compileCompletedTraceBase,
-          operationCount: 0,
-          rejected: [],
-          applied: false,
-          artifact: previousArtifact,
-          prunedEntryCountThisTurn: 0,
-          supersededEntryCountThisTurn: 0,
-        });
-
-        return degraded(input, "invalid_payload", error);
-      }
-
-      traceCompileRepairAttempted({
-        tracer: input.tracer,
-        turnId: input.turnId,
-        audienceEntityId: input.audienceEntityId,
-        error,
-      });
-      repairAttempted = true;
-
-      const repairMessages = buildSharedStateArtifactMessages({
-        ...messageInput,
-        additionalPromptSections: [
-          `Your previous patch was invalid: ${errorMessage(error)}. Emit a corrected patch.`,
-        ],
-      });
-
-      traceLlmCallStarted({
-        tracer: input.tracer,
-        turnId: input.turnId,
-        sessionId: input.sessionId,
-        label: "decision_artifact_compiler",
-        model: input.model,
-        systemPrompt,
-        messages: repairMessages,
-        tools,
-      });
-
-      let repairResponse: LLMCompleteResult;
-
-      try {
-        repairResponse = await input.llmClient.complete({
-          model: input.model,
-          system: systemPrompt,
-          messages: repairMessages,
-          tools,
-          tool_choice: { type: "tool", name: SHARED_STATE_TOOL_NAME },
-          max_tokens: MAX_PATCH_OUTPUT_TOKENS,
-          budget: "decision-artifact-compiler",
-        });
-      } catch (repairError) {
-        traceLlmCallError({
-          tracer: input.tracer,
-          turnId: input.turnId,
-          sessionId: input.sessionId,
-          label: "decision_artifact_compiler",
-          error: repairError,
-        });
-        traceCompileRepairFailed({
-          tracer: input.tracer,
-          turnId: input.turnId,
-          audienceEntityId: input.audienceEntityId,
-          error: repairError,
-        });
-        traceCompileCompleted({
-          ...compileCompletedTraceBase,
-          operationCount: 0,
-          rejected: [],
-          applied: false,
-          artifact: previousArtifact,
-          prunedEntryCountThisTurn: 0,
-          supersededEntryCountThisTurn: 0,
-        });
-
-        return degraded(input, "llm_failed", repairError);
-      }
-
-      traceLlmCallResponse({
-        tracer: input.tracer,
-        turnId: input.turnId,
-        sessionId: input.sessionId,
-        label: "decision_artifact_compiler",
-        response: repairResponse,
-        responseShape: summarizeToolResponseShape(repairResponse),
-      });
-
-      try {
-        parsed = parseResponse(repairResponse);
-        traceCompileRepairSucceeded({
-          tracer: input.tracer,
-          turnId: input.turnId,
-          audienceEntityId: input.audienceEntityId,
-        });
-      } catch (repairError) {
-        traceCompileRepairFailed({
-          tracer: input.tracer,
-          turnId: input.turnId,
-          audienceEntityId: input.audienceEntityId,
-          error: repairError,
-        });
-        traceCompileCompleted({
-          ...compileCompletedTraceBase,
-          operationCount: 0,
-          rejected: [],
-          applied: false,
-          artifact: previousArtifact,
-          prunedEntryCountThisTurn: 0,
-          supersededEntryCountThisTurn: 0,
-        });
-
-        return degraded(
-          input,
-          repairError instanceof MissingSharedStateArtifactToolCallError
-            ? "missing_tool_call"
-            : repairError instanceof z.ZodError
-              ? "invalid_payload"
-              : "llm_failed",
-          repairError,
-        );
-      }
-    } else {
+    if (isStructuredToolCallError(error, "llm_failed")) {
       traceCompileCompleted({
         ...compileCompletedTraceBase,
         operationCount: 0,
@@ -899,13 +783,81 @@ export async function compileSharedStateArtifact(
         supersededEntryCountThisTurn: 0,
       });
 
-      return degraded(
-        input,
-        error instanceof MissingSharedStateArtifactToolCallError
-          ? "missing_tool_call"
-          : "llm_failed",
-        error,
-      );
+      return degraded(input, "llm_failed", error.cause ?? error);
+    }
+
+    if (isStructuredToolCallError(error, "invalid_payload") && error.cause instanceof z.ZodError) {
+      if (error.stopReason === "max_tokens") {
+        traceCompileCompleted({
+          ...compileCompletedTraceBase,
+          operationCount: 0,
+          rejected: [],
+          applied: false,
+          artifact: previousArtifact,
+          prunedEntryCountThisTurn: 0,
+          supersededEntryCountThisTurn: 0,
+        });
+
+        return degraded(input, "invalid_payload", error.cause);
+      }
+
+      traceCompileRepairAttempted({
+        tracer: input.tracer,
+        turnId: input.turnId,
+        audienceEntityId: input.audienceEntityId,
+        error: error.cause,
+      });
+      repairAttempted = true;
+
+      const repairMessages = buildSharedStateArtifactMessages({
+        ...messageInput,
+        additionalPromptSections: [
+          `Your previous patch was invalid: ${errorMessage(error.cause)}. Emit a corrected patch.`,
+        ],
+      });
+
+      try {
+        parsed = (await callCompilerTool(repairMessages)).parsed;
+        traceCompileRepairSucceeded({
+          tracer: input.tracer,
+          turnId: input.turnId,
+          audienceEntityId: input.audienceEntityId,
+        });
+      } catch (repairError) {
+        const repairCause = structuredToolErrorCause(repairError);
+
+        traceCompileRepairFailed({
+          tracer: input.tracer,
+          turnId: input.turnId,
+          audienceEntityId: input.audienceEntityId,
+          error: repairCause,
+        });
+        traceCompileCompleted({
+          ...compileCompletedTraceBase,
+          operationCount: 0,
+          rejected: [],
+          applied: false,
+          artifact: previousArtifact,
+          prunedEntryCountThisTurn: 0,
+          supersededEntryCountThisTurn: 0,
+        });
+
+        return degraded(input, structuredToolDegradedReason(repairError), repairCause);
+      }
+    } else {
+      const cause = structuredToolErrorCause(error);
+
+      traceCompileCompleted({
+        ...compileCompletedTraceBase,
+        operationCount: 0,
+        rejected: [],
+        applied: false,
+        artifact: previousArtifact,
+        prunedEntryCountThisTurn: 0,
+        supersededEntryCountThisTurn: 0,
+      });
+
+      return degraded(input, structuredToolDegradedReason(error), cause);
     }
   }
 
@@ -988,76 +940,18 @@ export async function compileSharedStateArtifact(
       additionalPromptSections: [patchRejectionRepairMessage(repairableRejections)],
     });
 
-    traceLlmCallStarted({
-      tracer: input.tracer,
-      turnId: input.turnId,
-      sessionId: input.sessionId,
-      label: "decision_artifact_compiler",
-      model: input.model,
-      systemPrompt,
-      messages: repairMessages,
-      tools,
-    });
-
-    let repairResponse: LLMCompleteResult;
-
-    try {
-      repairResponse = await input.llmClient.complete({
-        model: input.model,
-        system: systemPrompt,
-        messages: repairMessages,
-        tools,
-        tool_choice: { type: "tool", name: SHARED_STATE_TOOL_NAME },
-        max_tokens: MAX_PATCH_OUTPUT_TOKENS,
-        budget: "decision-artifact-compiler",
-      });
-    } catch (error) {
-      traceLlmCallError({
-        tracer: input.tracer,
-        turnId: input.turnId,
-        sessionId: input.sessionId,
-        label: "decision_artifact_compiler",
-        error,
-      });
-      traceCompileRepairFailed({
-        tracer: input.tracer,
-        turnId: input.turnId,
-        audienceEntityId: input.audienceEntityId,
-        error,
-      });
-      traceCompileCompleted({
-        ...compileCompletedTraceBase,
-        operationCount: 0,
-        rejected: normalized.rejected,
-        applied: false,
-        artifact: previousArtifact,
-        prunedEntryCountThisTurn: 0,
-        supersededEntryCountThisTurn: 0,
-        nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
-      });
-
-      return degraded(input, "llm_failed", error);
-    }
-
-    traceLlmCallResponse({
-      tracer: input.tracer,
-      turnId: input.turnId,
-      sessionId: input.sessionId,
-      label: "decision_artifact_compiler",
-      response: repairResponse,
-      responseShape: summarizeToolResponseShape(repairResponse),
-    });
-
     let repairedParsed: EmitSharedStatePatch;
 
     try {
-      repairedParsed = parseResponse(repairResponse);
+      repairedParsed = (await callCompilerTool(repairMessages)).parsed;
     } catch (error) {
+      const cause = structuredToolErrorCause(error);
+
       traceCompileRepairFailed({
         tracer: input.tracer,
         turnId: input.turnId,
         audienceEntityId: input.audienceEntityId,
-        error,
+        error: cause,
       });
       traceCompileCompleted({
         ...compileCompletedTraceBase,
@@ -1070,15 +964,7 @@ export async function compileSharedStateArtifact(
         nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
       });
 
-      return degraded(
-        input,
-        error instanceof MissingSharedStateArtifactToolCallError
-          ? "missing_tool_call"
-          : error instanceof z.ZodError
-            ? "invalid_payload"
-            : "llm_failed",
-        error,
-      );
+      return degraded(input, structuredToolDegradedReason(error), cause);
     }
 
     normalized = normalizePatch({

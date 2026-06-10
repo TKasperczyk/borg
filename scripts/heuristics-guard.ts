@@ -26,7 +26,7 @@ const guards: readonly Guard[] = [
   {
     name: "substring semantic label matching",
     pattern: "\\b(label|alias)\\s*\\.\\s*(includes|indexOf)\\s*\\(",
-    paths: ["src/memory/semantic", "src/retrieval"],
+    paths: ["src/memory/semantic", "src/memory/review-queue", "src/retrieval"],
   },
   {
     name: "natural-language query punctuation splitting",
@@ -94,6 +94,7 @@ const disclosureGuardedPaths = [
   "src/outbound",
   "src/tools/internal",
   "src/retrieval",
+  "src/memory/common/disclosure-serializers.ts",
 ] as const;
 const disclosureAllowedNamePattern =
   /Disclosure|Export|Admin|Public|CurrentAudienceStanding|ActionAuthorization/i;
@@ -119,6 +120,7 @@ const labelCoverageGuardedPaths = [
   "src/autonomy",
   "src/outbound",
   "src/tools/internal",
+  "src/memory/common/disclosure-serializers.ts",
 ] as const;
 const privateBearingModelFieldNames = new Set([
   "title",

@@ -1,12 +1,13 @@
 import { z } from "zod";
 
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import type { ReviewQueueItem } from "../semantic/review-queue.js";
+import type { ReviewQueueItem } from "../review-queue/review-queue.js";
 import {
   episodeIdHelpers,
   parseEpisodeId,
@@ -84,10 +85,6 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
-function findProposalToolCall(result: LLMCompleteResult) {
-  return result.tool_calls.find((toolCall) => toolCall.name === REVIEW_OPEN_QUESTION_TOOL_NAME);
-}
-
 function toOpenQuestionProposal(
   input: z.infer<typeof reviewOpenQuestionProposalSchema>,
 ): OpenQuestionProposal {
@@ -128,58 +125,65 @@ export class ReviewOpenQuestionExtractor {
       return null;
     }
 
-    let result: LLMCompleteResult;
-
     try {
-      result = await this.options.llmClient.complete({
-        model: this.options.model,
-        system: REVIEW_OPEN_QUESTION_SYSTEM_PROMPT,
-        messages: [
-          {
-            role: "user",
-            content: JSON.stringify({
-              review_item: {
-                id: item.id,
-                kind: item.kind,
-                reason: item.reason,
-                refs: item.refs,
-              },
-              context,
-            }),
-          },
-        ],
-        tools: [REVIEW_OPEN_QUESTION_TOOL],
-        tool_choice: { type: "tool", name: REVIEW_OPEN_QUESTION_TOOL_NAME },
-        max_tokens: 1_000,
-        budget: "offline-review-open-question",
+      const result = await callStructuredTool({
+        llmClient: this.options.llmClient,
+        request: {
+          model: this.options.model,
+          system: REVIEW_OPEN_QUESTION_SYSTEM_PROMPT,
+          messages: [
+            {
+              role: "user",
+              content: JSON.stringify({
+                review_item: {
+                  id: item.id,
+                  kind: item.kind,
+                  reason: item.reason,
+                  refs: item.refs,
+                },
+                context,
+              }),
+            },
+          ],
+          tools: [REVIEW_OPEN_QUESTION_TOOL],
+          tool_choice: { type: "tool", name: REVIEW_OPEN_QUESTION_TOOL_NAME },
+          max_tokens: 1_000,
+          budget: "offline-review-open-question",
+        },
+        toolName: REVIEW_OPEN_QUESTION_TOOL_NAME,
+        parse: (input) => {
+          const parsed = reviewOpenQuestionProposalSchema.safeParse(input);
+
+          if (!parsed.success) {
+            throw parsed.error;
+          }
+
+          return toOpenQuestionProposal(parsed.data);
+        },
       });
+
+      return result.parsed;
     } catch (error) {
+      if (isStructuredToolCallError(error, "missing_tool_call")) {
+        await this.reportDegraded(item, {
+          reason: "missing_tool",
+        });
+        return null;
+      }
+
+      if (isStructuredToolCallError(error, "invalid_payload")) {
+        await this.reportDegraded(item, {
+          reason: "invalid_payload",
+          error: errorMessage(error.cause ?? error),
+        });
+        return null;
+      }
+
       await this.reportDegraded(item, {
         reason: "llm_call_failed",
-        error: errorMessage(error),
+        error: errorMessage(isStructuredToolCallError(error, "llm_failed") ? (error.cause ?? error) : error),
       });
       return null;
     }
-
-    const call = findProposalToolCall(result);
-
-    if (call === undefined) {
-      await this.reportDegraded(item, {
-        reason: "missing_tool",
-      });
-      return null;
-    }
-
-    const parsed = reviewOpenQuestionProposalSchema.safeParse(call.input);
-
-    if (!parsed.success) {
-      await this.reportDegraded(item, {
-        reason: "invalid_payload",
-        error: parsed.error.message,
-      });
-      return null;
-    }
-
-    return toOpenQuestionProposal(parsed.data);
   }
 }

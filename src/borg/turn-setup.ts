@@ -21,7 +21,7 @@ import type { ActivityRepository } from "../memory/activity/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { CreatorDirectiveRepository } from "../memory/creator-directives/index.js";
-import type { SharedStateRepository } from "../memory/decision-artifacts/index.js";
+import type { SharedStateRepository } from "../memory/shared-state/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import type { ObservedEventRepository } from "../memory/observed-events/index.js";
@@ -41,7 +41,8 @@ import type {
   TraitsRepository,
   ValuesRepository,
 } from "../memory/self/index.js";
-import type { ReviewQueueRepository, SemanticNodeRepository } from "../memory/semantic/index.js";
+import type { SemanticNodeRepository } from "../memory/semantic/index.js";
+import type { ReviewQueueRepository } from "../memory/review-queue/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemoryStore } from "../memory/working/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
@@ -51,7 +52,7 @@ import type { EmbeddingClient } from "../embeddings/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
 import type { Clock } from "../util/clock.js";
 import type { PromptOverrideRepository } from "../cognition/prompts/override-repository.js";
-import type { TurnTracer } from "../cognition/tracing/tracer.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import type { BorgStreamWriterFactory } from "./types.js";
 import type { StreamEntryIndexRepository } from "../stream/index.js";
 

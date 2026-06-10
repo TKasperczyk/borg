@@ -16,7 +16,7 @@ import {
 } from "../memory/actions/index.js";
 import { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import { CreatorDirectiveRepository } from "../memory/creator-directives/index.js";
-import { SharedStateRepository } from "../memory/decision-artifacts/index.js";
+import { SharedStateRepository } from "../memory/shared-state/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
 import { IdentityEventRepository, IdentityService } from "../memory/identity/index.js";
 import { ObservedEventRepository } from "../memory/observed-events/index.js";
@@ -47,17 +47,19 @@ import {
   type ReviewOpenQuestionExtractorDegradedEvent,
 } from "../memory/self/review-open-question-extractor.js";
 import {
-  ReviewQueueRepository,
-  ReviewQueueHandlerRegistry,
   SemanticBeliefDependencyRepository,
   SemanticEdgeRepository,
   SemanticGraph,
   SemanticNodeRepository,
   SemanticReviewService,
+} from "../memory/semantic/index.js";
+import {
+  ReviewQueueRepository,
+  ReviewQueueHandlerRegistry,
   createCorrectionReviewHandler,
   registerBuiltinReviewQueueHandlers,
   type ReviewQueueItem,
-} from "../memory/semantic/index.js";
+} from "../memory/review-queue/index.js";
 import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore } from "../memory/working/index.js";
 import { RecallStateRepository, RetrievalPipeline } from "../retrieval/index.js";
@@ -68,7 +70,7 @@ import { StreamEntryIndexRepository, StreamWriter, type StreamEntry } from "../s
 import type { Clock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
 import { PromptOverrideRepository } from "../cognition/prompts/override-repository.js";
-import type { TurnTracer } from "../cognition/tracing/tracer.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import type { BorgDependencies, BorgStreamWriterFactory } from "./types.js";
 import {
   backfillSessionStreamEntryIndexAndAttachments,

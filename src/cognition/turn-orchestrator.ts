@@ -16,7 +16,7 @@ import type { ActivityRepository } from "../memory/activity/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
 import { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { CreatorDirectiveRepository } from "../memory/creator-directives/index.js";
-import type { SharedStateRepository } from "../memory/decision-artifacts/index.js";
+import type { SharedStateRepository } from "../memory/shared-state/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import type { ObservedEventRepository } from "../memory/observed-events/index.js";
@@ -32,7 +32,8 @@ import {
   ValuesRepository,
   type OpenQuestionsRepository,
 } from "../memory/self/index.js";
-import { ReviewQueueRepository, type SemanticNodeRepository } from "../memory/semantic/index.js";
+import { type SemanticNodeRepository } from "../memory/semantic/index.js";
+import { ReviewQueueRepository } from "../memory/review-queue/index.js";
 import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
@@ -83,7 +84,7 @@ import { TurnReflectionCoordinator } from "./reflection/turn-reflection-coordina
 import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
 import { SessionLock } from "./session-lock.js";
 import { TurnSelfContextBuilder } from "./self/turn-self-context.js";
-import { NOOP_TRACER, type TurnTerminalOutcome, type TurnTracer } from "./tracing/tracer.js";
+import { NOOP_TRACER, type TurnTerminalOutcome, type TurnTracer } from "../tracing/tracer.js";
 import type { TurnOrchestratorInput } from "./turn-input.js";
 import { isAutonomousLikeTurnOrigin, type CognitiveMode, type IntentRecord } from "./types.js";
 

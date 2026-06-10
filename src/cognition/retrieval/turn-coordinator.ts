@@ -1,4 +1,8 @@
-import { createNeutralAffectiveSignal, type MoodRepository } from "../../memory/affective/index.js";
+import {
+  MOOD_ACTIVITY_THRESHOLD,
+  createNeutralAffectiveSignal,
+  type MoodRepository,
+} from "../../memory/affective/index.js";
 import type {
   CommitmentRecord,
   CommitmentRepository,
@@ -10,7 +14,7 @@ import type {
   OpenCommitmentReconciliationStatus,
   ReviewQueueItem,
   ReviewQueueRepository,
-} from "../../memory/semantic/index.js";
+} from "../../memory/review-queue/index.js";
 import type {
   ProceduralContext,
   SkillSelectionResult,
@@ -32,12 +36,12 @@ import {
 import type { Clock } from "../../util/clock.js";
 import type { EntityId } from "../../util/ids.js";
 import type { LLMClient } from "../../llm/index.js";
-import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
+import { NOOP_TRACER, type TurnTracer } from "../../tracing/tracer.js";
 import { computeRetrievalLimit, computeWeights, type SuppressionSet } from "../attention/index.js";
 import type { SelfSnapshot } from "../deliberation/deliberator.js";
 import { deriveProceduralContext } from "../procedural/context-derivation.js";
 import type { PerceptionResult } from "../types.js";
-import { correctionMemoryDisclosureLabel } from "../disclosure-labels.js";
+import { correctionMemoryDisclosureLabel } from "../../memory/common/disclosure-serializers.js";
 
 function buildSkillSelectionQuery(userMessage: string, entities: readonly string[]): string {
   return [userMessage, ...entities]
@@ -210,7 +214,7 @@ export class TurnRetrievalCoordinator {
       }) ?? [];
     const perceivedMood = input.workingMemory.mood ?? createNeutralAffectiveSignal();
     const perceivedMoodActive =
-      Math.abs(perceivedMood.valence) + Math.abs(perceivedMood.arousal) > 0.3;
+      Math.abs(perceivedMood.valence) + Math.abs(perceivedMood.arousal) > MOOD_ACTIVITY_THRESHOLD;
     const retrievalMood = perceivedMoodActive
       ? perceivedMood
       : this.options.moodRepository.current(coordinatorContext.sessionId);
@@ -223,7 +227,8 @@ export class TurnRetrievalCoordinator {
       currentGoals: input.selfSnapshot.goals,
       hasActiveValues: activeValues.length > 0,
       hasTemporalCue: input.perception.temporalCue !== null,
-      moodActive: Math.abs(retrievalMood.valence) + Math.abs(retrievalMood.arousal) > 0.3,
+      moodActive:
+        Math.abs(retrievalMood.valence) + Math.abs(retrievalMood.arousal) > MOOD_ACTIVITY_THRESHOLD,
       audienceTrust: input.audienceProfile?.trust ?? null,
     });
     const retrievalOptions: CognitionRetrievalOptions = {

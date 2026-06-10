@@ -1,10 +1,12 @@
 import { z } from "zod";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
-import type { TurnTracer } from "../../cognition/tracing/tracer.js";
-import type { ParticipantRoster } from "../../cognition/perception/index.js";
-import { renderParticipantRoster } from "../common/participant-roster-rendering.js";
-import { memoryDisclosurePayloadFields } from "../../cognition/disclosure-labels.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
+import {
+  renderParticipantRoster,
+  type ParticipantRosterForRendering,
+} from "../common/participant-roster-rendering.js";
+import { memoryDisclosurePayloadFields } from "../common/disclosure-serializers.js";
 import {
   HEADCOUNT_SET_GROUNDING_PROMPT,
   RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
@@ -16,8 +18,9 @@ import {
   type RelationshipClaim,
 } from "../common/relationship-claims.js";
 import {
+  callStructuredTool,
+  isStructuredToolCallError,
   type LLMClient,
-  type LLMCompleteResult,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
@@ -25,7 +28,7 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError, SemanticError, StorageError } from "../../util/errors.js";
 import { createSemanticNodeId, type EntityId, type StreamEntryId } from "../../util/ids.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
-import { memoryDisclosureLabelFromEpisodeAccess } from "../../retrieval/index.js";
+import { memoryDisclosureLabelFromEpisodeAccess } from "../common/disclosure-label.js";
 import {
   normalizeEpisodeAccess,
   type Episode,
@@ -37,7 +40,7 @@ import type {
 } from "../source-trust.js";
 import { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
 import type { SemanticReviewService } from "./review-service.js";
-import type { ReviewQueueInsertInput } from "./review-queue.js";
+import type { ReviewQueueInsertInput } from "../review-queue/review-queue.js";
 import { canonicalizeDomain } from "./domain.js";
 import {
   semanticNodeKindSchema,
@@ -116,7 +119,7 @@ export type SemanticExtractorOptions = {
   model: string;
   semanticReviewService?: Pick<SemanticReviewService, "queueDuplicateReview">;
   reviewEnqueue?: (input: ReviewQueueInsertInput) => unknown;
-  participantRoster?: ParticipantRoster | null;
+  participantRoster?: ParticipantRosterForRendering | null;
   selfEntityId?: EntityId | null;
   relationshipEvidenceStreamEntryTrust?: RelationshipEvidenceStreamEntryTrustValidator;
   clock?: Clock;
@@ -152,7 +155,7 @@ type SemanticInsertSkipReason =
 
 function buildPrompt(input: {
   episodes: readonly Episode[];
-  participantRoster?: ParticipantRoster | null;
+  participantRoster?: ParticipantRosterForRendering | null;
   selfEntityId?: EntityId | null;
   knownNodeKinds: readonly SemanticNodeKind[];
 }): string {
@@ -212,22 +215,14 @@ function buildPrompt(input: {
   ].join("\n");
 }
 
-function parseResponse(result: LLMCompleteResult): {
+function parseResponse(input: unknown): {
   nodes: ExtractorNode[];
   edges: ParsedExtractorEdge[];
   rawEdgeCount: number;
   schemaInvalidEdgeCount: number;
   schemaInvalidEdgeDetails: SkippedEdgeTraceDetail[];
 } {
-  const call = result.tool_calls.find((toolCall) => toolCall.name === EXTRACT_SEMANTIC_TOOL_NAME);
-
-  if (call === undefined) {
-    throw new LLMError(`Semantic extractor did not emit tool ${EXTRACT_SEMANTIC_TOOL_NAME}`, {
-      code: "SEMANTIC_EXTRACTOR_INVALID",
-    });
-  }
-
-  const parsed = extractorResponseSchema.safeParse(call.input);
+  const parsed = extractorResponseSchema.safeParse(input);
 
   if (!parsed.success) {
     throw new LLMError("Semantic extractor returned invalid payload", {
@@ -777,51 +772,55 @@ export class SemanticExtractor {
       };
     }
 
-    let result: LLMCompleteResult;
     const knownNodeKinds = this.options.nodeRepository.listDistinctKinds();
-
-    try {
-      result = await this.options.llmClient.complete({
-        model: this.options.model,
-        system: "Extract semantic nodes and edges grounded only in the provided episodes.",
-        messages: [
-          {
-            role: "user",
-            content: buildPrompt({
-              episodes,
-              participantRoster: this.options.participantRoster ?? null,
-              selfEntityId: this.options.selfEntityId ?? null,
-              knownNodeKinds,
-            }),
-          },
-        ],
-        tools: [EXTRACT_SEMANTIC_TOOL],
-        tool_choice: { type: "tool", name: EXTRACT_SEMANTIC_TOOL_NAME },
-        // Opus-class extraction can emit large structured batches. This is the
-        // OUTPUT-token ceiling, which is a fixed model limit (~20k for
-        // claude-opus-4-6), independent of the much larger input context window.
-        // 20_000 is verified within the model's max and well above the prior
-        // 12_000, so dense episodes aren't truncated. Do NOT raise past the
-        // model's output cap or the request is rejected outright.
-        max_tokens: 20_000,
-        budget: "semantic-extraction",
-      });
-    } catch (error) {
-      this.traceExtractorInvoked({
-        inputEpisodeCount: episodes.length,
-        parsedNodeCount: 0,
-        parsedEdgeCount: 0,
-        acceptedNodeCount: 0,
-        acceptedEdgeCount: 0,
-        skipReasons: ["llm_failed"],
-      });
-      throw error;
-    }
     let parsed: ReturnType<typeof parseResponse>;
 
     try {
-      parsed = parseResponse(result);
+      parsed = (
+        await callStructuredTool({
+          llmClient: this.options.llmClient,
+          request: {
+            model: this.options.model,
+            system: "Extract semantic nodes and edges grounded only in the provided episodes.",
+            messages: [
+              {
+                role: "user",
+                content: buildPrompt({
+                  episodes,
+                  participantRoster: this.options.participantRoster ?? null,
+                  selfEntityId: this.options.selfEntityId ?? null,
+                  knownNodeKinds,
+                }),
+              },
+            ],
+            tools: [EXTRACT_SEMANTIC_TOOL],
+            tool_choice: { type: "tool", name: EXTRACT_SEMANTIC_TOOL_NAME },
+            // Opus-class extraction can emit large structured batches. This is the
+            // OUTPUT-token ceiling, which is a fixed model limit (~20k for
+            // claude-opus-4-6), independent of the much larger input context window.
+            // 20_000 is verified within the model's max and well above the prior
+            // 12_000, so dense episodes aren't truncated. Do NOT raise past the
+            // model's output cap or the request is rejected outright.
+            max_tokens: 20_000,
+            budget: "semantic-extraction",
+          },
+          toolName: EXTRACT_SEMANTIC_TOOL_NAME,
+          parse: parseResponse,
+        })
+      ).parsed;
     } catch (error) {
+      if (isStructuredToolCallError(error, "llm_failed")) {
+        this.traceExtractorInvoked({
+          inputEpisodeCount: episodes.length,
+          parsedNodeCount: 0,
+          parsedEdgeCount: 0,
+          acceptedNodeCount: 0,
+          acceptedEdgeCount: 0,
+          skipReasons: ["llm_failed"],
+        });
+        throw error.cause ?? error;
+      }
+
       this.traceExtractorInvoked({
         inputEpisodeCount: episodes.length,
         parsedNodeCount: 0,
@@ -830,7 +829,14 @@ export class SemanticExtractor {
         acceptedEdgeCount: 0,
         skipReasons: ["parse_failed"],
       });
-      throw error;
+
+      if (isStructuredToolCallError(error, "missing_tool_call")) {
+        throw new LLMError(`Semantic extractor did not emit tool ${EXTRACT_SEMANTIC_TOOL_NAME}`, {
+          code: "SEMANTIC_EXTRACTOR_INVALID",
+        });
+      }
+
+      throw isStructuredToolCallError(error, "invalid_payload") ? (error.cause ?? error) : error;
     }
 
     const allowedEpisodeIds = new Set(episodes.map((episode) => episode.id));
