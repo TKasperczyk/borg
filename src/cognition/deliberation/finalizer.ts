@@ -4,7 +4,6 @@ import { z } from "zod";
 import type { LLMClient, LLMContentBlockMessage, LLMConverseOptions } from "../../llm/index.js";
 import { willSendThinkingUnderAutoToolChoice } from "../../llm/index.js";
 import type { ToolDefinition, ToolDispatcher } from "../../tools/dispatcher.js";
-import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
 import type { BorgRole } from "../../memory/commitments/index.js";
 import type { SessionAudienceRole } from "../../sessions/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
@@ -35,6 +34,8 @@ import {
   type PromptSurfaceRenderContext,
 } from "../prompts/prompt-surface-registry.js";
 import { RELATIONSHIP_LABELS_PROMPT } from "../prompts/relationship-labels.js";
+import { resolveFinalizerNonTerminalTools } from "./autonomous-finalizer-tools.js";
+import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
 
 export const EMIT_ANSWER_FINALIZER_TOOL_NAME = "EmitAnswer";
 export const EMIT_OBSERVE_FINALIZER_TOOL_NAME = "EmitObserve";
@@ -86,6 +87,7 @@ const EMIT_ANSWER_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_ANSWER_FINALIZER_TOOL_NAME,
   description:
     "I emit my visible response for this turn. I put the complete user-visible response in text. I use this for ordinary answers, questions, acknowledgments, challenges, and continuations. When the response is primarily addressed to one named participant, I also set reply_target to kind=entity with their prompt-visible entity_id; I default to kind=audience (or omit) when speaking to the whole channel or multiple participants.",
+  menuSummary: "Speak visibly for the current turn.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
   inputSchema: emitTextToolInputSchema,
@@ -99,6 +101,7 @@ const EMIT_NO_OUTPUT_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME,
   description:
     "I emit no visible message for this turn because the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Different from EmitObserve, which is only for multi-participant conversations where I remain present while other participants continue. When using this tool, I choose one primary_no_output_reason and classify the silence in no_output_categories using the provided enum; I use [] when uncertain.",
+  menuSummary: "End the turn with no visible message.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
   inputSchema: emitNoOutputToolInputSchema,
@@ -112,6 +115,7 @@ const EMIT_OBSERVE_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_OBSERVE_FINALIZER_TOOL_NAME,
   description:
     "I choose to observe the current conversation without producing a visible message. I use this only when <borg_audience_profile> shows a Participants list with multiple entries and they are talking to each other rather than to me: my input is not needed, the conversation flows naturally without me, or adding to it would interrupt rather than help. Different from EmitNoOutput, which signals conversation closure.",
+  menuSummary: "Stay present without a visible message in a multi-participant exchange.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
   inputSchema: emitObserveToolInputSchema,
@@ -125,6 +129,7 @@ const EMIT_SELF_REPORT_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_SELF_REPORT_FINALIZER_TOOL_NAME,
   description:
     "I emit a first-person interior self-report from my perspective. I set kind to self_report, persistence_class to assistant_self_report, and put the complete user-visible response in text. The text is shown to the user like EmitAnswer.",
+  menuSummary: "Speak visibly as a first-person interior self-report.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
   inputSchema: emitSelfReportToolInputSchema,
@@ -137,7 +142,8 @@ const EMIT_SELF_REPORT_FINALIZER_TOOL: ToolDefinition = {
 const EMIT_CONTINUE_THOUGHT_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_CONTINUE_THOUGHT_FINALIZER_TOOL_NAME,
   description:
-    "I continue my private in-progress train of thought across autonomous wakes. I put the complete self-private thought in text. This is not user-facing, has no audience, makes no disclosure decision, and does not post a message.",
+    "I append a private carryover thought to the self-private journal so it is available to a later autonomous wake. I put the complete self-private thought in text. This is not user-facing, has no audience, makes no disclosure decision, and does not post a message.",
+  menuSummary: "Append the carryover thought to the private journal and end the autonomous interval.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
   inputSchema: emitContinueThoughtToolInputSchema,
@@ -165,6 +171,17 @@ const EMISSION_FINALIZER_TOOL_NAMES = [
 
 export type EmissionToolName = (typeof EMISSION_FINALIZER_TOOL_NAMES)[number];
 
+export function resolveAvailableEmissionTools(
+  allowedEmissions: readonly EmissionToolName[] | undefined,
+  turnOrigin?: TurnOrigin,
+): ToolDefinition[] {
+  const allowedEmissionNames = new Set<string>(
+    resolveAvailableEmissionNames(allowedEmissions, turnOrigin),
+  );
+
+  return EMISSION_FINALIZER_TOOLS.filter((tool) => allowedEmissionNames.has(tool.name));
+}
+
 const EMIT_ANSWER_FINALIZER_INSTRUCTION =
   "I use EmitAnswer for an ordinary visible response when I should speak. I put the complete user-visible response in text. I use reply_target.kind=entity with a prompt-visible entity_id when the response is primarily addressed to a single named participant -- including when answering a question from a specific speaker, when addressing one person by name, or when a participant has asked to be addressed directly. I use reply_target.kind=audience (or omit) when the response speaks to the channel as a whole.";
 const EMIT_OBSERVE_FINALIZER_INSTRUCTION =
@@ -181,7 +198,7 @@ const DEFAULT_EMIT_NO_OUTPUT_FINALIZER_INSTRUCTION = `I use EmitNoOutput only wh
 const EMIT_SELF_REPORT_FINALIZER_INSTRUCTION =
   "I use EmitSelfReport for first-person expression of my interior state, identity reflection, voice, or boundary. EmitSelfReport must include kind=self_report, persistence_class=assistant_self_report, and text. It is shown to the user exactly like EmitAnswer and persisted as assistant_self_report.";
 const EMIT_CONTINUE_THOUGHT_FINALIZER_INSTRUCTION =
-  "I use EmitContinueThought to carry my private in-progress train of thought into the next autonomous reflection wake. It is not user-facing, has no audience, makes no disclosure decision, and only updates the private train_of_thought slot.";
+  "I use EmitContinueThought to carry a private thought into the next autonomous reflection wake by appending it to the self-private journal. It is not user-facing, has no audience, makes no disclosure decision, and does not post a visible message.";
 const EMIT_DISCOURSE_CONTROL_INSTRUCTION =
   "For EmitAnswer or EmitSelfReport, I set discourse_control.kind=stop_until_substantive_content ONLY when the visible response commits me to emit nothing until substantive new user content appears; I do not set it for ordinary topic boundaries, local explanations, or style commitments.";
 const EMIT_NO_OUTPUT_CLASSIFICATION_INSTRUCTIONS = [
@@ -343,6 +360,7 @@ export type RunFinalizerOptions = {
   cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
   allowedEmissions?: readonly EmissionToolName[];
   outboundToolAvailable?: boolean;
+  nonTerminalTools?: readonly ToolDefinition[];
   turnOrigin?: TurnOrigin;
   currentSenderBorgRole?: BorgRole | null;
   sessionAudienceRole?: SessionAudienceRole;
@@ -402,7 +420,8 @@ function buildDynamicSystemPrompt(options: RunFinalizerOptions): string {
 function createFinalizerPromptSurfaceRenderContext(
   options: RunFinalizerOptions,
 ): PromptSurfaceRenderContext {
-  const outboundTool = getOutboundTool(options);
+  const outboundAvailableForPrompt =
+    options.nonTerminalTools?.some((tool) => tool.name === OUTBOUND_POST_TOOL_NAME) ?? false;
 
   return {
     renderBlock: (id) => {
@@ -410,7 +429,7 @@ function createFinalizerPromptSurfaceRenderContext(
         case "finalizer_emission_protocol":
           return buildEmissionFinalizerInstructions(
             options.allowedEmissions,
-            outboundTool !== null,
+            outboundAvailableForPrompt,
             options.turnOrigin,
           );
         case "finalizer_cacheable_static_prefix":
@@ -456,14 +475,6 @@ function buildSystemPrompt(options: RunFinalizerOptions): LLMConverseOptions["sy
       text: dynamicPrompt,
     },
   ];
-}
-
-function getOutboundTool(
-  options: Pick<RunFinalizerOptions, "dispatcher" | "outboundToolAvailable">,
-) {
-  return options.outboundToolAvailable === true
-    ? options.dispatcher.getDefinition(OUTBOUND_POST_TOOL_NAME)
-    : null;
 }
 
 function invalidToolDecision(toolName: string, reason: string): EmissionDecision {
@@ -649,15 +660,17 @@ function finalizerFlushText(result: ToolLoopResult, decision: EmissionDecision):
 export async function runFinalizer(options: RunFinalizerOptions): Promise<FinalizerResult> {
   const toolProvenance =
     options.userEntryId === undefined ? undefined : { user_entry_id: options.userEntryId };
-  const systemPrompt = buildSystemPrompt(options);
-  const allowedEmissionNames = new Set<string>(
-    resolveAvailableEmissionNames(options.allowedEmissions, options.turnOrigin),
-  );
-  const emissionTools = EMISSION_FINALIZER_TOOLS.filter((tool) =>
-    allowedEmissionNames.has(tool.name),
-  );
-  const outboundTool = getOutboundTool(options);
-  const availableTools = outboundTool === null ? emissionTools : [...emissionTools, outboundTool];
+  const emissionTools = resolveAvailableEmissionTools(options.allowedEmissions, options.turnOrigin);
+  const nonTerminalTools = resolveFinalizerNonTerminalTools({
+    dispatcher: options.dispatcher,
+    turnOrigin: options.turnOrigin,
+    outboundToolAvailable: options.outboundToolAvailable,
+  });
+  const systemPrompt = buildSystemPrompt({
+    ...options,
+    nonTerminalTools,
+  });
+  const availableTools = [...emissionTools, ...nonTerminalTools];
   const terminalToolNames = emissionTools.map((tool) => tool.name);
   // Auto tool_choice iff thinking will actually reach the model -- otherwise force
   // an emission tool so a structured emission stays guaranteed (e.g. manual

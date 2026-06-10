@@ -104,6 +104,7 @@ import type {
   SessionRecord,
   SessionTouchUpdate,
 } from "../sessions/types.js";
+import type { TrainOfThoughtJournalEntry } from "../memory/train-of-thought/index.js";
 import type {
   ImageMediaType,
   ImagePerceptionRecord,
@@ -343,6 +344,10 @@ export type BorgGrowthMarkerSummaryOptions = {
   toTs?: number;
 };
 
+export type BorgJournalListOptions = {
+  limit?: number;
+};
+
 export type BorgOpenQuestionAddInput = {
   id?: OpenQuestionId;
   question: string;
@@ -440,6 +445,10 @@ export type BorgSelfFacade = {
     list(options?: BorgGrowthMarkerListOptions): GrowthMarker[];
     add(input: BorgGrowthMarkerAddInput): GrowthMarker;
     summarize(options?: BorgGrowthMarkerSummaryOptions): GrowthMarkersSummary;
+  };
+  journal: {
+    latest(): TrainOfThoughtJournalEntry | null;
+    list(options?: BorgJournalListOptions): TrainOfThoughtJournalEntry[];
   };
   openQuestions: {
     list(options?: OpenQuestionListOptions): OpenQuestion[];
@@ -1059,6 +1068,7 @@ export type BorgDreamFacade = {
   apply(plan: MaintenancePlan): Promise<OrchestratorResult>;
   consolidate(options?: { dryRun?: boolean; budget?: number }): Promise<OrchestratorResult>;
   reflect(options?: { dryRun?: boolean; budget?: number }): Promise<OrchestratorResult>;
+  associate(options?: { dryRun?: boolean; budget?: number }): Promise<OrchestratorResult>;
   extractSemantics(options?: { dryRun?: boolean; budget?: number }): Promise<OrchestratorResult>;
   curate(options?: { dryRun?: boolean; budget?: number }): Promise<OrchestratorResult>;
   oversee(options?: { dryRun?: boolean; budget?: number }): Promise<OrchestratorResult>;

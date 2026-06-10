@@ -43,6 +43,7 @@ export function createScheduledWakesListTool(
     name: "tool.scheduledWakes.list",
     description:
       "I list my scheduled self-wakes. Defaults to pending (not yet fired) wakes; I pass status to inspect fired or cancelled ones. I use this to review what I have already scheduled before adding or cancelling one.",
+    menuSummary: "List scheduled self-wakes before adding or cancelling one.",
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "read",
     inputSchema: scheduledWakesListInputSchema,

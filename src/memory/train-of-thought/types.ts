@@ -23,5 +23,14 @@ export const trainOfThoughtSchema = z
   })
   .strict();
 
+export const trainOfThoughtJournalEntrySchema = trainOfThoughtSchema
+  .extend({
+    id: z.number().int().positive(),
+    source_turn_id: z.string().min(1).nullable(),
+    marker_stream_entry_id: z.string().min(1).nullable(),
+  })
+  .strict();
+
 export type TrainOfThoughtDisclosureClass = z.infer<typeof trainOfThoughtDisclosureClassSchema>;
 export type TrainOfThought = z.infer<typeof trainOfThoughtSchema>;
+export type TrainOfThoughtJournalEntry = z.infer<typeof trainOfThoughtJournalEntrySchema>;

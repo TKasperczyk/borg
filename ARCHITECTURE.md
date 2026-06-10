@@ -1687,15 +1687,28 @@ rather than classifying affect from a message that does not exist. The wake
 context itself is rendered as untrusted data, so remembered trigger text cannot
 smuggle instructions into the turn.
 
-Autonomy does not grant new capabilities. Waking is not acting. An autonomous
-turn can only do what any turn can do -- reason, call host-provided tools, emit
-or stay silent -- and whether it claims an action it cannot perform is the
-model's judgment against the host-capabilities block, not something the harness
-gates. The scheduler also does not start itself: a runtime opts in by starting
-it, and one self-invocation source fires only the wakes the entity itself queued.
-Those are one-time self-scheduled wakes: the entity can create, list, and cancel
-them through a dedicated `scheduledWakes` tool surface, each stored in its own
-table and fired once by a `scheduled_wake` trigger.
+Autonomy does not grant unbounded capabilities. Waking is not acting by itself.
+An autonomous turn can only do what the finalizer actually offers for that
+origin: emit or stay silent, append a self-private journal entry, inspect recent
+or searched memory, walk prompt-visible semantic structure, create or resolve an
+open question through identity governance, schedule/list/cancel self-wakes, and
+post outbound only when the existing outbound gate exposes an authorized target.
+The autonomous prompt renders that menu from the same tool definitions the
+finalizer uses, so the interior action menu is a description of live structure,
+not aspirational copy.
+
+The private train-of-thought carryover is append-only journal state. The latest
+journal entry is still injected into the next autonomous wake in the same shape
+as the old singleton carryover, but older entries remain in storage and are available
+through the facade read surface. A terminal `EmitContinueThought` appends the
+carryover entry when the autonomous interval ends; `tool.journal.append` lets
+the entity keep an interior note without ending the turn.
+
+The scheduler also does not start itself: a runtime opts in by starting it, and
+one self-invocation source fires only the wakes the entity itself queued. Those
+are one-time self-scheduled wakes: the entity can create, list, and cancel them
+through a dedicated `scheduledWakes` tool surface, each stored in its own table
+and fired once by a `scheduled_wake` trigger.
 
 See A Single Turn End To End for the lifecycle an autonomous input enters, and
 Offline Maintenance for the separate between-turns maintenance path.
@@ -1748,6 +1761,25 @@ review carrying the proposed node and its candidate support edges, and the
 Review Resolver materializes them on acceptance. Confidence is kept conservative
 so a proposed pattern stays reviewable rather than asserted.
 
+### Associator
+
+The Associator consumes episodes sampled deliberately across time and context,
+not because they are already similar. It gives the model room to notice
+cross-domain structure that the hygiene processes would never put in the same
+cluster.
+
+It does not treat association as truth. Each finding is either an Open
+Question, when the connection is a weak hypothesis worth carrying, or a
+new-insight review item, when the model proposes a stronger pattern. The
+strong path reuses the Reflector's review-gated payload: proposed semantic
+node, candidate support edges, cited episode ids, and conservative confidence.
+Review Resolver acceptance is still what materializes semantic memory.
+
+The sampler is structural rather than interpretive. It mixes high-salience
+anchors with low-heat long-tail episodes across autobiographical periods or
+fallback time buckets, persists the sampled episode ids in the plan, and never
+resamples at apply time.
+
 ### Semantic Extractor
 
 The Semantic Extractor consumes episodes not yet represented in the semantic
@@ -1799,7 +1831,10 @@ should not block the current conversation.
 The Ruminator consumes Open Questions and retrieved evidence. It can resolve a
 question, bump urgency, abandon stale uncertainty, merge duplicates, mark a
 question unresolved, and optionally produce a growth marker when evidence
-shows clear change.
+shows clear change. When a question is not settled, it records a self-private
+rumination note with the live tensions, connected open questions, and the
+evidence it considered, so the next visit can continue the deliberation rather
+than restart it.
 
 It runs offline because unresolved uncertainty often requires scanning broader
 memory and should not be settled opportunistically during an unrelated user
@@ -1812,7 +1847,10 @@ autobiographical period -- recall is global to the being; it does not
 audience-gate or visibility-gate which episodes it reads (`listAll()`, temporal filter only) --
 plus current autobiographical state. It produces growth markers, period
 openings, period closures, and period narrative updates, each carrying a
-disclosure label combined from its source episodes.
+disclosure label combined from its source episodes. The model may also compose
+the period narrative directly as first-person prose from the labeled
+observations and episode evidence; when it does not, the older mechanical
+observation-join fallback remains.
 
 It runs offline because autobiographical narration needs temporal distance and
 multiple pieces of evidence. Its purpose is to help Borg maintain a coherent

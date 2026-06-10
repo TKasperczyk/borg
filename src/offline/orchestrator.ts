@@ -140,6 +140,12 @@ export class MaintenanceOrchestrator {
       candidates_proposed: stats.proposed,
       candidates_accepted: stats.accepted,
       candidates_rejected: stats.rejected,
+      ...(stats.truncated === undefined
+        ? {}
+        : {
+            candidates_truncated: stats.truncated,
+            notes: [`candidate_cap_truncated:${stats.truncated}`],
+          }),
       errors: input.result.errors.length,
       error_details: traceErrorDetails(input.result.errors),
       tokens_used: input.result.tokens_used,

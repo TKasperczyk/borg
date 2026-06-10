@@ -32,6 +32,7 @@ import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemoryStore } from "../memory/working/index.js";
 import {
   AuditLog,
+  AssociatorProcess,
   BeliefReviserProcess,
   CommitmentReconcilerProcess,
   ConsolidatorProcess,
@@ -133,6 +134,14 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
     overseer: new OverseerProcess({
       reviewQueueRepository: options.reviewQueueRepository,
       registry: reverserRegistry,
+    }),
+    associator: new AssociatorProcess({
+      semanticNodeRepository: options.semanticNodeRepository,
+      semanticEdgeRepository: options.semanticEdgeRepository,
+      reviewQueueRepository: options.reviewQueueRepository,
+      openQuestionsRepository: options.openQuestionsRepository,
+      registry: reverserRegistry,
+      clock: options.clock,
     }),
     "review-resolver": new ReviewResolverProcess({
       db: options.sqlite,

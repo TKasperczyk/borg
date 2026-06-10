@@ -22,11 +22,13 @@ import { ProvenanceError, StorageError } from "../../util/errors.js";
 import { clamp } from "../../util/math.js";
 import {
   createOpenQuestionId,
+  maintenanceRunIdHelpers,
   openQuestionIdHelpers,
   parseOpenQuestionId,
   type EntityId,
   type SharedStateEntryId,
   type GoalId,
+  type MaintenanceRunId,
   type OpenQuestionId,
 } from "../../util/ids.js";
 import { serializeJsonValue } from "../../util/json-value.js";
@@ -47,6 +49,7 @@ import {
   parseStoredProvenance,
   provenanceSchema,
   toStoredProvenance,
+  type Provenance,
 } from "../common/provenance.js";
 import {
   OPEN_QUESTION_SOURCES,
@@ -55,6 +58,7 @@ import {
   openQuestionAudienceEntityIdSchema,
   openQuestionIdSchema,
   openQuestionPatchSchema,
+  openQuestionRecordSchema,
   openQuestionResolvedByArtifactEntryIdSchema,
   openQuestionResolutionStreamEntryIdSchema,
   openQuestionSchema,
@@ -77,6 +81,7 @@ export {
   openQuestionAudienceEntityIdSchema,
   openQuestionIdSchema,
   openQuestionPatchSchema,
+  openQuestionRecordSchema,
   openQuestionResolvedByArtifactEntryIdSchema,
   openQuestionResolutionStreamEntryIdSchema,
   openQuestionSchema,
@@ -112,6 +117,39 @@ export type OpenQuestionResolveOptions = IdentityCasOptions & {
   resolvedByArtifactEntryId?: SharedStateEntryId | null;
 };
 
+export type OpenQuestionRumination = {
+  id: number;
+  open_question_id: OpenQuestionId;
+  note: string;
+  tensions: string[];
+  connected_open_question_ids: OpenQuestionId[];
+  evidence_episode_ids: z.infer<typeof episodeIdSchema>[];
+  evidence_stream_entry_ids: z.infer<typeof openQuestionResolutionStreamEntryIdSchema>[];
+  source_process: string;
+  source_run_id: MaintenanceRunId | null;
+  source_turn_id: string | null;
+  provenance: Provenance;
+  created_at: number;
+};
+
+export type OpenQuestionRuminationInput = {
+  open_question_id: OpenQuestionId;
+  note: string;
+  tensions?: readonly string[];
+  connected_open_question_ids?: readonly OpenQuestionId[];
+  evidence_episode_ids?: readonly z.infer<typeof episodeIdSchema>[];
+  evidence_stream_entry_ids?: readonly z.infer<typeof openQuestionResolutionStreamEntryIdSchema>[];
+  source_process: string;
+  source_run_id?: MaintenanceRunId | null;
+  source_turn_id?: string | null;
+  provenance: Provenance;
+  created_at?: number;
+};
+
+export type OpenQuestionRuminationListOptions = {
+  limit?: number;
+};
+
 type OpenQuestionVectorRow = {
   id: string;
   question: string;
@@ -124,6 +162,13 @@ type OpenQuestionVectorRow = {
   embedding: number[];
   _distance?: number;
 };
+
+const maintenanceRunIdSchema = z
+  .string()
+  .refine((value) => maintenanceRunIdHelpers.is(value), {
+    message: "Invalid maintenance run id",
+  })
+  .transform((value) => value as MaintenanceRunId);
 
 export type OpenQuestionsRepositoryOptions = {
   db: SqliteDatabase;
@@ -251,7 +296,11 @@ export function buildOpenQuestionDedupeKey(input: {
 }
 
 function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
-  const parsed = openQuestionSchema.safeParse({
+  const disclosureLabel =
+    row.disclosure_label === null || row.disclosure_label === undefined || row.disclosure_label === ""
+      ? undefined
+      : parseMemoryDisclosureLabel(row.disclosure_label);
+  const parsed = openQuestionRecordSchema.safeParse({
     id: row.id,
     record_version: Number(row.record_version ?? 1),
     question: row.question,
@@ -272,6 +321,7 @@ function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
       semanticNodeIdSchema,
       "open question related_semantic_node_ids",
     ),
+    ...(disclosureLabel === undefined ? {} : { disclosure_label: disclosureLabel }),
     provenance:
       row.provenance_kind === null || row.provenance_kind === undefined
         ? null
@@ -324,6 +374,71 @@ function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
     throw new StorageError("Open question row failed validation", {
       cause: parsed.error,
       code: "OPEN_QUESTION_INVALID",
+    });
+  }
+
+  return parsed.data;
+}
+
+function mapOpenQuestionRuminationRow(row: Record<string, unknown>): OpenQuestionRumination {
+  const parsed = z
+    .object({
+      id: z.number().int().positive(),
+      open_question_id: openQuestionIdSchema,
+      note: z.string().min(1),
+      tensions: z.array(z.string()),
+      connected_open_question_ids: z.array(openQuestionIdSchema),
+      evidence_episode_ids: z.array(episodeIdSchema),
+      evidence_stream_entry_ids: z.array(openQuestionResolutionStreamEntryIdSchema),
+      source_process: z.string().min(1),
+      source_run_id: maintenanceRunIdSchema.nullable(),
+      source_turn_id: z.string().min(1).nullable(),
+      provenance: provenanceSchema,
+      created_at: z.number().int().nonnegative(),
+    })
+    .safeParse({
+      id: Number(row.id),
+      open_question_id: row.open_question_id,
+      note: row.note,
+      tensions: parseIdArray(
+        String(row.tensions ?? "[]"),
+        z.string(),
+        "open question rumination tensions",
+      ),
+      connected_open_question_ids: parseIdArray(
+        String(row.connected_open_question_ids ?? "[]"),
+        openQuestionIdSchema,
+        "open question rumination connected_open_question_ids",
+      ),
+      evidence_episode_ids: parseIdArray(
+        String(row.evidence_episode_ids ?? "[]"),
+        episodeIdSchema,
+        "open question rumination evidence_episode_ids",
+      ),
+      evidence_stream_entry_ids: parseIdArray(
+        String(row.evidence_stream_entry_ids ?? "[]"),
+        openQuestionResolutionStreamEntryIdSchema,
+        "open question rumination evidence_stream_entry_ids",
+      ),
+      source_process: row.source_process,
+      source_run_id:
+        row.source_run_id === null || row.source_run_id === undefined ? null : row.source_run_id,
+      source_turn_id:
+        row.source_turn_id === null || row.source_turn_id === undefined
+          ? null
+          : row.source_turn_id,
+      provenance: parseStoredProvenance({
+        provenance_kind: row.provenance_kind,
+        provenance_episode_ids: row.provenance_episode_ids,
+        provenance_process: row.provenance_process,
+      }),
+      created_at: Number(row.created_at),
+    });
+
+  if (!parsed.success) {
+    throw new StorageError("Open question rumination row failed validation", {
+      cause: parsed.error,
+      code: "OPEN_QUESTION_RUMINATION_INVALID",
     });
   }
 
@@ -689,6 +804,7 @@ export class OpenQuestionsRepository {
     related_semantic_node_ids?: readonly z.infer<typeof semanticNodeIdSchema>[];
     goal_id?: GoalId | null;
     audience_entity_id?: EntityId | null;
+    disclosure_label?: MemoryDisclosureLabel | null;
     provenance?: z.infer<typeof provenanceSchema> | null;
     source: OpenQuestionSource;
     created_at?: number;
@@ -706,7 +822,7 @@ export class OpenQuestionsRepository {
       });
     }
     const nowMs = this.clock.now();
-    const question = openQuestionSchema.parse({
+    const question = openQuestionRecordSchema.parse({
       id: input.id ?? createOpenQuestionId(),
       record_version: 1,
       question: input.question,
@@ -716,6 +832,7 @@ export class OpenQuestionsRepository {
       audience_entity_id: input.audience_entity_id ?? null,
       related_episode_ids: relatedEpisodeIds,
       related_semantic_node_ids: relatedSemanticNodeIds,
+      ...(input.disclosure_label == null ? {} : { disclosure_label: input.disclosure_label }),
       provenance: input.provenance ?? null,
       source: input.source,
       created_at: input.created_at ?? nowMs,
@@ -751,11 +868,11 @@ export class OpenQuestionsRepository {
           INSERT INTO open_questions (
             id, question, dedupe_key, urgency, status, goal_id, audience_entity_id,
             related_episode_ids, related_semantic_node_ids, provenance_kind,
-            provenance_episode_ids, provenance_process, source, created_at, last_touched,
+            provenance_episode_ids, provenance_process, source, disclosure_label, created_at, last_touched,
             resolution_evidence_episode_ids, resolution_evidence_stream_entry_ids,
             resolution_disclosure_label, resolution_note, resolved_at, abandoned_reason, abandoned_at,
             resolved_by_artifact_entry_id, unresolved_rumination_ticks, last_ruminated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -772,6 +889,9 @@ export class OpenQuestionsRepository {
         storedProvenance?.provenance_episode_ids ?? null,
         storedProvenance?.provenance_process ?? null,
         question.source,
+        question.disclosure_label === undefined
+          ? null
+          : serializeJsonValue(question.disclosure_label),
         question.created_at,
         question.last_touched,
         serializeJsonValue(question.resolution_evidence_episode_ids),
@@ -970,6 +1090,112 @@ export class OpenQuestionsRepository {
     return row === undefined ? null : mapOpenQuestionRow(row);
   }
 
+  recordRumination(input: OpenQuestionRuminationInput): OpenQuestionRumination {
+    const openQuestionId = openQuestionIdSchema.parse(input.open_question_id);
+    const existing = this.get(openQuestionId);
+
+    if (existing === null) {
+      throw new StorageError(`Unknown open question id: ${openQuestionId}`, {
+        code: "OPEN_QUESTION_NOT_FOUND",
+      });
+    }
+
+    const note = z.string().min(1).parse(input.note.trim());
+    const tensions = uniqueNonEmptyStrings(input.tensions);
+    const connectedOpenQuestionIds = [
+      ...new Set(z.array(openQuestionIdSchema).parse(input.connected_open_question_ids ?? [])),
+    ].filter((connectedId) => {
+      const connected = this.get(connectedId);
+
+      return connectedId !== openQuestionId && connected?.status === "open";
+    });
+    const evidenceEpisodeIds = [
+      ...new Set(z.array(episodeIdSchema).parse(input.evidence_episode_ids ?? [])),
+    ];
+    const evidenceStreamEntryIds = [
+      ...new Set(
+        z
+          .array(openQuestionResolutionStreamEntryIdSchema)
+          .parse(input.evidence_stream_entry_ids ?? []),
+      ),
+    ];
+    const sourceProcess = z.string().min(1).parse(input.source_process);
+    const sourceRunId =
+      input.source_run_id === null || input.source_run_id === undefined
+        ? null
+        : maintenanceRunIdSchema.parse(input.source_run_id);
+    const sourceTurnId =
+      input.source_turn_id === null || input.source_turn_id === undefined
+        ? null
+        : z.string().min(1).parse(input.source_turn_id);
+    const provenance = provenanceSchema.parse(input.provenance);
+    const storedProvenance = toStoredProvenance(provenance);
+    const createdAt = z.number().int().nonnegative().parse(input.created_at ?? this.clock.now());
+    const result = this.db
+      .prepare(
+        `
+          INSERT INTO open_question_ruminations (
+            open_question_id, note, tensions, connected_open_question_ids,
+            evidence_episode_ids, evidence_stream_entry_ids, source_process,
+            source_run_id, source_turn_id, provenance_kind, provenance_episode_ids,
+            provenance_process, created_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        openQuestionId,
+        note,
+        serializeJsonValue(tensions),
+        serializeJsonValue(connectedOpenQuestionIds),
+        serializeJsonValue(evidenceEpisodeIds),
+        serializeJsonValue(evidenceStreamEntryIds),
+        sourceProcess,
+        sourceRunId,
+        sourceTurnId,
+        storedProvenance.provenance_kind,
+        storedProvenance.provenance_episode_ids,
+        storedProvenance.provenance_process,
+        createdAt,
+      );
+
+    return {
+      id: Number(result.lastInsertRowid),
+      open_question_id: openQuestionId,
+      note,
+      tensions,
+      connected_open_question_ids: connectedOpenQuestionIds,
+      evidence_episode_ids: evidenceEpisodeIds,
+      evidence_stream_entry_ids: evidenceStreamEntryIds,
+      source_process: sourceProcess,
+      source_run_id: sourceRunId,
+      source_turn_id: sourceTurnId,
+      provenance,
+      created_at: createdAt,
+    };
+  }
+
+  listRecentRuminations(
+    openQuestionId: OpenQuestionId,
+    options: OpenQuestionRuminationListOptions = {},
+  ): OpenQuestionRumination[] {
+    const parsedId = openQuestionIdSchema.parse(openQuestionId);
+    const limit = Math.max(1, Math.min(50, Math.floor(options.limit ?? 5)));
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM open_question_ruminations
+          WHERE open_question_id = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?
+        `,
+      )
+      .all(parsedId, limit) as Record<string, unknown>[];
+
+    return rows.map((row) => mapOpenQuestionRuminationRow(row));
+  }
+
   update(
     id: OpenQuestionId,
     patch: OpenQuestionPatch,
@@ -985,7 +1211,7 @@ export class OpenQuestionsRepository {
 
     const parsedPatch = openQuestionPatchSchema.parse(patch);
     const expectedVersion = expectedRecordVersion(existing, options);
-    const next = openQuestionSchema.parse({
+    const next = openQuestionRecordSchema.parse({
       ...existing,
       ...parsedPatch,
       record_version: nextRecordVersion(expectedVersion),
@@ -1006,7 +1232,7 @@ export class OpenQuestionsRepository {
           SET question = ?, urgency = ?, status = ?, goal_id = ?, audience_entity_id = ?,
               related_episode_ids = ?, related_semantic_node_ids = ?, provenance_kind = ?,
               provenance_episode_ids = ?, provenance_process = ?, source = ?, last_touched = ?,
-              resolution_evidence_episode_ids = ?, resolution_evidence_stream_entry_ids = ?,
+              disclosure_label = ?, resolution_evidence_episode_ids = ?, resolution_evidence_stream_entry_ids = ?,
               resolution_disclosure_label = ?, resolution_note = ?, resolved_at = ?, abandoned_reason = ?, abandoned_at = ?,
               resolved_by_artifact_entry_id = ?, dedupe_key = ?,
               unresolved_rumination_ticks = ?, last_ruminated_at = ?,
@@ -1027,6 +1253,7 @@ export class OpenQuestionsRepository {
         storedProvenance?.provenance_process ?? null,
         next.source,
         next.last_touched,
+        next.disclosure_label === undefined ? null : serializeJsonValue(next.disclosure_label),
         serializeJsonValue(next.resolution_evidence_episode_ids),
         serializeJsonValue(next.resolution_evidence_stream_entry_ids),
         serializeJsonValue(next.resolution_disclosure_label),
@@ -1057,7 +1284,7 @@ export class OpenQuestionsRepository {
   }
 
   restore(question: OpenQuestion): OpenQuestion {
-    const parsed = openQuestionSchema.parse(question);
+    const parsed = openQuestionRecordSchema.parse(question);
     const dedupeKey = buildOpenQuestionDedupeKey({
       question: parsed.question,
       relatedEpisodeIds: parsed.related_episode_ids,
@@ -1075,7 +1302,7 @@ export class OpenQuestionsRepository {
               audience_entity_id = ?,
               related_episode_ids = ?, related_semantic_node_ids = ?, provenance_kind = ?,
               provenance_episode_ids = ?, provenance_process = ?, source = ?, created_at = ?,
-              last_touched = ?, resolution_evidence_episode_ids = ?,
+              disclosure_label = ?, last_touched = ?, resolution_evidence_episode_ids = ?,
               resolution_evidence_stream_entry_ids = ?, resolution_disclosure_label = ?,
               resolution_note = ?, resolved_at = ?,
               abandoned_reason = ?, abandoned_at = ?, resolved_by_artifact_entry_id = ?,
@@ -1097,6 +1324,7 @@ export class OpenQuestionsRepository {
         storedProvenance?.provenance_process ?? null,
         parsed.source,
         parsed.created_at,
+        parsed.disclosure_label === undefined ? null : serializeJsonValue(parsed.disclosure_label),
         parsed.last_touched,
         serializeJsonValue(parsed.resolution_evidence_episode_ids),
         serializeJsonValue(parsed.resolution_evidence_stream_entry_ids),

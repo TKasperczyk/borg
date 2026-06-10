@@ -124,6 +124,7 @@ export function createSemanticWalkTool(
   return {
     name: "tool.semantic.walk",
     description: "Walk the semantic graph from a node across one relation family.",
+    menuSummary: "Walk semantic memory from a known node.",
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "read",
     inputSchema: semanticWalkInputSchema,

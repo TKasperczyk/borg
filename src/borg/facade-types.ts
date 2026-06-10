@@ -45,6 +45,7 @@ import type {
 } from "../memory/review-queue/index.js";
 import type { SemanticExtractor } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
+import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../memory/working/index.js";
 import type { ChatResponseCatchUpWorker } from "../cognition/ingestion/index.js";
 import type { MemoryDisclosureLabel } from "../retrieval/index.js";
@@ -192,6 +193,12 @@ export type BorgSelfFacade = {
     summarize: (
       ...args: Parameters<GrowthMarkersRepository["summarize"]>
     ) => ReturnType<GrowthMarkersRepository["summarize"]>;
+  };
+  journal: {
+    latest: () => ReturnType<TrainOfThoughtRepository["latest"]>;
+    list: (
+      ...args: Parameters<TrainOfThoughtRepository["list"]>
+    ) => ReturnType<TrainOfThoughtRepository["list"]>;
   };
   openQuestions: {
     list: (

@@ -19,6 +19,7 @@ function createSelfNarratorResponse(input: {
   whatChanged?: string;
   beforeDescription?: string | null;
   afterDescription?: string | null;
+  periodNarrative?: string | null;
 }) {
   return {
     text: "",
@@ -44,6 +45,7 @@ function createSelfNarratorResponse(input: {
               evidence_episode_ids: input.evidenceEpisodeIds,
             },
           ],
+          period_narrative: input.periodNarrative ?? null,
           period_decision: input.periodDecision ?? "open_new",
           period_decision_confidence: 0.8,
         },

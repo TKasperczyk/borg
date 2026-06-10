@@ -6,6 +6,7 @@ import { MODE_FALLBACK_TOOL } from "../cognition/perception/mode-detector.js";
 import { AFFECTIVE_FALLBACK_TOOL } from "../memory/affective/extractor.js";
 import { EXTRACT_EPISODES_TOOL } from "../memory/episodic/extractor.js";
 import { EXTRACT_SEMANTIC_TOOL } from "../memory/semantic/extractor.js";
+import { ASSOCIATOR_TOOL } from "../offline/associator/index.js";
 import { MERGE_TOOL } from "../offline/consolidator/index.js";
 import { OVERSEER_TOOL } from "../offline/overseer/index.js";
 import { REFLECTOR_TOOL } from "../offline/reflector/index.js";
@@ -58,8 +59,9 @@ describe("tool schemas", () => {
         tool: REFLECTOR_TOOL,
         required: ["label", "description", "confidence", "source_episode_ids"],
       },
-      { tool: RUMINATOR_TOOL, required: ["resolution_note", "growth_marker"] },
-      { tool: SELF_NARRATOR_TOOL, required: ["observations"] },
+      { tool: ASSOCIATOR_TOOL, required: ["findings"] },
+      { tool: RUMINATOR_TOOL, required: ["outcome"] },
+      { tool: SELF_NARRATOR_TOOL, required: ["observations", "period_narrative"] },
       { tool: ENTITY_FALLBACK_TOOL, required: ["entities"] },
       { tool: MODE_FALLBACK_TOOL, required: ["mode"] },
       { tool: AFFECTIVE_FALLBACK_TOOL, required: ["valence", "arousal", "dominant_emotion"] },

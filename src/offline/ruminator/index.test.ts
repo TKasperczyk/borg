@@ -11,6 +11,7 @@ import {
   createActionId,
   DEFAULT_SESSION_ID,
   createEpisodeId,
+  createOpenQuestionId,
   createSemanticNodeId,
   createStreamEntryId,
 } from "../../util/ids.js";
@@ -21,7 +22,7 @@ import {
   createOfflineTestHarness,
   TestEmbeddingClient,
 } from "../test-support.js";
-import { RuminatorProcess } from "./index.js";
+import { RUMINATOR_SYSTEM_PROMPT, RuminatorProcess } from "./index.js";
 
 const RUMINATOR_TOOL_NAME = "EmitRuminatorDecisions";
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -55,7 +56,35 @@ function createRuminatorResponse(input: {
       {
         id: "toolu_1",
         name: RUMINATOR_TOOL_NAME,
-        input,
+        input: {
+          outcome: "resolved",
+          ...input,
+        },
+      },
+    ],
+  };
+}
+
+function createStillOpenRuminatorResponse(input: {
+  reasoning: string;
+  tensions: string[];
+  connected_open_question_ids?: string[];
+}) {
+  return {
+    text: "",
+    input_tokens: 50,
+    output_tokens: 40,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_1",
+        name: RUMINATOR_TOOL_NAME,
+        input: {
+          outcome: "still_open",
+          reasoning: input.reasoning,
+          tensions: input.tensions,
+          connected_open_question_ids: input.connected_open_question_ids ?? [],
+        },
       },
     ],
   };
@@ -199,6 +228,136 @@ describe("RuminatorProcess", () => {
 
       expect(harness.growthMarkersRepository.list()).toHaveLength(0);
       expect(harness.openQuestionsRepository.get(question.id)?.status).toBe("open");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("persists still-open deliberations and renders recent rumination history", async () => {
+    const clock = new FixedClock(3_000_000);
+    const questionText = "What still explains the Atlas rollout tension?";
+    const tracer = new CaptureTracer();
+    const invalidConnectedOpenQuestionId = createOpenQuestionId();
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock,
+      tracer,
+      embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const episode = createEpisodeFixture(
+        {
+          title: "Atlas rollout tension",
+          narrative: "Atlas rollout evidence clarified timing but did not settle ownership.",
+          tags: ["atlas", "rollout"],
+          significance: 0.95,
+          created_at: 2_000_000,
+          updated_at: 2_000_000,
+        },
+        [1, 0, 0, 0],
+      );
+      await harness.episodicRepository.createEpisode(episode);
+      const question = harness.openQuestionsRepository.add({
+        question: questionText,
+        urgency: 0.7,
+        source: "reflection",
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+        provenance: { kind: "manual" },
+      });
+      const connected = harness.openQuestionsRepository.add({
+        question: "Is rollout ownership still unresolved?",
+        urgency: 0.5,
+        source: "reflection",
+        created_at: 1_100_000,
+        last_touched: 2_500_000,
+        provenance: { kind: "manual" },
+      });
+      llm.pushResponse(
+        createStillOpenRuminatorResponse({
+          reasoning:
+            "The fresh evidence narrows the rollout tension, but it does not yet settle whether scheduling or ownership is the main cause.",
+          tensions: [
+            "Scheduling evidence points one way while ownership evidence remains unresolved.",
+          ],
+          connected_open_question_ids: [connected.id, invalidConnectedOpenQuestionId],
+        }),
+      );
+      harness.openQuestionsRepository.recordRumination({
+        open_question_id: question.id,
+        note: "Earlier I saw timing as the live tension.",
+        tensions: ["Timing was visible, ownership was not."],
+        evidence_episode_ids: [episode.id],
+        source_process: "test",
+        provenance: { kind: "manual" },
+        created_at: 1_500_000,
+      });
+
+      const plan = await process.plan(harness.createContext(), {});
+      const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+      expect(llm.requests[0]?.system).toBe(RUMINATOR_SYSTEM_PROMPT);
+      expect(prompt).toContain("Connected open-question candidates:");
+      expect(prompt).toContain(connected.id);
+      expect(prompt).toContain("Is rollout ownership still unresolved?");
+      expect(prompt).not.toContain(invalidConnectedOpenQuestionId);
+      expect(prompt).toContain("Earlier I saw timing as the live tension.");
+      expect(prompt).toContain("disclosure_class=self_private");
+      expect(plan.items).toEqual(
+        expect.arrayContaining([
+        expect.objectContaining({
+          action: "mark_unresolved",
+          question_id: question.id,
+          next_unresolved_rumination_ticks: 1,
+          rumination_note:
+            "The fresh evidence narrows the rollout tension, but it does not yet settle whether scheduling or ownership is the main cause.",
+          tensions: [
+            "Scheduling evidence points one way while ownership evidence remains unresolved.",
+          ],
+          evidence_episode_ids: [episode.id],
+          connected_open_question_ids: [connected.id, invalidConnectedOpenQuestionId],
+        }),
+        ]),
+      );
+
+      const applyContext = harness.createContext();
+      await process.apply(applyContext, plan);
+
+      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+        status: "open",
+        unresolved_rumination_ticks: 1,
+        last_ruminated_at: clock.now(),
+      });
+      const ruminations = harness.openQuestionsRepository.listRecentRuminations(question.id, {
+        limit: 5,
+      });
+      expect(ruminations.map((rumination) => rumination.note)).toEqual([
+        "The fresh evidence narrows the rollout tension, but it does not yet settle whether scheduling or ownership is the main cause.",
+        "Earlier I saw timing as the live tension.",
+      ]);
+      expect(ruminations[0]).toMatchObject({
+        connected_open_question_ids: [connected.id],
+        source_process: "ruminator",
+        source_run_id: applyContext.runId,
+        source_turn_id: null,
+        provenance: { kind: "offline", process: "ruminator" },
+      });
+      expect(tracer.events).toContainEqual({
+        event: "open_question_rumination.connected_ids_dropped",
+        data: {
+          turnId: applyContext.runId,
+          oq_id: question.id,
+          dropped_connected_open_question_ids: [invalidConnectedOpenQuestionId],
+          reason: "missing_or_not_open",
+        },
+      });
     } finally {
       await harness.cleanup();
     }
@@ -764,6 +923,11 @@ describe("RuminatorProcess", () => {
               question_id: question.id,
               previous: previousWithoutVersion,
               next_unresolved_rumination_ticks: 1,
+              rumination_note: null,
+              tensions: [],
+              connected_open_question_ids: [],
+              evidence_episode_ids: [],
+              evidence_stream_entry_ids: [],
             },
           ],
           errors: [],

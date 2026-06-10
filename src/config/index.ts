@@ -252,6 +252,7 @@ const maintenanceProcessSchema = z.enum([
   "semantic-extractor",
   "curator",
   "overseer",
+  "associator",
   "review-resolver",
   "ruminator",
   "self-narrator",
@@ -396,6 +397,15 @@ const configBaseSchema = z.object({
           budget: z.number().int().positive().default(60_000),
         })
         .prefault({}),
+      associator: z
+        .object({
+          episodesPerSample: z.number().int().positive().max(8).default(8),
+          maxSamplesPerRun: z.number().int().positive().max(2).default(2),
+          maxFindingsPerRun: z.number().int().positive().max(4).default(4),
+          ceilingConfidence: z.number().positive().max(0.5).default(0.5),
+          budget: z.number().int().positive().default(60_000),
+        })
+        .prefault({}),
       semanticExtractor: z
         .object({
           maxEpisodesPerRun: z.number().int().positive().default(8),
@@ -513,6 +523,7 @@ const configBaseSchema = z.object({
         .default([
           "reflector",
           "overseer",
+          "associator",
           "review-resolver",
           "ruminator",
           "self-narrator",
@@ -1129,6 +1140,31 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "reflector", "budget"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_REFLECTOR_BUDGET"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "associator", "episodesPerSample"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_ASSOCIATOR_EPISODES_PER_SAMPLE"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "associator", "maxSamplesPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_ASSOCIATOR_MAX_SAMPLES_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "associator", "maxFindingsPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_ASSOCIATOR_MAX_FINDINGS_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "associator", "ceilingConfidence"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_ASSOCIATOR_CEILING_CONFIDENCE"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "associator", "budget"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_ASSOCIATOR_BUDGET"),
   );
   setConfigOverride(
     overrides,

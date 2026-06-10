@@ -26,6 +26,7 @@ import {
   EMIT_OBSERVE_FINALIZER_TOOL_NAME,
   EMIT_SELF_REPORT_FINALIZER_TOOL_NAME,
   resolveAvailableEmissionNames,
+  resolveAvailableEmissionTools,
   runFinalizer,
   type EmissionDecision,
   type EmissionToolName,
@@ -69,6 +70,10 @@ import type { SessionParticipationPolicy } from "../../sessions/index.js";
 import { isCreatorInOperatorContext } from "../authority.js";
 import { exposesOutboundTool, type TurnOrigin } from "../types.js";
 import { mergeDeliberationUsage } from "./usage.js";
+import {
+  buildFinalizerToolMenuItems,
+  resolveFinalizerNonTerminalTools,
+} from "./autonomous-finalizer-tools.js";
 
 export type {
   DeliberationContext,
@@ -756,6 +761,49 @@ export class Deliberator {
       contradictionRoutingTier: decision.contradiction_tier,
       deliberationPath: decision.path,
     };
+    const allowedEmissions = allowedEmissionsForParticipationPolicy(
+      effectiveContext.participationPolicy,
+      effectiveContext.turnOrigin,
+    );
+    const availableEmissionNames = resolveAvailableEmissionNames(
+      allowedEmissions,
+      effectiveContext.turnOrigin,
+    );
+    const manualOutboundAuthorized =
+      isCreatorInOperatorContext({
+        currentSenderBorgRole: effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
+        sessionAudienceRole: effectiveContext.creatorContext?.sessionAudienceRole ?? null,
+      }) &&
+      (effectiveContext.operatorSessionSnapshot?.sessions.some(
+        (session) => session.outbound_targetable,
+      ) ??
+        false);
+    const autonomousOutboundAuthorized =
+      effectiveContext.turnOrigin === "autonomous" &&
+      (effectiveContext.autonomousOutbound?.targets.length ?? 0) > 0;
+    const outboundToolAvailable =
+      exposesOutboundTool(effectiveContext.turnOrigin) &&
+      (manualOutboundAuthorized || autonomousOutboundAuthorized);
+    const availableEmissionTools = resolveAvailableEmissionTools(
+      allowedEmissions,
+      effectiveContext.turnOrigin,
+    );
+    const nonTerminalFinalizerTools = resolveFinalizerNonTerminalTools({
+      dispatcher: this.options.toolDispatcher,
+      turnOrigin: effectiveContext.turnOrigin,
+      outboundToolAvailable,
+    });
+    effectiveContext = {
+      ...effectiveContext,
+      ...(effectiveContext.turnOrigin === "autonomous"
+        ? {
+            autonomousFinalizerToolMenu: buildFinalizerToolMenuItems([
+              ...availableEmissionTools,
+              ...nonTerminalFinalizerTools,
+            ]),
+          }
+        : {}),
+    };
     const baseSystemPromptOptions: BuildBaseSystemPromptOptions = {
       retrievalContextBudget,
       semanticContextBudget,
@@ -814,29 +862,6 @@ export class Deliberator {
       ...(thinking === undefined ? {} : { thinking }),
       ...(effort === undefined ? {} : { effort }),
     };
-    const allowedEmissions = allowedEmissionsForParticipationPolicy(
-      effectiveContext.participationPolicy,
-      effectiveContext.turnOrigin,
-    );
-    const availableEmissionNames = resolveAvailableEmissionNames(
-      allowedEmissions,
-      effectiveContext.turnOrigin,
-    );
-    const manualOutboundAuthorized =
-      isCreatorInOperatorContext({
-        currentSenderBorgRole: effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
-        sessionAudienceRole: effectiveContext.creatorContext?.sessionAudienceRole ?? null,
-      }) &&
-      (effectiveContext.operatorSessionSnapshot?.sessions.some(
-        (session) => session.outbound_targetable,
-      ) ??
-        false);
-    const autonomousOutboundAuthorized =
-      effectiveContext.turnOrigin === "autonomous" &&
-      (effectiveContext.autonomousOutbound?.targets.length ?? 0) > 0;
-    const outboundToolAvailable =
-      exposesOutboundTool(effectiveContext.turnOrigin) &&
-      (manualOutboundAuthorized || autonomousOutboundAuthorized);
     const baseFinalizerCallContext = {
       context,
       effectiveContext,

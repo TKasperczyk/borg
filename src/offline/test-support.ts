@@ -344,6 +344,10 @@ export function createTestConfig(
         ...DEFAULT_CONFIG.offline.reflector,
         ...overrides.offline?.reflector,
       },
+      associator: {
+        ...DEFAULT_CONFIG.offline.associator,
+        ...overrides.offline?.associator,
+      },
       proceduralSynthesizer: {
         ...DEFAULT_CONFIG.offline.proceduralSynthesizer,
         ...overrides.offline?.proceduralSynthesizer,

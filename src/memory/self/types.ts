@@ -34,6 +34,7 @@ export const OPEN_QUESTION_SOURCES = [
   "contradiction",
   "ruminator",
   "overseer",
+  "associator",
   "autonomy",
   "deliberator",
 ] as const;
@@ -268,34 +269,34 @@ export const goalPatchSchema = goalSchema
   .partial()
   .strict();
 
-export const openQuestionSchema = z
-  .object({
-    id: openQuestionIdSchema,
-    record_version: z.number().int().positive().optional(),
-    question: z.string().min(1),
-    urgency: z.number().min(0).max(1),
-    status: openQuestionStatusSchema,
-    goal_id: goalIdSchema.nullable().default(null),
-    audience_entity_id: openQuestionAudienceEntityIdSchema.nullable().default(null),
-    related_episode_ids: z.array(episodeIdSchema),
-    related_semantic_node_ids: z.array(semanticNodeIdSchema),
-    provenance: provenanceSchema.nullable(),
-    source: openQuestionSourceSchema,
-    created_at: z.number().finite(),
-    last_touched: z.number().finite(),
-    resolution_evidence_episode_ids: z.array(episodeIdSchema),
-    resolution_evidence_stream_entry_ids: z.array(openQuestionResolutionStreamEntryIdSchema),
-    resolution_disclosure_label: memoryDisclosureLabelSchema.optional(),
-    resolution_note: z.string().nullable(),
-    resolved_at: z.number().finite().nullable(),
-    abandoned_reason: z.string().nullable(),
-    abandoned_at: z.number().finite().nullable(),
-    resolved_by_artifact_entry_id: openQuestionResolvedByArtifactEntryIdSchema
-      .nullable()
-      .optional(),
-    unresolved_rumination_ticks: z.number().int().nonnegative().default(0),
-    last_ruminated_at: z.number().finite().nullable().default(null),
-  })
+export const openQuestionSchema = z.object({
+  id: openQuestionIdSchema,
+  record_version: z.number().int().positive().optional(),
+  question: z.string().min(1),
+  urgency: z.number().min(0).max(1),
+  status: openQuestionStatusSchema,
+  goal_id: goalIdSchema.nullable().default(null),
+  audience_entity_id: openQuestionAudienceEntityIdSchema.nullable().default(null),
+  related_episode_ids: z.array(episodeIdSchema),
+  related_semantic_node_ids: z.array(semanticNodeIdSchema),
+  disclosure_label: memoryDisclosureLabelSchema.optional(),
+  provenance: provenanceSchema.nullable(),
+  source: openQuestionSourceSchema,
+  created_at: z.number().finite(),
+  last_touched: z.number().finite(),
+  resolution_evidence_episode_ids: z.array(episodeIdSchema),
+  resolution_evidence_stream_entry_ids: z.array(openQuestionResolutionStreamEntryIdSchema),
+  resolution_disclosure_label: memoryDisclosureLabelSchema.optional(),
+  resolution_note: z.string().nullable(),
+  resolved_at: z.number().finite().nullable(),
+  abandoned_reason: z.string().nullable(),
+  abandoned_at: z.number().finite().nullable(),
+  resolved_by_artifact_entry_id: openQuestionResolvedByArtifactEntryIdSchema.nullable().optional(),
+  unresolved_rumination_ticks: z.number().int().nonnegative().default(0),
+  last_ruminated_at: z.number().finite().nullable().default(null),
+});
+
+export const openQuestionRecordSchema = openQuestionSchema
   .refine(
     (value) =>
       value.related_episode_ids.length > 0 ||
@@ -326,6 +327,7 @@ export const openQuestionPatchSchema = z.object({
   audience_entity_id: openQuestionAudienceEntityIdSchema.nullable().optional(),
   related_episode_ids: z.array(episodeIdSchema).optional(),
   related_semantic_node_ids: z.array(semanticNodeIdSchema).optional(),
+  disclosure_label: memoryDisclosureLabelSchema.optional(),
   provenance: provenanceSchema.nullable().optional(),
   source: openQuestionSourceSchema.optional(),
   last_touched: z.number().finite().optional(),

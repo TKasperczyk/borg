@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ScheduledWakesRepository } from "../../autonomy/index.js";
 import { buildToolDispatcher } from "../../borg/tools-setup.js";
 import { SemanticGraph } from "../../memory/semantic/index.js";
+import { TrainOfThoughtRepository } from "../../memory/train-of-thought/index.js";
 import { createEpisodeFixture, createOfflineTestHarness } from "../../offline/test-support.js";
 import { StreamWriter } from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
@@ -23,8 +24,10 @@ function createHarnessToolDispatcher(
     semanticNodeRepository: harness.semanticNodeRepository,
     semanticGraph,
     commitmentRepository: harness.commitmentRepository,
+    entityRepository: harness.entityRepository,
     identityService: harness.identityService,
     skillRepository: harness.skillRepository,
+    trainOfThoughtRepository: new TrainOfThoughtRepository({ db: harness.db, clock }),
     scheduledWakesRepository: new ScheduledWakesRepository({ db: harness.db, clock }),
     createStreamWriter: (sessionId) =>
       new StreamWriter({

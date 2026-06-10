@@ -20,6 +20,7 @@ function createSelfNarratorResponse(input: {
     evidence_episode_ids: string[];
   } | null;
   period_decision?: "continue_current" | "open_new";
+  period_narrative?: string | null;
 }) {
   const observations =
     input.observation === null
@@ -47,6 +48,7 @@ function createSelfNarratorResponse(input: {
         name: SELF_NARRATOR_TOOL_NAME,
         input: {
           observations,
+          period_narrative: input.period_narrative ?? null,
           period_decision: input.period_decision ?? "open_new",
           period_decision_confidence: 0.8,
         },
@@ -680,6 +682,80 @@ describe("SelfNarratorProcess", () => {
           code: "SELF_NARRATOR_EMPTY_NARRATIVE",
         }),
       ]);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("uses composed period narrative when the model emits one", async () => {
+    const composedNarrative =
+      "I have been learning to treat deployment review as an ongoing practice rather than a one-off checklist, carrying the earlier planning period into more concrete operational judgment.";
+    const llm = new FakeLLMClient({
+      responses: [
+        createSelfNarratorResponse({
+          period_decision: "continue_current",
+          period_narrative: composedNarrative,
+          observation: {
+            category: "understanding",
+            theme: "deployment review",
+            what_changed: "Deployment review became a continuous practice.",
+            before_description: "Deployment review felt episodic.",
+            after_description: "Deployment review now connects planning and operations.",
+            confidence: 0.8,
+            evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
+          },
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const current = harness.autobiographicalRepository.upsertPeriod({
+        label: "2026-Q1",
+        start_ts: Date.UTC(2026, 0, 1),
+        narrative: "Planning quarter.",
+        themes: ["planning"],
+        provenance: { kind: "offline", process: "self-narrator" },
+      });
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({
+          id: "ep_aaaaaaaaaaaaaaaa" as never,
+          title: "Deploy rehearsal",
+          narrative: "Deployment review became concrete.",
+          tags: ["deploy"],
+          created_at: Date.UTC(2026, 6, 10),
+          updated_at: Date.UTC(2026, 6, 10),
+        }),
+      );
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({
+          id: "ep_bbbbbbbbbbbbbbbb" as never,
+          title: "Deploy follow-up",
+          narrative: "Deployment review stayed active.",
+          tags: ["deploy"],
+          created_at: Date.UTC(2026, 6, 11),
+          updated_at: Date.UTC(2026, 6, 11),
+        }),
+      );
+
+      const plan = await process.plan(harness.createContext(), {});
+      const update = plan.items.find((item) => item.action === "update_period_narrative");
+
+      expect(update).toMatchObject({
+        action: "update_period_narrative",
+        period_id: current.id,
+        narrative: composedNarrative,
+      });
+      expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
+        "I compose it in first-person prose",
+      );
     } finally {
       await harness.cleanup();
     }

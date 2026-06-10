@@ -46,6 +46,7 @@ export function createOpenQuestionsCreateTool(
   return {
     name: "tool.openQuestions.create",
     description: "Create a new open question in self-memory.",
+    menuSummary: "Create a self-memory open question.",
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "write",
     inputSchema: openQuestionsCreateInputSchema,

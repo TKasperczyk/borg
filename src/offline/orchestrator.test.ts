@@ -133,6 +133,7 @@ describe("maintenance orchestrator", () => {
         "semantic-extractor": process,
         curator: process,
         overseer: process,
+        associator: process,
         "review-resolver": process,
         ruminator: process,
         "self-narrator": process,
@@ -255,6 +256,7 @@ describe("maintenance orchestrator", () => {
         proposed: 3,
         accepted: 2,
         rejected: 1,
+        truncated: 1,
       },
     } satisfies OfflineResult;
     const fallbackResult = {
@@ -313,6 +315,8 @@ describe("maintenance orchestrator", () => {
         candidates_proposed: 3,
         candidates_accepted: 2,
         candidates_rejected: 1,
+        candidates_truncated: 1,
+        notes: ["candidate_cap_truncated:1"],
         errors: 1,
       }),
     });

@@ -102,6 +102,7 @@ export function createEpisodicSearchTool(
   return {
     name: "tool.episodic.search",
     description: "Search episodic memory for relevant episodes.",
+    menuSummary: "Search episodic memory by relevance.",
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "read",
     inputSchema: episodicSearchInputSchema,

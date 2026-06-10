@@ -11,9 +11,12 @@ export {
 export { toAnthropicToolDefinitions } from "./anthropic.js";
 export {
   createCommitmentsListTool,
+  createEpisodicRecentTool,
   createEpisodicSearchTool,
   createIdentityEventsListForCognitionTool,
+  createJournalAppendTool,
   createOpenQuestionsCreateTool,
+  createOpenQuestionsResolveTool,
   createOutboundPostTool,
   OUTBOUND_POST_TOOL_NAME,
   createScheduledWakesCancelTool,

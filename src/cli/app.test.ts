@@ -784,7 +784,7 @@ describe("cli", () => {
     });
   });
 
-  it("supports ruminate and narrate dream commands", async () => {
+  it("supports associate, ruminate, and narrate dream commands", async () => {
     const tempDir = createCliTempDir(tempDirs);
 
     const store = new LanceDbStore({
@@ -855,6 +855,21 @@ describe("cli", () => {
           stop_reason: "tool_use",
           tool_calls: [
             {
+              id: "toolu_associate_cli",
+              name: "EmitAssociations",
+              input: {
+                findings: [],
+              },
+            },
+          ],
+        },
+        {
+          text: "",
+          input_tokens: 30,
+          output_tokens: 20,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
               id: "toolu_1",
               name: "EmitRuminatorDecisions",
               input: {
@@ -899,6 +914,19 @@ describe("cli", () => {
       provenance: { kind: "manual" },
     });
     await seedBorg.close();
+
+    const associateOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "dream", "associate", "--dry-run"], {
+        stdout: associateOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+        openBorg: () => openTestBorg(tempDir, llm),
+      }),
+    ).toBe(0);
+    expect(JSON.parse(associateOut.read())).toMatchObject({
+      dryRun: true,
+    });
 
     const ruminateOut = createOutputBuffer();
     expect(

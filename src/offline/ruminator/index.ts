@@ -15,8 +15,10 @@ import {
   growthMarkerIdSchema,
   growthMarkerSchema,
   openQuestionIdSchema,
+  openQuestionResolutionStreamEntryIdSchema,
   openQuestionSchema,
   type OpenQuestion,
+  type OpenQuestionRumination,
 } from "../../memory/self/index.js";
 import { expectedRecordVersion } from "../../memory/common/cas.js";
 import { resolveOpenQuestionThroughIdentityService } from "../../memory/lifecycle-ops/index.js";
@@ -32,6 +34,7 @@ import {
 import {
   combineMemoryDisclosureLabels,
   memoryDisclosureLabelFromEpisodeAccess,
+  selfPrivateMemoryDisclosureLabel,
 } from "../../memory/common/disclosure-label.js";
 import { createGrowthMarkerId, DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
@@ -53,24 +56,56 @@ import { episodeEvidencePromptRow } from "../evidence-labels.js";
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const GROWTH_MARKER_CONFIDENCE_CEILING = 0.6;
 const OPEN_QUESTION_ACTIVE_ACTION_STATES = ["considering", "committed_to_do", "scheduled"] as const;
+const RECENT_RUMINATIONS_PER_QUESTION = 3;
+const CONNECTED_OPEN_QUESTION_CANDIDATE_LIMIT = 8;
 
-const resolutionResponseSchema = z.object({
-  resolution_note: z.string().min(1),
-  growth_marker: z
-    .object({
-      what_changed: z.string().min(1),
-      before_description: z.string().nullable().optional(),
-      after_description: z.string().nullable().optional(),
-      confidence: z.number().min(0).max(1),
-      category: growthMarkerCategorySchema,
-    })
-    .nullable(),
+export const RUMINATOR_SYSTEM_PROMPT = [
+  "I return to my open questions with time to think.",
+  "I weigh what has accumulated since I last visited a question: what now pulls toward an answer, what still resists, and what has shifted even when the question remains open.",
+  "When the evidence genuinely settles a question, I resolve it plainly and write what that resolution changes for me.",
+  "When the question is not settled, I keep it open with articulated reasoning: the live tension, what evidence would settle it, and any movement in my understanding.",
+  "I notice when questions connect: when two uncertainties are the same uncertainty, or when movement on one question changes another.",
+  "Groundedness is a value, not a cage. I invent no evidence and cite only what is supplied, but I do not stay timid when the evidence is enough.",
+].join(" ");
+
+const ruminatorGrowthMarkerResponseSchema = z
+  .object({
+    what_changed: z.string().min(1),
+    before_description: z.string().nullable().optional(),
+    after_description: z.string().nullable().optional(),
+    confidence: z.number().min(0).max(1),
+    category: growthMarkerCategorySchema,
+  })
+  .nullable();
+
+const ruminationResponseToolSchema = z.object({
+  outcome: z.enum(["resolved", "still_open"]),
+  resolution_note: z.string().min(1).nullable().optional(),
+  growth_marker: ruminatorGrowthMarkerResponseSchema.optional(),
+  reasoning: z.string().min(1).nullable().optional(),
+  tensions: z.array(z.string().min(1)).optional(),
+  connected_open_question_ids: z.array(openQuestionIdSchema).optional(),
 });
+const resolvedRuminationResponseSchema = z.object({
+  outcome: z.literal("resolved"),
+  resolution_note: z.string().min(1),
+  growth_marker: ruminatorGrowthMarkerResponseSchema.default(null),
+});
+const stillOpenRuminationResponseSchema = z.object({
+  outcome: z.literal("still_open"),
+  reasoning: z.string().min(1),
+  tensions: z.array(z.string().min(1)),
+  connected_open_question_ids: z.array(openQuestionIdSchema),
+});
+type RuminationResponse =
+  | z.infer<typeof resolvedRuminationResponseSchema>
+  | z.infer<typeof stillOpenRuminationResponseSchema>;
 const RUMINATOR_TOOL_NAME = "EmitRuminatorDecisions";
 export const RUMINATOR_TOOL = {
   name: RUMINATOR_TOOL_NAME,
-  description: "Emit a grounded open-question resolution note and optional growth marker.",
-  inputSchema: toToolInputSchema(resolutionResponseSchema),
+  description:
+    "Emit either a grounded open-question resolution or a still-open deliberation note with tensions and connected questions.",
+  inputSchema: toToolInputSchema(ruminationResponseToolSchema),
 } satisfies LLMToolDefinition;
 
 const serializableGrowthMarkerSchema = growthMarkerSchema.extend({
@@ -115,6 +150,11 @@ const ruminatorPlanItemSchema = z.discriminatedUnion("action", [
     question_id: openQuestionIdSchema,
     previous: openQuestionSchema,
     next_unresolved_rumination_ticks: z.number().int().nonnegative(),
+    rumination_note: z.string().min(1).nullable().default(null),
+    tensions: z.array(z.string().min(1)).default([]),
+    connected_open_question_ids: z.array(openQuestionIdSchema).default([]),
+    evidence_episode_ids: z.array(episodeIdSchema).default([]),
+    evidence_stream_entry_ids: z.array(openQuestionResolutionStreamEntryIdSchema).default([]),
   }),
 ]);
 
@@ -170,7 +210,67 @@ function reinsertOpenQuestion(
   repository.restore(question);
 }
 
-function buildResolutionPrompt(question: OpenQuestion, evidence: string): string {
+function renderRecentRuminationNotes(ruminations: readonly OpenQuestionRumination[]): string {
+  if (ruminations.length === 0) {
+    return "[]";
+  }
+
+  return ruminations
+    .map((rumination) =>
+      JSON.stringify({
+        created_at: rumination.created_at,
+        note: rumination.note,
+        tensions: rumination.tensions,
+        connected_open_question_ids: rumination.connected_open_question_ids,
+        evidence_episode_ids: rumination.evidence_episode_ids,
+        evidence_stream_entry_ids: rumination.evidence_stream_entry_ids,
+        ...memoryDisclosurePayloadFields(selfPrivateMemoryDisclosureLabel()),
+      }),
+    )
+    .join("\n");
+}
+
+function connectedOpenQuestionCandidates(
+  question: OpenQuestion,
+  allOpenQuestions: readonly OpenQuestion[],
+): OpenQuestion[] {
+  return allOpenQuestions
+    .filter((candidate) => candidate.id !== question.id && candidate.status === "open")
+    .sort(
+      (left, right) =>
+        right.last_touched - left.last_touched ||
+        right.urgency - left.urgency ||
+        right.created_at - left.created_at ||
+        left.id.localeCompare(right.id),
+    )
+    .slice(0, CONNECTED_OPEN_QUESTION_CANDIDATE_LIMIT);
+}
+
+function renderConnectedOpenQuestionCandidates(candidates: readonly OpenQuestion[]): string {
+  if (candidates.length === 0) {
+    return "[]";
+  }
+
+  return candidates
+    .map((candidate) =>
+      JSON.stringify({
+        id: candidate.id,
+        question: candidate.question,
+        urgency: candidate.urgency,
+        last_touched: candidate.last_touched,
+        source: candidate.source,
+        ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(candidate)),
+      }),
+    )
+    .join("\n");
+}
+
+function buildResolutionPrompt(
+  question: OpenQuestion,
+  evidence: string,
+  recentRuminations: readonly OpenQuestionRumination[],
+  connectedCandidates: readonly OpenQuestion[],
+): string {
   const questionRow = {
     id: question.id,
     question: question.question,
@@ -179,14 +279,21 @@ function buildResolutionPrompt(question: OpenQuestion, evidence: string): string
   };
 
   return [
-    "I turn over this open question using only the evidence below.",
+    "I turn over this open question using only the evidence and recent self-private rumination notes below.",
     `I emit my result by calling the ${RUMINATOR_TOOL_NAME} tool exactly once.`,
-    "I only include a growth_marker if the evidence clearly shows new understanding.",
-    `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to resolution_note and any growth_marker text fields.`,
+    "I choose outcome=resolved only when the evidence genuinely settles the question.",
+    "I choose outcome=still_open when the question should remain open, and then I state the reasoning, live tensions, connected open questions, and what evidence would settle it.",
+    "For connected_open_question_ids, I cite only ids from Connected open-question candidates. I use [] when none of those prompt-visible questions genuinely connects.",
+    "I only include a growth_marker on a resolved outcome when the evidence clearly shows new understanding.",
+    `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to resolution_note, reasoning, tensions, and any growth_marker text fields.`,
     "Open question:",
     JSON.stringify(questionRow),
+    "Connected open-question candidates:",
+    renderConnectedOpenQuestionCandidates(connectedCandidates),
     "Evidence:",
     evidence,
+    "Recent rumination notes:",
+    renderRecentRuminationNotes(recentRuminations),
   ].join("\n\n");
 }
 
@@ -208,7 +315,13 @@ function invalidResolutionResponse(error: unknown): unknown {
 }
 
 function parseResolutionResponse(input: unknown) {
-  return resolutionResponseSchema.parse(input);
+  const parsed = ruminationResponseToolSchema.parse(input);
+
+  if (parsed.outcome === "resolved") {
+    return resolvedRuminationResponseSchema.parse(parsed);
+  }
+
+  return stillOpenRuminationResponseSchema.parse(parsed);
 }
 
 function isOfflineChange(change: OfflineChange | null): change is OfflineChange {
@@ -542,6 +655,7 @@ async function planResolution(
   llmClient: LLMClient,
   question: OpenQuestion,
   maxQuestionsPerRun: number,
+  allOpenQuestions: readonly OpenQuestion[],
 ): Promise<RuminatorPlan["items"][number] | null> {
   const retrieval = await searchResolutionEvidence(ctx, question, maxQuestionsPerRun);
   const freshEvidence = retrieval.episodes.filter(
@@ -620,7 +734,11 @@ async function planResolution(
       ),
     )
     .join("\n");
-  let response: z.infer<typeof resolutionResponseSchema>;
+  const recentRuminations = ctx.openQuestionsRepository.listRecentRuminations(question.id, {
+    limit: RECENT_RUMINATIONS_PER_QUESTION,
+  });
+  const connectedCandidates = connectedOpenQuestionCandidates(question, allOpenQuestions);
+  let response: RuminationResponse;
 
   try {
     response = (
@@ -628,11 +746,16 @@ async function planResolution(
         llmClient,
         request: {
           model: ctx.config.anthropic.models.background,
-          system: "I update my open questions conservatively and only from grounded evidence.",
+          system: RUMINATOR_SYSTEM_PROMPT,
           messages: [
             {
               role: "user",
-              content: buildResolutionPrompt(question, evidenceBlock),
+              content: buildResolutionPrompt(
+                question,
+                evidenceBlock,
+                recentRuminations,
+                connectedCandidates,
+              ),
             },
           ],
           tools: [RUMINATOR_TOOL],
@@ -646,6 +769,29 @@ async function planResolution(
     ).parsed;
   } catch (error) {
     throw invalidResolutionResponse(error);
+  }
+
+  if (response.outcome === "still_open") {
+    const nextUnresolvedRuminationTicks = question.unresolved_rumination_ticks + 1;
+
+    emitOpenQuestionResolutionAttempt(ctx, {
+      oqId: question.id,
+      sourcePath: "offline_ruminator",
+      decision: "planned_still_open",
+      decisionReason: "llm_still_open_deliberation",
+    });
+
+    return {
+      action: "mark_unresolved",
+      question_id: question.id,
+      previous: question,
+      next_unresolved_rumination_ticks: nextUnresolvedRuminationTicks,
+      rumination_note: response.reasoning.trim(),
+      tensions: response.tensions.map((tension) => tension.trim()).filter((value) => value.length > 0),
+      connected_open_question_ids: response.connected_open_question_ids,
+      evidence_episode_ids: citedEvidenceEpisodeIds,
+      evidence_stream_entry_ids: [],
+    };
   }
 
   const growthMarker =
@@ -722,6 +868,36 @@ function planFallbackAction(
   }
 
   return null;
+}
+
+function validateConnectedOpenQuestionIds(
+  ctx: OfflineContext,
+  questionId: OpenQuestion["id"],
+  connectedOpenQuestionIds: readonly OpenQuestion["id"][],
+): OpenQuestion["id"][] {
+  const validIds: OpenQuestion["id"][] = [];
+  const droppedIds: OpenQuestion["id"][] = [];
+
+  for (const connectedId of [...new Set(connectedOpenQuestionIds)]) {
+    const connected = ctx.openQuestionsRepository.get(connectedId);
+
+    if (connectedId !== questionId && connected?.status === "open") {
+      validIds.push(connectedId);
+    } else {
+      droppedIds.push(connectedId);
+    }
+  }
+
+  if (droppedIds.length > 0 && ctx.tracer?.enabled === true) {
+    ctx.tracer.emit("open_question_rumination.connected_ids_dropped", {
+      turnId: ctx.runId,
+      oq_id: questionId,
+      dropped_connected_open_question_ids: droppedIds,
+      reason: "missing_or_not_open",
+    });
+  }
+
+  return validIds;
 }
 
 export type RuminatorProcessOptions = {
@@ -859,7 +1035,13 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
           }
 
           try {
-            const resolution = await planResolution(ctx, llmClient, question, maxQuestionsPerRun);
+            const resolution = await planResolution(
+              ctx,
+              llmClient,
+              question,
+              maxQuestionsPerRun,
+              allOpenQuestions,
+            );
 
             if (resolution !== null) {
               items.push(resolution);
@@ -889,6 +1071,11 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
               question_id: question.id,
               previous: question,
               next_unresolved_rumination_ticks: nextUnresolvedRuminationTicks,
+              rumination_note: null,
+              tensions: [],
+              connected_open_question_ids: [],
+              evidence_episode_ids: [],
+              evidence_stream_entry_ids: [],
             });
           } catch (error) {
             if (error instanceof BudgetExceededError) {
@@ -939,6 +1126,11 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
 
     for (const item of plan.items) {
       if (item.action === "mark_unresolved") {
+        const current = ctx.openQuestionsRepository.get(item.question_id);
+        const shouldRecordRumination =
+          current !== null &&
+          current.status === "open" &&
+          current.unresolved_rumination_ticks < item.next_unresolved_rumination_ticks;
         ctx.openQuestionsRepository.markRuminated(
           item.question_id,
           item.next_unresolved_rumination_ticks,
@@ -946,6 +1138,25 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
             expectedVersion: expectedRecordVersion(item.previous),
           },
         );
+        if (shouldRecordRumination && item.rumination_note !== null) {
+          const connectedOpenQuestionIds = validateConnectedOpenQuestionIds(
+            ctx,
+            item.question_id,
+            item.connected_open_question_ids,
+          );
+          ctx.openQuestionsRepository.recordRumination({
+            open_question_id: item.question_id,
+            note: item.rumination_note,
+            tensions: item.tensions,
+            connected_open_question_ids: connectedOpenQuestionIds,
+            evidence_episode_ids: item.evidence_episode_ids,
+            evidence_stream_entry_ids: item.evidence_stream_entry_ids,
+            source_process: this.name,
+            source_run_id: ctx.runId,
+            source_turn_id: null,
+            provenance: processProvenance,
+          });
+        }
         continue;
       }
 
