@@ -315,6 +315,200 @@ describe("Stream & Provenance", () => {
     expect(olderRequest).toBeDefined();
   });
 
+  it("preserves scroll position from the previous top anchor when loading older pages", async () => {
+    const live = makeLiveSource();
+    streamFetch(
+      [streamEntry({ id: "strm_new", kind: "agent_msg", content: "new row", timestamp: 10 })],
+      {
+        nextCursor: "cursor_old",
+        olderEntries: [
+          streamEntry({ id: "strm_old", kind: "user_msg", content: "older row", timestamp: 1 }),
+        ],
+      },
+    );
+    let topAnchorTop = 20;
+    vi.spyOn(window.HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.classList.contains("stream-main")) {
+        return {
+          top: 0,
+          bottom: 240,
+          left: 0,
+          right: 320,
+          width: 320,
+          height: 240,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        };
+      }
+      if (this.dataset.streamAnchorId === "group:turn_1") {
+        return {
+          top: topAnchorTop,
+          bottom: topAnchorTop + 24,
+          left: 0,
+          right: 320,
+          width: 320,
+          height: 24,
+          x: 0,
+          y: topAnchorTop,
+          toJSON: () => ({}),
+        };
+      }
+      return {
+        top: 260,
+        bottom: 284,
+        left: 0,
+        right: 320,
+        width: 320,
+        height: 24,
+        x: 0,
+        y: 260,
+        toJSON: () => ({}),
+      };
+    });
+
+    const { container } = renderWithInspector(
+      <LiveEventsProvider value={live.live()}>
+        <StreamScreen sessionId="default" />
+      </LiveEventsProvider>,
+    );
+    const main = container.querySelector(".stream-main") as HTMLElement;
+    main.scrollTop = 100;
+
+    fireEvent.click(await screen.findByRole("button", { name: "load older" }));
+    topAnchorTop = 50;
+
+    await screen.findByText("older row");
+    expect(main.scrollTop).toBe(130);
+  });
+
+  it("does not consume the older-load scroll anchor on a live append before older load completes", async () => {
+    const live = makeLiveSource();
+    const older = deferredResponse();
+    const fetchMock = vi.fn((request: RequestInfo | URL) => {
+      const url = requestUrl(request);
+      if (url.pathname === "/api/stream") {
+        if (url.searchParams.get("before") === "cursor_old") {
+          return older.promise;
+        }
+        return Promise.resolve(
+          jsonResponse({
+            entries: [
+              streamEntry({
+                id: "strm_new",
+                kind: "agent_msg",
+                content: "new row",
+                timestamp: 10,
+                turn_id: "turn_1",
+              }),
+            ],
+            next_cursor: "cursor_old",
+          }),
+        );
+      }
+      if (url.pathname === "/api/attachments") {
+        return Promise.resolve(jsonResponse([]));
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    let topAnchorTop = 20;
+    vi.spyOn(window.HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.classList.contains("stream-main")) {
+        return {
+          top: 0,
+          bottom: 240,
+          left: 0,
+          right: 320,
+          width: 320,
+          height: 240,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        };
+      }
+      if (this.dataset.streamAnchorId === "group:turn_1") {
+        return {
+          top: topAnchorTop,
+          bottom: topAnchorTop + 24,
+          left: 0,
+          right: 320,
+          width: 320,
+          height: 24,
+          x: 0,
+          y: topAnchorTop,
+          toJSON: () => ({}),
+        };
+      }
+      return {
+        top: 260,
+        bottom: 284,
+        left: 0,
+        right: 320,
+        width: 320,
+        height: 24,
+        x: 0,
+        y: 260,
+        toJSON: () => ({}),
+      };
+    });
+
+    const { container } = renderWithInspector(
+      <LiveEventsProvider value={live.live()}>
+        <StreamScreen sessionId="default" />
+      </LiveEventsProvider>,
+    );
+    const main = container.querySelector(".stream-main") as HTMLElement;
+    main.scrollTop = 100;
+
+    fireEvent.click(await screen.findByRole("button", { name: "load older" }));
+    topAnchorTop = 60;
+    act(() => {
+      live.emit({
+        type: "stream:append",
+        ts: 11,
+        entries: [
+          streamEntry({
+            id: "strm_live_during_older",
+            kind: "agent_msg",
+            content: "live during older",
+            timestamp: 11,
+            turn_id: "turn_live",
+          }),
+        ],
+      });
+    });
+
+    expect(await screen.findByText("live during older")).toBeInTheDocument();
+    expect(main.scrollTop).toBe(100);
+
+    topAnchorTop = 50;
+    await act(async () => {
+      older.resolve(
+        jsonResponse({
+          entries: [
+            streamEntry({
+              id: "strm_old",
+              kind: "user_msg",
+              content: "older row",
+              timestamp: 1,
+              turn_id: "turn_old",
+            }),
+          ],
+          next_cursor: null,
+        }),
+      );
+      await older.promise;
+    });
+
+    await screen.findByText("older row");
+    expect(main.scrollTop).toBe(130);
+  });
+
   it("discards a stale older page when server filters change in flight", async () => {
     const live = makeLiveSource();
     const older = deferredResponse();
@@ -528,9 +722,90 @@ describe("Stream & Provenance", () => {
     fireEvent.click(screen.getByRole("button", { name: /has attachment/ }));
 
     await waitFor(() => {
-      expect(container.querySelector(".stream-row.selected")).toBeNull();
+      expect(container.querySelector(".stream-row.selected")).not.toBeNull();
     });
-    expect(screen.getByText("select a stream entry")).toBeInTheDocument();
+    expect(
+      screen.getByText("Selected stream entry is hidden by the current filters."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("[strm_att]")).toBeInTheDocument();
+  });
+
+  it("preserves selected and collapsed visible groups across server filter refetches", async () => {
+    const live = makeLiveSource();
+    streamFetch([
+      streamEntry({
+        id: "strm_keep",
+        kind: "user_msg",
+        content: "keep selected",
+        timestamp: 4,
+        turn_id: "turn_keep",
+      }),
+      streamEntry({
+        id: "strm_agent",
+        kind: "agent_msg",
+        content: "agent row",
+        timestamp: 3,
+        turn_id: "turn_agent",
+      }),
+    ]);
+
+    const { container } = renderWithInspector(
+      <LiveEventsProvider value={live.live()}>
+        <StreamScreen sessionId="default" />
+      </LiveEventsProvider>,
+    );
+    const main = container.querySelector(".stream-main") as HTMLElement;
+
+    fireEvent.click(await screen.findByRole("button", { name: "collapse turn_keep" }));
+    expect(within(main).queryByText("keep selected")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /agent_msg/ }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "expand turn_keep" })).toBeInTheDocument();
+    });
+    expect(screen.queryByText("select a stream entry")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Selected stream entry is hidden by the current filters."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the last active kind pill focusable and guards the click", async () => {
+    const live = makeLiveSource();
+    streamFetch([
+      streamEntry({ id: "strm_user", kind: "user_msg", content: "user row", timestamp: 2 }),
+    ]);
+
+    renderWithInspector(
+      <LiveEventsProvider value={live.live()}>
+        <StreamScreen sessionId="default" />
+      </LiveEventsProvider>,
+    );
+
+    await screen.findByText("user row");
+    for (const kind of [
+      "user_image_attachment",
+      "agent_msg",
+      "agent_suppressed",
+      "agent_observed",
+      "thought",
+      "tool_call",
+      "tool_result",
+      "perception",
+      "internal_event",
+      "dream_report",
+    ]) {
+      fireEvent.click(screen.getByRole("button", { name: new RegExp(kind) }));
+    }
+
+    const lastKind = screen.getByRole("button", { name: /user_msg/ });
+    expect(lastKind).not.toBeDisabled();
+    expect(lastKind).toHaveAttribute("aria-disabled", "true");
+    expect(lastKind).toHaveAttribute("title", "At least one stream kind must stay selected");
+    lastKind.focus();
+    expect(lastKind).toHaveFocus();
+    fireEvent.click(lastKind);
+    expect(lastKind).toHaveAttribute("aria-disabled", "true");
   });
 
   it("uses entry index ordering for the loaded window selection", async () => {

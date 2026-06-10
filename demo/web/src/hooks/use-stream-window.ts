@@ -23,7 +23,7 @@ export type UseStreamWindowResult = {
   nextCursor: string | null;
   wsState: WsState;
   refetch: () => Promise<void>;
-  loadOlder: () => Promise<void>;
+  loadOlder: () => Promise<boolean>;
 };
 
 function attachmentStatusInvalidationIds(entries: readonly StreamEntry[]): string[] {
@@ -185,7 +185,7 @@ export function useStreamWindow({
 
   const loadOlder = useCallback(async () => {
     if (nextCursor === null || loadingOlderRef.current) {
-      return;
+      return false;
     }
 
     const requestSeq = requestSeqRef.current;
@@ -210,13 +210,14 @@ export function useStreamWindow({
         olderRequestSeqRef.current !== olderRequestSeq ||
         filterKeyRef.current !== requestFilterKey
       ) {
-        return;
+        return false;
       }
       const matchingEntries = response.entries.filter((entry) =>
         serverFilterMatches(entry, { sessionId, kinds: normalizedKinds, audience }),
       );
       setEntries((current) => mergeStreamEntriesForTurnGrouping(current, matchingEntries));
       setNextCursor(response.next_cursor);
+      return matchingEntries.length > 0;
     } catch (caught) {
       if (
         mountedRef.current &&
@@ -226,6 +227,7 @@ export function useStreamWindow({
       ) {
         setError(caught instanceof Error ? caught : new Error(String(caught)));
       }
+      return false;
     } finally {
       if (olderRequestSeqRef.current === olderRequestSeq) {
         loadingOlderRef.current = false;

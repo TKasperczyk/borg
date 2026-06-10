@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 
 import { ApiError, getLedger } from "../../api/client";
 import type {
@@ -18,6 +18,7 @@ export type LedgerViewProps = {
   cachedLedger?: EvidenceLedger;
   active: boolean;
   audience: string | null;
+  loadState?: LedgerLoadState;
   entryFilter?: (entry: EvidenceLedgerEntry) => boolean;
   emptyMessage?: string;
 };
@@ -32,6 +33,101 @@ type LedgerState = {
   turnId: string;
   ledger: EvidenceLedger;
 };
+
+export type LedgerLoadState = {
+  ledger: EvidenceLedger | null;
+  error: string | null;
+};
+
+export function useLedgerLoadState({
+  turnId,
+  cachedLedger,
+  active,
+}: Pick<LedgerViewProps, "turnId" | "cachedLedger" | "active">): LedgerLoadState {
+  const mountedRef = useRef(true);
+  const latestTurnIdRef = useRef<string | null>(turnId);
+  const inFlightRef = useRef<{
+    turnId: string;
+    promise: Promise<EvidenceLedger>;
+  } | null>(null);
+  const [ledgerState, setLedgerState] = useState<LedgerState | null>(() =>
+    turnId === null || cachedLedger === undefined ? null : { turnId, ledger: cachedLedger },
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    latestTurnIdRef.current = turnId;
+    setError(null);
+
+    if (turnId === null) {
+      setLedgerState(null);
+      return;
+    }
+
+    if (cachedLedger !== undefined) {
+      setLedgerState({ turnId, ledger: cachedLedger });
+      return;
+    }
+
+    setLedgerState((current) => (current?.turnId === turnId ? current : null));
+  }, [cachedLedger, turnId]);
+
+  const loadedTurnId = ledgerState?.turnId ?? null;
+
+  useEffect(() => {
+    if (!active || turnId === null || cachedLedger !== undefined || loadedTurnId === turnId) {
+      return;
+    }
+
+    setError(null);
+    const existingLoad =
+      inFlightRef.current?.turnId === turnId ? inFlightRef.current.promise : null;
+    const ledgerLoad =
+      existingLoad ??
+      getLedger(turnId).then((response) => {
+        return response.ledger;
+      });
+    if (existingLoad === null) {
+      inFlightRef.current = { turnId, promise: ledgerLoad };
+    }
+
+    void ledgerLoad
+      .then((ledger) => {
+        if (mountedRef.current && latestTurnIdRef.current === turnId) {
+          setLedgerState({ turnId, ledger });
+          setError(null);
+        }
+      })
+      .catch((caught: unknown) => {
+        if (mountedRef.current && latestTurnIdRef.current === turnId) {
+          setLedgerState(null);
+          setError(
+            caught instanceof ApiError && caught.status === 404
+              ? "ledger not retained (pre-restart) - durable replay lands in a later persistence sprint"
+              : caught instanceof Error
+                ? caught.message
+                : String(caught),
+          );
+        }
+      })
+      .finally(() => {
+        if (inFlightRef.current?.promise === ledgerLoad) {
+          inFlightRef.current = null;
+        }
+      });
+  }, [active, cachedLedger, loadedTurnId, turnId]);
+
+  return {
+    ledger: ledgerState?.turnId === turnId ? ledgerState.ledger : null,
+    error,
+  };
+}
 
 function groupForSection(section: EvidenceLedgerSection): LedgerGroup {
   return {
@@ -161,66 +257,20 @@ export function LedgerView({
   cachedLedger,
   active,
   audience,
+  loadState,
   entryFilter,
   emptyMessage = "ledger not loaded yet",
 }: LedgerViewProps) {
-  const [ledgerState, setLedgerState] = useState<LedgerState | null>(() =>
-    turnId === null || cachedLedger === undefined ? null : { turnId, ledger: cachedLedger },
-  );
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setError(null);
-
-    if (turnId === null) {
-      setLedgerState(null);
-      return;
-    }
-
-    if (cachedLedger !== undefined) {
-      setLedgerState({ turnId, ledger: cachedLedger });
-      return;
-    }
-
-    setLedgerState((current) => (current?.turnId === turnId ? current : null));
-  }, [cachedLedger, turnId]);
-
-  useEffect(() => {
-    if (!active || turnId === null || cachedLedger !== undefined) {
-      return;
-    }
-
-    let cancelled = false;
-    setError(null);
-    void getLedger(turnId)
-      .then((response) => {
-        if (!cancelled) {
-          setLedgerState({ turnId, ledger: response.ledger });
-        }
-      })
-      .catch((caught: unknown) => {
-        if (!cancelled) {
-          setLedgerState(null);
-          setError(
-            caught instanceof ApiError && caught.status === 404
-              ? "ledger not retained (pre-restart) - durable replay lands in a later persistence sprint"
-              : caught instanceof Error
-                ? caught.message
-                : String(caught),
-          );
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [active, cachedLedger, turnId]);
+  const localLoadState = useLedgerLoadState({
+    turnId,
+    cachedLedger,
+    active: loadState === undefined && active,
+  });
+  const { ledger, error } = loadState ?? localLoadState;
 
   if (turnId === null) {
     return <Empty>send a turn to build an evidence ledger</Empty>;
   }
-
-  const ledger = ledgerState?.turnId === turnId ? ledgerState.ledger : null;
 
   if (ledger === null) {
     return <Empty>{error ?? emptyMessage}</Empty>;
@@ -255,9 +305,7 @@ export function LedgerView({
             <span>{group.label}</span>
             <span className="count">[{group.entries.length}]</span>
           </div>
-          {group.entries.length === 0 ? (
-            <div className="lgr-empty">— none —</div>
-          ) : null}
+          {group.entries.length === 0 ? <div className="lgr-empty">— none —</div> : null}
           {group.entries.map((entry) => {
             const sourceObjectType = ledgerSourceObjectType(entry.source_type);
             const sourceObjectId =
@@ -267,7 +315,9 @@ export function LedgerView({
                 <div className="head">
                   <span className="id">
                     {sourceObjectType === null || sourceObjectId === null ? (
-                      <>[{group.id}:{entry.id}]</>
+                      <>
+                        [{group.id}:{entry.id}]
+                      </>
                     ) : (
                       <IdRef
                         id={sourceObjectId}
@@ -291,11 +341,7 @@ export function LedgerView({
                     {entry.citations.map((citation, index) => (
                       <Fragment key={`${citation}:${index}`}>
                         {index === 0 ? null : ", "}
-                        {resolveObjectType(citation) === null ? (
-                          citation
-                        ) : (
-                          <IdRef id={citation} />
-                        )}
+                        {resolveObjectType(citation) === null ? citation : <IdRef id={citation} />}
                       </Fragment>
                     ))}
                   </div>

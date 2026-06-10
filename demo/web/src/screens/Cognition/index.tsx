@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   getAssembledPrompt,
@@ -42,7 +42,6 @@ const CHAT_KINDS: readonly StreamEntryKind[] = [
   "agent_suppressed",
   "agent_observed",
 ];
-const CHAT_PANEL_LIMIT = 16;
 const TURN_HISTORY_LIMIT = 12;
 const DEMO_SOURCE_TYPE = "demo";
 const LAZY_XRAY_TABS = new Set<XrayTabId>(["shared", "commitments", "open_qs", "prompt"]);
@@ -327,12 +326,19 @@ export function CognitionScreen({
   const live = useLiveEventsContext();
   const [chatEntries, setChatEntries] = useState<StreamEntry[]>([]);
   const [optimisticEntries, setOptimisticEntries] = useState<ChatStreamEntry[]>([]);
+  const [chatNextCursor, setChatNextCursor] = useState<string | null>(null);
+  const [loadingOlderChat, setLoadingOlderChat] = useState(false);
+  const [olderChatError, setOlderChatError] = useState<Error | null>(null);
   const [replayTurnId, setReplayTurnId] = useState<string | null>(null);
   const [xrayTab, setXrayTab] = useState<XrayTabId>("flow");
   const [activatedXrayTabs, setActivatedXrayTabs] = useState<ReadonlySet<XrayTabId>>(
     () => new Set(),
   );
   const previousConnectionCountRef = useRef(live.connectionCount);
+  const olderChatRequestSeqRef = useRef(0);
+  const chatFilterKey = `${sessionId}\n${audienceValue ?? ""}`;
+  const chatFilterKeyRef = useRef(chatFilterKey);
+  chatFilterKeyRef.current = chatFilterKey;
   const participationPolicy = session?.participation_policy ?? "active";
   const participationPolicyLocked = session?.audience_role === "operator";
 
@@ -367,8 +373,12 @@ export function CognitionScreen({
   const refetchTurns = turnsApi.refetch;
 
   useEffect(() => {
+    olderChatRequestSeqRef.current += 1;
     setChatEntries([]);
     setOptimisticEntries([]);
+    setChatNextCursor(null);
+    setLoadingOlderChat(false);
+    setOlderChatError(null);
     setReplayTurnId(null);
   }, [audienceValue, sessionId]);
 
@@ -395,6 +405,8 @@ export function CognitionScreen({
           streamData.entries,
         ),
       );
+      setChatNextCursor(streamData.next_cursor);
+      setOlderChatError(null);
     }
   }, [audienceValue, sessionId, streamApi.data]);
 
@@ -471,11 +483,63 @@ export function CognitionScreen({
     };
   }, [audienceValue, live.connectionCount, replaceTailFromEntries, resetForReconnect, sessionId]);
 
+  const loadOlderChat = useCallback(async (): Promise<boolean> => {
+    if (audienceValue === null || chatNextCursor === null || loadingOlderChat) {
+      return false;
+    }
+
+    const requestSeq = olderChatRequestSeqRef.current + 1;
+    const requestFilterKey = chatFilterKeyRef.current;
+    olderChatRequestSeqRef.current = requestSeq;
+    setLoadingOlderChat(true);
+    setOlderChatError(null);
+
+    try {
+      const stream = await getStream({
+        session: sessionId,
+        audience: audienceValue,
+        kinds: CHAT_KINDS,
+        limit: 50,
+        before: chatNextCursor,
+      });
+
+      if (
+        olderChatRequestSeqRef.current !== requestSeq ||
+        chatFilterKeyRef.current !== requestFilterKey
+      ) {
+        return false;
+      }
+
+      setOptimisticEntries((current) =>
+        withoutReconciledOptimisticEntries(current, stream.entries),
+      );
+      setChatEntries((current) =>
+        mergeEntries(
+          current.filter(
+            (entry) => entry.session_id === sessionId && entry.audience === audienceValue,
+          ),
+          stream.entries,
+        ),
+      );
+      setChatNextCursor(stream.next_cursor);
+      return stream.entries.length > 0;
+    } catch (caught) {
+      if (
+        olderChatRequestSeqRef.current === requestSeq &&
+        chatFilterKeyRef.current === requestFilterKey
+      ) {
+        setOlderChatError(caught instanceof Error ? caught : new Error(String(caught)));
+      }
+      return false;
+    } finally {
+      if (olderChatRequestSeqRef.current === requestSeq) {
+        setLoadingOlderChat(false);
+      }
+    }
+  }, [audienceValue, chatNextCursor, loadingOlderChat, sessionId]);
+
   const visibleChatEntries = useMemo(
-    () =>
-      (sortStreamEntries([...chatEntries, ...optimisticEntries]) as ChatStreamEntry[]).slice(
-        -CHAT_PANEL_LIMIT,
-      ),
+    () => sortStreamEntries([...chatEntries, ...optimisticEntries]) as ChatStreamEntry[],
     [chatEntries, optimisticEntries],
   );
   const liveLedger =
@@ -567,6 +631,10 @@ export function CognitionScreen({
           audienceValue={audienceValue}
           audienceDisplay={audienceDisplay}
           running={turnStream.running}
+          hasOlder={chatNextCursor !== null}
+          loadingOlder={loadingOlderChat}
+          olderError={olderChatError}
+          onLoadOlder={loadOlderChat}
         />
         <ParticipationPolicyControl
           sessionId={sessionId}

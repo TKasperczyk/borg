@@ -27,7 +27,7 @@ import { lifecycleLabel, tagKind as lifecycleTagKind } from "../../lib/shared-st
 import { formatTimestamp } from "../../lib/stream-utils";
 import { shortId } from "../screen-utils";
 import { FlowChart } from "./FlowChart";
-import { LedgerView } from "./LedgerView";
+import { LedgerView, useLedgerLoadState } from "./LedgerView";
 
 export type XrayTabId =
   | "flow"
@@ -357,9 +357,21 @@ function PromptTab({ state }: { state: ApiDataState<PromptAssembledResponse> }) 
   );
 }
 
-function RawLedgerTab({ ledger }: { ledger?: EvidenceLedger }) {
-  if (ledger === undefined) {
-    return <Empty>ledger not loaded yet</Empty>;
+function RawLedgerTab({
+  turnId,
+  loadState,
+}: {
+  turnId: string | null;
+  loadState: ReturnType<typeof useLedgerLoadState>;
+}) {
+  const { ledger, error } = loadState;
+
+  if (turnId === null) {
+    return <Empty>send a turn to build an evidence ledger</Empty>;
+  }
+
+  if (ledger === null) {
+    return <Empty>{error ?? "ledger not loaded yet"}</Empty>;
   }
 
   return (
@@ -393,6 +405,14 @@ export function Xray({
   activeTab,
   onTabChange,
 }: XrayProps) {
+  const ledgerLoadState = useLedgerLoadState({
+    turnId: activeTurnId,
+    cachedLedger,
+    active:
+      activeTurnId !== null &&
+      (activeTab === "ledger" || activeTab === "memory" || activeTab === "raw"),
+  });
+
   return (
     <div className="xray">
       <ReplayContext turn={replayTurn} />
@@ -436,6 +456,7 @@ export function Xray({
             cachedLedger={cachedLedger}
             active={activeTurnId !== null}
             audience={audience}
+            loadState={ledgerLoadState}
           />
         ) : null}
         {activeTab === "memory" ? (
@@ -444,6 +465,7 @@ export function Xray({
             cachedLedger={cachedLedger}
             active={activeTurnId !== null}
             audience={audience}
+            loadState={ledgerLoadState}
             entryFilter={retrievalEntry}
             emptyMessage="no retrieved memory in this ledger"
           />
@@ -452,7 +474,9 @@ export function Xray({
         {activeTab === "commitments" ? <CommitmentsTab state={commitmentsApi} /> : null}
         {activeTab === "open_qs" ? <OpenQuestionsTab state={identityApi} /> : null}
         {activeTab === "prompt" ? <PromptTab state={promptApi} /> : null}
-        {activeTab === "raw" ? <RawLedgerTab ledger={cachedLedger} /> : null}
+        {activeTab === "raw" ? (
+          <RawLedgerTab turnId={activeTurnId} loadState={ledgerLoadState} />
+        ) : null}
       </div>
     </div>
   );

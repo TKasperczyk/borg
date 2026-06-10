@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
-import { getMemoryBand } from "../../api/client";
+import { ApiError, getDreamAudit, getMemoryBand, getReviews } from "../../api/client";
 import type {
+  MaintenanceAuditRow,
   MemoryBandDetail,
   MemoryBandId,
   ProceduralMemoryItem,
+  ReviewRow,
   SemanticMemoryEdge,
   SemanticMemoryNode,
 } from "../../api/types";
@@ -16,10 +18,14 @@ import {
   type RouteNavigationOptions,
 } from "../../routes";
 import { previewLine } from "../SessionFleet";
-import { shortId } from "../../screens/screen-utils";
+import { isInternalId, shortId } from "../../screens/screen-utils";
 import { useInspector } from "../Inspector/inspector-context";
-import { resolveObjectType, type ObjectType } from "../Inspector/inspector-id";
-import { objectRegistry } from "../Inspector/inspector-registry";
+import {
+  resolveObjectType,
+  type ObjectType,
+  type PrefixedObjectType,
+} from "../Inspector/inspector-id";
+import { boundedAllSettled, objectRegistry } from "../Inspector/inspector-registry";
 
 type CommandPaletteProps = {
   open: boolean;
@@ -53,10 +59,63 @@ type MemoryHit = {
 };
 
 type MemorySearchState =
-  | { status: "idle"; query: string; hits: MemoryHit[]; error: null }
-  | { status: "loading"; query: string; hits: MemoryHit[]; error: null }
-  | { status: "ready"; query: string; hits: MemoryHit[]; error: null }
-  | { status: "error"; query: string; hits: MemoryHit[]; error: string };
+  | {
+      status: "idle";
+      query: string;
+      hits: MemoryHit[];
+      error: null;
+      failures: MemorySearchFailure[];
+    }
+  | {
+      status: "loading";
+      query: string;
+      hits: MemoryHit[];
+      error: null;
+      failures: MemorySearchFailure[];
+    }
+  | {
+      status: "ready";
+      query: string;
+      hits: MemoryHit[];
+      error: null;
+      failures: MemorySearchFailure[];
+    }
+  | {
+      status: "error";
+      query: string;
+      hits: MemoryHit[];
+      error: string;
+      failures: MemorySearchFailure[];
+    };
+
+type MemorySearchFailure = {
+  band: SearchableMemoryBand;
+  message: string;
+};
+
+type ObjectOpenCandidate = {
+  type: ObjectType;
+  id: string;
+  subtitle?: string;
+};
+
+type ObjectLookupState =
+  | { status: "idle"; query: string; type: null; error: null }
+  | { status: "checking"; query: string; type: ObjectType; error: null }
+  | { status: "found"; query: string; type: ObjectType; id: string; error: null }
+  | { status: "missing"; query: string; type: ObjectType; error: null }
+  | { status: "error"; query: string; type: ObjectType; error: string };
+
+type NumericLookupState =
+  | { status: "idle"; query: string; hits: ObjectOpenCandidate[]; failures: string[] }
+  | { status: "loading"; query: string; hits: ObjectOpenCandidate[]; failures: string[] }
+  | { status: "ready"; query: string; hits: ObjectOpenCandidate[]; failures: string[] };
+
+type NumericLookupCache = {
+  reviews: ReviewRow[] | null;
+  dreamRows: MaintenanceAuditRow[] | null;
+  failures: string[];
+};
 
 const GROUP_ORDER: readonly CommandGroup[] = [
   "Screens",
@@ -71,6 +130,7 @@ const SEARCHABLE_MEMORY_BANDS: readonly SearchableMemoryBand[] = [
   "procedural",
 ];
 const MEMORY_SEARCH_LIMIT = 5;
+const MEMORY_SEARCH_DEBOUNCE_MS = 200;
 
 function normalizeCatalogString(value: string): string {
   return value.toLocaleLowerCase().replace(/\s+/g, "");
@@ -105,6 +165,103 @@ function catalogMatches(query: string, strings: readonly string[]): boolean {
 
 function looksLikeUnresolvedObjectId(query: string): boolean {
   return /^\d+$/.test(query) || query.includes("_");
+}
+
+function isNumericQuery(query: string): boolean {
+  return /^\d+$/.test(query);
+}
+
+function containsDisplayEllipsis(query: string): boolean {
+  return query.includes("…");
+}
+
+function isFullShapedPrefixedId(query: string, type: PrefixedObjectType): boolean {
+  return resolveObjectType(query) === type && isInternalId(query);
+}
+
+function failureMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+function cacheKey(candidate: Pick<ObjectOpenCandidate, "type" | "id">): string {
+  return `${candidate.type}:${candidate.id}`;
+}
+
+function mergeObjectCandidates(
+  current: readonly ObjectOpenCandidate[],
+  nextCandidates: readonly ObjectOpenCandidate[],
+): ObjectOpenCandidate[] {
+  const byKey = new Map(current.map((candidate) => [cacheKey(candidate), candidate]));
+  for (const candidate of nextCandidates) {
+    byKey.set(cacheKey(candidate), candidate);
+  }
+  return [...byKey.values()];
+}
+
+function cachedCandidateMatches(query: string, candidate: ObjectOpenCandidate): boolean {
+  if (containsDisplayEllipsis(query)) {
+    const displayId = shortId(candidate.id);
+    return query === displayId || query.includes(displayId);
+  }
+  return candidate.id === query || candidate.id.startsWith(query);
+}
+
+function memoryHitCandidate(hit: MemoryHit): ObjectOpenCandidate {
+  return {
+    type: hit.type,
+    id: hit.id,
+    subtitle: hit.subtitle,
+  };
+}
+
+function reviewCandidate(row: ReviewRow): ObjectOpenCandidate {
+  return {
+    type: "review",
+    id: String(row.id),
+    subtitle: `${row.kind} · ${row.resolved_at === null ? "open" : "resolved"}`,
+  };
+}
+
+function dreamAuditCandidate(row: MaintenanceAuditRow): ObjectOpenCandidate {
+  return {
+    type: "dream_audit",
+    id: String(row.id),
+    subtitle: `${row.process} · ${row.action}`,
+  };
+}
+
+function candidatesFromNumericCache(
+  query: string,
+  cache: NumericLookupCache,
+): ObjectOpenCandidate[] {
+  const hits: ObjectOpenCandidate[] = [];
+  const review = cache.reviews?.find((row) => String(row.id) === query);
+  if (review !== undefined) {
+    hits.push(reviewCandidate(review));
+  }
+
+  const numericId = Number(query);
+  const dreamRow = Number.isFinite(numericId)
+    ? cache.dreamRows?.find((row) => row.id === numericId)
+    : undefined;
+  if (dreamRow !== undefined) {
+    hits.push(dreamAuditCandidate(dreamRow));
+  }
+
+  return hits;
+}
+
+function objectResult(candidate: ObjectOpenCandidate, inspector: ReturnType<typeof useInspector>) {
+  const model = objectRegistry[candidate.type];
+  return {
+    id: `object:${candidate.type}:${candidate.id}`,
+    group: "Open object" as const,
+    title: `Open ${model.label} ${shortId(candidate.id)}`,
+    subtitle: candidate.subtitle ?? candidate.id,
+    icon: "↗",
+    hint: "inspect",
+    run: () => inspector.openObject({ type: candidate.type, id: candidate.id }),
+  };
 }
 
 function memoryHitSubtitle(
@@ -179,6 +336,14 @@ export function CommandPalette({
 }: CommandPaletteProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const optionRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const memorySearchTimerRef = useRef<number | null>(null);
+  const objectLookupTimerRef = useRef<number | null>(null);
+  const numericLookupTimerRef = useRef<number | null>(null);
+  const memorySearchSeqRef = useRef(0);
+  const objectLookupSeqRef = useRef(0);
+  const numericLookupSeqRef = useRef(0);
+  const numericRowsCacheRef = useRef<NumericLookupCache | null>(null);
+  const numericRowsLoadRef = useRef<Promise<NumericLookupCache> | null>(null);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const [memorySearch, setMemorySearch] = useState<MemorySearchState>({
@@ -186,11 +351,31 @@ export function CommandPalette({
     query: "",
     hits: [],
     error: null,
+    failures: [],
   });
+  const [objectLookup, setObjectLookup] = useState<ObjectLookupState>({
+    status: "idle",
+    query: "",
+    type: null,
+    error: null,
+  });
+  const [numericLookup, setNumericLookup] = useState<NumericLookupState>({
+    status: "idle",
+    query: "",
+    hits: [],
+    failures: [],
+  });
+  const [cachedObjectCandidates, setCachedObjectCandidates] = useState<ObjectOpenCandidate[]>([]);
   const { sessionsApi } = useLiveCache();
   const inspector = useInspector();
   const trimmedQuery = query.trim();
+  const numericQuery = isNumericQuery(trimmedQuery);
+  const ellipsizedQuery = containsDisplayEllipsis(trimmedQuery);
   const resolvedObjectType = trimmedQuery.length === 0 ? null : resolveObjectType(trimmedQuery);
+  const fullResolvedObjectType =
+    resolvedObjectType === null || !isFullShapedPrefixedId(trimmedQuery, resolvedObjectType)
+      ? null
+      : resolvedObjectType;
   const unresolvedId =
     trimmedQuery.length > 0 &&
     resolvedObjectType === null &&
@@ -205,50 +390,311 @@ export function CommandPalette({
 
     setQuery("");
     setActiveIndex(0);
+    numericRowsCacheRef.current = null;
+    numericRowsLoadRef.current = null;
     inputRef.current?.focus();
   }, [open]);
 
-  useEffect(() => {
+  const cacheObjectCandidates = useCallback((candidates: readonly ObjectOpenCandidate[]) => {
+    if (candidates.length === 0) {
+      return;
+    }
+    setCachedObjectCandidates((current) => mergeObjectCandidates(current, candidates));
+  }, []);
+
+  const runMemorySearch = useCallback(
+    async (searchQuery: string): Promise<void> => {
+      const requestSeq = memorySearchSeqRef.current + 1;
+      memorySearchSeqRef.current = requestSeq;
+      setMemorySearch({
+        status: "loading",
+        query: searchQuery,
+        hits: [],
+        error: null,
+        failures: [],
+      });
+
+      const results = await boundedAllSettled(SEARCHABLE_MEMORY_BANDS, async (band) =>
+        getMemoryBand(band, { query: searchQuery, limit: MEMORY_SEARCH_LIMIT }),
+      );
+
+      if (memorySearchSeqRef.current !== requestSeq) {
+        return;
+      }
+
+      const hits: MemoryHit[] = [];
+      const failures: MemorySearchFailure[] = [];
+
+      results.forEach((result, index) => {
+        const band = SEARCHABLE_MEMORY_BANDS[index] as SearchableMemoryBand;
+        if (result.status === "fulfilled") {
+          hits.push(...hitsFromMemoryDetail(result.value));
+        } else {
+          failures.push({ band, message: failureMessage(result.reason) });
+        }
+      });
+
+      cacheObjectCandidates(hits.map(memoryHitCandidate));
+
+      if (failures.length === SEARCHABLE_MEMORY_BANDS.length) {
+        setMemorySearch({
+          status: "error",
+          query: searchQuery,
+          hits: [],
+          error: failures.map((failure) => `${failure.band}: ${failure.message}`).join(" · "),
+          failures,
+        });
+        return;
+      }
+
+      setMemorySearch({
+        status: "ready",
+        query: searchQuery,
+        hits,
+        error: null,
+        failures,
+      });
+    },
+    [cacheObjectCandidates],
+  );
+
+  const flushMemorySearch = useCallback(() => {
     if (!shouldSearchMemory) {
-      setMemorySearch({ status: "idle", query: trimmedQuery, hits: [], error: null });
       return;
     }
 
-    let cancelled = false;
-    setMemorySearch({ status: "loading", query: trimmedQuery, hits: [], error: null });
+    if (memorySearchTimerRef.current !== null) {
+      window.clearTimeout(memorySearchTimerRef.current);
+      memorySearchTimerRef.current = null;
+    }
 
-    void Promise.all(
-      SEARCHABLE_MEMORY_BANDS.map(async (band) =>
-        getMemoryBand(band, { query: trimmedQuery, limit: MEMORY_SEARCH_LIMIT }),
-      ),
-    )
-      .then((details) => {
-        if (cancelled) {
-          return;
-        }
-        setMemorySearch({
-          status: "ready",
-          query: trimmedQuery,
-          hits: details.flatMap(hitsFromMemoryDetail),
-          error: null,
-        });
-      })
-      .catch((cause: unknown) => {
-        if (cancelled) {
-          return;
-        }
-        setMemorySearch({
-          status: "error",
-          query: trimmedQuery,
-          hits: [],
-          error: cause instanceof Error ? cause.message : "memory search failed",
-        });
+    void runMemorySearch(trimmedQuery);
+  }, [runMemorySearch, shouldSearchMemory, trimmedQuery]);
+
+  const runObjectLookup = useCallback(
+    async (
+      lookupQuery: string,
+      lookupType: PrefixedObjectType,
+    ): Promise<ObjectOpenCandidate | null> => {
+      const requestSeq = objectLookupSeqRef.current + 1;
+      objectLookupSeqRef.current = requestSeq;
+      setObjectLookup({
+        status: "checking",
+        query: lookupQuery,
+        type: lookupType,
+        error: null,
       });
 
+      try {
+        const object = await objectRegistry[lookupType].fetch(lookupQuery, {
+          sessionId: inspector.sessionId,
+          audience: inspector.audience,
+        });
+        if (objectLookupSeqRef.current !== requestSeq) {
+          return null;
+        }
+
+        if (object === null) {
+          setObjectLookup({
+            status: "missing",
+            query: lookupQuery,
+            type: lookupType,
+            error: null,
+          });
+          return null;
+        }
+
+        const candidate = { type: lookupType, id: lookupQuery };
+        cacheObjectCandidates([candidate]);
+        setObjectLookup({
+          status: "found",
+          query: lookupQuery,
+          type: lookupType,
+          id: lookupQuery,
+          error: null,
+        });
+        return candidate;
+      } catch (caught) {
+        if (objectLookupSeqRef.current !== requestSeq) {
+          return null;
+        }
+
+        if (caught instanceof ApiError && caught.status === 404) {
+          setObjectLookup({
+            status: "missing",
+            query: lookupQuery,
+            type: lookupType,
+            error: null,
+          });
+          return null;
+        }
+
+        setObjectLookup({
+          status: "error",
+          query: lookupQuery,
+          type: lookupType,
+          error: failureMessage(caught),
+        });
+        return null;
+      }
+    },
+    [cacheObjectCandidates, inspector.audience, inspector.sessionId],
+  );
+
+  const loadNumericRows = useCallback(async (): Promise<NumericLookupCache> => {
+    if (numericRowsCacheRef.current !== null) {
+      return numericRowsCacheRef.current;
+    }
+    if (numericRowsLoadRef.current !== null) {
+      return numericRowsLoadRef.current;
+    }
+
+    numericRowsLoadRef.current = Promise.allSettled([
+      getReviews({ openOnly: false }),
+      getDreamAudit(100),
+    ]).then(([reviewsResult, dreamResult]) => {
+      const failures: string[] = [];
+      const cache: NumericLookupCache = {
+        reviews: null,
+        dreamRows: null,
+        failures,
+      };
+
+      if (reviewsResult.status === "fulfilled") {
+        cache.reviews = reviewsResult.value.rows;
+      } else {
+        failures.push(`reviews: ${failureMessage(reviewsResult.reason)}`);
+      }
+
+      if (dreamResult.status === "fulfilled") {
+        cache.dreamRows = dreamResult.value.rows;
+      } else {
+        failures.push(`dream: ${failureMessage(dreamResult.reason)}`);
+      }
+
+      numericRowsCacheRef.current = cache;
+      numericRowsLoadRef.current = null;
+      return cache;
+    });
+
+    return numericRowsLoadRef.current;
+  }, []);
+
+  const runNumericLookup = useCallback(
+    async (searchQuery: string): Promise<void> => {
+      const requestSeq = numericLookupSeqRef.current + 1;
+      numericLookupSeqRef.current = requestSeq;
+      setNumericLookup({ status: "loading", query: searchQuery, hits: [], failures: [] });
+
+      const cache = await loadNumericRows();
+      if (numericLookupSeqRef.current !== requestSeq) {
+        return;
+      }
+
+      const hits = candidatesFromNumericCache(searchQuery, cache);
+      cacheObjectCandidates(hits);
+      setNumericLookup({ status: "ready", query: searchQuery, hits, failures: cache.failures });
+    },
+    [cacheObjectCandidates, loadNumericRows],
+  );
+
+  useEffect(() => {
+    if (!shouldSearchMemory) {
+      if (memorySearchTimerRef.current !== null) {
+        window.clearTimeout(memorySearchTimerRef.current);
+        memorySearchTimerRef.current = null;
+      }
+      memorySearchSeqRef.current += 1;
+      setMemorySearch({
+        status: "idle",
+        query: trimmedQuery,
+        hits: [],
+        error: null,
+        failures: [],
+      });
+      return;
+    }
+
+    if (memorySearchTimerRef.current !== null) {
+      window.clearTimeout(memorySearchTimerRef.current);
+    }
+
+    memorySearchTimerRef.current = window.setTimeout(() => {
+      memorySearchTimerRef.current = null;
+      void runMemorySearch(trimmedQuery);
+    }, MEMORY_SEARCH_DEBOUNCE_MS);
+
     return () => {
-      cancelled = true;
+      if (memorySearchTimerRef.current !== null) {
+        window.clearTimeout(memorySearchTimerRef.current);
+        memorySearchTimerRef.current = null;
+      }
     };
-  }, [shouldSearchMemory, trimmedQuery]);
+  }, [runMemorySearch, shouldSearchMemory, trimmedQuery]);
+
+  useEffect(() => {
+    if (objectLookupTimerRef.current !== null) {
+      window.clearTimeout(objectLookupTimerRef.current);
+      objectLookupTimerRef.current = null;
+    }
+
+    if (!open || fullResolvedObjectType === null || trimmedQuery.length === 0) {
+      objectLookupSeqRef.current += 1;
+      setObjectLookup({ status: "idle", query: trimmedQuery, type: null, error: null });
+      return;
+    }
+
+    objectLookupSeqRef.current += 1;
+    setObjectLookup({
+      status: "checking",
+      query: trimmedQuery,
+      type: fullResolvedObjectType,
+      error: null,
+    });
+
+    objectLookupTimerRef.current = window.setTimeout(() => {
+      objectLookupTimerRef.current = null;
+      void runObjectLookup(trimmedQuery, fullResolvedObjectType);
+    }, MEMORY_SEARCH_DEBOUNCE_MS);
+
+    return () => {
+      if (objectLookupTimerRef.current !== null) {
+        window.clearTimeout(objectLookupTimerRef.current);
+        objectLookupTimerRef.current = null;
+      }
+    };
+  }, [fullResolvedObjectType, open, runObjectLookup, trimmedQuery]);
+
+  useEffect(() => {
+    if (!open || !numericQuery) {
+      if (numericLookupTimerRef.current !== null) {
+        window.clearTimeout(numericLookupTimerRef.current);
+        numericLookupTimerRef.current = null;
+      }
+      numericLookupSeqRef.current += 1;
+      setNumericLookup({ status: "idle", query: trimmedQuery, hits: [], failures: [] });
+      return;
+    }
+
+    if (numericLookupTimerRef.current !== null) {
+      window.clearTimeout(numericLookupTimerRef.current);
+    }
+
+    numericLookupSeqRef.current += 1;
+    setNumericLookup({ status: "loading", query: trimmedQuery, hits: [], failures: [] });
+
+    numericLookupTimerRef.current = window.setTimeout(() => {
+      numericLookupTimerRef.current = null;
+      void runNumericLookup(trimmedQuery);
+    }, MEMORY_SEARCH_DEBOUNCE_MS);
+
+    return () => {
+      if (numericLookupTimerRef.current !== null) {
+        window.clearTimeout(numericLookupTimerRef.current);
+        numericLookupTimerRef.current = null;
+      }
+    };
+  }, [numericQuery, open, runNumericLookup, trimmedQuery]);
 
   const results = useMemo<CommandResult[]>(() => {
     const catalogQuery = trimmedQuery;
@@ -287,33 +733,124 @@ export function CommandPalette({
         run: () => setSessionId(session.session_id),
       }));
 
-    const objectResults: CommandResult[] =
-      resolvedObjectType === null
-        ? unresolvedId
-          ? [
-              {
-                id: `object-unresolved:${trimmedQuery}`,
-                group: "Open object",
-                title: "Object ID not resolvable",
-                subtitle:
-                  "specify a supported type prefix; numeric and non-sniffed ids need a typed opener",
-                icon: "!",
-                hint: "degraded",
-                disabled: true,
-              },
-            ]
-          : []
-        : [
+    const sessionObjectCandidates: ObjectOpenCandidate[] = (sessionsApi.data?.sessions ?? []).map(
+      (session) => ({
+        type: "session",
+        id: session.session_id,
+        subtitle: previewLine(session),
+      }),
+    );
+    const currentMemoryCandidates =
+      memorySearch.query === trimmedQuery ? memorySearch.hits.map(memoryHitCandidate) : [];
+    const availableCandidates = mergeObjectCandidates(
+      [...sessionObjectCandidates, ...cachedObjectCandidates],
+      currentMemoryCandidates,
+    );
+    const matchedCachedCandidates =
+      trimmedQuery.length === 0
+        ? []
+        : availableCandidates.filter((candidate) =>
+            cachedCandidateMatches(trimmedQuery, candidate),
+          );
+    const verifiedExactCandidates =
+      objectLookup.query === trimmedQuery && objectLookup.status === "found"
+        ? [{ type: objectLookup.type, id: objectLookup.id }]
+        : [];
+    const numericCandidates =
+      numericLookup.query === trimmedQuery && numericLookup.status === "ready"
+        ? numericLookup.hits
+        : [];
+    const objectCandidates = mergeObjectCandidates(
+      mergeObjectCandidates(matchedCachedCandidates, verifiedExactCandidates),
+      numericCandidates,
+    );
+    const objectResults: CommandResult[] = [
+      ...objectCandidates.map((candidate) => objectResult(candidate, inspector)),
+      ...(objectLookup.query === trimmedQuery &&
+      objectLookup.status === "checking" &&
+      objectCandidates.length === 0
+        ? [
             {
-              id: `object:${trimmedQuery}`,
-              group: "Open object",
-              title: `Open ${objectRegistry[resolvedObjectType].label} ${shortId(trimmedQuery)}`,
+              id: `object-checking:${trimmedQuery}`,
+              group: "Open object" as const,
+              title: "Checking object id",
               subtitle: trimmedQuery,
               icon: "↗",
-              hint: "inspect",
-              run: () => inspector.openObject({ type: resolvedObjectType, id: trimmedQuery }),
+              hint: "lookup",
+              disabled: true,
             },
-          ];
+          ]
+        : []),
+      ...(objectLookup.query === trimmedQuery && objectLookup.status === "error"
+        ? [
+            {
+              id: `object-error:${trimmedQuery}`,
+              group: "Open object" as const,
+              title: "Object lookup unavailable",
+              subtitle: objectLookup.error,
+              icon: "!",
+              hint: "degraded",
+              disabled: true,
+            },
+          ]
+        : []),
+      ...(numericLookup.query === trimmedQuery &&
+      numericLookup.status === "loading" &&
+      objectCandidates.length === 0
+        ? [
+            {
+              id: `numeric-loading:${trimmedQuery}`,
+              group: "Open object" as const,
+              title: "Checking review and dream rows",
+              subtitle: trimmedQuery,
+              icon: "↗",
+              hint: "lookup",
+              disabled: true,
+            },
+          ]
+        : []),
+      ...(numericLookup.query === trimmedQuery &&
+      numericLookup.status === "ready" &&
+      numericLookup.failures.length > 0
+        ? [
+            {
+              id: `numeric-partial:${trimmedQuery}`,
+              group: "Open object" as const,
+              title: "Partial numeric lookup",
+              subtitle: numericLookup.failures.join(" · "),
+              icon: "!",
+              hint: "degraded",
+              disabled: true,
+            },
+          ]
+        : []),
+      ...(ellipsizedQuery && objectCandidates.length === 0
+        ? [
+            {
+              id: `object-ellipsis:${trimmedQuery}`,
+              group: "Open object" as const,
+              title: "Paste the full id",
+              subtitle: "shortened display ids only resolve from loaded results",
+              icon: "!",
+              hint: "full id",
+              disabled: true,
+            },
+          ]
+        : []),
+      ...(resolvedObjectType === null && unresolvedId && !numericQuery && !ellipsizedQuery
+        ? [
+            {
+              id: `object-unresolved:${trimmedQuery}`,
+              group: "Open object" as const,
+              title: "Object ID not resolvable",
+              subtitle: "specify a supported type prefix or use an existing loaded row",
+              icon: "!",
+              hint: "degraded",
+              disabled: true,
+            },
+          ]
+        : []),
+    ];
 
     const memoryResults: CommandResult[] =
       memorySearch.query === trimmedQuery
@@ -338,6 +875,21 @@ export function CommandPalette({
                     group: "Memory" as const,
                     title: "Memory search unavailable",
                     subtitle: memorySearch.error,
+                    icon: "!",
+                    hint: "degraded",
+                    disabled: true,
+                  },
+                ]
+              : []),
+            ...(memorySearch.failures.length > 0 && memorySearch.status !== "error"
+              ? [
+                  {
+                    id: `memory-partial:${trimmedQuery}`,
+                    group: "Memory" as const,
+                    title: "Partial memory results",
+                    subtitle: memorySearch.failures
+                      .map((failure) => `${failure.band}: ${failure.message}`)
+                      .join(" · "),
                     icon: "!",
                     hint: "degraded",
                     disabled: true,
@@ -406,8 +958,13 @@ export function CommandPalette({
       ...actionCatalog,
     ];
   }, [
+    cachedObjectCandidates,
+    ellipsizedQuery,
     inspector,
     memorySearch,
+    numericLookup,
+    numericQuery,
+    objectLookup,
     onOpenReset,
     resolvedObjectType,
     sessionsApi.data?.sessions,
@@ -451,6 +1008,32 @@ export function CommandPalette({
     event.nativeEvent.stopImmediatePropagation();
   }
 
+  async function runEnter(): Promise<void> {
+    flushMemorySearch();
+
+    if (fullResolvedObjectType !== null) {
+      if (objectLookupTimerRef.current !== null) {
+        window.clearTimeout(objectLookupTimerRef.current);
+        objectLookupTimerRef.current = null;
+      }
+
+      const existingCandidate =
+        objectLookup.query === trimmedQuery && objectLookup.status === "found"
+          ? { type: objectLookup.type, id: objectLookup.id }
+          : null;
+      const candidate =
+        existingCandidate ?? (await runObjectLookup(trimmedQuery, fullResolvedObjectType));
+
+      if (candidate !== null) {
+        inspector.openObject({ type: candidate.type, id: candidate.id });
+        onOpenChange(false);
+      }
+      return;
+    }
+
+    runResult(results[activeIndex]);
+  }
+
   function onKeyDown(event: KeyboardEvent): void {
     if (event.key === "Escape") {
       containHandledKey(event);
@@ -474,7 +1057,7 @@ export function CommandPalette({
 
     if (event.key === "Enter") {
       containHandledKey(event);
-      runResult(results[activeIndex]);
+      void runEnter();
     }
   }
 

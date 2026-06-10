@@ -1,9 +1,16 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RESET_CONFIRM_TOKEN } from "../../api/client";
-import type { MemoryBandDetail, SessionRecord, StateSnapshot } from "../../api/types";
+import type {
+  CommitmentItem,
+  MaintenanceAuditRow,
+  MemoryBandDetail,
+  ReviewRow,
+  SessionRecord,
+  StateSnapshot,
+} from "../../api/types";
 import { LiveEventsProvider } from "../../hooks/live-context";
 import { LiveCacheProvider } from "../../hooks/use-live-cache";
 import { usePaletteHotkey } from "../../hooks/use-palette-hotkey";
@@ -12,6 +19,7 @@ import { Inspector } from "../Inspector/Inspector";
 import { InspectorProvider, useInspector } from "../Inspector/inspector-context";
 import { ResetButton } from "../ResetButton";
 import { ShortcutLegend } from "../ShortcutLegend";
+import { shortId } from "../../screens/screen-utils";
 import { CommandPalette } from "./CommandPalette";
 
 const realLocation = window.location;
@@ -93,9 +101,17 @@ function emptyMemoryDetail(band: "episodic" | "semantic" | "procedural"): Memory
 function setupFetch({
   sessions = [session({ session_id: "default", label: "demo (default)" })],
   memory = {},
+  memoryErrors = {},
+  commitments = [],
+  reviews = [],
+  dreamRows = [],
 }: {
   sessions?: SessionRecord[];
   memory?: Partial<Record<"episodic" | "semantic" | "procedural", MemoryBandDetail>>;
+  memoryErrors?: Partial<Record<"episodic" | "semantic" | "procedural", string>>;
+  commitments?: CommitmentItem[];
+  reviews?: ReviewRow[];
+  dreamRows?: MaintenanceAuditRow[];
 } = {}) {
   const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
     const url = requestUrl(request);
@@ -107,13 +123,31 @@ function setupFetch({
       return Promise.resolve(jsonResponse({ sessions }));
     }
     if (url.pathname === "/api/memory/bands/episodic") {
+      if (memoryErrors.episodic !== undefined) {
+        return Promise.reject(new Error(memoryErrors.episodic));
+      }
       return Promise.resolve(jsonResponse(memory.episodic ?? emptyMemoryDetail("episodic")));
     }
     if (url.pathname === "/api/memory/bands/semantic") {
+      if (memoryErrors.semantic !== undefined) {
+        return Promise.reject(new Error(memoryErrors.semantic));
+      }
       return Promise.resolve(jsonResponse(memory.semantic ?? emptyMemoryDetail("semantic")));
     }
     if (url.pathname === "/api/memory/bands/procedural") {
+      if (memoryErrors.procedural !== undefined) {
+        return Promise.reject(new Error(memoryErrors.procedural));
+      }
       return Promise.resolve(jsonResponse(memory.procedural ?? emptyMemoryDetail("procedural")));
+    }
+    if (url.pathname === "/api/commitments") {
+      return Promise.resolve(jsonResponse({ commitments }));
+    }
+    if (url.pathname === "/api/reviews") {
+      return Promise.resolve(jsonResponse({ rows: reviews }));
+    }
+    if (url.pathname === "/api/dream/audit") {
+      return Promise.resolve(jsonResponse({ rows: dreamRows }));
     }
     if (url.pathname === "/api/admin/reset" && init?.method === "POST") {
       return Promise.resolve(jsonResponse({ ok: true }));
@@ -202,10 +236,32 @@ function renderPalette(
 
 async function openWithMeta(): Promise<HTMLInputElement> {
   fireEvent.keyDown(window, { key: "k", metaKey: true });
+  const searchbox = screen.queryByRole("searchbox", {
+    name: "Command palette search",
+  }) as HTMLInputElement | null;
+  if (searchbox !== null) {
+    return searchbox;
+  }
   return screen.findByRole("searchbox", { name: "Command palette search" });
 }
 
+async function advancePaletteTimers(ms: number): Promise<void> {
+  await act(async () => {
+    vi.advanceTimersByTime(ms);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+async function flushMicrotasks(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
 afterEach(() => {
+  vi.useRealTimers();
   Object.defineProperty(window, "location", {
     configurable: true,
     value: realLocation,
@@ -423,16 +479,157 @@ describe("CommandPalette", () => {
   });
 
   it("opens a prefixed object id through the inspector", async () => {
-    setupFetch();
+    vi.useFakeTimers();
+    const episodeId = "ep_abc1234567890000";
+    const fetchMock = setupFetch({
+      memory: {
+        episodic: {
+          band: "episodic",
+          mode: "browse",
+          items: [
+            {
+              id: episodeId,
+              title: "Exact episode",
+              narrative: "Resolved through the registry list path.",
+              participants: [],
+              location: null,
+              start_time: 1_000,
+              end_time: 2_000,
+              audience: "alice",
+              significance: 0.8,
+              confidence: 0.9,
+              tags: [],
+              source_stream_ids: ["strm_source000001"],
+              source_count: 1,
+              lineage: { derived_from: [], supersedes: [] },
+              emotional_arc: null,
+              vector_dims: 4,
+              created_at: 1_000,
+              updated_at: 2_000,
+            },
+          ],
+          next_cursor: null,
+        },
+      },
+    });
     renderPalette();
 
     const input = await openWithMeta();
-    fireEvent.change(input, { target: { value: "ep_abc123456789" } });
+    fireEvent.change(input, { target: { value: episodeId } });
 
-    expect(await screen.findByText(/Open Episode/)).toBeInTheDocument();
+    expect(screen.getByText("Checking object id")).toBeInTheDocument();
+    expect(callsForPath(fetchMock, "/api/memory/bands/episodic")).toBe(0);
+
+    await advancePaletteTimers(200);
+
+    expect(screen.getByText(/Open Episode/)).toBeInTheDocument();
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect(screen.getByTestId("inspector-target")).toHaveTextContent("episode:ep_abc123456789");
+    expect(screen.getByTestId("inspector-target")).toHaveTextContent(`episode:${episodeId}`);
+  });
+
+  it("flushes a pending full-id verification on immediate Enter", async () => {
+    vi.useFakeTimers();
+    const episodeId = "ep_enterflush000001";
+    const fetchMock = setupFetch({
+      memory: {
+        episodic: {
+          band: "episodic",
+          mode: "browse",
+          items: [
+            {
+              id: episodeId,
+              title: "Enter flush episode",
+              narrative: "Resolved by immediate Enter.",
+              participants: [],
+              location: null,
+              start_time: 1_000,
+              end_time: 2_000,
+              audience: "alice",
+              significance: 0.8,
+              confidence: 0.9,
+              tags: [],
+              source_stream_ids: ["strm_source000001"],
+              source_count: 1,
+              lineage: { derived_from: [], supersedes: [] },
+              emotional_arc: null,
+              vector_dims: 4,
+              created_at: 1_000,
+              updated_at: 2_000,
+            },
+          ],
+          next_cursor: null,
+        },
+      },
+    });
+    renderPalette();
+
+    const input = await openWithMeta();
+    fireEvent.change(input, { target: { value: episodeId } });
+
+    expect(screen.getByText("Checking object id")).toBeInTheDocument();
+    expect(callsForPath(fetchMock, "/api/memory/bands/episodic")).toBe(0);
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    await flushMicrotasks();
+
+    const callsAfterEnter = callsForPath(fetchMock, "/api/memory/bands/episodic");
+    expect(callsAfterEnter).toBeGreaterThanOrEqual(1);
+    expect(screen.getByTestId("inspector-target")).toHaveTextContent(`episode:${episodeId}`);
+
+    await advancePaletteTimers(200);
+    expect(callsForPath(fetchMock, "/api/memory/bands/episodic")).toBe(callsAfterEnter);
+  });
+
+  it("resolves numeric review and dream rows from their list endpoints", async () => {
+    vi.useFakeTimers();
+    const review: ReviewRow = {
+      id: 42,
+      kind: "contradiction",
+      refs: {},
+      reason: "numeric review",
+      created_at: 1,
+      resolved_at: null,
+      resolution: null,
+    };
+    const dreamRow: MaintenanceAuditRow = {
+      id: 42,
+      run_id: "run_numeric",
+      process: "curator",
+      action: "applied",
+      targets: {},
+      reversal: {},
+      applied_at: 1,
+      reverted_at: null,
+      reverted_by: null,
+    };
+    const fetchMock = setupFetch({ reviews: [review], dreamRows: [dreamRow] });
+    renderPalette();
+
+    const input = await openWithMeta();
+    fireEvent.change(input, { target: { value: "4" } });
+    await advancePaletteTimers(199);
+    expect(callsForPath(fetchMock, "/api/reviews")).toBe(0);
+    expect(callsForPath(fetchMock, "/api/dream/audit")).toBe(0);
+
+    fireEvent.change(input, { target: { value: "42" } });
+    await advancePaletteTimers(200);
+
+    expect(screen.getByText("Open Review 42")).toBeInTheDocument();
+    expect(screen.getByText("Open Dream audit row 42")).toBeInTheDocument();
+    expect(callsForPath(fetchMock, "/api/reviews")).toBe(1);
+    expect(callsForPath(fetchMock, "/api/dream/audit")).toBe(1);
+
+    fireEvent.change(input, { target: { value: "43" } });
+    await advancePaletteTimers(200);
+    expect(callsForPath(fetchMock, "/api/reviews")).toBe(1);
+    expect(callsForPath(fetchMock, "/api/dream/audit")).toBe(1);
+
+    fireEvent.change(input, { target: { value: "42" } });
+    await advancePaletteTimers(200);
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(screen.getByTestId("inspector-target")).toHaveTextContent("review:42");
   });
 
   it("shows an honest degraded hint for non-prefixed ids without guessing an object type", async () => {
@@ -440,7 +637,7 @@ describe("CommandPalette", () => {
     renderPalette();
 
     const input = await openWithMeta();
-    fireEvent.change(input, { target: { value: "42" } });
+    fireEvent.change(input, { target: { value: "review_42" } });
 
     expect(await screen.findByText("Object ID not resolvable")).toBeInTheDocument();
     fireEvent.keyDown(input, { key: "Enter" });
@@ -450,6 +647,7 @@ describe("CommandPalette", () => {
   });
 
   it("uses server memory search results and opens the active memory object", async () => {
+    vi.useFakeTimers();
     const episodeId = "ep_meaning0000001";
     const fetchMock = setupFetch({
       memory: {
@@ -488,13 +686,216 @@ describe("CommandPalette", () => {
     const input = await openWithMeta();
     fireEvent.change(input, { target: { value: "meaning" } });
 
-    expect(await screen.findByText("Open Meaning episode")).toBeInTheDocument();
+    await advancePaletteTimers(200);
+
+    expect(screen.getByText("Open Meaning episode")).toBeInTheDocument();
     fireEvent.keyDown(input, { key: "Enter" });
 
     expect(screen.getByTestId("inspector-target")).toHaveTextContent(`episode:${episodeId}`);
     expect(callsForPath(fetchMock, "/api/memory/bands/episodic")).toBeGreaterThanOrEqual(1);
     expect(callsForPath(fetchMock, "/api/memory/bands/semantic")).toBeGreaterThanOrEqual(1);
     expect(callsForPath(fetchMock, "/api/memory/bands/procedural")).toBeGreaterThanOrEqual(1);
+  });
+
+  it("debounces memory fan-out and flushes the pending search on Enter", async () => {
+    vi.useFakeTimers();
+    const episodeId = "ep_debounce000001";
+    const fetchMock = setupFetch({
+      memory: {
+        episodic: {
+          band: "episodic",
+          mode: "search",
+          query: "meaning",
+          items: [
+            {
+              id: episodeId,
+              title: "Debounced episode",
+              narrative: "Returned after debounce.",
+              participants: [],
+              location: null,
+              start_time: 1_000,
+              end_time: 2_000,
+              audience: "alice",
+              significance: 0.8,
+              confidence: 0.9,
+              tags: [],
+              source_stream_ids: ["strm_source000001"],
+              source_count: 1,
+              lineage: { derived_from: [], supersedes: [] },
+              emotional_arc: null,
+              vector_dims: 4,
+              created_at: 1_000,
+              updated_at: 2_000,
+            },
+          ],
+          next_cursor: null,
+        },
+      },
+    });
+    renderPalette();
+
+    const input = await openWithMeta();
+    fireEvent.change(input, { target: { value: "meaning" } });
+
+    expect(callsForPath(fetchMock, "/api/memory/bands/episodic")).toBe(0);
+    await advancePaletteTimers(199);
+    expect(callsForPath(fetchMock, "/api/memory/bands/episodic")).toBe(0);
+
+    await advancePaletteTimers(1);
+
+    expect(screen.getByText("Open Debounced episode")).toBeInTheDocument();
+    const searchesAfterDebounce = callsForPath(fetchMock, "/api/memory/bands/episodic");
+
+    fireEvent.change(input, { target: { value: "zzflush" } });
+    expect(callsForPath(fetchMock, "/api/memory/bands/episodic")).toBe(searchesAfterDebounce);
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    await flushMicrotasks();
+
+    expect(callsForPath(fetchMock, "/api/memory/bands/episodic")).toBeGreaterThan(
+      searchesAfterDebounce,
+    );
+  });
+
+  it("keeps memory hits when one searchable band fails and shows the real partial state", async () => {
+    vi.useFakeTimers();
+    const episodeId = "ep_partial0000001";
+    setupFetch({
+      memory: {
+        episodic: {
+          band: "episodic",
+          mode: "search",
+          query: "partial",
+          items: [
+            {
+              id: episodeId,
+              title: "Partial episode",
+              narrative: "Returned despite a semantic failure.",
+              participants: [],
+              location: null,
+              start_time: 1_000,
+              end_time: 2_000,
+              audience: "alice",
+              significance: 0.8,
+              confidence: 0.9,
+              tags: [],
+              source_stream_ids: ["strm_source000001"],
+              source_count: 1,
+              lineage: { derived_from: [], supersedes: [] },
+              emotional_arc: null,
+              vector_dims: 4,
+              created_at: 1_000,
+              updated_at: 2_000,
+            },
+          ],
+          next_cursor: null,
+        },
+      },
+      memoryErrors: {
+        semantic: "semantic unavailable",
+      },
+    });
+    renderPalette();
+
+    const input = await openWithMeta();
+    fireEvent.change(input, { target: { value: "partial" } });
+
+    await advancePaletteTimers(200);
+
+    expect(screen.getByText("Open Partial episode")).toBeInTheDocument();
+    expect(screen.getByText("Partial memory results")).toBeInTheDocument();
+    expect(screen.getByText(/semantic unavailable/)).toBeInTheDocument();
+  });
+
+  it("does not offer a dead opener for truncated prefixed ids", async () => {
+    vi.useFakeTimers();
+    const fetchMock = setupFetch();
+    renderPalette();
+
+    const input = await openWithMeta();
+    fireEvent.change(input, { target: { value: "cmt_p48r" } });
+
+    await advancePaletteTimers(250);
+
+    expect(callsForPath(fetchMock, "/api/commitments")).toBe(0);
+    expect(screen.queryByText(/Open Commitment/)).not.toBeInTheDocument();
+  });
+
+  it("does not registry-check long partial prefixed ids outside the strict id shape", async () => {
+    vi.useFakeTimers();
+    const fetchMock = setupFetch();
+    renderPalette();
+
+    const input = await openWithMeta();
+    fireEvent.change(input, { target: { value: "cmt_1234567890" } });
+
+    await advancePaletteTimers(250);
+
+    expect(callsForPath(fetchMock, "/api/commitments")).toBe(0);
+    expect(screen.queryByText(/Open Commitment/)).not.toBeInTheDocument();
+  });
+
+  it("resolves pasted ellipsized ids only from loaded object caches", async () => {
+    vi.useFakeTimers();
+    const episodeId = "ep_cachedellipsis0001";
+    setupFetch({
+      memory: {
+        episodic: {
+          band: "episodic",
+          mode: "search",
+          query: "cached",
+          items: [
+            {
+              id: episodeId,
+              title: "Cached ellipsis episode",
+              narrative: "Loaded before the shortened id was pasted.",
+              participants: [],
+              location: null,
+              start_time: 1_000,
+              end_time: 2_000,
+              audience: "alice",
+              significance: 0.8,
+              confidence: 0.9,
+              tags: [],
+              source_stream_ids: ["strm_source000001"],
+              source_count: 1,
+              lineage: { derived_from: [], supersedes: [] },
+              emotional_arc: null,
+              vector_dims: 4,
+              created_at: 1_000,
+              updated_at: 2_000,
+            },
+          ],
+          next_cursor: null,
+        },
+      },
+    });
+    renderPalette();
+
+    const input = await openWithMeta();
+    fireEvent.change(input, { target: { value: "cached" } });
+    await advancePaletteTimers(200);
+    expect(screen.getByText("Open Cached ellipsis episode")).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: shortId(episodeId) } });
+
+    expect(screen.getByText(`Open Episode ${shortId(episodeId)}`)).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByTestId("inspector-target")).toHaveTextContent(`episode:${episodeId}`);
+  });
+
+  it("gives a full-id hint for pasted ellipsized ids that are not loaded", async () => {
+    vi.useFakeTimers();
+    const fetchMock = setupFetch();
+    renderPalette();
+
+    const input = await openWithMeta();
+    fireEvent.change(input, { target: { value: "cmt_p48r…abcd" } });
+
+    expect(screen.getByText("Paste the full id")).toBeInTheDocument();
+    await advancePaletteTimers(250);
+    expect(screen.queryByText(/Open Commitment/)).not.toBeInTheDocument();
+    expect(callsForPath(fetchMock, "/api/commitments")).toBe(0);
   });
 
   it("routes Reset demo through the RESET confirmation before posting", async () => {

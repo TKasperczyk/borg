@@ -1668,6 +1668,18 @@ select {
   flex-direction: column;
   gap: 22px;
 }
+.chat-history-control {
+  display: flex;
+  justify-content: center;
+  margin-bottom: -6px;
+}
+.chat-history-note {
+  align-self: center;
+  max-width: 100%;
+  color: var(--text-mute);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
 .participation-policy {
   border-top: 1px solid var(--line);
   background: var(--bg-1);
@@ -3361,6 +3373,13 @@ g.fc-regen-group.active .fc-regen-label-bg {
   background: var(--bg-1);
   color: var(--text);
 }
+.stream-filters .opt[aria-disabled="true"] {
+  cursor: not-allowed;
+  color: var(--text-faint);
+}
+.stream-filters .opt[aria-disabled="true"]:hover {
+  background: transparent;
+}
 .stream-filters .opt.on {
   color: var(--text);
   background: var(--bg-2);
@@ -3452,6 +3471,14 @@ g.fc-regen-group.active .fc-regen-label-bg {
   display: flex;
   justify-content: center;
   border-top: 1px solid var(--line-soft);
+}
+.stream-inline-note {
+  margin: 8px 14px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text-mute);
+  font-size: var(--fs-xs);
 }
 .stream-detail {
   border-left: 1px solid var(--line);
@@ -5597,15 +5624,15 @@ tr[role="button"]:focus-visible {
 }
 
 .inspector-tabs {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
   border-bottom: 1px solid var(--line);
   background: var(--bg-0);
-  overflow-x: auto;
+  overflow: visible;
 }
 
 .inspector-tab {
-  flex: 1 0 auto;
-  min-width: 78px;
+  min-width: 0;
   text-align: center;
   padding: 9px 7px;
   border: 0;
@@ -5619,7 +5646,9 @@ tr[role="button"]:focus-visible {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  white-space: nowrap;
+  line-height: 1.2;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .inspector-tab:last-child {

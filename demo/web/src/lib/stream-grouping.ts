@@ -2,6 +2,7 @@ import type { StreamEntry } from "../api/types";
 
 export const UNCLAIMED_STREAM_GROUP_ID = "__unclaimed_maintenance__";
 export const UNCLAIMED_STREAM_GROUP_LABEL = "unclaimed / maintenance";
+export const UNCLAIMED_STREAM_GROUP_ID_PREFIX = "unclaimed:";
 
 export type StreamGroupStatus = "active" | "aborted" | "maintenance" | "mixed";
 
@@ -120,6 +121,10 @@ export function mergeStreamEntriesForTurnGrouping(
   return [...byId.values()].sort(compareStreamEntriesForTurnGroup);
 }
 
+export function unclaimedStreamGroupId(entryId: string): string {
+  return `${UNCLAIMED_STREAM_GROUP_ID_PREFIX}${entryId}`;
+}
+
 function groupStatus(turnId: string | null, entries: readonly StreamEntry[]): StreamGroupStatus {
   if (turnId === null) {
     return "maintenance";
@@ -167,7 +172,7 @@ export function groupStreamEntriesByTurn(entries: readonly StreamEntry[]): Strea
 
   for (const entry of entries) {
     const turnId = entry.turn_id ?? null;
-    const id = turnId ?? UNCLAIMED_STREAM_GROUP_ID;
+    const id = turnId ?? unclaimedStreamGroupId(entry.id);
     const group = groups.get(id);
     if (group === undefined) {
       groups.set(id, { turnId, entries: [entry] });

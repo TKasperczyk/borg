@@ -127,7 +127,7 @@ function uniqueStrings(values: readonly string[]): string[] {
   return result;
 }
 
-async function boundedAllSettled<T, R>(
+export async function boundedAllSettled<T, R>(
   items: readonly T[],
   worker: (item: T) => Promise<R>,
   concurrency = INSPECTOR_FANOUT_CONCURRENCY,

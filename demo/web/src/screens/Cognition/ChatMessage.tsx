@@ -36,6 +36,7 @@ export function ChatMessage({ turn, audienceLabel = null }: ChatMessageProps) {
   return (
     <div
       className={`chat-msg ${turn.role}${deliveryStatus === undefined ? "" : " optimistic"}`}
+      data-chat-entry-id={turn.entry.id}
       data-delivery-status={deliveryStatus ?? ""}
     >
       <div className="avatar" aria-hidden="true">

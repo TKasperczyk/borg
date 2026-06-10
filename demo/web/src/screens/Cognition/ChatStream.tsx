@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { Empty } from "../../components/Empty";
 import { IdChip } from "../../components/Inspector/IdChip";
@@ -18,6 +18,10 @@ export type ChatStreamProps = {
   audienceValue: string | null;
   audienceDisplay: AudienceDisplayIdentity;
   running: boolean;
+  hasOlder: boolean;
+  loadingOlder: boolean;
+  olderError: Error | null;
+  onLoadOlder: () => Promise<boolean>;
 };
 
 function IdRefList({ ids, type }: { ids: readonly string[]; type: "stream_entry" | "turn" }) {
@@ -41,7 +45,7 @@ function ChatMarkerRow({ marker }: { marker: ChatMarker }) {
   const invalidTool = marker.summary.finalizerInvalidTool;
 
   return (
-    <details className={`chat-marker ${marker.entry.kind}`}>
+    <details className={`chat-marker ${marker.entry.kind}`} data-chat-entry-id={marker.entry.id}>
       <summary>
         <Tag kind={marker.summary.outcome.tagKind}>{marker.summary.outcome.label}</Tag>
         <span className="chat-marker-kind">{marker.entry.kind}</span>
@@ -109,17 +113,93 @@ export function ChatStream({
   audienceValue,
   audienceDisplay,
   running,
+  hasOlder,
+  loadingOlder,
+  olderError,
+  onLoadOlder,
 }: ChatStreamProps) {
   const chatRef = useRef<HTMLDivElement | null>(null);
+  const followRef = useRef(true);
+  const olderLoadSeqRef = useRef(0);
+  const olderScrollAnchorRef = useRef<{
+    seq: number;
+    id: string;
+    top: number;
+  } | null>(null);
+  const [olderRestoreSeq, setOlderRestoreSeq] = useState(0);
   const turns = useMemo(() => streamEntriesToChatTurns(entries), [entries]);
   const audienceEntityId = audienceDisplay.entityId;
   const audienceLabel = audienceDisplay.label ?? "unknown";
 
-  useEffect(() => {
-    if (chatRef.current !== null) {
-      chatRef.current.scrollTop = chatRef.current.scrollHeight;
+  useLayoutEffect(() => {
+    const chat = chatRef.current;
+    if (chat === null) {
+      return;
     }
-  }, [turns.length, running]);
+
+    const olderAnchor = olderScrollAnchorRef.current;
+    if (olderAnchor !== null) {
+      if (olderAnchor.seq !== olderRestoreSeq) {
+        return;
+      }
+
+      const anchoredElement =
+        [...chat.querySelectorAll<HTMLElement>("[data-chat-entry-id]")].find(
+          (element) => element.dataset.chatEntryId === olderAnchor.id,
+        ) ?? null;
+      olderScrollAnchorRef.current = null;
+      if (anchoredElement === null) {
+        return;
+      }
+
+      chat.scrollTop += anchoredElement.getBoundingClientRect().top - olderAnchor.top;
+      return;
+    }
+
+    if (followRef.current) {
+      chat.scrollTop = chat.scrollHeight;
+      followRef.current = true;
+    }
+  }, [entries.length, olderRestoreSeq, running]);
+
+  async function loadOlder(): Promise<void> {
+    const seq = olderLoadSeqRef.current + 1;
+    olderLoadSeqRef.current = seq;
+    const chat = chatRef.current;
+    if (chat !== null) {
+      const chatTop = chat.getBoundingClientRect().top;
+      const anchors = [...chat.querySelectorAll<HTMLElement>("[data-chat-entry-id]")];
+      const anchor =
+        anchors.find((element) => element.getBoundingClientRect().bottom >= chatTop) ?? null;
+      const anchorId = anchor?.dataset.chatEntryId;
+      olderScrollAnchorRef.current =
+        anchor === null || anchorId === undefined
+          ? null
+          : {
+              seq,
+              id: anchorId,
+              top: anchor.getBoundingClientRect().top,
+            };
+    }
+
+    const loaded = await onLoadOlder();
+    if (olderScrollAnchorRef.current?.seq !== seq) {
+      return;
+    }
+    if (loaded) {
+      setOlderRestoreSeq(seq);
+    } else {
+      olderScrollAnchorRef.current = null;
+    }
+  }
+
+  function updateFollowMode(): void {
+    const chat = chatRef.current;
+    if (chat === null) {
+      return;
+    }
+    followRef.current = chat.scrollHeight - chat.scrollTop - chat.clientHeight <= 24;
+  }
 
   return (
     <>
@@ -136,7 +216,26 @@ export function ChatStream({
           </span>
         </span>
       </div>
-      <div className="chat-stream" ref={chatRef}>
+      <div className="chat-stream" ref={chatRef} onScroll={updateFollowMode}>
+        {hasOlder ? (
+          <div className="chat-history-control">
+            <button
+              type="button"
+              className="btn sm ghost"
+              onClick={() => {
+                void loadOlder();
+              }}
+              disabled={loadingOlder}
+            >
+              {loadingOlder ? "loading older" : "load older"}
+            </button>
+          </div>
+        ) : null}
+        {olderError === null ? null : (
+          <div className="chat-history-note">
+            Older transcript unavailable: {olderError.message}
+          </div>
+        )}
         {turns.length === 0 ? <Empty>no chat history for this audience</Empty> : null}
         {turns.map((turn) =>
           turn.itemType === "marker" ? (

@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import type { StreamEntry } from "../api/types";
 import {
-  UNCLAIMED_STREAM_GROUP_ID,
   UNCLAIMED_STREAM_GROUP_LABEL,
   applyStreamStructuralFilters,
   groupStreamEntriesByTurn,
   hasStreamAttachment,
   matchesStreamStructuralFilters,
+  unclaimedStreamGroupId,
 } from "./stream-grouping";
 
 function entry(input: Partial<StreamEntry> & Pick<StreamEntry, "id" | "kind">): StreamEntry {
@@ -26,19 +26,27 @@ function entry(input: Partial<StreamEntry> & Pick<StreamEntry, "id" | "kind">): 
 }
 
 describe("stream grouping", () => {
-  it("groups loaded entries by turn id and puts null-turn rows in the maintenance lane", () => {
+  it("groups loaded entries by turn id and interleaves null-turn rows chronologically", () => {
     const groups = groupStreamEntriesByTurn([
       entry({ id: "strm_turn_a", kind: "user_msg", turn_id: "turn_a", timestamp: 10 }),
-      entry({ id: "strm_maintenance", kind: "internal_event", timestamp: 11 }),
+      entry({ id: "strm_maintenance_mid", kind: "internal_event", timestamp: 11 }),
+      entry({ id: "strm_maintenance_old", kind: "internal_event", timestamp: 9 }),
       entry({ id: "strm_turn_b", kind: "agent_msg", turn_id: "turn_b", timestamp: 12 }),
     ]);
 
     expect(groups.map((group) => group.id)).toEqual([
       "turn_b",
-      UNCLAIMED_STREAM_GROUP_ID,
+      unclaimedStreamGroupId("strm_maintenance_mid"),
       "turn_a",
+      unclaimedStreamGroupId("strm_maintenance_old"),
     ]);
     expect(groups[1]).toMatchObject({
+      turnId: null,
+      label: UNCLAIMED_STREAM_GROUP_LABEL,
+      status: "maintenance",
+      entryCount: 1,
+    });
+    expect(groups[3]).toMatchObject({
       turnId: null,
       label: UNCLAIMED_STREAM_GROUP_LABEL,
       status: "maintenance",

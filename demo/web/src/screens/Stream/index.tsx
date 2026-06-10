@@ -1,4 +1,12 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { getAttachmentMetadata, getAttachmentStatuses } from "../../api/client";
 import type {
@@ -953,6 +961,7 @@ function StreamTimelineRow({
   return (
     <div
       className={`stream-row ${selected ? "selected " : ""}${isAttachment ? "kind-attachment" : ""}`}
+      data-stream-anchor-id={`entry:${entry.id}`}
       role="button"
       tabIndex={0}
       aria-label={`select stream entry ${entry.id}`}
@@ -1019,7 +1028,7 @@ function StreamGroupHeader({
   onToggle: (groupId: string) => void;
 }) {
   return (
-    <div className="stream-group-head">
+    <div className="stream-group-head" data-stream-anchor-id={`group:${group.id}`}>
       <button
         type="button"
         className="stream-group-toggle"
@@ -1053,6 +1062,10 @@ export function StreamScreen({
   sessionId: string;
   activeSession?: SessionRecord | null;
 }) {
+  const streamMainRef = useRef<HTMLDivElement | null>(null);
+  const streamOlderLoadSeqRef = useRef(0);
+  const scrollAnchorRef = useRef<{ seq: number; id: string; top: number } | null>(null);
+  const [scrollAnchorRestoreSeq, setScrollAnchorRestoreSeq] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectionSeeded, setSelectionSeeded] = useState(false);
   const [selectedKinds, setSelectedKinds] = useState<Set<StreamEntryKind>>(
@@ -1061,6 +1074,7 @@ export function StreamScreen({
   const [audience, setAudience] = useState("all");
   const [structuralFilters, setStructuralFilters] = useState<StreamStructuralFilterState>({});
   const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(() => new Set());
+  const [streamNotice, setStreamNotice] = useState<string | null>(null);
   const [attachmentStatusById, setAttachmentStatusById] = useState<
     Record<string, AttachmentStatusItem["status"]>
   >({});
@@ -1068,7 +1082,6 @@ export function StreamScreen({
     () => STREAM_KINDS.filter((kind) => selectedKinds.has(kind)),
     [selectedKinds],
   );
-  const selectedKindKey = selectedKindList.join(",");
   const serverKinds =
     selectedKindList.length === STREAM_KINDS.length ? undefined : selectedKindList;
   const serverAudience = audience === "all" ? undefined : audience;
@@ -1105,12 +1118,55 @@ export function StreamScreen({
     [selectedAttachmentId],
   );
 
+  const captureStreamScrollAnchor = useCallback((seq: number) => {
+    const container = streamMainRef.current;
+    if (container === null) {
+      return;
+    }
+
+    const containerTop = container.getBoundingClientRect().top;
+    const anchors = [...container.querySelectorAll<HTMLElement>("[data-stream-anchor-id]")];
+    const anchor =
+      anchors.find((element) => element.getBoundingClientRect().bottom >= containerTop) ?? null;
+    const anchorId = anchor?.dataset.streamAnchorId;
+    if (anchor === null || anchorId === undefined) {
+      scrollAnchorRef.current = null;
+      return;
+    }
+
+    scrollAnchorRef.current = {
+      seq,
+      id: anchorId,
+      top: anchor.getBoundingClientRect().top,
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const anchor = scrollAnchorRef.current;
+    const container = streamMainRef.current;
+    if (anchor === null || container === null || anchor.seq !== scrollAnchorRestoreSeq) {
+      return;
+    }
+
+    const anchoredElement =
+      [...container.querySelectorAll<HTMLElement>("[data-stream-anchor-id]")].find(
+        (element) => element.dataset.streamAnchorId === anchor.id,
+      ) ?? null;
+    scrollAnchorRef.current = null;
+    if (anchoredElement === null) {
+      return;
+    }
+
+    container.scrollTop += anchoredElement.getBoundingClientRect().top - anchor.top;
+  }, [groups, scrollAnchorRestoreSeq]);
+
   useEffect(() => {
     setSelectedId(null);
     setSelectionSeeded(false);
     setCollapsedGroupIds(new Set());
+    setStreamNotice(null);
     setAttachmentStatusById({});
-  }, [audience, selectedKindKey, sessionId]);
+  }, [sessionId]);
 
   useEffect(() => {
     if (streamWindow.loading || selectionSeeded) {
@@ -1121,10 +1177,26 @@ export function StreamScreen({
   }, [filtered, selectionSeeded, streamWindow.loading]);
 
   useEffect(() => {
-    if (selectedId !== null && filtered.find((entry) => entry.id === selectedId) === undefined) {
-      setSelectedId(null);
+    if (streamWindow.loading) {
+      return;
     }
-  }, [filtered, selectedId]);
+    if (selectedId !== null && filtered.find((entry) => entry.id === selectedId) === undefined) {
+      setSelectedId(filtered[0]?.id ?? null);
+      setStreamNotice("Selected stream entry is hidden by the current filters.");
+    }
+  }, [filtered, selectedId, streamWindow.loading]);
+
+  useEffect(() => {
+    if (streamWindow.loading) {
+      return;
+    }
+
+    const visibleGroupIds = new Set(groups.map((group) => group.id));
+    setCollapsedGroupIds((current) => {
+      const next = new Set([...current].filter((groupId) => visibleGroupIds.has(groupId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [groups, streamWindow.loading]);
 
   const visibleAttachmentIds = useMemo(
     () => [
@@ -1239,7 +1311,15 @@ export function StreamScreen({
       return next;
     });
   };
+  const toggleKindFromButton = (kind: StreamEntryKind) => {
+    setStreamNotice(null);
+    if (selectedKinds.has(kind) && selectedKinds.size === 1) {
+      return;
+    }
+    toggleKind(kind);
+  };
   const toggleStructuralFilter = (filterId: StreamStructuralFilterId) => {
+    setStreamNotice(null);
     setStructuralFilters((current) => ({
       ...current,
       [filterId]: current[filterId] !== true,
@@ -1256,6 +1336,10 @@ export function StreamScreen({
       return next;
     });
   };
+  const selectEntry = useCallback((entryId: string) => {
+    setStreamNotice(null);
+    setSelectedId(entryId);
+  }, []);
 
   return (
     <div className="stream-screen">
@@ -1280,7 +1364,13 @@ export function StreamScreen({
               type="button"
               key={kind}
               className={`opt ${selectedKinds.has(kind) ? "on" : ""}`}
-              onClick={() => toggleKind(kind)}
+              onClick={() => toggleKindFromButton(kind)}
+              aria-disabled={selectedKinds.has(kind) && selectedKinds.size === 1}
+              title={
+                selectedKinds.has(kind) && selectedKinds.size === 1
+                  ? "At least one stream kind must stay selected"
+                  : undefined
+              }
             >
               <span>
                 <span className={`dot ${kindTag(kind)}`}></span> {kind}
@@ -1328,7 +1418,7 @@ export function StreamScreen({
         </div>
       </div>
 
-      <div className="stream-main">
+      <div className="stream-main" ref={streamMainRef}>
         <div className="stream-main-head">
           <span className="identity-inline">
             <span>{streamSessionLabel}</span>
@@ -1344,6 +1434,7 @@ export function StreamScreen({
         </div>
         {streamWindow.loading && entries.length === 0 ? <Loading>loading stream</Loading> : null}
         {streamWindow.error !== null ? <ErrorState>{streamWindow.error.message}</ErrorState> : null}
+        {streamNotice === null ? null : <div className="stream-inline-note">{streamNotice}</div>}
         {primaryEmpty ? <Empty>{primaryEmptyMessage}</Empty> : null}
         {groups.map((group) => {
           const collapsed = collapsedGroupIds.has(group.id);
@@ -1363,7 +1454,7 @@ export function StreamScreen({
                           attId === undefined ? undefined : attachmentStatusById[attId]
                         }
                         showAudience={showRowAudience}
-                        onSelect={setSelectedId}
+                        onSelect={selectEntry}
                       />
                     );
                   })}
@@ -1377,7 +1468,19 @@ export function StreamScreen({
                 type="button"
                 className="btn sm"
                 onClick={() => {
-                  void streamWindow.loadOlder();
+                  const seq = streamOlderLoadSeqRef.current + 1;
+                  streamOlderLoadSeqRef.current = seq;
+                  captureStreamScrollAnchor(seq);
+                  void streamWindow.loadOlder().then((loaded) => {
+                    if (scrollAnchorRef.current?.seq !== seq) {
+                      return;
+                    }
+                    if (loaded) {
+                      setScrollAnchorRestoreSeq(seq);
+                    } else {
+                      scrollAnchorRef.current = null;
+                    }
+                  });
                 }}
                 disabled={streamWindow.loadingOlder}
               >

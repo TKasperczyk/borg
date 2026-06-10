@@ -1,4 +1,5 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -35,6 +36,20 @@ function deferredResponse(): {
     resolve = innerResolve;
   });
   return { promise, resolve };
+}
+
+function elementRect(top: number, bottom = top + 20): DOMRect {
+  return {
+    x: 0,
+    y: top,
+    top,
+    bottom,
+    left: 0,
+    right: 100,
+    width: 100,
+    height: bottom - top,
+    toJSON: () => ({}),
+  } as DOMRect;
 }
 
 function makeLiveSource(): {
@@ -117,6 +132,7 @@ function turnRow(input: Partial<TurnHistoryRow> & Pick<TurnHistoryRow, "turn_id"
 function installCognitionFetch(
   input: {
     streamEntries?: StreamEntry[][];
+    streamNextCursors?: Array<string | null>;
     turnRows?: TurnHistoryRow[];
     sharedState?: unknown;
     commitments?: unknown;
@@ -136,9 +152,11 @@ function installCognitionFetch(
   const fetchMock = vi.fn((request: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(request), "http://test.invalid");
     if (url.pathname === "/api/stream") {
-      const entries = streamResponses[Math.min(streamCallCount, streamResponses.length - 1)];
+      const responseIndex = Math.min(streamCallCount, streamResponses.length - 1);
+      const entries = streamResponses[responseIndex];
+      const nextCursor = input.streamNextCursors?.[responseIndex] ?? null;
       streamCallCount += 1;
-      return Promise.resolve(jsonResponse({ entries, next_cursor: null }));
+      return Promise.resolve(jsonResponse({ entries, next_cursor: nextCursor }));
     }
     if (url.pathname === "/api/turns") {
       return Promise.resolve(jsonResponse({ rows: input.turnRows ?? [], next_cursor: null }));
@@ -390,6 +408,10 @@ describe("cognition screen", () => {
         audienceValue="alice"
         audienceDisplay={aliceAudienceDisplay}
         running={false}
+        hasOlder={false}
+        loadingOlder={false}
+        olderError={null}
+        onLoadOlder={async () => false}
       />,
     );
 
@@ -445,6 +467,10 @@ describe("cognition screen", () => {
         audienceValue="alice"
         audienceDisplay={aliceAudienceDisplay}
         running={false}
+        hasOlder={false}
+        loadingOlder={false}
+        olderError={null}
+        onLoadOlder={async () => false}
       />,
     );
 
@@ -493,11 +519,330 @@ describe("cognition screen", () => {
         audienceValue="alice"
         audienceDisplay={aliceAudienceDisplay}
         running={false}
+        hasOlder={false}
+        loadingOlder={false}
+        olderError={null}
+        onLoadOlder={async () => false}
       />,
     );
 
     expect(screen.getAllByText("aud alice").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "jump to strm_user_source" })).toBeInTheDocument();
+  });
+
+  it("renders more than the old transcript cap and pages older chat with the before cursor", async () => {
+    const source = makeLiveSource();
+    const initialEntries = Array.from({ length: 18 }, (_, index) =>
+      streamEntry({
+        id: `strm_msg_${String(index + 1).padStart(2, "0")}`,
+        timestamp: index + 1,
+        entry_index: index + 1,
+        kind: "user_msg",
+        turn_id: `turn_msg_${index + 1}`,
+        content: `message ${index + 1}`,
+      }),
+    );
+    const olderEntry = streamEntry({
+      id: "strm_older_msg",
+      timestamp: 0,
+      entry_index: 0,
+      kind: "user_msg",
+      turn_id: "turn_older",
+      content: "older message",
+    });
+    const { fetchMock } = installCognitionFetch({
+      streamEntries: [initialEntries, [olderEntry]],
+      streamNextCursors: ["cursor_older", null],
+    });
+
+    renderWithInspector(<Harness live={source.live()} />);
+
+    expect(await screen.findByText("message 1")).toBeInTheDocument();
+    expect(screen.getByText("message 18")).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: "load older" }));
+
+    expect(await screen.findByText("older message")).toBeInTheDocument();
+    const streamCalls = fetchPathCalls(fetchMock, "/api/stream");
+    expect(streamCalls).toHaveLength(2);
+    const olderUrl = new URL(String(streamCalls[1]?.[0]), "http://test.invalid");
+    expect(olderUrl.searchParams.get("before")).toBe("cursor_older");
+    expect(chatUserBodies()[0]).toBe("older message");
+  });
+
+  it("preserves the transcript scroll anchor when older chat is prepended", async () => {
+    let scrollHeight = 100;
+    let rowTops: Record<string, number> = {
+      strm_chat_new: 40,
+    };
+    const olderEntry = streamEntry({
+      id: "strm_chat_old",
+      timestamp: 1,
+      entry_index: 1,
+      kind: "user_msg",
+      turn_id: "turn_old",
+      content: "older anchored",
+    });
+    const newerEntry = streamEntry({
+      id: "strm_chat_new",
+      timestamp: 2,
+      entry_index: 2,
+      kind: "agent_msg",
+      turn_id: "turn_new",
+      content: "new anchored",
+    });
+
+    function AnchoredChat() {
+      const [entries, setEntries] = useState<StreamEntry[]>([newerEntry]);
+      return (
+        <ChatStream
+          entries={entries}
+          sessionId="default"
+          audienceValue="alice"
+          audienceDisplay={aliceAudienceDisplay}
+          running={false}
+          hasOlder={entries.length === 1}
+          loadingOlder={false}
+          olderError={null}
+          onLoadOlder={async () => {
+            scrollHeight = 180;
+            rowTops = {
+              strm_chat_old: 20,
+              strm_chat_new: 100,
+            };
+            setEntries([olderEntry, newerEntry]);
+            return true;
+          }}
+        />
+      );
+    }
+
+    vi.spyOn(window.HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.classList.contains("chat-stream")) {
+        return elementRect(0, 60);
+      }
+      const entryId = this.dataset.chatEntryId;
+      if (entryId !== undefined && rowTops[entryId] !== undefined) {
+        return elementRect(rowTops[entryId]);
+      }
+      return elementRect(200, 220);
+    });
+
+    renderWithInspector(<AnchoredChat />);
+    const chat = document.querySelector(".chat-stream") as HTMLElement;
+    Object.defineProperty(chat, "scrollHeight", {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(chat, "clientHeight", {
+      configurable: true,
+      get: () => 60,
+    });
+    chat.scrollTop = 20;
+
+    fireEvent.click(screen.getByRole("button", { name: "load older" }));
+
+    await waitFor(() => expect(chat.scrollTop).toBe(80));
+  });
+
+  it("keeps manual transcript scrollback even while live streaming is active", async () => {
+    let scrollHeight = 300;
+    const firstEntry = streamEntry({
+      id: "strm_follow_first",
+      timestamp: 1,
+      entry_index: 1,
+      kind: "user_msg",
+      turn_id: "turn_follow_first",
+      content: "first follow",
+    });
+    const secondEntry = streamEntry({
+      id: "strm_follow_second",
+      timestamp: 2,
+      entry_index: 2,
+      kind: "agent_msg",
+      turn_id: "turn_follow_second",
+      content: "second follow",
+    });
+    const liveEntry = streamEntry({
+      id: "strm_follow_live",
+      timestamp: 3,
+      entry_index: 3,
+      kind: "agent_msg",
+      turn_id: "turn_follow_live",
+      content: "live follow",
+    });
+
+    const { rerender } = renderWithInspector(
+      <ChatStream
+        entries={[firstEntry]}
+        sessionId="default"
+        audienceValue="alice"
+        audienceDisplay={aliceAudienceDisplay}
+        running={false}
+        hasOlder={false}
+        loadingOlder={false}
+        olderError={null}
+        onLoadOlder={async () => false}
+      />,
+    );
+    const chat = document.querySelector(".chat-stream") as HTMLElement;
+    Object.defineProperty(chat, "scrollHeight", {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(chat, "clientHeight", {
+      configurable: true,
+      get: () => 100,
+    });
+
+    chat.scrollTop = 20;
+    fireEvent.scroll(chat);
+    scrollHeight = 360;
+    rerender(
+      <ChatStream
+        entries={[firstEntry, secondEntry]}
+        sessionId="default"
+        audienceValue="alice"
+        audienceDisplay={aliceAudienceDisplay}
+        running={false}
+        hasOlder={false}
+        loadingOlder={false}
+        olderError={null}
+        onLoadOlder={async () => false}
+      />,
+    );
+
+    expect(chat.scrollTop).toBe(20);
+
+    scrollHeight = 420;
+    rerender(
+      <ChatStream
+        entries={[firstEntry, secondEntry, liveEntry]}
+        sessionId="default"
+        audienceValue="alice"
+        audienceDisplay={aliceAudienceDisplay}
+        running
+        hasOlder={false}
+        loadingOlder={false}
+        olderError={null}
+        onLoadOlder={async () => false}
+      />,
+    );
+
+    expect(chat.scrollTop).toBe(20);
+  });
+
+  it("does not consume the transcript older anchor on a live append before older load completes", async () => {
+    let scrollHeight = 100;
+    let rowTops: Record<string, number> = {
+      strm_race_new: 40,
+    };
+    let appendLive!: () => void;
+    let finishOlder!: () => void;
+    let resolveOlder!: (loaded: boolean) => void;
+    const olderLoaded = new Promise<boolean>((resolve) => {
+      resolveOlder = resolve;
+    });
+    const olderEntry = streamEntry({
+      id: "strm_race_old",
+      timestamp: 1,
+      entry_index: 1,
+      kind: "user_msg",
+      turn_id: "turn_race_old",
+      content: "older race",
+    });
+    const newerEntry = streamEntry({
+      id: "strm_race_new",
+      timestamp: 2,
+      entry_index: 2,
+      kind: "agent_msg",
+      turn_id: "turn_race_new",
+      content: "newer race",
+    });
+    const liveEntry = streamEntry({
+      id: "strm_race_live",
+      timestamp: 3,
+      entry_index: 3,
+      kind: "agent_msg",
+      turn_id: "turn_race_live",
+      content: "live during older",
+    });
+
+    function RaceChat() {
+      const [entries, setEntries] = useState<StreamEntry[]>([newerEntry]);
+      appendLive = () => {
+        scrollHeight = 130;
+        rowTops = {
+          strm_race_new: 40,
+          strm_race_live: 120,
+        };
+        setEntries([newerEntry, liveEntry]);
+      };
+      finishOlder = () => {
+        scrollHeight = 190;
+        rowTops = {
+          strm_race_old: 20,
+          strm_race_new: 100,
+          strm_race_live: 160,
+        };
+        setEntries([olderEntry, newerEntry, liveEntry]);
+        resolveOlder(true);
+      };
+      return (
+        <ChatStream
+          entries={entries}
+          sessionId="default"
+          audienceValue="alice"
+          audienceDisplay={aliceAudienceDisplay}
+          running={false}
+          hasOlder={entries[0]?.id !== olderEntry.id}
+          loadingOlder={false}
+          olderError={null}
+          onLoadOlder={() => olderLoaded}
+        />
+      );
+    }
+
+    vi.spyOn(window.HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.classList.contains("chat-stream")) {
+        return elementRect(0, 20);
+      }
+      const entryId = this.dataset.chatEntryId;
+      if (entryId !== undefined && rowTops[entryId] !== undefined) {
+        return elementRect(rowTops[entryId]);
+      }
+      return elementRect(200, 220);
+    });
+
+    renderWithInspector(<RaceChat />);
+    const chat = document.querySelector(".chat-stream") as HTMLElement;
+    Object.defineProperty(chat, "scrollHeight", {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(chat, "clientHeight", {
+      configurable: true,
+      get: () => 20,
+    });
+    chat.scrollTop = 20;
+    fireEvent.scroll(chat);
+
+    fireEvent.click(screen.getByRole("button", { name: "load older" }));
+    act(() => appendLive());
+
+    expect(await screen.findByText("live during older")).toBeInTheDocument();
+    expect(chat.scrollTop).toBe(20);
+
+    await act(async () => {
+      finishOlder();
+      await olderLoaded;
+    });
+
+    await waitFor(() => expect(chat.scrollTop).toBe(80));
   });
 
   it("does not render a stale cached ledger after switching turns", () => {
@@ -1172,6 +1517,57 @@ describe("cognition screen", () => {
     fireEvent.click(screen.getByRole("tab", { name: "ledger" }));
 
     expect(await screen.findByText(/ledger not retained \(pre-restart\)/)).toBeInTheDocument();
+  });
+
+  it("fetches the uncached ledger when the raw xray tab is active", async () => {
+    const source = makeLiveSource();
+    const { fetchMock } = installCognitionFetch({
+      turnRows: [turnRow({ turn_id: "turn_raw", started_at: 2 })],
+      ledgerResponses: {
+        turn_raw: jsonResponse({ ledger: ledgerWithText("raw fetched ledger") }),
+      },
+    });
+
+    renderWithInspector(<Harness live={source.live()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /turn_raw/ }));
+    fireEvent.click(screen.getByRole("tab", { name: "raw" }));
+
+    expect(await screen.findByText(/raw fetched ledger/)).toBeInTheDocument();
+    expect(fetchPathCalls(fetchMock, "/api/turns/turn_raw/ledger")).toHaveLength(1);
+  });
+
+  it("shares one uncached ledger request across fast xray ledger tab switches", async () => {
+    const source = makeLiveSource();
+    const pendingLedger = deferredResponse();
+    const turnId = "turn_shared";
+    const { fetchMock } = installCognitionFetch({
+      turnRows: [turnRow({ turn_id: turnId, started_at: 2 })],
+      ledgerResponses: {
+        [turnId]: pendingLedger.promise,
+      },
+    });
+
+    renderWithInspector(<Harness live={source.live()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /turn_shared/ }));
+    fireEvent.click(screen.getByRole("tab", { name: "raw" }));
+    await waitFor(() =>
+      expect(fetchPathCalls(fetchMock, `/api/turns/${turnId}/ledger`)).toHaveLength(1),
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "flow" }));
+    fireEvent.click(screen.getByRole("tab", { name: "ledger" }));
+
+    expect(fetchPathCalls(fetchMock, `/api/turns/${turnId}/ledger`)).toHaveLength(1);
+
+    await act(async () => {
+      pendingLedger.resolve(jsonResponse({ ledger: ledgerWithText("shared ledger fetch") }));
+      await pendingLedger.promise;
+    });
+
+    expect(await screen.findByText("shared ledger fetch")).toBeInTheDocument();
+    expect(fetchPathCalls(fetchMock, `/api/turns/${turnId}/ledger`)).toHaveLength(1);
   });
 
   it("returns from replay to live state without blocking later live updates", async () => {
