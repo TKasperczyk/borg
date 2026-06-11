@@ -31,12 +31,34 @@ function mockState(): ApiState {
 function renderApp(path = "/") {
   window.history.pushState({}, "", path);
   installMockWebSocket();
-  vi.spyOn(globalThis, "fetch").mockResolvedValue(
-    new Response(JSON.stringify(mockState()), {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    let body: unknown = mockState();
+    if (url === "/api/identity") {
+      body = {
+        values: [],
+        goals: [],
+        traits: [],
+        open_questions: [],
+        growth_markers: [],
+        periods: [],
+        open_question_events: [],
+      };
+    } else if (url.startsWith("/api/creator-directives")) {
+      body = { directives: [] };
+    } else if (url.startsWith("/api/commitments")) {
+      body = { commitments: [] };
+    } else if (url.startsWith("/api/memory/bands")) {
+      body = { bands: [] };
+    } else if (url.startsWith("/api/semantic/graph")) {
+      body = { nodes: [], edges: [], total_nodes: 0, total_edges: 0, rendered: { nodes: 0, edges: 0 } };
+    }
+
+    return new Response(JSON.stringify(body), {
       status: 200,
       headers: { "Content-Type": "application/json" },
-    }),
-  );
+    });
+  });
 
   return render(
     <LiveProvider>

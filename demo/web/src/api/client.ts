@@ -1,6 +1,19 @@
 import type {
   ApiState,
+  BandDetailResponse,
+  Commitment,
+  CommitmentsResponse,
+  CreatorDirective,
+  CreatorDirectivesResponse,
+  GoalPatchBody,
+  IdentityResponse,
   LedgerResponse,
+  MemoryBandId,
+  MemoryBandsResponse,
+  OpenQuestionPatchBody,
+  SemanticEdgeDetailResponse,
+  SemanticGraphResponse,
+  SemanticNodeDetailResponse,
   SessionRecord,
   SessionsResponse,
   StreamResponse,
@@ -68,6 +81,23 @@ export async function postJson<T>(path: string, body: unknown): Promise<T> {
   return (await response.json()) as T;
 }
 
+export async function patchJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: "PATCH",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    throw new ApiError(response.status, await responseMessage(response));
+  }
+
+  return (await response.json()) as T;
+}
+
 export function fetchState(session?: string): Promise<ApiState> {
   const params = new URLSearchParams();
   if (session !== undefined) {
@@ -106,4 +136,96 @@ export function postTurn(input: {
   session: string;
 }): Promise<TurnPostResponse> {
   return postJson<TurnPostResponse>("/api/turn", input);
+}
+
+export function fetchIdentity(): Promise<IdentityResponse> {
+  return getJson<IdentityResponse>("/api/identity");
+}
+
+export function patchGoal(id: string, body: GoalPatchBody): Promise<unknown> {
+  return patchJson<unknown>(`/api/identity/goals/${encodeURIComponent(id)}`, body);
+}
+
+export function patchOpenQuestion(id: string, body: OpenQuestionPatchBody): Promise<unknown> {
+  return patchJson<unknown>(`/api/identity/open-questions/${encodeURIComponent(id)}`, body);
+}
+
+export function fetchCreatorDirectives(
+  status: "active" | "revoked" | "superseded" | "all" = "active",
+): Promise<CreatorDirectivesResponse> {
+  return getJson<CreatorDirectivesResponse>(`/api/creator-directives?status=${status}`);
+}
+
+export function revokeCreatorDirective(id: string, reason: string): Promise<CreatorDirective> {
+  return postJson<CreatorDirective>(`/api/creator-directives/${encodeURIComponent(id)}/revoke`, {
+    reason,
+  });
+}
+
+export function supersedeCreatorDirective(
+  id: string,
+  replacementId: string,
+): Promise<CreatorDirective> {
+  return postJson<CreatorDirective>(
+    `/api/creator-directives/${encodeURIComponent(id)}/supersede`,
+    { replacement_id: replacementId },
+  );
+}
+
+export function fetchCommitments(
+  state: "active" | "all" | "revoked" | "expired" = "active",
+): Promise<CommitmentsResponse> {
+  return getJson<CommitmentsResponse>(`/api/commitments?state=${state}`);
+}
+
+export function revokeCommitment(id: string, reason: string): Promise<Commitment> {
+  return postJson<Commitment>(`/api/commitments/${encodeURIComponent(id)}/revoke`, {
+    reason,
+  });
+}
+
+export function fetchMemoryBands(session?: string): Promise<MemoryBandsResponse> {
+  const params = new URLSearchParams();
+  if (session !== undefined) {
+    params.set("session", session);
+  }
+  const suffix = params.size === 0 ? "" : `?${params.toString()}`;
+  return getJson<MemoryBandsResponse>(`/api/memory/bands${suffix}`);
+}
+
+export function fetchBandDetail(input: {
+  band: MemoryBandId;
+  session?: string;
+  cursor?: string | null;
+  limit?: number;
+}): Promise<BandDetailResponse> {
+  const params = new URLSearchParams({ limit: String(input.limit ?? 50) });
+  if (input.session !== undefined) {
+    params.set("session", input.session);
+  }
+  if (input.cursor !== undefined && input.cursor !== null) {
+    params.set("cursor", input.cursor);
+  }
+
+  return getJson<BandDetailResponse>(
+    `/api/memory/bands/${encodeURIComponent(input.band)}?${params.toString()}`,
+  );
+}
+
+export function fetchSemanticGraph(limit = 40): Promise<SemanticGraphResponse> {
+  return getJson<SemanticGraphResponse>(`/api/semantic/graph?limit=${limit}`);
+}
+
+export function fetchSemanticNode(id: string): Promise<SemanticNodeDetailResponse> {
+  return getJson<SemanticNodeDetailResponse>(`/api/semantic/nodes/${encodeURIComponent(id)}`);
+}
+
+export function fetchSemanticEdge(id: string): Promise<SemanticEdgeDetailResponse> {
+  return getJson<SemanticEdgeDetailResponse>(`/api/semantic/edges/${encodeURIComponent(id)}`);
+}
+
+export function invalidateSemanticEdge(id: string, reason?: string): Promise<unknown> {
+  return postJson<unknown>(`/api/correction/semantic-edges/${encodeURIComponent(id)}/invalidate`, {
+    ...(reason === undefined || reason.trim().length === 0 ? {} : { reason }),
+  });
 }

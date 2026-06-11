@@ -29,7 +29,11 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 function activePage(path: string): string {
-  return NAV_ITEMS.find((item) => item.path === path)?.page ?? "Chat";
+  return (
+    NAV_ITEMS.find((item) =>
+      item.path === "/" ? path === "/" : path === item.path || path.startsWith(`${item.path}/`),
+    )?.page ?? "Chat"
+  );
 }
 
 function UnknownPathRedirect() {
@@ -64,7 +68,10 @@ function AppShell({
         </div>
         <div className="nav-links">
           {NAV_ITEMS.map((item) => {
-            const active = item.path === location;
+            const active =
+              item.path === "/"
+                ? location === "/"
+                : location === item.path || location.startsWith(`${item.path}/`);
             return (
               <Link
                 key={item.path}
@@ -93,6 +100,7 @@ function AppShell({
       </nav>
 
       <Switch>
+        <Route path="/mind/inspect/:section" component={MindPage} />
         <Route path="/mind" component={MindPage} />
         <Route path="/reviews" component={ReviewsPage} />
         <Route path="/dream" component={DreamPage} />

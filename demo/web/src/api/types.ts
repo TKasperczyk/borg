@@ -185,6 +185,295 @@ export type TurnPostResponse = {
   stream_entry_id: string;
 };
 
+export type IdentityStateName = "candidate" | "established";
+export type GoalStatus = "active" | "done" | "abandoned" | "blocked";
+export type OpenQuestionStatus = "open" | "resolved" | "abandoned";
+
+export type IdentityValue = {
+  id: string;
+  label: string;
+  description: string;
+  priority: number;
+  state: IdentityStateName;
+  confidence: number;
+  created_at: number;
+  last_affirmed: number | null;
+  established_at: number | null;
+  support_count: number;
+  contradiction_count: number;
+};
+
+export type IdentityGoal = {
+  id: string;
+  description: string;
+  priority: number;
+  status: GoalStatus;
+  progress_notes: string | null;
+  last_progress_ts: number | null;
+  created_at: number;
+  target_at: number | null;
+  children?: IdentityGoal[];
+};
+
+export type IdentityTrait = {
+  id: string;
+  label: string;
+  strength: number;
+  state: IdentityStateName;
+  confidence: number;
+  established_at: number | null;
+  last_reinforced: number;
+};
+
+export type IdentityOpenQuestion = {
+  id: string;
+  question: string;
+  urgency: number;
+  status: OpenQuestionStatus;
+  source: string;
+  goal_id: string | null;
+  created_at: number;
+  last_touched: number;
+  related_episode_ids: string[];
+  related_semantic_node_ids: string[];
+  resolution_note: string | null;
+  resolved_at: number | null;
+  abandoned_reason: string | null;
+  abandoned_at: number | null;
+};
+
+export type IdentityGrowthMarker = {
+  id: string;
+  ts: number;
+  category: string;
+  what_changed: string;
+  confidence: number;
+  source_process: string;
+};
+
+export type IdentityPeriod = {
+  id: string;
+  label: string;
+  start_ts: number;
+  end_ts: number | null;
+  narrative: string;
+  themes: string[];
+  created_at: number;
+  last_updated: number;
+};
+
+export type IdentityEvent = {
+  id?: string | number;
+  ts?: number;
+  action?: string;
+  record_id?: string;
+  [key: string]: unknown;
+};
+
+export type IdentityResponse = {
+  values: IdentityValue[];
+  goals: IdentityGoal[];
+  traits: IdentityTrait[];
+  open_questions: IdentityOpenQuestion[];
+  growth_markers: IdentityGrowthMarker[];
+  periods: IdentityPeriod[];
+  open_question_events: IdentityEvent[];
+};
+
+export type GoalPatchBody =
+  | { action: "complete"; note?: string }
+  | { action: "block"; note?: string }
+  | { action: "progress"; note?: string; progress?: number };
+
+export type OpenQuestionPatchBody =
+  | { action: "resolve"; resolution: string }
+  | { action: "abandon"; reason: string }
+  | { action: "bump"; delta?: number };
+
+export type CreatorDirectiveStatus = "active" | "superseded" | "revoked";
+export type CreatorDirectiveKind =
+  | "self_identity"
+  | "subject_fact"
+  | "disclosure_boundary"
+  | "response_policy"
+  | "routing_instruction";
+
+export type CreatorDirective = {
+  id: string;
+  kind: CreatorDirectiveKind;
+  text: string | null;
+  canonical_fact: string | null;
+  operational_directive: string | null;
+  activation_scope: string;
+  content_scope: string;
+  mention_policy: string;
+  status: CreatorDirectiveStatus;
+  subject_kind: string;
+  subject_entity_id: string | null;
+  subject_entity_name: string | null;
+  priority: number;
+  superseded_by_id: string | null;
+  revoked_reason: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
+export type CreatorDirectivesResponse = {
+  directives: CreatorDirective[];
+};
+
+export type CommitmentState = "active" | "revoked" | "expired";
+export type CommitmentEnforcement = "critical" | "advisory";
+
+export type Commitment = {
+  id: string;
+  text: string;
+  type: "promise" | "boundary" | "rule" | "preference";
+  kind: string;
+  enforcement_class: CommitmentEnforcement;
+  critical_domain: string | null;
+  state: CommitmentState;
+  priority: number;
+  directive_family: string;
+  audience: string | null;
+  made_to: string | null;
+  about: string | null;
+  committed_by: string | null;
+  source: string;
+  created_at: number;
+  expires_at: number | null;
+  expired_at: number | null;
+  revoked_at: number | null;
+  revoked_reason: string | null;
+  superseded_by_id: string | null;
+  last_reinforced_at: number;
+};
+
+export type CommitmentsResponse = {
+  commitments: Commitment[];
+};
+
+export type MemoryBandId =
+  | "episodic"
+  | "semantic"
+  | "procedural"
+  | "affective"
+  | "self"
+  | "commitments"
+  | "social"
+  | "relational";
+
+export type MemoryBandSummary = {
+  id: MemoryBandId;
+  n: string;
+  name: string;
+  desc: string;
+  count: number;
+  count_is_lower_bound?: boolean;
+  stats: Array<{ k: string; v: string | number }>;
+};
+
+export type MemoryBandsResponse = {
+  bands: MemoryBandSummary[];
+};
+
+export type SemanticGraphNodeStatus = "active" | "contested" | "contradicted" | "quarantined";
+export type SemanticGraphEdgeType =
+  | "is_a"
+  | "part_of"
+  | "causes"
+  | "prevents"
+  | "supports"
+  | "contradicts"
+  | "related_to"
+  | "instance_of";
+
+export type SemanticGraphNode = {
+  id: string;
+  label: string;
+  display_label: string | null;
+  status: SemanticGraphNodeStatus;
+  kind: string;
+  edge_count: number;
+};
+
+export type SemanticGraphEdge = {
+  id: string;
+  source: string;
+  target: string;
+  type: SemanticGraphEdgeType;
+  weight: number;
+};
+
+export type SemanticGraphResponse = {
+  nodes: SemanticGraphNode[];
+  edges: SemanticGraphEdge[];
+  total_nodes: number;
+  total_edges: number;
+  rendered: {
+    nodes: number;
+    edges: number;
+  };
+};
+
+export type SemanticNodeDetail = {
+  id: string;
+  kind: string;
+  label: string;
+  display_label: string | null;
+  description: string;
+  domain: string | null;
+  aliases: string[];
+  confidence: number;
+  status: SemanticGraphNodeStatus | "superseded";
+  source_episode_ids: string[];
+  source_count: number;
+  created_at: number;
+  updated_at: number;
+};
+
+export type SemanticNodeDetailResponse = {
+  node: SemanticNodeDetail;
+};
+
+export type SemanticEdgeDetail = {
+  id: string;
+  from_node_id: string;
+  to_node_id: string;
+  relation: SemanticGraphEdgeType;
+  confidence: number;
+  evidence_episode_ids: string[];
+  source_count: number;
+  valid_from: number;
+  valid_to: number | null;
+  invalidated_at: number | null;
+  invalidated_reason: string | null;
+};
+
+export type SemanticEdgeDetailResponse = {
+  edge: SemanticEdgeDetail;
+};
+
+export type BandDetailResponse = {
+  band: MemoryBandId;
+  mode: "browse" | "search";
+  query?: string;
+  next_cursor?: string | null;
+  items?: Array<Record<string, unknown>>;
+  nodes?: SemanticNodeDetail[];
+  edges?: SemanticEdgeDetail[];
+  current?: MoodState | null;
+  history?: MoodState[];
+  counts?: Record<string, number>;
+  values?: IdentityValue[];
+  goals?: IdentityGoal[];
+  traits?: IdentityTrait[];
+  open_questions?: IdentityOpenQuestion[];
+  growth_markers?: IdentityGrowthMarker[];
+  periods?: IdentityPeriod[];
+  open_question_events?: IdentityEvent[];
+};
+
 // Source: src/cognition/lifecycle/turn-phase/phase-trace.ts
 export const TURN_PHASES = [
   "ingest",

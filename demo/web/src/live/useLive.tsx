@@ -27,10 +27,26 @@ type LiveContextValue = {
 const LiveContext = createContext<LiveContextValue | null>(null);
 
 const INVALIDATE_BY_FRAME: Partial<Record<LiveFrameType, string[]>> = {
-  "turn:terminal": ["state", "turns", "stream"],
+  "turn:terminal": [
+    "state",
+    "turns",
+    "stream",
+    "identity",
+    "bands",
+    "graph",
+    "directives",
+    "commitments",
+  ],
   "stream:append": ["stream", "turns"],
   "maintenance:tick": ["state", "dream"],
-  "dream:process:completed": ["dream"],
+  "dream:process:completed": [
+    "dream",
+    "identity",
+    "bands",
+    "graph",
+    "directives",
+    "commitments",
+  ],
   "borg:reset": [""],
 };
 
