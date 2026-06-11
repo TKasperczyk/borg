@@ -21,6 +21,11 @@ const CANONICAL_SECTION_PRIORITY = {
   prior_session_memory: 30,
 } as const satisfies Record<EvidenceLedgerSectionId, number>;
 
+const PROVENANCE_DEDUPE_PROTECTED_SECTIONS = new Set<EvidenceLedgerSectionId>([
+  "current_user_message",
+  "current_session_transcript",
+]);
+
 function metadataString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
@@ -126,6 +131,10 @@ type LedgerEntryRef = {
   handles: Set<string>;
 };
 
+function isProvenanceDedupeProtected(ref: LedgerEntryRef): boolean {
+  return PROVENANCE_DEDUPE_PROTECTED_SECTIONS.has(ref.sectionId);
+}
+
 function citationValue(handle: string): string {
   const index = handle.indexOf(":");
   return index < 0 ? handle : handle.slice(index + 1);
@@ -187,7 +196,38 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
 } {
   const refs: LedgerEntryRef[] = [];
   const parents = new DisjointSet<number>(() => -1);
+  const protectedRefsByRoot = new Map<number, Set<number>>();
   const handleOwners = new Map<string, number>();
+
+  const unionRefs = (left: number, right: number): boolean => {
+    const leftRoot = parents.find(left);
+    const rightRoot = parents.find(right);
+
+    if (leftRoot === rightRoot) {
+      return true;
+    }
+
+    const leftProtectedRefs = protectedRefsByRoot.get(leftRoot) ?? new Set<number>();
+    const rightProtectedRefs = protectedRefsByRoot.get(rightRoot) ?? new Set<number>();
+
+    if (leftProtectedRefs.size > 0 && rightProtectedRefs.size > 0) {
+      return false;
+    }
+
+    parents.union(leftRoot, rightRoot);
+
+    const root = parents.find(leftRoot);
+    const mergedProtectedRefs = new Set([...leftProtectedRefs, ...rightProtectedRefs]);
+
+    protectedRefsByRoot.delete(leftRoot);
+    protectedRefsByRoot.delete(rightRoot);
+
+    if (mergedProtectedRefs.size > 0) {
+      protectedRefsByRoot.set(root, mergedProtectedRefs);
+    }
+
+    return true;
+  };
 
   for (const [sectionIndex, section] of ledger.sections.entries()) {
     for (const [entryIndex, entry] of section.entries.entries()) {
@@ -202,13 +242,20 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
       });
       parents.add(refIndex);
 
+      if (isProvenanceDedupeProtected(refs[refIndex]!)) {
+        protectedRefsByRoot.set(refIndex, new Set([refIndex]));
+      }
+
       for (const handle of handles) {
         const owner = handleOwners.get(handle);
         if (owner === undefined) {
           handleOwners.set(handle, refIndex);
           continue;
         }
-        parents.union(owner, refIndex);
+
+        if (!unionRefs(owner, refIndex) && isProvenanceDedupeProtected(refs[refIndex]!)) {
+          handleOwners.set(handle, refIndex);
+        }
       }
     }
   }
@@ -231,7 +278,10 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
       continue;
     }
 
-    const canonical = [...group].sort(compareCanonicalRefs)[0]!;
+    const protectedRefs = group.filter(isProvenanceDedupeProtected);
+    const canonical = [...(protectedRefs.length > 0 ? protectedRefs : group)].sort(
+      compareCanonicalRefs,
+    )[0]!;
     const citations = citationHandles(group);
     canonicalByRef.set(canonical, {
       ...canonical.entry,
@@ -239,7 +289,7 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
     });
 
     for (const ref of group) {
-      if (ref !== canonical) {
+      if (ref !== canonical && !isProvenanceDedupeProtected(ref)) {
         droppedRefs.add(ref);
         dedupedEntryCount += 1;
       }

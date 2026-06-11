@@ -68,7 +68,6 @@ function compactedTranscriptRunEntry(
 ): EvidenceLedgerEntry {
   const first = entries[0] as TranscriptStreamEntry;
   const last = entries[entries.length - 1] as TranscriptStreamEntry;
-  const streamIds = entries.map((entry) => entry.id).join(", ");
   const firstIndex = resolver.streamOrderById.get(first.id);
   const lastIndex = resolver.streamOrderById.get(last.id);
   const indexRange =
@@ -80,7 +79,7 @@ function compactedTranscriptRunEntry(
     session_scope: "current_session",
     actor: "system",
     trust_rank: TRANSCRIPT_TRUST_RANK,
-    text: `Earlier assistant/system transcript entries compacted: entries=${entries.length}, stream_indexes=${indexRange}, stream_ids=${streamIds}.`,
+    text: `Earlier observe/suppress transcript markers compacted: entries=${entries.length}, stream_indexes=${indexRange}.`,
     stream_index: firstIndex,
     state: "compacted",
     taint: "none",
@@ -97,7 +96,7 @@ function compactedCurrentUserTranscriptEntry(
     session_scope: "current_session",
     actor: "system",
     trust_rank: TRANSCRIPT_TRUST_RANK,
-    text: `Current user transcript duplicate compacted; full text is rendered in section 1 as current_user_message:${entry.id}.`,
+    text: "Current user transcript duplicate compacted; full text is rendered in section 1 as current_user_message.",
     stream_index: resolver.streamOrderById.get(entry.id),
     state: "compacted",
     taint: "none",
@@ -150,6 +149,7 @@ function shouldKeepRawCompactedTranscriptEntry(
 
   return (
     tailIds.has(entry.id) ||
+    entry.kind === "agent_msg" ||
     entry.kind === "user_msg" ||
     entry.persistence_class === "assistant_self_report"
   );

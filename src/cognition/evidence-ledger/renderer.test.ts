@@ -644,6 +644,108 @@ describe("compactEvidenceLedger", () => {
     expect(rendered).toContain("[citation: ep_route, semn_route, strm_route]");
   });
 
+  it("does not collapse multiple transcript rows through a shared episode provenance handle", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "current_session_transcript").entries.push(
+      syntheticEntry({
+        id: "current_session_stream:strm_transcript_a",
+        source_type: "current_session_stream",
+        text: "First transcript row.",
+        trust_rank: 95,
+      }),
+      syntheticEntry({
+        id: "current_session_stream:strm_transcript_b",
+        source_type: "current_session_stream",
+        text: "Second transcript row.",
+        trust_rank: 95,
+      }),
+    );
+    section(ledger, "episodes").entries.push(
+      syntheticEntry({
+        id: "episode:ep_joined_transcript",
+        source_type: "episode",
+        text: "Episode cites both transcript rows.",
+        trust_rank: 52,
+        state_metadata: {
+          episode_id: "ep_joined_transcript",
+          source_stream_ids: ["strm_transcript_a", "strm_transcript_b"],
+        },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+    });
+    const transcriptEntryIds = section(compacted.ledger, "current_session_transcript").entries.map(
+      (entry) => entry.id,
+    );
+
+    expect(transcriptEntryIds).toEqual([
+      "current_session_stream:strm_transcript_a",
+      "current_session_stream:strm_transcript_b",
+    ]);
+    expect(section(compacted.ledger, "episodes").entries).toEqual([]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
+  });
+
+  it("does not bridge transcript rows transitively through separate evidence rows sharing an episode handle", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "current_session_transcript").entries.push(
+      syntheticEntry({
+        id: "current_session_stream:strm_bridge_a",
+        source_type: "current_session_stream",
+        text: "Transcript bridge row A.",
+        trust_rank: 95,
+      }),
+      syntheticEntry({
+        id: "current_session_stream:strm_bridge_b",
+        source_type: "current_session_stream",
+        text: "Transcript bridge row B.",
+        trust_rank: 95,
+      }),
+    );
+    section(ledger, "retrieved_memory_evidence").entries.push(
+      syntheticEntry({
+        id: "retrieved_evidence:bridge_a",
+        source_type: "episode",
+        text: "Evidence row A cites transcript A and shared episode.",
+        trust_rank: 52,
+        state_metadata: {
+          source_stream_ids: ["strm_bridge_a"],
+          episode_id: "ep_shared_bridge",
+        },
+      }),
+      syntheticEntry({
+        id: "retrieved_evidence:bridge_b",
+        source_type: "episode",
+        text: "Evidence row B cites transcript B and shared episode.",
+        trust_rank: 52,
+        state_metadata: {
+          source_stream_ids: ["strm_bridge_b"],
+          episode_id: "ep_shared_bridge",
+        },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+    });
+    const transcriptEntryIds = section(compacted.ledger, "current_session_transcript").entries.map(
+      (entry) => entry.id,
+    );
+
+    expect(transcriptEntryIds).toEqual([
+      "current_session_stream:strm_bridge_a",
+      "current_session_stream:strm_bridge_b",
+    ]);
+    expect(section(compacted.ledger, "retrieved_memory_evidence").entries).toEqual([]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(2);
+  });
+
   it("does not treat action-linked open question ids as action provenance", () => {
     const ledger = makeLedger();
 

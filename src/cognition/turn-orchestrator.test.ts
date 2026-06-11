@@ -13,6 +13,7 @@ import {
   type FrameAnomalyKind,
   type LLMCompleteOptions,
   type LLMCompleteResult,
+  type LLMConverseOptions,
 } from "../index.js";
 import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import type {
@@ -1509,6 +1510,122 @@ describe("TurnOrchestrator inbound batch catch-up", () => {
       ]);
     } finally {
       await borg.close();
+    }
+  });
+
+  it("includes the previous agent reply when the next user message queued before that reply was appended", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-inbound-batch-self-continuity-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_300_250);
+    const sessionId = createSessionId();
+    const previousReply = "Previous turn reply should be visible to the queued catch-up turn.";
+    let borg: Borg | undefined;
+    let queuedEntryId: StreamEntry["id"] | undefined;
+    let finalizerCount = 0;
+    const responseForRequest = async (options: LLMCompleteOptions | LLMConverseOptions) => {
+      if (options.budget === "goal-promotion-extractor") {
+        return createGoalPromotionResponse([]);
+      }
+
+      const toolChoice = options.tool_choice;
+
+      if (
+        typeof toolChoice === "object" &&
+        toolChoice !== null &&
+        "name" in toolChoice &&
+        toolChoice.name === "EmitTurnReflection"
+      ) {
+        return createEmptyReflectionResponse();
+      }
+
+      if (options.budget === "cognition-system-1" || options.budget === "cognition-system-2") {
+        finalizerCount += 1;
+
+        if (finalizerCount === 1) {
+          if (borg === undefined) {
+            throw new Error("Borg instance was not initialized before finalizer callback");
+          }
+
+          const senderEntityId = borg.entities.resolve("Queued Sender");
+          const internal = borg as unknown as {
+            deps: Pick<BorgDependencies, "entryIndex">;
+          };
+
+          clock.advance(10);
+          const writer = new StreamWriter({
+            dataDir: tempDir,
+            sessionId,
+            clock,
+            entryIndex: internal.deps.entryIndex,
+          });
+
+          try {
+            const queued = await writer.append({
+              kind: "user_msg",
+              content: "queued follow-up while the previous reply is still finalizing",
+              sender_entity_id: senderEntityId,
+            });
+            queuedEntryId = queued.id;
+          } finally {
+            writer.close();
+          }
+
+          return createEmitAnswerResponse(previousReply);
+        }
+
+        return createEmitAnswerResponse("Caught up with the queued follow-up.");
+      }
+
+      return createEmptyReflectionResponse();
+    };
+    const llm = new FakeLLMClient({
+      responses: Array.from({ length: 8 }, () => responseForRequest),
+    });
+
+    borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      configOverrides: {
+        generation: {
+          evidenceLedger: {
+            enabled: true,
+            currentSessionTranscriptTokenBudget: 50_000,
+          },
+        },
+      },
+    });
+
+    try {
+      await runInternalTurn(borg, {
+        sessionId,
+        userMessage: "first message before the queued follow-up",
+        stakes: "low",
+      });
+
+      if (queuedEntryId === undefined) {
+        throw new Error("Expected the finalizer callback to enqueue a follow-up message");
+      }
+
+      await runInternalTurn(borg, {
+        sessionId,
+        inboundBatch: {
+          kind: "stream_backlog",
+          entryIds: [queuedEntryId],
+        },
+      });
+
+      const tail = borg.stream.tail(10, { session: sessionId });
+      const previousAgentEntry = tail.find(
+        (entry) => entry.kind === "agent_msg" && entry.content === previousReply,
+      );
+      const secondFinalizerSystem = systemText(finalizerRequests(llm.requests).at(1));
+
+      expect(previousAgentEntry).toBeDefined();
+      expect(secondFinalizerSystem).toContain("<borg_evidence_ledger>");
+      expect(secondFinalizerSystem).toContain(previousReply);
+      expect(secondFinalizerSystem).toContain(
+        `id=current_session_stream:${previousAgentEntry?.id}`,
+      );
+    } finally {
+      await borg?.close();
     }
   });
 

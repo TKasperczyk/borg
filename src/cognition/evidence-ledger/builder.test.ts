@@ -3748,7 +3748,7 @@ describe("EvidenceLedgerBuilder", () => {
     }
   });
 
-  it("compacts older assistant transcript entries without dropping user-authored facts", async () => {
+  it("keeps assistant replies raw under transcript budget pressure while compacting observe markers", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const writer = new StreamWriter({
@@ -3759,6 +3759,14 @@ describe("EvidenceLedgerBuilder", () => {
     const factEntry = await writer.append({
       kind: "user_msg",
       content: "The launch window is Tuesday and the reviewer is Priya.",
+    });
+    await writer.append({
+      kind: "agent_observed",
+      content: { reason: "background observation marker for transcript compaction" },
+    });
+    await writer.append({
+      kind: "agent_suppressed",
+      content: { reason: "suppression marker for transcript compaction" },
     });
     for (let index = 0; index < 10; index += 1) {
       await writer.append({
@@ -3797,6 +3805,12 @@ describe("EvidenceLedgerBuilder", () => {
     });
     const transcriptEntries =
       ledger.sections.find((section) => section.id === "current_session_transcript")?.entries ?? [];
+    const compactedMarkerEntry = transcriptEntries.find(
+      (entry) =>
+        entry.source_type === "system_metadata" &&
+        entry.state === "compacted" &&
+        entry.text?.includes("Earlier observe/suppress transcript markers compacted") === true,
+    );
 
     expect(ledger.transcriptIncluded).toBe(true);
     expect(ledger.transcriptCompacted).toBe(true);
@@ -3804,6 +3818,16 @@ describe("EvidenceLedgerBuilder", () => {
     expect(ledger.originalTranscriptTokenEstimate).toBeGreaterThan(1);
     expect(ledger.compactedTranscriptEntryCount).toBe(3);
     expect(ledger.rawPreservedUserTranscriptEntryCount).toBe(1);
+    expect(compactedMarkerEntry?.text).toBe(
+      "Earlier observe/suppress transcript markers compacted: entries=2, stream_indexes=1..2.",
+    );
+    expect(compactedMarkerEntry?.text).not.toContain("strm_");
+    expect(transcriptEntries.filter((entry) => entry.actor === "assistant")).toHaveLength(10);
+    expect(
+      transcriptEntries.filter(
+        (entry) => entry.text?.includes("Assistant planning response") === true,
+      ),
+    ).toHaveLength(10);
     expect(transcriptEntries).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -3813,14 +3837,19 @@ describe("EvidenceLedgerBuilder", () => {
         expect.objectContaining({
           source_type: "system_metadata",
           state: "compacted",
-          text: expect.stringContaining("Earlier assistant/system transcript entries compacted"),
+          text: "Earlier observe/suppress transcript markers compacted: entries=2, stream_indexes=1..2.",
         }),
         expect.objectContaining({
           id: `current_session_compacted_current_user:${currentEntry.id}`,
-          text: expect.stringContaining("full text is rendered in section 1"),
+          text: "Current user transcript duplicate compacted; full text is rendered in section 1 as current_user_message.",
         }),
       ]),
     );
+    expect(
+      transcriptEntries.find(
+        (entry) => entry.id === `current_session_compacted_current_user:${currentEntry.id}`,
+      )?.text,
+    ).not.toContain(currentEntry.id);
   });
 
   it("propagates assistant self-report persistence through episode and semantic ledger entries", async () => {
@@ -4339,6 +4368,10 @@ describe("EvidenceLedgerBuilder", () => {
       kind: "user_msg",
       content: "Second pending batch message.",
     });
+    const laterQueuedEntry = await writer.append({
+      kind: "user_msg",
+      content: "Later queued message remains separate transcript evidence.",
+    });
     const batchMessages: readonly HydratedInboundMessage[] = [batchEntryA, batchEntryB].map(
       (entry) => ({
         id: entry.id,
@@ -4356,6 +4389,7 @@ describe("EvidenceLedgerBuilder", () => {
       actionRepository: { list: () => [] },
       currentSessionTranscriptTokenBudget: 50_000,
     });
+    const bridgeEpisodeId = createEpisodeId();
 
     const ledger = await builder.build({
       sessionId: DEFAULT_SESSION_ID,
@@ -4366,7 +4400,14 @@ describe("EvidenceLedgerBuilder", () => {
       workingMemory: makeWorkingMemory(),
       applicableCommitments: [],
       retrievedEvidence: [],
-      retrievedEpisodes: [],
+      retrievedEpisodes: [
+        makeRetrievedEpisode({
+          id: bridgeEpisodeId,
+          narrative: "A multi-stream episode bridges earlier and queued transcript evidence.",
+          sourceStreamIds: [priorUserEntry.id, assistantEntry.id, laterQueuedEntry.id],
+          citationChain: [priorUserEntry, assistantEntry, laterQueuedEntry],
+        }),
+      ],
       retrievedSemantic: null,
       openQuestions: [],
       pendingCorrections: [],
@@ -4378,12 +4419,20 @@ describe("EvidenceLedgerBuilder", () => {
     )?.entries[0];
     const transcriptEntries =
       ledger.sections.find((section) => section.id === "current_session_transcript")?.entries ?? [];
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+    });
+    const compactedTranscriptEntries =
+      compacted.ledger.sections.find((section) => section.id === "current_session_transcript")
+        ?.entries ?? [];
 
     expect(currentUserMessage?.text).toContain("First pending batch message.");
     expect(currentUserMessage?.text).toContain("Second pending batch message.");
     expect(transcriptEntries.map((entry) => entry.id)).toEqual([
       `current_session_stream:${priorUserEntry.id}`,
       `current_session_stream:${assistantEntry.id}`,
+      `current_session_stream:${laterQueuedEntry.id}`,
     ]);
     expect(
       transcriptEntries.some(
@@ -4392,6 +4441,16 @@ describe("EvidenceLedgerBuilder", () => {
           entry.id === `current_session_stream:${batchEntryB.id}`,
       ),
     ).toBe(false);
+    expect(compactedTranscriptEntries.map((entry) => entry.id)).toEqual([
+      `current_session_stream:${priorUserEntry.id}`,
+      `current_session_stream:${assistantEntry.id}`,
+      `current_session_stream:${laterQueuedEntry.id}`,
+    ]);
+    expect(
+      compactedTranscriptEntries.find(
+        (entry) => entry.id === `current_session_stream:${assistantEntry.id}`,
+      )?.text,
+    ).toBe("Earlier assistant context remains transcript evidence.");
   });
 
   it("keeps retrieved raw stream evidence whose stream id is not in the transcript", async () => {
