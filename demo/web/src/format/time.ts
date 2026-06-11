@@ -34,3 +34,27 @@ export function relativeAge(date: Date, now = new Date()): string {
   const days = Math.floor(hours / 24);
   return `${days}d`;
 }
+
+export function humanMs(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) {
+    return "—";
+  }
+  if (ms < 1_000) {
+    return `${Math.round(ms)}ms`;
+  }
+
+  const seconds = ms / 1_000;
+  if (seconds < 60) {
+    return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.round(seconds % 60);
+  if (minutes < 60) {
+    return remainder === 0 ? `${minutes}m` : `${minutes}m ${remainder}s`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  const minuteRemainder = minutes % 60;
+  return minuteRemainder === 0 ? `${hours}h` : `${hours}h ${minuteRemainder}m`;
+}

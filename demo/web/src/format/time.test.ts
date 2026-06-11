@@ -1,4 +1,4 @@
-import { dayLabel, hm, hms, relativeAge } from "./time";
+import { dayLabel, hm, hms, humanMs, relativeAge } from "./time";
 
 describe("time formatting", () => {
   it("formats local clock times", () => {
@@ -18,5 +18,12 @@ describe("time formatting", () => {
     expect(relativeAge(new Date(2026, 5, 11, 11, 54), now)).toBe("6m");
     expect(relativeAge(new Date(2026, 5, 11, 6, 0), now)).toBe("6h");
     expect(relativeAge(new Date(2026, 5, 9, 12, 0), now)).toBe("2d");
+  });
+
+  it("formats maintenance intervals", () => {
+    expect(humanMs(250)).toBe("250ms");
+    expect(humanMs(1_500)).toBe("1.5s");
+    expect(humanMs(60_000)).toBe("1m");
+    expect(humanMs(3_660_000)).toBe("1h 1m");
   });
 });

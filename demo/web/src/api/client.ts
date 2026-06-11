@@ -1,5 +1,7 @@
 import type {
+  AdminResetResponse,
   ApiState,
+  AssembledPromptResponse,
   BandDetailResponse,
   Commitment,
   CommitmentsResponse,
@@ -8,12 +10,21 @@ import type {
   CreatorDirective,
   CreatorDirectiveReconciliationBody,
   CreatorDirectivesResponse,
+  DreamApplyResponse,
+  DreamAuditResponse,
+  DreamPlanResponse,
+  DreamStateResponse,
+  EntityRecord,
   GoalPatchBody,
   IdentityResponse,
   LedgerResponse,
+  MaintenanceAuditRow,
   MemoryBandId,
   MemoryBandsResponse,
   OpenQuestionPatchBody,
+  OfflineProcessName,
+  PromptBlock,
+  PromptsResponse,
   ReviewGenericPatchBody,
   ReviewKind,
   ReviewRow,
@@ -21,6 +32,7 @@ import type {
   SemanticEdgeDetailResponse,
   SemanticGraphResponse,
   SemanticNodeDetailResponse,
+  SessionParticipationPolicy,
   SessionRecord,
   SessionsResponse,
   StreamResponse,
@@ -49,6 +61,17 @@ async function responseMessage(response: Response): Promise<string> {
       typeof body.message === "string"
     ) {
       return body.message;
+    }
+    if (
+      typeof body === "object" &&
+      body !== null &&
+      "error" in body &&
+      typeof body.error === "object" &&
+      body.error !== null &&
+      "message" in body.error &&
+      typeof body.error.message === "string"
+    ) {
+      return body.error.message;
     }
   } catch {
     return fallback;
@@ -96,6 +119,38 @@ export async function patchJson<T>(path: string, body: unknown): Promise<T> {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    throw new ApiError(response.status, await responseMessage(response));
+  }
+
+  return (await response.json()) as T;
+}
+
+export async function putJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: "PUT",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    throw new ApiError(response.status, await responseMessage(response));
+  }
+
+  return (await response.json()) as T;
+}
+
+export async function deleteJson<T>(path: string): Promise<T> {
+  const response = await fetch(path, {
+    method: "DELETE",
+    headers: {
+      Accept: "application/json",
+    },
   });
 
   if (!response.ok) {
@@ -286,4 +341,70 @@ export function patchCorrectionReview(
   body: CorrectionReviewPatchBody,
 ): Promise<ReviewRow> {
   return patchJson<ReviewRow>(`/api/correction/reviews/${id}`, body);
+}
+
+export function fetchDreamState(): Promise<DreamStateResponse> {
+  return getJson<DreamStateResponse>("/api/dream/state");
+}
+
+export function fetchDreamAudit(limit = 50): Promise<DreamAuditResponse> {
+  return getJson<DreamAuditResponse>(`/api/dream/audit?limit=${limit}`);
+}
+
+export function planDream(input: {
+  processes?: OfflineProcessName[];
+  budget?: number;
+}): Promise<DreamPlanResponse> {
+  return postJson<DreamPlanResponse>("/api/dream/plan", input);
+}
+
+export function applyDream(input: {
+  processes?: OfflineProcessName[];
+  budget?: number;
+  plan_id?: string;
+}): Promise<DreamApplyResponse> {
+  return postJson<DreamApplyResponse>("/api/dream/apply", input);
+}
+
+export function revertDreamAudit(id: number): Promise<MaintenanceAuditRow> {
+  return postJson<MaintenanceAuditRow>(`/api/dream/audit/${id}/revert`, {});
+}
+
+export function fetchPrompts(): Promise<PromptsResponse> {
+  return getJson<PromptsResponse>("/api/prompts");
+}
+
+export function fetchAssembledPrompts(): Promise<AssembledPromptResponse> {
+  return getJson<AssembledPromptResponse>("/api/prompts/assembled");
+}
+
+export function savePromptOverride(key: string, text: string): Promise<PromptBlock> {
+  return putJson<PromptBlock>(`/api/prompts/${encodeURIComponent(key)}`, { text });
+}
+
+export function resetPromptOverride(key: string): Promise<PromptBlock> {
+  return deleteJson<PromptBlock>(`/api/prompts/${encodeURIComponent(key)}`);
+}
+
+export function fetchCreatorEntity(): Promise<EntityRecord | null> {
+  return getJson<EntityRecord | null>("/api/entities/creator");
+}
+
+export function setCreatorEntity(name: string): Promise<EntityRecord> {
+  return postJson<EntityRecord>("/api/entities/creator", { name });
+}
+
+export function setSessionParticipation(
+  sessionId: string,
+  policy: SessionParticipationPolicy,
+  reason?: string,
+): Promise<SessionRecord> {
+  return postJson<SessionRecord>(`/api/sessions/${encodeURIComponent(sessionId)}/participation`, {
+    policy,
+    ...(reason === undefined || reason.trim().length === 0 ? {} : { reason }),
+  });
+}
+
+export function resetBorg(): Promise<AdminResetResponse> {
+  return postJson<AdminResetResponse>("/api/admin/reset", { confirm: "RESET" });
 }

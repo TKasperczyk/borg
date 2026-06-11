@@ -236,8 +236,16 @@ describe("Chat page", () => {
     };
 
     await screen.findByPlaceholderText("message the entity…");
-
     act(() => {
+      ws.instances[0]!.open();
+    });
+    await waitFor(() =>
+      expect(ws.instances[0]!.sent).toContain(
+        JSON.stringify({ type: "subscribe", session_id: "s_default" }),
+      ),
+    );
+
+    await act(async () => {
       ws.instances[0]!.receive({
         type: "turn:phase:started",
         ts: 1,
@@ -266,11 +274,11 @@ describe("Chat page", () => {
       });
     });
 
-    expect(screen.getByText("SYS_2 DELIB")).toBeTruthy();
-    expect(screen.getByText("EPI")).toBeTruthy();
-    expect(screen.getByText("t1")).toBeTruthy();
+    expect(await screen.findByText("SYS_2 DELIB")).toBeTruthy();
+    expect(await screen.findByText("EPI")).toBeTruthy();
+    expect(await screen.findByText("t1")).toBeTruthy();
 
-    act(() => {
+    await act(async () => {
       ws.instances[0]!.receive({
         type: "turn:phase:started",
         ts: 4,
@@ -285,8 +293,8 @@ describe("Chat page", () => {
       });
     });
 
-    expect(screen.getByText("PATH …")).toBeTruthy();
-    expect(screen.queryByText("EPI")).toBeNull();
-    expect(screen.getByText("no ledger for current turn yet")).toBeTruthy();
+    expect(await screen.findByText("PATH …")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText("EPI")).toBeNull());
+    expect(await screen.findByText("no ledger for current turn yet")).toBeTruthy();
   });
 });

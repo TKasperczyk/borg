@@ -47,6 +47,8 @@ export type SessionRecord = {
   audience_role: "participant" | "operator";
 };
 
+export type SessionParticipationPolicy = SessionRecord["participation_policy"];
+
 export type SessionsResponse = {
   sessions: SessionRecord[];
 };
@@ -529,6 +531,173 @@ export type BandDetailResponse = {
   growth_markers?: IdentityGrowthMarker[];
   periods?: IdentityPeriod[];
   open_question_events?: IdentityEvent[];
+};
+
+export type OfflineProcessName =
+  | "consolidator"
+  | "reflector"
+  | "semantic-extractor"
+  | "curator"
+  | "overseer"
+  | "associator"
+  | "review-resolver"
+  | "ruminator"
+  | "self-narrator"
+  | "procedural-synthesizer"
+  | "belief-reviser"
+  | "creator-directive-reconciler"
+  | "commitment-reconciler";
+
+export type DreamProcessRow = {
+  name: OfflineProcessName;
+  description: string;
+  last_run_at: number | null;
+  last_status: "ok" | "error" | null;
+  last_audit_id: number | null;
+  budget: number | null;
+  enabled: boolean;
+};
+
+export type DreamScheduleRow = {
+  process: OfflineProcessName;
+  scheduled_at: number;
+  source: "stream" | "audit";
+  stream_entry_id?: string;
+  audit_id?: number;
+};
+
+export type DreamReportError = {
+  process?: string;
+  message?: string;
+  code?: string;
+  target_type?: string;
+  target_id?: string;
+};
+
+export type DreamReport = {
+  run_id: string;
+  processes: OfflineProcessName[];
+  dry_run: boolean;
+  planned_at: number | null;
+  changes: number;
+  tokens_used: number;
+  errors: DreamReportError[];
+  budget_exhausted_processes: OfflineProcessName[];
+  notes: string[];
+};
+
+export type MaintenanceAuditRow = {
+  id: number;
+  run_id: string;
+  process: string;
+  action: string;
+  targets: string[];
+  reversal: Record<string, unknown>;
+  applied_at: number;
+  reverted_at: number | null;
+  reverted_by: string | null;
+};
+
+export type DreamSchedulerConfig = {
+  enabled: boolean;
+  light_interval_ms: number;
+  heavy_interval_ms: number;
+  optimize_storage: boolean;
+  light_processes: OfflineProcessName[];
+  heavy_processes: OfflineProcessName[];
+  process_budgets: Partial<Record<OfflineProcessName, number>>;
+};
+
+export type DreamStateResponse = {
+  processes: DreamProcessRow[];
+  pending_extraction_episodes: number;
+  schedule: DreamScheduleRow[];
+  dream_reports: DreamReport[];
+  audit_rows: MaintenanceAuditRow[];
+  belief_revision_rows: ReviewRow[];
+  scheduler: DreamSchedulerConfig;
+};
+
+export type DreamAuditResponse = {
+  rows: MaintenanceAuditRow[];
+};
+
+export type DreamPlanProcessPreview = {
+  name: OfflineProcessName;
+  would_change: boolean;
+  summary: string;
+  budget_used: number;
+  changes: unknown[];
+  errors: unknown[];
+  budget_exhausted: boolean;
+};
+
+export type DreamPlanResponse = {
+  plan_id: string;
+  processes: DreamPlanProcessPreview[];
+  total_budget_used: number;
+  changes: number;
+};
+
+export type DreamApplyResponse = {
+  run_id: string;
+  applied: Array<{
+    name: OfflineProcessName;
+    audit_id: number | null;
+    audit_ids: number[];
+    changes: number;
+  }>;
+  failed: Array<{
+    name: OfflineProcessName;
+    message: string;
+    code?: string;
+  }>;
+  duration_ms: number;
+  total_budget_used: number;
+};
+
+export type PromptBlock = {
+  key: string;
+  label: string;
+  description: string;
+  default_text: string;
+  current_text: string;
+  current_text_kind: "static_default" | "runtime_composed" | "stored_override";
+  overridden: boolean;
+  updated_at: number | null;
+};
+
+export type PromptsResponse = {
+  blocks: PromptBlock[];
+};
+
+export type AssembledPromptSegment = {
+  id: string;
+  label: string;
+  editable_key: string | null;
+  start: number;
+  end: number;
+};
+
+export type AssembledPromptResponse = {
+  text: string;
+  sections: string[];
+  segments: AssembledPromptSegment[];
+};
+
+export type EntityRecord = {
+  id: string;
+  canonical_name: string;
+  aliases: string[];
+  kind: "person" | "group" | "self" | "abstract" | null;
+  borg_role: "creator" | null;
+  name_provenance?: string;
+  created_at: number;
+  [key: string]: unknown;
+};
+
+export type AdminResetResponse = {
+  ok: boolean;
 };
 
 // Source: src/cognition/lifecycle/turn-phase/phase-trace.ts
