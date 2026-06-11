@@ -86,7 +86,7 @@ function delay(ms: number): Promise<void> {
 
 function createChunkedSseResponse(
   chunks: readonly string[],
-  options: { close?: boolean; delayMs?: number } = {},
+  options: { close?: boolean; delayMs?: number; onCancel?: (reason: unknown) => void } = {},
 ): Response {
   const encoder = new TextEncoder();
   let index = 0;
@@ -109,6 +109,9 @@ function createChunkedSseResponse(
 
       controller.enqueue(encoder.encode(chunks[index] ?? ""));
       index += 1;
+    },
+    cancel(reason) {
+      options.onCancel?.(reason);
     },
   });
 
@@ -622,6 +625,56 @@ describe("llm", () => {
     });
   });
 
+  it("fails ping-only OAuth SSE streams at the first message-event bound", async () => {
+    vi.useFakeTimers();
+    const onCancel = vi.fn();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        createChunkedSseResponse(
+          Array.from({ length: 20 }, (_, index) =>
+            index % 2 === 0 ? "event: ping\ndata: {}\n\n" : 'data: {"type":"ping"}\n\n',
+          ),
+          { close: false, delayMs: 5, onCancel },
+        ),
+      ),
+    );
+
+    const oauthFetch = createOAuthFetch({
+      sseInactivityTimeoutMs: 100,
+      sseFirstMessageEventTimeoutMs: 30,
+      sseMessageEventGapTimeoutMs: 100,
+    });
+    const response = await oauthFetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] }),
+    });
+
+    const textResult = response.text().then(
+      (value) => ({ status: "resolved" as const, value }),
+      (reason: unknown) => ({ status: "rejected" as const, reason }),
+    );
+
+    await vi.advanceTimersByTimeAsync(35);
+    const result = await textResult;
+
+    expect(result.status).toBe("rejected");
+    expect(result).toMatchObject({
+      reason: {
+        code: "LLM_STREAM_EVENT_STALLED",
+        message: "Anthropic SSE stream stalled for 30ms before the first message event",
+      },
+    });
+    expect(result).not.toMatchObject({
+      reason: {
+        code: "LLM_STREAM_STALLED",
+      },
+    });
+    expect(onCancel).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "LLM_STREAM_EVENT_STALLED" }),
+    );
+  });
+
   it("allows OAuth SSE chunks that arrive before the inactivity deadline", async () => {
     vi.stubGlobal(
       "fetch",
@@ -650,6 +703,130 @@ describe("llm", () => {
     );
   });
 
+  it("allows ping gaps between message events when they stay within event bounds", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        createChunkedSseResponse(
+          [
+            'data: {"type":"message_start","message":{"id":"msg_1"}}\n\n',
+            "event: ping\ndata: {}\n\n",
+            ": keep-alive\n\n",
+            'data: {"type":"ping"}\n\n',
+            'data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_1","name":"Lookup","input":{}}}\n\n',
+            "data: [DONE]\n\n",
+          ],
+          { close: true, delayMs: 5 },
+        ),
+      ),
+    );
+
+    const oauthFetch = createOAuthFetch({
+      sseInactivityTimeoutMs: 100,
+      sseFirstMessageEventTimeoutMs: 30,
+      sseMessageEventGapTimeoutMs: 30,
+    });
+    const response = await oauthFetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      body: JSON.stringify({
+        tools: [{ name: "lookup" }],
+        tool_choice: { type: "tool", name: "lookup" },
+      }),
+    });
+
+    const textPromise = response.text();
+    await vi.advanceTimersByTimeAsync(40);
+
+    await expect(textPromise).resolves.toBe(
+      'data: {"type":"message_start","message":{"id":"msg_1"}}\n\n' +
+        "event: ping\ndata: {}\n\n" +
+        ": keep-alive\n\n" +
+        'data: {"type":"ping"}\n\n' +
+        'data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_1","name":"lookup","input":{}}}\n\n' +
+        "data: [DONE]\n\n",
+    );
+  });
+
+  it("keeps the byte-silence watchdog responsible for fully silent SSE streams", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => createChunkedSseResponse([], { close: false })),
+    );
+
+    const oauthFetch = createOAuthFetch({
+      sseInactivityTimeoutMs: 20,
+      sseFirstMessageEventTimeoutMs: 100,
+      sseMessageEventGapTimeoutMs: 100,
+    });
+    const response = await oauthFetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] }),
+    });
+
+    const textResult = response.text().then(
+      (value) => ({ status: "resolved" as const, value }),
+      (reason: unknown) => ({ status: "rejected" as const, reason }),
+    );
+
+    await vi.advanceTimersByTimeAsync(25);
+    const result = await textResult;
+
+    expect(result).toMatchObject({
+      status: "rejected",
+      reason: {
+        code: "LLM_STREAM_STALLED",
+        message: "Anthropic SSE stream stalled after 20ms without a chunk",
+      },
+    });
+  });
+
+  it("fails when the gap between SSE message events exceeds the event bound", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        createChunkedSseResponse(
+          [
+            'data: {"type":"message_start","message":{"id":"msg_1"}}\n\n',
+            "event: ping\ndata: {}\n\n",
+            'data: {"type":"ping"}\n\n',
+            ": still waiting\n\n",
+            "event: ping\ndata: {}\n\n",
+          ],
+          { close: false, delayMs: 5 },
+        ),
+      ),
+    );
+
+    const oauthFetch = createOAuthFetch({
+      sseInactivityTimeoutMs: 100,
+      sseFirstMessageEventTimeoutMs: 100,
+      sseMessageEventGapTimeoutMs: 17,
+    });
+    const response = await oauthFetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] }),
+    });
+
+    const textResult = response.text().then(
+      (value) => ({ status: "resolved" as const, value }),
+      (reason: unknown) => ({ status: "rejected" as const, reason }),
+    );
+
+    await vi.advanceTimersByTimeAsync(30);
+    const result = await textResult;
+
+    expect(result).toMatchObject({
+      status: "rejected",
+      reason: {
+        code: "LLM_STREAM_EVENT_STALLED",
+        message: "Anthropic SSE stream stalled for 17ms between message events",
+      },
+    });
+  });
+
   it("clears OAuth SSE inactivity timers after normal completion", async () => {
     vi.useFakeTimers();
     vi.stubGlobal(
@@ -675,6 +852,288 @@ describe("llm", () => {
 
     await vi.advanceTimersByTimeAsync(25);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("fails typed when an OAuth unary JSON body read stalls", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        const stream = new ReadableStream<Uint8Array>({
+          async pull() {
+            await new Promise(() => undefined);
+          },
+        });
+
+        return new Response(stream, {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        });
+      }),
+    );
+
+    const oauthFetch = createOAuthFetch({ unaryBodyTimeoutMs: 20 });
+    const resultPromise = oauthFetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] }),
+    }).then(
+      (value) => ({ status: "resolved" as const, value }),
+      (reason: unknown) => ({ status: "rejected" as const, reason }),
+    );
+
+    await vi.advanceTimersByTimeAsync(25);
+    const result = await resultPromise;
+
+    expect(result).toMatchObject({
+      status: "rejected",
+      reason: {
+        code: "LLM_CALL_TIMED_OUT",
+        message: "Anthropic body-read LLM deadline exceeded after 20ms",
+      },
+    });
+  });
+
+  it("aborts OAuth fetches when response headers never arrive", async () => {
+    vi.useFakeTimers();
+    let observedSignal: AbortSignal | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+          await new Promise<Response>((_resolve, reject) => {
+            observedSignal = init?.signal ?? undefined;
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+              once: true,
+            });
+          }),
+      ),
+    );
+
+    const oauthFetch = createOAuthFetch({ fetchHeadersTimeoutMs: 20 });
+    const resultPromise = oauthFetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] }),
+    }).then(
+      (value) => ({ status: "resolved" as const, value }),
+      (reason: unknown) => ({ status: "rejected" as const, reason }),
+    );
+
+    await vi.advanceTimersByTimeAsync(25);
+    const result = await resultPromise;
+
+    expect(observedSignal?.aborted).toBe(true);
+    expect(result).toMatchObject({
+      status: "rejected",
+      reason: {
+        code: "LLM_CALL_TIMED_OUT",
+        message: "Anthropic headers LLM deadline exceeded after 20ms",
+      },
+    });
+  });
+
+  it("does not let the OAuth headers timeout abort a normal slow streaming body", async () => {
+    vi.useFakeTimers();
+    let observedSignal: AbortSignal | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        observedSignal = init?.signal ?? undefined;
+        return createChunkedSseResponse(
+          ['data: {"type":"message_start","message":{"id":"msg_1"}}\n\n', "data: [DONE]\n\n"],
+          { close: true, delayMs: 50 },
+        );
+      }),
+    );
+
+    const oauthFetch = createOAuthFetch({
+      fetchHeadersTimeoutMs: 20,
+      sseInactivityTimeoutMs: 100,
+      sseFirstMessageEventTimeoutMs: 100,
+      sseMessageEventGapTimeoutMs: 100,
+    });
+    const response = await oauthFetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] }),
+    });
+
+    const textPromise = response.text();
+    await vi.advanceTimersByTimeAsync(120);
+
+    await expect(textPromise).resolves.toBe(
+      'data: {"type":"message_start","message":{"id":"msg_1"}}\n\n' + "data: [DONE]\n\n",
+    );
+    expect(observedSignal?.aborted).toBe(false);
+  });
+
+  it("surfaces OAuth header deadlines through complete without SDK retries", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(
+      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+        await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+            once: true,
+          });
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+      oauthFetchHeadersTimeoutMs: 20,
+      unaryCallTimeoutMs: 1_000,
+    });
+    const resultPromise = client
+      .complete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      })
+      .then(
+        (value) => ({ status: "resolved" as const, value }),
+        (reason: unknown) => ({ status: "rejected" as const, reason }),
+      );
+
+    await vi.advanceTimersByTimeAsync(25);
+    const result = await resultPromise;
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: "rejected",
+      reason: {
+        code: "LLM_CALL_TIMED_OUT",
+        message: "Anthropic headers LLM deadline exceeded after 20ms",
+      },
+    });
+  });
+
+  it("cancels wedged OAuth unary bodies and surfaces typed through complete", async () => {
+    vi.useFakeTimers();
+    let cancelReason: unknown;
+    const fetchMock = vi.fn(async () => {
+      const stream = new ReadableStream<Uint8Array>({
+        cancel(reason) {
+          cancelReason = reason;
+        },
+      });
+
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+      oauthUnaryBodyTimeoutMs: 20,
+      unaryCallTimeoutMs: 1_000,
+    });
+    const resultPromise = client
+      .complete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      })
+      .then(
+        (value) => ({ status: "resolved" as const, value }),
+        (reason: unknown) => ({ status: "rejected" as const, reason }),
+      );
+
+    await vi.advanceTimersByTimeAsync(25);
+    const result = await resultPromise;
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(cancelReason).toMatchObject({
+      code: "LLM_CALL_TIMED_OUT",
+      message: "Anthropic body-read LLM deadline exceeded after 20ms",
+    });
+    expect(result).toMatchObject({
+      status: "rejected",
+      reason: {
+        code: "LLM_CALL_TIMED_OUT",
+        message: "Anthropic body-read LLM deadline exceeded after 20ms",
+      },
+    });
+  });
+
+  it("surfaces OAuth header deadlines through streaming without SDK retries", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(
+      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+        await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+            once: true,
+          });
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+      oauthFetchHeadersTimeoutMs: 20,
+      streamingCallTimeoutMs: 1_000,
+    });
+    const resultPromise = client
+      .streamComplete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      })
+      .then(
+        (value) => ({ status: "resolved" as const, value }),
+        (reason: unknown) => ({ status: "rejected" as const, reason }),
+      );
+
+    await vi.advanceTimersByTimeAsync(25);
+    const result = await resultPromise;
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: "rejected",
+      reason: {
+        code: "LLM_CALL_TIMED_OUT",
+        message: "Anthropic headers LLM deadline exceeded after 20ms",
+      },
+    });
+  });
+
+  it("retries plain Anthropic connection failures with Borg-owned bounds", async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+    });
+
+    await expect(
+      client.complete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      }),
+    ).rejects.toMatchObject({
+      code: "LLM_CONNECTION_FAILED",
+      message: "Anthropic connection failed after 3 attempts",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("surfaces OAuth SSE stalls at top level through the real SDK stream path", async () => {
@@ -1446,6 +1905,122 @@ describe("llm", () => {
         code: "LLM_STREAM_STALLED",
       },
     });
+  });
+
+  it("lifts event-stalled stream errors through the same retryable transport path", async () => {
+    const eventStalledError = new LLMError(
+      "Anthropic SSE stream stalled for 30ms before the first message event",
+      {
+        code: "LLM_STREAM_EVENT_STALLED",
+      },
+    );
+    const stream = {
+      async *[Symbol.asyncIterator]() {
+        throw new Error("SDK stream wrapper", { cause: eventStalledError });
+      },
+      finalMessage: vi.fn(),
+    };
+    const client = new AnthropicLLMClient({
+      client: {
+        messages: {
+          create: vi.fn(),
+          stream: vi.fn(() => stream as never),
+        },
+      },
+    });
+
+    await expect(
+      client.streamComplete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      }),
+    ).rejects.toMatchObject({
+      code: "LLM_STREAM_EVENT_STALLED",
+      cause: {
+        cause: {
+          code: "LLM_STREAM_EVENT_STALLED",
+        },
+      },
+    });
+  });
+
+  it("times out hung streaming SDK calls and aborts the request signal", async () => {
+    vi.useFakeTimers();
+    let observedSignal: AbortSignal | undefined;
+    const stream = {
+      async *[Symbol.asyncIterator]() {
+        await new Promise(() => undefined);
+      },
+      finalMessage: vi.fn(),
+    };
+    const streamFactory = vi.fn((_params: unknown, options?: { signal?: AbortSignal | null }) => {
+      observedSignal = options?.signal ?? undefined;
+      return stream as never;
+    });
+    const client = new AnthropicLLMClient({
+      client: {
+        messages: {
+          create: vi.fn(),
+          stream: streamFactory,
+        },
+      },
+      streamingCallTimeoutMs: 20,
+      oauthSseInactivityTimeoutMs: 1_000,
+      oauthSseFirstMessageEventTimeoutMs: 1_000,
+      oauthSseMessageEventGapTimeoutMs: 1_000,
+    });
+
+    const resultPromise = client
+      .streamComplete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      })
+      .then(
+        (value) => ({ status: "resolved" as const, value }),
+        (reason: unknown) => ({ status: "rejected" as const, reason }),
+      );
+
+    await vi.advanceTimersByTimeAsync(25);
+    const result = await resultPromise;
+
+    expect(observedSignal?.aborted).toBe(true);
+    expect(result).toMatchObject({
+      status: "rejected",
+      reason: {
+        code: "LLM_CALL_TIMED_OUT",
+        message: "Anthropic streaming LLM call timed out after 20ms",
+      },
+    });
+  });
+
+  it("clears outer deadline timers after fast unary SDK calls", async () => {
+    vi.useFakeTimers();
+    const create = vi.fn().mockResolvedValue(createMessageBody());
+    const client = new AnthropicLLMClient({
+      client: {
+        messages: { create },
+      },
+      unaryCallTimeoutMs: 20,
+    });
+
+    await expect(
+      client.complete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      }),
+    ).resolves.toMatchObject({
+      text: "Hello",
+    });
+
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(25);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("supports scripted fake llm responses", async () => {

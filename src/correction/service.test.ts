@@ -99,6 +99,7 @@ describe("correction service", () => {
           llmEnabled: false,
         },
         anthropic: {
+          ...DEFAULT_CONFIG.anthropic,
           auth: "api-key",
           apiKey: "test",
           models: {
@@ -174,6 +175,7 @@ describe("correction service", () => {
           llmEnabled: false,
         },
         anthropic: {
+          ...DEFAULT_CONFIG.anthropic,
           auth: "api-key",
           apiKey: "test",
           models: {
@@ -639,6 +641,7 @@ describe("correction service", () => {
           llmEnabled: false,
         },
         anthropic: {
+          ...DEFAULT_CONFIG.anthropic,
           auth: "api-key",
           apiKey: "test",
           models: {

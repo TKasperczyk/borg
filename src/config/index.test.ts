@@ -40,6 +40,15 @@ describe("config", () => {
       creatorDirective: "claude-sonnet-4-6",
       imagePerception: "claude-haiku-4-5-20251001",
     });
+    expect(config.anthropic).toMatchObject({
+      oauthSseInactivityTimeoutMs: 120_000,
+      oauthSseFirstMessageEventTimeoutMs: 240_000,
+      oauthSseMessageEventGapTimeoutMs: 180_000,
+      oauthFetchHeadersTimeoutMs: 120_000,
+      oauthUnaryBodyTimeoutMs: 120_000,
+      unaryCallTimeoutMs: 360_000,
+      streamingCallTimeoutMs: 720_000,
+    });
     expect(config.host_capabilities).toContain("Inputs available to me");
     expect(config.host_capabilities).toContain("Proactive outbound messaging");
     expect(config.perception.llmEnabled).toBe(true);
@@ -509,6 +518,13 @@ describe("config", () => {
         BORG_GENERATION_COGNITION_THINKING_BUDGET_TOKENS: "8192",
         BORG_MAINTENANCE_OPTIMIZE_STORAGE: "false",
         BORG_MODEL_RECALL_EXPANSION: "env-recall",
+        BORG_ANTHROPIC_OAUTH_SSE_INACTIVITY_TIMEOUT_MS: "111",
+        BORG_ANTHROPIC_OAUTH_SSE_FIRST_MESSAGE_EVENT_TIMEOUT_MS: "222",
+        BORG_ANTHROPIC_OAUTH_SSE_MESSAGE_EVENT_GAP_TIMEOUT_MS: "333",
+        BORG_ANTHROPIC_OAUTH_FETCH_HEADERS_TIMEOUT_MS: "444",
+        BORG_ANTHROPIC_OAUTH_UNARY_BODY_TIMEOUT_MS: "555",
+        BORG_ANTHROPIC_UNARY_CALL_TIMEOUT_MS: "666",
+        BORG_ANTHROPIC_STREAMING_CALL_TIMEOUT_MS: "777",
         ANTHROPIC_API_KEY: "secret",
       },
     });
@@ -520,6 +536,13 @@ describe("config", () => {
     expect(config.anthropic.apiKey).toBe("secret");
     expect(config.anthropic.models.cognition).toBe("file-cognition");
     expect(config.anthropic.models.recallExpansion).toBe("env-recall");
+    expect(config.anthropic.oauthSseInactivityTimeoutMs).toBe(111);
+    expect(config.anthropic.oauthSseFirstMessageEventTimeoutMs).toBe(222);
+    expect(config.anthropic.oauthSseMessageEventGapTimeoutMs).toBe(333);
+    expect(config.anthropic.oauthFetchHeadersTimeoutMs).toBe(444);
+    expect(config.anthropic.oauthUnaryBodyTimeoutMs).toBe(555);
+    expect(config.anthropic.unaryCallTimeoutMs).toBe(666);
+    expect(config.anthropic.streamingCallTimeoutMs).toBe(777);
     expect(config.executive.goalFocusThreshold).toBe(0.6);
     expect(config.streamIngestion.settle).toEqual({
       settleMs: 3000,

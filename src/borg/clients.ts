@@ -40,6 +40,13 @@ export function createLlmFactory(
       apiKey: config.anthropic.apiKey,
       env,
       clock,
+      oauthSseInactivityTimeoutMs: config.anthropic.oauthSseInactivityTimeoutMs,
+      oauthSseFirstMessageEventTimeoutMs: config.anthropic.oauthSseFirstMessageEventTimeoutMs,
+      oauthSseMessageEventGapTimeoutMs: config.anthropic.oauthSseMessageEventGapTimeoutMs,
+      oauthFetchHeadersTimeoutMs: config.anthropic.oauthFetchHeadersTimeoutMs,
+      oauthUnaryBodyTimeoutMs: config.anthropic.oauthUnaryBodyTimeoutMs,
+      unaryCallTimeoutMs: config.anthropic.unaryCallTimeoutMs,
+      streamingCallTimeoutMs: config.anthropic.streamingCallTimeoutMs,
       ...(attachmentService === undefined
         ? {}
         : {

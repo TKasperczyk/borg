@@ -51,6 +51,7 @@ function openCorrectionBorg(tempDir: string, llm = new FakeLLMClient()) {
         llmEnabled: false,
       },
       anthropic: {
+        ...DEFAULT_CONFIG.anthropic,
         auth: "api-key",
         apiKey: "test",
         models: {

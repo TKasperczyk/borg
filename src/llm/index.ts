@@ -349,29 +349,41 @@ export * from "./structured-tool-call.js";
 
 type AnthropicClientLike = {
   messages: {
-    create(params: {
-      model: string;
-      system?: string | TextBlockParam[];
-      messages: MessageParam[];
-      tools?: Tool[];
-      tool_choice?: ToolChoice;
-      output_config?: OutputConfig;
-      max_tokens: number;
-      temperature?: number;
-      thinking?: ThinkingConfigParam;
-    }): Promise<Message>;
-    stream?(params: {
-      model: string;
-      system?: string | TextBlockParam[];
-      messages: MessageParam[];
-      tools?: Tool[];
-      tool_choice?: ToolChoice;
-      output_config?: OutputConfig;
-      max_tokens: number;
-      temperature?: number;
-      thinking?: ThinkingConfigParam;
-    }): AsyncIterable<MessageStreamEvent> & { finalMessage(): Promise<Message> };
+    create(
+      params: {
+        model: string;
+        system?: string | TextBlockParam[];
+        messages: MessageParam[];
+        tools?: Tool[];
+        tool_choice?: ToolChoice;
+        output_config?: OutputConfig;
+        max_tokens: number;
+        temperature?: number;
+        thinking?: ThinkingConfigParam;
+      },
+      options?: AnthropicRequestOptions,
+    ): Promise<Message>;
+    stream?(
+      params: {
+        model: string;
+        system?: string | TextBlockParam[];
+        messages: MessageParam[];
+        tools?: Tool[];
+        tool_choice?: ToolChoice;
+        output_config?: OutputConfig;
+        max_tokens: number;
+        temperature?: number;
+        thinking?: ThinkingConfigParam;
+      },
+      options?: AnthropicRequestOptions,
+    ): AsyncIterable<MessageStreamEvent> & {
+      finalMessage(): Promise<Message>;
+    };
   };
+};
+
+type AnthropicRequestOptions = {
+  signal?: AbortSignal | null;
 };
 
 type OAuthAuthKind = {
@@ -393,6 +405,12 @@ export type AnthropicLLMClientOptions = {
   usageSink?: TokenUsageSink;
   clock?: Clock;
   oauthSseInactivityTimeoutMs?: number;
+  oauthSseFirstMessageEventTimeoutMs?: number;
+  oauthSseMessageEventGapTimeoutMs?: number;
+  oauthFetchHeadersTimeoutMs?: number;
+  oauthUnaryBodyTimeoutMs?: number;
+  unaryCallTimeoutMs?: number;
+  streamingCallTimeoutMs?: number;
   attachmentResolver?: (attachmentId: AttachmentId) => {
     mediaType: string;
     bytes: Buffer | Uint8Array;
@@ -767,13 +785,33 @@ type RequestBodyInit = NonNullable<RequestInit["body"]>;
 // Healthy streams deliver chunks/pings continuously; a fully silent stream is
 // the documented Anthropic-side stall signature.
 const SSE_INACTIVITY_TIMEOUT_MS = 120_000;
+const SSE_FIRST_MESSAGE_EVENT_TIMEOUT_MS = 240_000;
+const SSE_MESSAGE_EVENT_GAP_TIMEOUT_MS = 180_000;
+const OAUTH_FETCH_HEADERS_TIMEOUT_MS = 120_000;
+const OAUTH_UNARY_BODY_TIMEOUT_MS = 120_000;
+const LLM_UNARY_CALL_TIMEOUT_MS = 6 * 60_000;
+const LLM_STREAMING_CALL_TIMEOUT_MS = 12 * 60_000;
+const ANTHROPIC_CONNECTION_MAX_RETRIES = 2;
 
 type OAuthFetchOptions = {
   sseInactivityTimeoutMs?: number;
+  sseFirstMessageEventTimeoutMs?: number;
+  sseMessageEventGapTimeoutMs?: number;
+  fetchHeadersTimeoutMs?: number;
+  unaryBodyTimeoutMs?: number;
 };
 
 type SseReadResult = Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>>;
 const LLM_STREAM_STALLED_CODE = "LLM_STREAM_STALLED";
+const LLM_STREAM_EVENT_STALLED_CODE = "LLM_STREAM_EVENT_STALLED";
+const LLM_CALL_TIMED_OUT_CODE = "LLM_CALL_TIMED_OUT";
+const LLM_CONNECTION_FAILED_CODE = "LLM_CONNECTION_FAILED";
+const RETRYABLE_LLM_TRANSPORT_ERROR_CODES = new Set<string>([
+  LLM_STREAM_STALLED_CODE,
+  LLM_STREAM_EVENT_STALLED_CODE,
+  LLM_CALL_TIMED_OUT_CODE,
+  LLM_CONNECTION_FAILED_CODE,
+]);
 
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
   (timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
@@ -785,6 +823,40 @@ function createSseStalledError(timeoutMs: number): LLMError {
   });
 }
 
+function createSseEventStalledError(
+  bound: "first-message-event" | "message-event-gap",
+  timeoutMs: number,
+): LLMError {
+  const detail =
+    bound === "first-message-event" ? "before the first message event" : "between message events";
+
+  return new LLMError(`Anthropic SSE stream stalled for ${timeoutMs}ms ${detail}`, {
+    code: LLM_STREAM_EVENT_STALLED_CODE,
+  });
+}
+
+function createLlmCallTimedOutError(kind: "unary" | "streaming", timeoutMs: number): LLMError {
+  return new LLMError(`Anthropic ${kind} LLM call timed out after ${timeoutMs}ms`, {
+    code: LLM_CALL_TIMED_OUT_CODE,
+  });
+}
+
+function createFetchLayerLlmDeadlineError(
+  kind: "headers" | "body-read",
+  timeoutMs: number,
+): LLMError {
+  return new LLMError(`Anthropic ${kind} LLM deadline exceeded after ${timeoutMs}ms`, {
+    code: LLM_CALL_TIMED_OUT_CODE,
+  });
+}
+
+function createLlmConnectionFailedError(attempts: number, cause: unknown): LLMError {
+  return new LLMError(`Anthropic connection failed after ${attempts} attempts`, {
+    code: LLM_CONNECTION_FAILED_CODE,
+    cause,
+  });
+}
+
 function causeOf(error: unknown): unknown {
   if ((typeof error !== "object" && typeof error !== "function") || error === null) {
     return undefined;
@@ -793,14 +865,26 @@ function causeOf(error: unknown): unknown {
   return (error as { cause?: unknown }).cause;
 }
 
-function findSseStalledError(error: unknown): LLMError | undefined {
+function errorConstructorName(error: unknown): string | undefined {
+  if ((typeof error !== "object" && typeof error !== "function") || error === null) {
+    return undefined;
+  }
+
+  return (error as { constructor?: { name?: string } }).constructor?.name;
+}
+
+function isRetryableLlmTransportError(error: unknown): error is LLMError {
+  return error instanceof LLMError && RETRYABLE_LLM_TRANSPORT_ERROR_CODES.has(error.code);
+}
+
+function findRetryableLlmTransportError(error: unknown): LLMError | undefined {
   const seen = new Set<unknown>();
   let current: unknown = error;
 
   while (current !== undefined && current !== null && !seen.has(current)) {
     seen.add(current);
 
-    if (current instanceof LLMError && current.code === LLM_STREAM_STALLED_CODE) {
+    if (isRetryableLlmTransportError(current)) {
       return current;
     }
 
@@ -810,15 +894,84 @@ function findSseStalledError(error: unknown): LLMError | undefined {
   return undefined;
 }
 
-function rethrowSseStalledErrorAtTopLevel(error: unknown): void {
-  const stalledError = findSseStalledError(error);
+function isAnthropicConnectionError(error: unknown): error is Error {
+  const name = errorConstructorName(error);
+  return name === "APIConnectionError" || name === "APIConnectionTimeoutError";
+}
 
-  if (stalledError !== undefined) {
-    throw new LLMError(stalledError.message, {
-      code: LLM_STREAM_STALLED_CODE,
+function findAnthropicConnectionError(error: unknown): Error | undefined {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+
+  while (current !== undefined && current !== null && !seen.has(current)) {
+    seen.add(current);
+
+    if (isAnthropicConnectionError(current)) {
+      return current;
+    }
+
+    current = causeOf(current);
+  }
+
+  return undefined;
+}
+
+function rethrowRetryableLlmTransportErrorAtTopLevel(error: unknown): void {
+  const retryableError = findRetryableLlmTransportError(error);
+
+  if (retryableError !== undefined) {
+    throw new LLMError(retryableError.message, {
+      code: retryableError.code,
       cause: error,
     });
   }
+}
+
+async function runWithAnthropicConnectionRetries<T>(
+  run: () => Promise<T>,
+  maxRetries = ANTHROPIC_CONNECTION_MAX_RETRIES,
+): Promise<T> {
+  let attempts = 0;
+
+  while (true) {
+    attempts += 1;
+
+    try {
+      return await run();
+    } catch (error) {
+      if (findRetryableLlmTransportError(error) !== undefined) {
+        throw error;
+      }
+
+      const connectionError = findAnthropicConnectionError(error);
+
+      if (connectionError === undefined) {
+        throw error;
+      }
+
+      if (attempts > maxRetries) {
+        throw createLlmConnectionFailedError(attempts, error);
+      }
+    }
+  }
+}
+
+function composeAbortSignals(
+  signals: readonly (AbortSignal | null | undefined)[],
+): AbortSignal | undefined {
+  const activeSignals = signals.filter(
+    (signal): signal is AbortSignal => signal !== undefined && signal !== null,
+  );
+
+  if (activeSignals.length === 0) {
+    return undefined;
+  }
+
+  if (activeSignals.length === 1) {
+    return activeSignals[0];
+  }
+
+  return AbortSignal.any(activeSignals);
 }
 
 async function readSseChunkWithInactivityTimeout(
@@ -847,6 +1000,121 @@ async function readSseChunkWithInactivityTimeout(
     }
 
     return result;
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+async function runWithLlmCallTimeout<T>(input: {
+  kind: "unary" | "streaming";
+  timeoutMs: number;
+  run: (signal: AbortSignal) => Promise<T>;
+  signal?: AbortSignal | null;
+}): Promise<T> {
+  const timeoutController = new AbortController();
+  const signal = composeAbortSignals([input.signal, timeoutController.signal]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timeoutError: LLMError | undefined;
+
+  const operationPromise = Promise.resolve().then(() =>
+    input.run(signal ?? timeoutController.signal),
+  );
+  operationPromise.catch(() => undefined);
+
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        timeoutError = createLlmCallTimedOutError(input.kind, input.timeoutMs);
+        reject(timeoutError);
+        timeoutController.abort(timeoutError);
+      }, input.timeoutMs);
+      unrefTimer(timer);
+    });
+
+    const result = await Promise.race([operationPromise, timeoutPromise]);
+
+    if (timeoutError !== undefined) {
+      throw timeoutError;
+    }
+
+    return result;
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+async function readResponseTextWithTimeout(response: Response, timeoutMs: number): Promise<string> {
+  if (response.body === null) {
+    return "";
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timeoutError: LLMError | undefined;
+
+  const textPromise = (async () => {
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) {
+        text += decoder.decode();
+        return text;
+      }
+
+      text += decoder.decode(value, { stream: true });
+    }
+  })();
+  textPromise.catch(() => undefined);
+
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        timeoutError = createFetchLayerLlmDeadlineError("body-read", timeoutMs);
+        reject(timeoutError);
+        void reader.cancel(timeoutError).catch(() => undefined);
+      }, timeoutMs);
+      unrefTimer(timer);
+    });
+
+    const text = await Promise.race([textPromise, timeoutPromise]);
+
+    if (timeoutError !== undefined) {
+      throw timeoutError;
+    }
+
+    return text;
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+async function fetchWithHeadersTimeout(
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit | undefined,
+  timeoutMs: number,
+): Promise<Response> {
+  const timeoutController = new AbortController();
+  const signal = composeAbortSignals([init?.signal, timeoutController.signal]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    timer = setTimeout(() => {
+      timeoutController.abort(createFetchLayerLlmDeadlineError("headers", timeoutMs));
+    }, timeoutMs);
+    unrefTimer(timer);
+
+    return await globalThis.fetch(input, {
+      ...init,
+      ...(signal === undefined ? {} : { signal }),
+    });
   } finally {
     if (timer !== undefined) {
       clearTimeout(timer);
@@ -891,8 +1159,173 @@ function withBodyAndFreshLength(init: RequestInit, body: RequestBodyInit): Reque
   };
 }
 
+type SseFrameKind = "comment" | "ping" | "message";
+
+function parseSseField(line: string): { field: string; value: string } {
+  const delimiterIndex = line.indexOf(":");
+
+  if (delimiterIndex === -1) {
+    return { field: line, value: "" };
+  }
+
+  let value = line.slice(delimiterIndex + 1);
+
+  if (value.startsWith(" ")) {
+    value = value.slice(1);
+  }
+
+  return {
+    field: line.slice(0, delimiterIndex),
+    value,
+  };
+}
+
+function classifySseFrame(frame: string): SseFrameKind {
+  const lines = frame.split(/\r?\n/).filter((line) => line.length > 0);
+
+  if (lines.length > 0 && lines.every((line) => line.startsWith(":"))) {
+    return "comment";
+  }
+
+  let eventName: string | undefined;
+  const dataLines: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith(":")) {
+      continue;
+    }
+
+    const field = parseSseField(line);
+
+    if (field.field === "event") {
+      eventName = field.value;
+      continue;
+    }
+
+    if (field.field === "data") {
+      dataLines.push(field.value);
+    }
+  }
+
+  if (eventName === "ping") {
+    return "ping";
+  }
+
+  if (dataLines.length > 0) {
+    try {
+      const parsed = JSON.parse(dataLines.join("\n")) as unknown;
+
+      if (
+        parsed !== null &&
+        typeof parsed === "object" &&
+        (parsed as { type?: unknown }).type === "ping"
+      ) {
+        return "ping";
+      }
+    } catch {
+      // Non-JSON data is still a message event for watchdog purposes.
+    }
+  }
+
+  return "message";
+}
+
+function createSseMessageEventWatchdog(input: {
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  firstMessageEventTimeoutMs: number;
+  messageEventGapTimeoutMs: number;
+  onError: (error: LLMError) => void;
+}): {
+  arm(controller: ReadableStreamDefaultController<Uint8Array>): void;
+  recordFrame(frame: string): void;
+  close(): void;
+  error(error: unknown): void;
+  readonly errored: boolean;
+} {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let sawMessageEvent = false;
+  let closed = false;
+  let errored = false;
+
+  const clear = () => {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+  };
+
+  const fail = (error: LLMError) => {
+    if (closed || errored) {
+      return;
+    }
+
+    errored = true;
+    clear();
+    input.onError(error);
+
+    try {
+      controller?.error(error);
+    } catch {
+      // The stream may already have been errored by another watchdog.
+    }
+
+    void input.reader.cancel(error).catch(() => undefined);
+  };
+
+  const armTimer = () => {
+    if (closed || errored || timer !== undefined) {
+      return;
+    }
+
+    const bound = sawMessageEvent ? "message-event-gap" : "first-message-event";
+    const timeoutMs = sawMessageEvent
+      ? input.messageEventGapTimeoutMs
+      : input.firstMessageEventTimeoutMs;
+
+    timer = setTimeout(() => {
+      timer = undefined;
+      fail(createSseEventStalledError(bound, timeoutMs));
+    }, timeoutMs);
+    unrefTimer(timer);
+  };
+
+  return {
+    arm(nextController) {
+      controller = nextController;
+      armTimer();
+    },
+    recordFrame(frame) {
+      if (closed || errored || classifySseFrame(frame) !== "message") {
+        return;
+      }
+
+      sawMessageEvent = true;
+      clear();
+      armTimer();
+    },
+    close() {
+      closed = true;
+      clear();
+    },
+    error() {
+      errored = true;
+      clear();
+    },
+    get errored() {
+      return errored;
+    },
+  };
+}
+
 export function createOAuthFetch(options: OAuthFetchOptions = {}): typeof fetch {
   const sseInactivityTimeoutMs = options.sseInactivityTimeoutMs ?? SSE_INACTIVITY_TIMEOUT_MS;
+  const sseFirstMessageEventTimeoutMs =
+    options.sseFirstMessageEventTimeoutMs ?? SSE_FIRST_MESSAGE_EVENT_TIMEOUT_MS;
+  const sseMessageEventGapTimeoutMs =
+    options.sseMessageEventGapTimeoutMs ?? SSE_MESSAGE_EVENT_GAP_TIMEOUT_MS;
+  const fetchHeadersTimeoutMs = options.fetchHeadersTimeoutMs ?? OAUTH_FETCH_HEADERS_TIMEOUT_MS;
+  const unaryBodyTimeoutMs = options.unaryBodyTimeoutMs ?? OAUTH_UNARY_BODY_TIMEOUT_MS;
 
   return async (
     input: Parameters<typeof fetch>[0],
@@ -990,7 +1423,11 @@ export function createOAuthFetch(options: OAuthFetchOptions = {}): typeof fetch 
       }
     }
 
-    const response = await globalThis.fetch(requestUrl.toString(), modifiedInit);
+    const response = await fetchWithHeadersTimeout(
+      requestUrl.toString(),
+      modifiedInit,
+      fetchHeadersTimeoutMs,
+    );
 
     if (!isMessagesRequest) {
       return response;
@@ -1000,8 +1437,18 @@ export function createOAuthFetch(options: OAuthFetchOptions = {}): typeof fetch 
 
     if (contentType.includes("application/json") && !contentType.includes("stream")) {
       try {
-        const text = await response.clone().text();
-        const parsed = JSON.parse(text) as unknown;
+        const text = await readResponseTextWithTimeout(response, unaryBodyTimeoutMs);
+        let parsed: unknown;
+
+        try {
+          parsed = JSON.parse(text) as unknown;
+        } catch {
+          return new Response(text, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: new Headers(response.headers),
+          });
+        }
 
         if (mutateToolUseNames(parsed, originalNamesByTransformed)) {
           return new Response(JSON.stringify(parsed), {
@@ -1016,7 +1463,11 @@ export function createOAuthFetch(options: OAuthFetchOptions = {}): typeof fetch 
           statusText: response.statusText,
           headers: new Headers(response.headers),
         });
-      } catch {
+      } catch (error) {
+        if (isRetryableLlmTransportError(error)) {
+          throw error;
+        }
+
         return response;
       }
     }
@@ -1029,17 +1480,32 @@ export function createOAuthFetch(options: OAuthFetchOptions = {}): typeof fetch 
       const decoder = new TextDecoder();
       const encoder = new TextEncoder();
       let buffer = "";
+      const eventWatchdog = createSseMessageEventWatchdog({
+        reader,
+        firstMessageEventTimeoutMs: sseFirstMessageEventTimeoutMs,
+        messageEventGapTimeoutMs: sseMessageEventGapTimeoutMs,
+        onError: () => {
+          buffer = "";
+        },
+      });
 
       const stream = new ReadableStream<Uint8Array>(
         {
           async pull(controller) {
+            eventWatchdog.arm(controller);
+
             let result: SseReadResult;
 
             try {
               result = await readSseChunkWithInactivityTimeout(reader, sseInactivityTimeoutMs);
             } catch (error) {
               buffer = "";
+              eventWatchdog.error(error);
               controller.error(error);
+              return;
+            }
+
+            if (eventWatchdog.errored) {
               return;
             }
 
@@ -1047,12 +1513,17 @@ export function createOAuthFetch(options: OAuthFetchOptions = {}): typeof fetch 
 
             if (done) {
               if (buffer.length > 0) {
+                eventWatchdog.recordFrame(buffer);
+                if (eventWatchdog.errored) {
+                  return;
+                }
                 controller.enqueue(
                   encoder.encode(transformSseEvent(buffer, originalNamesByTransformed)),
                 );
                 buffer = "";
               }
 
+              eventWatchdog.close();
               controller.close();
               return;
             }
@@ -1062,17 +1533,23 @@ export function createOAuthFetch(options: OAuthFetchOptions = {}): typeof fetch 
             buffer = events.pop() ?? "";
 
             if (events.length > 0) {
-              controller.enqueue(
-                encoder.encode(
-                  `${events
-                    .map((event) => transformSseEvent(event, originalNamesByTransformed))
-                    .join("\n\n")}\n\n`,
-                ),
-              );
+              const transformedEvents: string[] = [];
+
+              for (const event of events) {
+                eventWatchdog.recordFrame(event);
+                if (eventWatchdog.errored) {
+                  return;
+                }
+
+                transformedEvents.push(transformSseEvent(event, originalNamesByTransformed));
+              }
+
+              controller.enqueue(encoder.encode(`${transformedEvents.join("\n\n")}\n\n`));
             }
           },
           async cancel(reason) {
             buffer = "";
+            eventWatchdog.close();
             await reader.cancel(reason);
           },
         },
@@ -1239,13 +1716,14 @@ async function resolveAnthropicAuth(
 function buildAnthropicClient(
   auth: ResolvedAnthropicAuth,
   env: NodeJS.ProcessEnv = process.env,
-  oauthSseInactivityTimeoutMs?: number,
+  oauthFetchOptions: OAuthFetchOptions = {},
 ): AnthropicClientLike {
   const baseURL = env.ANTHROPIC_BASE_URL?.trim() || undefined;
 
   if (auth.kind === "api-key") {
     return new Anthropic({
       apiKey: auth.apiKey,
+      maxRetries: 0,
       ...(baseURL ? { baseURL } : {}),
     });
   }
@@ -1256,7 +1734,8 @@ function buildAnthropicClient(
       "anthropic-beta": OAUTH_BETAS,
       "user-agent": OAUTH_USER_AGENT,
     },
-    fetch: createOAuthFetch({ sseInactivityTimeoutMs: oauthSseInactivityTimeoutMs }),
+    fetch: createOAuthFetch(oauthFetchOptions),
+    maxRetries: 0,
     ...(baseURL ? { baseURL } : {}),
   });
 }
@@ -1274,6 +1753,24 @@ export class AnthropicLLMClient implements LLMClient {
     this.usageSink = options.usageSink;
   }
 
+  private oauthFetchOptions(): OAuthFetchOptions {
+    return {
+      sseInactivityTimeoutMs: this.options.oauthSseInactivityTimeoutMs,
+      sseFirstMessageEventTimeoutMs: this.options.oauthSseFirstMessageEventTimeoutMs,
+      sseMessageEventGapTimeoutMs: this.options.oauthSseMessageEventGapTimeoutMs,
+      fetchHeadersTimeoutMs: this.options.oauthFetchHeadersTimeoutMs,
+      unaryBodyTimeoutMs: this.options.oauthUnaryBodyTimeoutMs,
+    };
+  }
+
+  private unaryCallTimeoutMs(): number {
+    return this.options.unaryCallTimeoutMs ?? LLM_UNARY_CALL_TIMEOUT_MS;
+  }
+
+  private streamingCallTimeoutMs(): number {
+    return this.options.streamingCallTimeoutMs ?? LLM_STREAMING_CALL_TIMEOUT_MS;
+  }
+
   private async ensureInitialized(): Promise<void> {
     if (this.client !== undefined) {
       return;
@@ -1282,11 +1779,7 @@ export class AnthropicLLMClient implements LLMClient {
     if (this.initialization === undefined) {
       const initialization = (async () => {
         this.auth = await resolveAnthropicAuth(this.options);
-        this.client = buildAnthropicClient(
-          this.auth,
-          this.options.env,
-          this.options.oauthSseInactivityTimeoutMs,
-        );
+        this.client = buildAnthropicClient(this.auth, this.options.env, this.oauthFetchOptions());
       })();
       this.initialization = initialization;
     }
@@ -1375,11 +1868,7 @@ export class AnthropicLLMClient implements LLMClient {
       authToken: credentials.accessToken,
       source: "credentials-file",
     };
-    this.client = buildAnthropicClient(
-      this.auth,
-      this.options.env,
-      this.options.oauthSseInactivityTimeoutMs,
-    );
+    this.client = buildAnthropicClient(this.auth, this.options.env, this.oauthFetchOptions());
     this.initialization = Promise.resolve();
   }
 
@@ -1387,6 +1876,7 @@ export class AnthropicLLMClient implements LLMClient {
     options: LLMCallOptions,
     messages: MessageParam[],
     retrying = false,
+    callTimeoutMs = this.unaryCallTimeoutMs(),
   ): Promise<Message> {
     await this.ensureInitialized();
 
@@ -1397,9 +1887,16 @@ export class AnthropicLLMClient implements LLMClient {
     }
 
     try {
-      return await client.messages.create(this.rawMessageParams(options, messages));
+      return await runWithLlmCallTimeout({
+        kind: "unary",
+        timeoutMs: callTimeoutMs,
+        run: (signal) =>
+          runWithAnthropicConnectionRetries(() =>
+            client.messages.create(this.rawMessageParams(options, messages), { signal }),
+          ),
+      });
     } catch (error) {
-      rethrowSseStalledErrorAtTopLevel(error);
+      rethrowRetryableLlmTransportErrorAtTopLevel(error);
 
       if (!retrying && this.auth?.kind === "oauth" && isAuthenticationFailure(error)) {
         try {
@@ -1416,7 +1913,7 @@ export class AnthropicLLMClient implements LLMClient {
           });
         }
 
-        return this.createRawMessage(options, messages, true);
+        return this.createRawMessage(options, messages, true, callTimeoutMs);
       }
 
       if (isAuthenticationFailure(error) && this.auth?.kind === "oauth") {
@@ -1452,82 +1949,93 @@ export class AnthropicLLMClient implements LLMClient {
       throw new LLMError("Anthropic client failed to initialize");
     }
 
-    if (client.messages.stream === undefined) {
-      return this.createRawMessage(options, messages, retrying);
+    const streamFactory = client.messages.stream?.bind(client.messages);
+
+    if (streamFactory === undefined) {
+      return this.createRawMessage(options, messages, retrying, this.streamingCallTimeoutMs());
     }
 
     try {
-      const stream = client.messages.stream(this.rawMessageParams(options, messages));
-
-      // Track per-content-block tool state so input_json_delta events can be
-      // forwarded as token chunks. For tools whose primary user-content lives in
-      // a known field (EmitAnswer.text, EmitObserve.reason, EmitNoOutput.reason)
-      // we extract that field's incremental value so the UI sees clean answer
-      // text. For other tools (S2's EmitTurnPlan, etc.) we forward the raw
-      // partial JSON so the structured thinking is visible as it forms.
-      const toolBlocks = new Map<
-        number,
-        { name: string; partial: string; lastExtracted: string; textFieldName?: string }
-      >();
-
-      for await (const event of stream) {
-        if (event.type === "content_block_start") {
-          if (event.content_block.type === "tool_use") {
-            toolBlocks.set(event.index, {
-              name: event.content_block.name,
-              partial: "",
-              lastExtracted: "",
-              textFieldName: TOOL_STREAM_TEXT_FIELDS[event.content_block.name],
+      return await runWithLlmCallTimeout({
+        kind: "streaming",
+        timeoutMs: this.streamingCallTimeoutMs(),
+        run: (signal) =>
+          runWithAnthropicConnectionRetries(async () => {
+            const stream = streamFactory(this.rawMessageParams(options, messages), {
+              signal,
             });
-          }
-          continue;
-        }
 
-        if (event.type === "content_block_delta") {
-          if (event.delta.type === "text_delta") {
-            // Under the emission-tool protocol, loose text emitted alongside the
-            // tool is not user-facing (the answer rides in the tool input); skip it
-            // so it never reaches the live stream.
-            if (options.suppressRawTextStream !== true) {
-              onTextDelta?.(event.delta.text);
-            }
-            continue;
-          }
+            // Track per-content-block tool state so input_json_delta events can be
+            // forwarded as token chunks. For tools whose primary user-content lives in
+            // a known field (EmitAnswer.text, EmitObserve.reason, EmitNoOutput.reason)
+            // we extract that field's incremental value so the UI sees clean answer
+            // text. For other tools (S2's EmitTurnPlan, etc.) we forward the raw
+            // partial JSON so the structured thinking is visible as it forms.
+            const toolBlocks = new Map<
+              number,
+              { name: string; partial: string; lastExtracted: string; textFieldName?: string }
+            >();
 
-          if (event.delta.type === "input_json_delta") {
-            const block = toolBlocks.get(event.index);
-            if (block === undefined) {
-              continue;
-            }
-
-            block.partial += event.delta.partial_json;
-
-            if (block.textFieldName === undefined) {
-              // Unknown tool — forward raw partial JSON so the user sees
-              // structured thinking accumulating.
-              if (event.delta.partial_json.length > 0) {
-                onTextDelta?.(event.delta.partial_json);
+            for await (const event of stream) {
+              if (event.type === "content_block_start") {
+                if (event.content_block.type === "tool_use") {
+                  toolBlocks.set(event.index, {
+                    name: event.content_block.name,
+                    partial: "",
+                    lastExtracted: "",
+                    textFieldName: TOOL_STREAM_TEXT_FIELDS[event.content_block.name],
+                  });
+                }
+                continue;
               }
-              continue;
+
+              if (event.type === "content_block_delta") {
+                if (event.delta.type === "text_delta") {
+                  // Under the emission-tool protocol, loose text emitted alongside the
+                  // tool is not user-facing (the answer rides in the tool input); skip it
+                  // so it never reaches the live stream.
+                  if (options.suppressRawTextStream !== true) {
+                    onTextDelta?.(event.delta.text);
+                  }
+                  continue;
+                }
+
+                if (event.delta.type === "input_json_delta") {
+                  const block = toolBlocks.get(event.index);
+                  if (block === undefined) {
+                    continue;
+                  }
+
+                  block.partial += event.delta.partial_json;
+
+                  if (block.textFieldName === undefined) {
+                    // Unknown tool — forward raw partial JSON so the user sees
+                    // structured thinking accumulating.
+                    if (event.delta.partial_json.length > 0) {
+                      onTextDelta?.(event.delta.partial_json);
+                    }
+                    continue;
+                  }
+
+                  const extracted = extractPartialStringField(block.partial, block.textFieldName);
+                  if (extracted !== null && extracted.length > block.lastExtracted.length) {
+                    onTextDelta?.(extracted.slice(block.lastExtracted.length));
+                    block.lastExtracted = extracted;
+                  }
+                  continue;
+                }
+              }
+
+              if (event.type === "content_block_stop") {
+                toolBlocks.delete(event.index);
+              }
             }
 
-            const extracted = extractPartialStringField(block.partial, block.textFieldName);
-            if (extracted !== null && extracted.length > block.lastExtracted.length) {
-              onTextDelta?.(extracted.slice(block.lastExtracted.length));
-              block.lastExtracted = extracted;
-            }
-            continue;
-          }
-        }
-
-        if (event.type === "content_block_stop") {
-          toolBlocks.delete(event.index);
-        }
-      }
-
-      return await stream.finalMessage();
+            return await stream.finalMessage();
+          }),
+      });
     } catch (error) {
-      rethrowSseStalledErrorAtTopLevel(error);
+      rethrowRetryableLlmTransportErrorAtTopLevel(error);
 
       if (!retrying && this.auth?.kind === "oauth" && isAuthenticationFailure(error)) {
         try {

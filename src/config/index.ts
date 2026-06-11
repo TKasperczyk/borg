@@ -287,6 +287,13 @@ const anthropicConfigSchema = z
     auth: anthropicAuthModeSchema.default("auto"),
     apiKey: z.string().min(1).optional(),
     models: anthropicModelsConfigSchema,
+    oauthSseInactivityTimeoutMs: z.number().int().positive().default(120_000),
+    oauthSseFirstMessageEventTimeoutMs: z.number().int().positive().default(240_000),
+    oauthSseMessageEventGapTimeoutMs: z.number().int().positive().default(180_000),
+    oauthFetchHeadersTimeoutMs: z.number().int().positive().default(120_000),
+    oauthUnaryBodyTimeoutMs: z.number().int().positive().default(120_000),
+    unaryCallTimeoutMs: z.number().int().positive().default(360_000),
+    streamingCallTimeoutMs: z.number().int().positive().default(720_000),
   })
   .prefault({});
 
@@ -932,6 +939,41 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["anthropic", "models", "creatorDirective"],
     readOptionalEnvString(env, "BORG_MODEL_CREATOR_DIRECTIVE"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "oauthSseInactivityTimeoutMs"],
+    readOptionalEnvNumber(env, "BORG_ANTHROPIC_OAUTH_SSE_INACTIVITY_TIMEOUT_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "oauthSseFirstMessageEventTimeoutMs"],
+    readOptionalEnvNumber(env, "BORG_ANTHROPIC_OAUTH_SSE_FIRST_MESSAGE_EVENT_TIMEOUT_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "oauthSseMessageEventGapTimeoutMs"],
+    readOptionalEnvNumber(env, "BORG_ANTHROPIC_OAUTH_SSE_MESSAGE_EVENT_GAP_TIMEOUT_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "oauthFetchHeadersTimeoutMs"],
+    readOptionalEnvNumber(env, "BORG_ANTHROPIC_OAUTH_FETCH_HEADERS_TIMEOUT_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "oauthUnaryBodyTimeoutMs"],
+    readOptionalEnvNumber(env, "BORG_ANTHROPIC_OAUTH_UNARY_BODY_TIMEOUT_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "unaryCallTimeoutMs"],
+    readOptionalEnvNumber(env, "BORG_ANTHROPIC_UNARY_CALL_TIMEOUT_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "streamingCallTimeoutMs"],
+    readOptionalEnvNumber(env, "BORG_ANTHROPIC_STREAMING_CALL_TIMEOUT_MS"),
   );
   setConfigOverride(
     overrides,
