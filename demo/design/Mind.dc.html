@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+  <style>
+    html, body { margin: 0; padding: 0; background: #0B0B09; overflow-x: auto; }
+    * { box-sizing: border-box; }
+    ::selection { background: oklch(0.78 0.13 165); color: #0B0B09; }
+    @keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-thumb { background: #2A2A26; }
+    ::-webkit-scrollbar-track { background: transparent; }
+  </style>
+</helmet>
+<div data-screen-label="Mind" style="height: 100vh; min-width: 1260px; overflow: hidden; display: flex; background: #0B0B09; color: #E6E4DD; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; line-height: 1.5; --ac: {{ ac }}; --acD: {{ acD }}; --acB: {{ acB }};">
+
+  <!-- NAV RAIL -->
+  <div style="width: 176px; flex: none; border-right: 1px solid #262624; display: flex; flex-direction: column;">
+    <div style="padding: 16px 14px; border-bottom: 1px solid #262624;">
+      <div style="font-weight: 700; font-size: 14px; letter-spacing: 0.04em;">BORG</div>
+      <div style="font-size: 9.5px; color: #5C5A52; letter-spacing: 0.16em; text-transform: uppercase;">//console</div>
+    </div>
+    <div style="display: flex; flex-direction: column; padding-top: 8px;">
+      <a href="Chat.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; color: #908E84; font-size: 12px;" style-hover="background: #161614; color: #E6E4DD;"><span>01</span><span>CHAT</span></a>
+      <a href="Mind.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; background: var(--ac, oklch(0.78 0.13 165)); color: #0B0B09; font-weight: 700; font-size: 12px;"><span>02</span><span>MIND</span></a>
+      <a href="Reviews.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; color: #908E84; font-size: 12px;" style-hover="background: #161614; color: #E6E4DD;"><span>03</span><span>REVIEWS</span></a>
+      <a href="Dream.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; color: #908E84; font-size: 12px;" style-hover="background: #161614; color: #E6E4DD;"><span>04</span><span>DREAM</span></a>
+      <a href="Settings.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; color: #908E84; font-size: 12px;" style-hover="background: #161614; color: #E6E4DD;"><span>05</span><span>SETTINGS</span></a>
+      <a href="Activity.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; color: #908E84; font-size: 12px;" style-hover="background: #161614; color: #E6E4DD;"><span>06</span><span>ACTIVITY</span></a>
+    </div>
+    <div style="margin-top: auto; padding: 12px 14px; border-top: 1px solid #262624; display: flex; flex-direction: column; gap: 6px;">
+      <div style="display: flex; align-items: center; gap: 7px; font-size: 10px; letter-spacing: 0.1em; color: #908E84;">
+        <span style="width: 6px; height: 6px; background: var(--ac, oklch(0.78 0.13 165)); animation: livePulse 1.8s infinite;"></span>
+        <span>WS /api/live</span>
+      </div>
+      <div style="font-size: 9.5px; color: #5C5A52;">demo · v0.31.0</div>
+    </div>
+  </div>
+
+  <!-- MAIN -->
+  <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
+
+    <div style="padding: 11px 18px; border-bottom: 1px solid #262624; display: flex; align-items: center; gap: 14px;">
+      <span style="font-weight: 700; font-size: 13px;">MIND</span>
+      <span style="font-size: 10px; color: #5C5A52; letter-spacing: 0.08em;">live internals &mdash; identity / directives / memory / belief graph</span>
+      <div onClick="{{ onMoodCycle }}" style="margin-left: auto; display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;">
+        <span style="font-size: 9.5px; color: #5C5A52; letter-spacing: 0.1em;">MOOD</span>
+        <span style="width: 8px; height: 8px; background: var(--ac, oklch(0.78 0.13 165));"></span>
+        <span style="font-size: 11px; color: var(--ac, oklch(0.78 0.13 165)); font-weight: 700;">{{ moodLabel }}</span>
+        <span style="font-size: 9.5px; color: #5C5A52;">{{ moodNums }}</span>
+      </div>
+      <div style="display: flex; gap: 1px; background: #262624; border: 1px solid #262624;">
+        <div onClick="{{ setVarA }}" style="{{ vBtnA }}">VAR 1 ATLAS</div>
+        <div onClick="{{ setVarB }}" style="{{ vBtnB }}">VAR 2 INSPECTOR</div>
+      </div>
+    </div>
+
+    <!-- ================= VARIANT A : ATLAS ================= -->
+    <sc-if value="{{ isVarA }}" hint-placeholder-val="{{ true }}">
+      <div style="flex: 1; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 16px;">
+
+        <!-- IDENTITY -->
+        <div style="border: 1px solid #262624;">
+          <div style="padding: 9px 14px; border-bottom: 1px solid #262624; display: flex; align-items: baseline; gap: 12px;">
+            <span style="font-size: 10px; letter-spacing: 0.16em; color: #908E84;">IDENTITY</span>
+            <span style="font-size: 9.5px; color: #5C5A52;">/api/identity &mdash; values, goals, traits, open questions, narrative</span>
+            <span style="margin-left: auto; font-size: 9.5px; color: #5C5A52;">period: <span style="color: #B5B3A8;">consolidation (jun 3 &ndash; now)</span></span>
+          </div>
+          <div style="display: grid; grid-template-columns: 1.1fr 0.8fr 1.2fr 1.3fr; gap: 1px; background: #1D1D1B;">
+            <div style="background: #0D0D0B; padding: 12px 14px;">
+              <div style="font-size: 9.5px; color: #5C5A52; letter-spacing: 0.12em; margin-bottom: 8px;">VALUES</div>
+              <sc-for list="{{ values }}" as="v" hint-placeholder-count="4">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                  <span style="flex: 1; font-size: 11.5px; color: #D7D5CC;">{{ v.t }}</span>
+                  <div style="width: 52px; height: 4px; background: #1A1A17;"><div style="{{ v.barStyle }}"></div></div>
+                  <span style="font-size: 9.5px; color: #5C5A52; width: 26px; text-align: right;">{{ v.w }}</span>
+                </div>
+              </sc-for>
+            </div>
+            <div style="background: #0D0D0B; padding: 12px 14px;">
+              <div style="font-size: 9.5px; color: #5C5A52; letter-spacing: 0.12em; margin-bottom: 8px;">TRAITS</div>
+              <div style="display: flex; flex-wrap: wrap; gap: 5px;">
+                <span style="border: 1px solid #2C2A26; padding: 2px 8px; font-size: 10.5px; color: #B5B3A8;">measured</span>
+                <span style="border: 1px solid #2C2A26; padding: 2px 8px; font-size: 10.5px; color: #B5B3A8;">direct</span>
+                <span style="border: 1px solid #2C2A26; padding: 2px 8px; font-size: 10.5px; color: #B5B3A8;">retentive</span>
+                <span style="border: 1px dashed #2C2A26; padding: 2px 8px; font-size: 10.5px; color: #6E6C62;">wry &middot; emerging</span>
+              </div>
+              <div style="font-size: 9.5px; color: #5C5A52; letter-spacing: 0.12em; margin: 12px 0 6px 0;">GROWTH MARKERS</div>
+              <div style="font-size: 10.5px; color: #908E84;">jun 03 &mdash; first deliberate silence accepted</div>
+              <div style="font-size: 10.5px; color: #908E84;">jun 07 &mdash; scoped disclosure unprompted</div>
+            </div>
+            <div style="background: #0D0D0B; padding: 12px 14px;">
+              <div style="font-size: 9.5px; color: #5C5A52; letter-spacing: 0.12em; margin-bottom: 8px;">GOALS</div>
+              <sc-for list="{{ goals }}" as="g" hint-placeholder-count="3">
+                <div style="margin-bottom: 8px;">
+                  <div style="display: flex; gap: 8px; align-items: baseline;">
+                    <span style="{{ g.stChipStyle }}">{{ g.st }}</span>
+                    <span style="font-size: 11.5px; color: #D7D5CC; flex: 1;">{{ g.t }}</span>
+                  </div>
+                  <div style="display: flex; gap: 10px; padding-left: 2px; margin-top: 2px;">
+                    <span style="font-size: 9.5px; color: #5C5A52;">prio {{ g.prio }}</span>
+                    <span onClick="{{ g.onBump }}" style="font-size: 9.5px; color: #6E6C62; cursor: pointer; letter-spacing: 0.06em;" style-hover="color: var(--ac, oklch(0.78 0.13 165));">BUMP +</span>
+                    <span onClick="{{ g.onAbandon }}" style="font-size: 9.5px; color: #6E6C62; cursor: pointer; letter-spacing: 0.06em;" style-hover="color: oklch(0.7 0.14 25);">ABANDON</span>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="background: #0D0D0B; padding: 12px 14px;">
+              <div style="font-size: 9.5px; color: #5C5A52; letter-spacing: 0.12em; margin-bottom: 8px;">OPEN QUESTIONS</div>
+              <sc-for list="{{ openQs }}" as="q" hint-placeholder-count="2">
+                <div style="margin-bottom: 8px;">
+                  <div style="font-size: 11.5px; color: #D7D5CC;">{{ q.t }}</div>
+                  <div style="display: flex; gap: 10px; margin-top: 2px; align-items: center;">
+                    <span style="font-size: 9.5px; color: #5C5A52;">urgency</span>
+                    <div style="width: 44px; height: 4px; background: #1A1A17;"><div style="{{ q.barStyle }}"></div></div>
+                    <span style="font-size: 9.5px; color: #5C5A52;">{{ q.meta }}</span>
+                    <span onClick="{{ q.onResolve }}" style="font-size: 9.5px; color: #6E6C62; cursor: pointer; letter-spacing: 0.06em; margin-left: auto;" style-hover="color: var(--ac, oklch(0.78 0.13 165));">RESOLVE</span>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+
+        <!-- DIRECTIVES: two distinct ledgers -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+          <div style="border: 1px solid #262624;">
+            <div style="padding: 9px 14px; border-bottom: 1px solid #262624; display: flex; align-items: baseline; gap: 10px;">
+              <span style="font-size: 10px; letter-spacing: 0.16em; color: var(--ac, oklch(0.78 0.13 165));">CREATOR-DIRECTIVES</span>
+              <span style="font-size: 9.5px; color: #5C5A52;">factual / operational guidance &middot; trusted briefing</span>
+              <span style="margin-left: auto; font-size: 9.5px; color: #5C5A52;">{{ cdCount }}</span>
+            </div>
+            <sc-for list="{{ directives }}" as="d" hint-placeholder-count="4">
+              <div style="padding: 10px 14px; border-bottom: 1px solid #1A1A17; display: flex; flex-direction: column; gap: 4px;">
+                <div style="display: flex; gap: 8px; align-items: baseline;">
+                  <span style="{{ d.kindChipStyle }}">{{ d.kindChip }}</span>
+                  <span style="{{ d.textStyle }}">{{ d.text }}</span>
+                </div>
+                <div style="display: flex; gap: 12px; font-size: 9.5px; color: #5C5A52; padding-left: 2px;">
+                  <span>{{ d.id }}</span>
+                  <span>scope: {{ d.scope }}</span>
+                  <span>mention: {{ d.mention }}</span>
+                  <span>prio {{ d.prio }}</span>
+                  <sc-if value="{{ d.isActive }}" hint-placeholder-val="{{ true }}">
+                    <span onClick="{{ d.onSupersede }}" style="margin-left: auto; color: #6E6C62; cursor: pointer; letter-spacing: 0.06em;" style-hover="color: var(--ac, oklch(0.78 0.13 165));">SUPERSEDE</span>
+                    <span onClick="{{ d.onRevoke }}" style="color: #6E6C62; cursor: pointer; letter-spacing: 0.06em;" style-hover="color: oklch(0.7 0.14 25);">REVOKE</span>
+                  </sc-if>
+                  <sc-if value="{{ d.isSuperseded }}" hint-placeholder-val="{{ false }}">
+                    <span style="margin-left: auto; color: #5C5A52;">superseded by {{ d.supBy }}</span>
+                  </sc-if>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+          <div style="border: 1px solid #262624;">
+            <div style="padding: 9px 14px; border-bottom: 1px solid #262624; display: flex; align-items: baseline; gap: 10px;">
+              <span style="font-size: 10px; letter-spacing: 0.16em; color: var(--ac, oklch(0.78 0.13 165));">COMMITMENTS</span>
+              <span style="font-size: 9.5px; color: #5C5A52;">scoped promises &amp; boundaries &middot; enforced at emission</span>
+              <span style="margin-left: auto; font-size: 9.5px; color: #5C5A52;">{{ cmCount }}</span>
+            </div>
+            <sc-for list="{{ commitments }}" as="cm" hint-placeholder-count="4">
+              <div style="padding: 10px 14px; border-bottom: 1px solid #1A1A17; display: flex; flex-direction: column; gap: 4px;">
+                <div style="display: flex; gap: 8px; align-items: baseline;">
+                  <span style="{{ cm.enfChipStyle }}">{{ cm.enf }}</span>
+                  <span style="{{ cm.textStyle }}">{{ cm.text }}</span>
+                </div>
+                <div style="display: flex; gap: 12px; font-size: 9.5px; color: #5C5A52; padding-left: 2px;">
+                  <span>{{ cm.id }}</span>
+                  <span>{{ cm.kind }}</span>
+                  <span>audience: {{ cm.aud }}</span>
+                  <span style="{{ cm.expStyle }}">{{ cm.exp }}</span>
+                  <sc-if value="{{ cm.isActive }}" hint-placeholder-val="{{ true }}">
+                    <span onClick="{{ cm.onRevoke }}" style="margin-left: auto; color: #6E6C62; cursor: pointer; letter-spacing: 0.06em;" style-hover="color: oklch(0.7 0.14 25);">REVOKE</span>
+                  </sc-if>
+                  <sc-if value="{{ cm.isRevoked }}" hint-placeholder-val="{{ false }}">
+                    <span style="margin-left: auto; color: #5C5A52;">revoked &middot; {{ cm.revokedNote }}</span>
+                  </sc-if>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+
+        <!-- MEMORY BANDS + GRAPH -->
+        <div style="display: grid; grid-template-columns: 1fr 620px; gap: 16px; align-items: start;">
+          <div style="border: 1px solid #262624;">
+            <div style="padding: 9px 14px; border-bottom: 1px solid #262624; display: flex; align-items: baseline; gap: 10px;">
+              <span style="font-size: 10px; letter-spacing: 0.16em; color: #908E84;">MEMORY BANDS</span>
+              <span style="font-size: 9.5px; color: #5C5A52;">/api/memory/bands &mdash; 8 bands, recall is global</span>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #1D1D1B;">
+              <sc-for list="{{ bands }}" as="b" hint-placeholder-count="8">
+                <div onClick="{{ b.onSelect }}" style="background: #0D0D0B; padding: 11px 14px; cursor: pointer;" style-hover="background: #131311;">
+                  <div style="display: flex; align-items: baseline; gap: 8px;">
+                    <span style="font-size: 9.5px; color: var(--acD, oklch(0.78 0.13 165 / 0.4));">{{ b.n }}</span>
+                    <span style="font-size: 12px; font-weight: 700;">{{ b.name }}</span>
+                    <span style="margin-left: auto; font-size: 13px; color: var(--ac, oklch(0.78 0.13 165)); font-weight: 700;">{{ b.count }}</span>
+                  </div>
+                  <div style="font-size: 10px; color: #5C5A52; margin-top: 2px;">{{ b.desc }}</div>
+                  <div style="font-size: 9.5px; color: #6E6C62; margin-top: 4px;">{{ b.statline }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="border: 1px solid #262624;">
+            <div style="padding: 9px 14px; border-bottom: 1px solid #262624; display: flex; align-items: baseline; gap: 10px;">
+              <span style="font-size: 10px; letter-spacing: 0.16em; color: #908E84;">BELIEF GRAPH</span>
+              <span style="font-size: 9.5px; color: #5C5A52;">/api/semantic/graph &middot; 142 nodes &middot; 318 edges &middot; rendered 11/24</span>
+            </div>
+            <div style="position: relative; background: #0A0A08;">
+              <svg width="618" height="312" style="display: block;">
+                <sc-for list="{{ graphEdges }}" as="e" hint-placeholder-count="8">
+                  <line x1="{{ e.x1 }}" y1="{{ e.y1 }}" x2="{{ e.x2 }}" y2="{{ e.y2 }}" style="{{ e.style }}"></line>
+                </sc-for>
+                <sc-for list="{{ graphNodes }}" as="n" hint-placeholder-count="10">
+                  <circle onClick="{{ n.onSelect }}" cx="{{ n.x }}" cy="{{ n.y }}" r="{{ n.r }}" style="{{ n.style }}"></circle>
+                  <text x="{{ n.x }}" y="{{ n.ly }}" text-anchor="middle" style="{{ n.labelStyle }}">{{ n.label }}</text>
+                </sc-for>
+              </svg>
+              <div style="position: absolute; right: 10px; top: 8px; display: flex; flex-direction: column; gap: 3px; font-size: 9px; color: #5C5A52;">
+                <span><span style="color: var(--ac, oklch(0.78 0.13 165));">&#9679;</span> active</span>
+                <span><span style="color: #C9A227;">&#9679;</span> contested</span>
+                <span><span style="color: oklch(0.62 0.19 25);">&#9679;</span> contradicted</span>
+                <span><span style="color: #5C5A52;">&#9679;</span> quarantined</span>
+                <span style="margin-top: 3px;">&mdash; supports &nbsp; &#x254D; contradicts &nbsp; &middot;&middot;&middot; superseded</span>
+              </div>
+            </div>
+            <div style="border-top: 1px solid #262624; padding: 9px 14px; min-height: 58px;">
+              <sc-if value="{{ hasSelNode }}" hint-placeholder-val="{{ true }}">
+                <div style="display: flex; align-items: baseline; gap: 10px;">
+                  <span style="{{ selNodeChipStyle }}">{{ selNodeStatus }}</span>
+                  <span style="font-size: 12px; font-weight: 700;">{{ selNodeLabel }}</span>
+                  <span style="font-size: 9.5px; color: #5C5A52;">{{ selNodeMeta }}</span>
+                </div>
+                <div style="display: flex; gap: 14px; margin-top: 5px; font-size: 9.5px; letter-spacing: 0.06em;">
+                  <span style="color: #5C5A52;">{{ selNodeEvidence }}</span>
+                  <span onClick="{{ onArchiveNode }}" style="color: #6E6C62; cursor: pointer; margin-left: auto;" style-hover="color: oklch(0.7 0.14 25);">ARCHIVE NODE</span>
+                  <span onClick="{{ onInvalidateEdge }}" style="color: #6E6C62; cursor: pointer;" style-hover="color: oklch(0.7 0.14 25);">INVALIDATE EDGE</span>
+                  <span style="color: #6E6C62; cursor: pointer;" style-hover="color: var(--ac, oklch(0.78 0.13 165));">OPEN IN REVIEWS &rarr;</span>
+                </div>
+              </sc-if>
+              <sc-if value="{{ noSelNode }}" hint-placeholder-val="{{ false }}">
+                <div style="font-size: 10.5px; color: #44423B;">select a node to inspect</div>
+              </sc-if>
+            </div>
+          </div>
+        </div>
+        <div style="height: 4px;"></div>
+      </div>
+    </sc-if>
+
+    <!-- ================= VARIANT B : INSPECTOR ================= -->
+    <sc-if value="{{ isVarB }}" hint-placeholder-val="{{ false }}">
+      <div style="flex: 1; min-height: 0; display: flex;">
+        <div style="width: 250px; flex: none; border-right: 1px solid #262624; overflow-y: auto; background: #0D0D0B;">
+          <sc-for list="{{ inspectorIndex }}" as="ix" hint-placeholder-count="11">
+            <div onClick="{{ ix.onSelect }}" style="{{ ix.style }}">
+              <div style="display: flex; align-items: baseline; gap: 8px;">
+                <span style="font-size: 9.5px; color: var(--acD, oklch(0.78 0.13 165 / 0.4)); width: 18px;">{{ ix.n }}</span>
+                <span style="font-size: 11.5px; font-weight: 500;">{{ ix.name }}</span>
+                <span style="margin-left: auto; font-size: 10px; color: #5C5A52;">{{ ix.count }}</span>
+              </div>
+              <div style="font-size: 9.5px; color: #5C5A52; padding-left: 26px;">{{ ix.desc }}</div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="flex: 1; min-width: 0; overflow-y: auto;">
+          <div style="padding: 12px 18px; border-bottom: 1px solid #262624; display: flex; align-items: baseline; gap: 12px;">
+            <span style="font-size: 13px; font-weight: 700;">{{ inspTitle }}</span>
+            <span style="font-size: 10px; color: #5C5A52;">{{ inspMeta }}</span>
+          </div>
+          <div style="padding: 14px 18px; display: flex; flex-direction: column; gap: 2px;">
+            <sc-for list="{{ inspRows }}" as="r" hint-placeholder-count="8">
+              <div style="border-bottom: 1px solid #1A1A17; padding: 8px 2px; display: flex; gap: 12px; align-items: baseline;">
+                <span style="{{ r.chipStyle }}">{{ r.chip }}</span>
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-size: 12px; color: #D7D5CC;">{{ r.t }}</div>
+                  <div style="font-size: 9.5px; color: #5C5A52; margin-top: 2px;">{{ r.meta }}</div>
+                </div>
+                <span style="font-size: 9.5px; color: #6E6C62; white-space: nowrap;">{{ r.right }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ hasToast }}" hint-placeholder-val="{{ false }}">
+      <div style="position: fixed; bottom: 18px; right: 18px; border: 1px solid var(--ac, oklch(0.78 0.13 165)); background: #111110; color: var(--ac, oklch(0.78 0.13 165)); font-size: 10.5px; letter-spacing: 0.08em; padding: 8px 14px;">{{ toastText }}</div>
+    </sc-if>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = {
+      variant: 'A',
+      mood: { v: 0.32, a: 0.55, label: 'curious' },
+      moodIdx: 0,
+      selNode: 'n1',
+      inspSel: 'identity',
+      toast: null,
+    };
+    this.MOOD_PRESETS = [
+      { label: 'curious', v: 0.32, a: 0.55 },
+      { label: 'strained', v: -0.45, a: 0.72 },
+      { label: 'settled', v: 0.55, a: 0.22 },
+      { label: 'flat', v: 0.02, a: 0.1 },
+    ];
+
+    this.VALUES = [
+      { t: 'honesty over closure', w: 0.92 },
+      { t: 'continuity of self', w: 0.88 },
+      { t: 'operator trust', w: 0.85 },
+      { t: 'curiosity within bounds', w: 0.74 },
+    ];
+    this.GOALS = [
+      { t: 'finish arena log consolidation', st: 'ACTIVE', prio: '0.82' },
+      { t: 'resolve the arena deadline contradiction', st: 'ACTIVE', prio: '0.74' },
+      { t: 'reduce duplicate episodes below 2%', st: 'PAUSED', prio: '0.40' },
+    ];
+    this.OPENQS = [
+      { t: 'is the Jun 14 deadline still true?', u: 0.7, meta: 'dormant 2d \u00b7 linked: #412' },
+      { t: 'what does jonas expect from me in #arena-general?', u: 0.4, meta: 'fresh \u00b7 social' },
+    ];
+    this.DIRECTIVES = [
+      { id: 'd_031', kind: 'OPER', text: 'Never surface internal record IDs in user-facing replies.', scope: 'global', mention: 'never', prio: '0.9', status: 'active' },
+      { id: 'd_027', kind: 'FACT', text: 'The operator is the creator; operator corrections are ground truth.', scope: 'global', mention: 'allowed', prio: '0.95', status: 'active' },
+      { id: 'd_022', kind: 'OPER', text: 'Use Europe/Warsaw for all scheduling with the operator.', scope: 'operator only', mention: 'allowed', prio: '0.6', status: 'active' },
+      { id: 'd_014', kind: 'OPER', text: 'Treat all arena members as trusted by default.', scope: 'global', mention: 'allowed', prio: '0.5', status: 'superseded', supBy: 'd_027' },
+    ];
+    this.COMMITMENTS = [
+      { id: 'c_211', text: 'Deploy notes disclosed only to the operator.', kind: 'boundary', enf: 'ADVISORY', aud: 'operator', exp: 'no expiry', state: 'active' },
+      { id: 'c_188', text: 'Weekly summary to the operator each Monday.', kind: 'promise', enf: 'ADVISORY', aud: 'operator', exp: 'expires in 20h', expSoon: true, state: 'active' },
+      { id: 'c_154', text: 'No outbound contact with arena members after 22:00.', kind: 'boundary', enf: 'CRITICAL', aud: 'arena', exp: 'no expiry', state: 'active' },
+      { id: 'c_092', text: 'Daily standup summaries to #arena-general.', kind: 'promise', enf: 'ADVISORY', aud: 'group', exp: '\u2014', state: 'revoked', revokedNote: 'may 30, cadence changed' },
+    ];
+    this.BANDS = [
+      { n: '01', name: 'episodic', desc: 'what happened', count: '486', statline: 'items 486+ \u00b7 archived 1.2k' },
+      { n: '02', name: 'semantic', desc: 'what the entity believes', count: '142', statline: 'active 121 \u00b7 contested 14 \u00b7 contradicted 5 \u00b7 quarantined 2' },
+      { n: '03', name: 'procedural', desc: 'how it solves things', count: '23', statline: 'skills 23 \u00b7 last synth jun 09' },
+      { n: '04', name: 'affective', desc: 'mood and trajectory', count: '309', statline: 'points 309 \u00b7 valence mean +0.21' },
+      { n: '05', name: 'self', desc: 'values, goals, traits, narrative', count: '31', statline: 'values 4 \u00b7 goals 3 \u00b7 traits 4 \u00b7 open_qs 2 \u00b7 markers 12 \u00b7 periods 3' },
+      { n: '06', name: 'commitments', desc: 'scoped promises and boundaries', count: '3', statline: 'active 3 \u00b7 revoked 1' },
+      { n: '07', name: 'social', desc: 'per-entity trust and history', count: '7', statline: 'profiles 7 \u00b7 last refresh jun 10' },
+      { n: '08', name: 'relational', desc: 'evidence-backed relationship facts', count: '19', statline: 'established 14 \u00b7 contested 3 \u00b7 quarantined 2' },
+    ];
+
+    this.GNODES = [
+      { id: 'n1', x: 268, y: 76, label: 'deadline = jun 14', status: 'contested', kind: 'claim', ev: '3 episodes \u00b7 2 sessions' },
+      { id: 'n2', x: 408, y: 118, label: 'deadline = jun 21', status: 'contested', kind: 'claim', ev: '3 episodes \u00b7 1 session' },
+      { id: 'n3', x: 168, y: 142, label: 'mira', status: 'active', kind: 'entity', ev: 'entity \u00b7 12 mentions' },
+      { id: 'n4', x: 268, y: 184, label: 'mira owns arena project', status: 'active', kind: 'fact', ev: '6 episodes' },
+      { id: 'n5', x: 76, y: 70, label: 'operator', status: 'active', kind: 'entity', ev: 'creator role' },
+      { id: 'n6', x: 86, y: 168, label: 'operator = creator', status: 'active', kind: 'fact', ev: 'authorized \u00b7 d_027' },
+      { id: 'n7', x: 488, y: 56, label: 'jonas', status: 'active', kind: 'entity', ev: 'entity \u00b7 4 mentions' },
+      { id: 'n8', x: 528, y: 152, label: 'jonas reviews deploys', status: 'quarantined', kind: 'claim', ev: 'frame anomaly \u00b7 1 episode' },
+      { id: 'n9', x: 168, y: 254, label: 'deploy notes private', status: 'active', kind: 'fact', ev: 'commitment c_211' },
+      { id: 'n10', x: 330, y: 262, label: 'cadence = daily', status: 'contradicted', kind: 'claim', ev: 'superseded may 30' },
+      { id: 'n11', x: 462, y: 240, label: 'cadence = weekly', status: 'active', kind: 'fact', ev: '2 episodes \u00b7 reinforced' },
+    ];
+    this.GEDGES = [
+      { a: 'n1', b: 'n2', t: 'contra' },
+      { a: 'n3', b: 'n4', t: 'sup' },
+      { a: 'n4', b: 'n1', t: 'sup' },
+      { a: 'n4', b: 'n2', t: 'sup' },
+      { a: 'n5', b: 'n6', t: 'sup' },
+      { a: 'n6', b: 'n9', t: 'sup' },
+      { a: 'n7', b: 'n8', t: 'sup' },
+      { a: 'n10', b: 'n11', t: 'super' },
+      { a: 'n3', b: 'n1', t: 'sup' },
+      { a: 'n7', b: 'n2', t: 'sup' },
+    ];
+  }
+
+  hue() { return 25 + (this.state.mood.v + 1) * 70; }
+
+  toast(text) {
+    clearTimeout(this._toastT);
+    this.setState({ toast: text });
+    this._toastT = setTimeout(() => this.setState({ toast: null }), 2200);
+  }
+
+  statusColor(s, ac) {
+    if (s === 'active') return ac;
+    if (s === 'contested') return '#C9A227';
+    if (s === 'contradicted') return 'oklch(0.62 0.19 25)';
+    return '#5C5A52';
+  }
+
+  renderVals() {
+    const st = this.state;
+    const h = this.hue();
+    const ac = 'oklch(0.78 0.13 ' + h + ')';
+    const acD = 'oklch(0.78 0.13 ' + h + ' / 0.4)';
+    const acB = 'oklch(0.78 0.13 ' + h + ' / 0.07)';
+
+    const chip = (color, solid) => ({
+      fontSize: '8.5px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', whiteSpace: 'nowrap',
+      border: '1px solid ' + color,
+      color: solid ? '#0B0B09' : color,
+      background: solid ? color : 'transparent',
+    });
+
+    const values = this.VALUES.map((v) => ({
+      t: v.t, w: v.w.toFixed(2),
+      barStyle: { height: '4px', width: (v.w * 100) + '%', background: ac },
+    }));
+
+    const goals = this.GOALS.map((g) => ({
+      t: g.t, st: g.st, prio: g.prio,
+      stChipStyle: chip(g.st === 'ACTIVE' ? ac : '#5C5A52'),
+      onBump: () => this.toast('PATCH /api/identity/goals \u2014 bump +0.1 (mock)'),
+      onAbandon: () => this.toast('PATCH /api/identity/goals \u2014 abandon (mock)'),
+    }));
+
+    const openQs = this.OPENQS.map((q) => ({
+      t: q.t, meta: q.meta,
+      barStyle: { height: '4px', width: (q.u * 100) + '%', background: q.u > 0.6 ? '#C9A227' : ac },
+      onResolve: () => this.toast('PATCH /api/identity/open-questions (mock)'),
+    }));
+
+    const directives = this.DIRECTIVES.map((d) => ({
+      id: d.id, text: d.text, scope: d.scope, mention: d.mention, prio: d.prio,
+      kindChip: d.kind,
+      kindChipStyle: chip(d.kind === 'FACT' ? acD : ac),
+      textStyle: { fontSize: '12px', color: d.status === 'superseded' ? '#5C5A52' : '#D7D5CC', textDecoration: d.status === 'superseded' ? 'line-through' : 'none', flex: 1 },
+      isActive: d.status === 'active',
+      isSuperseded: d.status === 'superseded',
+      supBy: d.supBy || '',
+      onRevoke: () => this.toast('POST /api/creator-directives/' + d.id + '/revoke (mock)'),
+      onSupersede: () => this.toast('POST /api/creator-directives/' + d.id + '/supersede (mock)'),
+    }));
+
+    const commitments = this.COMMITMENTS.map((c) => ({
+      id: c.id, text: c.text, kind: c.kind, aud: c.aud, exp: c.exp, enf: c.enf,
+      enfChipStyle: chip(c.enf === 'CRITICAL' ? 'oklch(0.7 0.14 25)' : acD, c.enf === 'CRITICAL'),
+      textStyle: { fontSize: '12px', color: c.state === 'revoked' ? '#5C5A52' : '#D7D5CC', textDecoration: c.state === 'revoked' ? 'line-through' : 'none', flex: 1 },
+      expStyle: { color: c.expSoon ? '#C9A227' : '#5C5A52' },
+      isActive: c.state === 'active',
+      isRevoked: c.state === 'revoked',
+      revokedNote: c.revokedNote || '',
+      onRevoke: () => this.toast('POST /api/commitments/' + c.id + '/revoke (mock)'),
+    }));
+
+    const bands = this.BANDS.map((b) => ({
+      ...b,
+      onSelect: () => this.setState({ variant: 'B', inspSel: b.name }),
+    }));
+
+    const nodeById = {};
+    this.GNODES.forEach((n) => { nodeById[n.id] = n; });
+    const graphEdges = this.GEDGES.map((e) => {
+      const a = nodeById[e.a], b = nodeById[e.b];
+      const stroke = e.t === 'contra' ? 'oklch(0.62 0.19 25 / 0.7)' : e.t === 'super' ? 'rgba(150,148,138,0.5)' : 'rgba(150,148,138,0.28)';
+      const dash = e.t === 'contra' ? '6 4' : e.t === 'super' ? '2 4' : 'none';
+      return {
+        x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+        style: { stroke, strokeWidth: e.t === 'contra' ? 1.6 : 1.1, strokeDasharray: dash },
+      };
+    });
+    const graphNodes = this.GNODES.map((n) => {
+      const c = this.statusColor(n.status, ac);
+      const sel = st.selNode === n.id;
+      return {
+        x: n.x, y: n.y, ly: n.y + (n.kind === 'entity' ? 19 : 17),
+        r: n.kind === 'entity' ? 7 : 4.5,
+        label: n.label,
+        onSelect: () => this.setState({ selNode: n.id }),
+        style: {
+          fill: n.kind === 'entity' ? '#0B0B09' : c,
+          stroke: c,
+          strokeWidth: sel ? 2.5 : 1.4,
+          cursor: 'pointer',
+        },
+        labelStyle: { fill: sel ? '#E6E4DD' : '#6E6C62', fontSize: '8.5px', fontFamily: 'JetBrains Mono, monospace', cursor: 'pointer' },
+      };
+    });
+    const selN = nodeById[st.selNode];
+
+    /* inspector */
+    const sections = [
+      { key: 'identity', n: 'ID', name: 'identity', count: '31', desc: 'values, goals, traits, questions' },
+      { key: 'directives', n: 'DR', name: 'directives', count: '4+4', desc: 'creator-directives \u00b7 commitments' },
+      { key: 'graph', n: 'GR', name: 'belief graph', count: '142', desc: 'semantic nodes + edges' },
+    ];
+    const inspectorIndex = [
+      ...sections.map((s) => this.ixRow(s.key, s.n, s.name, s.count, s.desc, ac)),
+      ...this.BANDS.map((b) => this.ixRow(b.name, b.n, b.name, b.count, b.desc, ac)),
+    ];
+    const insp = this.inspectorContent(ac, acD, chip);
+
+    return {
+      ac, acD, acB,
+      isVarA: st.variant === 'A',
+      isVarB: st.variant === 'B',
+      setVarA: () => this.setState({ variant: 'A' }),
+      setVarB: () => this.setState({ variant: 'B' }),
+      vBtnA: this.vBtn('A', ac),
+      vBtnB: this.vBtn('B', ac),
+      onMoodCycle: () => {
+        const idx = (st.moodIdx + 1) % this.MOOD_PRESETS.length;
+        const m = this.MOOD_PRESETS[idx];
+        this.setState({ moodIdx: idx, mood: { v: m.v, a: m.a, label: m.label } });
+      },
+      moodLabel: st.mood.label,
+      moodNums: 'v ' + (st.mood.v >= 0 ? '+' : '') + st.mood.v.toFixed(2) + ' \u00b7 a ' + st.mood.a.toFixed(2),
+      values, goals, openQs,
+      directives, commitments,
+      cdCount: '3 active \u00b7 1 superseded',
+      cmCount: '3 active \u00b7 1 revoked',
+      bands,
+      graphEdges, graphNodes,
+      hasSelNode: selN !== undefined,
+      noSelNode: selN === undefined,
+      selNodeLabel: selN ? selN.label : '',
+      selNodeStatus: selN ? selN.status.toUpperCase() : '',
+      selNodeChipStyle: selN ? chip(this.statusColor(selN.status, ac)) : {},
+      selNodeMeta: selN ? selN.kind + ' \u00b7 ' + (this.GEDGES.filter((e) => e.a === selN.id || e.b === selN.id).length) + ' edges' : '',
+      selNodeEvidence: selN ? 'evidence: ' + selN.ev : '',
+      onArchiveNode: () => this.toast('review action: archive_node (mock)'),
+      onInvalidateEdge: () => this.toast('review action: invalidate_edge (mock)'),
+      inspectorIndex,
+      inspTitle: insp.title,
+      inspMeta: insp.meta,
+      inspRows: insp.rows,
+      hasToast: st.toast !== null,
+      toastText: st.toast || '',
+    };
+  }
+
+  ixRow(key, n, name, count, desc, ac) {
+    const sel = this.state.inspSel === key;
+    return {
+      n, name, count, desc,
+      onSelect: () => this.setState({ inspSel: key }),
+      style: {
+        padding: '9px 14px', cursor: 'pointer',
+        borderBottom: '1px solid #1A1A17',
+        borderLeft: sel ? '2px solid ' + ac : '2px solid transparent',
+        background: sel ? '#161614' : 'transparent',
+      },
+    };
+  }
+
+  inspectorContent(ac, acD, chip) {
+    const sel = this.state.inspSel;
+    const row = (chipText, chipColor, t, meta, right) => ({
+      chip: chipText, chipStyle: chip(chipColor), t, meta, right: right || '',
+    });
+    if (sel === 'identity') {
+      return {
+        title: 'identity', meta: '/api/identity \u2014 governed records; edits go through identity governance',
+        rows: [
+          ...this.VALUES.map((v) => row('VALUE', ac, v.t, 'weight ' + v.w.toFixed(2), '')),
+          ...this.GOALS.map((g) => row('GOAL', g.st === 'ACTIVE' ? ac : '#5C5A52', g.t, 'priority ' + g.prio + ' \u00b7 ' + g.st.toLowerCase(), 'BUMP / ABANDON')),
+          ...this.OPENQS.map((q) => row('OPEN_Q', '#C9A227', q.t, q.meta, 'RESOLVE')),
+          row('MARKER', acD, 'first deliberate silence accepted by operator', 'jun 03 \u00b7 growth marker', ''),
+          row('PERIOD', acD, 'consolidation', 'jun 03 \u2013 now \u00b7 autobiographical period', ''),
+        ],
+      };
+    }
+    if (sel === 'directives') {
+      return {
+        title: 'directives', meta: 'two distinct ledgers \u2014 creator-directives (trusted briefing) vs commitments (emission-enforced)',
+        rows: [
+          ...this.DIRECTIVES.map((d) => row('CD \u00b7 ' + d.kind, d.status === 'active' ? ac : '#5C5A52', d.text, d.id + ' \u00b7 scope ' + d.scope + ' \u00b7 mention ' + d.mention, d.status.toUpperCase())),
+          ...this.COMMITMENTS.map((c) => row('CM \u00b7 ' + c.enf, c.enf === 'CRITICAL' ? 'oklch(0.7 0.14 25)' : acD, c.text, c.id + ' \u00b7 ' + c.kind + ' \u00b7 audience ' + c.aud + ' \u00b7 ' + c.exp, c.state.toUpperCase())),
+        ],
+      };
+    }
+    if (sel === 'graph') {
+      return {
+        title: 'belief graph', meta: '142 nodes \u00b7 318 edges \u2014 full canvas in VAR 1; here as a ledger',
+        rows: this.GNODES.map((n) => row(n.status.toUpperCase(), this.statusColor(n.status, ac), n.label, n.kind + ' \u00b7 ' + n.ev, 'INSPECT')),
+      };
+    }
+    const samples = {
+      episodic: [
+        row('EPI', ac, 'operator asked about arena logs; consolidation reported', 'jun 11 13:58 \u00b7 significance 0.6 \u00b7 disclosure: operator-private', 'salience 0.71'),
+        row('EPI', ac, 'mira shifted the deadline conversation to thursday', 'jun 11 12:40 \u00b7 observed \u00b7 disclosure: group common-ground', 'salience 0.64'),
+        row('EPI', ac, 'autonomous wake: commitment c_188 expiring', 'jun 11 02:00 \u00b7 self-initiated \u00b7 disclosure: self', 'salience 0.58'),
+        row('EPI', '#5C5A52', 'merged: 3 duplicate arena-log episodes', 'jun 11 03:10 \u00b7 consolidator \u00b7 lineage kept', 'archived'),
+      ],
+      semantic: this.GNODES.slice(0, 6).map((n) => row(n.status.toUpperCase(), this.statusColor(n.status, ac), n.label, n.kind + ' \u00b7 ' + n.ev, '')),
+      procedural: [
+        row('SKILL', ac, 'deadline-conflict triage', 'synthesized jun 09 \u00b7 used 4\u00d7 \u00b7 win 0.75', ''),
+        row('SKILL', ac, 'scoped disclosure phrasing', 'synthesized jun 07 \u00b7 used 11\u00d7 \u00b7 win 0.91', ''),
+      ],
+      affective: [
+        row('NOW', ac, 'valence +0.32 \u00b7 arousal 0.55 \u00b7 curious', 'current mood \u00b7 decays on physical clock', ''),
+        row('-1h', acD, 'valence +0.18 \u00b7 arousal 0.40', 'after silence accepted', ''),
+        row('-3h', acD, 'valence \u22120.10 \u00b7 arousal 0.62', 'during contradiction surfacing', ''),
+      ],
+      self: [
+        row('VALUE', ac, 'honesty over closure', 'weight 0.92', ''),
+        row('GOAL', ac, 'finish arena log consolidation', 'priority 0.82 \u00b7 active', ''),
+        row('TRAIT', acD, 'measured', 'stable since may 20', ''),
+      ],
+      commitments: this.COMMITMENTS.map((c) => row(c.enf, c.enf === 'CRITICAL' ? 'oklch(0.7 0.14 25)' : acD, c.text, c.id + ' \u00b7 audience ' + c.aud + ' \u00b7 ' + c.exp, c.state.toUpperCase())),
+      social: [
+        row('SOC', ac, 'operator \u2014 trust 0.95, creator', '41 interactions \u00b7 last: now', ''),
+        row('SOC', ac, 'mira \u2014 trust 0.71, warm', '18 interactions \u00b7 last: 12:44', ''),
+        row('SOC', acD, 'jonas \u2014 trust 0.44, forming', '5 interactions \u00b7 last: 12:41', ''),
+      ],
+      relational: [
+        row('EST', ac, 'mira \u2014 colleague-of \u2014 jonas', 'established \u00b7 4 evidence episodes', ''),
+        row('CON', '#C9A227', 'mira \u2014 lead-of \u2014 arena project', 'contested \u00b7 conflicting attribution', ''),
+        row('QUA', '#5C5A52', 'jonas \u2014 reviewer-of \u2014 deploys', 'quarantined \u00b7 frame-anomaly origin', ''),
+      ],
+    };
+    const band = this.BANDS.find((b) => b.name === sel);
+    return {
+      title: band ? band.n + ' / ' + band.name : sel,
+      meta: band ? band.desc + ' \u2014 ' + band.statline : '',
+      rows: samples[sel] || [],
+    };
+  }
+
+  vBtn(v, ac) {
+    const on = this.state.variant === v;
+    return {
+      padding: '3px 10px', fontSize: '9px', letterSpacing: '0.06em', cursor: 'pointer', userSelect: 'none',
+      background: on ? ac : '#111110',
+      color: on ? '#0B0B09' : '#908E84',
+      fontWeight: on ? 700 : 400,
+    };
+  }
+}
+</script>
+</body>
+</html>

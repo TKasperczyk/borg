@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+  <style>
+    html, body { margin: 0; padding: 0; background: #0B0B09; }
+    * { box-sizing: border-box; }
+    ::selection { background: oklch(0.78 0.13 165); color: #0B0B09; }
+  </style>
+</helmet>
+<div style="min-height: 100vh; background: #0B0B09; color: #E6E4DD; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.55;">
+  <div style="max-width: 1060px; margin: 0 auto; padding: 56px 32px 96px 32px; display: flex; flex-direction: column; gap: 40px;">
+
+    <div style="display: flex; flex-direction: column; gap: 12px; border-bottom: 1px solid #262624; padding-bottom: 28px;">
+      <div style="display: flex; align-items: baseline; gap: 14px;">
+        <div style="font-size: 26px; font-weight: 700; letter-spacing: 0.04em;">BORG//CONSOLE</div>
+        <div style="font-size: 11px; color: #908E84; text-transform: uppercase; letter-spacing: 0.14em;">operator frontend &mdash; design exploration 01</div>
+      </div>
+      <div style="color: #908E84; max-width: 72ch;">Frontend design for the Borg cognitive-memory harness. Five screens against the demo server's REST + WebSocket contract (<span style="color: #E6E4DD;">demo/server/src/app.ts</span>, <span style="color: #E6E4DD;">live.ts</span>). Static mock &mdash; all data illustrative, interactions simulated; wiring notes in <span style="color: #E6E4DD;">design/CONTRACT-NOTES.md</span>.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 0.16em; color: #5C5A52;">Screens</div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #262624; border: 1px solid #262624;">
+        <a href="Chat.dc.html" style="display: block; background: #111110; padding: 20px; text-decoration: none; color: #E6E4DD;" style-hover="background: #161614;">
+          <div style="display: flex; justify-content: space-between; align-items: baseline;"><span style="font-weight: 700;">01 / CHAT</span><span style="font-size: 10px; color: oklch(0.78 0.13 165); letter-spacing: 0.12em;">FLAGSHIP</span></div>
+          <div style="color: #908E84; font-size: 12px; margin-top: 8px;">Operator chat + active sessions. Cognition panel: radial mind core (3 variants) showing phase ring, token flow, system_1/system_2, recalled evidence, and honest terminal outcomes &mdash; including deliberate silence as a first-class artifact in the thread.</div>
+        </a>
+        <a href="Mind.dc.html" style="display: block; background: #111110; padding: 20px; text-decoration: none; color: #E6E4DD;" style-hover="background: #161614;">
+          <div style="font-weight: 700;">02 / MIND</div>
+          <div style="color: #908E84; font-size: 12px; margin-top: 8px;">Live internals: identity (values, goals, traits, open questions), creator-directives vs commitments as two distinct ledgers, 8 memory bands, belief graph with contradicted/superseded edges. Two page layout variants.</div>
+        </a>
+        <a href="Reviews.dc.html" style="display: block; background: #111110; padding: 20px; text-decoration: none; color: #E6E4DD;" style-hover="background: #161614;">
+          <div style="font-weight: 700;">03 / REVIEWS</div>
+          <div style="color: #908E84; font-size: 12px; margin-top: 8px;">Issue-resolution dashboard. Per-kind actions: keep-both / supersede-with-winner / invalidate / dismiss / accept / reject; creator-directive reconciliation gets its own survivor-picker flow. Three resolution-card variants.</div>
+        </a>
+        <a href="Dream.dc.html" style="display: block; background: #111110; padding: 20px; text-decoration: none; color: #E6E4DD;" style-hover="background: #161614;">
+          <div style="font-weight: 700;">04 / DREAM</div>
+          <div style="color: #908E84; font-size: 12px; margin-top: 8px;">Offline-phase control: pick from the 13 processes, plan &rarr; apply two-step, live run feed, dream reports with errors, audit trail with revert.</div>
+        </a>
+        <a href="Settings.dc.html" style="display: block; background: #111110; padding: 20px; text-decoration: none; color: #E6E4DD;" style-hover="background: #161614;">
+          <div style="font-weight: 700;">05 / SETTINGS</div>
+          <div style="color: #908E84; font-size: 12px; margin-top: 8px;">Prompt block editor with override/reset-to-default and assembled-framing preview; runtime + scheduler config; creator entity; reset with confirm token.</div>
+        </a>
+        <a href="Activity.dc.html" style="display: block; background: #111110; padding: 20px; text-decoration: none; color: #E6E4DD;" style-hover="background: #161614;">
+          <div style="font-weight: 700;">06 / ACTIVITY</div>
+          <div style="color: #908E84; font-size: 12px; margin-top: 8px;">What the entity did today, without asking it: day-grouped journal of every turn &mdash; autonomous wakes with trigger provenance, phase breakdowns, deliberate silences, the private train-of-thought lane, wake budget, and cancellable self-scheduled wakes.</div>
+        </a>
+      </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 32px;">
+      <div style="display: flex; flex-direction: column; gap: 10px;">
+        <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 0.16em; color: #5C5A52;">Design system</div>
+        <div style="color: #908E84; font-size: 12px; display: flex; flex-direction: column; gap: 8px;">
+          <div><span style="color: #E6E4DD;">Brutalist terminal.</span> JetBrains Mono throughout, 1px hairline panels, zero border radius, warm near-black ground (#0B0B09), no decoration that isn't data.</div>
+          <div><span style="color: #E6E4DD;">Mood is the only color.</span> A single accent hue derived from current mood (valence &rarr; hue, arousal &rarr; intensity) tints the whole app: nav, live indicators, the mind core. Errors keep a fixed red so failure never masquerades as feeling.</div>
+          <div><span style="color: #E6E4DD;">Neutral language.</span> The UI says "the entity" / "agent", never a persona.</div>
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 10px;">
+        <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 0.16em; color: #5C5A52;">Honesty rules (from the contract)</div>
+        <div style="color: #908E84; font-size: 12px; display: flex; flex-direction: column; gap: 8px;">
+          <div>A turn can end <span style="color: #E6E4DD;">emitted / observed / suppressed / silent / failed</span> &mdash; the animation and the thread render all five distinctly; silence is a deliberate outcome, not an absence.</div>
+          <div>Deliberation path (<span style="color: #E6E4DD;">system_1</span> fast vs <span style="color: #E6E4DD;">system_2</span>) changes the core's behavior, not just a badge.</div>
+          <div>Recalled memories shown per-band as evidence drawn into the core during retrieval, from <span style="color: #E6E4DD;">evidence_ledger:built</span>.</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; gap: 8px; align-items: center; border-top: 1px solid #262624; padding-top: 20px;">
+      <div style="width: 8px; height: 8px; background: oklch(0.78 0.13 165);"></div>
+      <a href="Chat.dc.html" style="color: #E6E4DD; text-decoration: none; font-weight: 700; letter-spacing: 0.06em;" style-hover="color: oklch(0.78 0.13 165);">ENTER &rarr; 01/CHAT</a>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

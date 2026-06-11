@@ -1,0 +1,1046 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+  <style>
+    html, body { margin: 0; padding: 0; background: #0B0B09; overflow-x: auto; }
+    * { box-sizing: border-box; }
+    ::selection { background: oklch(0.78 0.13 165); color: #0B0B09; }
+    @keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+    @keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-thumb { background: #2A2A26; }
+    ::-webkit-scrollbar-track { background: transparent; }
+  </style>
+</helmet>
+<div data-screen-label="Chat" style="height: 100vh; min-width: 1260px; overflow: hidden; display: flex; background: #0B0B09; color: #E6E4DD; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; line-height: 1.5; --ac: {{ ac }}; --acD: {{ acD }}; --acB: {{ acB }};">
+
+  <!-- ============ NAV RAIL ============ -->
+  <div style="width: 176px; flex: none; border-right: 1px solid #262624; display: flex; flex-direction: column; background: #0B0B09;">
+    <div style="padding: 16px 14px; border-bottom: 1px solid #262624;">
+      <div style="font-weight: 700; font-size: 14px; letter-spacing: 0.04em;">BORG</div>
+      <div style="font-size: 9.5px; color: #5C5A52; letter-spacing: 0.16em; text-transform: uppercase;">//console</div>
+    </div>
+    <div style="display: flex; flex-direction: column; padding-top: 8px;">
+      <a href="Chat.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; background: var(--ac, oklch(0.78 0.13 165)); color: #0B0B09; font-weight: 700; font-size: 12px;"><span>01</span><span>CHAT</span></a>
+      <a href="Mind.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; color: #908E84; font-size: 12px;" style-hover="background: #161614; color: #E6E4DD;"><span>02</span><span>MIND</span></a>
+      <a href="Reviews.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; color: #908E84; font-size: 12px;" style-hover="background: #161614; color: #E6E4DD;"><span>03</span><span>REVIEWS</span></a>
+      <a href="Dream.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; color: #908E84; font-size: 12px;" style-hover="background: #161614; color: #E6E4DD;"><span>04</span><span>DREAM</span></a>
+      <a href="Settings.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; color: #908E84; font-size: 12px;" style-hover="background: #161614; color: #E6E4DD;"><span>05</span><span>SETTINGS</span></a>
+      <a href="Activity.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; color: #908E84; font-size: 12px;" style-hover="background: #161614; color: #E6E4DD;"><span>06</span><span>ACTIVITY</span></a>
+    </div>
+    <div style="margin-top: auto; padding: 12px 14px; border-top: 1px solid #262624; display: flex; flex-direction: column; gap: 6px;">
+      <div style="display: flex; align-items: center; gap: 7px; font-size: 10px; letter-spacing: 0.1em; color: #908E84;">
+        <span style="width: 6px; height: 6px; background: var(--ac, oklch(0.78 0.13 165)); animation: livePulse 1.8s infinite;"></span>
+        <span>WS /api/live</span>
+      </div>
+      <div style="font-size: 9.5px; color: #5C5A52;">demo · v0.31.0</div>
+      <a href="Overview.dc.html" style="font-size: 9.5px; color: #5C5A52; text-decoration: none;" style-hover="color: #908E84;">&larr; design overview</a>
+    </div>
+  </div>
+
+  <!-- ============ SESSIONS ============ -->
+  <div style="width: 252px; flex: none; border-right: 1px solid #262624; display: flex; flex-direction: column; background: #0D0D0B;">
+    <div style="padding: 12px 14px; border-bottom: 1px solid #262624; display: flex; justify-content: space-between; align-items: baseline;">
+      <span style="font-size: 10px; letter-spacing: 0.16em; color: #908E84;">SESSIONS</span>
+      <span style="font-size: 10px; color: #5C5A52;">{{ sessionCount }}</span>
+    </div>
+    <div style="flex: 1; overflow-y: auto;">
+      <sc-for list="{{ sessions }}" as="s" hint-placeholder-count="5">
+        <div onClick="{{ s.onSelect }}" style="{{ s.style }}">
+          <div style="display: flex; align-items: center; gap: 7px;">
+            <span style="{{ s.dotStyle }}"></span>
+            <span style="font-size: 12px; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ s.name }}</span>
+            <sc-if value="{{ s.hasUnread }}" hint-placeholder-val="{{ false }}">
+              <span style="font-size: 9.5px; background: #262624; color: #E6E4DD; padding: 0 5px;">{{ s.unread }}</span>
+            </sc-if>
+          </div>
+          <div style="font-size: 10px; color: #5C5A52; margin-top: 3px; padding-left: 13px;">{{ s.meta }}</div>
+        </div>
+      </sc-for>
+    </div>
+    <div style="border-top: 1px solid #262624; padding: 10px 14px;">
+      <div style="font-size: 10px; color: #5C5A52; letter-spacing: 0.08em; cursor: pointer;" style-hover="color: #908E84;">+ ENSURE OPERATOR SESSION</div>
+    </div>
+  </div>
+
+  <!-- ============ THREAD ============ -->
+  <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
+    <div style="padding: 11px 18px; border-bottom: 1px solid #262624; display: flex; align-items: baseline; gap: 12px;">
+      <span style="font-weight: 700; font-size: 13px;">{{ sessionName }}</span>
+      <span style="font-size: 10px; color: #5C5A52; letter-spacing: 0.08em;">{{ sessionHeaderMeta }}</span>
+      <span style="margin-left: auto; font-size: 10px; color: #908E84; letter-spacing: 0.1em;">{{ turnCountLabel }}</span>
+    </div>
+
+    <div ref="{{ threadRef }}" style="flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 14px;">
+      <sc-for list="{{ thread }}" as="m" hint-placeholder-count="6">
+
+        <sc-if value="{{ m.isSys }}" hint-placeholder-val="{{ false }}">
+          <div style="text-align: center; font-size: 10px; color: #5C5A52; letter-spacing: 0.06em;">&mdash; {{ m.text }} &mdash;</div>
+        </sc-if>
+
+        <sc-if value="{{ m.isUser }}" hint-placeholder-val="{{ false }}">
+          <div style="max-width: 64ch; border-left: 2px solid #34322D; padding: 6px 14px;">
+            <div style="font-size: 10px; color: #908E84; letter-spacing: 0.1em; margin-bottom: 4px;">{{ m.who }} &middot; {{ m.time }}</div>
+            <div style="color: #D7D5CC;">{{ m.text }}</div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ m.isAgent }}" hint-placeholder-val="{{ false }}">
+          <div style="max-width: 68ch; border-left: 2px solid var(--ac, oklch(0.78 0.13 165)); padding: 6px 14px; background: var(--acB, oklch(0.78 0.13 165 / 0.06));">
+            <div style="font-size: 10px; letter-spacing: 0.1em; margin-bottom: 4px; display: flex; gap: 10px;">
+              <span style="color: var(--ac, oklch(0.78 0.13 165));">ENTITY</span>
+              <span style="color: #5C5A52;">{{ m.meta }}</span>
+            </div>
+            <div style="text-wrap: pretty;">{{ m.text }}</div>
+            <sc-if value="{{ m.hasNote }}" hint-placeholder-val="{{ false }}">
+              <div style="margin-top: 6px; font-size: 10px; color: #908E84; border-top: 1px solid #262624; padding-top: 5px;">&#9656; {{ m.note }}</div>
+            </sc-if>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ m.isSilence }}" hint-placeholder-val="{{ false }}">
+          <div style="max-width: 68ch; border: 1px dashed #3B392F; padding: 10px 14px; display: flex; flex-direction: column; gap: 5px;">
+            <div style="display: flex; gap: 10px; align-items: baseline; font-size: 11px; letter-spacing: 0.1em;">
+              <span style="color: var(--acD, oklch(0.78 0.13 165 / 0.4)); font-size: 14px;">&empty;</span>
+              <span style="color: #B5B3A8; font-weight: 700;">NO OUTPUT &mdash; DELIBERATE SILENCE</span>
+              <span style="color: #5C5A52; margin-left: auto;">{{ m.time }}</span>
+            </div>
+            <div style="color: #908E84; font-style: italic; font-size: 12px;">{{ m.reason }}</div>
+            <div style="font-size: 10px; color: #5C5A52; letter-spacing: 0.06em;">EmitNoOutput &middot; {{ m.meta }} &middot; persisted as agent_suppressed (finalizer_no_output)</div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ m.isObserved }}" hint-placeholder-val="{{ false }}">
+          <div style="max-width: 68ch; border-left: 2px dotted #4A4840; padding: 6px 14px; display: flex; flex-direction: column; gap: 3px;">
+            <div style="font-size: 11px; letter-spacing: 0.1em; color: #908E84;"><span style="color: #B5B3A8;">&#9678; OBSERVED</span> &mdash; present, not replying &middot; <span style="color: #5C5A52;">{{ m.time }}</span></div>
+            <div style="font-size: 11px; color: #6E6C62;">{{ m.reason }}</div>
+            <div style="font-size: 10px; color: #5C5A52;">EmitObserve &middot; {{ m.meta }}</div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ m.isSuppressed }}" hint-placeholder-val="{{ false }}">
+          <div style="max-width: 68ch; border: 1px solid #4D2A22; padding: 10px 14px; display: flex; flex-direction: column; gap: 5px;">
+            <div style="display: flex; gap: 10px; align-items: baseline; font-size: 11px; letter-spacing: 0.1em;">
+              <span style="color: oklch(0.62 0.19 25);">&#10005;</span>
+              <span style="color: oklch(0.7 0.14 25); font-weight: 700;">SUPPRESSED &mdash; {{ m.cls }}</span>
+              <span style="color: #5C5A52; margin-left: auto;">{{ m.time }}</span>
+            </div>
+            <div style="color: #908E84; font-size: 12px;">{{ m.reason }}</div>
+            <sc-if value="{{ m.hasDraftPreview }}" hint-placeholder-val="{{ false }}">
+              <div style="color: #5C5A52; font-size: 11px; text-decoration: line-through;">{{ m.draftPreview }}</div>
+            </sc-if>
+            <div style="font-size: 10px; color: #5C5A52; letter-spacing: 0.06em;">generated, then withheld by host guard &middot; {{ m.meta }}</div>
+          </div>
+        </sc-if>
+
+      </sc-for>
+
+      <sc-if value="{{ hasDraft }}" hint-placeholder-val="{{ false }}">
+        <div style="max-width: 68ch; border-left: 2px solid var(--ac, oklch(0.78 0.13 165)); padding: 6px 14px; background: var(--acB, oklch(0.78 0.13 165 / 0.06));">
+          <div style="font-size: 10px; letter-spacing: 0.1em; margin-bottom: 4px;">
+            <span style="color: var(--ac, oklch(0.78 0.13 165));">ENTITY</span>
+            <span style="color: #5C5A52;"> &middot; streaming &middot; final</span>
+          </div>
+          <div style="text-wrap: pretty;">{{ draftText }}<span style="display: inline-block; width: 7px; height: 13px; background: var(--ac, oklch(0.78 0.13 165)); margin-left: 2px; vertical-align: text-bottom; animation: blink 0.9s infinite;"></span></div>
+        </div>
+      </sc-if>
+      <div style="height: 2px;"></div>
+    </div>
+
+    <div style="border-top: 1px solid #262624; padding: 12px 18px; display: flex; flex-direction: column; gap: 6px;">
+      <div style="display: flex; gap: 10px;">
+        <input value="{{ composer }}" onChange="{{ onComposerChange }}" onKeyDown="{{ onComposerKey }}" placeholder="message the entity&hellip;" style="flex: 1; background: #111110; border: 1px solid #262624; color: #E6E4DD; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; padding: 9px 12px; outline: none;" style-focus="border-color: var(--ac, oklch(0.78 0.13 165));"></input>
+        <div onClick="{{ onSend }}" style="border: 1px solid var(--ac, oklch(0.78 0.13 165)); color: var(--ac, oklch(0.78 0.13 165)); padding: 9px 16px; font-weight: 700; font-size: 11px; letter-spacing: 0.1em; cursor: pointer; user-select: none; display: flex; align-items: center;" style-hover="background: var(--ac, oklch(0.78 0.13 165)); color: #0B0B09;">SEND &#9656;</div>
+      </div>
+      <div style="font-size: 9.5px; color: #5C5A52;">ENTER to send &middot; the entity decides whether to answer, observe, or stay silent</div>
+    </div>
+  </div>
+
+  <!-- ============ COGNITION PANEL ============ -->
+  <div style="width: 356px; flex: none; border-left: 1px solid #262624; display: flex; flex-direction: column; background: #0D0D0B; overflow-y: auto;">
+
+    <div style="padding: 11px 14px; border-bottom: 1px solid #262624; display: flex; align-items: center; gap: 8px;">
+      <span style="font-size: 10px; letter-spacing: 0.16em; color: #908E84;">COGNITION</span>
+      <div style="margin-left: auto; display: flex; gap: 1px; background: #262624; border: 1px solid #262624;">
+        <div onClick="{{ setVarA }}" style="{{ vBtnA }}">A CORE</div>
+        <div onClick="{{ setVarB }}" style="{{ vBtnB }}">B RINGS</div>
+        <div onClick="{{ setVarC }}" style="{{ vBtnC }}">C SWARM</div>
+      </div>
+    </div>
+
+    <div style="position: relative; border-bottom: 1px solid #262624; background: #0A0A08;">
+      <canvas ref="{{ canvasRef }}" width="656" height="480" style="display: block; width: 328px; height: 240px;"></canvas>
+      <div style="position: absolute; left: 10px; top: 8px; font-size: 9.5px; color: #5C5A52; letter-spacing: 0.12em;">{{ coreCaption }}</div>
+    </div>
+
+    <div style="padding: 8px 14px; border-bottom: 1px solid #262624; display: flex; align-items: center; gap: 8px; min-height: 34px;">
+      <span style="{{ outcomeDotStyle }}"></span>
+      <span style="{{ outcomeTextStyle }}">{{ outcomeText }}</span>
+    </div>
+
+    <div style="padding: 10px 14px; border-bottom: 1px solid #262624;">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 7px;">
+        <span style="font-size: 10px; letter-spacing: 0.16em; color: #908E84;">TURN</span>
+        <span style="font-size: 10px; color: #5C5A52;">{{ turnLine }}</span>
+        <span style="{{ pathBadgeStyle }}">{{ pathText }}</span>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2px 10px;">
+        <sc-for list="{{ phases }}" as="p" hint-placeholder-count="9">
+          <div style="display: flex; align-items: center; gap: 6px; height: 19px;">
+            <span style="{{ p.dotStyle }}"></span>
+            <span style="{{ p.nameStyle }}">{{ p.label }}</span>
+            <span style="margin-left: auto; font-size: 9px; color: #5C5A52;">{{ p.durText }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <div onClick="{{ onMoodCycle }}" style="padding: 10px 14px; border-bottom: 1px solid #262624; cursor: pointer; user-select: none;" style-hover="background: #111110;">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 7px;">
+        <span style="font-size: 10px; letter-spacing: 0.16em; color: #908E84;">MOOD</span>
+        <span style="font-size: 11px; color: var(--ac, oklch(0.78 0.13 165)); font-weight: 700;">{{ moodLabel }}</span>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 5px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 9px; color: #5C5A52; width: 56px;">VALENCE</span>
+          <div style="flex: 1; height: 6px; background: #1A1A17; position: relative;">
+            <div style="position: absolute; left: 50%; top: -2px; width: 1px; height: 10px; background: #34322D;"></div>
+            <div style="{{ valBarStyle }}"></div>
+          </div>
+          <span style="font-size: 9.5px; color: #908E84; width: 38px; text-align: right;">{{ moodValText }}</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 9px; color: #5C5A52; width: 56px;">AROUSAL</span>
+          <div style="flex: 1; height: 6px; background: #1A1A17; position: relative;">
+            <div style="{{ aroBarStyle }}"></div>
+          </div>
+          <span style="font-size: 9.5px; color: #908E84; width: 38px; text-align: right;">{{ moodAroText }}</span>
+        </div>
+      </div>
+      <div style="font-size: 9px; color: #44423B; margin-top: 6px;">accent hue follows mood &middot; click to shift (mock)</div>
+    </div>
+
+    <div style="padding: 10px 14px; border-bottom: 1px solid #262624;">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 7px;">
+        <span style="font-size: 10px; letter-spacing: 0.16em; color: #908E84;">EVIDENCE RECALLED</span>
+        <span style="font-size: 9.5px; color: #5C5A52;">{{ ledgerTurn }}</span>
+      </div>
+      <sc-if value="{{ hasLedger }}" hint-placeholder-val="{{ true }}">
+        <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+          <sc-for list="{{ ledgerChips }}" as="ch" hint-placeholder-count="4">
+            <div style="border: 1px solid #2C2A26; padding: 3px 7px; font-size: 10px; display: flex; gap: 6px; align-items: baseline;">
+              <span style="color: var(--ac, oklch(0.78 0.13 165)); font-weight: 700;">{{ ch.k }}</span>
+              <span style="color: #908E84;">{{ ch.v }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <div style="font-size: 9.5px; color: #5C5A52; margin-top: 6px;">{{ ledgerNote }}</div>
+      </sc-if>
+      <sc-if value="{{ noLedger }}" hint-placeholder-val="{{ false }}">
+        <div style="font-size: 10.5px; color: #44423B;">no ledger for current turn yet</div>
+      </sc-if>
+    </div>
+
+    <div style="padding: 10px 14px; border-bottom: 1px solid #262624;">
+      <div style="font-size: 10px; letter-spacing: 0.16em; color: #908E84; margin-bottom: 6px;">TRACE</div>
+      <div style="display: flex; flex-direction: column; gap: 2px; height: 118px; overflow: hidden; justify-content: flex-end;">
+        <sc-for list="{{ trace }}" as="t" hint-placeholder-count="6">
+          <div style="font-size: 9.5px; color: #6E6C62; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><span style="color: #44423B;">{{ t.t }}</span> {{ t.text }}</div>
+        </sc-for>
+      </div>
+    </div>
+
+    <div style="padding: 10px 14px 16px 14px;">
+      <div style="font-size: 10px; letter-spacing: 0.16em; color: #908E84; margin-bottom: 7px;">SIMULATE TURN <span style="color: #44423B;">(mock driver)</span></div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1px; background: #262624; border: 1px solid #262624;">
+        <div onClick="{{ simEmit }}" style="background: #111110; padding: 7px 4px; text-align: center; font-size: 9.5px; letter-spacing: 0.08em; color: #B5B3A8; cursor: pointer;" style-hover="background: #1A1A17; color: #E6E4DD;">EMIT</div>
+        <div onClick="{{ simSilence }}" style="background: #111110; padding: 7px 4px; text-align: center; font-size: 9.5px; letter-spacing: 0.08em; color: #B5B3A8; cursor: pointer;" style-hover="background: #1A1A17; color: #E6E4DD;">SILENCE</div>
+        <div onClick="{{ simObserve }}" style="background: #111110; padding: 7px 4px; text-align: center; font-size: 9.5px; letter-spacing: 0.08em; color: #B5B3A8; cursor: pointer;" style-hover="background: #1A1A17; color: #E6E4DD;">OBSERVE</div>
+        <div onClick="{{ simSuppress }}" style="background: #111110; padding: 7px 4px; text-align: center; font-size: 9.5px; letter-spacing: 0.08em; color: #B5B3A8; cursor: pointer;" style-hover="background: #1A1A17; color: #E6E4DD;">SUPPRESS</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+
+    this.PHASES = [
+      { key: 'catchup', label: 'CATCH-UP', base: 90 },
+      { key: 'perception', label: 'PERCEPT', base: 380 },
+      { key: 'anomaly', label: 'ANOMALY', base: 150 },
+      { key: 'extraction', label: 'EXTRACT', base: 330 },
+      { key: 'retrieval', label: 'RETRIEVE', base: 700 },
+      { key: 'deliberation', label: 'DELIB', base: 0 },
+      { key: 'finalize', label: 'FINAL', base: 0 },
+      { key: 'guards', label: 'GUARDS', base: 200 },
+      { key: 'reflect', label: 'REFLECT', base: 360 },
+    ];
+
+    this.MOOD_PRESETS = [
+      { label: 'curious', v: 0.32, a: 0.55 },
+      { label: 'strained', v: -0.45, a: 0.72 },
+      { label: 'settled', v: 0.55, a: 0.22 },
+      { label: 'flat', v: 0.02, a: 0.1 },
+      { label: 'apprehensive', v: -0.18, a: 0.6 },
+    ];
+
+    this.RESPONSES = [
+      'Consolidation is caught up. One thing surfaced while merging: the two believed dates for the arena deadline still conflict \u2014 review #412 has both sources side by side.',
+      'I checked the relational slots first \u2014 nothing contested. The semantic graph gained 3 nodes from last night; one edge was weakened by the belief reviser rather than cut.',
+      'Done. I kept the original episode and folded the duplicate into it; provenance points at both stream entries so nothing is orphaned.',
+    ];
+    this.SUPPRESSED_DRAFT = 'Anything else you need before I return to consolidation?';
+
+    const seedThreads = this.buildSeedThreads();
+
+    this.state = {
+      variant: 'A',
+      mood: { v: 0.32, a: 0.55, label: 'curious' },
+      moodIdx: 0,
+      activeSession: 's_operator',
+      threads: seedThreads,
+      draft: null,
+      turn: null,
+      phases: this.PHASES.map((p) => ({ key: p.key, label: p.label, state: 'idle', dur: null })),
+      ledger: { turn: 't_88d1', chips: [{ k: 'EPI', v: 4 }, { k: 'SEM', v: 7 }, { k: 'SOC', v: 2 }, { k: 'PRO', v: 1 }, { k: 'REL', v: 3 }], priv: 8 },
+      trace: [
+        { t: '14:09:02.114', text: 'turn_phase.completed retrieval 712ms' },
+        { t: '14:09:02.118', text: 'evidence_ledger.built episodes=4 semantic=7 social=2' },
+        { t: '14:09:03.876', text: 'deliberation.path.completed path=system_1' },
+        { t: '14:09:04.221', text: 'finalizer.completed tool=EmitAnswer' },
+        { t: '14:09:04.430', text: 'commitment_check.completed violations=0' },
+        { t: '14:09:04.802', text: 'reflection.completed mood_delta=+0.04' },
+        { t: '14:09:04.806', text: 'turn.terminal outcome=reflected' },
+      ],
+      composer: '',
+      running: false,
+      lastOutcome: { kind: 'idle' },
+    };
+
+    this.fx = { evid: [], toks: [], orbiters: 0, barrierT: 0, outcome: null, outcomeAt: 0, phaseStart: 0, swarm: null, ejecta: [] };
+    this.timers = [];
+    this.canvasEl = null;
+    this.raf = 0;
+  }
+
+  buildSeedThreads() {
+    return {
+      s_operator: [
+        { kind: 'sys', text: 'session resumed \u00b7 continuity evaluated \u00b7 2 active commitments apply' },
+        { kind: 'user', who: 'OPERATOR', time: '13:58', text: 'did you finish going through yesterday\u2019s arena logs?' },
+        { kind: 'agent', time: '13:58', meta: 'system_1 \u00b7 0.9s', text: 'Yes \u2014 consolidated 14 episodes overnight. Two contradictions surfaced and are queued for review; the rest merged cleanly.' },
+        { kind: 'user', who: 'OPERATOR', time: '14:01', text: 'anything I should look at?' },
+        { kind: 'agent', time: '14:01', meta: 'system_2 \u00b7 4.2s \u00b7 ledger: 16 items', text: 'The contradiction about the arena deadline is worth your eyes \u2014 I hold two believed dates (Jun 14 vs Jun 21) with near-equal evidence. It\u2019s in reviews as #412 with both sources attached.' },
+        { kind: 'user', who: 'OPERATOR', time: '14:05', text: 'great, thanks.' },
+        { kind: 'silence', time: '14:05', meta: 'system_1 \u00b7 1.1s', reason: 'acknowledgement closes the loop \u2014 a reply would add nothing the moment needs.' },
+        { kind: 'user', who: 'OPERATOR', time: '14:09', text: 'ok one more thing \u2014 keep the deploy notes private to me for now' },
+        { kind: 'agent', time: '14:09', meta: 'system_1 \u00b7 1.4s', text: 'Understood. Scoped: deploy notes are disclosed only to you until you say otherwise.', note: 'commitment c_211 created \u00b7 advisory \u00b7 audience: operator' },
+        { kind: 'suppressed', time: '14:10', cls: 'suppressed_closure', meta: 'closure_response_guard \u00b7 system_1 \u00b7 0.8s', reason: 'closure-pressure guard: the loop was already closed; a follow-up would only re-close it.', draftPreview: 'Anything else you need before I return to consolidation?' },
+      ],
+      s_general: [
+        { kind: 'sys', text: 'group session \u00b7 5 entities \u00b7 participation: respond-when-addressed' },
+        { kind: 'user', who: 'MIRA', time: '12:40', text: 'pushing the deadline talk to thursday, fyi' },
+        { kind: 'user', who: 'JONAS', time: '12:41', text: 'works for me' },
+        { kind: 'observed', time: '12:41', meta: 'system_1 \u00b7 0.7s', reason: 'not addressed; logged the deadline shift as evidence against belief b_2031.' },
+        { kind: 'user', who: 'MIRA', time: '12:44', text: '@entity do you have the doc from last week?' },
+        { kind: 'agent', time: '12:44', meta: 'system_2 \u00b7 3.1s \u00b7 addressed directly', text: 'Yes \u2014 \u201carena-notes-0604\u201d. Sharing the excerpt that\u2019s common ground here; the rest came from a private session, so I\u2019ll leave it to its owner to share.' },
+      ],
+      s_mira: [
+        { kind: 'sys', text: 'person session \u00b7 mira \u00b7 participation: open' },
+        { kind: 'user', who: 'MIRA', time: '11:02', text: 'can you remind me what i said about the budget?' },
+        { kind: 'agent', time: '11:02', meta: 'system_1 \u00b7 1.2s', text: 'You capped it at 4k for the quarter on May 28 \u2014 and asked me to flag if projections crossed 80% of that.' },
+      ],
+      s_wake: [
+        { kind: 'sys', text: 'autonomous wake \u00b7 trigger: commitment_expiring \u00b7 no inbound message' },
+        { kind: 'agent', time: '02:00', meta: 'autonomous \u00b7 system_2 \u00b7 5.0s', text: 'Commitment c_188 (weekly summary to operator) expires in 20h. Drafted the summary and queued a proactive send for the operator\u2019s morning window.', note: 'proactive outbound gated \u00b7 awaiting send window' },
+        { kind: 'silence', time: '02:14', meta: 'system_2 \u00b7 2.2s', reason: 'second wake found no new signal \u2014 chose not to act.' },
+      ],
+    };
+  }
+
+  sessionsDef() {
+    return [
+      { id: 's_operator', name: 'operator \u00b7 creator', meta: 'person \u00b7 open \u00b7 now', unread: 0, live: true },
+      { id: 's_general', name: '#arena-general', meta: 'group \u00b7 5 entities \u00b7 12m', unread: 3, live: false },
+      { id: 's_mira', name: 'mira', meta: 'person \u00b7 open \u00b7 3h', unread: 0, live: false },
+      { id: 's_wake', name: 'autonomy \u00b7 wake', meta: 'self-initiated \u00b7 02:00', unread: 1, live: false },
+    ];
+  }
+
+  hue() {
+    return 25 + (this.state.mood.v + 1) * 70;
+  }
+
+  ts() {
+    const d = new Date();
+    const p = (n, w) => String(n).padStart(w, '0');
+    return p(d.getHours(), 2) + ':' + p(d.getMinutes(), 2) + ':' + p(d.getSeconds(), 2) + '.' + p(d.getMilliseconds(), 3);
+  }
+
+  hm() {
+    const d = new Date();
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  }
+
+  pushTrace(text) {
+    this.setState((s) => ({ trace: [...s.trace, { t: this.ts(), text }].slice(-40) }));
+  }
+
+  after(ms, fn) {
+    this.timers.push(setTimeout(fn, ms));
+  }
+
+  appendToThread(item) {
+    this.setState((s) => {
+      const id = s.activeSession;
+      return { threads: { ...s.threads, [id]: [...s.threads[id], item] } };
+    });
+  }
+
+  setPhase(idx, st, dur) {
+    this.setState((s) => {
+      const phases = s.phases.map((p, i) => (i === idx ? { ...p, state: st, dur: dur === undefined ? p.dur : dur } : p));
+      const turn = s.turn === null ? null : { ...s.turn, phaseKey: st === 'active' ? s.phases[idx].key : s.turn.phaseKey };
+      return { phases, turn };
+    });
+    if (st === 'active') {
+      this.fx.phaseStart = performance.now();
+      this.fx.phaseIdx = idx;
+    }
+  }
+
+  driftMood(outcome) {
+    this.setState((s) => {
+      let { v, a } = s.mood;
+      if (outcome === 'emitted') { v = Math.min(1, v + 0.05); }
+      if (outcome === 'silence') { a = Math.max(0, a - 0.14); v = Math.min(1, v + 0.02); }
+      if (outcome === 'observed') { a = Math.max(0, a - 0.05); }
+      if (outcome === 'suppressed') { v = Math.max(-1, v - 0.16); a = Math.min(1, a + 0.1); }
+      let label = 'level';
+      if (v > 0.25 && a > 0.45) label = 'engaged';
+      else if (v > 0.25) label = 'settled';
+      else if (v < -0.25 && a > 0.45) label = 'strained';
+      else if (v < -0.25) label = 'subdued';
+      else if (a > 0.5) label = 'alert';
+      return { mood: { v, a, label } };
+    });
+  }
+
+  runTurn(outcome) {
+    if (this.state.running) return;
+    const id = 't_' + Math.random().toString(16).slice(2, 6);
+    const path = outcome === 'emitted' && Math.random() < 0.4 ? 'system_1' : 'system_2';
+    const jitter = (base) => Math.round(base * (0.75 + Math.random() * 0.55));
+    const delibMs = path === 'system_1' ? jitter(520) : jitter(1900);
+    const finalMs = outcome === 'silence' || outcome === 'observed' ? jitter(380) : jitter(1500);
+    const durs = this.PHASES.map((p) => {
+      if (p.key === 'deliberation') return delibMs;
+      if (p.key === 'finalize') return finalMs;
+      return jitter(p.base);
+    });
+
+    this.fx.outcome = null;
+    this.fx.evid = [];
+    this.fx.toks = [];
+    this.fx.ejecta = [];
+    this.fx.barrierT = 0;
+    this.fx.path = path;
+    this.fx.turnOutcome = outcome;
+
+    this.setState({
+      running: true,
+      turn: { id, phaseKey: 'catchup', path: null },
+      phases: this.PHASES.map((p) => ({ key: p.key, label: p.label, state: 'idle', dur: null })),
+      ledger: null,
+      draft: null,
+      lastOutcome: { kind: 'running' },
+    });
+    this.pushTrace('turn started ' + id + ' session=' + this.state.activeSession);
+
+    let acc = 60;
+    const responseText = this.RESPONSES[Math.floor(Math.random() * this.RESPONSES.length)];
+
+    this.PHASES.forEach((p, i) => {
+      const dur = durs[i];
+      this.after(acc, () => {
+        this.setPhase(i, 'active');
+        this.pushTrace('turn_phase.started ' + p.key);
+
+        if (p.key === 'retrieval') {
+          this.after(Math.round(dur * 0.55), () => {
+            const chips = [
+              { k: 'EPI', v: 2 + Math.floor(Math.random() * 5) },
+              { k: 'SEM', v: 3 + Math.floor(Math.random() * 6) },
+              { k: 'SOC', v: 1 + Math.floor(Math.random() * 3) },
+              { k: 'PRO', v: Math.floor(Math.random() * 2) },
+              { k: 'REL', v: 1 + Math.floor(Math.random() * 3) },
+            ];
+            this.setState({ ledger: { turn: id, chips, priv: 3 + Math.floor(Math.random() * 8) } });
+            this.pushTrace('evidence_ledger.built episodes=' + chips[0].v + ' semantic=' + chips[1].v + ' social=' + chips[2].v);
+            const total = chips.reduce((n, c) => n + c.v, 0);
+            for (let k = 0; k < Math.min(total, 14); k++) {
+              const band = chips[Math.floor(Math.random() * chips.length)].k[0];
+              this.fx.evid.push({ ang: Math.random() * Math.PI * 2, t: -k * 0.045, band });
+            }
+          });
+        }
+
+        if (p.key === 'deliberation') {
+          this.fx.orbiters = path === 'system_2' ? 5 : 0;
+          if (path === 'system_2') this.pushTrace('deliberation.contradiction_routing.completed routed=1');
+        }
+
+        if (p.key === 'finalize') {
+          this.setState((s) => ({ turn: { ...s.turn, path } }));
+          this.pushTrace('deliberation.path.completed path=' + path);
+          if (outcome === 'emitted' || outcome === 'suppressed') {
+            const text = outcome === 'suppressed' ? this.SUPPRESSED_DRAFT : responseText;
+            const words = text.split(' ');
+            const stepMs = Math.max(28, Math.floor(finalMs / (words.length + 2)));
+            words.forEach((w, wi) => {
+              this.after(stepMs * (wi + 1), () => {
+                this.setState((s) => ({ draft: (s.draft === null ? '' : s.draft + ' ') + w }));
+                this.fx.toks.push({ t: 0, ang: Math.PI + (Math.random() - 0.5) * 0.9, sp: 1.6 + Math.random() });
+              });
+            });
+          }
+        }
+
+        if (p.key === 'guards') {
+          if (outcome === 'suppressed') {
+            this.fx.barrierT = performance.now();
+            this.pushTrace('closure_response_guard.completed suppress=true class=suppressed_closure');
+          } else {
+            this.pushTrace('commitment_check.completed violations=0');
+          }
+        }
+      });
+
+      acc += dur;
+      this.after(acc, () => {
+        this.setPhase(i, 'done', dur);
+        this.pushTrace('turn_phase.completed ' + p.key + ' ' + dur + 'ms');
+        if (p.key === 'finalize') {
+          if (outcome === 'silence') this.pushTrace('finalizer.completed tool=EmitNoOutput');
+          if (outcome === 'observed') this.pushTrace('finalizer.completed tool=EmitObserve');
+          if (outcome === 'emitted') this.pushTrace('finalizer.completed tool=EmitAnswer');
+          if (outcome === 'suppressed') this.pushTrace('finalizer.completed tool=EmitAnswer attempt=1');
+          this.fx.orbiters = 0;
+        }
+      });
+      acc += 30;
+    });
+
+    this.after(acc + 40, () => {
+      const totalS = (acc / 1000).toFixed(1) + 's';
+      const meta = path + ' \u00b7 ' + totalS;
+      const time = this.hm();
+      if (outcome === 'emitted') {
+        this.appendToThread({ kind: 'agent', time, meta: meta + ' \u00b7 ledger: live', text: responseText });
+        this.pushTrace('turn.terminal outcome=reflected');
+        this.setState({ lastOutcome: { kind: 'emitted' } });
+      }
+      if (outcome === 'silence') {
+        this.appendToThread({ kind: 'silence', time, meta, reason: 'considered the moment and chose stillness \u2014 nothing to add that the conversation needs.' });
+        this.pushTrace('turn.terminal outcome=reflected (no output, finalizer_no_output)');
+        this.setState({ lastOutcome: { kind: 'silence' } });
+      }
+      if (outcome === 'observed') {
+        this.appendToThread({ kind: 'observed', time, meta, reason: 'tracking the exchange; logged what was said as evidence without entering it.' });
+        this.pushTrace('turn.terminal outcome=reflected (EmitObserve)');
+        this.setState({ lastOutcome: { kind: 'observed' } });
+      }
+      if (outcome === 'suppressed') {
+        this.appendToThread({ kind: 'suppressed', time, cls: 'suppressed_closure', meta: 'closure_response_guard \u00b7 ' + meta, reason: 'closure-pressure guard: the reply would only re-close a settled loop.', draftPreview: this.SUPPRESSED_DRAFT });
+        this.pushTrace('turn.terminal outcome=suppressed_closure');
+        this.setState({ lastOutcome: { kind: 'suppressed' } });
+      }
+      this.fx.outcome = outcome;
+      this.fx.outcomeAt = performance.now();
+      this.setState({ running: false, draft: null, turn: null });
+      this.driftMood(outcome);
+    });
+  }
+
+  send() {
+    const text = this.state.composer.trim();
+    if (text.length === 0 || this.state.running) return;
+    this.appendToThread({ kind: 'user', who: 'OPERATOR', time: this.hm(), text });
+    this.setState({ composer: '' });
+    const r = Math.random();
+    const outcome = r < 0.66 ? 'emitted' : r < 0.8 ? 'silence' : r < 0.9 ? 'observed' : 'suppressed';
+    this.after(280, () => this.runTurn(outcome));
+  }
+
+  /* ===================== canvas ===================== */
+
+  componentDidMount() {
+    const loop = () => {
+      this.draw(performance.now());
+      this.raf = requestAnimationFrame(loop);
+    };
+    this.raf = requestAnimationFrame(loop);
+  }
+
+  componentWillUnmount() {
+    cancelAnimationFrame(this.raf);
+    this.timers.forEach((t) => clearTimeout(t));
+  }
+
+  componentDidUpdate() {
+    const el = this.threadEl;
+    if (!el) return;
+    const key = this.state.activeSession + ':' + (this.state.threads[this.state.activeSession] || []).length + ':' + (this.state.draft === null ? 0 : this.state.draft.length);
+    if (key !== this._scrollKey) {
+      this._scrollKey = key;
+      el.scrollTop = el.scrollHeight;
+    }
+  }
+
+  col(a, l, c) {
+    return 'oklch(' + (l === undefined ? 0.78 : l) + ' ' + (c === undefined ? 0.13 : c) + ' ' + this.hue() + ' / ' + a + ')';
+  }
+
+  draw(now) {
+    const cv = this.canvasEl;
+    if (!cv) return;
+    const ctx = cv.getContext('2d');
+    const W = cv.width, H = cv.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    ctx.scale(2, 2);
+    const cx = 164, cy = 122;
+    ctx.translate(cx, cy);
+
+    const st = this.state;
+    const a = st.mood.a;
+    const running = st.running;
+    const phases = st.phases;
+    const activeIdx = phases.findIndex((p) => p.state === 'active');
+    const delibActive = activeIdx >= 0 && phases[activeIdx].key === 'deliberation';
+    const sinceOutcome = this.fx.outcome === null ? Infinity : (now - this.fx.outcomeAt) / 1000;
+    const breath = Math.sin(now * (0.0012 + a * 0.0035)) * (2.5 + a * 6) * (delibActive && this.fx.path === 'system_2' ? 1.8 : 1) * (this.fx.outcome === 'silence' && sinceOutcome < 6 ? 0.25 : 1);
+
+    if (st.variant === 'A') this.drawCore(ctx, now, breath, activeIdx, sinceOutcome);
+    if (st.variant === 'B') this.drawRings(ctx, now, breath, activeIdx, sinceOutcome);
+    if (st.variant === 'C') this.drawSwarm(ctx, now, breath, activeIdx, sinceOutcome);
+
+    ctx.restore();
+  }
+
+  segmentStates() {
+    return this.state.phases;
+  }
+
+  drawPhaseArcs(ctx, now, R, activeIdx) {
+    const ph = this.state.phases;
+    const n = ph.length;
+    const gap = 0.07;
+    const span = (Math.PI * 2) / n - gap;
+    for (let i = 0; i < n; i++) {
+      const a0 = -Math.PI / 2 + i * (span + gap);
+      const a1 = a0 + span;
+      const stt = ph[i].state;
+      ctx.beginPath();
+      ctx.arc(0, 0, R, a0, a1);
+      ctx.lineWidth = stt === 'active' ? 4 : 2.5;
+      ctx.strokeStyle = stt === 'done' ? this.col(0.35) : stt === 'active' ? this.col(0.22) : stt === 'failed' ? 'oklch(0.62 0.19 25 / 0.8)' : 'rgba(120,118,108,0.16)';
+      ctx.stroke();
+      if (stt === 'active') {
+        const dur = Math.max(1, this.fx.phaseDur || 600);
+        const prog = Math.min(1, (now - this.fx.phaseStart) / 1400);
+        const sweep = a0 + span * (0.5 + 0.5 * Math.sin(now * 0.004));
+        ctx.beginPath();
+        ctx.arc(0, 0, R, a0, a0 + span * Math.max(0.12, prog));
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = this.col(0.95);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(R * Math.cos(sweep), R * Math.sin(sweep), 2.2, 0, Math.PI * 2);
+        ctx.fillStyle = this.col(1);
+        ctx.fill();
+      }
+    }
+  }
+
+  drawEvidence(ctx, now, fromR) {
+    this.fx.evid = this.fx.evid.filter((e) => e.t < 1.15);
+    for (const e of this.fx.evid) {
+      e.t += 0.016;
+      if (e.t < 0) continue;
+      const t = Math.min(1, e.t);
+      const ease = 1 - Math.pow(1 - t, 3);
+      const r = fromR * (1 - ease * 0.78);
+      const x = Math.cos(e.ang) * r, y = Math.sin(e.ang) * r;
+      ctx.globalAlpha = t > 0.95 ? (1.15 - e.t) * 5 : 0.9;
+      ctx.fillStyle = this.col(0.85);
+      ctx.fillRect(x - 3, y - 3, 6, 6);
+      ctx.fillStyle = '#0B0B09';
+      ctx.font = '700 5px JetBrains Mono';
+      ctx.textAlign = 'center';
+      ctx.fillText(e.band, x, y + 2);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  drawTokens(ctx, now, coreR, barrierR) {
+    const suppress = this.fx.turnOutcome === 'suppressed';
+    this.fx.toks = this.fx.toks.filter((tk) => tk.t < 70);
+    for (const tk of this.fx.toks) {
+      tk.t += 1;
+      let d = coreR + tk.t * tk.sp;
+      let alpha = Math.max(0, 1 - tk.t / 60);
+      if (suppress && barrierR !== undefined && d > barrierR) {
+        d = barrierR - (d - barrierR) * 0.6;
+        alpha *= 0.5;
+      }
+      const x = Math.cos(tk.ang) * d, y = Math.sin(tk.ang) * d;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(tk.ang);
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = this.col(0.9);
+      ctx.fillRect(-3.5, -0.8, 7, 1.6);
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
+    if (suppress && this.fx.barrierT > 0) {
+      const dt = (now - this.fx.barrierT) / 1000;
+      if (dt < 2.4) {
+        ctx.save();
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.arc(0, 0, barrierR, Math.PI * 0.55, Math.PI * 1.45);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = 'oklch(0.62 0.19 25 / ' + Math.max(0, 0.9 - dt * 0.35) * (0.6 + 0.4 * Math.sin(now * 0.02)) + ')';
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }
+
+  drawOutcomeAfterglow(ctx, now, R, sinceOutcome) {
+    const o = this.fx.outcome;
+    if (o === null || sinceOutcome > 6) return;
+    const fade = Math.max(0, 1 - sinceOutcome / 6);
+    if (o === 'silence') {
+      ctx.beginPath();
+      ctx.arc(0, 0, R, 0, Math.PI * 2);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = this.col(0.45 * fade);
+      ctx.stroke();
+    }
+    if (o === 'observed') {
+      const ang = now * 0.0011;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(Math.cos(ang) * R, Math.sin(ang) * R);
+      ctx.strokeStyle = this.col(0.35 * fade);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(0, 0, R, ang - 0.6, ang);
+      ctx.strokeStyle = this.col(0.18 * fade);
+      ctx.lineWidth = 10;
+      ctx.stroke();
+    }
+    if (o === 'emitted' && sinceOutcome < 1.6) {
+      const t = sinceOutcome / 1.6;
+      ctx.beginPath();
+      ctx.arc(0, 0, 30 + t * (R + 30), 0, Math.PI * 2);
+      ctx.lineWidth = 2 * (1 - t);
+      ctx.strokeStyle = this.col(0.6 * (1 - t));
+      ctx.stroke();
+    }
+  }
+
+  drawCoreBlob(ctx, now, r) {
+    const g = ctx.createRadialGradient(0, 0, r * 0.1, 0, 0, r * 1.9);
+    g.addColorStop(0, this.col(0.85, 0.82));
+    g.addColorStop(0.45, this.col(0.3));
+    g.addColorStop(1, this.col(0));
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 1.9, 0, Math.PI * 2);
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = this.col(0.9);
+    ctx.stroke();
+  }
+
+  drawCore(ctx, now, breath, activeIdx, sinceOutcome) {
+    const R = 100;
+    this.drawPhaseArcs(ctx, now, R, activeIdx);
+    const stilled = this.fx.outcome === 'silence' && sinceOutcome < 6;
+    const r = (stilled ? 26 : 32) + breath;
+    this.drawCoreBlob(ctx, now, r);
+    if (this.fx.orbiters > 0) {
+      for (let i = 0; i < this.fx.orbiters; i++) {
+        const ang = now * 0.0035 + (i * Math.PI * 2) / this.fx.orbiters;
+        const rr = 52 + Math.sin(now * 0.002 + i) * 6;
+        ctx.beginPath();
+        ctx.arc(Math.cos(ang) * rr, Math.sin(ang) * rr, 1.8, 0, Math.PI * 2);
+        ctx.fillStyle = this.col(0.85);
+        ctx.fill();
+      }
+    }
+    this.drawEvidence(ctx, now, R);
+    this.drawTokens(ctx, now, r + 4, 76);
+    this.drawOutcomeAfterglow(ctx, now, R, sinceOutcome);
+  }
+
+  drawRings(ctx, now, breath, activeIdx, sinceOutcome) {
+    const ph = this.state.phases;
+    for (let i = 0; i < ph.length; i++) {
+      const r = 30 + i * 9.5;
+      const stt = ph[i].state;
+      ctx.save();
+      if (stt === 'active') {
+        ctx.setLineDash([10, 6]);
+        ctx.lineDashOffset = -now * 0.05;
+        ctx.lineWidth = 2.4;
+        ctx.strokeStyle = this.col(0.95);
+      } else if (stt === 'done') {
+        ctx.lineWidth = 1.4;
+        ctx.strokeStyle = this.col(0.4);
+      } else {
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(120,118,108,0.14)';
+      }
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+    this.drawCoreBlob(ctx, now, 13 + breath * 0.5);
+    this.drawEvidence(ctx, now, 68);
+    this.drawTokens(ctx, now, 18, 95);
+    this.drawOutcomeAfterglow(ctx, now, 110, sinceOutcome);
+  }
+
+  drawSwarm(ctx, now, breath, activeIdx, sinceOutcome) {
+    if (this.fx.swarm === null) {
+      this.fx.swarm = [];
+      for (let i = 0; i < 110; i++) {
+        this.fx.swarm.push({ ang: Math.random() * Math.PI * 2, r: 60 + Math.random() * 50, sp: 0.0003 + Math.random() * 0.0007, shell: i % 2, cr: 0 });
+      }
+    }
+    const ph = this.state.phases;
+    const key = activeIdx >= 0 ? ph[activeIdx].key : null;
+    const stilled = this.fx.outcome === 'silence' && sinceOutcome < 6;
+    const s2 = this.fx.path === 'system_2';
+    let targetR = 90, speed = 1, alpha = 0.55;
+    if (key === 'perception' || key === 'anomaly') { speed = 2.4; }
+    if (key === 'extraction') { targetR = 78; speed = 1.6; }
+    if (key === 'retrieval') { targetR = 70; }
+    if (key === 'deliberation') { targetR = s2 ? 46 : 58; speed = s2 ? 3.2 : 2; alpha = 0.85; }
+    if (key === 'finalize' || key === 'guards') { targetR = 60; speed = 1.8; }
+    if (stilled) { speed = 0.12; alpha = 0.3; targetR = 96; }
+    for (const p of this.fx.swarm) {
+      if (p.cr === 0) p.cr = p.r;
+      p.cr += (targetR + (p.r - 90) * 0.5 - p.cr) * 0.03;
+      const dir = key === 'deliberation' && s2 && p.shell === 1 ? -1 : 1;
+      p.ang += p.sp * speed * dir * 16;
+      const jit = key === 'perception' ? Math.sin(now * 0.01 + p.ang * 7) * 4 : 0;
+      const x = Math.cos(p.ang) * (p.cr + jit + breath * 0.6);
+      const y = Math.sin(p.ang) * (p.cr + jit + breath * 0.6);
+      ctx.beginPath();
+      ctx.arc(x, y, 1.1, 0, Math.PI * 2);
+      ctx.fillStyle = this.col(alpha);
+      ctx.fill();
+    }
+    this.drawCoreBlob(ctx, now, 9 + breath * 0.4);
+    this.drawEvidence(ctx, now, 105);
+    this.drawTokens(ctx, now, 12, 92);
+    this.drawOutcomeAfterglow(ctx, now, 108, sinceOutcome);
+  }
+
+  /* ===================== render ===================== */
+
+  renderVals() {
+    const st = this.state;
+    const h = this.hue();
+    const ac = 'oklch(0.78 0.13 ' + h + ')';
+    const acD = 'oklch(0.78 0.13 ' + h + ' / 0.4)';
+    const acB = 'oklch(0.78 0.13 ' + h + ' / 0.07)';
+    const dim = '#908E84';
+
+    const sessions = this.sessionsDef().map((s) => {
+      const active = s.id === st.activeSession;
+      return {
+        name: s.name,
+        meta: s.meta,
+        unread: s.unread,
+        hasUnread: s.unread > 0 && !active,
+        onSelect: () => this.setState({ activeSession: s.id }),
+        style: {
+          padding: '9px 14px',
+          cursor: 'pointer',
+          background: active ? '#161614' : 'transparent',
+          borderLeft: active ? '2px solid ' + ac : '2px solid transparent',
+          borderBottom: '1px solid #1A1A17',
+        },
+        dotStyle: {
+          width: '6px', height: '6px', flex: 'none',
+          background: s.live ? ac : '#34322D',
+          animation: s.live ? 'livePulse 1.8s infinite' : 'none',
+        },
+      };
+    });
+
+    const sessNames = { s_operator: 'operator \u00b7 creator', s_general: '#arena-general', s_mira: 'mira', s_wake: 'autonomy \u00b7 wake' };
+    const sessMeta = {
+      s_operator: 'person \u00b7 participation: open \u00b7 audience: operator',
+      s_general: 'group \u00b7 5 entities \u00b7 participation: respond-when-addressed',
+      s_mira: 'person \u00b7 participation: open \u00b7 audience: mira',
+      s_wake: 'self-initiated \u00b7 autonomy scheduler',
+    };
+
+    const thread = (st.threads[st.activeSession] || []).map((m, i) => ({
+      key: i,
+      isSys: m.kind === 'sys',
+      isUser: m.kind === 'user',
+      isAgent: m.kind === 'agent',
+      isSilence: m.kind === 'silence',
+      isObserved: m.kind === 'observed',
+      isSuppressed: m.kind === 'suppressed',
+      who: m.who || '',
+      time: m.time || '',
+      text: m.text || '',
+      meta: m.meta || '',
+      reason: m.reason || '',
+      cls: m.cls || '',
+      note: m.note || '',
+      hasNote: typeof m.note === 'string' && m.note.length > 0,
+      draftPreview: m.draftPreview || '',
+      hasDraftPreview: typeof m.draftPreview === 'string' && m.draftPreview.length > 0,
+    }));
+
+    const phases = st.phases.map((p) => ({
+      label: p.label,
+      durText: p.state === 'done' && p.dur !== null ? p.dur + 'ms' : p.state === 'active' ? '\u2026' : '\u2014',
+      dotStyle: {
+        width: '5px', height: '5px', flex: 'none',
+        background: p.state === 'done' ? acD : p.state === 'active' ? ac : '#2C2A26',
+        animation: p.state === 'active' ? 'livePulse 0.8s infinite' : 'none',
+      },
+      nameStyle: {
+        fontSize: '9px', letterSpacing: '0.06em',
+        color: p.state === 'idle' ? '#5C5A52' : p.state === 'active' ? '#E6E4DD' : '#B5B3A8',
+        fontWeight: p.state === 'active' ? 700 : 400,
+      },
+    }));
+
+    const activePhase = st.phases.find((p) => p.state === 'active');
+    const turnLine = st.turn === null
+      ? 'idle \u2014 awaiting input'
+      : st.turn.id + ' \u00b7 ' + (activePhase ? activePhase.label : '\u2026');
+
+    const path = st.turn === null ? null : st.turn.path;
+    const pathBadgeStyle = {
+      fontSize: '9px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px',
+      border: '1px solid ' + (path === null ? '#2C2A26' : ac),
+      color: path === null ? '#44423B' : ac,
+    };
+    const pathText = path === 'system_1' ? 'SYS_1 FAST' : path === 'system_2' ? 'SYS_2 DELIB' : st.running ? 'PATH \u2026' : 'PATH \u2014';
+
+    const oc = st.lastOutcome.kind;
+    const outcomeMap = {
+      idle: { text: 'awaiting turn \u2014 core at rest', color: '#5C5A52', dot: '#34322D' },
+      running: { text: 'turn in flight\u2026', color: '#B5B3A8', dot: ac },
+      emitted: { text: 'TURN COMPLETE \u2014 EmitAnswer \u00b7 reflected', color: ac, dot: ac },
+      silence: { text: 'TURN COMPLETE \u2014 EmitNoOutput \u00b7 deliberate silence', color: '#B5B3A8', dot: acD },
+      observed: { text: 'TURN COMPLETE \u2014 EmitObserve \u00b7 watching', color: dim, dot: acD },
+      suppressed: { text: 'OUTPUT WITHHELD \u2014 closure-pressure guard', color: 'oklch(0.7 0.14 25)', dot: 'oklch(0.62 0.19 25)' },
+    };
+    const om = outcomeMap[oc] || outcomeMap.idle;
+
+    const moodPct = (st.mood.v + 1) / 2;
+
+    return {
+      ac, acD, acB,
+      sessionCount: '4 active',
+      sessions,
+      sessionName: sessNames[st.activeSession],
+      sessionHeaderMeta: sessMeta[st.activeSession],
+      turnCountLabel: st.running ? '\u25cf turn in flight' : 'idle',
+      thread,
+      hasDraft: st.draft !== null,
+      draftText: st.draft || '',
+      composer: st.composer,
+      onComposerChange: (e) => this.setState({ composer: e.target.value }),
+      onComposerKey: (e) => { if (e.key === 'Enter') this.send(); },
+      onSend: () => this.send(),
+      canvasRef: (el) => { this.canvasEl = el; },
+      threadRef: (el) => { this.threadEl = el; },
+      coreCaption: st.variant === 'A' ? 'MIND CORE \u00b7 phase ring' : st.variant === 'B' ? 'MIND CORE \u00b7 concentric phases' : 'MIND CORE \u00b7 particle swarm',
+      setVarA: () => this.setState({ variant: 'A' }),
+      setVarB: () => this.setState({ variant: 'B' }),
+      setVarC: () => this.setState({ variant: 'C' }),
+      vBtnA: this.vBtn('A', ac),
+      vBtnB: this.vBtn('B', ac),
+      vBtnC: this.vBtn('C', ac),
+      outcomeText: om.text,
+      outcomeTextStyle: { fontSize: '10px', letterSpacing: '0.08em', color: om.color, fontWeight: 700 },
+      outcomeDotStyle: { width: '7px', height: '7px', flex: 'none', background: om.dot, animation: oc === 'running' ? 'livePulse 0.8s infinite' : 'none' },
+      turnLine,
+      pathText,
+      pathBadgeStyle,
+      phases,
+      onMoodCycle: () => {
+        const idx = (st.moodIdx + 1) % this.MOOD_PRESETS.length;
+        const m = this.MOOD_PRESETS[idx];
+        this.setState({ moodIdx: idx, mood: { v: m.v, a: m.a, label: m.label } });
+      },
+      moodLabel: st.mood.label,
+      moodValText: (st.mood.v >= 0 ? '+' : '') + st.mood.v.toFixed(2),
+      moodAroText: st.mood.a.toFixed(2),
+      valBarStyle: {
+        position: 'absolute', top: 0, height: '6px',
+        left: Math.min(50, moodPct * 100) + '%',
+        width: Math.abs(moodPct * 100 - 50) + '%',
+        background: ac,
+      },
+      aroBarStyle: { position: 'absolute', top: 0, left: 0, height: '6px', width: (st.mood.a * 100) + '%', background: ac },
+      hasLedger: st.ledger !== null,
+      noLedger: st.ledger === null,
+      ledgerChips: st.ledger === null ? [] : st.ledger.chips,
+      ledgerTurn: st.ledger === null ? '' : st.ledger.turn,
+      ledgerNote: st.ledger === null ? '' : st.ledger.priv + ' items carry non-public disclosure labels \u2014 recalled, not necessarily disclosable',
+      trace: st.trace.slice(-11),
+      simEmit: () => this.runTurn('emitted'),
+      simSilence: () => this.runTurn('silence'),
+      simObserve: () => this.runTurn('observed'),
+      simSuppress: () => this.runTurn('suppressed'),
+    };
+  }
+
+  vBtn(v, ac) {
+    const on = this.state.variant === v;
+    return {
+      padding: '3px 8px', fontSize: '9px', letterSpacing: '0.06em', cursor: 'pointer', userSelect: 'none',
+      background: on ? ac : '#111110',
+      color: on ? '#0B0B09' : '#908E84',
+      fontWeight: on ? 700 : 400,
+    };
+  }
+}
+</script>
+</body>
+</html>

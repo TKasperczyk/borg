@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+  <style>
+    html, body { margin: 0; padding: 0; background: #0B0B09; overflow-x: auto; }
+    * { box-sizing: border-box; }
+    ::selection { background: oklch(0.78 0.13 165); color: #0B0B09; }
+    @keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-thumb { background: #2A2A26; }
+    ::-webkit-scrollbar-track { background: transparent; }
+  </style>
+</helmet>
+<div data-screen-label="Dream" style="height: 100vh; min-width: 1260px; overflow: hidden; display: flex; background: #0B0B09; color: #E6E4DD; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; line-height: 1.5; --ac: {{ ac }}; --acD: {{ acD }};">
+
+  <!-- NAV RAIL -->
+  <div style="width: 176px; flex: none; border-right: 1px solid #262624; display: flex; flex-direction: column;">
+    <div style="padding: 16px 14px; border-bottom: 1px solid #262624;">
+      <div style="font-weight: 700; font-size: 14px; letter-spacing: 0.04em;">BORG</div>
+      <div style="font-size: 9.5px; color: #5C5A52; letter-spacing: 0.16em; text-transform: uppercase;">//console</div>
+    </div>
+    <div style="display: flex; flex-direction: column; padding-top: 8px;">
+      <a href="Chat.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; color: #908E84; font-size: 12px;" style-hover="background: #161614; color: #E6E4DD;"><span>01</span><span>CHAT</span></a>
+      <a href="Mind.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; color: #908E84; font-size: 12px;" style-hover="background: #161614; color: #E6E4DD;"><span>02</span><span>MIND</span></a>
+      <a href="Reviews.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; color: #908E84; font-size: 12px;" style-hover="background: #161614; color: #E6E4DD;"><span>03</span><span>REVIEWS</span></a>
+      <a href="Dream.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; background: var(--ac, oklch(0.78 0.13 165)); color: #0B0B09; font-weight: 700; font-size: 12px;"><span>04</span><span>DREAM</span></a>
+      <a href="Settings.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; color: #908E84; font-size: 12px;" style-hover="background: #161614; color: #E6E4DD;"><span>05</span><span>SETTINGS</span></a>
+      <a href="Activity.dc.html" style="display: flex; gap: 8px; padding: 8px 14px; text-decoration: none; color: #908E84; font-size: 12px;" style-hover="background: #161614; color: #E6E4DD;"><span>06</span><span>ACTIVITY</span></a>
+    </div>
+    <div style="margin-top: auto; padding: 12px 14px; border-top: 1px solid #262624; display: flex; flex-direction: column; gap: 6px;">
+      <div style="display: flex; align-items: center; gap: 7px; font-size: 10px; letter-spacing: 0.1em; color: #908E84;">
+        <span style="width: 6px; height: 6px; background: var(--ac, oklch(0.78 0.13 165)); animation: livePulse 1.8s infinite;"></span>
+        <span>WS /api/live</span>
+      </div>
+      <div style="font-size: 9.5px; color: #5C5A52;">demo · v0.31.0</div>
+    </div>
+  </div>
+
+  <!-- MAIN -->
+  <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
+
+    <div style="padding: 11px 18px; border-bottom: 1px solid #262624; display: flex; align-items: center; gap: 14px;">
+      <span style="font-weight: 700; font-size: 13px;">DREAM</span>
+      <span style="font-size: 10px; color: #5C5A52; letter-spacing: 0.08em;">offline mind maintenance &mdash; 13 processes, plan before you apply</span>
+      <span style="margin-left: auto; font-size: 10px; color: #908E84;">scheduler <span style="color: var(--ac, oklch(0.78 0.13 165)); font-weight: 700;">ENABLED</span> &middot; light 5m &middot; heavy 1h</span>
+      <span style="font-size: 10px; color: #C9A227;">{{ pendingLabel }}</span>
+    </div>
+
+    <div style="flex: 1; min-height: 0; display: flex;">
+
+      <!-- LEFT: process table + controls -->
+      <div style="flex: 1.2; min-width: 0; border-right: 1px solid #262624; display: flex; flex-direction: column;">
+        <div style="padding: 10px 16px; border-bottom: 1px solid #262624; display: flex; gap: 10px; align-items: center;">
+          <div onClick="{{ onSelectAll }}" style="font-size: 9.5px; color: #6E6C62; letter-spacing: 0.08em; cursor: pointer;" style-hover="color: #E6E4DD;">{{ selectAllLabel }}</div>
+          <span style="font-size: 9.5px; color: #5C5A52;">{{ selCount }} selected</span>
+          <div style="margin-left: auto; display: flex; gap: 8px;">
+            <div onClick="{{ onPlan }}" style="{{ planBtnStyle }}">PLAN (dry-run)</div>
+            <div onClick="{{ onApply }}" style="{{ applyBtnStyle }}">&#9654; APPLY</div>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 26px 1.15fr 1.4fr 90px 88px 70px; gap: 0; padding: 7px 16px; border-bottom: 1px solid #262624; font-size: 9px; color: #5C5A52; letter-spacing: 0.1em;">
+          <span></span><span>PROCESS</span><span>DOES</span><span>LAST RUN</span><span>STATUS</span><span style="text-align: right;">BUDGET</span>
+        </div>
+        <div style="flex: 1; overflow-y: auto;">
+          <sc-for list="{{ processes }}" as="p" hint-placeholder-count="13">
+            <div onClick="{{ p.onToggle }}" style="{{ p.rowStyle }}">
+              <span style="{{ p.boxStyle }}"></span>
+              <span style="{{ p.nameStyle }}">{{ p.name }}</span>
+              <span style="font-size: 10px; color: #6E6C62;">{{ p.desc }}</span>
+              <span style="font-size: 10px; color: #5C5A52;">{{ p.lastRun }}</span>
+              <span style="{{ p.statusStyle }}">{{ p.status }}</span>
+              <span style="font-size: 10px; color: #5C5A52; text-align: right;">{{ p.budget }}</span>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="border-top: 1px solid #262624; padding: 10px 16px; display: flex; gap: 16px; font-size: 9.5px; color: #5C5A52;">
+          <span>POST /api/dream/plan &rarr; preview, nothing written</span>
+          <span>POST /api/dream/apply {plan_id} &rarr; executes &middot; every write lands in the audit</span>
+        </div>
+      </div>
+
+      <!-- RIGHT: run feed + plan -->
+      <div style="width: 460px; flex: none; display: flex; flex-direction: column; background: #0D0D0B;">
+        <div style="padding: 10px 16px; border-bottom: 1px solid #262624; display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 10px; letter-spacing: 0.16em; color: #908E84;">RUN</span>
+          <span style="{{ runStateStyle }}">{{ runStateText }}</span>
+        </div>
+
+        <sc-if value="{{ hasPlan }}" hint-placeholder-val="{{ false }}">
+          <div style="margin: 12px 16px 0 16px; border: 1px solid #2C2A26; padding: 10px 12px;">
+            <div style="display: flex; gap: 10px; align-items: baseline;">
+              <span style="font-size: 9.5px; letter-spacing: 0.1em; color: var(--ac, oklch(0.78 0.13 165)); font-weight: 700;">PLAN {{ planId }}</span>
+              <span style="font-size: 9.5px; color: #5C5A52;">dry-run &middot; nothing written</span>
+            </div>
+            <div style="font-size: 10.5px; color: #908E84; margin-top: 6px;">{{ planSummary }}</div>
+            <div style="font-size: 9.5px; color: #5C5A52; margin-top: 4px;">apply will reuse this plan via plan_id</div>
+          </div>
+        </sc-if>
+
+        <div style="flex: 1; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 3px;">
+          <sc-for list="{{ runLog }}" as="l" hint-placeholder-count="5">
+            <div style="display: flex; gap: 8px; align-items: baseline;">
+              <span style="{{ l.markStyle }}">{{ l.mark }}</span>
+              <span style="{{ l.textStyle }}">{{ l.text }}</span>
+              <span style="margin-left: auto; font-size: 9px; color: #5C5A52; white-space: nowrap;">{{ l.right }}</span>
+            </div>
+          </sc-for>
+          <sc-if value="{{ emptyLog }}" hint-placeholder-val="{{ false }}">
+            <div style="font-size: 10.5px; color: #44423B;">no run yet &mdash; pick processes and PLAN or APPLY. dream:process:* frames stream here live.</div>
+          </sc-if>
+        </div>
+
+        <sc-if value="{{ hasSummary }}" hint-placeholder-val="{{ false }}">
+          <div style="border-top: 1px solid #262624; padding: 10px 16px; display: flex; gap: 16px; font-size: 10px;">
+            <span style="color: var(--ac, oklch(0.78 0.13 165)); font-weight: 700;">{{ sumChanges }} changes</span>
+            <span style="{{ sumErrStyle }}">{{ sumErrors }} errors</span>
+            <span style="color: #5C5A52;">{{ sumDur }}</span>
+            <span style="color: #5C5A52; margin-left: auto;">{{ sumRun }}</span>
+          </div>
+        </sc-if>
+      </div>
+    </div>
+
+    <!-- BOTTOM: audit + reports -->
+    <div style="height: 252px; flex: none; border-top: 1px solid #262624; display: flex;">
+      <div style="flex: 1.3; min-width: 0; border-right: 1px solid #262624; display: flex; flex-direction: column;">
+        <div style="padding: 8px 16px; border-bottom: 1px solid #262624; display: flex; align-items: baseline; gap: 10px;">
+          <span style="font-size: 10px; letter-spacing: 0.16em; color: #908E84;">AUDIT</span>
+          <span style="font-size: 9.5px; color: #5C5A52;">every dream write is reversible &mdash; POST /api/dream/audit/:id/revert</span>
+        </div>
+        <div style="flex: 1; overflow-y: auto;">
+          <sc-for list="{{ audits }}" as="a" hint-placeholder-count="5">
+            <div style="{{ a.rowStyle }}">
+              <span style="font-size: 9.5px; color: #5C5A52; width: 56px;">{{ a.id }}</span>
+              <span style="{{ a.procStyle }}">{{ a.process }}</span>
+              <span style="font-size: 10.5px; color: #B5B3A8; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ a.action }}</span>
+              <span style="font-size: 9.5px; color: #5C5A52; white-space: nowrap;">{{ a.when }}</span>
+              <sc-if value="{{ a.canRevert }}" hint-placeholder-val="{{ true }}">
+                <span onClick="{{ a.onRevert }}" style="font-size: 9px; letter-spacing: 0.08em; color: #6E6C62; cursor: pointer; border: 1px solid #2C2A26; padding: 1px 7px;" style-hover="color: oklch(0.7 0.14 25); border-color: oklch(0.7 0.14 25);">REVERT</span>
+              </sc-if>
+              <sc-if value="{{ a.isReverted }}" hint-placeholder-val="{{ false }}">
+                <span style="font-size: 9px; color: #5C5A52; letter-spacing: 0.08em;">REVERTED &#10003;</span>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      <div style="width: 460px; flex: none; display: flex; flex-direction: column; background: #0D0D0B;">
+        <div style="padding: 8px 16px; border-bottom: 1px solid #262624; display: flex; align-items: baseline; gap: 10px;">
+          <span style="font-size: 10px; letter-spacing: 0.16em; color: #908E84;">DREAM REPORTS</span>
+          <span style="font-size: 9.5px; color: #5C5A52;">stream kind: dream_report</span>
+        </div>
+        <div style="flex: 1; overflow-y: auto;">
+          <sc-for list="{{ reports }}" as="r" hint-placeholder-count="3">
+            <div style="padding: 9px 16px; border-bottom: 1px solid #1A1A17;">
+              <div style="display: flex; gap: 10px; align-items: baseline;">
+                <span style="font-size: 10px; color: #B5B3A8; font-weight: 700;">{{ r.when }}</span>
+                <span style="font-size: 9.5px; color: #5C5A52;">{{ r.procs }}</span>
+                <span style="{{ r.errStyle }}">{{ r.errLabel }}</span>
+              </div>
+              <div style="font-size: 10px; color: #6E6C62; margin-top: 3px;">{{ r.summary }}</div>
+              <sc-if value="{{ r.hasError }}" hint-placeholder-val="{{ false }}">
+                <div style="font-size: 9.5px; color: oklch(0.7 0.14 25); margin-top: 3px; border-left: 2px solid oklch(0.62 0.19 25); padding-left: 8px;">{{ r.errText }}</div>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+
+    <sc-if value="{{ hasToast }}" hint-placeholder-val="{{ false }}">
+      <div style="position: fixed; bottom: 18px; right: 18px; border: 1px solid var(--ac, oklch(0.78 0.13 165)); background: #111110; color: var(--ac, oklch(0.78 0.13 165)); font-size: 10.5px; letter-spacing: 0.08em; padding: 8px 14px; max-width: 480px;">{{ toastText }}</div>
+    </sc-if>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+
+    this.PROCS = [
+      { name: 'consolidator', desc: 'merge redundant episodes', last: '03:10', status: 'ok', budget: '40', heavy: false },
+      { name: 'reflector', desc: 'episodes to semantic insights', last: '03:10', status: 'ok', budget: '20', heavy: false },
+      { name: 'semantic-extractor', desc: 'extract graph facts', last: '03:11', status: 'ok', budget: '60', heavy: false },
+      { name: 'curator', desc: 'salience, heat, archive, decay', last: '03:12', status: 'ok', budget: '\u2014', heavy: false },
+      { name: 'overseer', desc: 'flag substrate issues', last: '02:00', status: 'ok', budget: '25', heavy: true },
+      { name: 'associator', desc: 'link related memory records', last: '02:02', status: 'ok', budget: '15', heavy: true },
+      { name: 'review-resolver', desc: 'process review queue items', last: '02:05', status: 'ok', budget: '10', heavy: true },
+      { name: 'creator-directive-reconciler', desc: 'reconcile conflicting creator directives', last: 'jun 10', status: 'ok', budget: '5', heavy: true },
+      { name: 'ruminator', desc: 'open-question rumination', last: 'jun 10', status: 'ok', budget: '6', heavy: true },
+      { name: 'self-narrator', desc: 'autobiography and growth markers', last: 'jun 09', status: 'ok', budget: '4', heavy: true },
+      { name: 'procedural-synthesizer', desc: 'skill abstractions', last: 'jun 09', status: 'ok', budget: '5', heavy: true },
+      { name: 'belief-reviser', desc: 'invalidate, weaken, contradict', last: '02:08', status: 'error', budget: '12', heavy: true },
+      { name: 'commitment-reconciler', desc: 'reconcile conflicting commitments', last: 'jun 10', status: 'ok', budget: '5', heavy: true },
+    ];
+
+    this.state = {
+      selected: { consolidator: true, reflector: true, 'semantic-extractor': true, curator: true },
+      running: false,
+      planning: false,
+      plan: null,
+      runLog: [],
+      summary: null,
+      reverted: {},
+      toast: null,
+      mood: { v: 0.32 },
+      audits: [
+        { id: 'a_1097', process: 'consolidator', action: 'merged 3 episodes \u2192 ep_4490 (lineage kept)', when: '03:10' },
+        { id: 'a_1096', process: 'curator', action: 'archived 12 cold episodes \u00b7 decayed 84 salience scores', when: '03:12' },
+        { id: 'a_1095', process: 'belief-reviser', action: 'weakened sn_2088 confidence 0.55 \u2192 0.30', when: '02:08' },
+        { id: 'a_1094', process: 'overseer', action: 'queued review #412 (contradiction) + #418 (duplicate)', when: '02:00' },
+        { id: 'a_1093', process: 'self-narrator', action: 'opened period "consolidation" \u00b7 added growth marker', when: 'jun 09' },
+        { id: 'a_1092', process: 'semantic-extractor', action: 'added 3 nodes, 5 edges from 9 episodes', when: '03:11' },
+      ],
+      reports: [
+        { when: '03:12', procs: 'light \u00b7 4 processes', summary: '14 episodes consolidated \u00b7 3 nodes added \u00b7 12 archived \u00b7 1.8s', err: null },
+        { when: '02:08', procs: 'heavy \u00b7 9 processes', summary: '2 reviews queued \u00b7 1 belief weakened \u00b7 1 skill drafted \u00b7 14.2s', err: 'belief-reviser: llm_call timeout on sn_1733 \u2014 retried, then skipped (budget)' },
+        { when: 'jun 10 02:00', procs: 'heavy \u00b7 9 processes', summary: 'directive family reconciled \u00b7 5 associations added \u00b7 11.0s', err: null },
+      ],
+    };
+    this.timers = [];
+  }
+
+  componentWillUnmount() { this.timers.forEach((t) => clearTimeout(t)); }
+  after(ms, fn) { this.timers.push(setTimeout(fn, ms)); }
+  hue() { return 25 + (this.state.mood.v + 1) * 70; }
+
+  toast(text) {
+    clearTimeout(this._toastT);
+    this.setState({ toast: text });
+    this._toastT = setTimeout(() => this.setState({ toast: null }), 2600);
+  }
+
+  log(mark, text, right, tone) {
+    this.setState((s) => ({ runLog: [...s.runLog, { mark, text, right: right || '', tone: tone || 'plain' }].slice(-80) }));
+  }
+
+  selectedList() {
+    return this.PROCS.filter((p) => this.state.selected[p.name] === true).map((p) => p.name);
+  }
+
+  plan() {
+    const sel = this.selectedList();
+    if (sel.length === 0 || this.state.running) { this.toast('select at least one process'); return; }
+    this.setState({ planning: true, runLog: [], summary: null });
+    this.log('\u25cb', 'POST /api/dream/plan { processes: [' + sel.length + '] }', 'dry-run');
+    this.after(700, () => {
+      const planId = 'pl_' + Math.random().toString(16).slice(2, 6);
+      this.setState({
+        planning: false,
+        plan: {
+          id: planId,
+          summary: sel.join(', ') + ' \u2014 est. ' + (9 + Math.floor(Math.random() * 30)) + ' candidate changes, ' + this.PROCS.filter((p) => sel.includes(p.name) && p.heavy).length + ' heavy',
+        },
+      });
+      this.log('\u25cf', 'plan ready ' + planId, 'cached server-side', 'ok');
+    });
+  }
+
+  apply() {
+    const sel = this.selectedList();
+    if (sel.length === 0 || this.state.running) { this.toast(this.state.running ? 'run in flight' : 'select at least one process'); return; }
+    const runId = 'run_' + Math.random().toString(16).slice(2, 6);
+    this.setState({ running: true, runLog: [], summary: null });
+    this.log('\u25cb', 'POST /api/dream/apply ' + (this.state.plan ? '{ plan_id: ' + this.state.plan.id + ' }' : '{ processes }'), runId);
+
+    let acc = 300;
+    let changes = 0;
+    let errors = 0;
+    const t0 = acc;
+    sel.forEach((name) => {
+      const dur = 400 + Math.floor(Math.random() * 900);
+      this.after(acc, () => {
+        this.log('\u25b8', 'dream:process:started ' + name, 'apply');
+      });
+      acc += dur;
+      this.after(acc, () => {
+        const failed = name === 'belief-reviser' && Math.random() < 0.7;
+        const accepted = failed ? 0 : Math.floor(Math.random() * 6);
+        changes += accepted;
+        if (failed) {
+          errors += 1;
+          this.log('\u2715', 'dream:process:completed ' + name + ' \u2014 1 error (llm_call timeout, skipped)', dur + 'ms', 'err');
+        } else {
+          this.log('\u2713', 'dream:process:completed ' + name + ' \u00b7 accepted ' + accepted, dur + 'ms', 'ok');
+        }
+        if (!failed && accepted > 0) {
+          this.setState((s) => ({
+            audits: [{
+              id: 'a_' + (1098 + s.audits.length),
+              process: name,
+              action: accepted + ' change' + (accepted === 1 ? '' : 's') + ' applied \u00b7 ' + runId,
+              when: 'now',
+            }, ...s.audits],
+          }));
+        }
+      });
+      acc += 60;
+    });
+
+    this.after(acc + 80, () => {
+      const totalMs = acc - t0;
+      this.log('\u25cf', 'maintenance:tick manual \u00b7 changed=' + (changes > 0), runId, 'ok');
+      this.setState((s) => ({
+        running: false,
+        summary: { changes, errors, dur: (totalMs / 1000).toFixed(1) + 's', run: runId },
+        reports: [{
+          when: 'now', procs: 'manual \u00b7 ' + sel.length + ' processes',
+          summary: changes + ' changes \u00b7 ' + errors + ' errors \u00b7 ' + (totalMs / 1000).toFixed(1) + 's',
+          err: errors > 0 ? 'belief-reviser: llm_call timeout \u2014 retried, then skipped (budget)' : null,
+        }, ...s.reports],
+      }));
+    });
+  }
+
+  renderVals() {
+    const st = this.state;
+    const h = this.hue();
+    const ac = 'oklch(0.78 0.13 ' + h + ')';
+    const acD = 'oklch(0.78 0.13 ' + h + ' / 0.4)';
+    const red = 'oklch(0.7 0.14 25)';
+
+    const allSelected = this.PROCS.every((p) => st.selected[p.name] === true);
+
+    const processes = this.PROCS.map((p) => {
+      const on = st.selected[p.name] === true;
+      return {
+        name: p.name, desc: p.desc, lastRun: p.last, budget: p.budget,
+        status: p.status === 'ok' ? 'ok' : 'error \u00d71',
+        statusStyle: { fontSize: '10px', color: p.status === 'ok' ? acD : red, fontWeight: p.status === 'ok' ? 400 : 700 },
+        onToggle: () => this.setState((s) => ({ selected: { ...s.selected, [p.name]: !(s.selected[p.name] === true) } })),
+        rowStyle: {
+          display: 'grid', gridTemplateColumns: '26px 1.15fr 1.4fr 90px 88px 70px', gap: 0, alignItems: 'baseline',
+          padding: '7px 16px', borderBottom: '1px solid #1A1A17', cursor: 'pointer',
+          background: on ? 'oklch(0.78 0.13 ' + h + ' / 0.05)' : 'transparent',
+        },
+        boxStyle: {
+          width: '10px', height: '10px', alignSelf: 'center',
+          border: '1px solid ' + (on ? ac : '#44423B'),
+          background: on ? ac : 'transparent',
+        },
+        nameStyle: { fontSize: '11.5px', fontWeight: on ? 700 : 400, color: on ? '#E6E4DD' : '#908E84' },
+      };
+    });
+
+    const btn = (color, solid, disabled) => ({
+      padding: '6px 14px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', whiteSpace: 'nowrap',
+      border: '1px solid ' + (disabled ? '#2C2A26' : color),
+      color: disabled ? '#44423B' : solid ? '#0B0B09' : color,
+      background: disabled ? 'transparent' : solid ? color : 'transparent',
+      cursor: disabled ? 'default' : 'pointer', userSelect: 'none',
+    });
+
+    const runLog = st.runLog.map((l) => ({
+      mark: l.mark, text: l.text, right: l.right,
+      markStyle: { fontSize: '10px', width: '12px', flex: 'none', color: l.tone === 'err' ? red : l.tone === 'ok' ? ac : '#5C5A52' },
+      textStyle: { fontSize: '10px', color: l.tone === 'err' ? 'oklch(0.7 0.14 25)' : '#B5B3A8', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+    }));
+
+    const audits = st.audits.map((a) => {
+      const reverted = st.reverted[a.id] === true;
+      return {
+        id: a.id, process: a.process, action: a.action, when: a.when,
+        procStyle: { fontSize: '9px', fontWeight: 700, letterSpacing: '0.06em', color: acD, width: '170px', flex: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+        canRevert: !reverted,
+        isReverted: reverted,
+        onRevert: () => {
+          this.setState((s) => ({ reverted: { ...s.reverted, [a.id]: true } }));
+          this.toast('POST /api/dream/audit/' + a.id + '/revert (mock) \u2014 reversal protocol applied');
+        },
+        rowStyle: {
+          display: 'flex', gap: '12px', alignItems: 'baseline', padding: '7px 16px',
+          borderBottom: '1px solid #1A1A17', opacity: reverted ? 0.5 : 1,
+        },
+      };
+    });
+
+    const reports = st.reports.map((r) => ({
+      when: r.when, procs: r.procs, summary: r.summary,
+      hasError: r.err !== null,
+      errText: r.err || '',
+      errLabel: r.err === null ? 'clean' : '1 error',
+      errStyle: { fontSize: '9px', letterSpacing: '0.08em', marginLeft: 'auto', color: r.err === null ? acD : red, fontWeight: r.err === null ? 400 : 700 },
+    }));
+
+    return {
+      ac, acD,
+      pendingLabel: '7 episodes pending extraction',
+      processes,
+      selCount: this.selectedList().length,
+      selectAllLabel: allSelected ? '[ ] NONE' : '[\u2713] ALL',
+      onSelectAll: () => {
+        const next = {};
+        if (!allSelected) this.PROCS.forEach((p) => { next[p.name] = true; });
+        this.setState({ selected: next });
+      },
+      onPlan: () => this.plan(),
+      onApply: () => this.apply(),
+      planBtnStyle: btn(ac, false, st.running || st.planning),
+      applyBtnStyle: btn(ac, true, st.running),
+      runStateText: st.running ? 'IN FLIGHT \u2014 streaming dream:process:* frames' : st.planning ? 'planning\u2026' : st.summary !== null ? 'complete \u00b7 ' + st.summary.run : 'idle',
+      runStateStyle: {
+        fontSize: '10px', letterSpacing: '0.06em',
+        color: st.running ? ac : '#5C5A52',
+        fontWeight: st.running ? 700 : 400,
+        animation: st.running ? 'livePulse 1.2s infinite' : 'none',
+      },
+      hasPlan: st.plan !== null,
+      planId: st.plan ? st.plan.id : '',
+      planSummary: st.plan ? st.plan.summary : '',
+      runLog,
+      emptyLog: st.runLog.length === 0,
+      hasSummary: st.summary !== null,
+      sumChanges: st.summary ? st.summary.changes : 0,
+      sumErrors: st.summary ? st.summary.errors : 0,
+      sumErrStyle: { color: st.summary && st.summary.errors > 0 ? red : '#5C5A52', fontWeight: st.summary && st.summary.errors > 0 ? 700 : 400 },
+      sumDur: st.summary ? st.summary.dur : '',
+      sumRun: st.summary ? st.summary.run : '',
+      audits,
+      reports,
+      hasToast: st.toast !== null,
+      toastText: st.toast || '',
+    };
+  }
+}
+</script>
+</body>
+</html>
