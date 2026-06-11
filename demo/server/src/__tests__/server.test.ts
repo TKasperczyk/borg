@@ -1715,6 +1715,43 @@ describe("demo server", () => {
     });
   });
 
+  it("serves a single episode by id with episodic band serialization and returns 404 for unknown ids", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-episode-detail-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const audienceId = borg.entities.resolve("Dana");
+    const episode = await seedCorrectionEpisode(borg, clock, {
+      title: "Evidence episode",
+      narrative: "Operator described the supporting context.",
+      participants: [audienceId],
+      audienceEntityId: audienceId,
+      originAudienceEntityIds: [audienceId],
+      shared: false,
+    });
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const response = await app.request(`/api/episodes/${episode.id}`);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      episode: {
+        id: episode.id,
+        title: "Evidence episode",
+        narrative: "Operator described the supporting context.",
+        participant_refs: [{ value: audienceId, id: audienceId, label: "Dana" }],
+        origin_audience_refs: [{ value: audienceId, id: audienceId, label: "Dana" }],
+        disclosure_class: "relationship_private",
+        start_time: episode.start_time,
+        end_time: episode.end_time,
+      },
+    });
+
+    const missing = await app.request(`/api/episodes/${createEpisodeId()}`);
+
+    expect(missing.status).toBe(404);
+  });
+
   it("pages semantic memory nodes with next_cursor", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-memory-semantic-"));
     tempDirs.push(tempDir);

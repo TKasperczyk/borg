@@ -17,6 +17,7 @@ import type {
   DreamPlanResponse,
   DreamStateResponse,
   EntityRecord,
+  EpisodeDetailResponse,
   GoalPatchBody,
   IdentityResponse,
   JournalResponse,
@@ -308,6 +309,10 @@ export function fetchSemanticNode(id: string): Promise<SemanticNodeDetailRespons
 
 export function fetchSemanticEdge(id: string): Promise<SemanticEdgeDetailResponse> {
   return getJson<SemanticEdgeDetailResponse>(`/api/semantic/edges/${encodeURIComponent(id)}`);
+}
+
+export function fetchEpisode(id: string): Promise<EpisodeDetailResponse> {
+  return getJson<EpisodeDetailResponse>(`/api/episodes/${encodeURIComponent(id)}`);
 }
 
 export function invalidateSemanticEdge(id: string, reason?: string): Promise<unknown> {

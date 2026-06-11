@@ -545,6 +545,19 @@ export type SemanticGraphResponse = {
   };
 };
 
+export type LabelRef = {
+  value: string;
+  id: string | null;
+  label: string | null;
+};
+
+export type DisclosureLabel = {
+  disclosure_class?: string;
+  origin_audience_entity_ids?: string[];
+  private_to_entity_ids?: string[];
+  public_to_entity_ids?: string[];
+};
+
 export type SemanticNodeDetail = {
   id: string;
   kind: string;
@@ -557,6 +570,9 @@ export type SemanticNodeDetail = {
   status: SemanticGraphNodeStatus | "superseded";
   source_episode_ids: string[];
   source_count: number;
+  origin_audience_refs?: LabelRef[];
+  disclosure_class?: string;
+  disclosure_label?: DisclosureLabel;
   created_at: number;
   updated_at: number;
 };
@@ -573,6 +589,9 @@ export type SemanticEdgeDetail = {
   confidence: number;
   evidence_episode_ids: string[];
   source_count: number;
+  origin_audience_refs?: LabelRef[];
+  disclosure_class?: string;
+  disclosure_label?: DisclosureLabel;
   valid_from: number;
   valid_to: number | null;
   invalidated_at: number | null;
@@ -581,6 +600,30 @@ export type SemanticEdgeDetail = {
 
 export type SemanticEdgeDetailResponse = {
   edge: SemanticEdgeDetail;
+};
+
+export type EpisodeDetail = {
+  id: string;
+  title: string;
+  narrative: string;
+  participants?: string[];
+  participant_refs?: LabelRef[];
+  location?: string | null;
+  start_time: number;
+  end_time: number;
+  audience?: string | null;
+  origin_audience_refs?: LabelRef[];
+  shared?: boolean;
+  disclosure_class?: string;
+  disclosure_label?: DisclosureLabel;
+  significance?: number;
+  confidence?: number;
+  tags?: string[];
+  source_count?: number;
+};
+
+export type EpisodeDetailResponse = {
+  episode: EpisodeDetail;
 };
 
 export type ReviewKind =

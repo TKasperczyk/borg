@@ -2139,6 +2139,41 @@
   font-size: 13px;
 }
 
+.review-ref-card-content {
+  min-width: 0;
+  flex: 1;
+}
+
+.review-ref-title-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.review-disclosure-chip {
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  color: var(--text-faint);
+  font-size: 8.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.review-ref-card .review-ref-description {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 7px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.review-ref-card .review-ref-description-expanded {
+  display: block;
+}
+
 .review-ref-card p,
 .review-member-card p {
   margin: 6px 0 0;
@@ -2161,6 +2196,69 @@
 }
 
 .review-note-line {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.review-edge-line {
+  border: 1px solid var(--hairline);
+  padding: 8px 10px;
+  background: var(--panel-deep);
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+
+.review-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border: 1px solid var(--hairline);
+  padding: 10px;
+  background: var(--panel);
+}
+
+.review-evidence-head {
+  color: var(--text-faint);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.review-evidence-row {
+  border: 1px solid var(--hairline);
+  padding: 8px 9px;
+  background: var(--panel-deep);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.review-evidence-row strong {
+  font-size: 12px;
+}
+
+.review-evidence-row span {
+  float: right;
+  color: var(--text-faint);
+  font-size: 9px;
+}
+
+.review-evidence-narrative {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 5px 0 0;
+  color: var(--text-dim);
+  font-size: 10.5px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.review-evidence-narrative-expanded {
+  display: block;
+}
+
+.review-evidence-muted {
   color: var(--text-faint);
   font-size: 10px;
 }

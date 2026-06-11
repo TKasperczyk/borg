@@ -627,6 +627,14 @@ const openQuestionParamSchema = z.object({
 const reviewParamSchema = z.object({
   id: z.coerce.number().int().positive(),
 });
+const episodeIdParamSchema = z.string().transform((value, ctx): Episode["id"] => {
+  try {
+    return parseEpisodeId(value) as Episode["id"];
+  } catch {
+    ctx.addIssue({ code: "custom", message: "Invalid episode id" });
+    return z.NEVER;
+  }
+});
 
 const DEFAULT_OPEN_QUESTION_BUMP_DELTA = 0.1;
 const DEFAULT_GROWTH_MARKER_CATEGORY = "understanding";
@@ -3315,6 +3323,19 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     } catch (error) {
       mapBorgErrorToHttp(error);
     }
+  });
+
+  app.get("/api/episodes/:id", async (c) => {
+    const id = parseRequest(episodeIdParamSchema, c.req.param("id"));
+    const result = await input.borg.episodic.get(id, { crossAudience: true });
+
+    if (result === null) {
+      throw new HTTPException(404, { message: `episode ${id} not found` });
+    }
+
+    return c.json({
+      episode: mapEpisode(input.borg, result.episode, createLabelResolver(input.borg)),
+    });
   });
 
   app.get("/api/memory/bands/:id", async (c) => {

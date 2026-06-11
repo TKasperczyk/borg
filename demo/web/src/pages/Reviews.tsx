@@ -6,7 +6,9 @@ import {
   fetchCorrectionReviews,
   fetchCorrectionWhy,
   fetchCreatorDirectives,
+  fetchEpisode,
   fetchReviews,
+  fetchSemanticEdge,
   fetchSemanticNode,
   patchCorrectionReview,
   patchDreamReview,
@@ -17,9 +19,11 @@ import type {
   Commitment,
   CorrectionWhyResponse,
   CreatorDirective,
+  EpisodeDetail,
   ReviewKind,
   ReviewResolution,
   ReviewRow,
+  SemanticEdgeDetail,
   SemanticNodeDetail,
 } from "../api/types";
 import { useQuery } from "../api/useQuery";
@@ -32,8 +36,19 @@ type RefCard = {
   label: string;
   sub: string;
   evidence: string;
+  description?: string;
+  audienceLabels?: string[];
+  disclosureClass?: string;
   tag?: string;
 };
+
+type PairEvidenceResult = {
+  key: string;
+  episodes: EpisodeDetail[];
+  failed: boolean;
+};
+
+const MAX_PAIR_EVIDENCE_EPISODES = 6;
 
 const GENERIC_ACTIONS: Record<ReviewKind, ReviewResolution[]> = {
   contradiction: ["keep_both", "supersede", "invalidate", "dismiss"],
@@ -174,9 +189,58 @@ function semanticNodeIds(row: ReviewRow | null): string[] {
   if (row === null) {
     return [];
   }
-  return row.kind === "contradiction" || row.kind === "duplicate"
-    ? stringArrayField(row.refs, "node_ids")
-    : [];
+  return isNodePairReview(row) ? stringArrayField(row.refs, "node_ids") : [];
+}
+
+function isNodePairReview(row: ReviewRow): boolean {
+  return row.kind === "contradiction" || row.kind === "duplicate";
+}
+
+function nodePairEdgeId(row: ReviewRow | null): string | null {
+  if (row === null || !isNodePairReview(row)) {
+    return null;
+  }
+  return stringField(row.refs, "edge_id");
+}
+
+function orderedUnique(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
+
+function pairEvidenceEpisodeIds(input: {
+  row: ReviewRow | null;
+  nodes: Record<string, SemanticNodeDetail | null>;
+  edge: SemanticEdgeDetail | null;
+}): string[] {
+  if (input.row === null || !isNodePairReview(input.row)) {
+    return [];
+  }
+
+  const nodeIds = stringArrayField(input.row.refs, "node_ids");
+  return orderedUnique([
+    ...nodeIds.flatMap((id) => input.nodes[id]?.source_episode_ids ?? []),
+    ...(input.edge?.evidence_episode_ids ?? []),
+  ]);
+}
+
+function publicDisclosure(value: string | undefined): boolean {
+  return value === undefined || value === "public";
+}
+
+function labelRefLabels(refs: SemanticNodeDetail["origin_audience_refs"]): string[] {
+  if (refs === undefined || refs.length === 0) {
+    return [];
+  }
+  return refs.map((ref) => ref.label ?? ref.value);
 }
 
 function correctionTargetId(row: ReviewRow): string | null {
@@ -395,6 +459,8 @@ function ReviewDetail({
   const [why, setWhy] = useState<CorrectionWhyResponse | null>(null);
   const [whyLoading, setWhyLoading] = useState(false);
   const nodeQueryKey = semanticNodeIds.length === 0 ? "reviews:nodes:none" : `reviews:nodes:${semanticNodeIds.join(",")}`;
+  const edgeId = nodePairEdgeId(row);
+  const edgeQueryKey = edgeId === null ? "reviews:edge:none" : `reviews:edge:${edgeId}`;
   const nodeDetails = useQuery<Record<string, SemanticNodeDetail | null>>(nodeQueryKey, async () => {
     const entries = await Promise.all(
       semanticNodeIds.map(async (id): Promise<[string, SemanticNodeDetail | null]> => {
@@ -408,6 +474,65 @@ function ReviewDetail({
     );
     return Object.fromEntries(entries);
   });
+  const edgeDetail = useQuery<SemanticEdgeDetail | null>(edgeQueryKey, async () => {
+    if (edgeId === null) {
+      return null;
+    }
+    try {
+      return (await fetchSemanticEdge(edgeId)).edge;
+    } catch {
+      return null;
+    }
+  });
+  const currentEdge = edgeDetail.data?.id === edgeId ? edgeDetail.data : null;
+  const nodeDetailsReady =
+    semanticNodeIds.length === 0 ||
+    (nodeDetails.data !== undefined &&
+      semanticNodeIds.every((id) => Object.prototype.hasOwnProperty.call(nodeDetails.data, id)));
+  const edgeDetailsReady = edgeId === null || !edgeDetail.loading;
+  const evidenceEpisodeIds = useMemo(
+    () =>
+      nodeDetailsReady && edgeDetailsReady
+        ? pairEvidenceEpisodeIds({
+            row,
+            nodes: nodeDetails.data ?? {},
+            edge: currentEdge,
+          })
+        : [],
+    [currentEdge, edgeDetailsReady, nodeDetails.data, nodeDetailsReady, row],
+  );
+  const cappedEvidenceEpisodeIds = evidenceEpisodeIds.slice(0, MAX_PAIR_EVIDENCE_EPISODES);
+  const evidenceQueryKey =
+    cappedEvidenceEpisodeIds.length === 0
+      ? "reviews:episodes:none"
+      : `reviews:episodes:${cappedEvidenceEpisodeIds.join(",")}`;
+  const pairEvidence = useQuery<PairEvidenceResult>(evidenceQueryKey, async () => {
+    if (cappedEvidenceEpisodeIds.length === 0) {
+      return { key: evidenceQueryKey, episodes: [], failed: false };
+    }
+
+    let failed = false;
+    const episodes = await Promise.all(
+      cappedEvidenceEpisodeIds.map(async (id): Promise<EpisodeDetail | null> => {
+        try {
+          return (await fetchEpisode(id)).episode;
+        } catch {
+          failed = true;
+          return null;
+        }
+      }),
+    );
+
+    return {
+      key: evidenceQueryKey,
+      episodes: episodes.filter((episode): episode is EpisodeDetail => episode !== null),
+      failed,
+    };
+  });
+  const currentPairEvidence =
+    pairEvidence.data?.key === evidenceQueryKey
+      ? pairEvidence.data
+      : { key: evidenceQueryKey, episodes: [], failed: false };
 
   useEffect(() => {
     setNote("");
@@ -547,7 +672,11 @@ function ReviewDetail({
           onPick={chooseWinner}
           why={why}
           whyLoading={whyLoading}
+          evidence={currentPairEvidence}
+          evidenceLoading={pairEvidence.loading && evidenceEpisodeIds.length > 0}
+          evidenceOmittedCount={Math.max(0, evidenceEpisodeIds.length - MAX_PAIR_EVIDENCE_EPISODES)}
         />
+        {isNodePairReview(effectiveRow) && currentEdge !== null ? <EdgeLine edge={currentEdge} /> : null}
         {resolved ? (
           <div className="review-resolved-banner">
             ✓ resolved -- {resolutionText(effectiveRow)}
@@ -689,6 +818,9 @@ function KindBody({
   onPick,
   why,
   whyLoading,
+  evidence,
+  evidenceLoading,
+  evidenceOmittedCount,
 }: {
   row: ReviewRow;
   refCards: RefCard[];
@@ -696,6 +828,9 @@ function KindBody({
   onPick: (id: string) => void;
   why: CorrectionWhyResponse | null;
   whyLoading: boolean;
+  evidence: PairEvidenceResult;
+  evidenceLoading: boolean;
+  evidenceOmittedCount: number;
 }) {
   if (row.kind === "creator_directive_reconciliation") {
     return (
@@ -713,6 +848,9 @@ function KindBody({
     return (
       <>
         <PairCards cards={refCards} selectedId={selectedId} onPick={onPick} />
+        {isNodePairReview(row) ? (
+          <PairEvidence evidence={evidence} loading={evidenceLoading} omittedCount={evidenceOmittedCount} />
+        ) : null}
         <div className="review-note-line">{pairNote(row)}</div>
       </>
     );
@@ -743,24 +881,126 @@ function PairCards({
   selectedId: string | undefined;
   onPick: (id: string) => void;
 }) {
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
+
+  const toggle = (id: string) => {
+    onPick(id);
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
   return (
     <div className="review-pair-grid">
-      {cards.map((card) => (
-        <button
-          key={card.id}
-          className={selectedId === card.id ? "review-ref-card review-ref-card-selected" : "review-ref-card"}
-          type="button"
-          onClick={() => onPick(card.id)}
-        >
-          <span className="review-radio" />
-          <div>
-            <strong>{card.label}</strong>
-            <p>{card.sub}</p>
-            <small>{card.evidence}</small>
-          </div>
-        </button>
-      ))}
+      {cards.map((card) => {
+        const expanded = expandedIds.has(card.id);
+        return (
+          <button
+            key={card.id}
+            className={selectedId === card.id ? "review-ref-card review-ref-card-selected" : "review-ref-card"}
+            type="button"
+            onClick={() => toggle(card.id)}
+          >
+            <span className="review-radio" />
+            <div className="review-ref-card-content">
+              <span className="review-ref-title-line">
+                <strong>{card.label}</strong>
+                {card.disclosureClass === undefined ? null : (
+                  <span className="review-disclosure-chip">{card.disclosureClass}</span>
+                )}
+              </span>
+              {card.description === undefined ? null : (
+                <p
+                  className={
+                    expanded
+                      ? "review-ref-description review-ref-description-expanded"
+                      : "review-ref-description"
+                  }
+                >
+                  {card.description}
+                </p>
+              )}
+              <p>{card.sub}</p>
+              <small>{card.evidence}</small>
+              {card.audienceLabels === undefined || card.audienceLabels.length === 0 ? null : (
+                <small>origin {card.audienceLabels.join(" · ")}</small>
+              )}
+            </div>
+          </button>
+        );
+      })}
     </div>
+  );
+}
+
+function EdgeLine({ edge }: { edge: SemanticEdgeDetail }) {
+  return (
+    <div className="review-edge-line">
+      {edge.relation} edge · confidence {edge.confidence.toFixed(2)} · recorded{" "}
+      {dayLabel(new Date(edge.valid_from))}
+    </div>
+  );
+}
+
+function PairEvidence({
+  evidence,
+  loading,
+  omittedCount,
+}: {
+  evidence: PairEvidenceResult;
+  loading: boolean;
+  omittedCount: number;
+}) {
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
+
+  if (loading) {
+    return <div className="review-evidence review-evidence-muted">loading evidence...</div>;
+  }
+
+  if (evidence.failed && evidence.episodes.length === 0) {
+    return <div className="review-evidence review-evidence-muted">evidence unavailable</div>;
+  }
+
+  if (evidence.episodes.length === 0 && !evidence.failed) {
+    return null;
+  }
+
+  const toggle = (id: string) => {
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  return (
+    <section className="review-evidence">
+      <div className="review-evidence-head">EVIDENCE</div>
+      {evidence.episodes.map((episode) => {
+        const expanded = expandedIds.has(episode.id);
+        return (
+          <button className="review-evidence-row" key={episode.id} type="button" onClick={() => toggle(episode.id)}>
+            <strong>{episode.title}</strong>
+            <span>{dayLabel(new Date(episode.start_time))}</span>
+            <p className={expanded ? "review-evidence-narrative review-evidence-narrative-expanded" : "review-evidence-narrative"}>
+              {episode.narrative}
+            </p>
+          </button>
+        );
+      })}
+      {omittedCount > 0 ? <div className="review-evidence-muted">{omittedCount} more not shown</div> : null}
+      {evidence.failed ? <div className="review-evidence-muted">evidence unavailable</div> : null}
+    </section>
   );
 }
 
@@ -848,11 +1088,25 @@ function reviewRefCards(input: {
     const labels = stringArrayField(input.row.refs, "node_labels");
     return nodeIds.map((id, index) => {
       const node = input.nodes[id] ?? null;
+      const description = node?.description.trim();
+      const domain = node?.domain === null || node?.domain === undefined ? [] : [node.domain];
+      const audiences = labelRefLabels(node?.origin_audience_refs);
       return {
         id,
         label: node?.display_label ?? node?.label ?? labels[index] ?? id,
-        sub: node === null ? "semantic node" : `${node.kind} · confidence ${node.confidence.toFixed(2)} · ${node.status}`,
-        evidence: node === null ? id : `${node.source_count} sources · ${id}`,
+        sub:
+          node === null
+            ? "semantic node"
+            : [node.kind, ...domain, `confidence ${node.confidence.toFixed(2)}`, node.status].join(" · "),
+        evidence:
+          node === null
+            ? id
+            : `recorded ${dayLabel(new Date(node.created_at))} · updated ${dayLabel(
+                new Date(node.updated_at),
+              )} · ${id}`,
+        description: description === undefined || description.length === 0 ? undefined : description,
+        audienceLabels: audiences.length === 0 ? undefined : audiences,
+        disclosureClass: publicDisclosure(node?.disclosure_class) ? undefined : node?.disclosure_class,
       };
     });
   }
