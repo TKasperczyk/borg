@@ -10,6 +10,7 @@ import {
   NEUTRAL_ACCENT,
   NEUTRAL_ACCENT_BACKDROP,
   NEUTRAL_ACCENT_DIM,
+  useMood,
 } from "./mood";
 
 function stateWithMood(current_mood: ApiState["current_mood"]): ApiState {
@@ -26,6 +27,11 @@ function stateWithMood(current_mood: ApiState["current_mood"]): ApiState {
     current_mood,
     version: "0.1.0",
   };
+}
+
+function MoodProbe() {
+  const mood = useMood();
+  return <div>{mood.label}</div>;
 }
 
 describe("mood", () => {
@@ -73,6 +79,42 @@ describe("mood", () => {
         NEUTRAL_ACCENT_BACKDROP,
       );
     });
+  });
+
+  it("requests state for the active session and exposes that session mood", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      return new Response(
+        JSON.stringify(
+          stateWithMood({
+            session_id: url.includes("s_mood") ? "s_mood" : "default",
+            valence: url.includes("s_mood") ? 0.5 : -0.5,
+            arousal: 0.6,
+            updated_at: 1,
+            half_life_hours: 8,
+            recent_triggers: [],
+          }),
+        ),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    });
+
+    const { getByText } = render(
+      <StateProvider sessionId="s_mood">
+        <MoodProvider>
+          <MoodProbe />
+        </MoodProvider>
+      </StateProvider>,
+    );
+
+    await waitFor(() => expect(getByText("engaged")).toBeTruthy());
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/state?session=s_mood",
+      expect.objectContaining({ headers: expect.objectContaining({ Accept: "application/json" }) }),
+    );
   });
 
   it("labels mood buckets", () => {

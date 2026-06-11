@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Link, Route, Switch, useLocation } from "wouter";
 
 import { useLive } from "./live/useLive";
@@ -9,6 +9,8 @@ import { MindPage } from "./pages/Mind";
 import { ReviewsPage } from "./pages/Reviews";
 import { SettingsPage } from "./pages/Settings";
 import { useAppState } from "./state/app-state";
+import { StateProvider } from "./state/app-state";
+import { MoodProvider } from "./state/mood";
 
 type NavItem = {
   n: string;
@@ -40,7 +42,11 @@ function UnknownPathRedirect() {
   return null;
 }
 
-function AppShell() {
+function AppShell({
+  onActiveSessionChange,
+}: {
+  onActiveSessionChange: (sessionId: string | null) => void;
+}) {
   const [location] = useLocation();
   const { status } = useLive();
   const state = useAppState();
@@ -92,7 +98,9 @@ function AppShell() {
         <Route path="/dream" component={DreamPage} />
         <Route path="/settings" component={SettingsPage} />
         <Route path="/activity" component={ActivityPage} />
-        <Route path="/" component={ChatPage} />
+        <Route path="/">
+          <ChatPage onActiveSessionChange={onActiveSessionChange} />
+        </Route>
         <Route component={UnknownPathRedirect} />
       </Switch>
     </div>
@@ -100,5 +108,13 @@ function AppShell() {
 }
 
 export function App() {
-  return <AppShell />;
+  const [stateSessionId, setStateSessionId] = useState<string | null>(null);
+
+  return (
+    <StateProvider sessionId={stateSessionId}>
+      <MoodProvider>
+        <AppShell onActiveSessionChange={setStateSessionId} />
+      </MoodProvider>
+    </StateProvider>
+  );
 }

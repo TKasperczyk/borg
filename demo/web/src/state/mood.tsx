@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useMemo } from "react";
 
 import type { MoodState } from "../api/types";
 import { useAppState } from "./app-state";
@@ -6,6 +6,21 @@ import { useAppState } from "./app-state";
 export const NEUTRAL_ACCENT = "oklch(0.78 0.02 95)";
 export const NEUTRAL_ACCENT_DIM = "oklch(0.78 0.02 95 / 0.4)";
 export const NEUTRAL_ACCENT_BACKDROP = "oklch(0.78 0.02 95 / 0.07)";
+export const NEUTRAL_HUE = 95;
+
+export type MoodContextValue = {
+  mood: MoodState | null;
+  hue: number;
+  arousal: number;
+  label: string;
+};
+
+const MoodContext = createContext<MoodContextValue>({
+  mood: null,
+  hue: NEUTRAL_HUE,
+  arousal: 0,
+  label: "level",
+});
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -66,6 +81,15 @@ export function accentVarsForMood(mood: MoodState | null | undefined): {
 export function MoodProvider({ children }: { children: ReactNode }) {
   const state = useAppState();
   const mood = state.data?.current_mood ?? null;
+  const value = useMemo<MoodContextValue>(
+    () => ({
+      mood,
+      hue: mood === null ? NEUTRAL_HUE : moodHue(mood.valence),
+      arousal: moodArousal(mood),
+      label: mood === null ? "level" : moodLabel(mood.valence, mood.arousal),
+    }),
+    [mood],
+  );
 
   useEffect(() => {
     const vars = accentVarsForMood(mood);
@@ -81,5 +105,9 @@ export function MoodProvider({ children }: { children: ReactNode }) {
     };
   }, [mood]);
 
-  return <>{children}</>;
+  return <MoodContext.Provider value={value}>{children}</MoodContext.Provider>;
+}
+
+export function useMood(): MoodContextValue {
+  return useContext(MoodContext);
 }

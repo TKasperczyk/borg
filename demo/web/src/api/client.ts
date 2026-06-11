@@ -1,4 +1,12 @@
-import type { ApiState } from "./types";
+import type {
+  ApiState,
+  LedgerResponse,
+  SessionRecord,
+  SessionsResponse,
+  StreamResponse,
+  TurnPostResponse,
+  TurnsResponse,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -68,4 +76,34 @@ export function fetchState(session?: string): Promise<ApiState> {
 
   const suffix = params.size === 0 ? "" : `?${params.toString()}`;
   return getJson<ApiState>(`/api/state${suffix}`);
+}
+
+export function fetchSessions(): Promise<SessionsResponse> {
+  return getJson<SessionsResponse>("/api/sessions");
+}
+
+export function ensureOperatorSession(): Promise<SessionRecord> {
+  return postJson<SessionRecord>("/api/sessions/operator", {});
+}
+
+export function fetchStream(session: string, limit = 100): Promise<StreamResponse> {
+  const params = new URLSearchParams({ session, limit: String(limit) });
+  return getJson<StreamResponse>(`/api/stream?${params.toString()}`);
+}
+
+export function fetchTurns(session: string, limit = 100): Promise<TurnsResponse> {
+  const params = new URLSearchParams({ session, limit: String(limit) });
+  return getJson<TurnsResponse>(`/api/turns?${params.toString()}`);
+}
+
+export function fetchLedger(turnId: string): Promise<LedgerResponse> {
+  return getJson<LedgerResponse>(`/api/turns/${encodeURIComponent(turnId)}/ledger`);
+}
+
+export function postTurn(input: {
+  message: string;
+  external_message_id: string;
+  session: string;
+}): Promise<TurnPostResponse> {
+  return postJson<TurnPostResponse>("/api/turn", input);
 }

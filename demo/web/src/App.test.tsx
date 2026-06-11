@@ -4,8 +4,6 @@ import { installMockWebSocket } from "./__tests__/mock-websocket";
 import { App } from "./App";
 import type { ApiState } from "./api/types";
 import { LiveProvider } from "./live/useLive";
-import { StateProvider } from "./state/app-state";
-import { MoodProvider } from "./state/mood";
 
 function mockState(): ApiState {
   return {
@@ -42,11 +40,7 @@ function renderApp(path = "/") {
 
   return render(
     <LiveProvider>
-      <StateProvider>
-        <MoodProvider>
-          <App />
-        </MoodProvider>
-      </StateProvider>
+      <App />
     </LiveProvider>,
   );
 }

@@ -13,8 +13,14 @@ type StateQuery = {
 
 const StateContext = createContext<StateQuery | null>(null);
 
-export function StateProvider({ children }: { children: ReactNode }) {
-  const state = useQuery("state", () => fetchState());
+export function StateProvider({
+  children,
+  sessionId = null,
+}: {
+  children: ReactNode;
+  sessionId?: string | null;
+}) {
+  const state = useQuery(`state:${sessionId ?? ""}`, () => fetchState(sessionId ?? undefined));
   return <StateContext.Provider value={state}>{children}</StateContext.Provider>;
 }
 
