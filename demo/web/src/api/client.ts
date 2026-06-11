@@ -2,6 +2,8 @@ import type {
   AdminResetResponse,
   ApiState,
   AssembledPromptResponse,
+  ActivityResponse,
+  AutonomyStateResponse,
   BandDetailResponse,
   Commitment,
   CommitmentsResponse,
@@ -17,6 +19,7 @@ import type {
   EntityRecord,
   GoalPatchBody,
   IdentityResponse,
+  JournalResponse,
   LedgerResponse,
   MaintenanceAuditRow,
   MemoryBandId,
@@ -186,6 +189,23 @@ export function fetchStream(session: string, limit = 100): Promise<StreamRespons
 export function fetchTurns(session: string, limit = 100): Promise<TurnsResponse> {
   const params = new URLSearchParams({ session, limit: String(limit) });
   return getJson<TurnsResponse>(`/api/turns?${params.toString()}`);
+}
+
+export function fetchActivity(day?: string): Promise<ActivityResponse> {
+  const params = new URLSearchParams();
+  if (day !== undefined) {
+    params.set("day", day);
+  }
+  const suffix = params.size === 0 ? "" : `?${params.toString()}`;
+  return getJson<ActivityResponse>(`/api/activity${suffix}`);
+}
+
+export function fetchAutonomyState(): Promise<AutonomyStateResponse> {
+  return getJson<AutonomyStateResponse>("/api/autonomy");
+}
+
+export function fetchJournal(limit = 10): Promise<JournalResponse> {
+  return getJson<JournalResponse>(`/api/journal?limit=${limit}`);
 }
 
 export function fetchLedger(turnId: string): Promise<LedgerResponse> {

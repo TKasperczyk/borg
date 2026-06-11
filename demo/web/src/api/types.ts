@@ -128,6 +128,122 @@ export type TurnsResponse = {
   next_cursor: string | null;
 };
 
+export type ActivityOrigin = "user" | "autonomous" | "dream";
+
+export type ActivityDigest = {
+  turns: number;
+  autonomous_wakes: number;
+  emissions: number;
+  silences: number;
+  observations: number;
+  suppressions: number;
+  dream_changes: number;
+  journal_notes: number;
+};
+
+export type ActivityTurnRow = {
+  id: string;
+  kind: "turn";
+  started_at: number;
+  session_id: string;
+  session_label: string | null;
+  origin: "user" | "autonomous";
+  trigger: string | null;
+  outcome: TurnHistoryOutcome;
+  suppression_reason: string | null;
+  duration_ms: number | null;
+  excerpt: string | null;
+  turn_id: string;
+};
+
+export type ActivityDreamRow = {
+  id: string;
+  kind: "dream";
+  started_at: number;
+  session_id: string;
+  session_label: string | null;
+  origin: "dream";
+  trigger: string | null;
+  outcome: "dream";
+  suppression_reason: null;
+  duration_ms: number | null;
+  excerpt: string | null;
+  turn_id: null;
+  dream: {
+    run_id: string;
+    process_count: number;
+    changes: number;
+    errors: number;
+  };
+};
+
+export type ActivityRow = ActivityTurnRow | ActivityDreamRow;
+
+export type ActivityResponse = {
+  day: string;
+  days: string[];
+  rows: ActivityRow[];
+  truncated: boolean;
+  digest: ActivityDigest;
+};
+
+export type AutonomyWakeSource = {
+  name: string;
+  enabled: boolean | null;
+  wake_source_type: "trigger" | "condition" | null;
+  source_category: "contemplative" | "operational" | null;
+  last_fired: number | null;
+  wake_count: number;
+};
+
+export type AutonomyWakeRecord = {
+  id: string;
+  ts: number;
+  trigger_name: string;
+  condition_name: string | null;
+  session_id: string | null;
+  session_label: string | null;
+  wake_source_type: "trigger" | "condition";
+  source_category: "contemplative" | "operational";
+};
+
+export type AutonomyStateResponse = {
+  scheduler: {
+    enabled: boolean;
+  };
+  wake_sources: AutonomyWakeSource[];
+  wake_budget: {
+    used: number;
+    limit: number;
+    window_ms: number;
+  } | null;
+  self_scheduled_wakes: Array<{
+    id: string;
+    due_at: number;
+    note: string;
+    created_at: number;
+    status: string;
+  }>;
+  can_cancel_wakes: boolean;
+  recent_wakes: AutonomyWakeRecord[];
+};
+
+export type JournalEntry = {
+  id: number;
+  self_entity_id: string;
+  self_label: string | null;
+  text: string;
+  disclosure_class: "self_private";
+  created_at: number;
+  updated_at: number;
+  source_turn_id: string | null;
+  marker_stream_entry_id: string | null;
+};
+
+export type JournalResponse = {
+  entries: JournalEntry[];
+};
+
 export type EvidenceLedgerEntry = {
   id: string;
   source_type?: string;

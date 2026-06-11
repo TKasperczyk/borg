@@ -39,6 +39,7 @@ import type { Episode, EpisodicRepository } from "../../../../src/memory/episodi
 import type { CreatorDirectiveRepository } from "../../../../src/memory/creator-directives/index.js";
 import type { RelationalSlotRepository } from "../../../../src/memory/relational-slots/repository.js";
 import type { ReviewQueueRepository } from "../../../../src/memory/review-queue/review-queue.js";
+import type { TrainOfThoughtRepository } from "../../../../src/memory/train-of-thought/index.js";
 import { TestEmbeddingClient, createTestConfig } from "../../../../src/offline/test-support.js";
 import type { AuditLog } from "../../../../src/offline/audit-log.js";
 import type { StreamWriter } from "../../../../src/stream/index.js";
@@ -67,6 +68,7 @@ type BorgTestInternals = {
     episodicRepository: EpisodicRepository;
     relationalSlotRepository: RelationalSlotRepository;
     reviewQueueRepository: ReviewQueueRepository;
+    trainOfThoughtRepository: TrainOfThoughtRepository;
   };
 };
 
@@ -368,6 +370,13 @@ function responseToSingleSource(entry: StreamEntry) {
     source_entry_ids: [entry.id],
     count: 1,
   };
+}
+
+function localDayString(ts: number): string {
+  const date = new Date(ts);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate(),
+  ).padStart(2, "0")}`;
 }
 
 async function seedCorrectionEpisode(
@@ -3572,6 +3581,360 @@ describe("demo server", () => {
         },
       ],
       next_cursor: null,
+    });
+  });
+
+  it("serves a day-filtered cross-session activity feed with structural origins and digest counts", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const internal = borg as unknown as BorgTestInternals;
+    const customSessionId = createSessionId();
+
+    borg.sessions.ensure({
+      session_id: customSessionId,
+      source_type: "demo",
+      label: "autonomy lane",
+      audience_label: "self",
+      conversation_kind: "demo",
+    });
+
+    const userSource = await borg.stream.append({
+      kind: "user_msg",
+      content: "user source",
+      turn_id: "turn_activity_user",
+      audience: "Alice",
+    });
+    clock.advance(10);
+    await borg.stream.append({
+      kind: "agent_msg",
+      content: "persisted emitted response",
+      turn_id: "turn_activity_user",
+      audience: "Alice",
+      response_to: responseToSingleSource(userSource),
+    });
+
+    clock.advance(10);
+    const autoSource = await borg.stream.append(
+      {
+        kind: "user_msg",
+        content: "autonomous source",
+        turn_id: "turn_activity_auto",
+        audience: "self",
+      },
+      { session: customSessionId },
+    );
+    clock.advance(10);
+    const autoResult = await borg.stream.append(
+      {
+        kind: "agent_suppressed",
+        content: { reason: "finalizer_no_output" },
+        turn_id: "turn_activity_auto",
+        audience: "self",
+        response_to: responseToSingleSource(autoSource),
+      },
+      { session: customSessionId },
+    );
+    await borg.stream.append({
+      kind: "internal_event",
+      content: {
+        kind: "autonomous_action",
+        trigger: "scheduled_reflection",
+        outcome_summary: "No output.",
+        turn_result_id: autoResult.id,
+        ts: clock.now(),
+      },
+    });
+
+    clock.advance(10);
+    await borg.stream.append({
+      kind: "dream_report",
+      content: {
+        run_id: createMaintenanceRunId(),
+        processes: ["belief-reviser", "self-narrator"],
+        dry_run: false,
+        planned_at: clock.now(),
+        changes: 3,
+        tokens_used: 120,
+        errors: [],
+        notes: ["summarized the overnight maintenance run"],
+      },
+    });
+    internal.deps.trainOfThoughtRepository.append({
+      text: "private note from autonomous reflection",
+      selfEntityId: borg.entities.resolve("self", {
+        kind: "self",
+        provenance: "assistant_seeded",
+      }),
+      sourceTurnId: "turn_activity_auto",
+      now: clock.now(),
+    });
+
+    const day = localDayString(userSource.timestamp);
+    const response = await app.request(`/api/activity?day=${day}`);
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      days: string[];
+      truncated: boolean;
+      rows: Array<{
+        id: string;
+        kind: string;
+        turn_id: string | null;
+        session_label: string | null;
+        origin: string;
+        trigger: string | null;
+        outcome: string;
+        excerpt: string | null;
+        dream?: { process_count: number; changes: number; errors: number };
+      }>;
+      digest: Record<string, number>;
+    };
+
+    expect(body.days).toContain(day);
+    expect(body.truncated).toBe(false);
+    expect(body.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "turn:default:turn_activity_user",
+          kind: "turn",
+          turn_id: "turn_activity_user",
+          origin: "user",
+          outcome: "emitted",
+          excerpt: "persisted emitted response",
+        }),
+        expect.objectContaining({
+          id: `turn:${customSessionId}:turn_activity_auto`,
+          kind: "turn",
+          turn_id: "turn_activity_auto",
+          session_label: "autonomy lane",
+          origin: "autonomous",
+          trigger: "scheduled_reflection",
+          outcome: "deliberate-silence",
+          excerpt: "finalizer_no_output",
+        }),
+        expect.objectContaining({
+          kind: "dream",
+          origin: "dream",
+          dream: expect.objectContaining({ process_count: 2, changes: 3, errors: 0 }),
+        }),
+      ]),
+    );
+    expect(body.digest).toMatchObject({
+      turns: 2,
+      autonomous_wakes: 1,
+      emissions: 1,
+      silences: 1,
+      observations: 0,
+      suppressions: 0,
+      dream_changes: 3,
+      journal_notes: 1,
+    });
+
+    const emptyDay = localDayString(userSource.timestamp - 24 * 60 * 60 * 1_000);
+    const emptyResponse = await app.request(`/api/activity?day=${emptyDay}`);
+    expect(emptyResponse.status).toBe(200);
+    const emptyBody = (await emptyResponse.json()) as {
+      rows: unknown[];
+      digest: Record<string, number>;
+    };
+    expect(emptyBody.rows).toEqual([]);
+    expect(emptyBody.digest.turns).toBe(0);
+    expect(emptyBody.digest.journal_notes).toBe(0);
+  });
+
+  it("keeps activity rows isolated when sessions reuse the same turn id", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const customSessionId = createSessionId();
+
+    borg.sessions.ensure({
+      session_id: customSessionId,
+      source_type: "demo",
+      label: "collision lane",
+      audience_label: "self",
+      conversation_kind: "demo",
+    });
+
+    const defaultSource = await borg.stream.append({
+      kind: "user_msg",
+      content: "default source",
+      turn_id: "turn_collision",
+    });
+    const defaultResult = await borg.stream.append({
+      kind: "agent_msg",
+      content: "default response",
+      turn_id: "turn_collision",
+      response_to: responseToSingleSource(defaultSource),
+    });
+
+    clock.advance(10);
+    const customSource = await borg.stream.append(
+      {
+        kind: "user_msg",
+        content: "custom source",
+        turn_id: "turn_collision",
+      },
+      { session: customSessionId },
+    );
+    const customResult = await borg.stream.append(
+      {
+        kind: "agent_msg",
+        content: "custom autonomous response",
+        turn_id: "turn_collision",
+        response_to: responseToSingleSource(customSource),
+      },
+      { session: customSessionId },
+    );
+    await borg.stream.append({
+      kind: "internal_event",
+      content: {
+        kind: "autonomous_action",
+        trigger: "goal_followup_due",
+        outcome_summary: "Answered.",
+        turn_result_id: customResult.id,
+        ts: clock.now(),
+      },
+    });
+
+    const response = await app.request(`/api/activity?day=${localDayString(defaultResult.timestamp)}`);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      rows: Array<{ id: string; origin: string; trigger: string | null; excerpt: string | null }>;
+    };
+
+    expect(body.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "turn:default:turn_collision",
+          origin: "user",
+          trigger: null,
+          excerpt: "default response",
+        }),
+        expect.objectContaining({
+          id: `turn:${customSessionId}:turn_collision`,
+          origin: "autonomous",
+          trigger: "goal_followup_due",
+          excerpt: "custom autonomous response",
+        }),
+      ]),
+    );
+  });
+
+  it("caps activity rows for a day and marks the response truncated", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    let firstSource: Awaited<ReturnType<typeof borg.stream.append>> | null = null;
+
+    for (let index = 0; index < 205; index += 1) {
+      const source = await borg.stream.append({
+        kind: "user_msg",
+        content: `source ${index}`,
+        turn_id: `turn_activity_cap_${index}`,
+      });
+      firstSource ??= source;
+      await borg.stream.append({
+        kind: "agent_msg",
+        content: `response ${index}`,
+        turn_id: `turn_activity_cap_${index}`,
+        response_to: responseToSingleSource(source),
+      });
+      clock.advance(1);
+    }
+
+    expect(firstSource).not.toBeNull();
+    const response = await app.request(`/api/activity?day=${localDayString(firstSource!.timestamp)}`);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { rows: unknown[]; truncated: boolean };
+
+    expect(body.rows).toHaveLength(200);
+    expect(body.truncated).toBe(true);
+  });
+
+  it("serves read-only autonomy state from public scheduler and wake history facades", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    borg.autonomy.wakes.record({
+      trigger_name: "scheduled_reflection",
+      session_id: DEFAULT_SESSION_ID,
+      wake_source_type: "trigger",
+      source_category: "contemplative",
+    });
+
+    const response = await app.request("/api/autonomy");
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      scheduler: { enabled: true },
+      wake_budget: null,
+      can_cancel_wakes: false,
+      self_scheduled_wakes: [],
+      wake_sources: expect.arrayContaining([
+        expect.objectContaining({
+          name: "scheduled_reflection",
+          enabled: null,
+          wake_source_type: "trigger",
+          source_category: "contemplative",
+          wake_count: 1,
+        }),
+      ]),
+      recent_wakes: [
+        expect.objectContaining({
+          trigger_name: "scheduled_reflection",
+          session_id: DEFAULT_SESSION_ID,
+        }),
+      ],
+    });
+
+    const cancel = await app.request("/api/autonomy/wakes/autw_missing/cancel", {
+      method: "POST",
+    });
+    expect(cancel.status).toBe(404);
+  });
+
+  it("serves train-of-thought journal entries with labels", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const internal = borg as unknown as BorgTestInternals;
+    const selfEntityId = borg.entities.resolve("self", {
+      kind: "self",
+      provenance: "assistant_seeded",
+    });
+
+    internal.deps.trainOfThoughtRepository.append({
+      text: "journal entry visible through facade",
+      selfEntityId,
+      sourceTurnId: "turn_journal",
+      now: clock.now(),
+    });
+
+    const response = await app.request("/api/journal?limit=5");
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      entries: [
+        expect.objectContaining({
+          text: "journal entry visible through facade",
+          disclosure_class: "self_private",
+          source_turn_id: "turn_journal",
+          self_label: "self",
+        }),
+      ],
     });
   });
 

@@ -11,6 +11,7 @@ import {
 
 import type { LiveFrame, LiveFrameType } from "../api/types";
 import { invalidateQueries } from "../api/useQuery";
+import { PhaseDurationCache, type CachedTurnPhaseDurations } from "./phaseCache";
 
 export type LiveStatus = "connecting" | "open" | "closed";
 type LiveFrameHandler = (frame: LiveFrame) => void;
@@ -22,6 +23,8 @@ type LiveContextValue = {
   subscribeSession: (sessionId: string) => void;
   unsubscribeSession: (sessionId: string) => void;
   onFrame: (type: FrameHandlerKey, handler: LiveFrameHandler) => () => void;
+  phaseCacheVersion: number;
+  getTurnPhaseDurations: (turnId: string) => CachedTurnPhaseDurations | null;
 };
 
 const LiveContext = createContext<LiveContextValue | null>(null);
@@ -31,6 +34,8 @@ const INVALIDATE_BY_FRAME: Partial<Record<LiveFrameType, string[]>> = {
     "state",
     "turns",
     "stream",
+    "activity",
+    "autonomy",
     "identity",
     "bands",
     "graph",
@@ -39,9 +44,11 @@ const INVALIDATE_BY_FRAME: Partial<Record<LiveFrameType, string[]>> = {
     "reviews",
   ],
   "stream:append": ["stream", "turns"],
-  "maintenance:tick": ["state", "dream", "reviews"],
+  "maintenance:tick": ["state", "dream", "reviews", "activity", "autonomy"],
   "dream:process:completed": [
     "dream",
+    "activity",
+    "autonomy",
     "identity",
     "bands",
     "graph",
@@ -82,6 +89,8 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   const subscriptionsRef = useRef(new Map<string, number>());
   const handlersRef = useRef(new Map<FrameHandlerKey, Set<LiveFrameHandler>>());
   const invalidationTimersRef = useRef(new Map<string, number>());
+  const phaseCacheRef = useRef(new PhaseDurationCache(100));
+  const [phaseCacheVersion, setPhaseCacheVersion] = useState(0);
 
   const sendJson = useCallback((payload: unknown) => {
     const socket = socketRef.current;
@@ -106,6 +115,10 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 
   const dispatchFrame = useCallback(
     (frame: LiveFrame) => {
+      if (phaseCacheRef.current.apply(frame)) {
+        setPhaseCacheVersion((version) => version + 1);
+      }
+
       const prefixes = INVALIDATE_BY_FRAME[frame.type] ?? [];
       for (const prefix of prefixes) {
         debounceInvalidation(prefix);
@@ -264,6 +277,10 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  const getTurnPhaseDurations = useCallback((turnId: string) => {
+    return phaseCacheRef.current.get(turnId);
+  }, []);
+
   const value = useMemo<LiveContextValue>(
     () => ({
       status,
@@ -271,8 +288,18 @@ export function LiveProvider({ children }: { children: ReactNode }) {
       subscribeSession,
       unsubscribeSession,
       onFrame,
+      phaseCacheVersion,
+      getTurnPhaseDurations,
     }),
-    [onFrame, sendJson, status, subscribeSession, unsubscribeSession],
+    [
+      getTurnPhaseDurations,
+      onFrame,
+      phaseCacheVersion,
+      sendJson,
+      status,
+      subscribeSession,
+      unsubscribeSession,
+    ],
   );
 
   return <LiveContext.Provider value={value}>{children}</LiveContext.Provider>;

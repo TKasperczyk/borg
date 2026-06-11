@@ -7,6 +7,7 @@ import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import {
   BorgError,
+  AUTONOMY_WAKE_SOURCE_NAMES,
   COMMITMENT_KINDS,
   DEFAULT_SESSION_ID,
   OFFLINE_PROCESS_NAMES,
@@ -18,6 +19,7 @@ import {
   classifySuppressionReason,
   memoryDisclosureLabelFromEpisodeAccess,
   type AttachmentId,
+  type AutonomyWakeRecord,
   type Borg,
   type CommitmentEnforcementClass,
   type CommitmentRecord,
@@ -169,6 +171,22 @@ const turnHistoryQuerySchema = z.object({
       return parsed;
     }),
 });
+
+const dayQuerySchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, { message: "day must be YYYY-MM-DD" });
+
+const activityQuerySchema = z
+  .object({
+    day: dayQuerySchema.optional(),
+  })
+  .strict();
+
+const journalQuerySchema = z
+  .object({
+    limit: limitSchema.default(10),
+  })
+  .strict();
 
 const audienceQuerySchema = z.object({
   audience: z.string().min(1).optional(),
@@ -1595,6 +1613,380 @@ function streamDisplayContent(entry: StreamEntry): unknown | undefined {
   return body.length === 0 ? undefined : body;
 }
 
+type SerializedStreamEntry = ReturnType<typeof serializeStreamEntries>[number];
+type JournalEntryForActivity = Awaited<ReturnType<Borg["self"]["journal"]["list"]>>[number];
+type AutonomousActionEntry = SerializedStreamEntry & {
+  content: {
+    kind: "autonomous_action";
+    trigger?: unknown;
+    outcome_summary?: unknown;
+    turn_result_id?: unknown;
+    ts?: unknown;
+  };
+};
+type ActivityOrigin = "user" | "autonomous" | "dream";
+type ActivityTurnRow = {
+  id: string;
+  kind: "turn";
+  started_at: number;
+  session_id: string;
+  session_label: string | null;
+  origin: Exclude<ActivityOrigin, "dream">;
+  trigger: string | null;
+  outcome: TurnHistoryOutcomeClass;
+  suppression_reason: string | null;
+  duration_ms: number | null;
+  excerpt: string | null;
+  turn_id: string;
+};
+type ActivityDreamRow = {
+  id: string;
+  kind: "dream";
+  started_at: number;
+  session_id: string;
+  session_label: string | null;
+  origin: "dream";
+  trigger: string | null;
+  outcome: "dream";
+  suppression_reason: null;
+  duration_ms: number | null;
+  excerpt: string | null;
+  turn_id: null;
+  dream: {
+    run_id: string;
+    process_count: number;
+    changes: number;
+    errors: number;
+  };
+};
+type ActivityRow = ActivityTurnRow | ActivityDreamRow;
+
+const ACTIVITY_SESSION_LIMIT = 200;
+const ACTIVITY_SESSION_TAIL_LIMIT = 800;
+const ACTIVITY_DAY_ROW_LIMIT = 200;
+const ACTIVITY_AVAILABLE_DAY_LIMIT = 7;
+
+function localDayString(ts = Date.now()): string {
+  const date = new Date(ts);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function dayBounds(day: string): { start: number; end: number } {
+  const [yearRaw, monthRaw, dayRaw] = day.split("-");
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  const date = Number(dayRaw);
+  const start = new Date(year, month - 1, date).getTime();
+  return {
+    start,
+    end: new Date(year, month - 1, date + 1).getTime(),
+  };
+}
+
+function conciseText(value: string | null | undefined, maxLength = 200): string | null {
+  const trimmed = value?.trim();
+  if (trimmed === undefined || trimmed.length === 0) {
+    return null;
+  }
+
+  return trimmed.length <= maxLength ? trimmed : trimmed.slice(0, maxLength);
+}
+
+function stringContent(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function persistedEntryExcerpt(
+  entry: SerializedStreamEntry | undefined,
+  fallbackReason: string | null,
+): string | null {
+  if (entry === undefined) {
+    return conciseText(fallbackReason);
+  }
+
+  if (entry.kind === "agent_msg") {
+    return conciseText(stringContent(entry.content));
+  }
+
+  if (entry.kind === "agent_suppressed" || entry.kind === "agent_observed") {
+    return conciseText(contentString(entry.content, "reason") ?? fallbackReason);
+  }
+
+  return conciseText(stringContent(entry.display_content) ?? stringContent(entry.content));
+}
+
+function isAutonomousActionEntry(
+  entry: SerializedStreamEntry,
+): entry is AutonomousActionEntry {
+  return (
+    entry.kind === "internal_event" &&
+    isRecord(entry.content) &&
+    entry.content.kind === "autonomous_action"
+  );
+}
+
+function activityRecentEntries(borg: Borg): SerializedStreamEntry[] {
+  const sessions = borg.sessions.list({ limit: ACTIVITY_SESSION_LIMIT });
+  const entries: StreamEntry[] = [];
+  const seen = new Set<string>();
+
+  for (const session of sessions) {
+    for (const entry of borg.stream.tail(ACTIVITY_SESSION_TAIL_LIMIT, { session: session.session_id })) {
+      if (seen.has(entry.id)) {
+        continue;
+      }
+
+      seen.add(entry.id);
+      entries.push(entry);
+    }
+  }
+
+  return serializeStreamEntries(borg, entries);
+}
+
+function activityTurnKey(sessionId: string, turnId: string): string {
+  return `${sessionId}\u0000${turnId}`;
+}
+
+function activitySupportEntriesForAnchor(
+  entry: SerializedStreamEntry,
+  turnId: string,
+  sources: {
+    byId: Map<string, SerializedStreamEntry>;
+    bySessionTurnId: Map<string, SerializedStreamEntry[]>;
+  },
+): SerializedStreamEntry[] {
+  const byId = sourceEntryIds(entry)
+    .map((sourceEntryId) => sources.byId.get(sourceEntryId))
+    .filter((source): source is SerializedStreamEntry => source !== undefined);
+  const byTurn = sources.bySessionTurnId.get(activityTurnKey(entry.session_id, turnId)) ?? [];
+  const unique = new Map<string, SerializedStreamEntry>();
+
+  for (const source of [...byId, ...byTurn]) {
+    if (source.id !== entry.id) {
+      unique.set(source.id, source);
+    }
+  }
+
+  return [...unique.values()].sort((left, right) => left.timestamp - right.timestamp);
+}
+
+function activityTurnRows(entries: readonly SerializedStreamEntry[]): ActivityTurnRow[] {
+  const bySessionTurnId = new Map<string, SerializedStreamEntry[]>();
+  const byId = new Map<string, SerializedStreamEntry>();
+  const autonomousActionByResultEntryId = new Map<string, AutonomousActionEntry>();
+
+  for (const entry of entries) {
+    byId.set(entry.id, entry);
+
+    if (typeof entry.turn_id === "string" && entry.turn_id.length > 0) {
+      const key = activityTurnKey(entry.session_id, entry.turn_id);
+      const bucket = bySessionTurnId.get(key) ?? [];
+      bucket.push(entry);
+      bySessionTurnId.set(key, bucket);
+    }
+
+    if (isAutonomousActionEntry(entry) && typeof entry.content.turn_result_id === "string") {
+      autonomousActionByResultEntryId.set(entry.content.turn_result_id, entry);
+    }
+  }
+
+  const rows: ActivityTurnRow[] = [];
+  const seenAnchors = new Set<string>();
+  const sources = { byId, bySessionTurnId };
+
+  for (const entry of entries) {
+    if (!isTurnHistoryAnchorEntry(entry) || seenAnchors.has(entry.id)) {
+      continue;
+    }
+
+    seenAnchors.add(entry.id);
+    const turnId = turnIdFromHistoryAnchor(entry);
+    if (turnId === null) {
+      continue;
+    }
+
+    const terminal = terminalOutcome(entry);
+    const outcome =
+      terminal === null ? { outcome: "failed" as const, suppressionReason: null } : terminal;
+    const supportEntries = activitySupportEntriesForAnchor(entry, turnId, sources);
+    const startedAt = supportEntries.reduce(
+      (earliest, source) => Math.min(earliest, source.timestamp),
+      entry.timestamp,
+    );
+    const terminalEntry = isDemoTerminalEntry(entry) ? entry : undefined;
+    const autonomousAction =
+      terminalEntry === undefined ? undefined : autonomousActionByResultEntryId.get(terminalEntry.id);
+    const trigger =
+      autonomousAction !== undefined && typeof autonomousAction.content.trigger === "string"
+        ? autonomousAction.content.trigger
+        : null;
+
+    rows.push({
+      id: `turn:${entry.session_id}:${turnId}`,
+      kind: "turn",
+      started_at: startedAt,
+      session_id: entry.session_id,
+      session_label: entry.session_label,
+      origin: autonomousAction === undefined ? "user" : "autonomous",
+      trigger,
+      outcome: outcome.outcome,
+      suppression_reason: outcome.suppressionReason,
+      duration_ms: null,
+      excerpt: persistedEntryExcerpt(terminalEntry, outcome.suppressionReason),
+      turn_id: turnId,
+    });
+  }
+
+  return rows;
+}
+
+function activityDreamRows(entries: readonly SerializedStreamEntry[]): ActivityDreamRow[] {
+  return entries.flatMap((entry) => {
+    const report = mapDreamReport(entry);
+    if (report === null) {
+      return [];
+    }
+
+    return [
+      {
+        id: `dream:${entry.id}`,
+        kind: "dream" as const,
+        started_at: entry.timestamp,
+        session_id: entry.session_id,
+        session_label: entry.session_label,
+        origin: "dream" as const,
+        trigger: null,
+        outcome: "dream" as const,
+        suppression_reason: null,
+        duration_ms: null,
+        excerpt: conciseText(report.notes[0]),
+        turn_id: null,
+        dream: {
+          run_id: report.run_id,
+          process_count: report.processes.length,
+          changes: report.changes,
+          errors: report.errors.length,
+        },
+      },
+    ];
+  });
+}
+
+function journalRowsForDay(
+  journalEntries: readonly JournalEntryForActivity[],
+  day: string,
+): JournalEntryForActivity[] {
+  return journalEntries.filter((entry) => localDayString(entry.created_at) === day);
+}
+
+function activityDigest(rows: readonly ActivityRow[], journalEntries: readonly JournalEntryForActivity[]) {
+  return {
+    turns: rows.filter((row) => row.kind === "turn").length,
+    autonomous_wakes: rows.filter((row) => row.origin === "autonomous").length,
+    emissions: rows.filter((row) => row.kind === "turn" && row.outcome === "emitted").length,
+    silences: rows.filter((row) => row.kind === "turn" && row.outcome === "deliberate-silence").length,
+    observations: rows.filter((row) => row.kind === "turn" && row.outcome === "observed").length,
+    suppressions: rows.filter(
+      (row) =>
+        row.kind === "turn" &&
+        (row.outcome === "guard-blocked" ||
+          row.outcome === "emission-failed" ||
+          row.outcome === "unknown"),
+    ).length,
+    dream_changes: rows.reduce(
+      (sum, row) => sum + (row.kind === "dream" ? row.dream.changes : 0),
+      0,
+    ),
+    journal_notes: journalEntries.length,
+  };
+}
+
+function activityFeed(borg: Borg, requestedDay?: string) {
+  const selectedDay = requestedDay ?? localDayString();
+  const bounds = dayBounds(selectedDay);
+  const entries = activityRecentEntries(borg);
+  const allRows = [...activityTurnRows(entries), ...activityDreamRows(entries)].sort(
+    (left, right) => right.started_at - left.started_at,
+  );
+  const days = [...new Set(allRows.map((row) => localDayString(row.started_at)))]
+    .sort((left, right) => right.localeCompare(left))
+    .slice(0, ACTIVITY_AVAILABLE_DAY_LIMIT);
+  const dayRows = allRows.filter(
+    (row) => row.started_at >= bounds.start && row.started_at < bounds.end,
+  );
+  const rows = dayRows.slice(0, ACTIVITY_DAY_ROW_LIMIT);
+  const journalEntries = journalRowsForDay(borg.self.journal.list({ limit: 500 }), selectedDay);
+
+  return {
+    day: selectedDay,
+    days,
+    rows,
+    truncated: dayRows.length > rows.length,
+    digest: activityDigest(rows, journalEntries),
+  };
+}
+
+function mapJournalEntry(borg: Borg, entry: JournalEntryForActivity) {
+  return {
+    ...entry,
+    self_label: entityLabel(borg, entry.self_entity_id),
+  };
+}
+
+function mapAutonomyWake(borg: Borg, wake: AutonomyWakeRecord) {
+  return {
+    id: wake.id,
+    ts: wake.ts,
+    trigger_name: wake.trigger_name,
+    condition_name: wake.condition_name,
+    session_id: wake.session_id,
+    session_label: wake.session_id === null ? null : borg.sessions.get(wake.session_id)?.label ?? null,
+    wake_source_type: wake.wake_source_type,
+    source_category: wake.source_category,
+  };
+}
+
+function autonomyState(borg: Borg) {
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1_000;
+  const recentWakes = borg.autonomy.wakes.listSince(since, 100);
+  const latestByName = new Map<string, AutonomyWakeRecord>();
+  const countsByName = new Map<string, number>();
+
+  for (const wake of recentWakes) {
+    countsByName.set(wake.trigger_name, (countsByName.get(wake.trigger_name) ?? 0) + 1);
+    const current = latestByName.get(wake.trigger_name);
+    if (current === undefined || wake.ts > current.ts) {
+      latestByName.set(wake.trigger_name, wake);
+    }
+  }
+
+  return {
+    scheduler: {
+      enabled: borg.autonomy.scheduler.isEnabled(),
+    },
+    wake_sources: AUTONOMY_WAKE_SOURCE_NAMES.map((name) => {
+      const latest = latestByName.get(name);
+
+      return {
+        name,
+        enabled: null,
+        wake_source_type: latest?.wake_source_type ?? null,
+        source_category: latest?.source_category ?? null,
+        last_fired: latest?.ts ?? null,
+        wake_count: countsByName.get(name) ?? 0,
+      };
+    }),
+    wake_budget: null,
+    self_scheduled_wakes: [],
+    can_cancel_wakes: false,
+    recent_wakes: recentWakes.map((wake) => mapAutonomyWake(borg, wake)),
+  };
+}
+
 function commitmentState(record: CommitmentRecord): "active" | "revoked" | "expired" {
   if (record.expired_at !== null) {
     return "expired";
@@ -2767,6 +3159,22 @@ export function createDemoServerApp(args: DemoServerAppInput) {
         cursor: query.cursor,
       }),
     );
+  });
+
+  app.get("/api/activity", (c) => {
+    const query = parseRequest(activityQuerySchema, c.req.query());
+    return c.json(activityFeed(input.borg, query.day));
+  });
+
+  app.get("/api/autonomy", (c) => c.json(autonomyState(input.borg)));
+
+  app.get("/api/journal", (c) => {
+    const query = parseRequest(journalQuerySchema, c.req.query());
+    return c.json({
+      entries: input.borg.self.journal
+        .list({ limit: query.limit })
+        .map((entry) => mapJournalEntry(input.borg, entry)),
+    });
   });
 
   app.get("/api/turns/:id/ledger", (c) => {

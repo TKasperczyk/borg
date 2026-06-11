@@ -21,6 +21,20 @@ export function terminalSummaryFromFrame(frame: TurnTerminalFrame): TerminalSumm
   };
 }
 
+export function outcomeDisplayForTurnHistory(outcome: TurnHistoryRow["outcome"]): OutcomeDisplay {
+  if (outcome === "emitted") {
+    return { text: "emitted", tone: "ok", pulse: false };
+  }
+  if (outcome === "deliberate-silence") {
+    return { text: "silence", tone: "dim", pulse: false };
+  }
+  if (outcome === "observed") {
+    return { text: "observed", tone: "dim", pulse: false };
+  }
+
+  return { text: outcome, tone: "red", pulse: false };
+}
+
 function isStreamEntry(entry: StreamEntry | ThreadItem): entry is StreamEntry {
   return "kind" in entry;
 }
