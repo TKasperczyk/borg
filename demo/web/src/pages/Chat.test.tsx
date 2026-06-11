@@ -225,6 +225,7 @@ describe("Chat page", () => {
 
   it("resets current-turn cognition display when a new in-flight turn starts", async () => {
     const { ws } = renderChat();
+    const firstTurnId = "12345678-90ab-cdef-1234-567890abcdef";
     const ledger: EvidenceLedger = {
       sections: [
         {
@@ -251,8 +252,8 @@ describe("Chat page", () => {
         ts: 1,
         event: "turn_phase.started",
         data: {
-          turnId: "t1",
-          turn_id: "t1",
+          turnId: firstTurnId,
+          turn_id: firstTurnId,
           session_id: "s_default",
           phase: "delib",
           ts: 1,
@@ -261,14 +262,14 @@ describe("Chat page", () => {
       ws.instances[0]!.receive({
         type: "turn:delib_path",
         ts: 2,
-        turn_id: "t1",
+        turn_id: firstTurnId,
         session_id: "s_default",
         path: "system_2",
       });
       ws.instances[0]!.receive({
         type: "evidence_ledger:built",
         ts: 3,
-        turn_id: "t1",
+        turn_id: firstTurnId,
         session_id: "s_default",
         ledger,
       });
@@ -276,7 +277,9 @@ describe("Chat page", () => {
 
     expect(await screen.findByText("SYS_2 DELIB")).toBeTruthy();
     expect(await screen.findByText("EPI")).toBeTruthy();
-    expect(await screen.findByText("t1")).toBeTruthy();
+    expect(await screen.findByText("12345678")).toBeTruthy();
+    expect(screen.getByTitle(firstTurnId).textContent).toBe("12345678");
+    expect(screen.queryByText(firstTurnId)).toBeNull();
 
     await act(async () => {
       ws.instances[0]!.receive({

@@ -21,7 +21,7 @@ const activityFixture: ActivityResponse = {
     observations: 0,
     suppressions: 0,
     dream_changes: 3,
-    journal_notes: 1,
+    journal_notes: 2,
   },
   rows: [
     {
@@ -114,6 +114,17 @@ const journalFixture: JournalResponse = {
       source_turn_id: "turn_user",
       marker_stream_entry_id: null,
     },
+    {
+      id: 2,
+      self_entity_id: "ent_self",
+      self_label: "self",
+      text: "long id note",
+      disclosure_class: "self_private",
+      created_at: baseTs,
+      updated_at: baseTs,
+      source_turn_id: "12345678-90ab-cdef-1234-567890abcdef",
+      marker_stream_entry_id: null,
+    },
   ],
 };
 
@@ -167,7 +178,10 @@ function renderActivity() {
     if (url === "/api/autonomy") {
       return json(autonomyFixture);
     }
-    if (url === "/api/journal?limit=10") {
+    if (url === `/api/journal?limit=10&day=${day}`) {
+      return json(journalFixture);
+    }
+    if (url === `/api/journal?limit=10&day=${previousDay}`) {
       return json(journalFixture);
     }
     if (url === "/api/stream?session=s_user&limit=200") {
@@ -199,6 +213,9 @@ describe("ActivityPage", () => {
     expect(screen.getByText("3 changes")).toBeTruthy();
     expect(screen.getByText("journal notes")).toBeTruthy();
     expect(screen.getByText("private note")).toBeTruthy();
+    expect(screen.getByText("12345678").getAttribute("title")).toBe(
+      "12345678-90ab-cdef-1234-567890abcdef",
+    );
     expect(screen.getByLabelText("scheduled_reflection state unknown")).toBeTruthy();
     expect(screen.getByText(/state unknown/)).toBeTruthy();
 

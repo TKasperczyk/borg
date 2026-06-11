@@ -185,6 +185,7 @@ const activityQuerySchema = z
 const journalQuerySchema = z
   .object({
     limit: limitSchema.default(10),
+    day: dayQuerySchema.optional(),
   })
   .strict();
 
@@ -1624,6 +1625,16 @@ type AutonomousActionEntry = SerializedStreamEntry & {
     ts?: unknown;
   };
 };
+type AutonomousWakeEntry = SerializedStreamEntry & {
+  content: {
+    kind: "autonomous_wake";
+    source_name?: unknown;
+    trigger_type?: unknown;
+    source_category?: unknown;
+    payload?: unknown;
+    ts?: unknown;
+  };
+};
 type ActivityOrigin = "user" | "autonomous" | "dream";
 type ActivityTurnRow = {
   id: string;
@@ -1728,6 +1739,34 @@ function isAutonomousActionEntry(
   );
 }
 
+function isAutonomousWakeEntry(entry: SerializedStreamEntry): entry is AutonomousWakeEntry {
+  return (
+    entry.kind === "internal_event" &&
+    isRecord(entry.content) &&
+    entry.content.kind === "autonomous_wake"
+  );
+}
+
+function autonomousActionTrigger(entry: AutonomousActionEntry): string | null {
+  return typeof entry.content.trigger === "string" && entry.content.trigger.length > 0
+    ? entry.content.trigger
+    : null;
+}
+
+function autonomousWakeSourceName(entry: AutonomousWakeEntry): string | null {
+  return typeof entry.content.source_name === "string" && entry.content.source_name.length > 0
+    ? entry.content.source_name
+    : null;
+}
+
+function entryOrder(left: SerializedStreamEntry, right: SerializedStreamEntry): number {
+  if (left.timestamp !== right.timestamp) {
+    return left.timestamp - right.timestamp;
+  }
+
+  return (left.entry_index ?? 0) - (right.entry_index ?? 0);
+}
+
 function activityRecentEntries(borg: Borg): SerializedStreamEntry[] {
   const sessions = borg.sessions.list({ limit: ACTIVITY_SESSION_LIMIT });
   const entries: StreamEntry[] = [];
@@ -1745,6 +1784,53 @@ function activityRecentEntries(borg: Borg): SerializedStreamEntry[] {
   }
 
   return serializeStreamEntries(borg, entries);
+}
+
+function autonomousTriggersByTerminalEntryId(
+  entries: readonly SerializedStreamEntry[],
+): Map<string, string> {
+  const byTerminalEntryId = new Map<string, string>();
+  const bySession = new Map<string, SerializedStreamEntry[]>();
+
+  for (const entry of entries) {
+    const sessionEntries = bySession.get(entry.session_id) ?? [];
+    sessionEntries.push(entry);
+    bySession.set(entry.session_id, sessionEntries);
+  }
+
+  for (const sessionEntries of bySession.values()) {
+    let pendingWake: AutonomousWakeEntry | null = null;
+    let pendingTerminal: SerializedStreamEntry | null = null;
+
+    for (const entry of [...sessionEntries].sort(entryOrder)) {
+      if (isAutonomousWakeEntry(entry)) {
+        pendingWake = entry;
+        pendingTerminal = null;
+        continue;
+      }
+
+      if (isTurnHistoryAnchorEntry(entry)) {
+        pendingTerminal = pendingWake === null ? null : entry;
+        continue;
+      }
+
+      if (!isAutonomousActionEntry(entry)) {
+        continue;
+      }
+
+      const trigger = autonomousActionTrigger(entry) ?? (pendingWake === null ? null : autonomousWakeSourceName(pendingWake));
+      if (typeof entry.content.turn_result_id === "string" && trigger !== null) {
+        byTerminalEntryId.set(entry.content.turn_result_id, trigger);
+      } else if (pendingWake !== null && pendingTerminal !== null && trigger !== null) {
+        byTerminalEntryId.set(pendingTerminal.id, trigger);
+      }
+
+      pendingWake = null;
+      pendingTerminal = null;
+    }
+  }
+
+  return byTerminalEntryId;
 }
 
 function activityTurnKey(sessionId: string, turnId: string): string {
@@ -1777,7 +1863,7 @@ function activitySupportEntriesForAnchor(
 function activityTurnRows(entries: readonly SerializedStreamEntry[]): ActivityTurnRow[] {
   const bySessionTurnId = new Map<string, SerializedStreamEntry[]>();
   const byId = new Map<string, SerializedStreamEntry>();
-  const autonomousActionByResultEntryId = new Map<string, AutonomousActionEntry>();
+  const autonomousTriggerByTerminalEntryId = autonomousTriggersByTerminalEntryId(entries);
 
   for (const entry of entries) {
     byId.set(entry.id, entry);
@@ -1789,9 +1875,6 @@ function activityTurnRows(entries: readonly SerializedStreamEntry[]): ActivityTu
       bySessionTurnId.set(key, bucket);
     }
 
-    if (isAutonomousActionEntry(entry) && typeof entry.content.turn_result_id === "string") {
-      autonomousActionByResultEntryId.set(entry.content.turn_result_id, entry);
-    }
   }
 
   const rows: ActivityTurnRow[] = [];
@@ -1818,12 +1901,8 @@ function activityTurnRows(entries: readonly SerializedStreamEntry[]): ActivityTu
       entry.timestamp,
     );
     const terminalEntry = isDemoTerminalEntry(entry) ? entry : undefined;
-    const autonomousAction =
-      terminalEntry === undefined ? undefined : autonomousActionByResultEntryId.get(terminalEntry.id);
     const trigger =
-      autonomousAction !== undefined && typeof autonomousAction.content.trigger === "string"
-        ? autonomousAction.content.trigger
-        : null;
+      terminalEntry === undefined ? null : autonomousTriggerByTerminalEntryId.get(terminalEntry.id) ?? null;
 
     rows.push({
       id: `turn:${entry.session_id}:${turnId}`,
@@ -1831,7 +1910,7 @@ function activityTurnRows(entries: readonly SerializedStreamEntry[]): ActivityTu
       started_at: startedAt,
       session_id: entry.session_id,
       session_label: entry.session_label,
-      origin: autonomousAction === undefined ? "user" : "autonomous",
+      origin: trigger === null ? "user" : "autonomous",
       trigger,
       outcome: outcome.outcome,
       suppression_reason: outcome.suppressionReason,
@@ -3170,10 +3249,15 @@ export function createDemoServerApp(args: DemoServerAppInput) {
 
   app.get("/api/journal", (c) => {
     const query = parseRequest(journalQuerySchema, c.req.query());
+    const entries =
+      query.day === undefined
+        ? input.borg.self.journal.list({ limit: query.limit })
+        : journalRowsForDay(input.borg.self.journal.list({ limit: 500 }), query.day).slice(
+            0,
+            query.limit,
+          );
     return c.json({
-      entries: input.borg.self.journal
-        .list({ limit: query.limit })
-        .map((entry) => mapJournalEntry(input.borg, entry)),
+      entries: entries.map((entry) => mapJournalEntry(input.borg, entry)),
     });
   });
 

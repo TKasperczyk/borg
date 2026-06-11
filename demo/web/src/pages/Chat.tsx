@@ -59,6 +59,10 @@ type InFlightTurn = {
 
 type InFlightBySession = Record<string, InFlightTurn | undefined>;
 
+function shortId(id: string): string {
+  return id.length <= 8 ? id : id.slice(0, 8);
+}
+
 type TraceItem = {
   id: string;
   time: string;
@@ -737,7 +741,9 @@ export function ChatPage({ onActiveSessionChange }: ChatPageProps) {
         <section className="cog-block">
           <div className="block-head">
             <span>EVIDENCE RECALLED</span>
-            <span>{ledgerTurnLabel}</span>
+            {ledgerTurnLabel.length === 0 ? null : (
+              <span title={ledgerTurnLabel}>{shortId(ledgerTurnLabel)}</span>
+            )}
           </div>
           {ledgerSummary === null || ledgerSummary.totalEntries === 0 ? (
             <div className="ledger-empty">no ledger for current turn yet</div>

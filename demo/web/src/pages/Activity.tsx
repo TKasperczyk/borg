@@ -57,6 +57,10 @@ function dayTabLabel(day: string): string {
   return day === todayDayString() ? `TODAY / ${label}` : label;
 }
 
+function shortId(id: string): string {
+  return id.length <= 8 ? id : id.slice(0, 8);
+}
+
 function outcomeClass(tone: OutcomeTone | "dream"): string {
   if (tone === "dream") {
     return "activity-outcome-dream";
@@ -368,7 +372,11 @@ function TrainOfThought({ entries }: { entries: readonly JournalEntry[] }) {
       {entries.map((entry) => (
         <div className="thought-row" key={entry.id}>
           <time>{hm(new Date(entry.updated_at))}</time>
-          <span>{entry.source_turn_id === null ? "journal" : entry.source_turn_id}</span>
+          {entry.source_turn_id === null ? (
+            <span>journal</span>
+          ) : (
+            <span title={entry.source_turn_id}>{shortId(entry.source_turn_id)}</span>
+          )}
           <i>{entry.text}</i>
         </div>
       ))}
@@ -382,8 +390,8 @@ export function ActivityPage() {
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const activity = useQuery(`activity:${selectedDay ?? "today"}`, () => fetchActivity(selectedDay));
   const autonomy = useQuery("autonomy", fetchAutonomyState);
-  const journal = useQuery("journal:latest", () => fetchJournal(10));
   const activeDay = activity.data?.day ?? selectedDay ?? todayDayString();
+  const journal = useQuery(`journal:${activeDay}`, () => fetchJournal(10, activeDay));
   const rows = useMemo(() => {
     const source = activity.data?.rows ?? [];
     return originFilter === "all" ? source : source.filter((row) => row.origin === originFilter);

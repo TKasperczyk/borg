@@ -3617,36 +3617,43 @@ describe("demo server", () => {
     });
 
     clock.advance(10);
-    const autoSource = await borg.stream.append(
+    await borg.stream.append(
       {
-        kind: "user_msg",
-        content: "autonomous source",
-        turn_id: "turn_activity_auto",
-        audience: "self",
+        kind: "internal_event",
+        content: {
+          kind: "autonomous_wake",
+          trigger_type: "trigger",
+          source_name: "scheduled_reflection",
+          source_category: "contemplative",
+          payload: { interval_ms: 14_400_000 },
+          ts: clock.now(),
+        },
       },
       { session: customSessionId },
     );
     clock.advance(10);
-    const autoResult = await borg.stream.append(
+    await borg.stream.append(
       {
         kind: "agent_suppressed",
         content: { reason: "finalizer_no_output" },
         turn_id: "turn_activity_auto",
         audience: "self",
-        response_to: responseToSingleSource(autoSource),
       },
       { session: customSessionId },
     );
-    await borg.stream.append({
-      kind: "internal_event",
-      content: {
-        kind: "autonomous_action",
-        trigger: "scheduled_reflection",
-        outcome_summary: "No output.",
-        turn_result_id: autoResult.id,
-        ts: clock.now(),
+    await borg.stream.append(
+      {
+        kind: "internal_event",
+        content: {
+          kind: "autonomous_action",
+          trigger: "scheduled_reflection",
+          outcome_summary: "No output.",
+          turn_result_id: null,
+          ts: clock.now(),
+        },
       },
-    });
+      { session: customSessionId },
+    );
 
     clock.advance(10);
     await borg.stream.append({
@@ -3923,7 +3930,7 @@ describe("demo server", () => {
       now: clock.now(),
     });
 
-    const response = await app.request("/api/journal?limit=5");
+    const response = await app.request(`/api/journal?limit=5&day=${localDayString(clock.now())}`);
 
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
@@ -3936,6 +3943,12 @@ describe("demo server", () => {
         }),
       ],
     });
+
+    const previousDay = await app.request(
+      `/api/journal?limit=5&day=${localDayString(clock.now() - 24 * 60 * 60 * 1_000)}`,
+    );
+    expect(previousDay.status).toBe(200);
+    expect(await previousDay.json()).toMatchObject({ entries: [] });
   });
 
   it("serves capped semantic graph visualization data", async () => {

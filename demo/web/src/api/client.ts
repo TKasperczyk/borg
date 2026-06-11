@@ -204,8 +204,12 @@ export function fetchAutonomyState(): Promise<AutonomyStateResponse> {
   return getJson<AutonomyStateResponse>("/api/autonomy");
 }
 
-export function fetchJournal(limit = 10): Promise<JournalResponse> {
-  return getJson<JournalResponse>(`/api/journal?limit=${limit}`);
+export function fetchJournal(limit = 10, day?: string): Promise<JournalResponse> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (day !== undefined) {
+    params.set("day", day);
+  }
+  return getJson<JournalResponse>(`/api/journal?${params.toString()}`);
 }
 
 export function fetchLedger(turnId: string): Promise<LedgerResponse> {
