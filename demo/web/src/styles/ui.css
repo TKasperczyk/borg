@@ -1378,15 +1378,21 @@
 }
 
 .trait-chip {
-  border: 1px solid var(--border-muted);
+  border: 1px solid var(--border);
   padding: 2px 8px;
   color: var(--text-muted);
   font-size: 10.5px;
 }
 
-.trait-chip-dashed {
-  border-style: dashed;
-  color: var(--text-dim-2);
+.trait-chip-established {
+  border-color: var(--border-strong);
+  color: var(--text-soft);
+}
+
+.mind-subhead-meta {
+  margin-left: 8px;
+  color: var(--text-ghost);
+  letter-spacing: 0.04em;
 }
 
 .marker-line {
@@ -1498,7 +1504,7 @@
 .inline-confirm input,
 .edge-action-row input {
   min-width: 0;
-  border: 1px solid var(--border-muted);
+  border: 1px solid var(--border);
   background: var(--panel);
   color: var(--text-bright);
   font: inherit;
@@ -1551,7 +1557,7 @@
   gap: 6px;
   margin-top: 8px;
   padding: 8px;
-  border: 1px solid var(--border-muted);
+  border: 1px solid var(--border);
   background: var(--panel);
 }
 
@@ -1866,7 +1872,7 @@
 
 .inline-graph-detail {
   margin-top: 10px;
-  border: 1px solid var(--border-muted);
+  border: 1px solid var(--border);
   padding: 8px 10px;
   color: var(--text-dim);
   font-size: 10px;
@@ -1875,7 +1881,7 @@
 .load-more {
   align-self: flex-start;
   margin-top: 10px;
-  border: 1px solid var(--border-muted);
+  border: 1px solid var(--border);
   padding: 5px 10px;
 }
 

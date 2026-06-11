@@ -482,6 +482,16 @@ function IdentityGrid({
 }) {
   const goals = flattenGoals(identity?.goals ?? []);
   const openQuestions = identity?.open_questions ?? [];
+  const traits = [...(identity?.traits ?? [])].sort((left, right) =>
+    left.state === right.state ? 0 : left.state === "established" ? -1 : right.state === "established" ? 1 : 0,
+  );
+  const traitStateCounts = new Map<string, number>();
+  for (const trait of traits) {
+    traitStateCounts.set(trait.state, (traitStateCounts.get(trait.state) ?? 0) + 1);
+  }
+  const traitStateMeta = [...traitStateCounts.entries()]
+    .map(([state, count]) => `${count} ${state}`)
+    .join(" · ");
   const markers = [...(identity?.growth_markers ?? [])]
     .sort((left, right) => right.ts - left.ts)
     .slice(0, 3);
@@ -504,12 +514,15 @@ function IdentityGrid({
         })}
       </div>
       <div className="identity-cell">
-        <Subhead>TRAITS</Subhead>
+        <Subhead>
+          TRAITS
+          {traitStateMeta.length > 0 ? <span className="mind-subhead-meta">{traitStateMeta}</span> : null}
+        </Subhead>
         <div className="trait-wrap">
-          {(identity?.traits ?? []).map((trait) => (
+          {traits.map((trait) => (
             <span
               key={trait.id}
-              className={trait.state === "candidate" ? "trait-chip trait-chip-dashed" : "trait-chip"}
+              className={trait.state === "established" ? "trait-chip trait-chip-established" : "trait-chip"}
             >
               {trait.label}
             </span>
