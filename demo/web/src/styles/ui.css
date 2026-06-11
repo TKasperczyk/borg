@@ -1891,14 +1891,6 @@
   white-space: nowrap;
 }
 
-.inline-graph-detail {
-  margin-top: 10px;
-  border: 1px solid var(--border);
-  padding: 8px 10px;
-  color: var(--text-dim);
-  font-size: 10px;
-}
-
 .load-more {
   align-self: flex-start;
   margin-top: 10px;

@@ -414,6 +414,25 @@ function renderMind(path = "/mind", options: RenderOptions = {}) {
       }
       return response;
     }
+    if (url.startsWith("/api/semantic/nodes/n_outside")) {
+      return json({
+        node: {
+          id: "n_outside",
+          kind: "concept",
+          label: "outside rendered subset",
+          display_label: "outside rendered subset",
+          description: "detail for a node outside the rendered graph subset",
+          domain: "memory",
+          aliases: [],
+          confidence: 0.77,
+          status: "active",
+          source_episode_ids: ["ep_outside"],
+          source_count: 1,
+          created_at: now,
+          updated_at: now,
+        },
+      });
+    }
     if (url.startsWith("/api/correction/semantic-edges/edge_1/invalidate")) {
       return json({ ok: true });
     }
@@ -446,7 +465,7 @@ describe("Mind page", () => {
     expect(screen.queryByText("The operator is the creator.")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "GRAPH" }));
-    expect(await screen.findByText(/confidence 0.90/)).toBeTruthy();
+    expect(await screen.findByText("select a node to inspect")).toBeTruthy();
     expect(screen.queryByText("semantic desc")).toBeNull();
 
     cleanup();
@@ -636,6 +655,37 @@ describe("Mind page", () => {
     expect(await screen.findByText("BUMP / BLOCK")).toBeTruthy();
   });
 
+  it("renders one graph inspector action per row and navigates to the graph detail route", async () => {
+    renderMind("/mind/inspect/graph");
+
+    expect(await screen.findByText("operator")).toBeTruthy();
+    expect(screen.getAllByText("INSPECT")).toHaveLength(graph.nodes.length);
+
+    fireEvent.click(screen.getAllByRole("button", { name: "INSPECT" })[0]!);
+
+    await waitFor(() => expect(window.location.pathname).toBe("/mind/graph/n1"));
+    expect(await screen.findByText(/confidence 0.90/)).toBeTruthy();
+    expect(screen.queryByText(/ACTIVE · operator · entity/)).toBeNull();
+  });
+
+  it("deep-links graph selection for nodes outside the rendered graph subset", async () => {
+    renderMind("/mind/graph/n_outside");
+
+    expect(await screen.findByText("outside rendered subset")).toBeTruthy();
+    expect(screen.getByText(/confidence 0.77/)).toBeTruthy();
+    expect(screen.getByText("evidence: detail for a node outside the rendered graph subset")).toBeTruthy();
+  });
+
+  it("updates the graph selection URL when an SVG node is clicked", async () => {
+    renderMind("/mind/graph");
+
+    expect(await screen.findByText("select a node to inspect")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("select operator"));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/mind/graph/n1"));
+    expect(await screen.findByText(/confidence 0.90/)).toBeTruthy();
+  });
+
   it("guards inline mutations while a request is pending", async () => {
     const { requests, goalPatch } = renderMind("/mind", { deferGoalPatch: true });
 
@@ -718,7 +768,7 @@ describe("Mind page", () => {
   });
 
   it("renders graph detail from real fields and invalidates selected edges", async () => {
-    const { requests } = renderMind("/mind/graph");
+    const { requests } = renderMind("/mind/graph/n1");
 
     expect(await screen.findAllByText("operator")).toHaveLength(2);
     expect(await screen.findByText(/confidence 0.90/)).toBeTruthy();
@@ -738,7 +788,7 @@ describe("Mind page", () => {
   });
 
   it("suppresses stale graph detail while a newly selected node loads", async () => {
-    renderMind("/mind/graph", { deferNode2Detail: true });
+    renderMind("/mind/graph/n1", { deferNode2Detail: true });
 
     expect(await screen.findByText(/confidence 0.90/)).toBeTruthy();
     fireEvent.click(screen.getByLabelText("select deadline = jun 14"));

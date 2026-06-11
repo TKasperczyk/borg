@@ -54,6 +54,7 @@ const BAND_IDS: MemoryBandId[] = [
 
 type InspectorSection = (typeof INSPECTOR_SECTIONS)[number] | MemoryBandId;
 type MindAtlasTab = "identity" | "directives" | "memory" | "graph";
+type Navigate = (path: string, options?: { replace?: boolean }) => void;
 type Filter = "active" | "all";
 type Toast = { text: string; tone: "ok" | "error" };
 
@@ -88,8 +89,18 @@ function activeAtlasTab(path: string): MindAtlasTab {
     return "identity";
   }
 
-  const raw = decodeURIComponent(path.slice(prefix.length));
+  const raw = decodeURIComponent(path.slice(prefix.length)).split("/")[0] ?? "";
   return MIND_ATLAS_TABS.some((tab) => tab.id === raw) ? (raw as MindAtlasTab) : "identity";
+}
+
+function activeGraphNodeId(path: string): string | null {
+  const prefix = "/mind/graph/";
+  if (!path.startsWith(prefix)) {
+    return null;
+  }
+
+  const raw = decodeURIComponent(path.slice(prefix.length));
+  return raw.length === 0 ? null : raw;
 }
 
 function formatError(error: unknown): string {
@@ -293,6 +304,7 @@ export function MindPage() {
   const [location, navigate] = useLocation();
   const section = activeInspectorSection(location);
   const activeTab = activeAtlasTab(location);
+  const graphNodeId = activeGraphNodeId(location);
   const [toast, showToast] = useToast();
 
   const state = useQuery("state:mind-default", () => fetchState());
@@ -334,6 +346,7 @@ export function MindPage() {
       {section === null ? (
         <MindAtlas
           activeTab={activeTab}
+          graphNodeId={graphNodeId}
           identity={identity.data}
           identityLoading={identity.loading}
           directives={directives.data?.directives ?? []}
@@ -368,7 +381,7 @@ function MindTabBar({
   navigate,
 }: {
   activeTab: MindAtlasTab;
-  navigate: (path: string) => void;
+  navigate: Navigate;
 }) {
   return (
     <div className="activity-tabs mind-tabs" aria-label="Mind sections">
@@ -388,6 +401,7 @@ function MindTabBar({
 
 function MindAtlas({
   activeTab,
+  graphNodeId,
   identity,
   identityLoading,
   directives,
@@ -399,32 +413,26 @@ function MindAtlas({
   refetchMind,
 }: {
   activeTab: MindAtlasTab;
+  graphNodeId: string | null;
   identity: IdentityResponse | undefined;
   identityLoading: boolean;
   directives: CreatorDirective[];
   commitments: Commitment[];
   bands: MemoryBandSummary[];
   graph: SemanticGraphResponse | undefined;
-  navigate: (path: string) => void;
+  navigate: Navigate;
   showToast: (toast: Toast) => void;
   refetchMind: () => void;
 }) {
   const [directiveFilter, setDirectiveFilter] = useState<Filter>("active");
   const [commitmentFilter, setCommitmentFilter] = useState<Filter>("active");
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const graphNodes = graph?.nodes ?? [];
   const graphEdges = graph?.edges ?? [];
-  const selectedNode = graphNodes.find((node) => node.id === selectedNodeId) ?? graphNodes[0] ?? null;
+  const selectedNode = graphNodeId === null ? null : (graphNodes.find((node) => node.id === graphNodeId) ?? null);
   const graphLayout = useMemo(
     () => layoutGraph(graphNodes, graphEdges),
     [graphEdges, graphNodes],
   );
-
-  useEffect(() => {
-    if (selectedNodeId === null && graphNodes[0] !== undefined) {
-      setSelectedNodeId(graphNodes[0].id);
-    }
-  }, [graphNodes, selectedNodeId]);
 
   const period = currentPeriod(identity?.periods ?? []);
   const shownDirectives =
@@ -517,11 +525,12 @@ function MindAtlas({
           />
           <GraphCanvas
             layout={graphLayout}
-            selectedNodeId={selectedNode?.id ?? null}
-            onSelect={setSelectedNodeId}
+            selectedNodeId={graphNodeId}
+            onSelect={(nodeId) => navigate(`/mind/graph/${encodeURIComponent(nodeId)}`, { replace: true })}
           />
           <GraphSelectionStrip
-            node={selectedNode}
+            nodeId={graphNodeId}
+            summaryNode={selectedNode}
             graphEdges={graphEdges}
             showToast={showToast}
             refetchMind={refetchMind}
@@ -1251,12 +1260,14 @@ function GraphCanvas({
 }
 
 function GraphSelectionStrip({
-  node,
+  nodeId,
+  summaryNode,
   graphEdges,
   showToast,
   refetchMind,
 }: {
-  node: SemanticGraphNode | null;
+  nodeId: string | null;
+  summaryNode: SemanticGraphNode | null;
   graphEdges: SemanticGraphEdge[];
   showToast: (toast: Toast) => void;
   refetchMind: () => void;
@@ -1265,13 +1276,16 @@ function GraphSelectionStrip({
   const [reasonByEdge, setReasonByEdge] = useState<Record<string, string>>({});
   const [pendingEdgeId, setPendingEdgeId] = useState<string | null>(null);
   const detail = useQuery<{ node: SemanticNodeDetail | null }>(
-    `graph-node:${node?.id ?? ""}`,
-    () => (node === null ? Promise.resolve({ node: null }) : fetchSemanticNode(node.id)),
+    `graph-node:${nodeId ?? ""}`,
+    () => (nodeId === null ? Promise.resolve({ node: null }) : fetchSemanticNode(nodeId)),
   );
   const nodeEdges =
-    node === null ? [] : graphEdges.filter((edge) => edge.source === node.id || edge.target === node.id);
-  const detailNode = node !== null && detail.data?.node?.id === node.id ? detail.data.node : null;
-  const loadingSelectedDetail = node !== null && detailNode === null && detail.loading;
+    summaryNode === null ? [] : graphEdges.filter((edge) => edge.source === summaryNode.id || edge.target === summaryNode.id);
+  const detailNode = nodeId !== null && detail.data?.node?.id === nodeId ? detail.data.node : null;
+  const loadingSelectedDetail = nodeId !== null && detailNode === null && detail.loading;
+  const status = summaryNode?.status ?? detailNode?.status ?? null;
+  const label = summaryNode?.display_label ?? summaryNode?.label ?? detailNode?.display_label ?? detailNode?.label ?? nodeId;
+  const kind = summaryNode?.kind ?? detailNode?.kind ?? null;
 
   const invalidate = async (edgeId: string) => {
     if (pendingEdgeId !== null) {
@@ -1289,18 +1303,24 @@ function GraphSelectionStrip({
     }
   };
 
-  if (node === null) {
+  if (nodeId === null) {
     return <div className="graph-strip mind-empty">select a node to inspect</div>;
   }
 
   return (
     <div className="graph-strip">
       <div className="graph-selected-main">
-        <span className={`graph-status graph-status-${node.status}`}>{node.status.toUpperCase()}</span>
-        <strong>{node.display_label ?? node.label}</strong>
-        <span>
-          {node.kind} · {node.edge_count} edges
-        </span>
+        {status === null ? null : (
+          <span className={`graph-status graph-status-${status}`}>{status.toUpperCase()}</span>
+        )}
+        <strong>{label}</strong>
+        {summaryNode !== null ? (
+          <span>
+            {summaryNode.kind} · {summaryNode.edge_count} edges
+          </span>
+        ) : kind === null ? null : (
+          <span>{kind}</span>
+        )}
       </div>
       {loadingSelectedDetail ? <div className="graph-detail-line mind-empty">loading node detail…</div> : null}
       {detailNode === null ? null : (
@@ -1310,7 +1330,9 @@ function GraphSelectionStrip({
         </div>
       )}
       <div className="graph-actions">
-        <span>evidence: {detailNode?.description ?? `${node.edge_count} graph edges`}</span>
+        <span>
+          evidence: {detailNode?.description ?? (summaryNode === null ? "detail unavailable" : `${summaryNode.edge_count} graph edges`)}
+        </span>
         {nodeEdges.length === 0 ? null : (
           <button type="button" onClick={() => setShowEdges((current) => !current)}>
             INVALIDATE EDGE
@@ -1361,7 +1383,7 @@ function MindInspector({
   commitments: Commitment[];
   bands: MemoryBandSummary[];
   graph: SemanticGraphResponse | undefined;
-  navigate: (path: string) => void;
+  navigate: Navigate;
   showToast: (toast: Toast) => void;
   refetchMind: () => void;
 }) {
@@ -1433,7 +1455,7 @@ function MindInspector({
           ) : section === "directives" ? (
             <DirectiveInspectorRows directives={directives} commitments={commitments} />
           ) : section === "graph" ? (
-            <GraphInspectorRows graph={graph} />
+            <GraphInspectorRows graph={graph} navigate={navigate} />
           ) : (
             <BandInspectorRows band={section} />
           )}
@@ -1546,8 +1568,7 @@ function DirectiveInspectorRows({
   );
 }
 
-function GraphInspectorRows({ graph }: { graph: SemanticGraphResponse | undefined }) {
-  const [selected, setSelected] = useState<SemanticGraphNode | null>(null);
+function GraphInspectorRows({ graph, navigate }: { graph: SemanticGraphResponse | undefined; navigate: Navigate }) {
   const nodes = graph?.nodes ?? [];
 
   if (nodes.length === 0) {
@@ -1562,19 +1583,16 @@ function GraphInspectorRows({ graph }: { graph: SemanticGraphResponse | undefine
           chip={node.status.toUpperCase()}
           text={node.display_label ?? node.label}
           meta={`${node.kind} · ${node.edge_count} edges`}
-          right="INSPECT"
         >
-          <button className="row-mini-action" type="button" onClick={() => setSelected(node)}>
+          <button
+            className="row-mini-action"
+            type="button"
+            onClick={() => navigate(`/mind/graph/${encodeURIComponent(node.id)}`)}
+          >
             INSPECT
           </button>
         </InspectorRow>
       ))}
-      {selected === null ? null : (
-        <div className="inline-graph-detail">
-          {selected.status.toUpperCase()} · {selected.display_label ?? selected.label} · {selected.kind} ·{" "}
-          {selected.edge_count} edges
-        </div>
-      )}
     </>
   );
 }
@@ -1729,13 +1747,13 @@ function InspectorRow({
   chip,
   text,
   meta,
-  right,
+  right = "",
   children,
 }: {
   chip: string;
   text: string;
   meta: string;
-  right: string;
+  right?: string;
   children?: ReactNode;
 }) {
   return (

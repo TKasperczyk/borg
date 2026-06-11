@@ -101,6 +101,7 @@ function AppShell({
 
       <Switch>
         <Route path="/mind/inspect/:section" component={MindPage} />
+        <Route path="/mind/graph/:nodeId" component={MindPage} />
         <Route path="/mind/:tab" component={MindPage} />
         <Route path="/mind" component={MindPage} />
         <Route path="/reviews" component={ReviewsPage} />
