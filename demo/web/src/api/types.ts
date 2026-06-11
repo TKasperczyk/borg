@@ -454,6 +454,63 @@ export type SemanticEdgeDetailResponse = {
   edge: SemanticEdgeDetail;
 };
 
+export type ReviewKind =
+  | "contradiction"
+  | "duplicate"
+  | "new_insight"
+  | "misattribution"
+  | "temporal_drift"
+  | "identity_inconsistency"
+  | "correction"
+  | "belief_revision"
+  | "skill_split"
+  | "creator_directive_reconciliation"
+  | "commitment_reconciliation"
+  | "relationship_claim_ungrounded";
+
+export type ReviewResolution =
+  | "keep_both"
+  | "supersede"
+  | "invalidate"
+  | "dismiss"
+  | "accept"
+  | "reject"
+  | "keep"
+  | "weaken"
+  | "archive_node"
+  | "invalidate_edge";
+
+export type ReviewRow = {
+  id: number;
+  kind: ReviewKind;
+  refs: Record<string, unknown>;
+  reason: string;
+  created_at: number;
+  resolved_at: number | null;
+  resolution: ReviewResolution | null;
+};
+
+export type ReviewsResponse = {
+  rows: ReviewRow[];
+};
+
+export type ReviewGenericPatchBody = {
+  action: ReviewResolution;
+  note?: string;
+  winner_node_id?: string;
+};
+
+export type CreatorDirectiveReconciliationBody =
+  | { action: "supersede"; survivor_id: string; reason?: string }
+  | { action: "keep"; reason?: string };
+
+export type CorrectionReviewPatchBody = {
+  action: "accept" | "reject";
+  note?: string;
+};
+
+export type CorrectionWhyResponse = Record<string, unknown>;
+
 export type BandDetailResponse = {
   band: MemoryBandId;
   mode: "browse" | "search";

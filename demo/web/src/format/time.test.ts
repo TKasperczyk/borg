@@ -1,4 +1,4 @@
-import { dayLabel, hm, hms } from "./time";
+import { dayLabel, hm, hms, relativeAge } from "./time";
 
 describe("time formatting", () => {
   it("formats local clock times", () => {
@@ -10,5 +10,13 @@ describe("time formatting", () => {
 
   it("formats local day labels", () => {
     expect(dayLabel(new Date(2026, 5, 11, 9, 5))).toBe("JUN 11");
+  });
+
+  it("formats compact relative ages", () => {
+    const now = new Date(2026, 5, 11, 12, 0);
+
+    expect(relativeAge(new Date(2026, 5, 11, 11, 54), now)).toBe("6m");
+    expect(relativeAge(new Date(2026, 5, 11, 6, 0), now)).toBe("6h");
+    expect(relativeAge(new Date(2026, 5, 9, 12, 0), now)).toBe("2d");
   });
 });

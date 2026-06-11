@@ -15,3 +15,22 @@ export function hms(date: Date): string {
 export function dayLabel(date: Date): string {
   return `${MONTHS[date.getMonth()]} ${date.getDate()}`;
 }
+
+export function relativeAge(date: Date, now = new Date()): string {
+  const diffMs = Math.max(0, now.getTime() - date.getTime());
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) {
+    return "now";
+  }
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${hours}h`;
+  }
+
+  const days = Math.floor(hours / 24);
+  return `${days}d`;
+}

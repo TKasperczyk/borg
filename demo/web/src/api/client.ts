@@ -3,7 +3,10 @@ import type {
   BandDetailResponse,
   Commitment,
   CommitmentsResponse,
+  CorrectionReviewPatchBody,
+  CorrectionWhyResponse,
   CreatorDirective,
+  CreatorDirectiveReconciliationBody,
   CreatorDirectivesResponse,
   GoalPatchBody,
   IdentityResponse,
@@ -11,6 +14,10 @@ import type {
   MemoryBandId,
   MemoryBandsResponse,
   OpenQuestionPatchBody,
+  ReviewGenericPatchBody,
+  ReviewKind,
+  ReviewRow,
+  ReviewsResponse,
   SemanticEdgeDetailResponse,
   SemanticGraphResponse,
   SemanticNodeDetailResponse,
@@ -228,4 +235,55 @@ export function invalidateSemanticEdge(id: string, reason?: string): Promise<unk
   return postJson<unknown>(`/api/correction/semantic-edges/${encodeURIComponent(id)}/invalidate`, {
     ...(reason === undefined || reason.trim().length === 0 ? {} : { reason }),
   });
+}
+
+export function fetchReviews(input: {
+  openOnly?: boolean;
+  kind?: Exclude<ReviewKind, "relationship_claim_ungrounded">;
+} = {}): Promise<ReviewsResponse> {
+  const params = new URLSearchParams();
+  if (input.openOnly !== undefined) {
+    params.set("open_only", input.openOnly ? "true" : "false");
+  }
+  if (input.kind !== undefined) {
+    params.set("kind", input.kind);
+  }
+  const suffix = params.size === 0 ? "" : `?${params.toString()}`;
+  return getJson<ReviewsResponse>(`/api/reviews${suffix}`);
+}
+
+export function patchReview(id: number, body: ReviewGenericPatchBody): Promise<ReviewRow> {
+  return patchJson<ReviewRow>(`/api/reviews/${id}`, body);
+}
+
+export function postCreatorDirectiveReconciliation(
+  id: number,
+  body: CreatorDirectiveReconciliationBody,
+): Promise<ReviewRow> {
+  return postJson<ReviewRow>(
+    `/api/reviews/${id}/creator-directive-reconciliation`,
+    body,
+  );
+}
+
+export function patchDreamReview(id: number, note?: string): Promise<ReviewRow> {
+  return patchJson<ReviewRow>(`/api/dream/review/${id}`, {
+    action: "dismiss",
+    ...(note === undefined || note.trim().length === 0 ? {} : { note }),
+  });
+}
+
+export function fetchCorrectionReviews(): Promise<ReviewsResponse> {
+  return getJson<ReviewsResponse>("/api/correction/reviews");
+}
+
+export function fetchCorrectionWhy(id: string): Promise<CorrectionWhyResponse> {
+  return getJson<CorrectionWhyResponse>(`/api/correction/${encodeURIComponent(id)}/why`);
+}
+
+export function patchCorrectionReview(
+  id: number,
+  body: CorrectionReviewPatchBody,
+): Promise<ReviewRow> {
+  return patchJson<ReviewRow>(`/api/correction/reviews/${id}`, body);
 }

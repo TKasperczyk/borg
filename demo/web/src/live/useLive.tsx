@@ -36,9 +36,10 @@ const INVALIDATE_BY_FRAME: Partial<Record<LiveFrameType, string[]>> = {
     "graph",
     "directives",
     "commitments",
+    "reviews",
   ],
   "stream:append": ["stream", "turns"],
-  "maintenance:tick": ["state", "dream"],
+  "maintenance:tick": ["state", "dream", "reviews"],
   "dream:process:completed": [
     "dream",
     "identity",
@@ -46,6 +47,7 @@ const INVALIDATE_BY_FRAME: Partial<Record<LiveFrameType, string[]>> = {
     "graph",
     "directives",
     "commitments",
+    "reviews",
   ],
   "borg:reset": [""],
 };
