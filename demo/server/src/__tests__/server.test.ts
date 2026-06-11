@@ -3883,18 +3883,35 @@ describe("demo server", () => {
     const response = await app.request("/api/autonomy");
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
-      scheduler: { enabled: true },
-      wake_budget: null,
+    const body = await response.json();
+    expect(body).toMatchObject({
+      scheduler: {
+        enabled: true,
+        interval_ms: 60_000,
+        next_tick_at: null,
+      },
+      wake_budget: {
+        used: 1,
+        limit: 6,
+        window_ms: 86_400_000,
+      },
       can_cancel_wakes: false,
       self_scheduled_wakes: [],
       wake_sources: expect.arrayContaining([
         expect.objectContaining({
           name: "scheduled_reflection",
-          enabled: null,
+          enabled: false,
           wake_source_type: "trigger",
           source_category: "contemplative",
+          next_due_at: null,
           wake_count: 1,
+        }),
+        expect.objectContaining({
+          name: "scheduled_wake",
+          enabled: true,
+          wake_source_type: "trigger",
+          source_category: "contemplative",
+          next_due_at: null,
         }),
       ]),
       recent_wakes: [
@@ -3904,6 +3921,15 @@ describe("demo server", () => {
         }),
       ],
     });
+    const conditionSource = body.wake_sources.find(
+      (source: { name: string }) => source.name === "commitment_revoked",
+    );
+    expect(conditionSource).toMatchObject({
+      enabled: true,
+      wake_source_type: "condition",
+      source_category: "operational",
+    });
+    expect(conditionSource).not.toHaveProperty("next_due_at");
 
     const cancel = await app.request("/api/autonomy/wakes/autw_missing/cancel", {
       method: "POST",

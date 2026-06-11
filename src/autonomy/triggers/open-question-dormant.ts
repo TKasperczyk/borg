@@ -78,6 +78,25 @@ export function createOpenQuestionDormantTrigger(
         })
         .filter((event): event is DueEvent<OpenQuestionDormantPayload> => event !== null);
     },
+    async nextDueAt() {
+      const nowMs = clock.now();
+      const candidates = options.openQuestionsRepository
+        .list({
+          status: "open",
+          limit: 10_000,
+        })
+        .flatMap((question): number[] => {
+          const watermarkProcessName = `${WATERMARK_PREFIX}:${question.id}:${question.last_touched}`;
+
+          if (options.watermarkRepository.get(watermarkProcessName, sessionId) !== null) {
+            return [];
+          }
+
+          return [Math.max(question.last_touched + options.dormantMs + 1, nowMs)];
+        });
+
+      return candidates.length === 0 ? null : Math.min(...candidates);
+    },
     buildTurn(event) {
       return {
         audience: "self",

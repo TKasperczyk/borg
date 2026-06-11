@@ -543,6 +543,11 @@ export type CommitmentRepositoryOptions = {
   identityEventRepository?: IdentityEventRepository;
 };
 
+export type CommitmentExpiringReadOnlyOptions = {
+  nowMs: number;
+  limit: number;
+};
+
 export class CommitmentRepository {
   private readonly clock: Clock;
 
@@ -1165,6 +1170,27 @@ export class CommitmentRepository {
         `,
       )
       .all(...values) as Record<string, unknown>[];
+
+    return rows.map((row) => mapCommitmentRow(row));
+  }
+
+  listFutureExpiringReadOnly(options: CommitmentExpiringReadOnlyOptions): CommitmentRecord[] {
+    const limit = Number.isFinite(options.limit) ? Math.max(0, Math.floor(options.limit)) : 0;
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM commitments
+          WHERE revoked_at IS NULL
+            AND superseded_by IS NULL
+            AND expired_at IS NULL
+            AND expires_at IS NOT NULL
+            AND expires_at > ?
+          ORDER BY expires_at ASC, priority DESC, created_at ASC, id ASC
+          LIMIT ?
+        `,
+      )
+      .all(options.nowMs, limit) as Record<string, unknown>[];
 
     return rows.map((row) => mapCommitmentRow(row));
   }

@@ -7,7 +7,6 @@ import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import {
   BorgError,
-  AUTONOMY_WAKE_SOURCE_NAMES,
   COMMITMENT_KINDS,
   DEFAULT_SESSION_ID,
   OFFLINE_PROCESS_NAMES,
@@ -2029,7 +2028,8 @@ function mapAutonomyWake(borg: Borg, wake: AutonomyWakeRecord) {
   };
 }
 
-function autonomyState(borg: Borg) {
+async function autonomyState(borg: Borg) {
+  const schedulerDescription = await borg.autonomy.scheduler.describe();
   const since = Date.now() - 7 * 24 * 60 * 60 * 1_000;
   const recentWakes = borg.autonomy.wakes.listSince(since, 100);
   const latestByName = new Map<string, AutonomyWakeRecord>();
@@ -2045,21 +2045,28 @@ function autonomyState(borg: Borg) {
 
   return {
     scheduler: {
-      enabled: borg.autonomy.scheduler.isEnabled(),
+      enabled: schedulerDescription.enabled,
+      interval_ms: schedulerDescription.interval_ms,
+      next_tick_at: schedulerDescription.next_tick_at,
     },
-    wake_sources: AUTONOMY_WAKE_SOURCE_NAMES.map((name) => {
-      const latest = latestByName.get(name);
+    wake_sources: schedulerDescription.sources.map((source) => {
+      const latest = latestByName.get(source.name);
 
       return {
-        name,
-        enabled: null,
-        wake_source_type: latest?.wake_source_type ?? null,
-        source_category: latest?.source_category ?? null,
+        name: source.name,
+        enabled: source.enabled,
+        wake_source_type: source.type,
+        source_category: source.category,
+        ...(source.type === "trigger" ? { next_due_at: source.next_due_at } : {}),
         last_fired: latest?.ts ?? null,
-        wake_count: countsByName.get(name) ?? 0,
+        wake_count: countsByName.get(source.name) ?? 0,
       };
     }),
-    wake_budget: null,
+    wake_budget: {
+      used: schedulerDescription.budget.used_in_current_window,
+      limit: schedulerDescription.budget.max_wakes_per_window,
+      window_ms: schedulerDescription.budget.window_ms,
+    },
     self_scheduled_wakes: [],
     can_cancel_wakes: false,
     recent_wakes: recentWakes.map((wake) => mapAutonomyWake(borg, wake)),
@@ -3245,7 +3252,7 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     return c.json(activityFeed(input.borg, query.day));
   });
 
-  app.get("/api/autonomy", (c) => c.json(autonomyState(input.borg)));
+  app.get("/api/autonomy", async (c) => c.json(await autonomyState(input.borg)));
 
   app.get("/api/journal", (c) => {
     const query = parseRequest(journalQuerySchema, c.req.query());

@@ -77,18 +77,40 @@ const activityFixture: ActivityResponse = {
 };
 
 const autonomyFixture: AutonomyStateResponse = {
-  scheduler: { enabled: true },
+  scheduler: { enabled: true, interval_ms: 60_000, next_tick_at: baseTs + 30_000 },
   wake_sources: [
     {
       name: "scheduled_reflection",
-      enabled: null,
+      enabled: true,
       wake_source_type: "trigger",
       source_category: "contemplative",
+      next_due_at: baseTs + 60_000,
       last_fired: baseTs,
       wake_count: 1,
     },
+    {
+      name: "scheduled_wake",
+      enabled: false,
+      wake_source_type: "trigger",
+      source_category: "contemplative",
+      next_due_at: null,
+      last_fired: null,
+      wake_count: 0,
+    },
+    {
+      name: "commitment_revoked",
+      enabled: true,
+      wake_source_type: "condition",
+      source_category: "operational",
+      last_fired: null,
+      wake_count: 0,
+    },
   ],
-  wake_budget: null,
+  wake_budget: {
+    used: 2,
+    limit: 6,
+    window_ms: 86_400_000,
+  },
   self_scheduled_wakes: [
     {
       id: "sw_1",
@@ -216,8 +238,14 @@ describe("ActivityPage", () => {
     expect(screen.getByText("12345678").getAttribute("title")).toBe(
       "12345678-90ab-cdef-1234-567890abcdef",
     );
-    expect(screen.getByLabelText("scheduled_reflection state unknown")).toBeTruthy();
-    expect(screen.getByText(/state unknown/)).toBeTruthy();
+    expect(screen.getByLabelText("scheduled_reflection enabled")).toBeTruthy();
+    expect(screen.getByLabelText("scheduled_wake disabled")).toBeTruthy();
+    expect(screen.queryByText(/state unknown/)).toBeNull();
+    expect(screen.getByText("next evaluation 12:00:30")).toBeTruthy();
+    expect(screen.getByText(/next 12:01/)).toBeTruthy();
+    expect(screen.getByText(/nothing scheduled/)).toBeTruthy();
+    expect(screen.getByText(/event-driven/)).toBeTruthy();
+    expect(screen.getByText("budget 2/6")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "AUTONOMOUS" }));
 

@@ -51,4 +51,31 @@ describe("scheduled reflection trigger", () => {
     expect(nextWindowScan).toHaveLength(1);
     expect(nextWindowScan[0]?.id).not.toBe(firstScan[0]?.id);
   });
+
+  it("describes the next reflection boundary from its watermark", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+
+    const trigger = createScheduledReflectionTrigger({
+      watermarkRepository,
+      intervalMs: 60_000,
+      clock,
+    });
+
+    await expect(trigger.nextDueAt!()).resolves.toBe(clock.now());
+
+    watermarkRepository.set("autonomy:scheduled-reflection", "default" as never, {
+      lastTs: clock.now(),
+      lastEntryId: "watermark",
+    });
+
+    await expect(trigger.nextDueAt!()).resolves.toBe(1_060_000);
+  });
 });

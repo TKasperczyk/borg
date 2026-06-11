@@ -29,6 +29,7 @@ import type { AutonomyTrigger, DueEvent } from "../types.js";
 
 const TRIGGER_NAME = "executive_focus_due" as const;
 const WATERMARK_PREFIX = "autonomy:executive-focus-due";
+const NEXT_DUE_CANDIDATE_LIMIT = 512;
 
 type ExecutiveFocusDueReason = "step_due" | "goal_stale";
 type ExecutiveFocusDisclosureLabelMetadata = ReturnType<typeof memoryDisclosureLabelMetadata>;
@@ -282,22 +283,37 @@ export function createExecutiveFocusDueTrigger(
   const sessionId = options.sessionId ?? DEFAULT_SESSION_ID;
   const threshold = options.threshold ?? DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD;
 
-  function getGoalCooldownProcessName(goal: GoalRecord): string {
-    return `${WATERMARK_PREFIX}:cooldown:${goal.id}`;
+  function getGoalCooldownProcessName(goalId: GoalRecord["id"]): string {
+    return `${WATERMARK_PREFIX}:cooldown:${goalId}`;
+  }
+
+  function getGoalCooldownEnd(input: {
+    goal_id: GoalRecord["id"];
+    last_progress_ts: number | null;
+  }): number | null {
+    const cooldown = options.watermarkRepository.get(
+      getGoalCooldownProcessName(input.goal_id),
+      sessionId,
+    );
+
+    if (cooldown === null) {
+      return null;
+    }
+
+    if (input.last_progress_ts !== null && input.last_progress_ts >= cooldown.updatedAt) {
+      return null;
+    }
+
+    return cooldown.updatedAt + options.wakeCooldownMs;
   }
 
   function isGoalCoolingDown(goal: GoalRecord, nowMs: number): boolean {
-    const cooldown = options.watermarkRepository.get(getGoalCooldownProcessName(goal), sessionId);
+    const cooldownEnd = getGoalCooldownEnd({
+      goal_id: goal.id,
+      last_progress_ts: goal.last_progress_ts,
+    });
 
-    if (cooldown === null) {
-      return false;
-    }
-
-    if (goal.last_progress_ts !== null && goal.last_progress_ts >= cooldown.updatedAt) {
-      return false;
-    }
-
-    return nowMs - cooldown.updatedAt < options.wakeCooldownMs;
+    return cooldownEnd !== null && cooldownEnd > nowMs;
   }
 
   function shouldDeferToGoalFollowup(goal: GoalRecord, nowMs: number): boolean {
@@ -437,7 +453,7 @@ export function createExecutiveFocusDueTrigger(
           id: `step:${dueStep.id}:${dueAt}:${dueStep.status}:${attemptKey}`,
           sourceName: TRIGGER_NAME,
           sourceType: "trigger",
-          watermarkProcessName: getGoalCooldownProcessName(goal),
+          watermarkProcessName: getGoalCooldownProcessName(goal.id),
           sortTs: dueAt,
           payload: buildScorePayload({
             goal,
@@ -485,7 +501,7 @@ export function createExecutiveFocusDueTrigger(
             id: `goal:${selectedGoal.id}:${progressAnchor}`,
             sourceName: TRIGGER_NAME,
             sourceType: "trigger",
-            watermarkProcessName: getGoalCooldownProcessName(selectedGoal),
+            watermarkProcessName: getGoalCooldownProcessName(selectedGoal.id),
             sortTs: progressAnchor + options.stalenessMs,
             payload: buildScorePayload({
               goal: selectedGoal,
@@ -507,6 +523,42 @@ export function createExecutiveFocusDueTrigger(
       return events.sort(
         (left, right) => left.sortTs - right.sortTs || left.id.localeCompare(right.id),
       );
+    },
+    async nextDueAt() {
+      if (!options.enabled) {
+        return null;
+      }
+
+      // The step-due path is pure schedule data. The goal-stale path depends on
+      // executive scoring/context fit in scan(), so this read-only surface does
+      // not predict it rather than approximating a fire decision.
+      const nowMs = clock.now();
+      const candidates = options.executiveStepsRepository.listDueStepWakeCandidatesReadOnly({
+        dueLeadMs: options.dueLeadMs,
+        limit: NEXT_DUE_CANDIDATE_LIMIT + 1,
+      });
+
+      if (candidates.length > NEXT_DUE_CANDIDATE_LIMIT) {
+        return null;
+      }
+
+      for (const candidate of candidates) {
+        const cooldownEnd = getGoalCooldownEnd({
+          goal_id: candidate.goal_id,
+          last_progress_ts: candidate.goal_last_progress_ts,
+        });
+        const dueAt = Math.max(
+          candidate.due_at,
+          cooldownEnd === null ? Number.NEGATIVE_INFINITY : cooldownEnd,
+          nowMs,
+        );
+
+        if (Number.isFinite(dueAt)) {
+          return dueAt;
+        }
+      }
+
+      return null;
     },
     buildTurn(event) {
       return {

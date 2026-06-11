@@ -124,4 +124,17 @@ describe("scheduled wake trigger", () => {
     expect(due.map((event) => event.id)).toEqual([sooner.id, later.id]);
     db.close();
   });
+
+  it("describes the next pending wake without reconciling rows", async () => {
+    const { trigger, scheduledWakesRepository, clock, db } = setup();
+    const wake = scheduledWakesRepository.schedule({ delaySeconds: 60, note: "sooner" });
+    scheduledWakesRepository.schedule({ delaySeconds: 120, note: "later" });
+
+    await expect(trigger.nextDueAt!()).resolves.toBe(wake.fire_at);
+
+    clock.advance(120_000);
+    await expect(trigger.nextDueAt!()).resolves.toBe(clock.now());
+    expect(scheduledWakesRepository.get(wake.id)?.status).toBe("pending");
+    db.close();
+  });
 });

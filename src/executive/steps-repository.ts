@@ -10,6 +10,7 @@ import { createExecutiveStepId, type ExecutiveStepId, type GoalId } from "../uti
 
 import {
   executiveStepKindSchema,
+  executiveStepGoalIdSchema,
   executiveStepPatchSchema,
   executiveStepSchema,
   executiveStepStatusSchema,
@@ -36,6 +37,17 @@ export type ExecutiveStepAddInput = {
   lastAttemptTs?: number | null;
   provenance: ExecutiveStepProvenance;
   createdAt?: number;
+};
+
+export type ExecutiveDueStepWakeCandidate = {
+  goal_id: GoalId;
+  goal_last_progress_ts: number | null;
+  due_at: number;
+};
+
+export type ExecutiveDueStepWakeCandidateOptions = {
+  dueLeadMs: number;
+  limit: number;
 };
 
 export type ExecutiveStepAbandonReason = "goal_closed";
@@ -216,6 +228,39 @@ export class ExecutiveStepsRepository {
       .all(goalId) as Record<string, unknown>[];
 
     return rows.map((row) => mapExecutiveStepRow(row));
+  }
+
+  listDueStepWakeCandidatesReadOnly(
+    options: ExecutiveDueStepWakeCandidateOptions,
+  ): ExecutiveDueStepWakeCandidate[] {
+    const limit = Number.isFinite(options.limit) ? Math.max(0, Math.floor(options.limit)) : 0;
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            goals.id AS goal_id,
+            goals.last_progress_ts AS goal_last_progress_ts,
+            MIN(executive_steps.due_at - ?) AS due_at
+          FROM executive_steps
+          INNER JOIN goals ON goals.id = executive_steps.goal_id
+          WHERE goals.status = 'active'
+            AND executive_steps.status IN ('queued', 'doing')
+            AND executive_steps.due_at IS NOT NULL
+          GROUP BY goals.id, goals.last_progress_ts
+          ORDER BY due_at ASC, goals.created_at ASC, goals.id ASC
+          LIMIT ?
+        `,
+      )
+      .all(options.dueLeadMs, limit) as Record<string, unknown>[];
+
+    return rows.map((row) => ({
+      goal_id: executiveStepGoalIdSchema.parse(row.goal_id),
+      goal_last_progress_ts:
+        row.goal_last_progress_ts === null || row.goal_last_progress_ts === undefined
+          ? null
+          : Number(row.goal_last_progress_ts),
+      due_at: Number(row.due_at),
+    }));
   }
 
   topOpen(goalId: GoalId): ExecutiveStep | null {

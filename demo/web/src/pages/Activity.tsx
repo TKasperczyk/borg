@@ -63,6 +63,10 @@ function journalTimeLabel(date: Date): string {
   return day === todayDayString() ? hm(date) : `${dayLabel(date)} · ${hm(date)}`;
 }
 
+function hmsClock(date: Date): string {
+  return `${hm(date)}:${String(date.getSeconds()).padStart(2, "0")}`;
+}
+
 function shortId(id: string): string {
   return id.length <= 8 ? id : id.slice(0, 8);
 }
@@ -286,30 +290,29 @@ function WakeSources({ autonomy }: { autonomy: AutonomyStateResponse }) {
         <span>WAKE SOURCES</span>
         <b>{autonomy.scheduler.enabled ? "enabled" : "disabled"}</b>
       </div>
+      {autonomy.scheduler.next_tick_at === null ? null : (
+        <div className="wake-source-summary">
+          next evaluation {hmsClock(new Date(autonomy.scheduler.next_tick_at))}
+        </div>
+      )}
       <div className="wake-source-list">
         {autonomy.wake_sources.map((source) => {
-          const stateClass =
-            source.enabled === true
-              ? "wake-dot wake-dot-on"
-              : source.enabled === false
-                ? "wake-dot wake-dot-off"
-                : "wake-dot wake-dot-unknown";
-          const stateLabel =
-            source.enabled === true
-              ? "enabled"
-              : source.enabled === false
-                ? "disabled"
-                : "state unknown";
+          const stateClass = source.enabled ? "wake-dot wake-dot-on" : "wake-dot wake-dot-off";
+          const stateLabel = source.enabled ? "enabled" : "disabled";
+          const scheduleLabel =
+            source.wake_source_type === "condition"
+              ? "event-driven"
+              : source.next_due_at === null || source.next_due_at === undefined
+                ? "nothing scheduled"
+                : `next ${journalTimeLabel(new Date(source.next_due_at))}`;
 
           return (
             <div className="wake-source-row" key={source.name}>
               <span aria-label={`${source.name} ${stateLabel}`} className={stateClass} />
               <div>
-                <b className={source.enabled === null ? "wake-source-name-unknown" : undefined}>
-                  {source.name}
-                </b>
+                <b>{source.name}</b>
                 <span>
-                  {stateLabel}
+                  {scheduleLabel}
                   {source.last_fired === null
                     ? " / no recent fire"
                     : ` / last ${hm(new Date(source.last_fired))}`}

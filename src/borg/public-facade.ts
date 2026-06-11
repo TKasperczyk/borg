@@ -3,6 +3,7 @@
 
 import type {
   AutonomyConditionName,
+  AutonomySchedulerDescription,
   AutonomyWakeSourceCategory,
   AutonomyWakeSourceName,
   AutonomyWakeSourceType,
@@ -1092,6 +1093,7 @@ export type BorgAutonomyObserver = {
 export type BorgAutonomyController = {
   setObserver(observer: BorgAutonomyObserver | null): void;
   isEnabled(): boolean;
+  describe(): Promise<AutonomySchedulerDescription>;
   start(): void;
   stop(options?: { graceful?: boolean }): Promise<void>;
   tick(): Promise<TickResult>;

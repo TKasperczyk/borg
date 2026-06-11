@@ -6,6 +6,8 @@ export {
 } from "./values-repository.js";
 export {
   GoalsRepository,
+  type GoalFollowupDueCandidate,
+  type GoalFollowupDueCandidateOptions,
   type GoalListOptions,
   type GoalStatusUpdateOptions,
   type GoalsRepositoryOptions,

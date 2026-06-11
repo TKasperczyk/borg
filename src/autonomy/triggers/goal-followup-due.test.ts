@@ -47,6 +47,69 @@ describe("goal followup due trigger", () => {
     });
   });
 
+  it("describes the next deadline or staleness threshold without firing", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+
+    harness.goalsRepository.add({
+      description: "Future deadline",
+      priority: 9,
+      provenance: { kind: "manual" },
+      targetAt: clock.now() + 120_000,
+    });
+    harness.goalsRepository.add({
+      description: "Future stale goal",
+      priority: 7,
+      provenance: { kind: "manual" },
+      createdAt: clock.now() - 20_000,
+    });
+    const trigger = createGoalFollowupDueTrigger({
+      goalsRepository: harness.goalsRepository,
+      watermarkRepository,
+      lookaheadMs: 20_000,
+      staleMs: 100_000,
+      clock,
+    });
+
+    await expect(trigger.nextDueAt!()).resolves.toBe(clock.now() + 80_001);
+
+    clock.advance(90_000);
+    await expect(trigger.nextDueAt!()).resolves.toBe(clock.now());
+  });
+
+  it("returns null instead of scanning beyond the observability candidate cap", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+
+    for (let index = 0; index < 513; index += 1) {
+      harness.goalsRepository.add({
+        description: `Bounded follow-up goal ${index}`,
+        priority: 1,
+        provenance: { kind: "manual" },
+        targetAt: clock.now() + 120_000 + index,
+      });
+    }
+    const trigger = createGoalFollowupDueTrigger({
+      goalsRepository: harness.goalsRepository,
+      watermarkRepository,
+      lookaheadMs: 20_000,
+      staleMs: 100_000,
+      clock,
+    });
+
+    await expect(trigger.nextDueAt!()).resolves.toBeNull();
+  });
+
   it("fires for stale goals with no recent progress", async () => {
     const clock = new ManualClock(2_000_000);
     const harness = await createOfflineTestHarness({ clock });

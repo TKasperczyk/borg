@@ -220,6 +220,64 @@ describe("executive focus due trigger", () => {
     });
   });
 
+  it("describes the next due executive step boundary without scoring", async () => {
+    const harness = await createHarness();
+    const goal = harness.goalsRepository.add({
+      description: "Ship executive focus",
+      priority: 10,
+      provenance: { kind: "manual" },
+    });
+    harness.executiveStepsRepository.add({
+      goalId: goal.id,
+      description: "Act when the step enters its lead window",
+      kind: "act",
+      dueAt: harness.clock.now() + 120_000,
+      provenance: { kind: "manual" },
+    });
+    const trigger = createTrigger(harness, {
+      dueLeadMs: 30_000,
+    });
+
+    await expect(trigger.nextDueAt!()).resolves.toBe(harness.clock.now() + 90_000);
+
+    harness.clock.advance(100_000);
+    await expect(trigger.nextDueAt!()).resolves.toBe(harness.clock.now());
+
+    harness.watermarkRepository.set(
+      `autonomy:executive-focus-due:cooldown:${goal.id}`,
+      "default" as never,
+      {
+        lastTs: harness.clock.now(),
+        lastEntryId: "cooldown",
+      },
+    );
+    await expect(trigger.nextDueAt!()).resolves.toBe(harness.clock.now() + 3_600_000);
+  });
+
+  it("returns null instead of scanning beyond the due-step observability candidate cap", async () => {
+    const harness = await createHarness();
+
+    for (let index = 0; index < 513; index += 1) {
+      const goal = harness.goalsRepository.add({
+        description: `Bounded executive goal ${index}`,
+        priority: 1,
+        provenance: { kind: "manual" },
+      });
+      harness.executiveStepsRepository.add({
+        goalId: goal.id,
+        description: `Bounded executive step ${index}`,
+        kind: "act",
+        dueAt: harness.clock.now() + 120_000 + index,
+        provenance: { kind: "manual" },
+      });
+    }
+    const trigger = createTrigger(harness, {
+      dueLeadMs: 30_000,
+    });
+
+    await expect(trigger.nextDueAt!()).resolves.toBeNull();
+  });
+
   it("uses embedding context fit for autonomy executive scoring", async () => {
     const harness = await createHarness(1_000_000, new ApolloEmbeddingClient());
     const goal = harness.goalsRepository.add({

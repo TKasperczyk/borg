@@ -1433,6 +1433,258 @@ describe("AutonomyScheduler", () => {
     });
   });
 
+  it("describes registered sources, unregistered sources, next tick, and budget", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const wakeRepository = new AutonomyWakesRepository({
+      db: harness.db,
+      clock,
+    });
+    wakeRepository.record({
+      trigger_name: "scheduled_wake",
+      session_id: DEFAULT_SESSION_ID,
+      wake_source_type: "trigger",
+      source_category: "contemplative",
+    });
+    const setIntervalFn = vi.fn((callback: () => void) => {
+      void callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    });
+    const clearIntervalFn = vi.fn<typeof clearInterval>();
+    const scheduler = createScheduler({
+      db: harness.db,
+      wakeRepository,
+      enabled: true,
+      intervalMs: 5_000,
+      maxWakesPerWindow: 6,
+      budgetWindowMs: 60_000,
+      reservedContemplativeWakesPerWindow: 2,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      watermarkRepository: new StreamWatermarkRepository({
+        db: harness.db,
+        clock,
+      }),
+      turnOrchestrator: {
+        run: vi.fn(),
+      },
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({
+            dataDir: harness.tempDir,
+            sessionId,
+            clock,
+          }),
+        clock,
+      }),
+      sources: [
+        {
+          name: "scheduled_wake",
+          type: "trigger",
+          sourceCategory: "contemplative",
+          scan: vi.fn(async () => []),
+          nextDueAt: vi.fn(async () => clock.now() + 30_000),
+          buildTurn() {
+            return {
+              audience: "self",
+              stakes: "low",
+              userMessage: "Wake",
+            };
+          },
+        },
+        {
+          name: "commitment_revoked",
+          type: "condition",
+          sourceCategory: "operational",
+          scan: vi.fn(async () => []),
+          buildTurn() {
+            return {
+              audience: "self",
+              stakes: "low",
+              userMessage: "Condition",
+            };
+          },
+        },
+      ],
+      setIntervalFn: setIntervalFn as unknown as typeof setInterval,
+      clearIntervalFn,
+    });
+
+    await expect(scheduler.describe()).resolves.toMatchObject({
+      enabled: true,
+      interval_ms: 5_000,
+      next_tick_at: null,
+      budget: {
+        max_wakes_per_window: 6,
+        window_ms: 60_000,
+        used_in_current_window: 1,
+        reserved_contemplative_wakes_per_window: 2,
+        contemplative_used_in_current_window: 1,
+      },
+      sources: expect.arrayContaining([
+        {
+          name: "scheduled_wake",
+          type: "trigger",
+          category: "contemplative",
+          enabled: true,
+          next_due_at: 1_030_000,
+        },
+        {
+          name: "scheduled_reflection",
+          type: "trigger",
+          category: "contemplative",
+          enabled: false,
+          next_due_at: null,
+        },
+        {
+          name: "commitment_revoked",
+          type: "condition",
+          category: "operational",
+          enabled: true,
+        },
+      ]),
+    });
+
+    const condition = (await scheduler.describe()).sources.find(
+      (source) => source.name === "commitment_revoked",
+    );
+    expect(condition).not.toHaveProperty("next_due_at");
+
+    scheduler.start();
+    await expect(scheduler.describe()).resolves.toMatchObject({
+      next_tick_at: 1_005_000,
+    });
+    await scheduler.stop();
+  });
+
+  it("keeps next_tick_at null while stopped and resets stale tick anchors on start", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const setIntervalFn = vi.fn((callback: () => void) => {
+      void callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    });
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 5_000,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      watermarkRepository: new StreamWatermarkRepository({
+        db: harness.db,
+        clock,
+      }),
+      turnOrchestrator: {
+        run: vi.fn(),
+      },
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({
+            dataDir: harness.tempDir,
+            sessionId,
+            clock,
+          }),
+        clock,
+      }),
+      sources: [],
+      setIntervalFn: setIntervalFn as unknown as typeof setInterval,
+      clearIntervalFn: vi.fn(),
+    });
+
+    await scheduler.tick();
+    await expect(scheduler.describe()).resolves.toMatchObject({
+      next_tick_at: null,
+    });
+
+    clock.advance(20_000);
+    scheduler.start();
+    await expect(scheduler.describe()).resolves.toMatchObject({
+      next_tick_at: 1_025_000,
+    });
+  });
+
+  it("clears running tick anchors across stop/start", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const setIntervalFn = vi.fn((callback: () => void) => {
+      void callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    });
+    const clearIntervalFn = vi.fn<typeof clearInterval>();
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 5_000,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      watermarkRepository: new StreamWatermarkRepository({
+        db: harness.db,
+        clock,
+      }),
+      turnOrchestrator: {
+        run: vi.fn(),
+      },
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({
+            dataDir: harness.tempDir,
+            sessionId,
+            clock,
+          }),
+        clock,
+      }),
+      sources: [],
+      setIntervalFn: setIntervalFn as unknown as typeof setInterval,
+      clearIntervalFn,
+    });
+
+    scheduler.start();
+    await expect(scheduler.describe()).resolves.toMatchObject({
+      next_tick_at: 1_005_000,
+    });
+    await scheduler.tick();
+    clock.advance(20_000);
+    await expect(scheduler.describe()).resolves.toMatchObject({
+      next_tick_at: 1_020_000,
+    });
+    await scheduler.stop();
+    await expect(scheduler.describe()).resolves.toMatchObject({
+      next_tick_at: null,
+    });
+
+    clock.advance(10_000);
+    scheduler.start();
+    await expect(scheduler.describe()).resolves.toMatchObject({
+      next_tick_at: 1_035_000,
+    });
+  });
+
   it("waits for an active tick to finish during graceful stop", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({

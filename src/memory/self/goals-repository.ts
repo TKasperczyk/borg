@@ -48,6 +48,17 @@ export type GoalListOptions = {
   ownerEntityId?: EntityId | null;
 };
 
+export type GoalFollowupDueCandidate = {
+  goal: GoalRecord;
+  due_at: number;
+};
+
+export type GoalFollowupDueCandidateOptions = {
+  lookaheadMs: number;
+  staleMs: number;
+  limit: number;
+};
+
 const GOAL_SELECT_COLUMNS = `
   id, record_version, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
   created_at, target_at, audience_entity_id, owner_entity_id, source_stream_entry_ids,
@@ -273,6 +284,41 @@ export class GoalsRepository {
     }
 
     return roots;
+  }
+
+  listActiveFollowupDueCandidatesReadOnly(
+    options: GoalFollowupDueCandidateOptions,
+  ): GoalFollowupDueCandidate[] {
+    const limit = Number.isFinite(options.limit) ? Math.max(0, Math.floor(options.limit)) : 0;
+    const rows = this.db
+      .prepare(
+        `
+          SELECT ${GOAL_SELECT_COLUMNS},
+            CASE
+              WHEN target_at IS NULL THEN COALESCE(last_progress_ts, created_at) + ? + 1
+              WHEN target_at - ? + 1 < COALESCE(last_progress_ts, created_at) + ? + 1
+                THEN target_at - ? + 1
+              ELSE COALESCE(last_progress_ts, created_at) + ? + 1
+            END AS autonomy_due_at
+          FROM goals
+          WHERE status = 'active'
+          ORDER BY autonomy_due_at ASC, priority DESC, created_at ASC, id ASC
+          LIMIT ?
+        `,
+      )
+      .all(
+        options.staleMs,
+        options.lookaheadMs,
+        options.staleMs,
+        options.lookaheadMs,
+        options.staleMs,
+        limit,
+      ) as Record<string, unknown>[];
+
+    return rows.map((row) => ({
+      goal: mapGoalRow(row),
+      due_at: Number(row.autonomy_due_at),
+    }));
   }
 
   updateStatus(

@@ -75,6 +75,25 @@ export function createScheduledWakeTrigger(
 
       return dueEvents;
     },
+    async nextDueAt() {
+      const nowMs = clock.now();
+      const pending = options.scheduledWakesRepository.list({
+        status: "pending",
+        limit: 10_000,
+      });
+
+      for (const wake of pending) {
+        const watermarkProcessName = `${WATERMARK_PREFIX}:${wake.id}`;
+
+        if (options.watermarkRepository.get(watermarkProcessName, sessionId) !== null) {
+          continue;
+        }
+
+        return Math.max(wake.fire_at, nowMs);
+      }
+
+      return null;
+    },
     buildTurn(event) {
       return {
         audience: "self",

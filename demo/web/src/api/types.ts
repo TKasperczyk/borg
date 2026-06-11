@@ -187,14 +187,23 @@ export type ActivityResponse = {
   digest: ActivityDigest;
 };
 
-export type AutonomyWakeSource = {
+type AutonomyWakeSourceBase = {
   name: string;
-  enabled: boolean | null;
-  wake_source_type: "trigger" | "condition" | null;
-  source_category: "contemplative" | "operational" | null;
+  enabled: boolean;
+  source_category: "contemplative" | "operational";
   last_fired: number | null;
   wake_count: number;
 };
+
+export type AutonomyWakeSource =
+  | (AutonomyWakeSourceBase & {
+      wake_source_type: "trigger";
+      next_due_at: number | null;
+    })
+  | (AutonomyWakeSourceBase & {
+      wake_source_type: "condition";
+      next_due_at?: never;
+    });
 
 export type AutonomyWakeRecord = {
   id: string;
@@ -210,6 +219,8 @@ export type AutonomyWakeRecord = {
 export type AutonomyStateResponse = {
   scheduler: {
     enabled: boolean;
+    interval_ms: number;
+    next_tick_at: number | null;
   };
   wake_sources: AutonomyWakeSource[];
   wake_budget: {

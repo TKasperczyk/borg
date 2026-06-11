@@ -471,6 +471,12 @@
   gap: 7px;
 }
 
+.wake-source-summary {
+  margin: -5px 0 10px;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
 .wake-source-row {
   display: grid;
   grid-template-columns: 10px minmax(0, 1fr);
@@ -490,10 +496,6 @@
 }
 
 .wake-dot-off {
-  background: var(--border-strong);
-}
-
-.wake-dot-unknown {
   border: 1px solid var(--border-strong);
   background: transparent;
 }
@@ -510,10 +512,6 @@
 .wake-source-row b {
   color: var(--text-bright);
   font-size: 11px;
-}
-
-.wake-source-name-unknown {
-  color: var(--text-dim);
 }
 
 .wake-source-row span {

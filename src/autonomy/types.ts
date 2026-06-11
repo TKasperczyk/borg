@@ -28,6 +28,51 @@ export type AutonomyWakeSourceName = (typeof AUTONOMY_WAKE_SOURCE_NAMES)[number]
 export type AutonomyWakeSourceType = "trigger" | "condition";
 export type AutonomyWakeSourceCategory = "contemplative" | "operational";
 
+export const AUTONOMY_WAKE_SOURCE_METADATA = {
+  commitment_expiring: {
+    type: "trigger",
+    category: "operational",
+  },
+  open_question_dormant: {
+    type: "trigger",
+    category: "operational",
+  },
+  scheduled_reflection: {
+    type: "trigger",
+    category: "contemplative",
+  },
+  scheduled_wake: {
+    type: "trigger",
+    category: "contemplative",
+  },
+  goal_followup_due: {
+    type: "trigger",
+    category: "operational",
+  },
+  executive_focus_due: {
+    type: "trigger",
+    category: "operational",
+  },
+  commitment_revoked: {
+    type: "condition",
+    category: "operational",
+  },
+  mood_valence_drop: {
+    type: "condition",
+    category: "operational",
+  },
+  open_question_urgency_bump: {
+    type: "condition",
+    category: "operational",
+  },
+} as const satisfies Record<
+  AutonomyWakeSourceName,
+  {
+    type: AutonomyWakeSourceType;
+    category: AutonomyWakeSourceCategory;
+  }
+>;
+
 export type DueEvent<Payload extends Record<string, unknown> = Record<string, unknown>> = {
   id: string;
   sourceName: AutonomyWakeSourceName;
@@ -44,6 +89,7 @@ export type AutonomyWakeSource<Payload extends Record<string, unknown> = Record<
     sourceCategory: AutonomyWakeSourceCategory;
     scan(): Promise<DueEvent<Payload>[]>;
     buildTurn(event: DueEvent<Payload>): TurnInput;
+    nextDueAt?(): Promise<number | null>;
     // Optional lifecycle hook invoked by the scheduler immediately after a wake
     // fires successfully (watermark committed). Lets a source make its own
     // persisted state authoritative at fire-time instead of waiting for the next
@@ -57,6 +103,41 @@ export type AutonomyTrigger<Payload extends Record<string, unknown> = Record<str
 
 export type AutonomyCondition<Payload extends Record<string, unknown> = Record<string, unknown>> =
   AutonomyWakeSource<Payload>;
+
+export type AutonomySchedulerBudgetDescription = {
+  max_wakes_per_window: number;
+  window_ms: number;
+  used_in_current_window: number;
+  reserved_contemplative_wakes_per_window: number;
+  contemplative_used_in_current_window: number;
+};
+
+export type AutonomySchedulerTriggerSourceDescription = {
+  name: AutonomyTriggerName;
+  type: "trigger";
+  category: AutonomyWakeSourceCategory;
+  enabled: boolean;
+  next_due_at: number | null;
+};
+
+export type AutonomySchedulerConditionSourceDescription = {
+  name: AutonomyConditionName;
+  type: "condition";
+  category: AutonomyWakeSourceCategory;
+  enabled: boolean;
+};
+
+export type AutonomySchedulerSourceDescription =
+  | AutonomySchedulerTriggerSourceDescription
+  | AutonomySchedulerConditionSourceDescription;
+
+export type AutonomySchedulerDescription = {
+  enabled: boolean;
+  interval_ms: number;
+  next_tick_at: number | null;
+  budget: AutonomySchedulerBudgetDescription;
+  sources: AutonomySchedulerSourceDescription[];
+};
 
 export type AutonomyTickEventResult = {
   id: string;

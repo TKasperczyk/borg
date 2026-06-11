@@ -10,6 +10,7 @@ import type { AutonomyTrigger, DueEvent } from "../types.js";
 
 const TRIGGER_NAME = "commitment_expiring" as const;
 const WATERMARK_PREFIX = "autonomy:commitment-expiring";
+const NEXT_DUE_CANDIDATE_LIMIT = 512;
 
 type CommitmentExpiringPayload = {
   commitment_id: CommitmentRecord["id"];
@@ -33,6 +34,10 @@ export function createCommitmentExpiringTrigger(
 ): AutonomyTrigger<CommitmentExpiringPayload> {
   const clock = options.clock ?? new SystemClock();
   const sessionId = options.sessionId ?? DEFAULT_SESSION_ID;
+
+  function dueAtForCommitment(expiresAt: number): number {
+    return expiresAt - options.lookaheadMs + 1;
+  }
 
   return {
     name: TRIGGER_NAME,
@@ -88,6 +93,35 @@ export function createCommitmentExpiringTrigger(
           };
         })
         .filter((event): event is DueEvent<CommitmentExpiringPayload> => event !== null);
+    },
+    async nextDueAt() {
+      const nowMs = clock.now();
+      const commitments = options.commitmentRepository.listFutureExpiringReadOnly({
+        nowMs,
+        limit: NEXT_DUE_CANDIDATE_LIMIT + 1,
+      });
+
+      if (commitments.length > NEXT_DUE_CANDIDATE_LIMIT) {
+        return null;
+      }
+
+      for (const commitment of commitments) {
+        const expiresAt = commitment.expires_at;
+
+        if (expiresAt === null) {
+          continue;
+        }
+
+        const watermarkProcessName = `${WATERMARK_PREFIX}:${commitment.id}:${expiresAt}`;
+
+        if (options.watermarkRepository.get(watermarkProcessName, sessionId) !== null) {
+          continue;
+        }
+
+        return Math.max(dueAtForCommitment(expiresAt), nowMs);
+      }
+
+      return null;
     },
     buildTurn(event) {
       return {

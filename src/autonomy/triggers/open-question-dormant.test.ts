@@ -52,6 +52,37 @@ describe("open question dormant trigger", () => {
     expect(events.map((event) => event.payload.open_question_id)).toEqual([dormant.id]);
   });
 
+  it("describes the next dormancy threshold without firing", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+
+    harness.openQuestionsRepository.add({
+      question: "When should this be revisited?",
+      urgency: 0.5,
+      provenance: { kind: "system" },
+      source: "user",
+      last_touched: clock.now() - 10_000,
+    });
+    const trigger = createOpenQuestionDormantTrigger({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      watermarkRepository,
+      dormantMs: 50_000,
+      clock,
+    });
+
+    await expect(trigger.nextDueAt!()).resolves.toBe(clock.now() + 40_001);
+
+    clock.advance(50_000);
+    await expect(trigger.nextDueAt!()).resolves.toBe(clock.now());
+  });
+
   it("renders dormant question disclosure labels in the autonomy payload", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({

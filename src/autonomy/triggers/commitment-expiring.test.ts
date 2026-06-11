@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import { StreamWatermarkRepository } from "../../stream/index.js";
@@ -59,6 +62,91 @@ describe("commitment expiring trigger", () => {
     });
 
     expect(await trigger.scan()).toEqual([]);
+  });
+
+  it("describes the next lookahead boundary for active expiring commitments", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+
+    const commitment = harness.commitmentRepository.add({
+      type: "promise",
+      directiveFamily: "future_commitment",
+      directive: "Handle the future commitment",
+      priority: 4,
+      provenance: { kind: "manual" },
+      expiresAt: clock.now() + 120_000,
+    });
+    const trigger = createCommitmentExpiringTrigger({
+      commitmentRepository: harness.commitmentRepository,
+      watermarkRepository,
+      lookaheadMs: 20_000,
+      clock,
+    });
+
+    await expect(trigger.nextDueAt!()).resolves.toBe(commitment.expires_at! - 20_000 + 1);
+
+    clock.advance(110_000);
+    await expect(trigger.nextDueAt!()).resolves.toBe(clock.now());
+  });
+
+  it("describes next due without materializing expired commitments", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+
+    const expired = harness.commitmentRepository.add({
+      type: "promise",
+      directiveFamily: "expired_commitment",
+      directive: "This commitment expires before the read",
+      priority: 4,
+      provenance: { kind: "manual" },
+      expiresAt: clock.now() + 10_000,
+    });
+    const future = harness.commitmentRepository.add({
+      type: "promise",
+      directiveFamily: "future_commitment",
+      directive: "This commitment expires soon",
+      priority: 4,
+      provenance: { kind: "manual" },
+      expiresAt: clock.now() + 120_000,
+    });
+    const trigger = createCommitmentExpiringTrigger({
+      commitmentRepository: harness.commitmentRepository,
+      watermarkRepository,
+      lookaheadMs: 20_000,
+      clock,
+    });
+    clock.advance(20_000);
+    harness.db.pragma("wal_checkpoint(TRUNCATE)");
+    const beforeBytes = readFileSync(join(harness.tempDir, "borg.db"));
+    const beforeIdentityEvents = harness.identityEventRepository.list({
+      recordType: "commitment",
+      limit: 100,
+    });
+
+    await expect(trigger.nextDueAt!()).resolves.toBe(future.expires_at! - 20_000 + 1);
+
+    const afterBytes = readFileSync(join(harness.tempDir, "borg.db"));
+    const afterIdentityEvents = harness.identityEventRepository.list({
+      recordType: "commitment",
+      limit: 100,
+    });
+    expect(afterBytes.equals(beforeBytes)).toBe(true);
+    expect(harness.commitmentRepository.get(expired.id)?.expired_at).toBeNull();
+    expect(afterIdentityEvents).toEqual(beforeIdentityEvents);
   });
 
   it("renders expiring commitment disclosure labels in the autonomy payload", async () => {

@@ -11,6 +11,7 @@ import type { AutonomyTrigger, DueEvent } from "../types.js";
 const TRIGGER_NAME = "goal_followup_due" as const;
 const WATERMARK_PREFIX = "autonomy:goal-followup-due";
 const DAY_MS = 24 * 60 * 60 * 1_000;
+const NEXT_DUE_CANDIDATE_LIMIT = 512;
 
 export type GoalFollowupDuePayload = {
   goal_id: GoalRecord["id"];
@@ -47,6 +48,10 @@ function flattenGoals(goals: readonly GoalTreeNode[]): GoalRecord[] {
   }
 
   return flattened;
+}
+
+function dueAfterStrictThreshold(thresholdTs: number): number {
+  return thresholdTs + 1;
 }
 
 export function createGoalFollowupDueTrigger(
@@ -112,6 +117,41 @@ export function createGoalFollowupDueTrigger(
         (left, right) =>
           left.sortTs - right.sortTs || right.payload.priority - left.payload.priority,
       );
+    },
+    async nextDueAt() {
+      const nowMs = clock.now();
+      const candidates = options.goalsRepository.listActiveFollowupDueCandidatesReadOnly({
+        lookaheadMs: options.lookaheadMs,
+        staleMs: options.staleMs,
+        limit: NEXT_DUE_CANDIDATE_LIMIT + 1,
+      });
+
+      if (candidates.length > NEXT_DUE_CANDIDATE_LIMIT) {
+        return null;
+      }
+
+      for (const candidate of candidates) {
+        const goal = candidate.goal;
+        const baseProgressTs = goal.last_progress_ts ?? goal.created_at;
+        const targetAtKey = goal.target_at ?? "no-target";
+        const progressKey = goal.last_progress_ts ?? goal.created_at;
+        const watermarkProcessName = `${WATERMARK_PREFIX}:${goal.id}:${targetAtKey}:${progressKey}`;
+
+        if (options.watermarkRepository.get(watermarkProcessName, sessionId) !== null) {
+          continue;
+        }
+
+        const staleDueAt = dueAfterStrictThreshold(baseProgressTs + options.staleMs);
+        const deadlineDueAt =
+          goal.target_at === null
+            ? Number.POSITIVE_INFINITY
+            : dueAfterStrictThreshold(goal.target_at - options.lookaheadMs);
+        const dueAt = Math.min(candidate.due_at, staleDueAt, deadlineDueAt);
+
+        return Math.max(dueAt, nowMs);
+      }
+
+      return null;
     },
     buildTurn(event) {
       return {

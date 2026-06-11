@@ -32,6 +32,16 @@ export function createScheduledReflectionTrigger(
   const sessionId = options.sessionId ?? DEFAULT_SESSION_ID;
   const initialWindowStartMs = clock.now();
 
+  function nextWindowStart(): number {
+    const watermark = options.watermarkRepository.get(WATERMARK_PROCESS_NAME, sessionId);
+
+    if (watermark === null) {
+      return initialWindowStartMs;
+    }
+
+    return watermark.lastTs + options.intervalMs;
+  }
+
   return {
     name: TRIGGER_NAME,
     type: "trigger",
@@ -68,6 +78,11 @@ export function createScheduledReflectionTrigger(
           },
         } satisfies DueEvent<ScheduledReflectionPayload>,
       ];
+    },
+    async nextDueAt() {
+      const nowMs = clock.now();
+
+      return Math.max(nextWindowStart(), nowMs);
     },
     buildTurn(event) {
       return {

@@ -12,11 +12,15 @@ import { selfPrivateMemoryDisclosureLabel } from "../memory/common/disclosure-la
 
 import type {
   AutonomyConditionName,
+  AutonomySchedulerDescription,
+  AutonomySchedulerSourceDescription,
   AutonomyTickEventResult,
+  AutonomyTriggerName,
   AutonomyWakeSource,
   TickResult,
   DueEvent,
 } from "./types.js";
+import { AUTONOMY_WAKE_SOURCE_METADATA, AUTONOMY_WAKE_SOURCE_NAMES } from "./types.js";
 import type { AutonomyWakesRepository } from "./wakes-repository.js";
 
 type IntervalHandle = ReturnType<typeof setInterval>;
@@ -124,6 +128,8 @@ export class AutonomyScheduler {
   private intervalHandle: IntervalHandle | null = null;
   private activeTick: Promise<TickResult> | null = null;
   private observer: AutonomySchedulerObserver | null = null;
+  private intervalStartedTs: number | null = null;
+  private lastTickTs: number | null = null;
 
   constructor(private readonly options: AutonomySchedulerOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -145,6 +151,8 @@ export class AutonomyScheduler {
       return;
     }
 
+    this.intervalStartedTs = this.clock.now();
+    this.lastTickTs = null;
     this.intervalHandle = this.setIntervalFn(() => {
       if (this.activeTick !== null) {
         return;
@@ -159,6 +167,8 @@ export class AutonomyScheduler {
       this.clearIntervalFn(this.intervalHandle);
       this.intervalHandle = null;
     }
+    this.intervalStartedTs = null;
+    this.lastTickTs = null;
 
     if (options.graceful === false) {
       return;
@@ -175,8 +185,71 @@ export class AutonomyScheduler {
     return this.runTrackedTick();
   }
 
+  async describe(): Promise<AutonomySchedulerDescription> {
+    const nowMs = this.clock.now();
+    const budgetCutoff = nowMs - this.options.budgetWindowMs;
+    const registeredSources = new Map(this.options.sources.map((source) => [source.name, source]));
+    const sources: AutonomySchedulerSourceDescription[] = [];
+
+    for (const name of AUTONOMY_WAKE_SOURCE_NAMES) {
+      const metadata = AUTONOMY_WAKE_SOURCE_METADATA[name];
+      const source = registeredSources.get(name);
+
+      if (metadata.type === "condition") {
+        sources.push({
+          name: name as AutonomyConditionName,
+          type: "condition",
+          category: metadata.category,
+          enabled: source !== undefined,
+        });
+        continue;
+      }
+
+      sources.push({
+        name: name as AutonomyTriggerName,
+        type: "trigger",
+        category: metadata.category,
+        enabled: source !== undefined,
+        next_due_at: source?.nextDueAt === undefined ? null : await source.nextDueAt(),
+      });
+    }
+
+    return {
+      enabled: this.options.enabled,
+      interval_ms: this.options.intervalMs,
+      next_tick_at: this.describeNextTickAt(nowMs),
+      budget: {
+        max_wakes_per_window: this.options.maxWakesPerWindow,
+        window_ms: this.options.budgetWindowMs,
+        used_in_current_window: this.options.wakeRepository.countSince(budgetCutoff),
+        reserved_contemplative_wakes_per_window: Math.min(
+          this.options.maxWakesPerWindow,
+          Math.max(0, Math.floor(this.options.reservedContemplativeWakesPerWindow ?? 0)),
+        ),
+        contemplative_used_in_current_window: this.options.wakeRepository.countSince(budgetCutoff, {
+          sourceCategory: "contemplative",
+        }),
+      },
+      sources,
+    };
+  }
+
+  private describeNextTickAt(nowMs: number): number | null {
+    if (this.intervalHandle === null) {
+      return null;
+    }
+
+    const tickAnchor =
+      this.lastTickTs === null || this.intervalStartedTs === null
+        ? (this.lastTickTs ?? this.intervalStartedTs ?? nowMs)
+        : Math.max(this.lastTickTs, this.intervalStartedTs);
+
+    return Math.max(tickAnchor + this.options.intervalMs, nowMs);
+  }
+
   private async tickOnce(): Promise<TickResult> {
     const nowMs = this.clock.now();
+    this.lastTickTs = nowMs;
     const scannedSources = this.options.sources.map((source) => source.name);
 
     if (!this.options.enabled) {

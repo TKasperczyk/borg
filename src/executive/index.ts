@@ -8,6 +8,8 @@ export { executiveMigrations } from "./migrations.js";
 export { canTransitionExecutiveStepStatus, VALID_TRANSITIONS } from "./types.js";
 export {
   ExecutiveStepsRepository,
+  type ExecutiveDueStepWakeCandidate,
+  type ExecutiveDueStepWakeCandidateOptions,
   type ExecutiveStepAbandonReason,
   type ExecutiveStepAddInput,
   type ExecutiveStepsRepositoryOptions,
