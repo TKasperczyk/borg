@@ -1,5 +1,4 @@
 import { useMemo, useState } from "react";
-import { Link } from "wouter";
 
 import {
   ApiError,
@@ -55,6 +54,13 @@ function dateFromDay(day: string): Date {
 function dayTabLabel(day: string): string {
   const label = dayLabel(dateFromDay(day));
   return day === todayDayString() ? `TODAY / ${label}` : label;
+}
+
+function journalTimeLabel(date: Date): string {
+  const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate(),
+  ).padStart(2, "0")}`;
+  return day === todayDayString() ? hm(date) : `${dayLabel(date)} · ${hm(date)}`;
 }
 
 function shortId(id: string): string {
@@ -371,7 +377,7 @@ function TrainOfThought({ entries }: { entries: readonly JournalEntry[] }) {
       </div>
       {entries.map((entry) => (
         <div className="thought-row" key={entry.id}>
-          <time>{hm(new Date(entry.updated_at))}</time>
+          <time>{journalTimeLabel(new Date(entry.updated_at))}</time>
           {entry.source_turn_id === null ? (
             <span>journal</span>
           ) : (
@@ -391,7 +397,7 @@ export function ActivityPage() {
   const activity = useQuery(`activity:${selectedDay ?? "today"}`, () => fetchActivity(selectedDay));
   const autonomy = useQuery("autonomy", fetchAutonomyState);
   const activeDay = activity.data?.day ?? selectedDay ?? todayDayString();
-  const journal = useQuery(`journal:${activeDay}`, () => fetchJournal(10, activeDay));
+  const journal = useQuery("journal", () => fetchJournal(10));
   const rows = useMemo(() => {
     const source = activity.data?.rows ?? [];
     return originFilter === "all" ? source : source.filter((row) => row.origin === originFilter);
@@ -465,9 +471,6 @@ export function ActivityPage() {
             </>
           )}
           <TrainOfThought entries={journalEntries} />
-          <div className="activity-rail-link">
-            <Link href="/dream">per-process budgets -&gt; DREAM</Link>
-          </div>
         </aside>
       </div>
     </main>

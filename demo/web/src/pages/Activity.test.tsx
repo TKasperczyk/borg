@@ -8,6 +8,7 @@ import { ActivityPage } from "./Activity";
 const day = "2026-06-11";
 const previousDay = "2026-06-10";
 const baseTs = Date.UTC(2026, 5, 11, 10, 0, 0);
+const previousJournalTs = Date.UTC(2026, 5, 10, 7, 55, 0);
 
 const activityFixture: ActivityResponse = {
   day,
@@ -21,7 +22,7 @@ const activityFixture: ActivityResponse = {
     observations: 0,
     suppressions: 0,
     dream_changes: 3,
-    journal_notes: 2,
+    journal_notes: 1,
   },
   rows: [
     {
@@ -120,8 +121,8 @@ const journalFixture: JournalResponse = {
       self_label: "self",
       text: "long id note",
       disclosure_class: "self_private",
-      created_at: baseTs,
-      updated_at: baseTs,
+      created_at: previousJournalTs,
+      updated_at: previousJournalTs,
       source_turn_id: "12345678-90ab-cdef-1234-567890abcdef",
       marker_stream_entry_id: null,
     },
@@ -178,10 +179,7 @@ function renderActivity() {
     if (url === "/api/autonomy") {
       return json(autonomyFixture);
     }
-    if (url === `/api/journal?limit=10&day=${day}`) {
-      return json(journalFixture);
-    }
-    if (url === `/api/journal?limit=10&day=${previousDay}`) {
+    if (url === "/api/journal?limit=10") {
       return json(journalFixture);
     }
     if (url === "/api/stream?session=s_user&limit=200") {
@@ -213,6 +211,8 @@ describe("ActivityPage", () => {
     expect(screen.getByText("3 changes")).toBeTruthy();
     expect(screen.getByText("journal notes")).toBeTruthy();
     expect(screen.getByText("private note")).toBeTruthy();
+    expect(screen.getByText("JUN 10 · 09:55")).toBeTruthy();
+    expect(screen.queryByText(/JUN 11 ·/)).toBeNull();
     expect(screen.getByText("12345678").getAttribute("title")).toBe(
       "12345678-90ab-cdef-1234-567890abcdef",
     );
@@ -283,12 +283,17 @@ describe("ActivityPage", () => {
     const { requests } = renderActivity();
 
     await screen.findByText("answer from user turn");
+    expect(requests.some((request) => request.url === "/api/journal?limit=10")).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "JUN 10" }));
 
     await waitFor(() =>
       expect(requests.some((request) => request.url === `/api/activity?day=${previousDay}`)).toBe(
         true,
       ),
+    );
+    expect(requests.filter((request) => request.url.startsWith("/api/journal")).length).toBe(1);
+    expect(requests.some((request) => request.url.startsWith("/api/journal?limit=10&day="))).toBe(
+      false,
     );
   });
 });
