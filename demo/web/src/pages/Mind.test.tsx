@@ -272,6 +272,7 @@ function deferred<T>(): Deferred<T> {
 type RenderOptions = {
   deferGoalPatch?: boolean;
   deferNode2Detail?: boolean;
+  identityOverride?: IdentityResponse;
 };
 
 function renderMind(path = "/mind", options: RenderOptions = {}) {
@@ -293,7 +294,7 @@ function renderMind(path = "/mind", options: RenderOptions = {}) {
       return json(state());
     }
     if (url === "/api/identity") {
-      return json(identity());
+      return json(options.identityOverride ?? identity());
     }
     if (url.startsWith("/api/identity/goals/goal_1") && method === "PATCH") {
       return options.deferGoalPatch ? goalPatch.promise : json({ ok: true });
@@ -451,6 +452,34 @@ describe("Mind page", () => {
         }),
       ),
     );
+  });
+
+  it("renders traits strongest-first with a preview cap and quiet empty values", async () => {
+    const base = identity();
+    const manyTraits = Array.from({ length: 12 }, (_, index) => ({
+      id: `trait_many_${index}`,
+      label: `trait label ${index}`,
+      strength: (12 - index) / 20,
+      state: index === 0 ? ("established" as const) : ("candidate" as const),
+      confidence: 0.5,
+      established_at: index === 0 ? now : null,
+      last_reinforced: now,
+    }));
+    const shuffled = [manyTraits[5]!, ...manyTraits.filter((_, index) => index !== 5)];
+    renderMind("/mind", { identityOverride: { ...base, values: [], traits: shuffled } });
+
+    expect(await screen.findByText("none recorded")).toBeTruthy();
+    expect(screen.getByText("1 established · 11 candidate")).toBeTruthy();
+
+    const rows = screen.getAllByText(/^trait label /);
+    expect(rows[0]?.textContent).toBe("trait label 0");
+    expect(rows).toHaveLength(10);
+    expect(screen.queryByText("trait label 11")).toBeNull();
+
+    fireEvent.click(screen.getByText("ALL 12"));
+    expect(screen.getByText("trait label 11")).toBeTruthy();
+    fireEvent.click(screen.getByText("STRONGEST 10"));
+    expect(screen.queryByText("trait label 11")).toBeNull();
   });
 
   it("uses block copy for inspector goal actions", async () => {

@@ -85,6 +85,8 @@ function barValue(value: number): number {
   return value > 1 ? clamp(value / 10) : clamp(value);
 }
 
+const TRAIT_PREVIEW_COUNT = 10;
+
 function dateText(ts: number | null | undefined): string {
   return typeof ts === "number" ? dayLabel(new Date(ts)) : "—";
 }
@@ -482,9 +484,9 @@ function IdentityGrid({
 }) {
   const goals = flattenGoals(identity?.goals ?? []);
   const openQuestions = identity?.open_questions ?? [];
-  const traits = [...(identity?.traits ?? [])].sort((left, right) =>
-    left.state === right.state ? 0 : left.state === "established" ? -1 : right.state === "established" ? 1 : 0,
-  );
+  const [showAllTraits, setShowAllTraits] = useState(false);
+  const traits = [...(identity?.traits ?? [])].sort((left, right) => right.strength - left.strength);
+  const visibleTraits = showAllTraits ? traits : traits.slice(0, TRAIT_PREVIEW_COUNT);
   const traitStateCounts = new Map<string, number>();
   for (const trait of traits) {
     traitStateCounts.set(trait.state, (traitStateCounts.get(trait.state) ?? 0) + 1);
@@ -500,6 +502,7 @@ function IdentityGrid({
     <div className="identity-grid">
       <div className="identity-cell">
         <Subhead>VALUES</Subhead>
+        {(identity?.values ?? []).length === 0 ? <div className="quiet-line">none recorded</div> : null}
         {(identity?.values ?? []).map((value) => {
           const width = barValue(value.priority) * 100;
           return (
@@ -518,16 +521,25 @@ function IdentityGrid({
           TRAITS
           {traitStateMeta.length > 0 ? <span className="mind-subhead-meta">{traitStateMeta}</span> : null}
         </Subhead>
-        <div className="trait-wrap">
-          {traits.map((trait) => (
-            <span
-              key={trait.id}
-              className={trait.state === "established" ? "trait-chip trait-chip-established" : "trait-chip"}
-            >
-              {trait.label}
-            </span>
-          ))}
-        </div>
+        {traits.length === 0 ? <div className="quiet-line">none recorded</div> : null}
+        {visibleTraits.map((trait) => (
+          <div
+            key={trait.id}
+            className={trait.state === "established" ? "value-row trait-row trait-row-established" : "value-row trait-row"}
+            title={trait.label}
+          >
+            <span>{trait.label}</span>
+            <div className="mini-track">
+              <div className="mini-fill" style={{ width: `${barValue(trait.strength) * 100}%` }} />
+            </div>
+            <b>{trait.strength.toFixed(2)}</b>
+          </div>
+        ))}
+        {traits.length > TRAIT_PREVIEW_COUNT ? (
+          <button type="button" className="load-more trait-toggle" onClick={() => setShowAllTraits((open) => !open)}>
+            {showAllTraits ? `STRONGEST ${TRAIT_PREVIEW_COUNT}` : `ALL ${traits.length}`}
+          </button>
+        ) : null}
         <Subhead className="subhead-spaced">GROWTH MARKERS</Subhead>
         {markers.map((marker) => (
           <div key={marker.id} className="marker-line">

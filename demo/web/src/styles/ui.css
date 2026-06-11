@@ -1363,7 +1363,7 @@
   width: 52px;
   height: 4px;
   flex: none;
-  background: var(--panel-mid);
+  background: var(--panel-soft);
 }
 
 .mini-fill {
@@ -1371,22 +1371,18 @@
   background: var(--ac);
 }
 
-.trait-wrap {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
 
-.trait-chip {
-  border: 1px solid var(--border);
-  padding: 2px 8px;
+.trait-row span {
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
-.trait-chip-established {
-  border-color: var(--border-strong);
+.trait-row-established span {
   color: var(--text-soft);
+}
+
+.trait-toggle {
+  margin-top: 4px;
 }
 
 .mind-subhead-meta {
@@ -1475,7 +1471,7 @@
 .row-mini-action {
   border: 0;
   background: transparent;
-  color: var(--text-dim-2);
+  color: var(--text-muted);
   cursor: pointer;
   font: inherit;
   letter-spacing: 0.06em;
@@ -1626,7 +1622,7 @@
 
 .band-card-stats {
   margin-top: 4px;
-  color: var(--text-dim-2);
+  color: var(--text-muted);
   font-size: 9.5px;
 }
 
@@ -1646,7 +1642,7 @@
 }
 
 .graph-canvas text {
-  fill: var(--text-dim-2);
+  fill: var(--text-muted);
   font-family: "JetBrains Mono Variable", monospace;
   font-size: 8.5px;
   pointer-events: none;
@@ -1728,7 +1724,7 @@
 }
 
 .graph-actions a {
-  color: var(--text-dim-2);
+  color: var(--text-muted);
   text-decoration: none;
 }
 
@@ -1865,7 +1861,7 @@
 }
 
 .inspector-row > span:last-child {
-  color: var(--text-dim-2);
+  color: var(--text-muted);
   font-size: 9.5px;
   white-space: nowrap;
 }
