@@ -1244,6 +1244,10 @@
   border-bottom: 1px solid var(--hairline);
 }
 
+.mind-tabs {
+  margin-left: 10px;
+}
+
 .mind-mood-chip {
   display: flex;
   align-items: center;
@@ -1270,12 +1274,24 @@
   flex: 1;
   flex-direction: column;
   gap: 16px;
-  overflow-y: auto;
+  min-height: 0;
+  overflow: hidden;
   padding: 16px 18px;
 }
 
 .mind-panel {
   border: 1px solid var(--hairline);
+}
+
+.mind-tab-panel {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.graph-tab-panel {
+  display: flex;
+  flex-direction: column;
 }
 
 .mind-panel-head {
@@ -1318,6 +1334,14 @@
   min-width: 0;
   padding: 12px 14px;
   background: var(--panel-deep);
+}
+
+.add-value-button {
+  margin-top: 10px;
+}
+
+.add-value-form {
+  margin-top: 8px;
 }
 
 .mind-subhead {
@@ -1511,6 +1535,7 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
+  align-items: start;
 }
 
 .filter-row {
@@ -1626,13 +1651,15 @@
 
 .graph-canvas-wrap {
   position: relative;
+  flex: 1;
+  min-height: 0;
   background: #0A0A08;
 }
 
 .graph-canvas {
   display: block;
-  width: 618px;
-  height: 312px;
+  width: 100%;
+  height: clamp(360px, 58vh, 680px);
 }
 
 .graph-canvas circle {

@@ -414,6 +414,11 @@ export type GoalPatchBody =
   | { action: "block"; note?: string }
   | { action: "progress"; note?: string; progress?: number };
 
+export type IdentityValueCreateBody = {
+  name: string;
+  description?: string;
+};
+
 export type OpenQuestionPatchBody =
   | { action: "resolve"; resolution: string }
   | { action: "abandon"; reason: string }

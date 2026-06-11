@@ -14,6 +14,7 @@ import {
   invalidateSemanticEdge,
   patchGoal,
   patchOpenQuestion,
+  postIdentityValue,
   revokeCommitment,
   revokeCreatorDirective,
   supersedeCreatorDirective,
@@ -52,8 +53,16 @@ const BAND_IDS: MemoryBandId[] = [
 ];
 
 type InspectorSection = (typeof INSPECTOR_SECTIONS)[number] | MemoryBandId;
+type MindAtlasTab = "identity" | "directives" | "memory" | "graph";
 type Filter = "active" | "all";
 type Toast = { text: string; tone: "ok" | "error" };
+
+const MIND_ATLAS_TABS: Array<{ id: MindAtlasTab; label: string; path: string }> = [
+  { id: "identity", label: "IDENTITY", path: "/mind" },
+  { id: "directives", label: "DIRECTIVES", path: "/mind/directives" },
+  { id: "memory", label: "MEMORY", path: "/mind/memory" },
+  { id: "graph", label: "GRAPH", path: "/mind/graph" },
+];
 
 function isInspectorSection(value: string): value is InspectorSection {
   return [...INSPECTOR_SECTIONS, ...BAND_IDS].includes(value as InspectorSection);
@@ -67,6 +76,20 @@ function activeInspectorSection(path: string): InspectorSection | null {
 
   const raw = decodeURIComponent(path.slice(prefix.length));
   return isInspectorSection(raw) ? raw : null;
+}
+
+function activeAtlasTab(path: string): MindAtlasTab {
+  if (path === "/mind" || path === "/mind/") {
+    return "identity";
+  }
+
+  const prefix = "/mind/";
+  if (!path.startsWith(prefix)) {
+    return "identity";
+  }
+
+  const raw = decodeURIComponent(path.slice(prefix.length));
+  return MIND_ATLAS_TABS.some((tab) => tab.id === raw) ? (raw as MindAtlasTab) : "identity";
 }
 
 function formatError(error: unknown): string {
@@ -86,6 +109,8 @@ function barValue(value: number): number {
 }
 
 const TRAIT_PREVIEW_COUNT = 10;
+const GOAL_PREVIEW_COUNT = 6;
+const OPEN_QUESTION_PREVIEW_COUNT = 8;
 
 function dateText(ts: number | null | undefined): string {
   return typeof ts === "number" ? dayLabel(new Date(ts)) : "—";
@@ -267,6 +292,7 @@ function useToast(): [Toast | null, (toast: Toast) => void] {
 export function MindPage() {
   const [location, navigate] = useLocation();
   const section = activeInspectorSection(location);
+  const activeTab = activeAtlasTab(location);
   const [toast, showToast] = useToast();
 
   const state = useQuery("state:mind-default", () => fetchState());
@@ -274,7 +300,7 @@ export function MindPage() {
   const directives = useQuery("directives:all", () => fetchCreatorDirectives("all"));
   const commitments = useQuery("commitments:all", () => fetchCommitments("all"));
   const bands = useQuery("bands", () => fetchMemoryBands());
-  const graph = useQuery("graph:40", () => fetchSemanticGraph(40));
+  const graph = useQuery("graph:60", () => fetchSemanticGraph(60));
 
   const refetchMind = useCallback(() => {
     identity.refetch();
@@ -296,6 +322,7 @@ export function MindPage() {
       <header className="mind-header">
         <span className="page-title">MIND</span>
         <span className="page-subtitle">live internals -- identity / directives / memory / belief graph</span>
+        {section === null ? <MindTabBar activeTab={activeTab} navigate={navigate} /> : null}
         <div className="mind-mood-chip" aria-label="Mood">
           <span>MOOD</span>
           <span className="mind-mood-square" />
@@ -306,6 +333,7 @@ export function MindPage() {
 
       {section === null ? (
         <MindAtlas
+          activeTab={activeTab}
           identity={identity.data}
           identityLoading={identity.loading}
           directives={directives.data?.directives ?? []}
@@ -335,7 +363,31 @@ export function MindPage() {
   );
 }
 
+function MindTabBar({
+  activeTab,
+  navigate,
+}: {
+  activeTab: MindAtlasTab;
+  navigate: (path: string) => void;
+}) {
+  return (
+    <div className="activity-tabs mind-tabs" aria-label="Mind sections">
+      {MIND_ATLAS_TABS.map((tab) => (
+        <button
+          className={activeTab === tab.id ? "activity-tab activity-tab-active" : "activity-tab"}
+          key={tab.id}
+          type="button"
+          onClick={() => navigate(tab.path)}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function MindAtlas({
+  activeTab,
   identity,
   identityLoading,
   directives,
@@ -346,6 +398,7 @@ function MindAtlas({
   showToast,
   refetchMind,
 }: {
+  activeTab: MindAtlasTab;
   identity: IdentityResponse | undefined;
   identityLoading: boolean;
   directives: CreatorDirective[];
@@ -383,53 +436,57 @@ function MindAtlas({
 
   return (
     <div className="mind-atlas">
-      <section className="mind-panel">
-        <PanelHead
-          title="IDENTITY"
-          subtitle="/api/identity -- values, goals, traits, open questions, narrative"
-          right={period === null ? "" : `period: ${period.label} (${rangeText(period)})`}
-        />
-        {identityLoading && identity === undefined ? (
-          <div className="mind-empty">loading identity…</div>
-        ) : (
-          <IdentityGrid identity={identity} showToast={showToast} refetchMind={refetchMind} />
-        )}
-      </section>
-
-      <div className="mind-ledger-grid">
-        <section className="mind-panel">
+      {activeTab === "identity" ? (
+        <section className="mind-panel mind-tab-panel">
           <PanelHead
-            title="CREATOR-DIRECTIVES"
-            titleAccent
-            subtitle="factual / operational guidance · trusted briefing"
-            right={directiveCount(directives)}
+            title="IDENTITY"
+            subtitle="/api/identity -- values, goals, traits, open questions, narrative"
+            right={period === null ? "" : `period: ${period.label} (${rangeText(period)})`}
           />
-          <FilterRow value={directiveFilter} onChange={setDirectiveFilter} />
-          <DirectiveLedger
-            directives={shownDirectives}
-            allDirectives={directives}
-            showToast={showToast}
-            refetchMind={refetchMind}
-          />
+          {identityLoading && identity === undefined ? (
+            <div className="mind-empty">loading identity…</div>
+          ) : (
+            <IdentityGrid identity={identity} showToast={showToast} refetchMind={refetchMind} />
+          )}
         </section>
-        <section className="mind-panel">
-          <PanelHead
-            title="COMMITMENTS"
-            titleAccent
-            subtitle="scoped promises & boundaries · enforced at emission"
-            right={commitmentCount(commitments)}
-          />
-          <FilterRow value={commitmentFilter} onChange={setCommitmentFilter} />
-          <CommitmentLedger
-            commitments={shownCommitments}
-            showToast={showToast}
-            refetchMind={refetchMind}
-          />
-        </section>
-      </div>
+      ) : null}
 
-      <div className="mind-bottom-grid">
-        <section className="mind-panel">
+      {activeTab === "directives" ? (
+        <div className="mind-tab-panel mind-ledger-grid">
+          <section className="mind-panel">
+            <PanelHead
+              title="CREATOR-DIRECTIVES"
+              titleAccent
+              subtitle="factual / operational guidance · trusted briefing"
+              right={directiveCount(directives)}
+            />
+            <FilterRow value={directiveFilter} onChange={setDirectiveFilter} />
+            <DirectiveLedger
+              directives={shownDirectives}
+              allDirectives={directives}
+              showToast={showToast}
+              refetchMind={refetchMind}
+            />
+          </section>
+          <section className="mind-panel">
+            <PanelHead
+              title="COMMITMENTS"
+              titleAccent
+              subtitle="scoped promises & boundaries · enforced at emission"
+              right={commitmentCount(commitments)}
+            />
+            <FilterRow value={commitmentFilter} onChange={setCommitmentFilter} />
+            <CommitmentLedger
+              commitments={shownCommitments}
+              showToast={showToast}
+              refetchMind={refetchMind}
+            />
+          </section>
+        </div>
+      ) : null}
+
+      {activeTab === "memory" ? (
+        <section className="mind-panel mind-tab-panel">
           <PanelHead title="MEMORY BANDS" subtitle="/api/memory/bands -- 8 bands, recall is global" />
           <div className="band-card-grid">
             {bands.map((band) => (
@@ -450,8 +507,10 @@ function MindAtlas({
             ))}
           </div>
         </section>
+      ) : null}
 
-        <section className="mind-panel graph-panel">
+      {activeTab === "graph" ? (
+        <section className="mind-panel mind-tab-panel graph-panel graph-tab-panel">
           <PanelHead
             title="BELIEF GRAPH"
             subtitle={`/api/semantic/graph · ${graph?.total_nodes ?? 0} nodes · ${graph?.total_edges ?? 0} edges · rendered ${graph?.rendered?.nodes ?? 0}/${graph?.rendered?.edges ?? 0}`}
@@ -468,7 +527,7 @@ function MindAtlas({
             refetchMind={refetchMind}
           />
         </section>
-      </div>
+      ) : null}
     </div>
   );
 }
@@ -482,9 +541,15 @@ function IdentityGrid({
   showToast: (toast: Toast) => void;
   refetchMind: () => void;
 }) {
-  const goals = flattenGoals(identity?.goals ?? []);
-  const openQuestions = identity?.open_questions ?? [];
+  const [showAllGoals, setShowAllGoals] = useState(false);
+  const [showAllOpenQuestions, setShowAllOpenQuestions] = useState(false);
   const [showAllTraits, setShowAllTraits] = useState(false);
+  const goals = [...flattenGoals(identity?.goals ?? [])].sort((left, right) => right.priority - left.priority);
+  const visibleGoals = showAllGoals ? goals : goals.slice(0, GOAL_PREVIEW_COUNT);
+  const openQuestions = [...(identity?.open_questions ?? [])].sort((left, right) => right.urgency - left.urgency);
+  const visibleOpenQuestions = showAllOpenQuestions
+    ? openQuestions
+    : openQuestions.slice(0, OPEN_QUESTION_PREVIEW_COUNT);
   const traits = [...(identity?.traits ?? [])].sort((left, right) => right.strength - left.strength);
   const visibleTraits = showAllTraits ? traits : traits.slice(0, TRAIT_PREVIEW_COUNT);
   const traitStateCounts = new Map<string, number>();
@@ -515,6 +580,7 @@ function IdentityGrid({
             </div>
           );
         })}
+        <AddValueForm showToast={showToast} refetchMind={refetchMind} />
       </div>
       <div className="identity-cell">
         <Subhead>
@@ -535,11 +601,14 @@ function IdentityGrid({
             <b>{trait.strength.toFixed(2)}</b>
           </div>
         ))}
-        {traits.length > TRAIT_PREVIEW_COUNT ? (
-          <button type="button" className="load-more trait-toggle" onClick={() => setShowAllTraits((open) => !open)}>
-            {showAllTraits ? `STRONGEST ${TRAIT_PREVIEW_COUNT}` : `ALL ${traits.length}`}
-          </button>
-        ) : null}
+        <PreviewToggle
+          total={traits.length}
+          previewCount={TRAIT_PREVIEW_COUNT}
+          expanded={showAllTraits}
+          collapsedLabel={`ALL ${traits.length}`}
+          expandedLabel={`STRONGEST ${TRAIT_PREVIEW_COUNT}`}
+          onToggle={() => setShowAllTraits((open) => !open)}
+        />
         <Subhead className="subhead-spaced">GROWTH MARKERS</Subhead>
         {markers.map((marker) => (
           <div key={marker.id} className="marker-line">
@@ -549,13 +618,21 @@ function IdentityGrid({
       </div>
       <div className="identity-cell">
         <Subhead>GOALS</Subhead>
-        {goals.map((goal) => (
+        {visibleGoals.map((goal) => (
           <GoalRow key={goal.id} goal={goal} showToast={showToast} refetchMind={refetchMind} />
         ))}
+        <PreviewToggle
+          total={goals.length}
+          previewCount={GOAL_PREVIEW_COUNT}
+          expanded={showAllGoals}
+          collapsedLabel={`ALL ${goals.length}`}
+          expandedLabel={`TOP ${GOAL_PREVIEW_COUNT}`}
+          onToggle={() => setShowAllGoals((open) => !open)}
+        />
       </div>
       <div className="identity-cell">
         <Subhead>OPEN QUESTIONS</Subhead>
-        {openQuestions.map((question) => (
+        {visibleOpenQuestions.map((question) => (
           <OpenQuestionRow
             key={question.id}
             question={question}
@@ -563,8 +640,112 @@ function IdentityGrid({
             refetchMind={refetchMind}
           />
         ))}
+        <PreviewToggle
+          total={openQuestions.length}
+          previewCount={OPEN_QUESTION_PREVIEW_COUNT}
+          expanded={showAllOpenQuestions}
+          collapsedLabel={`ALL ${openQuestions.length}`}
+          expandedLabel={`TOP ${OPEN_QUESTION_PREVIEW_COUNT}`}
+          onToggle={() => setShowAllOpenQuestions((open) => !open)}
+        />
       </div>
     </div>
+  );
+}
+
+function PreviewToggle({
+  total,
+  previewCount,
+  expanded,
+  collapsedLabel,
+  expandedLabel,
+  onToggle,
+}: {
+  total: number;
+  previewCount: number;
+  expanded: boolean;
+  collapsedLabel: string;
+  expandedLabel: string;
+  onToggle: () => void;
+}) {
+  if (total <= previewCount) {
+    return null;
+  }
+
+  return (
+    <button type="button" className="load-more trait-toggle" onClick={onToggle}>
+      {expanded ? expandedLabel : collapsedLabel}
+    </button>
+  );
+}
+
+function AddValueForm({
+  showToast,
+  refetchMind,
+}: {
+  showToast: (toast: Toast) => void;
+  refetchMind: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [pending, setPending] = useState(false);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const trimmedName = name.trim();
+    const trimmedDescription = description.trim();
+    if (pending || trimmedName.length === 0) {
+      return;
+    }
+
+    setPending(true);
+    try {
+      await postIdentityValue({
+        name: trimmedName,
+        ...(trimmedDescription.length === 0 ? {} : { description: trimmedDescription }),
+      });
+      showToast({ text: "value added", tone: "ok" });
+      setName("");
+      setDescription("");
+      setOpen(false);
+      refetchMind();
+    } catch (error) {
+      showToast({ text: formatError(error), tone: "error" });
+    } finally {
+      setPending(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button type="button" className="ensure-session add-value-button" onClick={() => setOpen(true)}>
+        + ADD VALUE
+      </button>
+    );
+  }
+
+  return (
+    <form className="inline-confirm add-value-form" onSubmit={(event) => void submit(event)}>
+      <input
+        value={name}
+        onChange={(event) => setName(event.target.value)}
+        placeholder="value"
+        disabled={pending}
+      />
+      <input
+        value={description}
+        onChange={(event) => setDescription(event.target.value)}
+        placeholder="description"
+        disabled={pending}
+      />
+      <button type="submit" disabled={pending || name.trim().length === 0}>
+        CONFIRM
+      </button>
+      <button type="button" onClick={() => setOpen(false)} disabled={pending}>
+        CANCEL
+      </button>
+    </form>
   );
 }
 

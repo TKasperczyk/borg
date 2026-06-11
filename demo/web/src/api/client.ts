@@ -20,6 +20,8 @@ import type {
   EpisodeDetailResponse,
   GoalPatchBody,
   IdentityResponse,
+  IdentityValue,
+  IdentityValueCreateBody,
   JournalResponse,
   LedgerResponse,
   MaintenanceAuditRow,
@@ -227,6 +229,10 @@ export function postTurn(input: {
 
 export function fetchIdentity(): Promise<IdentityResponse> {
   return getJson<IdentityResponse>("/api/identity");
+}
+
+export function postIdentityValue(body: IdentityValueCreateBody): Promise<IdentityValue> {
+  return postJson<IdentityValue>("/api/identity/values", body);
 }
 
 export function patchGoal(id: string, body: GoalPatchBody): Promise<unknown> {

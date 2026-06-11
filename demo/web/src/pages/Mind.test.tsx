@@ -273,6 +273,7 @@ type RenderOptions = {
   deferGoalPatch?: boolean;
   deferNode2Detail?: boolean;
   identityOverride?: IdentityResponse;
+  valueError?: boolean;
 };
 
 function renderMind(path = "/mind", options: RenderOptions = {}) {
@@ -295,6 +296,24 @@ function renderMind(path = "/mind", options: RenderOptions = {}) {
     }
     if (url === "/api/identity") {
       return json(options.identityOverride ?? identity());
+    }
+    if (url === "/api/identity/values" && method === "POST") {
+      if (options.valueError) {
+        return json({ message: "value name rejected" }, 400);
+      }
+      return json({
+        id: "val_new",
+        label: "new value",
+        description: "new value",
+        priority: 0,
+        state: "candidate",
+        confidence: 1,
+        created_at: now,
+        last_affirmed: now,
+        established_at: null,
+        support_count: 0,
+        contradiction_count: 0,
+      });
     }
     if (url.startsWith("/api/identity/goals/goal_1") && method === "PATCH") {
       return options.deferGoalPatch ? goalPatch.promise : json({ ok: true });
@@ -411,6 +430,67 @@ describe("Mind page", () => {
     vi.restoreAllMocks();
   });
 
+  it("switches atlas tabs and supports deep links", async () => {
+    renderMind("/mind");
+
+    expect(await screen.findByText("finish arena log consolidation")).toBeTruthy();
+    expect(screen.queryByText("The operator is the creator.")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "DIRECTIVES" }));
+    expect(await screen.findByText("The operator is the creator.")).toBeTruthy();
+    expect(screen.queryByText("finish arena log consolidation")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "MEMORY" }));
+    expect(await screen.findByText("02")).toBeTruthy();
+    expect(screen.getByText("semantic desc")).toBeTruthy();
+    expect(screen.queryByText("The operator is the creator.")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "GRAPH" }));
+    expect(await screen.findByText(/confidence 0.90/)).toBeTruthy();
+    expect(screen.queryByText("semantic desc")).toBeNull();
+
+    cleanup();
+    renderMind("/mind/directives");
+    expect(await screen.findByText("The operator is the creator.")).toBeTruthy();
+
+    cleanup();
+    renderMind("/mind/unknown");
+    expect(await screen.findByText("finish arena log consolidation")).toBeTruthy();
+    expect(screen.queryByText("The operator is the creator.")).toBeNull();
+  });
+
+  it("adds a value with the exact server body and surfaces server errors", async () => {
+    const emptyValues = { ...identity(), values: [] };
+    const { requests } = renderMind("/mind", { identityOverride: emptyValues });
+
+    expect(await screen.findByText("none recorded")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "+ ADD VALUE" }));
+    fireEvent.change(screen.getByPlaceholderText("value"), { target: { value: "curiosity under uncertainty" } });
+    fireEvent.change(screen.getByPlaceholderText("description"), { target: { value: "keep asking where evidence ends" } });
+    fireEvent.click(screen.getByText("CONFIRM"));
+
+    await waitFor(() =>
+      expect(requests).toContainEqual(
+        expect.objectContaining({
+          url: "/api/identity/values",
+          method: "POST",
+          body: {
+            name: "curiosity under uncertainty",
+            description: "keep asking where evidence ends",
+          },
+        }),
+      ),
+    );
+
+    cleanup();
+    renderMind("/mind", { identityOverride: emptyValues, valueError: true });
+    fireEvent.click(await screen.findByRole("button", { name: "+ ADD VALUE" }));
+    fireEvent.change(screen.getByPlaceholderText("value"), { target: { value: "bad value" } });
+    fireEvent.click(screen.getByText("CONFIRM"));
+
+    expect(await screen.findByText("400 value name rejected")).toBeTruthy();
+  });
+
   it("posts exact real identity action payloads", async () => {
     const { requests } = renderMind();
 
@@ -454,7 +534,7 @@ describe("Mind page", () => {
     );
   });
 
-  it("renders traits strongest-first with a preview cap and quiet empty values", async () => {
+  it("renders identity lists sorted with preview caps and toggles", async () => {
     const base = identity();
     const manyTraits = Array.from({ length: 12 }, (_, index) => ({
       id: `trait_many_${index}`,
@@ -465,8 +545,44 @@ describe("Mind page", () => {
       established_at: index === 0 ? now : null,
       last_reinforced: now,
     }));
+    const goalPriorities = [0.11, 0.95, 0.42, 0.88, 0.22, 0.74, 0.63, 0.07];
+    const manyGoals = goalPriorities.map((priority, index) => ({
+      id: `goal_many_${index}`,
+      description: `goal ${index}`,
+      priority,
+      status: "active" as const,
+      progress_notes: null,
+      last_progress_ts: null,
+      created_at: now,
+      target_at: null,
+    }));
+    const questionUrgencies = [0.1, 0.93, 0.55, 0.82, 0.2, 0.73, 0.64, 0.49, 0.31, 0.04];
+    const manyQuestions = questionUrgencies.map((urgency, index) => ({
+      id: `oq_many_${index}`,
+      question: `question ${index}`,
+      urgency,
+      status: "open" as const,
+      source: "manual",
+      goal_id: null,
+      created_at: now,
+      last_touched: now,
+      related_episode_ids: [],
+      related_semantic_node_ids: [],
+      resolution_note: null,
+      resolved_at: null,
+      abandoned_reason: null,
+      abandoned_at: null,
+    }));
     const shuffled = [manyTraits[5]!, ...manyTraits.filter((_, index) => index !== 5)];
-    renderMind("/mind", { identityOverride: { ...base, values: [], traits: shuffled } });
+    renderMind("/mind", {
+      identityOverride: {
+        ...base,
+        values: [],
+        traits: shuffled,
+        goals: [manyGoals[4]!, ...manyGoals.filter((_, index) => index !== 4)],
+        open_questions: [manyQuestions[4]!, ...manyQuestions.filter((_, index) => index !== 4)],
+      },
+    });
 
     expect(await screen.findByText("none recorded")).toBeTruthy();
     expect(screen.getByText("1 established · 11 candidate")).toBeTruthy();
@@ -480,6 +596,38 @@ describe("Mind page", () => {
     expect(screen.getByText("trait label 11")).toBeTruthy();
     fireEvent.click(screen.getByText("STRONGEST 10"));
     expect(screen.queryByText("trait label 11")).toBeNull();
+
+    const goalRows = screen.getAllByText(/^goal /);
+    expect(goalRows.map((row) => row.textContent)).toEqual([
+      "goal 1",
+      "goal 3",
+      "goal 5",
+      "goal 6",
+      "goal 2",
+      "goal 4",
+    ]);
+    expect(screen.queryByText("goal 7")).toBeNull();
+    fireEvent.click(screen.getByText("ALL 8"));
+    expect(screen.getByText("goal 7")).toBeTruthy();
+    fireEvent.click(screen.getByText("TOP 6"));
+    expect(screen.queryByText("goal 7")).toBeNull();
+
+    const questionRows = screen.getAllByText(/^question /);
+    expect(questionRows.map((row) => row.textContent)).toEqual([
+      "question 1",
+      "question 3",
+      "question 5",
+      "question 6",
+      "question 2",
+      "question 7",
+      "question 8",
+      "question 4",
+    ]);
+    expect(screen.queryByText("question 9")).toBeNull();
+    fireEvent.click(screen.getByText("ALL 10"));
+    expect(screen.getByText("question 9")).toBeTruthy();
+    fireEvent.click(screen.getByText("TOP 8"));
+    expect(screen.queryByText("question 9")).toBeNull();
   });
 
   it("uses block copy for inspector goal actions", async () => {
@@ -506,7 +654,7 @@ describe("Mind page", () => {
   });
 
   it("supersedes directives with a replacement id and renders superseded rows inactive", async () => {
-    const { requests } = renderMind();
+    const { requests } = renderMind("/mind/directives");
 
     await screen.findByText("The operator is the creator.");
     fireEvent.click(screen.getAllByText("all")[0]!);
@@ -529,7 +677,7 @@ describe("Mind page", () => {
     expect(commitmentExpiresSoon(commitment(), now)).toBe(true);
     expect(commitmentExpiresSoon(commitment({ expires_at: null }), now)).toBe(false);
 
-    const { requests } = renderMind();
+    const { requests } = renderMind("/mind/directives");
     await screen.findByText("Deploy notes disclosed only to the operator.");
     expect(screen.getByText("CRITICAL")).toBeTruthy();
 
@@ -549,10 +697,10 @@ describe("Mind page", () => {
   });
 
   it("renders band cards from real-shaped summaries and deep-links inspector bands", async () => {
-    renderMind("/mind/inspect/semantic");
+    renderMind("/mind/memory");
 
-    expect(await screen.findByText("semantic")).toBeTruthy();
-    expect(screen.getByText("02 / semantic")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: /semantic/i }));
+    expect(await screen.findByText("02 / semantic")).toBeTruthy();
   });
 
   it("appends episodic pages and renders affective special-case rows", async () => {
@@ -570,7 +718,7 @@ describe("Mind page", () => {
   });
 
   it("renders graph detail from real fields and invalidates selected edges", async () => {
-    const { requests } = renderMind();
+    const { requests } = renderMind("/mind/graph");
 
     expect(await screen.findAllByText("operator")).toHaveLength(2);
     expect(await screen.findByText(/confidence 0.90/)).toBeTruthy();
@@ -590,7 +738,7 @@ describe("Mind page", () => {
   });
 
   it("suppresses stale graph detail while a newly selected node loads", async () => {
-    renderMind("/mind", { deferNode2Detail: true });
+    renderMind("/mind/graph", { deferNode2Detail: true });
 
     expect(await screen.findByText(/confidence 0.90/)).toBeTruthy();
     fireEvent.click(screen.getByLabelText("select deadline = jun 14"));
