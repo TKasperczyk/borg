@@ -1530,6 +1530,7 @@ export function serializeStreamEntries(
   entries: readonly StreamEntry[],
 ): Array<
   StreamEntry & {
+    display_content?: unknown;
     sender_label: string | null;
     session_label: string | null;
     audience_label: string | null;
@@ -1541,14 +1542,57 @@ export function serializeStreamEntries(
     const session = labels.sessionRecord(entry.session_id);
     const senderLabel = labels.entityName(entry.sender_entity_id);
     const audienceEntityLabel = labels.entityName(session?.audience_entity_id ?? null);
+    const displayContent = streamDisplayContent(entry);
 
     return {
       ...entry,
+      ...(displayContent === undefined ? {} : { display_content: displayContent }),
       sender_label: senderLabel,
       session_label: session?.label ?? null,
       audience_label: audienceEntityLabel,
     };
   });
+}
+
+function streamDisplayContent(entry: StreamEntry): unknown | undefined {
+  if (
+    entry.kind !== "user_msg" ||
+    entry.source_message_key?.source_type !== "botarena" ||
+    typeof entry.content !== "string"
+  ) {
+    return undefined;
+  }
+
+  const firstLineBreak = entry.content.indexOf("\n");
+  if (firstLineBreak <= 0 || entry.content[0] !== "[") {
+    return undefined;
+  }
+
+  const closingBracket = entry.content.indexOf("]");
+  if (closingBracket <= 0 || closingBracket > firstLineBreak) {
+    return undefined;
+  }
+
+  let bodyStart = firstLineBreak + 1;
+  while (entry.content[bodyStart] === "\n" || entry.content[bodyStart] === "\r") {
+    bodyStart += 1;
+  }
+
+  const markerEnd = bodyStart + "[message]".length;
+  if (
+    entry.content.startsWith("[message]", bodyStart) &&
+    (markerEnd === entry.content.length ||
+      entry.content[markerEnd] === "\n" ||
+      entry.content[markerEnd] === "\r")
+  ) {
+    bodyStart = markerEnd;
+    while (entry.content[bodyStart] === "\n" || entry.content[bodyStart] === "\r") {
+      bodyStart += 1;
+    }
+  }
+
+  const body = entry.content.slice(bodyStart).trim();
+  return body.length === 0 ? undefined : body;
 }
 
 function commitmentState(record: CommitmentRecord): "active" | "revoked" | "expired" {

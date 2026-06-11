@@ -1525,6 +1525,64 @@ describe("demo server", () => {
     );
   });
 
+  it("adds display_content for BotArena connector envelopes without changing raw content", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-stream-display-content-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const envelopeContent =
+      '[BotArena thread "thread-1"] message from Lunaria (bot) | bot-chain-depth: 2 | addressed to you: yes\n[message]\nInner body only';
+    const markerlessContent =
+      "[BotArena thread thread-1] | bot-chain-depth: 2 | addressed to you: yes\n\nMarkerless body";
+
+    const envelopeEntry = await borg.stream.append({
+      kind: "user_msg",
+      content: envelopeContent,
+      source_message_key: {
+        source_type: "botarena",
+        source_external_id: "thread-1",
+        external_message_id: "message-1",
+      },
+    });
+    const markerlessEntry = await borg.stream.append({
+      kind: "user_msg",
+      content: markerlessContent,
+      source_message_key: {
+        source_type: "botarena",
+        source_external_id: "thread-1",
+        external_message_id: "message-1b",
+      },
+    });
+    const plainEntry = await borg.stream.append({
+      kind: "user_msg",
+      content: "plain body",
+      source_message_key: {
+        source_type: "demo",
+        source_external_id: DEFAULT_SESSION_ID,
+        external_message_id: "message-2",
+      },
+    });
+
+    const streamResponse = await app.request("/api/stream?kind=user_msg&limit=5");
+    expect(streamResponse.status).toBe(200);
+    const stream = (await streamResponse.json()) as {
+      entries: Array<{ id: string; content: unknown; display_content?: unknown }>;
+    };
+
+    expect(stream.entries.find((entry) => entry.id === envelopeEntry.id)).toMatchObject({
+      content: envelopeContent,
+      display_content: "Inner body only",
+    });
+    expect(stream.entries.find((entry) => entry.id === markerlessEntry.id)).toMatchObject({
+      content: markerlessContent,
+      display_content: "Markerless body",
+    });
+    expect(stream.entries.find((entry) => entry.id === plainEntry.id)).toEqual(
+      expect.not.objectContaining({ display_content: expect.anything() }),
+    );
+  });
+
   it("pages episodic memory band details with next_cursor", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-memory-episodic-"));
     tempDirs.push(tempDir);
