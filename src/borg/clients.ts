@@ -47,6 +47,7 @@ export function createLlmFactory(
       oauthUnaryBodyTimeoutMs: config.anthropic.oauthUnaryBodyTimeoutMs,
       unaryCallTimeoutMs: config.anthropic.unaryCallTimeoutMs,
       streamingCallTimeoutMs: config.anthropic.streamingCallTimeoutMs,
+      transportStallMaxRetries: config.anthropic.transportStallMaxRetries,
       ...(attachmentService === undefined
         ? {}
         : {

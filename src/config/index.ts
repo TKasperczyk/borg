@@ -294,6 +294,7 @@ const anthropicConfigSchema = z
     oauthUnaryBodyTimeoutMs: z.number().int().positive().default(120_000),
     unaryCallTimeoutMs: z.number().int().positive().default(360_000),
     streamingCallTimeoutMs: z.number().int().positive().default(720_000),
+    transportStallMaxRetries: z.number().int().min(0).default(1),
   })
   .prefault({});
 
@@ -974,6 +975,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["anthropic", "streamingCallTimeoutMs"],
     readOptionalEnvNumber(env, "BORG_ANTHROPIC_STREAMING_CALL_TIMEOUT_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "transportStallMaxRetries"],
+    readOptionalEnvNumber(env, "BORG_ANTHROPIC_TRANSPORT_STALL_MAX_RETRIES"),
   );
   setConfigOverride(
     overrides,

@@ -411,6 +411,7 @@ export type AnthropicLLMClientOptions = {
   oauthUnaryBodyTimeoutMs?: number;
   unaryCallTimeoutMs?: number;
   streamingCallTimeoutMs?: number;
+  transportStallMaxRetries?: number;
   attachmentResolver?: (attachmentId: AttachmentId) => {
     mediaType: string;
     bytes: Buffer | Uint8Array;
@@ -792,6 +793,9 @@ const OAUTH_UNARY_BODY_TIMEOUT_MS = 120_000;
 const LLM_UNARY_CALL_TIMEOUT_MS = 6 * 60_000;
 const LLM_STREAMING_CALL_TIMEOUT_MS = 12 * 60_000;
 const ANTHROPIC_CONNECTION_MAX_RETRIES = 2;
+// Mid-call stalls (watchdog-killed streams, fetch-layer deadlines) are usually
+// transient upstream degradation; one fresh attempt rescues most of them.
+const ANTHROPIC_STALL_MAX_RETRIES = 1;
 
 type OAuthFetchOptions = {
   sseInactivityTimeoutMs?: number;
@@ -811,6 +815,14 @@ const RETRYABLE_LLM_TRANSPORT_ERROR_CODES = new Set<string>([
   LLM_STREAM_EVENT_STALLED_CODE,
   LLM_CALL_TIMED_OUT_CODE,
   LLM_CONNECTION_FAILED_CODE,
+]);
+// The subset of typed transport errors worth a fresh in-call attempt: the call
+// died mid-flight (stalled stream or fetch-layer deadline) rather than being a
+// settled outcome like LLM_CONNECTION_FAILED, which is itself a retry verdict.
+const STALL_CLASS_LLM_ERROR_CODES = new Set<string>([
+  LLM_STREAM_STALLED_CODE,
+  LLM_STREAM_EVENT_STALLED_CODE,
+  LLM_CALL_TIMED_OUT_CODE,
 ]);
 
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
@@ -873,18 +885,17 @@ function errorConstructorName(error: unknown): string | undefined {
   return (error as { constructor?: { name?: string } }).constructor?.name;
 }
 
-function isRetryableLlmTransportError(error: unknown): error is LLMError {
-  return error instanceof LLMError && RETRYABLE_LLM_TRANSPORT_ERROR_CODES.has(error.code);
-}
-
-function findRetryableLlmTransportError(error: unknown): LLMError | undefined {
+function findInErrorCauseChain<T>(
+  error: unknown,
+  matches: (candidate: unknown) => candidate is T,
+): T | undefined {
   const seen = new Set<unknown>();
   let current: unknown = error;
 
   while (current !== undefined && current !== null && !seen.has(current)) {
     seen.add(current);
 
-    if (isRetryableLlmTransportError(current)) {
+    if (matches(current)) {
       return current;
     }
 
@@ -892,6 +903,22 @@ function findRetryableLlmTransportError(error: unknown): LLMError | undefined {
   }
 
   return undefined;
+}
+
+function isRetryableLlmTransportError(error: unknown): error is LLMError {
+  return error instanceof LLMError && RETRYABLE_LLM_TRANSPORT_ERROR_CODES.has(error.code);
+}
+
+function findRetryableLlmTransportError(error: unknown): LLMError | undefined {
+  return findInErrorCauseChain(error, isRetryableLlmTransportError);
+}
+
+function isStallClassLlmError(error: unknown): error is LLMError {
+  return error instanceof LLMError && STALL_CLASS_LLM_ERROR_CODES.has(error.code);
+}
+
+function findStallClassLlmError(error: unknown): LLMError | undefined {
+  return findInErrorCauseChain(error, isStallClassLlmError);
 }
 
 function isAnthropicConnectionError(error: unknown): error is Error {
@@ -900,20 +927,7 @@ function isAnthropicConnectionError(error: unknown): error is Error {
 }
 
 function findAnthropicConnectionError(error: unknown): Error | undefined {
-  const seen = new Set<unknown>();
-  let current: unknown = error;
-
-  while (current !== undefined && current !== null && !seen.has(current)) {
-    seen.add(current);
-
-    if (isAnthropicConnectionError(current)) {
-      return current;
-    }
-
-    current = causeOf(current);
-  }
-
-  return undefined;
+  return findInErrorCauseChain(error, isAnthropicConnectionError);
 }
 
 function rethrowRetryableLlmTransportErrorAtTopLevel(error: unknown): void {
@@ -927,18 +941,42 @@ function rethrowRetryableLlmTransportErrorAtTopLevel(error: unknown): void {
   }
 }
 
-async function runWithAnthropicConnectionRetries<T>(
-  run: () => Promise<T>,
-  maxRetries = ANTHROPIC_CONNECTION_MAX_RETRIES,
+type AnthropicTransportRetryOptions = {
+  connectionMaxRetries?: number;
+  stallMaxRetries?: number;
+  signal?: AbortSignal;
+};
+
+async function runWithAnthropicTransportRetries<T>(
+  run: (attempt: number) => Promise<T>,
+  options: AnthropicTransportRetryOptions = {},
 ): Promise<T> {
-  let attempts = 0;
+  const connectionMaxRetries = options.connectionMaxRetries ?? ANTHROPIC_CONNECTION_MAX_RETRIES;
+  const stallMaxRetries = options.stallMaxRetries ?? ANTHROPIC_STALL_MAX_RETRIES;
+  let attempt = 0;
+  let connectionFailures = 0;
+  let stallFailures = 0;
 
   while (true) {
-    attempts += 1;
+    attempt += 1;
 
     try {
-      return await run();
+      return await run(attempt);
     } catch (error) {
+      const stallError = findStallClassLlmError(error);
+
+      if (stallError !== undefined) {
+        stallFailures += 1;
+
+        // An aborted signal means the outer per-call deadline already settled
+        // the race -- a fresh attempt could never be observed by the caller.
+        if (stallFailures > stallMaxRetries || options.signal?.aborted === true) {
+          throw error;
+        }
+
+        continue;
+      }
+
       if (findRetryableLlmTransportError(error) !== undefined) {
         throw error;
       }
@@ -949,8 +987,10 @@ async function runWithAnthropicConnectionRetries<T>(
         throw error;
       }
 
-      if (attempts > maxRetries) {
-        throw createLlmConnectionFailedError(attempts, error);
+      connectionFailures += 1;
+
+      if (connectionFailures > connectionMaxRetries) {
+        throw createLlmConnectionFailedError(attempt, error);
       }
     }
   }
@@ -1771,6 +1811,10 @@ export class AnthropicLLMClient implements LLMClient {
     return this.options.streamingCallTimeoutMs ?? LLM_STREAMING_CALL_TIMEOUT_MS;
   }
 
+  private transportStallMaxRetries(): number {
+    return this.options.transportStallMaxRetries ?? ANTHROPIC_STALL_MAX_RETRIES;
+  }
+
   private async ensureInitialized(): Promise<void> {
     if (this.client !== undefined) {
       return;
@@ -1891,8 +1935,9 @@ export class AnthropicLLMClient implements LLMClient {
         kind: "unary",
         timeoutMs: callTimeoutMs,
         run: (signal) =>
-          runWithAnthropicConnectionRetries(() =>
-            client.messages.create(this.rawMessageParams(options, messages), { signal }),
+          runWithAnthropicTransportRetries(
+            () => client.messages.create(this.rawMessageParams(options, messages), { signal }),
+            { stallMaxRetries: this.transportStallMaxRetries(), signal },
           ),
       });
     } catch (error) {
@@ -1955,12 +2000,26 @@ export class AnthropicLLMClient implements LLMClient {
       return this.createRawMessage(options, messages, retrying, this.streamingCallTimeoutMs());
     }
 
+    // Per-call state shared across retry attempts: once any delta reached
+    // downstream buffers, a retried stream re-emitting from the start must not
+    // forward deltas again or the draft accumulates a duplicated prefix.
+    let anyDeltaForwarded = false;
+
     try {
       return await runWithLlmCallTimeout({
         kind: "streaming",
         timeoutMs: this.streamingCallTimeoutMs(),
         run: (signal) =>
-          runWithAnthropicConnectionRetries(async () => {
+          runWithAnthropicTransportRetries(
+            async (attempt) => {
+            const forwardDeltas = attempt === 1 || !anyDeltaForwarded;
+            const emitDelta =
+              forwardDeltas && onTextDelta !== undefined
+                ? (text: string) => {
+                    anyDeltaForwarded = true;
+                    onTextDelta(text);
+                  }
+                : undefined;
             const stream = streamFactory(this.rawMessageParams(options, messages), {
               signal,
             });
@@ -1995,7 +2054,7 @@ export class AnthropicLLMClient implements LLMClient {
                   // tool is not user-facing (the answer rides in the tool input); skip it
                   // so it never reaches the live stream.
                   if (options.suppressRawTextStream !== true) {
-                    onTextDelta?.(event.delta.text);
+                    emitDelta?.(event.delta.text);
                   }
                   continue;
                 }
@@ -2012,14 +2071,14 @@ export class AnthropicLLMClient implements LLMClient {
                     // Unknown tool — forward raw partial JSON so the user sees
                     // structured thinking accumulating.
                     if (event.delta.partial_json.length > 0) {
-                      onTextDelta?.(event.delta.partial_json);
+                      emitDelta?.(event.delta.partial_json);
                     }
                     continue;
                   }
 
                   const extracted = extractPartialStringField(block.partial, block.textFieldName);
                   if (extracted !== null && extracted.length > block.lastExtracted.length) {
-                    onTextDelta?.(extracted.slice(block.lastExtracted.length));
+                    emitDelta?.(extracted.slice(block.lastExtracted.length));
                     block.lastExtracted = extracted;
                   }
                   continue;
@@ -2032,7 +2091,9 @@ export class AnthropicLLMClient implements LLMClient {
             }
 
             return await stream.finalMessage();
-          }),
+            },
+            { stallMaxRetries: this.transportStallMaxRetries(), signal },
+          ),
       });
     } catch (error) {
       rethrowRetryableLlmTransportErrorAtTopLevel(error);

@@ -985,6 +985,7 @@ describe("llm", () => {
       },
       oauthFetchHeadersTimeoutMs: 20,
       unaryCallTimeoutMs: 1_000,
+      transportStallMaxRetries: 0,
     });
     const resultPromise = client
       .complete({
@@ -1036,6 +1037,7 @@ describe("llm", () => {
       },
       oauthUnaryBodyTimeoutMs: 20,
       unaryCallTimeoutMs: 1_000,
+      transportStallMaxRetries: 0,
     });
     const resultPromise = client
       .complete({
@@ -1084,6 +1086,7 @@ describe("llm", () => {
       },
       oauthFetchHeadersTimeoutMs: 20,
       streamingCallTimeoutMs: 1_000,
+      transportStallMaxRetries: 0,
     });
     const resultPromise = client
       .streamComplete({
@@ -1134,6 +1137,240 @@ describe("llm", () => {
       message: "Anthropic connection failed after 3 attempts",
     });
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("retries a unary call once when it dies with a stall-class error", async () => {
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new LLMError("Anthropic SSE stream stalled for 180000ms between message events", {
+          code: "LLM_STREAM_EVENT_STALLED",
+        }),
+      )
+      .mockResolvedValueOnce(createMessageBody());
+    const client = new AnthropicLLMClient({
+      client: {
+        messages: {
+          create,
+          stream: vi.fn(),
+        },
+      },
+    });
+
+    await expect(
+      client.complete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      }),
+    ).resolves.toMatchObject({ text: "Hello" });
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+
+  it("exhausts stall retries and surfaces the typed stall error", async () => {
+    const create = vi.fn(async () => {
+      throw new LLMError("Anthropic SSE stream stalled for 180000ms between message events", {
+        code: "LLM_STREAM_EVENT_STALLED",
+      });
+    });
+    const client = new AnthropicLLMClient({
+      client: {
+        messages: {
+          create,
+          stream: vi.fn(),
+        },
+      },
+    });
+
+    await expect(
+      client.complete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      }),
+    ).rejects.toMatchObject({
+      code: "LLM_STREAM_EVENT_STALLED",
+    });
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors transportStallMaxRetries: 0 with a single attempt", async () => {
+    const create = vi.fn(async () => {
+      throw new LLMError("Anthropic SSE stream stalled for 180000ms between message events", {
+        code: "LLM_STREAM_EVENT_STALLED",
+      });
+    });
+    const client = new AnthropicLLMClient({
+      client: {
+        messages: {
+          create,
+          stream: vi.fn(),
+        },
+      },
+      transportStallMaxRetries: 0,
+    });
+
+    await expect(
+      client.complete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      }),
+    ).rejects.toMatchObject({
+      code: "LLM_STREAM_EVENT_STALLED",
+    });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a stalled stream and suppresses duplicate retry deltas", async () => {
+    const stalledStream = {
+      async *[Symbol.asyncIterator]() {
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Hel" },
+        };
+        throw new LLMError("Anthropic SSE stream stalled for 20ms between message events", {
+          code: "LLM_STREAM_EVENT_STALLED",
+        });
+      },
+      finalMessage: vi.fn(),
+    };
+    const healthyStream = {
+      async *[Symbol.asyncIterator]() {
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Hel" },
+        };
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "lo" },
+        };
+      },
+      finalMessage: vi.fn(async () => createMessageBody()),
+    };
+    const streamFactory = vi
+      .fn()
+      .mockReturnValueOnce(stalledStream as never)
+      .mockReturnValueOnce(healthyStream as never);
+    const deltas: string[] = [];
+    const client = new AnthropicLLMClient({
+      client: {
+        messages: {
+          create: vi.fn(),
+          stream: streamFactory,
+        },
+      },
+    });
+
+    await expect(
+      client.streamComplete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+        onTextDelta: (text) => deltas.push(text),
+      }),
+    ).resolves.toMatchObject({ text: "Hello" });
+
+    expect(streamFactory).toHaveBeenCalledTimes(2);
+    // Attempt 1 forwarded "Hel" before stalling; the retry re-streams from the
+    // start and must not land that prefix in downstream buffers twice.
+    expect(deltas.join("")).toBe("Hel");
+  });
+
+  it("retries fetch-layer header deadlines once before surfacing typed", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(
+      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+        await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+            once: true,
+          });
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+      oauthFetchHeadersTimeoutMs: 20,
+      unaryCallTimeoutMs: 1_000,
+    });
+    const resultPromise = client
+      .complete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      })
+      .then(
+        (value) => ({ status: "resolved" as const, value }),
+        (reason: unknown) => ({ status: "rejected" as const, reason }),
+      );
+
+    await vi.advanceTimersByTimeAsync(25);
+    await vi.advanceTimersByTimeAsync(25);
+    const result = await resultPromise;
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      status: "rejected",
+      reason: {
+        code: "LLM_CALL_TIMED_OUT",
+        message: "Anthropic headers LLM deadline exceeded after 20ms",
+      },
+    });
+  });
+
+  it("does not burn stall retries after the outer call deadline fires", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(
+      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+        await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+            once: true,
+          });
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+      oauthFetchHeadersTimeoutMs: 10_000,
+      unaryCallTimeoutMs: 20,
+    });
+    const resultPromise = client
+      .complete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      })
+      .then(
+        (value) => ({ status: "resolved" as const, value }),
+        (reason: unknown) => ({ status: "rejected" as const, reason }),
+      );
+
+    await vi.advanceTimersByTimeAsync(25);
+    const result = await resultPromise;
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: "rejected",
+      reason: {
+        code: "LLM_CALL_TIMED_OUT",
+        message: "Anthropic unary LLM call timed out after 20ms",
+      },
+    });
   });
 
   it("surfaces OAuth SSE stalls at top level through the real SDK stream path", async () => {
