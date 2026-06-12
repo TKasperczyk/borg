@@ -22,6 +22,7 @@ import type {
   IdentityResponse,
   IdentityValue,
   IdentityValueCreateBody,
+  InflightResponse,
   JournalResponse,
   LedgerResponse,
   MaintenanceAuditRow,
@@ -192,6 +193,11 @@ export function fetchStream(session: string, limit = 100): Promise<StreamRespons
 export function fetchTurns(session: string, limit = 100): Promise<TurnsResponse> {
   const params = new URLSearchParams({ session, limit: String(limit) });
   return getJson<TurnsResponse>(`/api/turns?${params.toString()}`);
+}
+
+export function fetchInflight(session: string): Promise<InflightResponse> {
+  const params = new URLSearchParams({ session });
+  return getJson<InflightResponse>(`/api/inflight?${params.toString()}`);
 }
 
 export function fetchActivity(day?: string): Promise<ActivityResponse> {

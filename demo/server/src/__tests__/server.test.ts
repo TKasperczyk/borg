@@ -988,6 +988,65 @@ describe("demo server", () => {
     expect(frames).toEqual([]);
   });
 
+  it("serves the in-flight turn snapshot while a turn is running", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const idleBefore = await app.request("/api/inflight?session=default");
+    expect(idleBefore.status).toBe(200);
+    expect(await idleBefore.json()).toEqual({ inflight: null });
+
+    live.tracer.emit("turn_phase.started", {
+      turnId: "turn_live",
+      turn_id: "turn_live",
+      session_id: "default",
+      phase: "ingest",
+    });
+    live.tracer.emit("turn_phase.completed", {
+      turnId: "turn_live",
+      turn_id: "turn_live",
+      session_id: "default",
+      phase: "ingest",
+      duration_ms: 42,
+    });
+    live.tracer.emit("turn_phase.started", {
+      turnId: "turn_live",
+      turn_id: "turn_live",
+      session_id: "default",
+      phase: "delib",
+    });
+
+    const running = await app.request("/api/inflight?session=default");
+    expect(running.status).toBe(200);
+    expect(await running.json()).toEqual({
+      inflight: {
+        turn_id: "turn_live",
+        session_id: "default",
+        started_at: expect.any(Number),
+        last_event_at: expect.any(Number),
+        phases: [
+          { phase: "ingest", status: "completed", duration_ms: 42 },
+          { phase: "delib", status: "active", duration_ms: null },
+        ],
+      },
+    });
+
+    live.tracer.emit("turn.terminal", {
+      turnId: "turn_live",
+      turn_id: "turn_live",
+      session_id: "default",
+      outcome: "reflected",
+      duration_ms: 100,
+    });
+
+    const idleAfter = await app.request("/api/inflight?session=default");
+    expect(idleAfter.status).toBe(200);
+    expect(await idleAfter.json()).toEqual({ inflight: null });
+  });
+
   it("serves creator and operator session endpoints", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-creator-"));
     tempDirs.push(tempDir);

@@ -11,6 +11,7 @@ import {
 import {
   ApiError,
   ensureOperatorSession,
+  fetchInflight,
   fetchLedger,
   fetchSessions,
   fetchStream,
@@ -50,6 +51,7 @@ import {
   PHASE_LABELS,
   applyPhaseFrame,
   initialPhaseGridState,
+  seedPhaseGridFromInflight,
   type TurnPhaseGridState,
 } from "./chat/turnPhase";
 
@@ -314,6 +316,7 @@ export function ChatPage({ onActiveSessionChange }: ChatPageProps) {
   const threadRef = useRef<HTMLDivElement | null>(null);
   const pinnedRef = useRef(true);
   const activeTurnIdRef = useRef<string | null>(null);
+  const terminalSeenRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (activeSessionId !== null) {
@@ -344,6 +347,49 @@ export function ChatPage({ onActiveSessionChange }: ChatPageProps) {
   useEffect(() => {
     onActiveSessionChange?.(activeSessionId);
   }, [activeSessionId, onActiveSessionChange]);
+
+  // A page mounted (or switched to this session) mid-turn has missed the
+  // turn's frames -- and the live ring buffer cannot replay a long turn. Seed
+  // running state and the phase grid from the server's in-flight snapshot;
+  // live frames take over from there.
+  useEffect(() => {
+    if (activeSessionId === null) {
+      return undefined;
+    }
+
+    const sessionId = activeSessionId;
+    let cancelled = false;
+
+    fetchInflight(sessionId)
+      .then(({ inflight }) => {
+        if (
+          cancelled ||
+          inflight === null ||
+          inflight.session_id !== sessionId ||
+          terminalSeenRef.current.has(inflight.turn_id)
+        ) {
+          return;
+        }
+
+        activeTurnIdRef.current = inflight.turn_id;
+        setInFlightBySession((current) => ({
+          ...current,
+          [sessionId]: { turnId: inflight.turn_id },
+        }));
+        setPhaseGrid((current) =>
+          // A live frame may have already advanced this turn's grid while the
+          // fetch was in flight; never clobber fresher same-turn state.
+          current.turnId === inflight.turn_id ? current : seedPhaseGridFromInflight(inflight),
+        );
+      })
+      .catch(() => {
+        // Best-effort seeding only; live frames remain the source of truth.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId]);
 
   const stream = useQuery<SessionStreamData>(
     `stream:${activeSessionId ?? ""}`,
@@ -412,6 +458,17 @@ export function ChatPage({ onActiveSessionChange }: ChatPageProps) {
   useEffect(
     () =>
       onFrame("*", (frame) => {
+        if (frame.type === "turn:terminal") {
+          // Guards the in-flight seed against resurrecting a turn that ended
+          // while the snapshot fetch was in transit. Bounded ring of recents.
+          terminalSeenRef.current.add(frame.data.turn_id);
+          if (terminalSeenRef.current.size > 64) {
+            const oldest = terminalSeenRef.current.values().next().value;
+            if (oldest !== undefined) {
+              terminalSeenRef.current.delete(oldest);
+            }
+          }
+        }
         setInFlightBySession((current) => applyInFlightFrame(current, frame));
 
         const sessionId = frameSessionId(frame);

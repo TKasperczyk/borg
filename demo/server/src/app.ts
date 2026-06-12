@@ -145,6 +145,14 @@ const streamQuerySchema = z.object({
     }),
 });
 
+const inflightQuerySchema = z.object({
+  session: z
+    .string()
+    .min(1)
+    .optional()
+    .transform((value, ctx) => parseOptionalSessionQuery(value, ctx)),
+});
+
 const turnHistoryQuerySchema = z.object({
   session: z
     .string()
@@ -3263,6 +3271,11 @@ export function createDemoServerApp(args: DemoServerAppInput) {
         cursor: query.cursor,
       }),
     );
+  });
+
+  app.get("/api/inflight", (c) => {
+    const query = parseRequest(inflightQuerySchema, c.req.query());
+    return c.json({ inflight: input.live.broadcaster.inflightSnapshot(query.session) });
   });
 
   app.get("/api/activity", (c) => {

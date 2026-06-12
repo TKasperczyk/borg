@@ -1,7 +1,13 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { installMockWebSocket } from "../__tests__/mock-websocket";
-import type { ApiState, EvidenceLedger, SessionRecord, StreamEntry } from "../api/types";
+import type {
+  ApiState,
+  EvidenceLedger,
+  InflightTurn,
+  SessionRecord,
+  StreamEntry,
+} from "../api/types";
 import { LiveProvider } from "../live/useLive";
 import { StateProvider } from "../state/app-state";
 import { MoodProvider } from "../state/mood";
@@ -68,7 +74,9 @@ function streamEntry(input: Partial<StreamEntry> & Pick<StreamEntry, "id" | "kin
   };
 }
 
-function renderChat(options: { turnStatus?: number; turnMessage?: string } = {}) {
+function renderChat(
+  options: { turnStatus?: number; turnMessage?: string; inflight?: InflightTurn } = {},
+) {
   const ws = installMockWebSocket();
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => null);
   let sessions = [baseSession];
@@ -92,6 +100,9 @@ function renderChat(options: { turnStatus?: number; turnMessage?: string } = {})
     }
     if (url.startsWith("/api/turns?")) {
       return json({ rows: [], next_cursor: null });
+    }
+    if (url.startsWith("/api/inflight?")) {
+      return json({ inflight: options.inflight ?? null });
     }
     if (url === "/api/turn" && method === "POST") {
       postedTurn = JSON.parse(String(init?.body));
@@ -221,6 +232,25 @@ describe("Chat page", () => {
 
     expect(screen.queryByText("default-only")).toBeNull();
     expect(screen.getByText("loading stream…")).toBeTruthy();
+  });
+
+  it("seeds running state and the phase grid from the in-flight snapshot on mount", async () => {
+    renderChat({
+      inflight: {
+        turn_id: "turn_mid_flight",
+        session_id: "s_default",
+        started_at: Date.UTC(2026, 5, 11, 10),
+        last_event_at: Date.UTC(2026, 5, 11, 10, 0, 30),
+        phases: [
+          { phase: "ingest", status: "completed", duration_ms: 42 },
+          { phase: "delib", status: "active", duration_ms: null },
+        ],
+      },
+    });
+
+    expect(await screen.findByText("● turn in flight")).toBeTruthy();
+    expect(screen.getByText("42ms")).toBeTruthy();
+    expect(screen.getByText("DELIB").className).toContain("phase-active-name");
   });
 
   it("resets current-turn cognition display when a new in-flight turn starts", async () => {

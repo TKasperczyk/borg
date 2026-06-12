@@ -48,6 +48,20 @@ type LiveClient = {
   subscribedGlobal: boolean;
 };
 
+export type InflightPhaseSnapshot = {
+  phase: string;
+  status: "active" | "completed" | "failed";
+  duration_ms: number | null;
+};
+
+export type InflightTurnSnapshot = {
+  turn_id: string;
+  session_id: string;
+  started_at: number;
+  last_event_at: number;
+  phases: InflightPhaseSnapshot[];
+};
+
 type BufferedLiveFrame = {
   frame: LiveFrame;
   ts: number;
@@ -193,8 +207,95 @@ function parseSubscriptionPayload(raw: unknown): Record<string, unknown> | null 
 export class LiveBroadcaster {
   private readonly clients = new Map<SocketLike, LiveClient>();
   private readonly sessionBuffers = new Map<SessionId, BufferedLiveFrame[]>();
+  // Authoritative per-session in-flight turn state. The ring buffer cannot
+  // serve this purpose: a long phase outlives RING_BUFFER_MAX_AGE_MS and token
+  // frames evict phase frames, so a client subscribing mid-turn would see
+  // nothing. This snapshot answers "is a turn running and where is it" for
+  // clients that attach after the turn started.
+  private readonly inflightBySession = new Map<string, InflightTurnSnapshot>();
 
   constructor(private readonly logger: LoggerLike = console) {}
+
+  inflightSnapshot(sessionId: string): InflightTurnSnapshot | null {
+    return this.inflightBySession.get(sessionId) ?? null;
+  }
+
+  private trackInflightTurn(frame: LiveFrame): void {
+    if (frame.type === "borg:reset") {
+      this.inflightBySession.clear();
+      return;
+    }
+
+    const data = (frame as { data?: unknown }).data;
+    if (!isObject(data)) {
+      return;
+    }
+
+    const sessionId = typeof data.session_id === "string" ? data.session_id : undefined;
+    const turnId = typeof data.turn_id === "string" ? data.turn_id : undefined;
+    if (sessionId === undefined || turnId === undefined) {
+      return;
+    }
+
+    if (frame.type === "turn:terminal") {
+      if (this.inflightBySession.get(sessionId)?.turn_id === turnId) {
+        this.inflightBySession.delete(sessionId);
+      }
+      return;
+    }
+
+    if (
+      frame.type !== "turn:phase:started" &&
+      frame.type !== "turn:phase:completed" &&
+      frame.type !== "turn:phase:failed"
+    ) {
+      return;
+    }
+
+    const now = typeof frame.ts === "number" ? frame.ts : Date.now();
+    const existing = this.inflightBySession.get(sessionId);
+    const snapshot =
+      existing !== undefined && existing.turn_id === turnId
+        ? existing
+        : frame.type === "turn:phase:started"
+          ? {
+              turn_id: turnId,
+              session_id: sessionId,
+              started_at: now,
+              last_event_at: now,
+              phases: [],
+            }
+          : undefined;
+
+    // A completion frame for a turn we never saw start (or an older turn)
+    // carries no usable state.
+    if (snapshot === undefined) {
+      return;
+    }
+
+    const phase = typeof data.phase === "string" ? data.phase : undefined;
+    if (phase !== undefined) {
+      const status =
+        frame.type === "turn:phase:started"
+          ? ("active" as const)
+          : frame.type === "turn:phase:completed"
+            ? ("completed" as const)
+            : ("failed" as const);
+      const durationMs = typeof data.duration_ms === "number" ? data.duration_ms : null;
+      const cell = snapshot.phases.find((entry) => entry.phase === phase);
+      if (cell === undefined) {
+        snapshot.phases.push({ phase, status, duration_ms: durationMs });
+      } else {
+        cell.status = status;
+        if (frame.type !== "turn:phase:started") {
+          cell.duration_ms = durationMs;
+        }
+      }
+    }
+
+    snapshot.last_event_at = now;
+    this.inflightBySession.set(sessionId, snapshot);
+  }
 
   add(client: SocketLike): void {
     this.clients.set(client, {
@@ -249,6 +350,7 @@ export class LiveBroadcaster {
   }
 
   broadcast(frame: LiveFrame): void {
+    this.trackInflightTurn(frame);
     const deliverToAll = frame.type === "borg:reset" || frame.type === "maintenance:tick";
     const sessionId = deliverToAll ? undefined : frameSessionId(frame);
     if (sessionId !== undefined) {
@@ -272,6 +374,7 @@ export class LiveBroadcaster {
 
   clearAllSessionBuffers(): void {
     this.sessionBuffers.clear();
+    this.inflightBySession.clear();
   }
 
   private shouldDeliver(client: LiveClient, sessionId: SessionId | undefined): boolean {

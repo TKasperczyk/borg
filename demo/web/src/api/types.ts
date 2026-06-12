@@ -128,6 +128,24 @@ export type TurnsResponse = {
   next_cursor: string | null;
 };
 
+export type InflightPhase = {
+  phase: string;
+  status: "active" | "completed" | "failed";
+  duration_ms: number | null;
+};
+
+export type InflightTurn = {
+  turn_id: string;
+  session_id: string;
+  started_at: number;
+  last_event_at: number;
+  phases: InflightPhase[];
+};
+
+export type InflightResponse = {
+  inflight: InflightTurn | null;
+};
+
 export type ActivityOrigin = "user" | "autonomous" | "dream";
 
 export type ActivityDigest = {

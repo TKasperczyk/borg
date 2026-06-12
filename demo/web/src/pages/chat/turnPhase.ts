@@ -1,4 +1,4 @@
-import type { LiveFrame, TurnPhaseFrame, TurnPhaseName } from "../../api/types";
+import type { InflightTurn, LiveFrame, TurnPhaseFrame, TurnPhaseName } from "../../api/types";
 import { TURN_PHASES } from "../../api/types";
 
 export type PhaseDotState = "idle" | "active" | "done" | "failed";
@@ -53,6 +53,36 @@ export function initialPhaseGridState(): TurnPhaseGridState {
     turnId: null,
     sessionId: null,
     phases: makePhases(),
+  };
+}
+
+function isTurnPhaseName(phase: string): phase is TurnPhaseName {
+  return (TURN_PHASES as readonly string[]).includes(phase);
+}
+
+// Seeds the grid from the server's in-flight snapshot so a page mounted
+// mid-turn shows the turn's real progress instead of an idle core. Live
+// frames continue advancing the grid from here.
+export function seedPhaseGridFromInflight(inflight: InflightTurn): TurnPhaseGridState {
+  const phases = makePhases();
+
+  for (const entry of inflight.phases) {
+    if (!isTurnPhaseName(entry.phase)) {
+      continue;
+    }
+
+    phases[entry.phase] = {
+      ...phases[entry.phase],
+      state:
+        entry.status === "active" ? "active" : entry.status === "completed" ? "done" : "failed",
+      durationMs: entry.duration_ms,
+    };
+  }
+
+  return {
+    turnId: inflight.turn_id,
+    sessionId: inflight.session_id,
+    phases,
   };
 }
 
