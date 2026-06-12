@@ -79,6 +79,21 @@ export function seedPhaseGridFromInflight(inflight: InflightTurn): TurnPhaseGrid
     };
   }
 
+  // Server-side phase spans overlap (e.g. retrieval/ledger/shared run as
+  // nested spans), so a snapshot can carry several actives at once. The grid
+  // renders only the most recently started one -- the same single-active rule
+  // applyPhaseFrame enforces via clearActivePhases. Snapshot order is started
+  // order, so the last active entry wins.
+  const activeNames = inflight.phases
+    .filter((entry) => entry.status === "active" && isTurnPhaseName(entry.phase))
+    .map((entry) => entry.phase as TurnPhaseName);
+  const lastActive = activeNames.at(-1);
+  for (const name of activeNames) {
+    if (name !== lastActive) {
+      phases[name] = { ...phases[name], state: "idle", durationMs: null };
+    }
+  }
+
   return {
     turnId: inflight.turn_id,
     sessionId: inflight.session_id,

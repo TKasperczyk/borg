@@ -108,4 +108,29 @@ describe("turn phase reducer", () => {
     expect(replaced.phases.final.state).toBe("idle");
     expect(replaced.phases.delib.state).toBe("active");
   });
+
+  it("seeds a single active phase from snapshots with overlapping server spans", () => {
+    // Observed live: retrieval/ledger/shared run as nested spans server-side,
+    // so the snapshot reports several actives. The grid renders only the most
+    // recently started one, matching applyPhaseFrame's single-active rule.
+    const inflight: InflightTurn = {
+      turn_id: "t1",
+      session_id: "s1",
+      started_at: 1,
+      last_event_at: 2,
+      phases: [
+        { phase: "ingest", status: "completed", duration_ms: 23 },
+        { phase: "retrieval", status: "active", duration_ms: null },
+        { phase: "ledger", status: "active", duration_ms: null },
+        { phase: "shared", status: "active", duration_ms: null },
+      ],
+    };
+
+    const seeded = mergeInflightIntoPhaseGrid(initialPhaseGridState(), inflight);
+    expect(seeded.phases.ingest).toMatchObject({ state: "done", durationMs: 23 });
+    expect(seeded.phases.retrieval.state).toBe("idle");
+    expect(seeded.phases.ledger.state).toBe("idle");
+    expect(seeded.phases.shared.state).toBe("active");
+    expect(Object.values(seeded.phases).filter((cell) => cell.state === "active")).toHaveLength(1);
+  });
 });
