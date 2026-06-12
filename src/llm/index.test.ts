@@ -1225,7 +1225,7 @@ describe("llm", () => {
     expect(create).toHaveBeenCalledTimes(1);
   });
 
-  it("retries a stalled stream and suppresses duplicate retry deltas", async () => {
+  it("retries a stalled stream non-streaming without duplicating forwarded deltas", async () => {
     const stalledStream = {
       async *[Symbol.asyncIterator]() {
         yield {
@@ -1239,30 +1239,13 @@ describe("llm", () => {
       },
       finalMessage: vi.fn(),
     };
-    const healthyStream = {
-      async *[Symbol.asyncIterator]() {
-        yield {
-          type: "content_block_delta",
-          index: 0,
-          delta: { type: "text_delta", text: "Hel" },
-        };
-        yield {
-          type: "content_block_delta",
-          index: 0,
-          delta: { type: "text_delta", text: "lo" },
-        };
-      },
-      finalMessage: vi.fn(async () => createMessageBody()),
-    };
-    const streamFactory = vi
-      .fn()
-      .mockReturnValueOnce(stalledStream as never)
-      .mockReturnValueOnce(healthyStream as never);
+    const streamFactory = vi.fn().mockReturnValueOnce(stalledStream as never);
+    const create = vi.fn(async () => createMessageBody());
     const deltas: string[] = [];
     const client = new AnthropicLLMClient({
       client: {
         messages: {
-          create: vi.fn(),
+          create,
           stream: streamFactory,
         },
       },
@@ -1278,10 +1261,67 @@ describe("llm", () => {
       }),
     ).resolves.toMatchObject({ text: "Hello" });
 
-    expect(streamFactory).toHaveBeenCalledTimes(2);
-    // Attempt 1 forwarded "Hel" before stalling; the retry re-streams from the
-    // start and must not land that prefix in downstream buffers twice.
+    // The retry goes non-streaming: one stream attempt, one unary attempt, and
+    // the stalled attempt's forwarded prefix is never re-emitted.
+    expect(streamFactory).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(1);
     expect(deltas.join("")).toBe("Hel");
+  });
+
+  it("retries a stalled OAuth SSE stream non-streaming through the real fetch path", async () => {
+    const requestBodies: string[] = [];
+    const fetchMock = vi.fn(
+      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        requestBodies.push(String(init?.body));
+
+        if (requestBodies.length === 1) {
+          return createChunkedSseResponse(
+            [
+              `event: message_start\ndata: ${JSON.stringify({
+                type: "message_start",
+                message: createMessageBody({
+                  content: [],
+                  stop_reason: null,
+                  usage: {
+                    cache_creation: null,
+                    cache_creation_input_tokens: null,
+                    cache_read_input_tokens: null,
+                    input_tokens: 12,
+                    output_tokens: 0,
+                    server_tool_use: null,
+                  },
+                } as unknown as Partial<Message>),
+              })}\n\n`,
+              "event: ping\ndata: {}\n\n",
+            ],
+            { close: false },
+          );
+        }
+
+        return jsonResponse(createMessageBody());
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+      oauthSseInactivityTimeoutMs: 20,
+    });
+
+    await expect(
+      client.streamComplete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      }),
+    ).resolves.toMatchObject({ text: "Hello" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestBodies[0]).toContain('"stream":true');
+    expect(requestBodies[1]).not.toContain('"stream":true');
   });
 
   it("retries fetch-layer header deadlines once before surfacing typed", async () => {
@@ -2127,6 +2167,7 @@ describe("llm", () => {
           stream: vi.fn(() => stream as never),
         },
       },
+      transportStallMaxRetries: 0,
     });
 
     await expect(
@@ -2164,6 +2205,7 @@ describe("llm", () => {
           stream: vi.fn(() => stream as never),
         },
       },
+      transportStallMaxRetries: 0,
     });
 
     await expect(

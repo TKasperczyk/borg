@@ -384,6 +384,7 @@ type AnthropicClientLike = {
 
 type AnthropicRequestOptions = {
   signal?: AbortSignal | null;
+  timeout?: number;
 };
 
 type OAuthAuthKind = {
@@ -1815,6 +1816,23 @@ export class AnthropicLLMClient implements LLMClient {
     return this.options.transportStallMaxRetries ?? ANTHROPIC_STALL_MAX_RETRIES;
   }
 
+  // Streaming stalls live in the SSE delivery path; the same request bodies
+  // complete via non-streaming create (verified against the Jun 8-12 stall
+  // incidents), so stall retries of streaming calls go unary. A buffered
+  // non-streaming response sends headers only when generation finishes, so the
+  // retry client relaxes the fetch-layer headers guard to the streaming call
+  // budget; the outer per-call deadline signal still bounds the whole call.
+  private stallRetryUnaryClient(): AnthropicClientLike | undefined {
+    if (this.auth === undefined || this.options.client !== undefined) {
+      return this.client;
+    }
+
+    return buildAnthropicClient(this.auth, this.options.env, {
+      ...this.oauthFetchOptions(),
+      fetchHeadersTimeoutMs: this.streamingCallTimeoutMs(),
+    });
+  }
+
   private async ensureInitialized(): Promise<void> {
     if (this.client !== undefined) {
       return;
@@ -2000,11 +2018,6 @@ export class AnthropicLLMClient implements LLMClient {
       return this.createRawMessage(options, messages, retrying, this.streamingCallTimeoutMs());
     }
 
-    // Per-call state shared across retry attempts: once any delta reached
-    // downstream buffers, a retried stream re-emitting from the start must not
-    // forward deltas again or the draft accumulates a duplicated prefix.
-    let anyDeltaForwarded = false;
-
     try {
       return await runWithLlmCallTimeout({
         kind: "streaming",
@@ -2012,14 +2025,18 @@ export class AnthropicLLMClient implements LLMClient {
         run: (signal) =>
           runWithAnthropicTransportRetries(
             async (attempt) => {
-            const forwardDeltas = attempt === 1 || !anyDeltaForwarded;
-            const emitDelta =
-              forwardDeltas && onTextDelta !== undefined
-                ? (text: string) => {
-                    anyDeltaForwarded = true;
-                    onTextDelta(text);
-                  }
-                : undefined;
+            if (attempt > 1) {
+              // Retry attempts switch to non-streaming: the stall mode lives in
+              // SSE delivery, and a buffered response rides through it. This
+              // also means a retry can never re-emit deltas already forwarded
+              // by the stalled first attempt.
+              const retryClient = this.stallRetryUnaryClient() ?? client;
+              return await retryClient.messages.create(
+                this.rawMessageParams(options, messages),
+                { signal, timeout: this.streamingCallTimeoutMs() },
+              );
+            }
+
             const stream = streamFactory(this.rawMessageParams(options, messages), {
               signal,
             });
@@ -2054,7 +2071,7 @@ export class AnthropicLLMClient implements LLMClient {
                   // tool is not user-facing (the answer rides in the tool input); skip it
                   // so it never reaches the live stream.
                   if (options.suppressRawTextStream !== true) {
-                    emitDelta?.(event.delta.text);
+                    onTextDelta?.(event.delta.text);
                   }
                   continue;
                 }
@@ -2071,14 +2088,14 @@ export class AnthropicLLMClient implements LLMClient {
                     // Unknown tool — forward raw partial JSON so the user sees
                     // structured thinking accumulating.
                     if (event.delta.partial_json.length > 0) {
-                      emitDelta?.(event.delta.partial_json);
+                      onTextDelta?.(event.delta.partial_json);
                     }
                     continue;
                   }
 
                   const extracted = extractPartialStringField(block.partial, block.textFieldName);
                   if (extracted !== null && extracted.length > block.lastExtracted.length) {
-                    emitDelta?.(extracted.slice(block.lastExtracted.length));
+                    onTextDelta?.(extracted.slice(block.lastExtracted.length));
                     block.lastExtracted = extracted;
                   }
                   continue;
