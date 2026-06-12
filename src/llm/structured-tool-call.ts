@@ -9,6 +9,7 @@ import {
   summarizeToolResponseShape,
   traceLlmCallError,
   traceLlmCallResponse,
+  traceLlmCallRetryHook,
   traceLlmCallStarted,
 } from "../tracing/llm-call-trace.js";
 import type { TurnTraceData, TurnTracer } from "../tracing/tracer.js";
@@ -168,10 +169,22 @@ export async function callStructuredTool<T>(
   const names = acceptedToolNames(options);
   traceStarted(options);
 
+  const onTransportRetry =
+    options.trace === undefined
+      ? undefined
+      : traceLlmCallRetryHook({
+          tracer: options.trace.tracer,
+          turnId: options.trace.turnId,
+          sessionId: options.trace.sessionId,
+          label: options.trace.label,
+        });
+  const request =
+    onTransportRetry === undefined ? options.request : { ...options.request, onTransportRetry };
+
   let response: LLMCompleteResult;
 
   try {
-    response = await options.llmClient.complete(options.request);
+    response = await options.llmClient.complete(request);
   } catch (error) {
     traceError(options, error);
 

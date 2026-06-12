@@ -215,7 +215,21 @@ type LLMCallOptions = {
   // in the terminal tool's input (streamed via the tool-field extraction), so any
   // loose text the model emits alongside the tool must not reach the live stream.
   suppressRawTextStream?: boolean;
+  // Invoked when the transport layer retries this call in place (stalled stream,
+  // fetch-layer deadline, connection blip). Observability only -- the call's
+  // result is unaffected. Callers use this to trace rescued-vs-failed attempts.
+  onTransportRetry?: (event: LLMTransportRetryEvent) => void;
   budget: string;
+};
+
+export type LLMTransportRetryEvent = {
+  // The attempt number about to run (2 = first retry).
+  attempt: number;
+  kind: "stall" | "connection";
+  // Typed LLM error code that triggered the retry (stall class only).
+  code?: string;
+  // Transport of the upcoming retry attempt. Streaming calls retry unary.
+  retry_transport: "streaming" | "unary";
 };
 
 export type LLMStreamTextHandler = (text: string) => void;
@@ -946,6 +960,7 @@ type AnthropicTransportRetryOptions = {
   connectionMaxRetries?: number;
   stallMaxRetries?: number;
   signal?: AbortSignal;
+  onRetry?: (event: { attempt: number; kind: "stall" | "connection"; code?: string }) => void;
 };
 
 async function runWithAnthropicTransportRetries<T>(
@@ -975,6 +990,7 @@ async function runWithAnthropicTransportRetries<T>(
           throw error;
         }
 
+        options.onRetry?.({ attempt: attempt + 1, kind: "stall", code: stallError.code });
         continue;
       }
 
@@ -993,6 +1009,8 @@ async function runWithAnthropicTransportRetries<T>(
       if (connectionFailures > connectionMaxRetries) {
         throw createLlmConnectionFailedError(attempt, error);
       }
+
+      options.onRetry?.({ attempt: attempt + 1, kind: "connection" });
     }
   }
 }
@@ -1955,7 +1973,12 @@ export class AnthropicLLMClient implements LLMClient {
         run: (signal) =>
           runWithAnthropicTransportRetries(
             () => client.messages.create(this.rawMessageParams(options, messages), { signal }),
-            { stallMaxRetries: this.transportStallMaxRetries(), signal },
+            {
+              stallMaxRetries: this.transportStallMaxRetries(),
+              signal,
+              onRetry: (event) =>
+                options.onTransportRetry?.({ ...event, retry_transport: "unary" }),
+            },
           ),
       });
     } catch (error) {
@@ -2109,7 +2132,14 @@ export class AnthropicLLMClient implements LLMClient {
 
             return await stream.finalMessage();
             },
-            { stallMaxRetries: this.transportStallMaxRetries(), signal },
+            {
+              stallMaxRetries: this.transportStallMaxRetries(),
+              signal,
+              // Every retry of a streaming call runs unary (see the attempt > 1
+              // branch above).
+              onRetry: (event) =>
+                options.onTransportRetry?.({ ...event, retry_transport: "unary" }),
+            },
           ),
       });
     } catch (error) {

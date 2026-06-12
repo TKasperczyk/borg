@@ -19,7 +19,7 @@ import type { SessionAudienceRole } from "../../sessions/index.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import type { TurnOrigin } from "../types.js";
 import { buildUsageTraceBlock, toTraceJsonValue } from "../../tracing/tracer.js";
-import { summarizeToolSchemas } from "../../tracing/llm-call-trace.js";
+import { summarizeToolSchemas, traceLlmCallRetryHook } from "../../tracing/llm-call-trace.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
 import { serializeJsonValue } from "../../util/json-value.js";
@@ -249,6 +249,12 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
   };
   const traceEnabled = options.tracer?.enabled === true && options.turnId !== undefined;
   const traceLabel = options.traceLabel ?? options.budget;
+  const onTransportRetry = traceLlmCallRetryHook({
+    tracer: options.tracer,
+    turnId: options.turnId,
+    sessionId: options.sessionId,
+    label: traceLabel,
+  });
 
   while (true) {
     if (traceEnabled && options.turnId !== undefined) {
@@ -289,6 +295,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
       ...(options.suppressRawTextStream === undefined
         ? {}
         : { suppressRawTextStream: options.suppressRawTextStream }),
+      ...(onTransportRetry === undefined ? {} : { onTransportRetry }),
       budget: options.budget,
     } satisfies LLMConverseOptions;
     const response =

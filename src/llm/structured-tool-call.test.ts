@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { BudgetExceededError } from "../util/errors.js";
-import type { LLMClient, LLMCompleteResult, LLMToolDefinition } from "./index.js";
+import type {
+  LLMClient,
+  LLMCompleteOptions,
+  LLMCompleteResult,
+  LLMToolDefinition,
+} from "./index.js";
 import {
   callStructuredTool,
   isStructuredToolCallError,
@@ -247,6 +252,63 @@ describe("callStructuredTool", () => {
         usage: null,
       }),
     );
+  });
+
+  it("wires transport-retry tracing into the request", async () => {
+    const emit = vi.fn();
+    const complete = vi.fn(async (request: LLMCompleteOptions) => {
+      request.onTransportRetry?.({
+        attempt: 2,
+        kind: "stall",
+        code: "LLM_STREAM_EVENT_STALLED",
+        retry_transport: "unary",
+      });
+
+      return completeResult([
+        {
+          id: "toolu_1",
+          name: TOOL_NAME,
+          input: { value: "ok" },
+        },
+      ]);
+    });
+
+    await callStructuredTool({
+      llmClient: {
+        complete,
+        converse: vi.fn(async () => {
+          throw new Error("not used");
+        }),
+      },
+      request: {
+        model: "model",
+        system: "system",
+        messages: [{ role: "user", content: "message" }],
+        tools: [TOOL],
+        tool_choice: { type: "tool", name: TOOL_NAME },
+        budget: "test",
+      },
+      toolName: TOOL_NAME,
+      parse: (input) => schema.parse(input),
+      trace: {
+        tracer: {
+          enabled: true,
+          includePayloads: false,
+          emit,
+        },
+        turnId: "turn_1",
+        label: "test_call",
+      },
+    });
+
+    expect(emit).toHaveBeenCalledWith("llm_call.retried", {
+      turnId: "turn_1",
+      label: "test_call",
+      attempt: 2,
+      kind: "stall",
+      code: "LLM_STREAM_EVENT_STALLED",
+      retry_transport: "unary",
+    });
   });
 
   it("can omit tool schemas from started traces", async () => {

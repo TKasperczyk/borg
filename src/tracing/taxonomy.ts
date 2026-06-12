@@ -71,6 +71,7 @@ export const TRACE_EVENT_TAXONOMY = {
   ],
   deliberation: [
     "llm_call.started",
+    "llm_call.retried",
     "llm_call.completed",
     "deliberation.planner_ledger.completed",
     "deliberation.contradiction_routing.completed",

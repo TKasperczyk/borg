@@ -74,6 +74,7 @@ export type TurnTraceEventName =
   | "deliberation.path.completed"
   | "deliberation.path.transitioned"
   | "llm_call.started"
+  | "llm_call.retried"
   | "llm_call.completed"
   | "deliberation.plan.completed"
   | "deliberation.planner.degraded"

@@ -1,4 +1,9 @@
-import type { LLMCompleteResult, LLMMessage, LLMToolDefinition } from "../llm/index.js";
+import type {
+  LLMCompleteResult,
+  LLMMessage,
+  LLMToolDefinition,
+  LLMTransportRetryEvent,
+} from "../llm/index.js";
 import type { SessionId } from "../util/ids.js";
 import type { JsonValue } from "../util/json-value.js";
 import { buildUsageTraceBlock, type TurnTraceData, type TurnTracer } from "./tracer.js";
@@ -58,6 +63,35 @@ export function traceLlmCallStarted(options: {
       ...(options.tools === undefined ? {} : { toolSchemas: summarizeToolSchemas(options.tools) }),
     });
   }
+}
+
+// Builds the per-call onTransportRetry hook that surfaces in-place transport
+// retries (stalled stream rescued non-streaming, connection blips) as
+// llm_call.retried trace events. Returns undefined when tracing is off so
+// callers can omit the option entirely.
+export function traceLlmCallRetryHook(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  sessionId?: SessionId;
+  label: string;
+}): ((event: LLMTransportRetryEvent) => void) | undefined {
+  const { tracer, turnId } = options;
+
+  if (tracer?.enabled !== true || turnId === undefined) {
+    return undefined;
+  }
+
+  return (event) => {
+    tracer.emit("llm_call.retried", {
+      turnId,
+      ...(options.sessionId === undefined ? {} : { session_id: options.sessionId }),
+      label: options.label,
+      attempt: event.attempt,
+      kind: event.kind,
+      ...(event.code === undefined ? {} : { code: event.code }),
+      retry_transport: event.retry_transport,
+    });
+  };
 }
 
 export function traceLlmCallResponse(options: {

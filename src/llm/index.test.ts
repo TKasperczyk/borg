@@ -1119,6 +1119,7 @@ describe("llm", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
+    const retryEvents: unknown[] = [];
     const client = new AnthropicLLMClient({
       env: {
         ANTHROPIC_AUTH_TOKEN: "oauth-token",
@@ -1131,12 +1132,17 @@ describe("llm", () => {
         messages: [{ role: "user", content: "hello" }],
         max_tokens: 32,
         budget: "test",
+        onTransportRetry: (event) => retryEvents.push(event),
       }),
     ).rejects.toMatchObject({
       code: "LLM_CONNECTION_FAILED",
       message: "Anthropic connection failed after 3 attempts",
     });
     expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(retryEvents).toEqual([
+      { attempt: 2, kind: "connection", retry_transport: "unary" },
+      { attempt: 3, kind: "connection", retry_transport: "unary" },
+    ]);
   });
 
   it("retries a unary call once when it dies with a stall-class error", async () => {
@@ -1242,6 +1248,7 @@ describe("llm", () => {
     const streamFactory = vi.fn().mockReturnValueOnce(stalledStream as never);
     const create = vi.fn(async () => createMessageBody());
     const deltas: string[] = [];
+    const retryEvents: unknown[] = [];
     const client = new AnthropicLLMClient({
       client: {
         messages: {
@@ -1258,6 +1265,7 @@ describe("llm", () => {
         max_tokens: 32,
         budget: "test",
         onTextDelta: (text) => deltas.push(text),
+        onTransportRetry: (event) => retryEvents.push(event),
       }),
     ).resolves.toMatchObject({ text: "Hello" });
 
@@ -1266,6 +1274,14 @@ describe("llm", () => {
     expect(streamFactory).toHaveBeenCalledTimes(1);
     expect(create).toHaveBeenCalledTimes(1);
     expect(deltas.join("")).toBe("Hel");
+    expect(retryEvents).toEqual([
+      {
+        attempt: 2,
+        kind: "stall",
+        code: "LLM_STREAM_EVENT_STALLED",
+        retry_transport: "unary",
+      },
+    ]);
   });
 
   it("retries a stalled OAuth SSE stream non-streaming through the real fetch path", async () => {

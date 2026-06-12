@@ -20,6 +20,7 @@ import {
 import {
   summarizeToolResponseShape,
   traceLlmCallResponse,
+  traceLlmCallRetryHook,
   traceLlmCallStarted,
 } from "../../tracing/llm-call-trace.js";
 import { intentRecordSchema } from "../types.js";
@@ -263,6 +264,12 @@ async function callPlannerAttempt(
         : undefined,
   });
 
+  const onTransportRetry = traceLlmCallRetryHook({
+    tracer: options.tracer,
+    turnId: options.turnId,
+    sessionId: options.sessionId,
+    label: "s2_planner",
+  });
   const completeOptions = {
     model: options.model,
     system: systemPrompt,
@@ -279,6 +286,7 @@ async function callPlannerAttempt(
     max_tokens: options.maxTokens,
     ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
     ...(options.effort === undefined ? {} : { effort: options.effort }),
+    ...(onTransportRetry === undefined ? {} : { onTransportRetry }),
     budget: "cognition-plan",
   } satisfies LLMCompleteOptions;
   const planner =
