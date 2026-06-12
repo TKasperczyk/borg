@@ -86,6 +86,41 @@ export function seedPhaseGridFromInflight(inflight: InflightTurn): TurnPhaseGrid
   };
 }
 
+// Live frames can race ahead of the snapshot fetch: a frame for the same turn
+// may have already advanced the grid. The snapshot still carries the phase
+// history those frames missed, so merge -- snapshot as the base, non-idle live
+// cells winning (they are newer). When live state has its own active phase,
+// snapshot-sourced actives are stale and demote to idle (same honest-fallback
+// rule as clearActivePhases).
+export function mergeInflightIntoPhaseGrid(
+  current: TurnPhaseGridState,
+  inflight: InflightTurn,
+): TurnPhaseGridState {
+  const seeded = seedPhaseGridFromInflight(inflight);
+
+  if (current.turnId !== inflight.turn_id) {
+    return seeded;
+  }
+
+  const liveHasActive = TURN_PHASES.some((phase) => current.phases[phase].state === "active");
+  const phases = { ...seeded.phases };
+
+  for (const phase of TURN_PHASES) {
+    const live = current.phases[phase];
+
+    if (live.state !== "idle") {
+      phases[phase] = live;
+      continue;
+    }
+
+    if (liveHasActive && phases[phase].state === "active") {
+      phases[phase] = { ...phases[phase], state: "idle", durationMs: null };
+    }
+  }
+
+  return { ...seeded, sessionId: current.sessionId ?? seeded.sessionId, phases };
+}
+
 function isTurnPhaseFrame(frame: LiveFrame): frame is TurnPhaseFrame {
   return (
     frame.type === "turn:phase:started" ||

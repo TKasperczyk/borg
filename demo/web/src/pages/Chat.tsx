@@ -51,7 +51,7 @@ import {
   PHASE_LABELS,
   applyPhaseFrame,
   initialPhaseGridState,
-  seedPhaseGridFromInflight,
+  mergeInflightIntoPhaseGrid,
   type TurnPhaseGridState,
 } from "./chat/turnPhase";
 
@@ -376,11 +376,7 @@ export function ChatPage({ onActiveSessionChange }: ChatPageProps) {
           ...current,
           [sessionId]: { turnId: inflight.turn_id },
         }));
-        setPhaseGrid((current) =>
-          // A live frame may have already advanced this turn's grid while the
-          // fetch was in flight; never clobber fresher same-turn state.
-          current.turnId === inflight.turn_id ? current : seedPhaseGridFromInflight(inflight),
-        );
+        setPhaseGrid((current) => mergeInflightIntoPhaseGrid(current, inflight));
       })
       .catch(() => {
         // Best-effort seeding only; live frames remain the source of truth.

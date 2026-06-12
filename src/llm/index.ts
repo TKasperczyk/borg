@@ -928,14 +928,6 @@ function findRetryableLlmTransportError(error: unknown): LLMError | undefined {
   return findInErrorCauseChain(error, isRetryableLlmTransportError);
 }
 
-function isStallClassLlmError(error: unknown): error is LLMError {
-  return error instanceof LLMError && STALL_CLASS_LLM_ERROR_CODES.has(error.code);
-}
-
-function findStallClassLlmError(error: unknown): LLMError | undefined {
-  return findInErrorCauseChain(error, isStallClassLlmError);
-}
-
 function isAnthropicConnectionError(error: unknown): error is Error {
   const name = errorConstructorName(error);
   return name === "APIConnectionError" || name === "APIConnectionTimeoutError";
@@ -979,9 +971,16 @@ async function runWithAnthropicTransportRetries<T>(
     try {
       return await run(attempt);
     } catch (error) {
-      const stallError = findStallClassLlmError(error);
+      // The SHALLOWEST typed transport verdict in the cause chain decides.
+      // LLM_CONNECTION_FAILED is itself a retry verdict and must never
+      // re-enter retries, even when a deeper cause carries a stall-class code.
+      const typedError = findRetryableLlmTransportError(error);
 
-      if (stallError !== undefined) {
+      if (typedError !== undefined) {
+        if (!STALL_CLASS_LLM_ERROR_CODES.has(typedError.code)) {
+          throw error;
+        }
+
         stallFailures += 1;
 
         // An aborted signal means the outer per-call deadline already settled
@@ -990,12 +989,8 @@ async function runWithAnthropicTransportRetries<T>(
           throw error;
         }
 
-        options.onRetry?.({ attempt: attempt + 1, kind: "stall", code: stallError.code });
+        options.onRetry?.({ attempt: attempt + 1, kind: "stall", code: typedError.code });
         continue;
-      }
-
-      if (findRetryableLlmTransportError(error) !== undefined) {
-        throw error;
       }
 
       const connectionError = findAnthropicConnectionError(error);

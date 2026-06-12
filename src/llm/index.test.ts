@@ -1202,6 +1202,37 @@ describe("llm", () => {
     expect(create).toHaveBeenCalledTimes(2);
   });
 
+  it("never retries LLM_CONNECTION_FAILED even when its cause chain holds a stall code", async () => {
+    const create = vi.fn(async () => {
+      throw new LLMError("Anthropic connection failed after 3 attempts", {
+        code: "LLM_CONNECTION_FAILED",
+        cause: new LLMError("Anthropic SSE stream stalled for 20ms between message events", {
+          code: "LLM_STREAM_EVENT_STALLED",
+        }),
+      });
+    });
+    const client = new AnthropicLLMClient({
+      client: {
+        messages: {
+          create,
+          stream: vi.fn(),
+        },
+      },
+    });
+
+    await expect(
+      client.complete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      }),
+    ).rejects.toMatchObject({
+      code: "LLM_CONNECTION_FAILED",
+    });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
   it("honors transportStallMaxRetries: 0 with a single attempt", async () => {
     const create = vi.fn(async () => {
       throw new LLMError("Anthropic SSE stream stalled for 180000ms between message events", {
