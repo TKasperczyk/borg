@@ -3789,6 +3789,118 @@ describe("demo server", () => {
     expect(emptyBody.digest.journal_notes).toBe(0);
   });
 
+  it("carries wake origin and abort reason for failed turns in the activity feed", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const customSessionId = createSessionId();
+
+    borg.sessions.ensure({
+      session_id: customSessionId,
+      source_type: "demo",
+      label: "autonomy lane",
+      audience_label: "self",
+      conversation_kind: "demo",
+    });
+
+    const userSource = await borg.stream.append({
+      kind: "user_msg",
+      content: "user message that hit a stalled stream",
+      turn_id: "turn_failed_user",
+      audience: "Alice",
+    });
+    clock.advance(10);
+    await borg.stream.append({
+      kind: "internal_event",
+      turn_id: "turn_failed_user",
+      turn_status: "aborted",
+      content: {
+        event: "aborted_turn",
+        turn_id: "turn_failed_user",
+        reason: "LLMError: stream stalled before completion",
+      },
+    });
+
+    clock.advance(10);
+    await borg.stream.append(
+      {
+        kind: "internal_event",
+        content: {
+          kind: "autonomous_wake",
+          trigger_type: "trigger",
+          source_name: "executive_focus_due",
+          source_category: "operational",
+          payload: {},
+          ts: clock.now(),
+        },
+      },
+      { session: customSessionId },
+    );
+    clock.advance(10);
+    await borg.stream.append(
+      {
+        kind: "internal_event",
+        turn_id: "turn_failed_auto",
+        turn_status: "aborted",
+        content: {
+          event: "aborted_turn",
+          turn_id: "turn_failed_auto",
+          reason: "LLMError: Anthropic SSE stream stalled for 180000ms between message events",
+        },
+      },
+      { session: customSessionId },
+    );
+    clock.advance(10);
+    await borg.stream.append(
+      {
+        kind: "internal_event",
+        content: {
+          kind: "autonomous_action",
+          trigger: "executive_focus_due",
+          outcome_summary: "Autonomous turn failed: stream stalled",
+          turn_result_id: null,
+          ts: clock.now(),
+        },
+      },
+      { session: customSessionId },
+    );
+
+    const day = localDayString(userSource.timestamp);
+    const response = await app.request(`/api/activity?day=${day}`);
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      rows: Array<{
+        id: string;
+        origin: string;
+        trigger: string | null;
+        outcome: string;
+        excerpt: string | null;
+      }>;
+    };
+
+    expect(body.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "turn:default:turn_failed_user",
+          origin: "user",
+          trigger: null,
+          outcome: "failed",
+          excerpt: "LLMError: stream stalled before completion",
+        }),
+        expect.objectContaining({
+          id: `turn:${customSessionId}:turn_failed_auto`,
+          origin: "autonomous",
+          trigger: "executive_focus_due",
+          outcome: "failed",
+          excerpt: "LLMError: Anthropic SSE stream stalled for 180000ms between message events",
+        }),
+      ]),
+    );
+  });
+
   it("keeps activity rows isolated when sessions reuse the same turn id", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);

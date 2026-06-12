@@ -184,6 +184,19 @@ function didEntryLabel(entry: StreamEntry): string | null {
     entry.kind === "internal_event" &&
     typeof entry.content === "object" &&
     entry.content !== null &&
+    "event" in entry.content &&
+    entry.content.event === "aborted_turn"
+  ) {
+    const reason =
+      "reason" in entry.content && typeof entry.content.reason === "string"
+        ? entry.content.reason
+        : null;
+    return reason === null ? "turn aborted" : `aborted: ${reason}`;
+  }
+  if (
+    entry.kind === "internal_event" &&
+    typeof entry.content === "object" &&
+    entry.content !== null &&
     "kind" in entry.content &&
     typeof entry.content.kind === "string"
   ) {

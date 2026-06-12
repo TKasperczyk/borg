@@ -1158,6 +1158,14 @@ function turnIdFromHistoryAnchor(entry: StreamEntry): string | null {
   return turnIdFromAbortedMarker(entry);
 }
 
+function abortedAnchorFailureReason(entry: StreamEntry): string | null {
+  if (turnIdFromAbortedMarker(entry) === null || !isRecord(entry.content)) {
+    return null;
+  }
+
+  return contentString(entry.content, "reason");
+}
+
 function sourceEntryIds(entry: StreamEntry): string[] {
   const sourceEntryIds = entry.response_to?.source_entry_ids;
   if (!Array.isArray(sourceEntryIds)) {
@@ -1908,8 +1916,7 @@ function activityTurnRows(entries: readonly SerializedStreamEntry[]): ActivityTu
       entry.timestamp,
     );
     const terminalEntry = isDemoTerminalEntry(entry) ? entry : undefined;
-    const trigger =
-      terminalEntry === undefined ? null : autonomousTriggerByTerminalEntryId.get(terminalEntry.id) ?? null;
+    const trigger = autonomousTriggerByTerminalEntryId.get(entry.id) ?? null;
 
     rows.push({
       id: `turn:${entry.session_id}:${turnId}`,
@@ -1922,7 +1929,10 @@ function activityTurnRows(entries: readonly SerializedStreamEntry[]): ActivityTu
       outcome: outcome.outcome,
       suppression_reason: outcome.suppressionReason,
       duration_ms: null,
-      excerpt: persistedEntryExcerpt(terminalEntry, outcome.suppressionReason),
+      excerpt: persistedEntryExcerpt(
+        terminalEntry,
+        outcome.suppressionReason ?? abortedAnchorFailureReason(entry),
+      ),
       turn_id: turnId,
     });
   }

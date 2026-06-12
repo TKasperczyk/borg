@@ -54,6 +54,20 @@ const activityFixture: ActivityResponse = {
       turn_id: "turn_auto",
     },
     {
+      id: "turn:s_fail:turn_failed",
+      kind: "turn",
+      started_at: baseTs + 1_500,
+      session_id: "s_fail",
+      session_label: "self",
+      origin: "autonomous",
+      trigger: "executive_focus_due",
+      outcome: "failed",
+      suppression_reason: null,
+      duration_ms: null,
+      excerpt: "LLMError: Anthropic SSE stream stalled for 180000ms between message events",
+      turn_id: "turn_failed",
+    },
+    {
       id: "dream:entry_1",
       kind: "dream",
       started_at: baseTs + 2_000,
@@ -170,6 +184,30 @@ const streamFixture: StreamResponse = {
   ],
 };
 
+const failedStreamFixture: StreamResponse = {
+  next_cursor: null,
+  entries: [
+    {
+      id: "entry_aborted",
+      timestamp: baseTs + 1_502,
+      kind: "internal_event",
+      content: {
+        event: "aborted_turn",
+        turn_id: "turn_failed",
+        reason: "LLMError: Anthropic SSE stream stalled for 180000ms between message events",
+      },
+      turn_id: "turn_failed",
+      turn_status: "aborted",
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+      session_id: "s_fail",
+      sender_label: null,
+      session_label: "self",
+      audience_label: null,
+    },
+  ],
+};
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -207,6 +245,9 @@ function renderActivity() {
     if (url === "/api/stream?session=s_user&limit=200") {
       return json(streamFixture);
     }
+    if (url === "/api/stream?session=s_fail&limit=200") {
+      return json(failedStreamFixture);
+    }
     return json({}, 404);
   });
 
@@ -220,7 +261,15 @@ function renderActivity() {
 }
 
 describe("ActivityPage", () => {
+  beforeEach(() => {
+    // The fixtures are pinned to 2026-06-11; pin "today" with them so the
+    // today-vs-earlier date-label assertions survive real-clock rollover.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 11, 12, 0, 0));
+  });
+
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -251,6 +300,19 @@ describe("ActivityPage", () => {
 
     expect(screen.queryByText("answer from user turn")).toBeNull();
     expect(screen.getByText("finalizer_no_output")).toBeTruthy();
+  });
+
+  it("shows abort reason, origin, and trigger for failed turns", async () => {
+    renderActivity();
+
+    const reason = "LLMError: Anthropic SSE stream stalled for 180000ms between message events";
+    expect(await screen.findByText(reason)).toBeTruthy();
+    expect(screen.getByText("failed")).toBeTruthy();
+    expect(screen.getByText("executive_focus_due")).toBeTruthy();
+
+    fireEvent.click(screen.getByText(reason));
+
+    expect(await screen.findByText(`aborted: ${reason}`)).toBeTruthy();
   });
 
   it("fetches row details lazily on expand and renders journal notes for the turn", async () => {
