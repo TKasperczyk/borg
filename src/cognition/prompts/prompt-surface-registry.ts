@@ -632,9 +632,10 @@ export const PROMPT_SURFACE_BLOCKS = [
     purpose:
       "Invalid-tool corrective carrier. buildFinalizerCallOptions INTERCEPTS this section id " +
       "and routes its text into a trailing message adjacent to generation (not the system " +
-      "tail, where it sat behind the transcript and went unread). The system-surface placement " +
-      "below is a no-op fallback for hypothetical direct runFinalizer callers; the deliberator " +
-      "is the only caller today and always strips it before render, so it never renders here.",
+      "tail, where it sat behind the transcript and went unread). The deliberator is the only " +
+      "PRODUCTION caller and always strips it before render, so it never renders on this " +
+      "system surface in production. The placement below still serves a direct runFinalizer " +
+      "caller (e.g. tests) that supplies this section id -- such a caller would system-render it.",
     renderCondition: "finalizer retry after invalid terminal tool emission (intercepted; see purpose)",
     source: {
       file: "src/cognition/deliberation/deliberator.ts",
