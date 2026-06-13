@@ -827,8 +827,34 @@
   letter-spacing: 0.1em;
 }
 
+.special-toggle {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: inherit;
+  line-height: inherit;
+  text-align: left;
+}
+
+.special-toggle:hover strong {
+  color: var(--text-bright);
+}
+
 .special-head strong {
   color: var(--text-muted);
+}
+
+.special-caret {
+  width: 10px;
+  flex: none;
+  color: var(--text-faint);
+  font-size: 10px;
+  letter-spacing: 0;
 }
 
 .special-glyph {
@@ -866,6 +892,35 @@
   color: var(--text-faint);
   font-size: 10px;
   letter-spacing: 0.06em;
+}
+
+.special-detail {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 12px;
+  margin: 3px 0 0;
+  padding: 9px 0 0 24px;
+  border-top: 1px solid var(--panel-line);
+}
+
+.special-detail dt {
+  color: var(--text-faint);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+}
+
+.special-detail dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  letter-spacing: 0;
+  white-space: pre-wrap;
+}
+
+.special-detail-muted {
+  color: var(--text-faint) !important;
+  font-size: 10.5px !important;
 }
 
 .observed-head {

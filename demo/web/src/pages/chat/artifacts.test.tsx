@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 
 import type { StreamEntry, TurnHistoryRow } from "../../api/types";
 import { ThreadArtifactList, threadItemsFromEntries } from "./artifacts";
@@ -106,9 +106,138 @@ describe("chat artifact rendering", () => {
     expect(screen.getByText("SUPPRESSED — guard-blocked")).toBeTruthy();
     expect(screen.getByText("SUPPRESSED")).toBeTruthy();
     expect(screen.queryByText("SUPPRESSED — finalizer_no_output")).toBeNull();
+    expect(screen.queryByText("finalizer_no_output")).toBeNull();
     expect(screen.getByText("withheld text")).toBeTruthy();
     expect(screen.getByText(/◎ OBSERVED/)).toBeTruthy();
     expect(screen.getByText(/dream report/)).toBeTruthy();
     expect(screen.queryByText("private")).toBeNull();
+  });
+
+  it("expands deliberate silence rows with sibling plan rationale and structured reasons", () => {
+    const items = threadItemsFromEntries(
+      [
+        entry({
+          id: "p1",
+          kind: "thought",
+          timestamp: Date.UTC(2026, 5, 11, 10, 1),
+          content:
+            "plan: uncertainty: The current turn is empty -- an autonomous executive_focus_due wake with nothing addressed to me ; verify: wait ; emission: no_output",
+          turn_id: "t_silence",
+        }),
+        entry({
+          id: "s1",
+          kind: "agent_suppressed",
+          timestamp: Date.UTC(2026, 5, 11, 10, 2),
+          content: {
+            reason: "finalizer_no_output",
+            primary_no_output_reason: "low_value_echo",
+            no_output_categories: ["with_open_question"],
+          },
+          turn_id: "t_silence",
+        }),
+      ],
+      turns,
+    );
+
+    render(<ThreadArtifactList items={items} />);
+
+    const toggle = screen.getByRole("button", { name: /NO OUTPUT — DELIBERATE SILENCE/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText(/The current turn is empty/)).toBeNull();
+
+    fireEvent.click(toggle);
+
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getAllByText(/The current turn is empty/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/thought: plan: uncertainty:/)).toBeTruthy();
+    expect(screen.getByText("finalizer_no_output")).toBeTruthy();
+    expect(screen.getByText("low-value echo")).toBeTruthy();
+    expect(screen.getByText("open question pending")).toBeTruthy();
+  });
+
+  it("keeps semicolons inside the extracted uncertainty rationale", () => {
+    const items = threadItemsFromEntries(
+      [
+        entry({
+          id: "p1",
+          kind: "thought",
+          timestamp: Date.UTC(2026, 5, 11, 10, 1),
+          content: "plan: uncertainty: first clause; still the why ; emission: no_output",
+          turn_id: "t_silence",
+        }),
+        entry({
+          id: "s1",
+          kind: "agent_suppressed",
+          timestamp: Date.UTC(2026, 5, 11, 10, 2),
+          content: { reason: "finalizer_no_output" },
+          turn_id: "t_silence",
+        }),
+      ],
+      turns,
+    );
+
+    render(<ThreadArtifactList items={items} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /NO OUTPUT — DELIBERATE SILENCE/ }));
+
+    expect(screen.getByText("first clause; still the why")).toBeTruthy();
+  });
+
+  it("does not attach an unrelated plan thought from a different turn", () => {
+    const items = threadItemsFromEntries(
+      [
+        entry({
+          id: "p1",
+          kind: "thought",
+          timestamp: Date.UTC(2026, 5, 11, 10, 1),
+          content: "plan: uncertainty: wrong turn why ; emission: no_output",
+          turn_id: "t_other",
+        }),
+        entry({
+          id: "s1",
+          kind: "agent_suppressed",
+          timestamp: Date.UTC(2026, 5, 11, 10, 2),
+          content: { reason: "finalizer_no_output" },
+          turn_id: "t_silence",
+        }),
+      ],
+      turns,
+    );
+
+    render(<ThreadArtifactList items={items} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /NO OUTPUT — DELIBERATE SILENCE/ }));
+
+    expect(screen.queryByText(/wrong turn why/)).toBeNull();
+    expect(screen.queryByText("WHY")).toBeNull();
+  });
+
+  it("renders deliberate silence details without a sibling plan thought", () => {
+    const items = threadItemsFromEntries(
+      [
+        entry({
+          id: "s1",
+          kind: "agent_suppressed",
+          timestamp: Date.UTC(2026, 5, 11, 10, 2),
+          content: {
+            reason: "finalizer_no_output",
+            primary_no_output_reason: "closure",
+            no_output_categories: ["custom_category"],
+          },
+          turn_id: "t_silence",
+        }),
+      ],
+      turns,
+    );
+
+    render(<ThreadArtifactList items={items} />);
+
+    const toggle = screen.getByRole("button", { name: /NO OUTPUT — DELIBERATE SILENCE/ });
+    fireEvent.click(toggle);
+
+    expect(screen.getByText("finalizer_no_output")).toBeTruthy();
+    expect(screen.getByText("closure")).toBeTruthy();
+    expect(screen.getByText("custom category")).toBeTruthy();
+    expect(screen.queryByText("WHY")).toBeNull();
   });
 });
