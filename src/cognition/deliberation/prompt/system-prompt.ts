@@ -31,6 +31,8 @@ import {
   MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
   relationshipPrivateMemoryDisclosureLabel,
   renderMemoryDisclosureLabelForModel,
+  renderSelfMemoryExtractionEpochLabel,
+  selfMemoryExtractionEpochLabel,
   selfPrivateMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
 } from "../../../retrieval/index.js";
@@ -78,6 +80,10 @@ import {
   summarizeRetrievalConfidence,
 } from "./retrieval.js";
 import { renderTaggedPromptSection, type TaggedPromptSection } from "./sections.js";
+import {
+  RECENT_REGENERATIONS_LIMIT,
+  RECENT_SUPPRESSIONS_LIMIT,
+} from "../../generation/discourse-state.js";
 
 export { formatRelativeAge } from "../../../util/relative-time.js";
 
@@ -1102,6 +1108,10 @@ export function buildBaseSystemPromptSections(
     tag: "borg_discourse_control",
     content: summarizeDiscourseControl(context.workingMemory, context.turnOrigin),
   };
+  const mechanismEvidenceSection = {
+    tag: "borg_mechanism_evidence",
+    content: summarizeMechanismEvidence(context),
+  };
   const frameAnomalyGateSection = {
     tag: "borg_frame_anomaly_gate",
     content: summarizeFrameAnomalyGate(context.frameAnomaly ?? null),
@@ -1137,6 +1147,7 @@ export function buildBaseSystemPromptSections(
     heldPreferencesSection,
     hostCapabilitiesSection,
     proceduralGuidanceSection,
+    mechanismEvidenceSection,
     discourseControlSection,
     frameAnomalyGateSection,
   ]) {
@@ -1340,8 +1351,9 @@ function summarizeSelfSnapshotGoal(goal: SelfSnapshot["goals"][number]): string 
     goal,
     goalMemoryDisclosureLabel(goal),
   )}`;
+  const extractionEpoch = renderStaleSelfMemoryExtractionEpochSuffix(goal.created_at);
 
-  return `${goal.description} ${summarizeProvenanceForPrompt(goal.provenance)}${disclosure}`;
+  return `${goal.description} ${summarizeProvenanceForPrompt(goal.provenance)}${extractionEpoch}${disclosure}`;
 }
 
 function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): string | null {
@@ -1399,12 +1411,25 @@ function summarizeFrameAnomalyGate(
   ].join("\n");
 }
 
-function summarizePreferenceEvidence(
-  record: Pick<
-    SelfSnapshot["values"][number] | SelfSnapshot["traits"][number],
-    "evidence_episode_ids" | "provenance"
-  >,
-): string {
+type PreferenceEvidenceRecord = {
+  evidence_episode_ids?: readonly string[] | null;
+  provenance: Provenance;
+  created_at?: number | null;
+};
+
+function summarizePreferenceEvidence(record: PreferenceEvidenceRecord): string {
+  return `${summarizePreferenceEvidenceProvenance(record)}${renderStaleSelfMemoryExtractionEpochSuffix(
+    record.created_at,
+  )}`;
+}
+
+function summarizePreferenceEvidenceInline(record: PreferenceEvidenceRecord): string {
+  return `${summarizePreferenceEvidenceProvenance(record)}${renderStaleSelfMemoryExtractionEpochInline(
+    record.created_at,
+  )}`;
+}
+
+function summarizePreferenceEvidenceProvenance(record: PreferenceEvidenceRecord): string {
   const evidenceEpisodeIds = getEvidenceEpisodeIds(record);
 
   if (evidenceEpisodeIds.length > 0) {
@@ -1427,12 +1452,25 @@ function summarizePreferenceEvidence(
 }
 
 function getEvidenceEpisodeIds(
-  record: Pick<
-    SelfSnapshot["values"][number] | SelfSnapshot["traits"][number],
-    "evidence_episode_ids"
-  >,
+  record: Pick<PreferenceEvidenceRecord, "evidence_episode_ids">,
 ): string[] {
   return Array.isArray(record.evidence_episode_ids) ? record.evidence_episode_ids : [];
+}
+
+function renderStaleSelfMemoryExtractionEpochSuffix(
+  createdAtMs: number | null | undefined,
+): string {
+  return selfMemoryExtractionEpochLabel(createdAtMs) === "extracted_before_recall_inversion"
+    ? ` (${renderSelfMemoryExtractionEpochLabel(createdAtMs)})`
+    : "";
+}
+
+function renderStaleSelfMemoryExtractionEpochInline(
+  createdAtMs: number | null | undefined,
+): string {
+  return selfMemoryExtractionEpochLabel(createdAtMs) === "extracted_before_recall_inversion"
+    ? ` ${renderSelfMemoryExtractionEpochLabel(createdAtMs)}`
+    : "";
 }
 
 function getPreferenceConfidence(
@@ -1462,7 +1500,7 @@ function summarizeHeldPreferences(selfSnapshot: SelfSnapshot): string | null {
       `Values I hold: ${heldValues
         .map((value) => {
           const description = value.description.replace(/\s+/g, " ").trim();
-          return `${value.label} (conf ${getPreferenceConfidence(value).toFixed(2)}, ${summarizePreferenceEvidence(value).slice(1, -1)})${
+          return `${value.label} (conf ${getPreferenceConfidence(value).toFixed(2)}, ${summarizePreferenceEvidenceInline(value)})${
             description.length === 0 ? "" : ` -- ${description}`
           }`;
         })
@@ -1475,7 +1513,7 @@ function summarizeHeldPreferences(selfSnapshot: SelfSnapshot): string | null {
       `Traits I express: ${heldTraits
         .map(
           (trait) =>
-            `${trait.label}:${trait.strength.toFixed(2)} (conf ${getPreferenceConfidence(trait).toFixed(2)}, ${summarizePreferenceEvidence(trait).slice(1, -1)})`,
+            `${trait.label}:${trait.strength.toFixed(2)} (conf ${getPreferenceConfidence(trait).toFixed(2)}, ${summarizePreferenceEvidenceInline(trait)})`,
         )
         .join(", ")}`,
     );
@@ -1549,19 +1587,84 @@ function summarizeDiscourseControl(
     );
   }
 
-  const recentSuppressions = workingMemory.discourse_state?.recent_suppressions?.slice(-3) ?? [];
+  return lines.length === 0 ? null : lines.join("\n");
+}
+
+function summarizeMechanismEvidence(context: DeliberationContext): string | null {
+  const evidence = context.turnMechanismEvidence ?? {
+    recentSuppressions:
+      context.workingMemory.discourse_state?.recent_suppressions?.map((entry) => ({
+        turnId: entry.turn_id,
+        reason: entry.reason,
+        ts: entry.ts,
+        ...(entry.source_stream_entry_id === undefined
+          ? {}
+          : { sourceStreamEntryId: entry.source_stream_entry_id }),
+      })) ?? [],
+    recentRegenerations:
+      context.workingMemory.discourse_state?.recent_regenerations?.map((entry) => ({
+        turnId: entry.turn_id,
+        mechanism: entry.mechanism,
+        ts: entry.ts,
+        ...(entry.source_stream_entry_id === undefined
+          ? {}
+          : { sourceStreamEntryId: entry.source_stream_entry_id }),
+      })) ?? [],
+  };
+  const recentSuppressions = evidence.recentSuppressions.slice(-RECENT_SUPPRESSIONS_LIMIT);
+  const recentRegenerations = evidence.recentRegenerations.slice(-RECENT_REGENERATIONS_LIMIT);
+  const lines: string[] = [];
 
   if (recentSuppressions.length > 0) {
-    const rendered = recentSuppressions
-      .map((entry) => `${entry.turn_id}:${entry.reason}`)
-      .join(", ");
-
     lines.push(
-      `Recent silences from my side: ${rendered}. If asked about going quiet, I attribute it to the actual reason -- a guard rejected the response, a finalizer/tool decision emitted no output, or the response was suppressed. I do not invent network failures, latency spikes, or technical errors.`,
+      `Recent silences from my side: ${recentSuppressions
+        .map(renderRecentSuppressionMechanismEvidence)
+        .join(
+          ", ",
+        )}. If asked about going quiet, I attribute it to the actual reason code and rendered diagnostic. I do not invent network failures, latency spikes, or technical errors.`,
+    );
+  }
+
+  if (recentRegenerations.length > 0) {
+    lines.push(
+      `Regenerated final answers from my side: ${recentRegenerations
+        .map(
+          (entry) =>
+            `${escapeXmlText(entry.turnId)}: an internal commitment guard regenerated this turn's final answer`,
+        )
+        .join(", ")}.`,
     );
   }
 
   return lines.length === 0 ? null : lines.join("\n");
+}
+
+function renderRecentSuppressionMechanismEvidence(
+  entry: NonNullable<DeliberationContext["turnMechanismEvidence"]>["recentSuppressions"][number],
+): string {
+  const diagnostics = entry.diagnostic;
+  const renderedDiagnostics = [
+    diagnostics?.primaryNoOutputReason === undefined
+      ? null
+      : `primary_no_output_reason=${escapeXmlText(diagnostics.primaryNoOutputReason)}`,
+    diagnostics?.noOutputCategories === undefined || diagnostics.noOutputCategories.length === 0
+      ? null
+      : `no_output_categories=${escapeXmlText(JSON.stringify(diagnostics.noOutputCategories))}`,
+    diagnostics?.structuralNoOutputFlags === undefined ||
+    diagnostics.structuralNoOutputFlags.length === 0
+      ? null
+      : `structural_no_output_flags=${escapeXmlText(
+          JSON.stringify(diagnostics.structuralNoOutputFlags),
+        )}`,
+    diagnostics?.finalizerInvalidTool === undefined
+      ? null
+      : `finalizer_invalid_tool=${escapeXmlText(JSON.stringify(diagnostics.finalizerInvalidTool))}`,
+  ].filter((line): line is string => line !== null);
+  const rendered = `${escapeXmlText(entry.turnId)}:${escapeXmlText(String(entry.reason))}`;
+
+  return renderedDiagnostics.length === 0
+    ? rendered
+    : `${rendered} {${renderedDiagnostics.join("; ")}}`;
 }
 
 function relationalSlotSubjectLabel(
@@ -1774,8 +1877,10 @@ function summarizeCurrentPeriod(period: AutobiographicalPeriod | null | undefine
 }
 
 function summarizeAutobiographicalPeriodEvidence(period: AutobiographicalPeriod): string {
+  const extractionEpoch = renderStaleSelfMemoryExtractionEpochSuffix(period.created_at);
+
   if (period.key_episode_ids.length > 0) {
-    return summarizeProvenanceForPrompt({
+    return `${summarizeProvenanceForPrompt({
       kind: "episodes",
       episode_ids: [...period.key_episode_ids] as Provenance extends {
         kind: "episodes";
@@ -1783,14 +1888,14 @@ function summarizeAutobiographicalPeriodEvidence(period: AutobiographicalPeriod)
       }
         ? T
         : never,
-    });
+    })}${extractionEpoch}`;
   }
 
   if (period.provenance.kind === "episodes") {
-    return AUDIENCE_SCOPED_SELF_EVIDENCE_PROVENANCE;
+    return `${AUDIENCE_SCOPED_SELF_EVIDENCE_PROVENANCE}${extractionEpoch}`;
   }
 
-  return summarizeProvenanceForPrompt(period.provenance);
+  return `${summarizeProvenanceForPrompt(period.provenance)}${extractionEpoch}`;
 }
 
 function summarizeRecentGrowth(markers: readonly GrowthMarker[] | undefined): string | null {
@@ -1803,7 +1908,13 @@ function summarizeRecentGrowth(markers: readonly GrowthMarker[] | undefined): st
   for (const marker of markers.slice(0, 3)) {
     const change = marker.what_changed.trim();
     const compact = change.length > 160 ? `${change.slice(0, 157).trimEnd()}...` : change;
-    lines.push(`- [${marker.category}] ${compact} (conf ${marker.confidence.toFixed(2)})`);
+    const extractionEpoch = renderStaleSelfMemoryExtractionEpochInline(marker.created_at);
+    const label =
+      extractionEpoch.length === 0
+        ? `(conf ${marker.confidence.toFixed(2)})`
+        : `(conf ${marker.confidence.toFixed(2)};${extractionEpoch})`;
+
+    lines.push(`- [${marker.category}] ${compact} ${label}`);
   }
 
   return lines.length === 1 ? null : [...lines, SELF_IDENTITY_DISCLOSURE_LINE].join("\n");

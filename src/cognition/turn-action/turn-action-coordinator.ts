@@ -56,6 +56,12 @@ export type TurnActionCoordinatorResult = {
   actionResult: ActionResult;
   actionEmission: PendingTurnEmission;
   deliberation: DeliberationResult;
+  regenerationBreadcrumb?: TurnRegenerationBreadcrumb;
+};
+
+export type TurnRegenerationBreadcrumb = {
+  kind: "commitment_guard_regeneration";
+  turnId: string;
 };
 
 function withMessageMetadata<T extends PendingTurnEmission>(
@@ -196,7 +202,11 @@ export class TurnActionCoordinator {
           : {}),
       });
     };
-    const guarded =
+    const guarded: {
+      deliberation: DeliberationResult;
+      actionResult: ActionResult;
+      regenerationBreadcrumb?: TurnRegenerationBreadcrumb;
+    } =
       deliberationEmission.kind !== "message"
         ? {
             deliberation: input.deliberation,
@@ -224,6 +234,9 @@ export class TurnActionCoordinator {
       actionResult,
       actionEmission,
       deliberation: guarded.deliberation,
+      ...(guarded.regenerationBreadcrumb === undefined
+        ? {}
+        : { regenerationBreadcrumb: guarded.regenerationBreadcrumb }),
     };
   }
 
@@ -233,7 +246,11 @@ export class TurnActionCoordinator {
       pendingActionJudge: LLMPendingActionJudge;
       onPendingActionRejected: (event: PendingActionRejection) => void;
     },
-  ): Promise<{ actionResult: ActionResult; deliberation: DeliberationResult }> {
+  ): Promise<{
+    actionResult: ActionResult;
+    deliberation: DeliberationResult;
+    regenerationBreadcrumb?: TurnRegenerationBreadcrumb;
+  }> {
     const guarded = await traceTurnPhase({
       tracer: this.options.tracer,
       clock: this.options.clock,
@@ -245,6 +262,7 @@ export class TurnActionCoordinator {
         let currentDeliberation = input.deliberation;
         let currentDeliberationEmission: Extract<PendingTurnEmission, { kind: "message" }> =
           input.deliberationEmission;
+        let finalAnswerRegenerated = false;
         let commitmentCheck = await this.options.commitmentGuardRunner.run({
           llmClient: input.llmClient,
           turnId: input.turnId,
@@ -302,6 +320,7 @@ export class TurnActionCoordinator {
             }
 
             currentDeliberationEmission = regeneratedEmission;
+            finalAnswerRegenerated = true;
             commitmentCheck = await this.options.commitmentGuardRunner.run({
               llmClient: input.llmClient,
               turnId: input.turnId,
@@ -357,10 +376,20 @@ export class TurnActionCoordinator {
           deliberation: currentDeliberation,
           guardedEmission,
           performActionInsideGuard: false,
+          ...(finalAnswerRegenerated && guardedEmission.kind === "message"
+            ? {
+                regenerationBreadcrumb: {
+                  kind: "commitment_guard_regeneration" as const,
+                  turnId: input.turnId,
+                },
+              }
+            : {}),
         };
       },
       completedSub: (result) => `emission=${result.guardedEmission.kind}`,
     });
+    const regenerationBreadcrumb =
+      "regenerationBreadcrumb" in guarded ? guarded.regenerationBreadcrumb : undefined;
 
     if (guarded.performActionInsideGuard) {
       return {
@@ -372,6 +401,7 @@ export class TurnActionCoordinator {
           intents: guarded.deliberation.intents,
           workingMemory: input.workingMemory,
         }),
+        ...(regenerationBreadcrumb === undefined ? {} : { regenerationBreadcrumb }),
       };
     }
 
@@ -388,6 +418,7 @@ export class TurnActionCoordinator {
         pendingActionTimestamp: this.options.clock.now(),
         onPendingActionRejected: input.onPendingActionRejected,
       }),
+      ...(regenerationBreadcrumb === undefined ? {} : { regenerationBreadcrumb }),
     };
   }
 }

@@ -200,6 +200,11 @@ describe("TurnActionCoordinator commitment regeneration", () => {
     });
     expect(result.actionResult.response).toBe(cleanDraft);
     expect(result.deliberation.response).toBe(cleanDraft);
+    expect(result.regenerationBreadcrumb).toEqual({
+      kind: "commitment_guard_regeneration",
+      turnId: "turn-commitment-regeneration",
+    });
+    expect(JSON.stringify(result.regenerationBreadcrumb)).not.toContain("ORCHID-17");
     expect(regenerateFinalResponse).toHaveBeenCalledTimes(1);
     const regenerationPromptSection =
       regenerateFinalResponse.mock.calls[0]?.[0].additionalPromptSections[0]?.text ?? "";

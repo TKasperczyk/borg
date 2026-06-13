@@ -11,9 +11,7 @@ import type {
 } from "../memory/activity/index.js";
 import type { ActionRecord, ActionRepository } from "../memory/actions/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
-import type {
-  ObservedEventRepository,
-} from "../memory/observed-events/index.js";
+import type { ObservedEventRepository } from "../memory/observed-events/index.js";
 import { OBSERVED_EVENT_DISCLOSURE_CLASSES } from "../memory/observed-events/types.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import type {
@@ -28,6 +26,7 @@ import type {
 import type { Provenance } from "../memory/common/provenance.js";
 import {
   memoryDisclosureLabelFromEpisodeAccess,
+  renderSelfMemoryExtractionEpochLabel,
   selfPrivateMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
 } from "../retrieval/index.js";
@@ -691,6 +690,7 @@ export class AutobiographicalRecallService {
           goal_id: goal.id,
           status: goal.status,
           priority: goal.priority,
+          self_memory_provenance: renderSelfMemoryExtractionEpochLabel(goal.created_at),
         },
       });
     }
@@ -777,5 +777,6 @@ function periodMetadata(period: AutobiographicalPeriod): Record<string, unknown>
     start_ts: period.start_ts,
     end_ts: period.end_ts,
     themes: [...period.themes],
+    self_memory_provenance: renderSelfMemoryExtractionEpochLabel(period.created_at),
   };
 }

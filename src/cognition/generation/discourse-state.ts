@@ -2,6 +2,7 @@ import type {
   ClosurePressureHistoryReason,
   ClosureLoopState,
   DiscourseStopProvenance,
+  RecentRegenerationEntry,
   RecentSuppressionEntry,
   StopUntilSubstantiveContent,
   WorkingMemory,
@@ -9,7 +10,8 @@ import type {
 import type { StreamEntryId } from "../../util/ids.js";
 
 export const CLOSURE_PRESSURE_HISTORY_LIMIT = 5;
-export const RECENT_SUPPRESSIONS_LIMIT = 3;
+export const RECENT_SUPPRESSIONS_LIMIT = 10;
+export const RECENT_REGENERATIONS_LIMIT = 10;
 
 export type SetStopUntilSubstantiveContentInput = {
   provenance: DiscourseStopProvenance;
@@ -49,6 +51,12 @@ export type AppendRecentSuppressionInput = {
   ts: number;
   sourceStreamEntryId?: StreamEntryId;
   sourceStreamEntryIds?: readonly StreamEntryId[];
+};
+
+export type AppendRecentRegenerationInput = {
+  turnId: string;
+  ts: number;
+  sourceStreamEntryId?: StreamEntryId;
 };
 
 function baseDiscourseState(workingMemory: WorkingMemory): WorkingMemory["discourse_state"] {
@@ -175,6 +183,33 @@ export function appendRecentSuppression(
     discourse_state: {
       ...state,
       recent_suppressions: next,
+    },
+  };
+}
+
+export function appendRecentRegeneration(
+  workingMemory: WorkingMemory,
+  input: AppendRecentRegenerationInput,
+): WorkingMemory {
+  const state = baseDiscourseState(workingMemory);
+  const entry: RecentRegenerationEntry = {
+    turn_id: input.turnId,
+    mechanism: "commitment_guard_regeneration",
+    ts: input.ts,
+    ...(input.sourceStreamEntryId === undefined
+      ? {}
+      : { source_stream_entry_id: input.sourceStreamEntryId }),
+  };
+  const next = capNewest(
+    [...(state.recent_regenerations ?? []), entry],
+    RECENT_REGENERATIONS_LIMIT,
+  );
+
+  return {
+    ...workingMemory,
+    discourse_state: {
+      ...state,
+      recent_regenerations: next,
     },
   };
 }

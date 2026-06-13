@@ -158,12 +158,22 @@ export const recentSuppressionEntrySchema = z
   })
   .strict();
 
+export const recentRegenerationEntrySchema = z
+  .object({
+    turn_id: z.string().min(1),
+    mechanism: z.literal("commitment_guard_regeneration"),
+    ts: z.number().finite(),
+    source_stream_entry_id: workingStreamEntryIdSchema.optional(),
+  })
+  .strict();
+
 export const discourseStateSchema = z
   .object({
     stop_until_substantive_content: stopUntilSubstantiveContentSchema.nullable(),
     closure_loop: closureLoopStateSchema.nullable().optional(),
     closure_pressure_history: z.array(closurePressureHistoryEntrySchema).optional(),
     recent_suppressions: z.array(recentSuppressionEntrySchema).optional(),
+    recent_regenerations: z.array(recentRegenerationEntrySchema).optional(),
   })
   .strict();
 
@@ -207,6 +217,7 @@ export type ClosureLoopState = z.infer<typeof closureLoopStateSchema>;
 export type ClosurePressureHistoryEntry = z.infer<typeof closurePressureHistoryEntrySchema>;
 export type ClosurePressureHistoryReason = z.infer<typeof closurePressureHistoryReasonSchema>;
 export type RecentSuppressionEntry = z.infer<typeof recentSuppressionEntrySchema>;
+export type RecentRegenerationEntry = z.infer<typeof recentRegenerationEntrySchema>;
 
 /**
  * Derived live-state only. Phase E removed `scratchpad` (S2 planner output
@@ -231,6 +242,7 @@ export function createWorkingMemory(sessionId: SessionId, timestamp: number): Wo
       stop_until_substantive_content: null,
       closure_pressure_history: [],
       recent_suppressions: [],
+      recent_regenerations: [],
     },
     mode: null,
     updated_at: timestamp,

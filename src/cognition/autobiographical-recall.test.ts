@@ -216,4 +216,79 @@ describe("AutobiographicalRecallService", () => {
     expect(streamEvidence?.map((item) => item.text).join("\n")).not.toContain("thought-1");
     expect(streamEvidence?.map((item) => item.text).join("\n")).not.toContain("thought-2");
   });
+
+  it("labels self-memory extraction epoch in autobiographical metadata", async () => {
+    const beforeInversion = Date.parse("2026-06-04T14:43:26Z");
+    const afterInversion = Date.parse("2026-06-04T14:43:28Z");
+    const service = new AutobiographicalRecallService({
+      clock: new FixedClock(afterInversion + 1_000),
+      goalsRepository: {
+        list: () => [
+          {
+            id: "goal_aaaaaaaaaaaaaaaa",
+            description: "Review recall-inversion provenance",
+            priority: 6,
+            parent_goal_id: null,
+            status: "active",
+            progress_notes: null,
+            last_progress_ts: null,
+            created_at: afterInversion,
+            target_at: null,
+            audience_entity_id: null,
+            owner_entity_id: null,
+            source_stream_entry_ids: [createStreamEntryId()],
+            provenance: { kind: "manual" },
+            children: [],
+          },
+        ],
+      } as never,
+      autobiographicalRepository: {
+        listPeriods: () => [
+          {
+            id: "abp_aaaaaaaaaaaaaaaa",
+            label: "Before inversion",
+            start_ts: beforeInversion,
+            end_ts: null,
+            narrative: "A period extracted before global self-memory recall.",
+            key_episode_ids: [],
+            themes: ["recall"],
+            provenance: { kind: "manual" },
+            created_at: beforeInversion,
+            last_updated: beforeInversion,
+          },
+        ],
+      } as never,
+      sourceCap: 5,
+      totalCap: 10,
+    });
+
+    const result = await service.recall({
+      sessionId: createSessionId(),
+      temporalCue: {
+        sinceTs: beforeInversion - 1_000,
+        untilTs: afterInversion + 1_000,
+        label: "recall inversion boundary",
+      },
+      isSelfAudience: true,
+      sessionAudienceRole: "operator",
+      perceptionMode: "reflective",
+    });
+
+    expect(result?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "goal",
+          metadata: expect.objectContaining({
+            self_memory_provenance: "extraction_epoch=extracted_after_recall_inversion",
+          }),
+        }),
+        expect.objectContaining({
+          kind: "autobiographical_period",
+          metadata: expect.objectContaining({
+            self_memory_provenance: "extraction_epoch=extracted_before_recall_inversion",
+          }),
+        }),
+      ]),
+    );
+  });
 });

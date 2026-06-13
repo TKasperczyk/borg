@@ -1561,7 +1561,9 @@ describe("buildBaseSystemPrompt", () => {
     expect(retrievedBlock).toContain(privateMemory);
     expect(retrievedBlock).toContain("disclosure_class=relationship_private");
     expect(retrievedBlock).toContain(`private-to=${aliceId}`);
-    expect(guidanceBlock).toContain("I use labeled-private memories internally to inform my judgment");
+    expect(guidanceBlock).toContain(
+      "I use labeled-private memories internally to inform my judgment",
+    );
     expect(guidanceBlock).toContain(
       "I do not reveal labeled-private content, source details, or the existence of a private memory",
     );
@@ -1760,6 +1762,110 @@ describe("buildBaseSystemPrompt", () => {
     expect(nextStepLine).toContain(`private-to=${alice}`);
     expect(selfSnapshotBlock).toContain("Follow the source-grounded private goal");
     expect(selfSnapshotBlock).toContain(`private-to=${alice}`);
+  });
+
+  it("labels only stale self-memory extraction epoch in prompt renders", () => {
+    const beforeInversion = Date.parse("2026-06-04T14:43:26Z");
+    const afterInversion = Date.parse("2026-06-04T14:43:28Z");
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        selfSnapshot: {
+          values: [
+            {
+              id: "val_aaaaaaaaaaaaaaaa" as never,
+              label: "continuity",
+              description: "Keep continuity visible.",
+              priority: 0.8,
+              created_at: beforeInversion,
+              last_affirmed: null,
+              state: "candidate",
+              established_at: null,
+              confidence: 0.7,
+              last_tested_at: null,
+              last_contradicted_at: null,
+              support_count: 1,
+              contradiction_count: 0,
+              evidence_episode_ids: [],
+              provenance: { kind: "manual" },
+            },
+          ],
+          goals: [
+            {
+              id: "goal_cccccccccccccccc" as never,
+              description: "Carry the global recall change carefully",
+              priority: 7,
+              parent_goal_id: null,
+              status: "active",
+              progress_notes: null,
+              last_progress_ts: null,
+              created_at: afterInversion,
+              target_at: null,
+              audience_entity_id: null,
+              owner_entity_id: null,
+              source_stream_entry_ids: [createStreamEntryId()],
+              provenance: { kind: "manual" },
+            },
+          ],
+          traits: [
+            {
+              id: "trt_aaaaaaaaaaaaaaaa" as never,
+              label: "careful",
+              strength: 0.6,
+              last_reinforced: afterInversion,
+              last_decayed: null,
+              state: "candidate",
+              established_at: null,
+              confidence: 0.6,
+              last_tested_at: null,
+              last_contradicted_at: null,
+              support_count: 1,
+              contradiction_count: 0,
+              evidence_episode_ids: [],
+              provenance: { kind: "manual" },
+            },
+          ],
+          currentPeriod: {
+            id: "abp_bbbbbbbbbbbbbbbb" as never,
+            label: "Recall inversion",
+            start_ts: beforeInversion,
+            end_ts: null,
+            narrative: "Learning to treat stale self-memory as labeled evidence.",
+            key_episode_ids: [],
+            themes: ["recall"],
+            provenance: { kind: "manual" },
+            created_at: beforeInversion,
+            last_updated: afterInversion,
+          },
+          recentGrowthMarkers: [
+            {
+              id: "grw_bbbbbbbbbbbbbbbb" as never,
+              ts: afterInversion,
+              category: "understanding",
+              what_changed: "Noticed the inversion boundary.",
+              before_description: null,
+              after_description: null,
+              evidence_episode_ids: [],
+              disclosure_label: selfPrivateMemoryDisclosureLabel(),
+              confidence: 0.8,
+              source_process: "manual",
+              provenance: { kind: "manual" },
+              created_at: afterInversion,
+            },
+          ],
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    const selfSnapshotBlock = extractBlock(prompt, "borg_self_snapshot");
+
+    expect(selfSnapshotBlock).toContain("extraction_epoch=extracted_before_recall_inversion");
+    expect(selfSnapshotBlock).not.toContain("extraction_epoch=extracted_after_recall_inversion");
+    expect(selfSnapshotBlock).not.toContain("extraction_epoch=extraction_epoch_unknown");
+    expect(extractBlock(prompt, "borg_current_period")).toContain(
+      "extraction_epoch=extracted_before_recall_inversion",
+    );
+    expect(extractBlock(prompt, "borg_recent_growth")).not.toContain("extraction_epoch=");
   });
 
   it("omits legacy retrieved evidence when the evidence ledger is active", () => {
@@ -2131,6 +2237,40 @@ describe("buildBaseSystemPrompt", () => {
     expect(autonomousPrompt).not.toContain("stop-until-substantive-content");
   });
 
+  it("renders mechanism evidence on autonomous turns without discourse-control directives", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        turnOrigin: "autonomous",
+        workingMemory: {
+          ...makeContext().workingMemory,
+          discourse_state: {
+            stop_until_substantive_content: {
+              provenance: "finalizer_no_output",
+              source_stream_entry_id: "strm_aaaaaaaaaaaaaaaa" as never,
+              reason: "Finalizer called no_output.",
+              since_turn: 7,
+            },
+            recent_suppressions: [
+              {
+                turn_id: "turn-autonomous-silence",
+                reason: "finalizer_no_output",
+                ts: NOW_MS,
+              },
+            ],
+          },
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    expect(prompt).not.toContain("<borg_discourse_control");
+    expect(prompt).not.toContain("stop-until-substantive-content");
+    const block = extractBlock(prompt, "borg_mechanism_evidence");
+
+    expect(block).toContain("Recent silences from my side");
+    expect(block).toContain("turn-autonomous-silence:finalizer_no_output");
+  });
+
   it("renders closure-loop finalizer guidance in trusted discourse control", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({
@@ -2183,7 +2323,7 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("They find repeated codas and farewells unwelcome.");
   });
 
-  it("renders recent suppression reasons in trusted discourse control", () => {
+  it("renders recent suppression reasons in always-eligible mechanism evidence", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({
         workingMemory: {
@@ -2202,11 +2342,111 @@ describe("buildBaseSystemPrompt", () => {
       }),
       PROMPT_OPTIONS,
     );
-    const block = extractBlock(prompt, "borg_discourse_control");
+    const block = extractBlock(prompt, "borg_mechanism_evidence");
 
     expect(block).toContain("Recent silences from my side");
     expect(block).toContain("turn-b:finalizer_no_output");
     expect(block).toContain("I do not invent network failures");
+    expect(prompt).not.toContain("<borg_discourse_control>");
+  });
+
+  it("renders hydrated suppression diagnostics from mechanism evidence", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        turnMechanismEvidence: {
+          recentSuppressions: [
+            {
+              turnId: "turn-diagnostic",
+              reason: "finalizer_no_output",
+              ts: NOW_MS,
+              sourceStreamEntryId: "strm_aaaaaaaaaaaaaaaa" as never,
+              diagnostic: {
+                primaryNoOutputReason: "other",
+                noOutputCategories: ["with_open_question"],
+                structuralNoOutputFlags: ["open_question_rendered"],
+                finalizerInvalidTool: {
+                  tool_name: "EmitNoOutput",
+                  reason: "schema_error",
+                  attempt: "initial",
+                },
+              },
+            },
+          ],
+          recentRegenerations: [],
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_mechanism_evidence");
+
+    expect(block).toContain("turn-diagnostic:finalizer_no_output");
+    expect(block).toContain("primary_no_output_reason=other");
+    expect(block).toContain("no_output_categories=");
+    expect(block).toContain("structural_no_output_flags=");
+    expect(block).toContain("finalizer_invalid_tool=");
+    expect(block).toContain("schema_error");
+  });
+
+  it("renders regeneration breadcrumbs without draft or guard-internal content", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        workingMemory: {
+          ...makeContext().workingMemory,
+          discourse_state: {
+            stop_until_substantive_content: null,
+            recent_regenerations: [
+              {
+                turn_id: "turn-regenerated",
+                mechanism: "commitment_guard_regeneration",
+                ts: NOW_MS,
+                source_stream_entry_id: "strm_bbbbbbbbbbbbbbbb" as never,
+              },
+            ],
+          },
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_mechanism_evidence");
+
+    expect(block).toContain("Regenerated final answers from my side");
+    expect(block).toContain(
+      "turn-regenerated: an internal commitment guard regenerated this turn's final answer",
+    );
+    expect(block).not.toContain("ORCHID-17");
+    expect(block).not.toContain("violating_span");
+  });
+
+  it("caps mechanism evidence rendering to the newest entries", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        workingMemory: {
+          ...makeContext().workingMemory,
+          discourse_state: {
+            stop_until_substantive_content: null,
+            recent_suppressions: Array.from({ length: 12 }, (_, index) => ({
+              turn_id: `turn-suppressed-${String(index).padStart(2, "0")}`,
+              reason: "finalizer_no_output",
+              ts: NOW_MS + index,
+            })),
+            recent_regenerations: Array.from({ length: 12 }, (_, index) => ({
+              turn_id: `turn-regenerated-${String(index).padStart(2, "0")}`,
+              mechanism: "commitment_guard_regeneration" as const,
+              ts: NOW_MS + index,
+            })),
+          },
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_mechanism_evidence");
+
+    expect(block).not.toContain("turn-suppressed-00");
+    expect(block).not.toContain("turn-suppressed-01");
+    expect(block).toContain("turn-suppressed-02");
+    expect(block).not.toContain("turn-regenerated-00");
+    expect(block).not.toContain("turn-regenerated-01");
+    expect(block).toContain("turn-regenerated-02");
   });
 
   it("renders default host capabilities as trusted guidance with capability honesty posture", () => {
@@ -3016,8 +3256,7 @@ describe("buildAutonomousOutboundAuthorizationSection", () => {
   });
 
   it("renders open-interval framing for autonomous turns without reachable targets", () => {
-    const section =
-      buildAutonomousOutboundAuthorizationSection(null, "autonomous", toolMenu) ?? "";
+    const section = buildAutonomousOutboundAuthorizationSection(null, "autonomous", toolMenu) ?? "";
 
     expect(section).toContain("<borg_autonomous_reflection>");
     expect(section).toContain("<reflection_posture>");
@@ -3041,7 +3280,9 @@ describe("buildAutonomousOutboundAuthorizationSection", () => {
     // Even-handed: acting and not-acting are equally ordinary; the posture neither
     // instructs the being to post nor frames silence as the proper default.
     expect(section).toContain("Acting and not-acting are equally ordinary outcomes");
-    expect(section).toContain("neither performing action for its own sake, nor defaulting to silence");
+    expect(section).toContain(
+      "neither performing action for its own sake, nor defaulting to silence",
+    );
     expect(section).toContain("tool.outbound.post");
     expect(section).toContain("reachable_threads lists an authorized target");
     expect(section.toLowerCase()).not.toContain("i should post");

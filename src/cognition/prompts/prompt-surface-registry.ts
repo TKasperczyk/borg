@@ -368,7 +368,7 @@ export const PROMPT_SURFACE_BLOCKS = [
     id: "borg_discourse_control",
     owner: "cognition.generation",
     purpose: "Closure and discourse-control guidance.",
-    renderCondition: "non-autonomous discourse stop/closure/suppression state",
+    renderCondition: "non-autonomous discourse stop/closure state",
     source: {
       file: "src/cognition/deliberation/prompt/system-prompt.ts",
       exportName: "summarizeDiscourseControl",
@@ -377,6 +377,21 @@ export const PROMPT_SURFACE_BLOCKS = [
     surfaces: [
       { surface: PROMPT_SURFACES.baseTrustedGuidanceSections, order: 90 },
       { surface: PROMPT_SURFACES.cacheableTrustedDynamicSections, order: 80 },
+    ],
+  }),
+  block({
+    id: "borg_mechanism_evidence",
+    owner: "cognition.generation",
+    purpose: "Model-visible evidence about recent turn machinery outcomes.",
+    renderCondition: "recent suppression or regeneration evidence exists",
+    source: {
+      file: "src/cognition/deliberation/prompt/system-prompt.ts",
+      exportName: "summarizeMechanismEvidence",
+    },
+    tag: "borg_mechanism_evidence",
+    surfaces: [
+      { surface: PROMPT_SURFACES.baseTrustedGuidanceSections, order: 85 },
+      { surface: PROMPT_SURFACES.cacheableTrustedDynamicSections, order: 75 },
     ],
   }),
   block({
@@ -636,7 +651,8 @@ export const PROMPT_SURFACE_BLOCKS = [
       "PRODUCTION caller and always strips it before render, so it never renders on this " +
       "system surface in production. The placement below still serves a direct runFinalizer " +
       "caller (e.g. tests) that supplies this section id -- such a caller would system-render it.",
-    renderCondition: "finalizer retry after invalid terminal tool emission (intercepted; see purpose)",
+    renderCondition:
+      "finalizer retry after invalid terminal tool emission (intercepted; see purpose)",
     source: {
       file: "src/cognition/deliberation/deliberator.ts",
       exportName: "buildInvalidToolFinalizerRetryPromptSection",

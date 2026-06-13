@@ -7,6 +7,7 @@ import {
   clearClosureLoop,
   clearStopUntilSubstantiveContent,
   appendClosurePressureHistory,
+  appendRecentRegeneration,
   appendRecentSuppression,
   markClosureLoopNamed,
   reviewStopHardCap,
@@ -131,10 +132,10 @@ describe("discourse state", () => {
     ).toEqual(["turn-2", "turn-3", "turn-4", "turn-5", "turn-6"]);
   });
 
-  it("caps recent suppression visibility at the three most recent entries", () => {
+  it("caps recent suppression visibility at the ten most recent entries", () => {
     let workingMemory = createWorkingMemory(DEFAULT_SESSION_ID, 100);
 
-    for (let index = 0; index < 5; index += 1) {
+    for (let index = 0; index < 12; index += 1) {
       workingMemory = appendRecentSuppression(workingMemory, {
         turnId: `turn-${index}`,
         reason: "commitment_violation",
@@ -144,7 +145,55 @@ describe("discourse state", () => {
 
     expect(
       workingMemory.discourse_state?.recent_suppressions?.map((entry) => entry.turn_id),
-    ).toEqual(["turn-2", "turn-3", "turn-4"]);
+    ).toEqual([
+      "turn-2",
+      "turn-3",
+      "turn-4",
+      "turn-5",
+      "turn-6",
+      "turn-7",
+      "turn-8",
+      "turn-9",
+      "turn-10",
+      "turn-11",
+    ]);
+  });
+
+  it("appends and caps recent regeneration breadcrumbs without draft content", () => {
+    const sourceStreamEntryId = createStreamEntryId();
+    let workingMemory = createWorkingMemory(DEFAULT_SESSION_ID, 100);
+
+    for (let index = 0; index < 12; index += 1) {
+      workingMemory = appendRecentRegeneration(workingMemory, {
+        turnId: `turn-${index}`,
+        ts: index,
+        sourceStreamEntryId,
+      });
+    }
+
+    expect(
+      workingMemory.discourse_state?.recent_regenerations?.map((entry) => entry.turn_id),
+    ).toEqual([
+      "turn-2",
+      "turn-3",
+      "turn-4",
+      "turn-5",
+      "turn-6",
+      "turn-7",
+      "turn-8",
+      "turn-9",
+      "turn-10",
+      "turn-11",
+    ]);
+    expect(workingMemory.discourse_state?.recent_regenerations?.[0]).toEqual({
+      turn_id: "turn-2",
+      mechanism: "commitment_guard_regeneration",
+      ts: 2,
+      source_stream_entry_id: sourceStreamEntryId,
+    });
+    expect(JSON.stringify(workingMemory.discourse_state?.recent_regenerations)).not.toContain(
+      "violating",
+    );
   });
 
   it("marks a detected closure loop named after S2 planner no-output", () => {

@@ -13,10 +13,19 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { openDatabase } from "../storage/sqlite/index.js";
 import { ManualClock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID, createEntityId } from "../util/ids.js";
 import { StreamError } from "../util/errors.js";
-import { getSessionStreamPath, streamEntrySchema, StreamReader, StreamWriter } from "./index.js";
+import {
+  getSessionStreamPath,
+  hydrateStreamEntriesById,
+  streamEntryIndexMigrations,
+  streamEntrySchema,
+  StreamEntryIndexRepository,
+  StreamReader,
+  StreamWriter,
+} from "./index.js";
 
 describe("stream", () => {
   const tempDirs: string[] = [];
@@ -224,6 +233,54 @@ describe("stream", () => {
       expect(entries[2]).not.toHaveProperty("response_to");
     } finally {
       writer.close();
+    }
+  });
+
+  it("hydrates stream entries by id through indexed offsets", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({
+      db,
+      dataDir: tempDir,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+      entryIndex,
+    });
+
+    try {
+      const first = await writer.append({
+        kind: "user_msg",
+        content: "hello",
+      });
+      const target = await writer.append({
+        kind: "agent_suppressed",
+        content: {
+          reason: "finalizer_no_output",
+          primary_no_output_reason: "invalid_tool",
+        },
+      });
+
+      const hydrated = await hydrateStreamEntriesById({
+        dataDir: tempDir,
+        sessionId: DEFAULT_SESSION_ID,
+        streamEntryIds: [target.id, first.id],
+        entryIndex,
+        createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      });
+
+      expect(hydrated.get(target.id)?.kind).toBe("agent_suppressed");
+      expect(hydrated.get(target.id)?.content).toMatchObject({
+        primary_no_output_reason: "invalid_tool",
+      });
+      expect(hydrated.get(first.id)?.kind).toBe("user_msg");
+    } finally {
+      writer.close();
+      db.close();
     }
   });
 

@@ -294,6 +294,20 @@ function makeWorkingMemory(
         reason: "The user asked for no further status unless something changes.",
         last_substantive_user_entry_id: USER_ENTRY_ID,
       } as never,
+      recent_suppressions: [
+        {
+          turn_id: "turn_fixture_suppressed",
+          reason: "finalizer_no_output",
+          ts: NOW_MS - 800,
+        },
+      ],
+      recent_regenerations: [
+        {
+          turn_id: "turn_fixture_regenerated",
+          mechanism: "commitment_guard_regeneration",
+          ts: NOW_MS - 700,
+        },
+      ],
     },
     mode: "problem_solving",
     updated_at: NOW_MS,

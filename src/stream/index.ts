@@ -51,6 +51,11 @@ export {
   type StreamWatermark,
   type StreamWatermarkRepositoryOptions,
 } from "./watermark.js";
+export {
+  hydrateStreamEntriesById,
+  readStreamEntryAtOffset,
+  type HydrateStreamEntriesByIdInput,
+} from "./entry-lookup.js";
 export { streamCursorFromWatermark, streamCursorsEqual } from "./cursor.js";
 export {
   ABORTED_TURN_EVENT,

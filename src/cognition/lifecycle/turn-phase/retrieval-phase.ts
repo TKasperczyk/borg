@@ -40,6 +40,10 @@ import {
 import { AutobiographicalRecallService } from "../../autobiographical-recall.js";
 import { toTraceJsonValue } from "../../../tracing/tracer.js";
 import type { PerceptionResult } from "../../types.js";
+import {
+  hydrateTurnMechanismEvidence,
+  type TurnMechanismEvidence,
+} from "../../mechanism-evidence.js";
 import type { LLMClient } from "../../../llm/index.js";
 import {
   effectiveCommitmentEnforcementClass,
@@ -172,6 +176,7 @@ export type TurnRetrievalPhaseResult = {
   retrieval: Awaited<
     ReturnType<TurnPhaseCoordinatorOptions["turnRetrievalCoordinator"]["coordinate"]>
   >["retrieval"];
+  turnMechanismEvidence: TurnMechanismEvidence;
   retrievedEpisodes: Awaited<
     ReturnType<TurnPhaseCoordinatorOptions["turnRetrievalCoordinator"]["coordinate"]>
   >["retrievedEpisodes"];
@@ -758,6 +763,13 @@ export async function runRetrievalPhase(input: {
   const retrievedSemantic = retrievalContext.retrievedSemantic;
   const proceduralContext = retrievalContext.proceduralContext;
   const selectedSkill = retrievalContext.selectedSkill;
+  const turnMechanismEvidence = await hydrateTurnMechanismEvidence({
+    dataDir: input.options.config.dataDir,
+    sessionId: input.sessionId,
+    workingMemory: input.workingMemory,
+    entryIndex: input.options.entryIndex,
+    createStreamReader: input.options.createStreamReader,
+  });
   const relationalSlots = listConstrainedRelationalSlotsForParticipants(
     input.options.relationalSlotRepository,
     input.activeParticipants,
@@ -934,6 +946,7 @@ export async function runRetrievalPhase(input: {
     retrieval,
     retrievedEpisodes,
     retrievedSemantic,
+    turnMechanismEvidence,
     proceduralContext,
     selectedSkill,
     relationalSlots,

@@ -11,6 +11,7 @@ import {
 } from "../../generation/types.js";
 import type { ActualFrameAnomalyClassification } from "../../frame-anomaly/index.js";
 import type { ClosureLoopAssessment } from "../../generation/closure-loop.js";
+import { appendRecentRegeneration } from "../../generation/discourse-state.js";
 import type { ActiveParticipant } from "../../participants.js";
 import { isDirectedOutboundTurnOrigin, type PerceptionResult } from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
@@ -708,6 +709,16 @@ export async function runPostGenerationPhase(input: {
               : { discourse_control: actionEmission.discourse_control }),
           };
   let postActionWorkingMemory = actionResult.workingMemory;
+  if (
+    actionEmission.kind === "message" &&
+    actionCoordinatorResult.regenerationBreadcrumb?.kind === "commitment_guard_regeneration"
+  ) {
+    postActionWorkingMemory = appendRecentRegeneration(postActionWorkingMemory, {
+      turnId: actionCoordinatorResult.regenerationBreadcrumb.turnId,
+      ts: input.options.clock.now(),
+      sourceStreamEntryId: persistedAgentEntry.id,
+    });
+  }
   if (
     actionEmission.kind === "message" &&
     actionEmission.closure_pressure_history_reason !== undefined

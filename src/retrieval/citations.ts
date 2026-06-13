@@ -1,13 +1,5 @@
 /* Citation stream lookup helpers for retrieval results. */
-import {
-  closeSync,
-  existsSync,
-  fstatSync,
-  openSync,
-  readFileSync,
-  readSync,
-  readdirSync,
-} from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename } from "node:path";
 
 import {
@@ -15,6 +7,7 @@ import {
   getStreamDirectory,
   StreamReader,
   collectInactiveStreamEntryRefs,
+  readStreamEntryAtOffset,
   streamEntryIsActive,
   streamEntrySchema,
   type StreamEntry,
@@ -27,9 +20,6 @@ import {
   type StreamEntryId,
 } from "../util/ids.js";
 import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
-
-const INDEXED_CITATION_READ_CHUNK_SIZE_BYTES = 64 * 1024;
-const NEWLINE_BYTE = 0x0a;
 
 export type CitationResolverOptions = {
   dataDir: string;
@@ -109,7 +99,11 @@ export class CitationResolver {
           continue;
         }
 
-        const entry = this.readCitationEntryAtOffset(record.session_id, record.byte_offset);
+        const entry = readStreamEntryAtOffset({
+          dataDir: this.options.dataDir,
+          sessionId: record.session_id,
+          byteOffset: record.byte_offset,
+        });
 
         if (entry === null) {
           console.warn("Citation index read failed; falling back to stream scan.", {
@@ -174,7 +168,11 @@ export class CitationResolver {
       });
 
       for (const record of records) {
-        const entry = this.readCitationEntryAtOffset(record.session_id, record.byte_offset);
+        const entry = readStreamEntryAtOffset({
+          dataDir: this.options.dataDir,
+          sessionId: record.session_id,
+          byteOffset: record.byte_offset,
+        });
 
         if (entry === null || entry.id !== record.entry_id || entry.kind !== "internal_event") {
           console.warn("Citation status-marker index read failed; falling back to stream scan.", {
@@ -286,69 +284,6 @@ export class CitationResolver {
     }
 
     return entries;
-  }
-
-  private readCitationEntryAtOffset(sessionId: SessionId, byteOffset: number): StreamEntry | null {
-    const streamPath = getSessionStreamPath(this.options.dataDir, sessionId);
-
-    if (!existsSync(streamPath)) {
-      return null;
-    }
-
-    const fileDescriptor = openSync(streamPath, "r");
-    const chunks: Buffer[] = [];
-
-    try {
-      const fileSize = fstatSync(fileDescriptor).size;
-
-      if (byteOffset < 0 || byteOffset >= fileSize) {
-        return null;
-      }
-
-      let position = byteOffset;
-
-      while (position < fileSize) {
-        const chunkSize = Math.min(INDEXED_CITATION_READ_CHUNK_SIZE_BYTES, fileSize - position);
-        const chunk = Buffer.allocUnsafe(chunkSize);
-        const bytesRead = readSync(fileDescriptor, chunk, 0, chunkSize, position);
-
-        if (bytesRead <= 0) {
-          break;
-        }
-
-        const chunkBytes = bytesRead === chunkSize ? chunk : chunk.subarray(0, bytesRead);
-        const newlineIndex = chunkBytes.indexOf(NEWLINE_BYTE);
-
-        if (newlineIndex === -1) {
-          chunks.push(Buffer.from(chunkBytes));
-          position += bytesRead;
-          continue;
-        }
-
-        chunks.push(Buffer.from(chunkBytes.subarray(0, newlineIndex)));
-        break;
-      }
-    } finally {
-      closeSync(fileDescriptor);
-    }
-
-    if (chunks.length === 0) {
-      return null;
-    }
-
-    const line = Buffer.concat(chunks).toString("utf8");
-
-    if (line.trim() === "") {
-      return null;
-    }
-
-    try {
-      const raw = JSON.parse(line) as unknown;
-      const parsed = streamEntrySchema.safeParse(raw);
-      return parsed.success ? parsed.data : null;
-    } catch {
-      return null;
-    }
   }
 }
 

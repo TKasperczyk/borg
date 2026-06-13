@@ -44,6 +44,7 @@ import type {
 import type { ToolDispatcher } from "../../tools/dispatcher.js";
 import type { AutonomousOutboundPromptContext } from "../../outbound/autonomous-policy.js";
 import type { AutonomousFinalizerToolMenuItem } from "./autonomous-finalizer-tools.js";
+import type { TurnMechanismEvidence } from "../mechanism-evidence.js";
 import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { ToolLoopCallRecord } from "../turn-action/index.js";
@@ -225,6 +226,7 @@ export type DeliberationContext = {
   selectedSkill?: SkillSelectionResult | null;
   entityRepository?: EntityRepository;
   workingMemory: WorkingMemory;
+  turnMechanismEvidence?: TurnMechanismEvidence;
   recentCompletedActions?: readonly ActionRecord[];
   /**
    * Recent affective history for this session, newest first. The current
