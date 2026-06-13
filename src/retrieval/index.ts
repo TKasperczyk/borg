@@ -39,7 +39,6 @@ export {
   MEMORY_DISCLOSURE_INTERNAL_USE_NOTE,
   SEMANTIC_SOURCE_DISCLOSURE_INTERNAL_USE_NOTE,
   SELF_RECALL_SCOPE,
-  SELF_MEMORY_RECALL_INVERSION_EPOCH_MS,
   combineDisclosureLabelForEpisodeIds,
   combineMemoryDisclosureLabels,
   memoryDisclosureLabelFromEpisodeAccess,
@@ -51,10 +50,8 @@ export {
   publicMemoryDisclosureLabel,
   relationshipPrivateMemoryDisclosureLabel,
   renderMemoryDisclosureLabelForModel,
-  renderSelfMemoryExtractionEpochLabel,
   renderSemanticSourceDisclosureLabelForModel,
   resolveDisclosureLabelsByEpisodeId,
-  selfMemoryExtractionEpochLabel,
   selfPrivateMemoryDisclosureLabel,
   unknownMemoryDisclosureLabel,
   type CognitionRecallContext,
@@ -63,7 +60,6 @@ export {
   type MemoryDisclosureLabel,
   type MemoryDisclosureLabelMetadata,
   type MemoryDisclosureLabelRenderContext,
-  type SelfMemoryExtractionEpochLabel,
 } from "./recall-context.js";
 export {
   RetrievalPipeline,

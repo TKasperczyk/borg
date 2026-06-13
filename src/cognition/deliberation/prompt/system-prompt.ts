@@ -31,8 +31,6 @@ import {
   MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
   relationshipPrivateMemoryDisclosureLabel,
   renderMemoryDisclosureLabelForModel,
-  renderSelfMemoryExtractionEpochLabel,
-  selfMemoryExtractionEpochLabel,
   selfPrivateMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
 } from "../../../retrieval/index.js";
@@ -1351,9 +1349,8 @@ function summarizeSelfSnapshotGoal(goal: SelfSnapshot["goals"][number]): string 
     goal,
     goalMemoryDisclosureLabel(goal),
   )}`;
-  const extractionEpoch = renderStaleSelfMemoryExtractionEpochSuffix(goal.created_at);
 
-  return `${goal.description} ${summarizeProvenanceForPrompt(goal.provenance)}${extractionEpoch}${disclosure}`;
+  return `${goal.description} ${summarizeProvenanceForPrompt(goal.provenance)}${disclosure}`;
 }
 
 function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): string | null {
@@ -1414,22 +1411,9 @@ function summarizeFrameAnomalyGate(
 type PreferenceEvidenceRecord = {
   evidence_episode_ids?: readonly string[] | null;
   provenance: Provenance;
-  created_at?: number | null;
 };
 
 function summarizePreferenceEvidence(record: PreferenceEvidenceRecord): string {
-  return `${summarizePreferenceEvidenceProvenance(record)}${renderStaleSelfMemoryExtractionEpochSuffix(
-    record.created_at,
-  )}`;
-}
-
-function summarizePreferenceEvidenceInline(record: PreferenceEvidenceRecord): string {
-  return `${summarizePreferenceEvidenceProvenance(record)}${renderStaleSelfMemoryExtractionEpochInline(
-    record.created_at,
-  )}`;
-}
-
-function summarizePreferenceEvidenceProvenance(record: PreferenceEvidenceRecord): string {
   const evidenceEpisodeIds = getEvidenceEpisodeIds(record);
 
   if (evidenceEpisodeIds.length > 0) {
@@ -1455,22 +1439,6 @@ function getEvidenceEpisodeIds(
   record: Pick<PreferenceEvidenceRecord, "evidence_episode_ids">,
 ): string[] {
   return Array.isArray(record.evidence_episode_ids) ? record.evidence_episode_ids : [];
-}
-
-function renderStaleSelfMemoryExtractionEpochSuffix(
-  createdAtMs: number | null | undefined,
-): string {
-  return selfMemoryExtractionEpochLabel(createdAtMs) === "extracted_before_recall_inversion"
-    ? ` (${renderSelfMemoryExtractionEpochLabel(createdAtMs)})`
-    : "";
-}
-
-function renderStaleSelfMemoryExtractionEpochInline(
-  createdAtMs: number | null | undefined,
-): string {
-  return selfMemoryExtractionEpochLabel(createdAtMs) === "extracted_before_recall_inversion"
-    ? ` ${renderSelfMemoryExtractionEpochLabel(createdAtMs)}`
-    : "";
 }
 
 function getPreferenceConfidence(
@@ -1500,7 +1468,7 @@ function summarizeHeldPreferences(selfSnapshot: SelfSnapshot): string | null {
       `Values I hold: ${heldValues
         .map((value) => {
           const description = value.description.replace(/\s+/g, " ").trim();
-          return `${value.label} (conf ${getPreferenceConfidence(value).toFixed(2)}, ${summarizePreferenceEvidenceInline(value)})${
+          return `${value.label} (conf ${getPreferenceConfidence(value).toFixed(2)}, ${summarizePreferenceEvidence(value).slice(1, -1)})${
             description.length === 0 ? "" : ` -- ${description}`
           }`;
         })
@@ -1513,7 +1481,7 @@ function summarizeHeldPreferences(selfSnapshot: SelfSnapshot): string | null {
       `Traits I express: ${heldTraits
         .map(
           (trait) =>
-            `${trait.label}:${trait.strength.toFixed(2)} (conf ${getPreferenceConfidence(trait).toFixed(2)}, ${summarizePreferenceEvidenceInline(trait)})`,
+            `${trait.label}:${trait.strength.toFixed(2)} (conf ${getPreferenceConfidence(trait).toFixed(2)}, ${summarizePreferenceEvidence(trait).slice(1, -1)})`,
         )
         .join(", ")}`,
     );
@@ -1877,10 +1845,8 @@ function summarizeCurrentPeriod(period: AutobiographicalPeriod | null | undefine
 }
 
 function summarizeAutobiographicalPeriodEvidence(period: AutobiographicalPeriod): string {
-  const extractionEpoch = renderStaleSelfMemoryExtractionEpochSuffix(period.created_at);
-
   if (period.key_episode_ids.length > 0) {
-    return `${summarizeProvenanceForPrompt({
+    return summarizeProvenanceForPrompt({
       kind: "episodes",
       episode_ids: [...period.key_episode_ids] as Provenance extends {
         kind: "episodes";
@@ -1888,14 +1854,14 @@ function summarizeAutobiographicalPeriodEvidence(period: AutobiographicalPeriod)
       }
         ? T
         : never,
-    })}${extractionEpoch}`;
+    });
   }
 
   if (period.provenance.kind === "episodes") {
-    return `${AUDIENCE_SCOPED_SELF_EVIDENCE_PROVENANCE}${extractionEpoch}`;
+    return AUDIENCE_SCOPED_SELF_EVIDENCE_PROVENANCE;
   }
 
-  return `${summarizeProvenanceForPrompt(period.provenance)}${extractionEpoch}`;
+  return summarizeProvenanceForPrompt(period.provenance);
 }
 
 function summarizeRecentGrowth(markers: readonly GrowthMarker[] | undefined): string | null {
@@ -1908,13 +1874,8 @@ function summarizeRecentGrowth(markers: readonly GrowthMarker[] | undefined): st
   for (const marker of markers.slice(0, 3)) {
     const change = marker.what_changed.trim();
     const compact = change.length > 160 ? `${change.slice(0, 157).trimEnd()}...` : change;
-    const extractionEpoch = renderStaleSelfMemoryExtractionEpochInline(marker.created_at);
-    const label =
-      extractionEpoch.length === 0
-        ? `(conf ${marker.confidence.toFixed(2)})`
-        : `(conf ${marker.confidence.toFixed(2)};${extractionEpoch})`;
 
-    lines.push(`- [${marker.category}] ${compact} ${label}`);
+    lines.push(`- [${marker.category}] ${compact} (conf ${marker.confidence.toFixed(2)})`);
   }
 
   return lines.length === 1 ? null : [...lines, SELF_IDENTITY_DISCLOSURE_LINE].join("\n");

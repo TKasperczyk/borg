@@ -12,6 +12,9 @@ coverage
 .DS_Store
 .borg-data
 .borg-test-*
+backups/
+*.tgz
+*.tar.gz
 tmp
 .codex
 .mcp.json

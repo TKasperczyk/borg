@@ -4022,16 +4022,12 @@ describe("deliberator", () => {
       const system = requestSystemText(llm.requests.at(-1)?.system);
 
       expect(system).toContain(
-        "exploring values clarity (candidate, conf 0.50) (from ep_aaaaaaaaaaaaaaaa) (extraction_epoch=extracted_before_recall_inversion)",
+        "exploring values clarity (candidate, conf 0.50) (from ep_aaaaaaaaaaaaaaaa)",
       );
-      expect(system).toContain(
-        "goals Ship Sprint 6 (manual) (extraction_epoch=extracted_before_recall_inversion)",
-      );
+      expect(system).toContain("goals Ship Sprint 6 (manual)");
       expect(system).toContain("<borg_held_preferences>");
-      expect(system).toContain("Traits I express: engaged:0.80 (conf 0.82, (offline: reflector))");
-      expect(system).toContain(
-        "Current period: 2026-Q2 (offline: self-narrator) (extraction_epoch=extracted_before_recall_inversion)",
-      );
+      expect(system).toContain("Traits I express: engaged:0.80 (conf 0.82, offline: reflector)");
+      expect(system).toContain("Current period: 2026-Q2 (offline: self-narrator)");
       expect(system).toContain(
         "- Why does Atlas fail after rollback? (urgency=0.80, source=reflection, disclosure_class=self_private private-to=unknown; I can use this internally; I do not disclose it to the current audience unless authorized) (from ep_aaaaaaaaaaaaaaaa)",
       );
@@ -4170,13 +4166,13 @@ describe("deliberator", () => {
     expect(plannerSystem).toContain("I let voice_note reflect these where the turn allows.");
     expect(finalSystem).toContain("<borg_held_preferences>");
     expect(finalSystem).toContain(
-      "Values I hold: clarity (conf 0.85, (from ep_aaaaaaaaaaaaaaaa) extraction_epoch=extracted_before_recall_inversion) -- Prefer explicit state.",
+      "Values I hold: clarity (conf 0.85, from ep_aaaaaaaaaaaaaaaa) -- Prefer explicit state.",
     );
     expect(finalSystem).toContain(
-      "Traits I express: introspective:0.78 (conf 0.82, (from ep_aaaaaaaaaaaaaaaa))",
+      "Traits I express: introspective:0.78 (conf 0.82, from ep_aaaaaaaaaaaaaaaa)",
     );
     expect(finalSystem).toContain(
-      "Self snapshot: exploring values playfulness (candidate, conf 0.50) (manual) (extraction_epoch=extracted_before_recall_inversion)",
+      "Self snapshot: exploring values playfulness (candidate, conf 0.50) (manual)",
     );
     expect(finalSystem).not.toContain("Values I hold: playfulness");
   });
