@@ -457,6 +457,10 @@ function createFinalizerPromptSurfaceRenderContext(
         case "borg_additional_retrieval":
         case "borg_s2_plan":
         case "borg_commitment_regeneration_instruction":
+        // finalizer_invalid_tool_retry_instruction is intercepted by buildFinalizerCallOptions
+        // and routed to a trailing message, so the deliberator never passes it here; this case
+        // renders null for it (no matching section) and exists only for direct runFinalizer
+        // callers, of which there are none today.
         case "finalizer_invalid_tool_retry_instruction":
           return renderPromptSurfaceAdditionalBlock(id, options.additionalPromptSections);
         default:

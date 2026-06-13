@@ -629,8 +629,13 @@ export const PROMPT_SURFACE_BLOCKS = [
   block({
     id: "finalizer_invalid_tool_retry_instruction",
     owner: "cognition.deliberation",
-    purpose: "Regeneration instruction after invalid finalizer terminal tool use.",
-    renderCondition: "finalizer retry after invalid terminal tool emission",
+    purpose:
+      "Invalid-tool corrective carrier. buildFinalizerCallOptions INTERCEPTS this section id " +
+      "and routes its text into a trailing message adjacent to generation (not the system " +
+      "tail, where it sat behind the transcript and went unread). The system-surface placement " +
+      "below is a no-op fallback for hypothetical direct runFinalizer callers; the deliberator " +
+      "is the only caller today and always strips it before render, so it never renders here.",
+    renderCondition: "finalizer retry after invalid terminal tool emission (intercepted; see purpose)",
     source: {
       file: "src/cognition/deliberation/deliberator.ts",
       exportName: "buildInvalidToolFinalizerRetryPromptSection",

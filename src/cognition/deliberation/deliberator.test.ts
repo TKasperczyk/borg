@@ -1515,6 +1515,59 @@ describe("deliberator", () => {
     ]);
   });
 
+  it("anchors the emission contract on a commitment-guard regenerate (no invalid-tool corrective)", async () => {
+    // The commitment-guard regeneration is a finalizer regenerate that carries only the
+    // commitment instruction, not an invalid-tool corrective. It must STILL get the trailing
+    // emission anchor adjacent to generation -- it has no invalid-tool retry net of its own,
+    // so a prose-drop here would otherwise go silent under thinking.
+    const llm = new FakeLLMClient({
+      responses: [
+        emitFinalizerToolResponse({
+          id: "toolu_initial_answer",
+          name: "EmitAnswer",
+          input: { text: "Initial answer that trips the guard." },
+        }),
+        emitFinalizerToolResponse({
+          id: "toolu_regenerated_answer",
+          name: "EmitAnswer",
+          input: { text: "Revised answer that honors the boundary." },
+        }),
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({ turnId: "turn-commitment-regenerate" }),
+    );
+    expect(result.regenerateFinalResponse).toBeDefined();
+
+    const regenerated = await result.regenerateFinalResponse!({
+      additionalPromptSections: [
+        {
+          blockId: "borg_commitment_regeneration_instruction",
+          text: "<commitment_revision>Revise the answer to honor the boundary.</commitment_revision>",
+        },
+      ],
+    });
+
+    expect(regenerated.response).toBe("Revised answer that honors the boundary.");
+    expect(llm.requests).toHaveLength(2);
+    // The generic anchor is present on the regenerate, restating the contract adjacent to
+    // generation -- even though there is no invalid-tool corrective on this path.
+    const regenerateTail = requestLastMessageText(llm.requests[1]?.messages);
+    expect(regenerateTail).toContain("I emit exactly one terminal emission tool now");
+    expect(regenerateTail).not.toContain("I emitted 0 terminal emission tool calls");
+    // The commitment instruction itself stays in the system prompt (only the invalid-tool
+    // corrective is rerouted to the message tail).
+    expect(requestSystemText(llm.requests[1]?.system)).toContain(
+      "<commitment_revision>Revise the answer to honor the boundary.</commitment_revision>",
+    );
+    // The initial attempt carried no trailing anchor (its message array is unchanged).
+    expect(requestLastMessageText(llm.requests[0]?.messages)).not.toContain(
+      "I emit exactly one terminal emission tool now",
+    );
+  });
+
   it("suppresses with invalid_tool_after_regenerate when the retry is also malformed", async () => {
     const tracer = new CapturingTracer();
     const llm = new FakeLLMClient({
