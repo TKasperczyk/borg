@@ -18,6 +18,7 @@ import {
   withFinalizerImageBudget,
   withCurrentUserContentBlocks,
   withLedgerImageContentBlocks,
+  withTrailingUserMessage,
 } from "./dialogue.js";
 import { traceTurnPhase } from "../lifecycle/turn-phase/phase-trace.js";
 import {
@@ -171,11 +172,66 @@ type RunFinalizerTriadInput = {
   buildResult: (input: FinalizerTriadResultInput) => DeliberationResult;
 };
 
+const INVALID_TOOL_RETRY_BLOCK_ID = "finalizer_invalid_tool_retry_instruction";
+const EMISSION_CONTRACT_REMINDER_TAG = "turn_emission_contract";
+
+// On a regenerate after an invalid terminal-tool emission, the specific corrective is placed
+// as a trailing message -- adjacent to the generation point -- restating the contract. The
+// protocol block states the contract first (finalizer.ts), but every system block renders
+// before the whole transcript, so on a long session it sits tens of thousands of tokens
+// upstream of where the model generates; the corrective previously rode the system tail too,
+// behind the transcript, and went unread (the model repeated the same prose). The trailing
+// position is the only one adjacent to generation. This is regenerate-only by design: the
+// initial attempt is carried by the top-of-prompt contract, and the regenerate attempt is the
+// actual gate on suppression (a turn is suppressed only if BOTH attempts fail), so hardening
+// it is where the leverage is -- without changing the message shape of every ordinary turn.
+function buildEmissionContractRetryText(
+  availableEmissionNames: readonly EmissionToolName[],
+  retryCorrective: string | undefined,
+): string {
+  if (retryCorrective === undefined || availableEmissionNames.length === 0) {
+    return "";
+  }
+  const toolList =
+    availableEmissionNames.length === 1
+      ? availableEmissionNames[0]!
+      : availableEmissionNames.join(" / ");
+  return [
+    `<${EMISSION_CONTRACT_REMINDER_TAG}>`,
+    "(Harness scaffolding, not a message from anyone; the current turn is still the most recent conversation message above.)",
+    retryCorrective,
+    `I emit exactly one terminal emission tool now (${toolList}). Any text outside that tool call is never delivered, so my response goes inside the tool -- not in loose prose.`,
+    `</${EMISSION_CONTRACT_REMINDER_TAG}>`,
+  ].join("\n");
+}
+
 function buildFinalizerCallOptions(
   context: FinalizerCallOptionsContext,
   options: DeliberatorOptions,
   variable: FinalizerCallVariableOptions,
 ): RunFinalizerOptions {
+  // The invalid-tool corrective travels via additionalPromptSections, but its effective place
+  // is the trailing message (adjacent to generation), not the system tail (behind the
+  // transcript). Partition it out: route its text into the trailing anchor, keep the rest in
+  // the system prompt.
+  const retryCorrective = variable.additionalPromptSections?.find(
+    (section) => section.blockId === INVALID_TOOL_RETRY_BLOCK_ID,
+  )?.text;
+  const systemSections =
+    retryCorrective === undefined
+      ? variable.additionalPromptSections
+      : variable.additionalPromptSections?.filter(
+          (section) => section.blockId !== INVALID_TOOL_RETRY_BLOCK_ID,
+        );
+  const availableEmissionNames = resolveAvailableEmissionNames(
+    context.allowedEmissions,
+    context.effectiveContext.turnOrigin,
+  );
+  const initialMessages = withTrailingUserMessage(
+    context.initialMessages,
+    buildEmissionContractRetryText(availableEmissionNames, retryCorrective),
+  );
+
   return {
     llmClient: options.llmClient,
     dispatcher: options.toolDispatcher,
@@ -184,7 +240,7 @@ function buildFinalizerCallOptions(
     model: options.cognitionModel,
     baseSystemPrompt: context.baseSystemPrompt,
     cacheableSystemPrompt: context.cacheableSystemPrompt,
-    initialMessages: context.initialMessages,
+    initialMessages,
     userEntryId: context.context.userEntryId,
     maxTokens: context.maxTokens,
     ...context.reasoningCallOptions,
@@ -196,9 +252,9 @@ function buildFinalizerCallOptions(
     turnOrigin: context.effectiveContext.turnOrigin,
     currentSenderBorgRole: context.effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
     sessionAudienceRole: context.effectiveContext.creatorContext?.sessionAudienceRole,
-    ...(variable.additionalPromptSections === undefined
+    ...(systemSections === undefined || systemSections.length === 0
       ? {}
-      : { additionalPromptSections: variable.additionalPromptSections }),
+      : { additionalPromptSections: systemSections }),
     structuralNoOutputFlags: context.structuralNoOutputFlags,
     tracer: context.tracer,
     turnId: context.context.turnId,
@@ -627,7 +683,7 @@ export class Deliberator {
               input.additionalPromptSections,
               [
                 {
-                  blockId: "finalizer_invalid_tool_retry_instruction",
+                  blockId: INVALID_TOOL_RETRY_BLOCK_ID,
                   text: retryPromptSection,
                 },
               ],

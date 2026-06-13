@@ -147,6 +147,36 @@ function firstSystemBlockText(system: unknown): string {
     : "";
 }
 
+// Text of the final message, handling both string-content and content-block message shapes.
+// The finalizer's invalid-tool corrective now rides a trailing message adjacent to the
+// generation point (it previously sat in the system tail behind the transcript).
+function requestLastMessageText(messages: unknown): string {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return "";
+  }
+  const last = messages[messages.length - 1];
+  if (last === null || typeof last !== "object") {
+    return "";
+  }
+  const content = (last as { content?: unknown }).content;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((block) =>
+      block !== null &&
+      typeof block === "object" &&
+      "text" in block &&
+      typeof block.text === "string"
+        ? block.text
+        : "",
+    )
+    .join("\n");
+}
+
 function finalizerInstructionPrefix(system: unknown): string {
   const firstBlock = firstSystemBlockText(system);
   const basePromptStart = firstBlock.indexOf("\n\nI am an AI being");
@@ -809,7 +839,7 @@ describe("deliberator", () => {
     const finalizerInstructions = finalizerInstructionPrefix(llm.requests[0]?.system);
     expect(systemBlocks[0]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
     expect(finalizerInstructions).toContain(
-      "My available terminal tools are EmitAnswer, EmitObserve, EmitNoOutput, and EmitSelfReport.",
+      "I call exactly one of EmitAnswer, EmitObserve, EmitNoOutput, and EmitSelfReport",
     );
     expect(finalizerInstructions).not.toContain("EmitContinueThought");
     expect(system).toContain("<borg_evidence_ledger>");
@@ -1463,10 +1493,12 @@ describe("deliberator", () => {
       content: "Recovered answer.",
     });
     expect(llm.requests).toHaveLength(2);
-    expect(requestSystemText(llm.requests[1]?.system)).toContain(
+    // The invalid-tool corrective rides a trailing message adjacent to generation, not the
+    // system tail (where it sat behind the whole transcript and went unread).
+    expect(requestLastMessageText(llm.requests[1]?.messages)).toContain(
       "I emitted 0 terminal emission tool calls; I need to emit exactly one.",
     );
-    expect(requestSystemText(llm.requests[1]?.system)).toContain(
+    expect(requestLastMessageText(llm.requests[1]?.messages)).toContain(
       "I need to emit exactly one of EmitAnswer / EmitObserve / EmitNoOutput / EmitSelfReport with valid input.",
     );
     expect(
@@ -1575,12 +1607,12 @@ describe("deliberator", () => {
         responses: [
           firstResponse,
           (options: LLMConverseOptions) => {
-            const retrySystem = requestSystemText(options.system);
+            const retryReminder = requestLastMessageText(options.messages);
 
             for (const expectedPromptFragment of expectedPromptFragments) {
-              expect(retrySystem).toContain(expectedPromptFragment);
+              expect(retryReminder).toContain(expectedPromptFragment);
             }
-            expect(retrySystem).toContain(
+            expect(retryReminder).toContain(
               "I need to emit exactly one of EmitAnswer / EmitObserve / EmitNoOutput / EmitSelfReport with valid input.",
             );
 
@@ -1823,7 +1855,7 @@ describe("deliberator", () => {
     ]);
     const finalizerInstructions = finalizerInstructionPrefix(llm.converseRequests[0]?.system);
     expect(finalizerInstructions).toContain(
-      "My available terminal tools are EmitObserve and EmitNoOutput.",
+      "I call exactly one of EmitObserve and EmitNoOutput",
     );
     expect(finalizerInstructions).not.toContain("EmitAnswer");
     expect(finalizerInstructions).not.toContain("EmitSelfReport");
@@ -1858,7 +1890,7 @@ describe("deliberator", () => {
 
     expect(llm.converseRequests[0]?.tools?.map((tool) => tool.name)).toEqual(["EmitNoOutput"]);
     const finalizerInstructions = finalizerInstructionPrefix(llm.converseRequests[0]?.system);
-    expect(finalizerInstructions).toContain("My only available terminal tool is EmitNoOutput.");
+    expect(finalizerInstructions).toContain("my only terminal emission tool, EmitNoOutput");
     expect(finalizerInstructions).not.toContain("EmitAnswer");
     expect(finalizerInstructions).not.toContain("EmitObserve");
     expect(finalizerInstructions).not.toContain("EmitSelfReport");
@@ -1901,7 +1933,7 @@ describe("deliberator", () => {
 
     expect(llm.converseRequests[0]?.tools?.map((tool) => tool.name)).toEqual(["EmitNoOutput"]);
     const finalizerInstructions = finalizerInstructionPrefix(llm.converseRequests[0]?.system);
-    expect(finalizerInstructions).toContain("My only available terminal tool is EmitNoOutput.");
+    expect(finalizerInstructions).toContain("my only terminal emission tool, EmitNoOutput");
     expect(finalizerInstructions).not.toContain("EmitAnswer");
     expect(finalizerInstructions).not.toContain("EmitObserve");
     expect(finalizerInstructions).not.toContain("EmitSelfReport");

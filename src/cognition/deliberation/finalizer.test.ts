@@ -177,7 +177,7 @@ describe("runFinalizer emission tools", () => {
         type: "text",
         cache_control: { type: "ephemeral", ttl: "1h" },
         text: expect.stringContaining(
-          "My available terminal tools are EmitAnswer, EmitObserve, EmitNoOutput, and EmitSelfReport.",
+          "I call exactly one of EmitAnswer, EmitObserve, EmitNoOutput, and EmitSelfReport",
         ),
       }),
       expect.objectContaining({
@@ -402,7 +402,7 @@ describe("runFinalizer emission tools", () => {
       "EmitNoOutput",
     ]);
     const system = requestSystemText(llm.requests[0]?.system);
-    expect(system).toContain("My available terminal tools are EmitObserve and EmitNoOutput.");
+    expect(system).toContain("I call exactly one of EmitObserve and EmitNoOutput");
     expect(system).not.toContain("EmitAnswer");
     expect(system).not.toContain("EmitSelfReport");
   });
@@ -442,7 +442,7 @@ describe("runFinalizer emission tools", () => {
     });
     expect(llm.requests[0]?.tools?.map((tool) => tool.name)).toEqual(["EmitNoOutput"]);
     const system = requestSystemText(llm.requests[0]?.system);
-    expect(system).toContain("My only available terminal tool is EmitNoOutput.");
+    expect(system).toContain("my only terminal emission tool, EmitNoOutput");
     expect(system).toContain(
       "Self-referential memory voice: when a prompt-visible structure identifies content as self-owned, I write self-referential content",
     );

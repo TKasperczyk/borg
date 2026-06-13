@@ -243,19 +243,35 @@ function formatEmissionToolList(names: readonly EmissionToolName[]): string {
   return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]!}`;
 }
 
+// The terminal-emission contract, stated as the first thing in the protocol block. The
+// model's output channel for a turn IS a single terminal tool call; loose prose outside one
+// is discarded by the harness, never delivered. This is the structural fact -- not a judgment
+// of content -- and it was previously only implied by "available tools" framing plus one
+// aside, which let a thinking-mode turn (tool_choice:auto) occasionally answer in prose and
+// emit nothing. Naming the mechanism up front is the fix.
+function emissionContractPreamble(availableEmissionNames: readonly EmissionToolName[]): string {
+  const onePhrase =
+    availableEmissionNames.length === 1
+      ? `my only terminal emission tool, ${availableEmissionNames[0]}`
+      : `exactly one of ${formatEmissionToolList(availableEmissionNames)}`;
+  return [
+    `Every turn I take ends with one terminal emission tool call: I call ${onePhrase}, never zero and never more than one.`,
+    "That single tool call is my entire output for the turn. Any text I write outside a terminal emission tool call -- even a complete, well-formed reply in plain prose -- is internal scratch that the harness never delivers to anyone. Whatever I want to say or decide, I put it inside the terminal tool; writing prose instead of calling one emits nothing at all.",
+  ].join(" ");
+}
+
 function buildEmissionToolInstructions(
   availableEmissionNames: readonly EmissionToolName[],
 ): string {
   const available = new Set(availableEmissionNames);
+  const contractPreamble = emissionContractPreamble(availableEmissionNames);
   const noOutputInstructions = [
     EMIT_NO_OUTPUT_FINALIZER_INSTRUCTION,
     ...EMIT_NO_OUTPUT_CLASSIFICATION_INSTRUCTIONS,
   ];
 
   if (availableEmissionNames.length === 1 && available.has(EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME)) {
-    return ["My only available terminal tool is EmitNoOutput.", "", ...noOutputInstructions].join(
-      "\n",
-    );
+    return [contractPreamble, "", ...noOutputInstructions].join("\n");
   }
 
   if (
@@ -264,7 +280,7 @@ function buildEmissionToolInstructions(
     available.has(EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME)
   ) {
     return [
-      "My available terminal tools are EmitObserve and EmitNoOutput.",
+      contractPreamble,
       "",
       EMIT_OBSERVE_FINALIZER_INSTRUCTION,
       ...noOutputInstructions,
@@ -273,7 +289,7 @@ function buildEmissionToolInstructions(
 
   if (availableEmissionNames.length === EMISSION_FINALIZER_TOOL_NAMES.length) {
     return [
-      "I call exactly ONE of EmitAnswer / EmitObserve / EmitNoOutput / EmitSelfReport / EmitContinueThought per turn.",
+      contractPreamble,
       "",
       EMIT_ANSWER_FINALIZER_INSTRUCTION,
       EMIT_DISCOURSE_CONTROL_INSTRUCTION,
@@ -290,7 +306,7 @@ function buildEmissionToolInstructions(
   }
 
   return [
-    `My available terminal tools are ${formatEmissionToolList(availableEmissionNames)}.`,
+    contractPreamble,
     "",
     ...(available.has(EMIT_ANSWER_FINALIZER_TOOL_NAME) ? [EMIT_ANSWER_FINALIZER_INSTRUCTION] : []),
     ...(available.has(EMIT_ANSWER_FINALIZER_TOOL_NAME) ||

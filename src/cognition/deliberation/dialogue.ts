@@ -131,6 +131,26 @@ export function withCurrentUserContentBlocks(
   return next;
 }
 
+/**
+ * Append a final user-role text message after the transcript. The system prompt always renders
+ * before every message, so important per-turn directives placed there sit tens of thousands of
+ * tokens upstream of the generation point, behind the whole transcript. A trailing message is
+ * the only position truly adjacent to generation. This reuses the same shape
+ * withLedgerImageContentBlocks already uses to append trailing image messages, so the
+ * conversation shape is not novel. The caller frames the text as harness scaffolding (tagged,
+ * self-disclaiming) rather than conversation, so it does not read as the current speaker's turn.
+ */
+export function withTrailingUserMessage(
+  messages: readonly LLMContentBlockMessage[],
+  text: string,
+): LLMContentBlockMessage[] {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) {
+    return [...messages];
+  }
+  return [...messages, { role: "user", content: [{ type: "text", text: trimmed }] }];
+}
+
 function imageRefCount(messages: readonly LLMContentBlockMessage[]): number {
   return messages.reduce(
     (count, message) =>
