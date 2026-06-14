@@ -474,7 +474,7 @@ describe("ProceduralSynthesizerProcess", () => {
     });
   });
 
-  it("uses the default budget for two cluster syntheses and aborts the third cleanly", async () => {
+  it("exhausts a tight budget after two cluster syntheses and aborts the third cleanly", async () => {
     const llm = new FakeLLMClient({
       responses: [
         createSkillCandidateResponse({
@@ -535,8 +535,10 @@ describe("ProceduralSynthesizerProcess", () => {
       approachSummary: reflectApproach,
     });
 
+    // Pin a tight budget so this exhaustion test is independent of the
+    // configured default (which is sized for real runs, not two syntheses).
     const process = createProcess(harness);
-    const result = await process.run(harness.createContext(), {});
+    const result = await process.run(harness.createContext(), { budget: 4_000 });
 
     expect(result.budget_exhausted).toBe(true);
     expect(result.changes).toHaveLength(2);

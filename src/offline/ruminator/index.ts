@@ -83,7 +83,12 @@ const ruminationResponseToolSchema = z.object({
   resolution_note: z.string().min(1).nullable().optional(),
   growth_marker: ruminatorGrowthMarkerResponseSchema.optional(),
   reasoning: z.string().min(1).nullable().optional(),
-  tensions: z.array(z.string().min(1)).optional(),
+  tensions: z
+    .array(z.string().min(1))
+    .describe(
+      "The live tensions, each distinct tension as its own array element. Always an array, even for a single tension -- never one combined string.",
+    )
+    .optional(),
   connected_open_question_ids: z.array(openQuestionIdSchema).optional(),
 });
 const resolvedRuminationResponseSchema = z.object({

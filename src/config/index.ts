@@ -431,7 +431,7 @@ const configBaseSchema = z.object({
           splitCooldownDays: z.number().positive().default(7),
           splitClaimStaleSec: z.number().int().positive().default(1_800),
           maxSplitParseFailures: z.number().int().positive().default(3),
-          budget: z.number().int().positive().default(4_000),
+          budget: z.number().int().positive().default(16_000),
         })
         .prefault({}),
       curator: z
