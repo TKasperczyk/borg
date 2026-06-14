@@ -4,6 +4,7 @@ import type {
   Commitment,
   CreatorDirective,
   EpisodeDetail,
+  IdentityResponse,
   ReviewRow,
   SemanticEdgeDetail,
   SemanticNodeDetail,
@@ -82,6 +83,120 @@ const correction = row({
   },
 });
 
+const proposedPeriodNarrative =
+  "This proposed narrative starts with a first-person account of the reviewable change, then keeps going long enough that the console should clamp it before expansion while still preserving the exact proposed text for the operator.";
+
+const periodPatchReview = row({
+  id: 430,
+  kind: "identity_inconsistency",
+  reason: "Autobiographical period narrative should be patched.",
+  refs: {
+    target_type: "autobiographical_period",
+    target_id: "period_current",
+    repair_op: "patch",
+    patch: {
+      narrative: proposedPeriodNarrative,
+      themes: ["continuity", "repair"],
+      key_episode_ids: ["ep_1", "ep_2"],
+      future_text_list: ["structural patch field", "future patch list"],
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        origin_audience_entity_ids: ["ent_operator"],
+        private_to_entity_ids: ["ent_operator"],
+      },
+      internal_blob: {
+        internal_blob_key: "patch blob value must stay hidden",
+      },
+      embedding: [0.123, 0.456, 0.789],
+    },
+    evidence_episode_ids: ["ep_1"],
+  },
+});
+
+const newInsightInsert = row({
+  id: 431,
+  kind: "new_insight",
+  reason: "New reflected insight needs review.",
+  refs: {
+    node_ids: ["semn_new_insight"],
+    episode_ids: ["ep_1"],
+    evidence_cluster_key: "cluster:new",
+    evidence_cluster_size: 1,
+    reflector_pending_insight: {
+      target: {
+        mode: "insert",
+        node: {
+          id: "semn_new_insight",
+          kind: "claim",
+          label: "Borg values rollback planning",
+          description:
+            "The evidence-backed reasoning says Borg repeatedly treats rollback plans as part of deployment care.",
+          aliases: [],
+          confidence: 0.73,
+          source_episode_ids: ["ep_1"],
+          review_tags: ["rollback evidence", "deployment care"],
+          created_at: now,
+          updated_at: now,
+          last_verified_at: now,
+          embedding: [0.111, 0.222, 0.333],
+          archived: false,
+          superseded_by: null,
+          status: "candidate_reviewable",
+          corrected_by: null,
+          superseded_at: null,
+          internal_payload: {
+            internal_payload_key: "node payload value must stay hidden",
+          },
+          audit_vector: [0.9, 0.8],
+        },
+      },
+      candidate_support_edges: [],
+      evidence_cluster: {
+        key: "cluster:new",
+        episode_ids: ["ep_1"],
+        size: 1,
+      },
+    },
+  },
+});
+
+const newInsightUpdate = row({
+  id: 432,
+  kind: "new_insight",
+  reason: "Existing insight should be updated.",
+  refs: {
+    node_ids: ["semn_update_insight"],
+    episode_ids: ["ep_2"],
+    evidence_cluster_key: "cluster:update",
+    evidence_cluster_size: 1,
+    reflector_pending_insight: {
+      target: {
+        mode: "update",
+        node_id: "semn_update_insight",
+        patch: {
+          description: "Updated evidence says rollback planning is a durable preference.",
+          confidence: 0.82,
+          source_episode_ids: ["ep_2"],
+          revision_notes: ["structural update note"],
+          status: "needs-review-status",
+          last_verified_at: now,
+          embedding: [0.444, 0.555, 0.666],
+          archived: false,
+          internal_payload: {
+            update_payload_key: "update payload value must stay hidden",
+          },
+        },
+      },
+      candidate_support_edges: [],
+      evidence_cluster: {
+        key: "cluster:update",
+        episode_ids: ["ep_2"],
+        size: 1,
+      },
+    },
+  },
+});
+
 const commitmentReview = row({
   id: 427,
   kind: "commitment_reconciliation",
@@ -149,6 +264,21 @@ const nodes: Record<string, SemanticNodeDetail> = {
     status: "contested",
     source_episode_ids: ["ep_2", "ep_3", "ep_4", "ep_5", "ep_6", "ep_7"],
     source_count: 6,
+    created_at: now,
+    updated_at: now,
+  },
+  semn_update_insight: {
+    id: "semn_update_insight",
+    kind: "claim",
+    label: "Rollback planning matters",
+    display_label: "Rollback planning matters",
+    description: "Current evidence only says rollback planning matters sometimes.",
+    domain: "operations",
+    aliases: [],
+    confidence: 0.51,
+    status: "active",
+    source_episode_ids: ["ep_3"],
+    source_count: 1,
     created_at: now,
     updated_at: now,
   },
@@ -232,6 +362,33 @@ const directives: CreatorDirective[] = [
 
 const commitments: Commitment[] = [];
 
+const identity: IdentityResponse = {
+  values: [],
+  goals: [],
+  traits: [],
+  open_questions: [],
+  growth_markers: [],
+  periods: [
+    {
+      id: "period_current",
+      label: "2026-Q2",
+      start_ts: now - 10_000,
+      end_ts: null,
+      narrative: "Current period narrative before review.",
+      key_episode_ids: ["ep_3"],
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        origin_audience_entity_ids: ["ent_operator"],
+        private_to_entity_ids: ["ent_operator"],
+      },
+      themes: ["continuity"],
+      created_at: now - 10_000,
+      last_updated: now - 1_000,
+    },
+  ],
+  open_question_events: [],
+};
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -247,9 +404,26 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function renderReviews(options: { cdError?: boolean; failingEpisodes?: string[] } = {}) {
+function renderReviews(
+  options: {
+    cdError?: boolean;
+    failingEpisodes?: string[];
+    mainRows?: ReviewRow[];
+    correctionRows?: ReviewRow[];
+    identity?: IdentityResponse;
+  } = {},
+) {
   const failingEpisodes = new Set(options.failingEpisodes ?? []);
   const requests: Array<{ url: string; method: string; body: unknown }> = [];
+  const mainRows = options.mainRows ?? [
+    contradiction,
+    directiveReview,
+    beliefRevision,
+    correction,
+    commitmentReview,
+    resolvedDuplicate,
+  ];
+  const correctionRows = options.correctionRows ?? [correction];
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
     const method = init?.method ?? "GET";
@@ -261,11 +435,11 @@ function renderReviews(options: { cdError?: boolean; failingEpisodes?: string[] 
 
     if (url === "/api/reviews?open_only=false") {
       return json({
-        rows: [contradiction, directiveReview, beliefRevision, correction, commitmentReview, resolvedDuplicate],
+        rows: mainRows,
       });
     }
     if (url === "/api/correction/reviews") {
-      return json({ rows: [correction] });
+      return json({ rows: correctionRows });
     }
     if (url.startsWith("/api/semantic/nodes/")) {
       const id = decodeURIComponent(url.slice("/api/semantic/nodes/".length));
@@ -287,6 +461,9 @@ function renderReviews(options: { cdError?: boolean; failingEpisodes?: string[] 
     }
     if (url.startsWith("/api/commitments")) {
       return json({ commitments });
+    }
+    if (url === "/api/identity") {
+      return json(options.identity ?? identity);
     }
     if (url === "/api/reviews/412" && method === "PATCH") {
       return json({ ...contradiction, resolved_at: now, resolution: "supersede" });
@@ -386,6 +563,159 @@ describe("Reviews page", () => {
     expect(requests).toContainEqual(
       expect.objectContaining({ url: "/api/semantic/edges/seme_contradiction", method: "GET" }),
     );
+  });
+
+  it("renders patch proposed values with current comparison and expandable long text", async () => {
+    renderReviews({
+      mainRows: [periodPatchReview],
+      correctionRows: [],
+      identity,
+    });
+
+    expect(await screen.findAllByText("Autobiographical period narrative should be patched.")).toHaveLength(2);
+
+    expect(await screen.findByText("Current period narrative before review.")).toBeTruthy();
+    expect(screen.getByText(proposedPeriodNarrative)).toBeTruthy();
+    expect(screen.getAllByText("continuity").length).toBeGreaterThan(0);
+    expect(screen.getByText("repair")).toBeTruthy();
+    expect(screen.getAllByText("ep_1").length).toBeGreaterThan(0);
+    expect(screen.getByText("ep_2")).toBeTruthy();
+    expect(screen.getByText("structural patch field")).toBeTruthy();
+    expect(screen.getByText("future patch list")).toBeTruthy();
+    expect(screen.getAllByText("relationship_private").length).toBeGreaterThan(0);
+    expect(screen.queryByText("narrative, themes, key_episode_ids, disclosure_label, embedding")).toBeNull();
+    expect(screen.queryByText("embedding")).toBeNull();
+    expect(screen.queryByText("0.123")).toBeNull();
+    expect(screen.queryByText("INTERNAL BLOB")).toBeNull();
+    expect(screen.queryByText("internal_blob_key")).toBeNull();
+    expect(screen.queryByText("patch blob value must stay hidden")).toBeNull();
+
+    const toggle = screen.getByRole("button", { name: proposedPeriodNarrative }) as HTMLButtonElement;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+
+    expect(await screen.findByText("Evidence 1")).toBeTruthy();
+    expect(screen.getByText("Episode 1 narrative with enough context to decide the review.")).toBeTruthy();
+  });
+
+  it("renders pending insight content, confidence, and evidence while skipping vectors", async () => {
+    renderReviews({
+      mainRows: [newInsightInsert],
+      correctionRows: [],
+    });
+
+    expect(await screen.findAllByText("New reflected insight needs review.")).toHaveLength(2);
+
+    expect((await screen.findAllByText("Borg values rollback planning")).length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(
+        "The evidence-backed reasoning says Borg repeatedly treats rollback plans as part of deployment care.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("claim")).toBeTruthy();
+    expect(screen.getByText("0.73")).toBeTruthy();
+    expect(screen.getByText("candidate_reviewable")).toBeTruthy();
+    expect(screen.getByText("rollback evidence")).toBeTruthy();
+    expect(screen.getByText("deployment care")).toBeTruthy();
+    const proposedSection = screen.getByText("PROPOSED CONTENT").closest("section")!;
+    const proposedText = proposedSection.textContent ?? "";
+    const labelIndex = proposedText.indexOf("LABEL");
+    const descriptionIndex = proposedText.indexOf("DESCRIPTION");
+    const kindIndex = proposedText.indexOf("KIND");
+    const confidenceIndex = proposedText.indexOf("CONFIDENCE");
+    const statusIndex = proposedText.indexOf("STATUS");
+    expect(labelIndex).toBeGreaterThanOrEqual(0);
+    expect(descriptionIndex).toBeGreaterThanOrEqual(0);
+    expect(kindIndex).toBeGreaterThanOrEqual(0);
+    expect(confidenceIndex).toBeGreaterThanOrEqual(0);
+    expect(statusIndex).toBeGreaterThanOrEqual(0);
+    expect(labelIndex).toBeLessThan(descriptionIndex);
+    expect(descriptionIndex).toBeLessThan(kindIndex);
+    expect(kindIndex).toBeLessThan(confidenceIndex);
+    expect(confidenceIndex).toBeLessThan(statusIndex);
+    expect(await screen.findByText("Evidence 1")).toBeTruthy();
+    expect(screen.getByText("Episode 1 narrative with enough context to decide the review.")).toBeTruthy();
+    expect(screen.queryByText("embedding")).toBeNull();
+    expect(screen.queryByText("0.111")).toBeNull();
+    expect(screen.queryByText("semn_new_insight")).toBeNull();
+    expect(screen.queryByText("CREATED AT")).toBeNull();
+    expect(screen.queryByText("UPDATED AT")).toBeNull();
+    expect(screen.queryByText("LAST VERIFIED AT")).toBeNull();
+    expect(screen.queryByText("INTERNAL PAYLOAD")).toBeNull();
+    expect(screen.queryByText("internal_payload_key")).toBeNull();
+    expect(screen.queryByText("node payload value must stay hidden")).toBeNull();
+    expect(screen.queryByText("AUDIT VECTOR")).toBeNull();
+    expect(screen.queryByText("0.9")).toBeNull();
+  });
+
+  it("renders current-to-proposed comparison for pending insight updates", async () => {
+    renderReviews({
+      mainRows: [newInsightUpdate],
+      correctionRows: [],
+    });
+
+    expect(await screen.findAllByText("Existing insight should be updated.")).toHaveLength(2);
+
+    expect(await screen.findByText(/Rollback planning matters/)).toBeTruthy();
+    expect(screen.getByText("Current evidence only says rollback planning matters sometimes.")).toBeTruthy();
+    expect(screen.getByText("Updated evidence says rollback planning is a durable preference.")).toBeTruthy();
+    expect(screen.getByText("structural update note")).toBeTruthy();
+    expect(screen.getByText("needs-review-status")).toBeTruthy();
+    expect(screen.getByText("0.51")).toBeTruthy();
+    expect(screen.getByText("0.82")).toBeTruthy();
+    expect(screen.queryByText("LABEL")).toBeNull();
+    expect(screen.queryByText("KIND")).toBeNull();
+    expect(screen.queryByText("LAST VERIFIED AT")).toBeNull();
+    expect(screen.queryByText("INTERNAL PAYLOAD")).toBeNull();
+    expect(screen.queryByText("update_payload_key")).toBeNull();
+    expect(screen.queryByText("update payload value must stay hidden")).toBeNull();
+    expect(screen.queryByText("0.444")).toBeNull();
+  });
+
+  it("falls back to proposed-only rendering when a current insight target is missing", async () => {
+    const missingTargetInsight = row({
+      id: 433,
+      kind: "new_insight",
+      reason: "Missing current insight should still render.",
+      refs: {
+        node_ids: ["semn_missing_current"],
+        episode_ids: ["ep_1"],
+        evidence_cluster_key: "cluster:missing",
+        evidence_cluster_size: 1,
+        reflector_pending_insight: {
+          target: {
+            mode: "update",
+            node_id: "semn_missing_current",
+            patch: {
+              description: "Proposed-only description remains reviewable.",
+              confidence: 0.61,
+              source_episode_ids: ["ep_1"],
+              last_verified_at: now,
+              embedding: [0.9, 0.8, 0.7],
+              archived: false,
+            },
+          },
+          candidate_support_edges: [],
+          evidence_cluster: {
+            key: "cluster:missing",
+            episode_ids: ["ep_1"],
+            size: 1,
+          },
+        },
+      },
+    });
+
+    renderReviews({
+      mainRows: [missingTargetInsight],
+      correctionRows: [],
+    });
+
+    expect(await screen.findAllByText("Missing current insight should still render.")).toHaveLength(2);
+
+    expect(await screen.findByText("Proposed-only description remains reviewable.")).toBeTruthy();
+    expect(screen.getAllByText("PROPOSED ONLY").length).toBeGreaterThan(0);
+    expect(screen.queryByText("0.9")).toBeNull();
   });
 
   it("does not render stale node, edge, or episode evidence after switching selection", async () => {
@@ -563,6 +893,156 @@ describe("Reviews page", () => {
     expect(await screen.findByText("Current episode title")).toBeTruthy();
     expect(screen.queryByText("Stale episode title")).toBeNull();
     expect(screen.queryByText("Stale episode narrative.")).toBeNull();
+  });
+
+  it("does not render stale proposed evidence or current target after switching selection", async () => {
+    const staleReview = row({
+      id: 601,
+      kind: "new_insight",
+      reason: "Stale proposed insight.",
+      refs: {
+        node_ids: ["semn_stale_update"],
+        episode_ids: ["ep_stale_proposed"],
+        evidence_cluster_key: "cluster:stale",
+        evidence_cluster_size: 1,
+        reflector_pending_insight: {
+          target: {
+            mode: "update",
+            node_id: "semn_stale_update",
+            patch: {
+              description: "Stale proposed description.",
+              confidence: 0.9,
+              source_episode_ids: ["ep_stale_proposed"],
+              last_verified_at: now,
+              embedding: [0, 1, 0, 1],
+              archived: false,
+            },
+          },
+          candidate_support_edges: [],
+          evidence_cluster: {
+            key: "cluster:stale",
+            episode_ids: ["ep_stale_proposed"],
+            size: 1,
+          },
+        },
+      },
+    });
+    const currentReview = row({
+      id: 602,
+      kind: "new_insight",
+      reason: "Current proposed insight.",
+      refs: {
+        node_ids: ["semn_current_update"],
+        episode_ids: ["ep_current_proposed"],
+        evidence_cluster_key: "cluster:current",
+        evidence_cluster_size: 1,
+        reflector_pending_insight: {
+          target: {
+            mode: "update",
+            node_id: "semn_current_update",
+            patch: {
+              description: "Current proposed description.",
+              confidence: 0.8,
+              source_episode_ids: ["ep_current_proposed"],
+              last_verified_at: now,
+              embedding: [1, 0, 1, 0],
+              archived: false,
+            },
+          },
+          candidate_support_edges: [],
+          evidence_cluster: {
+            key: "cluster:current",
+            episode_ids: ["ep_current_proposed"],
+            size: 1,
+          },
+        },
+      },
+    });
+    const staleNode = {
+      ...nodes.semn_update_insight!,
+      id: "semn_stale_update",
+      label: "Stale current node",
+      display_label: "Stale current node",
+      description: "Stale current description.",
+    } satisfies SemanticNodeDetail;
+    const currentNode = {
+      ...nodes.semn_update_insight!,
+      id: "semn_current_update",
+      label: "Current node",
+      display_label: "Current node",
+      description: "Current node description.",
+    } satisfies SemanticNodeDetail;
+    const staleNodeDeferred = deferred<Response>();
+    const staleEpisodeDeferred = deferred<Response>();
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+
+      if (url === "/api/reviews?open_only=false") {
+        return json({ rows: [staleReview, currentReview] });
+      }
+      if (url === "/api/correction/reviews") {
+        return json({ rows: [] });
+      }
+      if (url.startsWith("/api/creator-directives")) {
+        return json({ directives: [] });
+      }
+      if (url.startsWith("/api/commitments")) {
+        return json({ commitments: [] });
+      }
+      if (url === "/api/semantic/nodes/semn_stale_update") {
+        return staleNodeDeferred.promise;
+      }
+      if (url === "/api/episodes/ep_stale_proposed") {
+        return staleEpisodeDeferred.promise;
+      }
+      if (url === "/api/semantic/nodes/semn_current_update") {
+        return json({ node: currentNode });
+      }
+      if (url === "/api/episodes/ep_current_proposed") {
+        return json({
+          episode: {
+            ...episodes.ep_1!,
+            id: "ep_current_proposed",
+            title: "Current proposed episode",
+            narrative: "Current proposed episode narrative.",
+          },
+        });
+      }
+
+      return json({ message: `unexpected ${method} ${url}` }, 404);
+    });
+
+    render(<ReviewsPage />);
+
+    expect(await screen.findAllByText("Stale proposed insight.")).toHaveLength(2);
+    expect(await screen.findByText("Stale proposed description.")).toBeTruthy();
+
+    fireEvent.click(screen.getAllByText("Current proposed insight.")[0]!);
+
+    expect(await screen.findByText("Current proposed description.")).toBeTruthy();
+    expect(await screen.findByText("Current node description.")).toBeTruthy();
+
+    await act(async () => {
+      staleNodeDeferred.resolve(json({ node: staleNode }));
+      staleEpisodeDeferred.resolve(
+        json({
+          episode: {
+            ...episodes.ep_1!,
+            id: "ep_stale_proposed",
+            title: "Stale proposed episode",
+            narrative: "Stale proposed episode narrative.",
+          },
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByText("Current proposed episode")).toBeTruthy();
+    expect(screen.queryByText("Stale current description.")).toBeNull();
+    expect(screen.queryByText("Stale proposed episode")).toBeNull();
+    expect(screen.queryByText("Stale proposed episode narrative.")).toBeNull();
   });
 
   it("keeps node-pair degraded evidence quiet", async () => {

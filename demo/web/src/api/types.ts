@@ -400,11 +400,15 @@ export type IdentityGrowthMarker = {
 
 export type IdentityPeriod = {
   id: string;
+  record_version?: number;
   label: string;
   start_ts: number;
   end_ts: number | null;
   narrative: string;
+  key_episode_ids?: string[];
+  disclosure_label?: DisclosureLabel;
   themes: string[];
+  provenance?: Record<string, unknown>;
   created_at: number;
   last_updated: number;
 };

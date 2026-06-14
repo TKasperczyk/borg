@@ -7,6 +7,7 @@ import {
   fetchCorrectionWhy,
   fetchCreatorDirectives,
   fetchEpisode,
+  fetchIdentity,
   fetchReviews,
   fetchSemanticEdge,
   fetchSemanticNode,
@@ -20,6 +21,7 @@ import type {
   CorrectionWhyResponse,
   CreatorDirective,
   EpisodeDetail,
+  IdentityResponse,
   ReviewKind,
   ReviewResolution,
   ReviewRow,
@@ -27,6 +29,7 @@ import type {
   SemanticNodeDetail,
 } from "../api/types";
 import { useQuery } from "../api/useQuery";
+import { ExpandableText } from "../components/ExpandableText";
 import { dayLabel, relativeAge } from "../format/time";
 
 type StatusFilter = "open" | "resolved";
@@ -47,8 +50,30 @@ type PairEvidenceResult = {
   episodes: EpisodeDetail[];
   failed: boolean;
 };
+type CurrentTargetState = {
+  record: Record<string, unknown> | null;
+  loading: boolean;
+};
+type ProposedInsight = {
+  mode: string;
+  nodeId: string | null;
+  node: Record<string, unknown> | null;
+  patch: Record<string, unknown> | null;
+  evidenceEpisodeIds: string[];
+};
+type ProposedValueMode = "current" | "proposed" | "insert";
 
 const MAX_PAIR_EVIDENCE_EPISODES = 6;
+const LONG_TEXT_MIN_LENGTH = 120;
+// Universal record metadata, not reviewable content.
+const UNIVERSAL_RECORD_METADATA_FIELDS = new Set(["id", "created_at", "updated_at", "last_verified_at"]);
+const IDENTITY_TARGET_COLLECTIONS: Record<string, string> = {
+  autobiographical_period: "periods",
+  goal: "goals",
+  open_question: "open_questions",
+  trait: "traits",
+  value: "values",
+};
 
 const GENERIC_ACTIONS: Record<ReviewKind, ReviewResolution[]> = {
   contradiction: ["keep_both", "supersede", "invalidate", "dismiss"],
@@ -149,6 +174,24 @@ function stringArrayField(record: Record<string, unknown>, key: string): string[
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
+function stringArrayValue(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+function nonEmptyStringArrayValue(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length === 0) {
+    return null;
+  }
+  if (!value.every((entry) => typeof entry === "string" && entry.length > 0)) {
+    return null;
+  }
+  return value as string[];
+}
+
+function hasOwn(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
 function upperLabel(value: string): string {
   return value.replace(/_/g, " ").toUpperCase();
 }
@@ -232,6 +275,115 @@ function pairEvidenceEpisodeIds(input: {
   ]);
 }
 
+function episodeIdsFromRecord(record: Record<string, unknown>): string[] {
+  const ids: string[] = [];
+  for (const [key, value] of Object.entries(record)) {
+    if (key === "episode_ids" || key.endsWith("_episode_ids")) {
+      ids.push(...stringArrayValue(value));
+    }
+  }
+  return ids;
+}
+
+function proposedInsight(row: ReviewRow | null): ProposedInsight | null {
+  const pending = asRecord(row?.refs.reflector_pending_insight);
+  if (pending === null) {
+    return null;
+  }
+
+  const target = asRecord(pending.target);
+  const topLevelNode = asRecord(pending.node);
+  const targetNode = asRecord(target?.node);
+  const node = targetNode ?? topLevelNode;
+  const patch = asRecord(target?.patch) ?? asRecord(pending.patch);
+  const targetMode = target === null ? null : stringField(target, "mode");
+  const pendingMode = stringField(pending, "mode");
+  const mode = targetMode ?? pendingMode ?? (patch !== null ? "update" : "insert");
+  const nodeId = stringField(target ?? {}, "node_id") ?? stringField(node ?? {}, "id");
+  const evidenceCluster = asRecord(pending.evidence_cluster);
+  const evidenceEpisodeIds = orderedUnique([
+    ...stringArrayField(row?.refs ?? {}, "episode_ids"),
+    ...episodeIdsFromRecord(evidenceCluster ?? {}),
+    ...episodeIdsFromRecord(node ?? {}),
+    ...episodeIdsFromRecord(patch ?? {}),
+  ]);
+
+  if (node === null && patch === null && nodeId === null) {
+    return null;
+  }
+
+  return { mode, nodeId, node, patch, evidenceEpisodeIds };
+}
+
+function pendingInsightUpdateNodeId(row: ReviewRow | null): string | null {
+  const insight = proposedInsight(row);
+  return insight?.mode === "update" ? insight.nodeId : null;
+}
+
+function reviewProposedEvidenceEpisodeIds(row: ReviewRow | null): string[] {
+  if (row === null) {
+    return [];
+  }
+
+  const patch = asRecord(row.refs.patch);
+  const insight = proposedInsight(row);
+  return orderedUnique([
+    ...stringArrayField(row.refs, "evidence_episode_ids"),
+    ...stringArrayField(row.refs, "episode_ids"),
+    ...(patch === null ? [] : episodeIdsFromRecord(patch)),
+    ...(insight?.evidenceEpisodeIds ?? []),
+  ]);
+}
+
+function patchTargetNeedsIdentity(row: ReviewRow | null): boolean {
+  if (row === null || asRecord(row.refs.patch) === null) {
+    return false;
+  }
+
+  const targetType = stringField(row.refs, "target_type");
+  return targetType !== null && hasOwn(IDENTITY_TARGET_COLLECTIONS, targetType);
+}
+
+function flattenRecordTree(values: readonly unknown[]): Record<string, unknown>[] {
+  return values.flatMap((value) => {
+    const record = asRecord(value);
+    if (record === null) {
+      return [];
+    }
+
+    const children = Array.isArray(record.children) ? flattenRecordTree(record.children) : [];
+    return [record, ...children];
+  });
+}
+
+function identityCurrentTarget(input: {
+  row: ReviewRow | null;
+  identity: IdentityResponse | null | undefined;
+}): Record<string, unknown> | null {
+  if (input.row === null || input.identity === null || input.identity === undefined) {
+    return null;
+  }
+
+  const targetType = stringField(input.row.refs, "target_type");
+  const targetId = stringField(input.row.refs, "target_id");
+  if (targetType === null || targetId === null) {
+    return null;
+  }
+
+  const collectionKey = IDENTITY_TARGET_COLLECTIONS[targetType];
+  if (collectionKey === undefined) {
+    return null;
+  }
+
+  const snapshot = input.identity as unknown as Record<string, unknown>;
+  const collection = snapshot[collectionKey];
+  if (!Array.isArray(collection)) {
+    return null;
+  }
+
+  return flattenRecordTree(collection).find((record) => stringField(record, "id") === targetId) ?? null;
+}
+
 function publicDisclosure(value: string | undefined): boolean {
   return value === undefined || value === "public";
 }
@@ -276,6 +428,43 @@ function useToast(): [Toast | null, (toast: Toast) => void] {
   );
 
   return [toast, showToast];
+}
+
+function useEvidenceEpisodes(scope: string, episodeIds: readonly string[]) {
+  const cappedEpisodeIds = episodeIds.slice(0, MAX_PAIR_EVIDENCE_EPISODES);
+  const queryKey =
+    cappedEpisodeIds.length === 0 ? `${scope}:none` : `${scope}:${cappedEpisodeIds.join(",")}`;
+  const query = useQuery<PairEvidenceResult>(queryKey, async () => {
+    if (cappedEpisodeIds.length === 0) {
+      return { key: queryKey, episodes: [], failed: false };
+    }
+
+    let failed = false;
+    const episodes = await Promise.all(
+      cappedEpisodeIds.map(async (id): Promise<EpisodeDetail | null> => {
+        try {
+          return (await fetchEpisode(id)).episode;
+        } catch {
+          failed = true;
+          return null;
+        }
+      }),
+    );
+
+    return {
+      key: queryKey,
+      episodes: episodes.filter((episode): episode is EpisodeDetail => episode !== null),
+      failed,
+    };
+  });
+  const evidence =
+    query.data?.key === queryKey ? query.data : { key: queryKey, episodes: [], failed: false };
+
+  return {
+    evidence,
+    loading: query.loading && episodeIds.length > 0,
+    omittedCount: Math.max(0, episodeIds.length - MAX_PAIR_EVIDENCE_EPISODES),
+  };
 }
 
 export function ReviewsPage() {
@@ -461,6 +650,10 @@ function ReviewDetail({
   const nodeQueryKey = semanticNodeIds.length === 0 ? "reviews:nodes:none" : `reviews:nodes:${semanticNodeIds.join(",")}`;
   const edgeId = nodePairEdgeId(row);
   const edgeQueryKey = edgeId === null ? "reviews:edge:none" : `reviews:edge:${edgeId}`;
+  const insightUpdateNodeId = pendingInsightUpdateNodeId(row);
+  const insightUpdateNodeQueryKey =
+    insightUpdateNodeId === null ? "reviews:insight-current-node:none" : `reviews:insight-current-node:${insightUpdateNodeId}`;
+  const identityQueryKey = patchTargetNeedsIdentity(row) ? "reviews:identity:current-targets" : "reviews:identity:none";
   const nodeDetails = useQuery<Record<string, SemanticNodeDetail | null>>(nodeQueryKey, async () => {
     const entries = await Promise.all(
       semanticNodeIds.map(async (id): Promise<[string, SemanticNodeDetail | null]> => {
@@ -484,7 +677,41 @@ function ReviewDetail({
       return null;
     }
   });
+  const insightCurrentNode = useQuery<SemanticNodeDetail | null>(insightUpdateNodeQueryKey, async () => {
+    if (insightUpdateNodeId === null) {
+      return null;
+    }
+    try {
+      return (await fetchSemanticNode(insightUpdateNodeId)).node;
+    } catch {
+      return null;
+    }
+  });
+  const identitySnapshot = useQuery<IdentityResponse | null>(identityQueryKey, async () => {
+    if (!patchTargetNeedsIdentity(row)) {
+      return null;
+    }
+    try {
+      return await fetchIdentity();
+    } catch {
+      return null;
+    }
+  });
   const currentEdge = edgeDetail.data?.id === edgeId ? edgeDetail.data : null;
+  const currentInsightNode =
+    insightCurrentNode.data?.id === insightUpdateNodeId ? insightCurrentNode.data : null;
+  const currentIdentityTarget = identityCurrentTarget({
+    row,
+    identity: identitySnapshot.data,
+  });
+  const currentPatchTarget: CurrentTargetState = {
+    record: currentIdentityTarget,
+    loading: identitySnapshot.loading && patchTargetNeedsIdentity(row),
+  };
+  const currentInsightTarget: CurrentTargetState = {
+    record: currentInsightNode === null ? null : (currentInsightNode as unknown as Record<string, unknown>),
+    loading: insightCurrentNode.loading && insightUpdateNodeId !== null,
+  };
   const nodeDetailsReady =
     semanticNodeIds.length === 0 ||
     (nodeDetails.data !== undefined &&
@@ -501,38 +728,9 @@ function ReviewDetail({
         : [],
     [currentEdge, edgeDetailsReady, nodeDetails.data, nodeDetailsReady, row],
   );
-  const cappedEvidenceEpisodeIds = evidenceEpisodeIds.slice(0, MAX_PAIR_EVIDENCE_EPISODES);
-  const evidenceQueryKey =
-    cappedEvidenceEpisodeIds.length === 0
-      ? "reviews:episodes:none"
-      : `reviews:episodes:${cappedEvidenceEpisodeIds.join(",")}`;
-  const pairEvidence = useQuery<PairEvidenceResult>(evidenceQueryKey, async () => {
-    if (cappedEvidenceEpisodeIds.length === 0) {
-      return { key: evidenceQueryKey, episodes: [], failed: false };
-    }
-
-    let failed = false;
-    const episodes = await Promise.all(
-      cappedEvidenceEpisodeIds.map(async (id): Promise<EpisodeDetail | null> => {
-        try {
-          return (await fetchEpisode(id)).episode;
-        } catch {
-          failed = true;
-          return null;
-        }
-      }),
-    );
-
-    return {
-      key: evidenceQueryKey,
-      episodes: episodes.filter((episode): episode is EpisodeDetail => episode !== null),
-      failed,
-    };
-  });
-  const currentPairEvidence =
-    pairEvidence.data?.key === evidenceQueryKey
-      ? pairEvidence.data
-      : { key: evidenceQueryKey, episodes: [], failed: false };
+  const pairEvidence = useEvidenceEpisodes("reviews:pair-episodes", evidenceEpisodeIds);
+  const proposedEvidenceEpisodeIds = useMemo(() => reviewProposedEvidenceEpisodeIds(row), [row]);
+  const proposedEvidence = useEvidenceEpisodes("reviews:proposed-episodes", proposedEvidenceEpisodeIds);
 
   useEffect(() => {
     setNote("");
@@ -672,9 +870,14 @@ function ReviewDetail({
           onPick={chooseWinner}
           why={why}
           whyLoading={whyLoading}
-          evidence={currentPairEvidence}
-          evidenceLoading={pairEvidence.loading && evidenceEpisodeIds.length > 0}
-          evidenceOmittedCount={Math.max(0, evidenceEpisodeIds.length - MAX_PAIR_EVIDENCE_EPISODES)}
+          evidence={pairEvidence.evidence}
+          evidenceLoading={pairEvidence.loading}
+          evidenceOmittedCount={pairEvidence.omittedCount}
+          proposedEvidence={proposedEvidence.evidence}
+          proposedEvidenceLoading={proposedEvidence.loading}
+          proposedEvidenceOmittedCount={proposedEvidence.omittedCount}
+          currentPatchTarget={currentPatchTarget}
+          currentInsightTarget={currentInsightTarget}
         />
         {isNodePairReview(effectiveRow) && currentEdge !== null ? <EdgeLine edge={currentEdge} /> : null}
         {resolved ? (
@@ -821,6 +1024,11 @@ function KindBody({
   evidence,
   evidenceLoading,
   evidenceOmittedCount,
+  proposedEvidence,
+  proposedEvidenceLoading,
+  proposedEvidenceOmittedCount,
+  currentPatchTarget,
+  currentInsightTarget,
 }: {
   row: ReviewRow;
   refCards: RefCard[];
@@ -831,6 +1039,11 @@ function KindBody({
   evidence: PairEvidenceResult;
   evidenceLoading: boolean;
   evidenceOmittedCount: number;
+  proposedEvidence: PairEvidenceResult;
+  proposedEvidenceLoading: boolean;
+  proposedEvidenceOmittedCount: number;
+  currentPatchTarget: CurrentTargetState;
+  currentInsightTarget: CurrentTargetState;
 }) {
   if (row.kind === "creator_directive_reconciliation") {
     return (
@@ -859,6 +1072,14 @@ function KindBody({
   return (
     <>
       <ReviewBodyBlock row={row} />
+      <ProposedContentBlock
+        row={row}
+        evidence={proposedEvidence}
+        evidenceLoading={proposedEvidenceLoading}
+        evidenceOmittedCount={proposedEvidenceOmittedCount}
+        currentPatchTarget={currentPatchTarget}
+        currentInsightTarget={currentInsightTarget}
+      />
       {row.kind === "belief_revision" ? (
         <div className="review-note-line">
           Applying a revision happens through the belief-reviser apply step; this queue exposes
@@ -916,15 +1137,14 @@ function PairCards({
                 )}
               </span>
               {card.description === undefined ? null : (
-                <p
+                <ExpandableText
+                  text={card.description}
+                  expanded={expanded}
                   className={
-                    expanded
-                      ? "review-ref-description review-ref-description-expanded"
-                      : "review-ref-description"
+                    "review-ref-description"
                   }
-                >
-                  {card.description}
-                </p>
+                  expandedClassName="review-ref-description-expanded"
+                />
               )}
               <p>{card.sub}</p>
               <small>{card.evidence}</small>
@@ -992,9 +1212,12 @@ function PairEvidence({
           <button className="review-evidence-row" key={episode.id} type="button" onClick={() => toggle(episode.id)}>
             <strong>{episode.title}</strong>
             <span>{dayLabel(new Date(episode.start_time))}</span>
-            <p className={expanded ? "review-evidence-narrative review-evidence-narrative-expanded" : "review-evidence-narrative"}>
-              {episode.narrative}
-            </p>
+            <ExpandableText
+              text={episode.narrative}
+              expanded={expanded}
+              className="review-evidence-narrative"
+              expandedClassName="review-evidence-narrative-expanded"
+            />
           </button>
         );
       })}
@@ -1028,6 +1251,310 @@ function MemberCards(props: {
       ))}
     </div>
   );
+}
+
+function ProposedContentBlock({
+  row,
+  evidence,
+  evidenceLoading,
+  evidenceOmittedCount,
+  currentPatchTarget,
+  currentInsightTarget,
+}: {
+  row: ReviewRow;
+  evidence: PairEvidenceResult;
+  evidenceLoading: boolean;
+  evidenceOmittedCount: number;
+  currentPatchTarget: CurrentTargetState;
+  currentInsightTarget: CurrentTargetState;
+}) {
+  const patch = asRecord(row.refs.patch);
+  const insight = proposedInsight(row);
+  const hasPatchContent = patch !== null && renderableEntries(patch).length > 0;
+  const hasInsightContent = insight !== null;
+  const hasEvidence =
+    evidenceLoading || evidence.failed || evidence.episodes.length > 0 || evidenceOmittedCount > 0;
+
+  if (!hasPatchContent && !hasInsightContent && !hasEvidence) {
+    return null;
+  }
+
+  return (
+    <section className="review-proposed-block">
+      <div className="review-proposed-head">PROPOSED CONTENT</div>
+      {patch === null ? null : (
+        <ProposedPatch patch={patch} currentTarget={currentPatchTarget} />
+      )}
+      {insight === null ? null : (
+        <ProposedInsightBlock insight={insight} currentTarget={currentInsightTarget} />
+      )}
+      <PairEvidence
+        evidence={evidence}
+        loading={evidenceLoading}
+        omittedCount={evidenceOmittedCount}
+      />
+    </section>
+  );
+}
+
+function ProposedPatch({
+  patch,
+  currentTarget,
+}: {
+  patch: Record<string, unknown>;
+  currentTarget: CurrentTargetState;
+}) {
+  const entries = renderableEntries(patch);
+  if (entries.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="review-proposed-section">
+      <div className="review-proposed-section-title">PATCH</div>
+      {entries.map(([field, value]) => (
+        <ProposedFieldRow
+          key={field}
+          field={field}
+          proposedValue={value}
+          currentTarget={currentTarget}
+          proposedMode="proposed"
+        />
+      ))}
+    </div>
+  );
+}
+
+function ProposedInsightBlock({
+  insight,
+  currentTarget,
+}: {
+  insight: ProposedInsight;
+  currentTarget: CurrentTargetState;
+}) {
+  const proposed = proposedInsightFields(insight);
+  if (proposed.length === 0) {
+    return null;
+  }
+
+  const label =
+    valueAsString(proposed.find(([field]) => field === "label")?.[1]) ??
+    valueAsString(currentTarget.record?.display_label) ??
+    valueAsString(currentTarget.record?.label) ??
+    insight.nodeId ??
+    "pending insight";
+  const contextKind =
+    valueAsString(proposed.find(([field]) => field === "kind")?.[1]) ??
+    valueAsString(currentTarget.record?.kind);
+  const title = ["INSIGHT", insight.mode.toUpperCase(), contextKind, label].filter(
+    (part): part is string => part !== null,
+  );
+
+  return (
+    <div className="review-proposed-section">
+      <div className="review-proposed-section-title">{title.join(" · ")}</div>
+      {proposed.map(([field, value]) => (
+        <ProposedFieldRow
+          key={field}
+          field={field}
+          proposedValue={value}
+          currentTarget={currentTarget}
+          proposedMode={insight.mode === "insert" ? "insert" : "proposed"}
+        />
+      ))}
+    </div>
+  );
+}
+
+function proposedInsightFields(insight: ProposedInsight): Array<[string, unknown]> {
+  const source = insight.mode === "update" ? insight.patch ?? insight.node ?? {} : insight.node ?? insight.patch ?? {};
+  const entries = renderableEntries(source);
+  const fields: Array<[string, unknown]> = [];
+  const headlineValues: Array<[string, unknown]> = [
+    ["label", source.display_label ?? source.label],
+    ["description", source.description],
+    ["kind", source.kind],
+    ["confidence", source.confidence],
+  ];
+
+  for (const [field, value] of headlineValues) {
+    if (value !== undefined && isRenderableProposedValue(value)) {
+      fields.push([field, value]);
+    }
+  }
+
+  const headlineFields = new Set(["display_label", "label", "description", "kind", "confidence"]);
+  for (const [field, value] of entries) {
+    if (!headlineFields.has(field)) {
+      fields.push([field, value]);
+    }
+  }
+
+  return fields;
+}
+
+function ProposedFieldRow({
+  field,
+  proposedValue,
+  currentTarget,
+  proposedMode,
+}: {
+  field: string;
+  proposedValue: unknown;
+  currentTarget: CurrentTargetState;
+  proposedMode: ProposedValueMode;
+}) {
+  if (!isRenderableProposedValue(proposedValue)) {
+    return null;
+  }
+
+  const hasCurrent = currentTarget.record !== null && hasOwn(currentTarget.record, field);
+  const currentValue = hasCurrent ? currentTarget.record![field] : undefined;
+  const proposedLabel =
+    proposedMode === "insert" ? "INSERT" : hasCurrent ? "PROPOSED" : "PROPOSED ONLY";
+
+  return (
+    <div className="review-proposed-row">
+      <strong>{upperLabel(field)}</strong>
+      <div className="review-proposed-values">
+        {currentTarget.loading ? (
+          <div className="review-proposed-value review-proposed-current">
+            <span className="review-proposed-value-label">CURRENT</span>
+            <span className="review-proposed-muted">loading...</span>
+          </div>
+        ) : hasCurrent ? (
+          <div className="review-proposed-value review-proposed-current">
+            <span className="review-proposed-value-label">CURRENT</span>
+            <ProposedValue field={field} value={currentValue} />
+          </div>
+        ) : null}
+        <div className="review-proposed-value">
+          <span className="review-proposed-value-label">{proposedLabel}</span>
+          <ProposedValue field={field} value={proposedValue} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProposedValue({ field, value }: { field: string; value: unknown }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (!isRenderableProposedValue(value)) {
+    return <span className="review-proposed-muted">not shown</span>;
+  }
+
+  if (typeof value === "string") {
+    if (value.length >= LONG_TEXT_MIN_LENGTH) {
+      return (
+        <button
+          type="button"
+          className="review-proposed-text-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <ExpandableText
+            text={value}
+            expanded={expanded}
+            className="review-proposed-long-text"
+            expandedClassName="review-proposed-long-text-expanded"
+          />
+        </button>
+      );
+    }
+
+    return <span>{value}</span>;
+  }
+
+  if (typeof value === "number") {
+    return <span>{field === "confidence" ? value.toFixed(2) : String(value)}</span>;
+  }
+
+  if (typeof value === "boolean") {
+    return <span>{String(value)}</span>;
+  }
+
+  const strings = nonEmptyStringArrayValue(value);
+  if (strings !== null) {
+    return <ChipList values={strings} />;
+  }
+
+  const record = asRecord(value);
+  if (record !== null && isDisclosureLabelRecord(record)) {
+    return <DisclosureLabelSummary record={record} />;
+  }
+
+  return <span className="review-proposed-muted">not shown</span>;
+}
+
+function ChipList({ values }: { values: string[] }) {
+  return (
+    <span className="review-proposed-chip-list">
+      {values.map((value) => (
+        <span className="review-proposed-chip" key={value}>
+          {value}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function DisclosureLabelSummary({ record }: { record: Record<string, unknown> }) {
+  const disclosureClass = stringField(record, "disclosure_class");
+  const privateTo = stringArrayField(record, "private_to_entity_ids");
+  const publicTo = stringArrayField(record, "public_to_entity_ids");
+  const origin = stringArrayField(record, "origin_audience_entity_ids");
+  const summary = [
+    privateTo.length > 0 ? `private to ${privateTo.length}` : null,
+    publicTo.length > 0 ? `public to ${publicTo.length}` : null,
+    origin.length > 0 ? `origin ${origin.length}` : null,
+  ].filter((entry): entry is string => entry !== null);
+
+  return (
+    <span className="review-proposed-disclosure">
+      {disclosureClass === null ? null : (
+        <span className="review-disclosure-chip">{disclosureClass}</span>
+      )}
+      {summary.length === 0 ? null : <span>{summary.join(" · ")}</span>}
+    </span>
+  );
+}
+
+function renderableEntries(record: Record<string, unknown>): Array<[string, unknown]> {
+  return Object.entries(record).filter(
+    ([field, value]) => !UNIVERSAL_RECORD_METADATA_FIELDS.has(field) && isRenderableProposedValue(value),
+  );
+}
+
+function isRenderableProposedValue(value: unknown): boolean {
+  if (typeof value === "string") {
+    return value.length > 0;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+  if (typeof value === "boolean") {
+    return true;
+  }
+  if (nonEmptyStringArrayValue(value) !== null) {
+    return true;
+  }
+
+  const record = asRecord(value);
+  return record !== null && isDisclosureLabelRecord(record);
+}
+
+function isDisclosureLabelRecord(record: Record<string, unknown>): boolean {
+  return (
+    hasOwn(record, "disclosure_class") ||
+    hasOwn(record, "origin_audience_entity_ids") ||
+    hasOwn(record, "private_to_entity_ids") ||
+    hasOwn(record, "public_to_entity_ids")
+  );
+}
+
+function valueAsString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function ReviewBodyBlock({ row }: { row: ReviewRow }) {
@@ -1194,11 +1721,6 @@ function bodyLines(row: ReviewRow): Array<{ label: string; value: string }> {
     lines.push({ label: "target", value: targetId === null ? targetType : `${targetType} · ${targetId}` });
   }
 
-  const patch = asRecord(refs.patch);
-  if (patch !== null) {
-    lines.push({ label: "patch", value: Object.keys(patch).join(", ") || "empty" });
-  }
-
   const invalidatedEdgeId = stringField(refs, "invalidated_edge_id");
   if (invalidatedEdgeId !== null) {
     lines.push({ label: "invalidated edge", value: invalidatedEdgeId });
@@ -1216,16 +1738,6 @@ function bodyLines(row: ReviewRow): Array<{ label: string; value: string }> {
     if (verdict !== null) {
       lines.push({ label: "proposed", value: rationale === null ? verdict : `${verdict} · ${rationale}` });
     }
-  }
-
-  const target = asRecord(asRecord(refs.reflector_pending_insight)?.target);
-  if (target !== null) {
-    const mode = stringField(target, "mode");
-    const node = asRecord(target.node);
-    lines.push({
-      label: "insight",
-      value: mode === "insert" && node !== null ? `${mode} · ${stringField(node, "label") ?? "node"}` : mode ?? "pending",
-    });
   }
 
   const rationale = stringField(refs, "rationale");
