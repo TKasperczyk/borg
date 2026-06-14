@@ -521,6 +521,9 @@ const configBaseSchema = z.object({
       enabled: z.boolean().default(true),
       lightIntervalMs: z.number().int().positive().default(14_400_000),
       heavyIntervalMs: z.number().int().positive().default(86_400_000),
+      startupGraceMs: z.number().int().nonnegative().default(30_000),
+      busyRetryBaseMs: z.number().int().positive().default(60_000),
+      busyRetryMaxMs: z.number().int().positive().default(900_000),
       optimizeStorage: z.boolean().default(true),
       // These cadence lists are the single authority for offline process
       // enablement. Remove a process from both lists to disable it.
@@ -1465,6 +1468,21 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["maintenance", "heavyIntervalMs"],
     readOptionalEnvNumber(env, "BORG_MAINTENANCE_HEAVY_INTERVAL_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["maintenance", "startupGraceMs"],
+    readOptionalEnvNumber(env, "BORG_MAINTENANCE_STARTUP_GRACE_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["maintenance", "busyRetryBaseMs"],
+    readOptionalEnvNumber(env, "BORG_MAINTENANCE_BUSY_RETRY_BASE_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["maintenance", "busyRetryMaxMs"],
+    readOptionalEnvNumber(env, "BORG_MAINTENANCE_BUSY_RETRY_MAX_MS"),
   );
   setConfigOverride(
     overrides,

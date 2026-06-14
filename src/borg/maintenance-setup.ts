@@ -9,6 +9,7 @@ import {
   type OfflineProcessName,
 } from "../offline/index.js";
 import type { LanceDbStore } from "../storage/lancedb/index.js";
+import type { StreamWatermarkRepository } from "../stream/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { Clock } from "../util/clock.js";
 
@@ -17,6 +18,7 @@ export type BuildMaintenanceSchedulerOptions = {
   lance: LanceDbStore;
   orchestrator: MaintenanceOrchestrator;
   processRegistry: Record<OfflineProcessName, OfflineProcess>;
+  cadenceWatermarkRepository: Pick<StreamWatermarkRepository, "get" | "set">;
   clock: Clock;
   tracer?: TurnTracer;
   isBusy?: () => boolean;
@@ -29,10 +31,14 @@ export function buildMaintenanceScheduler(
     enabled: options.config.maintenance.enabled,
     lightIntervalMs: options.config.maintenance.lightIntervalMs,
     heavyIntervalMs: options.config.maintenance.heavyIntervalMs,
+    startupGraceMs: options.config.maintenance.startupGraceMs,
+    busyRetryBaseMs: options.config.maintenance.busyRetryBaseMs,
+    busyRetryMaxMs: options.config.maintenance.busyRetryMaxMs,
     lightProcesses: options.config.maintenance.lightProcesses,
     heavyProcesses: options.config.maintenance.heavyProcesses,
     orchestrator: options.orchestrator,
     processRegistry: options.processRegistry,
+    cadenceWatermarkRepository: options.cadenceWatermarkRepository,
     optimizeStorage: options.config.maintenance.optimizeStorage,
     storageOptimizer: () => options.lance.optimizeStorage(),
     tracer: options.tracer,

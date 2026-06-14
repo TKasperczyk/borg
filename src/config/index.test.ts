@@ -85,6 +85,9 @@ describe("config", () => {
       "curator",
     ]);
     expect(config.maintenance.optimizeStorage).toBe(true);
+    expect(config.maintenance.startupGraceMs).toBe(30_000);
+    expect(config.maintenance.busyRetryBaseMs).toBe(60_000);
+    expect(config.maintenance.busyRetryMaxMs).toBe(900_000);
     expect(config.maintenance.heavyProcesses).toEqual([
       "reflector",
       "overseer",
@@ -517,6 +520,9 @@ describe("config", () => {
         BORG_GENERATION_COGNITION_THINKING_ENABLED: "true",
         BORG_GENERATION_COGNITION_THINKING_BUDGET_TOKENS: "8192",
         BORG_MAINTENANCE_OPTIMIZE_STORAGE: "false",
+        BORG_MAINTENANCE_STARTUP_GRACE_MS: "1234",
+        BORG_MAINTENANCE_BUSY_RETRY_BASE_MS: "2345",
+        BORG_MAINTENANCE_BUSY_RETRY_MAX_MS: "3456",
         BORG_MODEL_RECALL_EXPANSION: "env-recall",
         BORG_ANTHROPIC_OAUTH_SSE_INACTIVITY_TIMEOUT_MS: "111",
         BORG_ANTHROPIC_OAUTH_SSE_FIRST_MESSAGE_EVENT_TIMEOUT_MS: "222",
@@ -588,6 +594,9 @@ describe("config", () => {
       budget_tokens: 8192,
     });
     expect(config.maintenance.optimizeStorage).toBe(false);
+    expect(config.maintenance.startupGraceMs).toBe(1234);
+    expect(config.maintenance.busyRetryBaseMs).toBe(2345);
+    expect(config.maintenance.busyRetryMaxMs).toBe(3456);
     expect(config.cognition.actionLifecycle.archiveStaleAfterInactiveTurns).toBe(18);
     expect(config.offline.curator.retrievalLogRetentionDays).toBe(45);
     expect(config.offline.beliefReviser.maxLlmCalls).toBe(7);

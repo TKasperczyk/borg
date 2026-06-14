@@ -418,6 +418,7 @@ export async function openBorgDependencies(
       lance,
       orchestrator: offline.maintenanceOrchestrator,
       processRegistry: offline.offlineProcesses,
+      cadenceWatermarkRepository: streamWatermarkRepository,
       clock,
       tracer,
       isBusy: () => sessionLock.isHeld(),

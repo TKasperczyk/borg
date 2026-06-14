@@ -1,11 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { StreamWriter } from "../stream/index.js";
+import {
+  StreamWriter,
+  type StreamWatermark,
+  type StreamWatermarkRepository,
+} from "../stream/index.js";
 import type { LanceDbOptimizeStorageResult } from "../storage/lancedb/index.js";
 import { ManualClock } from "../util/clock.js";
-import { DEFAULT_SESSION_ID } from "../util/ids.js";
+import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
 
-import { MaintenanceScheduler, type MaintenanceTickResult } from "./scheduler.js";
+import {
+  MaintenanceScheduler,
+  type MaintenanceCadence,
+  type MaintenanceSchedulerOptions,
+  type MaintenanceTickResult,
+} from "./scheduler.js";
 import { MaintenanceOrchestrator, type MaintenanceRunOptions } from "./orchestrator.js";
 import { createOfflineTestHarness } from "./test-support.js";
 import type {
@@ -115,6 +124,130 @@ function createStorageOptimizationResult(): LanceDbOptimizeStorageResult {
   };
 }
 
+const MAINTENANCE_WATERMARK_SESSION_ID = "maintenance-global" as SessionId;
+
+function cadenceWatermarkProcessName(cadence: MaintenanceCadence): string {
+  return `maintenance:cadence:${cadence}`;
+}
+
+function watermarkKey(processName: string, sessionId: SessionId): string {
+  return `${processName}\0${sessionId}`;
+}
+
+function createFakeCadenceWatermarks(clock: ManualClock): {
+  repo: Pick<StreamWatermarkRepository, "get" | "set">;
+  get: (cadence: MaintenanceCadence) => StreamWatermark | null;
+  set: (cadence: MaintenanceCadence, lastTs: number, lastEntryId?: string) => StreamWatermark;
+} {
+  const records = new Map<string, StreamWatermark>();
+  const repo: Pick<StreamWatermarkRepository, "get" | "set"> = {
+    get: vi.fn((processName: string, sessionId: SessionId) => {
+      return records.get(watermarkKey(processName, sessionId)) ?? null;
+    }),
+    set: vi.fn((processName: string, sessionId: SessionId, input) => {
+      const record: StreamWatermark = {
+        processName,
+        sessionId,
+        lastTs: input.lastTs,
+        lastEntryId: input.lastEntryId,
+        updatedAt: clock.now(),
+      };
+      records.set(watermarkKey(processName, sessionId), record);
+      return record;
+    }),
+  };
+
+  return {
+    repo,
+    get: (cadence) =>
+      repo.get(cadenceWatermarkProcessName(cadence), MAINTENANCE_WATERMARK_SESSION_ID),
+    set: (cadence, lastTs, lastEntryId = `${cadence}:${lastTs}`) =>
+      repo.set(cadenceWatermarkProcessName(cadence), MAINTENANCE_WATERMARK_SESSION_ID, {
+        lastTs,
+        lastEntryId,
+      }),
+  };
+}
+
+function withSchedulerDefaults(
+  options: Omit<
+    MaintenanceSchedulerOptions,
+    "busyRetryBaseMs" | "busyRetryMaxMs" | "cadenceWatermarkRepository" | "startupGraceMs"
+  > &
+    Partial<
+      Pick<
+        MaintenanceSchedulerOptions,
+        "busyRetryBaseMs" | "busyRetryMaxMs" | "cadenceWatermarkRepository" | "startupGraceMs"
+      >
+    >,
+): MaintenanceSchedulerOptions {
+  const clock = options.clock ?? new ManualClock(1_000);
+
+  return {
+    busyRetryBaseMs: 1_000,
+    busyRetryMaxMs: 10_000,
+    cadenceWatermarkRepository: createFakeCadenceWatermarks(clock as ManualClock).repo,
+    startupGraceMs: 0,
+    ...options,
+    clock,
+  };
+}
+
+type ManualTimeout = {
+  id: number;
+  callback: () => void;
+  delayMs: number;
+  cleared: boolean;
+};
+
+function createManualTimeouts(): {
+  setTimeoutFn: NonNullable<MaintenanceSchedulerOptions["setTimeoutFn"]>;
+  clearTimeoutFn: NonNullable<MaintenanceSchedulerOptions["clearTimeoutFn"]>;
+  activeTimers: () => ManualTimeout[];
+  fire: (timer?: ManualTimeout) => Promise<void>;
+} {
+  const timers: ManualTimeout[] = [];
+  let nextId = 1;
+  const activeTimers = () => timers.filter((timer) => !timer.cleared);
+  const setTimeoutFn: NonNullable<MaintenanceSchedulerOptions["setTimeoutFn"]> = (
+    callback,
+    delayMs,
+  ) => {
+    const timer: ManualTimeout = {
+      id: nextId,
+      callback,
+      delayMs,
+      cleared: false,
+    };
+    nextId += 1;
+    timers.push(timer);
+    return timer.id as unknown as ReturnType<typeof setTimeout>;
+  };
+  const clearTimeoutFn: NonNullable<MaintenanceSchedulerOptions["clearTimeoutFn"]> = (handle) => {
+    const timer = timers.find((entry) => entry.id === (handle as unknown as number));
+
+    if (timer !== undefined) {
+      timer.cleared = true;
+    }
+  };
+  const fire = async (timer = activeTimers()[0]): Promise<void> => {
+    if (timer === undefined) {
+      throw new Error("No active timer to fire.");
+    }
+
+    timer.cleared = true;
+    timer.callback();
+    await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  return {
+    setTimeoutFn,
+    clearTimeoutFn,
+    activeTimers,
+    fire,
+  };
+}
+
 describe("MaintenanceScheduler", () => {
   const cleanup: Array<() => Promise<void>> = [];
 
@@ -131,16 +264,18 @@ describe("MaintenanceScheduler", () => {
   it("runs the configured light cadence on tick", async () => {
     const clock = new ManualClock(1_000);
     const spy = createFakeOrchestrator();
-    const scheduler = new MaintenanceScheduler({
-      enabled: true,
-      lightIntervalMs: 10_000,
-      heavyIntervalMs: 60_000,
-      lightProcesses: ["consolidator", "curator"],
-      heavyProcesses: ["reflector"],
-      orchestrator: spy.orchestrator,
-      processRegistry: createFakeProcessRegistry(),
-      clock,
-    });
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator", "curator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        clock,
+      }),
+    );
 
     const result = await scheduler.tick("light");
 
@@ -157,16 +292,18 @@ describe("MaintenanceScheduler", () => {
   it("selects heavy processes when heavy cadence is requested", async () => {
     const clock = new ManualClock(1_000);
     const spy = createFakeOrchestrator();
-    const scheduler = new MaintenanceScheduler({
-      enabled: true,
-      lightIntervalMs: 10_000,
-      heavyIntervalMs: 60_000,
-      lightProcesses: ["consolidator"],
-      heavyProcesses: ["reflector", "overseer", "self-narrator"],
-      orchestrator: spy.orchestrator,
-      processRegistry: createFakeProcessRegistry(),
-      clock,
-    });
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector", "overseer", "self-narrator"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        clock,
+      }),
+    );
 
     await scheduler.tick("heavy");
 
@@ -193,28 +330,30 @@ describe("MaintenanceScheduler", () => {
         errors: [],
       } as unknown as OrchestratorResult;
     });
-    const scheduler = new MaintenanceScheduler({
-      enabled: true,
-      lightIntervalMs: 10_000,
-      heavyIntervalMs: 60_000,
-      lightProcesses: ["consolidator"],
-      heavyProcesses: ["reflector"],
-      orchestrator: spy.orchestrator,
-      processRegistry: createFakeProcessRegistry(),
-      optimizeStorage: true,
-      storageOptimizer: async () => {
-        events.push("storage");
-        return createStorageOptimizationResult();
-      },
-      tracer: {
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
         enabled: true,
-        includePayloads: true,
-        emit: (event, data) => {
-          traceEvents.push({ event, data });
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        optimizeStorage: true,
+        storageOptimizer: async () => {
+          events.push("storage");
+          return createStorageOptimizationResult();
         },
-      },
-      clock,
-    });
+        tracer: {
+          enabled: true,
+          includePayloads: true,
+          emit: (event, data) => {
+            traceEvents.push({ event, data });
+          },
+        },
+        clock,
+      }),
+    );
 
     const result = await scheduler.tick("heavy");
 
@@ -252,18 +391,20 @@ describe("MaintenanceScheduler", () => {
     const clock = new ManualClock(1_000);
     const spy = createFakeOrchestrator();
     const storageOptimizer = vi.fn(async () => createStorageOptimizationResult());
-    const scheduler = new MaintenanceScheduler({
-      enabled: true,
-      lightIntervalMs: 10_000,
-      heavyIntervalMs: 60_000,
-      lightProcesses: ["consolidator"],
-      heavyProcesses: ["reflector"],
-      orchestrator: spy.orchestrator,
-      processRegistry: createFakeProcessRegistry(),
-      optimizeStorage: false,
-      storageOptimizer,
-      clock,
-    });
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        optimizeStorage: false,
+        storageOptimizer,
+        clock,
+      }),
+    );
 
     const result = await scheduler.tick("heavy");
 
@@ -276,27 +417,29 @@ describe("MaintenanceScheduler", () => {
     const clock = new ManualClock(1_000);
     const traceEvents: Array<{ event: string; data: Record<string, unknown> }> = [];
     const spy = createFakeOrchestrator();
-    const scheduler = new MaintenanceScheduler({
-      enabled: true,
-      lightIntervalMs: 10_000,
-      heavyIntervalMs: 60_000,
-      lightProcesses: ["consolidator"],
-      heavyProcesses: ["reflector"],
-      orchestrator: spy.orchestrator,
-      processRegistry: createFakeProcessRegistry(),
-      optimizeStorage: true,
-      storageOptimizer: async () => {
-        throw new Error("table enumeration failed");
-      },
-      tracer: {
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
         enabled: true,
-        includePayloads: true,
-        emit: (event, data) => {
-          traceEvents.push({ event, data });
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        optimizeStorage: true,
+        storageOptimizer: async () => {
+          throw new Error("table enumeration failed");
         },
-      },
-      clock,
-    });
+        tracer: {
+          enabled: true,
+          includePayloads: true,
+          emit: (event, data) => {
+            traceEvents.push({ event, data });
+          },
+        },
+        clock,
+      }),
+    );
 
     const result = await scheduler.tick("heavy");
 
@@ -326,18 +469,20 @@ describe("MaintenanceScheduler", () => {
     const clock = new ManualClock(1_000);
     const spy = createFakeOrchestrator();
     const storageOptimizer = vi.fn(async () => createStorageOptimizationResult());
-    const scheduler = new MaintenanceScheduler({
-      enabled: true,
-      lightIntervalMs: 10_000,
-      heavyIntervalMs: 60_000,
-      lightProcesses: ["consolidator"],
-      heavyProcesses: [],
-      orchestrator: spy.orchestrator,
-      processRegistry: createFakeProcessRegistry(),
-      optimizeStorage: true,
-      storageOptimizer,
-      clock,
-    });
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: [],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        optimizeStorage: true,
+        storageOptimizer,
+        clock,
+      }),
+    );
 
     const result = await scheduler.tick("heavy");
 
@@ -352,16 +497,18 @@ describe("MaintenanceScheduler", () => {
   it("reports disabled when the scheduler is off", async () => {
     const clock = new ManualClock(1_000);
     const spy = createFakeOrchestrator();
-    const scheduler = new MaintenanceScheduler({
-      enabled: false,
-      lightIntervalMs: 10_000,
-      heavyIntervalMs: 60_000,
-      lightProcesses: ["consolidator"],
-      heavyProcesses: ["reflector"],
-      orchestrator: spy.orchestrator,
-      processRegistry: createFakeProcessRegistry(),
-      clock,
-    });
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: false,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        clock,
+      }),
+    );
 
     const result = await scheduler.tick("light");
 
@@ -373,17 +520,19 @@ describe("MaintenanceScheduler", () => {
     const clock = new ManualClock(1_000);
     const spy = createFakeOrchestrator();
     let busy = true;
-    const scheduler = new MaintenanceScheduler({
-      enabled: true,
-      lightIntervalMs: 10_000,
-      heavyIntervalMs: 60_000,
-      lightProcesses: ["consolidator"],
-      heavyProcesses: ["reflector"],
-      orchestrator: spy.orchestrator,
-      processRegistry: createFakeProcessRegistry(),
-      clock,
-      isBusy: () => busy,
-    });
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        clock,
+        isBusy: () => busy,
+      }),
+    );
 
     const busyResult = await scheduler.tick("light");
     expect(busyResult.status).toBe("skipped_busy");
@@ -398,21 +547,513 @@ describe("MaintenanceScheduler", () => {
   it("returns skipped_empty when the cadence has no processes", async () => {
     const clock = new ManualClock(1_000);
     const spy = createFakeOrchestrator();
-    const scheduler = new MaintenanceScheduler({
-      enabled: true,
-      lightIntervalMs: 10_000,
-      heavyIntervalMs: 60_000,
-      lightProcesses: [],
-      heavyProcesses: ["reflector"],
-      orchestrator: spy.orchestrator,
-      processRegistry: createFakeProcessRegistry(),
-      clock,
-    });
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: [],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        clock,
+      }),
+    );
 
     const result = await scheduler.tick("light");
 
     expect(result.status).toBe("skipped_empty");
     expect(spy.runCalls).toHaveLength(0);
+  });
+
+  it("schedules a boot catch-up after the grace delay when the marker is missing", async () => {
+    const clock = new ManualClock(10_000);
+    const spy = createFakeOrchestrator();
+    const timeouts = createManualTimeouts();
+    const watermarks = createFakeCadenceWatermarks(clock);
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        cadenceWatermarkRepository: watermarks.repo,
+        startupGraceMs: 250,
+        clock,
+        setTimeoutFn: timeouts.setTimeoutFn,
+        clearTimeoutFn: timeouts.clearTimeoutFn,
+      }),
+    );
+
+    scheduler.start();
+
+    expect(timeouts.activeTimers().map((timer) => timer.delayMs)).toEqual([250, 250]);
+    expect(spy.runCalls).toHaveLength(0);
+
+    await timeouts.fire(timeouts.activeTimers()[0]);
+
+    expect(spy.runCalls).toHaveLength(1);
+    expect(watermarks.get("light")).toMatchObject({
+      lastTs: 10_000,
+      lastEntryId: "mrun_fake",
+    });
+  });
+
+  it("does not boot-catch up when the marker is still inside the interval", () => {
+    const clock = new ManualClock(10_000);
+    const spy = createFakeOrchestrator();
+    const timeouts = createManualTimeouts();
+    const watermarks = createFakeCadenceWatermarks(clock);
+    watermarks.set("light", 9_000);
+    watermarks.set("heavy", 10_000);
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        cadenceWatermarkRepository: watermarks.repo,
+        startupGraceMs: 250,
+        clock,
+        setTimeoutFn: timeouts.setTimeoutFn,
+        clearTimeoutFn: timeouts.clearTimeoutFn,
+      }),
+    );
+
+    scheduler.start();
+
+    expect(timeouts.activeTimers().map((timer) => timer.delayMs)).toEqual([9_000, 60_000]);
+    expect(spy.runCalls).toHaveLength(0);
+  });
+
+  it("runs an overdue boot catch-up exactly once", async () => {
+    const clock = new ManualClock(20_000);
+    const spy = createFakeOrchestrator();
+    const timeouts = createManualTimeouts();
+    const watermarks = createFakeCadenceWatermarks(clock);
+    watermarks.set("light", 0);
+    watermarks.set("heavy", 20_000);
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        cadenceWatermarkRepository: watermarks.repo,
+        startupGraceMs: 50,
+        clock,
+        setTimeoutFn: timeouts.setTimeoutFn,
+        clearTimeoutFn: timeouts.clearTimeoutFn,
+      }),
+    );
+
+    scheduler.start();
+    await timeouts.fire(timeouts.activeTimers()[0]);
+
+    expect(spy.runCalls).toHaveLength(1);
+    expect(watermarks.get("light")?.lastTs).toBe(20_000);
+    expect(timeouts.activeTimers().map((timer) => timer.delayMs)).toEqual([60_000, 10_000]);
+  });
+
+  it("keeps start idempotent", async () => {
+    const clock = new ManualClock(1_000);
+    const spy = createFakeOrchestrator();
+    const timeouts = createManualTimeouts();
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        startupGraceMs: 25,
+        clock,
+        setTimeoutFn: timeouts.setTimeoutFn,
+        clearTimeoutFn: timeouts.clearTimeoutFn,
+      }),
+    );
+
+    scheduler.start();
+    scheduler.start();
+
+    expect(timeouts.activeTimers()).toHaveLength(2);
+
+    await timeouts.fire(timeouts.activeTimers()[0]);
+
+    expect(spy.runCalls).toHaveLength(1);
+  });
+
+  it("retries a busy boot catch-up without advancing the marker", async () => {
+    const clock = new ManualClock(1_000);
+    const spy = createFakeOrchestrator();
+    const timeouts = createManualTimeouts();
+    const watermarks = createFakeCadenceWatermarks(clock);
+    let busy = true;
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        cadenceWatermarkRepository: watermarks.repo,
+        busyRetryBaseMs: 500,
+        busyRetryMaxMs: 2_000,
+        clock,
+        isBusy: () => busy,
+        setTimeoutFn: timeouts.setTimeoutFn,
+        clearTimeoutFn: timeouts.clearTimeoutFn,
+      }),
+    );
+
+    scheduler.start();
+    await timeouts.fire(timeouts.activeTimers()[0]);
+
+    expect(spy.runCalls).toHaveLength(0);
+    expect(watermarks.get("light")).toBeNull();
+    expect(timeouts.activeTimers().map((timer) => timer.delayMs)).toEqual([0, 500]);
+
+    busy = false;
+    await timeouts.fire(timeouts.activeTimers().find((timer) => timer.delayMs === 500));
+
+    expect(spy.runCalls).toHaveLength(1);
+    expect(watermarks.get("light")?.lastTs).toBe(1_000);
+  });
+
+  it("grows busy retry backoff and clamps it at the configured maximum", async () => {
+    const clock = new ManualClock(1_000);
+    const spy = createFakeOrchestrator();
+    const timeouts = createManualTimeouts();
+    const watermarks = createFakeCadenceWatermarks(clock);
+    watermarks.set("heavy", 1_000);
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        cadenceWatermarkRepository: watermarks.repo,
+        busyRetryBaseMs: 100,
+        busyRetryMaxMs: 250,
+        clock,
+        isBusy: () => true,
+        setTimeoutFn: timeouts.setTimeoutFn,
+        clearTimeoutFn: timeouts.clearTimeoutFn,
+      }),
+    );
+
+    scheduler.start();
+
+    await timeouts.fire(timeouts.activeTimers()[0]);
+    expect(timeouts.activeTimers().map((timer) => timer.delayMs)).toEqual([60_000, 100]);
+
+    await timeouts.fire(timeouts.activeTimers().find((timer) => timer.delayMs === 100));
+    expect(timeouts.activeTimers().map((timer) => timer.delayMs)).toEqual([60_000, 200]);
+
+    await timeouts.fire(timeouts.activeTimers().find((timer) => timer.delayMs === 200));
+    expect(timeouts.activeTimers().map((timer) => timer.delayMs)).toEqual([60_000, 250]);
+
+    await timeouts.fire(timeouts.activeTimers().find((timer) => timer.delayMs === 250));
+    expect(timeouts.activeTimers().map((timer) => timer.delayMs)).toEqual([60_000, 250]);
+    expect(watermarks.get("light")).toBeNull();
+  });
+
+  it("does not double-fire after a regular due run across restarts", async () => {
+    const clock = new ManualClock(1_090);
+    const spy = createFakeOrchestrator();
+    const watermarks = createFakeCadenceWatermarks(clock);
+    watermarks.set("light", 1_000);
+    watermarks.set("heavy", 1_090);
+    const firstTimeouts = createManualTimeouts();
+    const firstScheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 100,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        cadenceWatermarkRepository: watermarks.repo,
+        startupGraceMs: 25,
+        clock,
+        setTimeoutFn: firstTimeouts.setTimeoutFn,
+        clearTimeoutFn: firstTimeouts.clearTimeoutFn,
+      }),
+    );
+
+    firstScheduler.start();
+    expect(firstTimeouts.activeTimers().map((timer) => timer.delayMs)).toEqual([10, 60_000]);
+
+    clock.advance(10);
+    await firstTimeouts.fire(firstTimeouts.activeTimers()[0]);
+    await firstScheduler.stop();
+
+    expect(spy.runCalls).toHaveLength(1);
+    expect(watermarks.get("light")?.lastTs).toBe(1_100);
+
+    const secondTimeouts = createManualTimeouts();
+    const secondScheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 100,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        cadenceWatermarkRepository: watermarks.repo,
+        startupGraceMs: 25,
+        clock,
+        setTimeoutFn: secondTimeouts.setTimeoutFn,
+        clearTimeoutFn: secondTimeouts.clearTimeoutFn,
+      }),
+    );
+
+    secondScheduler.start();
+
+    expect(secondTimeouts.activeTimers().map((timer) => timer.delayMs)).toEqual([100, 59_990]);
+    expect(spy.runCalls).toHaveLength(1);
+  });
+
+  it("re-reads the marker immediately before an overdue catch-up tick", async () => {
+    const clock = new ManualClock(1_000);
+    const spy = createFakeOrchestrator();
+    const timeouts = createManualTimeouts();
+    const watermarks = createFakeCadenceWatermarks(clock);
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        cadenceWatermarkRepository: watermarks.repo,
+        clock,
+        setTimeoutFn: timeouts.setTimeoutFn,
+        clearTimeoutFn: timeouts.clearTimeoutFn,
+      }),
+    );
+
+    scheduler.start();
+    watermarks.set("light", 1_000);
+    await timeouts.fire(timeouts.activeTimers()[0]);
+
+    expect(spy.runCalls).toHaveLength(0);
+    expect(timeouts.activeTimers().map((timer) => timer.delayMs)).toEqual([0, 10_000]);
+  });
+
+  it("advances the heavy marker after a successful storage-only heavy tick", async () => {
+    const clock = new ManualClock(1_000);
+    const spy = createFakeOrchestrator();
+    const watermarks = createFakeCadenceWatermarks(clock);
+    const storageOptimizer = vi.fn(async () => createStorageOptimizationResult());
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: [],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        cadenceWatermarkRepository: watermarks.repo,
+        optimizeStorage: true,
+        storageOptimizer,
+        clock,
+      }),
+    );
+
+    const result = await scheduler.tick("heavy");
+
+    expect(result.status).toBe("ok");
+    expect(spy.runCalls).toHaveLength(0);
+    expect(storageOptimizer).toHaveBeenCalledTimes(1);
+    expect(watermarks.get("heavy")).toMatchObject({
+      lastTs: 1_000,
+      lastEntryId: "maintenance:heavy:1000",
+    });
+  });
+
+  it("does not advance the marker for skipped, disabled, or thrown ticks", async () => {
+    const skippedClock = new ManualClock(1_000);
+    const skippedWatermarks = createFakeCadenceWatermarks(skippedClock);
+    const skippedScheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: [],
+        heavyProcesses: ["reflector"],
+        orchestrator: createFakeOrchestrator().orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        cadenceWatermarkRepository: skippedWatermarks.repo,
+        clock: skippedClock,
+      }),
+    );
+
+    expect((await skippedScheduler.tick("light")).status).toBe("skipped_empty");
+    expect(skippedWatermarks.get("light")).toBeNull();
+
+    const disabledClock = new ManualClock(2_000);
+    const disabledWatermarks = createFakeCadenceWatermarks(disabledClock);
+    const disabledScheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: false,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: createFakeOrchestrator().orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        cadenceWatermarkRepository: disabledWatermarks.repo,
+        clock: disabledClock,
+      }),
+    );
+
+    expect((await disabledScheduler.tick("light")).status).toBe("disabled");
+    expect(disabledWatermarks.get("light")).toBeNull();
+
+    const thrownClock = new ManualClock(3_000);
+    const thrownWatermarks = createFakeCadenceWatermarks(thrownClock);
+    const thrownScheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: createFakeOrchestrator(async () => {
+          throw new Error("maintenance failed");
+        }).orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        cadenceWatermarkRepository: thrownWatermarks.repo,
+        clock: thrownClock,
+      }),
+    );
+
+    await expect(thrownScheduler.tick("light")).rejects.toThrow("maintenance failed");
+    expect(thrownWatermarks.get("light")).toBeNull();
+  });
+
+  it("advances the marker for ok ticks with embedded process and optimizer errors", async () => {
+    const clock = new ManualClock(1_000);
+    const watermarks = createFakeCadenceWatermarks(clock);
+    const processError = {
+      process: "reflector",
+      message: "invalid payload",
+      code: "INVALID_PAYLOAD",
+    } as const;
+    const spy = createFakeOrchestrator(async () => {
+      return {
+        run_id: "mrun_with_embedded_errors",
+        dryRun: false,
+        results: [],
+        changes: [],
+        tokens_used: 0,
+        errors: [processError],
+      } as unknown as OrchestratorResult;
+    });
+    const storageOptimizer = vi.fn(async () => {
+      throw new Error("optimize failed");
+    });
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        cadenceWatermarkRepository: watermarks.repo,
+        optimizeStorage: true,
+        storageOptimizer,
+        clock,
+      }),
+    );
+
+    const result = await scheduler.tick("heavy");
+
+    expect(result.status).toBe("ok");
+    expect(result.result?.errors).toEqual([processError]);
+    expect(result.storageOptimization?.error?.message).toBe("optimize failed");
+    expect(watermarks.get("heavy")).toMatchObject({
+      lastTs: 1_000,
+      lastEntryId: "mrun_with_embedded_errors",
+    });
+  });
+
+  it("reschedules when the pre-run cadence watermark read throws", async () => {
+    const clock = new ManualClock(1_000);
+    const spy = createFakeOrchestrator();
+    const timeouts = createManualTimeouts();
+    const watermarks = createFakeCadenceWatermarks(clock);
+    const readError = new Error("watermark read failed");
+    let lightReads = 0;
+    const cadenceWatermarkRepository: Pick<StreamWatermarkRepository, "get" | "set"> = {
+      get: vi.fn((processName, sessionId) => {
+        if (processName === cadenceWatermarkProcessName("light")) {
+          lightReads += 1;
+
+          if (lightReads > 1) {
+            throw readError;
+          }
+        }
+
+        return watermarks.repo.get(processName, sessionId);
+      }),
+      set: watermarks.repo.set,
+    };
+    const errors: unknown[] = [];
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        cadenceWatermarkRepository,
+        busyRetryBaseMs: 500,
+        busyRetryMaxMs: 2_000,
+        clock,
+        setTimeoutFn: timeouts.setTimeoutFn,
+        clearTimeoutFn: timeouts.clearTimeoutFn,
+      }),
+    );
+    scheduler.setObserver({
+      onError: (error) => {
+        errors.push(error);
+      },
+    });
+
+    scheduler.start();
+    await timeouts.fire(timeouts.activeTimers()[0]);
+
+    expect(errors).toEqual([readError]);
+    expect(spy.runCalls).toHaveLength(0);
+    expect(watermarks.get("light")).toBeNull();
+    expect(timeouts.activeTimers().map((timer) => timer.delayMs)).toEqual([0, 500]);
   });
 
   it("rejects overlapping light and heavy process sets", () => {
@@ -421,16 +1062,18 @@ describe("MaintenanceScheduler", () => {
 
     expect(
       () =>
-        new MaintenanceScheduler({
-          enabled: true,
-          lightIntervalMs: 10_000,
-          heavyIntervalMs: 60_000,
-          lightProcesses: ["consolidator", "reflector"],
-          heavyProcesses: ["reflector"],
-          orchestrator: spy.orchestrator,
-          processRegistry: createFakeProcessRegistry(),
-          clock,
-        }),
+        new MaintenanceScheduler(
+          withSchedulerDefaults({
+            enabled: true,
+            lightIntervalMs: 10_000,
+            heavyIntervalMs: 60_000,
+            lightProcesses: ["consolidator", "reflector"],
+            heavyProcesses: ["reflector"],
+            orchestrator: spy.orchestrator,
+            processRegistry: createFakeProcessRegistry(),
+            clock,
+          }),
+        ),
     ).toThrow(/overlapping processes: reflector/);
   });
 
@@ -450,16 +1093,18 @@ describe("MaintenanceScheduler", () => {
         errors: [],
       } as unknown as OrchestratorResult;
     });
-    const scheduler = new MaintenanceScheduler({
-      enabled: true,
-      lightIntervalMs: 10_000,
-      heavyIntervalMs: 60_000,
-      lightProcesses: ["consolidator"],
-      heavyProcesses: ["reflector"],
-      orchestrator: spy.orchestrator,
-      processRegistry: createFakeProcessRegistry(),
-      clock,
-    });
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        clock,
+      }),
+    );
 
     const light1 = scheduler.tick("light");
     const light2 = scheduler.tick("light");
@@ -560,16 +1205,18 @@ describe("MaintenanceScheduler", () => {
         }),
       processRegistry,
     });
-    const scheduler = new MaintenanceScheduler({
-      enabled: true,
-      lightIntervalMs: 10_000,
-      heavyIntervalMs: 60_000,
-      lightProcesses: ["curator"],
-      heavyProcesses: ["reflector"],
-      orchestrator,
-      processRegistry,
-      clock: harness.clock,
-    });
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["curator"],
+        heavyProcesses: ["reflector"],
+        orchestrator,
+        processRegistry,
+        clock: harness.clock,
+      }),
+    );
     const flush = async () => {
       await new Promise((resolve) => setImmediate(resolve));
     };
@@ -605,46 +1252,95 @@ describe("MaintenanceScheduler", () => {
     expect(maxActiveApplies).toBe(1);
   });
 
-  it("runs on interval when started and stops when stopped", async () => {
+  it("runs due timers when started and clears timers when stopped", async () => {
     const clock = new ManualClock(1_000);
     const spy = createFakeOrchestrator();
-    const intervalCallbacks: Array<() => void> = [];
-    let nextHandle = 1;
-    const handles = new Set<number>();
-    const setIntervalFn = ((callback: () => void) => {
-      intervalCallbacks.push(callback);
-      const handle = nextHandle++;
-      handles.add(handle);
-      return handle as unknown as ReturnType<typeof setInterval>;
-    }) as typeof setInterval;
-    const clearIntervalFn = ((handle: ReturnType<typeof setInterval>) => {
-      handles.delete(handle as unknown as number);
-    }) as typeof clearInterval;
+    const timeouts = createManualTimeouts();
 
-    const scheduler = new MaintenanceScheduler({
-      enabled: true,
-      lightIntervalMs: 10_000,
-      heavyIntervalMs: 60_000,
-      lightProcesses: ["consolidator"],
-      heavyProcesses: ["reflector"],
-      orchestrator: spy.orchestrator,
-      processRegistry: createFakeProcessRegistry(),
-      clock,
-      setIntervalFn,
-      clearIntervalFn,
-    });
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        clock,
+        setTimeoutFn: timeouts.setTimeoutFn,
+        clearTimeoutFn: timeouts.clearTimeoutFn,
+      }),
+    );
 
     scheduler.start();
-    expect(handles.size).toBe(2);
+    expect(timeouts.activeTimers().map((timer) => timer.delayMs)).toEqual([0, 0]);
 
-    // Fire the light interval once.
-    intervalCallbacks[0]?.();
-    // Flush microtasks so the scheduled tick resolves.
-    await new Promise((resolve) => setImmediate(resolve));
+    await timeouts.fire(timeouts.activeTimers()[0]);
     expect(spy.runCalls).toHaveLength(1);
+    expect(timeouts.activeTimers().map((timer) => timer.delayMs)).toEqual([0, 10_000]);
 
     await scheduler.stop();
-    expect(handles.size).toBe(0);
+    expect(timeouts.activeTimers()).toHaveLength(0);
+  });
+
+  it("graceful stop awaits in-flight ticks while non-graceful stop does not", async () => {
+    const clock = new ManualClock(1_000);
+    const releases: Array<() => void> = [];
+    const spy = createFakeOrchestrator(async () => {
+      await new Promise<void>((resolve) => {
+        releases.push(resolve);
+      });
+      return {
+        run_id: "mrun_fake",
+        dryRun: false,
+        results: [],
+        changes: [],
+        tokens_used: 0,
+        errors: [],
+      } as unknown as OrchestratorResult;
+    });
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        clock,
+      }),
+    );
+
+    const activeTick = scheduler.tick("light");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    let gracefulStopped = false;
+    const gracefulStop = scheduler.stop().then(() => {
+      gracefulStopped = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(gracefulStopped).toBe(false);
+
+    releases[0]?.();
+    await activeTick;
+    await gracefulStop;
+
+    expect(gracefulStopped).toBe(true);
+
+    const nextTick = scheduler.tick("light");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    let nonGracefulStopped = false;
+    await scheduler.stop({ graceful: false }).then(() => {
+      nonGracefulStopped = true;
+    });
+
+    expect(nonGracefulStopped).toBe(true);
+
+    releases[1]?.();
+    await nextTick;
   });
 
   it("invokes observer onTick for scheduled runs and onError when orchestrator throws", async () => {
@@ -664,28 +1360,25 @@ describe("MaintenanceScheduler", () => {
         errors: [],
       } as unknown as OrchestratorResult;
     });
-    const intervalCallbacks: Array<() => void> = [];
-    const setIntervalFn = ((callback: () => void) => {
-      intervalCallbacks.push(callback);
-      return intervalCallbacks.length as unknown as ReturnType<typeof setInterval>;
-    }) as typeof setInterval;
-    const clearIntervalFn = (() => {}) as typeof clearInterval;
+    const timeouts = createManualTimeouts();
 
     const ticks: MaintenanceTickResult[] = [];
     const errors: unknown[] = [];
 
-    const scheduler = new MaintenanceScheduler({
-      enabled: true,
-      lightIntervalMs: 10_000,
-      heavyIntervalMs: 60_000,
-      lightProcesses: ["consolidator"],
-      heavyProcesses: ["reflector"],
-      orchestrator: spy.orchestrator,
-      processRegistry: createFakeProcessRegistry(),
-      clock,
-      setIntervalFn,
-      clearIntervalFn,
-    });
+    const scheduler = new MaintenanceScheduler(
+      withSchedulerDefaults({
+        enabled: true,
+        lightIntervalMs: 10_000,
+        heavyIntervalMs: 60_000,
+        lightProcesses: ["consolidator"],
+        heavyProcesses: ["reflector"],
+        orchestrator: spy.orchestrator,
+        processRegistry: createFakeProcessRegistry(),
+        clock,
+        setTimeoutFn: timeouts.setTimeoutFn,
+        clearTimeoutFn: timeouts.clearTimeoutFn,
+      }),
+    );
 
     scheduler.setObserver({
       onTick: (result) => {
@@ -697,14 +1390,12 @@ describe("MaintenanceScheduler", () => {
     });
 
     scheduler.start();
-    intervalCallbacks[0]?.();
-    await new Promise((resolve) => setImmediate(resolve));
+    await timeouts.fire(timeouts.activeTimers()[0]);
     expect(ticks).toHaveLength(1);
     expect(ticks[0]?.status).toBe("ok");
 
     shouldThrow = true;
-    intervalCallbacks[0]?.();
-    await new Promise((resolve) => setImmediate(resolve));
+    await timeouts.fire(timeouts.activeTimers()[0]);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBe(error);
 

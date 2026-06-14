@@ -1,6 +1,6 @@
 // Schedules offline maintenance runs on two cadences (light/heavy).
 // Separate from the autonomy scheduler: maintenance is housekeeping, not cognition,
-// so it runs on its own interval loop with a busy-detection hook.
+// so it runs on its own durable timer loop with a busy-detection hook.
 
 import { performance } from "node:perf_hooks";
 
@@ -10,12 +10,16 @@ import {
   normalizeOptimizeError,
   type LanceDbOptimizeStorageResult,
 } from "../storage/lancedb/index.js";
+import type { StreamWatermark, StreamWatermarkRepository } from "../stream/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
+import type { SessionId } from "../util/ids.js";
 
 import type { MaintenanceOrchestrator } from "./orchestrator.js";
 import type { OfflineProcess, OfflineProcessName, OrchestratorResult } from "./types.js";
 
-type IntervalHandle = ReturnType<typeof setInterval>;
+type TimeoutHandle = ReturnType<typeof setTimeout>;
+type SetTimeoutFn = (callback: () => void, delayMs: number) => TimeoutHandle;
+type ClearTimeoutFn = (handle: TimeoutHandle) => void;
 
 export type MaintenanceCadence = "light" | "heavy";
 
@@ -48,25 +52,50 @@ export type MaintenanceSchedulerOptions = {
   processRegistry: Record<OfflineProcessName, OfflineProcess>;
   optimizeStorage?: boolean;
   storageOptimizer?: () => Promise<LanceDbOptimizeStorageResult>;
+  cadenceWatermarkRepository: Pick<StreamWatermarkRepository, "get" | "set">;
+  startupGraceMs: number;
+  busyRetryBaseMs: number;
+  busyRetryMaxMs: number;
   tracer?: TurnTracer;
   clock?: Clock;
   isBusy?: () => boolean;
-  setIntervalFn?: typeof setInterval;
-  clearIntervalFn?: typeof clearInterval;
+  setTimeoutFn?: SetTimeoutFn;
+  clearTimeoutFn?: ClearTimeoutFn;
 };
+
+type CadenceTimerState = {
+  timer: TimeoutHandle | null;
+  retryDelayMs: number | null;
+};
+
+const MAINTENANCE_CADENCE_WATERMARK_SESSION_ID = "maintenance-global" as SessionId;
+
+function cadenceWatermarkProcessName(cadence: MaintenanceCadence): string {
+  return `maintenance:cadence:${cadence}`;
+}
 
 export class MaintenanceScheduler {
   private readonly clock: Clock;
-  private readonly setIntervalFn: typeof setInterval;
-  private readonly clearIntervalFn: typeof clearInterval;
-  private lightHandle: IntervalHandle | null = null;
-  private heavyHandle: IntervalHandle | null = null;
+  private readonly setTimeoutFn: SetTimeoutFn;
+  private readonly clearTimeoutFn: ClearTimeoutFn;
+  private readonly timers: Record<MaintenanceCadence, CadenceTimerState> = {
+    light: {
+      timer: null,
+      retryDelayMs: null,
+    },
+    heavy: {
+      timer: null,
+      retryDelayMs: null,
+    },
+  };
   private readonly activeTicks: Record<MaintenanceCadence, Promise<MaintenanceTickResult> | null> =
     {
       light: null,
       heavy: null,
     };
   private observer: MaintenanceSchedulerObserver | null = null;
+  private started = false;
+  private stopping = false;
 
   constructor(private readonly options: MaintenanceSchedulerOptions) {
     // Defense in depth: the orchestrator serializes maintenance work because
@@ -88,8 +117,9 @@ export class MaintenanceScheduler {
     }
 
     this.clock = options.clock ?? new SystemClock();
-    this.setIntervalFn = options.setIntervalFn ?? setInterval;
-    this.clearIntervalFn = options.clearIntervalFn ?? clearInterval;
+    this.setTimeoutFn =
+      options.setTimeoutFn ?? ((callback, delayMs) => setTimeout(callback, delayMs));
+    this.clearTimeoutFn = options.clearTimeoutFn ?? ((handle) => clearTimeout(handle));
   }
 
   setObserver(observer: MaintenanceSchedulerObserver | null): void {
@@ -101,32 +131,23 @@ export class MaintenanceScheduler {
   }
 
   start(): void {
-    if (!this.options.enabled) {
+    if (!this.options.enabled || this.started) {
       return;
     }
 
-    if (this.lightHandle === null) {
-      this.lightHandle = this.setIntervalFn(() => {
-        void this.runScheduledTick("light");
-      }, this.options.lightIntervalMs);
-    }
-
-    if (this.heavyHandle === null) {
-      this.heavyHandle = this.setIntervalFn(() => {
-        void this.runScheduledTick("heavy");
-      }, this.options.heavyIntervalMs);
-    }
+    this.started = true;
+    this.stopping = false;
+    this.scheduleCadence("light", "startup");
+    this.scheduleCadence("heavy", "startup");
   }
 
   async stop(options: MaintenanceSchedulerStopOptions = {}): Promise<void> {
-    if (this.lightHandle !== null) {
-      this.clearIntervalFn(this.lightHandle);
-      this.lightHandle = null;
-    }
+    this.started = false;
+    this.stopping = true;
 
-    if (this.heavyHandle !== null) {
-      this.clearIntervalFn(this.heavyHandle);
-      this.heavyHandle = null;
+    for (const cadence of ["light", "heavy"] as const) {
+      this.clearCadenceTimer(cadence);
+      this.timers[cadence].retryDelayMs = null;
     }
 
     if (options.graceful === false) {
@@ -149,6 +170,176 @@ export class MaintenanceScheduler {
 
   async tick(cadence: MaintenanceCadence): Promise<MaintenanceTickResult> {
     return this.runTrackedTick(cadence, { notifyObserver: false });
+  }
+
+  private intervalMsFor(cadence: MaintenanceCadence): number {
+    return cadence === "light" ? this.options.lightIntervalMs : this.options.heavyIntervalMs;
+  }
+
+  private readCadenceWatermark(cadence: MaintenanceCadence): StreamWatermark | null {
+    return this.options.cadenceWatermarkRepository.get(
+      cadenceWatermarkProcessName(cadence),
+      MAINTENANCE_CADENCE_WATERMARK_SESSION_ID,
+    );
+  }
+
+  private isCadenceDue(cadence: MaintenanceCadence, nowMs: number): boolean {
+    const watermark = this.readCadenceWatermark(cadence);
+
+    return watermark === null || nowMs - watermark.lastTs >= this.intervalMsFor(cadence);
+  }
+
+  private nextDueAt(cadence: MaintenanceCadence, nowMs: number): number {
+    const watermark = this.readCadenceWatermark(cadence);
+
+    return watermark === null ? nowMs : watermark.lastTs + this.intervalMsFor(cadence);
+  }
+
+  private clearCadenceTimer(cadence: MaintenanceCadence): void {
+    const timer = this.timers[cadence].timer;
+
+    if (timer === null) {
+      return;
+    }
+
+    this.clearTimeoutFn(timer);
+    this.timers[cadence].timer = null;
+  }
+
+  private nextBusyRetryDelay(cadence: MaintenanceCadence): number {
+    const previousDelayMs = this.timers[cadence].retryDelayMs;
+    const baseDelayMs = this.options.busyRetryBaseMs;
+    const nextDelayMs =
+      previousDelayMs === null ? baseDelayMs : Math.max(baseDelayMs, previousDelayMs * 2);
+    const boundedDelayMs = Math.min(nextDelayMs, this.options.busyRetryMaxMs);
+
+    this.timers[cadence].retryDelayMs = boundedDelayMs;
+    return boundedDelayMs;
+  }
+
+  private scheduleCadence(
+    cadence: MaintenanceCadence,
+    reason: "startup" | "next" | "busy_retry",
+  ): void {
+    if (!this.started || this.stopping || !this.options.enabled) {
+      return;
+    }
+
+    this.clearCadenceTimer(cadence);
+
+    const nowMs = this.clock.now();
+    const delayMs =
+      reason === "busy_retry"
+        ? this.nextBusyRetryDelay(cadence)
+        : this.delayUntilNextDue(cadence, nowMs, reason);
+
+    this.scheduleCadenceAfter(cadence, delayMs);
+  }
+
+  private scheduleCadenceAfter(cadence: MaintenanceCadence, delayMs: number): void {
+    if (!this.started || this.stopping || !this.options.enabled) {
+      return;
+    }
+
+    this.clearCadenceTimer(cadence);
+
+    this.timers[cadence].timer = this.setTimeoutFn(() => {
+      this.timers[cadence].timer = null;
+
+      if (!this.started || this.stopping) {
+        return;
+      }
+
+      void this.runDueTick(cadence);
+    }, delayMs);
+  }
+
+  private delayUntilNextDue(
+    cadence: MaintenanceCadence,
+    nowMs: number,
+    reason: "startup" | "next",
+  ): number {
+    const delayMs = Math.max(0, this.nextDueAt(cadence, nowMs) - nowMs);
+
+    if (delayMs === 0 && reason === "startup") {
+      return this.options.startupGraceMs;
+    }
+
+    return delayMs;
+  }
+
+  private scheduleAfterResult(result: MaintenanceTickResult): void {
+    if (!this.started || this.stopping) {
+      return;
+    }
+
+    if (result.status === "skipped_busy") {
+      this.scheduleCadence(result.cadence, "busy_retry");
+      return;
+    }
+
+    if (result.status !== "ok") {
+      this.timers[result.cadence].retryDelayMs = null;
+      this.scheduleCadenceAfter(result.cadence, this.intervalMsFor(result.cadence));
+      return;
+    }
+
+    this.timers[result.cadence].retryDelayMs = null;
+    this.scheduleCadence(result.cadence, "next");
+  }
+
+  private async runDueTick(cadence: MaintenanceCadence): Promise<void> {
+    try {
+      if (!this.started || this.stopping) {
+        return;
+      }
+
+      const activeTick = this.activeTicks[cadence];
+
+      if (activeTick !== null) {
+        const result = await activeTick;
+        this.scheduleAfterResult(result);
+        return;
+      }
+
+      // Re-read the durable marker immediately before doing work so a restart
+      // inside the same interval observes a successful prior run instead of
+      // blindly executing another catch-up tick.
+      if (!this.isCadenceDue(cadence, this.clock.now())) {
+        this.timers[cadence].retryDelayMs = null;
+        this.scheduleCadence(cadence, "next");
+        return;
+      }
+
+      const result = await this.runTrackedTick(cadence, { notifyObserver: false });
+      await this.notifyTick(result);
+      this.scheduleAfterResult(result);
+    } catch (error) {
+      await this.notifyError(error, cadence);
+      this.scheduleCadence(cadence, "busy_retry");
+    }
+  }
+
+  private watermarkEntryIdFor(result: MaintenanceTickResult): string {
+    return result.result?.run_id ?? `maintenance:${result.cadence}:${result.ts}`;
+  }
+
+  private recordSuccessfulTick(result: MaintenanceTickResult): void {
+    if (result.status !== "ok") {
+      return;
+    }
+
+    // Borg runs one maintenance scheduler per data dir; this last-run anchor is not a distributed lock.
+    // "ok" means the cadence executed; embedded errors are surfaced via result/tracer and retry next cadence.
+    this.options.cadenceWatermarkRepository.set(
+      cadenceWatermarkProcessName(result.cadence),
+      MAINTENANCE_CADENCE_WATERMARK_SESSION_ID,
+      {
+        lastTs: this.clock.now(),
+        lastEntryId: this.watermarkEntryIdFor(result),
+      },
+    );
+    this.timers[result.cadence].retryDelayMs = null;
   }
 
   private processNamesFor(cadence: MaintenanceCadence): readonly OfflineProcessName[] {
@@ -361,6 +552,7 @@ export class MaintenanceScheduler {
     const promise = (async () => {
       try {
         const result = await this.tickOnce(cadence);
+        this.recordSuccessfulTick(result);
 
         if (options.notifyObserver) {
           await this.notifyTick(result);
@@ -382,22 +574,6 @@ export class MaintenanceScheduler {
 
     this.activeTicks[cadence] = promise;
     return promise;
-  }
-
-  private async runScheduledTick(cadence: MaintenanceCadence): Promise<void> {
-    // Guard only against duplicate same-cadence interval callbacks here.
-    // Cross-cadence work is queued by the orchestrator so heavy and light
-    // ticks both run without sharing stores concurrently.
-    if (this.activeTicks[cadence] !== null) {
-      return;
-    }
-
-    try {
-      await this.runTrackedTick(cadence, { notifyObserver: true });
-    } catch {
-      // Scheduled ticks report failures through notifyError; the interval loop
-      // must not surface an unhandled rejection.
-    }
   }
 
   private async notifyTick(result: MaintenanceTickResult): Promise<void> {

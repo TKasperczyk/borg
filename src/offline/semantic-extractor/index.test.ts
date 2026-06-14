@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
-import { StreamWriter } from "../../stream/index.js";
+import { StreamWriter, type StreamWatermarkRepository } from "../../stream/index.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
@@ -847,14 +847,28 @@ describe("semantic extractor process", () => {
         }),
       processRegistry,
     });
+    const cadenceWatermarkRepository: Pick<StreamWatermarkRepository, "get" | "set"> = {
+      get: () => null,
+      set: (processName, sessionId, input) => ({
+        processName,
+        sessionId,
+        lastTs: input.lastTs,
+        lastEntryId: input.lastEntryId,
+        updatedAt: harness.clock.now(),
+      }),
+    };
     const scheduler = new MaintenanceScheduler({
       enabled: true,
       lightIntervalMs: 1,
       heavyIntervalMs: 1,
+      startupGraceMs: 0,
+      busyRetryBaseMs: 1,
+      busyRetryMaxMs: 1,
       lightProcesses: ["consolidator", "semantic-extractor", "curator"],
       heavyProcesses: [],
       orchestrator,
       processRegistry,
+      cadenceWatermarkRepository,
       clock: harness.clock,
     });
 
