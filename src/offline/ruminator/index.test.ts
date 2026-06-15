@@ -363,6 +363,80 @@ describe("RuminatorProcess", () => {
     }
   });
 
+  it("coerces a string tensions value into an array instead of rejecting the rumination", async () => {
+    const clock = new FixedClock(3_000_000);
+    const questionText = "What still explains the Atlas rollout tension?";
+    const tensionText = "Timing is visible but ownership of the rollout is not.";
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock,
+      embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const episode = createEpisodeFixture(
+        {
+          title: "Atlas rollout tension",
+          narrative: "Atlas rollout evidence clarified timing but did not settle ownership.",
+          tags: ["atlas", "rollout"],
+          significance: 0.95,
+          created_at: 2_000_000,
+          updated_at: 2_000_000,
+        },
+        [1, 0, 0, 0],
+      );
+      await harness.episodicRepository.createEpisode(episode);
+      const question = harness.openQuestionsRepository.add({
+        question: questionText,
+        urgency: 0.5,
+        source: "reflection",
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+        provenance: { kind: "manual" },
+      });
+      // The model returns `tensions` as a bare string instead of an array.
+      llm.pushResponse({
+        text: "",
+        input_tokens: 50,
+        output_tokens: 40,
+        stop_reason: "tool_use" as const,
+        tool_calls: [
+          {
+            id: "toolu_1",
+            name: RUMINATOR_TOOL_NAME,
+            input: {
+              outcome: "still_open",
+              reasoning: "The evidence narrows the tension but does not settle the question.",
+              tensions: tensionText,
+              connected_open_question_ids: [],
+            },
+          },
+        ],
+      });
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      expect(plan.errors).toEqual([]);
+      expect(plan.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: "mark_unresolved",
+            question_id: question.id,
+            tensions: [tensionText],
+          }),
+        ]),
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("persists disclosure from every rendered row when private strong evidence is outside the top hits", async () => {
     const llm = new FakeLLMClient({
       responses: [

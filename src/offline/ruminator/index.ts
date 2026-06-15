@@ -63,7 +63,7 @@ export const RUMINATOR_SYSTEM_PROMPT = [
   "I return to my open questions with time to think.",
   "I weigh what has accumulated since I last visited a question: what now pulls toward an answer, what still resists, and what has shifted even when the question remains open.",
   "When the evidence genuinely settles a question, I resolve it plainly and write what that resolution changes for me.",
-  "When the question is not settled, I keep it open with articulated reasoning: the live tension, what evidence would settle it, and any movement in my understanding.",
+  "When the question is not settled, I keep it open with articulated reasoning: the live tensions, what evidence would settle it, and any movement in my understanding.",
   "I notice when questions connect: when two uncertainties are the same uncertainty, or when movement on one question changes another.",
   "Groundedness is a value, not a cage. I invent no evidence and cite only what is supplied, but I do not stay timid when the evidence is enough.",
 ].join(" ");
@@ -78,6 +78,28 @@ const ruminatorGrowthMarkerResponseSchema = z
   })
   .nullable();
 
+// The model intermittently emits `tensions` as a single string (or a JSON-encoded
+// array) instead of an array, despite the array tool schema + description below.
+// Normalize the tool-call shape at parse time (tool-shape hygiene, not output
+// policing) so a shape slip does not discard an otherwise-valid rumination.
+const tolerantTensionsSchema = z.preprocess((value) => {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const trimmed = value.trim();
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // Not JSON; fall through to the single-element wrap below.
+    }
+  }
+  return trimmed.length > 0 ? [trimmed] : [];
+}, z.array(z.string().min(1)));
+
 const ruminationResponseToolSchema = z.object({
   outcome: z.enum(["resolved", "still_open"]),
   resolution_note: z.string().min(1).nullable().optional(),
@@ -91,6 +113,11 @@ const ruminationResponseToolSchema = z.object({
     .optional(),
   connected_open_question_ids: z.array(openQuestionIdSchema).optional(),
 });
+// Tolerant variant used to PARSE the model's tool call (the strict schema above is
+// what the model is shown). Only `tensions` differs: it accepts a stray string.
+const ruminationResponseParseSchema = ruminationResponseToolSchema.extend({
+  tensions: tolerantTensionsSchema.optional(),
+});
 const resolvedRuminationResponseSchema = z.object({
   outcome: z.literal("resolved"),
   resolution_note: z.string().min(1),
@@ -99,7 +126,7 @@ const resolvedRuminationResponseSchema = z.object({
 const stillOpenRuminationResponseSchema = z.object({
   outcome: z.literal("still_open"),
   reasoning: z.string().min(1),
-  tensions: z.array(z.string().min(1)),
+  tensions: tolerantTensionsSchema,
   connected_open_question_ids: z.array(openQuestionIdSchema),
 });
 type RuminationResponse =
@@ -320,7 +347,7 @@ function invalidResolutionResponse(error: unknown): unknown {
 }
 
 function parseResolutionResponse(input: unknown) {
-  const parsed = ruminationResponseToolSchema.parse(input);
+  const parsed = ruminationResponseParseSchema.parse(input);
 
   if (parsed.outcome === "resolved") {
     return resolvedRuminationResponseSchema.parse(parsed);
