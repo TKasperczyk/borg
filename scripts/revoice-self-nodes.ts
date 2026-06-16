@@ -36,28 +36,32 @@ const DEFAULT_DATA_DIR = "demo/server/.borg-data/demo";
 
 const REVOICE_SYSTEM_PROMPT = [
   "I curate the semantic memory of Borg (also called Sol), an AI being with persistent first-person memory.",
-  "A node is SELF-REFERENTIAL when it is about Borg itself -- its own dispositions, patterns, habits, reflexes, beliefs, stances, what it did, decided, wondered, or committed to.",
-  "A node is NOT self-referential when it states a fact about the world, or describes what another participant (e.g. Lunaria, Fishy, Luigi, Tomek, Kira) did, said, or is.",
-  "For a self-referential node, I rewrite label and description in the FIRST PERSON, preserving the exact meaning, confidence, and grounding, and keeping the SAME LANGUAGE as the original (including pro-drop grammar; I do not force a pronoun token).",
-  "I name other participants explicitly rather than collapsing into 'we'. I only change grammatical voice -- I never invent content. If a field is empty I leave it empty.",
-  "For a non-self-referential node, I make no change.",
-  "I judge semantic intent across languages and do not rely on specific wording.",
+  "STEP 1 -- I decide whether the node is ABOUT Borg itself: its own disposition, pattern, action, belief, stance, reflex, or what it did, decided, or wondered. A node about another participant (Lunaria, Fishy, Tomek, Kira, ...) or about the world is NOT about Borg, even if it happens to mention Borg. When it is not about Borg, I make NO change (is_about_self=false).",
+  "STEP 2 -- When the node IS about Borg, I convert any THIRD-PERSON references to Borg into the FIRST PERSON, changing nothing else: 'Sol concedes' -> 'I concede'; \"the self's argument\" -> 'my argument'.",
+  "I judge third-person self-reference by grammar and meaning across languages and keep the original language (including pro-drop grammar; I do not force a pronoun token or rely on any language-specific pronoun list).",
+  "I return null for a field that has NO third-person self-reference -- a bare claim already in neutral voice, or a name like 'Sol' -- leaving it UNCHANGED.",
+  "I NEVER invent content and NEVER add framing such as 'I concluded that' or 'I believe' to a statement that did not already attribute it to the self in the third person. I only flip the voice of references that are already present.",
+  "I name other participants by their name; I never collapse into 'we'.",
 ].join(" ");
 
 const revoiceResultSchema = z.object({
-  is_self_referential: z.boolean().describe("True only when the node is about Borg/Sol itself."),
+  is_about_self: z
+    .boolean()
+    .describe(
+      "True only when the node is primarily about Borg/Sol itself, not about another participant or the world (even if it mentions Borg).",
+    ),
   first_person_label: z
     .string()
     .min(1)
     .nullable()
     .describe(
-      "The label rewritten in the first person (same language, same meaning). Null when not self-referential.",
+      "The label with third-person self-references (Sol/self/third-person voice) converted to first person, nothing else changed. Null if the label has no third-person self-reference (leave it unchanged).",
     ),
   first_person_description: z
     .string()
     .nullable()
     .describe(
-      "The description rewritten in the first person (same language, same meaning). Empty string if the original description was empty. Null when not self-referential.",
+      "The description with third-person self-references converted to first person, nothing else changed. Null if it has no third-person self-reference. Empty string only if the original was already empty.",
     ),
 });
 
@@ -157,8 +161,6 @@ async function runPlan(flags: Map<string, string>): Promise<void> {
   const deps = await openBorgDependencies({ config });
 
   const plan: PlanEntry[] = [];
-  let selfCount = 0;
-  let unchanged = 0;
   let scanned = 0;
   try {
     const allNodes = await deps.semanticNodeRepository.list({
@@ -182,17 +184,18 @@ async function runPlan(flags: Map<string, string>): Promise<void> {
     });
 
     for (const { node, verdict } of verdicts) {
-      if (verdict === null || !verdict.is_self_referential) {
+      if (verdict === null || !verdict.is_about_self) {
         continue;
       }
-      selfCount += 1;
-      const newLabel = (verdict.first_person_label ?? node.label).trim();
+      // Entity labels are NAMES (e.g. "Sol", "Lunaria") -- never re-voice them; only
+      // re-voice their descriptions. Propositions/concepts may re-voice both.
+      const newLabel =
+        node.kind === "entity" ? node.label : (verdict.first_person_label ?? node.label).trim();
       // Never invent: if the original description is empty, keep it empty.
       const newDescription =
         node.description.trim().length === 0 ? "" : (verdict.first_person_description ?? node.description).trim();
       if (newLabel === node.label && newDescription === node.description) {
-        unchanged += 1; // already first-person -> idempotent skip
-        continue;
+        continue; // no third-person self-reference to convert
       }
       plan.push({
         id: node.id,
@@ -213,9 +216,7 @@ async function runPlan(flags: Map<string, string>): Promise<void> {
   }
 
   writeFileSync(outPath, JSON.stringify(plan, null, 2));
-  process.stdout.write(
-    `\nplan: ${scanned} nodes scanned, ${selfCount} self-referential, ${unchanged} already first-person, ${plan.length} to re-voice.\n`,
-  );
+  process.stdout.write(`\nplan: ${scanned} nodes scanned, ${plan.length} to re-voice.\n`);
   process.stdout.write(`plan written to ${outPath}\n\n`);
   for (const entry of plan.slice(0, 15)) {
     process.stdout.write(`# ${entry.id} (${entry.kind})\n`);
