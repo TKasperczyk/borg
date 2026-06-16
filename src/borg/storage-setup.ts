@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { autonomyMigrations } from "../autonomy/index.js";
 import { promptOverrideMigrations } from "../cognition/prompts/override-migrations.js";
+import { promptSurfaceHistoryMigrations } from "../cognition/prompts/prompt-surface-history-migrations.js";
 import {
   attachmentMigrations,
   createImagePerceptionTableSchema,
@@ -264,6 +265,7 @@ export function createMigrations(): Migration[] {
     selfDecisionMigrations,
     observedEventMigrations,
     trainOfThoughtMigrations,
+    promptSurfaceHistoryMigrations,
   );
 }
 

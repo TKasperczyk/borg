@@ -10,6 +10,7 @@ import { StreamWriter } from "../../stream/index.js";
 import { ToolDispatcher, type ToolDefinition, type ToolOrigin } from "../../tools/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, createEntityId } from "../../util/ids.js";
+import { resolveFinalizerNonTerminalTools } from "./autonomous-finalizer-tools.js";
 import { runFinalizer, type CacheableFinalizerSystemPrompt } from "./finalizer.js";
 
 function createDispatcher(
@@ -284,6 +285,7 @@ describe("runFinalizer emission tools", () => {
         fakeTool("tool.openQuestions.create", ["autonomous", "deliberator"]),
         fakeTool("tool.journal.append", ["autonomous"]),
         fakeTool("tool.episodic.search", ["autonomous", "deliberator"]),
+        fakeTool("tool.promptSurface.changes", ["autonomous"]),
       ],
     });
 
@@ -296,7 +298,33 @@ describe("runFinalizer emission tools", () => {
       "tool.journal.append",
       "tool.openQuestions.create",
       "tool.episodic.search",
+      "tool.promptSurface.changes",
     ]);
+  });
+
+  it("exposes prompt-surface changes only to autonomous finalizer interiors", () => {
+    const dispatcher = createDispatcher(tempDirs, [
+      fakeTool("tool.promptSurface.changes", ["autonomous"]),
+    ]);
+
+    expect(dispatcher.listTools("autonomous").map((tool) => tool.name)).toContain(
+      "tool.promptSurface.changes",
+    );
+    expect(dispatcher.listTools("deliberator").map((tool) => tool.name)).not.toContain(
+      "tool.promptSurface.changes",
+    );
+    expect(
+      resolveFinalizerNonTerminalTools({
+        dispatcher,
+        turnOrigin: "user",
+      }).map((tool) => tool.name),
+    ).not.toContain("tool.promptSurface.changes");
+    expect(
+      resolveFinalizerNonTerminalTools({
+        dispatcher,
+        turnOrigin: "autonomous",
+      }).map((tool) => tool.name),
+    ).toEqual(["tool.promptSurface.changes"]);
   });
 
   it("parses EmitContinueThought as a private terminal decision", async () => {

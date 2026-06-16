@@ -667,6 +667,10 @@ function makeAutonomousRelationalContext(): DeliberationContext {
         menuSummary: "Walk semantic memory from a known node.",
       },
       {
+        name: "tool.promptSurface.changes",
+        menuSummary: "Review structural prompt-surface changes.",
+      },
+      {
         name: "tool.scheduledWakes.create",
         menuSummary: "Schedule a one-time wake for my future self.",
       },

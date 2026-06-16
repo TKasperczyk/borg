@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { ScheduledWakesRepository } from "../../autonomy/index.js";
 import { buildToolDispatcher } from "../../borg/tools-setup.js";
+import { PromptSurfaceHistoryRepository } from "../../cognition/prompts/prompt-surface-history.js";
 import { SemanticGraph } from "../../memory/semantic/index.js";
 import { TrainOfThoughtRepository } from "../../memory/train-of-thought/index.js";
 import { createEpisodeFixture, createOfflineTestHarness } from "../../offline/test-support.js";
@@ -17,6 +18,11 @@ function createHarnessToolDispatcher(
     nodeRepository: harness.semanticNodeRepository,
     edgeRepository: harness.semanticEdgeRepository,
   });
+  const promptSurfaceHistoryRepository = new PromptSurfaceHistoryRepository({
+    db: harness.db,
+    clock,
+  });
+  promptSurfaceHistoryRepository.observeCurrent();
 
   return buildToolDispatcher({
     retrievalPipeline: harness.retrievalPipeline,
@@ -29,6 +35,7 @@ function createHarnessToolDispatcher(
     skillRepository: harness.skillRepository,
     trainOfThoughtRepository: new TrainOfThoughtRepository({ db: harness.db, clock }),
     scheduledWakesRepository: new ScheduledWakesRepository({ db: harness.db, clock }),
+    promptSurfaceHistoryRepository,
     createStreamWriter: (sessionId) =>
       new StreamWriter({
         dataDir: harness.tempDir,

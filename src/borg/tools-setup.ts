@@ -2,6 +2,7 @@
 
 import type { Clock } from "../util/clock.js";
 import type { ScheduledWakesRepository } from "../autonomy/index.js";
+import type { PromptSurfaceHistoryRepository } from "../cognition/prompts/prompt-surface-history.js";
 import {
   combineMemoryDisclosureLabels,
   unknownMemoryDisclosureLabel,
@@ -38,6 +39,7 @@ import {
   createJournalAppendTool,
   createOpenQuestionsCreateTool,
   createOpenQuestionsResolveTool,
+  createPromptSurfaceChangesTool,
   createScheduledWakesCancelTool,
   createScheduledWakesCreateTool,
   createScheduledWakesListTool,
@@ -57,6 +59,7 @@ export type BuildToolDispatcherOptions = {
   skillRepository: SkillRepository;
   trainOfThoughtRepository: TrainOfThoughtRepository;
   scheduledWakesRepository: ScheduledWakesRepository;
+  promptSurfaceHistoryRepository: PromptSurfaceHistoryRepository;
   createStreamWriter: BorgStreamWriterFactory;
   clock: Clock;
 };
@@ -140,6 +143,12 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
             ),
           );
         },
+      }),
+    )
+    .register(
+      createPromptSurfaceChangesTool({
+        current: () => options.promptSurfaceHistoryRepository.current(),
+        listChanges: (input) => options.promptSurfaceHistoryRepository.listChanges(input),
       }),
     )
     .register(

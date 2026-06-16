@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { autonomyMigrations } from "../autonomy/index.js";
+import { promptSurfaceHistoryMigrations } from "../cognition/prompts/prompt-surface-history-migrations.js";
 import { CorrectionService } from "../correction/index.js";
 import { DEFAULT_CONFIG, type Config } from "../config/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
@@ -550,6 +551,7 @@ export async function createOfflineTestHarness(
       streamEntryIndexMigrations,
       selfDecisionMigrations,
       trainOfThoughtMigrations,
+      promptSurfaceHistoryMigrations,
     ),
   });
   const episodesTable = await lance.openTable({

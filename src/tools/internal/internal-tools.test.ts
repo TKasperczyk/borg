@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { Borg, DEFAULT_SESSION_ID } from "../../index.js";
 import { ScheduledWakesRepository } from "../../autonomy/index.js";
+import { PromptSurfaceHistoryRepository } from "../../cognition/prompts/prompt-surface-history.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { buildToolDispatcher } from "../../borg/tools-setup.js";
 import { deriveProceduralContextKey } from "../../memory/procedural/index.js";
@@ -77,6 +78,11 @@ function createHarnessToolDispatcher(
     nodeRepository: harness.semanticNodeRepository,
     edgeRepository: harness.semanticEdgeRepository,
   });
+  const promptSurfaceHistoryRepository = new PromptSurfaceHistoryRepository({
+    db: harness.db,
+    clock,
+  });
+  promptSurfaceHistoryRepository.observeCurrent();
 
   return buildToolDispatcher({
     retrievalPipeline: harness.retrievalPipeline,
@@ -89,6 +95,7 @@ function createHarnessToolDispatcher(
     skillRepository: harness.skillRepository,
     trainOfThoughtRepository: new TrainOfThoughtRepository({ db: harness.db, clock }),
     scheduledWakesRepository: new ScheduledWakesRepository({ db: harness.db, clock }),
+    promptSurfaceHistoryRepository,
     createStreamWriter: (sessionId) =>
       new StreamWriter({
         dataDir: harness.tempDir,
@@ -593,6 +600,65 @@ describe("internal tools", () => {
         private_to_entity_ids: [bob],
         public_to_entity_ids: [],
       });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("returns structural prompt-surface changes for autonomous reflection", async () => {
+    const harness = await createOfflineTestHarness();
+
+    try {
+      const dispatcher = createHarnessToolDispatcher(harness);
+      const result = await dispatcher.dispatch({
+        toolName: "tool.promptSurface.changes",
+        input: {},
+        origin: "autonomous",
+        sessionId: DEFAULT_SESSION_ID,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+
+      const output = result.output as {
+        current: Record<string, unknown>;
+        changes: Array<Record<string, unknown>>;
+      };
+      expect(Object.keys(output).sort()).toEqual(["changes", "current"]);
+      expect(Object.keys(output.current).sort()).toEqual([
+        "block_ids",
+        "hash",
+        "observed_at",
+        "surface_placements",
+      ]);
+      expect(output.current.block_ids).toContain("borg_autonomous_reflection");
+      expect(output.current.surface_placements).toContainEqual({
+        block_id: "borg_autonomous_reflection",
+        surface: "base_trusted_guidance_sections",
+        order: 50,
+      });
+      expect(output.changes).toHaveLength(1);
+      expect(Object.keys(output.changes[0] ?? {}).sort()).toEqual([
+        "added_block_ids",
+        "added_surface_placements",
+        "from_hash",
+        "observed_at",
+        "removed_block_ids",
+        "removed_surface_placements",
+        "to_hash",
+      ]);
+      expect(output.changes[0]).toMatchObject({
+        from_hash: null,
+        to_hash: output.current.hash,
+        added_block_ids: [],
+        removed_block_ids: [],
+        added_surface_placements: [],
+        removed_surface_placements: [],
+      });
+      expect(JSON.stringify(output)).not.toContain("renderCondition");
+      expect(JSON.stringify(output)).not.toContain("purpose");
     } finally {
       await harness.cleanup();
     }

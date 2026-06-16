@@ -6,6 +6,7 @@ export { createJournalAppendTool } from "./journal-append.js";
 export { createOpenQuestionsCreateTool } from "./open-questions-create.js";
 export { createOpenQuestionsResolveTool } from "./open-questions-resolve.js";
 export { createOutboundPostTool, OUTBOUND_POST_TOOL_NAME } from "./outbound-post.js";
+export { createPromptSurfaceChangesTool } from "./prompt-surface-changes.js";
 export { createScheduledWakesCancelTool } from "./scheduled-wakes-cancel.js";
 export { createScheduledWakesCreateTool } from "./scheduled-wakes-create.js";
 export { createScheduledWakesListTool } from "./scheduled-wakes-list.js";

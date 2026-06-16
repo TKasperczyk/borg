@@ -19,6 +19,7 @@ export {
   createOpenQuestionsResolveTool,
   createOutboundPostTool,
   OUTBOUND_POST_TOOL_NAME,
+  createPromptSurfaceChangesTool,
   createScheduledWakesCancelTool,
   createScheduledWakesCreateTool,
   createScheduledWakesListTool,

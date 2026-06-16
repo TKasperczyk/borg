@@ -181,6 +181,7 @@ export async function openBorgDependencies(
       skillRepository: repositories.skillRepository,
       trainOfThoughtRepository: repositories.trainOfThoughtRepository,
       scheduledWakesRepository: repositories.scheduledWakesRepository,
+      promptSurfaceHistoryRepository: repositories.promptSurfaceHistoryRepository,
       createStreamWriter: repositories.createStreamWriter,
       clock,
     });
@@ -434,6 +435,7 @@ export async function openBorgDependencies(
       imagePerceptionRepository: repositories.imagePerceptionRepository,
       imageAttachmentLifecycleService,
       promptOverrideRepository: repositories.promptOverrideRepository,
+      promptSurfaceHistoryRepository: repositories.promptSurfaceHistoryRepository,
       outboundConnectorRegistry,
       outboundDelivery,
       autonomousOutboundPolicy,

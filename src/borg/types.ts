@@ -19,6 +19,7 @@ import type {
 } from "../cognition/ingestion/index.js";
 import type { TurnOrchestrator } from "../cognition/index.js";
 import type { PromptOverrideRepository } from "../cognition/prompts/override-repository.js";
+import type { PromptSurfaceHistoryRepository } from "../cognition/prompts/prompt-surface-history.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { Config } from "../config/index.js";
 import type { CorrectionService } from "../correction/index.js";
@@ -138,6 +139,7 @@ export type BorgDependencies = {
   imageAttachmentLifecycleService: ImageAttachmentLifecycleService;
   attachmentService: AttachmentService;
   promptOverrideRepository: PromptOverrideRepository;
+  promptSurfaceHistoryRepository: PromptSurfaceHistoryRepository;
   outboundConnectorRegistry: MessageConnectorRegistry;
   outboundDelivery: OutboundDelivery;
   autonomousOutboundPolicy: AutonomousOutboundPolicy;

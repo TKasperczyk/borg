@@ -9,6 +9,7 @@ export const AUTONOMOUS_INTERIOR_FINALIZER_TOOL_NAMES = [
   "tool.episodic.recent",
   "tool.episodic.search",
   "tool.semantic.walk",
+  "tool.promptSurface.changes",
   "tool.scheduledWakes.create",
   "tool.scheduledWakes.list",
   "tool.scheduledWakes.cancel",

@@ -70,6 +70,7 @@ import { StreamEntryIndexRepository, StreamWriter, type StreamEntry } from "../s
 import type { Clock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
 import { PromptOverrideRepository } from "../cognition/prompts/override-repository.js";
+import { PromptSurfaceHistoryRepository } from "../cognition/prompts/prompt-surface-history.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { BorgDependencies, BorgStreamWriterFactory } from "./types.js";
 import {
@@ -121,6 +122,7 @@ export type BorgRepositorySetup = Pick<
   | "attachmentRepository"
   | "imagePerceptionRepository"
   | "promptOverrideRepository"
+  | "promptSurfaceHistoryRepository"
 > & {
   createStreamWriter: BorgStreamWriterFactory;
   createNonNotifyingStreamWriter: BorgStreamWriterFactory;
@@ -553,6 +555,17 @@ export async function buildBorgRepositories(
     clock,
   });
   const promptOverrideRepository = new PromptOverrideRepository(sqlite, clock);
+  const promptSurfaceHistoryRepository = new PromptSurfaceHistoryRepository({
+    db: sqlite,
+    clock,
+  });
+  try {
+    promptSurfaceHistoryRepository.observeCurrent();
+  } catch (error) {
+    console.error("Prompt surface history observation failed; continuing startup", {
+      cause: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+    });
+  }
   return {
     entryIndex,
     episodicRepository,
@@ -596,6 +609,7 @@ export async function buildBorgRepositories(
     attachmentRepository: options.attachmentRepository,
     imagePerceptionRepository,
     promptOverrideRepository,
+    promptSurfaceHistoryRepository,
     createStreamWriter,
     createNonNotifyingStreamWriter,
   };

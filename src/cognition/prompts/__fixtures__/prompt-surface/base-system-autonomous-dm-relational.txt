@@ -197,6 +197,7 @@ So when my current knowledge differs from what those past decisions assumed, I r
 - tool.episodic.recent: Read the most recent episodic memories.
 - tool.episodic.search: Search episodic memory by relevance.
 - tool.semantic.walk: Walk semantic memory from a known node.
+- tool.promptSurface.changes: Review structural prompt-surface changes.
 - tool.scheduledWakes.create: Schedule a one-time wake for my future self.
 - tool.scheduledWakes.list: List scheduled self-wakes before adding or cancelling one.
 - tool.scheduledWakes.cancel: Cancel a pending scheduled self-wake.
