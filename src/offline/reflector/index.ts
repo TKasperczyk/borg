@@ -41,6 +41,7 @@ import type {
   OfflineResult,
 } from "../types.js";
 import { disclosureLabelForEpisodeIds, episodeEvidencePromptRow } from "../evidence-labels.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 
 const insightResponseSchema = z.object({
   label: z.string().min(1),
@@ -403,8 +404,10 @@ async function buildInsightCandidate(
         llmClient,
         request: {
           model: ctx.config.anthropic.models.background,
-          system:
+          system: [
             "I propose low-confidence semantic propositions grounded in repeated episodic evidence.",
+            `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to a proposition's label and description when the proposition is about myself -- my own dispositions, patterns, beliefs, reflexes, or what I did or decided. Keep propositions about the world or about other people in their natural third-person form, naming those people.`,
+          ].join(" "),
           messages: [
             {
               role: "user",

@@ -24,6 +24,7 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
+import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError, SemanticError, StorageError } from "../../util/errors.js";
 import { createSemanticNodeId, type EntityId, type StreamEntryId } from "../../util/ids.js";
@@ -781,7 +782,10 @@ export class SemanticExtractor {
           llmClient: this.options.llmClient,
           request: {
             model: this.options.model,
-            system: "Extract semantic nodes and edges grounded only in the provided episodes.",
+            system: [
+              "Extract semantic nodes and edges grounded only in the provided episodes.",
+              `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to a node's label and description when the node is about the self entity. Keep nodes about the world or about other participants in their natural third-person form, naming those participants.`,
+            ].join(" "),
             messages: [
               {
                 role: "user",
