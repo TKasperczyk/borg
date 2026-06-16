@@ -4,7 +4,7 @@ import type {
   StreamEntry,
   TurnHistoryRow,
 } from "../../api/types";
-import { dayLabel, hm } from "../../format/time";
+import { dayLabel, hm, relativeDay } from "../../format/time";
 
 export type ThreadItem =
   | { type: "day"; id: string; label: string }
@@ -211,7 +211,7 @@ export function threadItemsFromEntries(
       items.push({
         type: "day",
         id: `day:${currentDay}`,
-        label: dayLabel(new Date(entry.timestamp)),
+        label: relativeDay(new Date(entry.timestamp)),
       });
     }
 

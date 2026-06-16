@@ -16,6 +16,31 @@ export function dayLabel(date: Date): string {
   return `${MONTHS[date.getMonth()]} ${date.getDate()}`;
 }
 
+function startOfDay(date: Date): number {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+const DAY_MS = 86_400_000;
+
+// Calendar-relative day: "Today" / "Yesterday" for the two most recent days,
+// otherwise the month-day label (with year appended when it differs from now).
+export function relativeDay(date: Date, now = new Date()): string {
+  const dayDiff = Math.round((startOfDay(now) - startOfDay(date)) / DAY_MS);
+  if (dayDiff === 0) {
+    return "Today";
+  }
+  if (dayDiff === 1) {
+    return "Yesterday";
+  }
+  const label = dayLabel(date);
+  return date.getFullYear() === now.getFullYear() ? label : `${label} ${date.getFullYear()}`;
+}
+
+// Relative date + clock time, e.g. "Today 15:00", "Yesterday 09:05", "JUN 14 15:00".
+export function dateTimeLabel(date: Date, now = new Date()): string {
+  return `${relativeDay(date, now)} ${hm(date)}`;
+}
+
 export function relativeAge(date: Date, now = new Date()): string {
   const diffMs = Math.max(0, now.getTime() - date.getTime());
   const minutes = Math.floor(diffMs / 60_000);

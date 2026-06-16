@@ -29,7 +29,7 @@ import type {
 } from "../api/types";
 import { TURN_PHASES, type TurnPhaseName } from "../api/types";
 import { useQuery } from "../api/useQuery";
-import { hms, hm } from "../format/time";
+import { dateTimeLabel, hms } from "../format/time";
 import { newId } from "../format/uid";
 import { useLive } from "../live/useLive";
 import { useAppState } from "../state/app-state";
@@ -174,7 +174,7 @@ function applyInFlightFrame(state: InFlightBySession, frame: LiveFrame): InFligh
 }
 
 function sessionMeta(session: SessionRecord): string {
-  return `${session.conversation_kind} · ${session.status} · ${hm(new Date(session.last_activity_at))}`;
+  return `${session.conversation_kind} · ${session.status} · ${dateTimeLabel(new Date(session.last_activity_at))}`;
 }
 
 function sessionHeaderMeta(session: SessionRecord | null): string {
