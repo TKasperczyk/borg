@@ -744,6 +744,55 @@ describe("reflector process", () => {
     ).toEqual([]);
   });
 
+  it("keeps an over-citing insight, dropping refs outside the support set", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(harness.cleanup);
+
+    const supportedEpisodes = [
+      createEpisodeFixture(
+        { title: "Pattern one", tags: ["pattern"], created_at: 20_000, updated_at: 20_000 },
+        [0, 0, 1, 0],
+      ),
+      createEpisodeFixture(
+        { title: "Pattern two", tags: ["pattern"], created_at: 30_000, updated_at: 30_000 },
+        [0, 0, 1, 0],
+      ),
+      createEpisodeFixture(
+        { title: "Pattern three", tags: ["pattern"], created_at: 40_000, updated_at: 40_000 },
+        [0, 0, 1, 0],
+      ),
+    ];
+    for (const episode of supportedEpisodes) {
+      await harness.episodicRepository.createEpisode(episode);
+    }
+
+    // The model cites one real cluster episode plus a hallucinated one. The stray
+    // ref is dropped rather than rejecting the whole (otherwise grounded) insight.
+    llm.pushResponse({
+      ...createReflectorResponse({
+        label: "Partly over-cited insight",
+        description: "Grounded in the cluster but also names a missing episode.",
+        confidence: 0.6,
+        source_episode_ids: [supportedEpisodes[0]!.id, "ep_missing"],
+      }),
+      input_tokens: 5,
+      output_tokens: 5,
+    });
+
+    const process = new ReflectorProcess({
+      semanticNodeRepository: harness.semanticNodeRepository,
+      semanticEdgeRepository: harness.semanticEdgeRepository,
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+
+    const result = await process.run(harness.createContext(), { dryRun: false });
+
+    expect(result.errors).toEqual([]);
+    expect(result.changes).toHaveLength(1);
+  });
+
   it("clusters reflection evidence across audience scopes", async () => {
     const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({

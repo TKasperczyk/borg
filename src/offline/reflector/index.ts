@@ -425,10 +425,16 @@ async function buildInsightCandidate(
   }
 
   const allowedIds = new Set(cluster.episodes.map((episode) => episode.id));
+  // The model occasionally over-cites episodes outside the cluster. The stored insight
+  // is grounded in the cluster's episodes regardless (clusterEpisodeIds at the call
+  // site), so drop out-of-support refs (reference-validity hygiene) and only reject
+  // when NONE of the cited episodes are in the support set -- i.e. the insight is
+  // grounded entirely outside its own cluster.
+  const groundedEpisodeIds = insight.source_episode_ids.filter((episodeId) =>
+    allowedIds.has(episodeId as Episode["id"]),
+  );
 
-  if (
-    !insight.source_episode_ids.every((episodeId) => allowedIds.has(episodeId as Episode["id"]))
-  ) {
+  if (groundedEpisodeIds.length === 0) {
     throw new SemanticError("Reflector referenced episodes outside the support set", {
       code: "REFLECTOR_INVALID_REF",
     });
@@ -444,7 +450,7 @@ async function buildInsightCandidate(
     label: insight.label.trim(),
     description: insight.description.trim(),
     confidence: Math.min(insight.confidence, ceiling),
-    sourceEpisodeIds: insight.source_episode_ids as Episode["id"][],
+    sourceEpisodeIds: groundedEpisodeIds as Episode["id"][],
     embedding,
   };
 }

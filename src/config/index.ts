@@ -402,7 +402,7 @@ const configBaseSchema = z.object({
           goalSimilarityThreshold: z.number().min(0).max(1).default(0.82),
           ceilingConfidence: z.number().positive().max(0.5).default(0.5),
           maxInsightsPerRun: z.number().int().positive().default(2),
-          budget: z.number().int().positive().default(150_000),
+          budget: z.number().int().positive().default(200_000),
         })
         .prefault({}),
       associator: z
