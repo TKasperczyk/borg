@@ -21,12 +21,13 @@
  *   pnpm tsx scripts/revoice-self-nodes.ts apply --plan /tmp/revoice.plan.json [--data-dir demo/server/.borg-data/demo]
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 import { z } from "zod";
 
 import { loadConfig, type LLMClient } from "../src/index.js";
 import { openBorgDependencies } from "../src/borg/open.js";
+import { openDatabase } from "../src/storage/sqlite/index.js";
 import { toToolInputSchema, type LLMToolDefinition } from "../src/llm/index.js";
 import type { SemanticNodeId } from "../src/util/ids.js";
 import { selectScriptClients } from "./_clients.js";
@@ -282,15 +283,86 @@ async function runApply(flags: Map<string, string>): Promise<void> {
   process.stdout.write(`apply complete: applied=${applied} missing=${missing}\n`);
 }
 
+// Sweep the open new_insight review-queue proposals (reflector insights pending
+// acceptance), which carry a third-person proposed node in refs. Same gate; the
+// review_queue is SQLite (JSON refs column), WAL-safe to update while live.
+async function runReview(flags: Map<string, string>): Promise<void> {
+  const dataDir = resolve(flags.get("data-dir") ?? DEFAULT_DATA_DIR);
+  const apply = flags.has("apply");
+
+  const { llm, llmMode } = await selectScriptClients({});
+  if (llmMode !== "real") {
+    throw new Error("Real LLM unavailable (need OAuth credentials or ANTHROPIC_API_KEY).");
+  }
+
+  const db = openDatabase(join(dataDir, "borg.db"));
+  const rows = db
+    .prepare("SELECT id, refs FROM review_queue WHERE kind = 'new_insight' AND resolved_at IS NULL")
+    .all() as Array<{ id: number; refs: string }>;
+  process.stdout.write(`${rows.length} open new_insight proposals.\n`);
+
+  const update = db.prepare("UPDATE review_queue SET refs = ? WHERE id = ?");
+  let changed = 0;
+  for (const row of rows) {
+    let refs: Record<string, unknown>;
+    try {
+      refs = JSON.parse(row.refs) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const pending = (refs.reflector_pending_insight ?? {}) as Record<string, unknown>;
+    const target = (pending.target ?? {}) as Record<string, unknown>;
+    const node = ((target.node ?? pending.node) ?? undefined) as Record<string, unknown> | undefined;
+    if (node === undefined) {
+      continue;
+    }
+    const label = typeof node.label === "string" ? node.label : "";
+    const description = typeof node.description === "string" ? node.description : "";
+    if (label.length === 0) {
+      continue;
+    }
+    const verdict = await classifyNode(llm, {
+      id: String(row.id),
+      kind: typeof node.kind === "string" ? node.kind : "proposition",
+      label,
+      description,
+    });
+    if (verdict === null || !verdict.is_about_self) {
+      continue;
+    }
+    const newLabel = (verdict.first_person_label ?? label).trim();
+    const newDescription =
+      description.trim().length === 0 ? "" : (verdict.first_person_description ?? description).trim();
+    if (newLabel === label && newDescription === description) {
+      continue;
+    }
+    changed += 1;
+    process.stdout.write(
+      `\n#${row.id}\n- OLD label: ${label}\n- NEW label: ${newLabel}\n- OLD desc:  ${description.slice(0, 180)}\n- NEW desc:  ${newDescription.slice(0, 180)}\n`,
+    );
+    if (apply) {
+      node.label = newLabel;
+      node.description = newDescription;
+      update.run(JSON.stringify(refs), row.id);
+    }
+  }
+  db.close();
+  process.stdout.write(
+    `\nreview sweep: ${changed} proposal(s) ${apply ? "updated" : "to update (dry-run; pass --apply)"}.\n`,
+  );
+}
+
 async function main(): Promise<void> {
   const [, , command, ...rest] = process.argv;
   const flags = parseFlags(rest);
   if (command === "apply") {
     await runApply(flags);
+  } else if (command === "review") {
+    await runReview(flags);
   } else if (command === "plan" || command === undefined) {
     await runPlan(flags);
   } else {
-    process.stderr.write(`unknown command: ${command} (expected "plan" or "apply")\n`);
+    process.stderr.write(`unknown command: ${command} (expected "plan", "apply", or "review")\n`);
     process.exit(1);
   }
 }
