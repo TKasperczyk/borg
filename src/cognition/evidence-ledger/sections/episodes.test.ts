@@ -19,17 +19,21 @@ import {
   addRetrievedStructuredEvidenceSection,
 } from "./retrieved-evidence.js";
 
+const NOW_MS = 1_800_000_000_000;
+
 describe("evidence-ledger episode section", () => {
   it("renders disclosure labels for private recalled episodes", () => {
     const alice = createEntityId();
     const bob = createEntityId();
     const streamId = createStreamEntryId();
+    const occurredAt = NOW_MS - 5 * 60_000;
     const buckets = createSectionBuckets();
     const retrievedEpisode: RetrievedEpisode = {
       episode: createEpisodeFixture({
         id: createEpisodeId(),
         title: "Alice private planning",
         narrative: "Alice private planning should be usable internally but not disclosed.",
+        end_time: occurredAt,
         source_stream_ids: [streamId],
         audience_entity_id: alice,
         shared: false,
@@ -42,9 +46,11 @@ describe("evidence-ledger episode section", () => {
     addEpisodesSection({
       input: {
         sessionId: DEFAULT_SESSION_ID,
+        nowMs: NOW_MS,
         audienceEntityId: bob,
         retrievedEpisodes: [retrievedEpisode],
       },
+      nowMs: NOW_MS,
       resolver: {
         currentSessionId: DEFAULT_SESSION_ID,
         streamEntriesById: new Map(),
@@ -62,12 +68,15 @@ describe("evidence-ledger episode section", () => {
       "I can use this internally; I do not disclose it to the current audience unless authorized",
     );
     expect(entry?.state_metadata).toMatchObject({
+      occurred_at: new Date(occurredAt).toISOString(),
+      relative_age: "5m ago",
       disclosure_label: {
         disclosure_class: "relationship_private",
         origin_audience_entity_ids: [alice],
         private_to_entity_ids: [alice],
       },
-      disclosure_note: "I can use this internally; I do not disclose it to the current audience unless authorized",
+      disclosure_note:
+        "I can use this internally; I do not disclose it to the current audience unless authorized",
       current_audience_entity_id: bob,
     });
   });
@@ -128,7 +137,8 @@ describe("evidence-ledger episode section", () => {
         origin_audience_entity_ids: [alice],
         private_to_entity_ids: [alice],
       },
-      disclosure_note: "I can use this internally; I do not disclose it to the current audience unless authorized",
+      disclosure_note:
+        "I can use this internally; I do not disclose it to the current audience unless authorized",
     });
   });
 
@@ -174,7 +184,8 @@ describe("evidence-ledger episode section", () => {
         private_to_entity_ids: [],
         public_to_entity_ids: [],
       },
-      disclosure_note: "I can use this internally; I do not disclose it to the current audience unless authorized",
+      disclosure_note:
+        "I can use this internally; I do not disclose it to the current audience unless authorized",
     });
   });
 });

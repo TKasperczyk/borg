@@ -142,6 +142,7 @@ export class EvidenceLedgerBuilder {
         ...input,
         retrievedEvidence,
       },
+      ...(input.nowMs === undefined ? {} : { nowMs: input.nowMs }),
       resolver,
       buckets: sections,
       options: {

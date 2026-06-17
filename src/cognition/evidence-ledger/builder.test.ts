@@ -618,6 +618,7 @@ describe("EvidenceLedgerBuilder", () => {
     const aliceEntityId = createEntityId();
     const bobEntityId = createEntityId();
     const sourceStreamEntryId = createStreamEntryId();
+    const lastUpdatedAt = NOW_MS - 2 * 60 * 60_000;
     const builder = new EvidenceLedgerBuilder({
       createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
       relationalSlotRepository: { list: () => [] },
@@ -629,6 +630,7 @@ describe("EvidenceLedgerBuilder", () => {
     const ledger = await builder.build({
       sessionId: DEFAULT_SESSION_ID,
       turnId: "turn-shared-state-recall",
+      nowMs: NOW_MS,
       audienceEntityId: bobEntityId,
       currentUserMessage: "Bob asks about Atlas.",
       workingMemory: makeWorkingMemory(),
@@ -647,8 +649,8 @@ describe("EvidenceLedgerBuilder", () => {
           owner_entity_id: aliceEntityId,
           provenance_stream_entry_ids: [sourceStreamEntryId],
           last_updated_stream_entry_ids: [sourceStreamEntryId],
-          created_at: NOW_MS,
-          last_updated_at: NOW_MS,
+          created_at: lastUpdatedAt,
+          last_updated_at: lastUpdatedAt,
           last_updated_turn_global: 7,
           superseded_by_id: null,
           rank: 0,
@@ -674,6 +676,8 @@ describe("EvidenceLedgerBuilder", () => {
         state_metadata: expect.objectContaining({
           audience_entity_id: aliceEntityId,
           current_audience_entity_id: bobEntityId,
+          last_updated_at: new Date(lastUpdatedAt).toISOString(),
+          relative_age: "2h ago",
           disclosure_label: {
             disclosure_class: "relationship_private",
             origin_audience_entity_ids: [aliceEntityId],
@@ -687,6 +691,48 @@ describe("EvidenceLedgerBuilder", () => {
     expect(rendered).toContain("Cross-Audience Shared State Recall");
     expect(rendered).toContain("disclosure_class=relationship_private");
     expect(rendered).toContain(`private-to=${aliceEntityId}`);
+  });
+
+  it("adds ISO and relative labels to applicable commitment metadata", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-commitment-recency-"));
+    tempDirs.push(tempDir);
+    const sourceStreamEntryId = createStreamEntryId();
+    const createdAt = NOW_MS - 2 * 24 * 60 * 60_000;
+    const lastReinforcedAt = NOW_MS - 30 * 60_000;
+    const commitment = {
+      ...makeCommitment(sourceStreamEntryId),
+      created_at: createdAt,
+      last_reinforced_at: lastReinforcedAt,
+    };
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-commitment-recency",
+      nowMs: NOW_MS,
+      audienceEntityId: null,
+      currentUserMessage: "Check commitments.",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [commitment],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      openQuestions: [],
+      pendingCorrections: [],
+    });
+
+    expect(ledger.audienceStanding?.commitmentEntries[0]?.state_metadata).toEqual(
+      expect.objectContaining({
+        created_at: new Date(createdAt).toISOString(),
+        created_relative_age: "2d ago",
+        last_reinforced_at: new Date(lastReinforcedAt).toISOString(),
+        last_reinforced_relative_age: "30m ago",
+      }),
+    );
   });
 
   it("keeps cross-session self activity as labeled audience-standing metadata with source handles", async () => {
@@ -1017,7 +1063,8 @@ describe("EvidenceLedgerBuilder", () => {
           disclosure_class: "unknown",
           private_to_entity_ids: [],
         }),
-        disclosure_note: "I can use this internally; I do not disclose it to the current audience unless authorized",
+        disclosure_note:
+          "I can use this internally; I do not disclose it to the current audience unless authorized",
       }),
     );
   });
@@ -2227,7 +2274,8 @@ describe("EvidenceLedgerBuilder", () => {
           origin_audience_entity_ids: sortedAudienceIds,
           private_to_entity_ids: sortedAudienceIds,
         }),
-        disclosure_note: "I can use this internally; I do not disclose it to the current audience unless authorized",
+        disclosure_note:
+          "I can use this internally; I do not disclose it to the current audience unless authorized",
       }),
     });
     expect(entry?.text).toContain("Keep Alice launch replies short.");
@@ -3650,6 +3698,52 @@ describe("EvidenceLedgerBuilder", () => {
           resolution_note: "The user explicitly said the dish worked out well.",
           resolved_at: NOW_MS,
           resolution_evidence_stream_entry_ids: [resolvedEntry.id],
+        }),
+      }),
+    ]);
+  });
+
+  it("adds ISO and relative labels to open open-question metadata", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-open-question-recency-"));
+    tempDirs.push(tempDir);
+    const episodeId = createEpisodeId();
+    const createdAt = NOW_MS - 4 * 60 * 60_000;
+    const lastTouched = NOW_MS - 15 * 60_000;
+    const question: OpenQuestion = {
+      ...makeOpenQuestion(episodeId),
+      created_at: createdAt,
+      last_touched: lastTouched,
+    };
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-open-question-recency",
+      nowMs: NOW_MS,
+      audienceEntityId: null,
+      currentUserMessage: "Review open questions.",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      openQuestions: [question],
+      pendingCorrections: [],
+    });
+
+    expect(ledger.sections.find((section) => section.id === "open_questions")?.entries).toEqual([
+      expect.objectContaining({
+        id: `open_question:${question.id}`,
+        state: expect.stringContaining("open"),
+        state_metadata: expect.objectContaining({
+          created_at: new Date(createdAt).toISOString(),
+          created_relative_age: "4h ago",
+          last_touched: new Date(lastTouched).toISOString(),
+          last_touched_relative_age: "15m ago",
         }),
       }),
     ]);

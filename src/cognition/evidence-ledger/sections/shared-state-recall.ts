@@ -1,4 +1,5 @@
 import { sharedStateMemoryDisclosureLabel } from "../../../memory/common/disclosure-serializers.js";
+import { formatRelativeAge } from "../../../util/relative-time.js";
 import type { BuilderSectionContext } from "../builder-context.js";
 import {
   appendMemoryDisclosureState,
@@ -38,6 +39,10 @@ export function addSharedStateRecallSection(context: BuilderSectionContext): voi
           kind: entry.kind,
           provenance_stream_entry_ids: [...entry.provenance_stream_entry_ids],
           last_updated_stream_entry_ids: [...entry.last_updated_stream_entry_ids],
+          last_updated_at: new Date(entry.last_updated_at).toISOString(),
+          ...(context.nowMs === undefined
+            ? {}
+            : { relative_age: formatRelativeAge(entry.last_updated_at, context.nowMs) }),
           last_updated_turn_global: entry.last_updated_turn_global,
           canonicalizes: entry.canonicalizes,
         },

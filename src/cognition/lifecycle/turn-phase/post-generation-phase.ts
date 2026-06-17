@@ -330,6 +330,7 @@ async function compilePostResponseSharedState(input: {
   const ledgerInput = {
     sessionId: input.sessionId,
     turnId: input.turnId,
+    nowMs: input.options.clock.now(),
     audienceEntityId: input.audienceEntityId,
     currentUserMessage: input.turnInput.userMessage,
     ...(currentUserEntry === undefined ? {} : { currentUserEntry }),

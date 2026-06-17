@@ -7,7 +7,7 @@ audience_entity_id=ent_aaaaaaaaaaaaaaaa
 matched_state_key_buckets=all_active_state_key_buckets active_state_key_bucket_count=1
 active_entry_count=1 active_keyed_entry_count=1 active_legacy_unkeyed_entry_count=0
 active_counts_by_kind=locked=0 live=1 low_salience_live=0 dormant_live=0 tentative=0 invalidated=0 pending=0
-most_recent_update_at=1699999999000 most_recent_entry_id=dart_aaaaaaaaaaaaaaaa most_recent_state_key=thread.prompt_surface_registry most_recent_kind=live most_recent_ref=strm_bbbbbbbbbbbbbbbb
+most_recent_update_at=2023-11-14T22:13:19.000Z most_recent_relative_age=~1s ago most_recent_entry_id=dart_aaaaaaaaaaaaaaaa most_recent_state_key=thread.prompt_surface_registry most_recent_kind=live most_recent_ref=strm_bbbbbbbbbbbbbbbb
 state_key_buckets:
-- state_key_bucket=thread.prompt_surface_registry bucket_source=keyed_thread entries=1 kinds=locked=0 live=1 low_salience_live=0 dormant_live=0 tentative=0 invalidated=0 pending=0 most_recent_update_at=1699999999000 most_recent_ref=strm_bbbbbbbbbbbbbbbb
+- state_key_bucket=thread.prompt_surface_registry bucket_source=keyed_thread entries=1 kinds=locked=0 live=1 low_salience_live=0 dormant_live=0 tentative=0 invalidated=0 pending=0 most_recent_update_at=2023-11-14T22:13:19.000Z most_recent_relative_age=~1s ago most_recent_ref=strm_bbbbbbbbbbbbbbbb
 </borg_session_reentry_continuity>

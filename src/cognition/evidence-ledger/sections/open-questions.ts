@@ -52,7 +52,7 @@ export function addOpenQuestionsSection(context: BuilderSectionContext): void {
           disclosureLabel,
         }),
         state_metadata: appendMemoryDisclosureStateMetadata({
-          stateMetadata: openQuestionStateMetadata(question),
+          stateMetadata: openQuestionStateMetadata(question, context.nowMs),
           disclosureLabel,
         }),
         taint: "none",

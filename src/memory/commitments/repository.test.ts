@@ -772,6 +772,59 @@ describe("commitment repository", () => {
     }
   });
 
+  it("falls back to created_at when a legacy row has a null last_reinforced_at", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-commitments-"));
+    const dbPath = join(tempDir, "borg.db");
+    const commitmentId = createCommitmentId();
+    const createdAt = 1_700_000_000_000;
+
+    try {
+      const legacyDb = openDatabase(dbPath, {
+        migrations: commitmentMigrations.filter((migration) => migration.id <= 9),
+      });
+
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO commitments (
+              id, type, directive, priority, source_episode_ids, created_at,
+              directive_family, last_reinforced_at, provenance_kind
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          commitmentId,
+          "rule",
+          "Keep the legacy rule.",
+          5,
+          "[]",
+          createdAt,
+          "legacy_rule",
+          null,
+          "manual",
+        );
+      legacyDb.close();
+
+      const db = openDatabase(dbPath, {
+        migrations: commitmentMigrations,
+      });
+      const commitments = new CommitmentRepository({
+        db,
+        clock: new FixedClock(1_000),
+      });
+
+      try {
+        const record = commitments.get(commitmentId);
+        // Without the fallback, Number(null) -> 0 would surface as a 1970-epoch recency label.
+        expect(record?.last_reinforced_at).toBe(createdAt);
+      } finally {
+        db.close();
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("defaults new entities to person and lists by kind", () => {
     const db = openDatabase(":memory:", {
       migrations: commitmentMigrations,

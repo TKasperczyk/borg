@@ -1073,6 +1073,7 @@ describe("prompt surface fixtures", () => {
         priorUserTurnCount: 0,
         audienceEntityId: GROUP_ID,
         artifact: makeSharedStateArtifact(),
+        nowMs: NOW_MS,
       }).promptSection ?? "",
     );
   });

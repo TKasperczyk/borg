@@ -6,6 +6,7 @@ import {
 import { EPISODE_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets.js";
 import { persistenceClassFromProvenance, scopeFromStreamIds } from "../scope-resolver.js";
 import { memoryDisclosureLabelFromEpisodeAccess } from "../../../retrieval/index.js";
+import { formatRelativeAge } from "../../../util/relative-time.js";
 
 export function addEpisodesSection(context: BuilderSectionContext): void {
   for (const result of context.input.retrievedEpisodes) {
@@ -32,6 +33,10 @@ export function addEpisodesSection(context: BuilderSectionContext): void {
         state_metadata: appendMemoryDisclosureStateMetadata({
           stateMetadata: {
             episode_id: result.episode.id,
+            occurred_at: new Date(result.episode.end_time).toISOString(),
+            ...(context.nowMs === undefined
+              ? {}
+              : { relative_age: formatRelativeAge(result.episode.end_time, context.nowMs) }),
             source_stream_ids: [...result.episode.source_stream_ids],
           },
           disclosureLabel,

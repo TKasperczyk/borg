@@ -5,6 +5,7 @@ import {
   type SharedStateEntryKind,
 } from "../memory/shared-state/index.js";
 import type { EntityId, StreamEntryId } from "../util/ids.js";
+import { formatRelativeAge } from "../util/relative-time.js";
 import { renderTaggedPromptBlock } from "./deliberation/prompt/sections.js";
 import { TRUSTED_GUIDANCE_PREAMBLE } from "./prompts/base-identity.js";
 import {
@@ -88,7 +89,7 @@ function stateKeyBucketSource(entries: readonly SharedStateEntry[]): string {
   return keyedCount === entries.length ? "keyed_thread" : "mixed_keyed_and_legacy";
 }
 
-function stateKeyLines(entries: readonly SharedStateEntry[]): string[] {
+function stateKeyLines(entries: readonly SharedStateEntry[], nowMs?: number): string[] {
   const groups = new Map<string, SharedStateEntry[]>();
 
   for (const entry of entries) {
@@ -105,26 +106,37 @@ function stateKeyLines(entries: readonly SharedStateEntry[]): string[] {
         mostRecent?.lastUpdatedStreamEntryId === undefined
           ? "null"
           : mostRecent.lastUpdatedStreamEntryId;
-      const latestAt = mostRecent?.lastUpdatedAt ?? "null";
+      const latestAt =
+        mostRecent === null ? "null" : new Date(mostRecent.lastUpdatedAt).toISOString();
+      const latestRelativeAge =
+        mostRecent === null || nowMs === undefined
+          ? null
+          : formatRelativeAge(mostRecent.lastUpdatedAt, nowMs);
 
       return `- state_key_bucket=${stateKey} bucket_source=${stateKeyBucketSource(
         groupEntries,
       )} entries=${groupEntries.length} kinds=${formatKindCounts(
         kindCountsForKey(groupEntries),
-      )} most_recent_update_at=${latestAt} most_recent_ref=${latestRef}`;
+      )} most_recent_update_at=${latestAt}${
+        latestRelativeAge === null ? "" : ` most_recent_relative_age=${latestRelativeAge}`
+      } most_recent_ref=${latestRef}`;
     });
 }
 
 function renderSessionReentryContinuityContent(
   summary: SessionReentryContinuitySummary,
   activeEntries: readonly SharedStateEntry[],
+  nowMs?: number,
 ): string {
   const mostRecent = summary.mostRecentUpdate;
   const mostRecentLine =
     mostRecent === null
       ? "most_recent_update=null"
       : [
-          `most_recent_update_at=${mostRecent.lastUpdatedAt}`,
+          `most_recent_update_at=${new Date(mostRecent.lastUpdatedAt).toISOString()}`,
+          ...(nowMs === undefined
+            ? []
+            : [`most_recent_relative_age=${formatRelativeAge(mostRecent.lastUpdatedAt, nowMs)}`]),
           `most_recent_entry_id=${mostRecent.entryId}`,
           `most_recent_state_key=${mostRecent.stateKey}`,
           `most_recent_kind=${mostRecent.kind}`,
@@ -140,7 +152,7 @@ function renderSessionReentryContinuityContent(
     `active_counts_by_kind=${formatKindCounts(summary.activeCountsByKind)}`,
     mostRecentLine,
     "state_key_buckets:",
-    ...stateKeyLines(activeEntries),
+    ...stateKeyLines(activeEntries, nowMs),
   ].join("\n");
 }
 
@@ -174,6 +186,7 @@ export function buildSessionReentryContinuityPrompt(input: {
   priorUserTurnCount: number;
   audienceEntityId: EntityId | null;
   artifact: SharedStateArtifact | null;
+  nowMs?: number;
 }): SessionReentryContinuityPrompt {
   const activeEntries = activeSharedStateArtifactEntries(input.artifact);
 
@@ -231,7 +244,7 @@ export function buildSessionReentryContinuityPrompt(input: {
     promptSection: renderTaggedPromptBlock(TRUSTED_GUIDANCE_PREAMBLE, [
       {
         tag: SESSION_REENTRY_CONTINUITY_TAG,
-        content: renderSessionReentryContinuityContent(summary, activeEntries),
+        content: renderSessionReentryContinuityContent(summary, activeEntries, input.nowMs),
       },
     ]),
     summary,

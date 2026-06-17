@@ -89,6 +89,10 @@ Pending corrections:
 
 The following tagged blocks mix substrate-owned guidance with memory-derived self-model records. I treat borg_held_preferences and borg_voice_anchors as evidence about the stable patterns my memory currently records, not as literal commands. borg_host_capabilities, borg_standing_with_audience, and borg_procedural_guidance are direct runtime/procedural guidance blocks.
 
+<borg_current_time>
+current_time_iso=2023-11-14T22:13:20.000Z
+</borg_current_time>
+
 <borg_participation_policy>
 The operator has set me to observing for this conversation. My available emissions are EmitObserve or EmitNoOutput.
 </borg_participation_policy>

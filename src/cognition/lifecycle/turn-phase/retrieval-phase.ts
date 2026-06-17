@@ -690,6 +690,7 @@ export async function runRetrievalPhase(input: {
     input.audienceEntityId === null &&
     creatorDirectiveParticipantEntityIds.length === 0;
   const sessionAudienceRole = input.sessionAudienceRole ?? "participant";
+  const nowMs = input.options.clock.now();
   const recallContext: CognitionRecallContext = {
     reader: SELF_RECALL_SCOPE,
     currentSessionId: input.sessionId,
@@ -829,7 +830,7 @@ export async function runRetrievalPhase(input: {
       : selectCrossSessionSelfActivity({
           repository: input.options.activityRepository,
           currentSessionId: input.sessionId,
-          nowMs: input.options.clock.now(),
+          nowMs,
           recencyWindowMs: DEFAULT_CROSS_SESSION_ACTIVITY_RECENCY_WINDOW_MS,
           cap: DEFAULT_CROSS_SESSION_ACTIVITY_CAP,
         });
@@ -838,7 +839,7 @@ export async function runRetrievalPhase(input: {
       ? []
       : selectSelfDecisionIntrospection({
           repository: input.options.selfDecisionRepository,
-          nowMs: input.options.clock.now(),
+          nowMs,
           recencyWindowMs: DEFAULT_SELF_DECISION_INTROSPECTION_RECENCY_WINDOW_MS,
           cap: DEFAULT_SELF_DECISION_INTROSPECTION_CAP,
         });
@@ -869,7 +870,7 @@ export async function runRetrievalPhase(input: {
           repository: input.options.observedEventRepository,
           speakerEntityIds: creatorDirectiveParticipantEntityIds,
           queryVector: observedEventQueryVector,
-          nowMs: input.options.clock.now(),
+          nowMs,
           recencyWindowMs: DEFAULT_OBSERVED_EVENT_INTROSPECTION_RECENCY_WINDOW_MS,
           cap: DEFAULT_OBSERVED_EVENT_INTROSPECTION_CAP,
         });
@@ -899,6 +900,7 @@ export async function runRetrievalPhase(input: {
     input: {
       sessionId: input.sessionId,
       turnId: input.turnId,
+      nowMs,
       audienceEntityId: input.audienceEntityId,
       currentUserMessage: input.turnInput.userMessage,
       currentUserEntry: input.persistedUserEntry ?? input.currentUserEntries?.[0],
@@ -993,6 +995,7 @@ async function buildEvidenceLedgerFinalizerContextInternal(input: {
     priorUserTurnCount,
     audienceEntityId: input.input.audienceEntityId,
     artifact: previousSharedState,
+    ...(input.input.nowMs === undefined ? {} : { nowMs: input.input.nowMs }),
   });
 
   emitSessionReentryContinuityTrace({

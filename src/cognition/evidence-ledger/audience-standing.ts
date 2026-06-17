@@ -37,6 +37,7 @@ import type { EvidenceLedgerAudienceStanding, EvidenceLedgerEntry } from "./type
 import { resolveSpeakerDisplayName } from "../speaker-tags.js";
 import type { CommitmentRecord, EntityKind } from "../../memory/commitments/index.js";
 import type { EntityId } from "../../util/ids.js";
+import { formatRelativeAge } from "../../util/relative-time.js";
 import {
   effectiveCommitmentCriticalDomain,
   effectiveCommitmentEnforcementClass,
@@ -245,6 +246,17 @@ function buildCommitmentEntries(context: BuilderSectionContext): EvidenceLedgerE
           commitment_type: commitment.type,
           commitment_enforcement_class: effectiveCommitmentEnforcementClass(commitment),
           commitment_critical_domain: effectiveCommitmentCriticalDomain(commitment),
+          created_at: new Date(commitment.created_at).toISOString(),
+          last_reinforced_at: new Date(commitment.last_reinforced_at).toISOString(),
+          ...(context.nowMs === undefined
+            ? {}
+            : {
+                created_relative_age: formatRelativeAge(commitment.created_at, context.nowMs),
+                last_reinforced_relative_age: formatRelativeAge(
+                  commitment.last_reinforced_at,
+                  context.nowMs,
+                ),
+              }),
         },
         disclosureLabel,
       }),

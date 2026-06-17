@@ -260,6 +260,21 @@ export const PROMPT_SURFACE_BLOCKS = [
     surfaces: [{ surface: PROMPT_SURFACES.cacheableDynamic, order: 10 }],
   }),
   block({
+    id: "borg_current_time",
+    owner: "cognition.deliberation",
+    purpose: "Turn current-time anchor for interpreting recalled-memory recency labels.",
+    renderCondition: "nowMs provided",
+    source: {
+      file: "src/cognition/deliberation/prompt/system-prompt.ts",
+      exportName: "renderCurrentTimeSection",
+    },
+    tag: "borg_current_time",
+    surfaces: [
+      { surface: PROMPT_SURFACES.baseTrustedGuidanceSections, order: 5 },
+      { surface: PROMPT_SURFACES.cacheableTrustedDynamicSections, order: 5 },
+    ],
+  }),
+  block({
     id: "borg_participation_policy",
     owner: "cognition.sessions",
     purpose: "Session participation policy guidance.",

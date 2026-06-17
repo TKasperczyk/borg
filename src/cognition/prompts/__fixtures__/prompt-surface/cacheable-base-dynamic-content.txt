@@ -1,3 +1,7 @@
+<borg_current_time>
+current_time_iso=2023-11-14T22:13:20.000Z
+</borg_current_time>
+
 <borg_participation_policy>
 The operator has set me to observing for this conversation. My available emissions are EmitObserve or EmitNoOutput.
 </borg_participation_policy>

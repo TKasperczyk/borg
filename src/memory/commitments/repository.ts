@@ -189,7 +189,10 @@ function mapCommitmentRow(row: Record<string, unknown>): CommitmentRecord {
       row.canonicalized_by_artifact_entry_id === undefined
         ? null
         : String(row.canonicalized_by_artifact_entry_id),
-    last_reinforced_at: Number(row.last_reinforced_at),
+    last_reinforced_at:
+      row.last_reinforced_at === null || row.last_reinforced_at === undefined
+        ? Number(row.created_at)
+        : Number(row.last_reinforced_at),
   });
 
   if (!parsed.success) {

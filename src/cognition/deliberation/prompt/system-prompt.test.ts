@@ -283,6 +283,21 @@ describe("formatRelativeAge", () => {
 });
 
 describe("buildBaseSystemPrompt", () => {
+  it("renders the current-time anchor only in dynamic trusted prompt content", () => {
+    const options = { ...PROMPT_OPTIONS, nowMs: NOW_MS };
+    const context = makeContext();
+    const prompt = buildBaseSystemPrompt(context, options);
+    const cacheable = buildCacheableBaseSystemPromptParts(context, options);
+    const expectedLine = `current_time_iso=${new Date(NOW_MS).toISOString()}`;
+
+    expect(extractBlock(prompt, "borg_current_time")).toContain(expectedLine);
+    expect(cacheable.dynamicContent).toContain("<borg_current_time>");
+    expect(cacheable.dynamicContent).toContain(expectedLine);
+    expect(cacheable.staticPrefix).not.toContain("borg_current_time");
+    expect(cacheable.staticPrefixSections).not.toContain("borg_current_time");
+    expect(buildBaseSystemPrompt(context, PROMPT_OPTIONS)).not.toContain("borg_current_time");
+  });
+
   it("renders creator identity and current-speaker authority in standing block without duplicated identity lines", () => {
     const creatorId = createEntityId();
     const context = makeContext({

@@ -91,6 +91,7 @@ describe("buildSessionReentryContinuityPrompt", () => {
       priorUserTurnCount: 0,
       audienceEntityId,
       artifact,
+      nowMs: 183_000,
     });
 
     expect(result.summary.status).toBe("rendered");
@@ -122,6 +123,10 @@ describe("buildSessionReentryContinuityPrompt", () => {
     expect(result.promptSection).toContain(
       "state_key_bucket=legacy bucket_source=unkeyed_legacy_state entries=1",
     );
+    expect(result.promptSection).toContain(
+      "most_recent_update_at=1970-01-01T00:00:03.000Z most_recent_relative_age=3m ago",
+    );
+    expect(result.promptSection).not.toContain("most_recent_update_at=3000");
     expect(result.promptSection).toContain(`most_recent_ref=${legacyRef}`);
   });
 

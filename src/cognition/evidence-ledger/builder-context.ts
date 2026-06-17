@@ -6,6 +6,7 @@ import type { TranscriptCompactionResult } from "./transcript-compaction.js";
 
 export type BuilderSectionContext = {
   input: EvidenceLedgerBuildInput;
+  nowMs?: number;
   resolver: ScopeResolver;
   buckets: SectionBuckets;
   options: Pick<

@@ -1,4 +1,5 @@
 import type { OpenQuestion, OpenQuestionStatus } from "../../memory/self/index.js";
+import { formatRelativeAge } from "../../util/relative-time.js";
 import type { EvidenceLedgerBuildInput } from "./builder-types.js";
 import {
   combineScopes,
@@ -115,7 +116,21 @@ export function relevantOpenQuestionEpisodeIds(input: EvidenceLedgerBuildInput):
 
 export function openQuestionStateMetadata(
   question: OpenQuestion,
+  nowMs?: number,
 ): Record<string, unknown> | undefined {
+  if (question.status === "open") {
+    return {
+      created_at: new Date(question.created_at).toISOString(),
+      last_touched: new Date(question.last_touched).toISOString(),
+      ...(nowMs === undefined
+        ? {}
+        : {
+            created_relative_age: formatRelativeAge(question.created_at, nowMs),
+            last_touched_relative_age: formatRelativeAge(question.last_touched, nowMs),
+          }),
+    };
+  }
+
   if (question.status === "resolved") {
     return {
       resolution_note: question.resolution_note,

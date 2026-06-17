@@ -210,6 +210,14 @@ function renderParticipationPolicy(policy: SessionParticipationPolicy): string |
   }
 }
 
+export function renderCurrentTimeSection(nowMs: number | undefined): string | null {
+  if (nowMs === undefined || !Number.isFinite(nowMs)) {
+    return null;
+  }
+
+  return `current_time_iso=${new Date(nowMs).toISOString()}`;
+}
+
 const CREATOR_DISPLAY_NAME_MAX_CHARS = 256;
 const CREATOR_DISPLAY_NAME_CONTROL_OR_SEPARATOR_PATTERN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu;
 const CREATOR_DISPLAY_NAME_WHITESPACE_PATTERN = /\s+/gu;
@@ -1118,6 +1126,10 @@ export function buildBaseSystemPromptSections(
     tag: "borg_participation_policy",
     content: renderParticipationPolicy(options.participationPolicy ?? "active"),
   };
+  const currentTimeSection = {
+    tag: "borg_current_time",
+    content: renderCurrentTimeSection(options.nowMs),
+  };
   const creatorIdentitySection = {
     tag: "borg_creator_identity",
     content: renderCreatorIdentity(context.creatorIdentity),
@@ -1139,6 +1151,7 @@ export function buildBaseSystemPromptSections(
   }
 
   for (const section of [
+    currentTimeSection,
     participationPolicySection,
     creatorIdentitySection,
     memoryDisclosureGuidanceSection,
