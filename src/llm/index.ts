@@ -360,6 +360,11 @@ export {
   type AnthropicContentBlockOptions,
 } from "./anthropic-content-blocks.js";
 export * from "./structured-tool-call.js";
+export {
+  OpenAICompatibleLLMClient,
+  type OpenAICompatibleLLMClientOptions,
+  type OpenAIChatCompletionsClient,
+} from "./openai-compatible.js";
 
 type AnthropicClientLike = {
   messages: {
