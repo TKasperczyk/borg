@@ -14,6 +14,7 @@ export {
   type BorgEpisodeSearchOptions,
   type BorgOpenOptions,
 } from "./borg.js";
+export { BorgPool, type BorgPoolOptions } from "./borg/pool.js";
 export type {
   BorgActionsFacade,
   BorgAttachmentBytesResult,
@@ -129,6 +130,9 @@ export {
 } from "./embeddings/index.js";
 export {
   AnthropicLLMClient,
+  OpenAICompatibleLLMClient,
+  type OpenAICompatibleLLMClientOptions,
+  type OpenAIChatCompletionsClient,
   LLMStructuredOutputParseError,
   toStructuredOutputFormat,
   type AnthropicAuthMode,
