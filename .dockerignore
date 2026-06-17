@@ -1,0 +1,27 @@
+# Never ship host node_modules — natives are ABI-bound to the host Node and must
+# be compiled in-image (see Dockerfile).
+node_modules
+**/node_modules
+.git
+dist
+*.log
+*.tgz
+.DS_Store
+
+# Never ship local secrets or runtime data into the image.
+.env
+.env.*
+**/.env
+**/.env.*
+.borg-data
+**/.borg-data
+data
+*.db
+*.sqlite
+*.sqlite3
+
+# Build/test artifacts that bloat the image and aren't needed at runtime.
+coverage
+**/coverage
+tmp
+.cache
