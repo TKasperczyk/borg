@@ -255,4 +255,99 @@ describe("BorgPool", () => {
     await pool.closeAll();
     expect(pool.size()).toBe(0);
   });
+
+  // A withTenant callback that records peak concurrency: it bumps a shared counter
+  // on entry, yields twice (an interleaving impl would let another callback in
+  // during the yields), then decrements. Serialized callbacks keep the peak at 1.
+  function makeConcurrencyProbe() {
+    let active = 0;
+    const state = { peak: 0, ran: [] as number[] };
+    const op = (pool: BorgPool, tenant: string, id: number, exclusive: boolean) =>
+      pool.withTenant(
+        tenant,
+        async () => {
+          active += 1;
+          state.peak = Math.max(state.peak, active);
+          state.ran.push(id);
+          await Promise.resolve();
+          await Promise.resolve();
+          active -= 1;
+          return id;
+        },
+        exclusive ? { exclusive: true } : undefined,
+      );
+    return { state, op };
+  }
+
+  it("serializes exclusive ops for the same tenant (peak concurrency 1)", async () => {
+    const { pool } = makePool();
+    const { state, op } = makeConcurrencyProbe();
+
+    const results = await Promise.all([
+      op(pool, "alpha", 1, true),
+      op(pool, "alpha", 2, true),
+      op(pool, "alpha", 3, true),
+    ]);
+
+    expect(state.peak).toBe(1); // never two exclusive ops on one being at once
+    expect(results).toEqual([1, 2, 3]); // each op returns its own result
+    expect(new Set(state.ran)).toEqual(new Set([1, 2, 3])); // all three ran
+  });
+
+  it("does not serialize non-exclusive ops on the same tenant (reads stay concurrent)", async () => {
+    const { pool } = makePool();
+    const { state, op } = makeConcurrencyProbe();
+
+    await Promise.all([
+      op(pool, "alpha", 1, false),
+      op(pool, "alpha", 2, false),
+      op(pool, "alpha", 3, false),
+    ]);
+
+    expect(state.peak).toBeGreaterThan(1); // overlapped -> not serialized
+  });
+
+  it("exclusive ops on different tenants run concurrently (independent chains)", async () => {
+    const { pool } = makePool();
+
+    let alphaStarted: () => void = () => {};
+    const alphaReady = new Promise<void>((resolve) => {
+      alphaStarted = resolve;
+    });
+    let releaseAlpha: () => void = () => {};
+    const gateAlpha = new Promise<void>((resolve) => {
+      releaseAlpha = resolve;
+    });
+
+    const opAlpha = pool.withTenant(
+      "alpha",
+      async () => {
+        alphaStarted();
+        await gateAlpha; // park alpha's exclusive chain indefinitely
+        return "alpha";
+      },
+      { exclusive: true },
+    );
+
+    await alphaReady; // alpha is parked inside its exclusive section
+    // beta is a different tenant -> different chain -> must NOT be blocked by the
+    // parked alpha. If chains weren't per-tenant this would deadlock.
+    const beta = await pool.withTenant("beta", () => "beta", { exclusive: true });
+    expect(beta).toBe("beta");
+
+    releaseAlpha();
+    expect(await opAlpha).toBe("alpha");
+  });
+
+  it("a failed exclusive op does not block the next exclusive op", async () => {
+    const { pool } = makePool();
+
+    const op1 = pool.withTenant("alpha", () => Promise.reject(new Error("boom")), {
+      exclusive: true,
+    });
+    const op2 = pool.withTenant("alpha", () => "ok", { exclusive: true });
+
+    await expect(op1).rejects.toThrow("boom");
+    await expect(op2).resolves.toBe("ok");
+  });
 });

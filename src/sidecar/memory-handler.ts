@@ -22,7 +22,11 @@ const TENANT_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 // The handler only needs withTenant from the pool; typing it structurally keeps
 // the handler unit-testable with a stub.
 export type MemoryPool = {
-  withTenant<T>(tenantId: string, fn: (borg: Borg) => T | Promise<T>): Promise<T>;
+  withTenant<T>(
+    tenantId: string,
+    fn: (borg: Borg) => T | Promise<T>,
+    opts?: { exclusive?: boolean },
+  ): Promise<T>;
 };
 
 export type MemoryHandlerOptions = {
@@ -149,10 +153,17 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         }
         const author = asString(body.author);
         const text = author === "" ? content : `[${author}] ${content}`;
-        const extracted = await pool.withTenant(tenant, async (borg) => {
-          const entry = await borg.stream.append({ kind: "user_msg", content: text });
-          return borg.episodic.extract({ sinceTs: entry.timestamp });
-        });
+        // Exclusive: append + extract must run serialized per tenant, else two
+        // concurrent remembers for one tenant interleave and each extract (with an
+        // open-ended sinceTs) sweeps the other's just-appended entry -> duplicates.
+        const extracted = await pool.withTenant(
+          tenant,
+          async (borg) => {
+            const entry = await borg.stream.append({ kind: "user_msg", content: text });
+            return borg.episodic.extract({ sinceTs: entry.timestamp });
+          },
+          { exclusive: true },
+        );
         send(res, 200, { ok: true, extracted });
         return;
       }

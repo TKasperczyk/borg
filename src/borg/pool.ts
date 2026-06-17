@@ -87,6 +87,13 @@ export class BorgPool {
   private readonly entries = new Map<string, PoolEntry>();
   // Monotonic counter for LRU ordering -- deterministic, no clock dependency.
   private seq = 0;
+  // Per-tenant tail of the exclusive-operation chain. EXCLUSIVE withTenant calls
+  // (writes) for a given tenant run strictly one-at-a-time, in arrival order, so
+  // two concurrent remember()s can't interleave append + extract on one being --
+  // which would let each extract sweep the other's just-appended stream entry and
+  // race createEpisode, producing duplicate / cross-request episodes. Non-exclusive
+  // calls (reads / recall) never touch this chain and stay fully concurrent.
+  private readonly writeChains = new Map<string, Promise<unknown>>();
 
   constructor(options: BorgPoolOptions) {
     if (!options.root.trim()) {
@@ -104,8 +111,18 @@ export class BorgPool {
    * being is reserved (inUse) across the call, so eviction can never close it
    * mid-operation. This is the only access path -- do not retain the `borg`
    * reference beyond the callback (the pool may close it afterwards).
+   *
+   * Pass `{ exclusive: true }` for write operations (e.g. append + extract): the
+   * callback then runs serialized against all other exclusive calls for the SAME
+   * tenant (arrival order, one at a time), so concurrent writers can't interleave
+   * on one being. Reads omit it and run concurrently. A failed exclusive op never
+   * blocks the next one.
    */
-  async withTenant<T>(tenantId: string, fn: (borg: Borg) => T | Promise<T>): Promise<T> {
+  async withTenant<T>(
+    tenantId: string,
+    fn: (borg: Borg) => T | Promise<T>,
+    opts?: { exclusive?: boolean },
+  ): Promise<T> {
     const { entry, created } = this.acquire(tenantId);
     entry.inUse += 1;
     try {
@@ -113,7 +130,9 @@ export class BorgPool {
         await this.enforceMaxOpen(entry.tenantId);
       }
       const borg = await entry.promise;
-      return await fn(borg);
+      return await (opts?.exclusive
+        ? this.runExclusive(entry.tenantId, () => fn(borg))
+        : fn(borg));
     } finally {
       entry.inUse -= 1;
       entry.lastUsed = (this.seq += 1);
@@ -132,6 +151,31 @@ export class BorgPool {
         }
       }
     }
+  }
+
+  // Serialize an exclusive (write) callback after any prior exclusive callback for
+  // the same tenant. The caller already holds the entry open (inUse incremented),
+  // so a queued write keeps its being from being evicted while it waits.
+  private runExclusive<T>(tenantId: string, fn: () => T | Promise<T>): Promise<T> {
+    const prev = this.writeChains.get(tenantId) ?? Promise.resolve();
+    // Run after prev settles on BOTH outcomes, so one failed write never wedges
+    // the queue. `result` carries fn's real outcome back to the caller.
+    const result = prev.then(fn, fn) as Promise<T>;
+    // The stored tail MUST NOT reject -- it gates the next op via `prev`, and a
+    // rejected gate would reject the next caller's chain. Swallow here only.
+    const tail: Promise<void> = result.then(
+      () => {},
+      () => {},
+    );
+    this.writeChains.set(tenantId, tail);
+    // Drop the chain once drained so an idle tenant doesn't retain a settled
+    // promise. Only if still the tail -- a newer op may have already chained on.
+    void tail.then(() => {
+      if (this.writeChains.get(tenantId) === tail) {
+        this.writeChains.delete(tenantId);
+      }
+    });
+    return result;
   }
 
   /** Close a tenant's being and drop it from the pool, draining any in-flight op first. */
