@@ -90,6 +90,7 @@ import type { MemoryDisclosureLabel } from "../retrieval/index.js";
 import type { SocialProfile } from "../memory/social/types.js";
 import type { WorkingMemory } from "../memory/working/types.js";
 import type { PromptKey } from "../cognition/prompts/registry.js";
+import type { IngestionResult } from "../cognition/ingestion/index.js";
 import type { MaintenancePlan } from "../offline/plan-file.js";
 import type { OrchestratorResult } from "../offline/types.js";
 import type {
@@ -201,6 +202,10 @@ export type BorgStreamReader = {
 
 export type BorgStreamFacade = {
   append(input: StreamEntryInput, options?: { session?: SessionId }): Promise<StreamEntry>;
+  appendMany(
+    inputs: readonly StreamEntryInput[],
+    options?: { session?: SessionId },
+  ): Promise<StreamEntry[]>;
   tail(n: number, options?: { session?: SessionId }): StreamEntry[];
   reader(options?: { session?: SessionId }): BorgStreamReader;
 };
@@ -214,6 +219,7 @@ export type BorgEpisodicFacade = {
     untilTs?: number;
     session?: SessionId;
   }): Promise<BorgExtractFromStreamResult>;
+  ingest(options?: { session?: SessionId }): Promise<IngestionResult>;
   list(options?: EpisodeListOptions): Promise<EpisodeListResult>;
   listAll(): Promise<Episode[]>;
   getStats(id: Episode["id"]): EpisodeStats | null;

@@ -1,18 +1,21 @@
 // HTTP request handler for the borg memory sidecar: a thin, tenant-routed wrapper
 // over BorgPool that exposes long-term memory to an external (e.g. Python) service.
 //
-//   POST /memory/remember  { tenant, content, author? }  -> append + extract episode(s)
-//   POST /memory/recall    { tenant, query, limit? }     -> semantic episodic search
+//   POST /memory/remember    { tenant, content, author? }          -> append + extract episode(s)
+//   POST /memory/append-turn { tenant, session, user, assistant }  -> append + async extract
+//   POST /memory/recall      { tenant, query, limit? }             -> semantic episodic search
 //   GET  /healthz                                         -> liveness (no auth)
 //
 // Recall is tenant-wide by design: the pool routes to one being per tenant and,
 // within a being, recall is global (borg's "recall is global to the being", with
 // being == tenant). All authenticated routes require the shared x-borg-token.
 
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Borg } from "../borg.js";
+import type { StreamEntryInput } from "../stream/index.js";
+import { parseSessionId, type SessionId } from "../util/ids.js";
 
 // Mirror of BorgPool's DEFAULT_TENANT_ID_PATTERN so the handler returns a clean
 // 400 for a malformed tenant id at the boundary, rather than relying on (and
@@ -92,6 +95,27 @@ function asString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function asContentString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function sessionFromCaller(value: string): SessionId {
+  try {
+    return parseSessionId(value);
+  } catch {
+    const hash = createHash("sha256").update(value).digest("hex").slice(0, 16);
+    return parseSessionId(`sess_${hash}`);
+  }
+}
+
+function scheduleIngestion(pool: MemoryPool, tenant: string, session: SessionId): void {
+  void pool
+    .withTenant(tenant, (borg) => borg.episodic.ingest({ session }))
+    .catch((error: unknown) => {
+      console.error(`memory-sidecar: background ingestion failed for tenant "${tenant}"`, error);
+    });
+}
+
 export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandler {
   const { pool, token } = options;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
@@ -111,7 +135,10 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       return;
     }
 
-    if (method !== "POST" || (url !== "/memory/remember" && url !== "/memory/recall")) {
+    if (
+      method !== "POST" ||
+      (url !== "/memory/remember" && url !== "/memory/recall" && url !== "/memory/append-turn")
+    ) {
       send(res, 404, { error: "not found" });
       return;
     }
@@ -168,13 +195,55 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         return;
       }
 
+      if (url === "/memory/append-turn") {
+        const sessionRaw = asString(body.session);
+        if (sessionRaw === "") {
+          send(res, 400, { error: "missing 'session'" });
+          return;
+        }
+        const user = asContentString(body.user);
+        if (user.trim() === "") {
+          send(res, 400, { error: "missing 'user'" });
+          return;
+        }
+        const assistant = asContentString(body.assistant);
+        if (assistant.trim() === "") {
+          send(res, 400, { error: "missing 'assistant'" });
+          return;
+        }
+
+        const session = sessionFromCaller(sessionRaw);
+        const entries = await pool.withTenant(
+          tenant,
+          (borg) => {
+            const inputs: StreamEntryInput[] = [
+              { kind: "user_msg", content: user },
+              { kind: "agent_msg", content: assistant },
+            ];
+            return borg.stream.appendMany(inputs, { session });
+          },
+          { exclusive: true },
+        );
+        send(res, 200, {
+          ok: true,
+          session,
+          entries: entries.map((entry) => ({
+            id: entry.id,
+            kind: entry.kind,
+          })),
+        });
+        scheduleIngestion(pool, tenant, session);
+        return;
+      }
+
       // /memory/recall
       const query = asString(body.query);
       if (query === "") {
         send(res, 400, { error: "missing 'query'" });
         return;
       }
-      const rawLimit = typeof body.limit === "number" && Number.isFinite(body.limit) ? body.limit : 10;
+      const rawLimit =
+        typeof body.limit === "number" && Number.isFinite(body.limit) ? body.limit : 10;
       const limit = Math.max(1, Math.min(maxRecallLimit, Math.floor(rawLimit)));
       const hits = await pool.withTenant(tenant, (borg) => borg.episodic.search(query, { limit }));
       send(res, 200, {

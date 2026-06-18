@@ -47,7 +47,7 @@ import type { SemanticExtractor } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
 import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../memory/working/index.js";
-import type { ChatResponseCatchUpWorker } from "../cognition/ingestion/index.js";
+import type { ChatResponseCatchUpWorker, IngestionResult } from "../cognition/ingestion/index.js";
 import type { MemoryDisclosureLabel } from "../retrieval/index.js";
 import type { PromptKey } from "../cognition/prompts/registry.js";
 import type { OfflineProcessName } from "../offline/index.js";
@@ -78,6 +78,10 @@ import type {
 
 export type BorgStreamFacade = {
   append: (input: StreamEntryInput, options?: { session?: SessionId }) => Promise<StreamEntry>;
+  appendMany: (
+    inputs: readonly StreamEntryInput[],
+    options?: { session?: SessionId },
+  ) => Promise<StreamEntry[]>;
   tail: (n: number, options?: { session?: SessionId }) => StreamEntry[];
   reader: (options?: { session?: SessionId }) => StreamReader;
 };
@@ -91,6 +95,7 @@ export type BorgEpisodicFacade = {
     untilTs?: number;
     session?: SessionId;
   }) => Promise<ExtractFromStreamResult>;
+  ingest: (options?: { session?: SessionId }) => Promise<IngestionResult>;
   list: (...args: Parameters<EpisodicRepository["list"]>) => ReturnType<EpisodicRepository["list"]>;
   listAll: () => ReturnType<EpisodicRepository["listAll"]>;
   getStats: (

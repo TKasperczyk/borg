@@ -360,6 +360,15 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           writer.close();
         }
       },
+      appendMany: async (inputs, options = {}) => {
+        const writer = deps.createStreamWriter(options.session ?? DEFAULT_SESSION_ID);
+
+        try {
+          return await writer.appendMany(inputs);
+        } finally {
+          writer.close();
+        }
+      },
       tail: (n, options = {}) =>
         new StreamReader({
           dataDir: deps.config.dataDir,
@@ -405,6 +414,9 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           untilTs: options.untilTs,
         });
       },
+      ingest: (options = {}) =>
+        deps.streamIngestionCoordinator?.ingest(options.session ?? DEFAULT_SESSION_ID) ??
+        Promise.resolve({ ran: false, processedEntries: 0 }),
       list: (...args) => deps.episodicRepository.list(...args),
       listAll: () => deps.episodicRepository.listAll(),
       getStats: (...args) => deps.episodicRepository.getStats(...args),
