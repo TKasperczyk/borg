@@ -15,7 +15,7 @@ and follow the imports.
 - **Runtime:** Node >= 22, ESM-only (`"type": "module"`)
 - **Language:** TypeScript, strict mode, `moduleResolution: "Bundler"`
 - **Vectors:** LanceDB (`@lancedb/lancedb`) embedded, per-table
-- **Structured state:** SQLite (`better-sqlite3`) for goals, commitments,
+- **Structured state:** SQLite (`node:sqlite`) for goals, commitments,
   graph edges, skills, stats
 - **Stream log:** JSONL atomic append on disk
 - **LLM:** Anthropic SDK (`@anthropic-ai/sdk`). The cognition,

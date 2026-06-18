@@ -1,7 +1,3 @@
-import { runCli } from "./app.js";
+import "../util/suppress-sqlite-experimental-warning.js";
 
-const exitCode = await runCli(process.argv);
-
-if (exitCode !== 0) {
-  process.exitCode = exitCode;
-}
+await import("./main.js");

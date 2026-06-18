@@ -24,7 +24,7 @@
     "ARCHITECTURE.md"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.18.0"
   },
   "scripts": {
     "start": "tsx scripts/memory-sidecar.ts",
@@ -52,7 +52,6 @@
     "@anthropic-ai/sdk": "^0.90.0",
     "@lancedb/lancedb": "^0.27.2",
     "apache-arrow": "^18.1.0",
-    "better-sqlite3": "^12.9.0",
     "cac": "^7.0.0",
     "nanoid": "^5.1.9",
     "openai": "^6.34.0",
@@ -60,7 +59,6 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.6.0",
     "@vitest/coverage-v8": "^4.1.4",
     "fallow": "^2.88.3",

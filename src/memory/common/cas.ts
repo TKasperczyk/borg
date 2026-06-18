@@ -1,5 +1,3 @@
-import type BetterSqlite3 from "better-sqlite3";
-
 import { IdentityCasMismatchError } from "../../util/errors.js";
 
 export type IdentityCasRecord = {
@@ -8,6 +6,10 @@ export type IdentityCasRecord = {
 
 export type IdentityCasOptions = {
   expectedVersion?: number;
+};
+
+type SqliteChangeResult = {
+  changes: number | bigint;
 };
 
 export function expectedRecordVersion(
@@ -24,7 +26,7 @@ export function nextRecordVersion(expectedVersion: number): number {
 }
 
 export function assertIdentityCasUpdated(input: {
-  result: Pick<BetterSqlite3.RunResult, "changes">;
+  result: SqliteChangeResult;
   recordType: string;
   recordId: string;
   expectedVersion: number;

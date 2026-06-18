@@ -1,13 +1,199 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-
-import Database from "better-sqlite3";
-import type BetterSqlite3 from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
+import type { StatementSync } from "node:sqlite";
 
 import { StorageError } from "../../util/errors.js";
 
-type BetterSqliteDatabase = BetterSqlite3.Database;
-type PreparedStatement = BetterSqlite3.Statement;
+export type SqliteRunResult = {
+  changes: number;
+  lastInsertRowid: number | bigint;
+};
+
+type SqliteRow = Record<string, unknown>;
+
+type BoundStatement = {
+  run: (...args: unknown[]) => SqliteRunResult;
+  get: (...args: unknown[]) => SqliteRow | undefined;
+  all: (...args: unknown[]) => SqliteRow[];
+  iterate: (...args: unknown[]) => IterableIterator<SqliteRow>;
+  columns: () => unknown[];
+};
+
+function bindArguments(args: unknown[]): unknown[] {
+  return args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+}
+
+function normalizeRow(row: SqliteRow): SqliteRow {
+  return { ...row };
+}
+
+function* normalizeRowIterator(rows: Iterable<SqliteRow>): IterableIterator<SqliteRow> {
+  for (const row of rows) {
+    yield normalizeRow(row);
+  }
+}
+
+export class SqliteStatement {
+  constructor(private readonly statement: StatementSync) {}
+
+  run(...args: unknown[]): SqliteRunResult {
+    return (this.statement as unknown as BoundStatement).run(...bindArguments(args));
+  }
+
+  get(...args: unknown[]): SqliteRow | undefined {
+    const row = (this.statement as unknown as BoundStatement).get(...bindArguments(args));
+    return row === undefined ? undefined : normalizeRow(row);
+  }
+
+  all(...args: unknown[]): SqliteRow[] {
+    return (this.statement as unknown as BoundStatement)
+      .all(...bindArguments(args))
+      .map(normalizeRow);
+  }
+
+  iterate(...args: unknown[]): IterableIterator<SqliteRow> {
+    return normalizeRowIterator(
+      (this.statement as unknown as BoundStatement).iterate(...bindArguments(args)),
+    );
+  }
+
+  columns(): unknown[] {
+    return (this.statement as unknown as BoundStatement).columns();
+  }
+}
+
+export type SqlitePragmaOptions = {
+  simple?: boolean;
+};
+
+type TransactionMode = "deferred" | "immediate" | "exclusive";
+
+export type SqliteTransaction<T extends (...args: never[]) => unknown> = ((
+  ...args: Parameters<T>
+) => ReturnType<T>) & {
+  default: (...args: Parameters<T>) => ReturnType<T>;
+  deferred: (...args: Parameters<T>) => ReturnType<T>;
+  immediate: (...args: Parameters<T>) => ReturnType<T>;
+  exclusive: (...args: Parameters<T>) => ReturnType<T>;
+};
+
+export class SqliteRawDatabase {
+  private readonly statementCache = new Map<string, SqliteStatement>();
+  private savepointCounter = 0;
+
+  constructor(private readonly database: DatabaseSync) {}
+
+  get inTransaction(): boolean {
+    return this.database.isTransaction;
+  }
+
+  prepare(sql: string): SqliteStatement {
+    const cached = this.statementCache.get(sql);
+
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const statement = new SqliteStatement(this.database.prepare(sql));
+    this.statementCache.set(sql, statement);
+    return statement;
+  }
+
+  exec(sql: string): void {
+    this.database.exec(sql);
+  }
+
+  pragma(source: string, options: SqlitePragmaOptions = {}): unknown {
+    const rows = this.prepare(`PRAGMA ${source}`).all();
+
+    if (options.simple !== true) {
+      return rows;
+    }
+
+    const first = rows[0];
+    return first === undefined ? undefined : Object.values(first)[0];
+  }
+
+  transaction<T extends (...args: never[]) => unknown>(fn: T): SqliteTransaction<T> {
+    const run = (mode: TransactionMode, args: Parameters<T>): ReturnType<T> =>
+      this.runTransaction<ReturnType<T>>(mode, () => fn(...args) as ReturnType<T>);
+    const transaction = ((...args: Parameters<T>): ReturnType<T> =>
+      run("deferred", args)) as SqliteTransaction<T>;
+
+    transaction.default = (...args: Parameters<T>): ReturnType<T> => run("deferred", args);
+    transaction.deferred = (...args: Parameters<T>): ReturnType<T> => run("deferred", args);
+    transaction.immediate = (...args: Parameters<T>): ReturnType<T> => run("immediate", args);
+    transaction.exclusive = (...args: Parameters<T>): ReturnType<T> => run("exclusive", args);
+
+    return transaction;
+  }
+
+  close(): void {
+    this.statementCache.clear();
+    this.database.close();
+  }
+
+  private runTransaction<T>(mode: TransactionMode, callback: () => T): T {
+    if (this.inTransaction) {
+      return this.runNestedTransaction(callback);
+    }
+
+    this.database.exec(beginSql(mode));
+
+    try {
+      const result = callback();
+      this.database.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        if (this.inTransaction) {
+          this.database.exec("ROLLBACK");
+        }
+      } catch {
+        // Preserve the original failure.
+      }
+
+      throw error;
+    }
+  }
+
+  private runNestedTransaction<T>(callback: () => T): T {
+    const savepoint = `borg_tx_${++this.savepointCounter}`;
+    this.database.exec(`SAVEPOINT ${savepoint}`);
+
+    try {
+      const result = callback();
+      this.database.exec(`RELEASE ${savepoint}`);
+      return result;
+    } catch (error) {
+      try {
+        this.database.exec(`ROLLBACK TO ${savepoint}`);
+      } catch {
+        // Preserve the original failure.
+      }
+
+      try {
+        this.database.exec(`RELEASE ${savepoint}`);
+      } catch {
+        // Preserve the original failure.
+      }
+
+      throw error;
+    }
+  }
+}
+
+function beginSql(mode: TransactionMode): string {
+  switch (mode) {
+    case "deferred":
+      return "BEGIN";
+    case "immediate":
+      return "BEGIN IMMEDIATE";
+    case "exclusive":
+      return "BEGIN EXCLUSIVE";
+  }
+}
 
 export type Migration = {
   id: number;
@@ -26,20 +212,10 @@ export type AppliedMigration = {
 };
 
 export class SqliteDatabase {
-  private readonly statementCache = new Map<string, PreparedStatement>();
+  constructor(readonly raw: SqliteRawDatabase) {}
 
-  constructor(readonly raw: BetterSqliteDatabase) {}
-
-  prepare(sql: string): PreparedStatement {
-    const cached = this.statementCache.get(sql);
-
-    if (cached !== undefined) {
-      return cached;
-    }
-
-    const statement = this.raw.prepare(sql);
-    this.statementCache.set(sql, statement);
-    return statement;
+  prepare(sql: string): SqliteStatement {
+    return this.raw.prepare(sql);
   }
 
   exec(sql: string): this {
@@ -47,11 +223,11 @@ export class SqliteDatabase {
     return this;
   }
 
-  pragma(source: string, options?: Parameters<BetterSqliteDatabase["pragma"]>[1]): unknown {
+  pragma(source: string, options?: SqlitePragmaOptions): unknown {
     return this.raw.pragma(source, options);
   }
 
-  transaction<T extends (...args: never[]) => unknown>(fn: T): BetterSqlite3.Transaction<T> {
+  transaction<T extends (...args: never[]) => unknown>(fn: T): SqliteTransaction<T> {
     return this.raw.transaction(fn);
   }
 
@@ -62,7 +238,6 @@ export class SqliteDatabase {
   }
 
   close(): void {
-    this.statementCache.clear();
     this.raw.close();
   }
 }
@@ -160,15 +335,18 @@ function runMigrations(db: SqliteDatabase, migrations: readonly Migration[]): vo
 }
 
 export function openDatabase(path: string, options: OpenDatabaseOptions = {}): SqliteDatabase {
-  let raw: BetterSqliteDatabase | undefined;
+  let raw: SqliteRawDatabase | undefined;
 
   try {
     mkdirSync(dirname(path), { recursive: true });
 
-    raw = new Database(path);
+    raw = new SqliteRawDatabase(
+      new DatabaseSync(path, { enableDoubleQuotedStringLiterals: true }),
+    );
     const db = new SqliteDatabase(raw);
 
     try {
+      db.pragma("busy_timeout = 5000");
       db.pragma("journal_mode = WAL");
       db.pragma("foreign_keys = ON");
       runMigrations(db, options.migrations ?? []);
