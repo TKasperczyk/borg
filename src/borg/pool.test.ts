@@ -183,7 +183,9 @@ describe("BorgPool", () => {
         pool.withTenant("beta", append("b")),
       ).resolves.toBeDefined();
       expect(pool.has("beta")).toBe(true);
-      expect(pool.has("alpha")).toBe(false);
+      // alpha's close failed -> its entry is RETAINED (fail-closed: never reopen the
+      // same dataDir), not silently dropped. beta succeeding is what matters here.
+      expect(pool.has("alpha")).toBe(true);
       expect(errorSpy).toHaveBeenCalled();
     } finally {
       errorSpy.mockRestore();
@@ -218,7 +220,9 @@ describe("BorgPool", () => {
 
     await expect(op).resolves.toBe("done"); // the op itself completes fine
     await expect(ev).rejects.toThrow("boom"); // evict surfaces the deferred close failure
-    expect(pool.has("alpha")).toBe(false);
+    // Close failed -> entry retained (fail-closed), not deleted, so a later acquire
+    // can't open a second Borg over the same dataDir.
+    expect(pool.has("alpha")).toBe(true);
   });
 
   it("rejects tenant ids that could escape the root", async () => {
@@ -349,5 +353,74 @@ describe("BorgPool", () => {
 
     await expect(op1).rejects.toThrow("boom");
     await expect(op2).resolves.toBe("ok");
+  });
+
+  it("shutdown() closes open beings and rejects all subsequent work", async () => {
+    const { pool } = makePool();
+
+    await pool.withTenant("alpha", append("x"));
+    expect(pool.size()).toBe(1);
+
+    await pool.shutdown();
+    expect(pool.size()).toBe(0);
+
+    await expect(pool.withTenant("alpha", (b) => b)).rejects.toThrow(/shutting down/i);
+    await expect(pool.withTenant("beta", (b) => b)).rejects.toThrow(/shutting down/i);
+  });
+
+  it("shutdown() drains an in-flight op while rejecting newly-arriving work (barrier)", async () => {
+    const { pool } = makePool();
+
+    let started: () => void = () => {};
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const inflight = pool.withTenant("alpha", async (borg) => {
+      await borg.stream.append({ kind: "user_msg", content: "before" });
+      started();
+      await held;
+      // Would throw if storage were torn down under us mid-shutdown.
+      await borg.stream.append({ kind: "user_msg", content: "after" });
+      return "done";
+    });
+
+    await ready; // alpha op is in-flight (inUse > 0)
+    const shut = pool.shutdown(); // sets closing, then drains the in-flight op
+
+    // A request arriving DURING shutdown must be rejected, not opened behind the barrier.
+    await expect(pool.withTenant("beta", (b) => b)).rejects.toThrow(/shutting down/i);
+
+    release();
+    expect(await inflight).toBe("done"); // the in-flight op completed cleanly
+    await shut;
+    expect(pool.size()).toBe(0);
+  });
+
+  it("a failed close keeps the entry and refuses to reopen the same dataDir", async () => {
+    const { pool } = makePool();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      let alphaBorg!: Borg;
+      await pool.withTenant("alpha", (borg) => {
+        alphaBorg = borg;
+      });
+      alphaBorg.close = () => Promise.reject(new Error("close boom"));
+
+      await expect(pool.evict("alpha")).rejects.toThrow("close boom");
+      expect(pool.has("alpha")).toBe(true); // entry kept, NOT deleted
+
+      // No second Borg over the same dataDir: acquire fails closed.
+      await expect(pool.withTenant("alpha", (b) => b)).rejects.toThrow(
+        /failed to close|restart required/i,
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

@@ -100,7 +100,10 @@ async function shutdown(signal: string): Promise<void> {
   // bounded by a hard timeout so a wedged connection can't block forever.
   await Promise.race([closeServer(), delay(shutdownTimeoutMs)]);
   try {
-    await pool.closeAll();
+    // shutdown() (not closeAll()) is a barrier: it rejects any new withTenant so a
+    // request still in readBody can't open a being that escapes this drain and gets
+    // killed mid-write at process.exit. It drains in-flight ops before closing.
+    await pool.shutdown();
   } catch (error) {
     console.error("memory-sidecar: error during pool shutdown", error);
   }

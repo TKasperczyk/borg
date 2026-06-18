@@ -75,6 +75,10 @@ type PoolEntry = {
   closing?: Promise<void>;
   // Resolves when a deferred close finally completes (drain barrier for evict()).
   drained?: Deferred;
+  // Set if borg.close() rejected: the dataDir's handles may still be live, so the
+  // entry is KEPT (not deleted) and acquire() refuses to reopen it -- otherwise a
+  // fresh open would run a second Borg writer over the same dataDir.
+  closeFailed?: boolean;
 };
 
 export class BorgPool {
@@ -94,6 +98,10 @@ export class BorgPool {
   // race createEpisode, producing duplicate / cross-request episodes. Non-exclusive
   // calls (reads / recall) never touch this chain and stay fully concurrent.
   private readonly writeChains = new Map<string, Promise<unknown>>();
+  // Set once shutdown() begins. While true, withTenant() rejects new work, so the
+  // closeAll() drain inside shutdown() is a true barrier: no being can be opened
+  // after the drain snapshots, and nothing escapes shutdown unclosed.
+  private closing = false;
 
   constructor(options: BorgPoolOptions) {
     if (!options.root.trim()) {
@@ -123,6 +131,11 @@ export class BorgPool {
     fn: (borg: Borg) => T | Promise<T>,
     opts?: { exclusive?: boolean },
   ): Promise<T> {
+    if (this.closing) {
+      // Pool is shutting down; refuse new work so it can't open a being that
+      // escapes the shutdown drain (or get killed mid-write at process exit).
+      throw new Error("BorgPool is shutting down; not accepting new operations");
+    }
     const { entry, created } = this.acquire(tenantId);
     entry.inUse += 1;
     try {
@@ -203,6 +216,17 @@ export class BorgPool {
     }
   }
 
+  /**
+   * Begin shutdown: reject all subsequent withTenant() calls, THEN drain + close
+   * every open being. Unlike closeAll(), this is a BARRIER -- once it starts no new
+   * being can be opened, so an incoming request can't open a being that escapes the
+   * drain and then gets killed mid-write at process exit. Use at process shutdown.
+   */
+  async shutdown(): Promise<void> {
+    this.closing = true;
+    await this.closeAll();
+  }
+
   /** Whether a being is currently open (or opening) for this tenant. */
   has(tenantId: string): boolean {
     return this.isValidTenantId(tenantId) && this.entries.has(tenantId);
@@ -221,6 +245,14 @@ export class BorgPool {
   private acquire(tenantId: string): { entry: PoolEntry; created: boolean } {
     const validated = this.validateTenantId(tenantId);
     const existing = this.entries.get(validated);
+    if (existing?.closeFailed === true) {
+      // A prior close() rejected; the dataDir's handles may still be live, so
+      // opening a fresh being here could run two writers over one dataDir. Fail
+      // closed -- this tenant is unavailable until the process restarts.
+      throw new Error(
+        `BorgPool: being for "${validated}" failed to close; refusing to reopen the same dataDir (restart required)`,
+      );
+    }
     if (existing !== undefined && !existing.closeRequested && existing.closing === undefined) {
       existing.lastUsed = (this.seq += 1);
       return { entry: existing, created: false };
@@ -310,7 +342,9 @@ export class BorgPool {
         await this.finishClose(victim);
       } catch (error) {
         // Best-effort: a victim's close failure must not fail the unrelated
-        // caller that triggered eviction. The entry is removed regardless.
+        // caller that triggered eviction. A failed close keeps the entry (marked
+        // closeFailed, skipped by future eviction since `closing` stays set) rather
+        // than reopening the same dataDir.
         console.error(`BorgPool: failed to close evicted being "${victim.tenantId}"`, error);
       }
     }
@@ -350,10 +384,17 @@ export class BorgPool {
       }
       try {
         await borg.close();
-      } finally {
-        if (this.entries.get(entry.tenantId) === entry) {
-          this.entries.delete(entry.tenantId);
-        }
+      } catch (error) {
+        // Close failed -> the dataDir's storage handles may still be live. KEEP the
+        // entry and mark it: acquire() then refuses to reopen the same dataDir, so we
+        // never run two Borg writers over one dataDir. (Deleting here -- the old
+        // behavior -- allowed exactly that.) Fail closed; a process restart clears it.
+        entry.closeFailed = true;
+        throw error;
+      }
+      // Success: drop the entry so a later acquire() opens a fresh being.
+      if (this.entries.get(entry.tenantId) === entry) {
+        this.entries.delete(entry.tenantId);
       }
     })();
     if (entry.drained !== undefined) {
