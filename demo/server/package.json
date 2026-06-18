@@ -14,7 +14,7 @@
   "dependencies": {
     "@hono/node-server": "^1.19.6",
     "@hono/node-ws": "^1.2.0",
-    "borg": "workspace:*",
+    "borg": "file:../..",
     "hono": "^4.10.9",
     "zod": "^4.3.6"
   },

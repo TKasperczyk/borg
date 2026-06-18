@@ -27,20 +27,21 @@
     "node": ">=22"
   },
   "scripts": {
+    "start": "tsx scripts/memory-sidecar.ts",
     "build": "tsup",
     "assess": "tsx assessor/cli.ts",
     "chat": "tsx scripts/chat.ts",
     "daemon": "tsx scripts/daemon.ts",
     "debug": "tsx scripts/debug.ts",
     "dev": "tsx watch src/cli/index.ts",
-    "dev:server": "pnpm --filter @borg/demo-server dev",
-    "dev:web": "pnpm --filter @borg/demo-web dev",
+    "dev:server": "npm --prefix demo/server run dev",
+    "dev:web": "npm --prefix demo/web run dev",
     "eval": "tsx eval/runner.ts",
     "simulate": "tsx simulator/cli.ts",
-    "build:server": "pnpm --filter @borg/demo-server build",
-    "build:web": "pnpm --filter @borg/demo-web build",
+    "build:server": "npm --prefix demo/server run build",
+    "build:web": "npm --prefix demo/web run build",
     "test": "vitest run",
-    "test:dist-smoke": "pnpm build && NODE_OPTIONS= node --import tsx scripts/dist-smoke.ts",
+    "test:dist-smoke": "npm run build && NODE_OPTIONS= node --import tsx scripts/dist-smoke.ts",
     "heuristics:guard": "tsx scripts/heuristics-guard.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.eval.json && tsc --noEmit -p tsconfig.assessor.json && tsc --noEmit -p tsconfig.simulator.json && tsc --noEmit -p tsconfig.test.json",
@@ -55,6 +56,7 @@
     "cac": "^7.0.0",
     "nanoid": "^5.1.9",
     "openai": "^6.34.0",
+    "tsx": "^4.21.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -64,14 +66,7 @@
     "fallow": "^2.88.3",
     "prettier": "^3.8.3",
     "tsup": "^8.5.1",
-    "tsx": "^4.21.0",
     "typescript": "^5.7.3",
     "vitest": "^4.1.4"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "better-sqlite3",
-      "esbuild"
-    ]
   }
 }
