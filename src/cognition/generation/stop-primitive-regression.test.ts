@@ -284,6 +284,47 @@ describe("stop primitive v8 regressions", () => {
     }
   });
 
+  it("clears a stop-state when a new topic directly solicits a response", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        textResponse(
+          "I will stop responding until you bring substantive content.",
+          stopDiscourseControl(),
+        ),
+        reflectionResponse(),
+        gateResponse({
+          decision: "proceed",
+          substantive: true,
+          reason: "The turn introduces a new topic and asks for a response.",
+        }),
+        textResponse("That research finding is a substantive new topic."),
+        reflectionResponse(),
+      ],
+    });
+    const borg = await openRegressionBorg(llm);
+
+    try {
+      const commitment = await borg.turn({
+        userMessage: "Stop responding if this becomes filler.",
+      });
+      const resumed = await borg.turn({
+        userMessage:
+          "A long-running nutrition study reported a new finding about fries and diabetes risk. What do you all make of it?",
+      });
+
+      expect(commitment.emitted).toBe(true);
+      expect(resumed.emitted).toBe(true);
+      expect(resumed.response).toContain("substantive new topic");
+      expect(agentMessages(borg)).toEqual([
+        "I will stop responding until you bring substantive content.",
+        "That research finding is a substantive new topic.",
+      ]);
+      expect(borg.workmem.load().discourse_state?.stop_until_substantive_content).toBeNull();
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("does not arm a stop-state from closure-ish prose without the structured discourse_control signal", async () => {
     const llm = new FakeLLMClient({
       responses: [textResponse("I think I'll wrap things up here for now."), reflectionResponse()],
