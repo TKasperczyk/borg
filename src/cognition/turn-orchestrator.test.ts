@@ -715,6 +715,7 @@ function createGoalPromotionResponse(
   promotions: Array<{
     description: string;
     priority?: number;
+    terminal_condition?: string | null;
     target_at?: number | null;
     reason?: string;
     confidence?: number;
@@ -743,6 +744,7 @@ function createGoalPromotionResponse(
             classification: "durable_borg_goal",
             description: promotion.description,
             priority: promotion.priority ?? 8,
+            terminal_condition: promotion.terminal_condition ?? null,
             target_at: promotion.target_at ?? null,
             reason: promotion.reason ?? "The user asked Borg to carry this as an ongoing goal.",
             confidence: promotion.confidence ?? 0.9,
@@ -6297,6 +6299,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           {
             description: "Help the user keep the Monday postmortem straight",
             priority: 9,
+            terminal_condition: null,
             target_at: targetAt,
             reason: "The user asked Borg to help keep the postmortem organized.",
             confidence: 0.91,
@@ -7088,22 +7091,27 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           [
             {
               description: "Help the user track the launch checklist",
+              terminal_condition: null,
               confidence: 0.95,
             },
             {
               description: "Help the user prepare the investor update",
+              terminal_condition: null,
               confidence: 0.94,
             },
             {
               description: "Help the user schedule the design review",
+              terminal_condition: null,
               confidence: 0.93,
             },
             {
               description: "Help the user collect beta feedback",
+              terminal_condition: null,
               confidence: 0.92,
             },
             {
               description: "Help the user plan the onboarding pass",
+              terminal_condition: null,
               confidence: 0.91,
             },
           ],
@@ -7195,6 +7203,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         createGoalPromotionResponse([
           {
             description: "Help the user track their API review checklist",
+            terminal_condition: null,
             duplicate_of_goal_id: existingGoalId,
             confidence: 0.95,
           },

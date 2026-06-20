@@ -3972,6 +3972,7 @@ describe("deliberator", () => {
             {
               id: "goal_aaaaaaaaaaaaaaaa" as never,
               description: "Ship Sprint 6",
+              terminal_condition: null,
               priority: 0.9,
               parent_goal_id: null,
               status: "active",

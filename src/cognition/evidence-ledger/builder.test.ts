@@ -247,6 +247,7 @@ function makeGoal(
     id: createGoalId(),
     record_version: 1,
     description: "Coordinate the Spain trip",
+    terminal_condition: null,
     priority: 1,
     parent_goal_id: null,
     status: "active",

@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { IdentityCasMismatchError, ProvenanceError } from "../../util/errors.js";
-import { createEntityId, createStreamEntryId } from "../../util/ids.js";
+import { createEntityId, createGoalId, createStreamEntryId } from "../../util/ids.js";
 import { expectedRecordVersion } from "../common/cas.js";
 import { selfMigrations } from "./migrations.js";
 import { GoalsRepository, TraitsRepository, ValuesRepository } from "./repository.js";
@@ -150,6 +150,7 @@ describe("self repositories", () => {
       });
       const parent = goals.add({
         description: "Ship Sprint 2",
+        terminalCondition: "Sprint 2 is shipped",
         priority: 10,
         provenance: manualProvenance,
       });
@@ -175,6 +176,7 @@ describe("self repositories", () => {
       expect(goals.list()).toEqual([
         expect.objectContaining({
           id: parent.id,
+          terminal_condition: "Sprint 2 is shipped",
           children: [
             expect.objectContaining({
               id: child.id,
@@ -268,6 +270,7 @@ describe("self repositories", () => {
       });
       const goal = firstGoals.add({
         description: "Help track italki shortlist",
+        terminalCondition: "The italki shortlist reaches a selected tutor",
         priority: 8,
         audienceEntityId,
         provenance: manualProvenance,
@@ -286,10 +289,107 @@ describe("self repositories", () => {
         expect(
           secondGoals
             .list({ status: "active", visibleToAudienceEntityId: audienceEntityId })
-            .map((item) => item.id),
-        ).toEqual([goal.id]);
+            .map((item) => [item.id, item.terminal_condition]),
+        ).toEqual([[goal.id, "The italki shortlist reaches a selected tutor"]]);
       } finally {
         secondDb.close();
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("adds goal nullable columns to existing goals with additive migrations", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-self-goal-terminal-migration-"));
+    const dbPath = join(tempDir, "borg.db");
+    const goalId = createGoalId();
+    const oldGoalBaseline = {
+      id: 1,
+      name: "old_goal_baseline",
+      up: `
+        CREATE TABLE goals (
+          id TEXT PRIMARY KEY,
+          record_version INTEGER NOT NULL DEFAULT 1,
+          description TEXT NOT NULL,
+          priority REAL NOT NULL,
+          parent_goal_id TEXT,
+          status TEXT NOT NULL CHECK (status IN ('active', 'done', 'abandoned', 'blocked')),
+          progress_notes TEXT,
+          created_at INTEGER NOT NULL,
+          target_at INTEGER,
+          provenance_kind TEXT,
+          provenance_episode_ids TEXT,
+          provenance_process TEXT,
+          last_progress_ts INTEGER,
+          audience_entity_id TEXT,
+          owner_entity_id TEXT,
+          source_stream_entry_ids TEXT,
+          canonicalized_by_artifact_entry_id TEXT NULL,
+          FOREIGN KEY (parent_goal_id) REFERENCES goals(id) ON DELETE SET NULL
+        )
+      `,
+    };
+    const terminalConditionMigration = selfMigrations.find((migration) => migration.id === 6);
+    const streamProvenanceMigration = selfMigrations.find((migration) => migration.id === 7);
+
+    expect(terminalConditionMigration).toBeDefined();
+    expect(streamProvenanceMigration).toBeDefined();
+
+    try {
+      const oldDb = openDatabase(dbPath, {
+        migrations: [oldGoalBaseline],
+      });
+      oldDb
+        .prepare(
+          `
+            INSERT INTO goals (
+              id, description, priority, parent_goal_id, status, progress_notes, created_at,
+              target_at, provenance_kind, provenance_episode_ids, provenance_process,
+              last_progress_ts, audience_entity_id, owner_entity_id, source_stream_entry_ids,
+              canonicalized_by_artifact_entry_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          goalId,
+          "Keep old rows readable",
+          4,
+          null,
+          "active",
+          null,
+          100,
+          null,
+          "manual",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+        );
+      oldDb.close();
+
+      const migratedDb = openDatabase(dbPath, {
+        migrations: [oldGoalBaseline, terminalConditionMigration!, streamProvenanceMigration!],
+      });
+      const goals = new GoalsRepository({
+        db: migratedDb,
+        clock: new FixedClock(200),
+      });
+
+      try {
+        const columns = migratedDb.pragma("table_info(goals)") as Array<{ name: string }>;
+        expect(columns.map((column) => column.name)).toContain("terminal_condition");
+        expect(columns.map((column) => column.name)).toContain("provenance_stream_entry_ids");
+        expect(goals.get(goalId)).toEqual(
+          expect.objectContaining({
+            id: goalId,
+            terminal_condition: null,
+          }),
+        );
+      } finally {
+        migratedDb.close();
       }
     } finally {
       rmSync(tempDir, { recursive: true, force: true });

@@ -26,4 +26,14 @@ describe("self patch schemas", () => {
       }),
     ).toThrow();
   });
+
+  it("allows goal terminal condition edits in patches", () => {
+    expect(
+      goalPatchSchema.parse({
+        terminal_condition: "The decision has been reached.",
+      }),
+    ).toEqual({
+      terminal_condition: "The decision has been reached.",
+    });
+  });
 });

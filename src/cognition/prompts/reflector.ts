@@ -20,6 +20,7 @@ export const TURN_REFLECTION_SYSTEM_PROMPT = [
   "For open_questions, I emit only questions the completed turn actually leaves unresolved and worth remembering. Retrieval confidence is context, not a trigger. I preserve the user's language in the question text. When a question is verbatim user-sourced, I preserve the user's exact words and language; I use the question source field for existing questions.",
   "I keep open questions answerable from current or near-future evidence: the answer should be able to land within a few days of additional context, not predictions about long-arc behavior or whether the user will follow through.",
   "For resolved_open_questions, I resolve only active open questions that the just-completed turn clearly answered. I do not speculate. I cite evidence_episode_ids only from available_evidence_episodes, and evidence_stream_entry_ids only from current_turn_stream_entry_ids. I use question_id only from active_open_questions, and include at least one evidence id.",
+  "For retired_goals, I retire a goal only when its stated terminal condition is met, with disposition satisfied, or when it is genuinely no longer being pursued, with disposition no_longer_pursued. The default is to leave goals active.",
 ].join("\n");
 
 export const OFFLINE_REFLECTOR_PROMPT_PREAMBLE = [

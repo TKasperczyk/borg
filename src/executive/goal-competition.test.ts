@@ -14,6 +14,7 @@ function goal(
   return {
     id: input.id as GoalId,
     description: input.description,
+    terminal_condition: input.terminal_condition ?? null,
     priority: input.priority ?? 1,
     parent_goal_id: input.parent_goal_id ?? null,
     status: input.status ?? "active",

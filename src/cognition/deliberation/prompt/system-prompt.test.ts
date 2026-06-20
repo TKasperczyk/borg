@@ -1610,6 +1610,7 @@ describe("buildBaseSystemPrompt", () => {
     const goal = {
       id: "goal_aaaaaaaaaaaaaaaa" as never,
       description: "Understand the continuity model",
+      terminal_condition: null,
       priority: 8,
       parent_goal_id: null,
       status: "active",
@@ -1713,6 +1714,7 @@ describe("buildBaseSystemPrompt", () => {
     const goal = {
       id: "goal_bbbbbbbbbbbbbbbb" as never,
       description: "Follow the source-grounded private goal",
+      terminal_condition: null,
       priority: 8,
       parent_goal_id: null,
       status: "active",

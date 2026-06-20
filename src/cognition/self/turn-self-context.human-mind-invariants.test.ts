@@ -119,6 +119,7 @@ describe("turn self-context human-mind invariants", () => {
     const goal: GoalRecord = {
       id: createGoalId(),
       description: "Follow up on the Alice-private source",
+      terminal_condition: null,
       priority: 10,
       parent_goal_id: null,
       status: "active",

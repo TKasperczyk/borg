@@ -97,6 +97,7 @@ export class TurnGoalPromotionService {
       activeGoals: input.activeGoals.map((goal) => ({
         id: goal.id,
         description: goal.description,
+        terminal_condition: goal.terminal_condition ?? null,
         priority: goal.priority,
         target_at: goal.target_at,
         owner_entity_id: goal.owner_entity_id ?? null,
@@ -242,6 +243,7 @@ export class TurnGoalPromotionService {
       try {
         goal = this.options.identityService.addGoal({
           description: candidate.description,
+          terminalCondition: candidate.terminal_condition,
           priority: candidate.priority,
           status: "active",
           targetAt: candidate.target_at,

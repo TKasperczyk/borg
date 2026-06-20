@@ -35,6 +35,10 @@ export function mapGoalRow(row: Record<string, unknown>): GoalRecord {
     id: row.id,
     record_version: Number(row.record_version ?? 1),
     description: row.description,
+    terminal_condition:
+      row.terminal_condition === null || row.terminal_condition === undefined
+        ? null
+        : String(row.terminal_condition),
     priority: Number(row.priority),
     parent_goal_id:
       row.parent_goal_id === null || row.parent_goal_id === undefined
@@ -70,6 +74,7 @@ export function mapGoalRow(row: Record<string, unknown>): GoalRecord {
     provenance: parseStoredProvenance({
       provenance_kind: row.provenance_kind,
       provenance_episode_ids: row.provenance_episode_ids,
+      provenance_stream_entry_ids: row.provenance_stream_entry_ids,
       provenance_process: row.provenance_process,
     }),
   });

@@ -204,6 +204,7 @@ export const goalSchema = z.object({
   id: goalIdSchema,
   record_version: z.number().int().positive().optional(),
   description: z.string().min(1),
+  terminal_condition: z.string().min(1).nullable().default(null),
   priority: z.number().finite(),
   parent_goal_id: goalIdSchema.nullable(),
   status: goalStatusSchema,
@@ -262,6 +263,7 @@ export const goalPatchSchema = goalSchema
     source_stream_entry_ids: true,
   })
   .extend({
+    terminal_condition: z.string().min(1).nullable().optional(),
     audience_entity_id: goalAudienceEntityIdSchema.nullable().optional(),
     owner_entity_id: goalOwnerEntityIdSchema.nullable().optional(),
     source_stream_entry_ids: z.array(goalSourceStreamEntryIdSchema).min(1).optional(),

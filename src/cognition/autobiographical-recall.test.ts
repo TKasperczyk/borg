@@ -5,12 +5,14 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { ObservedEventRepository } from "../memory/observed-events/index.js";
+import type { GoalTreeNode } from "../memory/self/index.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import type { SessionRecord } from "../sessions/index.js";
 import { StreamReader, StreamWriter } from "../stream/index.js";
 import { FixedClock, ManualClock } from "../util/clock.js";
 import {
   createEntityId,
+  createGoalId,
   createObservedEventId,
   createSessionId,
   createStreamEntryId,
@@ -161,6 +163,58 @@ describe("AutobiographicalRecallService", () => {
       ]),
     );
     expect(renderSection(section!)).toContain('framing_counts: {"self_decision":1}');
+  });
+
+  it("renders goal terminal conditions on the autobiographical surface", async () => {
+    const goal = {
+      id: createGoalId(),
+      record_version: 1,
+      description: "Track the release readiness decision",
+      terminal_condition: "The release readiness decision is made",
+      priority: 5,
+      parent_goal_id: null,
+      status: "active",
+      progress_notes: "Compared rollback and launch options.",
+      last_progress_ts: 2_000,
+      created_at: 1_000,
+      target_at: null,
+      audience_entity_id: null,
+      owner_entity_id: null,
+      canonicalized_by_artifact_entry_id: null,
+      provenance: { kind: "manual" },
+      children: [],
+    } satisfies GoalTreeNode;
+    const service = new AutobiographicalRecallService({
+      clock: new FixedClock(NOW_MS),
+      goalsRepository: {
+        list: () => [goal],
+      },
+      sourceCap: 5,
+      totalCap: 10,
+    });
+
+    const result = await service.recall({
+      sessionId: createSessionId(),
+      temporalCue: {
+        sinceTs: 1_000,
+        untilTs: 3_000,
+        label: "release readiness window",
+      },
+      isSelfAudience: false,
+      sessionAudienceRole: "operator",
+      perceptionMode: "reflective",
+    });
+
+    expect(result?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "goal",
+          text: expect.stringContaining(
+            "terminal_condition=The release readiness decision is made",
+          ),
+        }),
+      ]),
+    );
   });
 
   it("caps stream autobiographical evidence after selecting the most recent in-window entries", async () => {

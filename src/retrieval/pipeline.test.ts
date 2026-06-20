@@ -1306,6 +1306,7 @@ describe("retrieval pipeline", () => {
           {
             id: "goal_aaaaaaaaaaaaaaaa" as never,
             description: "release goal",
+            terminal_condition: null,
             priority: 1,
             parent_goal_id: null,
             status: "active",

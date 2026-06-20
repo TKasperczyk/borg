@@ -10,6 +10,7 @@ describe("attention weights", () => {
         {
           id: "goal_aaaaaaaaaaaaaaaa" as never,
           description: "Ship release",
+          terminal_condition: null,
           priority: 1,
           parent_goal_id: null,
           status: "active",
