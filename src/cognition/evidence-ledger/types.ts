@@ -122,8 +122,13 @@ export const EVIDENCE_LEDGER_SECTION_DEFINITIONS = [
     label: "12. Prior-Session Memory",
   },
   {
+    id: "recent_lived_experience",
+    label: "13. Recent Lived Experience",
+    optional: true,
+  },
+  {
     id: "autobiographical_recall",
-    label: "13. Autobiographical Recall",
+    label: "14. Autobiographical Recall",
     optional: true,
   },
 ] as const satisfies readonly EvidenceLedgerSectionDefinition[];
@@ -143,8 +148,8 @@ export type EvidenceLedgerSection = {
 };
 
 export type EvidenceLedgerAudienceStanding = {
-  crossSessionActivityEntries: EvidenceLedgerEntry[];
-  selfDecisionIntrospectionEntries: EvidenceLedgerEntry[];
+  recentLivedExperienceEntries: EvidenceLedgerEntry[];
+  renderRecentLivedExperience: boolean;
   observedEventIntrospectionEntries: EvidenceLedgerEntry[];
   commitmentEntries: EvidenceLedgerEntry[];
   relationalEntries: EvidenceLedgerEntry[];

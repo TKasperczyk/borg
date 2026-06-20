@@ -148,6 +148,12 @@ describe("config", () => {
       finalizerTargetTokens: 60_000,
       finalizerHardCapTokens: 100_000,
       finalizerMaxEntryTextTokens: 1_200,
+      recentLivedExperience: {
+        recencyWindowMs: 3 * 24 * 60 * 60_000,
+        cap: 64,
+        densityCap: 48,
+        gapThresholdMs: 3 * 60 * 60_000,
+      },
       sectionOptions: {},
       decisionArtifact: {
         maxActiveEntries: 40,
@@ -512,6 +518,10 @@ describe("config", () => {
         BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_TARGET_TOKENS: "60000",
         BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_HARD_CAP_TOKENS: "100000",
         BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_MAX_ENTRY_TEXT_TOKENS: "900",
+        BORG_GENERATION_EVIDENCE_LEDGER_RECENT_LIVED_EXPERIENCE_RECENCY_WINDOW_MS: "172800000",
+        BORG_GENERATION_EVIDENCE_LEDGER_RECENT_LIVED_EXPERIENCE_CAP: "72",
+        BORG_GENERATION_EVIDENCE_LEDGER_RECENT_LIVED_EXPERIENCE_DENSITY_CAP: "24",
+        BORG_GENERATION_EVIDENCE_LEDGER_RECENT_LIVED_EXPERIENCE_GAP_THRESHOLD_MS: "60000",
         BORG_COGNITION_ACTION_LIFECYCLE_ARCHIVE_STALE_AFTER_INACTIVE_TURNS: "18",
         BORG_DELIBERATION_CONTRADICTION_ROUTING_ENABLED: "false",
         BORG_DELIBERATION_CONTRADICTION_ROUTING_COOLDOWN_TURNS: "3",
@@ -573,6 +583,12 @@ describe("config", () => {
     expect(config.generation.evidenceLedger.finalizerTargetTokens).toBe(60_000);
     expect(config.generation.evidenceLedger.finalizerHardCapTokens).toBe(100_000);
     expect(config.generation.evidenceLedger.finalizerMaxEntryTextTokens).toBe(900);
+    expect(config.generation.evidenceLedger.recentLivedExperience).toEqual({
+      recencyWindowMs: 172_800_000,
+      cap: 72,
+      densityCap: 24,
+      gapThresholdMs: 60_000,
+    });
     expect(config.generation.evidenceLedger.decisionArtifact).toMatchObject({
       maxActiveEntries: 40,
       maxLiveEntriesPerKey: 2,

@@ -28,6 +28,7 @@ import { addEpisodesSection } from "./sections/episodes.js";
 import { addGroupChannelMemorySection } from "./sections/group-channel-memory.js";
 import { addOpenQuestionsSection } from "./sections/open-questions.js";
 import { addContradictionsAndQuarantinesSection } from "./sections/quarantines.js";
+import { addRecentLivedExperienceSection } from "./sections/recent-lived-experience.js";
 import {
   addRetrievedRawStreamEvidenceSection,
   addRetrievedStructuredEvidenceSection,
@@ -183,6 +184,7 @@ export class EvidenceLedgerBuilder {
     addEpisodesSection(context);
     addSemanticGraphSection(context);
     addOpenQuestionsSection(context);
+    addRecentLivedExperienceSection(context);
     addAutobiographicalRecallSection(context);
 
     const orderedSections = finalSections(sections);

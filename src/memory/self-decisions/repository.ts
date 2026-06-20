@@ -11,6 +11,7 @@ import {
   type SessionId,
   type StreamEntryId,
 } from "../../util/ids.js";
+import { timestampFromUtcDayKey } from "../../util/utc-day.js";
 import {
   selfDecisionEventSchema,
   type SelfDecisionEvent,
@@ -44,6 +45,14 @@ export type SelfDecisionProjectionSourceEvent = {
   decisionSummary: string;
   decisionRationale: string | null;
   sourceStreamEntryIds: readonly StreamEntryId[];
+};
+
+export type SelfDecisionDailyDensityRow = {
+  dayKey: string;
+  dayStartMs: number;
+  decisionCount: number;
+  firstOccurredAt: number;
+  lastOccurredAt: number;
 };
 
 export type SelfDecisionRepositoryOptions = {
@@ -109,6 +118,18 @@ function mapProjectionRow(row: Record<string, unknown>): SelfDecisionProjectionS
       String(row.source_stream_entry_ids ?? "[]"),
       "source_stream_entry_ids",
     ),
+  };
+}
+
+function mapDailyDensityRow(row: Record<string, unknown>): SelfDecisionDailyDensityRow {
+  const dayKey = String(row.day_key);
+
+  return {
+    dayKey,
+    dayStartMs: timestampFromUtcDayKey(dayKey),
+    decisionCount: Number(row.decision_count),
+    firstOccurredAt: Number(row.first_occurred_at),
+    lastOccurredAt: Number(row.last_occurred_at),
   };
 }
 
@@ -231,5 +252,44 @@ export class SelfDecisionRepository {
       .all(input.sinceMs, input.limit) as Record<string, unknown>[];
 
     return rows.map(mapProjectionRow);
+  }
+
+  listDailyAutonomousSelfPrivateDensity(input: {
+    sinceMs: number;
+    untilMs?: number;
+    limit: number;
+  }): SelfDecisionDailyDensityRow[] {
+    const filters = [
+      "origin = 'autonomous'",
+      "disclosure_class = 'self_private'",
+      "occurred_at >= ?",
+    ];
+    const values: unknown[] = [input.sinceMs];
+
+    if (input.untilMs !== undefined) {
+      filters.push("occurred_at <= ?");
+      values.push(input.untilMs);
+    }
+
+    values.push(Math.max(1, Math.floor(input.limit)));
+
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            strftime('%Y-%m-%d', occurred_at / 1000, 'unixepoch') AS day_key,
+            COUNT(*) AS decision_count,
+            MIN(occurred_at) AS first_occurred_at,
+            MAX(occurred_at) AS last_occurred_at
+          FROM self_decision_events
+          WHERE ${filters.join(" AND ")}
+          GROUP BY day_key
+          ORDER BY last_occurred_at DESC
+          LIMIT ?
+        `,
+      )
+      .all(...values) as Record<string, unknown>[];
+
+    return rows.map(mapDailyDensityRow);
   }
 }

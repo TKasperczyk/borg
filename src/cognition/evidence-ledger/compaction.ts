@@ -108,6 +108,10 @@ const DEFAULT_FULL_LEDGER_SECTION_OPTIONS = {
     maxEntries: 48,
     maxTokens: 4_000,
   },
+  recent_lived_experience: {
+    maxEntries: 96,
+    maxTokens: 5_000,
+  },
   autobiographical_recall: {
     maxEntries: 48,
     maxTokens: 5_000,
@@ -119,21 +123,22 @@ const DEFAULT_FULL_LEDGER_SECTION_OPTIONS = {
 // newly added section can never silently escape trust-ordered compaction.
 const LOWEST_TRUST_SECTION_COMPACTION_PRIORITY = {
   prior_session_memory: 0,
-  semantic_graph: 1,
-  episodes: 2,
-  retrieved_memory_evidence: 3,
-  autobiographical_recall: 4,
-  open_questions: 5,
-  shared_state_recall: 6,
-  current_session_attribution_sidebar: 7,
-  group_channel_memory: 8,
-  attribution_matrix: 9,
-  action_states: 10,
-  contradictions_quarantines: 11,
-  closure_discourse_state: 12,
-  retrieved_raw_stream_evidence: 13,
-  current_session_transcript: 14,
-  current_user_message: 15,
+  recent_lived_experience: 1,
+  semantic_graph: 2,
+  episodes: 3,
+  retrieved_memory_evidence: 4,
+  autobiographical_recall: 5,
+  open_questions: 6,
+  shared_state_recall: 7,
+  current_session_attribution_sidebar: 8,
+  group_channel_memory: 9,
+  attribution_matrix: 10,
+  action_states: 11,
+  contradictions_quarantines: 12,
+  closure_discourse_state: 13,
+  retrieved_raw_stream_evidence: 14,
+  current_session_transcript: 15,
+  current_user_message: 16,
 } as const satisfies Record<EvidenceLedgerSectionId, number>;
 
 const LOWEST_TRUST_SECTION_ORDER: readonly EvidenceLedgerSectionId[] = [...allSectionIds()].sort(
@@ -146,6 +151,7 @@ type FullLedgerSectionRetentionPolicy = "head" | "tail";
 
 const TAIL_PRESERVING_FULL_LEDGER_SECTIONS = new Set<EvidenceLedgerSectionId>([
   "current_session_transcript",
+  "recent_lived_experience",
 ]);
 
 function truncateTextForFullEvidenceLedger(

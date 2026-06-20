@@ -2,7 +2,9 @@ export { activityMigrations } from "./migrations.js";
 export {
   ActivityRepository,
   type ActivityAutobiographicalSourceEvent,
+  type ActivityDailyDensityRow,
   type ActivityEventRecordInput,
+  type ActivityEventKindCounts,
   type ActivityProjectionSourceEvent,
   type ActivityRepositoryOptions,
 } from "./repository.js";
@@ -13,6 +15,18 @@ export {
   type CrossSessionSelfActivityProjectionInput,
   type CrossSessionSelfActivityRow,
 } from "./projection.js";
+export {
+  DEFAULT_RECENT_LIVED_EXPERIENCE_CAP,
+  DEFAULT_RECENT_LIVED_EXPERIENCE_DENSITY_CAP,
+  DEFAULT_RECENT_LIVED_EXPERIENCE_GAP_THRESHOLD_MS,
+  DEFAULT_RECENT_LIVED_EXPERIENCE_RECENCY_WINDOW_MS,
+  RECENT_LIVED_EXPERIENCE_INDIVIDUAL_WINDOW_MS,
+  recentLivedExperienceDisclosureLabel,
+  selectRecentLivedExperienceRows,
+  type RecentLivedExperienceKind,
+  type RecentLivedExperienceProjectionInput,
+  type RecentLivedExperienceRow,
+} from "./lived-experience.js";
 export {
   activityEventKindSchema,
   activityEventSchema,

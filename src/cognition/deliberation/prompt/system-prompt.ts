@@ -45,6 +45,7 @@ import {
   relationalSlotMemoryDisclosureLabel,
 } from "../../../memory/common/disclosure-serializers.js";
 import { formatRelativeAge } from "../../../util/relative-time.js";
+import { formatUtcDayBoundary, utcDayKey } from "../../../util/utc-day.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
@@ -875,6 +876,62 @@ function renderStandingEntryGroupLines(input: {
   ];
 }
 
+function entryOccurredAt(entry: EvidenceLedgerEntry): number | null {
+  const value = entry.state_metadata?.occurred_at;
+
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function renderRecentLivedExperienceLines(input: {
+  entries: readonly EvidenceLedgerEntry[] | undefined;
+  render: boolean | undefined;
+  indent: string;
+}): string[] {
+  if (input.render !== true || input.entries === undefined || input.entries.length === 0) {
+    return [];
+  }
+
+  const entries = [...input.entries].sort((left, right) => {
+    const leftOccurredAt = entryOccurredAt(left) ?? 0;
+    const rightOccurredAt = entryOccurredAt(right) ?? 0;
+
+    if (leftOccurredAt !== rightOccurredAt) {
+      return leftOccurredAt - rightOccurredAt;
+    }
+
+    return left.id.localeCompare(right.id);
+  });
+  const lines = [
+    `${input.indent}<recent_lived_experience>`,
+    `${input.indent}  <interpretation>Session-agnostic recent lived experience since I last engaged this current session. Rows are disclosure-labeled density or introspection metadata; other-audience message text is not rendered here.</interpretation>`,
+  ];
+  let currentDayKey: string | null = null;
+
+  for (const entry of entries) {
+    const occurredAt = entryOccurredAt(entry);
+
+    if (occurredAt !== null) {
+      const dayKey = utcDayKey(occurredAt);
+
+      if (dayKey !== currentDayKey) {
+        currentDayKey = dayKey;
+        lines.push(
+          `${input.indent}  <day_boundary>--- ${escapeXmlText(
+            formatUtcDayBoundary(occurredAt),
+          )} ---</day_boundary>`,
+        );
+      }
+    }
+
+    lines.push(
+      ...renderLedgerEntryLines("recent_lived_experience_entry", entry, `${input.indent}  `),
+    );
+  }
+
+  lines.push(`${input.indent}</recent_lived_experience>`);
+  return lines;
+}
+
 const SOCIAL_MEMORY_INTERPRETATION =
   "Social memories are recalled by global relevance across ALL my past conversations -- topic similarity, recency, recurrence, and person relevance. A present participant is a ranking boost, not a requirement; an entry may involve someone absent from the current turn. I use recall_reasons, recurrence, age, speaker/origin provenance, stance, taint, and disclosure labels to understand why it appeared and how cautiously to reason with it. These entries summarize my own prior stance toward a social frame; rejected or quarantined entries are not accepted as true. I use the disclosure label and provenance to decide whether and how to mention the pattern to the current audience.";
 
@@ -957,16 +1014,9 @@ function renderCrossSessionAwarenessLines(context: DeliberationContext, indent: 
   return [
     `${indent}<cross_session_awareness>`,
     ...renderSessionStatusSnapshotLines(context.operatorSessionSnapshot ?? null, `${indent}  `),
-    ...renderStandingEntryGroupLines({
-      tag: "cross_session_activity_entries",
-      entryTag: "activity_entry",
-      entries: standing?.crossSessionActivityEntries,
-      indent: `${indent}  `,
-    }),
-    ...renderStandingEntryGroupLines({
-      tag: "self_decision_introspection_entries",
-      entryTag: "self_decision_entry",
-      entries: standing?.selfDecisionIntrospectionEntries,
+    ...renderRecentLivedExperienceLines({
+      entries: standing?.recentLivedExperienceEntries,
+      render: standing?.renderRecentLivedExperience,
       indent: `${indent}  `,
     }),
     ...renderSocialMemoryEntryGroupLines({

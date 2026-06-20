@@ -23,8 +23,8 @@ function cloneAudienceStanding(
   }
 
   return {
-    crossSessionActivityEntries: standing.crossSessionActivityEntries.map(cloneEntry),
-    selfDecisionIntrospectionEntries: standing.selfDecisionIntrospectionEntries.map(cloneEntry),
+    recentLivedExperienceEntries: standing.recentLivedExperienceEntries.map(cloneEntry),
+    renderRecentLivedExperience: standing.renderRecentLivedExperience,
     observedEventIntrospectionEntries: standing.observedEventIntrospectionEntries.map(cloneEntry),
     commitmentEntries: standing.commitmentEntries.map(cloneEntry),
     relationalEntries: standing.relationalEntries.map(cloneEntry),

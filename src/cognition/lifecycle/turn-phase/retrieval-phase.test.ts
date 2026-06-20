@@ -1179,7 +1179,7 @@ describe("creator directive retrieval briefing", () => {
           }),
         ]),
       );
-      expect(rendered).toContain("## 13. Autobiographical Recall");
+      expect(rendered).toContain("## 14. Autobiographical Recall");
       expect(rendered).toContain("window_source");
       expect(rendered).toContain("private-to=");
       expect(rendered).not.toContain("Sol did");

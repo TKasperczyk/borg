@@ -180,8 +180,6 @@ For a group audience, origin_audience means a memory was shared in that venue, n
   </relational_identity>
   <cross_session_awareness>
     <session_status_snapshot status="none" />
-    <cross_session_activity_entries status="not_available" />
-    <self_decision_introspection_entries status="not_available" />
     <social_memory_entries status="not_available" />
   </cross_session_awareness>
 </borg_standing_with_audience>

@@ -1,16 +1,23 @@
 import { formatRelativeAge } from "../../util/relative-time.js";
-import type { SessionId, StreamEntryId } from "../../util/ids.js";
+import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { ActivityEventKind } from "./types.js";
 import type { ActivityRepository, ActivityProjectionSourceEvent } from "./repository.js";
+import {
+  DEFAULT_RECENT_LIVED_EXPERIENCE_CAP,
+  DEFAULT_RECENT_LIVED_EXPERIENCE_RECENCY_WINDOW_MS,
+} from "./lived-experience.js";
 
-export const DEFAULT_CROSS_SESSION_ACTIVITY_RECENCY_WINDOW_MS = 60 * 60_000;
-export const DEFAULT_CROSS_SESSION_ACTIVITY_CAP = 8;
+export const DEFAULT_CROSS_SESSION_ACTIVITY_RECENCY_WINDOW_MS =
+  DEFAULT_RECENT_LIVED_EXPERIENCE_RECENCY_WINDOW_MS;
+export const DEFAULT_CROSS_SESSION_ACTIVITY_CAP = DEFAULT_RECENT_LIVED_EXPERIENCE_CAP;
 
 export type CrossSessionSelfActivityRow = {
   kind: ActivityEventKind;
   occurredAt: number;
+  sessionId: SessionId;
   relativeAge: string;
   text: string;
+  originAudienceEntityIds: readonly EntityId[];
   sourceStreamEntryIds: readonly StreamEntryId[];
 };
 
@@ -65,8 +72,13 @@ export function selectCrossSessionSelfActivity(
     return {
       kind: event.kind,
       occurredAt: event.occurredAt,
+      sessionId: event.sessionId,
       relativeAge,
       text: rowText(event, relativeAge),
+      originAudienceEntityIds:
+        event.audienceEntityId === null || event.audienceEntityId === undefined
+          ? []
+          : [event.audienceEntityId],
       sourceStreamEntryIds: event.sourceStreamEntryIds,
     };
   });

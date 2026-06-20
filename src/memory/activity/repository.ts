@@ -12,6 +12,7 @@ import {
   type SessionId,
   type StreamEntryId,
 } from "../../util/ids.js";
+import { timestampFromUtcDayKey } from "../../util/utc-day.js";
 import {
   activityEventSchema,
   type ActivityEvent,
@@ -42,7 +43,9 @@ export type ActivityEventRecordInput = {
 export type ActivityProjectionSourceEvent = {
   kind: ActivityEventKind;
   occurredAt: number;
+  sessionId: SessionId;
   participantLabel: string;
+  audienceEntityId: EntityId | null;
   sourceStreamEntryIds: readonly StreamEntryId[];
 };
 
@@ -58,6 +61,26 @@ export type ActivityAutobiographicalSourceEvent = {
   audienceEntityId: EntityId | null;
   participantEntityIds: readonly EntityId[];
   sourceStreamEntryIds: readonly StreamEntryId[];
+};
+
+export type ActivityEventKindCounts = {
+  userContact: number;
+  borgReplied: number;
+  turnCompleted: number;
+};
+
+export type ActivityDailyDensityRow = {
+  dayKey: string;
+  dayStartMs: number;
+  sessionId: SessionId;
+  sessionLabel: string;
+  audienceLabel: string;
+  audienceEntityId: EntityId | null;
+  eventCount: number;
+  conversationTurnCount: number;
+  kindCounts: ActivityEventKindCounts;
+  firstOccurredAt: number;
+  lastOccurredAt: number;
 };
 
 export type ActivityRepositoryOptions = {
@@ -129,7 +152,12 @@ function mapProjectionRow(row: Record<string, unknown>): ActivityProjectionSourc
   return {
     kind: row.kind as ActivityEventKind,
     occurredAt: Number(row.occurred_at),
+    sessionId: row.session_id as SessionId,
     participantLabel: String(row.participant_label ?? "A participant"),
+    audienceEntityId:
+      row.audience_entity_id === null || row.audience_entity_id === undefined
+        ? null
+        : (row.audience_entity_id as EntityId),
     sourceStreamEntryIds: parseStreamEntryIds(
       String(row.source_stream_entry_ids ?? "[]"),
       "source_stream_entry_ids",
@@ -159,6 +187,31 @@ function mapAutobiographicalRow(row: Record<string, unknown>): ActivityAutobiogr
       String(row.source_stream_entry_ids ?? "[]"),
       "source_stream_entry_ids",
     ),
+  };
+}
+
+function mapDailyDensityRow(row: Record<string, unknown>): ActivityDailyDensityRow {
+  const dayKey = String(row.day_key);
+
+  return {
+    dayKey,
+    dayStartMs: timestampFromUtcDayKey(dayKey),
+    sessionId: row.session_id as SessionId,
+    sessionLabel: String(row.session_label ?? "session"),
+    audienceLabel: String(row.audience_label ?? "A participant"),
+    audienceEntityId:
+      row.audience_entity_id === null || row.audience_entity_id === undefined
+        ? null
+        : (row.audience_entity_id as EntityId),
+    eventCount: Number(row.event_count),
+    conversationTurnCount: Number(row.conversation_turn_count ?? 0),
+    kindCounts: {
+      userContact: Number(row.user_contact_count ?? 0),
+      borgReplied: Number(row.borg_replied_count ?? 0),
+      turnCompleted: Number(row.turn_completed_count ?? 0),
+    },
+    firstOccurredAt: Number(row.first_occurred_at),
+    lastOccurredAt: Number(row.last_occurred_at),
   };
 }
 
@@ -290,6 +343,8 @@ export class ActivityRepository {
           SELECT
             e.kind,
             e.occurred_at,
+            e.session_id,
+            e.audience_entity_id,
             e.source_stream_entry_ids,
             COALESCE(speaker.canonical_name, audience.canonical_name, s.audience_label)
               AS participant_label
@@ -302,6 +357,19 @@ export class ActivityRepository {
             AND s.status = 'active'
             AND e.session_id <> ?
             AND e.occurred_at >= ?
+            AND (
+              e.kind IN ('user_contact', 'borg_replied')
+              OR EXISTS (
+                SELECT 1
+                FROM activity_events engaged
+                WHERE
+                  engaged.status = 'active'
+                  AND engaged.session_id = e.session_id
+                  AND engaged.kind IN ('user_contact', 'borg_replied')
+                  AND strftime('%Y-%m-%d', engaged.occurred_at / 1000, 'unixepoch') =
+                    strftime('%Y-%m-%d', e.occurred_at / 1000, 'unixepoch')
+              )
+            )
           ORDER BY
             CASE e.kind
               WHEN 'user_contact' THEN 0
@@ -316,6 +384,82 @@ export class ActivityRepository {
       .all(input.currentSessionId, input.sinceMs, input.limit) as Record<string, unknown>[];
 
     return rows.map(mapProjectionRow);
+  }
+
+  getMostRecentOtherActiveSessionEventOccurredAt(input: {
+    currentSessionId: SessionId;
+    sinceMs: number;
+  }): number | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT MAX(e.occurred_at) AS occurred_at
+          FROM activity_events e
+          INNER JOIN sessions s ON s.session_id = e.session_id
+          WHERE
+            e.status = 'active'
+            AND s.status = 'active'
+            AND e.session_id <> ?
+            AND e.occurred_at >= ?
+        `,
+      )
+      .get(input.currentSessionId, input.sinceMs) as { occurred_at: number | null } | undefined;
+
+    return row === undefined || row.occurred_at === null ? null : Number(row.occurred_at);
+  }
+
+  listDailyOtherActiveSessionDensity(input: {
+    currentSessionId: SessionId;
+    sinceMs: number;
+    untilMs?: number;
+    limit: number;
+  }): ActivityDailyDensityRow[] {
+    const filters = [
+      "e.status = 'active'",
+      "s.status = 'active'",
+      "e.session_id <> ?",
+      "e.occurred_at >= ?",
+    ];
+    const values: unknown[] = [input.currentSessionId, input.sinceMs];
+
+    if (input.untilMs !== undefined) {
+      filters.push("e.occurred_at <= ?");
+      values.push(input.untilMs);
+    }
+
+    values.push(Math.max(1, Math.floor(input.limit)));
+
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            strftime('%Y-%m-%d', e.occurred_at / 1000, 'unixepoch') AS day_key,
+            e.session_id,
+            s.label AS session_label,
+            s.audience_label,
+            s.audience_entity_id,
+            COUNT(*) AS event_count,
+            SUM(CASE WHEN e.kind = 'user_contact' THEN 1 ELSE 0 END) AS user_contact_count,
+            SUM(CASE WHEN e.kind = 'borg_replied' THEN 1 ELSE 0 END) AS borg_replied_count,
+            SUM(CASE WHEN e.kind = 'turn_completed' THEN 1 ELSE 0 END) AS turn_completed_count,
+            COUNT(DISTINCT CASE
+              WHEN e.kind IN ('user_contact', 'borg_replied') THEN COALESCE(e.turn_id, e.id)
+              ELSE NULL
+            END) AS conversation_turn_count,
+            MIN(e.occurred_at) AS first_occurred_at,
+            MAX(e.occurred_at) AS last_occurred_at
+          FROM activity_events e
+          INNER JOIN sessions s ON s.session_id = e.session_id
+          WHERE ${filters.join(" AND ")}
+          GROUP BY day_key, e.session_id
+          HAVING user_contact_count > 0 OR borg_replied_count > 0
+          ORDER BY last_occurred_at DESC, e.session_id ASC
+          LIMIT ?
+        `,
+      )
+      .all(...values) as Record<string, unknown>[];
+
+    return rows.map(mapDailyDensityRow);
   }
 
   listRecentGlobalEvents(input: {

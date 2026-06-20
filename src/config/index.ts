@@ -7,6 +7,12 @@ import {
   type EvidenceLedgerSectionId,
 } from "../cognition/evidence-ledger/types.js";
 import { DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD } from "../executive/index.js";
+import {
+  DEFAULT_RECENT_LIVED_EXPERIENCE_CAP,
+  DEFAULT_RECENT_LIVED_EXPERIENCE_DENSITY_CAP,
+  DEFAULT_RECENT_LIVED_EXPERIENCE_GAP_THRESHOLD_MS,
+  DEFAULT_RECENT_LIVED_EXPERIENCE_RECENCY_WINDOW_MS,
+} from "../memory/activity/lived-experience.js";
 import { sessionIdSchema, sessionSourceTypeSchema } from "../sessions/index.js";
 import { readJsonFile } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
@@ -155,6 +161,23 @@ const sharedStateConfigSchema = z
   })
   .strict()
   .prefault({});
+const recentLivedExperienceConfigSchema = z
+  .object({
+    recencyWindowMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(DEFAULT_RECENT_LIVED_EXPERIENCE_RECENCY_WINDOW_MS),
+    cap: z.number().int().positive().default(DEFAULT_RECENT_LIVED_EXPERIENCE_CAP),
+    densityCap: z.number().int().positive().default(DEFAULT_RECENT_LIVED_EXPERIENCE_DENSITY_CAP),
+    gapThresholdMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(DEFAULT_RECENT_LIVED_EXPERIENCE_GAP_THRESHOLD_MS),
+  })
+  .strict()
+  .prefault({});
 const evidenceLedgerConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -165,6 +188,7 @@ const evidenceLedgerConfigSchema = z
     finalizerTargetTokens: z.number().int().positive().default(60_000),
     finalizerHardCapTokens: z.number().int().positive().default(100_000),
     finalizerMaxEntryTextTokens: z.number().int().positive().default(1_200),
+    recentLivedExperience: recentLivedExperienceConfigSchema,
     sectionOptions: z
       .partialRecord(evidenceLedgerSectionIdSchema, evidenceLedgerSectionOptionsSchema)
       .default({}),
@@ -1127,6 +1151,35 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["generation", "evidenceLedger", "finalizerMaxEntryTextTokens"],
     readOptionalEnvNumber(env, "BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_MAX_ENTRY_TEXT_TOKENS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "recentLivedExperience", "recencyWindowMs"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_GENERATION_EVIDENCE_LEDGER_RECENT_LIVED_EXPERIENCE_RECENCY_WINDOW_MS",
+    ),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "recentLivedExperience", "cap"],
+    readOptionalEnvNumber(env, "BORG_GENERATION_EVIDENCE_LEDGER_RECENT_LIVED_EXPERIENCE_CAP"),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "recentLivedExperience", "densityCap"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_GENERATION_EVIDENCE_LEDGER_RECENT_LIVED_EXPERIENCE_DENSITY_CAP",
+    ),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "recentLivedExperience", "gapThresholdMs"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_GENERATION_EVIDENCE_LEDGER_RECENT_LIVED_EXPERIENCE_GAP_THRESHOLD_MS",
+    ),
   );
   setConfigOverride(
     overrides,

@@ -126,8 +126,16 @@ export type TurnPhaseCoordinatorOptions = {
   sharedStateRepository: Pick<SharedStateRepository, "get" | "upsert"> &
     Partial<Pick<SharedStateRepository, "listRecentEntriesForCognition">>;
   activityRepository?: Pick<ActivityRepository, "record" | "listRecentOtherActiveSessionEvents"> &
-    Partial<Pick<ActivityRepository, "listRecentGlobalEvents">>;
-  selfDecisionRepository?: Pick<SelfDecisionRepository, "listRecentAutonomousSelfPrivate">;
+    Partial<
+      Pick<
+        ActivityRepository,
+        | "listRecentGlobalEvents"
+        | "getMostRecentOtherActiveSessionEventOccurredAt"
+        | "listDailyOtherActiveSessionDensity"
+      >
+    >;
+  selfDecisionRepository?: Pick<SelfDecisionRepository, "listRecentAutonomousSelfPrivate"> &
+    Partial<Pick<SelfDecisionRepository, "listDailyAutonomousSelfPrivateDensity">>;
   trainOfThoughtRepository?: Pick<TrainOfThoughtRepository, "append">;
   observedEventRepository?: Pick<
     ObservedEventRepository,

@@ -1165,25 +1165,32 @@ describe("buildBaseSystemPrompt", () => {
             taint: "none",
           },
         ],
-        crossSessionActivityEntries: [
+        recentLivedExperienceEntries: [
           {
-            id: "cross_session_self_activity:1",
+            id: "recent_lived_experience:1",
             source_type: "system_metadata",
-            session_scope: "prior_session",
+            session_scope: "global",
             actor: "system",
             trust_rank: 84,
             text: "Borg replied to Alice 5m ago in another active session.",
-            value: "borg_replied",
-            state: "active",
+            value: "cross_session_activity",
+            state: "active disclosure_class=self_private private-to=unknown",
             state_metadata: {
+              lived_experience_kind: "cross_session_activity",
               event_kind: "borg_replied",
               occurred_at: NOW_MS - 5 * 60_000,
               relative_age: "5m ago",
+              disclosure_label: {
+                disclosure_class: "self_private",
+                audience_scope: "self",
+                private_to_entity_ids: [],
+                origin_audience_entity_ids: [],
+              },
             },
             taint: "none",
           },
         ],
-        selfDecisionIntrospectionEntries: [],
+        renderRecentLivedExperience: true,
         observedEventIntrospectionEntries: [],
       },
       transcriptIncluded: true,
@@ -1247,6 +1254,8 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("preferred_address=Sam");
     expect(block).toContain("<cross_session_awareness>");
     expect(block).toContain("Borg replied to Alice 5m ago in another active session.");
+    expect(block).toContain("<recent_lived_experience>");
+    expect(block).not.toContain("<cross_session_activity_entries>");
     expect(block).toContain("<session_status_snapshot");
     expect(prompt).not.toContain("<borg_creator_directive_briefing>");
     expect(prompt).not.toContain("<borg_commitment_records>");
@@ -1325,28 +1334,35 @@ describe("buildBaseSystemPrompt", () => {
       audienceStanding: {
         commitmentEntries: [],
         relationalEntries: [],
-        crossSessionActivityEntries: [],
         observedEventIntrospectionEntries: [],
-        selfDecisionIntrospectionEntries: [
+        recentLivedExperienceEntries: [
           {
-            id: "self_decision_introspection:1",
+            id: "recent_lived_experience:1",
             source_type: "system_metadata",
-            session_scope: "current_session",
+            session_scope: "global",
             actor: "system",
             trust_rank: 84,
             text: `Autonomous trigger goal_followup_due completed 2h ago: ${decisionSummary}`,
-            value: "goal_followup_due",
-            state: "active",
+            value: "self_decision_introspection",
+            state: "active disclosure_class=self_private private-to=unknown",
             state_metadata: {
+              lived_experience_kind: "self_decision_introspection",
               trigger_name: "goal_followup_due",
               trigger_type: "trigger",
               occurred_at: NOW_MS - 2 * 60 * 60_000,
               relative_age: "2h ago",
               disclosure_class: "self_private",
+              disclosure_label: {
+                disclosure_class: "self_private",
+                audience_scope: "self",
+                private_to_entity_ids: [],
+                origin_audience_entity_ids: [],
+              },
             },
             taint: "none",
           },
         ],
+        renderRecentLivedExperience: true,
       },
       transcriptIncluded: true,
       transcriptCompacted: false,
@@ -1379,12 +1395,134 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(extractBlock(operatorPrompt, "borg_standing_with_audience")).toContain(decisionSummary);
     expect(extractBlock(operatorPrompt, "borg_standing_with_audience")).toContain(
-      "<self_decision_introspection_entries>",
+      "<recent_lived_experience>",
     );
     expect(extractBlock(selfPrompt, "borg_standing_with_audience")).toContain(decisionSummary);
     expect(extractBlock(selfPrompt, "borg_standing_with_audience")).toContain(
-      "<self_decision_introspection_entries>",
+      "<recent_lived_experience>",
     );
+  });
+
+  it("renders recent lived experience chronologically with UTC day boundaries", () => {
+    const firstDayAt = Date.UTC(2026, 5, 15, 20, 0, 0);
+    const secondDayAt = Date.UTC(2026, 5, 17, 10, 0, 0);
+    const evidenceLedger = {
+      sections: [],
+      audienceStanding: {
+        commitmentEntries: [],
+        relationalEntries: [],
+        observedEventIntrospectionEntries: [],
+        recentLivedExperienceEntries: [
+          {
+            id: "recent_lived_experience:2",
+            source_type: "system_metadata",
+            session_scope: "global",
+            actor: "system",
+            trust_rank: 84,
+            text: "Borg replied to Kira 2h ago in another active session.",
+            value: "cross_session_activity",
+            state: "active disclosure_class=self_private private-to=unknown",
+            state_metadata: {
+              lived_experience_kind: "cross_session_activity",
+              occurred_at: secondDayAt,
+              relative_age: "2h ago",
+              disclosure_label: {
+                disclosure_class: "self_private",
+                audience_scope: "self",
+                private_to_entity_ids: [],
+                origin_audience_entity_ids: [],
+              },
+            },
+            taint: "none",
+          },
+          {
+            id: "recent_lived_experience:1",
+            source_type: "system_metadata",
+            session_scope: "global",
+            actor: "system",
+            trust_rank: 84,
+            text: "[Jun 15] 20 conversation turns with BotArena group (10:00-20:00 UTC; activity_events=51; user_contact=20 borg_replied=20 turn_completed=11).",
+            value: "cross_session_activity_density",
+            state: "active disclosure_class=self_private private-to=unknown",
+            state_metadata: {
+              lived_experience_kind: "cross_session_activity_density",
+              occurred_at: firstDayAt,
+              relative_age: "2d ago",
+              disclosure_label: {
+                disclosure_class: "self_private",
+                audience_scope: "self",
+                private_to_entity_ids: [],
+                origin_audience_entity_ids: [],
+              },
+            },
+            taint: "none",
+          },
+        ],
+        renderRecentLivedExperience: true,
+      },
+      transcriptIncluded: true,
+      transcriptCompacted: false,
+      originalTranscriptTokenEstimate: 0,
+      compactedTranscriptEntryCount: 0,
+      rawPreservedUserTranscriptEntryCount: 0,
+      estimatedTokens: 0,
+    } satisfies EvidenceLedger;
+    const block = renderStandingWithAudience({ evidenceLedger });
+
+    expect(block).toContain("<recent_lived_experience>");
+    expect(block).toContain("--- Mon Jun 15 ---");
+    expect(block).toContain("--- Wed Jun 17 ---");
+    expect(block.indexOf("20 conversation turns with BotArena group")).toBeLessThan(
+      block.indexOf("Borg replied to Kira"),
+    );
+    expect(block).not.toContain("<cross_session_activity_entries>");
+    expect(block).not.toContain("<self_decision_introspection_entries>");
+  });
+
+  it("does not render recent lived experience when the structural gap gate is false", () => {
+    const evidenceLedger = {
+      sections: [],
+      audienceStanding: {
+        commitmentEntries: [],
+        relationalEntries: [],
+        observedEventIntrospectionEntries: [],
+        recentLivedExperienceEntries: [
+          {
+            id: "recent_lived_experience:1",
+            source_type: "system_metadata",
+            session_scope: "global",
+            actor: "system",
+            trust_rank: 84,
+            text: "[Jun 15] 20 conversation turns with BotArena group (10:00-20:00 UTC; activity_events=51; user_contact=20 borg_replied=20 turn_completed=11).",
+            value: "cross_session_activity_density",
+            state: "active disclosure_class=self_private private-to=unknown",
+            state_metadata: {
+              lived_experience_kind: "cross_session_activity_density",
+              occurred_at: Date.UTC(2026, 5, 15, 20, 0, 0),
+              relative_age: "2d ago",
+              disclosure_label: {
+                disclosure_class: "self_private",
+                audience_scope: "self",
+                private_to_entity_ids: [],
+                origin_audience_entity_ids: [],
+              },
+            },
+            taint: "none",
+          },
+        ],
+        renderRecentLivedExperience: false,
+      },
+      transcriptIncluded: true,
+      transcriptCompacted: false,
+      originalTranscriptTokenEstimate: 0,
+      compactedTranscriptEntryCount: 0,
+      rawPreservedUserTranscriptEntryCount: 0,
+      estimatedTokens: 0,
+    } satisfies EvidenceLedger;
+    const block = renderStandingWithAudience({ evidenceLedger });
+
+    expect(block).not.toContain("<recent_lived_experience>");
+    expect(block).not.toContain("20 conversation turns with BotArena group");
   });
 
   it("renders social observed and self-private observed memories with labels for all cognition", () => {
@@ -1397,8 +1535,8 @@ describe("buildBaseSystemPrompt", () => {
       audienceStanding: {
         commitmentEntries: [],
         relationalEntries: [],
-        crossSessionActivityEntries: [],
-        selfDecisionIntrospectionEntries: [],
+        recentLivedExperienceEntries: [],
+        renderRecentLivedExperience: false,
         observedEventIntrospectionEntries: [
           {
             id: "observed_event_introspection:1",

@@ -274,6 +274,10 @@ export function createTestConfig(
         // ledger behavior.
         enabled: overrides.generation?.evidenceLedger?.enabled ?? false,
         ...overrides.generation?.evidenceLedger,
+        recentLivedExperience: {
+          ...DEFAULT_CONFIG.generation.evidenceLedger.recentLivedExperience,
+          ...overrides.generation?.evidenceLedger?.recentLivedExperience,
+        },
         decisionArtifact: {
           ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact,
           ...overrides.generation?.evidenceLedger?.decisionArtifact,

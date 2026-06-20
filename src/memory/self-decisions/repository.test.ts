@@ -180,6 +180,53 @@ describe("SelfDecisionRepository", () => {
     db.close();
   });
 
+  it("aggregates autonomous self-private decisions by UTC day", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-self-decisions-density-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "self-decisions.db"), {
+      migrations: selfDecisionMigrations,
+    });
+    const repository = new SelfDecisionRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const sessionId = createSessionId();
+    const firstAt = Date.UTC(2026, 5, 15, 2, 0, 0);
+    const secondAt = Date.UTC(2026, 5, 15, 23, 30, 0);
+    const nextDayAt = Date.UTC(2026, 5, 16, 1, 0, 0);
+
+    for (const [index, occurredAt] of [firstAt, secondAt, nextDayAt].entries()) {
+      repository.record({
+        occurredAt,
+        sessionId,
+        triggerName: `scheduled_reflection_${index}`,
+        triggerType: "trigger",
+        sourceEventId: `scheduled-reflection:${index}`,
+        fireEventId: createStreamEntryId(),
+        decisionSummary: `Reflection ${index}.`,
+        sourceStreamEntryIds: [createStreamEntryId()],
+      });
+    }
+
+    expect(
+      repository.listDailyAutonomousSelfPrivateDensity({
+        sinceMs: firstAt - 1,
+        untilMs: nextDayAt - 1,
+        limit: 10,
+      }),
+    ).toEqual([
+      {
+        dayKey: "2026-06-15",
+        dayStartMs: Date.UTC(2026, 5, 15),
+        decisionCount: 2,
+        firstOccurredAt: firstAt,
+        lastOccurredAt: secondAt,
+      },
+    ]);
+
+    db.close();
+  });
+
   it("validates rows at the read boundary", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-self-decisions-invalid-"));
     tempDirs.push(tempDir);

@@ -58,15 +58,10 @@ import type {
 } from "../../../memory/creator-directives/index.js";
 import { creatorDirectiveDisclosureBlocksPrivateOperation } from "../../../memory/creator-directives/index.js";
 import {
-  DEFAULT_CROSS_SESSION_ACTIVITY_CAP,
-  DEFAULT_CROSS_SESSION_ACTIVITY_RECENCY_WINDOW_MS,
+  selectRecentLivedExperienceRows,
   selectCrossSessionSelfActivity,
 } from "../../../memory/activity/index.js";
-import {
-  DEFAULT_SELF_DECISION_INTROSPECTION_CAP,
-  DEFAULT_SELF_DECISION_INTROSPECTION_RECENCY_WINDOW_MS,
-  selectSelfDecisionIntrospection,
-} from "../../../memory/self-decisions/index.js";
+import { selectSelfDecisionIntrospection } from "../../../memory/self-decisions/index.js";
 import {
   DEFAULT_OBSERVED_EVENT_INTROSPECTION_CAP,
   DEFAULT_OBSERVED_EVENT_INTROSPECTION_RECENCY_WINDOW_MS,
@@ -115,6 +110,7 @@ import {
   shouldSkipSharedStateCompile,
 } from "./shared-state-phase.js";
 import { runSharedStateArtifactRetryOnlyReconciliation } from "./reconciliation-phase.js";
+import { shouldRenderRecentLivedExperience } from "./recent-lived-experience-gap.js";
 import { sharedStateRenderOptions } from "./utils.js";
 import type { TurnExtractionPhaseResult } from "./extraction-phase.js";
 
@@ -824,6 +820,9 @@ export async function runRetrievalPhase(input: {
     }),
     entityRepository: input.options.entityRepository,
   });
+  const recentLivedExperienceConfig =
+    input.options.config.generation.evidenceLedger.recentLivedExperience;
+  const recentLivedExperienceSinceMs = nowMs - recentLivedExperienceConfig.recencyWindowMs;
   const crossSessionSelfActivity =
     input.options.activityRepository === undefined
       ? []
@@ -831,8 +830,8 @@ export async function runRetrievalPhase(input: {
           repository: input.options.activityRepository,
           currentSessionId: input.sessionId,
           nowMs,
-          recencyWindowMs: DEFAULT_CROSS_SESSION_ACTIVITY_RECENCY_WINDOW_MS,
-          cap: DEFAULT_CROSS_SESSION_ACTIVITY_CAP,
+          recencyWindowMs: recentLivedExperienceConfig.recencyWindowMs,
+          cap: recentLivedExperienceConfig.cap,
         });
   const selfDecisionIntrospection =
     input.options.selfDecisionRepository === undefined
@@ -840,9 +839,46 @@ export async function runRetrievalPhase(input: {
       : selectSelfDecisionIntrospection({
           repository: input.options.selfDecisionRepository,
           nowMs,
-          recencyWindowMs: DEFAULT_SELF_DECISION_INTROSPECTION_RECENCY_WINDOW_MS,
-          cap: DEFAULT_SELF_DECISION_INTROSPECTION_CAP,
+          recencyWindowMs: recentLivedExperienceConfig.recencyWindowMs,
+          cap: recentLivedExperienceConfig.cap,
         });
+  const activityDensity =
+    input.options.activityRepository?.listDailyOtherActiveSessionDensity?.({
+      currentSessionId: input.sessionId,
+      sinceMs: recentLivedExperienceSinceMs,
+      untilMs: nowMs,
+      limit: recentLivedExperienceConfig.densityCap,
+    }) ?? [];
+  const selfDecisionDensity =
+    input.options.selfDecisionRepository?.listDailyAutonomousSelfPrivateDensity?.({
+      sinceMs: recentLivedExperienceSinceMs,
+      untilMs: nowMs,
+      limit: recentLivedExperienceConfig.densityCap,
+    }) ?? [];
+  const recentLivedExperience = selectRecentLivedExperienceRows({
+    nowMs,
+    crossSessionSelfActivity,
+    selfDecisionIntrospection,
+    activityDensity,
+    selfDecisionDensity,
+  });
+  const mostRecentOtherSessionActivityAt =
+    input.options.activityRepository?.getMostRecentOtherActiveSessionEventOccurredAt?.({
+      currentSessionId: input.sessionId,
+      sinceMs: recentLivedExperienceSinceMs,
+    }) ?? null;
+  const currentSessionPreviousTurnAt = await currentSessionPreviousTurnAdjacencyAt({
+    options: input.options,
+    sessionId: input.sessionId,
+    currentUserEntries: input.currentUserEntries,
+    currentUserEntryId: input.persistedUserEntry?.id,
+  });
+  const renderRecentLivedExperience = shouldRenderRecentLivedExperience({
+    nowMs,
+    mostRecentOtherSessionActivityAt,
+    currentSessionPreviousTurnAt,
+    gapThresholdMs: recentLivedExperienceConfig.gapThresholdMs,
+  });
   const observedEventQueryText = input.cognitionInput.trim();
   let observedEventQueryVector: Float32Array | null = null;
 
@@ -916,8 +952,8 @@ export async function runRetrievalPhase(input: {
       pendingCommitmentReviews,
       frameAnomaly: input.currentTurnFrameAnomaly,
       activeParticipants: input.activeParticipants,
-      crossSessionSelfActivity,
-      selfDecisionIntrospection,
+      recentLivedExperience,
+      renderRecentLivedExperience,
       observedEventIntrospection,
       autobiographicalRecall,
       participantRoster: input.participantRoster,
@@ -1155,6 +1191,102 @@ export async function buildCompactedEvidenceLedgerWithoutSharedState(input: {
     ledger: compacted.ledger,
     rendered: renderEvidenceLedger(compacted.ledger),
   };
+}
+
+const CURRENT_SESSION_ADJACENCY_KINDS = [
+  "agent_msg",
+  "agent_suppressed",
+  "agent_observed",
+] as const;
+
+function maxTimestamp(values: readonly number[]): number | null {
+  const finite = values.filter((value) => Number.isFinite(value));
+
+  return finite.length === 0 ? null : Math.max(...finite);
+}
+
+function isCurrentSessionAdjacencyEntry(entry: StreamEntry): boolean {
+  return (
+    CURRENT_SESSION_ADJACENCY_KINDS.some((kind) => entry.kind === kind) &&
+    entry.turn_status !== "aborted"
+  );
+}
+
+async function currentSessionPreviousTurnAdjacencyAt(input: {
+  options: TurnPhaseCoordinatorOptions;
+  sessionId: SessionId;
+  currentUserEntryId?: StreamEntryId;
+  currentUserEntries?: readonly StreamEntry[];
+}): Promise<number | null> {
+  const currentEntryIds = dedupePreservingOrder([
+    ...(input.currentUserEntryId === undefined ? [] : [input.currentUserEntryId]),
+    ...(input.currentUserEntries ?? []).map((entry) => entry.id),
+  ]);
+  const currentEntryTimestamps = (input.currentUserEntries ?? []).map((entry) => entry.timestamp);
+
+  if (input.options.entryIndex !== undefined) {
+    const currentRecords =
+      currentEntryIds.length === 0
+        ? new Map()
+        : input.options.entryIndex.lookupMany(currentEntryIds);
+    const currentEntryIndexes = currentEntryIds.flatMap((entryId) => {
+      const indexed = currentRecords.get(entryId)?.entry_index ?? null;
+
+      return indexed === null ? [] : [indexed];
+    });
+    const currentTimestamps = [
+      ...currentEntryTimestamps,
+      ...currentEntryIds.flatMap((entryId) => {
+        const timestamp = currentRecords.get(entryId)?.timestamp;
+
+        return timestamp === undefined ? [] : [timestamp];
+      }),
+    ];
+    const terminalRecords = CURRENT_SESSION_ADJACENCY_KINDS.flatMap((kind) =>
+      input.options.entryIndex!.lookupSessionEntriesByKind({
+        sessionId: input.sessionId,
+        kind,
+      }),
+    ).filter((record) => record.active);
+
+    if (currentEntryIndexes.length > 0) {
+      const oldestCurrentEntryIndex = Math.min(...currentEntryIndexes);
+
+      return maxTimestamp(
+        terminalRecords
+          .filter((record) => record.entry_index !== null)
+          .filter((record) => record.entry_index! < oldestCurrentEntryIndex)
+          .map((record) => record.timestamp),
+      );
+    }
+
+    if (currentTimestamps.length > 0) {
+      const oldestCurrentTimestamp = Math.min(...currentTimestamps);
+
+      return maxTimestamp(
+        terminalRecords
+          .filter((record) => record.timestamp < oldestCurrentTimestamp)
+          .map((record) => record.timestamp),
+      );
+    }
+
+    return maxTimestamp(terminalRecords.map((record) => record.timestamp));
+  }
+
+  const entries = await loadSessionStreamEntries(input.options.createStreamReader(input.sessionId));
+  const currentIds = new Set(currentEntryIds);
+  const firstCurrentIndex =
+    currentIds.size === 0 ? -1 : entries.findIndex((entry) => currentIds.has(entry.id));
+  const priorEntries =
+    firstCurrentIndex >= 0
+      ? entries.slice(0, firstCurrentIndex)
+      : currentEntryTimestamps.length === 0
+        ? entries
+        : entries.filter((entry) => entry.timestamp < Math.min(...currentEntryTimestamps));
+
+  return maxTimestamp(
+    priorEntries.filter(isCurrentSessionAdjacencyEntry).map((entry) => entry.timestamp),
+  );
 }
 
 async function countPriorUserTurnsForSession(input: {

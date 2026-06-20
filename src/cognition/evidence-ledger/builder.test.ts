@@ -736,7 +736,7 @@ describe("EvidenceLedgerBuilder", () => {
     );
   });
 
-  it("keeps cross-session self activity as labeled audience-standing metadata with source handles", async () => {
+  it("keeps recent lived activity as labeled audience-standing metadata with source handles", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const builder = new EvidenceLedgerBuilder({
@@ -749,6 +749,7 @@ describe("EvidenceLedgerBuilder", () => {
       },
       currentSessionTranscriptTokenBudget: 50_000,
     });
+    const sourceStreamEntryId = createStreamEntryId();
 
     const ledger = await builder.build({
       sessionId: DEFAULT_SESSION_ID,
@@ -763,36 +764,44 @@ describe("EvidenceLedgerBuilder", () => {
       openQuestions: [],
       pendingCorrections: [],
       frameAnomaly: null,
-      crossSessionSelfActivity: [
+      recentLivedExperience: [
         {
-          kind: "user_contact",
+          kind: "cross_session_activity",
           occurredAt: NOW_MS - 41_000,
           relativeAge: "~41s ago",
           text: "Alice contacted Borg ~41s ago in another active session.",
-          sourceStreamEntryIds: [createStreamEntryId()],
+          sourceStreamEntryIds: [sourceStreamEntryId],
+          originAudienceEntityIds: [],
+          metadata: {
+            event_kind: "user_contact",
+            session_id: DEFAULT_SESSION_ID,
+            source_stream_ids: [sourceStreamEntryId],
+          },
         },
       ],
+      renderRecentLivedExperience: false,
     });
     const rendered = renderEvidenceLedger(ledger) ?? "";
 
-    expect(ledger.audienceStanding?.crossSessionActivityEntries).toEqual([
+    expect(ledger.audienceStanding?.recentLivedExperienceEntries).toEqual([
       expect.objectContaining({
+        id: "recent_lived_experience:1",
         source_type: "system_metadata",
         session_scope: "global",
         text: "Alice contacted Borg ~41s ago in another active session.",
         state: expect.stringContaining("disclosure_class=self_private"),
         state_metadata: expect.objectContaining({
+          lived_experience_kind: "cross_session_activity",
           source_stream_ids: [expect.stringMatching(/^strm_/)],
         }),
       }),
     ]);
-    expect(rendered).not.toContain("Cross-Session Self Activity");
     expect(rendered).not.toContain("Alice contacted Borg ~41s ago in another active session.");
     expect(rendered).not.toContain("sess_");
     expect(rendered).not.toContain("strm_");
   });
 
-  it("renders self-decision introspection as audience standing only", async () => {
+  it("keeps recent lived self-decision introspection as audience standing only", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const builder = new EvidenceLedgerBuilder({
@@ -820,37 +829,104 @@ describe("EvidenceLedgerBuilder", () => {
       openQuestions: [],
       pendingCorrections: [],
       frameAnomaly: null,
-      selfDecisionIntrospection: [
+      recentLivedExperience: [
         {
+          kind: "self_decision_introspection",
           occurredAt: NOW_MS - 2 * 60 * 60_000,
           relativeAge: "2h ago",
-          triggerName: "goal_followup_due",
-          triggerType: "trigger",
-          decisionSummary,
-          decisionRationale: null,
           sourceStreamEntryIds: [createStreamEntryId()],
+          originAudienceEntityIds: [],
           text: `Autonomous trigger goal_followup_due completed 2h ago: ${decisionSummary}`,
+          metadata: {
+            trigger_name: "goal_followup_due",
+            trigger_type: "trigger",
+            disclosure_class: "self_private",
+          },
         },
       ],
+      renderRecentLivedExperience: false,
     });
     const rendered = renderEvidenceLedger(ledger) ?? "";
 
-    expect(ledger.audienceStanding?.selfDecisionIntrospectionEntries).toEqual([
+    expect(ledger.audienceStanding?.recentLivedExperienceEntries).toEqual([
       expect.objectContaining({
-        id: "self_decision_introspection:1",
+        id: "recent_lived_experience:1",
         source_type: "system_metadata",
         session_scope: "global",
         actor: "system",
         text: expect.stringContaining(decisionSummary),
-        value: "goal_followup_due",
+        value: "self_decision_introspection",
         state_metadata: expect.objectContaining({
           disclosure_class: "self_private",
         }),
       }),
     ]);
-    expect(rendered).not.toContain("Self Decision Introspection");
     expect(rendered).not.toContain(decisionSummary);
     expect(rendered).not.toContain("self_private");
+  });
+
+  it("adds recent lived experience as a dedicated disclosure-labeled section when gap-gated", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-lived-experience",
+      audienceEntityId: null,
+      currentUserMessage: "What happened while I was away?",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      recentLivedExperience: [
+        {
+          kind: "cross_session_activity_density",
+          occurredAt: Date.UTC(2026, 5, 15, 20, 0, 0),
+          relativeAge: "2d ago",
+          text: "[Jun 15] 20 conversation turns with BotArena group (10:00-20:00 UTC; activity_events=51; user_contact=20 borg_replied=20 turn_completed=11).",
+          sourceStreamEntryIds: [],
+          originAudienceEntityIds: [],
+          metadata: {
+            day_key: "2026-06-15",
+            event_count: 51,
+            disclosure_class: "self_private",
+          },
+        },
+      ],
+      renderRecentLivedExperience: true,
+    });
+
+    const section = ledger.sections.find((candidate) => candidate.id === "recent_lived_experience");
+
+    expect(section?.entries).toEqual([
+      expect.objectContaining({
+        id: "recent_lived_experience:1",
+        source_type: "system_metadata",
+        session_scope: "global",
+        text: expect.stringContaining("20 conversation turns with BotArena group"),
+        state: expect.stringContaining("disclosure_class=self_private"),
+        state_metadata: expect.objectContaining({
+          lived_experience_kind: "cross_session_activity_density",
+          disclosure_label: expect.objectContaining({
+            disclosure_class: "self_private",
+          }),
+        }),
+      }),
+    ]);
   });
 
   it("builds observed-event introspection entries with speaker and origin provenance", async () => {
