@@ -88,6 +88,7 @@ import type {
   StreamEntryId,
 } from "../../../util/ids.js";
 import { dedupePreservingOrder } from "../../../util/collections.js";
+import { utcDayStartMs } from "../../../util/utc-day.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
 import type { SessionAudienceRole } from "../../../sessions/index.js";
 import type { ClosureLoopAssessment } from "../../generation/closure-loop.js";
@@ -872,12 +873,34 @@ export async function runRetrievalPhase(input: {
           limit: recentLivedExperienceConfig.densityCap,
         })
       : [];
+  const livedExperienceClosedWindowEndMs = utcDayStartMs(nowMs) - 1;
+  let livedExperienceDaySummaries = [] as ReturnType<
+    NonNullable<typeof input.options.livedExperienceDaySummaryRepository>["listForWindow"]
+  >;
+
+  if (
+    input.options.livedExperienceDaySummaryRepository !== undefined &&
+    livedExperienceClosedWindowEndMs >= recentLivedExperienceSinceMs
+  ) {
+    const selfEntityForLivedExperienceSummaries = input.options.entityRepository.getSelf();
+
+    livedExperienceDaySummaries =
+      selfEntityForLivedExperienceSummaries === null
+        ? []
+        : input.options.livedExperienceDaySummaryRepository.listForWindow({
+            selfEntityId: selfEntityForLivedExperienceSummaries.id,
+            fromMs: recentLivedExperienceSinceMs,
+            toMs: livedExperienceClosedWindowEndMs,
+            limit: recentLivedExperienceConfig.densityCap,
+          });
+  }
   const recentLivedExperience = selectRecentLivedExperienceRows({
     nowMs,
     crossSessionSelfActivity,
     selfDecisionIntrospection,
     activityDensity,
     selfDecisionDensity,
+    daySummaries: livedExperienceDaySummaries,
     autobiographicalPeriods: livedExperienceAutobiographicalPeriods,
     returnSilence: {
       currentAudienceLabel:

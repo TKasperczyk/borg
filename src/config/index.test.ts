@@ -78,6 +78,14 @@ describe("config", () => {
       maxGroupsPerRun: 8,
       budget: 60_000,
     });
+    expect(config.offline.livedExperienceDaySummarizer).toEqual({
+      budget: 80_000,
+      windowDays: 7,
+      maxDaysPerRun: 3,
+      maxSelfDecisionEventsPerDay: 96,
+      maxActivityEventsPerDay: 256,
+      maxEpisodesPerDay: 12,
+    });
     expect(config.offline.overseer.budget).toBeNull();
     expect(config.maintenance.lightProcesses).toEqual([
       "consolidator",
@@ -95,6 +103,7 @@ describe("config", () => {
       "review-resolver",
       "ruminator",
       "self-narrator",
+      "lived-experience-day-summarizer",
       "procedural-synthesizer",
       "belief-reviser",
       "creator-directive-reconciler",

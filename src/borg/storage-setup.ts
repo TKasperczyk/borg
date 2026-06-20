@@ -189,6 +189,10 @@ export function resolveBorgConfig(options: {
         ...DEFAULT_CONFIG.offline.selfNarrator,
         ...rawConfig.offline?.selfNarrator,
       },
+      livedExperienceDaySummarizer: {
+        ...DEFAULT_CONFIG.offline.livedExperienceDaySummarizer,
+        ...rawConfig.offline?.livedExperienceDaySummarizer,
+      },
       beliefReviser: {
         ...DEFAULT_CONFIG.offline.beliefReviser,
         ...rawConfig.offline?.beliefReviser,

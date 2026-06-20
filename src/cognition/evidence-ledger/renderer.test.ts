@@ -1002,13 +1002,19 @@ describe("compactEvidenceLedger", () => {
         id: `recent_lived_experience:spine_${index}`,
         source_type: "system_metadata",
         text:
-          index % 2 === 0
-            ? `[Jun ${16 + index}] ${index + 1} conversation turns with BotArena group.`
-            : `[Jun ${16 + index}] ${index + 1} autonomous reflections; 1 distinct structural pattern.`,
+          index === 0
+            ? "[Jun 16] I held the same restraint across about 28 wakes."
+            : index % 2 === 0
+              ? `[Jun ${16 + index}] ${index + 1} conversation turns with BotArena group.`
+              : `[Jun ${16 + index}] ${index + 1} autonomous reflections; 1 distinct structural pattern.`,
         trust_rank: 84,
         state_metadata: {
           lived_experience_kind:
-            index % 2 === 0 ? "cross_session_activity_density" : "self_decision_density",
+            index === 0
+              ? "lived_experience_day_summary"
+              : index % 2 === 0
+                ? "cross_session_activity_density"
+                : "self_decision_density",
           occurred_at: Date.UTC(2026, 5, 16 + index, 12, 0, 0),
         },
       }),

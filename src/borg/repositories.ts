@@ -9,7 +9,10 @@ import type { EmbeddingClient } from "../embeddings/index.js";
 import { ExecutiveStepsRepository } from "../executive/index.js";
 import type { LLMClient } from "../llm/index.js";
 import { MoodRepository } from "../memory/affective/index.js";
-import { ActivityRepository } from "../memory/activity/index.js";
+import {
+  ActivityRepository,
+  LivedExperienceDaySummaryRepository,
+} from "../memory/activity/index.js";
 import {
   ActionRepository,
   resolveOpenQuestionsForCompletedAction,
@@ -105,6 +108,7 @@ export type BorgRepositorySetup = Pick<
   | "creatorDirectiveRepository"
   | "sharedStateRepository"
   | "activityRepository"
+  | "livedExperienceDaySummaryRepository"
   | "selfDecisionRepository"
   | "trainOfThoughtRepository"
   | "observedEventRepository"
@@ -330,6 +334,10 @@ export async function buildBorgRepositories(
     clock,
   });
   const activityRepository = new ActivityRepository({
+    db: sqlite,
+    clock,
+  });
+  const livedExperienceDaySummaryRepository = new LivedExperienceDaySummaryRepository({
     db: sqlite,
     clock,
   });
@@ -592,6 +600,7 @@ export async function buildBorgRepositories(
     creatorDirectiveRepository,
     sharedStateRepository,
     activityRepository,
+    livedExperienceDaySummaryRepository,
     selfDecisionRepository,
     trainOfThoughtRepository,
     observedEventRepository,

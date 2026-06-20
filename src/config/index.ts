@@ -280,6 +280,7 @@ const maintenanceProcessSchema = z.enum([
   "review-resolver",
   "ruminator",
   "self-narrator",
+  "lived-experience-day-summarizer",
   "procedural-synthesizer",
   "belief-reviser",
   "creator-directive-reconciler",
@@ -508,6 +509,16 @@ const configBaseSchema = z.object({
           cadenceHintDays: z.number().positive().default(7),
         })
         .prefault({}),
+      livedExperienceDaySummarizer: z
+        .object({
+          budget: z.number().int().positive().default(80_000),
+          windowDays: z.number().int().positive().default(7),
+          maxDaysPerRun: z.number().int().positive().default(3),
+          maxSelfDecisionEventsPerDay: z.number().int().positive().default(96),
+          maxActivityEventsPerDay: z.number().int().positive().default(256),
+          maxEpisodesPerDay: z.number().int().positive().default(12),
+        })
+        .prefault({}),
       beliefReviser: z
         .object({
           confidenceDropMultiplier: z.number().min(0).max(1).default(0.5),
@@ -563,6 +574,7 @@ const configBaseSchema = z.object({
           "review-resolver",
           "ruminator",
           "self-narrator",
+          "lived-experience-day-summarizer",
           "procedural-synthesizer",
           "belief-reviser",
           "creator-directive-reconciler",
@@ -1441,6 +1453,42 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "selfNarrator", "cadenceHintDays"],
     readOptionalEnvFloat(env, "BORG_OFFLINE_SELF_NARRATOR_CADENCE_HINT_DAYS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "livedExperienceDaySummarizer", "budget"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_LIVED_EXPERIENCE_DAY_SUMMARIZER_BUDGET"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "livedExperienceDaySummarizer", "windowDays"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_LIVED_EXPERIENCE_DAY_SUMMARIZER_WINDOW_DAYS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "livedExperienceDaySummarizer", "maxDaysPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_LIVED_EXPERIENCE_DAY_SUMMARIZER_MAX_DAYS_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "livedExperienceDaySummarizer", "maxSelfDecisionEventsPerDay"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_OFFLINE_LIVED_EXPERIENCE_DAY_SUMMARIZER_MAX_SELF_DECISION_EVENTS_PER_DAY",
+    ),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "livedExperienceDaySummarizer", "maxActivityEventsPerDay"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_OFFLINE_LIVED_EXPERIENCE_DAY_SUMMARIZER_MAX_ACTIVITY_EVENTS_PER_DAY",
+    ),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "livedExperienceDaySummarizer", "maxEpisodesPerDay"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_LIVED_EXPERIENCE_DAY_SUMMARIZER_MAX_EPISODES_PER_DAY"),
   );
   setConfigOverride(
     overrides,

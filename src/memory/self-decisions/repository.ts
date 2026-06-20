@@ -256,6 +256,35 @@ export class SelfDecisionRepository {
     return rows.map(mapProjectionRow);
   }
 
+  listAutonomousSelfPrivateForRange(input: {
+    sinceMs: number;
+    untilMs: number;
+    limit: number;
+  }): SelfDecisionProjectionSourceEvent[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            occurred_at, trigger_name, trigger_type, decision_summary, decision_rationale,
+            source_stream_entry_ids
+          FROM self_decision_events
+          WHERE
+            origin = 'autonomous'
+            AND disclosure_class = 'self_private'
+            AND occurred_at >= ?
+            AND occurred_at <= ?
+          ORDER BY occurred_at ASC, id ASC
+          LIMIT ?
+        `,
+      )
+      .all(input.sinceMs, input.untilMs, Math.max(1, Math.floor(input.limit))) as Record<
+      string,
+      unknown
+    >[];
+
+    return rows.map(mapProjectionRow);
+  }
+
   listDailyAutonomousSelfPrivateDensity(input: {
     sinceMs: number;
     untilMs?: number;

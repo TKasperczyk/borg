@@ -34,4 +34,34 @@ export const activityMigrations = [
       `);
     },
   },
+  {
+    id: 2,
+    name: "lived_experience_day_summaries",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS lived_experience_day_summaries (
+          id TEXT PRIMARY KEY,
+          self_entity_id TEXT NOT NULL,
+          utc_day TEXT NOT NULL,
+          day_start_ms INTEGER NOT NULL,
+          day_end_ms INTEGER NOT NULL,
+          gist TEXT NOT NULL,
+          salience REAL NOT NULL,
+          counts_snapshot TEXT NOT NULL,
+          source_episode_ids TEXT NOT NULL,
+          source_stream_entry_ids TEXT NOT NULL,
+          disclosure_label TEXT NOT NULL,
+          provenance_kind TEXT NOT NULL,
+          provenance_episode_ids TEXT NOT NULL,
+          provenance_process TEXT NULL,
+          source_run_id TEXT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE(self_entity_id, utc_day)
+        );
+        CREATE INDEX IF NOT EXISTS idx_lived_experience_day_summaries_entity_day_start
+          ON lived_experience_day_summaries(self_entity_id, day_start_ms DESC);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

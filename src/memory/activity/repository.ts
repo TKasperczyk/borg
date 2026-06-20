@@ -83,6 +83,17 @@ export type ActivityDailyDensityRow = {
   lastOccurredAt: number;
 };
 
+export type ActivityGlobalDailyDensityRow = {
+  dayKey: string;
+  dayStartMs: number;
+  eventCount: number;
+  conversationTurnCount: number;
+  distinctSessionCount: number;
+  kindCounts: ActivityEventKindCounts;
+  firstOccurredAt: number;
+  lastOccurredAt: number;
+};
+
 export type ActivityRepositoryOptions = {
   db: SqliteDatabase;
   clock?: Clock;
@@ -205,6 +216,25 @@ function mapDailyDensityRow(row: Record<string, unknown>): ActivityDailyDensityR
         : (row.audience_entity_id as EntityId),
     eventCount: Number(row.event_count),
     conversationTurnCount: Number(row.conversation_turn_count ?? 0),
+    kindCounts: {
+      userContact: Number(row.user_contact_count ?? 0),
+      borgReplied: Number(row.borg_replied_count ?? 0),
+      turnCompleted: Number(row.turn_completed_count ?? 0),
+    },
+    firstOccurredAt: Number(row.first_occurred_at),
+    lastOccurredAt: Number(row.last_occurred_at),
+  };
+}
+
+function mapGlobalDailyDensityRow(row: Record<string, unknown>): ActivityGlobalDailyDensityRow {
+  const dayKey = String(row.day_key);
+
+  return {
+    dayKey,
+    dayStartMs: timestampFromUtcDayKey(dayKey),
+    eventCount: Number(row.event_count),
+    conversationTurnCount: Number(row.conversation_turn_count ?? 0),
+    distinctSessionCount: Number(row.distinct_session_count ?? 0),
     kindCounts: {
       userContact: Number(row.user_contact_count ?? 0),
       borgReplied: Number(row.borg_replied_count ?? 0),
@@ -460,6 +490,52 @@ export class ActivityRepository {
       .all(...values) as Record<string, unknown>[];
 
     return rows.map(mapDailyDensityRow);
+  }
+
+  listDailyGlobalActiveDensity(input: {
+    sinceMs: number;
+    untilMs?: number;
+    limit: number;
+  }): ActivityGlobalDailyDensityRow[] {
+    const filters = ["e.status = 'active'", "s.status = 'active'", "e.occurred_at >= ?"];
+    const values: unknown[] = [input.sinceMs];
+
+    if (input.untilMs !== undefined) {
+      filters.push("e.occurred_at <= ?");
+      values.push(input.untilMs);
+    }
+
+    values.push(Math.max(1, Math.floor(input.limit)));
+
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            strftime('%Y-%m-%d', e.occurred_at / 1000, 'unixepoch') AS day_key,
+            COUNT(*) AS event_count,
+            COUNT(DISTINCT e.session_id) AS distinct_session_count,
+            SUM(CASE WHEN e.kind = 'user_contact' THEN 1 ELSE 0 END) AS user_contact_count,
+            SUM(CASE WHEN e.kind = 'borg_replied' THEN 1 ELSE 0 END) AS borg_replied_count,
+            SUM(CASE WHEN e.kind = 'turn_completed' THEN 1 ELSE 0 END) AS turn_completed_count,
+            COUNT(DISTINCT CASE
+              WHEN e.kind IN ('user_contact', 'borg_replied') THEN
+                e.session_id || '|' || COALESCE(e.turn_id, e.id)
+              ELSE NULL
+            END) AS conversation_turn_count,
+            MIN(e.occurred_at) AS first_occurred_at,
+            MAX(e.occurred_at) AS last_occurred_at
+          FROM activity_events e
+          INNER JOIN sessions s ON s.session_id = e.session_id
+          WHERE ${filters.join(" AND ")}
+          GROUP BY day_key
+          HAVING user_contact_count > 0 OR borg_replied_count > 0
+          ORDER BY last_occurred_at DESC
+          LIMIT ?
+        `,
+      )
+      .all(...values) as Record<string, unknown>[];
+
+    return rows.map(mapGlobalDailyDensityRow);
   }
 
   listRecentGlobalEvents(input: {

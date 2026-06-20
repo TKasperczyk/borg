@@ -14,6 +14,7 @@ import type {
   OfflineProcessPlan,
   OfflineResult,
 } from "./types.js";
+import { OFFLINE_PROCESS_NAMES } from "./types.js";
 
 class CaptureTracer implements TurnTracer {
   readonly enabled = true;
@@ -65,23 +66,8 @@ function fakeProcess(name: OfflineProcessName, result: OfflineResult = emptyResu
 function createProcessRegistry(
   overrides: Partial<Record<OfflineProcessName, OfflineProcess>>,
 ): Record<OfflineProcessName, OfflineProcess> {
-  const names: OfflineProcessName[] = [
-    "consolidator",
-    "reflector",
-    "semantic-extractor",
-    "curator",
-    "overseer",
-    "review-resolver",
-    "ruminator",
-    "self-narrator",
-    "procedural-synthesizer",
-    "belief-reviser",
-    "creator-directive-reconciler",
-    "commitment-reconciler",
-  ];
-
   return Object.fromEntries(
-    names.map((name) => [name, overrides[name] ?? fakeProcess(name)]),
+    OFFLINE_PROCESS_NAMES.map((name) => [name, overrides[name] ?? fakeProcess(name)]),
   ) as Record<OfflineProcessName, OfflineProcess>;
 }
 
@@ -127,21 +113,7 @@ describe("maintenance orchestrator", () => {
           sessionId: DEFAULT_SESSION_ID,
           clock: harness.clock,
         }),
-      processRegistry: {
-        consolidator: process,
-        reflector: process,
-        "semantic-extractor": process,
-        curator: process,
-        overseer: process,
-        associator: process,
-        "review-resolver": process,
-        ruminator: process,
-        "self-narrator": process,
-        "procedural-synthesizer": process,
-        "belief-reviser": process,
-        "creator-directive-reconciler": process,
-        "commitment-reconciler": process,
-      },
+      processRegistry: createProcessRegistry({ curator: process }),
     });
 
     const result = await orchestrator.run({

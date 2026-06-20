@@ -17,6 +17,7 @@ import type {
   SelfDecisionDailyDensityRow,
   SelfDecisionIntrospectionRow,
 } from "../self-decisions/index.js";
+import type { LivedExperienceDaySummary } from "./lived-experience-day-summary.js";
 import type { ActivityDailyDensityRow, ActivityEventKindCounts } from "./repository.js";
 import type { CrossSessionSelfActivityRow } from "./projection.js";
 
@@ -37,12 +38,14 @@ export type RecentLivedExperienceKind =
   | "self_decision_introspection"
   | "cross_session_activity_density"
   | "self_decision_density"
+  | "lived_experience_day_summary"
   | "autobiographical_period";
 
 export const RECENT_LIVED_EXPERIENCE_SPINE_KINDS = [
   "return_silence_delta",
   "cross_session_activity_density",
   "self_decision_density",
+  "lived_experience_day_summary",
   "autobiographical_period",
 ] as const satisfies readonly RecentLivedExperienceKind[];
 
@@ -73,6 +76,7 @@ export type RecentLivedExperienceProjectionInput = {
   selfDecisionIntrospection: readonly SelfDecisionIntrospectionRow[];
   activityDensity: readonly ActivityDailyDensityRow[];
   selfDecisionDensity: readonly SelfDecisionDailyDensityRow[];
+  daySummaries?: readonly LivedExperienceDaySummary[];
   autobiographicalPeriods?: readonly AutobiographicalPeriod[];
   returnSilence?: {
     currentAudienceLabel?: string | null;
@@ -124,6 +128,12 @@ function selfDecisionDensityText(row: SelfDecisionDailyDensityRow): string {
     row.distinctDecisionShapeCount === 1 ? "structural pattern" : "structural patterns";
 
   return `[${span}] ${row.decisionCount} autonomous reflections; ${row.distinctDecisionShapeCount} distinct ${patternLabel} (${timeSpan}).`;
+}
+
+function daySummaryText(row: LivedExperienceDaySummary): string {
+  const span = formatUtcDaySpanLabel(row.day_start_ms, row.day_end_ms);
+
+  return `[${span}] ${row.gist}`;
 }
 
 function privateOriginLabel(originAudienceEntityIds: readonly EntityId[]) {
@@ -207,6 +217,7 @@ export function selectRecentLivedExperienceRows(
   const dailySpineCutoffMs = input.nowMs - dailySpineWindowMs;
   const collapsedActivityDayKeys = new Set<string>();
   const collapsedSelfDecisionDayKeys = new Set<string>();
+  const summaryDayKeys = new Set((input.daySummaries ?? []).map((summary) => summary.utc_day));
   const olderSpineRows = [...input.activityDensity, ...input.selfDecisionDensity].filter((row) =>
     isUtcDayBefore(row.lastOccurredAt, dailySpineCutoffMs),
   );
@@ -322,6 +333,10 @@ export function selectRecentLivedExperienceRows(
   }
 
   for (const row of input.activityDensity) {
+    if (summaryDayKeys.has(row.dayKey)) {
+      continue;
+    }
+
     if (!isUtcDayBefore(row.lastOccurredAt, individualCutoffMs)) {
       continue;
     }
@@ -358,6 +373,10 @@ export function selectRecentLivedExperienceRows(
   }
 
   for (const row of input.selfDecisionDensity) {
+    if (summaryDayKeys.has(row.dayKey)) {
+      continue;
+    }
+
     if (!isUtcDayBefore(row.lastOccurredAt, individualCutoffMs)) {
       continue;
     }
@@ -384,6 +403,30 @@ export function selectRecentLivedExperienceRows(
         last_occurred_at: row.lastOccurredAt,
         relative_age: formatRelativeAge(row.lastOccurredAt, input.nowMs),
         disclosure_class: "self_private",
+      },
+    });
+  }
+
+  for (const summary of input.daySummaries ?? []) {
+    rows.push({
+      kind: "lived_experience_day_summary",
+      occurredAt: summary.day_end_ms,
+      relativeAge: formatRelativeAge(summary.day_end_ms, input.nowMs),
+      text: daySummaryText(summary),
+      sourceStreamEntryIds: summary.source_stream_entry_ids,
+      originAudienceEntityIds: summary.disclosure_label.originAudienceEntityIds,
+      disclosureLabel: summary.disclosure_label,
+      metadata: {
+        summary_id: summary.id,
+        self_entity_id: summary.self_entity_id,
+        utc_day: summary.utc_day,
+        day_start_ms: summary.day_start_ms,
+        day_end_ms: summary.day_end_ms,
+        salience: summary.salience,
+        counts_snapshot: summary.counts_snapshot,
+        source_episode_ids: [...summary.source_episode_ids],
+        source_stream_ids: [...summary.source_stream_entry_ids],
+        relative_age: formatRelativeAge(summary.day_end_ms, input.nowMs),
       },
     });
   }

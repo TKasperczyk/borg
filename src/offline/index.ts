@@ -110,6 +110,13 @@ export {
   type SelfNarratorProcessOptions,
 } from "./self-narrator/index.js";
 export {
+  LIVED_EXPERIENCE_DAY_SUMMARY_TOOL,
+  LivedExperienceDaySummarizerProcess,
+  livedExperienceDaySummarizerPlanSchema,
+  type LivedExperienceDaySummarizerPlan,
+  type LivedExperienceDaySummarizerProcessOptions,
+} from "./lived-experience-day-summarizer/index.js";
+export {
   OFFLINE_PROCESS_NAMES,
   type OfflineChange,
   type OfflineContext,

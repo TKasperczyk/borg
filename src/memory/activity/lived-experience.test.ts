@@ -3,11 +3,15 @@ import { describe, expect, it } from "vitest";
 import {
   createAutobiographicalPeriodId,
   createEntityId,
+  createLivedExperienceDaySummaryId,
   createSessionId,
   createStreamEntryId,
 } from "../../util/ids.js";
 import { unknownMemoryDisclosureLabel } from "../common/disclosure-label.js";
-import { selectRecentLivedExperienceRows } from "./lived-experience.js";
+import {
+  isRecentLivedExperienceSpineKind,
+  selectRecentLivedExperienceRows,
+} from "./lived-experience.js";
 
 describe("selectRecentLivedExperienceRows", () => {
   it("keeps recent individual rows and collapses older days into density rows", () => {
@@ -352,6 +356,133 @@ describe("selectRecentLivedExperienceRows", () => {
     ]);
     expect(rowsWithPeriodCapZero.map((row) => row.kind)).toEqual([
       "cross_session_activity_density",
+    ]);
+  });
+
+  it("emits a day summary spine row and skips same-day deterministic density", () => {
+    const nowMs = Date.UTC(2026, 5, 17, 12, 0, 0);
+    const dayStartMs = Date.UTC(2026, 5, 15);
+    const dayEndMs = dayStartMs + 24 * 60 * 60_000 - 1;
+    const sessionId = createSessionId();
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const rows = selectRecentLivedExperienceRows({
+      nowMs,
+      crossSessionSelfActivity: [],
+      selfDecisionIntrospection: [],
+      activityDensity: [
+        {
+          dayKey: "2026-06-15",
+          dayStartMs,
+          sessionId,
+          sessionLabel: "Arena thread",
+          audienceLabel: "BotArena group",
+          audienceEntityId,
+          eventCount: 18,
+          conversationTurnCount: 6,
+          kindCounts: {
+            userContact: 6,
+            borgReplied: 6,
+            turnCompleted: 6,
+          },
+          firstOccurredAt: dayStartMs + 60_000,
+          lastOccurredAt: dayStartMs + 3_600_000,
+        },
+      ],
+      selfDecisionDensity: [
+        {
+          dayKey: "2026-06-15",
+          dayStartMs,
+          decisionCount: 28,
+          distinctDecisionShapeCount: 2,
+          firstOccurredAt: dayStartMs + 120_000,
+          lastOccurredAt: dayStartMs + 4_000_000,
+        },
+      ],
+      daySummaries: [
+        {
+          id: createLivedExperienceDaySummaryId(),
+          self_entity_id: createEntityId(),
+          utc_day: "2026-06-15",
+          day_start_ms: dayStartMs,
+          day_end_ms: dayEndMs,
+          gist: "I held the same restraint across about 28 wakes; the one new thing was a structural pattern becoming visible.",
+          salience: 0.7,
+          counts_snapshot: {
+            activity: { conversation_turn_count: 6 },
+            self_decisions: { decision_count: 28 },
+          },
+          source_episode_ids: [],
+          source_stream_entry_ids: [sourceStreamEntryId],
+          disclosure_label: unknownMemoryDisclosureLabel([audienceEntityId]),
+          provenance: { kind: "offline", process: "lived-experience-day-summarizer" },
+          source_run_id: null,
+          created_at: nowMs,
+          updated_at: nowMs,
+        },
+      ],
+    });
+    const text = rows.map((row) => row.text).join("\n");
+
+    expect(isRecentLivedExperienceSpineKind("lived_experience_day_summary")).toBe(true);
+    expect(rows.map((row) => row.kind)).toEqual(["lived_experience_day_summary"]);
+    expect(text).toContain("[Jun 15] I held the same restraint across about 28 wakes");
+    expect(text).not.toContain("conversation turns with BotArena group");
+    expect(text).not.toContain("autonomous reflections");
+    expect(rows[0]).toMatchObject({
+      sourceStreamEntryIds: [sourceStreamEntryId],
+      disclosureLabel: expect.objectContaining({ disclosureClass: "unknown" }),
+      metadata: expect.objectContaining({
+        utc_day: "2026-06-15",
+        counts_snapshot: {
+          activity: { conversation_turn_count: 6 },
+          self_decisions: { decision_count: 28 },
+        },
+      }),
+    });
+  });
+
+  it("falls back to deterministic density when no day summary exists", () => {
+    const nowMs = Date.UTC(2026, 5, 17, 12, 0, 0);
+    const dayStartMs = Date.UTC(2026, 5, 15);
+    const rows = selectRecentLivedExperienceRows({
+      nowMs,
+      crossSessionSelfActivity: [],
+      selfDecisionIntrospection: [],
+      activityDensity: [
+        {
+          dayKey: "2026-06-15",
+          dayStartMs,
+          sessionId: createSessionId(),
+          sessionLabel: "Arena thread",
+          audienceLabel: "BotArena group",
+          audienceEntityId: createEntityId(),
+          eventCount: 18,
+          conversationTurnCount: 6,
+          kindCounts: {
+            userContact: 6,
+            borgReplied: 6,
+            turnCompleted: 6,
+          },
+          firstOccurredAt: dayStartMs + 60_000,
+          lastOccurredAt: dayStartMs + 3_600_000,
+        },
+      ],
+      selfDecisionDensity: [
+        {
+          dayKey: "2026-06-15",
+          dayStartMs,
+          decisionCount: 28,
+          distinctDecisionShapeCount: 2,
+          firstOccurredAt: dayStartMs + 120_000,
+          lastOccurredAt: dayStartMs + 4_000_000,
+        },
+      ],
+    });
+
+    expect(rows.map((row) => row.kind)).toEqual([
+      "cross_session_activity_density",
+      "self_decision_density",
     ]);
   });
 });

@@ -5,9 +5,18 @@ export {
   type ActivityDailyDensityRow,
   type ActivityEventRecordInput,
   type ActivityEventKindCounts,
+  type ActivityGlobalDailyDensityRow,
   type ActivityProjectionSourceEvent,
   type ActivityRepositoryOptions,
 } from "./repository.js";
+export {
+  LivedExperienceDaySummaryRepository,
+  livedExperienceDaySummarySchema,
+  type LivedExperienceDaySummary,
+  type LivedExperienceDaySummaryInput,
+  type LivedExperienceDaySummaryListOptions,
+  type LivedExperienceDaySummaryRepositoryOptions,
+} from "./lived-experience-day-summary.js";
 export {
   DEFAULT_CROSS_SESSION_ACTIVITY_CAP,
   DEFAULT_CROSS_SESSION_ACTIVITY_RECENCY_WINDOW_MS,

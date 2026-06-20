@@ -441,4 +441,106 @@ describe("ActivityRepository", () => {
 
     db.close();
   });
+
+  it("aggregates global daily active density without current-session filtering", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-activity-global-density-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "activity.db"), {
+      migrations: composeMigrations(sessionMigrations, activityMigrations, commitmentMigrations),
+    });
+    const sessions = new SessionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const repository = new ActivityRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const firstSessionId = createSessionId();
+    const secondSessionId = createSessionId();
+    const archivedSessionId = createSessionId();
+    const dayStart = Date.UTC(2026, 5, 15);
+    const firstAt = dayStart + 60_000;
+    const secondAt = dayStart + 120_000;
+    const nextDayAt = Date.UTC(2026, 5, 16, 1, 0, 0);
+
+    for (const [sessionId, status] of [
+      [firstSessionId, "active"],
+      [secondSessionId, "active"],
+      [archivedSessionId, "archived"],
+    ] as const) {
+      sessions.ensure({
+        session_id: sessionId,
+        source_type: "demo",
+        label: "Session",
+        audience_label: "Audience",
+        conversation_kind: "demo",
+        audience_role: "participant",
+        status,
+        created_at: dayStart,
+        last_activity_at: nextDayAt,
+      });
+    }
+
+    repository.record({
+      kind: "user_contact",
+      occurredAt: firstAt,
+      sessionId: firstSessionId,
+      turnId: "turn-1",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "borg_replied",
+      occurredAt: secondAt,
+      sessionId: secondSessionId,
+      turnId: "turn-2",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "turn_completed",
+      occurredAt: secondAt + 1,
+      sessionId: secondSessionId,
+      turnId: "turn-2",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "user_contact",
+      occurredAt: secondAt + 2,
+      sessionId: archivedSessionId,
+      turnId: "archived",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "user_contact",
+      occurredAt: nextDayAt,
+      sessionId: firstSessionId,
+      turnId: "next-day",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+
+    expect(
+      repository.listDailyGlobalActiveDensity({
+        sinceMs: dayStart,
+        untilMs: nextDayAt - 1,
+        limit: 10,
+      }),
+    ).toEqual([
+      {
+        dayKey: "2026-06-15",
+        dayStartMs: dayStart,
+        eventCount: 3,
+        conversationTurnCount: 2,
+        distinctSessionCount: 2,
+        kindCounts: {
+          userContact: 1,
+          borgReplied: 1,
+          turnCompleted: 1,
+        },
+        firstOccurredAt: firstAt,
+        lastOccurredAt: secondAt + 1,
+      },
+    ]);
+
+    db.close();
+  });
 });

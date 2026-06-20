@@ -27,7 +27,10 @@ import type { EmbeddingClient } from "../embeddings/index.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { LLMClient } from "../llm/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
-import type { ActivityRepository } from "../memory/activity/index.js";
+import type {
+  ActivityRepository,
+  LivedExperienceDaySummaryRepository,
+} from "../memory/activity/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { CreatorDirectiveRepository } from "../memory/creator-directives/index.js";
@@ -120,6 +123,7 @@ export type BorgDependencies = {
   creatorDirectiveRepository: CreatorDirectiveRepository;
   sharedStateRepository: SharedStateRepository;
   activityRepository: ActivityRepository;
+  livedExperienceDaySummaryRepository: LivedExperienceDaySummaryRepository;
   selfDecisionRepository: SelfDecisionRepository;
   trainOfThoughtRepository: TrainOfThoughtRepository;
   observedEventRepository: ObservedEventRepository;

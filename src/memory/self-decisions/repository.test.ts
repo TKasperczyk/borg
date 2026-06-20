@@ -228,6 +228,62 @@ describe("SelfDecisionRepository", () => {
     db.close();
   });
 
+  it("lists autonomous self-private decision summaries inside an explicit range", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-self-decisions-range-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "self-decisions.db"), {
+      migrations: selfDecisionMigrations,
+    });
+    const repository = new SelfDecisionRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const sessionId = createSessionId();
+    const firstAt = Date.UTC(2026, 5, 15, 2, 0, 0);
+    const inRangeSourceId = createStreamEntryId();
+
+    repository.record({
+      occurredAt: firstAt - 1,
+      sessionId,
+      triggerName: "before",
+      triggerType: "trigger",
+      sourceEventId: "before",
+      fireEventId: createStreamEntryId(),
+      decisionSummary: "Before range.",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      occurredAt: firstAt,
+      sessionId,
+      triggerName: "inside",
+      triggerType: "trigger",
+      sourceEventId: "inside",
+      fireEventId: createStreamEntryId(),
+      decisionSummary: "Inside range.",
+      decisionRationale: "The range read keeps rationale.",
+      sourceStreamEntryIds: [inRangeSourceId],
+    });
+
+    expect(
+      repository.listAutonomousSelfPrivateForRange({
+        sinceMs: firstAt,
+        untilMs: firstAt,
+        limit: 10,
+      }),
+    ).toEqual([
+      {
+        occurredAt: firstAt,
+        triggerName: "inside",
+        triggerType: "trigger",
+        decisionSummary: "Inside range.",
+        decisionRationale: "The range read keeps rationale.",
+        sourceStreamEntryIds: [inRangeSourceId],
+      },
+    ]);
+
+    db.close();
+  });
+
   it("counts full-window daily density and collapses repeated structural emission shapes", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-self-decisions-density-flood-"));
     tempDirs.push(tempDir);
