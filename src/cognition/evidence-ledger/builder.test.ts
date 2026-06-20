@@ -897,7 +897,7 @@ describe("EvidenceLedgerBuilder", () => {
           kind: "cross_session_activity_density",
           occurredAt: Date.UTC(2026, 5, 15, 20, 0, 0),
           relativeAge: "2d ago",
-          text: "[Jun 15] 20 conversation turns with BotArena group (10:00-20:00 UTC; activity_events=51; user_contact=20 borg_replied=20 turn_completed=11).",
+          text: "[Jun 15] 20 conversation turns with BotArena group (10:00-20:00 UTC; user_contact=20 borg_replied=20 turn_completed=11).",
           sourceStreamEntryIds: [],
           originAudienceEntityIds: [],
           metadata: {

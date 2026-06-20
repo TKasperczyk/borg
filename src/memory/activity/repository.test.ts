@@ -344,4 +344,101 @@ describe("ActivityRepository", () => {
 
     db.close();
   });
+
+  it("counts full-window conversational turns inside one capped density day", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-activity-density-flood-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "activity.db"), {
+      migrations: composeMigrations(sessionMigrations, activityMigrations, commitmentMigrations),
+    });
+    const sessions = new SessionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const repository = new ActivityRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const currentSessionId = createSessionId();
+    const arenaSessionId = createSessionId();
+    const audienceEntityId = createEntityId();
+    const firstAt = Date.UTC(2026, 5, 15, 9, 0, 0);
+
+    sessions.ensure({
+      session_id: currentSessionId,
+      source_type: "demo",
+      label: "Current",
+      audience_label: "Tom",
+      conversation_kind: "demo",
+      audience_role: "operator",
+      status: "active",
+      created_at: firstAt,
+      last_activity_at: firstAt,
+    });
+    sessions.ensure({
+      session_id: arenaSessionId,
+      source_type: "botarena",
+      label: "Arena thread",
+      audience_label: "BotArena group",
+      audience_entity_id: audienceEntityId,
+      conversation_kind: "thread",
+      audience_role: "participant",
+      status: "active",
+      created_at: firstAt,
+      last_activity_at: firstAt + 80 * 60_000,
+    });
+
+    for (let index = 0; index < 80; index += 1) {
+      const occurredAt = firstAt + index * 60_000;
+      const turnId = `arena-${index}`;
+
+      repository.record({
+        kind: "user_contact",
+        occurredAt,
+        sessionId: arenaSessionId,
+        turnId,
+        audienceEntityId,
+        sourceStreamEntryIds: [createStreamEntryId()],
+      });
+      repository.record({
+        kind: "borg_replied",
+        occurredAt: occurredAt + 10_000,
+        sessionId: arenaSessionId,
+        turnId,
+        audienceEntityId,
+        sourceStreamEntryIds: [createStreamEntryId()],
+      });
+      repository.record({
+        kind: "turn_completed",
+        occurredAt: occurredAt + 20_000,
+        sessionId: arenaSessionId,
+        turnId,
+        audienceEntityId,
+        sourceStreamEntryIds: [createStreamEntryId()],
+      });
+    }
+
+    expect(
+      repository.listDailyOtherActiveSessionDensity({
+        currentSessionId,
+        sinceMs: firstAt - 1,
+        untilMs: firstAt + 90 * 60_000,
+        limit: 1,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        dayKey: "2026-06-15",
+        sessionId: arenaSessionId,
+        eventCount: 240,
+        conversationTurnCount: 80,
+        kindCounts: {
+          userContact: 80,
+          borgReplied: 80,
+          turnCompleted: 80,
+        },
+      }),
+    ]);
+
+    db.close();
+  });
 });

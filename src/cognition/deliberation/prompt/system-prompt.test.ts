@@ -1441,7 +1441,7 @@ describe("buildBaseSystemPrompt", () => {
             session_scope: "global",
             actor: "system",
             trust_rank: 84,
-            text: "[Jun 15] 20 conversation turns with BotArena group (10:00-20:00 UTC; activity_events=51; user_contact=20 borg_replied=20 turn_completed=11).",
+            text: "[Jun 15] 20 conversation turns with BotArena group (10:00-20:00 UTC; user_contact=20 borg_replied=20 turn_completed=11).",
             value: "cross_session_activity_density",
             state: "active disclosure_class=self_private private-to=unknown",
             state_metadata: {
@@ -1493,7 +1493,7 @@ describe("buildBaseSystemPrompt", () => {
             session_scope: "global",
             actor: "system",
             trust_rank: 84,
-            text: "[Jun 15] 20 conversation turns with BotArena group (10:00-20:00 UTC; activity_events=51; user_contact=20 borg_replied=20 turn_completed=11).",
+            text: "[Jun 15] 20 conversation turns with BotArena group (10:00-20:00 UTC; user_contact=20 borg_replied=20 turn_completed=11).",
             value: "cross_session_activity_density",
             state: "active disclosure_class=self_private private-to=unknown",
             state_metadata: {

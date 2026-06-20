@@ -219,9 +219,66 @@ describe("SelfDecisionRepository", () => {
         dayKey: "2026-06-15",
         dayStartMs: Date.UTC(2026, 5, 15),
         decisionCount: 2,
+        distinctDecisionShapeCount: 1,
         firstOccurredAt: firstAt,
         lastOccurredAt: secondAt,
       },
+    ]);
+
+    db.close();
+  });
+
+  it("counts full-window daily density and collapses repeated structural emission shapes", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-self-decisions-density-flood-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "self-decisions.db"), {
+      migrations: selfDecisionMigrations,
+    });
+    const repository = new SelfDecisionRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const sessionId = createSessionId();
+    const firstAt = Date.UTC(2026, 5, 15, 2, 0, 0);
+
+    for (let index = 0; index < 80; index += 1) {
+      repository.record({
+        occurredAt: firstAt + index * 60_000,
+        sessionId,
+        triggerName: `wake_${index}`,
+        triggerType: "trigger",
+        sourceEventId: `wake:${index}`,
+        fireEventId: createStreamEntryId(),
+        decisionSummary: `Reflection ${index}.`,
+        sourceStreamEntryIds: [createStreamEntryId()],
+      });
+    }
+    repository.record({
+      occurredAt: firstAt + 90 * 60_000,
+      sessionId,
+      triggerName: "condition_wake",
+      triggerType: "condition",
+      sourceEventId: "condition:1",
+      fireEventId: createStreamEntryId(),
+      decisionSummary: "Different structural shape.",
+      decisionRationale: "Different shape because rationale is present.",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+
+    expect(
+      repository.listDailyAutonomousSelfPrivateDensity({
+        sinceMs: firstAt - 1,
+        untilMs: firstAt + 100 * 60_000,
+        limit: 1,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        dayKey: "2026-06-15",
+        decisionCount: 81,
+        distinctDecisionShapeCount: 2,
+        firstOccurredAt: firstAt,
+        lastOccurredAt: firstAt + 90 * 60_000,
+      }),
     ]);
 
     db.close();

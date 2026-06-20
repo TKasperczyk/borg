@@ -1,9 +1,16 @@
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import { coercePositiveIntegerOrFallback } from "../../util/math.js";
+import { formatUtcDaySpanLabel } from "../../util/utc-day.js";
+import { isRecentLivedExperienceSpineKind } from "../../memory/activity/index.js";
+import { selfPrivateMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import { allSectionIds, emptySectionCountRecord } from "./budget.js";
 import { estimateEvidenceLedgerTokens, cloneLedgerWithSections } from "./ledger-copy.js";
 import { dedupeEvidenceLedgerByProvenance } from "./provenance-dedupe.js";
 import { renderSection } from "./section-rendering.js";
+import {
+  appendMemoryDisclosureState,
+  appendMemoryDisclosureStateMetadata,
+} from "./entry-metadata.js";
 import type {
   EvidenceLedger,
   EvidenceLedgerEntry,
@@ -147,11 +154,17 @@ const LOWEST_TRUST_SECTION_ORDER: readonly EvidenceLedgerSectionId[] = [...allSe
     LOWEST_TRUST_SECTION_COMPACTION_PRIORITY[right],
 );
 
-type FullLedgerSectionRetentionPolicy = "head" | "tail";
+type FullLedgerSectionRetentionPolicy = "head" | "tail" | "spine";
+
+type OmittedEntrySpan = {
+  firstOccurredAt: number;
+  lastOccurredAt: number;
+};
+
+const RECENT_LIVED_EXPERIENCE_BREADCRUMB_DISCLOSURE_LABEL = selfPrivateMemoryDisclosureLabel();
 
 const TAIL_PRESERVING_FULL_LEDGER_SECTIONS = new Set<EvidenceLedgerSectionId>([
   "current_session_transcript",
-  "recent_lived_experience",
 ]);
 
 function truncateTextForFullEvidenceLedger(
@@ -188,16 +201,115 @@ function compactFullLedgerEntry(
 type FullLedgerSectionState = {
   section: EvidenceLedgerSection;
   omittedCount: number;
+  omittedSpan?: OmittedEntrySpan;
   dropped: boolean;
   retentionPolicy: FullLedgerSectionRetentionPolicy;
 };
+
+function entryOccurredAt(entry: EvidenceLedgerEntry): number | null {
+  const value = entry.state_metadata?.occurred_at;
+
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function omittedSpanForEntries(entries: readonly EvidenceLedgerEntry[]): OmittedEntrySpan | null {
+  const occurredAts = entries
+    .map(entryOccurredAt)
+    .filter((value): value is number => value !== null);
+
+  if (occurredAts.length === 0) {
+    return null;
+  }
+
+  return {
+    firstOccurredAt: Math.min(...occurredAts),
+    lastOccurredAt: Math.max(...occurredAts),
+  };
+}
+
+function mergeOmittedSpans(
+  left: OmittedEntrySpan | undefined,
+  right: OmittedEntrySpan | null,
+): OmittedEntrySpan | undefined {
+  if (right === null) {
+    return left;
+  }
+
+  if (left === undefined) {
+    return right;
+  }
+
+  return {
+    firstOccurredAt: Math.min(left.firstOccurredAt, right.firstOccurredAt),
+    lastOccurredAt: Math.max(left.lastOccurredAt, right.lastOccurredAt),
+  };
+}
+
+function recentLivedExperienceKind(entry: EvidenceLedgerEntry): string | null {
+  const value = entry.state_metadata?.lived_experience_kind;
+
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function isRecentLivedExperienceSpineEntry(entry: EvidenceLedgerEntry): boolean {
+  return isRecentLivedExperienceSpineKind(recentLivedExperienceKind(entry));
+}
+
+function compareEntriesByOccurredAt(left: EvidenceLedgerEntry, right: EvidenceLedgerEntry): number {
+  const leftOccurredAt = entryOccurredAt(left) ?? 0;
+  const rightOccurredAt = entryOccurredAt(right) ?? 0;
+
+  return leftOccurredAt - rightOccurredAt || left.id.localeCompare(right.id);
+}
+
+function recentLivedExperienceBreadcrumbDisclosure(
+  section: EvidenceLedgerSection,
+  stateMetadata: Record<string, unknown>,
+): Pick<EvidenceLedgerEntry, "state" | "state_metadata"> {
+  if (section.id !== "recent_lived_experience") {
+    return {
+      state: "omitted",
+    };
+  }
+
+  return {
+    state: appendMemoryDisclosureState({
+      state: "omitted",
+      disclosureLabel: RECENT_LIVED_EXPERIENCE_BREADCRUMB_DISCLOSURE_LABEL,
+    }),
+    state_metadata: appendMemoryDisclosureStateMetadata({
+      stateMetadata,
+      disclosureLabel: RECENT_LIVED_EXPERIENCE_BREADCRUMB_DISCLOSURE_LABEL,
+    }),
+  };
+}
 
 function fullLedgerOmittedEntry(
   section: EvidenceLedgerSection,
   omittedCount: number,
   retentionPolicy: FullLedgerSectionRetentionPolicy,
+  omittedSpan?: OmittedEntrySpan,
 ): EvidenceLedgerEntry {
   const omittedKind = retentionPolicy === "tail" ? "older" : "lower-priority";
+  const text =
+    section.id === "recent_lived_experience"
+      ? omittedSpan === undefined
+        ? `Recent lived experience omitted ${omittedCount} detail entries; retained dated spine entries carry the elapsed span.`
+        : `Recent lived experience omitted ${omittedCount} detail entries from ${formatUtcDaySpanLabel(
+            omittedSpan.firstOccurredAt,
+            omittedSpan.lastOccurredAt,
+          )}; omitted detail is summarized in the dated spine above.`
+      : `Evidence ledger omitted ${omittedCount} ${omittedKind} entries from ${section.id} to stay within the finalizer ledger budget.`;
+  const disclosure = recentLivedExperienceBreadcrumbDisclosure(section, {
+    breadcrumb_kind: "recent_lived_experience_omission",
+    omitted_entry_count: omittedCount,
+    ...(omittedSpan === undefined
+      ? {}
+      : {
+          first_omitted_occurred_at: omittedSpan.firstOccurredAt,
+          last_omitted_occurred_at: omittedSpan.lastOccurredAt,
+        }),
+  });
 
   return {
     id: `evidence_ledger_omitted:${section.id}`,
@@ -205,8 +317,8 @@ function fullLedgerOmittedEntry(
     session_scope: "global",
     actor: "system",
     trust_rank: 0,
-    state: "omitted",
-    text: `Evidence ledger omitted ${omittedCount} ${omittedKind} entries from ${section.id} to stay within the finalizer ledger budget.`,
+    ...disclosure,
+    text,
     taint: "none",
   };
 }
@@ -215,13 +327,18 @@ function fullLedgerDroppedSectionEntry(
   section: EvidenceLedgerSection,
   omittedCount: number,
 ): EvidenceLedgerEntry {
+  const disclosure = recentLivedExperienceBreadcrumbDisclosure(section, {
+    breadcrumb_kind: "recent_lived_experience_dropped_section",
+    omitted_entry_count: omittedCount,
+  });
+
   return {
     id: `evidence_ledger_dropped_section:${section.id}`,
     source_type: "system_metadata",
     session_scope: "global",
     actor: "system",
     trust_rank: 0,
-    state: "omitted",
+    ...disclosure,
     text: `Evidence ledger dropped all entries from ${section.id} to stay within the global hard cap: entries=${omittedCount}.`,
     taint: "none",
   };
@@ -245,7 +362,12 @@ function materializeFullLedgerSectionState(state: FullLedgerSectionState): Evide
         ? state.section.entries
         : [
             ...state.section.entries,
-            fullLedgerOmittedEntry(state.section, state.omittedCount, state.retentionPolicy),
+            fullLedgerOmittedEntry(
+              state.section,
+              state.omittedCount,
+              state.retentionPolicy,
+              state.omittedSpan,
+            ),
           ],
   };
 }
@@ -280,7 +402,115 @@ function fullLedgerSectionOptions(
 function fullLedgerSectionRetentionPolicy(
   sectionId: EvidenceLedgerSectionId,
 ): FullLedgerSectionRetentionPolicy {
+  if (sectionId === "recent_lived_experience") {
+    return "spine";
+  }
+
   return TAIL_PRESERVING_FULL_LEDGER_SECTIONS.has(sectionId) ? "tail" : "head";
+}
+
+function renderedSectionWithOmission(input: {
+  section: EvidenceLedgerSection;
+  entries: readonly EvidenceLedgerEntry[];
+  omittedCount: number;
+  retentionPolicy: FullLedgerSectionRetentionPolicy;
+  omittedSpan?: OmittedEntrySpan;
+}): string {
+  return renderSection({
+    ...input.section,
+    entries:
+      input.omittedCount <= 0
+        ? [...input.entries]
+        : [
+            ...input.entries,
+            fullLedgerOmittedEntry(
+              input.section,
+              input.omittedCount,
+              input.retentionPolicy,
+              input.omittedSpan,
+            ),
+          ],
+  });
+}
+
+function capRecentLivedExperienceSection(input: {
+  section: EvidenceLedgerSection;
+  maxEntryTextTokens: number;
+  options: FullEvidenceLedgerSectionOptions;
+}): FullLedgerSectionState {
+  const compactedEntries = input.section.entries
+    .map((entry) => compactFullLedgerEntry(entry, input.maxEntryTextTokens))
+    .sort(compareEntriesByOccurredAt);
+  const spineEntries = compactedEntries.filter(isRecentLivedExperienceSpineEntry);
+  const detailEntries = compactedEntries.filter(
+    (entry) => !isRecentLivedExperienceSpineEntry(entry),
+  );
+  let includedSpineEntries = spineEntries;
+  let includedDetailEntries: EvidenceLedgerEntry[] = [];
+  let omittedCount = 0;
+  let omittedSpan: OmittedEntrySpan | undefined;
+
+  if (includedSpineEntries.length > input.options.maxEntries) {
+    const omittedSpineEntries = includedSpineEntries.slice(
+      0,
+      includedSpineEntries.length - input.options.maxEntries,
+    );
+
+    omittedCount += omittedSpineEntries.length;
+    omittedSpan = mergeOmittedSpans(omittedSpan, omittedSpanForEntries(omittedSpineEntries));
+    includedSpineEntries = includedSpineEntries.slice(-input.options.maxEntries);
+  }
+
+  const detailCapacity = Math.max(0, input.options.maxEntries - includedSpineEntries.length);
+
+  if (detailCapacity > 0) {
+    includedDetailEntries = detailEntries.slice(-detailCapacity);
+  }
+
+  const omittedDetailEntries = detailEntries.slice(
+    0,
+    detailEntries.length - includedDetailEntries.length,
+  );
+  omittedCount += omittedDetailEntries.length;
+  omittedSpan = mergeOmittedSpans(omittedSpan, omittedSpanForEntries(omittedDetailEntries));
+
+  const includedEntries = [...includedSpineEntries, ...includedDetailEntries];
+
+  while (includedEntries.length > 1) {
+    const rendered = renderedSectionWithOmission({
+      section: input.section,
+      entries: includedEntries,
+      omittedCount,
+      retentionPolicy: "spine",
+      omittedSpan,
+    });
+
+    if (estimatePromptTokens(rendered) <= input.options.maxTokens) {
+      break;
+    }
+
+    const detailIndex = includedEntries.findLastIndex(
+      (entry) => !isRecentLivedExperienceSpineEntry(entry),
+    );
+    const removeIndex = detailIndex >= 0 ? detailIndex : includedEntries.length - 1;
+    const [removed] = includedEntries.splice(removeIndex, 1);
+
+    if (removed !== undefined) {
+      omittedCount += 1;
+      omittedSpan = mergeOmittedSpans(omittedSpan, omittedSpanForEntries([removed]));
+    }
+  }
+
+  return {
+    section: {
+      ...input.section,
+      entries: includedEntries,
+    },
+    omittedCount,
+    omittedSpan,
+    dropped: false,
+    retentionPolicy: "spine",
+  };
 }
 
 function capFullLedgerSection(input: {
@@ -289,6 +519,11 @@ function capFullLedgerSection(input: {
   options: FullEvidenceLedgerSectionOptions;
 }): FullLedgerSectionState {
   const retentionPolicy = fullLedgerSectionRetentionPolicy(input.section.id);
+
+  if (retentionPolicy === "spine") {
+    return capRecentLivedExperienceSection(input);
+  }
+
   const entries =
     retentionPolicy === "tail"
       ? input.section.entries.slice(-input.options.maxEntries)
@@ -413,14 +648,26 @@ function trimFullLedgerToTarget(
     }
 
     const state = states.find((section) => section.section.id === sectionId)!;
+    const recentDetailRemoveIndex = state.section.entries.findLastIndex(
+      (entry) => !isRecentLivedExperienceSpineEntry(entry),
+    );
+    const removeIndex =
+      state.retentionPolicy === "tail"
+        ? 0
+        : state.retentionPolicy === "spine"
+          ? recentDetailRemoveIndex >= 0
+            ? recentDetailRemoveIndex
+            : state.section.entries.length - 1
+          : state.section.entries.length - 1;
+    const removedEntries =
+      removeIndex < state.section.entries.length ? [state.section.entries[removeIndex]!] : [];
+
     state.section = {
       ...state.section,
-      entries:
-        state.retentionPolicy === "tail"
-          ? state.section.entries.slice(1)
-          : state.section.entries.slice(0, -1),
+      entries: state.section.entries.filter((_, index) => index !== removeIndex),
     };
     state.omittedCount += 1;
+    state.omittedSpan = mergeOmittedSpans(state.omittedSpan, omittedSpanForEntries(removedEntries));
   }
 }
 
@@ -447,6 +694,10 @@ function dropFullLedgerSectionsToHardCap(
 
     const state = states.find((section) => section.section.id === sectionId)!;
     state.omittedCount += state.section.entries.length;
+    state.omittedSpan = mergeOmittedSpans(
+      state.omittedSpan,
+      omittedSpanForEntries(state.section.entries),
+    );
     state.section = {
       ...state.section,
       entries: [],

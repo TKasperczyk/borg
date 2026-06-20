@@ -58,6 +58,7 @@ import type {
 } from "../../../memory/creator-directives/index.js";
 import { creatorDirectiveDisclosureBlocksPrivateOperation } from "../../../memory/creator-directives/index.js";
 import {
+  RECENT_LIVED_EXPERIENCE_DAILY_SPINE_WINDOW_MS,
   selectRecentLivedExperienceRows,
   selectCrossSessionSelfActivity,
 } from "../../../memory/activity/index.js";
@@ -855,24 +856,41 @@ export async function runRetrievalPhase(input: {
       untilMs: nowMs,
       limit: recentLivedExperienceConfig.densityCap,
     }) ?? [];
-  const recentLivedExperience = selectRecentLivedExperienceRows({
-    nowMs,
-    crossSessionSelfActivity,
-    selfDecisionIntrospection,
-    activityDensity,
-    selfDecisionDensity,
-  });
-  const mostRecentOtherSessionActivityAt =
-    input.options.activityRepository?.getMostRecentOtherActiveSessionEventOccurredAt?.({
-      currentSessionId: input.sessionId,
-      sinceMs: recentLivedExperienceSinceMs,
-    }) ?? null;
   const currentSessionPreviousTurnAt = await currentSessionPreviousTurnAdjacencyAt({
     options: input.options,
     sessionId: input.sessionId,
     currentUserEntries: input.currentUserEntries,
     currentUserEntryId: input.persistedUserEntry?.id,
   });
+  const autobiographicalPeriodCutoffMs = nowMs - RECENT_LIVED_EXPERIENCE_DAILY_SPINE_WINDOW_MS;
+  const livedExperienceAutobiographicalPeriods =
+    input.options.autobiographicalRepository !== undefined &&
+    autobiographicalPeriodCutoffMs > recentLivedExperienceSinceMs
+      ? input.options.autobiographicalRepository.listPeriods({
+          fromTs: recentLivedExperienceSinceMs,
+          toTs: autobiographicalPeriodCutoffMs,
+          limit: recentLivedExperienceConfig.densityCap,
+        })
+      : [];
+  const recentLivedExperience = selectRecentLivedExperienceRows({
+    nowMs,
+    crossSessionSelfActivity,
+    selfDecisionIntrospection,
+    activityDensity,
+    selfDecisionDensity,
+    autobiographicalPeriods: livedExperienceAutobiographicalPeriods,
+    returnSilence: {
+      currentAudienceLabel:
+        input.audienceEntity?.canonical_name ?? input.turnInput.audience ?? null,
+      currentSessionPreviousTurnAt,
+    },
+    windowStartMs: recentLivedExperienceSinceMs,
+  });
+  const mostRecentOtherSessionActivityAt =
+    input.options.activityRepository?.getMostRecentOtherActiveSessionEventOccurredAt?.({
+      currentSessionId: input.sessionId,
+      sinceMs: recentLivedExperienceSinceMs,
+    }) ?? null;
   const renderRecentLivedExperience = shouldRenderRecentLivedExperience({
     nowMs,
     mostRecentOtherSessionActivityAt,

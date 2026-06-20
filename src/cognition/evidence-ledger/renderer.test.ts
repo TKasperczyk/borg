@@ -994,6 +994,115 @@ describe("compactEvidenceLedger", () => {
     ]);
   });
 
+  it("retains recent lived experience spine rows while trimming individual detail", () => {
+    const ledger = makeLedger();
+    const pressureText = "individual lived detail ".repeat(120);
+    const densityEntries = Array.from({ length: 4 }, (_, index) =>
+      syntheticEntry({
+        id: `recent_lived_experience:spine_${index}`,
+        source_type: "system_metadata",
+        text:
+          index % 2 === 0
+            ? `[Jun ${16 + index}] ${index + 1} conversation turns with BotArena group.`
+            : `[Jun ${16 + index}] ${index + 1} autonomous reflections; 1 distinct structural pattern.`,
+        trust_rank: 84,
+        state_metadata: {
+          lived_experience_kind:
+            index % 2 === 0 ? "cross_session_activity_density" : "self_decision_density",
+          occurred_at: Date.UTC(2026, 5, 16 + index, 12, 0, 0),
+        },
+      }),
+    );
+    const detailEntries = Array.from({ length: 30 }, (_, index) =>
+      syntheticEntry({
+        id: `recent_lived_experience:detail_${index}`,
+        source_type: "system_metadata",
+        text: `${index} ${pressureText}`,
+        trust_rank: 84,
+        state_metadata: {
+          lived_experience_kind: "self_decision_introspection",
+          occurred_at: Date.UTC(2026, 5, 19, 13, index, 0),
+        },
+      }),
+    );
+
+    section(ledger, "recent_lived_experience").entries = [...densityEntries, ...detailEntries];
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+      maxEntryTextTokens: 120,
+      sectionOptions: {
+        recent_lived_experience: {
+          maxEntries: 4,
+          maxTokens: 20_000,
+        },
+      },
+    });
+    const recentEntries = section(compacted.ledger, "recent_lived_experience").entries;
+    const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
+
+    expect(recentEntries.map((entry) => entry.id)).toEqual(
+      expect.arrayContaining(densityEntries.map((entry) => entry.id)),
+    );
+    expect(
+      recentEntries.some((entry) => entry.id.startsWith("recent_lived_experience:detail_")),
+    ).toBe(false);
+    expect(rendered).toContain("Recent lived experience omitted 30 detail entries from Jun 19");
+    expect(rendered).toContain("omitted detail is summarized in the dated spine above");
+    expect(
+      recentEntries.find((entry) => entry.id === "evidence_ledger_omitted:recent_lived_experience"),
+    ).toMatchObject({
+      state: expect.stringContaining("disclosure_class=self_private"),
+      state_metadata: expect.objectContaining({
+        disclosure_label: expect.objectContaining({
+          disclosure_class: "self_private",
+        }),
+      }),
+    });
+    expect(compacted.traceSummary.omittedEntryCountsBySection.recent_lived_experience).toBe(30);
+  });
+
+  it("labels recent lived experience dropped-section breadcrumbs as self-private", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "recent_lived_experience").entries = [
+      syntheticEntry({
+        id: "recent_lived_experience:spine_drop",
+        source_type: "system_metadata",
+        text: "Recent lived experience spine under hard-cap pressure. ".repeat(200),
+        trust_rank: 84,
+        state_metadata: {
+          lived_experience_kind: "self_decision_density",
+          occurred_at: Date.UTC(2026, 5, 19, 12, 0, 0),
+        },
+      }),
+    ];
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 1,
+      hardCapTokens: 1,
+      maxEntryTextTokens: 120,
+      sectionOptions: {
+        recent_lived_experience: {
+          maxEntries: 1,
+          maxTokens: 20_000,
+        },
+      },
+    });
+    const dropped = section(compacted.ledger, "recent_lived_experience").entries[0];
+
+    expect(dropped).toMatchObject({
+      id: "evidence_ledger_dropped_section:recent_lived_experience",
+      state: expect.stringContaining("disclosure_class=self_private"),
+      state_metadata: expect.objectContaining({
+        disclosure_label: expect.objectContaining({
+          disclosure_class: "self_private",
+        }),
+      }),
+    });
+  });
+
   it("drops lowest-trust sections when the hard cap is exceeded", () => {
     const ledger = makeLedger();
     const pressureText = "hard cap pressure ".repeat(160);

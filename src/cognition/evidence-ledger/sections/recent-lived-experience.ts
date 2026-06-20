@@ -1,3 +1,4 @@
+import { isRecentLivedExperienceSpineKind } from "../../../memory/activity/index.js";
 import type { BuilderSectionContext } from "../builder-context.js";
 import { buildRecentLivedExperienceLedgerEntry } from "../recent-lived-experience.js";
 import { addEntry, setSectionFraming } from "../section-buckets.js";
@@ -16,6 +17,7 @@ export function addRecentLivedExperienceSection(context: BuilderSectionContext):
     text: RECENT_LIVED_EXPERIENCE_FRAMING,
     counts: {
       entries: rows.length,
+      spine: rows.filter((row) => isRecentLivedExperienceSpineKind(row.kind)).length,
       density: rows.filter(
         (row) =>
           row.kind === "cross_session_activity_density" || row.kind === "self_decision_density",

@@ -51,6 +51,7 @@ export type SelfDecisionDailyDensityRow = {
   dayKey: string;
   dayStartMs: number;
   decisionCount: number;
+  distinctDecisionShapeCount: number;
   firstOccurredAt: number;
   lastOccurredAt: number;
 };
@@ -128,6 +129,7 @@ function mapDailyDensityRow(row: Record<string, unknown>): SelfDecisionDailyDens
     dayKey,
     dayStartMs: timestampFromUtcDayKey(dayKey),
     decisionCount: Number(row.decision_count),
+    distinctDecisionShapeCount: Number(row.distinct_decision_shape_count ?? 0),
     firstOccurredAt: Number(row.first_occurred_at),
     lastOccurredAt: Number(row.last_occurred_at),
   };
@@ -279,6 +281,12 @@ export class SelfDecisionRepository {
           SELECT
             strftime('%Y-%m-%d', occurred_at / 1000, 'unixepoch') AS day_key,
             COUNT(*) AS decision_count,
+            COUNT(DISTINCT (
+              session_id || '|' ||
+              trigger_type || '|' ||
+              CASE WHEN decision_rationale IS NULL OR decision_rationale = '' THEN 'r0' ELSE 'r1' END || '|' ||
+              CASE WHEN turn_result_id IS NULL THEN 't0' ELSE 't1' END
+            )) AS distinct_decision_shape_count,
             MIN(occurred_at) AS first_occurred_at,
             MAX(occurred_at) AS last_occurred_at
           FROM self_decision_events
