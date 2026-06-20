@@ -1360,6 +1360,12 @@ export class TurnPhaseCoordinator {
         turnId,
         sessionId,
       });
+      workingMemory = this.options.discourseStateService.clearStopState({
+        workingMemory,
+        reason: `Closure-loop classifier marked the current turn substantive: ${closureLoopAssessment.reason}`,
+        turnId,
+        sessionId,
+      });
     } else if (
       closureLoopAssessment?.currentUserClosureShaped === true &&
       workingMemory.discourse_state?.closure_loop?.status === "named"

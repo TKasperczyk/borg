@@ -161,6 +161,13 @@ function readTraceEvents(path: string): TraceEvent[] {
     .map((line) => JSON.parse(line) as TraceEvent);
 }
 
+async function seedClosureLoopClassifierWindow(borg: Borg): Promise<void> {
+  await borg.stream.append({ kind: "user_msg", content: "Prior turn one." });
+  await borg.stream.append({ kind: "agent_msg", content: "Prior response one." });
+  await borg.stream.append({ kind: "user_msg", content: "Prior turn two." });
+  await borg.stream.append({ kind: "agent_msg", content: "Prior response two." });
+}
+
 function createEmptyReflectionResponse() {
   return {
     text: "",
@@ -544,6 +551,80 @@ function createClosureLoopSignoffResponseFromRequest() {
               messages,
               confidence: 0.96,
               rationale: "The current user turn is another closure beat.",
+            },
+          },
+        ],
+      };
+    },
+    { budget: "closure-loop-classifier" },
+  );
+}
+
+function createClosureLoopCurrentTurnResponse(input: {
+  substantive: boolean;
+  reason?: string;
+}) {
+  return Object.assign(
+    (options: LLMCompleteOptions): LLMCompleteResult => {
+      const payload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
+        dialogue_window?: unknown;
+      };
+      const dialogueWindow = Array.isArray(payload.dialogue_window) ? payload.dialogue_window : [];
+      const supplied = dialogueWindow
+        .map((item) => {
+          if (typeof item !== "object" || item === null) {
+            return null;
+          }
+
+          const message = item as { message_ref?: unknown; role?: unknown };
+
+          if (
+            typeof message.message_ref !== "string" ||
+            (message.role !== "user" && message.role !== "assistant")
+          ) {
+            return null;
+          }
+
+          return {
+            message_ref: message.message_ref,
+            role: message.role,
+          };
+        })
+        .filter((message): message is { message_ref: string; role: "user" | "assistant" } =>
+          message !== null,
+        );
+      const currentUserIndex = supplied.findLastIndex((message) => message.role === "user");
+      const messages: ClosureLoopClassifiedMessage[] = supplied.map((message, index) => {
+        const currentUserSubstantive =
+          input.substantive && index === currentUserIndex && message.role === "user";
+
+        return {
+          message_ref: message.message_ref,
+          role: message.role,
+          act: currentUserSubstantive ? "substantive" : "minimal_acknowledgment",
+          is_closure_shaped: false,
+          has_substantive_content: currentUserSubstantive,
+          has_substantive_state_delta: false,
+        };
+      });
+
+      return {
+        text: "",
+        input_tokens: 4,
+        output_tokens: 2,
+        stop_reason: "tool_use" as const,
+        tool_calls: [
+          {
+            id: "toolu_closure_loop",
+            name: CLOSURE_LOOP_CLASSIFIER_TOOL_NAME,
+            input: {
+              messages,
+              confidence: 0.96,
+              rationale:
+                input.reason ??
+                (input.substantive
+                  ? "The current user turn advances content."
+                  : "The current user turn remains a loop probe."),
             },
           },
         ],
@@ -7484,6 +7565,130 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           .filter((event) => event.event === "turn.terminal")
           .map((event) => event.outcome),
       ).toEqual(["reflected", "suppressed_generation_gate"]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("clears active stop before the generation gate when closure-loop marks the turn substantive", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_200_500);
+    const stopSourceId = createStreamEntryId();
+    const llm = new FakeLLMClient({
+      responses: [
+        createGoalPromotionResponse([]),
+        createClosureLoopCurrentTurnResponse({
+          substantive: true,
+          reason: "The current turn introduces a new topic and asks for a response.",
+        }),
+        createEmitAnswerResponse("Closure-loop released the stale stop."),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "workingMemoryStore">;
+    };
+
+    try {
+      await seedClosureLoopClassifierWindow(borg);
+      const workingMemory = internal.deps.workingMemoryStore.load(DEFAULT_SESSION_ID);
+      internal.deps.workingMemoryStore.save(
+        setStopUntilSubstantiveContent(workingMemory, {
+          provenance: "finalizer_emission_metadata",
+          sourceStreamEntryId: stopSourceId,
+          reason: "A stale stop from an earlier closed thread.",
+          sinceTurn: workingMemory.turn_counter,
+        }),
+      );
+
+      const result = await borg.turn({
+        userMessage:
+          "A long-running nutrition study reported a new finding about fries and diabetes risk. What do you all make of it?",
+      });
+      const traceEvents = readTraceEvents(tracePath);
+
+      expect(result.emitted).toBe(true);
+      expect(result.response).toBe("Closure-loop released the stale stop.");
+      expect(borg.workmem.load().discourse_state?.stop_until_substantive_content).toBeNull();
+      expect(llm.requests.some((request) => request.budget === "closure-loop-classifier")).toBe(
+        true,
+      );
+      expect(llm.requests.some((request) => request.budget === "generation-gate")).toBe(false);
+      expect(
+        traceEvents.some(
+          (event) =>
+            event.event === "discourse_state.transitioned" &&
+            event.state === "stop_until_substantive_content" &&
+            event.transition === "cleared",
+        ),
+      ).toBe(true);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("keeps active stop for a loop-probe when closure-loop does not mark it substantive", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_200_750);
+    const stopSourceId = createStreamEntryId();
+    const llm = new FakeLLMClient({
+      responses: [
+        createGoalPromotionResponse([]),
+        createClosureLoopCurrentTurnResponse({
+          substantive: false,
+          reason: "The current turn remains a repeated minimal loop probe.",
+        }),
+        createGenerationGateResponse({
+          decision: "suppress",
+          substantive: false,
+          reason: "The active stop still applies to the loop probe.",
+        }),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "workingMemoryStore">;
+    };
+
+    try {
+      await seedClosureLoopClassifierWindow(borg);
+      const workingMemory = internal.deps.workingMemoryStore.load(DEFAULT_SESSION_ID);
+      internal.deps.workingMemoryStore.save(
+        setStopUntilSubstantiveContent(workingMemory, {
+          provenance: "finalizer_emission_metadata",
+          sourceStreamEntryId: stopSourceId,
+          reason: "A stale stop from an earlier closed thread.",
+          sinceTurn: workingMemory.turn_counter,
+        }),
+      );
+
+      const result = await borg.turn({
+        userMessage: "No.",
+      });
+
+      expect(result.emitted).toBe(false);
+      expect(result.response).toBe("");
+      expect(result.emission).toMatchObject({
+        kind: "suppressed",
+        reason: "active_discourse_stop",
+      });
+      expect(borg.workmem.load().discourse_state?.stop_until_substantive_content).toMatchObject({
+        provenance: "finalizer_emission_metadata",
+        source_stream_entry_id: stopSourceId,
+      });
+      expect(llm.requests.some((request) => request.budget === "closure-loop-classifier")).toBe(
+        true,
+      );
+      expect(llm.requests.some((request) => request.budget === "generation-gate")).toBe(true);
     } finally {
       await borg.close();
     }
