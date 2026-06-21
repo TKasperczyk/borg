@@ -1,7 +1,9 @@
 import { SystemClock, type Clock } from "../util/clock.js";
 import type { Migration, SqliteDatabase } from "../storage/sqlite/index.js";
+import { tableHasColumn } from "../storage/sqlite/migrations-utils.js";
 import type { SessionId } from "../util/ids.js";
 import { StorageError } from "../util/errors.js";
+import { assertJsonValue, serializeJsonValue, type JsonValue } from "../util/json-value.js";
 
 export const streamWatermarkMigrations: Migration[] = [
   {
@@ -20,6 +22,15 @@ export const streamWatermarkMigrations: Migration[] = [
       `);
     },
   },
+  {
+    id: 2,
+    name: "stream_watermark_metadata_json",
+    up: (db) => {
+      if (!tableHasColumn(db, "stream_watermarks", "metadata_json")) {
+        db.exec("ALTER TABLE stream_watermarks ADD COLUMN metadata_json TEXT");
+      }
+    },
+  },
 ];
 
 export type StreamWatermark = {
@@ -28,6 +39,7 @@ export type StreamWatermark = {
   lastTs: number;
   lastEntryId: string;
   updatedAt: number;
+  metadata: JsonValue | null;
 };
 
 type WatermarkRow = {
@@ -36,12 +48,30 @@ type WatermarkRow = {
   last_ts: number;
   last_entry_id: string | null;
   updated_at: number;
+  metadata_json?: string | null;
 };
 
 export type StreamWatermarkRepositoryOptions = {
   db: SqliteDatabase;
   clock?: Clock;
 };
+
+function parseMetadata(value: string | null | undefined): JsonValue | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    assertJsonValue(parsed);
+    return parsed;
+  } catch (error) {
+    throw new StorageError("Stream watermark metadata failed validation", {
+      cause: error,
+      code: "STREAM_WATERMARK_METADATA_INVALID",
+    });
+  }
+}
 
 /**
  * Tracks per-process, per-session high-water marks in the stream. Each
@@ -61,7 +91,7 @@ export class StreamWatermarkRepository {
   get(processName: string, sessionId: SessionId): StreamWatermark | null {
     const row = this.db
       .prepare(
-        `SELECT process_name, session_id, last_ts, last_entry_id, updated_at
+        `SELECT process_name, session_id, last_ts, last_entry_id, updated_at, metadata_json
          FROM stream_watermarks
          WHERE process_name = ? AND session_id = ?`,
       )
@@ -90,25 +120,33 @@ export class StreamWatermarkRepository {
       lastTs: row.last_ts,
       lastEntryId: row.last_entry_id,
       updatedAt: row.updated_at,
+      metadata: parseMetadata(row.metadata_json),
     };
   }
 
   set(
     processName: string,
     sessionId: SessionId,
-    input: { lastTs: number; lastEntryId: string },
+    input: { lastTs: number; lastEntryId: string; metadata?: JsonValue | null },
   ): StreamWatermark {
     const nowMs = this.clock.now();
+    const metadataJson =
+      input.metadata === undefined || input.metadata === null
+        ? null
+        : serializeJsonValue(input.metadata);
     this.db
       .prepare(
-        `INSERT INTO stream_watermarks (process_name, session_id, last_ts, last_entry_id, updated_at)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO stream_watermarks (
+           process_name, session_id, last_ts, last_entry_id, updated_at, metadata_json
+         )
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT (process_name, session_id) DO UPDATE SET
            last_ts = excluded.last_ts,
            last_entry_id = excluded.last_entry_id,
-           updated_at = excluded.updated_at`,
+           updated_at = excluded.updated_at,
+           metadata_json = excluded.metadata_json`,
       )
-      .run(processName, sessionId, input.lastTs, input.lastEntryId, nowMs);
+      .run(processName, sessionId, input.lastTs, input.lastEntryId, nowMs, metadataJson);
 
     return {
       processName,
@@ -116,6 +154,7 @@ export class StreamWatermarkRepository {
       lastTs: input.lastTs,
       lastEntryId: input.lastEntryId,
       updatedAt: nowMs,
+      metadata: input.metadata ?? null,
     };
   }
 

@@ -43,6 +43,7 @@ describe("StreamWatermarkRepository", () => {
       expect(first.lastTs).toBe(123);
       expect(first.lastEntryId).toBe("strm_aaaaaaaaaaaaaaaa");
       expect(first.updatedAt).toBe(1_000);
+      expect(first.metadata).toBeNull();
 
       clock.advance(50);
       const second = repo.set("episodic-extractor", DEFAULT_SESSION_ID, {
@@ -56,6 +57,50 @@ describe("StreamWatermarkRepository", () => {
       const fetched = repo.get("episodic-extractor", DEFAULT_SESSION_ID);
       expect(fetched?.lastTs).toBe(456);
       expect(fetched?.lastEntryId).toBe("strm_bbbbbbbbbbbbbbbb");
+      expect(fetched?.metadata).toBeNull();
+    } finally {
+      close();
+    }
+  });
+
+  it("round-trips optional metadata without requiring existing callers to provide it", () => {
+    const { repo, close } = openRepo(1_000);
+
+    try {
+      const stored = repo.set(
+        "autonomy:executive-focus-due:goal-stale-backoff:goal_a",
+        DEFAULT_SESSION_ID,
+        {
+          lastTs: 123,
+          lastEntryId: "goal-stale-event",
+          metadata: {
+            empty_count: 2,
+            source: "goal_stale",
+          },
+        },
+      );
+
+      expect(stored.metadata).toEqual({
+        empty_count: 2,
+        source: "goal_stale",
+      });
+      expect(
+        repo.get("autonomy:executive-focus-due:goal-stale-backoff:goal_a", DEFAULT_SESSION_ID)
+          ?.metadata,
+      ).toEqual({
+        empty_count: 2,
+        source: "goal_stale",
+      });
+
+      repo.set("autonomy:executive-focus-due:goal-stale-backoff:goal_a", DEFAULT_SESSION_ID, {
+        lastTs: 456,
+        lastEntryId: "goal-stale-event-2",
+      });
+
+      expect(
+        repo.get("autonomy:executive-focus-due:goal-stale-backoff:goal_a", DEFAULT_SESSION_ID)
+          ?.metadata,
+      ).toBeNull();
     } finally {
       close();
     }
@@ -73,6 +118,7 @@ describe("StreamWatermarkRepository", () => {
           last_ts INTEGER NOT NULL,
           last_entry_id TEXT NULL,
           updated_at INTEGER NOT NULL,
+          metadata_json TEXT,
           PRIMARY KEY (process_name, session_id)
         )
       `);
@@ -82,9 +128,10 @@ describe("StreamWatermarkRepository", () => {
           session_id,
           last_ts,
           last_entry_id,
-          updated_at
-        ) VALUES (?, ?, ?, ?, ?)`,
-      ).run("episodic-extractor", DEFAULT_SESSION_ID, 123, null, 1_000);
+          updated_at,
+          metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run("episodic-extractor", DEFAULT_SESSION_ID, 123, null, 1_000, null);
 
       let thrown: unknown;
       try {

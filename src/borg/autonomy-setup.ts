@@ -87,6 +87,9 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
             stalenessMs: options.config.autonomy.executiveFocus.stalenessSec * 1_000,
             dueLeadMs: options.config.autonomy.executiveFocus.dueLeadSec * 1_000,
             wakeCooldownMs: options.config.autonomy.executiveFocus.wakeCooldownSec * 1_000,
+            wakeCooldownBackoffMultiplier:
+              options.config.autonomy.executiveFocus.emptyWakeBackoffMultiplier,
+            wakeCooldownMaxMs: options.config.autonomy.executiveFocus.wakeCooldownMaxSec * 1_000,
             deadlineLookaheadMs: options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
             goalFollowupDue: {
               enabled: options.config.autonomy.triggers.goalFollowupDue.enabled,
@@ -173,6 +176,7 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
     wakeRepository: options.autonomyWakesRepository,
     selfDecisionRepository: options.selfDecisionRepository,
     trainOfThoughtRepository: options.trainOfThoughtRepository,
+    goalsRepository: options.goalsRepository,
     turnOrchestrator: options.turnOrchestrator,
     toolDispatcher: options.toolDispatcher,
     sources: autonomySources,

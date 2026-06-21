@@ -132,6 +132,8 @@ describe("config", () => {
       },
     });
     expect(config.autonomy.executiveFocus.wakeCooldownSec).toBe(3_600);
+    expect(config.autonomy.executiveFocus.emptyWakeBackoffMultiplier).toBe(2);
+    expect(config.autonomy.executiveFocus.wakeCooldownMaxSec).toBe(86_400);
     expect(config.streamIngestion.settle).toEqual({
       settleMs: 0,
       maxSettleMs: 30_000,
@@ -361,6 +363,22 @@ describe("config", () => {
     expect(config.autonomy.maxWakesPerWindow).toBe(9);
     expect(config.autonomy.budgetWindowMs).toBe(7_200_000);
     expect(config.autonomy.reservedContemplativeWakesPerWindow).toBe(2);
+  });
+
+  it("loads executive focus empty-wake backoff config from env", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {
+        BORG_AUTONOMY_EXECUTIVE_FOCUS_EMPTY_WAKE_BACKOFF_MULTIPLIER: "3.5",
+        BORG_AUTONOMY_EXECUTIVE_FOCUS_WAKE_COOLDOWN_MAX_SEC: "7200",
+      },
+    });
+
+    expect(config.autonomy.executiveFocus.emptyWakeBackoffMultiplier).toBe(3.5);
+    expect(config.autonomy.executiveFocus.wakeCooldownMaxSec).toBe(7_200);
   });
 
   it("loads autonomous proactive outbound gates from config and env", () => {

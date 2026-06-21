@@ -8,7 +8,9 @@ import type { TurnOrchestrator, TurnResult } from "../cognition/index.js";
 import { memoryDisclosurePayloadFields } from "../memory/common/disclosure-serializers.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
+import type { GoalsRepository } from "../memory/self/index.js";
 import { selfPrivateMemoryDisclosureLabel } from "../memory/common/disclosure-label.js";
+import { OUTBOUND_POST_TOOL_NAME } from "../tools/internal/outbound-post-name.js";
 
 import type {
   AutonomyConditionName,
@@ -22,6 +24,10 @@ import type {
 } from "./types.js";
 import { AUTONOMY_WAKE_SOURCE_METADATA, AUTONOMY_WAKE_SOURCE_NAMES } from "./types.js";
 import type { AutonomyWakesRepository } from "./wakes-repository.js";
+import {
+  getExecutiveFocusGoalStaleBackoffProcessName,
+  readExecutiveFocusGoalStaleBackoffMetadata,
+} from "./executive-focus-stale-backoff.js";
 
 type IntervalHandle = ReturnType<typeof setInterval>;
 type RetryBackoffState = {
@@ -61,6 +67,7 @@ export type AutonomySchedulerOptions = {
   wakeRepository: AutonomyWakesRepository;
   selfDecisionRepository?: Pick<SelfDecisionRepository, "record">;
   trainOfThoughtRepository?: Pick<TrainOfThoughtRepository, "get">;
+  goalsRepository?: Pick<GoalsRepository, "get">;
   turnOrchestrator: Pick<TurnOrchestrator, "run">;
   toolDispatcher: ToolDispatcher;
   sources: readonly AutonomyWakeSource[];
@@ -117,6 +124,55 @@ function formatError(error: unknown): string {
 
 function backoffKey(event: DueEvent): string {
   return `${event.sourceType}:${event.sourceName}:${event.id}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function executiveFocusGoalStalePayload(event: DueEvent): {
+  goalId: string;
+  lastProgressTs: number | null;
+} | null {
+  if (event.sourceName !== "executive_focus_due" || event.sourceType !== "trigger") {
+    return null;
+  }
+
+  const payload = event.payload;
+
+  if (
+    !isRecord(payload) ||
+    payload.reason !== "goal_stale" ||
+    typeof payload.selected_goal_id !== "string" ||
+    !isRecord(payload.selected_goal)
+  ) {
+    return null;
+  }
+
+  const lastProgressTs = payload.selected_goal.last_progress_ts;
+
+  if (lastProgressTs !== null && typeof lastProgressTs !== "number") {
+    return null;
+  }
+
+  return {
+    goalId: payload.selected_goal_id,
+    lastProgressTs,
+  };
+}
+
+function outboundPostEmitted(call: TurnResult["toolCalls"][number]): boolean {
+  if (call.name !== OUTBOUND_POST_TOOL_NAME || !call.ok || !isRecord(call.output)) {
+    return false;
+  }
+
+  const outbound = call.output.outbound;
+
+  return isRecord(outbound) && outbound.emitted === true;
+}
+
+function goalProgressAdvanced(input: { before: number | null; after: number | null }): boolean {
+  return input.after !== null && (input.before === null || input.after > input.before);
 }
 
 export class AutonomyScheduler {
@@ -404,6 +460,7 @@ export class AutonomyScheduler {
                 lastTs: dueEvent.sortTs,
                 lastEntryId: dueEvent.id,
               });
+              this.updateExecutiveFocusGoalStaleBackoff(preparedEvent.event, turnResult);
               this.options.selfDecisionRepository?.record({
                 occurredAt: autonomousActionEntry.timestamp,
                 sessionId: this.sessionId,
@@ -506,6 +563,54 @@ export class AutonomyScheduler {
     } finally {
       this.pruneWakeRecords();
     }
+  }
+
+  private updateExecutiveFocusGoalStaleBackoff(event: DueEvent, turnResult: TurnResult): void {
+    const payload = executiveFocusGoalStalePayload(event);
+
+    if (payload === null) {
+      return;
+    }
+
+    const processName = getExecutiveFocusGoalStaleBackoffProcessName(payload.goalId);
+    const previousBackoff = this.options.watermarkRepository.get(processName, this.sessionId);
+    const currentGoal =
+      this.options.goalsRepository?.get(payload.goalId as Parameters<GoalsRepository["get"]>[0]) ??
+      null;
+    const currentLastProgressTs = currentGoal?.last_progress_ts ?? payload.lastProgressTs;
+    const progressedDuringTurn = goalProgressAdvanced({
+      before: payload.lastProgressTs,
+      after: currentLastProgressTs,
+    });
+
+    // Structural headway mapping only: progress timestamp advance, outward message,
+    // private thought carryover, or a successful outbound post reset the stale loop.
+    // Passive observed markers do not carry goal work forward, so they count empty.
+    const emissionKind = turnResult.emission?.kind;
+    const emittedHeadway =
+      emissionKind === "message" ||
+      emissionKind === "continue_thought" ||
+      turnResult.toolCalls.some(outboundPostEmitted);
+
+    if (progressedDuringTurn || emittedHeadway) {
+      this.options.watermarkRepository.reset(processName, this.sessionId);
+      return;
+    }
+
+    const progressSincePreviousBackoff =
+      previousBackoff !== null &&
+      payload.lastProgressTs !== null &&
+      payload.lastProgressTs >= previousBackoff.updatedAt;
+    const previousMetadata = readExecutiveFocusGoalStaleBackoffMetadata(previousBackoff);
+    const previousEmptyCount = progressSincePreviousBackoff ? 0 : previousMetadata.empty_count;
+
+    this.options.watermarkRepository.set(processName, this.sessionId, {
+      lastTs: event.sortTs,
+      lastEntryId: event.id,
+      metadata: {
+        empty_count: previousEmptyCount + 1,
+      },
+    });
   }
 
   private runTrackedTick(

@@ -627,6 +627,8 @@ const configBaseSchema = z.object({
           stalenessSec: z.number().int().positive().default(86_400),
           dueLeadSec: z.number().int().nonnegative().default(0),
           wakeCooldownSec: z.number().int().nonnegative().default(3_600),
+          emptyWakeBackoffMultiplier: z.number().min(1).default(2),
+          wakeCooldownMaxSec: z.number().int().positive().default(86_400),
         })
         .prefault({}),
       triggers: z
@@ -1664,6 +1666,16 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["autonomy", "executiveFocus", "wakeCooldownSec"],
     readOptionalEnvNumber(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_WAKE_COOLDOWN_SEC"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "executiveFocus", "emptyWakeBackoffMultiplier"],
+    readOptionalEnvFloat(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_EMPTY_WAKE_BACKOFF_MULTIPLIER"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "executiveFocus", "wakeCooldownMaxSec"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_WAKE_COOLDOWN_MAX_SEC"),
   );
   setConfigOverride(
     overrides,
