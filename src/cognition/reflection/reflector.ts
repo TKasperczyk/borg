@@ -36,6 +36,7 @@ import {
   type GoalStatus,
   type OpenQuestion,
   type OpenQuestionsRepository,
+  type TraitRecord,
 } from "../../memory/self/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
 import { resolveOpenQuestionThroughIdentityService } from "../../memory/lifecycle-ops/index.js";
@@ -132,6 +133,9 @@ export type ReflectionResult = {
 const SURFACED_TTL_TURNS = 4;
 const REFLECTION_TOOL_NAME = "EmitTurnReflection";
 const DEFAULT_REFLECTION_MAX_TOKENS = 768;
+// Candidate labels can grow quickly; established traits are the stable vocabulary,
+// while the strongest 40 candidates give the reflector reuse handles without unbounded prompt growth.
+const CURRENT_TRAIT_VOCABULARY_CANDIDATE_LIMIT = 40;
 
 const traitDemonstrationSchema = z.object({
   trait_label: z.string().min(1),
@@ -510,6 +514,33 @@ function summarizeExecutiveFocusForReflection(focus: ExecutiveFocus | null | und
             ...memoryDisclosurePayloadFields(selectedGoalDisclosureLabel),
           },
   };
+}
+
+type CurrentTraitVocabularyEntry = Pick<TraitRecord, "label" | "state" | "strength">;
+
+function currentTraitVocabularyForReflection(
+  traits: readonly TraitRecord[],
+): CurrentTraitVocabularyEntry[] {
+  const vocabulary: CurrentTraitVocabularyEntry[] = [];
+  let candidateCount = 0;
+
+  for (const trait of traits) {
+    if (trait.state === "candidate") {
+      if (candidateCount >= CURRENT_TRAIT_VOCABULARY_CANDIDATE_LIMIT) {
+        continue;
+      }
+
+      candidateCount += 1;
+    }
+
+    vocabulary.push({
+      label: trait.label,
+      state: trait.state,
+      strength: trait.strength,
+    });
+  }
+
+  return vocabulary;
 }
 
 export type ReflectorOptions = {
@@ -1873,6 +1904,9 @@ export class Reflector {
                   origin: context.origin ?? "user",
                   pending_procedural_attempts: pendingProceduralAttempts,
                   pending_actions: pendingActions,
+                  current_trait_vocabulary: currentTraitVocabularyForReflection(
+                    context.selfSnapshot.traits,
+                  ),
                   active_open_questions: activeOpenQuestions.map((question) => ({
                     id: question.id,
                     question: question.question,

@@ -18,6 +18,7 @@ import {
   OpenQuestionsRepository,
   TraitsRepository,
   ValuesRepository,
+  type TraitRecord,
 } from "../../memory/self/index.js";
 import { retrievalMigrations } from "../../retrieval/migrations.js";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
@@ -28,6 +29,7 @@ import {
   createEntityId,
   createExecutiveStepId,
   createStreamEntryId,
+  createTraitId,
 } from "../../util/ids.js";
 import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
@@ -177,6 +179,30 @@ function createRetrievalConfidence(
     sourceDiversity: overrides.sourceDiversity ?? 1,
     contradictionPresent: overrides.contradictionPresent ?? false,
     sampleSize: overrides.sampleSize ?? 3,
+  };
+}
+
+function createTraitRecord(
+  overrides: Pick<TraitRecord, "label" | "state" | "strength"> & Partial<TraitRecord>,
+): TraitRecord {
+  return {
+    ...overrides,
+    id: overrides.id ?? createTraitId(),
+    label: overrides.label,
+    strength: overrides.strength,
+    last_reinforced: 0,
+    last_decayed: null,
+    state: overrides.state,
+    established_at: overrides.state === "established" ? 0 : null,
+    confidence: 0.8,
+    last_tested_at: null,
+    last_contradicted_at: null,
+    support_count: overrides.state === "established" ? 5 : 1,
+    contradiction_count: 0,
+    evidence_episode_ids: [],
+    provenance: {
+      kind: "manual",
+    },
   };
 }
 
@@ -2479,9 +2505,117 @@ describe("reflector", () => {
       "the answer should be able to land within a few days of additional context",
     );
     expect(llm.requests[0]?.system).toContain("not predictions about long-arc behavior");
+    expect(llm.requests[0]?.system).toContain(
+      "When the trait my completed turn demonstrated matches by meaning one of the labels in current_trait_vocabulary, I reuse that exact existing label string; I coin a new trait_label only for a genuinely new trait not already in my vocabulary.",
+    );
     expect(llm.requests[0]?.system).toContain("For retired_goals");
     expect(llm.requests[0]?.system).toContain("The default is to leave goals active.");
     expect(llm.requests[0]?.system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
+  });
+
+  it("passes current trait vocabulary with established traits and capped strongest candidates", async () => {
+    const llm = new FakeLLMClient({
+      responses: [createReflectionResponse()],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const establishedHigh = createTraitRecord({
+      label: "established-high",
+      state: "established",
+      strength: 0.99,
+    });
+    const candidateTraits = Array.from({ length: 45 }, (_, index) =>
+      createTraitRecord({
+        label: `candidate-${String(index).padStart(2, "0")}`,
+        state: "candidate",
+        strength: 0.9 - index * 0.01,
+      }),
+    );
+    const establishedLow = createTraitRecord({
+      label: "established-low",
+      state: "established",
+      strength: 0.01,
+    });
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-4-6",
+    });
+
+    await reflector.reflect(
+      {
+        ...createOpenQuestionReflectionContext(),
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [establishedHigh, ...candidateTraits, establishedLow],
+        },
+      },
+      harness.streamWriter,
+    );
+    const payload = JSON.parse(llm.requests[0]?.messages[0]?.content ?? "{}") as {
+      current_trait_vocabulary?: Array<{
+        label?: string;
+        state?: string;
+        strength?: number;
+        support_count?: number;
+      }>;
+    };
+    const vocabulary = payload.current_trait_vocabulary ?? [];
+
+    expect(vocabulary).toEqual([
+      {
+        label: "established-high",
+        state: "established",
+        strength: 0.99,
+      },
+      ...candidateTraits.slice(0, 40).map((trait) => ({
+        label: trait.label,
+        state: "candidate",
+        strength: trait.strength,
+      })),
+      {
+        label: "established-low",
+        state: "established",
+        strength: 0.01,
+      },
+    ]);
+    expect(vocabulary.map((trait) => trait.label)).not.toContain("candidate-40");
+    expect(vocabulary.every((trait) => trait.support_count === undefined)).toBe(true);
+  });
+
+  it("passes an empty current trait vocabulary when no traits exist yet", async () => {
+    const llm = new FakeLLMClient({
+      responses: [createReflectionResponse()],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-4-6",
+    });
+
+    await reflector.reflect(
+      {
+        ...createOpenQuestionReflectionContext(),
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+      },
+      harness.streamWriter,
+    );
+    const payload = JSON.parse(llm.requests[0]?.messages[0]?.content ?? "{}") as {
+      current_trait_vocabulary?: unknown;
+    };
+
+    expect(payload.current_trait_vocabulary).toEqual([]);
   });
 
   it("passes disclosure labels for active goals and open questions into reflection payloads", async () => {
