@@ -15,6 +15,7 @@ export {
 export {
   TraitsRepository,
   type TraitContradictionEvent,
+  type TraitMergeInput,
   type TraitReinforcementEvent,
   type TraitsRepositoryOptions,
 } from "./traits-repository.js";

@@ -7,7 +7,13 @@ import { describe, expect, it } from "vitest";
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { IdentityCasMismatchError, ProvenanceError } from "../../util/errors.js";
-import { createEntityId, createGoalId, createStreamEntryId } from "../../util/ids.js";
+import {
+  createEntityId,
+  createGoalId,
+  createStreamEntryId,
+  createTraitId,
+  type EpisodeId,
+} from "../../util/ids.js";
 import { expectedRecordVersion } from "../common/cas.js";
 import { selfMigrations } from "./migrations.js";
 import { GoalsRepository, TraitsRepository, ValuesRepository } from "./repository.js";
@@ -18,6 +24,67 @@ describe("self repositories", () => {
     kind: "episodes" as const,
     episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
   };
+  const mergeEpisodeIds = [
+    "ep_aaaaaaaaaaaaaaaa",
+    "ep_bbbbbbbbbbbbbbbb",
+    "ep_cccccccccccccccc",
+    "ep_dddddddddddddddd",
+    "ep_eeeeeeeeeeeeeeee",
+    "ep_ffffffffffffffff",
+    "ep_1111111111111111",
+    "ep_2222222222222222",
+    "ep_3333333333333333",
+    "ep_4444444444444444",
+  ] as EpisodeId[];
+
+  function reinforceTraitWithEpisodes(
+    traits: TraitsRepository,
+    label: string,
+    episodeIds: readonly EpisodeId[],
+    options: { delta?: number; firstTimestamp?: number } = {},
+  ) {
+    let record: ReturnType<TraitsRepository["reinforce"]> | null = null;
+    const delta = options.delta ?? 0.1;
+    const firstTimestamp = options.firstTimestamp ?? 1_000;
+
+    for (const [index, episodeId] of episodeIds.entries()) {
+      record = traits.reinforce({
+        label,
+        delta,
+        provenance: {
+          kind: "episodes",
+          episode_ids: [episodeId],
+        },
+        timestamp: firstTimestamp + index,
+      });
+    }
+
+    if (record === null) {
+      throw new Error("reinforceTraitWithEpisodes requires at least one episode id");
+    }
+
+    return record;
+  }
+
+  function distinctEpisodeCount(
+    events: ReturnType<TraitsRepository["listReinforcementEvents"]>,
+  ): number {
+    const episodeIds = new Set<EpisodeId>();
+    for (const event of events) {
+      if (event.provenance.kind !== "episodes") {
+        continue;
+      }
+      for (const episodeId of event.provenance.episode_ids) {
+        episodeIds.add(episodeId);
+      }
+    }
+    return episodeIds.size;
+  }
+
+  function countRows(db: ReturnType<typeof openDatabase>, sql: string, value: string): number {
+    const row = db.prepare(sql).get(value) as { count: number } | undefined;
+    return Number(row?.count ?? 0);
+  }
 
   it("manages values and episode bindings", () => {
     const db = openDatabase(":memory:", {
@@ -502,6 +569,438 @@ describe("self repositories", () => {
         }),
       );
       expect(traits.list()[0]?.established_at).not.toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("merges candidate traits and promotes from the union of distinct reinforcement episodes", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...selfMigrations],
+    });
+    const traits = new TraitsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      const canonical = reinforceTraitWithEpisodes(
+        traits,
+        "intellectual_honesty",
+        mergeEpisodeIds.slice(0, 3),
+        { firstTimestamp: 1_000 },
+      );
+      const source = reinforceTraitWithEpisodes(
+        traits,
+        "intellectual honesty",
+        mergeEpisodeIds.slice(3, 6),
+        { firstTimestamp: 2_000 },
+      );
+
+      expect(canonical.state).toBe("candidate");
+      expect(source.state).toBe("candidate");
+
+      const merged = traits.mergeInto({
+        sourceId: source.id,
+        canonicalId: canonical.id,
+        expectedSourceVersion: expectedRecordVersion(source),
+        expectedCanonicalVersion: expectedRecordVersion(canonical),
+        provenance: { kind: "offline", process: "trait-consolidation-test" },
+      });
+
+      expect(merged).toMatchObject({
+        id: canonical.id,
+        state: "established",
+        support_count: 6,
+      });
+      expect(merged.established_at).not.toBeNull();
+      expect(merged.evidence_episode_ids).toHaveLength(3);
+      expect(distinctEpisodeCount(traits.listReinforcementEvents(canonical.id))).toBe(6);
+      expect(traits.get(source.id)).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("clamps combined trait strength during merge", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...selfMigrations],
+    });
+    const traits = new TraitsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      const canonical = reinforceTraitWithEpisodes(
+        traits,
+        "careful_synthesis",
+        [mergeEpisodeIds[0]!],
+        { delta: 0.7 },
+      );
+      const source = reinforceTraitWithEpisodes(
+        traits,
+        "careful synthesis",
+        [mergeEpisodeIds[1]!],
+        { delta: 0.6, firstTimestamp: 2_000 },
+      );
+
+      const merged = traits.mergeInto({
+        sourceId: source.id,
+        canonicalId: canonical.id,
+        expectedSourceVersion: expectedRecordVersion(source),
+        expectedCanonicalVersion: expectedRecordVersion(canonical),
+        provenance: { kind: "offline", process: "trait-consolidation-test" },
+      });
+
+      expect(merged.strength).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("merges established traits into an established canonical without demotion", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...selfMigrations],
+    });
+    const traits = new TraitsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      const canonical = reinforceTraitWithEpisodes(
+        traits,
+        "truth_seeking",
+        mergeEpisodeIds.slice(0, 5),
+        { firstTimestamp: 1_000 },
+      );
+      const source = reinforceTraitWithEpisodes(
+        traits,
+        "truth seeking",
+        mergeEpisodeIds.slice(5, 10),
+        { firstTimestamp: 2_000 },
+      );
+
+      expect(canonical.state).toBe("established");
+      expect(source.state).toBe("established");
+
+      const merged = traits.mergeInto({
+        sourceId: source.id,
+        canonicalId: canonical.id,
+        expectedSourceVersion: expectedRecordVersion(source),
+        expectedCanonicalVersion: expectedRecordVersion(canonical),
+        provenance: { kind: "offline", process: "trait-consolidation-test" },
+      });
+
+      expect(merged.state).toBe("established");
+      expect(merged.established_at).toBe(canonical.established_at);
+      expect(traits.get(source.id)).toBeNull();
+      expect(distinctEpisodeCount(traits.listReinforcementEvents(canonical.id))).toBe(10);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("refuses to merge an established source into a candidate canonical", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...selfMigrations],
+    });
+    const traits = new TraitsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      const canonical = reinforceTraitWithEpisodes(traits, "deliberate", [mergeEpisodeIds[0]!], {
+        firstTimestamp: 1_000,
+      });
+      const source = reinforceTraitWithEpisodes(
+        traits,
+        "deliberateness",
+        mergeEpisodeIds.slice(1, 6),
+        { firstTimestamp: 2_000 },
+      );
+
+      expect(canonical.state).toBe("candidate");
+      expect(source.state).toBe("established");
+
+      expect(() =>
+        traits.mergeInto({
+          sourceId: source.id,
+          canonicalId: canonical.id,
+          expectedSourceVersion: expectedRecordVersion(source),
+          expectedCanonicalVersion: expectedRecordVersion(canonical),
+          provenance: { kind: "offline", process: "trait-consolidation-test" },
+        }),
+      ).toThrow(/established trait into a candidate canonical/);
+
+      expect(traits.get(source.id)).not.toBeNull();
+      expect(traits.listReinforcementEvents(source.id)).toHaveLength(5);
+      expect(traits.listReinforcementEvents(canonical.id)).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("CAS-protects trait merges", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...selfMigrations],
+    });
+    const traits = new TraitsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      const canonical = reinforceTraitWithEpisodes(
+        traits,
+        "steady_reasoning",
+        [mergeEpisodeIds[0]!],
+        { firstTimestamp: 1_000 },
+      );
+      const source = reinforceTraitWithEpisodes(traits, "steady reasoning", [mergeEpisodeIds[1]!], {
+        firstTimestamp: 2_000,
+      });
+      const staleSourceVersion = expectedRecordVersion(source);
+
+      const changedSource = traits.reinforce({
+        label: source.label,
+        delta: 0.1,
+        provenance: {
+          kind: "episodes",
+          episode_ids: [mergeEpisodeIds[2]!],
+        },
+        timestamp: 3_000,
+        expectedVersion: staleSourceVersion,
+      });
+
+      expect(() =>
+        traits.mergeInto({
+          sourceId: changedSource.id,
+          canonicalId: canonical.id,
+          expectedSourceVersion: staleSourceVersion,
+          expectedCanonicalVersion: expectedRecordVersion(canonical),
+          provenance: { kind: "offline", process: "trait-consolidation-test" },
+        }),
+      ).toThrow(IdentityCasMismatchError);
+      expect(traits.get(changedSource.id)).not.toBeNull();
+      expect(traits.listReinforcementEvents(changedSource.id)).toHaveLength(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("CAS-protects trait merges when the canonical version is stale", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...selfMigrations],
+    });
+    const traits = new TraitsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      const canonical = reinforceTraitWithEpisodes(
+        traits,
+        "adaptive_reasoning",
+        [mergeEpisodeIds[0]!],
+        { firstTimestamp: 1_000 },
+      );
+      const source = reinforceTraitWithEpisodes(
+        traits,
+        "adaptive reasoning",
+        [mergeEpisodeIds[1]!],
+        { firstTimestamp: 2_000 },
+      );
+      const staleCanonicalVersion = expectedRecordVersion(canonical);
+
+      const changedCanonical = traits.reinforce({
+        label: canonical.label,
+        delta: 0.1,
+        provenance: {
+          kind: "episodes",
+          episode_ids: [mergeEpisodeIds[2]!],
+        },
+        timestamp: 3_000,
+        expectedVersion: staleCanonicalVersion,
+      });
+
+      expect(() =>
+        traits.mergeInto({
+          sourceId: source.id,
+          canonicalId: changedCanonical.id,
+          expectedSourceVersion: expectedRecordVersion(source),
+          expectedCanonicalVersion: staleCanonicalVersion,
+          provenance: { kind: "offline", process: "trait-consolidation-test" },
+        }),
+      ).toThrow(IdentityCasMismatchError);
+      expect(traits.get(source.id)).not.toBeNull();
+      expect(traits.listReinforcementEvents(source.id)).toHaveLength(1);
+      expect(traits.listReinforcementEvents(changedCanonical.id)).toHaveLength(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("refuses to merge a trait into itself", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...selfMigrations],
+    });
+    const traits = new TraitsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      const trait = reinforceTraitWithEpisodes(traits, "self_consistency", [mergeEpisodeIds[0]!], {
+        firstTimestamp: 1_000,
+      });
+
+      expect(() =>
+        traits.mergeInto({
+          sourceId: trait.id,
+          canonicalId: trait.id,
+          expectedSourceVersion: expectedRecordVersion(trait),
+          expectedCanonicalVersion: expectedRecordVersion(trait),
+          provenance: { kind: "offline", process: "trait-consolidation-test" },
+        }),
+      ).toThrow(/Cannot merge a trait into itself/);
+      expect(traits.get(trait.id)).not.toBeNull();
+      expect(traits.listReinforcementEvents(trait.id)).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects trait merges with an unknown source id", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...selfMigrations],
+    });
+    const traits = new TraitsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      const canonical = reinforceTraitWithEpisodes(
+        traits,
+        "known_canonical",
+        [mergeEpisodeIds[0]!],
+        { firstTimestamp: 1_000 },
+      );
+      const unknownSourceId = createTraitId();
+
+      expect(() =>
+        traits.mergeInto({
+          sourceId: unknownSourceId,
+          canonicalId: canonical.id,
+          expectedSourceVersion: 1,
+          expectedCanonicalVersion: expectedRecordVersion(canonical),
+          provenance: { kind: "offline", process: "trait-consolidation-test" },
+        }),
+      ).toThrow(/Unknown source trait id/);
+      expect(traits.get(canonical.id)).not.toBeNull();
+      expect(traits.listReinforcementEvents(canonical.id)).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects trait merges with an unknown canonical id", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...selfMigrations],
+    });
+    const traits = new TraitsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      const source = reinforceTraitWithEpisodes(traits, "known_source", [mergeEpisodeIds[0]!], {
+        firstTimestamp: 1_000,
+      });
+      const unknownCanonicalId = createTraitId();
+
+      expect(() =>
+        traits.mergeInto({
+          sourceId: source.id,
+          canonicalId: unknownCanonicalId,
+          expectedSourceVersion: expectedRecordVersion(source),
+          expectedCanonicalVersion: 1,
+          provenance: { kind: "offline", process: "trait-consolidation-test" },
+        }),
+      ).toThrow(/Unknown canonical trait id/);
+      expect(traits.get(source.id)).not.toBeNull();
+      expect(traits.listReinforcementEvents(source.id)).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("deletes the source trait and re-points reinforcement and contradiction events", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...selfMigrations],
+    });
+    const traits = new TraitsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      const canonical = reinforceTraitWithEpisodes(
+        traits,
+        "contextual_precision",
+        [mergeEpisodeIds[0]!],
+        { firstTimestamp: 1_000 },
+      );
+      const source = reinforceTraitWithEpisodes(
+        traits,
+        "contextual precision",
+        [mergeEpisodeIds[1]!],
+        { firstTimestamp: 2_000 },
+      );
+
+      traits.recordContradiction({
+        label: source.label,
+        provenance: { kind: "manual" },
+        timestamp: 3_000,
+        expectedVersion: expectedRecordVersion(source),
+      });
+      const sourceAfterContradiction = traits.get(source.id)!;
+
+      const merged = traits.mergeInto({
+        sourceId: sourceAfterContradiction.id,
+        canonicalId: canonical.id,
+        expectedSourceVersion: expectedRecordVersion(sourceAfterContradiction),
+        expectedCanonicalVersion: expectedRecordVersion(canonical),
+        provenance: { kind: "offline", process: "trait-consolidation-test" },
+      });
+
+      expect(traits.get(source.id)).toBeNull();
+      expect(traits.listReinforcementEvents(source.id)).toEqual([]);
+      expect(traits.listContradictionEvents(source.id)).toEqual([]);
+      expect(traits.listReinforcementEvents(canonical.id)).toHaveLength(2);
+      expect(traits.listContradictionEvents(canonical.id)).toHaveLength(1);
+      expect(merged).toMatchObject({
+        support_count: 2,
+        contradiction_count: 1,
+        last_contradicted_at: 3_000,
+      });
+      expect(
+        countRows(
+          db,
+          "SELECT COUNT(*) AS count FROM trait_reinforcement_events WHERE trait_id = ?",
+          source.id,
+        ),
+      ).toBe(0);
+      expect(
+        countRows(
+          db,
+          "SELECT COUNT(*) AS count FROM trait_contradiction_events WHERE trait_id = ?",
+          source.id,
+        ),
+      ).toBe(0);
     } finally {
       db.close();
     }

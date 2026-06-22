@@ -50,6 +50,25 @@ export type TraitContradictionEvent = {
   weight: number;
 };
 
+export type TraitMergeInput = {
+  sourceId: TraitId;
+  canonicalId: TraitId;
+  expectedSourceVersion: number;
+  expectedCanonicalVersion: number;
+  provenance: Provenance;
+  timestamp?: number;
+};
+
+function maxNullable(left: number | null, right: number | null): number | null {
+  if (left === null) {
+    return right;
+  }
+  if (right === null) {
+    return left;
+  }
+  return Math.max(left, right);
+}
+
 export class TraitsRepository {
   private readonly clock: Clock;
 
@@ -415,6 +434,194 @@ export class TraitsRepository {
       });
 
       return next;
+    });
+  }
+
+  mergeInto(input: TraitMergeInput): TraitRecord {
+    if (input.sourceId === input.canonicalId) {
+      throw new StorageError("Cannot merge a trait into itself", {
+        code: "TRAIT_MERGE_INVALID",
+      });
+    }
+
+    const provenance = requireProvenance(input.provenance, "Trait merge");
+    const timestamp = input.timestamp ?? this.clock.now();
+
+    return runIdentityWrite(this.identityEventRepository, () => {
+      let sourceBefore: TraitRecord | null = null;
+      let canonicalBefore: TraitRecord | null = null;
+      let promoted = false;
+
+      const apply = this.db.transaction(() => {
+        const sourceRow = this.getById(input.sourceId);
+        const canonicalRow = this.getById(input.canonicalId);
+
+        if (sourceRow === undefined) {
+          throw new StorageError(`Unknown source trait id: ${input.sourceId}`, {
+            code: "TRAIT_NOT_FOUND",
+          });
+        }
+
+        if (canonicalRow === undefined) {
+          throw new StorageError(`Unknown canonical trait id: ${input.canonicalId}`, {
+            code: "TRAIT_NOT_FOUND",
+          });
+        }
+
+        const source = mapTraitRow(sourceRow);
+        const canonical = mapTraitRow(canonicalRow);
+        sourceBefore = source;
+        canonicalBefore = canonical;
+
+        if (expectedRecordVersion(source) !== input.expectedSourceVersion) {
+          assertIdentityCasUpdated({
+            result: { changes: 0 },
+            recordType: "trait",
+            recordId: source.id,
+            expectedVersion: input.expectedSourceVersion,
+          });
+        }
+
+        if (expectedRecordVersion(canonical) !== input.expectedCanonicalVersion) {
+          assertIdentityCasUpdated({
+            result: { changes: 0 },
+            recordType: "trait",
+            recordId: canonical.id,
+            expectedVersion: input.expectedCanonicalVersion,
+          });
+        }
+
+        if (source.state === "established" && canonical.state !== "established") {
+          throw new StorageError("Cannot merge an established trait into a candidate canonical", {
+            code: "TRAIT_MERGE_INVALID",
+          });
+        }
+
+        this.db
+          .prepare("UPDATE trait_reinforcement_events SET trait_id = ? WHERE trait_id = ?")
+          .run(canonical.id, source.id);
+        this.db
+          .prepare("UPDATE trait_contradiction_events SET trait_id = ? WHERE trait_id = ?")
+          .run(canonical.id, source.id);
+
+        const reinforcementEvents = this.listReinforcementEvents(canonical.id);
+        const contradictionEvents = this.listContradictionEvents(canonical.id);
+        const promotion = this.getPromotionMetadata(canonical.id);
+        const evidence = summarizeEvidence(reinforcementEvents, contradictionEvents);
+        const nextState = canonical.state === "established" ? canonical.state : promotion.state;
+        const nextEstablishedAt =
+          canonical.state === "established" ? canonical.established_at : promotion.established_at;
+        const nextProvenance =
+          canonical.state !== "established" && promotion.state === "established"
+            ? (promotion.promotionProvenance ?? canonical.provenance)
+            : canonical.provenance;
+        const storedNextProvenance = toStoredProvenance(nextProvenance);
+        const next = traitSchema.parse({
+          ...canonical,
+          strength: clamp(canonical.strength + source.strength, 0, 1),
+          last_reinforced: Math.max(canonical.last_reinforced, source.last_reinforced),
+          last_decayed: maxNullable(canonical.last_decayed, source.last_decayed),
+          state: nextState,
+          established_at: nextEstablishedAt,
+          confidence: computeConfidence(evidence.supportCount, evidence.contradictionCount),
+          last_tested_at: evidence.lastTestedAt,
+          last_contradicted_at: evidence.lastContradictedAt,
+          support_count: evidence.supportCount,
+          contradiction_count: evidence.contradictionCount,
+          evidence_episode_ids: evidence.evidenceEpisodeIds,
+          provenance: nextProvenance,
+          record_version: nextRecordVersion(input.expectedCanonicalVersion),
+        });
+
+        const updateCanonical = this.db
+          .prepare(
+            `
+              UPDATE traits
+              SET strength = ?, last_reinforced = ?, last_decayed = ?, state = ?, established_at = ?,
+                  confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
+                  contradiction_count = ?, evidence_episode_ids = ?, provenance_kind = ?,
+                  provenance_episode_ids = ?, provenance_process = ?, record_version = record_version + 1
+              WHERE id = ? AND record_version = ?
+            `,
+          )
+          .run(
+            next.strength,
+            next.last_reinforced,
+            next.last_decayed,
+            next.state,
+            next.established_at,
+            next.confidence,
+            next.last_tested_at,
+            next.last_contradicted_at,
+            next.support_count,
+            next.contradiction_count,
+            JSON.stringify(next.evidence_episode_ids),
+            storedNextProvenance.provenance_kind,
+            storedNextProvenance.provenance_episode_ids,
+            storedNextProvenance.provenance_process,
+            canonical.id,
+            input.expectedCanonicalVersion,
+          );
+
+        assertIdentityCasUpdated({
+          result: updateCanonical,
+          recordType: "trait",
+          recordId: canonical.id,
+          expectedVersion: input.expectedCanonicalVersion,
+        });
+
+        const deleteSource = this.db
+          .prepare("DELETE FROM traits WHERE id = ? AND record_version = ?")
+          .run(source.id, input.expectedSourceVersion);
+
+        assertIdentityCasUpdated({
+          result: deleteSource,
+          recordType: "trait",
+          recordId: source.id,
+          expectedVersion: input.expectedSourceVersion,
+        });
+
+        promoted = canonical.state !== "established" && next.state === "established";
+        return next;
+      });
+
+      const merged = apply();
+
+      recordIdentityEvent(this.identityEventRepository, {
+        record_type: "trait",
+        record_id: input.canonicalId,
+        action: "merge",
+        old_value: canonicalBefore,
+        new_value: merged,
+        reason: `Merged trait ${input.sourceId} into ${input.canonicalId}`,
+        provenance,
+        ts: timestamp,
+      });
+
+      recordIdentityEvent(this.identityEventRepository, {
+        record_type: "trait",
+        record_id: input.sourceId,
+        action: "merge_delete",
+        old_value: sourceBefore,
+        new_value: null,
+        reason: `Merged into trait ${input.canonicalId}`,
+        provenance,
+        ts: timestamp,
+      });
+
+      if (promoted) {
+        recordIdentityEvent(this.identityEventRepository, {
+          record_type: "trait",
+          record_id: input.canonicalId,
+          action: "promote",
+          old_value: canonicalBefore,
+          new_value: merged,
+          provenance,
+          ts: timestamp,
+        });
+      }
+
+      return merged;
     });
   }
 
