@@ -35,6 +35,7 @@ export type TurnTraceEventName =
   | "recall_expansion.completed"
   | "retrieval.started"
   | "retrieval.completed"
+  | "retrieval.intent_candidates"
   | "observed_event_recall.degraded"
   | "observed_event_embedding_backfill.started"
   | "observed_event_embedding_backfill.completed"
@@ -246,6 +247,7 @@ export const NOOP_TRACER = new NoopTracer();
 
 const PAYLOAD_GATED_TRACE_KEYS = new Set([
   "candidate_description",
+  "candidate_texts",
   "chunk_text",
   "contextText",
   "conversationContext",
@@ -253,12 +255,17 @@ const PAYLOAD_GATED_TRACE_KEYS = new Set([
   "description_excerpt",
   "dropped_facets",
   "error",
+  "facets",
+  "intent_query",
   "ledger",
+  "matched_terms_by_candidate",
+  "named_terms",
   "normalizedPayload",
   "original_response",
   "prompt",
   "rawToolInput",
   "record",
+  "recall_intents",
   "response",
   "rewritten_response",
   "skipped_promotions",
@@ -315,6 +322,52 @@ export function compositeTracer(tracers: readonly (TurnTracer | undefined | null
   }
 
   return new CompositeTracer(active);
+}
+
+export type CallbackTraceEntry = Record<string, JsonValue> & {
+  ts: number;
+  wallMs: number;
+  turnId: string;
+  event: TurnTraceEventName;
+};
+
+export type CallbackTracerOptions = {
+  includePayloads?: boolean;
+  timestamp?: () => number;
+  sink: (entry: CallbackTraceEntry) => void;
+};
+
+export class CallbackTracer implements TurnTracer {
+  readonly enabled = true;
+  readonly includePayloads: boolean;
+  private readonly timestamp: () => number;
+  private readonly sink: (entry: CallbackTraceEntry) => void;
+
+  constructor(options: CallbackTracerOptions) {
+    const clock = new SystemClock();
+    this.includePayloads = options.includePayloads ?? false;
+    this.timestamp = options.timestamp ?? (() => clock.now());
+    this.sink = options.sink;
+  }
+
+  emit(event: TurnTraceEventName, data: TurnTraceData): void {
+    const emittedData = this.includePayloads ? data : stripPayloadGatedTraceData(data);
+    const { turnId, ...payload } = emittedData;
+    const entry: Record<string, JsonValue> = {
+      ts: this.timestamp(),
+      wallMs: performance.now(),
+      turnId,
+      event,
+    };
+
+    for (const [key, value] of Object.entries(payload)) {
+      if (value !== undefined) {
+        entry[key] = value;
+      }
+    }
+
+    this.sink(entry as CallbackTraceEntry);
+  }
 }
 
 export function toTraceJsonValue(value: unknown): JsonValue {

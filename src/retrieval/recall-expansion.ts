@@ -72,6 +72,65 @@ const RECALL_EXPANSION_SYSTEM_PROMPT = [
   "Do not infer facts beyond the message. Do not answer the user. Use the tool exactly once.",
 ].join("\n");
 
+function expansionTraceIntents(result: RecallExpansionResult) {
+  return [
+    ...result.facets.map((facet) => ({
+      kind: facet.kind,
+      query: facet.query,
+      priority: 60 + facet.priority * 20,
+    })),
+    ...result.named_terms.map((term) => ({
+      kind: "known_term",
+      query: term,
+      priority: 90,
+    })),
+  ];
+}
+
+function emitRecallExpansionCompleted(input: {
+  options: RecallExpansionOptions;
+  result: RecallExpansionResult;
+  clipped: boolean;
+  originalFacetCount: number;
+  droppedFacets: readonly z.infer<typeof recallExpansionFacetSchema>[];
+}): void {
+  const { options } = input;
+
+  if (options.tracer?.enabled !== true || options.turnId === undefined) {
+    return;
+  }
+
+  options.tracer.emit("recall_expansion.completed", {
+    turnId: options.turnId,
+    ...(options.sessionId === undefined ? {} : { session_id: options.sessionId }),
+    clipped: input.clipped,
+    original_count: input.originalFacetCount,
+    retained_count: input.result.facets.length,
+    facet_count: input.result.facets.length,
+    named_term_count: input.result.named_terms.length,
+    intent_count: input.result.facets.length + input.result.named_terms.length,
+    ...(options.tracer.includePayloads === true
+      ? {
+          facets: input.result.facets.map((facet) => ({
+            kind: facet.kind,
+            priority: facet.priority,
+            query: facet.query,
+          })),
+          named_terms: [...input.result.named_terms],
+          recall_intents: expansionTraceIntents(input.result),
+          ...(input.droppedFacets.length === 0
+            ? {}
+            : {
+                dropped_facets: input.droppedFacets.map((facet) => ({
+                  priority: facet.priority,
+                  query: facet.query,
+                })),
+              }),
+        }
+      : {}),
+  });
+}
+
 export async function expandRecall(
   options: RecallExpansionOptions,
 ): Promise<RecallExpansionResult> {
@@ -126,36 +185,33 @@ export async function expandRecall(
     throw error;
   }
 
-  if (parsed.facets.length <= MAX_RECALL_EXPANSION_FACETS) {
-    return parsed;
-  }
-
-  const orderedFacets = parsed.facets
-    .map((facet, index) => ({ facet, index }))
-    .sort((left, right) => right.facet.priority - left.facet.priority || left.index - right.index);
-  const retainedFacets = orderedFacets.slice(0, MAX_RECALL_EXPANSION_FACETS);
-  const droppedFacets = orderedFacets.slice(MAX_RECALL_EXPANSION_FACETS);
+  const orderedFacets =
+    parsed.facets.length <= MAX_RECALL_EXPANSION_FACETS
+      ? undefined
+      : parsed.facets
+          .map((facet, index) => ({ facet, index }))
+          .sort(
+            (left, right) => right.facet.priority - left.facet.priority || left.index - right.index,
+          );
+  const retainedFacets = orderedFacets?.slice(0, MAX_RECALL_EXPANSION_FACETS);
+  const droppedFacets = orderedFacets?.slice(MAX_RECALL_EXPANSION_FACETS).map((item) => item.facet);
+  const result =
+    retainedFacets === undefined
+      ? parsed
+      : {
+          ...parsed,
+          facets: retainedFacets.map((item) => item.facet),
+        };
 
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
-    options.tracer.emit("recall_expansion.completed", {
-      turnId: options.turnId,
-      ...(options.sessionId === undefined ? {} : { session_id: options.sessionId }),
-      clipped: true,
-      original_count: parsed.facets.length,
-      retained_count: MAX_RECALL_EXPANSION_FACETS,
-      ...(options.tracer.includePayloads === true
-        ? {
-            dropped_facets: droppedFacets.map((item) => ({
-              priority: item.facet.priority,
-              query: item.facet.query,
-            })),
-          }
-        : {}),
+    emitRecallExpansionCompleted({
+      options,
+      result,
+      clipped: retainedFacets !== undefined,
+      originalFacetCount: parsed.facets.length,
+      droppedFacets: droppedFacets ?? [],
     });
   }
 
-  return {
-    ...parsed,
-    facets: retainedFacets.map((item) => item.facet),
-  };
+  return result;
 }

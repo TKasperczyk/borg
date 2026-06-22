@@ -373,11 +373,15 @@ describe("retrieval pipeline", () => {
       clock: new FixedClock(10_000),
       tracer,
     });
+    await episodicRepository.createEpisode(
+      createEpisode("ep_aaaaaaaaaaaaaaaa", createStreamEntryId(), [1, 0, 0, 0]),
+    );
 
     await pipeline.searchWithContextForDisclosure("planning", {
       limit: 1,
       traceTurnId: "turn-retrieval-session",
       sessionId,
+      entityTerms: ["planning"],
     });
 
     expect(tracer.emit).toHaveBeenCalledWith(
@@ -394,6 +398,31 @@ describe("retrieval pipeline", () => {
         session_id: sessionId,
       }),
     );
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "retrieval.intent_candidates",
+      expect.objectContaining({
+        turnId: "turn-retrieval-session",
+        session_id: sessionId,
+        intent_id: "recall_raw_text_0",
+        intent_kind: "raw_text",
+        candidate_count: expect.any(Number),
+        candidates: expect.any(Array),
+      }),
+    );
+    const intentCandidateCalls = vi
+      .mocked(tracer.emit)
+      .mock.calls.filter(([event]) => event === "retrieval.intent_candidates")
+      .map(([, data]) => data);
+    const knownTermCandidates = intentCandidateCalls.find(
+      (data) => data.intent_kind === "known_term",
+    );
+    expect(knownTermCandidates?.candidate_count).toBeGreaterThan(0);
+    expect(knownTermCandidates).not.toHaveProperty("matched_terms_by_candidate");
+    expect(
+      (knownTermCandidates?.candidates as Array<Record<string, unknown>>).some((candidate) =>
+        Object.hasOwn(candidate, "matched_terms"),
+      ),
+    ).toBe(false);
   });
 
   it("degrades commitment evidence on embedding batch failure without aborting retrieval", async () => {

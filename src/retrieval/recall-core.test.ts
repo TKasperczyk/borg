@@ -289,6 +289,51 @@ describe("Recall Core", () => {
     });
   });
 
+  it("traces normal recall expansion results with payloads", async () => {
+    const tracer = {
+      ...createTracer(),
+      includePayloads: true,
+    };
+    const llmClient = new FakeLLMClient({
+      responses: [
+        recallExpansion({
+          facets: [{ kind: "topic", query: "Maya design review", priority: 0.75 }],
+          named_terms: ["Maya"],
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createEmbeddingClient(),
+      llmClient,
+    });
+    const pipeline = createTracedRetrievalPipeline(harness, tracer);
+
+    await pipeline.searchWithContextForDisclosure(MAYA_TURN, {
+      limit: 3,
+      traceTurnId: "turn-recall-expansion-normal",
+    });
+
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "recall_expansion.completed",
+      expect.objectContaining({
+        turnId: "turn-recall-expansion-normal",
+        clipped: false,
+        original_count: 1,
+        retained_count: 1,
+        facet_count: 1,
+        named_term_count: 1,
+        intent_count: 2,
+        facets: [{ kind: "topic", priority: 0.75, query: "Maya design review" }],
+        named_terms: ["Maya"],
+        recall_intents: [
+          { kind: "topic", query: "Maya design review", priority: 75 },
+          { kind: "known_term", query: "Maya", priority: 90 },
+        ],
+      }),
+    );
+  });
+
   it("traces recall expansion LLM responses before schema parse failures degrade retrieval", async () => {
     const tracer = createTracer();
     const llmClient = new FakeLLMClient({
@@ -368,13 +413,17 @@ describe("Recall Core", () => {
       "Atlas commitment",
       "Atlas topic",
     ]);
-    expect(tracer.emit).toHaveBeenCalledWith("recall_expansion.completed", {
-      turnId: "turn-recall-expansion-clipped",
-      clipped: true,
-      original_count: 5,
-      retained_count: 4,
-      dropped_facets: [{ priority: 0.1, query: "Atlas low-priority" }],
-    });
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "recall_expansion.completed",
+      expect.objectContaining({
+        turnId: "turn-recall-expansion-clipped",
+        clipped: true,
+        original_count: 5,
+        retained_count: 4,
+        facet_count: 4,
+        dropped_facets: [{ priority: 0.1, query: "Atlas low-priority" }],
+      }),
+    );
   });
 
   it("traces recall expansion transport failures as LLM responses", async () => {

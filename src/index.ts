@@ -58,11 +58,14 @@ export type {
 export { PROMPT_KEYS, type PromptKey } from "./cognition/prompts/registry.js";
 export {
   CompositeTracer,
+  CallbackTracer,
   JsonlTracer,
   NOOP_TRACER,
   NoopTracer,
   compositeTracer,
   createTurnTracer,
+  type CallbackTraceEntry,
+  type CallbackTracerOptions,
   type CreateTurnTracerOptions,
   type JsonlTracerOptions,
   type TurnTraceData,

@@ -18,6 +18,12 @@ import {
   type OpenAIChatCompletionsClient,
 } from "../src/index.js";
 import { createMemoryHandler } from "../src/sidecar/memory-handler.js";
+import {
+  MemoryTraceRegistry,
+  memoryTraceCapacityFromEnv,
+  memoryTraceEnabledFromEnv,
+  memoryTraceMaxTenantsFromEnv,
+} from "../src/sidecar/memory-trace.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -67,14 +73,32 @@ const embeddingClient = new OpenAICompatibleEmbeddingClient({
   model: embeddingModel,
   dims: embeddingDims,
 });
+const traceRegistry = memoryTraceEnabledFromEnv(process.env)
+  ? new MemoryTraceRegistry({
+      capacity: memoryTraceCapacityFromEnv(process.env),
+      maxTenants: memoryTraceMaxTenantsFromEnv(process.env),
+      includePayloads: true,
+    })
+  : undefined;
 
 const pool = new BorgPool({
   root,
   maxOpen,
   openOptions: { embeddingDimensions: embeddingDims, embeddingClient, llmClient },
+  ...(traceRegistry === undefined
+    ? {}
+    : {
+        tracerFor: (tenantId: string) => traceRegistry.tracerFor(tenantId),
+      }),
 });
 
-const server = createServer(createMemoryHandler({ pool, token }));
+const server = createServer(
+  createMemoryHandler({
+    pool,
+    token,
+    ...(traceRegistry === undefined ? {} : { traceRegistry }),
+  }),
+);
 server.listen(port, host, () => {
   console.log(`borg memory sidecar listening on ${host}:${port} (root=${root}, maxOpen=${maxOpen})`);
 });

@@ -479,6 +479,7 @@ export class RetrievalPipeline {
       limit,
       mode,
     );
+    this.emitIntentCandidateTrace(intents, episodeCandidates, options);
     const citationResolver = this.createCitationResolver();
     const citationEntries = await citationResolver.resolveCitationEntries(
       episodeCandidates.flatMap((item) => item.candidate.episode.source_stream_ids),
@@ -1273,6 +1274,58 @@ export class RetrievalPipeline {
         score,
       };
     });
+  }
+
+  private emitIntentCandidateTrace(
+    intents: readonly RecallIntent[],
+    episodeCandidates: readonly EpisodeEvidenceCandidate[],
+    options: RetrievalExecutionOptions,
+  ): void {
+    if (!this.tracer.enabled || options.traceTurnId === undefined) {
+      return;
+    }
+
+    const candidatesByIntent = new Map<string, EpisodeEvidenceCandidate[]>();
+
+    for (const candidate of episodeCandidates) {
+      const candidates = candidatesByIntent.get(candidate.intent.id) ?? [];
+      if (candidates.length === 0) {
+        candidatesByIntent.set(candidate.intent.id, candidates);
+      }
+      candidates.push(candidate);
+    }
+
+    for (const intent of intents) {
+      const candidates = candidatesByIntent.get(intent.id) ?? [];
+
+      this.tracer.emit("retrieval.intent_candidates", {
+        turnId: options.traceTurnId,
+        session_id: options.sessionId,
+        intent_id: intent.id,
+        intent_kind: intent.kind,
+        intent_source: intent.source,
+        intent_priority: intent.priority,
+        candidate_count: candidates.length,
+        candidates: candidates.map((candidate) => ({
+          episode_id: candidate.candidate.episode.id,
+          score: candidate.score.score,
+          vector_score: candidate.candidate.similarity,
+        })),
+        ...(this.tracer.includePayloads
+          ? {
+              intent_query: intent.query,
+              matched_terms_by_candidate: candidates.map((candidate) => ({
+                episode_id: candidate.candidate.episode.id,
+                matched_terms: [...candidate.matchedTerms],
+              })),
+              candidate_texts: candidates.map((candidate) => ({
+                episode_id: candidate.candidate.episode.id,
+                title: candidate.candidate.episode.title,
+              })),
+            }
+          : {}),
+      });
+    }
   }
 
   private async collectEpisodicCandidatesForDisclosureModeIntent(

@@ -8,7 +8,9 @@ import { Borg } from "../borg.js";
 import { BorgPool, type BorgPoolOptions } from "./pool.js";
 import { FakeEmbeddingClient } from "../embeddings/index.js";
 import { FakeLLMClient } from "../llm/test-support/fake-client.js";
+import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import { ConfigError } from "../util/errors.js";
+import { createSessionId } from "../util/ids.js";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 
@@ -44,6 +46,16 @@ function tailContents(borg: Borg): unknown[] {
   return borg.stream.tail(20).map((entry) => entry.content);
 }
 
+function recordingTracer(events: Array<{ event: TurnTraceEventName; data: TurnTraceData }>) {
+  return {
+    enabled: true,
+    includePayloads: false,
+    emit: (event, data) => {
+      events.push({ event, data });
+    },
+  } satisfies TurnTracer;
+}
+
 describe("BorgPool", () => {
   it("isolates tenants in separate dataDirs (no cross-tenant recall)", async () => {
     const { pool, root } = makePool();
@@ -73,6 +85,35 @@ describe("BorgPool", () => {
 
     expect(a1).toBe(a2);
     expect(pool.size()).toBe(1);
+  });
+
+  it("composes shared openOptions tracer with per-tenant tracerFor", async () => {
+    const sharedEvents: Array<{ event: TurnTraceEventName; data: TurnTraceData }> = [];
+    const tenantEvents = new Map<string, Array<{ event: TurnTraceEventName; data: TurnTraceData }>>();
+    const { pool } = makePool({
+      openOptions: {
+        ...baseOpenOptions(),
+        tracer: recordingTracer(sharedEvents),
+      },
+      tracerFor: (tenantId) => {
+        const events: Array<{ event: TurnTraceEventName; data: TurnTraceData }> = [];
+        tenantEvents.set(tenantId, events);
+        return recordingTracer(events);
+      },
+    });
+    const alphaSession = createSessionId();
+    const betaSession = createSessionId();
+
+    await pool.withTenant("alpha", (borg) => borg.endSession(alphaSession));
+    await pool.withTenant("beta", (borg) => borg.endSession(betaSession));
+
+    expect(sharedEvents.filter((entry) => entry.event === "session.completed")).toHaveLength(2);
+    expect(tenantEvents.get("alpha")?.filter((entry) => entry.event === "session.completed").map((entry) => entry.data.turnId)).toEqual([
+      `session_end:${alphaSession}`,
+    ]);
+    expect(tenantEvents.get("beta")?.filter((entry) => entry.event === "session.completed").map((entry) => entry.data.turnId)).toEqual([
+      `session_end:${betaSession}`,
+    ]);
   });
 
   it("evict closes the being; reopening preserves persisted data", async () => {

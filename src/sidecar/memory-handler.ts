@@ -6,6 +6,7 @@
 //   POST /memory/recall      { tenant, query, limit? }             -> semantic episodic search
 //   GET  /memory/episodes?tenant=<id>&limit=<n>&cursor=<c> -> list raw episodic bank
 //   GET  /memory/episodes/{id}?tenant=<id>                  -> inspect one raw episode
+//   GET  /memory/trace?tenant=<id>&since=<ts>                -> inspect recall trace buffer
 //   GET  /healthz                                           -> liveness (no auth)
 //
 // Recall is tenant-wide by design: the pool routes to one being per tenant and,
@@ -19,6 +20,7 @@ import type { Borg } from "../borg.js";
 import type { Episode } from "../memory/episodic/index.js";
 import type { StreamEntryInput } from "../stream/index.js";
 import { parseEpisodeId, parseSessionId, type EpisodeId, type SessionId } from "../util/ids.js";
+import type { MemoryTraceRegistry } from "./memory-trace.js";
 
 // Mirror of BorgPool's DEFAULT_TENANT_ID_PATTERN so the handler returns a clean
 // 400 for a malformed tenant id at the boundary, rather than relying on (and
@@ -42,6 +44,7 @@ export type MemoryHandlerOptions = {
   token: string;
   maxBodyBytes?: number;
   maxRecallLimit?: number;
+  traceRegistry?: MemoryTraceRegistry;
 };
 
 type RequestHandler = (req: IncomingMessage, res: ServerResponse) => void;
@@ -144,6 +147,16 @@ function episodeListCursorFromQuery(searchParams: URLSearchParams): string | und
   return raw === null || raw.trim() === "" ? undefined : raw;
 }
 
+function traceSinceFromQuery(searchParams: URLSearchParams): number | null {
+  const raw = searchParams.get("since");
+  if (raw === null || raw.trim() === "") {
+    return 0;
+  }
+
+  const since = Number(raw);
+  return Number.isFinite(since) ? since : null;
+}
+
 function parseEpisodeIdFromPath(pathname: string): EpisodeId | null | undefined {
   const segments = pathname.split("/");
   if (segments.length !== 4 || segments[1] !== "memory" || segments[2] !== "episodes") {
@@ -208,9 +221,15 @@ function scheduleIngestion(pool: MemoryPool, tenant: string, session: SessionId)
 }
 
 export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandler {
-  const { pool, token } = options;
+  const { pool, token, traceRegistry } = options;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const maxRecallLimit = options.maxRecallLimit ?? DEFAULT_MAX_RECALL_LIMIT;
+  let recallTraceSequence = 0;
+
+  const nextRecallTraceTurnId = (tenant: string): string => {
+    recallTraceSequence += 1;
+    return `sidecar_recall:${tenant}:${Date.now()}:${recallTraceSequence}`;
+  };
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const method = req.method ?? "GET";
@@ -227,9 +246,11 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
     }
 
     if (method === "GET") {
+      const isTracePath = rawPath === "/memory/trace";
       const isEpisodeListPath = rawPath === "/memory/episodes";
-      const episodeId = isEpisodeListPath ? undefined : parseEpisodeIdFromPath(rawPath);
-      if (!isEpisodeListPath && episodeId === undefined) {
+      const episodeId =
+        isTracePath || isEpisodeListPath ? undefined : parseEpisodeIdFromPath(rawPath);
+      if (!isTracePath && !isEpisodeListPath && episodeId === undefined) {
         send(res, 404, { error: "not found" });
         return;
       }
@@ -240,6 +261,29 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       }
 
       try {
+        if (isTracePath) {
+          const since = traceSinceFromQuery(searchParams);
+          if (since === null) {
+            send(res, 400, { error: "invalid 'since'" });
+            return;
+          }
+
+          if (traceRegistry === undefined) {
+            send(res, 200, { ok: true, tenant, events: [], disabled: true });
+            return;
+          }
+
+          const result = traceRegistry.query(tenant, since);
+          send(res, 200, {
+            ok: true,
+            tenant,
+            events: result.events,
+            nextSince: result.nextSince,
+            truncated: result.truncated,
+          });
+          return;
+        }
+
         if (rawPath === "/memory/episodes") {
           const limit = episodeListLimitFromQuery(searchParams);
           const cursor = episodeListCursorFromQuery(searchParams);
@@ -393,7 +437,14 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       const rawLimit =
         typeof body.limit === "number" && Number.isFinite(body.limit) ? body.limit : 10;
       const limit = Math.max(1, Math.min(maxRecallLimit, Math.floor(rawLimit)));
-      const hits = await pool.withTenant(tenant, (borg) => borg.episodic.search(query, { limit }));
+      const traceTurnId =
+        traceRegistry === undefined ? undefined : nextRecallTraceTurnId(tenant);
+      const hits = await pool.withTenant(tenant, (borg) =>
+        borg.episodic.search(query, {
+          limit,
+          ...(traceTurnId === undefined ? {} : { traceTurnId }),
+        }),
+      );
       send(res, 200, {
         ok: true,
         episodes: hits.map((hit) => ({

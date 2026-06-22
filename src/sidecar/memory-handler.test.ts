@@ -5,7 +5,8 @@ import { createHash } from "node:crypto";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createMemoryHandler, type MemoryPool } from "./memory-handler.js";
+import { createMemoryHandler, type MemoryHandlerOptions, type MemoryPool } from "./memory-handler.js";
+import { MemoryTraceRegistry } from "./memory-trace.js";
 import type { Borg } from "../borg.js";
 import type { Episode } from "../memory/episodic/index.js";
 
@@ -23,6 +24,7 @@ type Recorder = {
   tenants: string[];
   exclusives: Array<boolean | undefined>;
   lastRecallLimit?: number;
+  lastRecallTraceTurnId?: string;
   lastListOptions?: {
     limit?: number;
     cursor?: string;
@@ -84,8 +86,9 @@ function stubBorg(rec: Recorder): Borg {
         rec.ingestSessions.push(options?.session ?? "");
         return { ran: true, processedEntries: 2 };
       },
-      search: async (_query: string, opts: { limit?: number }) => {
+      search: async (_query: string, opts: { limit?: number; traceTurnId?: string }) => {
         rec.lastRecallLimit = opts.limit;
+        rec.lastRecallTraceTurnId = opts.traceTurnId;
         return [{ episode: { id: "ep_1", title: "Title", narrative: "Narrative" }, score: 0.91 }];
       },
       list: async (options?: { limit?: number; cursor?: string }) => {
@@ -115,8 +118,12 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
   return { pool, rec };
 }
 
-function start(pool: MemoryPool, token = TOKEN): Promise<string> {
-  const server = createServer(createMemoryHandler({ pool, token }));
+function start(
+  pool: MemoryPool,
+  token = TOKEN,
+  handlerOptions: Omit<MemoryHandlerOptions, "pool" | "token"> = {},
+): Promise<string> {
+  const server = createServer(createMemoryHandler({ pool, token, ...handlerOptions }));
   servers.push(server);
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
@@ -263,6 +270,34 @@ describe("memory sidecar handler", () => {
     });
     expect(rec.tenants).toEqual(["acme"]);
     expect(rec.lastRecallLimit).toBe(50); // clamped to maxRecallLimit
+    expect(rec.lastRecallTraceTurnId).toBeUndefined();
+  });
+
+  it("keeps recall response unchanged while passing a trace turn id when tracing is enabled", async () => {
+    const { pool: offPool, rec: offRec } = recordingPool();
+    const offBase = await start(offPool);
+    const offRes = await post(
+      offBase,
+      "/memory/recall",
+      { tenant: "acme", query: "who leads", limit: 3 },
+      TOKEN,
+    );
+    const offBody = await offRes.json();
+
+    const { pool: onPool, rec: onRec } = recordingPool();
+    const onBase = await start(onPool, TOKEN, { traceRegistry: new MemoryTraceRegistry() });
+    const onRes = await post(
+      onBase,
+      "/memory/recall",
+      { tenant: "acme", query: "who leads", limit: 3 },
+      TOKEN,
+    );
+    const onBody = await onRes.json();
+
+    expect(onRes.status).toBe(200);
+    expect(onBody).toEqual(offBody);
+    expect(offRec.lastRecallTraceTurnId).toBeUndefined();
+    expect(onRec.lastRecallTraceTurnId).toMatch(/^sidecar_recall:acme:/);
   });
 
   it("lists episodes from the query tenant without a body, clamping limit and passing cursor", async () => {
@@ -292,6 +327,69 @@ describe("memory sidecar handler", () => {
     expect(rec.tenants).toEqual(["acme"]);
     expect(rec.exclusives).toEqual([undefined]);
     expect(rec.lastListOptions).toEqual({ limit: 100, cursor: "opaque-cursor" });
+  });
+
+  it("returns a disabled empty trace response without opening a tenant", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const res = await get(base, "/memory/trace?tenant=acme", TOKEN);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      tenant: "acme",
+      events: [],
+      disabled: true,
+    });
+    expect(rec.tenants).toEqual([]);
+  });
+
+  it("returns enabled trace events filtered by since without opening a tenant", async () => {
+    let now = 5_000;
+    const traceRegistry = new MemoryTraceRegistry({
+      capacity: 5,
+      now: () => now,
+    });
+    const tracer = traceRegistry.tracerFor("acme");
+    tracer.emit("retrieval.started", {
+      turnId: "turn_trace_1",
+      query: "first",
+    });
+    now = 5_100;
+    tracer.emit("retrieval.completed", {
+      turnId: "turn_trace_2",
+      episodeCount: 1,
+      semanticHits: 0,
+    });
+    const since = traceRegistry.query("acme", 0).events[0]!.ts;
+    const { pool, rec } = recordingPool();
+    const base = await start(pool, TOKEN, { traceRegistry });
+    const res = await get(base, `/memory/trace?tenant=acme&since=${since}`, TOKEN);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      tenant: "acme",
+      events: [
+        expect.objectContaining({
+          turnId: "turn_trace_2",
+          event: "retrieval.completed",
+        }),
+      ],
+      nextSince: expect.any(Number),
+      truncated: false,
+    });
+    expect(rec.tenants).toEqual([]);
+  });
+
+  it("rejects invalid trace tenant or since before touching the pool", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool, TOKEN, { traceRegistry: new MemoryTraceRegistry() });
+
+    expect((await get(base, "/memory/trace", TOKEN)).status).toBe(400);
+    expect((await get(base, "/memory/trace?tenant=UPPER", TOKEN)).status).toBe(400);
+    expect((await get(base, "/memory/trace?tenant=acme&since=nope", TOKEN)).status).toBe(400);
+    expect(rec.tenants).toEqual([]);
   });
 
   it("treats empty or whitespace list cursors as absent", async () => {

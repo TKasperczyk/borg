@@ -15,10 +15,12 @@ import {
 import { FixedClock, ManualClock } from "../util/clock.js";
 import { createSessionId } from "../util/ids.js";
 import {
+  CallbackTracer,
   JsonlTracer,
   NoopTracer,
   compositeTracer,
   createTurnTracer,
+  type CallbackTraceEntry,
   type TurnTraceData,
   type TurnTracer,
 } from "./tracer.js";
@@ -194,6 +196,59 @@ describe("TurnTracer", () => {
       reason: "mixed_closure_observed",
       spans: [{ text: "kept" }],
     });
+  });
+
+  it("records callback trace entries and applies payload stripping", () => {
+    const strippedEntries: CallbackTraceEntry[] = [];
+    const fullEntries: CallbackTraceEntry[] = [];
+    const stripped = new CallbackTracer({
+      includePayloads: false,
+      timestamp: () => 1_001,
+      sink: (entry) => strippedEntries.push(entry),
+    });
+    const full = new CallbackTracer({
+      includePayloads: true,
+      timestamp: () => 1_002,
+      sink: (entry) => fullEntries.push(entry),
+    });
+
+    const payload: TurnTraceData = {
+      turnId: "turn_callback",
+      clipped: false,
+      facet_count: 1,
+      named_term_count: 1,
+      facets: [{ kind: "topic", query: "Atlas rollback", priority: 0.9 }],
+      named_terms: ["Atlas"],
+      recall_intents: [{ kind: "topic", query: "Atlas rollback", priority: 78 }],
+      matched_terms_by_candidate: [{ episode_id: "ep_1", matched_terms: ["Atlas"] }],
+    };
+
+    stripped.emit("recall_expansion.completed", payload);
+    full.emit("recall_expansion.completed", payload);
+
+    expect(strippedEntries).toHaveLength(1);
+    expect(strippedEntries[0]).toMatchObject({
+      ts: 1_001,
+      turnId: "turn_callback",
+      event: "recall_expansion.completed",
+      clipped: false,
+      facet_count: 1,
+      named_term_count: 1,
+    });
+    expect(strippedEntries[0]).not.toHaveProperty("facets");
+    expect(strippedEntries[0]).not.toHaveProperty("named_terms");
+    expect(strippedEntries[0]).not.toHaveProperty("recall_intents");
+    expect(strippedEntries[0]).not.toHaveProperty("matched_terms_by_candidate");
+
+    expect(fullEntries[0]).toMatchObject({
+      ts: 1_002,
+      event: "recall_expansion.completed",
+      facets: [{ kind: "topic", query: "Atlas rollback", priority: 0.9 }],
+      named_terms: ["Atlas"],
+      recall_intents: [{ kind: "topic", query: "Atlas rollback", priority: 78 }],
+      matched_terms_by_candidate: [{ episode_id: "ep_1", matched_terms: ["Atlas"] }],
+    });
+    expect(typeof fullEntries[0]?.wallMs).toBe("number");
   });
 
   it("strips payload-gated keys for a lone JsonlTracer without payloads", () => {
@@ -542,6 +597,9 @@ describe("TurnTracer", () => {
       "llm_call.started",
       "llm_call.completed",
       "retrieval.degraded",
+      "retrieval.intent_candidates",
+      "retrieval.intent_candidates",
+      "retrieval.intent_candidates",
       "retrieval.completed",
       "turn_phase.started",
       "session_reentry.continuity.evaluated",

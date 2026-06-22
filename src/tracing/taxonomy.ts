@@ -33,6 +33,7 @@ export const TRACE_EVENT_TAXONOMY = {
   retrieval: [
     "retrieval.started",
     "retrieval.completed",
+    "retrieval.intent_candidates",
     "retrieval.degraded",
     "recall_expansion.completed",
     "creator_directive_rendered",

@@ -22,6 +22,7 @@
 import { join, resolve, sep } from "node:path";
 
 import { Borg } from "../borg.js";
+import { compositeTracer, type TurnTracer } from "../tracing/tracer.js";
 import { ConfigError } from "../util/errors.js";
 import type { BorgOpenOptions } from "./types.js";
 
@@ -50,6 +51,9 @@ export type BorgPoolOptions = {
   // Per-tenant tracer file path. Returning a per-tenant path enables tracing
   // without the shared-BORG_TRACE interleave (N beings appending one file).
   tracerPathFor?: (tenantId: string) => string | undefined;
+  // Per-tenant in-process tracer. Returning a tenant-bound tracer lets callers
+  // keep memory-only trace buffers isolated while still composing with file tracing.
+  tracerFor?: (tenantId: string) => TurnTracer | undefined;
 };
 
 type Deferred = { readonly promise: Promise<void>; readonly resolve: () => void };
@@ -87,6 +91,7 @@ export class BorgPool {
   private readonly maxOpen: number | undefined;
   private readonly tenantIdPattern: RegExp;
   private readonly tracerPathFor: ((tenantId: string) => string | undefined) | undefined;
+  private readonly tracerFor: ((tenantId: string) => TurnTracer | undefined) | undefined;
 
   private readonly entries = new Map<string, PoolEntry>();
   // Monotonic counter for LRU ordering -- deterministic, no clock dependency.
@@ -112,6 +117,7 @@ export class BorgPool {
     this.maxOpen = options.maxOpen;
     this.tenantIdPattern = options.tenantIdPattern ?? DEFAULT_TENANT_ID_PATTERN;
     this.tracerPathFor = options.tracerPathFor;
+    this.tracerFor = options.tracerFor;
   }
 
   /**
@@ -290,6 +296,7 @@ export class BorgPool {
 
   private openBeing(tenantId: string): Promise<Borg> {
     const tracerPath = this.tracerPathFor?.(tenantId);
+    const tracer = this.tracerForTenant(tenantId);
     // With no explicit per-tenant tracer path, strip ambient BORG_TRACE so an
     // operator's debug env var doesn't commingle every tenant's trace content
     // into one shared file.
@@ -297,9 +304,24 @@ export class BorgPool {
     return Borg.open({
       ...this.openOptions,
       ...(env === undefined ? {} : { env }),
+      ...(tracer === undefined ? {} : { tracer }),
       dataDir: join(this.root, tenantId),
       ...(tracerPath === undefined ? {} : { tracerPath }),
     });
+  }
+
+  private tracerForTenant(tenantId: string): TurnTracer | undefined {
+    const tenantTracer = this.tracerFor?.(tenantId);
+
+    if (tenantTracer === undefined) {
+      return this.openOptions.tracer;
+    }
+
+    if (this.openOptions.tracer === undefined) {
+      return tenantTracer;
+    }
+
+    return compositeTracer([this.openOptions.tracer, tenantTracer]);
   }
 
   private tenantSafeEnv(): NodeJS.ProcessEnv | undefined {
