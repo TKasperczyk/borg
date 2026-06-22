@@ -134,6 +134,7 @@ describe("config", () => {
     expect(config.autonomy.executiveFocus.wakeCooldownSec).toBe(3_600);
     expect(config.autonomy.executiveFocus.emptyWakeBackoffMultiplier).toBe(2);
     expect(config.autonomy.executiveFocus.wakeCooldownMaxSec).toBe(86_400);
+    expect(config.autonomy.executiveFocus.emptyWakeDormancyCount).toBe(3);
     expect(config.streamIngestion.settle).toEqual({
       settleMs: 0,
       maxSettleMs: 30_000,
@@ -374,11 +375,13 @@ describe("config", () => {
       env: {
         BORG_AUTONOMY_EXECUTIVE_FOCUS_EMPTY_WAKE_BACKOFF_MULTIPLIER: "3.5",
         BORG_AUTONOMY_EXECUTIVE_FOCUS_WAKE_COOLDOWN_MAX_SEC: "7200",
+        BORG_AUTONOMY_EXECUTIVE_FOCUS_EMPTY_WAKE_DORMANCY_COUNT: "5",
       },
     });
 
     expect(config.autonomy.executiveFocus.emptyWakeBackoffMultiplier).toBe(3.5);
     expect(config.autonomy.executiveFocus.wakeCooldownMaxSec).toBe(7_200);
+    expect(config.autonomy.executiveFocus.emptyWakeDormancyCount).toBe(5);
   });
 
   it("loads autonomous proactive outbound gates from config and env", () => {

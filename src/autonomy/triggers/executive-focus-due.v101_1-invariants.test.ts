@@ -60,6 +60,7 @@ describe("v101.1 executive focus cognition invariants", () => {
         wakeCooldownMs: 3_600_000,
         wakeCooldownBackoffMultiplier: 2,
         wakeCooldownMaxMs: 86_400_000,
+        wakeEmptyDormancyCount: 1_000,
         deadlineLookaheadMs: 604_800_000,
         goalFollowupDue: {
           enabled: false,
@@ -142,6 +143,7 @@ describe("v101.1 executive focus cognition invariants", () => {
         wakeCooldownMs: 3_600_000,
         wakeCooldownBackoffMultiplier: 2,
         wakeCooldownMaxMs: 86_400_000,
+        wakeEmptyDormancyCount: 1_000,
         deadlineLookaheadMs: 604_800_000,
         goalFollowupDue: {
           enabled: false,

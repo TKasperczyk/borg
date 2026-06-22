@@ -629,6 +629,11 @@ const configBaseSchema = z.object({
           wakeCooldownSec: z.number().int().nonnegative().default(3_600),
           emptyWakeBackoffMultiplier: z.number().min(1).default(2),
           wakeCooldownMaxSec: z.number().int().positive().default(86_400),
+          // After this many consecutive empty wakes a stale goal goes dormant
+          // (exits exec-focus selection) until it makes headway, instead of
+          // merely slowing to the cooldown cap. Keeps a pool of never-
+          // progressing goals from summing into a steady drip of empty wakes.
+          emptyWakeDormancyCount: z.number().int().positive().default(3),
         })
         .prefault({}),
       triggers: z
@@ -1676,6 +1681,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["autonomy", "executiveFocus", "wakeCooldownMaxSec"],
     readOptionalEnvNumber(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_WAKE_COOLDOWN_MAX_SEC"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "executiveFocus", "emptyWakeDormancyCount"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_EMPTY_WAKE_DORMANCY_COUNT"),
   );
   setConfigOverride(
     overrides,

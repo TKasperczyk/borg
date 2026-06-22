@@ -1886,15 +1886,21 @@ a goal whose progress timestamp keeps aging -- can stay true when nothing has
 actually changed, so it carries a per-goal dampener. A `goal_stale` wake that
 ends in neither progress nor a non-suppressed emission (an outward message, a
 continued train-of-thought, or a successful outbound post) raises that goal's
-empty-wake count, and its stale cooldown grows exponentially from the base
-toward a configured cap; any headway resets it to base. The dampener is purely
-structural -- it keys on the goal id, its progress timestamp, and the turn's
-emission kind, never on goal content -- and it only delays re-selection: the
+empty-wake count, and its stale cooldown grows exponentially from the base;
+after a configured number of consecutive empty wakes the goal goes dormant --
+it exits exec-focus selection entirely until it makes headway, rather than
+merely slowing to a cap (which, across a pool of never-progressing goals, would
+still sum to a steady drip of empty wakes). Any headway -- progress, or an
+emission that clears the count -- resets it, and a dormant goal re-enters only
+when its progress advances, never on a timer. The dampener is purely structural
+-- it keys on the goal id, its progress timestamp, and the turn's emission kind,
+never on goal content -- and it only changes when a goal is re-selected: the
 goal stays active and globally recallable, while the base cooldown, the
 step-due path, and inbound and contemplative wakes are untouched. This keeps a
 legitimately held but unprogressable goal -- for instance one a standing
 commitment asks the entity to hold open without acting -- from re-waking the
-entity on a fixed cadence to re-derive the same silence.
+entity to re-derive the same silence, while a goal that becomes live again
+(its tracked situation advances) returns to normal selection on its own.
 
 An autonomous turn is structurally distinct from a user turn. Its origin is
 autonomous, its audience is the self, and it carries no external sender and no

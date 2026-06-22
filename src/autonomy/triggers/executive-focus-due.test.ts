@@ -82,6 +82,9 @@ describe("executive focus due trigger", () => {
       wakeCooldownMs: 3_600_000,
       wakeCooldownBackoffMultiplier: 2,
       wakeCooldownMaxMs: 86_400_000,
+      // High by default so cooldown/cap cases are unaffected; dormancy-specific
+      // tests override this to a low value.
+      wakeEmptyDormancyCount: 1_000,
       deadlineLookaheadMs: 604_800_000,
       goalFollowupDue: {
         enabled: false,
@@ -921,6 +924,64 @@ describe("executive focus due trigger", () => {
       reason: "goal_stale",
       selected_goal_id: nextGoal.id,
     });
+  });
+
+  it("stops firing once a stale goal reaches the empty-wake dormancy count", async () => {
+    const harness = await createHarness(5_000_000);
+    const goal = harness.goalsRepository.add({
+      description: "Perpetually empty stale goal",
+      priority: 10,
+      provenance: { kind: "manual" },
+      createdAt: harness.clock.now() - 20_000,
+    });
+    const trigger = createTrigger(harness, {
+      stalenessMs: 1_000,
+      wakeCooldownMs: 1_000,
+      wakeCooldownBackoffMultiplier: 2,
+      wakeCooldownMaxMs: 60_000,
+      wakeEmptyDormancyCount: 2,
+    });
+
+    // Below the dormancy count it is still a candidate -- once its escalating
+    // cooldown elapses it fires again.
+    setGoalStaleBackoff({ harness, goalId: goal.id, emptyCount: 1 });
+    harness.clock.advance(60_000);
+    expect(await trigger.scan()).toHaveLength(1);
+
+    // At the dormancy count it exits selection entirely, regardless of how much
+    // time elapses -- no timer brings it back.
+    setGoalStaleBackoff({ harness, goalId: goal.id, emptyCount: 2 });
+    harness.clock.advance(10 * 86_400_000);
+    expect(await trigger.scan()).toHaveLength(0);
+  });
+
+  it("re-enters selection when a dormant stale goal makes progress", async () => {
+    const harness = await createHarness(5_000_000);
+    const goal = harness.goalsRepository.add({
+      description: "Dormant stale goal that later progresses",
+      priority: 10,
+      provenance: { kind: "manual" },
+      createdAt: harness.clock.now() - 20_000,
+    });
+    const trigger = createTrigger(harness, {
+      stalenessMs: 1_000,
+      wakeCooldownMs: 1_000,
+      wakeCooldownBackoffMultiplier: 2,
+      wakeCooldownMaxMs: 60_000,
+      wakeEmptyDormancyCount: 2,
+    });
+
+    setGoalStaleBackoff({ harness, goalId: goal.id, emptyCount: 2 });
+    expect(await trigger.scan()).toHaveLength(0);
+
+    // Headway after the backoff stamp clears dormancy; once it is stale again
+    // it is eligible -- the only way back is real progress, never a timer.
+    harness.clock.advance(1_000);
+    harness.goalsRepository.updateProgress(goal.id, "External report advanced the goal.", {
+      kind: "manual",
+    });
+    harness.clock.advance(2_000);
+    expect(await trigger.scan()).toHaveLength(1);
   });
 
   it("does not delay step_due wakes with stale-goal empty wake backoff", async () => {

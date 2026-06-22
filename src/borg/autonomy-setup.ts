@@ -90,6 +90,8 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
             wakeCooldownBackoffMultiplier:
               options.config.autonomy.executiveFocus.emptyWakeBackoffMultiplier,
             wakeCooldownMaxMs: options.config.autonomy.executiveFocus.wakeCooldownMaxSec * 1_000,
+            wakeEmptyDormancyCount:
+              options.config.autonomy.executiveFocus.emptyWakeDormancyCount,
             deadlineLookaheadMs: options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
             goalFollowupDue: {
               enabled: options.config.autonomy.triggers.goalFollowupDue.enabled,
