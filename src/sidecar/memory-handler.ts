@@ -4,7 +4,9 @@
 //   POST /memory/remember    { tenant, content, author? }          -> append + extract episode(s)
 //   POST /memory/append-turn { tenant, session, user, assistant }  -> append + async extract
 //   POST /memory/recall      { tenant, query, limit? }             -> semantic episodic search
-//   GET  /healthz                                         -> liveness (no auth)
+//   GET  /memory/episodes?tenant=<id>&limit=<n>&cursor=<c> -> list raw episodic bank
+//   GET  /memory/episodes/{id}?tenant=<id>                  -> inspect one raw episode
+//   GET  /healthz                                           -> liveness (no auth)
 //
 // Recall is tenant-wide by design: the pool routes to one being per tenant and,
 // within a being, recall is global (borg's "recall is global to the being", with
@@ -14,8 +16,9 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Borg } from "../borg.js";
+import type { Episode } from "../memory/episodic/index.js";
 import type { StreamEntryInput } from "../stream/index.js";
-import { parseSessionId, type SessionId } from "../util/ids.js";
+import { parseEpisodeId, parseSessionId, type EpisodeId, type SessionId } from "../util/ids.js";
 
 // Mirror of BorgPool's DEFAULT_TENANT_ID_PATTERN so the handler returns a clean
 // 400 for a malformed tenant id at the boundary, rather than relying on (and
@@ -45,6 +48,8 @@ type RequestHandler = (req: IncomingMessage, res: ServerResponse) => void;
 
 const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
 const DEFAULT_MAX_RECALL_LIMIT = 50;
+const DEFAULT_EPISODE_LIST_LIMIT = 20;
+const MAX_EPISODE_LIST_LIMIT = 100;
 
 class PayloadTooLargeError extends Error {}
 
@@ -99,6 +104,92 @@ function asContentString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function parseRawRequestTarget(rawUrl: string): {
+  rawPath: string;
+  searchParams: URLSearchParams;
+} {
+  const queryStart = rawUrl.indexOf("?");
+  if (queryStart === -1) {
+    return { rawPath: rawUrl, searchParams: new URLSearchParams() };
+  }
+
+  return {
+    rawPath: rawUrl.slice(0, queryStart),
+    searchParams: new URLSearchParams(rawUrl.slice(queryStart + 1)),
+  };
+}
+
+function validateTenantForResponse(res: ServerResponse, tenant: string): boolean {
+  if (tenant === "") {
+    send(res, 400, { error: "missing 'tenant'" });
+    return false;
+  }
+  if (!TENANT_ID_RE.test(tenant)) {
+    send(res, 400, { error: "invalid 'tenant'" });
+    return false;
+  }
+
+  return true;
+}
+
+function episodeListLimitFromQuery(searchParams: URLSearchParams): number {
+  const raw = searchParams.get("limit");
+  const rawLimit = raw === null || raw.trim() === "" ? DEFAULT_EPISODE_LIST_LIMIT : Number(raw);
+  const finiteLimit = Number.isFinite(rawLimit) ? rawLimit : DEFAULT_EPISODE_LIST_LIMIT;
+  return Math.max(1, Math.min(MAX_EPISODE_LIST_LIMIT, Math.floor(finiteLimit)));
+}
+
+function episodeListCursorFromQuery(searchParams: URLSearchParams): string | undefined {
+  const raw = searchParams.get("cursor");
+  return raw === null || raw.trim() === "" ? undefined : raw;
+}
+
+function parseEpisodeIdFromPath(pathname: string): EpisodeId | null | undefined {
+  const segments = pathname.split("/");
+  if (segments.length !== 4 || segments[1] !== "memory" || segments[2] !== "episodes") {
+    return undefined;
+  }
+
+  try {
+    return parseEpisodeId(segments[3] ?? "");
+  } catch {
+    return null;
+  }
+}
+
+function projectEpisodeForList(episode: Episode): {
+  id: Episode["id"];
+  title: string;
+  narrative: string;
+  significance: number;
+  tags: string[];
+  source_stream_ids: Episode["source_stream_ids"];
+} {
+  return {
+    id: episode.id,
+    title: episode.title,
+    narrative: episode.narrative,
+    significance: episode.significance,
+    tags: episode.tags,
+    source_stream_ids: episode.source_stream_ids,
+  };
+}
+
+function episodeWithoutEmbedding(episode: Episode): Omit<Episode, "embedding"> {
+  const { embedding: _embedding, ...rest } = episode;
+  return rest;
+}
+
+function errorCode(error: unknown): unknown {
+  return error !== null && typeof error === "object" && "code" in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+}
+
+function isInvalidEpisodeCursorError(error: unknown): boolean {
+  return errorCode(error) === "EPISODE_CURSOR_INVALID";
+}
+
 function sessionFromCaller(value: string): SessionId {
   try {
     return parseSessionId(value);
@@ -123,9 +214,9 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const method = req.method ?? "GET";
-    const url = (req.url ?? "").split("?")[0];
+    const { rawPath, searchParams } = parseRawRequestTarget(req.url ?? "/");
 
-    if (method === "GET" && url === "/healthz") {
+    if (method === "GET" && rawPath === "/healthz") {
       send(res, 200, { ok: true });
       return;
     }
@@ -135,9 +226,71 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       return;
     }
 
+    if (method === "GET") {
+      const isEpisodeListPath = rawPath === "/memory/episodes";
+      const episodeId = isEpisodeListPath ? undefined : parseEpisodeIdFromPath(rawPath);
+      if (!isEpisodeListPath && episodeId === undefined) {
+        send(res, 404, { error: "not found" });
+        return;
+      }
+
+      const tenant = asString(searchParams.get("tenant"));
+      if (!validateTenantForResponse(res, tenant)) {
+        return;
+      }
+
+      try {
+        if (rawPath === "/memory/episodes") {
+          const limit = episodeListLimitFromQuery(searchParams);
+          const cursor = episodeListCursorFromQuery(searchParams);
+          const result = await pool.withTenant(tenant, (borg) =>
+            borg.episodic.list({
+              limit,
+              ...(cursor === undefined ? {} : { cursor }),
+            }),
+          );
+
+          send(res, 200, {
+            ok: true,
+            episodes: result.items.map((episode) => projectEpisodeForList(episode)),
+            ...(result.nextCursor === undefined ? {} : { nextCursor: result.nextCursor }),
+          });
+          return;
+        }
+
+        if (episodeId === null) {
+          send(res, 400, { error: "invalid episode id" });
+          return;
+        }
+        if (episodeId !== undefined) {
+          const episode = await pool.withTenant(tenant, (borg) => borg.episodic.inspect(episodeId));
+          if (episode === null) {
+            send(res, 404, { ok: false });
+            return;
+          }
+
+          send(res, 200, { ok: true, episode: episodeWithoutEmbedding(episode) });
+          return;
+        }
+
+        send(res, 404, { error: "not found" });
+      } catch (error) {
+        if (isInvalidEpisodeCursorError(error)) {
+          send(res, 400, { error: "invalid 'cursor'" });
+          return;
+        }
+
+        console.error(`memory-sidecar: ${rawPath} failed for tenant "${tenant}"`, error);
+        send(res, 500, { error: "internal error" });
+      }
+      return;
+    }
+
     if (
       method !== "POST" ||
-      (url !== "/memory/remember" && url !== "/memory/recall" && url !== "/memory/append-turn")
+      (rawPath !== "/memory/remember" &&
+        rawPath !== "/memory/recall" &&
+        rawPath !== "/memory/append-turn")
     ) {
       send(res, 404, { error: "not found" });
       return;
@@ -162,17 +315,12 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
     }
 
     const tenant = asString(body.tenant);
-    if (tenant === "") {
-      send(res, 400, { error: "missing 'tenant'" });
-      return;
-    }
-    if (!TENANT_ID_RE.test(tenant)) {
-      send(res, 400, { error: "invalid 'tenant'" });
+    if (!validateTenantForResponse(res, tenant)) {
       return;
     }
 
     try {
-      if (url === "/memory/remember") {
+      if (rawPath === "/memory/remember") {
         const content = asString(body.content);
         if (content === "") {
           send(res, 400, { error: "missing 'content'" });
@@ -195,7 +343,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         return;
       }
 
-      if (url === "/memory/append-turn") {
+      if (rawPath === "/memory/append-turn") {
         const sessionRaw = asString(body.session);
         if (sessionRaw === "") {
           send(res, 400, { error: "missing 'session'" });
@@ -259,7 +407,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       // Tenant id is validated above, so anything thrown here is an internal
       // failure (open / storage / provider) that may carry sensitive detail —
       // log server-side, return a generic error.
-      console.error(`memory-sidecar: ${url} failed for tenant "${tenant}"`, error);
+      console.error(`memory-sidecar: ${rawPath} failed for tenant "${tenant}"`, error);
       send(res, 500, { error: "internal error" });
     }
   }

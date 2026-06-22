@@ -212,6 +212,7 @@ export type BorgStreamFacade = {
 
 export type BorgEpisodicFacade = {
   get(id: EpisodeId, options?: BorgEpisodeGetOptions): Promise<BorgRetrievedEpisode | null>;
+  inspect(id: Episode["id"]): Promise<Episode | null>;
   search(query: string, options?: BorgEpisodeSearchOptions): Promise<BorgRetrievedEpisode[]>;
   extract(options?: {
     sinceTs?: number;

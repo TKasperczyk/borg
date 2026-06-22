@@ -1,4 +1,4 @@
-import { createServer, type Server } from "node:http";
+import { createServer, request as httpRequest, type Server } from "node:http";
 import { AddressInfo } from "node:net";
 
 import { createHash } from "node:crypto";
@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createMemoryHandler, type MemoryPool } from "./memory-handler.js";
 import type { Borg } from "../borg.js";
+import type { Episode } from "../memory/episodic/index.js";
 
 const TOKEN = "secret-token";
 
@@ -22,12 +23,47 @@ type Recorder = {
   tenants: string[];
   exclusives: Array<boolean | undefined>;
   lastRecallLimit?: number;
+  lastListOptions?: {
+    limit?: number;
+    cursor?: string;
+  };
+  inspectIds: string[];
   appendMany?: {
     inputs: unknown[];
     session?: string;
   };
   ingestSessions: string[];
 };
+
+function testEpisode(id: Episode["id"] = "ep_aaaaaaaaaaaaaaaa" as Episode["id"]): Episode {
+  return {
+    id,
+    title: "Title",
+    narrative: "Narrative",
+    participants: ["Ada"],
+    location: null,
+    start_time: 10,
+    end_time: 20,
+    source_stream_ids: ["strm_aaaaaaaaaaaaaaaa" as Episode["source_stream_ids"][number]],
+    significance: 0.72,
+    tags: ["planning", "admin"],
+    confidence: 0.9,
+    lineage: {
+      derived_from: [],
+      supersedes: [],
+    },
+    emotional_arc: null,
+    audience_entity_id: null,
+    origin_audience_entity_ids: [],
+    shared: false,
+    episode_kind: "raw",
+    consolidation_family_id: null,
+    consolidation_coverage_hash: null,
+    embedding: Float32Array.from([1, 0, 0, 0]),
+    created_at: 1,
+    updated_at: 2,
+  };
+}
 
 function stubBorg(rec: Recorder): Borg {
   return {
@@ -52,12 +88,23 @@ function stubBorg(rec: Recorder): Borg {
         rec.lastRecallLimit = opts.limit;
         return [{ episode: { id: "ep_1", title: "Title", narrative: "Narrative" }, score: 0.91 }];
       },
+      list: async (options?: { limit?: number; cursor?: string }) => {
+        rec.lastListOptions = options;
+        return {
+          items: [testEpisode()],
+          nextCursor: "next-cursor",
+        };
+      },
+      inspect: async (id: Episode["id"]) => {
+        rec.inspectIds.push(id);
+        return id === ("ep_missingmissing00" as Episode["id"]) ? null : testEpisode(id);
+      },
     },
   } as unknown as Borg;
 }
 
 function recordingPool(): { pool: MemoryPool; rec: Recorder } {
-  const rec: Recorder = { tenants: [], exclusives: [], ingestSessions: [] };
+  const rec: Recorder = { tenants: [], exclusives: [], inspectIds: [], ingestSessions: [] };
   const pool: MemoryPool = {
     async withTenant(tenantId, fn, opts) {
       rec.tenants.push(tenantId);
@@ -85,6 +132,63 @@ async function post(base: string, path: string, body: unknown, token?: string, r
     headers["x-borg-token"] = token;
   }
   return fetch(`${base}${path}`, { method: "POST", headers, body: raw ?? JSON.stringify(body) });
+}
+
+async function get(base: string, path: string, token?: string) {
+  const headers: Record<string, string> = {};
+  if (token !== undefined) {
+    headers["x-borg-token"] = token;
+  }
+  return fetch(`${base}${path}`, { headers });
+}
+
+async function requestRaw(
+  base: string,
+  path: string,
+  options: {
+    method?: string;
+    token?: string;
+    body?: unknown;
+  } = {},
+): Promise<{ status: number; body: unknown; text: string }> {
+  const baseUrl = new URL(base);
+  const rawBody = options.body === undefined ? undefined : JSON.stringify(options.body);
+  const headers: Record<string, string> = {};
+  if (options.token !== undefined) {
+    headers["x-borg-token"] = options.token;
+  }
+  if (rawBody !== undefined) {
+    headers["content-type"] = "application/json";
+    headers["content-length"] = String(Buffer.byteLength(rawBody));
+  }
+
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      {
+        hostname: baseUrl.hostname,
+        port: Number(baseUrl.port),
+        method: options.method ?? "GET",
+        path,
+        headers,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8");
+          let body: unknown = text;
+          try {
+            body = JSON.parse(text) as unknown;
+          } catch {
+            // Keep non-JSON bodies as text for diagnostics.
+          }
+          resolve({ status: res.statusCode ?? 0, body, text });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.end(rawBody);
+  });
 }
 
 describe("memory sidecar handler", () => {
@@ -125,6 +229,24 @@ describe("memory sidecar handler", () => {
     expect(getRes.status).toBe(404);
   });
 
+  it("uses the raw request path for auth and routing without dot-segment normalization", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+
+    const authProbe = await requestRaw(base, "/foo/../healthz");
+    expect(authProbe.status).toBe(401);
+    expect(authProbe.body).toEqual({ error: "unauthorized" });
+
+    const routeProbe = await requestRaw(base, "/memory/nope/../recall", {
+      method: "POST",
+      token: TOKEN,
+      body: { tenant: "acme", query: "q" },
+    });
+    expect(routeProbe.status).toBe(404);
+    expect(routeProbe.body).toEqual({ error: "not found" });
+    expect(rec.tenants).toEqual([]);
+  });
+
   it("recalls and maps episodes, routing by tenant, clamping the limit", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
@@ -141,6 +263,138 @@ describe("memory sidecar handler", () => {
     });
     expect(rec.tenants).toEqual(["acme"]);
     expect(rec.lastRecallLimit).toBe(50); // clamped to maxRecallLimit
+  });
+
+  it("lists episodes from the query tenant without a body, clamping limit and passing cursor", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const res = await get(
+      base,
+      "/memory/episodes?tenant=acme&limit=999&cursor=opaque-cursor",
+      TOKEN,
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      episodes: [
+        {
+          id: "ep_aaaaaaaaaaaaaaaa",
+          title: "Title",
+          narrative: "Narrative",
+          significance: 0.72,
+          tags: ["planning", "admin"],
+          source_stream_ids: ["strm_aaaaaaaaaaaaaaaa"],
+        },
+      ],
+      nextCursor: "next-cursor",
+    });
+    expect(rec.tenants).toEqual(["acme"]);
+    expect(rec.exclusives).toEqual([undefined]);
+    expect(rec.lastListOptions).toEqual({ limit: 100, cursor: "opaque-cursor" });
+  });
+
+  it("treats empty or whitespace list cursors as absent", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+
+    expect((await get(base, "/memory/episodes?tenant=acme&cursor=", TOKEN)).status).toBe(200);
+    expect(rec.lastListOptions).toEqual({ limit: 20 });
+
+    expect((await get(base, "/memory/episodes?tenant=acme&cursor=%20%20", TOKEN)).status).toBe(200);
+    expect(rec.lastListOptions).toEqual({ limit: 20 });
+  });
+
+  it("maps malformed list cursors to 400 client errors", async () => {
+    const calls: string[] = [];
+    const pool: MemoryPool = {
+      async withTenant(tenantId, fn) {
+        calls.push(tenantId);
+        const invalidCursor = Object.assign(new Error("Invalid episode cursor"), {
+          code: "EPISODE_CURSOR_INVALID",
+        });
+        return fn({
+          episodic: {
+            list: async () => {
+              throw invalidCursor;
+            },
+          },
+        } as unknown as Borg);
+      },
+    };
+    const base = await start(pool);
+    const res = await get(base, "/memory/episodes?tenant=acme&cursor=not-a-cursor", TOKEN);
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid 'cursor'" });
+    expect(calls).toEqual(["acme"]);
+  });
+
+  it("rejects missing or invalid query tenant for episode GET routes before touching the pool", async () => {
+    const calls: string[] = [];
+    const pool: MemoryPool = {
+      async withTenant(tenantId, fn) {
+        calls.push(tenantId);
+        return fn({} as Borg);
+      },
+    };
+    const base = await start(pool);
+
+    expect((await get(base, "/memory/episodes", TOKEN)).status).toBe(400);
+    expect((await get(base, "/memory/episodes?tenant=UPPER", TOKEN)).status).toBe(400);
+    expect(
+      (await get(base, "/memory/episodes/ep_aaaaaaaaaaaaaaaa?tenant=../evil", TOKEN)).status,
+    ).toBe(400);
+    expect(calls).toEqual([]);
+  });
+
+  it("inspects one episode by query tenant and excludes the embedding vector", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const res = await get(base, "/memory/episodes/ep_aaaaaaaaaaaaaaaa?tenant=acme", TOKEN);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { episode: Record<string, unknown> };
+    expect(body).toMatchObject({
+      ok: true,
+      episode: {
+        id: "ep_aaaaaaaaaaaaaaaa",
+        title: "Title",
+        narrative: "Narrative",
+        participants: ["Ada"],
+        source_stream_ids: ["strm_aaaaaaaaaaaaaaaa"],
+        significance: 0.72,
+        tags: ["planning", "admin"],
+      },
+    });
+    expect(body.episode).not.toHaveProperty("embedding");
+    expect(rec.tenants).toEqual(["acme"]);
+    expect(rec.exclusives).toEqual([undefined]);
+    expect(rec.inspectIds).toEqual(["ep_aaaaaaaaaaaaaaaa"]);
+  });
+
+  it("404s an unknown episode id and 400s an invalid episode id without touching the pool", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const missing = await get(base, "/memory/episodes/ep_missingmissing00?tenant=acme", TOKEN);
+
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ ok: false });
+    expect(rec.tenants).toEqual(["acme"]);
+    expect(rec.inspectIds).toEqual(["ep_missingmissing00"]);
+
+    const invalidCalls: string[] = [];
+    const invalidPool: MemoryPool = {
+      async withTenant(tenantId, fn) {
+        invalidCalls.push(tenantId);
+        return fn({} as Borg);
+      },
+    };
+    const invalidBase = await start(invalidPool);
+    expect(
+      (await get(invalidBase, "/memory/episodes/not-an-episode?tenant=acme", TOKEN)).status,
+    ).toBe(400);
+    expect(invalidCalls).toEqual([]);
   });
 
   it("remembers (append + extract), routing by tenant", async () => {

@@ -388,6 +388,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           audienceEntityId: resolveEpisodeAudienceEntityId(options),
           crossAudience: options.crossAudience,
         }),
+      inspect: (id) => deps.episodicRepository.get(id, { includeArchived: true }),
       search: (query, options = {}) =>
         deps.retrievalPipeline.searchEpisodesForDisclosure(
           query,
