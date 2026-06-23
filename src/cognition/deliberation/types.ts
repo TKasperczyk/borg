@@ -183,6 +183,7 @@ export type SelfSnapshot = {
 
 export type DeliberationContext = {
   sessionId: SessionId;
+  nowMs?: number;
   participationPolicy?: SessionParticipationPolicy;
   creatorIdentity?: CreatorIdentityContext | null;
   creatorContext?: TrustedCreatorContext | null;

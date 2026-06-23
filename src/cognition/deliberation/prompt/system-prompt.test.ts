@@ -1312,13 +1312,15 @@ describe("buildBaseSystemPrompt", () => {
               : null,
         } as never,
       }),
-      PROMPT_OPTIONS,
+      { ...PROMPT_OPTIONS, nowMs: NOW_MS + 90_000 },
     );
     const block = extractBlock(prompt, "commitment_scope_details");
 
     expect(block).toContain(`id="${commitmentId}"`);
     expect(block).toContain("<made_to");
     expect(block).toContain("Sam</made_to>");
+    expect(block).toContain(`<created_at>${new Date(NOW_MS).toISOString()}</created_at>`);
+    expect(block).toContain("<created_relative_age>1m ago</created_relative_age>");
     expect(block).toContain("disclosure_class=relationship_private");
     expect(block).toContain(`private-to=${madeToEntityId}`);
     expect(block).not.toContain("No active commitments apply to this turn.");

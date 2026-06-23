@@ -79,6 +79,7 @@ import type { IndexedEntryFacts, StreamEntry } from "../../../stream/index.js";
 import { loadSessionStreamEntries } from "../../../stream/index.js";
 import type {
   ActionId,
+  AttachmentId,
   CommitmentId,
   EntityId,
   GoalId,
@@ -674,6 +675,7 @@ export async function runRetrievalPhase(input: {
   participantProfiles: readonly ParticipantProfileContext[];
   persistedUserEntry?: StreamEntry;
   currentUserEntries?: readonly StreamEntry[];
+  currentTurnAttachmentIds?: readonly AttachmentId[];
   currentTurnFrameAnomaly: ActualFrameAnomalyClassification | null;
   closureLoopAssessment: ClosureLoopAssessment | null;
 }): Promise<TurnRetrievalPhaseResult> {
@@ -743,6 +745,9 @@ export async function runRetrievalPhase(input: {
     activeValues: activeScoringValues,
     scoringFeatures: retrievalScoringFeatures,
     suppressionSet: input.suppressionSet,
+    ...(input.currentTurnAttachmentIds === undefined || input.currentTurnAttachmentIds.length === 0
+      ? {}
+      : { currentTurnAttachmentIds: input.currentTurnAttachmentIds }),
     llmClient: input.llmClient,
     proceduralContextModel: input.options.config.anthropic.models.background,
   });

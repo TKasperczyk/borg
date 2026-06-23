@@ -103,6 +103,7 @@ export type EvidenceItem = {
   source_visibility_fraction?: number;
   imageAttachmentId?: AttachmentId;
   imageLabel?: string;
+  imageOriginFrame?: string;
   citationType?: "original_image" | "generated_perception_text" | "parent_user_message";
   imageUnavailableReason?: "budget" | "inactive";
   disclosureLabel?: MemoryDisclosureLabel;

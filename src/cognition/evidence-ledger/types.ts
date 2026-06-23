@@ -173,6 +173,7 @@ export type EvidenceLedger = {
 
 export type EvidenceLedgerImageAttachment = {
   label: string;
+  originFrame?: string;
   attachment_id: string;
   byte_size?: number;
   citation_type: "original_image";

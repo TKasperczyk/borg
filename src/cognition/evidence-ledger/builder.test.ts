@@ -507,6 +507,8 @@ describe("EvidenceLedgerBuilder", () => {
           scoreBreakdown: { vector: 0.9 },
           imageAttachmentId: attachmentA,
           imageLabel: "Image: first",
+          imageOriginFrame:
+            "[remembered image -- not sent in this message; first shared yesterday]",
           citationType: "generated_perception_text",
         },
         {
@@ -531,6 +533,7 @@ describe("EvidenceLedgerBuilder", () => {
     expect(ledger.imageAttachments).toEqual([
       expect.objectContaining({
         attachment_id: attachmentA,
+        originFrame: "[remembered image -- not sent in this message; first shared yesterday]",
         citation_type: "original_image",
       }),
     ]);
@@ -700,8 +703,12 @@ describe("EvidenceLedgerBuilder", () => {
     const sourceStreamEntryId = createStreamEntryId();
     const createdAt = NOW_MS - 2 * 24 * 60 * 60_000;
     const lastReinforcedAt = NOW_MS - 30 * 60_000;
+    const madeToEntityId = createEntityId();
+    const committedByEntityId = createEntityId();
     const commitment = {
       ...makeCommitment(sourceStreamEntryId),
+      made_to_entity: madeToEntityId,
+      committed_by_entity_id: committedByEntityId,
       created_at: createdAt,
       last_reinforced_at: lastReinforcedAt,
     };
@@ -732,6 +739,8 @@ describe("EvidenceLedgerBuilder", () => {
         created_relative_age: "2d ago",
         last_reinforced_at: new Date(lastReinforcedAt).toISOString(),
         last_reinforced_relative_age: "30m ago",
+        made_to_entity_id: madeToEntityId,
+        committed_by_entity_id: committedByEntityId,
       }),
     );
   });
@@ -2580,10 +2589,11 @@ describe("EvidenceLedgerBuilder", () => {
     });
     const groupCommitment = {
       ...makeCommitment(userEntry.id),
+      made_to_entity: group,
       restricted_audience: group,
       directive_family: "spain_channel_scope",
       directive: "Keep Spain planning scoped to the channel.",
-      committed_by_entity_id: null,
+      committed_by_entity_id: group,
     };
     const aliceCommitment = {
       ...makeCommitment(userEntry.id),
@@ -2602,11 +2612,13 @@ describe("EvidenceLedgerBuilder", () => {
     const groupGoal = makeGoal(userEntry.id, {
       audience_entity_id: group,
       owner_entity_id: null,
+      last_progress_ts: NOW_MS - 30 * 60_000,
       description: "Coordinate the Spain trip channel.",
     });
     const aliceGoal = makeGoal(userEntry.id, {
       audience_entity_id: group,
       owner_entity_id: alice,
+      last_progress_ts: NOW_MS - 45 * 60_000,
       description: "Alice will book the Alhambra visit.",
     });
     const leakedGoal = makeGoal(userEntry.id, {
@@ -2750,6 +2762,7 @@ describe("EvidenceLedgerBuilder", () => {
     const ledger = await builder.build({
       sessionId: DEFAULT_SESSION_ID,
       turnId: "turn-group-ledger",
+      nowMs: NOW_MS,
       audienceEntityId: group,
       currentUserMessage: String(userEntry.content),
       currentUserEntry: userEntry,
@@ -2780,6 +2793,18 @@ describe("EvidenceLedgerBuilder", () => {
     const groupText = JSON.stringify(groupSection?.entries ?? []);
     const participantText = JSON.stringify(ledger.audienceStanding?.relationalEntries ?? []);
     const actionText = JSON.stringify(actionSection?.entries ?? []);
+    const groupCommitmentEntry = groupSection?.entries.find(
+      (entry) => entry.id === `group_commitment:${groupCommitment.id}`,
+    );
+    const groupGoalEntry = groupSection?.entries.find(
+      (entry) => entry.id === `group_goal:${groupGoal.id}`,
+    );
+    const participantCommitmentEntry = ledger.audienceStanding?.relationalEntries.find(
+      (entry) => entry.id === `participant_commitment:${alice}:${aliceCommitment.id}`,
+    );
+    const participantGoalEntry = ledger.audienceStanding?.relationalEntries.find(
+      (entry) => entry.id === `participant_goal:${alice}:${aliceGoal.id}`,
+    );
     const privateOtherAudienceActionEntry = actionSection?.entries.find((entry) =>
       entry.text?.includes("call the private channel contact"),
     );
@@ -2791,6 +2816,24 @@ describe("EvidenceLedgerBuilder", () => {
     expect(groupText).toContain("trip.destination=Spain");
     expect(groupText).toContain("spain_channel_scope");
     expect(groupText).toContain("settle Spain trip dates");
+    expect(groupCommitmentEntry?.state_metadata).toEqual(
+      expect.objectContaining({
+        created_at: new Date(groupCommitment.created_at).toISOString(),
+        created_relative_age: "~0s ago",
+        made_to_entity_id: group,
+        committed_by_entity_id: group,
+      }),
+    );
+    expect(groupGoalEntry?.state_metadata).toEqual(
+      expect.objectContaining({
+        created_at: new Date(groupGoal.created_at).toISOString(),
+        created_relative_age: "~0s ago",
+        last_progress_at: new Date(groupGoal.last_progress_ts!).toISOString(),
+        last_progress_relative_age: "30m ago",
+        owner_entity_id: null,
+        audience_entity_id: group,
+      }),
+    );
     expect(groupText).not.toContain("book Alhambra");
     expect(groupText).not.toContain("alice_alhambra_booking");
     expect(groupText).not.toContain("Alice will book the Alhambra visit.");
@@ -2800,6 +2843,21 @@ describe("EvidenceLedgerBuilder", () => {
     expect(participantText).not.toContain("spain_channel_scope");
     expect(participantText).toContain("alice_alhambra_booking");
     expect(participantText).toContain("Alice will book the Alhambra visit.");
+    expect(participantCommitmentEntry?.state_metadata).toEqual(
+      expect.objectContaining({
+        created_relative_age: "~0s ago",
+        made_to_entity_id: null,
+        committed_by_entity_id: alice,
+      }),
+    );
+    expect(participantGoalEntry?.state_metadata).toEqual(
+      expect.objectContaining({
+        created_relative_age: "~0s ago",
+        last_progress_relative_age: "45m ago",
+        owner_entity_id: alice,
+        audience_entity_id: group,
+      }),
+    );
     expect(rendered).toContain("book Alhambra");
     expect(rendered).toContain("actor: Alice");
     expect(groupText).not.toContain("call the private channel contact");

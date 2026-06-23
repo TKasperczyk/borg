@@ -256,6 +256,14 @@ export function withLedgerImageContentBlocks(
     {
       role: "user",
       content: budgetedLedger.imageAttachments.flatMap((image): LLMContentBlock[] => [
+        ...(image.originFrame === undefined
+          ? []
+          : [
+              {
+                type: "text" as const,
+                text: image.originFrame,
+              },
+            ]),
         {
           type: "text",
           text: image.label,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createSemanticNodeFixture } from "../../../offline/test-support.js";
+import { createEpisodeFixture, createSemanticNodeFixture } from "../../../offline/test-support.js";
 import type { RetrievedSemantic } from "../../../retrieval/index.js";
 import {
   DEFAULT_SESSION_ID,
@@ -13,6 +13,80 @@ import { createSectionBuckets } from "../section-buckets.js";
 import { addSemanticGraphSection } from "./semantic-graph.js";
 
 describe("evidence-ledger semantic graph section", () => {
+  it("labels semantic node origin by hydrated source occurrence or recorded storage time", () => {
+    const hydratedEpisodeId = createEpisodeId();
+    const storedOnlyEpisodeId = createEpisodeId();
+    const hydratedNode = createSemanticNodeFixture({
+      label: "Hydrated source node",
+      source_episode_ids: [hydratedEpisodeId],
+      created_at: 1_000,
+    }) satisfies RetrievedSemantic["matched_nodes"][number];
+    const storedOnlyNode = createSemanticNodeFixture({
+      label: "Storage source node",
+      source_episode_ids: [storedOnlyEpisodeId],
+      created_at: 2_000,
+    }) satisfies RetrievedSemantic["matched_nodes"][number];
+    const episode = createEpisodeFixture({
+      id: hydratedEpisodeId,
+      end_time: 9_000,
+    });
+    const buckets = createSectionBuckets();
+
+    addSemanticGraphSection({
+      input: {
+        nowMs: 10_000,
+        retrievedEpisodes: [
+          {
+            episode,
+            score: 1,
+            scoreBreakdown: {},
+            citationChain: [],
+          },
+        ],
+        retrievedSemantic: {
+          as_of: null,
+          supports: [],
+          contradicts: [],
+          categories: [],
+          matched_node_ids: [hydratedNode.id, storedOnlyNode.id],
+          matched_nodes: [hydratedNode, storedOnlyNode],
+          support_hits: [],
+          causal_hits: [],
+          contradiction_hits: [],
+          category_hits: [],
+        },
+      },
+      nowMs: 10_000,
+      resolver: {
+        currentSessionId: DEFAULT_SESSION_ID,
+        streamEntriesById: new Map(),
+        streamOrderById: new Map(),
+        episodeScopesById: new Map(),
+        episodeSourceStreamIdsById: new Map(),
+      },
+      buckets,
+    } as unknown as BuilderSectionContext);
+
+    const entries = buckets.get("semantic_graph")?.entries ?? [];
+
+    expect(entries.find((entry) => entry.id === `semantic_node:${hydratedNode.id}`)).toMatchObject({
+      state_metadata: expect.objectContaining({
+        origin_time_basis: "source_episode_occurred_at",
+        source_occurred_at: new Date(9_000).toISOString(),
+        source_occurrence_relative_age: "~1s ago",
+      }),
+    });
+    expect(entries.find((entry) => entry.id === `semantic_node:${storedOnlyNode.id}`)).toMatchObject(
+      {
+        state_metadata: expect.objectContaining({
+          origin_time_basis: "storage_recorded_at",
+          recorded_at: new Date(2_000).toISOString(),
+          recorded_relative_age: "~8s ago",
+        }),
+      },
+    );
+  });
+
   it("renders disclosure labels for private semantic nodes and edges", () => {
     const alice = createEntityId();
     const episodeId = createEpisodeId();

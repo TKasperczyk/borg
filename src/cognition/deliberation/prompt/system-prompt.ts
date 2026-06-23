@@ -843,6 +843,12 @@ function renderCommitmentDetailsLines(context: DeliberationContext, indent: stri
       `${detailIndent}<commitment_type>${escapeXmlText(commitment.type)}</commitment_type>`,
       `${detailIndent}<commitment_enforcement_class>${escapeXmlText(effectiveCommitmentEnforcementClass(commitment))}</commitment_enforcement_class>`,
       `${detailIndent}<commitment_critical_domain>${escapeXmlText(effectiveCommitmentCriticalDomain(commitment) ?? "none")}</commitment_critical_domain>`,
+      `${detailIndent}<created_at>${escapeXmlText(new Date(commitment.created_at).toISOString())}</created_at>`,
+      ...(context.nowMs === undefined
+        ? []
+        : [
+            `${detailIndent}<created_relative_age>${escapeXmlText(formatRelativeAge(commitment.created_at, context.nowMs))}</created_relative_age>`,
+          ]),
       ...refs,
       `${detailIndent}<provenance>${escapeXmlText(summarizeProvenanceForPrompt(commitment.provenance))}</provenance>`,
       `${indent}  </commitment_detail>`,
@@ -1053,6 +1059,10 @@ export function buildBaseSystemPromptSections(
   context: DeliberationContext,
   options: BuildBaseSystemPromptOptions,
 ): BaseSystemPromptSections {
+  const contextWithTime: DeliberationContext =
+    options.nowMs === undefined || !Number.isFinite(options.nowMs)
+      ? context
+      : { ...context, nowMs: options.nowMs };
   const evidenceLedgerActive =
     context.evidenceLedgerPromptSection !== undefined &&
     context.evidenceLedgerPromptSection !== null;
@@ -1188,7 +1198,7 @@ export function buildBaseSystemPromptSections(
     tag: "borg_memory_disclosure_guidance",
     content: MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
   };
-  const standingWithAudienceSection = buildStandingWithAudienceSection(context);
+  const standingWithAudienceSection = buildStandingWithAudienceSection(contextWithTime);
   const autonomousOutboundAuthorizationSection = buildAutonomousOutboundAuthorizationSection(
     context.autonomousOutbound ?? null,
     context.turnOrigin,

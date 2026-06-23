@@ -8,6 +8,7 @@ import {
 } from "../entry-metadata.js";
 import { SEMANTIC_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets.js";
 import { persistenceClassFromProvenance, scopeFromEpisodeIds } from "../scope-resolver.js";
+import { formatRelativeAge } from "../../../util/relative-time.js";
 
 function semanticNodeStatusAnnotation(node: {
   status: string;
@@ -63,7 +64,23 @@ export function addSemanticGraphSection(context: BuilderSectionContext): void {
     return;
   }
 
+  const sourceEpisodesById = new Map(
+    (context.input.retrievedEpisodes ?? []).map(
+      (result) => [result.episode.id, result.episode] as const,
+    ),
+  );
+
   for (const node of semantic.matched_nodes) {
+    const sourceEpisodes = node.source_episode_ids.flatMap((episodeId) => {
+      const episode = sourceEpisodesById.get(episodeId);
+
+      return episode === undefined ? [] : [episode];
+    });
+    const sourceOccurredAt = sourceEpisodes.reduce<number | null>(
+      (latest, episode) =>
+        latest === null || episode.end_time > latest ? episode.end_time : latest,
+      null,
+    );
     addEntry(
       context.buckets,
       "semantic_graph",
@@ -79,6 +96,26 @@ export function addSemanticGraphSection(context: BuilderSectionContext): void {
         state_metadata: {
           ...(semanticNodeStateMetadata(node) ?? {}),
           ...semanticDisclosureMetadata(node.disclosureLabel),
+          ...(sourceOccurredAt === null
+            ? {
+                origin_time_basis: "storage_recorded_at",
+                recorded_at: new Date(node.created_at).toISOString(),
+                ...(context.nowMs === undefined
+                  ? {}
+                  : { recorded_relative_age: formatRelativeAge(node.created_at, context.nowMs) }),
+              }
+            : {
+                origin_time_basis: "source_episode_occurred_at",
+                source_occurred_at: new Date(sourceOccurredAt).toISOString(),
+                ...(context.nowMs === undefined
+                  ? {}
+                  : {
+                      source_occurrence_relative_age: formatRelativeAge(
+                        sourceOccurredAt,
+                        context.nowMs,
+                      ),
+                    }),
+              }),
         },
         taint: semanticTaint({ underReview: node.under_review, status: node.status }),
         ...persistenceClassFromProvenance(
@@ -95,6 +132,16 @@ export function addSemanticGraphSection(context: BuilderSectionContext): void {
     ...semantic.contradiction_hits,
     ...semantic.category_hits,
   ]) {
+    const sourceEpisodes = hit.node.source_episode_ids.flatMap((episodeId) => {
+      const episode = sourceEpisodesById.get(episodeId);
+
+      return episode === undefined ? [] : [episode];
+    });
+    const sourceOccurredAt = sourceEpisodes.reduce<number | null>(
+      (latest, episode) =>
+        latest === null || episode.end_time > latest ? episode.end_time : latest,
+      null,
+    );
     addEntry(
       context.buckets,
       "semantic_graph",
@@ -110,6 +157,31 @@ export function addSemanticGraphSection(context: BuilderSectionContext): void {
         state_metadata: {
           ...(semanticNodeStateMetadata(hit.node) ?? {}),
           ...semanticDisclosureMetadata(hit.node.disclosureLabel),
+          ...(sourceOccurredAt === null
+            ? {
+                origin_time_basis: "storage_recorded_at",
+                recorded_at: new Date(hit.node.created_at).toISOString(),
+                ...(context.nowMs === undefined
+                  ? {}
+                  : {
+                      recorded_relative_age: formatRelativeAge(
+                        hit.node.created_at,
+                        context.nowMs,
+                      ),
+                    }),
+              }
+            : {
+                origin_time_basis: "source_episode_occurred_at",
+                source_occurred_at: new Date(sourceOccurredAt).toISOString(),
+                ...(context.nowMs === undefined
+                  ? {}
+                  : {
+                      source_occurrence_relative_age: formatRelativeAge(
+                        sourceOccurredAt,
+                        context.nowMs,
+                      ),
+                    }),
+              }),
         },
         taint: semanticTaint({ underReview: hit.node.under_review, status: hit.node.status }),
         ...persistenceClassFromProvenance(
