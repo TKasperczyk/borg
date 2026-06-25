@@ -135,10 +135,16 @@ export type TurnPhaseCoordinatorOptions = {
         | "listRecentGlobalEvents"
         | "getMostRecentOtherActiveSessionEventOccurredAt"
         | "listDailyOtherActiveSessionDensity"
+        | "countOtherActiveSessionConversationTurns"
       >
     >;
   selfDecisionRepository?: Pick<SelfDecisionRepository, "listRecentAutonomousSelfPrivate"> &
-    Partial<Pick<SelfDecisionRepository, "listDailyAutonomousSelfPrivateDensity">>;
+    Partial<
+      Pick<
+        SelfDecisionRepository,
+        "listDailyAutonomousSelfPrivateDensity" | "countAutonomousSelfPrivateDecisions"
+      >
+    >;
   livedExperienceDaySummaryRepository?: Pick<LivedExperienceDaySummaryRepository, "listForWindow">;
   trainOfThoughtRepository?: Pick<TrainOfThoughtRepository, "append">;
   observedEventRepository?: Pick<

@@ -329,4 +329,30 @@ export class SelfDecisionRepository {
 
     return rows.map(mapDailyDensityRow);
   }
+
+  countAutonomousSelfPrivateDecisions(input: { sinceMs: number; untilMs?: number }): number {
+    const filters = [
+      "origin = 'autonomous'",
+      "disclosure_class = 'self_private'",
+      "occurred_at >= ?",
+    ];
+    const values: unknown[] = [input.sinceMs];
+
+    if (input.untilMs !== undefined) {
+      filters.push("occurred_at <= ?");
+      values.push(input.untilMs);
+    }
+
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS decision_count
+          FROM self_decision_events
+          WHERE ${filters.join(" AND ")}
+        `,
+      )
+      .get(...values) as { decision_count: number | null } | undefined;
+
+    return row === undefined || row.decision_count === null ? 0 : Number(row.decision_count);
+  }
 }

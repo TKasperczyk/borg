@@ -124,10 +124,8 @@ function activityDensityText(row: ActivityDailyDensityRow): string {
 function selfDecisionDensityText(row: SelfDecisionDailyDensityRow): string {
   const span = formatUtcDaySpanLabel(row.firstOccurredAt, row.lastOccurredAt);
   const timeSpan = formatUtcTimeSpan(row.firstOccurredAt, row.lastOccurredAt);
-  const patternLabel =
-    row.distinctDecisionShapeCount === 1 ? "structural pattern" : "structural patterns";
 
-  return `[${span}] ${row.decisionCount} autonomous reflections; ${row.distinctDecisionShapeCount} distinct ${patternLabel} (${timeSpan}).`;
+  return `[${span}] ${row.decisionCount} autonomous reflections (${timeSpan}).`;
 }
 
 function daySummaryText(row: LivedExperienceDaySummary): string {

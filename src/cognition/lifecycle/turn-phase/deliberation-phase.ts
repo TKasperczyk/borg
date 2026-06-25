@@ -86,6 +86,7 @@ export async function runDeliberationPhase(input: {
   const deliberation = await deliberator.run(
     {
       sessionId: input.sessionId,
+      currentTimeContext: input.retrievalPhase.currentTimeContext,
       participationPolicy: input.participationPolicy,
       creatorIdentity: input.creatorIdentity,
       creatorContext: input.creatorContext,

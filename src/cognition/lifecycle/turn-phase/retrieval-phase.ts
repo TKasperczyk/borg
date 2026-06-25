@@ -4,6 +4,7 @@ import {
 } from "../../commitments/corrective-preference-service.js";
 import type {
   CreatorDirectiveBriefing,
+  CurrentTimePromptContext,
   DeliberationRoutingOverride,
 } from "../../deliberation/types.js";
 import {
@@ -76,7 +77,7 @@ import {
   type DisclosureContext,
 } from "../../../retrieval/index.js";
 import type { IndexedEntryFacts, StreamEntry } from "../../../stream/index.js";
-import { loadSessionStreamEntries } from "../../../stream/index.js";
+import { filterActiveStreamEntries, loadSessionStreamEntries } from "../../../stream/index.js";
 import type {
   ActionId,
   AttachmentId,
@@ -188,6 +189,7 @@ export type TurnRetrievalPhaseResult = {
   selectedSkill: Awaited<
     ReturnType<TurnPhaseCoordinatorOptions["turnRetrievalCoordinator"]["coordinate"]>
   >["selectedSkill"];
+  currentTimeContext: CurrentTimePromptContext;
   relationalSlots: ReturnType<typeof listConstrainedRelationalSlotsForParticipants>;
   participantRoster: ParticipantRoster | null;
   creatorDirectiveBriefing: CreatorDirectiveBriefing | null;
@@ -862,11 +864,34 @@ export async function runRetrievalPhase(input: {
       untilMs: nowMs,
       limit: recentLivedExperienceConfig.densityCap,
     }) ?? [];
+  const crossSessionConversationTurnCount =
+    input.options.activityRepository?.countOtherActiveSessionConversationTurns?.({
+      currentSessionId: input.sessionId,
+      sinceMs: recentLivedExperienceSinceMs,
+      untilMs: nowMs,
+    }) ?? 0;
+  const autonomousReflectionCount =
+    input.options.selfDecisionRepository?.countAutonomousSelfPrivateDecisions?.({
+      sinceMs: recentLivedExperienceSinceMs,
+      untilMs: nowMs,
+    }) ?? 0;
   const currentSessionPreviousTurnAt = await currentSessionPreviousTurnAdjacencyAt({
     options: input.options,
     sessionId: input.sessionId,
     currentUserEntries: input.currentUserEntries,
     currentUserEntryId: input.persistedUserEntry?.id,
+  });
+  const previousUserMessageAt = await currentSessionPreviousUserMessageAt({
+    options: input.options,
+    sessionId: input.sessionId,
+    currentUserEntries: input.currentUserEntries,
+    currentUserEntryId: input.persistedUserEntry?.id,
+  });
+  const currentTimeContext = buildCurrentTimePromptContext({
+    previousUserMessageAt,
+    recentLifeWindowMs: recentLivedExperienceConfig.recencyWindowMs,
+    autonomousReflectionCount,
+    crossSessionConversationTurnCount,
   });
   const autobiographicalPeriodCutoffMs = nowMs - RECENT_LIVED_EXPERIENCE_DAILY_SPINE_WINDOW_MS;
   const livedExperienceAutobiographicalPeriods =
@@ -1033,6 +1058,7 @@ export async function runRetrievalPhase(input: {
     turnMechanismEvidence,
     proceduralContext,
     selectedSkill,
+    currentTimeContext,
     relationalSlots,
     participantRoster: input.participantRoster,
     creatorDirectiveBriefing,
@@ -1258,6 +1284,32 @@ function isCurrentSessionAdjacencyEntry(entry: StreamEntry): boolean {
   );
 }
 
+function isCurrentSessionUserMessageEntry(entry: StreamEntry): boolean {
+  return entry.kind === "user_msg" && entry.turn_status !== "aborted";
+}
+
+function buildCurrentTimePromptContext(input: {
+  previousUserMessageAt: number | null;
+  recentLifeWindowMs: number;
+  autonomousReflectionCount: number;
+  crossSessionConversationTurnCount: number;
+}): CurrentTimePromptContext {
+  return {
+    previousUserMessageAt: input.previousUserMessageAt,
+    recentLifeElsewhere: {
+      windowMs: input.recentLifeWindowMs,
+      autonomousReflectionCount: nonNegativeInteger(input.autonomousReflectionCount),
+      crossSessionConversationTurnCount: nonNegativeInteger(
+        input.crossSessionConversationTurnCount,
+      ),
+    },
+  };
+}
+
+function nonNegativeInteger(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
 async function currentSessionPreviousTurnAdjacencyAt(input: {
   options: TurnPhaseCoordinatorOptions;
   sessionId: SessionId;
@@ -1319,7 +1371,9 @@ async function currentSessionPreviousTurnAdjacencyAt(input: {
     return maxTimestamp(terminalRecords.map((record) => record.timestamp));
   }
 
-  const entries = await loadSessionStreamEntries(input.options.createStreamReader(input.sessionId));
+  const entries = filterActiveStreamEntries(
+    await loadSessionStreamEntries(input.options.createStreamReader(input.sessionId)),
+  );
   const currentIds = new Set(currentEntryIds);
   const firstCurrentIndex =
     currentIds.size === 0 ? -1 : entries.findIndex((entry) => currentIds.has(entry.id));
@@ -1332,6 +1386,85 @@ async function currentSessionPreviousTurnAdjacencyAt(input: {
 
   return maxTimestamp(
     priorEntries.filter(isCurrentSessionAdjacencyEntry).map((entry) => entry.timestamp),
+  );
+}
+
+async function currentSessionPreviousUserMessageAt(input: {
+  options: TurnPhaseCoordinatorOptions;
+  sessionId: SessionId;
+  currentUserEntryId?: StreamEntryId;
+  currentUserEntries?: readonly StreamEntry[];
+}): Promise<number | null> {
+  const currentEntryIds = dedupePreservingOrder([
+    ...(input.currentUserEntryId === undefined ? [] : [input.currentUserEntryId]),
+    ...(input.currentUserEntries ?? []).map((entry) => entry.id),
+  ]);
+  const currentEntryTimestamps = (input.currentUserEntries ?? []).map((entry) => entry.timestamp);
+
+  if (input.options.entryIndex !== undefined) {
+    const currentRecords =
+      currentEntryIds.length === 0
+        ? new Map()
+        : input.options.entryIndex.lookupMany(currentEntryIds);
+    const currentEntryIndexes = currentEntryIds.flatMap((entryId) => {
+      const indexed = currentRecords.get(entryId)?.entry_index ?? null;
+
+      return indexed === null ? [] : [indexed];
+    });
+    const currentTimestamps = [
+      ...currentEntryTimestamps,
+      ...currentEntryIds.flatMap((entryId) => {
+        const timestamp = currentRecords.get(entryId)?.timestamp;
+
+        return timestamp === undefined ? [] : [timestamp];
+      }),
+    ];
+    const userRecords = input.options.entryIndex
+      .lookupSessionEntriesByKind({
+        sessionId: input.sessionId,
+        kind: "user_msg",
+      })
+      .filter((record) => record.active);
+
+    if (currentEntryIndexes.length > 0) {
+      const oldestCurrentEntryIndex = Math.min(...currentEntryIndexes);
+
+      return maxTimestamp(
+        userRecords
+          .filter((record) => record.entry_index !== null)
+          .filter((record) => record.entry_index! < oldestCurrentEntryIndex)
+          .map((record) => record.timestamp),
+      );
+    }
+
+    if (currentTimestamps.length > 0) {
+      const oldestCurrentTimestamp = Math.min(...currentTimestamps);
+
+      return maxTimestamp(
+        userRecords
+          .filter((record) => record.timestamp < oldestCurrentTimestamp)
+          .map((record) => record.timestamp),
+      );
+    }
+
+    return maxTimestamp(userRecords.map((record) => record.timestamp));
+  }
+
+  const entries = filterActiveStreamEntries(
+    await loadSessionStreamEntries(input.options.createStreamReader(input.sessionId)),
+  );
+  const currentIds = new Set(currentEntryIds);
+  const firstCurrentIndex =
+    currentIds.size === 0 ? -1 : entries.findIndex((entry) => currentIds.has(entry.id));
+  const priorEntries =
+    firstCurrentIndex >= 0
+      ? entries.slice(0, firstCurrentIndex)
+      : currentEntryTimestamps.length === 0
+        ? entries
+        : entries.filter((entry) => entry.timestamp < Math.min(...currentEntryTimestamps));
+
+  return maxTimestamp(
+    priorEntries.filter(isCurrentSessionUserMessageEntry).map((entry) => entry.timestamp),
   );
 }
 

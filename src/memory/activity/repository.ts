@@ -492,6 +492,44 @@ export class ActivityRepository {
     return rows.map(mapDailyDensityRow);
   }
 
+  countOtherActiveSessionConversationTurns(input: {
+    currentSessionId: SessionId;
+    sinceMs: number;
+    untilMs?: number;
+  }): number {
+    const filters = [
+      "e.status = 'active'",
+      "s.status = 'active'",
+      "e.session_id <> ?",
+      "e.occurred_at >= ?",
+    ];
+    const values: unknown[] = [input.currentSessionId, input.sinceMs];
+
+    if (input.untilMs !== undefined) {
+      filters.push("e.occurred_at <= ?");
+      values.push(input.untilMs);
+    }
+
+    const row = this.db
+      .prepare(
+        `
+          SELECT
+            COUNT(DISTINCT CASE
+              WHEN e.kind IN ('user_contact', 'borg_replied') THEN COALESCE(e.turn_id, e.id)
+              ELSE NULL
+            END) AS conversation_turn_count
+          FROM activity_events e
+          INNER JOIN sessions s ON s.session_id = e.session_id
+          WHERE ${filters.join(" AND ")}
+        `,
+      )
+      .get(...values) as { conversation_turn_count: number | null } | undefined;
+
+    return row === undefined || row.conversation_turn_count === null
+      ? 0
+      : Number(row.conversation_turn_count);
+  }
+
   listDailyGlobalActiveDensity(input: {
     sinceMs: number;
     untilMs?: number;

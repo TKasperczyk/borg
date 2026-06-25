@@ -296,6 +296,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       "review-resolver": deps.config.offline.reviewResolver.budget,
       ruminator: deps.config.offline.ruminator.budget,
       "self-narrator": deps.config.offline.selfNarrator.budget,
+      "lived-experience-day-summarizer": deps.config.offline.livedExperienceDaySummarizer.budget,
       "procedural-synthesizer": deps.config.offline.proceduralSynthesizer.budget,
       "belief-reviser": null,
       "creator-directive-reconciler": deps.config.offline.creatorDirectiveReconciler.budget,

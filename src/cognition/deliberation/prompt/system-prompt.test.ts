@@ -285,17 +285,103 @@ describe("formatRelativeAge", () => {
 describe("buildBaseSystemPrompt", () => {
   it("renders the current-time anchor only in dynamic trusted prompt content", () => {
     const options = { ...PROMPT_OPTIONS, nowMs: NOW_MS };
-    const context = makeContext();
+    const context = makeContext({
+      currentTimeContext: {
+        previousUserMessageAt: NOW_MS - 11 * 60_000,
+        recentLifeElsewhere: {
+          windowMs: 3 * 24 * 60 * 60_000,
+          autonomousReflectionCount: 138,
+          crossSessionConversationTurnCount: 40,
+        },
+      },
+    });
     const prompt = buildBaseSystemPrompt(context, options);
     const cacheable = buildCacheableBaseSystemPromptParts(context, options);
     const expectedLine = `current_time_iso=${new Date(NOW_MS).toISOString()}`;
+    const block = extractBlock(prompt, "borg_current_time");
 
-    expect(extractBlock(prompt, "borg_current_time")).toContain(expectedLine);
+    expect(block).toContain(expectedLine);
+    expect(block.split("\n")[1]).toBe(expectedLine);
+    expect(block).toContain("last_current_audience_user_message_relative_age=11m ago");
+    expect(block).toContain(
+      "recent_life_elsewhere_window=last 3d; autonomous_reflections=138; other_session_conversation_turns=40",
+    );
+    expect(block.indexOf(expectedLine)).toBeLessThan(
+      block.indexOf("last_current_audience_user_message_relative_age=11m ago"),
+    );
     expect(cacheable.dynamicContent).toContain("<borg_current_time>");
     expect(cacheable.dynamicContent).toContain(expectedLine);
     expect(cacheable.staticPrefix).not.toContain("borg_current_time");
     expect(cacheable.staticPrefixSections).not.toContain("borg_current_time");
     expect(buildBaseSystemPrompt(context, PROMPT_OPTIONS)).not.toContain("borg_current_time");
+
+    const quietBlock = extractBlock(
+      buildBaseSystemPrompt(
+        makeContext({
+          currentTimeContext: {
+            previousUserMessageAt: null,
+            recentLifeElsewhere: {
+              windowMs: 3 * 24 * 60 * 60_000,
+              autonomousReflectionCount: 0,
+              crossSessionConversationTurnCount: 0,
+            },
+          },
+        }),
+        options,
+      ),
+      "borg_current_time",
+    );
+
+    expect(quietBlock).toContain(expectedLine);
+    expect(quietBlock.split("\n")[1]).toBe(expectedLine);
+    expect(quietBlock).not.toContain("last_current_audience_user_message_relative_age");
+    expect(quietBlock).not.toContain("recent_life_elsewhere_window");
+
+    const elapsedOnlyBlock = extractBlock(
+      buildBaseSystemPrompt(
+        makeContext({
+          currentTimeContext: {
+            previousUserMessageAt: NOW_MS - 5 * 60_000,
+            recentLifeElsewhere: {
+              windowMs: 3 * 24 * 60 * 60_000,
+              autonomousReflectionCount: 0,
+              crossSessionConversationTurnCount: 0,
+            },
+          },
+        }),
+        options,
+      ),
+      "borg_current_time",
+    );
+
+    expect(elapsedOnlyBlock.split("\n")[1]).toBe(expectedLine);
+    expect(elapsedOnlyBlock).toContain(
+      "last_current_audience_user_message_relative_age=5m ago",
+    );
+    expect(elapsedOnlyBlock).not.toContain("recent_life_elsewhere_window");
+
+    const volumeOnlyBlock = extractBlock(
+      buildBaseSystemPrompt(
+        makeContext({
+          currentTimeContext: {
+            previousUserMessageAt: null,
+            recentLifeElsewhere: {
+              windowMs: 3 * 24 * 60 * 60_000,
+              autonomousReflectionCount: 8,
+              crossSessionConversationTurnCount: 5,
+            },
+          },
+        }),
+        options,
+      ),
+      "borg_current_time",
+    );
+
+    expect(volumeOnlyBlock.split("\n")[1]).toBe(expectedLine);
+    expect(volumeOnlyBlock).not.toContain("last_current_audience_user_message_relative_age");
+    expect(volumeOnlyBlock).toContain(
+      "recent_life_elsewhere_window=last 3d; autonomous_reflections=8; other_session_conversation_turns=5",
+    );
   });
 
   it("renders creator identity and current-speaker authority in standing block without duplicated identity lines", () => {

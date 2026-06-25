@@ -511,7 +511,7 @@ const configBaseSchema = z.object({
         .prefault({}),
       livedExperienceDaySummarizer: z
         .object({
-          budget: z.number().int().positive().default(80_000),
+          budget: z.number().int().positive().default(160_000),
           windowDays: z.number().int().positive().default(7),
           maxDaysPerRun: z.number().int().positive().default(3),
           maxSelfDecisionEventsPerDay: z.number().int().positive().default(96),

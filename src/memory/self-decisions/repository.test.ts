@@ -224,6 +224,12 @@ describe("SelfDecisionRepository", () => {
         lastOccurredAt: secondAt,
       },
     ]);
+    expect(
+      repository.countAutonomousSelfPrivateDecisions({
+        sinceMs: firstAt - 1,
+        untilMs: nextDayAt - 1,
+      }),
+    ).toBe(2);
 
     db.close();
   });
@@ -336,6 +342,12 @@ describe("SelfDecisionRepository", () => {
         lastOccurredAt: firstAt + 90 * 60_000,
       }),
     ]);
+    expect(
+      repository.countAutonomousSelfPrivateDecisions({
+        sinceMs: firstAt - 1,
+        untilMs: firstAt + 100 * 60_000,
+      }),
+    ).toBe(81);
 
     db.close();
   });

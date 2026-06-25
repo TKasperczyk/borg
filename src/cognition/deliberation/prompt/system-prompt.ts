@@ -44,7 +44,7 @@ import {
   openQuestionMemoryDisclosureLabel,
   relationalSlotMemoryDisclosureLabel,
 } from "../../../memory/common/disclosure-serializers.js";
-import { formatRelativeAge } from "../../../util/relative-time.js";
+import { formatRelativeAge, formatRelativeDuration } from "../../../util/relative-time.js";
 import { formatUtcDayBoundary, utcDayKey } from "../../../util/utc-day.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
@@ -70,6 +70,7 @@ import { PROMPT_BLOCKS, type PromptKey } from "../../prompts/registry.js";
 import type {
   CreatorDirectiveBriefingContentDirective,
   CreatorDirectiveBriefingPrivateDirective,
+  CurrentTimePromptContext,
   DeliberationContext,
   SelfSnapshot,
 } from "../types.js";
@@ -211,12 +212,48 @@ function renderParticipationPolicy(policy: SessionParticipationPolicy): string |
   }
 }
 
-export function renderCurrentTimeSection(nowMs: number | undefined): string | null {
+export function renderCurrentTimeSection(
+  nowMs: number | undefined,
+  context?: CurrentTimePromptContext | null,
+): string | null {
   if (nowMs === undefined || !Number.isFinite(nowMs)) {
     return null;
   }
 
-  return `current_time_iso=${new Date(nowMs).toISOString()}`;
+  const lines = [`current_time_iso=${new Date(nowMs).toISOString()}`];
+  const previousUserMessageAt = context?.previousUserMessageAt ?? null;
+
+  if (previousUserMessageAt !== null && Number.isFinite(previousUserMessageAt)) {
+    lines.push(
+      `last_current_audience_user_message_relative_age=${formatRelativeAge(
+        previousUserMessageAt,
+        nowMs,
+      )}`,
+    );
+  }
+
+  const recentLife = context?.recentLifeElsewhere;
+
+  if (recentLife !== undefined) {
+    const autonomousReflectionCount = Number.isFinite(recentLife.autonomousReflectionCount)
+      ? Math.max(0, Math.floor(recentLife.autonomousReflectionCount))
+      : 0;
+    const crossSessionConversationTurnCount = Number.isFinite(
+      recentLife.crossSessionConversationTurnCount,
+    )
+      ? Math.max(0, Math.floor(recentLife.crossSessionConversationTurnCount))
+      : 0;
+
+    if (autonomousReflectionCount > 0 || crossSessionConversationTurnCount > 0) {
+      lines.push(
+        `recent_life_elsewhere_window=last ${formatRelativeDuration(
+          recentLife.windowMs,
+        )}; autonomous_reflections=${autonomousReflectionCount}; other_session_conversation_turns=${crossSessionConversationTurnCount}`,
+      );
+    }
+  }
+
+  return lines.join("\n");
 }
 
 const CREATOR_DISPLAY_NAME_MAX_CHARS = 256;
@@ -1188,7 +1225,7 @@ export function buildBaseSystemPromptSections(
   };
   const currentTimeSection = {
     tag: "borg_current_time",
-    content: renderCurrentTimeSection(options.nowMs),
+    content: renderCurrentTimeSection(options.nowMs, context.currentTimeContext ?? null),
   };
   const creatorIdentitySection = {
     tag: "borg_creator_identity",

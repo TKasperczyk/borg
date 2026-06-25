@@ -341,6 +341,13 @@ describe("ActivityRepository", () => {
         lastOccurredAt: latestAt,
       },
     ]);
+    expect(
+      repository.countOtherActiveSessionConversationTurns({
+        currentSessionId,
+        sinceMs: firstAt - 1,
+        untilMs: latestAt + 10,
+      }),
+    ).toBe(1);
 
     db.close();
   });
@@ -438,6 +445,13 @@ describe("ActivityRepository", () => {
         },
       }),
     ]);
+    expect(
+      repository.countOtherActiveSessionConversationTurns({
+        currentSessionId,
+        sinceMs: firstAt - 1,
+        untilMs: firstAt + 90 * 60_000,
+      }),
+    ).toBe(80);
 
     db.close();
   });

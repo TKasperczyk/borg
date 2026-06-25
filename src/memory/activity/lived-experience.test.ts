@@ -97,7 +97,7 @@ describe("selectRecentLivedExperienceRows", () => {
       "[Jun 15] 20 conversation turns with BotArena group",
     );
     expect(rows.map((row) => row.text).join("\n")).toContain(
-      "[Jun 15] 12 autonomous reflections; 3 distinct structural patterns",
+      "[Jun 15] 12 autonomous reflections (11:00-21:00 UTC).",
     );
     expect(rows.map((row) => row.text).join("\n")).not.toContain("Old detailed");
     expect(rows.at(-1)).toMatchObject({
