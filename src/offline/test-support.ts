@@ -198,6 +198,14 @@ export function createTestConfig(
       ...DEFAULT_CONFIG.perception,
       ...overrides.perception,
     },
+    frameAnomaly: {
+      ...DEFAULT_CONFIG.frameAnomaly,
+      ...overrides.frameAnomaly,
+      peerChannelSourceTypes: [
+        ...(overrides.frameAnomaly?.peerChannelSourceTypes ??
+          DEFAULT_CONFIG.frameAnomaly.peerChannelSourceTypes),
+      ],
+    },
     affective: {
       ...DEFAULT_CONFIG.affective,
       ...overrides.affective,

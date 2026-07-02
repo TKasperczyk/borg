@@ -29,6 +29,11 @@ const OBSERVED_EVENT_DIMENSIONS_BY_DISPOSITION = {
     taint: "none",
     beliefEffect: "updated",
   },
+  trusted_peer_channel: {
+    stance: "noted_frame",
+    taint: "none",
+    beliefEffect: "unchanged",
+  },
   none: {
     stance: "noted_frame",
     taint: "none",

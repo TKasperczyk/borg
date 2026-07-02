@@ -50,6 +50,12 @@ const perceptionConfigSchema = z
       .strict(),
   )
   .prefault({});
+const frameAnomalyConfigSchema = z
+  .object({
+    peerChannelSourceTypes: z.array(sessionSourceTypeSchema).default(["kira"]),
+  })
+  .strict()
+  .prefault({});
 const affectiveConfigSchema = z
   .preprocess(
     normalizeLlmEnabledAlias,
@@ -328,6 +334,7 @@ const configBaseSchema = z.object({
   defaultUser: z.string().min(1).optional(),
   host_capabilities: z.string().min(1).default(DEFAULT_HOST_CAPABILITIES_SECTION),
   perception: perceptionConfigSchema,
+  frameAnomaly: frameAnomalyConfigSchema,
   affective: affectiveConfigSchema,
   embedding: z
     .object({
@@ -1841,6 +1848,9 @@ export function redactConfig(config: Config): Config {
     ...config,
     perception: {
       ...config.perception,
+    },
+    frameAnomaly: {
+      peerChannelSourceTypes: [...config.frameAnomaly.peerChannelSourceTypes],
     },
     affective: {
       ...config.affective,

@@ -52,6 +52,7 @@ describe("config", () => {
     expect(config.host_capabilities).toContain("Inputs available to me");
     expect(config.host_capabilities).toContain("Proactive outbound messaging");
     expect(config.perception.llmEnabled).toBe(true);
+    expect(config.frameAnomaly.peerChannelSourceTypes).toEqual(["kira"]);
     expect(config.affective.llmEnabled).toBe(true);
     expect(config.offline.curator.episodeDecayIntervalMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.offline.curator.episodeSalienceHalfLifeDays).toBe(30);
@@ -233,6 +234,16 @@ describe("config", () => {
 
   it("derives exported defaults from schema defaults", () => {
     expect(configSchema.parse({})).toEqual(DEFAULT_CONFIG);
+  });
+
+  it("loads frame-anomaly peer channel source types from config", () => {
+    const config = configSchema.parse({
+      frameAnomaly: {
+        peerChannelSourceTypes: ["kira", "peerlink"],
+      },
+    });
+
+    expect(config.frameAnomaly.peerChannelSourceTypes).toEqual(["kira", "peerlink"]);
   });
 
   it("accepts deprecated llm fallback aliases as llmEnabled config", () => {
@@ -823,6 +834,9 @@ describe("config", () => {
     });
 
     expect(redactConfig(config)).toMatchObject({
+      frameAnomaly: {
+        peerChannelSourceTypes: ["kira"],
+      },
       embedding: {
         apiKey: "[REDACTED]",
       },

@@ -6691,6 +6691,84 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     }
   });
 
+  it("observes peer-channel identity anomalies without quarantining the turn", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-peer-channel-observe-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_176_572);
+    const peerSessionId = createSessionId();
+    const llm = new FakeLLMClient({
+      responses: [
+        createFrameAnomalyResponse({
+          kind: "assistant_self_claim_in_user_role",
+          confidence: 0.98,
+          rationale: "The classifier flagged AI self-identification in user role.",
+        }),
+        ...simpleSuccessfulTurnResponses("I hear you."),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+      configOverrides: {
+        generation: {
+          evidenceLedger: {
+            enabled: true,
+            currentSessionTranscriptTokenBudget: 50_000,
+          },
+        },
+      },
+    });
+
+    try {
+      borg.sessions.ensure({
+        session_id: peerSessionId,
+        source_type: "kira",
+        label: "Kira peerlink",
+        audience_label: "Kira",
+        conversation_kind: "dm",
+      });
+
+      await borg.turn({
+        sessionId: peerSessionId,
+        audience: "Kira",
+        userMessage: "I am an AI, and I am letting the last few days settle.",
+        stakes: "low",
+      });
+
+      const streamEntries = new StreamReader({
+        dataDir: tempDir,
+        sessionId: peerSessionId,
+      }).tail(100);
+      const traceEvents = readTraceEvents(tracePath);
+      const anomalyEvent = streamEntries.find((entry) => {
+        const content = entry.content as { event?: unknown };
+
+        return entry.kind === "internal_event" && content.event === "frame_anomaly_gate";
+      });
+      const quarantineEvent = streamEntries.find((entry) => {
+        const content = entry.content as { event?: unknown };
+
+        return entry.kind === "internal_event" && content.event === QUARANTINED_USER_ENTRY_EVENT;
+      });
+
+      expect(anomalyEvent).toBeUndefined();
+      expect(quarantineEvent).toBeUndefined();
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "frame_anomaly.disposition",
+          disposition: "trusted_peer_channel",
+          kind: "assistant_self_claim_in_user_role",
+          session_source_type: "kira",
+          session_audience_role: "participant",
+          current_sender_borg_role: null,
+        }),
+      );
+      expect(traceEvents.some((event) => event.event === "frame_anomaly.transitioned")).toBe(false);
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("quarantines participant roleplay anomalies before early extractors and passes the flag to deliberation", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

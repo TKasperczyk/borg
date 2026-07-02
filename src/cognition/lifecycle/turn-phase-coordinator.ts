@@ -1240,6 +1240,7 @@ export class TurnPhaseCoordinator {
           conversationContext: frameAnomalyConversationContext,
           currentSenderBorgRole: creatorContext.currentSenderBorgRole,
           sessionAudienceRole,
+          sessionSourceType: sessionRecord?.source_type ?? null,
           persistedUserEntryId,
           sourceUserEntryIds,
           streamWriter,
