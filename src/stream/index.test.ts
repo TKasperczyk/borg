@@ -506,6 +506,68 @@ describe("stream", () => {
     expect(stopEntryLengths).toEqual([1]);
   });
 
+  it("scanReverse stopScan can tolerate a single out-of-order old timestamp", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const streamPath = getSessionStreamPath(tempDir, DEFAULT_SESSION_ID);
+    const cutoff = 100;
+
+    mkdirSync(join(tempDir, "stream"), { recursive: true });
+    appendFileSync(
+      streamPath,
+      [
+        { id: "strm_0000000000000200", timestamp: 170, content: "unscanned-newer" },
+        { id: "strm_0000000000000201", timestamp: 50, content: "old-stop-a" },
+        { id: "strm_0000000000000202", timestamp: 60, content: "old-stop-b" },
+        { id: "strm_0000000000000203", timestamp: 150, content: "new-after-stray" },
+        { id: "strm_0000000000000204", timestamp: 50, content: "stray-old" },
+        { id: "strm_0000000000000205", timestamp: 160, content: "new-tail" },
+      ]
+        .map((entry) =>
+          JSON.stringify({
+            ...entry,
+            kind: "user_msg",
+            session_id: "default",
+            compressed: false,
+          }),
+        )
+        .map((line) => `${line}\n`)
+        .join(""),
+      { encoding: "utf8", flag: "a" },
+    );
+
+    let consecutiveOldEntries = 0;
+    const scan = new StreamReader({
+      dataDir: tempDir,
+    }).scanReverse({
+      filter: (entry) => entry.timestamp >= cutoff,
+      stopScan: (entry) => {
+        if (entry.timestamp >= cutoff) {
+          consecutiveOldEntries = 0;
+          return false;
+        }
+
+        consecutiveOldEntries += 1;
+        return consecutiveOldEntries >= 2;
+      },
+    });
+    const optOutScan = new StreamReader({
+      dataDir: tempDir,
+    }).scanReverse({
+      filter: (entry) => entry.timestamp >= cutoff,
+    });
+
+    expect(scan.entries.map((entry) => entry.content)).toEqual(["new-after-stray", "new-tail"]);
+    expect(scan.scannedEntries).toBe(5);
+    expect(scan.capReached).toBeNull();
+    expect(optOutScan.entries.map((entry) => entry.content)).toEqual([
+      "unscanned-newer",
+      "new-after-stray",
+      "new-tail",
+    ]);
+    expect(optOutScan.scannedEntries).toBe(6);
+  });
+
   it("scanReverse stops at the entry cap", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
