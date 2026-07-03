@@ -1034,6 +1034,7 @@ export class Deliberator {
       tracer: this.tracer,
       turnId: context.turnId,
       sessionId: context.sessionId,
+      turnOrigin: effectiveContext.turnOrigin,
     });
     const plan = planner.plan;
     const thoughts = plan === null ? [] : [formatTurnPlanForThought(plan)];
@@ -1074,21 +1075,25 @@ export class Deliberator {
         ? await context.reRetrieve(verificationQuery, { limit: 3 })
         : null;
 
-    const additionalRetrievalBlock = renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
-      {
-        tag: "borg_additional_retrieval",
-        content: summarizeRetrievedEvidence(
-          "Additional retrieval",
+    const shouldRenderAdditionalRetrieval =
+      effectiveContext.turnOrigin !== "autonomous" || verificationQuery.length > 0;
+    const additionalRetrievalBlock = shouldRenderAdditionalRetrieval
+      ? renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
           {
-            evidence: secondaryRetrieval?.evidence ?? [],
-            episodes: secondaryRetrieval?.episodes ?? [],
-            semantic: secondaryRetrieval?.semantic ?? null,
-            openQuestions: secondaryRetrieval?.open_questions ?? [],
+            tag: "borg_additional_retrieval",
+            content: summarizeRetrievedEvidence(
+              "Additional retrieval",
+              {
+                evidence: secondaryRetrieval?.evidence ?? [],
+                episodes: secondaryRetrieval?.episodes ?? [],
+                semantic: secondaryRetrieval?.semantic ?? null,
+                openQuestions: secondaryRetrieval?.open_questions ?? [],
+              },
+              retrievalContextBudget,
+            ),
           },
-          retrievalContextBudget,
-        ),
-      },
-    ]);
+        ])
+      : null;
     const planSection = plan === null ? null : formatTurnPlanForPrompt(plan);
     const additionalPromptSections = compactPromptSurfaceAdditionalSections([
       promptSurfaceAdditionalSection("borg_s2_plan", planSection),

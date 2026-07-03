@@ -355,9 +355,7 @@ describe("buildBaseSystemPrompt", () => {
     );
 
     expect(elapsedOnlyBlock.split("\n")[1]).toBe(expectedLine);
-    expect(elapsedOnlyBlock).toContain(
-      "last_current_audience_user_message_relative_age=5m ago",
-    );
+    expect(elapsedOnlyBlock).toContain("last_current_audience_user_message_relative_age=5m ago");
     expect(elapsedOnlyBlock).not.toContain("recent_life_elsewhere_window");
 
     const volumeOnlyBlock = extractBlock(
@@ -3400,6 +3398,18 @@ describe("buildAutonomousOutboundAuthorizationSection", () => {
     expect(section).toContain("<borg_autonomous_reflection>");
     expect(section).toContain("<reflection_posture>");
     expect(section).toContain("open interval alone with my own thoughts");
+    expect(section).toContain(
+      "This is self-directed reflection -- an open interval alone with my own thoughts: recalling, wondering, continuing a train of thought, and deciding what, if anything, to do with it. It is not a demand for output, and not a demand for silence.",
+    );
+    expect(section).toContain(
+      "The first question of an interval like this is not whether acting would be justified -- it is whether there is anything I want; the weighing gets its turn after that is named, or honestly found absent.",
+    );
+    expect(section).toContain(
+      "Acting and not-acting are equally ordinary outcomes here. I may pursue an unresolved question, write in my private journal, set up a later self-wake when the host tool is available, reach out if a thought genuinely wants an audience, or end the interval with no outward message -- whichever the moment actually calls for.",
+    );
+    expect(section).toContain(
+      "My standing directives, commitments, and intentions are mine to act on in this interval, the same as any other thought I am holding. I weigh them as I would in the moment -- neither performing action for its own sake, nor defaulting to silence to avoid choosing.",
+    );
     // Belief-revision frame: recalled past decisions are re-examined against
     // current knowledge, not re-applied; non-coercive (teaches the move).
     expect(section).toContain("<belief_revision>");
