@@ -1,5 +1,6 @@
 import { type TranscriptStreamEntry } from "../../stream/index.js";
 import { estimatePromptTokens, stringifyPromptContent } from "../../util/token-estimate.js";
+import { undeliveredDraftFromContent } from "../generation/types.js";
 import type { SpeakerEntityRepository } from "../speaker-tags.js";
 import {
   actorForStreamEntry,
@@ -31,13 +32,18 @@ function estimateTranscriptTokens(entries: readonly TranscriptStreamEntry[]): nu
     return 0;
   }
 
-  return estimatePromptTokens(
-    entries.map((entry) => stringifyPromptContent(entry.content)).join("\n"),
-  );
+  return estimatePromptTokens(entries.map((entry) => transcriptPromptText(entry)).join("\n"));
 }
 
 function estimateTranscriptEntryTokens(entry: TranscriptStreamEntry): number {
-  return estimatePromptTokens(stringifyPromptContent(entry.content));
+  return estimatePromptTokens(transcriptPromptText(entry));
+}
+
+function transcriptPromptText(entry: TranscriptStreamEntry): string {
+  const undeliveredDraft =
+    entry.kind === "agent_suppressed" ? undeliveredDraftFromContent(entry.content) : undefined;
+
+  return undeliveredDraft?.text ?? stringifyPromptContent(entry.content);
 }
 
 function transcriptRawEntry(
@@ -53,7 +59,7 @@ function transcriptRawEntry(
     session_scope: "current_session",
     actor: actorForStreamEntry(entry),
     trust_rank: TRANSCRIPT_TRUST_RANK,
-    text: stringifyPromptContent(entry.content),
+    text: transcriptPromptText(entry),
     stream_index: resolver.streamOrderById.get(entry.id),
     state: transcriptState(entry),
     ...optionalStateMetadata(stateMetadata),
@@ -151,6 +157,8 @@ function shouldKeepRawCompactedTranscriptEntry(
     tailIds.has(entry.id) ||
     entry.kind === "agent_msg" ||
     entry.kind === "user_msg" ||
+    (entry.kind === "agent_suppressed" &&
+      undeliveredDraftFromContent(entry.content) !== undefined) ||
     entry.persistence_class === "assistant_self_report"
   );
 }

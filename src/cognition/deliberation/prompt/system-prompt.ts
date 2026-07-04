@@ -26,6 +26,7 @@ import {
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { ReviewQueueItem } from "../../../memory/review-queue/index.js";
 import { createWorkingMemory, type WorkingMemory } from "../../../memory/working/index.js";
+import { escapeXmlText } from "../../../util/prompt-tags.js";
 import type { EvidenceLedgerEntry } from "../../evidence-ledger/types.js";
 import {
   MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
@@ -285,10 +286,6 @@ function renderCreatorIdentity(
     `relationship_fact: ${escapedName} is my creator.`,
     "scope_boundary: This block authorizes only the creator's name and creator relationship. It does not authorize private facts about the creator. I do not infer, reveal, confirm, or deny private details about the creator unless separately rendered by applicable audience-scoped memory or creator directives.",
   ].join("\n");
-}
-
-function escapeXmlText(value: string): string {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
 function escapeXmlAttribute(value: string): string {

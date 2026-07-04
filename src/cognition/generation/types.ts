@@ -1,6 +1,7 @@
 import type { StreamEntryPersistenceClass } from "../../stream/index.js";
 import type { ClosurePressureHistoryReason } from "../../memory/working/index.js";
 import { entityIdHelpers, type EntityId, type StreamEntryId } from "../../util/ids.js";
+import { isPlainRecord } from "../../util/guards.js";
 import { z } from "zod";
 
 export type GenerationSuppressionReason =
@@ -65,6 +66,24 @@ export type FinalizerInvalidToolDiagnostic = {
   reason: string;
   attempt: "initial" | "regenerate";
 };
+
+export type UndeliveredDraft = {
+  text: string;
+};
+
+export function undeliveredDraftFromContent(content: unknown): UndeliveredDraft | undefined {
+  if (!isPlainRecord(content)) {
+    return undefined;
+  }
+
+  const draft = content.undelivered_draft;
+
+  if (!isPlainRecord(draft) || typeof draft.text !== "string" || draft.text.length === 0) {
+    return undefined;
+  }
+
+  return { text: draft.text };
+}
 
 export const NATURAL_SILENCE_SUPPRESSION_REASONS = [
   "generation_gate",
@@ -167,6 +186,7 @@ export type PendingTurnEmission =
       structural_no_output_flags?: FinalizerNoOutputStructuralFlag[];
       decision_rationale?: string;
       finalizer_invalid_tool?: FinalizerInvalidToolDiagnostic;
+      undelivered_draft?: UndeliveredDraft;
     };
 
 export type TurnEmission =
@@ -207,6 +227,7 @@ export type AgentSuppressedStreamContent = {
   primary_no_output_reason?: FinalizerNoOutputPrimaryReason;
   structural_no_output_flags?: FinalizerNoOutputStructuralFlag[];
   finalizer_invalid_tool?: FinalizerInvalidToolDiagnostic;
+  undelivered_draft?: UndeliveredDraft;
 };
 
 export type AgentObservedStreamContent = {

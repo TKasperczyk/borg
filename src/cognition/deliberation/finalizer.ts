@@ -692,10 +692,13 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
   });
   const availableTools = [...emissionTools, ...nonTerminalTools];
   const terminalToolNames = emissionTools.map((tool) => tool.name);
+  const effectiveThinking =
+    options.finalizerAttempt === "regenerate" ? undefined : options.thinking;
+  const effectiveEffort = options.finalizerAttempt === "regenerate" ? undefined : options.effort;
   // Auto tool_choice iff thinking will actually reach the model -- otherwise force
   // an emission tool so a structured emission stays guaranteed (e.g. manual
   // thinking on Opus is omitted by the client, so forcing is correct there).
-  const useAutoToolChoice = willSendThinkingUnderAutoToolChoice(options.model, options.thinking);
+  const useAutoToolChoice = willSendThinkingUnderAutoToolChoice(options.model, effectiveThinking);
   let tokenSequence = 0;
 
   const result = await executeToolLoop({
@@ -713,8 +716,8 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
     sessionAudienceRole: options.sessionAudienceRole,
     provenance: toolProvenance,
     maxTokens: options.maxTokens,
-    ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
-    ...(options.effort === undefined ? {} : { effort: options.effort }),
+    ...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
+    ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
     // Emission-tool protocol: the answer lives in the terminal tool input, so any
     // loose text the model emits under auto tool_choice must not reach the stream.
     suppressRawTextStream: true,

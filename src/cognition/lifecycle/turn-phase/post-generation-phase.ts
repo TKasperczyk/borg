@@ -609,6 +609,7 @@ export async function runPostGenerationPhase(input: {
                   primaryNoOutputReason: actionEmission.primary_no_output_reason,
                   structuralNoOutputFlags: actionEmission.structural_no_output_flags,
                   finalizerInvalidTool: actionEmission.finalizer_invalid_tool,
+                  undeliveredDraft: actionEmission.undelivered_draft,
                 }),
               },
     completedSub: (result) => `entry=${result.entry.kind}`,

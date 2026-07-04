@@ -150,4 +150,82 @@ describe("OutboundDelivery", () => {
       outbound_stream_entry_id: result.streamEntry.id,
     });
   });
+
+  it("delivers only the appended agent_msg entry, never suppressed draft content", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-outbound-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(NOW_MS);
+    const targetSession = session();
+    const delivered: StreamEntry[] = [];
+    const connector: MessageConnector = {
+      sourceType: "demo",
+      async deliver(input) {
+        delivered.push(input.streamEntry);
+        return {
+          status: "transported",
+          externalMessageId: "demo-message-2",
+        };
+      },
+    };
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: targetSession.session_id,
+      clock,
+    });
+    const delivery = new OutboundDelivery({
+      connectorRegistry: new MessageConnectorRegistry([connector]),
+      createStreamWriter: () => writer,
+      clock,
+    });
+
+    try {
+      const suppressedEntry = await writer.append({
+        kind: "agent_suppressed",
+        content: {
+          reason: "invalid_tool_after_regenerate",
+          undelivered_draft: { text: "Suppressed draft must stay out of transport." },
+        },
+      });
+      clock.advance(10);
+
+      const result = await delivery.deliver({
+        session: targetSession,
+        message: {
+          content: "Transported reply",
+          streamInput: {
+            kind: "agent_suppressed",
+            content: {
+              reason: "invalid_tool_after_regenerate",
+              undelivered_draft: { text: "Malformed metadata draft" },
+            },
+            turn_id: "turn-outbound",
+          } as never,
+        },
+        streamWriter: writer,
+      });
+
+      expect(result.streamEntry).toMatchObject({
+        kind: "agent_msg",
+        content: "Transported reply",
+        turn_id: "turn-outbound",
+      });
+      expect(delivered).toEqual([
+        expect.objectContaining({
+          id: result.streamEntry.id,
+          kind: "agent_msg",
+          content: "Transported reply",
+        }),
+      ]);
+      expect(delivered.map((entry) => entry.id)).not.toContain(suppressedEntry.id);
+    } finally {
+      writer.close();
+    }
+
+    const entries = new StreamReader({
+      dataDir: tempDir,
+      sessionId: targetSession.session_id,
+    }).tail(5);
+    expect(entries.map((entry) => entry.kind)).toEqual(["agent_suppressed", "agent_msg"]);
+    expect(entries[1]?.content).toBe("Transported reply");
+  });
 });

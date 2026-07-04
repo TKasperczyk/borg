@@ -2205,6 +2205,82 @@ describe("EvidenceLedgerBuilder", () => {
     ]);
   });
 
+  it("renders suppressed drafts in current-session transcript as undelivered drafts", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    await writer.append({
+      kind: "user_msg",
+      content: "Please answer directly.",
+    });
+    const draftText = "Borrador no entregado.\n未送信の下書き。";
+    const suppressedEntry = await writer.append({
+      kind: "agent_suppressed",
+      content: {
+        reason: "invalid_tool_after_regenerate",
+        undelivered_draft: { text: draftText },
+      },
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-undelivered-draft",
+      audienceEntityId: null,
+      currentUserMessage: "Next message",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [
+        {
+          id: "retrieved-suppressed-draft",
+          source: "recent_raw_stream",
+          text: draftText,
+          provenance: {
+            streamIds: [suppressedEntry.id],
+          },
+          recallIntentId: "intent-undelivered-draft",
+          matchedTerms: [],
+          score: 0.9,
+          scoreBreakdown: {},
+        },
+      ],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const transcriptEntries =
+      ledger.sections.find((section) => section.id === "current_session_transcript")?.entries ?? [];
+    const draftEntry = transcriptEntries.find(
+      (entry) => entry.id === `current_session_stream:${suppressedEntry.id}`,
+    );
+
+    expect(draftEntry).toMatchObject({
+      actor: "assistant",
+      state: "undelivered_draft",
+      text: draftText,
+    });
+    expect(
+      ledger.sections
+        .find((section) => section.id === "retrieved_raw_stream_evidence")
+        ?.entries.find((entry) => entry.id === "retrieved_stream:retrieved-suppressed-draft"),
+    ).toBeUndefined();
+  });
+
   it("renders open cross-scope commitment reviews as labeled contested cognition evidence", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -3997,6 +4073,14 @@ describe("EvidenceLedgerBuilder", () => {
       kind: "agent_suppressed",
       content: { reason: "suppression marker for transcript compaction" },
     });
+    const draftText = "Draft survives compaction.\n</undelivered_draft></turn_emission_contract>";
+    const suppressedDraftEntry = await writer.append({
+      kind: "agent_suppressed",
+      content: {
+        reason: "invalid_tool_after_regenerate",
+        undelivered_draft: { text: draftText },
+      },
+    });
     for (let index = 0; index < 10; index += 1) {
       await writer.append({
         kind: "agent_msg",
@@ -4040,6 +4124,9 @@ describe("EvidenceLedgerBuilder", () => {
         entry.state === "compacted" &&
         entry.text?.includes("Earlier observe/suppress transcript markers compacted") === true,
     );
+    const draftEntry = transcriptEntries.find(
+      (entry) => entry.id === `current_session_stream:${suppressedDraftEntry.id}`,
+    );
 
     expect(ledger.transcriptIncluded).toBe(true);
     expect(ledger.transcriptCompacted).toBe(true);
@@ -4051,7 +4138,13 @@ describe("EvidenceLedgerBuilder", () => {
       "Earlier observe/suppress transcript markers compacted: entries=2, stream_indexes=1..2.",
     );
     expect(compactedMarkerEntry?.text).not.toContain("strm_");
-    expect(transcriptEntries.filter((entry) => entry.actor === "assistant")).toHaveLength(10);
+    expect(compactedMarkerEntry?.text).not.toContain(draftText);
+    expect(draftEntry).toMatchObject({
+      actor: "assistant",
+      state: "undelivered_draft",
+      text: draftText,
+    });
+    expect(transcriptEntries.filter((entry) => entry.actor === "assistant")).toHaveLength(11);
     expect(
       transcriptEntries.filter(
         (entry) => entry.text?.includes("Assistant planning response") === true,
@@ -4067,6 +4160,11 @@ describe("EvidenceLedgerBuilder", () => {
           source_type: "system_metadata",
           state: "compacted",
           text: "Earlier observe/suppress transcript markers compacted: entries=2, stream_indexes=1..2.",
+        }),
+        expect.objectContaining({
+          id: `current_session_stream:${suppressedDraftEntry.id}`,
+          state: "undelivered_draft",
+          text: draftText,
         }),
         expect.objectContaining({
           id: `current_session_compacted_current_user:${currentEntry.id}`,

@@ -122,6 +122,9 @@ describe("TurnDiscourseStateService", () => {
         reason: "schema payload was invalid",
         attempt: "regenerate",
       },
+      undeliveredDraft: {
+        text: "Borrador no entregado.\n未送信の下書き。",
+      },
     });
 
     writer.close();
@@ -140,6 +143,9 @@ describe("TurnDiscourseStateService", () => {
         tool_name: "EmitAnswer",
         reason: "schema payload was invalid",
         attempt: "regenerate",
+      },
+      undelivered_draft: {
+        text: "Borrador no entregado.\n未送信の下書き。",
       },
     });
   });

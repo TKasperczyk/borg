@@ -8,6 +8,7 @@ import {
 } from "../../retrieval/index.js";
 import type { StreamEntry, TranscriptStreamEntry } from "../../stream/index.js";
 import type { EntityId } from "../../util/ids.js";
+import { undeliveredDraftFromContent } from "../generation/types.js";
 import type { EvidenceLedgerBuildInput } from "./builder-types.js";
 import { resolveSpeakerDisplayName, type SpeakerEntityRepository } from "../speaker-tags.js";
 import type { ScopeResolver } from "./scope-resolver.js";
@@ -31,7 +32,9 @@ export function actorForStreamEntry(entry: Pick<StreamEntry, "kind">): EvidenceL
 
 export function transcriptState(entry: TranscriptStreamEntry): string | undefined {
   if (entry.kind === "agent_suppressed") {
-    return "suppressed";
+    return undeliveredDraftFromContent(entry.content) === undefined
+      ? "suppressed"
+      : "undelivered_draft";
   }
 
   if (entry.kind === "agent_observed") {

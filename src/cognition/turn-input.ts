@@ -10,6 +10,7 @@ import type {
   StreamResponseTo,
   StreamSourceMessageKey,
 } from "../stream/index.js";
+import { escapeXmlText } from "../util/prompt-tags.js";
 import type {
   AttachmentId,
   EntityId,
@@ -122,10 +123,6 @@ export function orderedInboundBatchEntries(
       left.timestamp - right.timestamp ||
       left.id.localeCompare(right.id),
   );
-}
-
-function escapeXmlText(value: string): string {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
 function escapeXmlAttribute(value: string): string {

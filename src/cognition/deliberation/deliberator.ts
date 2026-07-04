@@ -2,6 +2,7 @@
 import { computeRetrievalConfidence, type RetrievedEpisode } from "../../retrieval/index.js";
 import type { StreamWriter } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
+import { escapeXmlText } from "../../util/prompt-tags.js";
 import type { LLMCompleteOptions } from "../../llm/index.js";
 import {
   DEFAULT_DELIBERATION_PLAN_MAX_TOKENS,
@@ -59,6 +60,7 @@ import type {
   FinalizerNoOutputStructuralFlag,
   GenerationSuppressionReason,
   PendingTurnEmission,
+  UndeliveredDraft,
 } from "../generation/types.js";
 import { deriveFinalizerNoOutputPrimaryReason } from "../generation/types.js";
 import type {
@@ -251,7 +253,7 @@ function buildFinalizerCallOptions(
     initialMessages,
     userEntryId: context.context.userEntryId,
     maxTokens: context.maxTokens,
-    ...context.reasoningCallOptions,
+    ...(variable.finalizerAttempt === "regenerate" ? {} : context.reasoningCallOptions),
     path: variable.path,
     ...(context.allowedEmissions === undefined
       ? {}
@@ -370,12 +372,24 @@ function invalidToolRetryCause(decision: InvalidToolDecision): string {
 export function buildInvalidToolFinalizerRetryPromptSection(
   decision: InvalidToolDecision,
   availableEmissionNames: readonly EmissionToolName[] = resolveAvailableEmissionNames(undefined),
+  previousResponseText?: string,
 ): string {
+  const previousResponseBlock =
+    previousResponseText === undefined || previousResponseText.length === 0
+      ? []
+      : [
+          "The previous response was prose outside a valid terminal emission tool call. Its text follows verbatim; any content I still intend to emit belongs inside exactly one terminal emission tool call.",
+          "<undelivered_draft>",
+          escapeXmlText(previousResponseText),
+          "</undelivered_draft>",
+        ];
+
   return [
     "My previous turn did not emit a valid final response.",
     invalidToolRetryCause(decision),
+    ...previousResponseBlock,
     `I need to emit exactly one of ${availableEmissionNames.join(" / ")} with valid input.`,
-  ].join(" ");
+  ].join("\n");
 }
 
 async function retryInvalidToolFinalizer(input: {
@@ -393,6 +407,7 @@ async function retryInvalidToolFinalizer(input: {
   const retryPromptSection = buildInvalidToolFinalizerRetryPromptSection(
     input.initial.decision,
     input.availableEmissionNames,
+    input.initial.text,
   );
   const retry = await input.runRetry(retryPromptSection);
 
@@ -470,6 +485,10 @@ function buildFinalizerEmission(
       : finalizerSuppressionReason(result);
 
   if (suppressionReason !== null) {
+    const undeliveredDraft =
+      result.decision.kind === "invalid_tool" && result.text.length > 0
+        ? ({ text: result.text } satisfies UndeliveredDraft)
+        : undefined;
     const noOutputSemanticCategories =
       result.decision.kind === "no_output" ? result.decision.no_output_categories : undefined;
     const noOutputStructuralFlags =
@@ -519,6 +538,7 @@ function buildFinalizerEmission(
                 options.invalidToolDiagnosticAttempt ?? "initial",
               ),
             }),
+        ...(undeliveredDraft === undefined ? {} : { undelivered_draft: undeliveredDraft }),
       },
     };
   }
