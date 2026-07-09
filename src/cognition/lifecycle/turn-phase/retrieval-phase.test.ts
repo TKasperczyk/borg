@@ -2472,14 +2472,69 @@ describe("creator directive retrieval briefing", () => {
           crossSessionConversationTurnCount: 40,
         },
       });
-      expect(result.evidenceLedgerContext.ledger?.audienceStanding?.renderRecentLivedExperience).toBe(
-        false,
-      );
+      expect(
+        result.evidenceLedgerContext.ledger?.audienceStanding?.renderRecentLivedExperience,
+      ).toBe(false);
       expect(
         result.evidenceLedgerContext.ledger?.sections.find(
           (section) => section.id === "recent_lived_experience",
         ),
       ).toBeUndefined();
+
+      const autonomousResult = await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-autonomous-lived-experience-renders",
+        turnInput: {
+          userMessage: "Autonomous wake.",
+          audience: "operator",
+          origin: "autonomous",
+        },
+        isSelfAudience: false,
+        isUserTurn: false,
+        cognitionInput: "Autonomous wake.",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: null,
+        audienceEntity: null,
+        audienceProfile: null,
+        sessionAudienceRole: "operator",
+        perception: {
+          entities: [],
+          mode: "relational",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 3,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [],
+        participantRoster: null,
+        participantProfiles: [],
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+      const autonomousRecentLivedSection =
+        autonomousResult.evidenceLedgerContext.ledger?.sections.find(
+          (section) => section.id === "recent_lived_experience",
+        );
+
+      expect(
+        autonomousResult.evidenceLedgerContext.ledger?.audienceStanding
+          ?.renderRecentLivedExperience,
+      ).toBe(true);
+      expect(autonomousRecentLivedSection?.entries.length).toBeGreaterThan(0);
     } finally {
       priorWriter.close();
       priorAgentWriter.close();
@@ -3072,10 +3127,9 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
       requestPayload.canonicalization_candidates?.active_commitments?.find(
         (candidate) => candidate.id === commitmentId,
       );
-    const openQuestionCandidate =
-      requestPayload.canonicalization_candidates?.open_questions?.find(
-        (candidate) => candidate.id === openQuestionId,
-      );
+    const openQuestionCandidate = requestPayload.canonicalization_candidates?.open_questions?.find(
+      (candidate) => candidate.id === openQuestionId,
+    );
 
     expect(commitmentCandidate).toMatchObject({
       disclosure_label: {
@@ -3083,18 +3137,14 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
         private_to_entity_ids: [audienceEntityId],
       },
     });
-    expect(commitmentCandidate?.disclosure).toContain(
-      "disclosure_class=relationship_private",
-    );
+    expect(commitmentCandidate?.disclosure).toContain("disclosure_class=relationship_private");
     expect(openQuestionCandidate).toMatchObject({
       disclosure_label: {
         disclosure_class: "relationship_private",
         private_to_entity_ids: [audienceEntityId],
       },
     });
-    expect(openQuestionCandidate?.disclosure).toContain(
-      "disclosure_class=relationship_private",
-    );
+    expect(openQuestionCandidate?.disclosure).toContain("disclosure_class=relationship_private");
 
     expect(update).toHaveBeenCalledWith(
       actionId,

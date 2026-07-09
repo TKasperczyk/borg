@@ -8,8 +8,15 @@ import {
 import { escapeReservedBorgTags } from "../util/prompt-tags.js";
 import type { SessionRecord } from "../sessions/index.js";
 import { SessionBusyError } from "../util/errors.js";
-import type { SessionId } from "../util/ids.js";
-import type { OutboundDeliveryReceipt } from "./types.js";
+import type {
+  FinalizerNoOutputCategory,
+  FinalizerNoOutputPrimaryReason,
+  FinalizerNoOutputStructuralFlag,
+  GenerationSuppressionReason,
+  TurnEmission,
+} from "../cognition/generation/types.js";
+import type { SessionId, StreamEntryId } from "../util/ids.js";
+import type { OutboundDeliveryReceipt, OutboundDeliveryStatus } from "./types.js";
 
 export type DirectedOutboundTurnInput = {
   targetSession: SessionRecord;
@@ -25,11 +32,54 @@ export type DirectedOutboundTurnResult = {
   response: string;
   agentMessageId?: string;
   delivery?: OutboundDeliveryReceipt;
+  deliveryOutcome: DirectedOutboundDeliveryOutcome;
 };
 
 export type DirectedOutboundTurnRunnerOptions = {
   turnOrchestrator: Pick<TurnOrchestrator, "run">;
 };
+
+export type DirectedOutboundDeliveryOutcome =
+  | {
+      state: "delivered";
+      agentMessageId: StreamEntryId;
+      deliveryStatus?: OutboundDeliveryStatus;
+      sourceType?: OutboundDeliveryReceipt["sourceType"];
+      externalMessageId?: string;
+    }
+  | {
+      state: "suppressed";
+      reason: GenerationSuppressionReason;
+      markerEntryId?: StreamEntryId;
+      noOutputCategories?: FinalizerNoOutputCategory[];
+      primaryNoOutputReason?: FinalizerNoOutputPrimaryReason;
+      structuralNoOutputFlags?: FinalizerNoOutputStructuralFlag[];
+    }
+  | {
+      state: "not_emitted";
+      emissionKind: Exclude<TurnEmission["kind"], "message" | "suppressed">;
+      markerEntryId?: StreamEntryId;
+    }
+  | {
+      state: "not_transportable";
+      reason: "composed_not_transported";
+      agentMessageId: StreamEntryId;
+      streamEntryId: StreamEntryId;
+      sourceType: OutboundDeliveryReceipt["sourceType"];
+      error?: string;
+    }
+  | {
+      state: "transport_failed";
+      reason: "transport_failed";
+      agentMessageId: StreamEntryId;
+      streamEntryId: StreamEntryId;
+      sourceType: OutboundDeliveryReceipt["sourceType"];
+      error?: string;
+    }
+  | {
+      state: "target_busy";
+      reason: "target_session_busy";
+    };
 
 function directedOutboundProvenanceLine(
   authorizationKind: DirectedOutboundTurnInput["authorizationKind"],
@@ -61,6 +111,75 @@ export function formatDirectedOutboundInstruction(input: {
   return renderPromptSurface(PROMPT_SURFACES.directedOutboundFraming, renderContext) ?? "";
 }
 
+function directedOutboundDeliveryOutcome(input: {
+  emission: TurnEmission;
+  agentMessageId?: string;
+  delivery?: OutboundDeliveryReceipt;
+}): DirectedOutboundDeliveryOutcome {
+  if (input.emission.kind === "message") {
+    const agentMessageId = (input.agentMessageId ?? input.emission.agentMessageId) as StreamEntryId;
+
+    if (input.delivery?.status === "transport_failed") {
+      return {
+        state: "transport_failed",
+        reason: "transport_failed",
+        agentMessageId,
+        streamEntryId: input.delivery.streamEntryId,
+        sourceType: input.delivery.sourceType,
+        ...(input.delivery.error === undefined ? {} : { error: input.delivery.error }),
+      };
+    }
+
+    if (input.delivery?.status === "composed_not_transported") {
+      return {
+        state: "not_transportable",
+        reason: "composed_not_transported",
+        agentMessageId,
+        streamEntryId: input.delivery.streamEntryId,
+        sourceType: input.delivery.sourceType,
+        ...(input.delivery.error === undefined ? {} : { error: input.delivery.error }),
+      };
+    }
+
+    return {
+      state: "delivered",
+      agentMessageId,
+      ...(input.delivery === undefined ? {} : { deliveryStatus: input.delivery.status }),
+      ...(input.delivery === undefined ? {} : { sourceType: input.delivery.sourceType }),
+      ...(input.delivery?.externalMessageId === undefined
+        ? {}
+        : { externalMessageId: input.delivery.externalMessageId }),
+    };
+  }
+
+  if (input.emission.kind === "suppressed") {
+    return {
+      state: "suppressed",
+      reason: input.emission.reason,
+      ...(input.emission.markerEntryId === undefined
+        ? {}
+        : { markerEntryId: input.emission.markerEntryId }),
+      ...(input.emission.no_output_categories === undefined
+        ? {}
+        : { noOutputCategories: [...input.emission.no_output_categories] }),
+      ...(input.emission.primary_no_output_reason === undefined
+        ? {}
+        : { primaryNoOutputReason: input.emission.primary_no_output_reason }),
+      ...(input.emission.structural_no_output_flags === undefined
+        ? {}
+        : { structuralNoOutputFlags: [...input.emission.structural_no_output_flags] }),
+    };
+  }
+
+  return {
+    state: "not_emitted",
+    emissionKind: input.emission.kind,
+    ...(input.emission.markerEntryId === undefined
+      ? {}
+      : { markerEntryId: input.emission.markerEntryId }),
+  };
+}
+
 export async function runDirectedOutboundTurn(
   options: DirectedOutboundTurnRunnerOptions,
   input: DirectedOutboundTurnInput,
@@ -87,6 +206,10 @@ export async function runDirectedOutboundTurn(
         status: "target_busy",
         emitted: false,
         response: "",
+        deliveryOutcome: {
+          state: "target_busy",
+          reason: "target_session_busy",
+        },
       };
     }
 
@@ -101,5 +224,10 @@ export async function runDirectedOutboundTurn(
     response: result.response,
     ...(result.agentMessageId === undefined ? {} : { agentMessageId: result.agentMessageId }),
     ...(result.outboundDelivery === undefined ? {} : { delivery: result.outboundDelivery }),
+    deliveryOutcome: directedOutboundDeliveryOutcome({
+      emission: result.emission,
+      agentMessageId: result.agentMessageId,
+      delivery: result.outboundDelivery,
+    }),
   };
 }

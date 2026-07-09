@@ -413,6 +413,7 @@ function metricsRow(turnCounter: number): MetricsRow {
       extractor: 0,
       reflector: 0,
       api: 0,
+      tool: 0,
       unknown: 0,
     },
     action_record_creation_count_this_turn: 0,
@@ -1848,10 +1849,9 @@ describe("SimulatorRunner", () => {
     expect(simulatorHealthWarningsForRows([legacyFieldRow])).toEqual(
       simulatorHealthWarningsForRows([newFieldRow]),
     );
-    expect(simulatorHealthWarningsForRows([legacyFieldRow]).map((warning) => warning.kind)).toEqual([
-      "semantic_revision_llm_calls_high",
-      "semantic_revision_transition_yield_low",
-    ]);
+    expect(simulatorHealthWarningsForRows([legacyFieldRow]).map((warning) => warning.kind)).toEqual(
+      ["semantic_revision_llm_calls_high", "semantic_revision_transition_yield_low"],
+    );
   });
 
   it("summarizes capability findings by claim-status severity", () => {

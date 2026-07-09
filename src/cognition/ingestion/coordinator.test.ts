@@ -800,6 +800,304 @@ describe("StreamIngestionCoordinator", () => {
     }
   });
 
+  it("includes intervening non-user entries in an answered window without re-extracting past the watermark", async () => {
+    const dataDir = createTempDir();
+    const { watermarkRepository, entryIndex, close } = openIndexedRepos(dataDir);
+    const calls: ExtractCall[] = [];
+    const priorAgent = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_msg",
+      content: "Sol-initiated prior outbound message",
+      ts: 100,
+    });
+    const answeredUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "peer reply to prior outbound",
+      ts: 110,
+    });
+    const terminal = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_suppressed",
+      content: {
+        reason: "finalizer_no_output",
+      },
+      ts: 120,
+      responseTo: {
+        kind: "stream_backlog",
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: answeredUser.timestamp,
+          entryId: answeredUser.id,
+        },
+        source_entry_ids: [answeredUser.id],
+        count: 1,
+      },
+    });
+    const answeredWindow = {
+      responseTo: {
+        kind: "stream_backlog" as const,
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: answeredUser.timestamp,
+          entryId: answeredUser.id,
+        },
+        source_entry_ids: [answeredUser.id],
+        count: 1,
+      },
+      terminalCursor: {
+        ts: terminal.timestamp,
+        entryId: terminal.id,
+      },
+    };
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository,
+      dataDir,
+      minEntriesThreshold: 1,
+    });
+
+    try {
+      const result = await coordinator.ingest(DEFAULT_SESSION_ID, {
+        answeredWindow,
+      });
+
+      expect(result.ran).toBe(true);
+      expect(result.processedEntries).toBe(3);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.entryIds).toEqual([priorAgent.id, answeredUser.id, terminal.id]);
+      expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+        lastTs: terminal.timestamp,
+        lastEntryId: terminal.id,
+      });
+
+      const repeated = await coordinator.ingest(DEFAULT_SESSION_ID, {
+        answeredWindow,
+      });
+
+      expect(repeated).toEqual({
+        ran: false,
+        processedEntries: 0,
+      });
+      expect(calls).toHaveLength(1);
+    } finally {
+      close();
+    }
+  });
+
+  it("does not jump the watermark over older user history on a fresh answered window", async () => {
+    const dataDir = createTempDir();
+    const { watermarkRepository, entryIndex, close } = openIndexedRepos(dataDir);
+    const calls: ExtractCall[] = [];
+    const olderUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "older unwatermarked user message",
+      ts: 90,
+    });
+    const olderAgent = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_msg",
+      content: "older unwatermarked agent reply",
+      ts: 100,
+    });
+    const priorAgent = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_msg",
+      content: "Sol-initiated prior outbound message",
+      ts: 110,
+    });
+    const answeredUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "peer reply to prior outbound",
+      ts: 120,
+    });
+    const interleavedUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "queued after drained batch",
+      ts: 130,
+    });
+    const terminal = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_suppressed",
+      content: {
+        reason: "finalizer_no_output",
+      },
+      ts: 140,
+      responseTo: {
+        kind: "stream_backlog",
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: answeredUser.timestamp,
+          entryId: answeredUser.id,
+        },
+        source_entry_ids: [answeredUser.id],
+        count: 1,
+      },
+    });
+    const answeredWindow = {
+      responseTo: {
+        kind: "stream_backlog" as const,
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: answeredUser.timestamp,
+          entryId: answeredUser.id,
+        },
+        source_entry_ids: [answeredUser.id],
+        count: 1,
+      },
+      terminalCursor: {
+        ts: terminal.timestamp,
+        entryId: terminal.id,
+      },
+    };
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository,
+      dataDir,
+      minEntriesThreshold: 1,
+    });
+
+    try {
+      const result = await coordinator.ingest(DEFAULT_SESSION_ID, {
+        answeredWindow,
+      });
+
+      expect(result.ran).toBe(true);
+      expect(result.processedEntries).toBe(5);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.entryIds).toEqual([
+        olderUser.id,
+        olderAgent.id,
+        priorAgent.id,
+        answeredUser.id,
+        terminal.id,
+      ]);
+      expect(calls[0]?.entryIds).not.toContain(interleavedUser.id);
+      expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+        lastTs: terminal.timestamp,
+        lastEntryId: terminal.id,
+      });
+    } finally {
+      close();
+    }
+  });
+
+  it("caps a fresh answered-window prefix and catches up incrementally without skipping", async () => {
+    const dataDir = createTempDir();
+    const { watermarkRepository, entryIndex, close } = openIndexedRepos(dataDir);
+    const calls: ExtractCall[] = [];
+    const olderUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "older unwatermarked user message",
+      ts: 80,
+    });
+    const olderAgent = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_msg",
+      content: "older unwatermarked agent reply",
+      ts: 90,
+    });
+    const priorAgent = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_msg",
+      content: "Sol-initiated prior outbound message",
+      ts: 100,
+    });
+    const answeredUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "peer reply to prior outbound",
+      ts: 110,
+    });
+    const interleavedUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "queued after drained batch",
+      ts: 115,
+    });
+    const terminal = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_suppressed",
+      content: {
+        reason: "finalizer_no_output",
+      },
+      ts: 120,
+      responseTo: {
+        kind: "stream_backlog",
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: answeredUser.timestamp,
+          entryId: answeredUser.id,
+        },
+        source_entry_ids: [answeredUser.id],
+        count: 1,
+      },
+    });
+    const answeredWindow = {
+      responseTo: {
+        kind: "stream_backlog" as const,
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: answeredUser.timestamp,
+          entryId: answeredUser.id,
+        },
+        source_entry_ids: [answeredUser.id],
+        count: 1,
+      },
+      terminalCursor: {
+        ts: terminal.timestamp,
+        entryId: terminal.id,
+      },
+    };
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository,
+      dataDir,
+      minEntriesThreshold: 1,
+      maxEntries: 2,
+    });
+
+    try {
+      const first = await coordinator.ingest(DEFAULT_SESSION_ID, {
+        answeredWindow,
+      });
+
+      expect(first.ran).toBe(true);
+      expect(first.processedEntries).toBe(2);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({
+        session: DEFAULT_SESSION_ID,
+        untilCursor: {
+          ts: olderAgent.timestamp,
+          entryId: olderAgent.id,
+        },
+      });
+      expect(calls[0]?.sinceCursor).toBeUndefined();
+      expect(calls[0]?.entryIds).toBeUndefined();
+      expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+        lastTs: olderAgent.timestamp,
+        lastEntryId: olderAgent.id,
+      });
+
+      const second = await coordinator.ingest(DEFAULT_SESSION_ID, {
+        answeredWindow,
+      });
+
+      expect(second.ran).toBe(true);
+      expect(second.processedEntries).toBe(3);
+      expect(calls).toHaveLength(2);
+      expect(calls[1]?.entryIds).toEqual([priorAgent.id, answeredUser.id, terminal.id]);
+      expect(calls[1]?.entryIds).not.toContain(olderUser.id);
+      expect(calls[1]?.entryIds).not.toContain(olderAgent.id);
+      expect(calls[1]?.entryIds).not.toContain(interleavedUser.id);
+      expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+        lastTs: terminal.timestamp,
+        lastEntryId: terminal.id,
+      });
+
+      const repeated = await coordinator.ingest(DEFAULT_SESSION_ID, {
+        answeredWindow,
+      });
+
+      expect(repeated).toEqual({
+        ran: false,
+        processedEntries: 0,
+      });
+      expect(calls).toHaveLength(2);
+    } finally {
+      close();
+    }
+  });
+
   it("lets relational-slot provenance cite drained batch user ids in an explicit answered window", async () => {
     const dataDir = createTempDir();
     const clock = new ManualClock(1_000);

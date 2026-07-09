@@ -944,12 +944,14 @@ export async function runRetrievalPhase(input: {
       currentSessionId: input.sessionId,
       sinceMs: recentLivedExperienceSinceMs,
     }) ?? null;
-  const renderRecentLivedExperience = shouldRenderRecentLivedExperience({
-    nowMs,
-    mostRecentOtherSessionActivityAt,
-    currentSessionPreviousTurnAt,
-    gapThresholdMs: recentLivedExperienceConfig.gapThresholdMs,
-  });
+  const renderRecentLivedExperience =
+    input.turnInput.origin === "autonomous" ||
+    shouldRenderRecentLivedExperience({
+      nowMs,
+      mostRecentOtherSessionActivityAt,
+      currentSessionPreviousTurnAt,
+      gapThresholdMs: recentLivedExperienceConfig.gapThresholdMs,
+    });
   const observedEventQueryText = input.cognitionInput.trim();
   let observedEventQueryVector: Float32Array | null = null;
 

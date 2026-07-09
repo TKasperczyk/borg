@@ -56,6 +56,7 @@ export function buildStreamIngestionCoordinator(
     watermarkRepository: options.streamWatermarkRepository,
     chatResponseWatermarkCoordinator: options.chatResponseWatermarkCoordinator,
     dataDir: options.config.dataDir,
+    maxEntries: options.config.streamIngestion.preTurnCatchup.maxEntries,
     settleMs: options.config.streamIngestion.settle.settleMs,
     maxSettleMs: options.config.streamIngestion.settle.maxSettleMs,
     clock: options.clock,

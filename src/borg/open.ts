@@ -367,6 +367,8 @@ export async function openBorgDependencies(
         sessionsRepository: repositories.sessionsRepository,
         connectorRegistry: outboundConnectorRegistry,
         autonomousOutboundPolicy,
+        actionRepository: repositories.actionRepository,
+        clock,
         postOutbound: (input) =>
           runDirectedOutboundTurn(
             {

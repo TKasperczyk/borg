@@ -204,7 +204,7 @@ export type ActionRepositoryOptions = {
 };
 
 export type ActionCountByState = Record<ActionState, number>;
-export type ActionRecordCreationSource = "extractor" | "reflector" | "api" | "unknown";
+export type ActionRecordCreationSource = "extractor" | "reflector" | "api" | "tool" | "unknown";
 export type ActionCreationCountsBySource = Record<ActionRecordCreationSource, number>;
 export type ActionDescriptionSimilarityPair = {
   leftId: ActionId;
@@ -237,6 +237,7 @@ export class ActionRepository {
     extractor: 0,
     reflector: 0,
     api: 0,
+    tool: 0,
     unknown: 0,
   };
 

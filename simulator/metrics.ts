@@ -80,7 +80,7 @@ const ABORTED_TURN_EVENT = "aborted_turn";
 const ABORTED_ATTEMPT_EVENT = "aborted_attempt";
 const OPEN_QUESTION_RECORD_TYPE = "open_question";
 const RESOLVED_STATUS = "resolved";
-const ACTION_CREATION_SOURCES = ["extractor", "reflector", "api", "unknown"] as const;
+const ACTION_CREATION_SOURCES = ["extractor", "reflector", "api", "tool", "unknown"] as const;
 const ACTION_CANDIDATE_CLASSIFICATION_METRIC_KEYS = [
   ...ACTION_CANDIDATE_CLASSIFICATIONS,
   "invalid_classification",

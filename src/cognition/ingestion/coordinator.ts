@@ -8,10 +8,20 @@ import {
 } from "../../stream/index.js";
 import { BorgError, CognitionError } from "../../util/errors.js";
 import { type Clock, SystemClock } from "../../util/clock.js";
-import type { SessionId } from "../../util/ids.js";
+import type { SessionId, StreamEntryId } from "../../util/ids.js";
 import type { ChatResponseWatermarkCoordinator } from "./chat-response-watermark.js";
 
 const EPISODIC_PROCESS_NAME = "episodic-extractor";
+const ANSWERED_WINDOW_INTERVENING_CONTEXT_KINDS = new Set<StreamEntry["kind"]>([
+  "agent_msg",
+  "agent_suppressed",
+  "perception",
+  "internal_event",
+]);
+const ANSWERED_WINDOW_UNWATERMARKED_PREFIX_CONTEXT_KINDS = new Set<StreamEntry["kind"]>([
+  "user_msg",
+  ...ANSWERED_WINDOW_INTERVENING_CONTEXT_KINDS,
+]);
 type TimeoutHandle = ReturnType<typeof setTimeout>;
 type SetTimeoutFn = (callback: () => void, delayMs: number) => TimeoutHandle;
 type ClearTimeoutFn = (handle: TimeoutHandle) => void;
@@ -46,6 +56,12 @@ export type StreamIngestionCoordinatorOptions = {
    * the coordinator no-ops and waits for the next turn.
    */
   minEntriesThreshold?: number;
+  /**
+   * Optional default cap for ingestion passes. Borg.open wires this from
+   * streamIngestion.preTurnCatchup.maxEntries so live and pre-turn catch-up
+   * share one per-pass bound.
+   */
+  maxEntries?: number;
   /**
    * Optional debounce before a live ingestion pass starts. Defaults to 0,
    * which preserves immediate pass starts. Suggested busy-chat values are
@@ -143,6 +159,17 @@ type PendingIngestion = {
 };
 
 type IngestionMode = "normal" | "clamped-catch-up" | "answered-window";
+type AnsweredWindowReadResult =
+  | {
+      status: "ready";
+      entriesForPass: StreamEntry[];
+      includeUnwatermarkedPrefix: boolean;
+      reachedTerminal: boolean;
+      sinceCursor?: StreamCursor;
+    }
+  | {
+      status: "already_processed";
+    };
 
 type SettlingIngestion = PendingIngestion & {
   timer: TimeoutHandle | null;
@@ -244,6 +271,7 @@ export class StreamIngestionCoordinator {
   private readonly setTimeoutFn: SetTimeoutFn;
   private readonly clearTimeoutFn: ClearTimeoutFn;
   private readonly minEntriesThreshold: number;
+  private readonly maxEntries: number | undefined;
   private readonly settleMs: number;
   private readonly maxSettleMs: number;
   private readonly inFlight = new Map<SessionId, InFlightIngestion>();
@@ -259,6 +287,8 @@ export class StreamIngestionCoordinator {
       options.setTimeoutFn ?? ((callback, delayMs) => setTimeout(callback, delayMs));
     this.clearTimeoutFn = options.clearTimeoutFn ?? ((handle) => clearTimeout(handle));
     this.minEntriesThreshold = options.minEntriesThreshold ?? 2;
+    this.maxEntries =
+      options.maxEntries === undefined ? undefined : Math.max(1, Math.floor(options.maxEntries));
     this.settleMs = Math.max(0, options.settleMs ?? 0);
     this.maxSettleMs = Math.max(0, options.maxSettleMs ?? 30_000);
   }
@@ -273,9 +303,10 @@ export class StreamIngestionCoordinator {
    * pass wait on a queued follow-up pass.
    */
   ingest(sessionId: SessionId, ingestOptions: IngestOptions = {}): Promise<IngestionResult> {
+    const maxEntries = ingestOptions.maxEntries ?? this.maxEntries;
     const resolvedOptions = {
       minEntriesThreshold: ingestOptions.minEntriesThreshold ?? this.minEntriesThreshold,
-      ...(ingestOptions.maxEntries === undefined ? {} : { maxEntries: ingestOptions.maxEntries }),
+      ...(maxEntries === undefined ? {} : { maxEntries }),
       ...(ingestOptions.clampToChatResponseWatermark === true
         ? { clampToChatResponseWatermark: true }
         : {}),
@@ -863,28 +894,84 @@ export class StreamIngestionCoordinator {
     return entries;
   }
 
-  private async ingestAnsweredWindow(
+  private async readAnsweredWindowEntries(
     sessionId: SessionId,
     answeredWindow: AnsweredStreamWindow,
-  ): Promise<IngestionResult> {
-    const entryIds = [
-      ...answeredWindow.responseTo.source_entry_ids,
-      answeredWindow.terminalCursor.entryId,
-    ];
-    const entries = await this.readEntriesById(sessionId, entryIds);
-    const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
-    const missingEntryId = entryIds.find((entryId) => !entriesById.has(entryId));
+    maxEntries?: number,
+  ): Promise<AnsweredWindowReadResult> {
+    const resumeOptions = this.resolveResumeOptions(sessionId);
+    const includeUnwatermarkedPrefix = resumeOptions.sinceCursor === undefined;
+    const entriesPastWatermark = await this.readEntriesPastWatermark(
+      sessionId,
+      resumeOptions,
+      maxEntries,
+    );
+    const firstAnsweredSourceEntryId = answeredWindow.responseTo.source_entry_ids[0];
+    const reachedFirstAnsweredSource =
+      firstAnsweredSourceEntryId !== undefined &&
+      entriesPastWatermark.some((entry) => entry.id === firstAnsweredSourceEntryId);
+    const entriesForPass: StreamEntry[] = [];
 
-    if (missingEntryId !== undefined) {
+    for (const entry of entriesPastWatermark) {
+      entriesForPass.push(entry);
+
+      if (entry.id !== answeredWindow.terminalCursor.entryId) {
+        continue;
+      }
+
+      if (entry.timestamp !== answeredWindow.terminalCursor.ts || entry.session_id !== sessionId) {
+        throw new CognitionError(
+          "Answered ingestion window terminal cursor mismatches the stream",
+          {
+            code: "ANSWERED_INGESTION_WINDOW_TERMINAL_MISMATCH",
+          },
+        );
+      }
+
+      return {
+        status: "ready",
+        entriesForPass,
+        includeUnwatermarkedPrefix,
+        reachedTerminal: true,
+        ...(resumeOptions.sinceCursor === undefined
+          ? {}
+          : { sinceCursor: resumeOptions.sinceCursor }),
+      };
+    }
+
+    if (
+      maxEntries !== undefined &&
+      entriesForPass.length >= maxEntries &&
+      includeUnwatermarkedPrefix &&
+      !reachedFirstAnsweredSource
+    ) {
+      return {
+        status: "ready",
+        entriesForPass,
+        includeUnwatermarkedPrefix,
+        reachedTerminal: false,
+        ...(resumeOptions.sinceCursor === undefined
+          ? {}
+          : { sinceCursor: resumeOptions.sinceCursor }),
+      };
+    }
+
+    if (maxEntries !== undefined && entriesForPass.length >= maxEntries) {
+      return this.readAnsweredWindowEntries(sessionId, answeredWindow);
+    }
+
+    const terminalEntries = await this.readEntriesById(sessionId, [
+      answeredWindow.terminalCursor.entryId,
+    ]);
+    const terminalEntry = terminalEntries[0];
+
+    if (terminalEntry === undefined) {
       throw new CognitionError("Answered ingestion window references a missing stream entry", {
         code: "ANSWERED_INGESTION_WINDOW_ENTRY_MISSING",
       });
     }
 
-    const terminalEntry = entriesById.get(answeredWindow.terminalCursor.entryId);
-
     if (
-      terminalEntry === undefined ||
       terminalEntry.timestamp !== answeredWindow.terminalCursor.ts ||
       terminalEntry.session_id !== sessionId
     ) {
@@ -893,7 +980,118 @@ export class StreamIngestionCoordinator {
       });
     }
 
+    return {
+      status: "already_processed",
+    };
+  }
+
+  private answeredWindowEntryIds(input: {
+    answeredWindow: AnsweredStreamWindow;
+    entriesThroughTerminal: readonly StreamEntry[];
+    includeUnwatermarkedPrefix: boolean;
+  }): StreamEntryId[] {
+    const requiredEntryIds = new Set<StreamEntryId>([
+      ...input.answeredWindow.responseTo.source_entry_ids,
+      input.answeredWindow.terminalCursor.entryId,
+    ]);
+    const firstAnsweredSourceEntryId = input.answeredWindow.responseTo.source_entry_ids[0];
+    let reachedAnsweredWindow = !input.includeUnwatermarkedPrefix;
+    const seenEntryIds = new Set<StreamEntryId>();
+    const entryIds: StreamEntryId[] = [];
+
+    for (const entry of input.entriesThroughTerminal) {
+      if (entry.id === firstAnsweredSourceEntryId) {
+        reachedAnsweredWindow = true;
+      }
+
+      const shouldInclude = reachedAnsweredWindow
+        ? requiredEntryIds.has(entry.id) ||
+          ANSWERED_WINDOW_INTERVENING_CONTEXT_KINDS.has(entry.kind)
+        : ANSWERED_WINDOW_UNWATERMARKED_PREFIX_CONTEXT_KINDS.has(entry.kind);
+
+      if (!shouldInclude) {
+        continue;
+      }
+
+      if (seenEntryIds.has(entry.id)) {
+        continue;
+      }
+
+      seenEntryIds.add(entry.id);
+      entryIds.push(entry.id);
+    }
+
+    return entryIds;
+  }
+
+  private async ingestAnsweredWindow(
+    sessionId: SessionId,
+    answeredWindow: AnsweredStreamWindow,
+    maxEntries?: number,
+  ): Promise<IngestionResult> {
+    const windowEntries = await this.readAnsweredWindowEntries(
+      sessionId,
+      answeredWindow,
+      maxEntries,
+    );
+
+    if (windowEntries.status === "already_processed") {
+      return {
+        ran: false,
+        processedEntries: 0,
+      };
+    }
+
+    const lastProcessedEntry = windowEntries.entriesForPass.at(-1);
+
+    if (lastProcessedEntry === undefined) {
+      return {
+        ran: false,
+        processedEntries: 0,
+      };
+    }
+
     try {
+      if (!windowEntries.reachedTerminal) {
+        const extractionResult = await this.options.extractor.extractFromStream({
+          session: sessionId,
+          sinceCursor: windowEntries.sinceCursor,
+          untilCursor: {
+            ts: lastProcessedEntry.timestamp,
+            entryId: lastProcessedEntry.id,
+          },
+        });
+
+        this.options.watermarkRepository.set(EPISODIC_PROCESS_NAME, sessionId, {
+          lastTs: lastProcessedEntry.timestamp,
+          lastEntryId: lastProcessedEntry.id,
+        });
+
+        return {
+          ran: true,
+          processedEntries: windowEntries.entriesForPass.length,
+          extractionResult,
+        };
+      }
+
+      const entriesById = new Map(windowEntries.entriesForPass.map((entry) => [entry.id, entry]));
+      const requiredEntryIds = [
+        ...answeredWindow.responseTo.source_entry_ids,
+        answeredWindow.terminalCursor.entryId,
+      ];
+      const missingEntryId = requiredEntryIds.find((entryId) => !entriesById.has(entryId));
+
+      if (missingEntryId !== undefined) {
+        throw new CognitionError("Answered ingestion window references a missing stream entry", {
+          code: "ANSWERED_INGESTION_WINDOW_ENTRY_MISSING",
+        });
+      }
+
+      const entryIds = this.answeredWindowEntryIds({
+        answeredWindow,
+        entriesThroughTerminal: windowEntries.entriesForPass,
+        includeUnwatermarkedPrefix: windowEntries.includeUnwatermarkedPrefix,
+      });
       const extractionResult = await this.options.extractor.extractFromStream({
         session: sessionId,
         entryIds,
@@ -906,7 +1104,7 @@ export class StreamIngestionCoordinator {
 
       return {
         ran: true,
-        processedEntries: entries.length,
+        processedEntries: entryIds.length,
         extractionResult,
       };
     } catch (error) {
@@ -918,7 +1116,7 @@ export class StreamIngestionCoordinator {
 
       return {
         ran: false,
-        processedEntries: entries.length,
+        processedEntries: windowEntries.entriesForPass.length,
         error,
       };
     }
@@ -929,7 +1127,11 @@ export class StreamIngestionCoordinator {
     ingestOptions: IngestOptions,
   ): Promise<IngestionResult> {
     if (ingestOptions.answeredWindow !== undefined) {
-      return this.ingestAnsweredWindow(sessionId, ingestOptions.answeredWindow);
+      return this.ingestAnsweredWindow(
+        sessionId,
+        ingestOptions.answeredWindow,
+        ingestOptions.maxEntries,
+      );
     }
 
     const threshold = ingestOptions.minEntriesThreshold ?? this.minEntriesThreshold;

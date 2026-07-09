@@ -168,7 +168,17 @@ function outboundPostEmitted(call: TurnResult["toolCalls"][number]): boolean {
 
   const outbound = call.output.outbound;
 
-  return isRecord(outbound) && outbound.emitted === true;
+  if (!isRecord(outbound)) {
+    return false;
+  }
+
+  const deliveryOutcome = outbound.delivery_outcome;
+
+  if (isRecord(deliveryOutcome)) {
+    return deliveryOutcome.state === "delivered";
+  }
+
+  return outbound.emitted === true;
 }
 
 function goalProgressAdvanced(input: { before: number | null; after: number | null }): boolean {

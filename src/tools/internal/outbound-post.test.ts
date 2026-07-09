@@ -49,11 +49,18 @@ function connectorRegistry(
   };
 }
 
+function actionRepository() {
+  return {
+    add: vi.fn(),
+  };
+}
+
 describe("tool.outbound.post", () => {
   it("is available to deliberator and autonomous origins", () => {
     const tool = createOutboundPostTool({
       sessionsRepository: repository([]),
       connectorRegistry: connectorRegistry(),
+      actionRepository: actionRepository(),
       postOutbound: vi.fn(),
     });
 
@@ -69,13 +76,21 @@ describe("tool.outbound.post", () => {
       audience_label: "Alice",
     });
     const deliveryStreamEntryId = createStreamEntryId();
+    const deliveredAgentMessageId = createStreamEntryId();
     const postOutbound = vi.fn(async () => ({
       targetSessionId: targetSession.session_id,
       status: "completed" as const,
       turnId: "turn-target",
       emitted: true,
       response: "Target-scoped message",
-      agentMessageId: "strm_aaaaaaaaaaaaaaaa",
+      agentMessageId: deliveredAgentMessageId,
+      deliveryOutcome: {
+        state: "delivered" as const,
+        agentMessageId: deliveredAgentMessageId,
+        deliveryStatus: "transported" as const,
+        sourceType: "demo" as const,
+        externalMessageId: "demo-message-1",
+      },
       delivery: {
         status: "transported" as const,
         streamEntryId: deliveryStreamEntryId,
@@ -86,6 +101,7 @@ describe("tool.outbound.post", () => {
     const tool = createOutboundPostTool({
       sessionsRepository: repository([operatorSession, targetSession]),
       connectorRegistry: connectorRegistry(),
+      actionRepository: actionRepository(),
       postOutbound,
     });
 
@@ -113,10 +129,17 @@ describe("tool.outbound.post", () => {
       turn_id: "turn-target",
       emitted: true,
       response: "Target-scoped message",
-      agent_message_id: "strm_aaaaaaaaaaaaaaaa",
+      agent_message_id: deliveredAgentMessageId,
       delivery: {
         status: "transported",
         stream_entry_id: deliveryStreamEntryId,
+        source_type: "demo",
+        external_message_id: "demo-message-1",
+      },
+      delivery_outcome: {
+        state: "delivered",
+        agent_message_id: deliveredAgentMessageId,
+        delivery_status: "transported",
         source_type: "demo",
         external_message_id: "demo-message-1",
       },
@@ -131,17 +154,24 @@ describe("tool.outbound.post", () => {
     const autonomousOutboundPolicy = {
       assertAuthorized: vi.fn(),
     } satisfies Pick<AutonomousOutboundPolicy, "assertAuthorized">;
+    const agentMessageId = createStreamEntryId();
     const postOutbound = vi.fn(async () => ({
       targetSessionId: targetSession.session_id,
       status: "completed" as const,
       turnId: "turn-target",
       emitted: true,
       response: "Target-scoped message",
+      agentMessageId,
+      deliveryOutcome: {
+        state: "delivered" as const,
+        agentMessageId,
+      },
     }));
     const tool = createOutboundPostTool({
       sessionsRepository: repository([currentSession, targetSession]),
       connectorRegistry: connectorRegistry(),
       autonomousOutboundPolicy,
+      actionRepository: actionRepository(),
       postOutbound,
     });
 
@@ -182,16 +212,23 @@ describe("tool.outbound.post", () => {
     const autonomousOutboundPolicy = {
       assertAuthorized: vi.fn(),
     } satisfies Pick<AutonomousOutboundPolicy, "assertAuthorized">;
+    const agentMessageId = createStreamEntryId();
     const tool = createOutboundPostTool({
       sessionsRepository: repository([currentSession, targetSession]),
       connectorRegistry: connectorRegistry(),
       autonomousOutboundPolicy,
+      actionRepository: actionRepository(),
       postOutbound: vi.fn(async () => ({
         targetSessionId: targetSession.session_id,
         status: "completed" as const,
         turnId: "turn-target",
         emitted: true,
         response: "Target-scoped message",
+        agentMessageId,
+        deliveryOutcome: {
+          state: "delivered" as const,
+          agentMessageId,
+        },
       })),
     });
 
@@ -220,6 +257,7 @@ describe("tool.outbound.post", () => {
     const missingPolicyTool = createOutboundPostTool({
       sessionsRepository: repository([currentSession, targetSession]),
       connectorRegistry: connectorRegistry(),
+      actionRepository: actionRepository(),
       postOutbound: vi.fn(),
     });
 
@@ -248,6 +286,7 @@ describe("tool.outbound.post", () => {
           });
         },
       },
+      actionRepository: actionRepository(),
       postOutbound: vi.fn(),
     });
 
@@ -275,6 +314,7 @@ describe("tool.outbound.post", () => {
     const tool = createOutboundPostTool({
       sessionsRepository: repository([currentSession, targetSession]),
       connectorRegistry: connectorRegistry(),
+      actionRepository: actionRepository(),
       postOutbound: vi.fn(),
     });
 
@@ -324,6 +364,7 @@ describe("tool.outbound.post", () => {
     const tool = createOutboundPostTool({
       sessionsRepository: repository([operatorSession, targetSession]),
       connectorRegistry: connectorRegistry(["demo"]),
+      actionRepository: actionRepository(),
       postOutbound,
     });
 
@@ -351,9 +392,80 @@ describe("tool.outbound.post", () => {
           source_type: "slack",
           error: "No wired outbound connector for target session source_type.",
         },
+        delivery_outcome: {
+          state: "not_transportable",
+          reason: "no_wired_outbound_connector",
+          source_type: "slack",
+          error: "No wired outbound connector for target session source_type.",
+        },
       },
     });
     expect(postOutbound).not.toHaveBeenCalled();
+  });
+
+  it("applies the once-per-turn guard before returning no-connector not_transportable", async () => {
+    const operatorSession = session({
+      audience_role: "operator",
+    });
+    const targetSession = session({
+      source_type: "slack",
+    });
+    const actions = actionRepository();
+    const postOutbound = vi.fn();
+    const tool = createOutboundPostTool({
+      sessionsRepository: repository([operatorSession, targetSession]),
+      connectorRegistry: connectorRegistry(["demo"]),
+      actionRepository: actions,
+      postOutbound,
+    });
+    const context = {
+      sessionId: operatorSession.session_id,
+      origin: "deliberator" as const,
+      sessionAudienceRole: "operator" as const,
+      currentSenderBorgRole: "creator" as const,
+      turnId: "turn-directing",
+      toolCallEntryId: createStreamEntryId(),
+    };
+
+    await expect(
+      tool.invoke(
+        {
+          target_session_id: targetSession.session_id,
+          instruction: "Reach out.",
+        },
+        context,
+      ),
+    ).resolves.toMatchObject({
+      outbound: {
+        status: "not_transportable",
+        delivery_outcome: {
+          state: "not_transportable",
+        },
+      },
+    });
+
+    await expect(
+      tool.invoke(
+        {
+          target_session_id: targetSession.session_id,
+          instruction: "Reach out again.",
+        },
+        context,
+      ),
+    ).rejects.toMatchObject({
+      code: "OUTBOUND_POST_ALREADY_USED_IN_TURN",
+    });
+    expect(postOutbound).not.toHaveBeenCalled();
+    expect(actions.add).toHaveBeenCalledTimes(1);
+    expect(actions.add).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "not_done",
+        completed_at: null,
+        not_done_at: expect.any(Number),
+        provenance_stream_entry_ids: [context.toolCallEntryId],
+      }),
+      { creationSource: "tool" },
+    );
   });
 
   it("allows tool.outbound.post only once per directing turn", async () => {
@@ -361,15 +473,22 @@ describe("tool.outbound.post", () => {
       audience_role: "operator",
     });
     const targetSession = session();
+    const agentMessageId = createStreamEntryId();
     const postOutbound = vi.fn(async () => ({
       targetSessionId: targetSession.session_id,
       status: "completed" as const,
       emitted: true,
       response: "Target-scoped message",
+      agentMessageId,
+      deliveryOutcome: {
+        state: "delivered" as const,
+        agentMessageId,
+      },
     }));
     const tool = createOutboundPostTool({
       sessionsRepository: repository([operatorSession, targetSession]),
       connectorRegistry: connectorRegistry(),
+      actionRepository: actionRepository(),
       postOutbound,
     });
     const context = {
@@ -415,7 +534,12 @@ describe("tool.outbound.post", () => {
         status: "target_busy" as const,
         emitted: false,
         response: "",
+        deliveryOutcome: {
+          state: "target_busy" as const,
+          reason: "target_session_busy" as const,
+        },
       })),
+      actionRepository: actionRepository(),
     });
 
     await expect(
@@ -437,6 +561,10 @@ describe("tool.outbound.post", () => {
         status: "target_busy",
         emitted: false,
         response: "",
+        delivery_outcome: {
+          state: "target_busy",
+          reason: "target_session_busy",
+        },
       },
     });
   });
@@ -451,6 +579,7 @@ describe("tool.outbound.post", () => {
     const tool = createOutboundPostTool({
       sessionsRepository: repository([operatorSession, archivedTarget]),
       connectorRegistry: connectorRegistry(),
+      actionRepository: actionRepository(),
       postOutbound: vi.fn(),
     });
 

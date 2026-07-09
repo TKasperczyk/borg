@@ -11,6 +11,7 @@ import {
   DEFAULT_SESSION_ID,
   type EntityId,
   type SessionId,
+  type StreamEntryId,
 } from "../util/ids.js";
 
 export type ToolOrigin = "autonomous" | "deliberator";
@@ -23,6 +24,7 @@ export type ToolInvocationContext = {
   audienceEntityId?: EntityId | null;
   currentSenderBorgRole?: BorgRole | null;
   sessionAudienceRole?: SessionAudienceRole;
+  toolCallEntryId?: StreamEntryId;
   provenance?: unknown;
 };
 
@@ -219,7 +221,7 @@ export class ToolDispatcher {
     const writer = this.options.createStreamWriter(sessionId);
 
     try {
-      await writer.append({
+      const toolCallEntry = await writer.append({
         kind: "tool_call",
         ...(call.turnId === undefined ? {} : { turn_id: call.turnId }),
         content: {
@@ -279,6 +281,7 @@ export class ToolDispatcher {
         ...(call.sessionAudienceRole === undefined
           ? {}
           : { sessionAudienceRole: call.sessionAudienceRole }),
+        toolCallEntryId: toolCallEntry.id,
         provenance: call.provenance,
       };
       const invocation =
