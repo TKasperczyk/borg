@@ -19,7 +19,7 @@ import type { Clock } from "../util/clock.js";
 import { AuthError, ConfigError, LLMError } from "../util/errors.js";
 import type { AttachmentId } from "../util/ids.js";
 import { toAnthropicContentBlockMessages } from "./anthropic-content-blocks.js";
-import { getModelMaxOutputTokens } from "./max-tokens.js";
+import { clampMaxOutputTokens, getModelMaxOutputTokens } from "./max-tokens.js";
 
 const OAUTH_BETAS = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14";
 const OAUTH_USER_AGENT = "claude-cli/2.1.2 (external, cli)";
@@ -1654,7 +1654,8 @@ function isOpusModel(model: string): boolean {
 }
 
 function resolveMaxTokens(options: Pick<LLMCallOptions, "max_tokens" | "model">): number {
-  return options.max_tokens ?? getModelMaxOutputTokens(options.model);
+  const requested = options.max_tokens ?? getModelMaxOutputTokens(options.model);
+  return clampMaxOutputTokens(options.model, requested);
 }
 
 function shouldOmitTemperature(model: string): boolean {

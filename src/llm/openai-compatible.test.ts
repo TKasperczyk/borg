@@ -69,7 +69,7 @@ describe("OpenAICompatibleLLMClient", () => {
     expect(captured.model).toBe("generative-apis/qwen3-235b-a22b-instruct-2507");
     expect(captured.tool_choice).toEqual({ type: "function", function: { name: "EmitFacts" } });
     expect(captured.parallel_tool_calls).toBe(false);
-    expect(captured.max_tokens).toBe(8192);
+    expect(captured.max_tokens).toBe(16_384);
     expect(captured.max_completion_tokens).toBeUndefined();
     expect(captured.tools).toEqual([
       {
@@ -127,6 +127,17 @@ describe("OpenAICompatibleLLMClient", () => {
     await client.complete(completeOptions({ max_tokens: 512 }));
     expect(captured.max_completion_tokens).toBe(512);
     expect(captured.max_tokens).toBeUndefined();
+  });
+
+  it("clamps an explicit output request to the selected model's ceiling", async () => {
+    let captured: CapturedParams = {};
+    const client = new OpenAICompatibleLLMClient({
+      client: fakeClient(toolCallResponse("{}"), (params) => (captured = params)),
+    });
+
+    await client.complete(completeOptions({ max_tokens: 20_000 }));
+
+    expect(captured.max_tokens).toBe(16_384);
   });
 
   it("throws LLMError on unparseable tool arguments (becomes llm_failed via callStructuredTool)", async () => {

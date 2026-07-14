@@ -11,5 +11,13 @@ export function getModelMaxOutputTokens(model: string): number {
     return 32_000;
   }
 
+  if (matchesModelFamily(model, /^(?:[^/]+\/)?qwen3(?:[-._].+)?$/)) {
+    return 16_384;
+  }
+
   return 8_192;
+}
+
+export function clampMaxOutputTokens(model: string, requested: number): number {
+  return Math.min(requested, getModelMaxOutputTokens(model));
 }

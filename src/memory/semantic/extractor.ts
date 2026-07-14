@@ -799,12 +799,9 @@ export class SemanticExtractor {
             ],
             tools: [EXTRACT_SEMANTIC_TOOL],
             tool_choice: { type: "tool", name: EXTRACT_SEMANTIC_TOOL_NAME },
-            // Opus-class extraction can emit large structured batches. This is the
-            // OUTPUT-token ceiling, which is a fixed model limit (~20k for
-            // claude-opus-4-6), independent of the much larger input context window.
-            // 20_000 is verified within the model's max and well above the prior
-            // 12_000, so dense episodes aren't truncated. Do NOT raise past the
-            // model's output cap or the request is rejected outright.
+            // Large structured batches benefit from a generous requested output
+            // budget. This is a request, not a transport mandate: the LLM client
+            // clamps it to the selected model's output ceiling before sending it.
             max_tokens: 20_000,
             budget: "semantic-extraction",
           },

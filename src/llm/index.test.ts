@@ -205,6 +205,24 @@ describe("llm", () => {
     ]);
   });
 
+  it("clamps explicit Anthropic output requests to the model ceiling", async () => {
+    const create = vi.fn().mockResolvedValue(createMessageBody());
+    const client = new AnthropicLLMClient({
+      client: {
+        messages: { create },
+      },
+    });
+
+    await client.complete({
+      model: "claude-opus-4-6",
+      messages: [{ role: "user", content: "hello" }],
+      max_tokens: 80_000,
+      budget: "test",
+    });
+
+    expect(create.mock.calls[0]?.[0]).toMatchObject({ max_tokens: 64_000 });
+  });
+
   it("passes structured output config and extracts parsed JSON text", async () => {
     const outputConfig = {
       format: {

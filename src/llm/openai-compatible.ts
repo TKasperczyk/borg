@@ -20,7 +20,7 @@
 import OpenAI from "openai";
 
 import { ConfigError, LLMError } from "../util/errors.js";
-import { getModelMaxOutputTokens } from "./max-tokens.js";
+import { clampMaxOutputTokens, getModelMaxOutputTokens } from "./max-tokens.js";
 import type {
   LLMClient,
   LLMCompleteOptions,
@@ -352,11 +352,12 @@ export class OpenAICompatibleLLMClient implements LLMClient {
     }
 
     const hasTools = options.tools !== undefined && options.tools.length > 0;
+    const requestedMaxTokens = options.max_tokens ?? getModelMaxOutputTokens(options.model);
 
     const params: Record<string, unknown> = {
       model: options.model,
       messages,
-      [this.maxTokensField]: options.max_tokens ?? getModelMaxOutputTokens(options.model),
+      [this.maxTokensField]: clampMaxOutputTokens(options.model, requestedMaxTokens),
     };
     if (options.temperature !== undefined) {
       params.temperature = options.temperature;
