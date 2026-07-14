@@ -121,6 +121,9 @@ describe("consolidator process", () => {
       type: "tool",
       name: CONSOLIDATION_TOOL_NAME,
     });
+    expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
+      "Messages with kind agent_msg are your own; write your own actions, statements, and decisions in first person; refer to every other sender by name or stable handle.",
+    );
     expect((await harness.episodicRepository.listAll()).map((episode) => episode.id)).toEqual([
       second.id,
       first.id,

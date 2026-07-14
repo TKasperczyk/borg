@@ -611,6 +611,8 @@ export type BorgEntitiesFacade = {
   get(id: EntityId): EntityRecord | null;
   list(options?: { kind?: EntityKind }): EntityRecord[];
   getCreator(): EntityRecord | null;
+  getSelf(): EntityRecord | null;
+  ensureSelf(canonicalName: string, options?: { provenance?: NameProvenance }): EntityRecord;
   setBorgRole(id: EntityId, role: BorgRole | null): EntityRecord | null;
   find(name: string, options?: Pick<BorgEntityResolveOptions, "kind">): EntityRecord | null;
 };
@@ -1043,7 +1045,8 @@ export type BorgOfflineMaintenanceProcessPlan = {
 
 export type BorgMaintenancePlan = {
   kind: "borg_maintenance_plan";
-  version: 1;
+  version: 2;
+  run_id: MaintenanceRunId;
   created_at: number;
   processes: BorgOfflineMaintenanceProcessPlan[];
 };
@@ -1193,11 +1196,14 @@ export type BorgMaintenanceScheduler = {
 
 export type BorgMaintenanceFacade = {
   scheduler: BorgMaintenanceScheduler;
+  optimizeStorage(options?: { runId?: MaintenanceRunId }): Promise<BorgStorageOptimizationResult>;
   config(): {
     enabled: boolean;
     lightIntervalMs: number;
     heavyIntervalMs: number;
     optimizeStorage: boolean;
+    lightBudget: number | null;
+    heavyBudget: number | null;
     lightProcesses: readonly string[];
     heavyProcesses: readonly string[];
     processBudgets: Partial<Record<string, number | null>>;

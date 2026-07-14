@@ -173,6 +173,7 @@ const vectorOnlyDuplicateReviewRefsSchema = z
 export const reviewResolverPlanSchema = z.object({
   process: z.literal("review-resolver"),
   items: z.array(reviewResolverCandidateSchema),
+  budget: z.number().int().positive().nullable().default(null),
   max_items: z.number().int().positive().default(DEFAULT_REVIEW_RESOLVER_MAX_ITEMS_PER_PASS),
   skipped_over_cap: z.number().int().nonnegative().default(0),
   errors: z
@@ -2271,6 +2272,7 @@ export class ReviewResolverProcess implements OfflineProcess<ReviewResolverPlan>
     return reviewResolverPlanSchema.parse({
       process: this.name,
       items: selected,
+      budget: opts.budget ?? ctx.config.offline.reviewResolver.budget,
       max_items: maxItems,
       skipped_over_cap: skippedOverCap,
       errors: [],
@@ -2302,7 +2304,7 @@ export class ReviewResolverProcess implements OfflineProcess<ReviewResolverPlan>
     const changes: OfflineChange[] = [];
     const errors: OfflineProcessError[] = [...plan.errors];
     const counters = emptyCounters();
-    const budget = ctx.config.offline.reviewResolver.budget;
+    const budget = plan.budget;
     let tokensUsed = plan.tokens_used;
     let budgetExhausted = plan.budget_exhausted;
 

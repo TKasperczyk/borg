@@ -2,11 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
-import type {
-  TurnTraceData,
-  TurnTraceEventName,
-  TurnTracer,
-} from "../../tracing/tracer.js";
+import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
 import {
   relationshipPrivateMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
@@ -166,7 +162,8 @@ function pendingNewInsightInsertRefs(input: {
           id: nodeId,
           kind: "proposition",
           label: input.label ?? "Rollback planning preference",
-          description: input.description ?? "I treat rollback planning as important for release work.",
+          description:
+            input.description ?? "I treat rollback planning as important for release work.",
           domain: null,
           aliases: [],
           confidence: input.confidence ?? 0.5,
@@ -1399,7 +1396,7 @@ describe("review resolver process", () => {
       configOverrides: {
         offline: {
           reviewResolver: {
-            budget: 10,
+            budget: 1_000,
           },
         },
       },
@@ -1423,7 +1420,10 @@ describe("review resolver process", () => {
       }),
     );
 
-    const result = await runResolver(harness);
+    const process = new ReviewResolverProcess({ db: harness.db, maxItemsPerPass: 3 });
+    const plan = await process.plan(harness.createContext(), { budget: 10 });
+    expect(plan.budget).toBe(10);
+    const result = await process.apply(harness.createContext(), plan);
     const open = harness.reviewQueueRepository.get(item.id);
     const stored = await harness.semanticNodeRepository.get(nodeId);
 

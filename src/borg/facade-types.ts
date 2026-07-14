@@ -45,6 +45,7 @@ import type {
 } from "../memory/review-queue/index.js";
 import type { SemanticExtractor } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
+import type { LanceDbOptimizeStorageResult } from "../storage/lancedb/index.js";
 import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../memory/working/index.js";
 import type { ChatResponseCatchUpWorker, IngestionResult } from "../cognition/ingestion/index.js";
@@ -270,6 +271,10 @@ export type BorgEntitiesFacade = {
   get: (...args: Parameters<EntityRepository["get"]>) => ReturnType<EntityRepository["get"]>;
   list: (...args: Parameters<EntityRepository["list"]>) => ReturnType<EntityRepository["list"]>;
   getCreator: () => ReturnType<EntityRepository["getCreator"]>;
+  getSelf: () => ReturnType<EntityRepository["getSelf"]>;
+  ensureSelf: (
+    ...args: Parameters<EntityRepository["ensureSelf"]>
+  ) => ReturnType<EntityRepository["ensureSelf"]>;
   setBorgRole: (id: EntityId, role: BorgRole | null) => ReturnType<EntityRepository["setBorgRole"]>;
   find: (
     name: string,
@@ -526,11 +531,16 @@ export type BorgAutonomyFacade = {
 
 export type BorgMaintenanceFacade = {
   scheduler: MaintenanceScheduler;
+  optimizeStorage: (options?: {
+    runId?: MaintenanceRunId;
+  }) => Promise<LanceDbOptimizeStorageResult>;
   config: () => {
     enabled: boolean;
     lightIntervalMs: number;
     heavyIntervalMs: number;
     optimizeStorage: boolean;
+    lightBudget: number | null;
+    heavyBudget: number | null;
     lightProcesses: readonly OfflineProcessName[];
     heavyProcesses: readonly OfflineProcessName[];
     processBudgets: Partial<Record<OfflineProcessName, number | null>>;

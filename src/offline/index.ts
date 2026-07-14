@@ -97,6 +97,7 @@ export {
   type MaintenanceSchedulerStopOptions,
   type MaintenanceTickResult,
 } from "./scheduler.js";
+export { runStorageOptimization } from "./storage-optimization.js";
 export {
   RuminatorProcess,
   ruminatorPlanSchema,

@@ -7,6 +7,10 @@
 //   GET  /memory/episodes?tenant=<id>&limit=<n>&cursor=<c> -> list raw episodic bank
 //   GET  /memory/episodes/{id}?tenant=<id>                  -> inspect one raw episode
 //   GET  /memory/trace?tenant=<id>&since=<ts>                -> inspect recall trace buffer
+//   POST /memory/maintenance?tenant=<id>&mode=<light|heavy>&dryRun=<0|1>
+//   GET  /memory/maintenance/status?tenant=<id>
+//   GET  /memory/maintenance/audit?tenant=<id>&run_id=<id>
+//   POST /memory/maintenance/revert?tenant=<id>&audit_id=<id>
 //   GET  /healthz                                           -> liveness (no auth)
 //
 // Recall is tenant-wide by design: the pool routes to one being per tenant and,
@@ -19,7 +23,15 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Borg } from "../borg.js";
 import type { Episode } from "../memory/episodic/index.js";
 import type { StreamEntryInput } from "../stream/index.js";
-import { parseEpisodeId, parseSessionId, type EpisodeId, type SessionId } from "../util/ids.js";
+import {
+  parseAuditId,
+  parseEpisodeId,
+  parseMaintenanceRunId,
+  parseSessionId,
+  type EpisodeId,
+  type SessionId,
+} from "../util/ids.js";
+import type { MemoryMaintenanceCoordinator } from "./memory-maintenance.js";
 import type { MemoryTraceRegistry } from "./memory-trace.js";
 
 // Mirror of BorgPool's DEFAULT_TENANT_ID_PATTERN so the handler returns a clean
@@ -45,6 +57,10 @@ export type MemoryHandlerOptions = {
   maxBodyBytes?: number;
   maxRecallLimit?: number;
   traceRegistry?: MemoryTraceRegistry;
+  maintenanceCoordinator?: Pick<
+    MemoryMaintenanceCoordinator,
+    "cancelReservation" | "getStatus" | "hasReservation" | "startReserved" | "tryReserve"
+  >;
 };
 
 type RequestHandler = (req: IncomingMessage, res: ServerResponse) => void;
@@ -135,6 +151,19 @@ function validateTenantForResponse(res: ServerResponse, tenant: string): boolean
   return true;
 }
 
+function requiredSingleQueryValue(
+  res: ServerResponse,
+  searchParams: URLSearchParams,
+  name: string,
+): string | null {
+  const values = searchParams.getAll(name);
+  if (values.length !== 1 || values[0]?.trim() === "") {
+    send(res, 400, { error: `missing or duplicate '${name}'` });
+    return null;
+  }
+  return values[0]!.trim();
+}
+
 function episodeListLimitFromQuery(searchParams: URLSearchParams): number {
   const raw = searchParams.get("limit");
   const rawLimit = raw === null || raw.trim() === "" ? DEFAULT_EPISODE_LIST_LIMIT : Number(raw);
@@ -221,7 +250,7 @@ function scheduleIngestion(pool: MemoryPool, tenant: string, session: SessionId)
 }
 
 export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandler {
-  const { pool, token, traceRegistry } = options;
+  const { pool, token, traceRegistry, maintenanceCoordinator } = options;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const maxRecallLimit = options.maxRecallLimit ?? DEFAULT_MAX_RECALL_LIMIT;
   let recallTraceSequence = 0;
@@ -245,22 +274,177 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       return;
     }
 
+    if (method === "POST" && rawPath === "/memory/maintenance") {
+      const tenant = requiredSingleQueryValue(res, searchParams, "tenant");
+      if (tenant === null) {
+        return;
+      }
+      const mode = requiredSingleQueryValue(res, searchParams, "mode");
+      if (mode === null) {
+        return;
+      }
+      const dryRun = requiredSingleQueryValue(res, searchParams, "dryRun");
+      if (dryRun === null) {
+        return;
+      }
+      if (!validateTenantForResponse(res, tenant)) {
+        return;
+      }
+      if (mode !== "light" && mode !== "heavy") {
+        send(res, 400, { error: "invalid 'mode'" });
+        return;
+      }
+      if (dryRun !== "0" && dryRun !== "1") {
+        send(res, 400, { error: "invalid 'dryRun'" });
+        return;
+      }
+      if (maintenanceCoordinator === undefined) {
+        send(res, 503, { error: "maintenance unavailable" });
+        return;
+      }
+
+      const started = maintenanceCoordinator.tryReserve({
+        tenant,
+        mode,
+        dryRun: dryRun === "1",
+      });
+      switch (started.status) {
+        case "accepted": {
+          try {
+            // Admission is already reserved, so racing POSTs see 409 while the
+            // tenant is opened and its pool initializer establishes readiness.
+            await pool.withTenant(tenant, () => undefined);
+          } catch {
+            maintenanceCoordinator.cancelReservation(tenant, started.runId);
+            send(res, 503, { error: "maintenance tenant unavailable" });
+            return;
+          }
+          if (!maintenanceCoordinator.hasReservation(tenant, started.runId)) {
+            send(res, 503, { error: "maintenance shutting down" });
+            return;
+          }
+          try {
+            send(res, 202, { run_id: started.runId });
+          } finally {
+            // Scheduling happens only after the acceptance response is handed
+            // to the server, and remains detached from the client connection.
+            maintenanceCoordinator.startReserved(tenant, started.runId);
+          }
+          return;
+        }
+        case "conflict":
+          send(res, 409, {
+            error: "maintenance already running",
+            run_id: started.runId,
+          });
+          return;
+        case "disabled":
+          send(res, 503, { error: "maintenance disabled" });
+          return;
+        case "shutting_down":
+          send(res, 503, { error: "maintenance shutting down" });
+          return;
+      }
+    }
+
+    if (method === "POST" && rawPath === "/memory/maintenance/revert") {
+      const tenant = requiredSingleQueryValue(res, searchParams, "tenant");
+      if (tenant === null) {
+        return;
+      }
+      const auditIdRaw = requiredSingleQueryValue(res, searchParams, "audit_id");
+      if (auditIdRaw === null) {
+        return;
+      }
+      if (!validateTenantForResponse(res, tenant)) {
+        return;
+      }
+
+      let auditId;
+      try {
+        auditId = parseAuditId(auditIdRaw);
+      } catch {
+        send(res, 400, { error: "invalid 'audit_id'" });
+        return;
+      }
+
+      try {
+        const audit = await pool.withTenant(
+          tenant,
+          (borg) => borg.audit.revert(auditId, "memory-sidecar"),
+          { exclusive: true },
+        );
+        if (audit === null) {
+          send(res, 404, { error: "audit record not found" });
+          return;
+        }
+        send(res, 200, { ok: true, tenant, audit });
+      } catch (error) {
+        console.error(`memory-sidecar: ${rawPath} failed for tenant "${tenant}"`, error);
+        send(res, 500, { error: "internal error" });
+      }
+      return;
+    }
+
     if (method === "GET") {
       const isTracePath = rawPath === "/memory/trace";
       const isEpisodeListPath = rawPath === "/memory/episodes";
+      const isMaintenanceStatusPath = rawPath === "/memory/maintenance/status";
+      const isMaintenanceAuditPath = rawPath === "/memory/maintenance/audit";
       const episodeId =
-        isTracePath || isEpisodeListPath ? undefined : parseEpisodeIdFromPath(rawPath);
-      if (!isTracePath && !isEpisodeListPath && episodeId === undefined) {
+        isTracePath || isEpisodeListPath || isMaintenanceStatusPath || isMaintenanceAuditPath
+          ? undefined
+          : parseEpisodeIdFromPath(rawPath);
+      if (
+        !isTracePath &&
+        !isEpisodeListPath &&
+        !isMaintenanceStatusPath &&
+        !isMaintenanceAuditPath &&
+        episodeId === undefined
+      ) {
         send(res, 404, { error: "not found" });
         return;
       }
 
-      const tenant = asString(searchParams.get("tenant"));
+      const strictMaintenanceQuery = isMaintenanceStatusPath || isMaintenanceAuditPath;
+      const tenant = strictMaintenanceQuery
+        ? requiredSingleQueryValue(res, searchParams, "tenant")
+        : asString(searchParams.get("tenant"));
+      if (tenant === null) {
+        return;
+      }
       if (!validateTenantForResponse(res, tenant)) {
         return;
       }
 
       try {
+        if (isMaintenanceStatusPath) {
+          if (maintenanceCoordinator === undefined) {
+            send(res, 503, { error: "maintenance unavailable" });
+            return;
+          }
+          const status = maintenanceCoordinator.getStatus(tenant);
+          send(res, 200, { ok: true, tenant, ...status });
+          return;
+        }
+
+        if (isMaintenanceAuditPath) {
+          const runIdRaw = requiredSingleQueryValue(res, searchParams, "run_id");
+          if (runIdRaw === null) {
+            return;
+          }
+          let runId;
+          try {
+            runId = parseMaintenanceRunId(runIdRaw);
+          } catch {
+            send(res, 400, { error: "invalid 'run_id'" });
+            return;
+          }
+          const audit = await pool.withTenant(tenant, (borg) => borg.audit.list({ runId }));
+          send(res, 200, { ok: true, tenant, run_id: runId, audit });
+          return;
+        }
+
         if (isTracePath) {
           const since = traceSinceFromQuery(searchParams);
           if (since === null) {
@@ -437,8 +621,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       const rawLimit =
         typeof body.limit === "number" && Number.isFinite(body.limit) ? body.limit : 10;
       const limit = Math.max(1, Math.min(maxRecallLimit, Math.floor(rawLimit)));
-      const traceTurnId =
-        traceRegistry === undefined ? undefined : nextRecallTraceTurnId(tenant);
+      const traceTurnId = traceRegistry === undefined ? undefined : nextRecallTraceTurnId(tenant);
       const hits = await pool.withTenant(tenant, (borg) =>
         borg.episodic.search(query, {
           limit,

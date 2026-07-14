@@ -16,6 +16,7 @@ export {
   type CommitmentRevokeOptions,
   type CommitmentRepositoryOptions,
   type EntityAddInput,
+  type EntityEnsureSelfOptions,
   type EntityListOptions,
   type EntityRepositoryOptions,
   type EntityResolveOptions,

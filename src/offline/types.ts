@@ -31,26 +31,12 @@ import type { RelationalSlotRepository } from "../memory/relational-slots/index.
 import type { StreamEntryIndexRepository, StreamWriter } from "../stream/index.js";
 import type { Clock } from "../util/clock.js";
 import type { MaintenanceRunId } from "../util/ids.js";
+import type { OfflineProcessName } from "../contracts/offline-process.js";
 
 import type { AuditLog } from "./audit-log.js";
 
-export const OFFLINE_PROCESS_NAMES = [
-  "consolidator",
-  "reflector",
-  "semantic-extractor",
-  "curator",
-  "overseer",
-  "associator",
-  "review-resolver",
-  "ruminator",
-  "self-narrator",
-  "procedural-synthesizer",
-  "belief-reviser",
-  "creator-directive-reconciler",
-  "commitment-reconciler",
-] as const;
-
-export type OfflineProcessName = (typeof OFFLINE_PROCESS_NAMES)[number];
+export { OFFLINE_PROCESS_NAMES } from "../contracts/offline-process.js";
+export type { OfflineProcessName } from "../contracts/offline-process.js";
 
 export type OfflineChange = {
   process: OfflineProcessName;

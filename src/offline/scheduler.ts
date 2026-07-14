@@ -2,19 +2,15 @@
 // Separate from the autonomy scheduler: maintenance is housekeeping, not cognition,
 // so it runs on its own durable timer loop with a busy-detection hook.
 
-import { performance } from "node:perf_hooks";
-
 import { SystemClock, type Clock } from "../util/clock.js";
 import { ConfigError } from "../util/errors.js";
-import {
-  normalizeOptimizeError,
-  type LanceDbOptimizeStorageResult,
-} from "../storage/lancedb/index.js";
+import type { LanceDbOptimizeStorageResult } from "../storage/lancedb/index.js";
 import type { StreamWatermark, StreamWatermarkRepository } from "../stream/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { SessionId } from "../util/ids.js";
 
 import type { MaintenanceOrchestrator } from "./orchestrator.js";
+import { runStorageOptimization } from "./storage-optimization.js";
 import type { OfflineProcess, OfflineProcessName, OrchestratorResult } from "./types.js";
 
 type TimeoutHandle = ReturnType<typeof setTimeout>;
@@ -347,85 +343,13 @@ export class MaintenanceScheduler {
   }
 
   private shouldOptimizeStorage(cadence: MaintenanceCadence): boolean {
+    // optimizeStorage is an automatic-scheduler gate only. Explicit/manual
+    // heavy maintenance owns its own dry-run decision and is not disabled here.
     return (
       cadence === "heavy" &&
       this.options.optimizeStorage === true &&
       this.options.storageOptimizer !== undefined
     );
-  }
-
-  private emitStorageOptimizationCompleted(input: {
-    cadence: MaintenanceCadence;
-    ts: number;
-    runId?: string;
-    result: LanceDbOptimizeStorageResult;
-  }): void {
-    if (this.options.tracer?.enabled !== true) {
-      return;
-    }
-
-    const successfulTables = input.result.tables.filter((table) => table.status === "ok");
-    const errorCount =
-      input.result.tables.length -
-      successfulTables.length +
-      (input.result.error === undefined ? 0 : 1);
-    const tables: Array<Record<string, number | string>> = input.result.tables.map((table) => {
-      if (table.status === "ok") {
-        return {
-          table: table.table,
-          status: table.status,
-          fragments_removed: table.fragmentsRemoved,
-          fragments_added: table.fragmentsAdded,
-          versions_pruned: table.versionsPruned,
-          bytes_removed: table.bytesRemoved,
-          duration_ms: table.durationMs,
-        };
-      }
-
-      const errorTable: Record<string, number | string> = {
-        table: table.table,
-        status: table.status,
-        duration_ms: table.durationMs,
-        error_message: table.error.message,
-      };
-
-      if (table.error.code !== undefined) {
-        errorTable.error_code = table.error.code;
-      }
-
-      return errorTable;
-    });
-
-    this.options.tracer.emit("storage.optimize.completed", {
-      turnId: input.runId ?? `maintenance_storage_${input.cadence}_${input.ts}`,
-      cadence: input.cadence,
-      table_count: input.result.tables.length,
-      errors: errorCount,
-      fragments_removed: successfulTables.reduce((sum, table) => sum + table.fragmentsRemoved, 0),
-      fragments_added: successfulTables.reduce((sum, table) => sum + table.fragmentsAdded, 0),
-      versions_pruned: successfulTables.reduce((sum, table) => sum + table.versionsPruned, 0),
-      duration_ms: input.result.durationMs,
-      tables,
-      ...(input.result.error === undefined
-        ? {}
-        : {
-            optimizer_error_message: input.result.error.message,
-            ...(input.result.error.code === undefined
-              ? {}
-              : { optimizer_error_code: input.result.error.code }),
-          }),
-    });
-  }
-
-  private createStorageOptimizationFailureResult(input: {
-    error: unknown;
-    startedAt: number;
-  }): LanceDbOptimizeStorageResult {
-    return {
-      durationMs: Math.round(performance.now() - input.startedAt),
-      tables: [],
-      error: normalizeOptimizeError(input.error),
-    };
   }
 
   private async optimizeStorageAfterHeavy(input: {
@@ -437,25 +361,12 @@ export class MaintenanceScheduler {
       return null;
     }
 
-    const startedAt = performance.now();
-    let result: LanceDbOptimizeStorageResult;
-
-    try {
-      result = await this.options.storageOptimizer!();
-    } catch (error) {
-      result = this.createStorageOptimizationFailureResult({
-        error,
-        startedAt,
-      });
-    }
-
-    this.emitStorageOptimizationCompleted({
-      cadence: input.cadence,
+    return runStorageOptimization({
+      optimizer: this.options.storageOptimizer!,
       ts: input.ts,
       runId: input.runId,
-      result,
+      tracer: this.options.tracer,
     });
-    return result;
   }
 
   private async tickOnce(cadence: MaintenanceCadence): Promise<MaintenanceTickResult> {

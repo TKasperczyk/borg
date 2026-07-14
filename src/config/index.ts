@@ -7,6 +7,7 @@ import {
   type EvidenceLedgerSectionId,
 } from "../cognition/evidence-ledger/types.js";
 import { DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD } from "../executive/index.js";
+import { OFFLINE_PROCESS_NAMES, type OfflineProcessName } from "../contracts/offline-process.js";
 import { sessionIdSchema, sessionSourceTypeSchema } from "../sessions/index.js";
 import { readJsonFile } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
@@ -246,21 +247,7 @@ const postGenerationGuardsConfigSchema = z
   })
   .strict()
   .prefault({});
-const maintenanceProcessSchema = z.enum([
-  "consolidator",
-  "reflector",
-  "semantic-extractor",
-  "curator",
-  "overseer",
-  "associator",
-  "review-resolver",
-  "ruminator",
-  "self-narrator",
-  "procedural-synthesizer",
-  "belief-reviser",
-  "creator-directive-reconciler",
-  "commitment-reconciler",
-]);
+const maintenanceProcessSchema = z.enum(OFFLINE_PROCESS_NAMES);
 
 export type PostGenerationGuardMode = z.infer<typeof postGenerationGuardModeSchema>;
 const anthropicModelsConfigSchema = z
@@ -525,6 +512,8 @@ const configBaseSchema = z.object({
       busyRetryBaseMs: z.number().int().positive().default(60_000),
       busyRetryMaxMs: z.number().int().positive().default(900_000),
       optimizeStorage: z.boolean().default(true),
+      lightBudget: z.number().int().positive().nullable().default(null),
+      heavyBudget: z.number().int().positive().nullable().default(null),
       // These cadence lists are the single authority for offline process
       // enablement. Remove a process from both lists to disable it.
       lightProcesses: z
@@ -682,6 +671,27 @@ export const configSchema = configOutputSchema.superRefine((value, context) => {
       path: ["anthropic", "apiKey"],
     });
   }
+
+  for (const cadence of ["light", "heavy"] as const) {
+    const processes = value.maintenance[`${cadence}Processes`];
+    if (new Set(processes).size !== processes.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Maintenance ${cadence} process list must not contain duplicates`,
+        path: ["maintenance", `${cadence}Processes`],
+      });
+    }
+  }
+
+  const heavyProcesses = new Set(value.maintenance.heavyProcesses);
+  const overlap = value.maintenance.lightProcesses.filter((process) => heavyProcesses.has(process));
+  if (overlap.length > 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Maintenance light/heavy process lists must be disjoint: ${overlap.join(", ")}`,
+      path: ["maintenance", "heavyProcesses"],
+    });
+  }
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -719,6 +729,35 @@ function readOptionalEnvNumber(env: NodeJS.ProcessEnv, name: string): number | u
   }
 
   return value;
+}
+
+function readOptionalMaintenanceProcessList(
+  env: NodeJS.ProcessEnv,
+  name: string,
+): OfflineProcessName[] | undefined {
+  const raw = env[name];
+  if (raw === undefined) {
+    return undefined;
+  }
+
+  const items = raw.split(",").map((item) => item.trim());
+  if (items.length === 0 || items.some((item) => item.length === 0)) {
+    throw new ConfigError(`Environment variable ${name} must be a comma-separated process list`);
+  }
+
+  const parsed = z.array(maintenanceProcessSchema).safeParse(items);
+  if (!parsed.success) {
+    throw new ConfigError(
+      `Environment variable ${name} contains an unknown process; expected: ${OFFLINE_PROCESS_NAMES.join(", ")}`,
+      { cause: parsed.error },
+    );
+  }
+
+  if (new Set(parsed.data).size !== parsed.data.length) {
+    throw new ConfigError(`Environment variable ${name} must not contain duplicate processes`);
+  }
+
+  return parsed.data;
 }
 
 function readOptionalEnvFloat(env: NodeJS.ProcessEnv, name: string): number | undefined {
@@ -1351,6 +1390,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
+    ["offline", "reviewResolver", "budget"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_REVIEW_RESOLVER_BUDGET"),
+  );
+  setConfigOverride(
+    overrides,
     ["offline", "ruminator", "maxQuestionsPerRun"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_MAX_QUESTIONS_PER_RUN"),
   );
@@ -1488,6 +1532,26 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["maintenance", "optimizeStorage"],
     readOptionalEnvBoolean(env, "BORG_MAINTENANCE_OPTIMIZE_STORAGE"),
+  );
+  setConfigOverride(
+    overrides,
+    ["maintenance", "lightProcesses"],
+    readOptionalMaintenanceProcessList(env, "BORG_MAINTENANCE_LIGHT_PROCESSES"),
+  );
+  setConfigOverride(
+    overrides,
+    ["maintenance", "heavyProcesses"],
+    readOptionalMaintenanceProcessList(env, "BORG_MAINTENANCE_HEAVY_PROCESSES"),
+  );
+  setConfigOverride(
+    overrides,
+    ["maintenance", "lightBudget"],
+    readOptionalEnvNumber(env, "BORG_MAINTENANCE_LIGHT_BUDGET"),
+  );
+  setConfigOverride(
+    overrides,
+    ["maintenance", "heavyBudget"],
+    readOptionalEnvNumber(env, "BORG_MAINTENANCE_HEAVY_BUDGET"),
   );
   setConfigOverride(
     overrides,

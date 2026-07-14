@@ -233,6 +233,75 @@ describe("RuminatorProcess", () => {
     }
   });
 
+  it("leaves sqlite retrieval state and Lance episode state unchanged during dry-run planning", async () => {
+    const questionText = "Why does Atlas deploy fail?";
+    const llm = new FakeLLMClient({
+      responses: [
+        createRuminatorResponse({
+          resolution_note: "Atlas now succeeds after the rollback rehearsal.",
+          growth_marker: null,
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const episode = createEpisodeFixture(
+        {
+          title: "Atlas rollback rehearsal",
+          narrative: "Atlas stabilized after a rollback rehearsal.",
+          tags: ["atlas", "deploy"],
+          created_at: 2_000_000,
+          updated_at: 2_000_000,
+        },
+        [1, 0, 0, 0],
+      );
+      await harness.episodicRepository.createEpisode(episode);
+      harness.openQuestionsRepository.add({
+        question: questionText,
+        urgency: 0.7,
+        source: "reflection",
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+        provenance: { kind: "manual" },
+      });
+      const readSqliteRetrievalState = () => ({
+        stats: harness.db
+          .prepare("SELECT * FROM episode_stats WHERE episode_id = ?")
+          .all(episode.id),
+        index: harness.db
+          .prepare("SELECT * FROM episode_index WHERE episode_id = ?")
+          .all(episode.id),
+        logs: harness.db
+          .prepare("SELECT * FROM retrieval_log WHERE episode_id = ? ORDER BY timestamp, score")
+          .all(episode.id),
+        recall: harness.db.prepare("SELECT * FROM recall_state ORDER BY scope_key").all(),
+      });
+      const sqliteBefore = readSqliteRetrievalState();
+      const lanceBefore = await harness.episodicRepository.get(episode.id, {
+        includeArchived: true,
+      });
+
+      const plan = await process.plan(harness.createContext(), { dryRun: true });
+
+      expect(plan.items).toHaveLength(1);
+      expect(readSqliteRetrievalState()).toEqual(sqliteBefore);
+      expect(await harness.episodicRepository.get(episode.id, { includeArchived: true })).toEqual(
+        lanceBefore,
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("persists still-open deliberations and renders recent rumination history", async () => {
     const clock = new FixedClock(3_000_000);
     const questionText = "What still explains the Atlas rollout tension?";
@@ -312,18 +381,18 @@ describe("RuminatorProcess", () => {
       expect(prompt).toContain("disclosure_class=self_private");
       expect(plan.items).toEqual(
         expect.arrayContaining([
-        expect.objectContaining({
-          action: "mark_unresolved",
-          question_id: question.id,
-          next_unresolved_rumination_ticks: 1,
-          rumination_note:
-            "The fresh evidence narrows the rollout tension, but it does not yet settle whether scheduling or ownership is the main cause.",
-          tensions: [
-            "Scheduling evidence points one way while ownership evidence remains unresolved.",
-          ],
-          evidence_episode_ids: [episode.id],
-          connected_open_question_ids: [connected.id, invalidConnectedOpenQuestionId],
-        }),
+          expect.objectContaining({
+            action: "mark_unresolved",
+            question_id: question.id,
+            next_unresolved_rumination_ticks: 1,
+            rumination_note:
+              "The fresh evidence narrows the rollout tension, but it does not yet settle whether scheduling or ownership is the main cause.",
+            tensions: [
+              "Scheduling evidence points one way while ownership evidence remains unresolved.",
+            ],
+            evidence_episode_ids: [episode.id],
+            connected_open_question_ids: [connected.id, invalidConnectedOpenQuestionId],
+          }),
         ]),
       );
 

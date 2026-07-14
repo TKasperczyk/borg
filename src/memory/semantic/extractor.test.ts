@@ -246,12 +246,36 @@ describe("semantic extractor", () => {
     expect(prompt).toContain("relational_slot:rslot_grounded");
     expect(prompt).toContain("- self (id: ent_selfaaaaaaaaaaa");
     expect(prompt).toContain(
-      "Entity ent_selfaaaaaaaaaaa is yourself; refer to all entities by name, including yourself.",
+      "Entity ent_selfaaaaaaaaaaa is yourself; write your own actions, statements, and decisions in first person, and refer to every other entity by name or stable handle.",
     );
     expect(prompt).not.toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
     expect(prompt).toContain("disclosure_class=relationship_private");
     expect(prompt).toContain("I can use this internally");
     expect(prompt).toContain(privateAudience);
+  });
+
+  it("includes the generic self voice anchor when no self entity exists", async () => {
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas note");
+    const llm = new FakeLLMClient({
+      responses: [createSemanticToolResponse({ nodes: [], edges: [] })],
+    });
+    const extractor = new SemanticExtractor({
+      nodeRepository: {
+        listDistinctKinds: () => [],
+      } as unknown as SemanticNodeRepository,
+      edgeRepository: {} as SemanticEdgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: llm,
+      model: "haiku",
+      selfEntityId: null,
+    });
+
+    await extractor.extractFromEpisodes([episode]);
+
+    expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
+      "Messages with kind agent_msg are your own; write your own actions, statements, and decisions in first person; refer to every other sender by name or stable handle.",
+    );
   });
 
   it("traces and skips semantic nodes with ungrounded relationship claims", async () => {

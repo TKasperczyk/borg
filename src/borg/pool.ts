@@ -54,9 +54,14 @@ export type BorgPoolOptions = {
   // Per-tenant in-process tracer. Returning a tenant-bound tracer lets callers
   // keep memory-only trace buffers isolated while still composing with file tracing.
   tracerFor?: (tenantId: string) => TurnTracer | undefined;
+  // Optional post-open hook. A failed hook closes the newly opened being before
+  // the error escapes, so callers never inherit a half-initialized pool entry.
+  initializeBeing?: (tenantId: string, borg: Borg) => void | Promise<void>;
 };
 
 type Deferred = { readonly promise: Promise<void>; readonly resolve: () => void };
+
+class BorgPoolInitializerCloseError extends AggregateError {}
 
 function deferred(): Deferred {
   let resolve!: () => void;
@@ -92,6 +97,9 @@ export class BorgPool {
   private readonly tenantIdPattern: RegExp;
   private readonly tracerPathFor: ((tenantId: string) => string | undefined) | undefined;
   private readonly tracerFor: ((tenantId: string) => TurnTracer | undefined) | undefined;
+  private readonly initializeBeing:
+    | ((tenantId: string, borg: Borg) => void | Promise<void>)
+    | undefined;
 
   private readonly entries = new Map<string, PoolEntry>();
   // Monotonic counter for LRU ordering -- deterministic, no clock dependency.
@@ -102,6 +110,8 @@ export class BorgPool {
   // which would let each extract sweep the other's just-appended stream entry and
   // race createEpisode, producing duplicate / cross-request episodes. Non-exclusive
   // calls (reads / recall) never touch this chain and stay fully concurrent.
+  // Maintenance intentionally reserves one exclusive chunk at a time: recall
+  // may overlap a chunk, while append/remember can interleave between chunks.
   private readonly writeChains = new Map<string, Promise<unknown>>();
   // Set once shutdown() begins. While true, withTenant() rejects new work, so the
   // closeAll() drain inside shutdown() is a true barrier: no being can be opened
@@ -118,6 +128,7 @@ export class BorgPool {
     this.tenantIdPattern = options.tenantIdPattern ?? DEFAULT_TENANT_ID_PATTERN;
     this.tracerPathFor = options.tracerPathFor;
     this.tracerFor = options.tracerFor;
+    this.initializeBeing = options.initializeBeing;
   }
 
   /**
@@ -149,12 +160,10 @@ export class BorgPool {
         await this.enforceMaxOpen(entry.tenantId);
       }
       const borg = await entry.promise;
-      return await (opts?.exclusive
-        ? this.runExclusive(entry.tenantId, () => fn(borg))
-        : fn(borg));
+      return await (opts?.exclusive ? this.runExclusive(entry.tenantId, () => fn(borg)) : fn(borg));
     } finally {
       entry.inUse -= 1;
-      entry.lastUsed = (this.seq += 1);
+      entry.lastUsed = this.seq += 1;
       if (entry.inUse === 0) {
         if (entry.closeRequested) {
           // Trigger the deferred close. The deliberate caller (evict/closeAll)
@@ -260,7 +269,7 @@ export class BorgPool {
       );
     }
     if (existing !== undefined && !existing.closeRequested && existing.closing === undefined) {
-      existing.lastUsed = (this.seq += 1);
+      existing.lastUsed = this.seq += 1;
       return { entry: existing, created: false };
     }
 
@@ -281,10 +290,15 @@ export class BorgPool {
       inUse: 0,
       lastUsed: (this.seq += 1),
       closeRequested: false,
-      // Cache the in-flight promise so concurrent acquires share one open. On
-      // failure, drop the entry so a later call retries.
+      // Cache the in-flight promise so concurrent acquires share one open. On a
+      // clean failure, drop the entry so a later call retries.
       promise: open.catch((error: unknown) => {
-        if (this.entries.get(validated) === entry) {
+        if (error instanceof BorgPoolInitializerCloseError) {
+          // The initializer failed and the compensating close also failed. Keep
+          // the poisoned entry so acquire() fails closed instead of opening a
+          // second writer over handles that may still be live.
+          entry.closeFailed = true;
+        } else if (this.entries.get(validated) === entry) {
           this.entries.delete(validated);
         }
         throw error;
@@ -294,20 +308,35 @@ export class BorgPool {
     return { entry, created: true };
   }
 
-  private openBeing(tenantId: string): Promise<Borg> {
+  private async openBeing(tenantId: string): Promise<Borg> {
     const tracerPath = this.tracerPathFor?.(tenantId);
     const tracer = this.tracerForTenant(tenantId);
     // With no explicit per-tenant tracer path, strip ambient BORG_TRACE so an
     // operator's debug env var doesn't commingle every tenant's trace content
     // into one shared file.
     const env = tracerPath === undefined ? this.tenantSafeEnv() : this.openOptions.env;
-    return Borg.open({
+    const borg = await Borg.open({
       ...this.openOptions,
       ...(env === undefined ? {} : { env }),
       ...(tracer === undefined ? {} : { tracer }),
       dataDir: join(this.root, tenantId),
       ...(tracerPath === undefined ? {} : { tracerPath }),
     });
+
+    try {
+      await this.initializeBeing?.(tenantId, borg);
+      return borg;
+    } catch (initializeError) {
+      try {
+        await borg.close();
+      } catch (closeError) {
+        throw new BorgPoolInitializerCloseError(
+          [initializeError, closeError],
+          `BorgPool: initializer and close failed for tenant "${tenantId}"`,
+        );
+      }
+      throw initializeError;
+    }
   }
 
   private tracerForTenant(tenantId: string): TurnTracer | undefined {
@@ -379,6 +408,7 @@ export class BorgPool {
         entry.tenantId === exclude ||
         entry.inUse > 0 ||
         entry.closeRequested ||
+        entry.closeFailed === true ||
         entry.closing !== undefined
       ) {
         continue;

@@ -24,10 +24,7 @@ import {
   type SkillContextStatsRecord,
   type SkillRecord,
 } from "../../memory/procedural/index.js";
-import type {
-  ReviewQueueItem,
-  SkillSplitReviewPayload,
-} from "../../memory/review-queue/index.js";
+import type { ReviewQueueItem, SkillSplitReviewPayload } from "../../memory/review-queue/index.js";
 import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { combineMemoryDisclosureLabels } from "../../retrieval/index.js";
@@ -755,6 +752,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
     opts: { dryRun?: boolean; budget?: number; params?: Record<string, unknown> } = {},
   ): Promise<ProceduralSynthesizerPlan> {
     const errors: OfflineProcessError[] = [];
+    const dryRun = opts.dryRun === true;
     const budget = opts.budget ?? ctx.config.offline.proceduralSynthesizer.budget;
     const minSupport = ctx.config.offline.proceduralSynthesizer.minSupport;
     const synthesizerConfig = ctx.config.offline.proceduralSynthesizer;
@@ -856,14 +854,14 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
         }
 
         for (const candidate of splitCandidates) {
-          const claimedAt = this.clock.now();
-          const staleBefore = claimedAt - synthesizerConfig.splitClaimStaleSec * 1_000;
+          const claimedAt = dryRun ? null : this.clock.now();
 
           if (
+            claimedAt !== null &&
             !ctx.skillRepository.claimSplit({
               skillId: candidate.skill.id,
               claimedAt,
-              staleBefore,
+              staleBefore: claimedAt - synthesizerConfig.splitClaimStaleSec * 1_000,
             })
           ) {
             await appendSkillSplitInternalEvent(
@@ -919,11 +917,13 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
               } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
 
-                ctx.skillRepository.recordSplitAttemptAndClearClaim({
-                  skillId: candidate.skill.id,
-                  attemptedAt: this.clock.now(),
-                  claimedAt,
-                });
+                if (!dryRun) {
+                  ctx.skillRepository.recordSplitAttemptAndClearClaim({
+                    skillId: candidate.skill.id,
+                    attemptedAt: this.clock.now(),
+                    claimedAt,
+                  });
+                }
                 splitItems.push({
                   ...splitItem,
                   proposal: {
@@ -935,7 +935,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
               }
             }
 
-            if (proposal.decision !== "split" || opts.dryRun === true) {
+            if (!dryRun && proposal.decision !== "split") {
               ctx.skillRepository.recordSplitAttemptAndClearClaim({
                 skillId: candidate.skill.id,
                 attemptedAt: this.clock.now(),
@@ -946,27 +946,30 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
             splitItems.push(splitItem);
           } catch (error) {
             if (error instanceof BudgetExceededError) {
-              ctx.skillRepository.clearSplitClaim({
-                skillId: candidate.skill.id,
-                claimedAt,
-                clearedAt: this.clock.now(),
-              });
+              if (claimedAt !== null) {
+                ctx.skillRepository.clearSplitClaim({
+                  skillId: candidate.skill.id,
+                  claimedAt,
+                  clearedAt: this.clock.now(),
+                });
+              }
               throw error;
             }
 
             const splitError = proceduralSynthesizerStructuredError(error, SKILL_SPLIT_TOOL_NAME);
             const message = splitError instanceof Error ? splitError.message : String(splitError);
-            const failedSkill = isSkillSplitParseFailure(splitError)
-              ? ctx.skillRepository.recordSplitFailureAndClearClaim({
-                  skillId: candidate.skill.id,
-                  attemptedAt: this.clock.now(),
-                  claimedAt,
-                  error: message,
-                  manualReviewThreshold: synthesizerConfig.maxSplitParseFailures,
-                })
-              : null;
+            const failedSkill =
+              !dryRun && isSkillSplitParseFailure(splitError)
+                ? ctx.skillRepository.recordSplitFailureAndClearClaim({
+                    skillId: candidate.skill.id,
+                    attemptedAt: this.clock.now(),
+                    claimedAt,
+                    error: message,
+                    manualReviewThreshold: synthesizerConfig.maxSplitParseFailures,
+                  })
+                : null;
 
-            if (failedSkill === null) {
+            if (!dryRun && failedSkill === null) {
               ctx.skillRepository.recordSplitAttemptAndClearClaim({
                 skillId: candidate.skill.id,
                 attemptedAt: this.clock.now(),
@@ -974,19 +977,21 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
               });
             }
             errors.push(offlineProcessError(this.name, splitError));
-            await appendSkillSplitInternalEvent(
-              ctx,
-              {
-                hook: "skill_split_failed",
-                error: message,
-                skill_id: candidate.skill.id,
-                split_failure_count: failedSkill?.split_failure_count ?? null,
-                split_suppressed:
-                  (failedSkill?.split_failure_count ?? 0) >=
-                  synthesizerConfig.maxSplitParseFailures,
-              },
-              errors,
-            );
+            if (!dryRun) {
+              await appendSkillSplitInternalEvent(
+                ctx,
+                {
+                  hook: "skill_split_failed",
+                  error: message,
+                  skill_id: candidate.skill.id,
+                  split_failure_count: failedSkill?.split_failure_count ?? null,
+                  split_suppressed:
+                    (failedSkill?.split_failure_count ?? 0) >=
+                    synthesizerConfig.maxSplitParseFailures,
+                },
+                errors,
+              );
+            }
           }
         }
       });

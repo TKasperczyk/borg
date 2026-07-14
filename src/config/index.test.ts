@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { OFFLINE_PROCESS_NAMES } from "../offline/types.js";
+import { OFFLINE_PROCESS_NAMES } from "../contracts/offline-process.js";
 import { writeJsonFileAtomic } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
 import { DEFAULT_CONFIG, configSchema, loadConfig, redactConfig } from "./index.js";
@@ -85,6 +85,8 @@ describe("config", () => {
       "curator",
     ]);
     expect(config.maintenance.optimizeStorage).toBe(true);
+    expect(config.maintenance.lightBudget).toBeNull();
+    expect(config.maintenance.heavyBudget).toBeNull();
     expect(config.maintenance.startupGraceMs).toBe(30_000);
     expect(config.maintenance.busyRetryBaseMs).toBe(60_000);
     expect(config.maintenance.busyRetryMaxMs).toBe(900_000);
@@ -693,6 +695,58 @@ describe("config", () => {
         env: {
           BORG_EMBEDDING_DIMS: "nope",
         },
+      }),
+    ).toThrow(ConfigError);
+  });
+
+  it("loads maintenance process lists and token budgets from the environment", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {
+        BORG_MAINTENANCE_LIGHT_PROCESSES: " consolidator, curator ",
+        BORG_MAINTENANCE_HEAVY_PROCESSES: "review-resolver,belief-reviser",
+        BORG_MAINTENANCE_LIGHT_BUDGET: "1200",
+        BORG_MAINTENANCE_HEAVY_BUDGET: "3400",
+        BORG_OFFLINE_REVIEW_RESOLVER_BUDGET: "560",
+      },
+    });
+
+    expect(config.maintenance.lightProcesses).toEqual(["consolidator", "curator"]);
+    expect(config.maintenance.heavyProcesses).toEqual(["review-resolver", "belief-reviser"]);
+    expect(config.maintenance.lightBudget).toBe(1_200);
+    expect(config.maintenance.heavyBudget).toBe(3_400);
+    expect(config.offline.reviewResolver.budget).toBe(560);
+  });
+
+  it.each([
+    ["BORG_MAINTENANCE_LIGHT_BUDGET", "0"],
+    ["BORG_MAINTENANCE_HEAVY_BUDGET", "-1"],
+    ["BORG_OFFLINE_REVIEW_RESOLVER_BUDGET", "1.5"],
+  ])("rejects invalid positive integer budget %s=%s", (name, value) => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    expect(() => loadConfig({ dataDir: tempDir, env: { [name]: value } })).toThrow(ConfigError);
+  });
+
+  it.each([
+    ["unknown process", "consolidator,not-a-process"],
+    ["blank entry", "consolidator,,curator"],
+    ["leading blank", ",consolidator"],
+    ["trailing blank", "consolidator,"],
+    ["empty list", "   "],
+    ["duplicate process", "consolidator,consolidator"],
+  ])("rejects a maintenance CSV with %s", (_label, value) => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    expect(() =>
+      loadConfig({
+        dataDir: tempDir,
+        env: { BORG_MAINTENANCE_LIGHT_PROCESSES: value },
       }),
     ).toThrow(ConfigError);
   });

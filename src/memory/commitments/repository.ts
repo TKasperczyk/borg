@@ -229,6 +229,10 @@ export type EntityResolveOptions = {
   kind?: EntityKind;
 };
 
+export type EntityEnsureSelfOptions = {
+  provenance?: NameProvenance;
+};
+
 export type CommitmentRevokeOptions = IdentityCasOptions & {
   canonicalizedByArtifactEntryId?: SharedStateEntryId | null;
 };
@@ -474,6 +478,66 @@ export class EntityRepository {
       .get() as Record<string, unknown> | undefined;
 
     return row === undefined ? null : mapEntityRow(row);
+  }
+
+  ensureSelf(canonicalName: string, options: EntityEnsureSelfOptions = {}): EntityRecord {
+    const name = canonicalName.trim();
+
+    if (name.length === 0) {
+      throw new CommitmentError("Entity name is required", {
+        code: "ENTITY_NAME_REQUIRED",
+      });
+    }
+
+    const provenance = options.provenance ?? "config_default_user";
+    const ensure = this.db.transaction(() => {
+      const current = this.getSelf();
+
+      if (current === null) {
+        return this.add({
+          canonicalName: name,
+          aliases: ["self"],
+          kind: "self",
+          provenance,
+        });
+      }
+
+      const canonical = normalizeName(name);
+      const aliases: string[] = [];
+      const seen = new Set<string>();
+      for (const candidate of [...current.aliases, current.canonical_name, "self"]) {
+        const normalized = normalizeName(candidate);
+        if (
+          normalized.length === 0 ||
+          (normalized === canonical && normalized !== "self") ||
+          seen.has(normalized)
+        ) {
+          continue;
+        }
+        seen.add(normalized);
+        aliases.push(normalized === "self" ? "self" : candidate.trim());
+      }
+
+      const next = entityRecordSchema.parse({
+        ...current,
+        canonical_name: name,
+        aliases,
+        name_provenance:
+          normalizeName(current.canonical_name) === canonical
+            ? strongerNameProvenance(current.name_provenance, provenance)
+            : provenance,
+      });
+
+      this.db
+        .prepare(
+          "UPDATE entities SET canonical_name = ?, aliases = ?, name_provenance = ? WHERE id = ?",
+        )
+        .run(next.canonical_name, serializeJsonValue(next.aliases), next.name_provenance, next.id);
+
+      return next;
+    });
+
+    return ensure.immediate();
   }
 
   setBorgRole(id: EntityId, role: BorgRole | null): EntityRecord | null {

@@ -22,7 +22,11 @@ import {
   promptSurfaceBlocksForSurface,
 } from "../cognition/prompts/prompt-surface-registry.js";
 import type { BorgPromptBlockView, BorgPromptsFacade } from "./facade-types.js";
-import { OFFLINE_PROCESS_NAMES, revalidateReviewQueue } from "../offline/index.js";
+import {
+  OFFLINE_PROCESS_NAMES,
+  revalidateReviewQueue,
+  runStorageOptimization,
+} from "../offline/index.js";
 import type { MaintenancePlan, OfflineProcessName, OrchestratorResult } from "../offline/index.js";
 import type { DisclosureRetrievalOptions } from "../retrieval/index.js";
 import {
@@ -284,6 +288,8 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     lightIntervalMs: deps.config.maintenance.lightIntervalMs,
     heavyIntervalMs: deps.config.maintenance.heavyIntervalMs,
     optimizeStorage: deps.config.maintenance.optimizeStorage,
+    lightBudget: deps.config.maintenance.lightBudget,
+    heavyBudget: deps.config.maintenance.heavyBudget,
     lightProcesses: deps.config.maintenance.lightProcesses,
     heavyProcesses: deps.config.maintenance.heavyProcesses,
     processBudgets: {
@@ -332,6 +338,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     const processes = processNames.map((name) => deps.offlineProcesses[name]);
 
     return deps.maintenanceOrchestrator.run({
+      runId: options.runId,
       processes,
       opts: {
         dryRun: options.dryRun,
@@ -342,6 +349,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
   };
   const planDream = (processNames: readonly OfflineProcessName[], options: BorgDreamOptions = {}) =>
     deps.maintenanceOrchestrator.plan({
+      runId: options.runId,
       processes: processNames.map((name) => deps.offlineProcesses[name]),
       opts: {
         budget: options.budget,
@@ -508,6 +516,8 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       get: (...args) => deps.entityRepository.get(...args),
       list: (...args) => deps.entityRepository.list(...args),
       getCreator: () => deps.entityRepository.getCreator(),
+      getSelf: () => deps.entityRepository.getSelf(),
+      ensureSelf: (...args) => deps.entityRepository.ensureSelf(...args),
       setBorgRole: (...args) => deps.entityRepository.setBorgRole(...args),
       find: (name, options) => {
         const entityId = deps.entityRepository.findByName(name, options);
@@ -664,7 +674,16 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           semanticReviewService: deps.semanticReviewService,
           reviewEnqueue: (input) => deps.reviewQueueRepository.enqueue(input),
           participantRoster: buildParticipantRosterFromRepositories({
-            activeParticipants: [],
+            activeParticipants:
+              selfEntity === null
+                ? []
+                : [
+                    {
+                      entityId: selfEntity.id,
+                      displayName: selfEntity.canonical_name,
+                      role: "participant",
+                    },
+                  ],
             entityRepository: deps.entityRepository,
             relationalSlotRepository: deps.relationalSlotRepository,
           }),
@@ -852,6 +871,17 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     maintenance: {
       scheduler: deps.maintenanceScheduler,
       config: maintenanceConfigSnapshot,
+      // Manual heavy maintenance always optimizes. The config flag gates only
+      // automatic scheduler ticks; callers decide whether a manual run is dry.
+      optimizeStorage: (options = {}) =>
+        deps.maintenanceOrchestrator.runMechanicalMaintenance(() =>
+          runStorageOptimization({
+            optimizer: () => deps.lance.optimizeStorage(),
+            ts: deps.clock.now(),
+            runId: options.runId,
+            tracer: deps.tracer,
+          }),
+        ),
     },
     inbox: {
       catchUp: deps.chatResponseCatchUpWorker,

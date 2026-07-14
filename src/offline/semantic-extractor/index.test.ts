@@ -196,7 +196,7 @@ describe("semantic extractor process", () => {
     const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
     expect(prompt).toContain(`- self (id: ${selfEntityId}`);
     expect(prompt).toContain(
-      `Entity ${selfEntityId} is yourself; refer to all entities by name, including yourself.`,
+      `Entity ${selfEntityId} is yourself; write your own actions, statements, and decisions in first person, and refer to every other entity by name or stable handle.`,
     );
     await expect(harness.semanticNodeRepository.list()).resolves.toEqual([
       expect.objectContaining({

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -75,6 +75,31 @@ describe("BorgPool", () => {
     expect(existsSync(join(root, "beta", "borg.db"))).toBe(true);
   });
 
+  it("loads each tenant directory's own config when no shared config snapshot is supplied", async () => {
+    const { pool, root } = makePool({
+      openOptions: { ...baseOpenOptions(), env: {} },
+    });
+    mkdirSync(join(root, "alpha"), { recursive: true });
+    mkdirSync(join(root, "beta"), { recursive: true });
+    writeFileSync(
+      join(root, "alpha", "config.json"),
+      JSON.stringify({ maintenance: { enabled: false } }),
+    );
+    writeFileSync(
+      join(root, "beta", "config.json"),
+      JSON.stringify({ maintenance: { enabled: true } }),
+    );
+
+    const alphaEnabled = await pool.withTenant(
+      "alpha",
+      (borg) => borg.maintenance.config().enabled,
+    );
+    const betaEnabled = await pool.withTenant("beta", (borg) => borg.maintenance.config().enabled);
+
+    expect(alphaEnabled).toBe(false);
+    expect(betaEnabled).toBe(true);
+  });
+
   it("reuses one being per tenant and dedupes concurrent opens", async () => {
     const { pool } = makePool();
 
@@ -87,9 +112,62 @@ describe("BorgPool", () => {
     expect(pool.size()).toBe(1);
   });
 
+  it("treats the post-open self initializer as idempotent provisioning, including dry-run opens", async () => {
+    let initializerCalls = 0;
+    const { pool } = makePool({
+      initializeBeing: (_tenantId, borg) => {
+        initializerCalls += 1;
+        borg.entities.ensureSelf("team-agent");
+      },
+    });
+
+    const first = await pool.withTenant("alpha", async (borg) => {
+      const beforeDryRun = borg.entities.getSelf();
+      const result = await borg.dream({ dryRun: true, processes: [] });
+      return {
+        beforeDryRun,
+        afterDryRun: borg.entities.getSelf(),
+        entityCount: borg.entities.list().length,
+        changes: result.changes,
+      };
+    });
+    await pool.evict("alpha");
+    const secondId = await pool.withTenant("alpha", (borg) => borg.entities.getSelf()?.id);
+
+    expect(first.beforeDryRun).toBeDefined();
+    expect(first.afterDryRun?.id).toBe(first.beforeDryRun?.id);
+    expect(first.entityCount).toBe(1);
+    expect(first.changes).toEqual([]);
+    expect(secondId).toBe(first.beforeDryRun?.id);
+    expect(initializerCalls).toBe(2);
+  });
+
+  it("closes a newly opened being before propagating initializer failure", async () => {
+    let closeCalled = false;
+    const { pool } = makePool({
+      initializeBeing: async (_tenantId, borg) => {
+        const close = borg.close.bind(borg);
+        borg.close = async () => {
+          closeCalled = true;
+          await close();
+        };
+        throw new Error("initializer failed");
+      },
+    });
+
+    await expect(pool.withTenant("alpha", () => "unreachable")).rejects.toThrow(
+      "initializer failed",
+    );
+    expect(closeCalled).toBe(true);
+    expect(pool.has("alpha")).toBe(false);
+  });
+
   it("composes shared openOptions tracer with per-tenant tracerFor", async () => {
     const sharedEvents: Array<{ event: TurnTraceEventName; data: TurnTraceData }> = [];
-    const tenantEvents = new Map<string, Array<{ event: TurnTraceEventName; data: TurnTraceData }>>();
+    const tenantEvents = new Map<
+      string,
+      Array<{ event: TurnTraceEventName; data: TurnTraceData }>
+    >();
     const { pool } = makePool({
       openOptions: {
         ...baseOpenOptions(),
@@ -108,12 +186,18 @@ describe("BorgPool", () => {
     await pool.withTenant("beta", (borg) => borg.endSession(betaSession));
 
     expect(sharedEvents.filter((entry) => entry.event === "session.completed")).toHaveLength(2);
-    expect(tenantEvents.get("alpha")?.filter((entry) => entry.event === "session.completed").map((entry) => entry.data.turnId)).toEqual([
-      `session_end:${alphaSession}`,
-    ]);
-    expect(tenantEvents.get("beta")?.filter((entry) => entry.event === "session.completed").map((entry) => entry.data.turnId)).toEqual([
-      `session_end:${betaSession}`,
-    ]);
+    expect(
+      tenantEvents
+        .get("alpha")
+        ?.filter((entry) => entry.event === "session.completed")
+        .map((entry) => entry.data.turnId),
+    ).toEqual([`session_end:${alphaSession}`]);
+    expect(
+      tenantEvents
+        .get("beta")
+        ?.filter((entry) => entry.event === "session.completed")
+        .map((entry) => entry.data.turnId),
+    ).toEqual([`session_end:${betaSession}`]);
   });
 
   it("evict closes the being; reopening preserves persisted data", async () => {
@@ -220,9 +304,7 @@ describe("BorgPool", () => {
       alphaBorg.close = () => Promise.reject(new Error("boom"));
 
       // Opening beta evicts alpha (LRU); alpha.close rejects, beta must still succeed.
-      await expect(
-        pool.withTenant("beta", append("b")),
-      ).resolves.toBeDefined();
+      await expect(pool.withTenant("beta", append("b"))).resolves.toBeDefined();
       expect(pool.has("beta")).toBe(true);
       // alpha's close failed -> its entry is RETAINED (fail-closed: never reopen the
       // same dataDir), not silently dropped. beta succeeding is what matters here.

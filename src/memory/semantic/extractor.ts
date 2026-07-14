@@ -13,10 +13,7 @@ import {
   RELATIONSHIP_LABELS_PROMPT,
 } from "../common/relationship-label-prompts.js";
 import { checkRelationshipClaimGroundingAsync } from "../common/relationship-claim-grounding.js";
-import {
-  relationshipClaimSchema,
-  type RelationshipClaim,
-} from "../common/relationship-claims.js";
+import { relationshipClaimSchema, type RelationshipClaim } from "../common/relationship-claims.js";
 import {
   callStructuredTool,
   isStructuredToolCallError,
@@ -24,7 +21,10 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
+import {
+  GENERIC_SELF_ENTITY_VOICE_ANCHOR,
+  SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
+} from "../../util/self-memory-voice.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError, SemanticError, StorageError } from "../../util/errors.js";
 import { createSemanticNodeId, type EntityId, type StreamEntryId } from "../../util/ids.js";
@@ -163,8 +163,8 @@ function buildPrompt(input: {
   const roster = renderParticipantRoster(input.participantRoster);
   const selfEntityGuidance =
     input.selfEntityId === undefined || input.selfEntityId === null
-      ? null
-      : `Entity ${input.selfEntityId} is yourself; refer to all entities by name, including yourself.`;
+      ? GENERIC_SELF_ENTITY_VOICE_ANCHOR
+      : `Entity ${input.selfEntityId} is yourself; write your own actions, statements, and decisions in first person, and refer to every other entity by name or stable handle.`;
   const knownNodeKindGuidance =
     input.knownNodeKinds.length === 0
       ? "Known semantic node kinds already in graph: none."
@@ -193,7 +193,7 @@ function buildPrompt(input: {
     HEADCOUNT_SET_GROUNDING_PROMPT,
     "When a node label or description asserts a sensitive interpersonal relationship, emit relationship_claims with supporting evidence ids. Do not cite assistant output as relationship evidence. If no accepted evidence grounds the claim, rewrite the node neutrally before emitting it.",
     roster === null ? "Thread roster: none supplied." : roster,
-    ...(selfEntityGuidance === null ? [] : [selfEntityGuidance]),
+    selfEntityGuidance,
     "Keep confidence modest for fresh extractions.",
     "Episodes:",
     ...input.episodes.map((episode) => {

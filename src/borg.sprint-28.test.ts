@@ -12,7 +12,9 @@ import { Borg } from "./borg.js";
 import { DEFAULT_CONFIG } from "./config/index.js";
 import type { EmbeddingClient } from "./embeddings/index.js";
 import { FakeLLMClient, createFakeEmitAnswerResponse } from "./llm/test-support/fake-client.js";
+import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "./tracing/tracer.js";
 import { ManualClock } from "./util/clock.js";
+import { createMaintenanceRunId } from "./util/ids.js";
 
 class ConstantEmbeddingClient implements EmbeddingClient {
   async embed(): Promise<Float32Array> {
@@ -197,6 +199,41 @@ describe("Sprint 28 integration", () => {
       expect(light.status).toBe("ok");
       expect(heavy.cadence).toBe("heavy");
       expect(heavy.status).toBe("skipped_empty");
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("manually optimizes LanceDB even when the automatic scheduler gate is disabled", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-s28-"));
+    tempDirs.push(tempDir);
+    const events: Array<{ event: TurnTraceEventName; data: TurnTraceData }> = [];
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: (event, data) => events.push({ event, data }),
+    };
+    const borg = await Borg.open({
+      config: configWith({
+        dataDir: tempDir,
+        maintenance: { optimizeStorage: false },
+      }),
+      clock: new ManualClock(1_000_000),
+      embeddingDimensions: 4,
+      embeddingClient: new ConstantEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+      tracer,
+    });
+    const runId = createMaintenanceRunId();
+
+    try {
+      const result = await borg.maintenance.optimizeStorage({ runId });
+
+      expect(result.tables.length).toBeGreaterThan(0);
+      expect(events).toContainEqual({
+        event: "storage.optimize.completed",
+        data: expect.objectContaining({ turnId: runId, cadence: "heavy" }),
+      });
     } finally {
       await borg.close();
     }

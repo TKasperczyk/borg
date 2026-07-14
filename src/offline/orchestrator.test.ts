@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import { StreamReader, StreamWriter } from "../stream/index.js";
-import { DEFAULT_SESSION_ID } from "../util/ids.js";
+import { createMaintenanceRunId, DEFAULT_SESSION_ID } from "../util/ids.js";
 
 import { CuratorProcess } from "./curator/index.js";
 import { MaintenanceOrchestrator } from "./orchestrator.js";
@@ -144,14 +144,16 @@ describe("maintenance orchestrator", () => {
       },
     });
 
+    const runId = createMaintenanceRunId();
     const result = await orchestrator.run({
+      runId,
       processes: [process],
       opts: {
         dryRun: false,
       },
     });
 
-    expect(result.run_id).toBeDefined();
+    expect(result.run_id).toBe(runId);
     expect(harness.auditLog.list()[0]?.run_id).toBe(result.run_id);
 
     const reader = new StreamReader({
@@ -166,6 +168,44 @@ describe("maintenance orchestrator", () => {
         run_id: result.run_id,
       }),
     });
+  });
+
+  it("preserves a caller run id through plan, preview, apply, and tracing context", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+    const seenRunIds: string[] = [];
+    const process = {
+      ...fakeProcess("curator"),
+      plan: async (ctx: OfflineContext) => {
+        seenRunIds.push(ctx.runId);
+        return emptyPlan("curator");
+      },
+      apply: async (ctx: OfflineContext) => {
+        seenRunIds.push(ctx.runId);
+        return emptyResult("curator");
+      },
+    } satisfies OfflineProcess;
+    const orchestrator = new MaintenanceOrchestrator({
+      baseContext: baseContextFrom(harness.createContext()),
+      auditLog: harness.auditLog,
+      createStreamWriter: () =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId: DEFAULT_SESSION_ID,
+          clock: harness.clock,
+        }),
+      processRegistry: createProcessRegistry({ curator: process }),
+    });
+    const runId = createMaintenanceRunId();
+
+    const plan = await orchestrator.plan({ runId, processes: [process] });
+    const preview = orchestrator.preview(plan);
+    const applied = await orchestrator.apply(plan);
+
+    expect(plan.run_id).toBe(runId);
+    expect(preview.run_id).toBe(runId);
+    expect(applied.run_id).toBe(runId);
+    expect(seenRunIds).toEqual([runId, runId]);
   });
 
   it("traces process error details on offline_process.completed", async () => {

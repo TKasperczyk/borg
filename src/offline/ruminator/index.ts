@@ -49,6 +49,7 @@ import type {
   OfflineContext,
   OfflineProcess,
   OfflineProcessError,
+  OfflineProcessRunOptions,
   OfflineResult,
 } from "../types.js";
 import { episodeEvidencePromptRow } from "../evidence-labels.js";
@@ -82,23 +83,26 @@ const ruminatorGrowthMarkerResponseSchema = z
 // array) instead of an array, despite the array tool schema + description below.
 // Normalize the tool-call shape at parse time (tool-shape hygiene, not output
 // policing) so a shape slip does not discard an otherwise-valid rumination.
-const tolerantTensionsSchema = z.preprocess((value) => {
-  if (typeof value !== "string") {
-    return value;
-  }
-  const trimmed = value.trim();
-  if (trimmed.startsWith("[")) {
-    try {
-      const parsed = JSON.parse(trimmed) as unknown;
-      if (Array.isArray(parsed)) {
-        return parsed;
-      }
-    } catch {
-      // Not JSON; fall through to the single-element wrap below.
+const tolerantTensionsSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") {
+      return value;
     }
-  }
-  return trimmed.length > 0 ? [trimmed] : [];
-}, z.array(z.string().min(1)));
+    const trimmed = value.trim();
+    if (trimmed.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (Array.isArray(parsed)) {
+          return parsed;
+        }
+      } catch {
+        // Not JSON; fall through to the single-element wrap below.
+      }
+    }
+    return trimmed.length > 0 ? [trimmed] : [];
+  },
+  z.array(z.string().min(1)),
+);
 
 const ruminationResponseToolSchema = z.object({
   outcome: z.enum(["resolved", "still_open"]),
@@ -622,6 +626,7 @@ async function searchResolutionEvidence(
   ctx: OfflineContext,
   question: OpenQuestion,
   maxQuestionsPerRun: number,
+  dryRun: boolean,
 ): Promise<{
   episodes: RetrievedEpisode[];
   expectedCount: number;
@@ -633,6 +638,7 @@ async function searchResolutionEvidence(
       .list({ status: "active" })
       .map((goal) => goal.description),
     includeOpenQuestions: false,
+    recordRetrieval: !dryRun,
   };
   const retrieval = await ctx.retrievalPipeline.recallEpisodesForCognition(question.question, {
     ...baseOptions,
@@ -688,8 +694,9 @@ async function planResolution(
   question: OpenQuestion,
   maxQuestionsPerRun: number,
   allOpenQuestions: readonly OpenQuestion[],
+  dryRun: boolean,
 ): Promise<RuminatorPlan["items"][number] | null> {
-  const retrieval = await searchResolutionEvidence(ctx, question, maxQuestionsPerRun);
+  const retrieval = await searchResolutionEvidence(ctx, question, maxQuestionsPerRun, dryRun);
   const freshEvidence = retrieval.episodes.filter(
     (result) => result.episode.updated_at > question.last_touched,
   );
@@ -819,7 +826,9 @@ async function planResolution(
       previous: question,
       next_unresolved_rumination_ticks: nextUnresolvedRuminationTicks,
       rumination_note: response.reasoning.trim(),
-      tensions: response.tensions.map((tension) => tension.trim()).filter((value) => value.length > 0),
+      tensions: response.tensions
+        .map((tension) => tension.trim())
+        .filter((value) => value.length > 0),
       connected_open_question_ids: response.connected_open_question_ids,
       evidence_episode_ids: citedEvidenceEpisodeIds,
       evidence_stream_entry_ids: [],
@@ -992,10 +1001,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
     });
   }
 
-  async plan(
-    ctx: OfflineContext,
-    opts: { budget?: number; params?: Record<string, unknown> } = {},
-  ) {
+  async plan(ctx: OfflineContext, opts: OfflineProcessRunOptions = {}) {
     const errors: OfflineProcessError[] = [];
     const items: RuminatorPlan["items"] = [];
     const budget = opts.budget ?? ctx.config.offline.ruminator.budget;
@@ -1073,6 +1079,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
               question,
               maxQuestionsPerRun,
               allOpenQuestions,
+              opts.dryRun === true,
             );
 
             if (resolution !== null) {

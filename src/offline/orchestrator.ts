@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks";
 
 import { StreamWriter } from "../stream/index.js";
-import { createMaintenanceRunId } from "../util/ids.js";
+import { createMaintenanceRunId, type MaintenanceRunId } from "../util/ids.js";
 import { BorgError } from "../util/errors.js";
 
 import type { AuditLog } from "./audit-log.js";
@@ -24,6 +24,7 @@ export type MaintenanceOrchestratorOptions = {
 };
 
 export type MaintenanceRunOptions = {
+  runId?: MaintenanceRunId;
   processes: OfflineProcess[];
   afterRun?: (result: OrchestratorResult) => Promise<void>;
   opts?: {
@@ -155,8 +156,10 @@ export class MaintenanceOrchestrator {
     });
   }
 
-  private async planUnlocked(input: MaintenanceRunOptions): Promise<MaintenancePlan> {
-    const runId = createMaintenanceRunId();
+  private async planUnlocked(
+    input: MaintenanceRunOptions,
+    runId: MaintenanceRunId,
+  ): Promise<MaintenancePlan> {
     const streamWriter = this.options.createStreamWriter();
 
     try {
@@ -205,7 +208,8 @@ export class MaintenanceOrchestrator {
 
       return maintenancePlanSchema.parse({
         kind: "borg_maintenance_plan",
-        version: 1,
+        version: 2,
+        run_id: runId,
         created_at: this.options.baseContext.clock.now(),
         processes: plans,
       });
@@ -215,12 +219,13 @@ export class MaintenanceOrchestrator {
   }
 
   async plan(input: MaintenanceRunOptions): Promise<MaintenancePlan> {
-    return this.runExclusive(() => this.planUnlocked(input));
+    return this.runExclusive(() =>
+      this.planUnlocked(input, input.runId ?? createMaintenanceRunId()),
+    );
   }
 
-  preview(rawPlan: MaintenancePlan): OrchestratorResult {
+  private previewWithRunId(rawPlan: MaintenancePlan, runId: MaintenanceRunId): OrchestratorResult {
     const plan = maintenancePlanSchema.parse(rawPlan);
-    const runId = createMaintenanceRunId();
     const results = plan.processes.map((processPlan) => {
       const process = this.options.processRegistry[processPlan.process];
       return process.preview(processPlan);
@@ -229,9 +234,16 @@ export class MaintenanceOrchestrator {
     return this.summarizeResults(runId, results);
   }
 
-  private async applyUnlocked(rawPlan: MaintenancePlan): Promise<OrchestratorResult> {
+  preview(rawPlan: MaintenancePlan): OrchestratorResult {
     const plan = maintenancePlanSchema.parse(rawPlan);
-    const runId = createMaintenanceRunId();
+    return this.previewWithRunId(plan, plan.run_id);
+  }
+
+  private async applyUnlocked(
+    rawPlan: MaintenancePlan,
+    runId: MaintenanceRunId,
+  ): Promise<OrchestratorResult> {
+    const plan = maintenancePlanSchema.parse(rawPlan);
     const streamWriter = this.options.createStreamWriter();
     const results: OfflineResult[] = [];
 
@@ -297,7 +309,8 @@ export class MaintenanceOrchestrator {
   }
 
   async apply(rawPlan: MaintenancePlan): Promise<OrchestratorResult> {
-    return this.runExclusive(() => this.applyUnlocked(rawPlan));
+    const plan = maintenancePlanSchema.parse(rawPlan);
+    return this.runExclusive(() => this.applyUnlocked(plan, plan.run_id));
   }
 
   async runMechanicalMaintenance<T>(operation: () => Promise<T>): Promise<T> {
@@ -306,9 +319,12 @@ export class MaintenanceOrchestrator {
 
   async run(input: MaintenanceRunOptions): Promise<OrchestratorResult> {
     return this.runExclusive(async () => {
-      const plan = await this.planUnlocked(input);
+      const runId = input.runId ?? createMaintenanceRunId();
+      const plan = await this.planUnlocked(input, runId);
       const result =
-        input.opts?.dryRun === true ? this.preview(plan) : await this.applyUnlocked(plan);
+        input.opts?.dryRun === true
+          ? this.previewWithRunId(plan, runId)
+          : await this.applyUnlocked(plan, runId);
       await input.afterRun?.(result);
       return result;
     });

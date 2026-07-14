@@ -26,7 +26,10 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError } from "../../util/errors.js";
 import { createEpisodeId, DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
-import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
+import {
+  GENERIC_SELF_ENTITY_VOICE_ANCHOR,
+  SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
+} from "../../util/self-memory-voice.js";
 import { valueAppearsIn } from "../../util/text-presence.js";
 import { estimatePromptTokens, stringifyPromptContent } from "../../util/token-estimate.js";
 import { normalizeEpisodeAccess } from "./access.js";
@@ -397,7 +400,7 @@ function buildExtractorPrompt(
   });
   const selfEntityGuidance =
     selfEntity === null
-      ? null
+      ? GENERIC_SELF_ENTITY_VOICE_ANCHOR
       : `You are entity ${selfEntity.id} (${selfEntity.canonical_name}); messages with kind "agent_msg" are your own. Write your own actions, statements, and decisions in the first person; refer to every other sender by their name or stable handle.`;
 
   const promptLines = [
@@ -406,7 +409,7 @@ function buildExtractorPrompt(
     "source_stream_ids MUST only reference ids present in the chunk.",
     "Perception context is advisory only; NEVER include perception context entries in source_stream_ids.",
     "Narrative should be 2-5 concise sentences.",
-    ...(selfEntityGuidance === null ? [] : [selfEntityGuidance]),
+    selfEntityGuidance,
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to the narrative body. Keep the title topic-neutral and scannable rather than first-person narration.`,
     "When a source contains multiple substantive threads, the episode narrative should cover each substantive thread, not only the headline topic. Details that merely elaborate one core thread are not separate threads.",
     "A thread is substantive when the user introduces a specific name, place, observation, callback, or concrete detail; trivial filler does not count.",

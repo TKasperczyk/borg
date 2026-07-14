@@ -107,6 +107,48 @@ describe("commitment repository", () => {
     }
   });
 
+  it("ensures one stable self entity while preserving prior names as aliases", () => {
+    const db = openDatabase(":memory:", {
+      migrations: commitmentMigrations,
+    });
+    const entities = new EntityRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+
+    try {
+      const first = entities.ensureSelf("team-agent");
+      expect(first.canonical_name).toBe("team-agent");
+      expect(first.aliases).toEqual(["self"]);
+      expect(entities.resolve("self", { kind: "self" })).toBe(first.id);
+
+      entities.addAlias(first.id, "memory-borg");
+      const renamed = entities.ensureSelf("Team Memory", {
+        provenance: "user_declared",
+      });
+      const repeated = entities.ensureSelf("Team Memory");
+
+      expect(renamed.id).toBe(first.id);
+      expect(repeated.id).toBe(first.id);
+      expect(repeated.aliases).toEqual(["self", "memory-borg", "team-agent"]);
+      expect(repeated.name_provenance).toBe("user_declared");
+
+      const configuredRename = entities.ensureSelf("configured-agent");
+      expect(configuredRename.id).toBe(first.id);
+      expect(configuredRename.canonical_name).toBe("configured-agent");
+      expect(configuredRename.aliases).toEqual([
+        "self",
+        "memory-borg",
+        "team-agent",
+        "Team Memory",
+      ]);
+      expect(configuredRename.name_provenance).toBe("config_default_user");
+      expect(entities.list({ kind: "self" })).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it("filters by audience and supports revoke/supersede", () => {
     const db = openDatabase(":memory:", {
       migrations: composeMigrations(commitmentMigrations, identityMigrations),

@@ -5,10 +5,15 @@ import { createHash } from "node:crypto";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createMemoryHandler, type MemoryHandlerOptions, type MemoryPool } from "./memory-handler.js";
+import {
+  createMemoryHandler,
+  type MemoryHandlerOptions,
+  type MemoryPool,
+} from "./memory-handler.js";
 import { MemoryTraceRegistry } from "./memory-trace.js";
 import type { Borg } from "../borg.js";
 import type { Episode } from "../memory/episodic/index.js";
+import { createMaintenanceRunId } from "../util/ids.js";
 
 const TOKEN = "secret-token";
 
@@ -251,7 +256,323 @@ describe("memory sidecar handler", () => {
     });
     expect(routeProbe.status).toBe(404);
     expect(routeProbe.body).toEqual({ error: "not found" });
+
+    const maintenanceProbe = await requestRaw(
+      base,
+      "/memory/nope/../maintenance?tenant=acme&mode=light&dryRun=0",
+      { method: "POST", token: TOKEN },
+    );
+    expect(maintenanceProbe.status).toBe(404);
+    expect(maintenanceProbe.body).toEqual({ error: "not found" });
     expect(rec.tenants).toEqual([]);
+  });
+
+  it("authenticates and accepts a detached maintenance run from query parameters", async () => {
+    const { pool } = recordingPool();
+    const runId = createMaintenanceRunId();
+    const starts: unknown[] = [];
+    const maintenanceCoordinator = {
+      tryReserve: (input: unknown) => {
+        starts.push(input);
+        return {
+          status: "accepted",
+          runId,
+          completion: new Promise(() => {}),
+        };
+      },
+      startReserved: (tenant: string, startedRunId: string) => {
+        starts.push({ scheduled: [tenant, startedRunId] });
+        return true;
+      },
+      hasReservation: () => true,
+      cancelReservation: () => true,
+      getStatus: () => ({ current: null, last: null }),
+    } as unknown as NonNullable<MemoryHandlerOptions["maintenanceCoordinator"]>;
+    const base = await start(pool, TOKEN, { maintenanceCoordinator });
+
+    const unauthorized = await post(
+      base,
+      "/memory/maintenance?tenant=acme&mode=heavy&dryRun=1",
+      {},
+    );
+    expect(unauthorized.status).toBe(401);
+    expect(starts).toEqual([]);
+
+    const accepted = await post(
+      base,
+      "/memory/maintenance?tenant=acme&mode=heavy&dryRun=1",
+      {},
+      TOKEN,
+    );
+    expect(accepted.status).toBe(202);
+    expect(await accepted.json()).toEqual({ run_id: runId });
+    expect(starts).toEqual([
+      { tenant: "acme", mode: "heavy", dryRun: true },
+      { scheduled: ["acme", runId] },
+    ]);
+  });
+
+  it("holds a synchronous reservation during readiness and rejects a racing POST", async () => {
+    const runId = createMaintenanceRunId();
+    let active = false;
+    let scheduled = false;
+    let readinessStarted!: () => void;
+    const startedReadiness = new Promise<void>((resolve) => {
+      readinessStarted = resolve;
+    });
+    let releaseReadiness!: () => void;
+    const readinessGate = new Promise<void>((resolve) => {
+      releaseReadiness = resolve;
+    });
+    const pool: MemoryPool = {
+      async withTenant(_tenant, fn) {
+        readinessStarted();
+        await readinessGate;
+        return fn({} as Borg);
+      },
+    };
+    const maintenanceCoordinator = {
+      tryReserve: () => {
+        if (active) {
+          return { status: "conflict" as const, runId };
+        }
+        active = true;
+        return { status: "accepted" as const, runId, completion: new Promise(() => {}) };
+      },
+      startReserved: () => {
+        scheduled = true;
+        return true;
+      },
+      hasReservation: () => active,
+      cancelReservation: () => {
+        active = false;
+        return true;
+      },
+      getStatus: () => ({ current: null, last: null }),
+    } as unknown as NonNullable<MemoryHandlerOptions["maintenanceCoordinator"]>;
+    const base = await start(pool, TOKEN, { maintenanceCoordinator });
+    const path = "/memory/maintenance?tenant=acme&mode=light&dryRun=0";
+
+    const firstResponse = post(base, path, {}, TOKEN);
+    await startedReadiness;
+    const racing = await post(base, path, {}, TOKEN);
+
+    expect(racing.status).toBe(409);
+    expect(await racing.json()).toEqual({
+      error: "maintenance already running",
+      run_id: runId,
+    });
+    expect(scheduled).toBe(false);
+
+    releaseReadiness();
+    const accepted = await firstResponse;
+    expect(accepted.status).toBe(202);
+    expect(await accepted.json()).toEqual({ run_id: runId });
+    expect(scheduled).toBe(true);
+  });
+
+  it("clears a reservation and returns 503 when tenant readiness fails", async () => {
+    const runId = createMaintenanceRunId();
+    const cancellations: unknown[] = [];
+    const pool: MemoryPool = {
+      async withTenant() {
+        throw new Error("tenant config is invalid");
+      },
+    };
+    const maintenanceCoordinator = {
+      tryReserve: () => ({
+        status: "accepted" as const,
+        runId,
+        completion: new Promise(() => {}),
+      }),
+      startReserved: () => true,
+      hasReservation: () => true,
+      cancelReservation: (tenant: string, cancelledRunId: string) => {
+        cancellations.push([tenant, cancelledRunId]);
+        return true;
+      },
+      getStatus: () => ({ current: null, last: null }),
+    } as unknown as NonNullable<MemoryHandlerOptions["maintenanceCoordinator"]>;
+    const base = await start(pool, TOKEN, { maintenanceCoordinator });
+
+    const response = await post(
+      base,
+      "/memory/maintenance?tenant=acme&mode=heavy&dryRun=1",
+      {},
+      TOKEN,
+    );
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "maintenance tenant unavailable" });
+    expect(cancellations).toEqual([["acme", runId]]);
+  });
+
+  it("maps maintenance conflicts and disabled configuration to explicit statuses", async () => {
+    const { pool } = recordingPool();
+    const runId = createMaintenanceRunId();
+    let outcome: "conflict" | "disabled" = "conflict";
+    const maintenanceCoordinator = {
+      tryReserve: () =>
+        outcome === "conflict" ? { status: "conflict", runId } : { status: "disabled" },
+      getStatus: () => ({ current: null, last: null }),
+    } as unknown as NonNullable<MemoryHandlerOptions["maintenanceCoordinator"]>;
+    const base = await start(pool, TOKEN, { maintenanceCoordinator });
+    const path = "/memory/maintenance?tenant=acme&mode=light&dryRun=0";
+
+    const conflict = await post(base, path, {}, TOKEN);
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({
+      error: "maintenance already running",
+      run_id: runId,
+    });
+
+    outcome = "disabled";
+    const disabled = await post(base, path, {}, TOKEN);
+    expect(disabled.status).toBe(503);
+    expect(await disabled.json()).toEqual({ error: "maintenance disabled" });
+  });
+
+  it("validates the maintenance query before starting a run", async () => {
+    const { pool } = recordingPool();
+    let starts = 0;
+    const maintenanceCoordinator = {
+      tryReserve: () => {
+        starts += 1;
+        return { status: "disabled" };
+      },
+      getStatus: () => ({ current: null, last: null }),
+    } as unknown as NonNullable<MemoryHandlerOptions["maintenanceCoordinator"]>;
+    const base = await start(pool, TOKEN, { maintenanceCoordinator });
+
+    expect((await post(base, "/memory/maintenance", {}, TOKEN)).status).toBe(400);
+    expect(
+      (await post(base, "/memory/maintenance?tenant=acme&mode=nope&dryRun=0", {}, TOKEN)).status,
+    ).toBe(400);
+    expect(
+      (await post(base, "/memory/maintenance?tenant=acme&mode=light&dryRun=yes", {}, TOKEN)).status,
+    ).toBe(400);
+    expect(
+      (
+        await post(
+          base,
+          "/memory/maintenance?tenant=acme&tenant=other&mode=light&dryRun=0",
+          {},
+          TOKEN,
+        )
+      ).status,
+    ).toBe(400);
+    expect(starts).toBe(0);
+  });
+
+  it("returns coordinator status without opening a pooled being", async () => {
+    const { pool, rec } = recordingPool();
+    const runId = createMaintenanceRunId();
+    const maintenanceCoordinator = {
+      tryReserve: () => ({ status: "disabled" }),
+      getStatus: (tenant: string) => ({
+        current: { tenant, run_id: runId, state: "running" },
+        last: null,
+      }),
+    } as unknown as NonNullable<MemoryHandlerOptions["maintenanceCoordinator"]>;
+    const base = await start(pool, TOKEN, { maintenanceCoordinator });
+
+    const response = await get(base, "/memory/maintenance/status?tenant=acme", TOKEN);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      tenant: "acme",
+      current: { tenant: "acme", run_id: runId, state: "running" },
+      last: null,
+    });
+    expect(rec.tenants).toEqual([]);
+  });
+
+  it("wraps maintenance audit listing and exclusive revert", async () => {
+    const runId = createMaintenanceRunId();
+    const calls: Array<{ tenant: string; exclusive: boolean | undefined }> = [];
+    const auditCalls: unknown[] = [];
+    const borg = {
+      audit: {
+        list: (options: unknown) => {
+          auditCalls.push(["list", options]);
+          return [{ id: 12, run_id: runId }];
+        },
+        revert: (auditId: number, revertedBy: string) => {
+          auditCalls.push(["revert", auditId, revertedBy]);
+          return Promise.resolve({ id: auditId, run_id: runId, reverted_by: revertedBy });
+        },
+      },
+    } as unknown as Borg;
+    const pool: MemoryPool = {
+      async withTenant(tenant, fn, options) {
+        calls.push({ tenant, exclusive: options?.exclusive });
+        return fn(borg);
+      },
+    };
+    const base = await start(pool);
+
+    const listed = await get(base, `/memory/maintenance/audit?tenant=acme&run_id=${runId}`, TOKEN);
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toEqual({
+      ok: true,
+      tenant: "acme",
+      run_id: runId,
+      audit: [{ id: 12, run_id: runId }],
+    });
+
+    const reverted = await post(
+      base,
+      "/memory/maintenance/revert?tenant=acme&audit_id=12",
+      {},
+      TOKEN,
+    );
+    expect(reverted.status).toBe(200);
+    expect(await reverted.json()).toEqual({
+      ok: true,
+      tenant: "acme",
+      audit: { id: 12, run_id: runId, reverted_by: "memory-sidecar" },
+    });
+    expect(auditCalls).toEqual([
+      ["list", { runId }],
+      ["revert", 12, "memory-sidecar"],
+    ]);
+    expect(calls).toEqual([
+      { tenant: "acme", exclusive: undefined },
+      { tenant: "acme", exclusive: true },
+    ]);
+  });
+
+  it("returns 404 for a missing maintenance audit and validates audit queries", async () => {
+    const calls: Array<{ tenant: string; exclusive: boolean | undefined }> = [];
+    const borg = {
+      audit: {
+        list: () => [],
+        revert: () => Promise.resolve(null),
+      },
+    } as unknown as Borg;
+    const pool: MemoryPool = {
+      async withTenant(tenant, fn, options) {
+        calls.push({ tenant, exclusive: options?.exclusive });
+        return fn(borg);
+      },
+    };
+    const base = await start(pool);
+
+    expect(
+      (await get(base, "/memory/maintenance/audit?tenant=acme&run_id=bad", TOKEN)).status,
+    ).toBe(400);
+    expect(
+      (await post(base, "/memory/maintenance/revert?tenant=acme&audit_id=bad", {}, TOKEN)).status,
+    ).toBe(400);
+    const missing = await post(
+      base,
+      "/memory/maintenance/revert?tenant=acme&audit_id=99",
+      {},
+      TOKEN,
+    );
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: "audit record not found" });
+    expect(calls).toEqual([{ tenant: "acme", exclusive: true }]);
   });
 
   it("recalls and maps episodes, routing by tenant, clamping the limit", async () => {

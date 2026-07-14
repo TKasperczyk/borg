@@ -15,9 +15,16 @@ import {
   BorgPool,
   OpenAICompatibleEmbeddingClient,
   OpenAICompatibleLLMClient,
+  loadConfig,
   type OpenAIChatCompletionsClient,
 } from "../src/index.js";
 import { createMemoryHandler } from "../src/sidecar/memory-handler.js";
+import {
+  MemoryMaintenanceCoordinator,
+  memoryMaintenanceConfigFromConfig,
+  memorySelfNameFromEnv,
+} from "../src/sidecar/memory-maintenance.js";
+import { drainMemorySidecar } from "../src/sidecar/memory-sidecar-shutdown.js";
 import {
   MemoryTraceRegistry,
   memoryTraceCapacityFromEnv,
@@ -80,37 +87,52 @@ const traceRegistry = memoryTraceEnabledFromEnv(process.env)
       includePayloads: true,
     })
   : undefined;
+// This root snapshot controls sidecar-wide admission/scheduling only. Do not
+// pass it to BorgPool: each being must load <root>/<tenant>/config.json itself.
+const sidecarConfig = loadConfig({ env: process.env, dataDir: root });
+const selfName = memorySelfNameFromEnv(process.env);
 
 const pool = new BorgPool({
   root,
   maxOpen,
-  openOptions: { embeddingDimensions: embeddingDims, embeddingClient, llmClient },
+  openOptions: {
+    embeddingDimensions: embeddingDims,
+    embeddingClient,
+    llmClient,
+  },
+  initializeBeing: (_tenantId, borg) => {
+    // This is idempotent tenant provisioning performed by the pool lifecycle,
+    // not a dream mutation. It intentionally also runs before a dry-run dream.
+    borg.entities.ensureSelf(selfName, { provenance: "config_default_user" });
+  },
   ...(traceRegistry === undefined
     ? {}
     : {
         tracerFor: (tenantId: string) => traceRegistry.tracerFor(tenantId),
       }),
 });
+const maintenanceCoordinator = new MemoryMaintenanceCoordinator({
+  pool,
+  config: memoryMaintenanceConfigFromConfig(sidecarConfig),
+});
 
 const server = createServer(
   createMemoryHandler({
     pool,
     token,
+    maintenanceCoordinator,
     ...(traceRegistry === undefined ? {} : { traceRegistry }),
   }),
 );
 server.listen(port, host, () => {
-  console.log(`borg memory sidecar listening on ${host}:${port} (root=${root}, maxOpen=${maxOpen})`);
+  console.log(
+    `borg memory sidecar listening on ${host}:${port} (root=${root}, maxOpen=${maxOpen})`,
+  );
 });
 
 let shuttingDown = false;
 function closeServer(): Promise<void> {
   return new Promise((resolve) => server.close(() => resolve()));
-}
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms).unref();
-  });
 }
 
 async function shutdown(signal: string): Promise<void> {
@@ -119,17 +141,32 @@ async function shutdown(signal: string): Promise<void> {
   }
   shuttingDown = true;
   console.log(`memory-sidecar: ${signal} received, draining in-flight requests...`);
-  server.closeIdleConnections();
-  // Stop accepting and let accepted requests finish (their withTenant completes),
-  // bounded by a hard timeout so a wedged connection can't block forever.
-  await Promise.race([closeServer(), delay(shutdownTimeoutMs)]);
-  try {
-    // shutdown() (not closeAll()) is a barrier: it rejects any new withTenant so a
-    // request still in readBody can't open a being that escapes this drain and gets
-    // killed mid-write at process.exit. It drains in-flight ops before closing.
-    await pool.shutdown();
-  } catch (error) {
-    console.error("memory-sidecar: error during pool shutdown", error);
+  const result = await drainMemorySidecar({
+    timeoutMs: shutdownTimeoutMs,
+    beginShutdown: () => maintenanceCoordinator.beginShutdown(),
+    forceFinalizeMaintenance: () => maintenanceCoordinator.forceFinalizeAborted(),
+    onAbandoned: (runIds) => {
+      if (runIds.length > 0) {
+        console.error(
+          `memory-sidecar: abandoned maintenance runs during shutdown: ${runIds.join(", ")}`,
+        );
+      }
+    },
+    closeIdleConnections: () => server.closeIdleConnections(),
+    closeHttp: closeServer,
+    // shutdown() (not closeAll()) is a barrier: it rejects any new withTenant so
+    // accepted requests cannot open a being that escapes the drain.
+    shutdownPool: () => pool.shutdown(),
+  });
+  if (result.http.status === "timed_out") {
+    console.error("memory-sidecar: HTTP drain exceeded the shutdown deadline");
+  } else if (result.http.status === "error") {
+    console.error("memory-sidecar: error during HTTP drain", result.http.error);
+  }
+  if (result.pool.status === "timed_out") {
+    console.error("memory-sidecar: pool shutdown exceeded the shutdown deadline");
+  } else if (result.pool.status === "error") {
+    console.error("memory-sidecar: error during pool shutdown", result.pool.error);
   }
   process.exit(0);
 }

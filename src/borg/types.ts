@@ -87,7 +87,7 @@ import type { LanceDbStore } from "../storage/lancedb/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import type { StreamEntry, StreamEntryIndexRepository, StreamWriter } from "../stream/index.js";
 import type { Clock } from "../util/clock.js";
-import type { EntityId, SessionId } from "../util/ids.js";
+import type { EntityId, MaintenanceRunId, SessionId } from "../util/ids.js";
 
 export type BorgStreamWriterFactory = (sessionId: SessionId) => StreamWriter;
 
@@ -183,6 +183,7 @@ export type BorgOpenOptions = {
 };
 
 export type BorgDreamOptions = {
+  runId?: MaintenanceRunId;
   dryRun?: boolean;
   budget?: number;
   processes?: OfflineProcessName[];

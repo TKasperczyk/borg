@@ -394,6 +394,9 @@ describe("episodic extractor", () => {
     expect(prompt).toContain('"affectiveSignal"');
     expect(prompt).not.toContain('"tool_call"');
     expect(prompt).not.toContain("non-conversational scaffolding");
+    expect(prompt).toContain(
+      "Messages with kind agent_msg are your own; write your own actions, statements, and decisions in first person; refer to every other sender by name or stable handle.",
+    );
     expect(listed[0]?.source_stream_ids).toEqual([user.id, agent.id]);
     expect(listed[0]?.source_stream_ids).not.toContain(perception.id);
   });

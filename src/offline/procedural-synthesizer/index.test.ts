@@ -916,6 +916,55 @@ describe("ProceduralSynthesizerProcess", () => {
     ).toContain("skill_split");
   });
 
+  it("keeps persisted skill and stream state identical during a heavy dry-run split plan", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillSplitResponse({
+          decision: "split",
+          parts: [
+            {
+              applies_when: "TypeScript debugging comparison",
+              approach: "Compare the compiler failure with the last passing TypeScript state.",
+              target_contexts: [TYPESCRIPT_DEBUG_CONTEXT_KEY],
+            },
+            {
+              applies_when: "Roadmap planning comparison",
+              approach: "Compare the roadmap against the current goal list.",
+              target_contexts: [ROADMAP_PLANNING_CONTEXT_KEY],
+            },
+          ],
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({
+        minContextAttemptsForSplit: 3,
+        minDivergenceForSplit: 0.01,
+      }),
+      llmClient: llm,
+    });
+    const { skill } = await addSkillWithContextStats(harness);
+    await harness.streamWriter.append({
+      kind: "internal_event",
+      content: { hook: "procedural_dry_run_baseline" },
+    });
+    const beforeSkill = harness.skillRepository.get(skill.id);
+    const beforeStats = harness.skillRepository.listContextStatsForSkill(skill.id);
+    const beforeStream = new StreamReader({ dataDir: harness.tempDir }).tail(100);
+
+    const result = await createProcess(harness).run(harness.createContext(), { dryRun: true });
+
+    expect(result).toMatchObject({
+      dryRun: true,
+      errors: [],
+      changes: [expect.objectContaining({ action: "skill_split_proposal" })],
+    });
+    expect(harness.skillRepository.get(skill.id)).toEqual(beforeSkill);
+    expect(harness.skillRepository.listContextStatsForSkill(skill.id)).toEqual(beforeStats);
+    expect(new StreamReader({ dataDir: harness.tempDir }).tail(100)).toEqual(beforeStream);
+    expect(harness.reviewQueueRepository.list({ kind: "skill_split" })).toEqual([]);
+  });
+
   it("logs no_split decisions without mutating skills", async () => {
     const llm = new FakeLLMClient({
       responses: [

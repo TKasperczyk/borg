@@ -37,7 +37,10 @@ import {
   type EpisodeId,
 } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
-import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
+import {
+  GENERIC_SELF_ENTITY_VOICE_ANCHOR,
+  SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
+} from "../../util/self-memory-voice.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
@@ -307,7 +310,7 @@ function buildMergePrompt(
 ): string {
   const selfEntityGuidance =
     selfEntity === null
-      ? null
+      ? GENERIC_SELF_ENTITY_VOICE_ANCHOR
       : `I am the self entity ${selfEntity.id}; content grounded in my own agent-authored source messages is self-owned. I use first person only for my own actions, statements, and decisions; I keep every other participant named and world facts in third person.`;
   const previousContext =
     candidate.previousCurrentVersion === null
@@ -331,7 +334,7 @@ function buildMergePrompt(
     "I merge the redundant raw episodes into one grounded consolidation version for my autobiographical memory.",
     `I emit my result by calling the ${MERGE_TOOL_NAME} tool exactly once.`,
     "I preserve facts from all raw inputs. I keep the narrative to 2-5 sentences.",
-    ...(selfEntityGuidance === null ? [] : [selfEntityGuidance]),
+    selfEntityGuidance,
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to the merged narrative. I keep the title topic-neutral and scannable rather than first-person narration.`,
     ...previousContext,
     "New raw evidence:",
