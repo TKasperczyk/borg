@@ -606,8 +606,18 @@ export type BorgEntityResolveOptions = {
   provenance?: NameProvenance;
 };
 
+export type BorgEntityResolveExternalInput = Pick<
+  BorgEntityResolveOptions,
+  "kind" | "provenance"
+> & {
+  source: string;
+  externalId: string;
+  canonicalName: string;
+};
+
 export type BorgEntitiesFacade = {
   resolve(name: string, options?: BorgEntityResolveOptions): EntityId;
+  resolveExternal(input: BorgEntityResolveExternalInput): EntityId;
   get(id: EntityId): EntityRecord | null;
   list(options?: { kind?: EntityKind }): EntityRecord[];
   getCreator(): EntityRecord | null;

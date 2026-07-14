@@ -28,6 +28,7 @@ export const DEFAULT_RECALL_STATE_WARM_SUPPRESSION_TURNS = 2;
 export const DEFAULT_RECALL_STATE_MAX_ACTIVE_HANDLES = 24;
 export const DEFAULT_RECALL_STATE_MAX_NEW_HANDLES_PER_TURN = 6;
 export const DEFAULT_RECALL_STATE_MAX_WARM_EVIDENCE_RENDERED = 4;
+export const DEFAULT_RECALL_STATE_REINFORCEMENT_CAP = 6;
 
 const streamEntryIdSchema = z
   .string()
@@ -141,6 +142,19 @@ export type RecallStateHandle = {
   expiresAfterTurn: number;
   reinforcementCount: number;
 };
+
+export function effectiveRecallStateReinforcementCount(
+  stateHandle: Pick<RecallStateHandle, "lastSeenTurn" | "reinforcementCount">,
+  turn: number,
+): number {
+  const capped = Math.min(
+    DEFAULT_RECALL_STATE_REINFORCEMENT_CAP,
+    Math.max(0, stateHandle.reinforcementCount),
+  );
+  const inactiveTurns = Math.max(0, turn - stateHandle.lastSeenTurn - 1);
+
+  return Math.max(0, capped - inactiveTurns);
+}
 
 export type RecallState = {
   scopeKey: string;

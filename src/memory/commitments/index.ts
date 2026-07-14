@@ -19,6 +19,7 @@ export {
   type EntityEnsureSelfOptions,
   type EntityListOptions,
   type EntityRepositoryOptions,
+  type EntityResolveExternalInput,
   type EntityResolveOptions,
 } from "./repository.js";
 export {

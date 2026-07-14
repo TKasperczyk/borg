@@ -58,6 +58,10 @@ export {
   type ParticipantRosterUncertain,
 } from "./perception/index.js";
 export {
+  resolveEpisodeSourceParticipants,
+  type ResolveEpisodeSourceParticipantsInput,
+} from "./participants.js";
+export {
   clearStopUntilSubstantiveContent,
   reviewStopHardCap,
   setStopUntilSubstantiveContent,

@@ -1,11 +1,13 @@
 import { DEFAULT_ACTIVE_PARTICIPANT_LIMIT } from "../config/index.js";
 import type { EntityRepository } from "../memory/commitments/index.js";
+import { episodeParticipantEntityIds, type Episode } from "../memory/episodic/index.js";
 import type { SocialProfile, SocialRepository } from "../memory/social/index.js";
 import {
   filterActiveStreamEntries,
   isAbortedTurnMarker,
   isQuarantinedUserEntryMarker,
   type StreamEntry,
+  type StreamEntryIndexRepository,
   type StreamReader,
   type StreamReverseScanResult,
 } from "../stream/index.js";
@@ -33,6 +35,12 @@ export type ResolveActiveParticipantsInput = {
   streamEntries: readonly StreamEntry[];
   entityRepository: Pick<EntityRepository, "get">;
   limit?: number;
+};
+
+export type ResolveEpisodeSourceParticipantsInput = {
+  episodes: readonly Pick<Episode, "participants" | "source_stream_ids">[];
+  entryIndex: Pick<StreamEntryIndexRepository, "lookupMany">;
+  entityRepository: Pick<EntityRepository, "get">;
 };
 
 type MutableParticipant = {
@@ -239,6 +247,45 @@ export function resolveActiveParticipants(
     displayName: resolveSpeakerDisplayName(input.entityRepository, participant.entityId),
     role: participant.role,
   }));
+}
+
+export function resolveEpisodeSourceParticipants(
+  input: ResolveEpisodeSourceParticipantsInput,
+): ActiveParticipant[] {
+  const sourceIds = input.episodes.flatMap((episode) => episode.source_stream_ids);
+  const indexedEntries = input.entryIndex.lookupMany(sourceIds);
+  const seen = new Set<EntityId>();
+  const participants: ActiveParticipant[] = [];
+  const senderEntityIds = [
+    ...input.episodes.flatMap((episode) => episodeParticipantEntityIds(episode.participants)),
+    ...sourceIds.flatMap((sourceId) => {
+      const entry = indexedEntries.get(sourceId);
+      const senderEntityId = entry?.kind === "user_msg" ? entry.sender_entity_id : null;
+
+      return senderEntityId === null || senderEntityId === undefined ? [] : [senderEntityId];
+    }),
+  ];
+
+  for (const senderEntityId of senderEntityIds) {
+    if (seen.has(senderEntityId)) {
+      continue;
+    }
+
+    const entity = input.entityRepository.get(senderEntityId);
+
+    if (entity === null) {
+      continue;
+    }
+
+    seen.add(senderEntityId);
+    participants.push({
+      entityId: senderEntityId,
+      displayName: entity.canonical_name,
+      role: "participant",
+    });
+  }
+
+  return participants;
 }
 
 export function resolveParticipantProfiles(

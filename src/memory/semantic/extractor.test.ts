@@ -19,6 +19,7 @@ import {
 } from "../../util/ids.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import type { ParticipantRosterForRendering } from "../common/participant-roster-rendering.js";
+import type { EntityRecord } from "../commitments/index.js";
 import type { RelationshipClaim } from "../common/relationship-claims.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import type { Episode } from "../episodic/types.js";
@@ -118,6 +119,45 @@ function createEpisodeLookup(episodes: readonly Episode[]) {
   };
 }
 
+function identityEntity(
+  id: ReturnType<typeof createEntityId>,
+  canonicalName: string,
+  kind: EntityRecord["kind"],
+  aliases: string[] = [],
+): EntityRecord {
+  return {
+    id,
+    canonical_name: canonicalName,
+    aliases,
+    kind,
+    borg_role: null,
+    name_provenance: "transport_sender",
+    created_at: 1,
+  };
+}
+
+function identityRepository(records: readonly EntityRecord[]) {
+  const byId = new Map(records.map((record) => [record.id, record]));
+
+  return {
+    get: (id: EntityRecord["id"]) => byId.get(id) ?? null,
+  };
+}
+
+function identityRoster(records: readonly EntityRecord[]): ParticipantRosterForRendering {
+  return {
+    participants: records.map((record) => ({
+      entity_id: record.id,
+      display_name: record.canonical_name,
+      known_relationships: [],
+      audience_role: record.kind === "person" ? "speaker" : "active_participant",
+      relationship_source: null,
+    })),
+    non_chat_subjects: [],
+    unknown_or_uncertain: [],
+  };
+}
+
 async function createSemanticRepositories(cleanup: Array<() => Promise<void>>) {
   const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
   const store = new LanceDbStore({
@@ -154,6 +194,46 @@ async function createSemanticRepositories(cleanup: Array<() => Promise<void>>) {
   };
 }
 
+const IDENTITY_GUARD_EPISODE_ID = "ep_aaaaaaaaaaaaaaaa" as Episode["id"];
+
+async function runIdentityGuardExtraction(input: {
+  cleanup: Array<() => Promise<void>>;
+  records: readonly EntityRecord[];
+  selfEntityId: EntityRecord["id"];
+  nodes: unknown[];
+  edges?: unknown[];
+}) {
+  const repositories = await createSemanticRepositories(input.cleanup);
+  const episode = buildEpisode(IDENTITY_GUARD_EPISODE_ID, "Identity attribution episode", {
+    participants: input.records.map((record) => record.canonical_name),
+  });
+  const llm = new FakeLLMClient({
+    responses: [
+      createSemanticToolResponse({
+        nodes: input.nodes,
+        edges: input.edges ?? [],
+      }),
+    ],
+  });
+  const extractor = new SemanticExtractor({
+    ...repositories,
+    episodicRepository: createEpisodeLookup([episode]),
+    embeddingClient: new SemanticEmbeddingClient(),
+    llmClient: llm,
+    model: "qwen3",
+    participantRoster: identityRoster(input.records),
+    selfEntityId: input.selfEntityId,
+    entityRepository: identityRepository(input.records),
+  });
+  const result = await extractor.extractFromEpisodes([episode]);
+
+  return {
+    ...repositories,
+    llm,
+    result,
+  };
+}
+
 describe("semantic extractor", () => {
   const cleanup: Array<() => Promise<void>> = [];
 
@@ -173,6 +253,295 @@ describe("semantic extractor", () => {
     expect(semanticSource).toContain("checkRelationshipClaimGroundingAsync");
     expect(sharedStateSource).toContain("checkRelationshipClaimGrounding");
     expect(semanticSource).toContain("relationship_claims");
+  });
+
+  it("forces repository-anchored human nodes to person kind", async () => {
+    const selfId = createEntityId();
+    const mateuszId = createEntityId();
+    const self = identityEntity(selfId, "team-agent", "self", ["self"]);
+    const mateusz = identityEntity(mateuszId, "Mateusz Rybak", "person");
+    const run = await runIdentityGuardExtraction({
+      cleanup,
+      records: [self, mateusz],
+      selfEntityId: selfId,
+      nodes: [
+        {
+          kind: "agent",
+          label: "Mateusz Rybak",
+          description: "Mateusz Rybak coordinates the release workflow.",
+          domain: "people",
+          aliases: [],
+          observation_metadata: null,
+          relationship_claims: [],
+          identity_entity_id: mateuszId,
+          description_perspective: "third_person",
+          confidence: 0.7,
+          source_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+        },
+      ],
+    });
+
+    await expect(run.nodeRepository.list()).resolves.toEqual([
+      expect.objectContaining({
+        label: "Mateusz Rybak",
+        kind: "person",
+      }),
+    ]);
+    expect(run.result).toMatchObject({ insertedNodes: 1, skippedNodes: 0 });
+    const prompt = String(run.llm.requests[0]?.messages[0]?.content ?? "");
+    expect(prompt).toContain("A person identity anchor must use kind person");
+  });
+
+  it("rejects first-person descriptions on anchored non-self people", async () => {
+    const selfId = createEntityId();
+    const humanId = createEntityId();
+    const run = await runIdentityGuardExtraction({
+      cleanup,
+      records: [
+        identityEntity(selfId, "team-agent", "self", ["self"]),
+        identityEntity(humanId, "Mateusz Rybak", "person"),
+      ],
+      selfEntityId: selfId,
+      nodes: [
+        {
+          kind: "person",
+          label: "Mateusz Rybak",
+          description: "I built the deployment automation and own its outcomes.",
+          domain: "people",
+          aliases: [],
+          observation_metadata: null,
+          relationship_claims: [],
+          identity_entity_id: humanId,
+          description_perspective: "first_person",
+          confidence: 0.7,
+          source_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+        },
+      ],
+    });
+
+    await expect(run.nodeRepository.list()).resolves.toEqual([]);
+    expect(run.result).toMatchObject({ insertedNodes: 0, skippedNodes: 1 });
+  });
+
+  it("rejects first-person person nodes even without an identity anchor", async () => {
+    const selfId = createEntityId();
+    const run = await runIdentityGuardExtraction({
+      cleanup,
+      records: [identityEntity(selfId, "team-agent", "self", ["self"])],
+      selfEntityId: selfId,
+      nodes: [
+        {
+          kind: "person",
+          label: "Unanchored teammate",
+          description: "I designed and shipped the release workflow.",
+          domain: "people",
+          aliases: [],
+          observation_metadata: null,
+          relationship_claims: [],
+          identity_entity_id: null,
+          description_perspective: "first_person",
+          confidence: 0.7,
+          source_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+        },
+      ],
+    });
+
+    await expect(run.nodeRepository.list()).resolves.toEqual([]);
+    expect(run.result).toMatchObject({ insertedNodes: 0, skippedNodes: 1 });
+  });
+
+  it("collapses an unanchored first-person agent node onto canonical self", async () => {
+    const selfId = createEntityId();
+    const run = await runIdentityGuardExtraction({
+      cleanup,
+      records: [identityEntity(selfId, "team-agent", "self", ["self"])],
+      selfEntityId: selfId,
+      nodes: [
+        {
+          kind: "agent",
+          label: "parallel-agent",
+          description: "I coordinate the release workflow.",
+          domain: "people",
+          aliases: [],
+          observation_metadata: null,
+          relationship_claims: [],
+          identity_entity_id: null,
+          description_perspective: "first_person",
+          confidence: 0.7,
+          source_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+        },
+      ],
+    });
+
+    await expect(run.nodeRepository.list()).resolves.toEqual([
+      expect.objectContaining({
+        label: "team-agent",
+        kind: "self",
+        aliases: expect.arrayContaining(["parallel-agent", "self"]),
+      }),
+    ]);
+    expect(run.result).toMatchObject({ insertedNodes: 1, skippedNodes: 0 });
+  });
+
+  it("rejects a name-only identity candidate when two people share that display name", async () => {
+    const selfId = createEntityId();
+    const firstAlexId = createEntityId();
+    const secondAlexId = createEntityId();
+    const run = await runIdentityGuardExtraction({
+      cleanup,
+      records: [
+        identityEntity(selfId, "team-agent", "self", ["self"]),
+        identityEntity(firstAlexId, "Alex Kim", "person"),
+        identityEntity(secondAlexId, "Alex Kim", "person"),
+      ],
+      selfEntityId: selfId,
+      nodes: [
+        {
+          kind: "person",
+          label: "Alex Kim",
+          description: "Alex Kim updated the release plan.",
+          domain: "people",
+          aliases: [],
+          observation_metadata: null,
+          relationship_claims: [],
+          identity_entity_id: null,
+          description_perspective: "third_person",
+          confidence: 0.7,
+          source_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+        },
+      ],
+    });
+
+    await expect(run.nodeRepository.list()).resolves.toEqual([]);
+    expect(run.result).toMatchObject({ insertedNodes: 0, skippedNodes: 1 });
+  });
+
+  it("forbids is_a and instance_of edges from person identities into self", async () => {
+    const selfId = createEntityId();
+    const humanId = createEntityId();
+    const records = [
+      identityEntity(selfId, "team-agent", "self", ["self"]),
+      identityEntity(humanId, "Mateusz Rybak", "person"),
+    ];
+    const run = await runIdentityGuardExtraction({
+      cleanup,
+      records,
+      selfEntityId: selfId,
+      nodes: [
+        {
+          kind: "person",
+          label: "Mateusz Rybak",
+          description: "Mateusz Rybak is a human teammate.",
+          domain: "people",
+          aliases: [],
+          observation_metadata: null,
+          relationship_claims: [],
+          identity_entity_id: humanId,
+          description_perspective: "third_person",
+          confidence: 0.7,
+          source_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+        },
+        {
+          kind: "self",
+          label: "team-agent",
+          description: "I am team-agent.",
+          domain: "people",
+          aliases: [],
+          observation_metadata: null,
+          relationship_claims: [],
+          identity_entity_id: selfId,
+          description_perspective: "first_person",
+          confidence: 0.7,
+          source_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+        },
+      ],
+      edges: [
+        {
+          from_label: "Mateusz Rybak",
+          to_label: "team-agent",
+          relation: "is_a",
+          confidence: 0.7,
+          evidence_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+          valid_from_ts: null,
+          valid_to_ts: null,
+        },
+        {
+          from_label: "Mateusz Rybak",
+          to_label: "team-agent",
+          relation: "instance_of",
+          confidence: 0.7,
+          evidence_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+          valid_from_ts: null,
+          valid_to_ts: null,
+        },
+      ],
+    });
+
+    expect(run.edgeRepository.listEdges()).toEqual([]);
+    expect(run.result).toMatchObject({ insertedEdges: 0, skippedEdges: 2 });
+  });
+
+  it("anchors parallel self labels onto one self node and rejects the resulting self-loop", async () => {
+    const selfId = createEntityId();
+    const run = await runIdentityGuardExtraction({
+      cleanup,
+      records: [identityEntity(selfId, "team-agent", "self", ["self"])],
+      selfEntityId: selfId,
+      nodes: [
+        {
+          kind: "agent",
+          label: "team-agent",
+          description: "I coordinate memory work for the team.",
+          domain: "people",
+          aliases: [],
+          observation_metadata: null,
+          relationship_claims: [],
+          identity_entity_id: selfId,
+          description_perspective: "first_person",
+          confidence: 0.6,
+          source_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+        },
+        {
+          kind: "self",
+          label: "parallel-self",
+          description: "I coordinate memory work and release follow-ups.",
+          domain: "people",
+          aliases: [],
+          observation_metadata: null,
+          relationship_claims: [],
+          identity_entity_id: null,
+          description_perspective: "first_person",
+          confidence: 0.7,
+          source_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+        },
+      ],
+      edges: [
+        {
+          from_label: "team-agent",
+          to_label: "parallel-self",
+          relation: "related_to",
+          confidence: 0.7,
+          evidence_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+          valid_from_ts: null,
+          valid_to_ts: null,
+        },
+      ],
+    });
+
+    const nodes = await run.nodeRepository.list();
+
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]).toMatchObject({
+      label: "team-agent",
+      kind: "self",
+      aliases: expect.arrayContaining(["self"]),
+    });
+    expect(run.edgeRepository.listEdges()).toEqual([]);
+    expect(run.result).toMatchObject({
+      insertedNodes: 1,
+      updatedNodes: 1,
+      skippedEdges: 1,
+    });
   });
 
   it("includes event-vs-state guidance in the extraction prompt", async () => {

@@ -72,6 +72,7 @@ const NAME_PROVENANCE_RANK: Record<NameProvenance, number> = {
   creator_directive: 2,
   config_default_user: 2,
   transport_audience_label: 2,
+  transport_sender: 3,
   user_confirmed: 3,
   user_declared: 4,
 };
@@ -227,6 +228,12 @@ export type EntityAddInput = {
 export type EntityResolveOptions = {
   provenance?: NameProvenance;
   kind?: EntityKind;
+};
+
+export type EntityResolveExternalInput = EntityResolveOptions & {
+  source: string;
+  externalId: string;
+  canonicalName: string;
 };
 
 export type EntityEnsureSelfOptions = {
@@ -438,6 +445,132 @@ export class EntityRepository {
     });
 
     return entity.id;
+  }
+
+  findByExternalId(source: string, externalId: string): EntityId | null {
+    const normalizedSource = source.trim();
+    const normalizedExternalId = externalId.trim();
+
+    if (normalizedSource.length === 0 || normalizedExternalId.length === 0) {
+      return null;
+    }
+
+    const row = this.db
+      .prepare(
+        `
+          SELECT entity_id
+          FROM entity_external_ids
+          WHERE source = ? AND external_id = ?
+        `,
+      )
+      .get(normalizedSource, normalizedExternalId) as { entity_id: string } | undefined;
+
+    return row === undefined ? null : parseEntityId(row.entity_id);
+  }
+
+  resolveExternal(input: EntityResolveExternalInput): EntityId {
+    const source = input.source.trim();
+    const externalId = input.externalId.trim();
+    const canonicalName = input.canonicalName.trim();
+    const provenance = input.provenance ?? "unknown";
+    const kind = input.kind ?? "person";
+
+    if (source.length === 0) {
+      throw new CommitmentError("External entity source is required", {
+        code: "ENTITY_EXTERNAL_SOURCE_REQUIRED",
+      });
+    }
+
+    if (externalId.length === 0) {
+      throw new CommitmentError("External entity id is required", {
+        code: "ENTITY_EXTERNAL_ID_REQUIRED",
+      });
+    }
+
+    if (canonicalName.length === 0) {
+      throw new CommitmentError("Entity name is required", {
+        code: "ENTITY_NAME_REQUIRED",
+      });
+    }
+
+    const resolve = this.db.transaction(() => {
+      const existingId = this.findByExternalId(source, externalId);
+      const nowMs = this.clock.now();
+
+      if (existingId !== null) {
+        const current = this.get(existingId);
+
+        if (current === null) {
+          throw new CommitmentError(`External entity mapping points to missing ${existingId}`, {
+            code: "ENTITY_EXTERNAL_ID_DANGLING",
+          });
+        }
+
+        const nextProvenance = strongerNameProvenance(current.name_provenance, provenance);
+        const canonicalChanged =
+          normalizeName(current.canonical_name) !== normalizeName(canonicalName);
+        const aliases = canonicalChanged
+          ? uniqueStrings([...current.aliases, current.canonical_name]).filter(
+              (alias) => normalizeName(alias) !== normalizeName(canonicalName),
+            )
+          : current.aliases;
+        const next = entityRecordSchema.parse({
+          ...current,
+          canonical_name: canonicalName,
+          aliases,
+          kind,
+          name_provenance: nextProvenance,
+        });
+
+        this.db
+          .prepare(
+            `
+              UPDATE entities
+              SET canonical_name = ?, aliases = ?, kind = ?, name_provenance = ?
+              WHERE id = ?
+            `,
+          )
+          .run(
+            next.canonical_name,
+            serializeJsonValue(next.aliases),
+            next.kind,
+            next.name_provenance,
+            next.id,
+          );
+        this.db
+          .prepare(
+            `
+              UPDATE entity_external_ids
+              SET updated_at = ?
+              WHERE source = ? AND external_id = ?
+            `,
+          )
+          .run(nowMs, source, externalId);
+
+        return next.id;
+      }
+
+      const entity = this.add({
+        canonicalName,
+        kind,
+        provenance,
+        createdAt: nowMs,
+      });
+
+      this.db
+        .prepare(
+          `
+            INSERT INTO entity_external_ids (
+              source, external_id, entity_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+          `,
+        )
+        .run(source, externalId, entity.id, nowMs, nowMs);
+
+      return entity.id;
+    });
+
+    return resolve.immediate();
   }
 
   get(id: EntityId): EntityRecord | null {

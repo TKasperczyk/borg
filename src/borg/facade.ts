@@ -6,6 +6,7 @@ import {
   createUserStreamEntryRelationshipEvidenceTrustValidator,
 } from "../memory/semantic/index.js";
 import { buildParticipantRosterFromRepositories } from "../cognition/perception/index.js";
+import { resolveEpisodeSourceParticipants } from "../cognition/participants.js";
 import {
   PROMPT_BLOCKS,
   getPromptBlockSpec,
@@ -513,6 +514,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     },
     entities: {
       resolve: (...args) => deps.entityRepository.resolve(...args),
+      resolveExternal: (...args) => deps.entityRepository.resolveExternal(...args),
       get: (...args) => deps.entityRepository.get(...args),
       list: (...args) => deps.entityRepository.list(...args),
       getCreator: () => deps.entityRepository.getCreator(),
@@ -664,6 +666,11 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       },
       extract: async (episodes) => {
         const selfEntity = deps.entityRepository.getSelf();
+        const sourceParticipants = resolveEpisodeSourceParticipants({
+          episodes,
+          entryIndex: deps.entryIndex,
+          entityRepository: deps.entityRepository,
+        });
         const extractor = new SemanticExtractor({
           nodeRepository: deps.semanticNodeRepository,
           edgeRepository: deps.semanticEdgeRepository,
@@ -674,20 +681,25 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           semanticReviewService: deps.semanticReviewService,
           reviewEnqueue: (input) => deps.reviewQueueRepository.enqueue(input),
           participantRoster: buildParticipantRosterFromRepositories({
-            activeParticipants:
-              selfEntity === null
+            activeParticipants: [
+              ...(selfEntity === null
                 ? []
                 : [
                     {
                       entityId: selfEntity.id,
                       displayName: selfEntity.canonical_name,
-                      role: "participant",
+                      role: "participant" as const,
                     },
-                  ],
+                  ]),
+              ...sourceParticipants.filter(
+                (participant) => participant.entityId !== selfEntity?.id,
+              ),
+            ],
             entityRepository: deps.entityRepository,
             relationalSlotRepository: deps.relationalSlotRepository,
           }),
           selfEntityId: selfEntity?.id ?? null,
+          entityRepository: deps.entityRepository,
           relationshipEvidenceStreamEntryTrust:
             createUserStreamEntryRelationshipEvidenceTrustValidator({
               entryIndex: deps.entryIndex,

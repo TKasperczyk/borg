@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import { buildParticipantRosterFromRepositories } from "../../cognition/perception/index.js";
+import { resolveEpisodeSourceParticipants } from "../../cognition/participants.js";
 import {
   SemanticExtractor,
   createUserStreamEntryRelationshipEvidenceTrustValidator,
@@ -472,6 +473,11 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
     try {
       const budgeted = await withBudget(this.name, plan.budget, async ({ wrapClient }) => {
         const selfEntity = ctx.entityRepository.getSelf();
+        const sourceParticipants = resolveEpisodeSourceParticipants({
+          episodes,
+          entryIndex: ctx.entryIndex,
+          entityRepository: ctx.entityRepository,
+        });
         const extractor = new SemanticExtractor({
           nodeRepository: ctx.semanticNodeRepository,
           edgeRepository: ctx.semanticEdgeRepository,
@@ -480,20 +486,25 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
           llmClient: wrapClient(ctx.llm.extraction),
           model: ctx.config.anthropic.models.extraction,
           participantRoster: buildParticipantRosterFromRepositories({
-            activeParticipants:
-              selfEntity === null
+            activeParticipants: [
+              ...(selfEntity === null
                 ? []
                 : [
                     {
                       entityId: selfEntity.id,
                       displayName: selfEntity.canonical_name,
-                      role: "participant",
+                      role: "participant" as const,
                     },
-                  ],
+                  ]),
+              ...sourceParticipants.filter(
+                (participant) => participant.entityId !== selfEntity?.id,
+              ),
+            ],
             entityRepository: ctx.entityRepository,
             relationalSlotRepository: ctx.relationalSlotRepository,
           }),
           selfEntityId: selfEntity?.id ?? null,
+          entityRepository: ctx.entityRepository,
           relationshipEvidenceStreamEntryTrust:
             createUserStreamEntryRelationshipEvidenceTrustValidator({
               entryIndex: ctx.entryIndex,

@@ -2,7 +2,7 @@
 // over BorgPool that exposes long-term memory to an external (e.g. Python) service.
 //
 //   POST /memory/remember    { tenant, content, author? }          -> append + extract episode(s)
-//   POST /memory/append-turn { tenant, session, user, assistant }  -> append + async extract
+//   POST /memory/append-turn { tenant, session, user, assistant, sender? } -> append + async extract
 //   POST /memory/recall      { tenant, query, limit? }             -> semantic episodic search
 //   GET  /memory/episodes?tenant=<id>&limit=<n>&cursor=<c> -> list raw episodic bank
 //   GET  /memory/episodes/{id}?tenant=<id>                  -> inspect one raw episode
@@ -69,6 +69,7 @@ const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
 const DEFAULT_MAX_RECALL_LIMIT = 50;
 const DEFAULT_EPISODE_LIST_LIMIT = 20;
 const MAX_EPISODE_LIST_LIMIT = 100;
+const APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE = "team-agent.sender";
 
 class PayloadTooLargeError extends Error {}
 
@@ -121,6 +122,39 @@ function asString(value: unknown): string {
 
 function asContentString(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+type AppendTurnSender = {
+  externalId: string;
+  displayName: string;
+};
+
+function parseAppendTurnSender(
+  value: unknown,
+): { valid: true; sender: AppendTurnSender | null } | { valid: false } {
+  if (value === undefined) {
+    return { valid: true, sender: null };
+  }
+
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { valid: false };
+  }
+
+  const sender = value as Record<string, unknown>;
+  const externalId = asString(sender.external_id);
+  const displayName = asString(sender.display_name);
+
+  if (externalId.length === 0 || displayName.length === 0) {
+    return { valid: false };
+  }
+
+  return {
+    valid: true,
+    sender: {
+      externalId,
+      displayName,
+    },
+  };
 }
 
 function parseRawRequestTarget(rawUrl: string): {
@@ -587,13 +621,34 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           send(res, 400, { error: "missing 'assistant'" });
           return;
         }
+        const parsedSender = parseAppendTurnSender(body.sender);
+        if (!parsedSender.valid) {
+          send(res, 400, {
+            error: "invalid 'sender'; expected non-empty 'external_id' and 'display_name'",
+          });
+          return;
+        }
 
         const session = sessionFromCaller(sessionRaw);
         const entries = await pool.withTenant(
           tenant,
           (borg) => {
+            const senderEntityId =
+              parsedSender.sender === null
+                ? undefined
+                : borg.entities.resolveExternal({
+                    source: APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE,
+                    externalId: parsedSender.sender.externalId,
+                    canonicalName: parsedSender.sender.displayName,
+                    kind: "person",
+                    provenance: "transport_sender",
+                  });
             const inputs: StreamEntryInput[] = [
-              { kind: "user_msg", content: user },
+              {
+                kind: "user_msg",
+                content: user,
+                ...(senderEntityId === undefined ? {} : { sender_entity_id: senderEntityId }),
+              },
               { kind: "agent_msg", content: assistant },
             ];
             return borg.stream.appendMany(inputs, { session });

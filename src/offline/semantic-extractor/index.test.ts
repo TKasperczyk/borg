@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import { episodeParticipantEntityIdTerm } from "../../memory/episodic/index.js";
 import { StreamWriter, type StreamWatermarkRepository } from "../../stream/index.js";
 import {
   createEpisodeFixture,
@@ -223,6 +224,62 @@ describe("semantic extractor process", () => {
         accepted_node_count: 1,
       }),
     });
+  });
+
+  it("keeps equal sender display names distinct by entity id in the semantic roster", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSemanticToolResponse({
+          nodes: [],
+          edges: [],
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(harness.cleanup);
+    harness.entityRepository.resolve("team-agent", {
+      kind: "self",
+      provenance: "assistant_seeded",
+    });
+    const firstAlex = harness.entityRepository.resolveExternal({
+      source: "team-agent.sender",
+      externalId: "platform-alex-1",
+      canonicalName: "Alex Kim",
+      kind: "person",
+      provenance: "transport_sender",
+    });
+    const secondAlex = harness.entityRepository.resolveExternal({
+      source: "team-agent.sender",
+      externalId: "platform-alex-2",
+      canonicalName: "Alex Kim",
+      kind: "person",
+      provenance: "transport_sender",
+    });
+    const episode = createEpisodeFixture({
+      title: "Release planning",
+      narrative: "Two participants named Alex Kim planned the release.",
+      participants: [
+        "Alex Kim",
+        episodeParticipantEntityIdTerm(firstAlex),
+        episodeParticipantEntityIdTerm(secondAlex),
+      ],
+    });
+    await harness.episodicRepository.createEpisode(episode);
+    const process = createProcess(harness);
+    const ctx = harness.createContext();
+    const plan = await process.plan(ctx, {});
+
+    await process.apply(ctx, plan);
+
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(prompt).toContain(`- Alex Kim (id: ${firstAlex}`);
+    expect(prompt).toContain(`- Alex Kim (id: ${secondAlex}`);
+    expect(prompt).toContain(`"${firstAlex}":{"entity_id":"${firstAlex}"`);
+    expect(prompt).toContain(`"${secondAlex}":{"entity_id":"${secondAlex}"`);
+    expect(prompt).toContain(
+      `"participant_entities":[{"entity_id":"${firstAlex}","display_name":"Alex Kim"},{"entity_id":"${secondAlex}","display_name":"Alex Kim"}]`,
+    );
   });
 
   it("repairs one invalid node payload and charges both calls to the process budget", async () => {

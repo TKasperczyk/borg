@@ -896,6 +896,54 @@ describe("commitment repository", () => {
     }
   });
 
+  it("durably resolves distinct external senders without collapsing equal display names", () => {
+    const db = openDatabase(":memory:", {
+      migrations: commitmentMigrations,
+    });
+    const entities = new EntityRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+
+    try {
+      const first = entities.resolveExternal({
+        source: "team-agent.sender",
+        externalId: "platform-user-1",
+        canonicalName: "Alex Kim",
+        kind: "person",
+        provenance: "transport_sender",
+      });
+      const second = entities.resolveExternal({
+        source: "team-agent.sender",
+        externalId: "platform-user-2",
+        canonicalName: "Alex Kim",
+        kind: "person",
+        provenance: "transport_sender",
+      });
+      const renamed = entities.resolveExternal({
+        source: "team-agent.sender",
+        externalId: "platform-user-1",
+        canonicalName: "Alex Nowak",
+        kind: "person",
+        provenance: "transport_sender",
+      });
+
+      expect(first).not.toBe(second);
+      expect(renamed).toBe(first);
+      expect(entities.findByExternalId("team-agent.sender", "platform-user-1")).toBe(first);
+      expect(entities.findByExternalId("team-agent.sender", "platform-user-2")).toBe(second);
+      expect(entities.get(first)).toMatchObject({
+        canonical_name: "Alex Nowak",
+        aliases: ["Alex Kim"],
+        kind: "person",
+        name_provenance: "transport_sender",
+      });
+      expect(entities.list({ kind: "person" })).toHaveLength(2);
+    } finally {
+      db.close();
+    }
+  });
+
   it("materializes expiration and records an identity event", () => {
     const db = openDatabase(":memory:", {
       migrations: composeMigrations(commitmentMigrations, identityMigrations),

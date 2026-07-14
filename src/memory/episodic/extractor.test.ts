@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { type LLMCompleteOptions } from "../../llm/index.js";
@@ -22,6 +22,7 @@ import { selfMigrations } from "../self/migrations.js";
 import { createWorkingMemory, WorkingMemoryStore } from "../working/index.js";
 import { episodicMigrations } from "./migrations.js";
 import { EpisodicExtractor, RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF } from "./extractor.js";
+import { episodeParticipantEntityIdTerm } from "./participant-terms.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "./repository.js";
 
 const EPISODE_TOOL_NAME = "EmitEpisodeCandidates";
@@ -88,6 +89,8 @@ describe("episodic extractor", () => {
   const cleanup: Array<() => Promise<void>> = [];
 
   afterEach(async () => {
+    vi.restoreAllMocks();
+
     while (cleanup.length > 0) {
       await cleanup.pop()?.();
     }
@@ -964,6 +967,223 @@ describe("episodic extractor", () => {
     ).toBeNull();
   });
 
+  it("preserves autonomous OUTCOME and decision protocol lines verbatim in the stored narrative", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const request = await harness.writer.append({
+      kind: "user_msg",
+      content: "Run the ticket triage role for the fresh tenant bank.",
+    });
+    const outcomeLine = "OUTCOME fp=9f341d56b7c44c18 role=ticket-triage tenant=tenant_42";
+    const decisionLine = "decision=create";
+    const autonomousResult = await harness.writer.append({
+      kind: "agent_msg",
+      content: [
+        "Autonomous triage completed and created OPS-194.",
+        outcomeLine,
+        decisionLine,
+        "The next run should deduplicate against these receipts.",
+      ].join("\n"),
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse([
+          {
+            title: "Autonomous ticket triage",
+            narrative: "I completed ticket triage and created OPS-194.\ndecision=create:ticket",
+            source_stream_ids: [request.id, autonomousResult.id],
+            participants: ["team-agent"],
+            tags: ["autonomy", "tickets"],
+            confidence: 0.95,
+            significance: 0.9,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "qwen3",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      clock: harness.clock,
+    });
+
+    await extractor.extractFromStream();
+
+    const episodes = await harness.repo.listAll();
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]?.narrative).toContain(`\n${outcomeLine}\n${decisionLine}`);
+    expect(episodes[0]?.narrative.split(/\r\n|\n|\r/u)).toContain("decision=create:ticket");
+    expect(episodes[0]?.narrative.split(outcomeLine)).toHaveLength(2);
+    expect(
+      episodes[0]?.narrative.split(/\r\n|\n|\r/u).filter((line) => line === decisionLine),
+    ).toHaveLength(1);
+    expect(prompt).toContain("Copy that complete line verbatim");
+  });
+
+  it("uses sender display names in episode rosters and binds self.name per sender", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const alice = harness.entityRepository.resolve("Alice Nowak", {
+      kind: "person",
+      provenance: "transport_sender",
+    });
+    const bob = harness.entityRepository.resolve("Bob Chen", {
+      kind: "person",
+      provenance: "transport_sender",
+    });
+    const aliceMessage = await harness.writer.append({
+      kind: "user_msg",
+      content: "My name is Alice Nowak. Can you open the release checklist?",
+      sender_entity_id: alice,
+    });
+    harness.clock.advance(10);
+    const bobMessage = await harness.writer.append({
+      kind: "user_msg",
+      content: "My name is Bob Chen. Add the rollback drill too.",
+      sender_entity_id: bob,
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse(
+          [
+            {
+              title: "Release checklist planning",
+              narrative:
+                "Alice Nowak asked me to open the release checklist. Bob Chen added the rollback drill.",
+              source_stream_ids: [aliceMessage.id, bobMessage.id],
+              participants: ["team"],
+              tags: ["release"],
+              confidence: 0.9,
+              significance: 0.8,
+            },
+          ],
+          [
+            {
+              subject_entity_id: RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF,
+              slot_key: "self.name",
+              asserted_value: "Alice Nowak",
+              source_stream_entry_ids: [aliceMessage.id],
+              confirmation_kind: "direct",
+            },
+            {
+              subject_entity_id: RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF,
+              slot_key: "self.name",
+              asserted_value: "Bob Chen",
+              source_stream_entry_ids: [bobMessage.id],
+              confirmation_kind: "direct",
+            },
+          ],
+        ),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "qwen3",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      clock: harness.clock,
+    });
+
+    await extractor.extractFromStream();
+
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const episodes = await harness.repo.listAll();
+
+    expect(prompt).toContain(`"sender_display_name":"Alice Nowak"`);
+    expect(prompt).toContain(`"sender_display_name":"Bob Chen"`);
+    expect(prompt).toContain("<sender_participant_roster>");
+    expect(episodes[0]?.participants).toEqual(
+      expect.arrayContaining(["team", "Alice Nowak", "Bob Chen"]),
+    );
+    expect(harness.relationalSlotRepository.findBySubjectAndKey(alice, "self.name")).toMatchObject({
+      subject_entity_id: alice,
+      value: "Alice Nowak",
+    });
+    expect(harness.relationalSlotRepository.findBySubjectAndKey(bob, "self.name")).toMatchObject({
+      subject_entity_id: bob,
+      value: "Bob Chen",
+    });
+    expect(
+      harness.relationalSlotRepository.findBySubjectAndKey(
+        harness.entityRepository.resolve("user"),
+        "self.name",
+      ),
+    ).toBeNull();
+  });
+
+  it("stores entity-id participant terms for senders with the same display name", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const firstAlex = harness.entityRepository.resolveExternal({
+      source: "team-agent.sender",
+      externalId: "platform-alex-1",
+      canonicalName: "Alex Kim",
+      kind: "person",
+      provenance: "transport_sender",
+    });
+    const secondAlex = harness.entityRepository.resolveExternal({
+      source: "team-agent.sender",
+      externalId: "platform-alex-2",
+      canonicalName: "Alex Kim",
+      kind: "person",
+      provenance: "transport_sender",
+    });
+    const firstMessage = await harness.writer.append({
+      kind: "user_msg",
+      content: "Please open the release checklist.",
+      sender_entity_id: firstAlex,
+    });
+    const secondMessage = await harness.writer.append({
+      kind: "user_msg",
+      content: "Please add the rollback drill.",
+      sender_entity_id: secondAlex,
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse([
+          {
+            title: "Release planning",
+            narrative: "The two participants named Alex Kim updated the release plan.",
+            source_stream_ids: [firstMessage.id, secondMessage.id],
+            participants: ["Alex Kim"],
+            tags: ["release"],
+            confidence: 0.9,
+            significance: 0.8,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "qwen3",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      clock: harness.clock,
+    });
+
+    await extractor.extractFromStream();
+
+    const episode = (await harness.repo.listAll())[0];
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(episode?.participants).toEqual([
+      "Alex Kim",
+      episodeParticipantEntityIdTerm(firstAlex),
+      episodeParticipantEntityIdTerm(secondAlex),
+    ]);
+    expect(prompt).toContain(`"entity_id":"${firstAlex}","display_name":"Alex Kim"`);
+    expect(prompt).toContain(`"entity_id":"${secondAlex}","display_name":"Alex Kim"`);
+  });
+
   it("keeps same-key current-sender relational slots separate for group chat senders", async () => {
     const harness = await createRelationalExtractorHarness();
     const group = harness.entityRepository.resolve("Planning Room", {
@@ -1044,6 +1264,60 @@ describe("episodic extractor", () => {
       harness.relationalSlotRepository.findBySubjectAndKey(alice, "partner.name")?.value,
     ).not.toBe("Sara");
     expect(harness.relationalSlotRepository.findBySubjectAndKey(group, "partner.name")).toBeNull();
+  });
+
+  it("rejects a current-sender slot update grounded in multiple senders", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const firstSender = harness.entityRepository.resolve("First sender", { kind: "person" });
+    const secondSender = harness.entityRepository.resolve("Second sender", { kind: "person" });
+    const firstMessage = await harness.writer.append({
+      kind: "user_msg",
+      content: "My name is Alex.",
+      sender_entity_id: firstSender,
+    });
+    const secondMessage = await harness.writer.append({
+      kind: "user_msg",
+      content: "My name is also Alex.",
+      sender_entity_id: secondSender,
+    });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse(
+          [],
+          [
+            {
+              subject_entity_id: RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF,
+              slot_key: "self.name",
+              asserted_value: "Alex",
+              source_stream_entry_ids: [firstMessage.id, secondMessage.id],
+              confirmation_kind: "direct",
+            },
+          ],
+        ),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "qwen3",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      clock: harness.clock,
+    });
+
+    await extractor.extractFromStream();
+
+    expect(harness.relationalSlotRepository.list()).toEqual([]);
+    expect(warning).toHaveBeenCalledWith(
+      "Skipped ambiguous @current_sender relational slot update.",
+      {
+        source_stream_entry_ids: [firstMessage.id, secondMessage.id],
+        sender_entity_ids: [firstSender, secondSender],
+      },
+    );
   });
 
   it("keeps current-sender relational slot subject refs on the default user for self audience", async () => {

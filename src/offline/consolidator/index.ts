@@ -12,6 +12,7 @@ import {
   buildConsolidationCoverageHash,
   consolidationFamilyIdSchema,
   normalizeEpisodeAccess,
+  preserveProtectedEpisodeTokenLines,
   episodeIdSchema,
   episodeKindSchema,
   episodeLineageSchema,
@@ -334,6 +335,7 @@ function buildMergePrompt(
     "I merge the redundant raw episodes into one grounded consolidation version for my autobiographical memory.",
     `I emit my result by calling the ${MERGE_TOOL_NAME} tool exactly once.`,
     "I preserve facts from all raw inputs. I keep the narrative to 2-5 sentences.",
+    "Any complete raw narrative line containing an OUTCOME fp= token or decision= token is an opaque dedup record. I copy that complete line verbatim; I never paraphrase, extend, normalize, or omit it.",
     selfEntityGuidance,
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to the merged narrative. I keep the title topic-neutral and scannable rather than first-person narration.`,
     ...previousContext,
@@ -707,8 +709,12 @@ async function buildMergedEpisode(
     rawEpisodes.flatMap((episode) => (episode.location === null ? [] : [episode.location])),
   );
   const nowMs = ctx.clock.now();
+  const protectedNarrative = preserveProtectedEpisodeTokenLines(
+    merged.narrative,
+    rawEpisodes.map((episode) => episode.narrative),
+  );
   const embedding = await ctx.embeddingClient.embed(
-    `${merged.title}\n${merged.narrative}\n${tags.join(" ")}\n${participants.join(" ")}`,
+    `${merged.title}\n${protectedNarrative}\n${tags.join(" ")}\n${participants.join(" ")}`,
   );
   const access = episodeAccessFromCombinedDisclosureLabel(
     combineMemoryDisclosureLabels(rawEpisodes.map(memoryDisclosureLabelFromEpisodeAccess)),
@@ -719,7 +725,7 @@ async function buildMergedEpisode(
     episode: normalizeEpisodeAccess({
       id: createEpisodeId(),
       title: merged.title.trim(),
-      narrative: merged.narrative.trim(),
+      narrative: protectedNarrative,
       participants,
       location: locationValues.length === 1 ? (locationValues[0] ?? null) : null,
       start_time: startTime,

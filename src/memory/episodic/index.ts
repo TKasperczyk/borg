@@ -19,6 +19,16 @@ export {
   type ExtractFromStreamResult,
 } from "./extractor.js";
 export { computeEpisodeHeat } from "./heat.js";
+export {
+  collectProtectedEpisodeTokenLines,
+  preserveProtectedEpisodeTokenLines,
+} from "./protected-lines.js";
+export {
+  episodeParticipantDisplayNames,
+  episodeParticipantEntityIds,
+  episodeParticipantEntityIdTerm,
+  parseEpisodeParticipantEntityIdTerm,
+} from "./participant-terms.js";
 export { episodicMigrations } from "./migrations.js";
 export {
   EpisodicRepository,

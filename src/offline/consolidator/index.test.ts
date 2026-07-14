@@ -67,16 +67,16 @@ describe("consolidator process", () => {
   });
 
   it("creates a family version, hides covered raws without archiving them, and supports reversal", async () => {
+    const outcomeLine = "OUTCOME fp=consolidation-receipt role=planner tenant=tenant_42";
+    const decisionLine = "decision=create";
+    const uncheckedMergedNarrative = [
+      "The team merged two overlapping planning notes into one grounded summary.",
+      "decision=create:ticket",
+    ].join("\n");
     const llm = new FakeLLMClient({
       responses: [
-        createConsolidationResponse(
-          "Merged planning incident",
-          "The team merged two overlapping planning notes into one grounded summary. The merged episode preserves both source anchors.",
-        ),
-        createConsolidationResponse(
-          "Merged planning incident",
-          "The team merged two overlapping planning notes into one grounded summary. The merged episode preserves both source anchors.",
-        ),
+        createConsolidationResponse("Merged planning incident", uncheckedMergedNarrative),
+        createConsolidationResponse("Merged planning incident", uncheckedMergedNarrative),
       ],
     });
     const harness = await createOfflineTestHarness({
@@ -87,7 +87,7 @@ describe("consolidator process", () => {
     const first = createEpisodeFixture(
       {
         title: "Sprint planning note",
-        narrative: "The team planned the sprint and listed the deploy checklist.",
+        narrative: `The team planned the sprint and listed the deploy checklist.\n${outcomeLine}`,
         tags: ["planning", "deploy"],
         created_at: 10_000,
         updated_at: 10_000,
@@ -97,7 +97,7 @@ describe("consolidator process", () => {
     const second = createEpisodeFixture(
       {
         title: "Sprint planning follow-up",
-        narrative: "The same planning session captured the deploy checklist again.",
+        narrative: `The same planning session captured the deploy checklist again.\n${decisionLine}`,
         tags: ["planning", "deploy"],
         created_at: 20_000,
         updated_at: 20_000,
@@ -147,6 +147,12 @@ describe("consolidator process", () => {
     });
     expect(merged?.lineage.derived_from).toEqual([first.id, second.id]);
     expect(merged?.lineage.supersedes).toEqual([first.id, second.id]);
+    expect(merged?.narrative.split(/\r\n|\n|\r/u)).toEqual([
+      "The team merged two overlapping planning notes into one grounded summary.",
+      "decision=create:ticket",
+      outcomeLine,
+      decisionLine,
+    ]);
     expect(members.map((member) => member.raw_episode_id).sort()).toEqual(
       [first.id, second.id].sort(),
     );
@@ -159,6 +165,9 @@ describe("consolidator process", () => {
 
     const auditEntry = harness.auditLog.list({ process: "consolidator" })[0];
     expect(auditEntry?.action).toBe("consolidate");
+    expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
+      "copy that complete line verbatim",
+    );
 
     await harness.auditLog.revert(auditEntry!.id, "test");
 

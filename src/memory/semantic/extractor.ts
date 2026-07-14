@@ -31,10 +31,13 @@ import { createSemanticNodeId, type EntityId, type StreamEntryId } from "../../u
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { memoryDisclosureLabelFromEpisodeAccess } from "../common/disclosure-label.js";
 import {
+  episodeParticipantDisplayNames,
+  episodeParticipantEntityIds,
   normalizeEpisodeAccess,
   type Episode,
   type EpisodicRepository,
 } from "../episodic/index.js";
+import type { EntityRecord, EntityRepository } from "../commitments/index.js";
 import type {
   RelationshipEvidenceStreamEntryTrustResult,
   RelationshipEvidenceStreamEntryTrustValidator,
@@ -55,7 +58,7 @@ import {
 const MAX_EXTRACTOR_NODES = 40;
 const MAX_EXTRACTOR_EDGES = 60;
 
-const extractorNodeSchema = z.object({
+const extractorNodeBaseSchema = z.object({
   kind: semanticNodeKindSchema,
   label: z.string().min(1),
   description: z.string().min(1),
@@ -65,6 +68,29 @@ const extractorNodeSchema = z.object({
   relationship_claims: z.array(relationshipClaimSchema).optional().default([]),
   confidence: z.number().min(0).max(1),
   source_episode_ids: z.array(z.string().min(1)).min(1),
+});
+const extractorDescriptionPerspectiveSchema = z.enum([
+  "first_person",
+  "third_person",
+  "impersonal",
+]);
+const extractorNodeSchema = extractorNodeBaseSchema.extend({
+  identity_entity_id: z.string().min(1).nullable().default(null),
+  description_perspective: z
+    .enum(["first_person", "third_person", "impersonal", "unspecified"])
+    .default("unspecified"),
+});
+const extractorNodeToolSchema = extractorNodeBaseSchema.extend({
+  identity_entity_id: z
+    .string()
+    .min(1)
+    .nullable()
+    .describe(
+      "Repository entity id when this node denotes one supplied identity anchor; null otherwise.",
+    ),
+  description_perspective: extractorDescriptionPerspectiveSchema.describe(
+    "Grammatical perspective of the description, used for identity attribution validation.",
+  ),
 });
 
 const extractorEdgeSchema = z.object({
@@ -82,7 +108,7 @@ const extractorResponseSchema = z.object({
   edges: z.array(z.unknown()).max(MAX_EXTRACTOR_EDGES),
 });
 const extractorResponseToolSchema = z.object({
-  nodes: z.array(extractorNodeSchema).max(MAX_EXTRACTOR_NODES),
+  nodes: z.array(extractorNodeToolSchema).max(MAX_EXTRACTOR_NODES),
   edges: z.array(extractorEdgeSchema).max(MAX_EXTRACTOR_EDGES),
 });
 
@@ -92,6 +118,7 @@ type ParsedExtractorEdge = {
   candidate: ExtractorEdge;
   candidateIndex: number;
 };
+type SemanticIdentityAnchor = Pick<EntityRecord, "id" | "canonical_name" | "aliases" | "kind">;
 type SkippedEdgeTraceDetail = {
   candidate_index: number;
   reason: SemanticInsertSkipReason;
@@ -122,6 +149,7 @@ export type SemanticExtractorOptions = {
   reviewEnqueue?: (input: ReviewQueueInsertInput) => unknown;
   participantRoster?: ParticipantRosterForRendering | null;
   selfEntityId?: EntityId | null;
+  entityRepository?: Pick<EntityRepository, "get">;
   relationshipEvidenceStreamEntryTrust?: RelationshipEvidenceStreamEntryTrustValidator;
   clock?: Clock;
   tracer?: TurnTracer;
@@ -149,6 +177,7 @@ type SemanticInsertSkipReason =
   | "schema_invalid"
   | "invalid_ref"
   | "invalid_endpoint"
+  | "identity_guard"
   | "validity_window_conflict"
   | "episode_archived_post_plan"
   | "relationship_claim_ungrounded"
@@ -158,6 +187,7 @@ function buildPrompt(input: {
   episodes: readonly Episode[];
   participantRoster?: ParticipantRosterForRendering | null;
   selfEntityId?: EntityId | null;
+  identityAnchors: readonly SemanticIdentityAnchor[];
   knownNodeKinds: readonly SemanticNodeKind[];
 }): string {
   const roster = renderParticipantRoster(input.participantRoster);
@@ -191,10 +221,30 @@ function buildPrompt(input: {
     RELATIONSHIP_LABELS_PROMPT,
     RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
     HEADCOUNT_SET_GROUNDING_PROMPT,
+    "Identity guards: when a node denotes an entity in identity_anchors_by_entity_id, copy that entity's id into identity_entity_id. Use null only when the node does not denote a supplied identity anchor; never invent an entity id.",
+    'Set description_perspective to "first_person", "third_person", or "impersonal" according to the description you emit.',
+    "A person identity anchor must use kind person and must be described in third person, by name. Never write a non-self person's statements, actions, work, or history as my own.",
+    "Every node that denotes the self must use the single supplied self identity_entity_id and canonical self label. Do not coin parallel self, assistant, agent, or first-person identity nodes.",
+    "Never emit is_a or instance_of from a person identity node into the self identity node.",
     "When a node label or description asserts a sensitive interpersonal relationship, emit relationship_claims with supporting evidence ids. Do not cite assistant output as relationship evidence. If no accepted evidence grounds the claim, rewrite the node neutrally before emitting it.",
     roster === null ? "Thread roster: none supplied." : roster,
     selfEntityGuidance,
     "Keep confidence modest for fresh extractions.",
+    "<identity_anchors_by_entity_id>",
+    JSON.stringify(
+      Object.fromEntries(
+        input.identityAnchors.map((anchor) => [
+          anchor.id,
+          {
+            entity_id: anchor.id,
+            display_name: anchor.canonical_name,
+            aliases: anchor.aliases,
+            kind: anchor.kind,
+          },
+        ]),
+      ),
+    ),
+    "</identity_anchors_by_entity_id>",
     "Episodes:",
     ...input.episodes.map((episode) => {
       const access = normalizeEpisodeAccess(episode);
@@ -204,7 +254,12 @@ function buildPrompt(input: {
         id: episode.id,
         title: episode.title,
         narrative: episode.narrative,
-        participants: episode.participants,
+        participants: episodeParticipantDisplayNames(episode.participants),
+        participant_entities: episodeParticipantEntityIds(episode.participants).map((entityId) => ({
+          entity_id: entityId,
+          display_name:
+            input.identityAnchors.find((anchor) => anchor.id === entityId)?.canonical_name ?? null,
+        })),
         audience_entity_id: access.audience_entity_id,
         origin_audience_entity_ids: access.origin_audience_entity_ids,
         shared: access.shared,
@@ -390,6 +445,109 @@ function relationshipClaimLabelFamilies(claims: readonly RelationshipClaim[]): s
   return [...new Set(claims.map((claim) => claim.label_family))];
 }
 
+function participantRosterEntityIds(
+  roster: ParticipantRosterForRendering | null | undefined,
+): EntityId[] {
+  if (roster === null || roster === undefined) {
+    return [];
+  }
+
+  return [
+    ...roster.participants.map((participant) => participant.entity_id as EntityId),
+    ...roster.non_chat_subjects.map((subject) => subject.entity_id as EntityId),
+    ...roster.unknown_or_uncertain.flatMap((item) =>
+      item.entity_id === null ? [] : [item.entity_id as EntityId],
+    ),
+  ];
+}
+
+function identityAnchorsForExtraction(
+  options: Pick<
+    SemanticExtractorOptions,
+    "entityRepository" | "participantRoster" | "selfEntityId"
+  >,
+): SemanticIdentityAnchor[] {
+  if (options.entityRepository === undefined) {
+    return [];
+  }
+
+  const ids = new Set<EntityId>(participantRosterEntityIds(options.participantRoster));
+
+  if (options.selfEntityId !== null && options.selfEntityId !== undefined) {
+    ids.add(options.selfEntityId);
+  }
+
+  return [...ids].flatMap((entityId) => {
+    const entity = options.entityRepository?.get(entityId);
+
+    return entity === null || entity === undefined
+      ? []
+      : [
+          {
+            id: entity.id,
+            canonical_name: entity.canonical_name,
+            aliases: [...entity.aliases],
+            kind: entity.kind,
+          },
+        ];
+  });
+}
+
+function identityAnchorNames(anchor: SemanticIdentityAnchor): string[] {
+  return [anchor.canonical_name, ...anchor.aliases].map((name) => name.trim());
+}
+
+function identityAnchorForCandidate(
+  candidate: ExtractorNode,
+  anchors: readonly SemanticIdentityAnchor[],
+): {
+  anchor: SemanticIdentityAnchor | null;
+  invalidExplicitRef: boolean;
+  ambiguousKnownLabel: boolean;
+} {
+  const label = candidate.label.trim();
+  const labelMatches = anchors.filter((anchor) =>
+    identityAnchorNames(anchor).some((name) => name === label),
+  );
+  const labelAnchor = labelMatches.length === 1 ? (labelMatches[0] ?? null) : null;
+
+  if (candidate.identity_entity_id !== null) {
+    const anchor = anchors.find((item) => item.id === candidate.identity_entity_id);
+
+    return {
+      anchor: anchor ?? null,
+      invalidExplicitRef:
+        anchor === undefined || (labelAnchor !== null && labelAnchor.id !== anchor.id),
+      ambiguousKnownLabel: false,
+    };
+  }
+
+  const selfAnchors = anchors.filter((anchor) => anchor.kind === "self");
+  const isStructurallySelfReferential =
+    candidate.kind === "self" ||
+    (candidate.kind === "agent" && candidate.description_perspective === "first_person");
+
+  return {
+    anchor:
+      labelAnchor ??
+      (isStructurallySelfReferential && selfAnchors.length === 1 ? (selfAnchors[0] ?? null) : null),
+    invalidExplicitRef: false,
+    ambiguousKnownLabel: labelMatches.length > 1,
+  };
+}
+
+function identityAnchorForNode(
+  node: SemanticNode,
+  anchors: readonly SemanticIdentityAnchor[],
+): SemanticIdentityAnchor | null {
+  const nodeNames = new Set([node.label.trim(), ...node.aliases.map((alias) => alias.trim())]);
+  const matches = anchors.filter((anchor) =>
+    identityAnchorNames(anchor).some((name) => nodeNames.has(name)),
+  );
+
+  return matches.length === 1 ? (matches[0] ?? null) : null;
+}
+
 export class SemanticExtractor {
   private readonly clock: Clock;
   private readonly dedupThreshold: number;
@@ -520,6 +678,7 @@ export class SemanticExtractor {
     candidate: ExtractorNode,
     allowedEpisodeIds: ReadonlySet<string>,
     episodeById: ReadonlyMap<Episode["id"], Episode>,
+    identityAnchors: readonly SemanticIdentityAnchor[],
   ): Promise<{
     status: "inserted" | "updated" | "skipped";
     node?: SemanticNode;
@@ -547,10 +706,53 @@ export class SemanticExtractor {
       };
     }
 
+    const identityResolution = identityAnchorForCandidate(candidate, identityAnchors);
+
+    if (identityResolution.invalidExplicitRef) {
+      return {
+        status: "skipped",
+        reason: "invalid_ref",
+      };
+    }
+
+    if (identityResolution.ambiguousKnownLabel) {
+      return {
+        status: "skipped",
+        reason: "identity_guard",
+      };
+    }
+
+    const identityAnchor = identityResolution.anchor;
+
+    const isFirstPerson = candidate.description_perspective === "first_person";
+    const resolvesToSelf = identityAnchor?.kind === "self";
+    const isPersonCandidate = candidate.kind === "person" || identityAnchor?.kind === "person";
+    const isSelfKindCandidate = candidate.kind === "self" || candidate.kind === "agent";
+
+    if (isFirstPerson && !resolvesToSelf && (isPersonCandidate || isSelfKindCandidate)) {
+      return {
+        status: "skipped",
+        reason: "identity_guard",
+      };
+    }
+
     try {
-      const candidateLabel = candidate.label.trim();
+      const candidateLabel = identityAnchor?.canonical_name ?? candidate.label.trim();
       const candidateDescription = candidate.description.trim();
-      const candidateAliases = mergeAliases(candidate.aliases, []);
+      const candidateAliases = mergeAliases(
+        candidate.aliases,
+        identityAnchor === null
+          ? []
+          : [candidate.label, ...identityAnchor.aliases].filter(
+              (alias) => alias.trim() !== candidateLabel,
+            ),
+      );
+      const candidateKind =
+        identityAnchor?.kind === "person"
+          ? "person"
+          : identityAnchor?.kind === "self"
+            ? "self"
+            : candidate.kind;
       const embedding = await this.options.embeddingClient.embed(
         buildNodeEmbeddingText({
           label: candidateLabel,
@@ -560,8 +762,14 @@ export class SemanticExtractor {
         }),
       );
       const isCompatibleNode = (node: SemanticNode): boolean => {
-        if (node.kind !== candidate.kind) {
+        if (node.kind !== candidateKind) {
           return false;
+        }
+
+        if (identityAnchor !== null) {
+          return (
+            node.label === candidateLabel || node.aliases.some((alias) => alias === candidateLabel)
+          );
         }
 
         if (!observationMetadataAligns(node.observation_metadata, candidate.observation_metadata)) {
@@ -571,7 +779,7 @@ export class SemanticExtractor {
         return cosineSimilarity(node.embedding, embedding) >= this.dedupThreshold;
       };
       const byLabelMatches = await this.options.nodeRepository.findByExactLabelOrAlias(
-        candidate.label,
+        candidateLabel,
         5,
         {
           includeArchived: true,
@@ -604,7 +812,7 @@ export class SemanticExtractor {
       if (existing === undefined) {
         const inserted = await this.options.nodeRepository.insert({
           id: createSemanticNodeId(),
-          kind: candidate.kind,
+          kind: candidateKind,
           label: candidateLabel,
           description: candidateDescription,
           domain: canonicalizeDomain(candidate.domain),
@@ -774,6 +982,7 @@ export class SemanticExtractor {
     }
 
     const knownNodeKinds = this.options.nodeRepository.listDistinctKinds();
+    const identityAnchors = identityAnchorsForExtraction(this.options);
     let parsed: ReturnType<typeof parseResponse>;
 
     try {
@@ -793,6 +1002,7 @@ export class SemanticExtractor {
                   episodes,
                   participantRoster: this.options.participantRoster ?? null,
                   selfEntityId: this.options.selfEntityId ?? null,
+                  identityAnchors,
                   knownNodeKinds,
                 }),
               },
@@ -866,7 +1076,12 @@ export class SemanticExtractor {
 
     try {
       for (const candidate of parsed.nodes) {
-        const outcome = await this.upsertNode(candidate, allowedEpisodeIds, episodeById);
+        const outcome = await this.upsertNode(
+          candidate,
+          allowedEpisodeIds,
+          episodeById,
+          identityAnchors,
+        );
 
         if (outcome.status === "inserted") {
           insertedNodes += 1;
@@ -964,6 +1179,28 @@ export class SemanticExtractor {
           this.traceInsertSkipped({
             kind: "edge",
             reason: "invalid_endpoint",
+          });
+          continue;
+        }
+
+        const fromIdentity = identityAnchorForNode(fromNode, identityAnchors);
+        const toIdentity = identityAnchorForNode(toNode, identityAnchors);
+        const isPersonIntoSelfClassification =
+          (fromIdentity?.kind === "person" || fromNode.kind === "person") &&
+          (toIdentity?.kind === "self" || toNode.kind === "self") &&
+          (candidate.relation === "is_a" || candidate.relation === "instance_of");
+
+        if (isPersonIntoSelfClassification) {
+          skippedEdges += 1;
+          invalidEdgeSkips += 1;
+          skipReasons.add("identity_guard");
+          pushSkippedEdgeTraceDetail(
+            skippedEdgeDetails,
+            skippedEdgeTraceDetailFromCandidate(candidateIndex, "identity_guard", candidate),
+          );
+          this.traceInsertSkipped({
+            kind: "edge",
+            reason: "identity_guard",
           });
           continue;
         }

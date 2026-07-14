@@ -33,6 +33,8 @@ import {
 import { valueAppearsIn } from "../../util/text-presence.js";
 import { estimatePromptTokens, stringifyPromptContent } from "../../util/token-estimate.js";
 import { normalizeEpisodeAccess } from "./access.js";
+import { episodeParticipantEntityIdTerm } from "./participant-terms.js";
+import { preserveProtectedEpisodeTokenLines } from "./protected-lines.js";
 import { EpisodicRepository } from "./repository.js";
 import { type Episode } from "./types.js";
 import {
@@ -88,6 +90,10 @@ type RelationalSlotSubject = {
 type SelfPromptEntity = {
   id: EntityId;
   canonical_name: string;
+};
+type SenderParticipant = {
+  entity_id: EntityId;
+  display_name: string;
 };
 const EXTRACT_EPISODES_TOOL_NAME = "EmitEpisodeCandidates";
 const EPISODIC_CONTEXT_STREAM_KINDS = [
@@ -380,19 +386,29 @@ function buildExtractorPrompt(
   chunk: readonly StreamEntry[],
   perceptionContextEntries: readonly StreamEntry[],
   relationalSlotSubjects: readonly RelationalSlotSubject[],
+  senderParticipants: readonly SenderParticipant[],
   selfEntity: SelfPromptEntity | null,
 ): string {
-  const lines = chunk.map((entry) =>
-    JSON.stringify({
+  const sendersById = new Map(
+    senderParticipants.map((participant) => [participant.entity_id, participant]),
+  );
+  const lines = chunk.map((entry) => {
+    const sender =
+      entry.sender_entity_id === null || entry.sender_entity_id === undefined
+        ? undefined
+        : sendersById.get(entry.sender_entity_id);
+
+    return JSON.stringify({
       id: entry.id,
       timestamp: entry.timestamp,
       kind: entry.kind,
       sender_entity_id: entry.sender_entity_id ?? undefined,
+      sender_display_name: sender?.display_name,
       content: entry.content,
       audience:
         entry.audience === undefined ? undefined : `(audience routing label) ${entry.audience}`,
-    }),
-  );
+    });
+  });
   const perceptionLines = perceptionContextEntries.flatMap((entry) => {
     const line = perceptionContextLine(entry);
 
@@ -411,6 +427,8 @@ function buildExtractorPrompt(
     "Narrative should be 2-5 concise sentences.",
     selfEntityGuidance,
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to the narrative body. Keep the title topic-neutral and scannable rather than first-person narration.`,
+    "For each user_msg with sender_display_name, attribute that message to the exact display name (for example, ‘Name asked …’), never to a generic user.",
+    "Any complete source line containing an OUTCOME fp= token or decision= token is an opaque dedup record. Copy that complete line verbatim into the episode narrative; never paraphrase, translate, normalize, or omit it.",
     "When a source contains multiple substantive threads, the episode narrative should cover each substantive thread, not only the headline topic. Details that merely elaborate one core thread are not separate threads.",
     "A thread is substantive when the user introduces a specific name, place, observation, callback, or concrete detail; trivial filler does not count.",
     "The narrative may be slightly longer when needed for multi-thread coverage, but prioritize coverage over length.",
@@ -433,6 +451,14 @@ function buildExtractorPrompt(
       "<relational_slot_subjects>",
       ...relationalSlotSubjects.map((subject) => JSON.stringify(subjectForPrompt(subject))),
       "</relational_slot_subjects>",
+    );
+  }
+
+  if (senderParticipants.length > 0) {
+    promptLines.push(
+      "<sender_participant_roster>",
+      ...senderParticipants.map((participant) => JSON.stringify(participant)),
+      "</sender_participant_roster>",
     );
   }
 
@@ -574,13 +600,7 @@ function senderForRelationalSlot(
   sourceEntries: readonly StreamEntry[],
   relationalSlotSubjects: readonly RelationalSlotSubject[],
 ): RelationalSlotSubject | null {
-  const senderIds = uniqueStrings(
-    sourceEntries.flatMap((entry) =>
-      entry.sender_entity_id === null || entry.sender_entity_id === undefined
-        ? []
-        : [entry.sender_entity_id],
-    ),
-  );
+  const senderIds = senderEntityIdsForRelationalSlot(sourceEntries);
 
   if (senderIds.length !== 1) {
     return null;
@@ -593,6 +613,16 @@ function senderForRelationalSlot(
   }
 
   return relationalSlotSubjects.find((subject) => subject.entity_id === senderId) ?? null;
+}
+
+function senderEntityIdsForRelationalSlot(sourceEntries: readonly StreamEntry[]): EntityId[] {
+  return uniqueStrings(
+    sourceEntries.flatMap((entry) =>
+      entry.sender_entity_id === null || entry.sender_entity_id === undefined
+        ? []
+        : [entry.sender_entity_id],
+    ),
+  ) as EntityId[];
 }
 
 function resolveRelationalSlotSubjectEntityId(
@@ -731,7 +761,7 @@ function buildEpisodeFromCandidate(
   return normalizeEpisodeAccess({
     id: createEpisodeId(),
     title: candidate.title.trim(),
-    narrative: candidate.narrative.trim(),
+    narrative: candidate.narrative,
     participants: uniqueStrings(candidate.participants),
     location: candidate.location ?? null,
     start_time: Math.min(...timestamps),
@@ -851,6 +881,33 @@ export class EpisodicExtractor {
     return uniqueRelationalSlotSubjects(subjects);
   }
 
+  private senderParticipantsForEntries(entries: readonly StreamEntry[]): SenderParticipant[] {
+    const participants: SenderParticipant[] = [];
+    const seen = new Set<EntityId>();
+
+    for (const entry of entries) {
+      const senderEntityId = entry.kind === "user_msg" ? entry.sender_entity_id : null;
+
+      if (senderEntityId === null || senderEntityId === undefined || seen.has(senderEntityId)) {
+        continue;
+      }
+
+      const entity = this.options.entityRepository.get(senderEntityId);
+
+      if (entity === null) {
+        continue;
+      }
+
+      seen.add(senderEntityId);
+      participants.push({
+        entity_id: senderEntityId,
+        display_name: entity.canonical_name,
+      });
+    }
+
+    return participants;
+  }
+
   private async processCandidate(
     candidate: ExtractorCandidate,
     chunkById: Map<string, StreamEntry>,
@@ -867,12 +924,30 @@ export class EpisodicExtractor {
       return "skipped";
     }
 
+    const senderParticipants = this.senderParticipantsForEntries(sourceEntries);
+    const protectedCandidate: ExtractorCandidate = {
+      ...candidate,
+      narrative: preserveProtectedEpisodeTokenLines(
+        candidate.narrative,
+        sourceEntries.flatMap((entry) =>
+          typeof entry.content === "string" ? [entry.content] : [],
+        ),
+      ),
+      participants: uniqueStrings([
+        ...candidate.participants,
+        ...senderParticipants.map((participant) => participant.display_name),
+        ...senderParticipants.map((participant) =>
+          episodeParticipantEntityIdTerm(participant.entity_id),
+        ),
+      ]),
+    };
+
     const embedding = await this.options.embeddingClient.embed(
-      `${candidate.title}\n${candidate.narrative}\n${candidate.tags.join(" ")}`,
+      `${protectedCandidate.title}\n${protectedCandidate.narrative}\n${protectedCandidate.tags.join(" ")}`,
     );
     const nowMs = this.clock.now();
     const nextEpisode = buildEpisodeFromCandidate(
-      candidate,
+      protectedCandidate,
       sourceEntries,
       contextEntries,
       access,
@@ -897,6 +972,19 @@ export class EpisodicExtractor {
     }
 
     const sourceEntries = sourceEntriesFromRelationalSlotUpdate(candidate, chunkById);
+
+    if (candidate.subject_entity_id === RELATIONAL_SLOT_CURRENT_SENDER_SUBJECT_REF) {
+      const senderEntityIds = senderEntityIdsForRelationalSlot(sourceEntries);
+
+      if (senderEntityIds.length > 1) {
+        console.warn("Skipped ambiguous @current_sender relational slot update.", {
+          source_stream_entry_ids: candidate.source_stream_entry_ids,
+          sender_entity_ids: senderEntityIds,
+        });
+        return;
+      }
+    }
+
     const subjectEntityId = resolveRelationalSlotSubjectEntityId(
       candidate.subject_entity_id,
       sourceEntries,
@@ -998,6 +1086,7 @@ export class EpisodicExtractor {
         activeContextEntries,
       );
       const relationalSlotSubjects = this.relationalSlotSubjectsForChunk(chunk);
+      const senderParticipants = this.senderParticipantsForEntries(chunk);
       let extracted: ExtractorResponse;
 
       try {
@@ -1014,6 +1103,7 @@ export class EpisodicExtractor {
                     chunk,
                     perceptionContextEntries,
                     relationalSlotSubjects,
+                    senderParticipants,
                     selfEntity,
                   ),
                 },

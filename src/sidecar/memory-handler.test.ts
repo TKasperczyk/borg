@@ -13,7 +13,7 @@ import {
 import { MemoryTraceRegistry } from "./memory-trace.js";
 import type { Borg } from "../borg.js";
 import type { Episode } from "../memory/episodic/index.js";
-import { createMaintenanceRunId } from "../util/ids.js";
+import { createEntityId, createMaintenanceRunId, type EntityId } from "../util/ids.js";
 
 const TOKEN = "secret-token";
 
@@ -39,6 +39,12 @@ type Recorder = {
     inputs: unknown[];
     session?: string;
   };
+  appendManyCalls: Array<{
+    inputs: unknown[];
+    session?: string;
+  }>;
+  resolvedExternalSenders: unknown[];
+  externalSenderIds: Map<string, EntityId>;
   ingestSessions: string[];
 };
 
@@ -78,10 +84,25 @@ function stubBorg(rec: Recorder): Borg {
       append: async (input: { content: string }) => ({ timestamp: 1000, content: input.content }),
       appendMany: async (inputs: unknown[], options?: { session?: string }) => {
         rec.appendMany = { inputs, session: options?.session };
+        rec.appendManyCalls.push(rec.appendMany);
         return inputs.map((input, index) => ({
           id: `strm_${String(index).padStart(16, "a")}`,
           kind: (input as { kind?: string }).kind,
         }));
+      },
+    },
+    entities: {
+      resolveExternal: (input: { source: string; externalId: string }) => {
+        rec.resolvedExternalSenders.push(input);
+        const existing = rec.externalSenderIds.get(input.externalId);
+
+        if (existing !== undefined) {
+          return existing;
+        }
+
+        const entityId = createEntityId();
+        rec.externalSenderIds.set(input.externalId, entityId);
+        return entityId;
       },
     },
     episodic: {
@@ -112,7 +133,15 @@ function stubBorg(rec: Recorder): Borg {
 }
 
 function recordingPool(): { pool: MemoryPool; rec: Recorder } {
-  const rec: Recorder = { tenants: [], exclusives: [], inspectIds: [], ingestSessions: [] };
+  const rec: Recorder = {
+    tenants: [],
+    exclusives: [],
+    inspectIds: [],
+    appendManyCalls: [],
+    resolvedExternalSenders: [],
+    externalSenderIds: new Map(),
+    ingestSessions: [],
+  };
   const pool: MemoryPool = {
     async withTenant(tenantId, fn, opts) {
       rec.tenants.push(tenantId);
@@ -869,6 +898,87 @@ describe("memory sidecar handler", () => {
     expect(rec.tenants).toEqual(["acme", "acme"]);
     expect(rec.exclusives).toEqual([true, undefined]);
     expect(rec.ingestSessions).toEqual([expectedSession]);
+  });
+
+  it("resolves optional sender identities and stamps only their user stream entries", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+
+    for (const sender of [
+      { external_id: "platform-alice", display_name: "Alice Nowak" },
+      { external_id: "platform-bob", display_name: "Bob Chen" },
+    ]) {
+      const response = await post(
+        base,
+        "/memory/append-turn",
+        {
+          tenant: "acme",
+          session: "shared-room",
+          user: `message from ${sender.display_name}`,
+          assistant: "acknowledged",
+          sender,
+        },
+        TOKEN,
+      );
+
+      expect(response.status).toBe(200);
+      await response.json();
+    }
+
+    const aliceId = rec.externalSenderIds.get("platform-alice");
+    const bobId = rec.externalSenderIds.get("platform-bob");
+
+    expect(aliceId).toBeDefined();
+    expect(bobId).toBeDefined();
+    expect(aliceId).not.toBe(bobId);
+    expect(rec.resolvedExternalSenders).toEqual([
+      {
+        source: "team-agent.sender",
+        externalId: "platform-alice",
+        canonicalName: "Alice Nowak",
+        kind: "person",
+        provenance: "transport_sender",
+      },
+      {
+        source: "team-agent.sender",
+        externalId: "platform-bob",
+        canonicalName: "Bob Chen",
+        kind: "person",
+        provenance: "transport_sender",
+      },
+    ]);
+    expect(rec.appendManyCalls).toHaveLength(2);
+    expect(rec.appendManyCalls[0]?.inputs).toEqual([
+      { kind: "user_msg", content: "message from Alice Nowak", sender_entity_id: aliceId },
+      { kind: "agent_msg", content: "acknowledged" },
+    ]);
+    expect(rec.appendManyCalls[1]?.inputs).toEqual([
+      { kind: "user_msg", content: "message from Bob Chen", sender_entity_id: bobId },
+      { kind: "agent_msg", content: "acknowledged" },
+    ]);
+  });
+
+  it("rejects malformed optional sender objects before touching the tenant", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const response = await post(
+      base,
+      "/memory/append-turn",
+      {
+        tenant: "acme",
+        session: "room",
+        user: "hello",
+        assistant: "hi",
+        sender: { external_id: "platform-alice", display_name: "" },
+      },
+      TOKEN,
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "invalid 'sender'; expected non-empty 'external_id' and 'display_name'",
+    });
+    expect(rec.tenants).toEqual([]);
   });
 
   it("does not serialize later append-turn requests behind pending ingestion", async () => {

@@ -82,6 +82,7 @@ const NAME_PROVENANCE_RANK: Record<RelationalSlotNameProvenance, number> = {
   creator_directive: 2,
   config_default_user: 2,
   transport_audience_label: 2,
+  transport_sender: 3,
   user_confirmed: 3,
   user_declared: 4,
 };

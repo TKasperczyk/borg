@@ -38,6 +38,7 @@ export const NAME_PROVENANCES = [
   "user_confirmed",
   "config_default_user",
   "transport_audience_label",
+  "transport_sender",
   "assistant_seeded",
   "creator_directive",
   "unknown",

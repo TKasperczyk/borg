@@ -79,4 +79,23 @@ export const commitmentMigrations = [
       `);
     },
   },
+  {
+    id: 2,
+    name: "entity_external_ids",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE entity_external_ids (
+          source TEXT NOT NULL,
+          external_id TEXT NOT NULL,
+          entity_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (source, external_id),
+          FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE
+        );
+        CREATE INDEX entity_external_ids_entity_idx
+          ON entity_external_ids(entity_id);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

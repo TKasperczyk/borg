@@ -24,7 +24,11 @@ import {
   type SessionId,
 } from "../util/ids.js";
 
-import type { RecallStateHandle } from "./recall-state.js";
+import {
+  DEFAULT_RECALL_STATE_REINFORCEMENT_CAP,
+  effectiveRecallStateReinforcementCount,
+  type RecallStateHandle,
+} from "./recall-state.js";
 import { SELF_RECALL_SCOPE } from "./recall-context.js";
 import { RetrievalPipeline } from "./pipeline.js";
 
@@ -519,7 +523,9 @@ describe("retrieval recall_state", () => {
       (item) => item.provenance?.episodeId === episode.id,
     );
     const state = harness.recallStateRepository.load(sessionId);
-    const handle = state?.activeHandles.find((item) => item.handle.source === "episode");
+    const handle = state?.activeHandles.find(
+      (item) => item.handle.source === "episode" && item.handle.episodeId === episode.id,
+    );
     const key = `episode:${episode.id}`;
 
     expect(duplicateEvidence).toHaveLength(1);
@@ -584,7 +590,7 @@ describe("retrieval recall_state", () => {
     expect(handleAfterWarmRender?.lastSeenTurn).toBe(1);
     expect(handleAfterWarmRender?.lastRenderedTurn).toBe(2);
     expect(handleAfterWarmRender?.expiresAfterTurn).toBe(7);
-    expect(handleAfterWarmRender?.reinforcementCount).toBe(10);
+    expect(handleAfterWarmRender?.reinforcementCount).toBe(DEFAULT_RECALL_STATE_REINFORCEMENT_CAP);
     expect(stateAfterWarmRender?.suppressedHandles[key]).toBe(4);
 
     const third = await harness.retrievalPipeline.searchWithContextForDisclosure(
@@ -615,10 +621,85 @@ describe("retrieval recall_state", () => {
       fifth.evidence.some(
         (item) => item.source === "warm_recall" && item.provenance?.episodeId === episode.id,
       ),
+    ).toBe(false);
+    expect(
+      harness.recallStateRepository
+        .load(sessionId)
+        ?.activeHandles.some(
+          (item) => item.handle.source === "episode" && item.handle.episodeId === episode.id,
+        ),
     ).toBe(true);
   });
 
-  it("preserves reinforced handles under cap pressure from broad fresh evidence", async () => {
+  it("derives idempotent reinforcement decay and uses it for same-turn warm scoring", async () => {
+    harness = await createHarness();
+    const sessionId = testSessionId();
+    const episode = createEpisodeFixture(
+      {
+        title: "Old warm incident",
+        narrative: "This incident should cool after inactive turns.",
+        participants: ["Atlas"],
+        tags: ["Atlas"],
+        significance: 0.1,
+        created_at: 1_000,
+        updated_at: 1_000,
+      },
+      [1, 0, 0, 0],
+    );
+    await harness.episodicRepository.createEpisode(episode);
+    await insertDistractors(harness);
+    const handle = createStateHandle(
+      { source: "episode", episodeId: episode.id },
+      {
+        lastSeenTurn: 1,
+        expiresAfterTurn: 10,
+        reinforcementCount: 6,
+      },
+    );
+
+    expect(
+      [1, 2, 3, 4, 5].map((turn) => effectiveRecallStateReinforcementCount(handle, turn)),
+    ).toEqual([6, 6, 5, 4, 3]);
+
+    seedRecallHandles({
+      harness,
+      scopeKey: sessionId,
+      activeHandles: [handle],
+      lastRefreshTurn: 1,
+      ttlTurns: 10,
+    });
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: harness.embeddingClient,
+      episodicRepository: harness.episodicRepository,
+      recallStateRepository: harness.recallStateRepository,
+      dataDir: harness.tempDir,
+      clock: harness.clock,
+      recallStateWarmSuppressionTurns: 0,
+      recallStateMaxNewHandlesPerTurn: 0,
+    });
+    const warmScores: number[] = [];
+
+    for (let turnCounter = 2; turnCounter <= 5; turnCounter += 1) {
+      const result = await pipeline.searchWithContextForDisclosure("unrelated recall", {
+        sessionId,
+        turnCounter,
+        limit: 1,
+        minSimilarity: 0.99,
+      });
+      const warm = result.evidence.find(
+        (item) => item.source === "warm_recall" && item.provenance?.episodeId === episode.id,
+      );
+
+      warmScores.push(warm?.score ?? -1);
+    }
+
+    expect(warmScores).toEqual([0.3, 0.27, 0.24, 0.21]);
+    expect(
+      harness.recallStateRepository.load(sessionId)?.activeHandles[0]?.reinforcementCount,
+    ).toBe(6);
+  });
+
+  it("admits newly selected evidence under cap pressure from lifetime-reinforced handles", async () => {
     harness = await createHarness();
     const sessionId = testSessionId();
     const reinforcedEpisodeId = createEpisodeId();
@@ -667,6 +748,118 @@ describe("retrieval recall_state", () => {
         (item) => item.handle.source === "episode" && item.handle.episodeId === reinforcedEpisodeId,
       ),
     ).toBe(true);
+    expect(state?.activeHandles.some((item) => item.firstSeenTurn === 2)).toBe(true);
+  });
+
+  it("admits selected episode handles in MMR relevance order", async () => {
+    harness = await createHarness();
+    const sessionId = testSessionId();
+    const episodes = [
+      createEpisodeFixture(
+        {
+          id: "ep_zzzzzzzzzzzzzzzz" as never,
+          title: "Highest relevance",
+          created_at: 30_000,
+          updated_at: 30_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          id: "ep_mmmmmmmmmmmmmmmm" as never,
+          title: "Middle relevance",
+          created_at: 30_000,
+          updated_at: 30_000,
+        },
+        [0.9, 0.435_889_9, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          id: "ep_aaaaaaaaaaaaaaaa" as never,
+          title: "Lowest relevance",
+          created_at: 30_000,
+          updated_at: 30_000,
+        },
+        [0.8, 0.6, 0, 0],
+      ),
+    ];
+
+    for (const episode of episodes) {
+      await harness.episodicRepository.createEpisode(episode);
+    }
+
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: harness.embeddingClient,
+      episodicRepository: harness.episodicRepository,
+      recallStateRepository: harness.recallStateRepository,
+      dataDir: harness.tempDir,
+      clock: harness.clock,
+      mmrLambda: 1,
+      recallStateMaxNewHandlesPerTurn: 2,
+    });
+    const result = await pipeline.searchWithContextForDisclosure("Atlas current", {
+      sessionId,
+      turnCounter: 1,
+      limit: 3,
+    });
+    const admittedIds = episodeHandleIds(
+      harness.recallStateRepository.load(sessionId)?.activeHandles ?? [],
+    );
+
+    expect(result.episodes).toHaveLength(3);
+    expect(admittedIds).toEqual(
+      new Set(result.episodes.slice(0, 2).map((item) => item.episode.id)),
+    );
+    expect(admittedIds.has(episodes[2]!.id)).toBe(false);
+  });
+
+  it("caps production-scale reinforcement across turns and admits newer relevant episodes", async () => {
+    harness = await createHarness();
+    const sessionId = testSessionId();
+    const earlyIds = Array.from({ length: 24 }, () => createEpisodeId());
+    seedRecallHandles({
+      harness,
+      scopeKey: sessionId,
+      activeHandles: earlyIds.map((episodeId) => ({
+        handle: { source: "episode" as const, episodeId },
+        firstSeenTurn: 1,
+        lastSeenTurn: 789,
+        lastRenderedTurn: 789,
+        expiresAfterTurn: 1_789,
+        // Mirrors the audited frozen bank after hundreds of turns.
+        reinforcementCount: 765,
+      })),
+      lastRefreshTurn: 789,
+      ttlTurns: 1_000,
+    });
+    const newerRelevant = await insertMatchingEpisodes({
+      harness,
+      count: 15,
+      prefix: "New relevant incidents",
+    });
+
+    for (let turnCounter = 790; turnCounter < 802; turnCounter += 1) {
+      const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
+        "Atlas current",
+        {
+          sessionId,
+          turnCounter,
+          limit: 15,
+          minSimilarity: 0.99,
+        },
+      );
+
+      expect(result.episodes).toHaveLength(15);
+    }
+
+    const state = harness.recallStateRepository.load(sessionId);
+    const activeEpisodeIds = episodeHandleIds(state?.activeHandles ?? []);
+
+    expect(newerRelevant.every((episode) => activeEpisodeIds.has(episode.id))).toBe(true);
+    expect(earlyIds.filter((episodeId) => activeEpisodeIds.has(episodeId))).toHaveLength(9);
+    expect(
+      Math.max(...(state?.activeHandles.map((handle) => handle.reinforcementCount) ?? [])),
+    ).toBeLessThanOrEqual(DEFAULT_RECALL_STATE_REINFORCEMENT_CAP);
   });
 
   it("bounds brand-new fresh handle admission per turn", async () => {
