@@ -1,12 +1,18 @@
 import type { Borg } from "../borg.js";
 import type { Config } from "../config/index.js";
 import { storageOptimizationErrorCount } from "../offline/storage-optimization.js";
-import type { OfflineProcessName } from "../offline/types.js";
+import type { OfflineProcessError, OfflineProcessName } from "../offline/types.js";
 import type { LanceDbOptimizeStorageResult } from "../storage/lancedb/index.js";
 import { createMaintenanceRunId, type MaintenanceRunId } from "../util/ids.js";
 
 export type MemoryMaintenanceMode = "light" | "heavy";
 export type MemoryMaintenanceSkipReason = "budget" | "shutdown";
+
+export type MemoryMaintenanceErrorDetail = {
+  process?: OfflineProcessName;
+  message: string;
+  code?: string;
+};
 
 export type MemoryMaintenanceProcessReport = {
   name: OfflineProcessName;
@@ -16,6 +22,7 @@ export type MemoryMaintenanceProcessReport = {
   tokens_used: number;
   budget_exhausted: boolean;
   duration_ms: number;
+  error_details: MemoryMaintenanceErrorDetail[];
   skipped?: MemoryMaintenanceSkipReason;
   error?: string;
 };
@@ -26,10 +33,17 @@ export type MemoryMaintenanceStorageReport =
   | {
       status: "completed" | "error";
       errors: number;
+      error_details: MemoryMaintenanceErrorDetail[];
       duration_ms: number;
       result: LanceDbOptimizeStorageResult;
     }
-  | { status: "error"; errors: 1; duration_ms: number; error: string };
+  | {
+      status: "error";
+      errors: 1;
+      error_details: MemoryMaintenanceErrorDetail[];
+      duration_ms: number;
+      error: string;
+    };
 
 export type MemoryMaintenanceRunReport = {
   evt: "memory_maintenance";
@@ -55,11 +69,16 @@ type MemoryMaintenanceStdoutProcess =
       name: OfflineProcessName;
       changes: number;
       errors: number;
+      error_details: MemoryMaintenanceErrorDetail[];
       tokens_used: number;
       budget_exhausted: boolean;
       duration_ms: number;
     }
-  | { name: OfflineProcessName; skipped: MemoryMaintenanceSkipReason };
+  | {
+      name: OfflineProcessName;
+      skipped: MemoryMaintenanceSkipReason;
+      error_details: MemoryMaintenanceErrorDetail[];
+    };
 
 type MemoryMaintenanceStdoutReport = {
   evt: "memory_maintenance";
@@ -71,6 +90,15 @@ type MemoryMaintenanceStdoutReport = {
   storage_optimize: MemoryMaintenanceStorageReport;
   total_duration_ms: number;
   errors_total: number;
+};
+
+type MemoryMaintenanceErrorReport = {
+  evt: "memory_maintenance_error";
+  tenant: string;
+  run_id: MaintenanceRunId;
+  mode: MemoryMaintenanceMode;
+  errors_total: number;
+  error_details: MemoryMaintenanceErrorDetail[];
 };
 
 export type MemoryMaintenanceStatus = {
@@ -133,9 +161,80 @@ export type MemoryMaintenanceCoordinatorOptions = {
 };
 
 const DEFAULT_MAX_LAST_TENANTS = 64;
+const MAX_ERROR_DETAILS = 3;
+const MAX_ERROR_MESSAGE_LENGTH = 300;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (error === null || typeof error !== "object" || !("code" in error)) {
+    return undefined;
+  }
+  return typeof error.code === "string" ? error.code : undefined;
+}
+
+function normalizeErrorDetail(input: {
+  process?: OfflineProcessName;
+  message: string;
+  code?: string;
+}): MemoryMaintenanceErrorDetail {
+  return {
+    ...(input.process === undefined ? {} : { process: input.process }),
+    message: input.message.slice(0, MAX_ERROR_MESSAGE_LENGTH),
+    ...(input.code === undefined ? {} : { code: input.code }),
+  };
+}
+
+function offlineErrorDetails(
+  errors: readonly OfflineProcessError[],
+): MemoryMaintenanceErrorDetail[] {
+  return errors.slice(0, MAX_ERROR_DETAILS).map((error) =>
+    normalizeErrorDetail({
+      process: error.process,
+      message: error.message,
+      ...(error.code === undefined ? {} : { code: error.code }),
+    }),
+  );
+}
+
+function thrownErrorDetail(
+  error: unknown,
+  process?: OfflineProcessName,
+): MemoryMaintenanceErrorDetail {
+  const code = errorCode(error);
+  return normalizeErrorDetail({
+    ...(process === undefined ? {} : { process }),
+    message: errorMessage(error),
+    ...(code === undefined ? {} : { code }),
+  });
+}
+
+function storageErrorDetails(result: LanceDbOptimizeStorageResult): MemoryMaintenanceErrorDetail[] {
+  const details: MemoryMaintenanceErrorDetail[] = [];
+  if (result.error !== undefined) {
+    details.push(
+      normalizeErrorDetail({
+        message: result.error.message,
+        ...(result.error.code === undefined ? {} : { code: result.error.code }),
+      }),
+    );
+  }
+  for (const table of result.tables) {
+    if (details.length >= MAX_ERROR_DETAILS) {
+      break;
+    }
+    if (table.status === "error") {
+      details.push(
+        normalizeErrorDetail({
+          message: table.error.message,
+          ...(table.error.code === undefined ? {} : { code: table.error.code }),
+        }),
+      );
+    }
+  }
+  return details;
 }
 
 function cloneReport(report: MemoryMaintenanceRunReport): MemoryMaintenanceRunReport {
@@ -154,6 +253,7 @@ function skippedProcess(
     tokens_used: 0,
     budget_exhausted: reason === "budget",
     duration_ms: 0,
+    error_details: [],
     skipped: reason,
   };
 }
@@ -171,15 +271,38 @@ function stdoutReport(report: MemoryMaintenanceRunReport): MemoryMaintenanceStdo
             name: process.name,
             changes: process.changes,
             errors: process.errors,
+            error_details: process.error_details,
             tokens_used: process.tokens_used,
             budget_exhausted: process.budget_exhausted,
             duration_ms: process.duration_ms,
           }
-        : { name: process.name, skipped: process.skipped },
+        : {
+            name: process.name,
+            skipped: process.skipped,
+            error_details: process.error_details,
+          },
     ),
     storage_optimize: report.storage_optimize,
     total_duration_ms: report.total_duration_ms,
     errors_total: report.errors_total,
+  };
+}
+
+function errorReport(report: MemoryMaintenanceRunReport): MemoryMaintenanceErrorReport {
+  const storageDetails =
+    report.storage_optimize.status === "completed" || report.storage_optimize.status === "error"
+      ? report.storage_optimize.error_details
+      : [];
+  return {
+    evt: "memory_maintenance_error",
+    tenant: report.tenant,
+    run_id: report.run_id,
+    mode: report.mode,
+    errors_total: report.errors_total,
+    error_details: [
+      ...report.processes.flatMap((process) => process.error_details),
+      ...storageDetails,
+    ].slice(0, MAX_ERROR_DETAILS),
   };
 }
 
@@ -311,6 +434,7 @@ export class MemoryMaintenanceCoordinator {
           tokens_used: 0,
           budget_exhausted: false,
           duration_ms: 0,
+          error_details: [],
         })),
         storage_optimize: input.dryRun
           ? { status: "skipped", reason: "dryRun" }
@@ -357,6 +481,7 @@ export class MemoryMaintenanceCoordinator {
           Object.assign(pending, {
             status: "completed",
             errors: 1,
+            error_details: [thrownErrorDetail(error, pending.name)],
             error: errorMessage(error),
           });
         }
@@ -509,9 +634,11 @@ export class MemoryMaintenanceCoordinator {
         }
         const result = reserved.result;
         const processResult = result.results[0];
+        const reportedErrors = processResult?.errors ?? result.errors;
         process.status = "completed";
         process.changes = processResult?.changes.length ?? result.changes.length;
-        process.errors = processResult?.errors.length ?? result.errors.length;
+        process.errors = reportedErrors.length;
+        process.error_details = offlineErrorDetails(reportedErrors);
         process.tokens_used = processResult?.tokens_used ?? result.tokens_used;
         process.budget_exhausted = processResult?.budget_exhausted ?? false;
         process.duration_ms = Math.max(0, this.now() - (startedAt ?? this.now()));
@@ -531,6 +658,7 @@ export class MemoryMaintenanceCoordinator {
         }
         process.status = "completed";
         process.errors = 1;
+        process.error_details = [thrownErrorDetail(error, process.name)];
         process.error = errorMessage(error);
         process.duration_ms = Math.max(0, this.now() - (startedAt ?? this.now()));
       }
@@ -604,6 +732,7 @@ export class MemoryMaintenanceCoordinator {
         state.report.storage_optimize = {
           status: errors === 0 ? "completed" : "error",
           errors,
+          error_details: storageErrorDetails(result),
           duration_ms: Math.max(0, this.now() - (startedAt ?? this.now())),
           result,
         };
@@ -618,6 +747,7 @@ export class MemoryMaintenanceCoordinator {
         state.report.storage_optimize = {
           status: "error",
           errors: 1,
+          error_details: [thrownErrorDetail(error)],
           duration_ms: Math.max(0, this.now() - (startedAt ?? this.now())),
           error: errorMessage(error),
         };
@@ -696,9 +826,7 @@ export class MemoryMaintenanceCoordinator {
       this.writeReport(JSON.stringify(stdoutReport(finalReport)));
       const errors = finalReport.errors_total;
       if (errors > 0) {
-        this.writeError(
-          `memory-sidecar: maintenance run ${finalReport.run_id} for tenant "${finalReport.tenant}" completed with ${errors} error(s)`,
-        );
+        this.writeError(JSON.stringify(errorReport(finalReport)));
       }
     }
     state.resolveCompletion(finalReport);

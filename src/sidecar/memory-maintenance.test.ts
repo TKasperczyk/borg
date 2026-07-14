@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { Borg } from "../borg.js";
 import type { BorgDreamOptions } from "../borg/types.js";
-import type { OfflineProcessName, OrchestratorResult } from "../offline/types.js";
+import type {
+  OfflineProcessError,
+  OfflineProcessName,
+  OrchestratorResult,
+} from "../offline/types.js";
 import type { MaintenanceRunId } from "../util/ids.js";
 import {
   MemoryMaintenanceCoordinator,
@@ -21,17 +25,25 @@ function deferred<T>() {
 function resultFor(
   runId: MaintenanceRunId,
   process: OfflineProcessName,
-  options: { tokens?: number; changes?: number; errors?: number; budgetExhausted?: boolean } = {},
+  options: {
+    tokens?: number;
+    changes?: number;
+    errors?: number;
+    errorDetails?: OfflineProcessError[];
+    budgetExhausted?: boolean;
+  } = {},
 ): OrchestratorResult {
   const changes = Array.from({ length: options.changes ?? 0 }, (_, index) => ({
     process,
     action: `change-${index}`,
     targets: {},
   }));
-  const errors = Array.from({ length: options.errors ?? 0 }, (_, index) => ({
-    process,
-    message: `error-${index}`,
-  }));
+  const errors =
+    options.errorDetails ??
+    Array.from({ length: options.errors ?? 0 }, (_, index) => ({
+      process,
+      message: `error-${index}`,
+    }));
   const processResult = {
     process,
     dryRun: false,
@@ -188,6 +200,7 @@ describe("memory maintenance coordinator", () => {
     expect(report.processes.map((process) => process.name)).toEqual(["consolidator", "reflector"]);
     expect(report.budget_remaining).toBe(10);
     expect(report.errors_total).toBe(0);
+    expect(report.processes.every((process) => process.error_details.length === 0)).toBe(true);
     expect(report.storage_optimize).toMatchObject({ status: "completed", errors: 0 });
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!)).toEqual({
@@ -200,6 +213,7 @@ describe("memory maintenance coordinator", () => {
         name: process.name,
         changes: process.changes,
         errors: process.errors,
+        error_details: [],
         tokens_used: process.tokens_used,
         budget_exhausted: process.budget_exhausted,
         duration_ms: process.duration_ms,
@@ -412,12 +426,24 @@ describe("memory maintenance coordinator", () => {
     expect(lines).toHaveLength(1);
   });
 
-  it("emits one JSON report and an error log when a process reports errors", async () => {
+  it("surfaces bounded process error details in status, stdout, and the error event", async () => {
     const lines: string[] = [];
-    const errors: string[] = [];
+    const errorLines: string[] = [];
+    const longMessage = "x".repeat(350);
+    const reportedErrors: OfflineProcessError[] = [
+      { process: "consolidator", message: longMessage, code: "E_LONG" },
+      { process: "consolidator", message: "second failure" },
+      { process: "consolidator", message: "third failure", code: "E_THIRD" },
+      { process: "consolidator", message: "fourth failure" },
+    ];
+    const expectedDetails = [
+      { process: "consolidator", message: "x".repeat(300), code: "E_LONG" },
+      { process: "consolidator", message: "second failure" },
+      { process: "consolidator", message: "third failure", code: "E_THIRD" },
+    ];
     const borg = {
       dream: async (options: BorgDreamOptions = {}) =>
-        resultFor(options.runId!, options.processes![0]!, { errors: 2 }),
+        resultFor(options.runId!, options.processes![0]!, { errorDetails: reportedErrors }),
       maintenance: { optimizeStorage: vi.fn() },
     } as unknown as Borg;
     const coordinator = new MemoryMaintenanceCoordinator({
@@ -425,7 +451,7 @@ describe("memory maintenance coordinator", () => {
       config: maintenanceConfig(),
       schedule: (task) => task(),
       writeReport: (line) => lines.push(line),
-      writeError: (message) => errors.push(message),
+      writeError: (message) => errorLines.push(message),
     });
 
     const started = coordinator.tryStart({ tenant: "alpha", mode: "light", dryRun: false });
@@ -435,10 +461,108 @@ describe("memory maintenance coordinator", () => {
     const report = await started.completion;
 
     expect(report.state).toBe("completed_with_errors");
-    expect(report.errors_total).toBe(2);
+    expect(report.errors_total).toBe(4);
+    expect(report.processes[0]).toMatchObject({
+      errors: 4,
+      error_details: expectedDetails,
+    });
+    expect(report.processes[0]!.error_details[0]!.message).toHaveLength(300);
+    expect(coordinator.getStatus("alpha").last?.processes[0]?.error_details).toEqual(
+      expectedDetails,
+    );
     expect(lines).toHaveLength(1);
-    expect(JSON.parse(lines[0]!)).toMatchObject({ run_id: started.runId });
-    expect(errors).toEqual([expect.stringContaining(`maintenance run ${started.runId}`)]);
+    expect(JSON.parse(lines[0]!)).toMatchObject({
+      run_id: started.runId,
+      processes: [{ name: "consolidator", errors: 4, error_details: expectedDetails }],
+    });
+    expect(errorLines).toHaveLength(1);
+    expect(JSON.parse(errorLines[0]!)).toEqual({
+      evt: "memory_maintenance_error",
+      tenant: "alpha",
+      run_id: started.runId,
+      mode: "light",
+      errors_total: 4,
+      error_details: expectedDetails,
+    });
+  });
+
+  it("normalizes a thrown process chunk into the same error details", async () => {
+    const errorLines: string[] = [];
+    const chunkError = Object.assign(new Error("process chunk failed"), {
+      code: "E_PROCESS_CHUNK",
+    });
+    const borg = {
+      dream: async () => {
+        throw chunkError;
+      },
+      maintenance: { optimizeStorage: vi.fn() },
+    } as unknown as Borg;
+    const coordinator = new MemoryMaintenanceCoordinator({
+      pool: { withTenant: async (_tenant, fn) => fn(borg) },
+      config: maintenanceConfig(),
+      schedule: (task) => task(),
+      writeReport: () => {},
+      writeError: (line) => errorLines.push(line),
+    });
+
+    const started = coordinator.tryStart({ tenant: "alpha", mode: "light", dryRun: false });
+    if (started.status !== "accepted") {
+      throw new Error("expected accepted run");
+    }
+    const report = await started.completion;
+    const expectedDetails = [
+      {
+        process: "consolidator",
+        message: "process chunk failed",
+        code: "E_PROCESS_CHUNK",
+      },
+    ];
+
+    expect(report.processes[0]).toMatchObject({ errors: 1, error_details: expectedDetails });
+    expect(JSON.parse(errorLines[0]!)).toMatchObject({ error_details: expectedDetails });
+  });
+
+  it("normalizes a thrown storage chunk into the storage report and error event", async () => {
+    const lines: string[] = [];
+    const errorLines: string[] = [];
+    const storageError = Object.assign(new Error("storage chunk failed"), {
+      code: "E_STORAGE_CHUNK",
+    });
+    const borg = {
+      dream: vi.fn(),
+      maintenance: {
+        optimizeStorage: async () => {
+          throw storageError;
+        },
+      },
+    } as unknown as Borg;
+    const coordinator = new MemoryMaintenanceCoordinator({
+      pool: { withTenant: async (_tenant, fn) => fn(borg) },
+      config: maintenanceConfig({ heavyProcesses: [] }),
+      schedule: (task) => task(),
+      writeReport: (line) => lines.push(line),
+      writeError: (line) => errorLines.push(line),
+    });
+
+    const started = coordinator.tryStart({ tenant: "alpha", mode: "heavy", dryRun: false });
+    if (started.status !== "accepted") {
+      throw new Error("expected accepted run");
+    }
+    const report = await started.completion;
+    const expectedDetails = [{ message: "storage chunk failed", code: "E_STORAGE_CHUNK" }];
+
+    expect(report.storage_optimize).toMatchObject({
+      status: "error",
+      errors: 1,
+      error_details: expectedDetails,
+    });
+    expect(JSON.parse(lines[0]!).storage_optimize).toMatchObject({
+      error_details: expectedDetails,
+    });
+    expect(JSON.parse(errorLines[0]!)).toMatchObject({
+      errors_total: 1,
+      error_details: expectedDetails,
+    });
   });
 
   it("caps completed tenant records at 64", async () => {
