@@ -804,25 +804,24 @@ describe("reflector", () => {
   ])(
     "rejects the whole reflection when executive output is malformed",
     async ({ executiveOutput }) => {
+      const invalidResponse = createRawReflectionResponse({
+        advanced_goals: [],
+        procedural_outcomes: [
+          {
+            attempt_turn_counter: 1,
+            classification: "success",
+            evidence: "The user's follow-up confirmed the approach worked.",
+            grounded: true,
+            skill_actually_applied: true,
+          },
+        ],
+        trait_demonstrations: [],
+        intent_updates: [],
+        ...executiveOutput,
+      });
       const harness = await createOfflineTestHarness({
         llmClient: new FakeLLMClient({
-          responses: [
-            createRawReflectionResponse({
-              advanced_goals: [],
-              procedural_outcomes: [
-                {
-                  attempt_turn_counter: 1,
-                  classification: "success",
-                  evidence: "The user's follow-up confirmed the approach worked.",
-                  grounded: true,
-                  skill_actually_applied: true,
-                },
-              ],
-              trait_demonstrations: [],
-              intent_updates: [],
-              ...executiveOutput,
-            }),
-          ],
+          responses: [invalidResponse, invalidResponse],
         }),
       });
       cleanup.push(harness.cleanup);

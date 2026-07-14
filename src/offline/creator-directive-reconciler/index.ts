@@ -392,10 +392,7 @@ function configuredMaxFamilies(ctx: OfflineContext, opts: OfflineProcessRunOptio
   );
 }
 
-function buildPromptPayload(input: {
-  family: DirectiveFamily;
-  repairInstruction?: string;
-}): string {
+function buildPromptPayload(family: DirectiveFamily): string {
   return JSON.stringify(
     {
       task: "Reconcile one structural family of active non-slotted creator directives.",
@@ -421,9 +418,8 @@ function buildPromptPayload(input: {
         scope_gate:
           "Do not decide whether same_intent records are safe to merge. Audience scope is checked after your tool call.",
       },
-      structural_family_key: input.family.key,
-      directives: input.family.members.map((directive) => directivePromptRow(directive)),
-      repair_instruction: input.repairInstruction,
+      structural_family_key: family.key,
+      directives: family.members.map((directive) => directivePromptRow(directive)),
     },
     null,
     2,
@@ -494,7 +490,6 @@ async function callReconciler(input: {
   ctx: OfflineContext;
   llmClient: LLMClient;
   family: DirectiveFamily;
-  repairInstruction?: string;
 }): Promise<CreatorDirectiveReconciliationJudgment[]> {
   return (
     await callStructuredTool({
@@ -505,10 +500,7 @@ async function callReconciler(input: {
         messages: [
           {
             role: "user",
-            content: buildPromptPayload({
-              family: input.family,
-              repairInstruction: input.repairInstruction,
-            }),
+            content: buildPromptPayload(input.family),
           },
         ],
         tools: [DIRECTIVE_RECONCILIATION_TOOL],
@@ -538,18 +530,7 @@ async function judgeFamily(input: {
       throw error.cause ?? error;
     }
 
-    const parseError = structuredReconciliationError(error);
-
-    try {
-      return await callReconciler({
-        ...input,
-        repairInstruction: `Your previous tool payload was structurally invalid: ${parseErrorMessage(
-          parseError,
-        )}. Emit a corrected ${TOOL_NAME} payload using only directive ids from this family.`,
-      });
-    } catch (repairError) {
-      throw structuredReconciliationError(repairError);
-    }
+    throw structuredReconciliationError(error);
   }
 }
 

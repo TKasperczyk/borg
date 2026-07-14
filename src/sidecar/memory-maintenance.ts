@@ -1,5 +1,10 @@
 import type { Borg } from "../borg.js";
 import type { Config } from "../config/index.js";
+import {
+  formatOfflineProcessErrorMessage,
+  MAX_OFFLINE_ERROR_DETAILS,
+  MAX_OFFLINE_ERROR_MESSAGE_LENGTH,
+} from "../offline/process-errors.js";
 import { storageOptimizationErrorCount } from "../offline/storage-optimization.js";
 import type { OfflineProcessError, OfflineProcessName } from "../offline/types.js";
 import type { LanceDbOptimizeStorageResult } from "../storage/lancedb/index.js";
@@ -161,11 +166,9 @@ export type MemoryMaintenanceCoordinatorOptions = {
 };
 
 const DEFAULT_MAX_LAST_TENANTS = 64;
-const MAX_ERROR_DETAILS = 3;
-const MAX_ERROR_MESSAGE_LENGTH = 300;
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return formatOfflineProcessErrorMessage(error);
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -182,7 +185,7 @@ function normalizeErrorDetail(input: {
 }): MemoryMaintenanceErrorDetail {
   return {
     ...(input.process === undefined ? {} : { process: input.process }),
-    message: input.message.slice(0, MAX_ERROR_MESSAGE_LENGTH),
+    message: input.message.slice(0, MAX_OFFLINE_ERROR_MESSAGE_LENGTH),
     ...(input.code === undefined ? {} : { code: input.code }),
   };
 }
@@ -190,7 +193,7 @@ function normalizeErrorDetail(input: {
 function offlineErrorDetails(
   errors: readonly OfflineProcessError[],
 ): MemoryMaintenanceErrorDetail[] {
-  return errors.slice(0, MAX_ERROR_DETAILS).map((error) =>
+  return errors.slice(0, MAX_OFFLINE_ERROR_DETAILS).map((error) =>
     normalizeErrorDetail({
       process: error.process,
       message: error.message,
@@ -222,7 +225,7 @@ function storageErrorDetails(result: LanceDbOptimizeStorageResult): MemoryMainte
     );
   }
   for (const table of result.tables) {
-    if (details.length >= MAX_ERROR_DETAILS) {
+    if (details.length >= MAX_OFFLINE_ERROR_DETAILS) {
       break;
     }
     if (table.status === "error") {
@@ -302,7 +305,7 @@ function errorReport(report: MemoryMaintenanceRunReport): MemoryMaintenanceError
     error_details: [
       ...report.processes.flatMap((process) => process.error_details),
       ...storageDetails,
-    ].slice(0, MAX_ERROR_DETAILS),
+    ].slice(0, MAX_OFFLINE_ERROR_DETAILS),
   };
 }
 

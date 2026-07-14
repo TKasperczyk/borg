@@ -402,16 +402,15 @@ describe("CreatorDirectiveExtractor", () => {
 
   it("rejects semantic values without semantic slots", async () => {
     const onDegraded = vi.fn();
+    const invalidResponse = creatorDirectiveResponse([
+      candidate({
+        semantic_slot: null,
+        semantic_value: "Vesper",
+        canonical_fact: "Borg's self-chosen name is Claude.",
+      }),
+    ]);
     const llm = new FakeLLMClient({
-      responses: [
-        creatorDirectiveResponse([
-          candidate({
-            semantic_slot: null,
-            semantic_value: "Vesper",
-            canonical_fact: "Borg's self-chosen name is Claude.",
-          }),
-        ]),
-      ],
+      responses: [invalidResponse, invalidResponse],
     });
     const extractor = new CreatorDirectiveExtractor({
       llmClient: llm,

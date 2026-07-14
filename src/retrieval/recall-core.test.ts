@@ -265,6 +265,8 @@ describe("Recall Core", () => {
     expect(tracer.emit).toHaveBeenCalledWith("llm_call.started", {
       turnId: "turn-recall-expansion",
       label: "recall_expansion",
+      attempt: 1,
+      schema_repair: false,
       model: harness.config.anthropic.models.recallExpansion,
       promptCharCount: expect.any(Number),
       toolSchemas: expect.any(Array),
@@ -272,6 +274,8 @@ describe("Recall Core", () => {
     expect(tracer.emit).toHaveBeenCalledWith("llm_call.completed", {
       turnId: "turn-recall-expansion",
       label: "recall_expansion",
+      attempt: 1,
+      schema_repair: false,
       responseShape: {
         textLength: 0,
         toolUseBlocks: [
@@ -444,6 +448,8 @@ describe("Recall Core", () => {
     expect(tracer.emit).toHaveBeenCalledWith("llm_call.completed", {
       turnId: "turn-recall-expansion-transport-failure",
       label: "recall_expansion",
+      attempt: 1,
+      schema_repair: false,
       responseShape: {
         error: "recall expansion unavailable",
       },

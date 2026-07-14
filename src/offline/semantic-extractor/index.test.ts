@@ -225,6 +225,67 @@ describe("semantic extractor process", () => {
     });
   });
 
+  it("repairs one invalid node payload and charges both calls to the process budget", async () => {
+    const episode = createEpisodeFixture({
+      title: "Repairable semantic extraction",
+      narrative: "A grounded concept should survive one structurally invalid model response.",
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createSemanticToolResponse({
+          nodes: [
+            {
+              kind: "concept",
+              label: 42,
+              description: "The first candidate has a non-string label.",
+              domain: null,
+              aliases: [],
+              confidence: 0.6,
+              source_episode_ids: [episode.id],
+            },
+          ],
+          edges: [],
+        }),
+        createSemanticToolResponse({
+          nodes: [
+            {
+              kind: "concept",
+              label: "Repaired concept",
+              description: "The corrected candidate conforms to the semantic schema.",
+              domain: null,
+              aliases: [],
+              confidence: 0.6,
+              source_episode_ids: [episode.id],
+            },
+          ],
+          edges: [],
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(harness.cleanup);
+    await harness.episodicRepository.createEpisode(episode);
+    const process = createProcess(harness);
+    const ctx = harness.createContext();
+
+    const plan = await process.plan(ctx);
+    const result = await process.apply(ctx, plan);
+
+    expect(result.errors).toEqual([]);
+    expect(result.tokens_used).toBe(30);
+    expect(llm.requests).toHaveLength(2);
+    expect(llm.requests.map((request) => request.budget)).toEqual([
+      "semantic-extraction",
+      "semantic-extraction",
+    ]);
+    const repairPrompt = llm.requests[1]?.messages.at(-1)?.content ?? "";
+    expect(repairPrompt).toContain("nodes.0.label:");
+    expect(repairPrompt).toContain('"label":42');
+    await expect(harness.semanticNodeRepository.list()).resolves.toEqual([
+      expect.objectContaining({ label: "Repaired concept" }),
+    ]);
+  });
+
   it("does not replan episodes after a zero-candidate extraction audit", async () => {
     const episode = createEpisodeFixture({
       title: "Sparse semantic content",

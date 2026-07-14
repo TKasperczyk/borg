@@ -263,6 +263,29 @@ export function describeError(error: unknown): string {
   return String(error);
 }
 
+export function findInErrorCauseChain<T>(
+  error: unknown,
+  matches: (candidate: unknown) => candidate is T,
+): T | undefined {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+
+  while (current !== undefined && current !== null && !seen.has(current)) {
+    seen.add(current);
+
+    if (matches(current)) {
+      return current;
+    }
+
+    current =
+      typeof current === "object" || typeof current === "function"
+        ? (current as { cause?: unknown }).cause
+        : undefined;
+  }
+
+  return undefined;
+}
+
 export abstract class BorgError extends Error {
   readonly code: BorgErrorCode;
 

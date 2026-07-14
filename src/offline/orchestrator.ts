@@ -6,7 +6,11 @@ import { BorgError } from "../util/errors.js";
 
 import type { AuditLog } from "./audit-log.js";
 import { maintenancePlanSchema, type MaintenancePlan } from "./plan-file.js";
-import { offlineProcessError } from "./process-errors.js";
+import {
+  MAX_OFFLINE_ERROR_DETAILS,
+  MAX_OFFLINE_ERROR_MESSAGE_LENGTH,
+  offlineProcessError,
+} from "./process-errors.js";
 import {
   type OfflineContext,
   type OfflineProcess,
@@ -44,8 +48,8 @@ export type MaintenanceRunOptions = {
 };
 
 function traceErrorDetails(errors: readonly OfflineProcessError[]) {
-  return errors.map((error) => ({
-    message: error.message,
+  return errors.slice(0, MAX_OFFLINE_ERROR_DETAILS).map((error) => ({
+    message: error.message.slice(0, MAX_OFFLINE_ERROR_MESSAGE_LENGTH),
     ...(error.code === undefined ? {} : { code: error.code }),
     ...(error.target_type === undefined ? {} : { target_type: error.target_type }),
     ...(error.target_id === undefined ? {} : { target_id: error.target_id }),

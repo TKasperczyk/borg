@@ -1014,25 +1014,24 @@ describe("ProceduralSynthesizerProcess", () => {
     });
   });
 
-  it("logs malformed split tool output without mutating or retrying", async () => {
-    const llm = new FakeLLMClient({
-      responses: [
+  it("logs malformed split tool output without mutating after one repair attempt", async () => {
+    const malformedResponse = {
+      text: "",
+      input_tokens: 10,
+      output_tokens: 5,
+      stop_reason: "tool_use",
+      tool_calls: [
         {
-          text: "",
-          input_tokens: 10,
-          output_tokens: 5,
-          stop_reason: "tool_use",
-          tool_calls: [
-            {
-              id: "toolu_bad_split",
-              name: "EmitSkillSplit",
-              input: {
-                decision: "split",
-              },
-            },
-          ],
+          id: "toolu_bad_split",
+          name: "EmitSkillSplit",
+          input: {
+            decision: "split",
+          },
         },
       ],
+    };
+    const llm = new FakeLLMClient({
+      responses: [malformedResponse, malformedResponse],
     });
     harness = await createOfflineTestHarness({
       configOverrides: proceduralConfig({
@@ -1049,7 +1048,7 @@ describe("ProceduralSynthesizerProcess", () => {
 
     expect(result.changes).toEqual([]);
     expect(result.errors).toHaveLength(1);
-    expect(llm.requests).toHaveLength(1);
+    expect(llm.requests).toHaveLength(2);
     expect(harness.skillRepository.get(skill.id)).toMatchObject({
       status: "active",
       superseded_by: [],
@@ -1067,58 +1066,27 @@ describe("ProceduralSynthesizerProcess", () => {
     const second = await process.run(harness.createContext(), {});
 
     expect(second.changes).toEqual([]);
-    expect(llm.requests).toHaveLength(1);
+    expect(llm.requests).toHaveLength(2);
   });
 
   it("suppresses a split candidate after repeated malformed split output", async () => {
-    const llm = new FakeLLMClient({
-      responses: [
+    const malformedResponse = {
+      text: "",
+      input_tokens: 10,
+      output_tokens: 5,
+      stop_reason: "tool_use",
+      tool_calls: [
         {
-          text: "",
-          input_tokens: 10,
-          output_tokens: 5,
-          stop_reason: "tool_use",
-          tool_calls: [
-            {
-              id: "toolu_bad_split_1",
-              name: "EmitSkillSplit",
-              input: {
-                decision: "split",
-              },
-            },
-          ],
-        },
-        {
-          text: "",
-          input_tokens: 10,
-          output_tokens: 5,
-          stop_reason: "tool_use",
-          tool_calls: [
-            {
-              id: "toolu_bad_split_2",
-              name: "EmitSkillSplit",
-              input: {
-                decision: "split",
-              },
-            },
-          ],
-        },
-        {
-          text: "",
-          input_tokens: 10,
-          output_tokens: 5,
-          stop_reason: "tool_use",
-          tool_calls: [
-            {
-              id: "toolu_bad_split_3",
-              name: "EmitSkillSplit",
-              input: {
-                decision: "split",
-              },
-            },
-          ],
+          id: "toolu_bad_split",
+          name: "EmitSkillSplit",
+          input: {
+            decision: "split",
+          },
         },
       ],
+    };
+    const llm = new FakeLLMClient({
+      responses: Array.from({ length: 6 }, () => malformedResponse),
     });
     const clock = new ManualClock(1_000_000);
     harness = await createOfflineTestHarness({
@@ -1142,7 +1110,7 @@ describe("ProceduralSynthesizerProcess", () => {
     clock.advance(1_000);
     await process.run(harness.createContext(), {});
 
-    expect(llm.requests).toHaveLength(3);
+    expect(llm.requests).toHaveLength(6);
     expect(harness.skillRepository.get(skill.id)).toMatchObject({
       status: "active",
       split_failure_count: 3,

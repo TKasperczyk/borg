@@ -94,6 +94,43 @@ export function traceLlmCallRetryHook(options: {
   };
 }
 
+export type LlmSchemaRepairTraceStatus = "attempted" | "succeeded" | "failed";
+
+export function traceLlmSchemaRepair(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  sessionId?: SessionId;
+  label: string;
+  status: LlmSchemaRepairTraceStatus;
+  attempt: number;
+  repairOfAttempt: number;
+  failureKind?: string;
+  error?: unknown;
+}): void {
+  if (options.tracer?.enabled !== true || options.turnId === undefined) {
+    return;
+  }
+
+  const event =
+    options.status === "attempted"
+      ? "llm_call.schema_repair.attempted"
+      : options.status === "succeeded"
+        ? "llm_call.schema_repair.succeeded"
+        : "llm_call.schema_repair.failed";
+
+  options.tracer.emit(event, {
+    turnId: options.turnId,
+    ...(options.sessionId === undefined ? {} : { session_id: options.sessionId }),
+    label: options.label,
+    attempt: options.attempt,
+    repair_of_attempt: options.repairOfAttempt,
+    ...(options.failureKind === undefined ? {} : { failure_kind: options.failureKind }),
+    ...(options.error === undefined
+      ? {}
+      : { error: options.error instanceof Error ? options.error.message : String(options.error) }),
+  });
+}
+
 export function traceLlmCallResponse(options: {
   tracer?: TurnTracer;
   turnId?: string;

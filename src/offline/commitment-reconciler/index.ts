@@ -367,7 +367,7 @@ function commitmentPreview(commitment: CommitmentRecord): Record<string, unknown
   };
 }
 
-function buildPromptPayload(input: { group: CommitmentGroup; repairInstruction?: string }): string {
+function buildPromptPayload(group: CommitmentGroup): string {
   return JSON.stringify(
     {
       task: "Reconcile one structural audience-scope group of active commitments.",
@@ -391,19 +391,15 @@ function buildPromptPayload(input: { group: CommitmentGroup; repairInstruction?:
         manual_review:
           "For conflict, include the conflicting commitment_ids and a concise reason. Do not pick a survivor.",
       },
-      structural_scope_key: input.group.key,
-      commitments: input.group.members.map((member) => commitmentPreview(member)),
-      repair_instruction: input.repairInstruction,
+      structural_scope_key: group.key,
+      commitments: group.members.map((member) => commitmentPreview(member)),
     },
     null,
     2,
   );
 }
 
-function buildCrossScopePromptPayload(input: {
-  group: CrossScopeCommitmentGroup;
-  repairInstruction?: string;
-}): string {
+function buildCrossScopePromptPayload(group: CrossScopeCommitmentGroup): string {
   return JSON.stringify(
     {
       task: "Detect cross-scope commitment redundancy or conflict for internal awareness only.",
@@ -429,10 +425,9 @@ function buildCrossScopePromptPayload(input: {
         manual_review:
           "For conflict, include the conflicting commitment_ids and a concise reason. Do not pick a survivor.",
       },
-      structural_detection_key: input.group.detectionKey,
-      structural_scope_keys: input.group.scopeKeyStrings,
-      commitments: input.group.members.map((member) => commitmentPreview(member)),
-      repair_instruction: input.repairInstruction,
+      structural_detection_key: group.detectionKey,
+      structural_scope_keys: group.scopeKeyStrings,
+      commitments: group.members.map((member) => commitmentPreview(member)),
     },
     null,
     2,
@@ -498,7 +493,6 @@ async function callReconciler(input: {
   ctx: OfflineContext;
   llmClient: LLMClient;
   group: CommitmentGroup;
-  repairInstruction?: string;
 }): Promise<CommitmentReconciliationJudgment[]> {
   return (
     await callStructuredTool({
@@ -509,10 +503,7 @@ async function callReconciler(input: {
         messages: [
           {
             role: "user",
-            content: buildPromptPayload({
-              group: input.group,
-              repairInstruction: input.repairInstruction,
-            }),
+            content: buildPromptPayload(input.group),
           },
         ],
         tools: [COMMITMENT_RECONCILIATION_TOOL],
@@ -530,7 +521,6 @@ async function callCrossScopeReconciler(input: {
   ctx: OfflineContext;
   llmClient: LLMClient;
   group: CrossScopeCommitmentGroup;
-  repairInstruction?: string;
 }): Promise<CommitmentReconciliationJudgment[]> {
   return (
     await callStructuredTool({
@@ -541,10 +531,7 @@ async function callCrossScopeReconciler(input: {
         messages: [
           {
             role: "user",
-            content: buildCrossScopePromptPayload({
-              group: input.group,
-              repairInstruction: input.repairInstruction,
-            }),
+            content: buildCrossScopePromptPayload(input.group),
           },
         ],
         tools: [CROSS_SCOPE_COMMITMENT_RECONCILIATION_TOOL],
@@ -574,18 +561,7 @@ async function judgeGroup(input: {
       throw error.cause ?? error;
     }
 
-    const parseError = structuredReconciliationError(error);
-
-    try {
-      return await callReconciler({
-        ...input,
-        repairInstruction: `Your previous tool payload was structurally invalid: ${parseErrorMessage(
-          parseError,
-        )}. Emit a corrected ${TOOL_NAME} payload using only commitment ids from this group.`,
-      });
-    } catch (repairError) {
-      throw structuredReconciliationError(repairError);
-    }
+    throw structuredReconciliationError(error);
   }
 }
 
@@ -605,18 +581,7 @@ async function judgeCrossScopeGroup(input: {
       throw error.cause ?? error;
     }
 
-    const parseError = structuredReconciliationError(error);
-
-    try {
-      return await callCrossScopeReconciler({
-        ...input,
-        repairInstruction: `Your previous tool payload was structurally invalid: ${parseErrorMessage(
-          parseError,
-        )}. Emit a corrected ${TOOL_NAME} payload using only commitment ids from this group.`,
-      });
-    } catch (repairError) {
-      throw structuredReconciliationError(repairError);
-    }
+    throw structuredReconciliationError(error);
   }
 }
 

@@ -685,19 +685,18 @@ describe("GoalPromotionExtractor", () => {
       emit,
     } satisfies TurnTracer;
     const onDegraded = vi.fn();
-    const llm = new FakeLLMClient({
-      responses: [
+    const invalidResponse = {
+      ...goalPromotionResponse([]),
+      tool_calls: [
         {
-          ...goalPromotionResponse([]),
-          tool_calls: [
-            {
-              id: "toolu_goal_promotion",
-              name: "EmitGoalPromotion",
-              input: {},
-            },
-          ],
+          id: "toolu_goal_promotion",
+          name: "EmitGoalPromotion",
+          input: {},
         },
       ],
+    };
+    const llm = new FakeLLMClient({
+      responses: [invalidResponse, invalidResponse],
     });
     const extractor = new GoalPromotionExtractor({
       llmClient: llm,

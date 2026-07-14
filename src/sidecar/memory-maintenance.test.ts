@@ -7,6 +7,7 @@ import type {
   OfflineProcessName,
   OrchestratorResult,
 } from "../offline/types.js";
+import { LLMError } from "../util/errors.js";
 import type { MaintenanceRunId } from "../util/ids.js";
 import {
   MemoryMaintenanceCoordinator,
@@ -486,10 +487,17 @@ describe("memory maintenance coordinator", () => {
     });
   });
 
-  it("normalizes a thrown process chunk into the same error details", async () => {
+  it("threads bounded HTTP cause details through status, stdout, and the error event", async () => {
+    const lines: string[] = [];
     const errorLines: string[] = [];
-    const chunkError = Object.assign(new Error("process chunk failed"), {
-      code: "E_PROCESS_CHUNK",
+    const gatewayError = Object.assign(new Error("Bad Request"), {
+      status: 400,
+      error: {
+        message: 'Grammar error: Unimplemented keys: ["propertyNames"]',
+      },
+    });
+    const chunkError = new LLMError("OpenAI-compatible completion request failed", {
+      cause: gatewayError,
     });
     const borg = {
       dream: async () => {
@@ -501,7 +509,7 @@ describe("memory maintenance coordinator", () => {
       pool: { withTenant: async (_tenant, fn) => fn(borg) },
       config: maintenanceConfig(),
       schedule: (task) => task(),
-      writeReport: () => {},
+      writeReport: (line) => lines.push(line),
       writeError: (line) => errorLines.push(line),
     });
 
@@ -513,12 +521,19 @@ describe("memory maintenance coordinator", () => {
     const expectedDetails = [
       {
         process: "consolidator",
-        message: "process chunk failed",
-        code: "E_PROCESS_CHUNK",
+        message:
+          'OpenAI-compatible completion request failed: HTTP 400: Grammar error: Unimplemented keys: ["propertyNames"]',
+        code: "BORG_LLM_ERROR",
       },
     ];
 
     expect(report.processes[0]).toMatchObject({ errors: 1, error_details: expectedDetails });
+    expect(coordinator.getStatus("alpha").last?.processes[0]?.error_details).toEqual(
+      expectedDetails,
+    );
+    expect(JSON.parse(lines[0]!)).toMatchObject({
+      processes: [{ error_details: expectedDetails }],
+    });
     expect(JSON.parse(errorLines[0]!)).toMatchObject({ error_details: expectedDetails });
   });
 

@@ -16,7 +16,7 @@ import { z } from "zod";
 
 import { getFreshCredentials, type GetFreshCredentialsOptions } from "../auth/claude-oauth.js";
 import type { Clock } from "../util/clock.js";
-import { AuthError, ConfigError, LLMError } from "../util/errors.js";
+import { AuthError, ConfigError, findInErrorCauseChain, LLMError } from "../util/errors.js";
 import type { AttachmentId } from "../util/ids.js";
 import { toAnthropicContentBlockMessages } from "./anthropic-content-blocks.js";
 import { clampMaxOutputTokens, getModelMaxOutputTokens } from "./max-tokens.js";
@@ -136,6 +136,71 @@ export type LLMOutputConfig = {
   format: JSONOutputFormat;
 };
 
+function isJsonSchemaObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+const UNSUPPORTED_GUIDED_GENERATION_SCHEMA_KEYS = new Set([
+  "propertyNames",
+  "patternProperties",
+  "if",
+  "then",
+  "else",
+  "dependentSchemas",
+  "dependentRequired",
+]);
+
+const JSON_SCHEMA_MAP_KEYS = new Set(["properties", "$defs", "definitions"]);
+const JSON_SCHEMA_CHILD_KEYS = new Set([
+  "additionalItems",
+  "additionalProperties",
+  "contains",
+  "contentSchema",
+  "items",
+  "not",
+  "unevaluatedItems",
+  "unevaluatedProperties",
+]);
+const JSON_SCHEMA_CHILD_ARRAY_KEYS = new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);
+
+// Grammar-guided OpenAI-compatible backends commonly accept a smaller JSON
+// Schema subset than Zod emits. The client-side Zod parse remains authoritative,
+// so omitting these wire-only constraints is a safe compatibility relaxation.
+function sanitizeToolInputJsonSchema(value: unknown): unknown {
+  if (!isJsonSchemaObject(value)) {
+    return value;
+  }
+
+  const sanitized: Record<string, unknown> = {};
+
+  for (const [key, entry] of Object.entries(value)) {
+    if (UNSUPPORTED_GUIDED_GENERATION_SCHEMA_KEYS.has(key)) {
+      continue;
+    }
+
+    if (JSON_SCHEMA_MAP_KEYS.has(key) && isJsonSchemaObject(entry)) {
+      sanitized[key] = Object.fromEntries(
+        Object.entries(entry).map(([name, schema]) => [name, sanitizeToolInputJsonSchema(schema)]),
+      );
+      continue;
+    }
+
+    if (JSON_SCHEMA_CHILD_KEYS.has(key)) {
+      sanitized[key] = sanitizeToolInputJsonSchema(entry);
+      continue;
+    }
+
+    if (JSON_SCHEMA_CHILD_ARRAY_KEYS.has(key) && Array.isArray(entry)) {
+      sanitized[key] = entry.map((schema) => sanitizeToolInputJsonSchema(schema));
+      continue;
+    }
+
+    sanitized[key] = entry;
+  }
+
+  return sanitized;
+}
+
 export function toToolInputSchema(schema: z.ZodType): LLMToolDefinition["inputSchema"] {
   const jsonSchema = z.toJSONSchema(schema, {
     io: "input",
@@ -146,11 +211,7 @@ export function toToolInputSchema(schema: z.ZodType): LLMToolDefinition["inputSc
     throw new TypeError("Tool input schema must serialize to a top-level object schema");
   }
 
-  return jsonSchema as LLMToolDefinition["inputSchema"];
-}
-
-function isJsonSchemaObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+  return sanitizeToolInputJsonSchema(jsonSchema) as LLMToolDefinition["inputSchema"];
 }
 
 function normalizeStructuredJsonSchema(value: unknown): unknown {
@@ -197,6 +258,7 @@ export function toStructuredOutputFormat(schema: z.ZodType): JSONOutputFormat {
 
 type LLMCallOptions = {
   model: string;
+  signal?: AbortSignal | null;
   // If callers embed retrieved memory or other user-derived records into
   // `system`, delimit those blocks explicitly and label them as untrusted
   // data rather than concatenating free-form text that looks like policy.
@@ -889,40 +951,12 @@ function createLlmConnectionFailedError(attempts: number, cause: unknown): LLMEr
   });
 }
 
-function causeOf(error: unknown): unknown {
-  if ((typeof error !== "object" && typeof error !== "function") || error === null) {
-    return undefined;
-  }
-
-  return (error as { cause?: unknown }).cause;
-}
-
 function errorConstructorName(error: unknown): string | undefined {
   if ((typeof error !== "object" && typeof error !== "function") || error === null) {
     return undefined;
   }
 
   return (error as { constructor?: { name?: string } }).constructor?.name;
-}
-
-function findInErrorCauseChain<T>(
-  error: unknown,
-  matches: (candidate: unknown) => candidate is T,
-): T | undefined {
-  const seen = new Set<unknown>();
-  let current: unknown = error;
-
-  while (current !== undefined && current !== null && !seen.has(current)) {
-    seen.add(current);
-
-    if (matches(current)) {
-      return current;
-    }
-
-    current = causeOf(current);
-  }
-
-  return undefined;
 }
 
 function isRetryableLlmTransportError(error: unknown): error is LLMError {
@@ -1971,6 +2005,7 @@ export class AnthropicLLMClient implements LLMClient {
       return await runWithLlmCallTimeout({
         kind: "unary",
         timeoutMs: callTimeoutMs,
+        signal: options.signal,
         run: (signal) =>
           runWithAnthropicTransportRetries(
             () => client.messages.create(this.rawMessageParams(options, messages), { signal }),
@@ -2046,6 +2081,7 @@ export class AnthropicLLMClient implements LLMClient {
       return await runWithLlmCallTimeout({
         kind: "streaming",
         timeoutMs: this.streamingCallTimeoutMs(),
+        signal: options.signal,
         run: (signal) =>
           runWithAnthropicTransportRetries(
             async (attempt) => {

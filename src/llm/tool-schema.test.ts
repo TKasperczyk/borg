@@ -12,6 +12,7 @@ import { OVERSEER_TOOL } from "../offline/overseer/index.js";
 import { REFLECTOR_TOOL } from "../offline/reflector/index.js";
 import { RUMINATOR_TOOL } from "../offline/ruminator/index.js";
 import { SELF_NARRATOR_TOOL } from "../offline/self-narrator/index.js";
+import { toToolInputSchema } from "./index.js";
 
 type JsonObjectSchema = {
   type: "object";
@@ -95,5 +96,44 @@ describe("tool schemas", () => {
       pattern: "^[a-z][a-z0-9_]*$",
     });
     expect(nodesSchema.items?.properties?.kind).not.toHaveProperty("enum");
+  });
+
+  it("removes guided-generation keywords unsupported by grammar backends", () => {
+    const recordSchema = toToolInputSchema(
+      z
+        .object({
+          if: z.string(),
+          nested: z.object({
+            patch: z.record(z.string(), z.unknown()),
+          }),
+        })
+        .meta({
+          if: { properties: { if: { const: "condition" } } },
+          then: { required: ["if"] },
+          else: {},
+          patternProperties: { "^x": { type: "string" } },
+          dependentSchemas: { if: { required: ["nested"] } },
+          dependentRequired: { if: ["nested"] },
+        }),
+    );
+    const unsupportedKeywords = [
+      "propertyNames",
+      "patternProperties",
+      "if",
+      "then",
+      "else",
+      "dependentSchemas",
+      "dependentRequired",
+    ] as const;
+
+    expect(recordSchema.properties?.if).toEqual({ type: "string" });
+    for (const keyword of unsupportedKeywords) {
+      expect(recordSchema).not.toHaveProperty(keyword);
+    }
+    expect(JSON.stringify(recordSchema)).not.toContain('"propertyNames":');
+
+    const overseerSchema = JSON.stringify(OVERSEER_TOOL.inputSchema);
+    expect(overseerSchema).not.toContain('"propertyNames":');
+    expect(overseerSchema).not.toContain('"patternProperties":');
   });
 });

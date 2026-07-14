@@ -1,12 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import { summarizeSemanticContext } from "../../cognition/deliberation/prompt/retrieval.js";
-import { type LLMCompleteResult } from "../../llm/index.js";
+import { type LLMCompleteOptions, type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
-import {
-  SemanticGraph,
-  type SemanticEdge,
-} from "../../memory/semantic/index.js";
+import { SemanticGraph, type SemanticEdge } from "../../memory/semantic/index.js";
 import { type ReviewQueueItem } from "../../memory/review-queue/index.js";
 import { resolveSemanticContext, toRetrievedSemantic } from "../../retrieval/semantic-retrieval.js";
 import { StreamReader } from "../../stream/index.js";
@@ -75,6 +72,7 @@ async function runBeliefReviser(
     maxParseFailures?: number;
     maxLlmCalls?: number;
     consecutiveParseFailureLimit?: number;
+    llmTimeoutMs?: number;
   } = {},
 ) {
   const process = new BeliefReviserProcess({
@@ -1351,6 +1349,10 @@ describe("belief reviser process", () => {
           verdict: "keep",
           rationale: "The reclaimed run keeps the belief.",
         }),
+        beliefRevisionResponse({
+          verdict: "weaken",
+          rationale: "Malformed stale owner repair response.",
+        }),
       ],
     });
     const clock = new ManualClock(1_000);
@@ -1495,14 +1497,13 @@ describe("belief reviser process", () => {
   });
 
   it("rejects positive confidence_delta values from the LLM", async () => {
+    const invalidResponse = beliefRevisionResponse({
+      verdict: "weaken",
+      rationale: "Positive deltas are invalid for weakening.",
+      confidence_delta: 0.2,
+    });
     const llmClient = new FakeLLMClient({
-      responses: [
-        beliefRevisionResponse({
-          verdict: "weaken",
-          rationale: "Positive deltas are invalid for weakening.",
-          confidence_delta: 0.2,
-        }),
-      ],
+      responses: [invalidResponse, invalidResponse],
     });
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(2_000),
@@ -1529,12 +1530,195 @@ describe("belief reviser process", () => {
           code: "belief_reviser_regrade_failed",
         }),
       ]);
+      expect(result.tokens_used).toBe(16);
       expect(review?.refs).toEqual(
         expect.objectContaining({
           belief_revision_failure_count: 1,
         }),
       );
       expect((await harness.semanticNodeRepository.get(target.id))?.confidence).toBeCloseTo(0.8);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("aggregates both schema-repair responses into tokens_used", async () => {
+    const llmClient = new FakeLLMClient({
+      responses: [
+        beliefRevisionResponse({
+          verdict: "weaken",
+          rationale: "The first response is missing its required delta.",
+        }),
+        beliefRevisionResponse({
+          verdict: "keep",
+          rationale: "The corrected response keeps the supported belief.",
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_000),
+      llmClient,
+    });
+
+    try {
+      const target = await insertNode(harness, "Repair accounting target", [0, 1, 0, 0]);
+      enqueueNodeBeliefRevision(harness, target);
+
+      const result = await runBeliefReviser(harness, { regradeBatchSize: 1 });
+
+      expect(llmClient.requests).toHaveLength(2);
+      expect(result.tokens_used).toBe(16);
+      expect(result.errors).toEqual([]);
+      expect(beliefRevisionItems(harness)[0]).toMatchObject({ resolution: "keep" });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("enforces max_llm_calls against physical schema-repair attempts", async () => {
+    const llmClient = new FakeLLMClient({
+      responses: [
+        beliefRevisionResponse({
+          verdict: "weaken",
+          rationale: "The only allowed physical call is malformed.",
+        }),
+        beliefRevisionResponse({
+          verdict: "keep",
+          rationale: "This repair must remain unused.",
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_000),
+      llmClient,
+    });
+
+    try {
+      const target = await insertNode(harness, "Physical call cap target", [0, 1, 0, 0]);
+      enqueueNodeBeliefRevision(harness, target);
+
+      const result = await runBeliefReviser(harness, {
+        regradeBatchSize: 1,
+        maxLlmCalls: 1,
+      });
+      const [review] = openBeliefRevisionItems(harness);
+
+      expect(llmClient.requests).toHaveLength(1);
+      expect(result.tokens_used).toBe(8);
+      expect(result.errors).toEqual([
+        expect.objectContaining({ code: "belief_reviser_regrade_failed" }),
+      ]);
+      expect(review?.refs).toEqual(expect.objectContaining({ belief_revision_failure_count: 1 }));
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("does not outer-retry a repair-time transport failure", async () => {
+    const llmClient = new FakeLLMClient({
+      responses: [
+        beliefRevisionResponse({
+          verdict: "weaken",
+          rationale: "The initial response is malformed.",
+        }),
+        () => {
+          throw new Error("repair transport failed");
+        },
+        beliefRevisionResponse({
+          verdict: "keep",
+          rationale: "An outer retry must not consume this response.",
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_000),
+      llmClient,
+    });
+
+    try {
+      const target = await insertNode(harness, "Repair transport target", [0, 1, 0, 0]);
+      enqueueNodeBeliefRevision(harness, target);
+
+      const result = await runBeliefReviser(harness, { regradeBatchSize: 1 });
+      const [review] = openBeliefRevisionItems(harness);
+
+      expect(llmClient.requests).toHaveLength(2);
+      expect(result.tokens_used).toBe(8);
+      expect(review?.refs).toEqual(expect.objectContaining({ belief_revision_failure_count: 1 }));
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("drains a timed-out repair before reporting physical calls and tokens", async () => {
+    let repairSignalAborted = false;
+    const llmClient = new FakeLLMClient({
+      responses: [
+        beliefRevisionResponse({
+          verdict: "weaken",
+          rationale: "The initial response is malformed.",
+        }),
+        async (options: LLMCompleteOptions) => {
+          await new Promise<void>((resolve) => {
+            const signal = options.signal;
+
+            if (signal === undefined || signal === null) {
+              throw new Error("belief revision timeout signal was not forwarded");
+            }
+
+            if (signal.aborted) {
+              repairSignalAborted = true;
+              resolve();
+              return;
+            }
+
+            signal.addEventListener(
+              "abort",
+              () => {
+                repairSignalAborted = true;
+                resolve();
+              },
+              { once: true },
+            );
+          });
+
+          return beliefRevisionResponse({
+            verdict: "keep",
+            rationale: "The repair completed while its caller timed out.",
+          });
+        },
+        beliefRevisionResponse({
+          verdict: "keep",
+          rationale: "An outer retry must not consume this response.",
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_000),
+      llmClient,
+    });
+
+    try {
+      const target = await insertNode(harness, "Repair timeout target", [0, 1, 0, 0]);
+      enqueueNodeBeliefRevision(harness, target);
+
+      const result = await runBeliefReviser(harness, {
+        regradeBatchSize: 1,
+        maxLlmCalls: 2,
+        llmTimeoutMs: 5,
+      });
+      const [review] = openBeliefRevisionItems(harness);
+
+      expect(repairSignalAborted).toBe(true);
+      expect(llmClient.requests).toHaveLength(2);
+      expect(result.tokens_used).toBe(16);
+      expect(result.errors).toEqual([
+        expect.objectContaining({
+          code: "belief_reviser_regrade_failed",
+          message: "Belief revision LLM call timed out",
+        }),
+      ]);
+      expect(review?.refs).not.toHaveProperty("__borg_belief_revision_claim");
     } finally {
       await harness.cleanup();
     }
@@ -1586,21 +1770,22 @@ describe("belief reviser process", () => {
   });
 
   it("escalates malformed LLM output after the configured parse-failure limit", async () => {
+    const invalidResponses = [
+      beliefRevisionResponse({
+        verdict: "weaken",
+        rationale: "Missing delta.",
+      }),
+      beliefRevisionResponse({
+        verdict: "weaken",
+        rationale: "Still missing delta.",
+      }),
+      beliefRevisionResponse({
+        verdict: "weaken",
+        rationale: "Still malformed.",
+      }),
+    ];
     const llmClient = new FakeLLMClient({
-      responses: [
-        beliefRevisionResponse({
-          verdict: "weaken",
-          rationale: "Missing delta.",
-        }),
-        beliefRevisionResponse({
-          verdict: "weaken",
-          rationale: "Still missing delta.",
-        }),
-        beliefRevisionResponse({
-          verdict: "weaken",
-          rationale: "Still malformed.",
-        }),
-      ],
+      responses: invalidResponses.flatMap((response) => [response, response]),
     });
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(2_000),
@@ -1626,7 +1811,7 @@ describe("belief reviser process", () => {
 
       const [review] = openBeliefRevisionItems(harness);
 
-      expect(llmClient.requests).toHaveLength(3);
+      expect(llmClient.requests).toHaveLength(6);
       expect(review?.resolution).toBeNull();
       expect(review?.refs).toEqual(
         expect.objectContaining({

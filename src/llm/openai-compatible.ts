@@ -377,7 +377,12 @@ export class OpenAICompatibleLLMClient implements LLMClient {
     // standard OpenAI auto tool-calling.
 
     const requestOptions =
-      this.requestTimeoutMs === undefined ? undefined : { timeout: this.requestTimeoutMs };
+      this.requestTimeoutMs === undefined && options.signal === undefined
+        ? undefined
+        : {
+            ...(options.signal === undefined ? {} : { signal: options.signal }),
+            ...(this.requestTimeoutMs === undefined ? {} : { timeout: this.requestTimeoutMs }),
+          };
 
     try {
       return await this.client.chat.completions.create(params, requestOptions);

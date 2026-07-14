@@ -212,6 +212,7 @@ describe("maintenance orchestrator", () => {
     const tracer = new CaptureTracer();
     const harness = await createOfflineTestHarness({ tracer });
     cleanup.push(harness.cleanup);
+    const longMessage = `overseer target failed ${"x".repeat(350)}`;
 
     const result = {
       process: "overseer",
@@ -221,11 +222,14 @@ describe("maintenance orchestrator", () => {
       errors: [
         {
           process: "overseer",
-          message: "overseer target failed",
+          message: longMessage,
           code: "OVERSEER_TARGET_FAILED",
           target_type: "episode",
           target_id: "ep_trace_target",
         },
+        { process: "overseer", message: "second failure" },
+        { process: "overseer", message: "third failure" },
+        { process: "overseer", message: "fourth failure" },
       ],
       budget_exhausted: true,
       candidate_stats: {
@@ -260,14 +264,16 @@ describe("maintenance orchestrator", () => {
       event: "offline_process.completed",
       data: expect.objectContaining({
         process_name: "overseer",
-        errors: 1,
+        errors: 4,
         error_details: [
           {
-            message: "overseer target failed",
+            message: longMessage.slice(0, 300),
             code: "OVERSEER_TARGET_FAILED",
             target_type: "episode",
             target_id: "ep_trace_target",
           },
+          { message: "second failure" },
+          { message: "third failure" },
         ],
         tokens_used: 42,
         budget_exhausted: true,

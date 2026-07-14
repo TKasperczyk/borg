@@ -203,15 +203,14 @@ describe("review open-question extractor", () => {
 
   it("fails closed and emits degraded observability when the tool payload is invalid", async () => {
     const events: unknown[] = [];
+    const invalidResponse = createToolResponse({
+      urgency: -0.1,
+      related_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+      related_semantic_node_ids: [],
+    });
     const extractor = new ReviewOpenQuestionExtractor({
       llmClient: new FakeLLMClient({
-        responses: [
-          createToolResponse({
-            urgency: -0.1,
-            related_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
-            related_semantic_node_ids: [],
-          }),
-        ],
+        responses: [invalidResponse, invalidResponse],
       }),
       model: "bg-model",
       onDegraded: (event) => {

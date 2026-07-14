@@ -743,29 +743,28 @@ describe("FrameAnomalyClassifier", () => {
 
   it("returns degraded when the classifier emits an invalid kind", async () => {
     const degraded: string[] = [];
+    const invalidResponse = Object.assign(
+      () => ({
+        text: "",
+        input_tokens: 4,
+        output_tokens: 2,
+        stop_reason: "tool_use" as const,
+        tool_calls: [
+          {
+            id: "toolu_frame_anomaly",
+            name: "ClassifyFrameAnomaly",
+            input: {
+              kind: "not_a_kind",
+              confidence: 0.8,
+              rationale: "Invalid kind.",
+            },
+          },
+        ],
+      }),
+      { budget: "frame-anomaly-classifier" },
+    );
     const llm = new FakeLLMClient({
-      responses: [
-        Object.assign(
-          () => ({
-            text: "",
-            input_tokens: 4,
-            output_tokens: 2,
-            stop_reason: "tool_use" as const,
-            tool_calls: [
-              {
-                id: "toolu_frame_anomaly",
-                name: "ClassifyFrameAnomaly",
-                input: {
-                  kind: "not_a_kind",
-                  confidence: 0.8,
-                  rationale: "Invalid kind.",
-                },
-              },
-            ],
-          }),
-          { budget: "frame-anomaly-classifier" },
-        ),
-      ],
+      responses: [invalidResponse, invalidResponse],
     });
     const classifier = new FrameAnomalyClassifier({
       llmClient: llm,

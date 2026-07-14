@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { OpenAICompatibleLLMClient, type OpenAIChatCompletionsClient } from "./openai-compatible.js";
 import { callStructuredTool, isStructuredToolCallError } from "./structured-tool-call.js";
@@ -127,6 +127,20 @@ describe("OpenAICompatibleLLMClient", () => {
     await client.complete(completeOptions({ max_tokens: 512 }));
     expect(captured.max_completion_tokens).toBe(512);
     expect(captured.max_tokens).toBeUndefined();
+  });
+
+  it("forwards a caller abort signal to the OpenAI-compatible transport", async () => {
+    const create = vi.fn(async () => toolCallResponse("{}"));
+    const signal = new AbortController().signal;
+    const client = new OpenAICompatibleLLMClient({
+      client: {
+        chat: { completions: { create } },
+      } as unknown as OpenAIChatCompletionsClient,
+    });
+
+    await client.complete(completeOptions({ signal }));
+
+    expect(create).toHaveBeenCalledWith(expect.any(Object), { signal });
   });
 
   it("clamps an explicit output request to the selected model's ceiling", async () => {

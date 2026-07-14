@@ -1878,25 +1878,24 @@ describe("semantic extractor", () => {
     });
 
     const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas incident");
-    const llm = new FakeLLMClient({
-      responses: [
+    const invalidResponse = {
+      text: "",
+      input_tokens: 1,
+      output_tokens: 1,
+      stop_reason: "tool_use",
+      tool_calls: [
         {
-          text: "",
-          input_tokens: 1,
-          output_tokens: 1,
-          stop_reason: "tool_use",
-          tool_calls: [
-            {
-              id: "toolu_1",
-              name: SEMANTIC_TOOL_NAME,
-              input: {
-                nodes:
-                  '[{"kind":"entity","label":"Atlas","description":"Atlas node","aliases":[],"confidence":0.7,"source_episode_ids":["ep_aaaaaaaaaaaaaaaa"]},{"kind":"concept","label":"Rollback","description":"Rollback concept","aliases":[],"confidence":0.6,"source_episode_ids":["ep_aaaaaaaaaaaaaaaa"]}]<parameter name="edges">[{"from_label":"Atlas","to_label":"Rollback","relation":"related_to","confidence":0.5,"evidence_episode_ids":["ep_aaaaaaaaaaaaaaaa"]}]',
-              },
-            },
-          ],
+          id: "toolu_1",
+          name: SEMANTIC_TOOL_NAME,
+          input: {
+            nodes:
+              '[{"kind":"entity","label":"Atlas","description":"Atlas node","aliases":[],"confidence":0.7,"source_episode_ids":["ep_aaaaaaaaaaaaaaaa"]},{"kind":"concept","label":"Rollback","description":"Rollback concept","aliases":[],"confidence":0.6,"source_episode_ids":["ep_aaaaaaaaaaaaaaaa"]}]<parameter name="edges">[{"from_label":"Atlas","to_label":"Rollback","relation":"related_to","confidence":0.5,"evidence_episode_ids":["ep_aaaaaaaaaaaaaaaa"]}]',
+          },
         },
       ],
+    };
+    const llm = new FakeLLMClient({
+      responses: [invalidResponse, invalidResponse],
     });
     const extractor = new SemanticExtractor({
       nodeRepository,

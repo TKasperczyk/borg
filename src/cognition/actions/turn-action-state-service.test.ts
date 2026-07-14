@@ -70,12 +70,11 @@ describe("TurnActionStateService", () => {
     const streamEntryId = createStreamEntryId();
     const sessionId = createSessionId();
     const emit = vi.fn();
+    const invalidResponse = createActionStateResponse({
+      action_states: "invalid",
+    });
     const llm = new FakeLLMClient({
-      responses: [
-        createActionStateResponse({
-          action_states: "invalid",
-        }),
-      ],
+      responses: [invalidResponse, invalidResponse],
     });
     const service = new TurnActionStateService({
       model: "test-recall",

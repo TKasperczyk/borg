@@ -372,10 +372,7 @@ describe("CreatorDirectiveTurnService", () => {
       );
 
       expect(result).toHaveLength(2);
-      expect(result.map((directive) => directive.canonical_fact)).toEqual([
-        staticFact,
-        eventFact,
-      ]);
+      expect(result.map((directive) => directive.canonical_fact)).toEqual([staticFact, eventFact]);
       expect(result.map((directive) => directive.operational_directive)).toEqual([null, null]);
       expect(result).toEqual(
         expect.arrayContaining([
@@ -428,27 +425,26 @@ describe("CreatorDirectiveTurnService", () => {
   it("rejects slotted candidates without a semantic value before persistence", async () => {
     const harness = createHarness();
     const sessionId = createSessionId();
+    const invalidResponse = creatorDirectiveResponse(
+      candidate({
+        semantic_value: null,
+        canonical_fact: "Borg's self-chosen name is Claude.",
+        disclosure_policy: {
+          content_scope: "public",
+          allowed_entity_ids: [],
+          allowed_entity_labels: [],
+          excluded_entity_ids: [],
+          excluded_entity_labels: [],
+          subject_may_know: true,
+          mention_policy: "answer_if_asked",
+          denied_audience_behavior: "omit",
+          boundary_prompt: null,
+          topic_tags: ["Claude"],
+        },
+      }),
+    );
     const llmClient = new FakeLLMClient({
-      responses: [
-        creatorDirectiveResponse(
-          candidate({
-            semantic_value: null,
-            canonical_fact: "Borg's self-chosen name is Claude.",
-            disclosure_policy: {
-              content_scope: "public",
-              allowed_entity_ids: [],
-              allowed_entity_labels: [],
-              excluded_entity_ids: [],
-              excluded_entity_labels: [],
-              subject_may_know: true,
-              mention_policy: "answer_if_asked",
-              denied_audience_behavior: "omit",
-              boundary_prompt: null,
-              topic_tags: ["Claude"],
-            },
-          }),
-        ),
-      ],
+      responses: [invalidResponse, invalidResponse],
     });
 
     try {

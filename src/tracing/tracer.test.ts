@@ -584,9 +584,15 @@ describe("TurnTracer", () => {
       "llm_call.completed",
       "llm_call.completed",
       "llm_call.completed",
-      "extraction.commitments.degraded",
+      // The corrective-preference fixture is invalid. Its repair is traced as
+      // a distinct correlated call while the extraction tasks run concurrently.
+      "llm_call.schema_repair.attempted",
+      "llm_call.started",
+      "llm_call.completed",
       "extraction.actions.completed",
+      "llm_call.schema_repair.failed",
       "extraction.goals.completed",
+      "extraction.commitments.degraded",
       "turn_phase.completed",
       "turn_phase.started",
       "turn_phase.completed",

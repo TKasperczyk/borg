@@ -411,6 +411,8 @@ describe("CorrectivePreferenceExtractor", () => {
     expect(emit).toHaveBeenCalledWith("llm_call.started", {
       turnId: "turn-corrective-preference",
       label: "corrective_preference_extractor",
+      attempt: 1,
+      schema_repair: false,
       model: "haiku",
       promptCharCount: expect.any(Number),
       toolSchemas: expect.any(Array),
@@ -418,6 +420,8 @@ describe("CorrectivePreferenceExtractor", () => {
     expect(emit).toHaveBeenCalledWith("llm_call.completed", {
       turnId: "turn-corrective-preference",
       label: "corrective_preference_extractor",
+      attempt: 1,
+      schema_repair: false,
       responseShape: {
         textLength: 0,
         toolUseBlocks: [

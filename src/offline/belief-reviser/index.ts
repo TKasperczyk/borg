@@ -47,6 +47,7 @@ import type {
   OfflineResult,
 } from "../types.js";
 import {
+  BeliefRevisionEvaluationError,
   BeliefRevisionParseError,
   evaluateBeliefRevision,
   type BeliefRevisionLlmInput,
@@ -1861,6 +1862,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     ctx: OfflineContext;
     regradeItem: z.infer<typeof beliefRevisionRegradeItemSchema>;
     llm: OfflineContext["llm"]["background"];
+    maxLlmCalls: number;
     recordTokens: (tokens: number) => void;
     changes: OfflineChange[];
     errors: OfflineResult["errors"];
@@ -1888,13 +1890,14 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
 
     try {
       const llmInput = await this.buildLlmInput(input.ctx, claimed);
-      llmCalls += 1;
       const result = await evaluateBeliefRevision({
         llm: input.llm,
         model: input.ctx.config.anthropic.models.background,
         input: llmInput,
         timeoutMs: this.options.llmTimeoutMs,
+        maxPhysicalAttempts: input.maxLlmCalls,
       });
+      llmCalls += result.llmCalls;
       input.recordTokens(result.tokensUsed);
       const prepared = this.prepareNodeVectorSync(
         input.ctx,
@@ -1925,6 +1928,11 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
         parseFailureEffect: "reset",
       };
     } catch (error) {
+      if (error instanceof BeliefRevisionEvaluationError) {
+        llmCalls += error.llmCalls;
+        input.recordTokens(error.tokensUsed);
+      }
+
       const handled = await this.handleRegradeError({
         ctx: input.ctx,
         regradeItem: input.regradeItem,
@@ -1970,6 +1978,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
         ctx: input.ctx,
         regradeItem,
         llm: input.llm,
+        maxLlmCalls: input.plan.max_llm_calls - llmCalls,
         recordTokens: input.recordTokens,
         changes: input.changes,
         errors: input.errors,

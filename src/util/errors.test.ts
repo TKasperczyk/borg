@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ConfigError } from "./errors.js";
+import { ConfigError, findInErrorCauseChain } from "./errors.js";
 
 describe("errors", () => {
   it("serializes borg errors with codes and causes", () => {
@@ -18,5 +18,24 @@ describe("errors", () => {
         message: "missing field",
       },
     });
+  });
+
+  it("finds a matching nested cause and terminates on cause cycles", () => {
+    const target = Object.assign(new Error("target"), { status: 400 });
+    const wrapped = new Error("wrapped", { cause: target });
+
+    expect(
+      findInErrorCauseChain(
+        wrapped,
+        (candidate): candidate is Error & { status: number } =>
+          candidate instanceof Error && "status" in candidate,
+      ),
+    ).toBe(target);
+
+    const cycle = new Error("cycle");
+    Object.defineProperty(cycle, "cause", { value: cycle });
+    expect(
+      findInErrorCauseChain(cycle, (candidate): candidate is Date => candidate instanceof Date),
+    ).toBeUndefined();
   });
 });

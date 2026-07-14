@@ -848,6 +848,10 @@ describe("Borg", () => {
           createInvalidEntityClassifierResponse(),
           createInvalidModeClassifierResponse(),
           createNoTemporalCueResponse(),
+          // Perception classifiers run concurrently; their schema-repair
+          // responses follow all three initial classifier responses.
+          createInvalidEntityClassifierResponse(),
+          createInvalidModeClassifierResponse(),
           createEmitAnswerResponse("The turn still completed.", {
             inputTokens: 10,
             outputTokens: 5,

@@ -2513,29 +2513,23 @@ describe("compileSharedStateArtifact", () => {
       ...baseInput(llmClient),
       tracer: trace,
     });
-    const repairPayload = JSON.parse(String(llmClient.requests[1]?.messages[0]?.content)) as {
-      additional_prompt_sections?: string[];
-    };
+    const repairPrompt = String(llmClient.requests[1]?.messages.at(-1)?.content);
 
     expect(llmClient.requests).toHaveLength(2);
-    expect(repairPayload.additional_prompt_sections?.[0]).toContain(
-      "Your previous patch was invalid:",
-    );
-    expect(repairPayload.additional_prompt_sections?.[0]).toContain("Emit a corrected patch.");
+    expect(repairPrompt).toContain("failed client-side schema validation");
+    expect(repairPrompt).toContain("operations.0.type");
+    expect(repairPrompt).toContain('"type":"replace"');
     expect(patch.operations).toHaveLength(1);
     expect(activeEntries().map((entry) => entry.text)).toContain(
       "Corrected live shared-state entry",
     );
+    expectSingleSuccessfulRepair(trace);
     expect(trace.events.map((event) => event.event)).toEqual(
       expect.arrayContaining([
-        "shared_state.compile.repair_attempted",
-        "shared_state.compile.repair_succeeded",
+        "llm_call.schema_repair.attempted",
+        "llm_call.schema_repair.succeeded",
       ]),
     );
-    expect(trace.events.some((event) => event.event === "shared_state.compile.repair_failed")).toBe(
-      false,
-    );
-    expectSingleSuccessfulRepair(trace);
   });
 
   it("repairs live adds that exceed the per-key active-entry cap", async () => {
@@ -2912,11 +2906,12 @@ describe("compileSharedStateArtifact", () => {
     expect(llmClient.requests).toHaveLength(2);
     expect(patch.operations).toHaveLength(0);
     expect(activeEntries()).toHaveLength(0);
+    expect(trace.events.map((event) => event.event)).toContain("shared_state.compile.degraded");
     expect(trace.events.map((event) => event.event)).toEqual(
       expect.arrayContaining([
         "shared_state.compile.repair_attempted",
         "shared_state.compile.repair_failed",
-        "shared_state.compile.degraded",
+        "llm_call.schema_repair.failed",
       ]),
     );
     expect(
@@ -2924,21 +2919,23 @@ describe("compileSharedStateArtifact", () => {
     ).toBe("invalid_payload");
   });
 
-  it("does not repair max-token-truncated compiler payloads", async () => {
+  it("repairs max-token-truncated compiler payloads once before degrading", async () => {
     const trace = createTraceRecorder();
+    const invalidResponse = emitRawSharedStateArtifactPatchResponse({
+      operations: [
+        {
+          type: "replace",
+          text: "Partial invalid operation from truncation",
+        },
+      ],
+    });
     const llmClient = new FakeLLMClient({
       responses: [
         {
-          ...emitRawSharedStateArtifactPatchResponse({
-            operations: [
-              {
-                type: "replace",
-                text: "Partial invalid operation from truncation",
-              },
-            ],
-          }),
+          ...invalidResponse,
           stop_reason: "max_tokens",
         },
+        invalidResponse,
       ],
     });
 
@@ -2947,11 +2944,15 @@ describe("compileSharedStateArtifact", () => {
       tracer: trace,
     });
 
-    expect(llmClient.requests).toHaveLength(1);
+    expect(llmClient.requests).toHaveLength(2);
     expect(patch.operations).toHaveLength(0);
-    expect(
-      trace.events.some((event) => event.event === "shared_state.compile.repair_attempted"),
-    ).toBe(false);
+    expect(trace.events.map((event) => event.event)).toEqual(
+      expect.arrayContaining([
+        "shared_state.compile.repair_attempted",
+        "shared_state.compile.repair_failed",
+        "llm_call.schema_repair.failed",
+      ]),
+    );
     expect(
       trace.events.find((event) => event.event === "shared_state.compile.degraded")?.data.reason,
     ).toBe("invalid_payload");
