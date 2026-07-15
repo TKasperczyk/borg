@@ -50,6 +50,7 @@ type Recorder = {
     session?: string;
   }>;
   resolvedExternalSenders: unknown[];
+  lookedUpExternalSenders: Array<{ source: string; externalId: string }>;
   externalSenderIds: Map<string, EntityId>;
   ingestSessions: string[];
   extractOptions: unknown[];
@@ -142,6 +143,10 @@ function stubBorg(rec: Recorder): Borg {
         const entityId = createEntityId();
         rec.externalSenderIds.set(input.externalId, entityId);
         return entityId;
+      },
+      findByExternalId: (source: string, externalId: string) => {
+        rec.lookedUpExternalSenders.push({ source, externalId });
+        return rec.externalSenderIds.get(externalId) ?? null;
       },
       get: (id: EntityId) =>
         [...rec.externalSenderIds.values()].some((entityId) => entityId === id)
@@ -258,6 +263,7 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     inspectIds: [],
     appendManyCalls: [],
     resolvedExternalSenders: [],
+    lookedUpExternalSenders: [],
     externalSenderIds: new Map(),
     ingestSessions: [],
     extractOptions: [],
@@ -1071,6 +1077,107 @@ describe("memory sidecar handler", () => {
     };
     expect(boundedBody.commitments).toHaveLength(100);
     expect(boundedBody.truncated).toBe(true);
+  });
+
+  it("resolves commitment audience scope from the append-turn sender external id", async () => {
+    const { pool, rec } = recordingPool();
+    const audienceId = createEntityId();
+    const otherAudienceId = createEntityId();
+    const externalId = "platform/user 42";
+    rec.externalSenderIds.set(externalId, audienceId);
+    rec.commitments.push(
+      testCommitment({
+        directive_family: "tenant_wide",
+        directive: "Tenant-wide rule",
+        priority: 10,
+      }),
+      testCommitment({
+        directive_family: "sender_scoped",
+        directive: "Sender-scoped rule",
+        restricted_audience: audienceId,
+      }),
+      testCommitment({
+        directive_family: "other_sender",
+        directive: "Other sender rule",
+        restricted_audience: otherAudienceId,
+      }),
+    );
+    const base = await start(pool);
+    const response = await get(
+      base,
+      `/memory/commitments?tenant=acme&audience_external_id=${encodeURIComponent(externalId)}`,
+      TOKEN,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      tenant: "acme",
+      audience_entity_id: audienceId,
+      audience_external_id: externalId,
+      audience_resolved: true,
+      commitments: [
+        expect.objectContaining({ family: "tenant_wide" }),
+        expect.objectContaining({ family: "sender_scoped" }),
+      ],
+      truncated: false,
+    });
+    expect(rec.lookedUpExternalSenders).toEqual([
+      { source: "team-agent.sender", externalId },
+    ]);
+    expect(rec.resolvedExternalSenders).toEqual([]);
+  });
+
+  it("returns only tenant-wide commitments for an unknown external audience id", async () => {
+    const { pool, rec } = recordingPool();
+    rec.commitments.push(
+      testCommitment({
+        directive_family: "tenant_wide",
+        directive: "Tenant-wide rule",
+      }),
+      testCommitment({
+        directive_family: "known_sender_only",
+        directive: "Known sender rule",
+        restricted_audience: createEntityId(),
+      }),
+    );
+    const base = await start(pool);
+    const response = await get(
+      base,
+      "/memory/commitments?tenant=acme&audience_external_id=not-seen-yet",
+      TOKEN,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      tenant: "acme",
+      audience_entity_id: null,
+      audience_external_id: "not-seen-yet",
+      audience_resolved: false,
+      commitments: [expect.objectContaining({ family: "tenant_wide" })],
+      truncated: false,
+    });
+    expect(rec.lookedUpExternalSenders).toEqual([
+      { source: "team-agent.sender", externalId: "not-seen-yet" },
+    ]);
+  });
+
+  it("rejects internal and external commitment audiences supplied together", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const response = await get(
+      base,
+      `/memory/commitments?tenant=acme&audience=${createEntityId()}&audience_external_id=sender-1`,
+      TOKEN,
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "'audience' and 'audience_external_id' are mutually exclusive",
+    });
+    expect(rec.tenants).toEqual([]);
+    expect(rec.lookedUpExternalSenders).toEqual([]);
   });
 
   it("strictly validates and creates an operator-set audience commitment", async () => {

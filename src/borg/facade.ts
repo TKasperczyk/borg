@@ -518,6 +518,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     entities: {
       resolve: (...args) => deps.entityRepository.resolve(...args),
       resolveExternal: (...args) => deps.entityRepository.resolveExternal(...args),
+      findByExternalId: (...args) => deps.entityRepository.findByExternalId(...args),
       get: (...args) => deps.entityRepository.get(...args),
       list: (...args) => deps.entityRepository.list(...args),
       getCreator: () => deps.entityRepository.getCreator(),

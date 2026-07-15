@@ -5,6 +5,7 @@
 //   POST /memory/append-turn { tenant, session, user, assistant, sender? } -> append + async extract
 //   POST /memory/recall      { tenant, query, limit? }             -> semantic episodic search
 //   GET  /memory/commitments?tenant=<id>&audience=<entity_id>      -> active commitments
+//        Alternative audience_external_id resolves team-agent sender identity.
 //   POST /memory/commitments { tenant, ...commitment }             -> operator-set commitment
 //   DELETE /memory/commitments?tenant=<id>&id=<commitment_id>      -> retire commitment
 //   GET  /memory/episodes?tenant=<id>&limit=<n>&cursor=<c> -> list raw episodic bank
@@ -643,6 +644,18 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       if (audienceRaw === null) {
         return;
       }
+      const audienceExternalIdRaw = isCommitmentListPath
+        ? optionalSingleQueryValue(res, searchParams, "audience_external_id")
+        : undefined;
+      if (audienceExternalIdRaw === null) {
+        return;
+      }
+      if (audienceRaw !== undefined && audienceExternalIdRaw !== undefined) {
+        send(res, 400, {
+          error: "'audience' and 'audience_external_id' are mutually exclusive",
+        });
+        return;
+      }
       const parsedAudience =
         audienceRaw === undefined
           ? { success: true as const, data: null }
@@ -704,19 +717,36 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         }
 
         if (isCommitmentListPath) {
-          const commitments = await pool.withTenant(tenant, (borg) =>
-            borg.commitments.list({
-              activeOnly: true,
-              audienceEntityId: parsedAudience.data,
-            }),
-          );
-          const ordered = [...commitments].sort(compareCommitmentsForResponse);
+          const result = await pool.withTenant(tenant, (borg) => {
+            const audienceEntityId =
+              audienceExternalIdRaw === undefined
+                ? parsedAudience.data
+                : borg.entities.findByExternalId(
+                    APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE,
+                    audienceExternalIdRaw,
+                  );
+
+            return {
+              audienceEntityId,
+              commitments: borg.commitments.list({
+                activeOnly: true,
+                audienceEntityId,
+              }),
+            };
+          });
+          const ordered = [...result.commitments].sort(compareCommitmentsForResponse);
           const bounded = ordered.slice(0, MAX_COMMITMENT_RESPONSE_ITEMS);
 
           send(res, 200, {
             ok: true,
             tenant,
-            audience_entity_id: parsedAudience.data,
+            audience_entity_id: result.audienceEntityId,
+            ...(audienceExternalIdRaw === undefined
+              ? {}
+              : {
+                  audience_external_id: audienceExternalIdRaw,
+                  audience_resolved: result.audienceEntityId !== null,
+                }),
             commitments: bounded.map((commitment) => projectCommitment(commitment)),
             truncated: ordered.length > bounded.length,
           });

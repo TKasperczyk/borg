@@ -619,6 +619,7 @@ export type BorgEntityResolveExternalInput = Pick<
 export type BorgEntitiesFacade = {
   resolve(name: string, options?: BorgEntityResolveOptions): EntityId;
   resolveExternal(input: BorgEntityResolveExternalInput): EntityId;
+  findByExternalId(source: string, externalId: string): EntityId | null;
   get(id: EntityId): EntityRecord | null;
   list(options?: { kind?: EntityKind }): EntityRecord[];
   getCreator(): EntityRecord | null;

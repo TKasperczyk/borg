@@ -272,6 +272,9 @@ export type BorgEntitiesFacade = {
   resolveExternal: (
     ...args: Parameters<EntityRepository["resolveExternal"]>
   ) => ReturnType<EntityRepository["resolveExternal"]>;
+  findByExternalId: (
+    ...args: Parameters<EntityRepository["findByExternalId"]>
+  ) => ReturnType<EntityRepository["findByExternalId"]>;
   get: (...args: Parameters<EntityRepository["get"]>) => ReturnType<EntityRepository["get"]>;
   list: (...args: Parameters<EntityRepository["list"]>) => ReturnType<EntityRepository["list"]>;
   getCreator: () => ReturnType<EntityRepository["getCreator"]>;
