@@ -56,8 +56,12 @@ export function memoryTraceMaxTenantsFromEnv(env: NodeJS.ProcessEnv = process.en
 function shouldStoreMemoryTraceEvent(event: TurnTraceEventName, data: TurnTraceData): boolean {
   return (
     event === "recall_expansion.completed" ||
+    event === "commitment_classification.downgraded" ||
     event.startsWith("retrieval.") ||
-    (event.startsWith("llm_call.") && data.label === "recall_expansion")
+    event.startsWith("extraction.commitments.") ||
+    event.startsWith("corrective_preference.") ||
+    (event.startsWith("llm_call.") &&
+      (data.label === "recall_expansion" || data.label === "corrective_preference_extractor"))
   );
 }
 

@@ -95,7 +95,39 @@ export const streamEntryIndexMigrations: Migration[] = [
       `);
     },
   },
+  {
+    id: 2,
+    name: "corrective_preference_ingestion_receipts",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE corrective_preference_ingestion_receipts (
+          source_entry_id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('processed', 'retryable', 'dead_letter')),
+          failure_count INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX idx_corrective_preference_receipts_session_status
+        ON corrective_preference_ingestion_receipts(session_id, status);
+      `);
+    },
+  },
 ];
+
+export type CorrectivePreferenceIngestionReceiptStatus =
+  | "processed"
+  | "retryable"
+  | "dead_letter";
+
+export type CorrectivePreferenceIngestionReceipt = {
+  source_entry_id: StreamEntryId;
+  session_id: SessionId;
+  status: CorrectivePreferenceIngestionReceiptStatus;
+  failure_count: number;
+  last_error: string | null;
+  updated_at: number;
+};
 
 export type StreamEntryIndexRecord = {
   entry_id: string;
@@ -172,6 +204,15 @@ type QuarantineRefRow = {
 
 type SessionIdRow = {
   session_id: string;
+};
+
+type CorrectivePreferenceIngestionReceiptRow = {
+  source_entry_id: string;
+  session_id: string;
+  status: string;
+  failure_count: number;
+  last_error: string | null;
+  updated_at: number;
 };
 
 export type StreamEntryIndexRepositoryOptions = {
@@ -461,6 +502,113 @@ export class StreamEntryIndexRepository {
     this.db = options.db;
     this.dataDir = options.dataDir;
     this.logger = options.logger ?? console;
+  }
+
+  getCorrectivePreferenceIngestionReceipt(
+    sourceEntryId: StreamEntryId,
+  ): CorrectivePreferenceIngestionReceipt | null {
+    const row = this.db
+      .prepare(
+        `SELECT source_entry_id, session_id, status, failure_count, last_error, updated_at
+         FROM corrective_preference_ingestion_receipts
+         WHERE source_entry_id = ?`,
+      )
+      .get(sourceEntryId) as CorrectivePreferenceIngestionReceiptRow | undefined;
+
+    if (row === undefined) {
+      return null;
+    }
+
+    return {
+      source_entry_id: row.source_entry_id as StreamEntryId,
+      session_id: row.session_id as SessionId,
+      status: row.status as CorrectivePreferenceIngestionReceiptStatus,
+      failure_count: row.failure_count,
+      last_error: row.last_error,
+      updated_at: row.updated_at,
+    };
+  }
+
+  recordCorrectivePreferenceIngestionProcessed(input: {
+    sourceEntryId: StreamEntryId;
+    sessionId: SessionId;
+    updatedAt: number;
+  }): CorrectivePreferenceIngestionReceipt {
+    this.db
+      .prepare(
+        `INSERT INTO corrective_preference_ingestion_receipts (
+           source_entry_id, session_id, status, failure_count, last_error, updated_at
+         ) VALUES (?, ?, 'processed', 0, NULL, ?)
+         ON CONFLICT (source_entry_id) DO UPDATE SET
+           session_id = excluded.session_id,
+           status = 'processed',
+           last_error = NULL,
+           updated_at = excluded.updated_at
+         WHERE corrective_preference_ingestion_receipts.status != 'dead_letter'`,
+      )
+      .run(input.sourceEntryId, input.sessionId, input.updatedAt);
+
+    const receipt = this.getCorrectivePreferenceIngestionReceipt(input.sourceEntryId);
+
+    if (receipt === null) {
+      throw new Error("Failed to read corrective-preference ingestion receipt after write");
+    }
+
+    return receipt;
+  }
+
+  recordCorrectivePreferenceIngestionFailure(input: {
+    sourceEntryId: StreamEntryId;
+    sessionId: SessionId;
+    error: string;
+    updatedAt: number;
+    maxFailures: number;
+    deadLetterImmediately?: boolean;
+  }): CorrectivePreferenceIngestionReceipt {
+    const recordFailure = this.db.transaction(() => {
+      const previous = this.getCorrectivePreferenceIngestionReceipt(input.sourceEntryId);
+
+      if (previous?.status === "processed" || previous?.status === "dead_letter") {
+        return previous;
+      }
+
+      const failureCount = (previous?.failure_count ?? 0) + 1;
+      const status: CorrectivePreferenceIngestionReceiptStatus =
+        input.deadLetterImmediately === true || failureCount >= input.maxFailures
+          ? "dead_letter"
+          : "retryable";
+
+      this.db
+        .prepare(
+          `INSERT INTO corrective_preference_ingestion_receipts (
+             source_entry_id, session_id, status, failure_count, last_error, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (source_entry_id) DO UPDATE SET
+             session_id = excluded.session_id,
+             status = excluded.status,
+             failure_count = excluded.failure_count,
+             last_error = excluded.last_error,
+             updated_at = excluded.updated_at`,
+        )
+        .run(
+          input.sourceEntryId,
+          input.sessionId,
+          status,
+          failureCount,
+          input.error,
+          input.updatedAt,
+        );
+
+      const receipt = this.getCorrectivePreferenceIngestionReceipt(input.sourceEntryId);
+
+      if (receipt === null) {
+        throw new Error("Failed to read corrective-preference ingestion receipt after failure");
+      }
+
+      return receipt;
+    });
+
+    return recordFailure();
   }
 
   record(

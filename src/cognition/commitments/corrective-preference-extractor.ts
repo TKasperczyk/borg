@@ -224,12 +224,26 @@ export type CorrectivePreferenceExtractorDegradedReason =
   | "missing_tool_call"
   | "invalid_payload";
 
+export class CorrectivePreferenceExtractorDegradedError extends Error {
+  readonly reason: CorrectivePreferenceExtractorDegradedReason;
+  readonly degradationCause: unknown;
+
+  constructor(reason: CorrectivePreferenceExtractorDegradedReason, cause?: unknown) {
+    super(`Corrective preference extraction degraded: ${reason}`);
+    this.name = "CorrectivePreferenceExtractorDegradedError";
+    this.reason = reason;
+    this.degradationCause = cause;
+  }
+}
+
 export type CorrectivePreferenceExtractorOptions = {
   llmClient?: LLMClient;
   model?: string;
   tracer?: TurnTracer;
   turnId?: string;
   sessionId?: SessionId;
+  // Optional strict degradation propagation; defaults to the tolerant behavior.
+  throwOnDegraded?: boolean;
   onDegraded?: (
     reason: CorrectivePreferenceExtractorDegradedReason,
     error?: unknown,
@@ -533,6 +547,10 @@ export class CorrectivePreferenceExtractor {
       }
     } catch {
       // Best-effort degraded-mode logging only.
+    }
+
+    if (this.options.throwOnDegraded === true) {
+      throw new CorrectivePreferenceExtractorDegradedError(reason, error);
     }
 
     return null;

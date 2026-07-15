@@ -609,14 +609,14 @@ describe("Borg", () => {
         failedSessionEntries.some(
           (entry) =>
             entry.kind === "internal_event" &&
-            String(entry.content).includes("Live episodic extraction failed: boom"),
+            String(entry.content).includes("Live stream ingestion failed: boom"),
         ),
       ).toBe(true);
       expect(
         defaultSessionEntries.some(
           (entry) =>
             entry.kind === "internal_event" &&
-            String(entry.content).includes("Live episodic extraction failed: boom"),
+            String(entry.content).includes("Live stream ingestion failed: boom"),
         ),
       ).toBe(false);
     } finally {

@@ -244,11 +244,22 @@ export async function openBorgDependencies(
       embeddingClient,
       lazyLlmClient,
       entityRepository: repositories.entityRepository,
+      commitmentRepository: repositories.commitmentRepository,
+      identityService: repositories.identityService,
+      identityEventRepository: repositories.identityEventRepository,
       relationalSlotRepository: repositories.relationalSlotRepository,
       workingMemoryStore: repositories.workingMemoryStore,
+      entryIndex: repositories.entryIndex,
       streamWatermarkRepository,
       chatResponseWatermarkCoordinator,
       createStreamWriter: repositories.createStreamWriter,
+      ...(options.liveCommitmentExtraction === true
+        ? {
+            correctivePreferenceExtraction: {
+              budget: options.liveCommitmentExtractionBudget ?? null,
+            },
+          }
+        : {}),
       tracer,
       clock,
     });

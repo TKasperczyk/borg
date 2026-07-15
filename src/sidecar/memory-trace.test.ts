@@ -47,10 +47,7 @@ describe("MemoryTraceRegistry", () => {
     });
 
     const alphaAll = registry.query("alpha", 0);
-    expect(alphaAll.events.map((event) => event.turnId)).toEqual([
-      "turn_alpha_2",
-      "turn_alpha_3",
-    ]);
+    expect(alphaAll.events.map((event) => event.turnId)).toEqual(["turn_alpha_2", "turn_alpha_3"]);
     expect(alphaAll.truncated).toBe(false);
     expect(alphaAll.nextSince).toBe(alphaAll.events.at(-1)?.ts);
 
@@ -78,6 +75,37 @@ describe("MemoryTraceRegistry", () => {
     expect(memoryTraceMaxTenantsFromEnv({ BORG_MEMORY_TRACE_MAX_TENANTS: "bad" })).toBe(
       DEFAULT_MEMORY_TRACE_MAX_TENANTS,
     );
+  });
+
+  it("keeps corrective-preference classifier and ingestion outcomes", () => {
+    const registry = new MemoryTraceRegistry({
+      capacity: 4,
+      now: () => 2_000,
+    });
+    const tracer = registry.tracerFor("alpha");
+
+    tracer.emit("llm_call.completed", {
+      turnId: "turn_commitment_llm",
+      label: "corrective_preference_extractor",
+      input_tokens: 5,
+      output_tokens: 2,
+    });
+    tracer.emit("corrective_preference.ingestion.completed", {
+      turnId: "turn_commitment_result",
+      outcome: "none",
+      tokens_used: 7,
+    });
+
+    expect(registry.query("alpha", 0).events).toEqual([
+      expect.objectContaining({
+        event: "llm_call.completed",
+        turnId: "turn_commitment_llm",
+      }),
+      expect.objectContaining({
+        event: "corrective_preference.ingestion.completed",
+        turnId: "turn_commitment_result",
+      }),
+    ]);
   });
 
   it("bounds tenant buffers and evicts the least-recently-written tenant", () => {

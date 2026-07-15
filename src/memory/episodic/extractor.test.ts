@@ -1108,6 +1108,74 @@ describe("episodic extractor", () => {
     expect(prompt).toContain("Copy that complete line verbatim");
   });
 
+  it("does not duplicate an OUTCOME episode when a later entry processor forces replay", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const request = await harness.writer.append({
+      kind: "user_msg",
+      content: "Run the deployment check.",
+    });
+    const outcomeLine = "OUTCOME fp=replay-safe role=deployment-check tenant=tenant_42";
+    const resultEntry = await harness.writer.append({
+      kind: "agent_msg",
+      content: ["Deployment check completed.", outcomeLine, "decision=continue"].join("\n"),
+    });
+    const candidate = {
+      title: "Deployment check outcome",
+      narrative: "I completed the deployment check and continued.",
+      source_stream_ids: [request.id, resultEntry.id],
+      participants: ["team-agent"],
+      tags: ["deployment"],
+      confidence: 0.95,
+      significance: 0.9,
+    };
+    const llm = new FakeLLMClient({
+      responses: [createEpisodeToolResponse([candidate]), createEpisodeToolResponse([candidate])],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "qwen3",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      salienceGateEnabled: false,
+      clock: harness.clock,
+    });
+    const watermarkDb = openDatabase(":memory:", {
+      migrations: streamWatermarkMigrations,
+    });
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: watermarkDb,
+      clock: harness.clock,
+    });
+    const entryProcessor = {
+      process: vi
+        .fn<() => Promise<void>>()
+        .mockRejectedValueOnce(new Error("commitment ingestion retry"))
+        .mockResolvedValueOnce(),
+    };
+    const coordinator = new StreamIngestionCoordinator({
+      extractor,
+      entryProcessor,
+      watermarkRepository,
+      dataDir: harness.tempDir,
+      minEntriesThreshold: 1,
+    });
+
+    cleanup.push(async () => {
+      watermarkDb.close();
+    });
+
+    await expect(coordinator.ingest(DEFAULT_SESSION_ID)).resolves.toMatchObject({ ran: false });
+    await expect(coordinator.ingest(DEFAULT_SESSION_ID)).resolves.toMatchObject({ ran: true });
+
+    const episodes = await harness.repo.listAll();
+    expect(entryProcessor.process).toHaveBeenCalledTimes(2);
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]?.narrative.split(outcomeLine)).toHaveLength(2);
+  });
+
   it("accepts an empty protected chunk and advances the watermark when the salience gate is disabled", async () => {
     const harness = await createRelationalExtractorHarness();
     const protectedEntry = await harness.writer.append({

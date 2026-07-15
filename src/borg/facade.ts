@@ -750,16 +750,19 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           provenance: input.provenance,
           expiresAt: input.expiresAt ?? null,
         }),
+      get: (id) => deps.commitmentRepository.get(id),
       revoke: (...args) => deps.commitmentRepository.revoke(...args),
       list: (options = {}) =>
         deps.commitmentRepository.list({
           activeOnly: options.activeOnly,
           audience:
-            options.audience === undefined
-              ? undefined
-              : options.audience === null
-                ? null
-                : deps.entityRepository.resolve(options.audience),
+            options.audienceEntityId !== undefined
+              ? options.audienceEntityId
+              : options.audience === undefined
+                ? undefined
+                : options.audience === null
+                  ? null
+                  : deps.entityRepository.resolve(options.audience),
           aboutEntity:
             options.aboutEntity === undefined
               ? undefined

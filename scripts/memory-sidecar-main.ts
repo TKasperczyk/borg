@@ -20,6 +20,10 @@ import {
 } from "../src/index.js";
 import { createMemoryHandler } from "../src/sidecar/memory-handler.js";
 import {
+  memoryCommitmentExtractionBudgetFromEnv,
+  memoryCommitmentExtractionEnabledFromEnv,
+} from "../src/sidecar/memory-commitment-extraction.js";
+import {
   MemoryMaintenanceCoordinator,
   memoryMaintenanceConfigFromConfig,
   memorySelfNameFromEnv,
@@ -99,6 +103,8 @@ const pool = new BorgPool({
     embeddingDimensions: embeddingDims,
     embeddingClient,
     llmClient,
+    liveCommitmentExtraction: memoryCommitmentExtractionEnabledFromEnv(process.env),
+    liveCommitmentExtractionBudget: memoryCommitmentExtractionBudgetFromEnv(process.env),
   },
   initializeBeing: (_tenantId, borg) => {
     // This is idempotent tenant provisioning performed by the pool lifecycle,

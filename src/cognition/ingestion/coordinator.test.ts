@@ -392,6 +392,99 @@ describe("StreamIngestionCoordinator", () => {
     }
   });
 
+  it("runs the optional entry processor before advancing the shared watermark", async () => {
+    const dataDir = createTempDir();
+    await seedStream(dataDir, [
+      { kind: "user_msg", content: "remember this preference", ts: 100 },
+      { kind: "agent_msg", content: "understood", ts: 110 },
+    ]);
+
+    const { repo, close } = openRepo();
+    const calls: ExtractCall[] = [];
+    const processed: Array<readonly StreamEntry[]> = [];
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      entryProcessor: {
+        process: async ({ entries }) => {
+          expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)).toBeNull();
+          processed.push(entries);
+        },
+      },
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 2,
+    });
+
+    try {
+      const result = await coordinator.ingest(DEFAULT_SESSION_ID);
+
+      expect(result.ran).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(processed).toHaveLength(1);
+      expect(processed[0]?.map((entry) => entry.kind)).toEqual(["user_msg", "agent_msg"]);
+      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+        lastTs: 110,
+        lastEntryId: expect.any(String),
+      });
+    } finally {
+      close();
+    }
+  });
+
+  it("retries the optional entry processor when it fails before watermark advancement", async () => {
+    const dataDir = createTempDir();
+    await seedStream(dataDir, [
+      { kind: "user_msg", content: "retry this preference", ts: 100 },
+      { kind: "agent_msg", content: "understood", ts: 110 },
+    ]);
+
+    const { repo, close } = openRepo();
+    const calls: ExtractCall[] = [];
+    const errors: unknown[] = [];
+    let processorCalls = 0;
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      entryProcessor: {
+        process: async () => {
+          processorCalls += 1;
+
+          if (processorCalls === 1) {
+            throw new Error("transient commitment extraction failure");
+          }
+        },
+      },
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 2,
+      onError: (error) => {
+        errors.push(error);
+      },
+    });
+
+    try {
+      const failed = await coordinator.ingest(DEFAULT_SESSION_ID);
+
+      expect(failed.ran).toBe(false);
+      expect(failed.error).toMatchObject({
+        message: "transient commitment extraction failure",
+      });
+      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)).toBeNull();
+
+      const retried = await coordinator.catchUp(DEFAULT_SESSION_ID, { maxEntries: 10 });
+
+      expect(retried.ran).toBe(true);
+      expect(processorCalls).toBe(2);
+      expect(calls).toHaveLength(2);
+      expect(errors).toHaveLength(1);
+      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+        lastTs: 110,
+        lastEntryId: expect.any(String),
+      });
+    } finally {
+      close();
+    }
+  });
+
   it("pre-turn catch-up retries backlog left by failed fire-and-forget ingestion", async () => {
     const dataDir = createTempDir();
     await seedStream(dataDir, [

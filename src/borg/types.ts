@@ -180,6 +180,14 @@ export type BorgOpenOptions = {
    * does not consume responses out of band.
    */
   liveExtraction?: boolean;
+  /**
+   * When true, live stream ingestion also classifies sender-stamped user
+   * entries with the corrective-preference machinery. This is disabled by
+   * default because the full cognition turn loop already performs that work.
+   */
+  liveCommitmentExtraction?: boolean;
+  /** Per-user-entry token accounting cap for live commitment extraction. */
+  liveCommitmentExtractionBudget?: number | null;
 };
 
 export type BorgDreamOptions = {

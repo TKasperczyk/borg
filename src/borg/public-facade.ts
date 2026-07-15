@@ -771,11 +771,13 @@ export type BorgCommitmentAddInput = {
 export type BorgCommitmentListOptions = {
   activeOnly?: boolean;
   audience?: string | null;
+  audienceEntityId?: EntityId | null;
   aboutEntity?: string | null;
 };
 
 export type BorgCommitmentsFacade = {
   add(input: BorgCommitmentAddInput): CommitmentRecord;
+  get(id: CommitmentId): CommitmentRecord | null;
   revoke(
     id: CommitmentId,
     reason: string,

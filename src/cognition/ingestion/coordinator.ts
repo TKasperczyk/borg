@@ -34,6 +34,15 @@ function isFileMissingError(error: unknown): boolean {
 
 export type StreamIngestionCoordinatorOptions = {
   extractor: EpisodicExtractor;
+  /**
+   * Runs after the episodic extractor has handled the complete selected
+   * window. Consumers therefore observe relational state produced anywhere in
+   * that window. This preserves episodic grouping/OUTCOME replay semantics;
+   * processors needing per-entry snapshots must supply them explicitly.
+   */
+  entryProcessor?: {
+    process(input: { sessionId: SessionId; entries: readonly StreamEntry[] }): Promise<void>;
+  };
   watermarkRepository: StreamWatermarkRepository;
   chatResponseWatermarkCoordinator?: Pick<
     ChatResponseWatermarkCoordinator,
@@ -898,6 +907,10 @@ export class StreamIngestionCoordinator {
         session: sessionId,
         entryIds,
       });
+      await this.options.entryProcessor?.process({
+        sessionId,
+        entries,
+      });
 
       this.options.watermarkRepository.set(EPISODIC_PROCESS_NAME, sessionId, {
         lastTs: answeredWindow.terminalCursor.ts,
@@ -968,6 +981,10 @@ export class StreamIngestionCoordinator {
           ts: lastProcessedEntry.timestamp,
           entryId: lastProcessedEntry.id,
         },
+      });
+      await this.options.entryProcessor?.process({
+        sessionId,
+        entries: newEntries,
       });
 
       this.options.watermarkRepository.set(EPISODIC_PROCESS_NAME, sessionId, {

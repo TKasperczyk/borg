@@ -11,6 +11,7 @@ export {
   getBudgetErrorTokens,
   withBudget,
   wrapLlmClientWithSink,
+  type BudgetProcessName,
 } from "./budget.js";
 export { extractedEpisodeIds, isEpisodeExtracted } from "./extracted-episodes.js";
 export {

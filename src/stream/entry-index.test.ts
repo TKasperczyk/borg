@@ -1315,4 +1315,73 @@ describe("stream entry index", () => {
       db.close();
     }
   });
+
+  it("persists corrective-preference retry and dead-letter receipts across reopen", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-receipts-"));
+    tempDirs.push(tempDir);
+    const dbPath = join(tempDir, "borg.db");
+    const sessionId = createSessionId();
+    const sourceEntryId = createStreamEntryId();
+    const firstDb = openDatabase(dbPath, {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const firstIndex = new StreamEntryIndexRepository({ db: firstDb, dataDir: tempDir });
+
+    firstIndex.recordCorrectivePreferenceIngestionFailure({
+      sourceEntryId,
+      sessionId,
+      error: "provider unavailable",
+      updatedAt: 100,
+      maxFailures: 3,
+    });
+    firstIndex.recordCorrectivePreferenceIngestionFailure({
+      sourceEntryId,
+      sessionId,
+      error: "provider still unavailable",
+      updatedAt: 200,
+      maxFailures: 3,
+    });
+    firstDb.close();
+
+    const reopenedDb = openDatabase(dbPath, {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const reopenedIndex = new StreamEntryIndexRepository({
+      db: reopenedDb,
+      dataDir: tempDir,
+    });
+
+    try {
+      expect(reopenedIndex.getCorrectivePreferenceIngestionReceipt(sourceEntryId)).toEqual({
+        source_entry_id: sourceEntryId,
+        session_id: sessionId,
+        status: "retryable",
+        failure_count: 2,
+        last_error: "provider still unavailable",
+        updated_at: 200,
+      });
+      expect(
+        reopenedIndex.recordCorrectivePreferenceIngestionFailure({
+          sourceEntryId,
+          sessionId,
+          error: "persistent poison",
+          updatedAt: 300,
+          maxFailures: 3,
+        }),
+      ).toMatchObject({ status: "dead_letter", failure_count: 3 });
+
+      reopenedIndex.recordCorrectivePreferenceIngestionProcessed({
+        sourceEntryId,
+        sessionId,
+        updatedAt: 400,
+      });
+      expect(reopenedIndex.getCorrectivePreferenceIngestionReceipt(sourceEntryId)).toMatchObject({
+        status: "dead_letter",
+        failure_count: 3,
+        last_error: "persistent poison",
+      });
+    } finally {
+      reopenedDb.close();
+    }
+  });
 });

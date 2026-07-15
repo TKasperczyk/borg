@@ -12,7 +12,10 @@ import {
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { RelationshipClaim } from "../../memory/common/relationship-claims.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
-import { CorrectivePreferenceExtractor } from "./corrective-preference-extractor.js";
+import {
+  CorrectivePreferenceExtractor,
+  CorrectivePreferenceExtractorDegradedError,
+} from "./corrective-preference-extractor.js";
 
 function correctivePreferenceResponse(input: {
   classification: "corrective_preference" | "retire_commitment" | "none";
@@ -609,6 +612,27 @@ describe("CorrectivePreferenceExtractor", () => {
         activeCommitments: [],
       }),
     ).resolves.toBeNull();
+    expect(onDegraded).toHaveBeenCalledWith("llm_unavailable", undefined);
+  });
+
+  it("can surface degradation for strict sidecar retry semantics", async () => {
+    const onDegraded = vi.fn();
+    const extractor = new CorrectivePreferenceExtractor({
+      onDegraded,
+      throwOnDegraded: true,
+    });
+
+    await expect(
+      extractor.extract({
+        userMessage: "Never disclose this.",
+        recentHistory: [],
+        audienceEntityId: null,
+        activeCommitments: [],
+      }),
+    ).rejects.toMatchObject({
+      name: "CorrectivePreferenceExtractorDegradedError",
+      reason: "llm_unavailable",
+    } satisfies Partial<CorrectivePreferenceExtractorDegradedError>);
     expect(onDegraded).toHaveBeenCalledWith("llm_unavailable", undefined);
   });
 

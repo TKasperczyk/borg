@@ -406,12 +406,16 @@ export type BorgCommitmentsFacade = {
     provenance: Provenance;
     expiresAt?: number | null;
   }) => ReturnType<CommitmentRepository["add"]>;
+  get: (
+    ...args: Parameters<CommitmentRepository["get"]>
+  ) => ReturnType<CommitmentRepository["get"]>;
   revoke: (
     ...args: Parameters<CommitmentRepository["revoke"]>
   ) => ReturnType<CommitmentRepository["revoke"]>;
   list: (options?: {
     activeOnly?: boolean;
     audience?: string | null;
+    audienceEntityId?: EntityId | null;
     aboutEntity?: string | null;
   }) => ReturnType<CommitmentRepository["list"]>;
   countActive: () => ReturnType<CommitmentRepository["countActive"]>;

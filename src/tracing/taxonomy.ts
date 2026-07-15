@@ -155,6 +155,9 @@ export const TRACE_EVENT_TAXONOMY = {
     "review_queue.completed",
   ],
   ingestion: [
+    "corrective_preference.ingestion.completed",
+    "corrective_preference.ingestion.retry_scheduled",
+    "corrective_preference.ingestion.dead_lettered",
     "episodic_extractor.skipped",
     "semantic_extractor.started",
     "semantic_extractor.degraded",

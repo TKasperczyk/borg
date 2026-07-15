@@ -12,8 +12,14 @@ import {
 } from "./memory-handler.js";
 import { MemoryTraceRegistry } from "./memory-trace.js";
 import type { Borg } from "../borg.js";
+import { commitmentSchema, type CommitmentRecord } from "../memory/commitments/index.js";
 import type { Episode } from "../memory/episodic/index.js";
-import { createEntityId, createMaintenanceRunId, type EntityId } from "../util/ids.js";
+import {
+  createCommitmentId,
+  createEntityId,
+  createMaintenanceRunId,
+  type EntityId,
+} from "../util/ids.js";
 
 const TOKEN = "secret-token";
 
@@ -47,6 +53,8 @@ type Recorder = {
   externalSenderIds: Map<string, EntityId>;
   ingestSessions: string[];
   extractOptions: unknown[];
+  commitments: CommitmentRecord[];
+  commitmentAdds: unknown[];
 };
 
 function testEpisode(id: Episode["id"] = "ep_aaaaaaaaaaaaaaaa" as Episode["id"]): Episode {
@@ -79,6 +87,36 @@ function testEpisode(id: Episode["id"] = "ep_aaaaaaaaaaaaaaaa" as Episode["id"])
   };
 }
 
+function testCommitment(overrides: Partial<CommitmentRecord> = {}): CommitmentRecord {
+  return commitmentSchema.parse({
+    id: overrides.id ?? createCommitmentId(),
+    record_version: overrides.record_version ?? 1,
+    type: overrides.type ?? "preference",
+    kind: overrides.kind ?? "participant_preference",
+    enforcement_class: overrides.enforcement_class ?? "advisory",
+    critical_domain: overrides.critical_domain ?? null,
+    directive_family: overrides.directive_family ?? "concise_replies",
+    closure_pressure_relevance: overrides.closure_pressure_relevance ?? "neutral",
+    directive: overrides.directive ?? "Keep replies concise.",
+    priority: overrides.priority ?? 5,
+    made_to_entity: overrides.made_to_entity ?? null,
+    restricted_audience: overrides.restricted_audience ?? null,
+    about_entity: overrides.about_entity ?? null,
+    committed_by_entity_id: overrides.committed_by_entity_id ?? null,
+    provenance: overrides.provenance ?? { kind: "manual" },
+    source_stream_entry_ids: overrides.source_stream_entry_ids,
+    created_at: overrides.created_at ?? 100,
+    expires_at: overrides.expires_at ?? null,
+    expired_at: overrides.expired_at ?? null,
+    revoked_at: overrides.revoked_at ?? null,
+    revoked_reason: overrides.revoked_reason ?? null,
+    revoke_provenance: overrides.revoke_provenance ?? null,
+    superseded_by: overrides.superseded_by ?? null,
+    canonicalized_by_artifact_entry_id: overrides.canonicalized_by_artifact_entry_id ?? null,
+    last_reinforced_at: overrides.last_reinforced_at ?? 100,
+  });
+}
+
 function stubBorg(rec: Recorder): Borg {
   return {
     stream: {
@@ -104,6 +142,83 @@ function stubBorg(rec: Recorder): Borg {
         const entityId = createEntityId();
         rec.externalSenderIds.set(input.externalId, entityId);
         return entityId;
+      },
+      get: (id: EntityId) =>
+        [...rec.externalSenderIds.values()].some((entityId) => entityId === id)
+          ? {
+              id,
+              canonical_name: "Known sender",
+              aliases: [],
+              kind: "person",
+              borg_role: null,
+              created_at: 1,
+            }
+          : null,
+    },
+    identity: {
+      addCommitment: (input: {
+        type: CommitmentRecord["type"];
+        kind: CommitmentRecord["kind"];
+        enforcementClass: CommitmentRecord["enforcement_class"];
+        criticalDomain: CommitmentRecord["critical_domain"];
+        directiveFamily: string;
+        directive: string;
+        priority: number;
+        restrictedAudience: EntityId | null;
+      }) => {
+        rec.commitmentAdds.push(input);
+        const commitment = testCommitment({
+          type: input.type,
+          kind: input.kind,
+          enforcement_class: input.enforcementClass,
+          critical_domain: input.criticalDomain,
+          directive_family: input.directiveFamily,
+          directive: input.directive,
+          priority: input.priority,
+          restricted_audience: input.restrictedAudience,
+          created_at: 100 + rec.commitments.length,
+          last_reinforced_at: 100 + rec.commitments.length,
+        });
+        rec.commitments.push(commitment);
+        return commitment;
+      },
+    },
+    commitments: {
+      get: (id: CommitmentRecord["id"]) =>
+        rec.commitments.find((commitment) => commitment.id === id) ?? null,
+      list: (options?: { activeOnly?: boolean; audienceEntityId?: EntityId | null }) =>
+        rec.commitments.filter((commitment) => {
+          if (
+            options?.activeOnly === true &&
+            (commitment.revoked_at !== null ||
+              commitment.expired_at !== null ||
+              commitment.superseded_by !== null)
+          ) {
+            return false;
+          }
+
+          if (options?.audienceEntityId === undefined) {
+            return true;
+          }
+
+          const scope = commitment.restricted_audience ?? commitment.made_to_entity;
+          return scope === null || scope === options.audienceEntityId;
+        }),
+      revoke: (id: CommitmentRecord["id"], reason: string) => {
+        const index = rec.commitments.findIndex((commitment) => commitment.id === id);
+        const current = rec.commitments[index];
+        if (current === undefined) {
+          return null;
+        }
+        const revoked = testCommitment({
+          ...current,
+          record_version: (current.record_version ?? 1) + 1,
+          revoked_at: 500,
+          revoked_reason: reason,
+          revoke_provenance: { kind: "manual" },
+        });
+        rec.commitments[index] = revoked;
+        return revoked;
       },
     },
     episodic: {
@@ -146,6 +261,8 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     externalSenderIds: new Map(),
     ingestSessions: [],
     extractOptions: [],
+    commitments: [],
+    commitmentAdds: [],
   };
   const pool: MemoryPool = {
     async withTenant(tenantId, fn, opts) {
@@ -186,6 +303,14 @@ async function get(base: string, path: string, token?: string) {
     headers["x-borg-token"] = token;
   }
   return fetch(`${base}${path}`, { headers });
+}
+
+async function del(base: string, path: string, token?: string) {
+  const headers: Record<string, string> = {};
+  if (token !== undefined) {
+    headers["x-borg-token"] = token;
+  }
+  return fetch(`${base}${path}`, { method: "DELETE", headers });
 }
 
 async function requestRaw(
@@ -848,6 +973,198 @@ describe("memory sidecar handler", () => {
       (await get(invalidBase, "/memory/episodes/not-an-episode?tenant=acme", TOKEN)).status,
     ).toBe(400);
     expect(invalidCalls).toEqual([]);
+  });
+
+  it("lists applicable active commitments with critical-first ordering and a bounded response", async () => {
+    const { pool, rec } = recordingPool();
+    const audienceId = createEntityId();
+    const otherAudienceId = createEntityId();
+    rec.externalSenderIds.set("known-audience", audienceId);
+    rec.commitments.push(
+      testCommitment({
+        directive_family: "global_advisory",
+        directive: "Global advisory",
+        priority: 100,
+        enforcement_class: "advisory",
+      }),
+      testCommitment({
+        type: "boundary",
+        kind: "boundary",
+        directive_family: "global_critical",
+        directive: "Global critical",
+        priority: 1,
+        enforcement_class: "critical",
+        critical_domain: "privacy",
+      }),
+      testCommitment({
+        type: "boundary",
+        kind: "audience_rule",
+        directive_family: "audience_critical",
+        directive: "Audience critical",
+        priority: 9,
+        enforcement_class: "critical",
+        critical_domain: "audience_scope",
+        restricted_audience: audienceId,
+      }),
+      testCommitment({
+        type: "boundary",
+        kind: "audience_rule",
+        directive_family: "other_audience",
+        directive: "Other audience only",
+        priority: 99,
+        enforcement_class: "critical",
+        critical_domain: "audience_scope",
+        restricted_audience: otherAudienceId,
+      }),
+      testCommitment({
+        directive_family: "retired",
+        directive: "Retired",
+        revoked_at: 200,
+        revoked_reason: "done",
+        revoke_provenance: { kind: "manual" },
+      }),
+    );
+    const base = await start(pool);
+    const response = await get(
+      base,
+      `/memory/commitments?tenant=acme&audience=${audienceId}`,
+      TOKEN,
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      audience_entity_id: string;
+      commitments: Array<Record<string, unknown>>;
+      truncated: boolean;
+    };
+    expect(body.audience_entity_id).toBe(audienceId);
+    expect(body.commitments.map((commitment) => commitment.family)).toEqual([
+      "audience_critical",
+      "global_critical",
+      "global_advisory",
+    ]);
+    expect(body.commitments[0]).toMatchObject({
+      type: "boundary",
+      kind: "audience_rule",
+      enforcement_class: "critical",
+      critical_domain: "audience_scope",
+      directive: "Audience critical",
+      family: "audience_critical",
+      priority: 9,
+      audience_entity_id: audienceId,
+    });
+    expect(body.truncated).toBe(false);
+
+    rec.commitments = Array.from({ length: 101 }, (_, index) =>
+      testCommitment({
+        directive_family: `bounded_${index}`,
+        directive: `Bounded ${index}`,
+        priority: index,
+        created_at: index,
+        last_reinforced_at: index,
+      }),
+    );
+    const bounded = await get(base, "/memory/commitments?tenant=acme", TOKEN);
+    const boundedBody = (await bounded.json()) as {
+      commitments: unknown[];
+      truncated: boolean;
+    };
+    expect(boundedBody.commitments).toHaveLength(100);
+    expect(boundedBody.truncated).toBe(true);
+  });
+
+  it("strictly validates and creates an operator-set audience commitment", async () => {
+    const { pool, rec } = recordingPool();
+    const audienceId = createEntityId();
+    rec.externalSenderIds.set("known-audience", audienceId);
+    const base = await start(pool);
+    const payload = {
+      tenant: "acme",
+      type: "boundary",
+      kind: "audience_rule",
+      enforcement_class: "critical",
+      critical_domain: "privacy",
+      directive: "Never disclose private launch notes.",
+      family: "Private Launch Notes",
+      priority: 12,
+      audience_entity_id: audienceId,
+    };
+    const response = await post(base, "/memory/commitments", payload, TOKEN);
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      commitment: {
+        type: "boundary",
+        kind: "audience_rule",
+        enforcement_class: "critical",
+        critical_domain: "privacy",
+        directive: "Never disclose private launch notes.",
+        family: "private_launch_notes",
+        priority: 12,
+        audience_entity_id: audienceId,
+      },
+    });
+    expect(rec.commitmentAdds).toHaveLength(1);
+    expect(rec.exclusives).toEqual([true]);
+
+    const unknownField = await post(
+      base,
+      "/memory/commitments",
+      { ...payload, unexpected: true },
+      TOKEN,
+    );
+    expect(unknownField.status).toBe(400);
+    expect(await unknownField.json()).toEqual({ error: "invalid commitment body" });
+
+    const invalidClassification = await post(
+      base,
+      "/memory/commitments",
+      {
+        ...payload,
+        type: "rule",
+        kind: "process_norm",
+        critical_domain: "safety",
+      },
+      TOKEN,
+    );
+    expect(invalidClassification.status).toBe(400);
+  });
+
+  it("retires an active commitment and rejects invalid or inactive ids", async () => {
+    const { pool, rec } = recordingPool();
+    const commitment = testCommitment();
+    rec.commitments.push(commitment);
+    const base = await start(pool);
+
+    expect(
+      (await del(base, "/memory/commitments?tenant=acme&id=not-a-commitment", TOKEN)).status,
+    ).toBe(400);
+
+    const retired = await del(base, `/memory/commitments?tenant=acme&id=${commitment.id}`, TOKEN);
+    expect(retired.status).toBe(200);
+    expect(await retired.json()).toMatchObject({
+      ok: true,
+      commitment: {
+        id: commitment.id,
+      },
+    });
+    expect(rec.commitments[0]?.revoked_reason).toBe("retired_by_operator");
+    expect(rec.exclusives.at(-1)).toBe(true);
+
+    expect(
+      (await del(base, `/memory/commitments?tenant=acme&id=${commitment.id}`, TOKEN)).status,
+    ).toBe(409);
+  });
+
+  it("validates commitment audience ids before opening a tenant", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+
+    expect((await get(base, "/memory/commitments?tenant=acme&audience=bad", TOKEN)).status).toBe(
+      400,
+    );
+    expect(rec.tenants).toEqual([]);
   });
 
   it("remembers (append + extract), routing by tenant", async () => {

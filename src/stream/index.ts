@@ -39,6 +39,8 @@ export { StreamWriter, type StreamWriterOptions } from "./stream-writer.js";
 export {
   StreamEntryIndexRepository,
   streamEntryIndexMigrations,
+  type CorrectivePreferenceIngestionReceipt,
+  type CorrectivePreferenceIngestionReceiptStatus,
   type IndexedEntryFacts,
   type LookupExactStreamBacklogResponseStampInput,
   type LookupSessionStreamBacklogResponseStampsInput,

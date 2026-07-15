@@ -4,6 +4,9 @@
 //   POST /memory/remember    { tenant, content, author? }          -> append + extract episode(s)
 //   POST /memory/append-turn { tenant, session, user, assistant, sender? } -> append + async extract
 //   POST /memory/recall      { tenant, query, limit? }             -> semantic episodic search
+//   GET  /memory/commitments?tenant=<id>&audience=<entity_id>      -> active commitments
+//   POST /memory/commitments { tenant, ...commitment }             -> operator-set commitment
+//   DELETE /memory/commitments?tenant=<id>&id=<commitment_id>      -> retire commitment
 //   GET  /memory/episodes?tenant=<id>&limit=<n>&cursor=<c> -> list raw episodic bank
 //   GET  /memory/episodes/{id}?tenant=<id>                  -> inspect one raw episode
 //   GET  /memory/trace?tenant=<id>&since=<ts>                -> inspect recall trace buffer
@@ -20,11 +23,24 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+import { z } from "zod";
+
 import type { Borg } from "../borg.js";
+import { normalizeCommitmentClassification } from "../cognition/commitments/classification-normalizer.js";
+import {
+  commitmentCriticalDomainSchema,
+  commitmentEnforcementClassSchema,
+  commitmentKindSchema,
+  commitmentTypeSchema,
+  directiveFamilySchema,
+  entityIdSchema,
+  type CommitmentRecord,
+} from "../memory/commitments/index.js";
 import type { Episode } from "../memory/episodic/index.js";
 import type { StreamEntryInput } from "../stream/index.js";
 import {
   parseAuditId,
+  parseCommitmentId,
   parseEpisodeId,
   parseMaintenanceRunId,
   parseSessionId,
@@ -69,7 +85,41 @@ const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
 const DEFAULT_MAX_RECALL_LIMIT = 50;
 const DEFAULT_EPISODE_LIST_LIMIT = 20;
 const MAX_EPISODE_LIST_LIMIT = 100;
+const MAX_COMMITMENT_RESPONSE_ITEMS = 100;
 const APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE = "team-agent.sender";
+
+const operatorCommitmentBodySchema = z
+  .object({
+    tenant: z.string().trim().regex(TENANT_ID_RE),
+    type: commitmentTypeSchema.exclude(["promise"]),
+    kind: commitmentKindSchema.exclude(["assistant_commitment"]),
+    enforcement_class: commitmentEnforcementClassSchema,
+    critical_domain: commitmentCriticalDomainSchema.nullable(),
+    directive: z.string().trim().min(1),
+    family: directiveFamilySchema,
+    priority: z.number().int(),
+    audience_entity_id: entityIdSchema.nullable().optional().default(null),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const normalized = normalizeCommitmentClassification({
+      kind: value.kind,
+      type: value.type,
+      enforcement_class: value.enforcement_class,
+      critical_domain: value.critical_domain,
+    });
+
+    if (
+      normalized.enforcement_class !== value.enforcement_class ||
+      normalized.critical_domain !== value.critical_domain
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "invalid enforcement_class/critical_domain for commitment kind and type",
+        path: ["enforcement_class"],
+      });
+    }
+  });
 
 class PayloadTooLargeError extends Error {}
 
@@ -198,6 +248,25 @@ function requiredSingleQueryValue(
   return values[0]!.trim();
 }
 
+function optionalSingleQueryValue(
+  res: ServerResponse,
+  searchParams: URLSearchParams,
+  name: string,
+): string | null | undefined {
+  const values = searchParams.getAll(name);
+
+  if (values.length === 0) {
+    return undefined;
+  }
+
+  if (values.length !== 1 || values[0]?.trim() === "") {
+    send(res, 400, { error: `invalid or duplicate '${name}'` });
+    return null;
+  }
+
+  return values[0]!.trim();
+}
+
 function episodeListLimitFromQuery(searchParams: URLSearchParams): number {
   const raw = searchParams.get("limit");
   const rawLimit = raw === null || raw.trim() === "" ? DEFAULT_EPISODE_LIST_LIMIT : Number(raw);
@@ -256,6 +325,45 @@ function episodeWithoutEmbedding(episode: Episode): Omit<Episode, "embedding"> {
   return rest;
 }
 
+function projectCommitment(commitment: CommitmentRecord): {
+  id: CommitmentRecord["id"];
+  type: CommitmentRecord["type"];
+  kind: CommitmentRecord["kind"];
+  enforcement_class: CommitmentRecord["enforcement_class"];
+  critical_domain: CommitmentRecord["critical_domain"];
+  directive: string;
+  family: string;
+  priority: number;
+  audience_entity_id: CommitmentRecord["restricted_audience"];
+  created_at: number;
+} {
+  return {
+    id: commitment.id,
+    type: commitment.type,
+    kind: commitment.kind,
+    enforcement_class: commitment.enforcement_class,
+    critical_domain: commitment.critical_domain,
+    directive: commitment.directive,
+    family: commitment.directive_family,
+    priority: commitment.priority,
+    audience_entity_id: commitment.restricted_audience ?? commitment.made_to_entity,
+    created_at: commitment.created_at,
+  };
+}
+
+function compareCommitmentsForResponse(left: CommitmentRecord, right: CommitmentRecord): number {
+  const enforcementOrder =
+    (left.enforcement_class === "critical" ? 0 : 1) -
+    (right.enforcement_class === "critical" ? 0 : 1);
+
+  return (
+    enforcementOrder ||
+    right.priority - left.priority ||
+    left.created_at - right.created_at ||
+    left.id.localeCompare(right.id)
+  );
+}
+
 function errorCode(error: unknown): unknown {
   return error !== null && typeof error === "object" && "code" in error
     ? (error as { code?: unknown }).code
@@ -305,6 +413,79 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
 
     if (!tokenMatches(req.headers["x-borg-token"], token)) {
       send(res, 401, { error: "unauthorized" });
+      return;
+    }
+
+    if (method === "DELETE" && rawPath === "/memory/commitments") {
+      const tenant = requiredSingleQueryValue(res, searchParams, "tenant");
+      if (tenant === null) {
+        return;
+      }
+      const commitmentIdRaw = requiredSingleQueryValue(res, searchParams, "id");
+      if (commitmentIdRaw === null) {
+        return;
+      }
+      if (!validateTenantForResponse(res, tenant)) {
+        return;
+      }
+
+      let commitmentId;
+      try {
+        commitmentId = parseCommitmentId(commitmentIdRaw);
+      } catch {
+        send(res, 400, { error: "invalid 'id'" });
+        return;
+      }
+
+      try {
+        const result = await pool.withTenant(
+          tenant,
+          (borg) => {
+            const commitment = borg.commitments.get(commitmentId);
+
+            if (commitment === null) {
+              return { status: "missing" as const };
+            }
+
+            const active = borg.commitments
+              .list({ activeOnly: true })
+              .some((candidate) => candidate.id === commitmentId);
+
+            if (!active) {
+              return { status: "inactive" as const };
+            }
+
+            return {
+              status: "retired" as const,
+              commitment: borg.commitments.revoke(commitmentId, "retired_by_operator", {
+                kind: "manual",
+              }),
+            };
+          },
+          { exclusive: true },
+        );
+
+        if (result.status === "missing") {
+          send(res, 404, { error: "commitment not found" });
+          return;
+        }
+        if (result.status === "inactive") {
+          send(res, 409, { error: "commitment is not active" });
+          return;
+        }
+        if (result.commitment === null) {
+          send(res, 409, { error: "commitment could not be retired" });
+          return;
+        }
+
+        send(res, 200, {
+          ok: true,
+          commitment: projectCommitment(result.commitment),
+        });
+      } catch (error) {
+        console.error(`memory-sidecar: ${rawPath} failed for tenant "${tenant}"`, error);
+        send(res, 500, { error: "internal error" });
+      }
       return;
     }
 
@@ -423,15 +604,21 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
     if (method === "GET") {
       const isTracePath = rawPath === "/memory/trace";
       const isEpisodeListPath = rawPath === "/memory/episodes";
+      const isCommitmentListPath = rawPath === "/memory/commitments";
       const isMaintenanceStatusPath = rawPath === "/memory/maintenance/status";
       const isMaintenanceAuditPath = rawPath === "/memory/maintenance/audit";
       const episodeId =
-        isTracePath || isEpisodeListPath || isMaintenanceStatusPath || isMaintenanceAuditPath
+        isTracePath ||
+        isEpisodeListPath ||
+        isCommitmentListPath ||
+        isMaintenanceStatusPath ||
+        isMaintenanceAuditPath
           ? undefined
           : parseEpisodeIdFromPath(rawPath);
       if (
         !isTracePath &&
         !isEpisodeListPath &&
+        !isCommitmentListPath &&
         !isMaintenanceStatusPath &&
         !isMaintenanceAuditPath &&
         episodeId === undefined
@@ -440,14 +627,28 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         return;
       }
 
-      const strictMaintenanceQuery = isMaintenanceStatusPath || isMaintenanceAuditPath;
-      const tenant = strictMaintenanceQuery
+      const strictQuery = isCommitmentListPath || isMaintenanceStatusPath || isMaintenanceAuditPath;
+      const tenant = strictQuery
         ? requiredSingleQueryValue(res, searchParams, "tenant")
         : asString(searchParams.get("tenant"));
       if (tenant === null) {
         return;
       }
       if (!validateTenantForResponse(res, tenant)) {
+        return;
+      }
+      const audienceRaw = isCommitmentListPath
+        ? optionalSingleQueryValue(res, searchParams, "audience")
+        : undefined;
+      if (audienceRaw === null) {
+        return;
+      }
+      const parsedAudience =
+        audienceRaw === undefined
+          ? { success: true as const, data: null }
+          : entityIdSchema.safeParse(audienceRaw);
+      if (!parsedAudience.success) {
+        send(res, 400, { error: "invalid 'audience'" });
         return;
       }
 
@@ -502,6 +703,26 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           return;
         }
 
+        if (isCommitmentListPath) {
+          const commitments = await pool.withTenant(tenant, (borg) =>
+            borg.commitments.list({
+              activeOnly: true,
+              audienceEntityId: parsedAudience.data,
+            }),
+          );
+          const ordered = [...commitments].sort(compareCommitmentsForResponse);
+          const bounded = ordered.slice(0, MAX_COMMITMENT_RESPONSE_ITEMS);
+
+          send(res, 200, {
+            ok: true,
+            tenant,
+            audience_entity_id: parsedAudience.data,
+            commitments: bounded.map((commitment) => projectCommitment(commitment)),
+            truncated: ordered.length > bounded.length,
+          });
+          return;
+        }
+
         if (rawPath === "/memory/episodes") {
           const limit = episodeListLimitFromQuery(searchParams);
           const cursor = episodeListCursorFromQuery(searchParams);
@@ -552,7 +773,8 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       method !== "POST" ||
       (rawPath !== "/memory/remember" &&
         rawPath !== "/memory/recall" &&
-        rawPath !== "/memory/append-turn")
+        rawPath !== "/memory/append-turn" &&
+        rawPath !== "/memory/commitments")
     ) {
       send(res, 404, { error: "not found" });
       return;
@@ -582,6 +804,57 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
     }
 
     try {
+      if (rawPath === "/memory/commitments") {
+        const parsed = operatorCommitmentBodySchema.safeParse(body);
+
+        if (!parsed.success) {
+          send(res, 400, { error: "invalid commitment body" });
+          return;
+        }
+
+        const result = await pool.withTenant(
+          tenant,
+          (borg) => {
+            if (
+              parsed.data.audience_entity_id !== null &&
+              borg.entities.get(parsed.data.audience_entity_id) === null
+            ) {
+              return { status: "unknown_audience" as const };
+            }
+
+            return {
+              status: "created" as const,
+              commitment: borg.identity.addCommitment({
+                type: parsed.data.type,
+                kind: parsed.data.kind,
+                enforcementClass: parsed.data.enforcement_class,
+                criticalDomain: parsed.data.critical_domain,
+                directiveFamily: parsed.data.family,
+                directive: parsed.data.directive,
+                priority: parsed.data.priority,
+                madeToEntity: null,
+                restrictedAudience: parsed.data.audience_entity_id,
+                aboutEntity: null,
+                committedByEntityId: null,
+                provenance: { kind: "manual" },
+              }),
+            };
+          },
+          { exclusive: true },
+        );
+
+        if (result.status === "unknown_audience") {
+          send(res, 400, { error: "unknown 'audience_entity_id'" });
+          return;
+        }
+
+        send(res, 201, {
+          ok: true,
+          commitment: projectCommitment(result.commitment),
+        });
+        return;
+      }
+
       if (rawPath === "/memory/remember") {
         const content = asString(body.content);
         if (content === "") {
