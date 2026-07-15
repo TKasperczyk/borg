@@ -7,6 +7,7 @@ import {
 } from "../cognition/ingestion/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import type { EntityRepository } from "../memory/commitments/index.js";
 import { EpisodicExtractor, type EpisodicRepository } from "../memory/episodic/index.js";
 import type { RelationalSlotRepository } from "../memory/relational-slots/index.js";
@@ -27,6 +28,7 @@ export type BuildIngestionCoordinatorOptions = {
   streamWatermarkRepository: StreamWatermarkRepository;
   chatResponseWatermarkCoordinator?: ChatResponseWatermarkCoordinator;
   createStreamWriter: BorgStreamWriterFactory;
+  tracer: TurnTracer;
   clock: Clock;
 };
 
@@ -51,6 +53,8 @@ export function buildStreamIngestionCoordinator(
       relationalSlotRepository: options.relationalSlotRepository,
       workingMemoryStore: options.workingMemoryStore,
       defaultUser: options.config.defaultUser,
+      salienceGateEnabled: options.config.episodic.salienceGateEnabled,
+      tracer: options.tracer,
       clock: options.clock,
     }),
     watermarkRepository: options.streamWatermarkRepository,

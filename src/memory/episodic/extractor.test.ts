@@ -7,8 +7,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { type LLMCompleteOptions } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import { StreamIngestionCoordinator } from "../../cognition/ingestion/index.js";
 import { createOfflineTestHarness } from "../../offline/test-support.js";
-import { QUARANTINED_USER_ENTRY_EVENT, StreamWriter } from "../../stream/index.js";
+import {
+  QUARANTINED_USER_ENTRY_EVENT,
+  StreamWatermarkRepository,
+  StreamWriter,
+  streamWatermarkMigrations,
+} from "../../stream/index.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { ManualClock } from "../../util/clock.js";
@@ -404,7 +411,7 @@ describe("episodic extractor", () => {
     expect(listed[0]?.source_stream_ids).not.toContain(perception.id);
   });
 
-  it("includes secondary-thread coverage guidance in the extraction prompt", async () => {
+  it("gates non-salient chunks and includes the significance rubric in the prompt", async () => {
     const harness = await createRelationalExtractorHarness();
     const selfEntityId = harness.entityRepository.resolve("self", {
       kind: "self",
@@ -418,6 +425,11 @@ describe("episodic extractor", () => {
     const llm = new FakeLLMClient({
       responses: [createEpisodeToolResponse([])],
     });
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    } satisfies TurnTracer;
     const extractor = new EpisodicExtractor({
       dataDir: harness.tempDir,
       episodicRepository: harness.repo,
@@ -425,6 +437,7 @@ describe("episodic extractor", () => {
       llmClient: llm,
       model: "claude-haiku",
       entityRepository: harness.entityRepository,
+      tracer,
       clock: harness.clock,
     });
 
@@ -434,8 +447,18 @@ describe("episodic extractor", () => {
     expect(result).toEqual({
       inserted: 0,
       updated: 0,
-      skipped: 0,
+      skipped: 1,
     });
+    expect(prompt).toContain("emitting an empty episodes array is valid, expected");
+    expect(prompt).toContain("a novel durable fact");
+    expect(prompt).toContain("an explicit request to remember the content");
+    expect(prompt).toContain("pure command echoes or directory listings");
+    expect(prompt).toContain("restatements of already-covered episodic content");
+    expect(prompt).toContain("about 0.2: routine lookup or minor exchange");
+    expect(prompt).toContain("about 0.4: useful durable fact or small decision");
+    expect(prompt).toContain("about 0.6: notable decision or change");
+    expect(prompt).toContain("about 0.8: incident, outage, or major decision");
+    expect(prompt).toContain("about 0.95: critical incident or foundational commitment");
     expect(prompt).toContain("multiple substantive threads");
     expect(prompt).toContain("not only the headline topic");
     expect(prompt).toContain("prioritize coverage over length");
@@ -444,6 +467,59 @@ describe("episodic extractor", () => {
     );
     expect(prompt).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
     expect(prompt).toContain("Keep the title topic-neutral and scannable");
+    expect(tracer.emit).toHaveBeenCalledWith("episodic_extractor.skipped", {
+      turnId: DEFAULT_SESSION_ID,
+      session_id: DEFAULT_SESSION_ID,
+      reason: "no_salient_episode",
+      source_entry_count: 1,
+      source_stream_ids: [expect.any(String)],
+    });
+  });
+
+  it.each([
+    {
+      mode: "disabled by configuration",
+      salienceGateEnabled: false,
+      bypassSalienceGate: false,
+    },
+    {
+      mode: "explicitly bypassed",
+      salienceGateEnabled: true,
+      bypassSalienceGate: true,
+    },
+  ])("restores empty-result behavior when the salience gate is $mode", async (gate) => {
+    const harness = await createRelationalExtractorHarness();
+    await harness.writer.append({
+      kind: "user_msg",
+      content: "hello",
+    });
+    const llm = new FakeLLMClient({
+      responses: [createEpisodeToolResponse([])],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "qwen3",
+      entityRepository: harness.entityRepository,
+      salienceGateEnabled: gate.salienceGateEnabled,
+      clock: harness.clock,
+    });
+
+    const result = await extractor.extractFromStream(
+      gate.bypassSalienceGate ? { bypassSalienceGate: true } : {},
+    );
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(result).toEqual({
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+    });
+    expect(prompt).not.toContain("emitting an empty episodes array is valid, expected");
+    expect(prompt).not.toContain("pure command echoes or directory listings");
+    expect(prompt).toContain("about 0.95: critical incident or foundational commitment");
   });
 
   it("applies relational slot updates emitted with episodic extraction", async () => {
@@ -967,7 +1043,7 @@ describe("episodic extractor", () => {
     ).toBeNull();
   });
 
-  it("preserves autonomous OUTCOME and decision protocol lines verbatim in the stored narrative", async () => {
+  it("forces episode formation and preserves protected protocol lines verbatim", async () => {
     const harness = await createRelationalExtractorHarness();
     const request = await harness.writer.append({
       kind: "user_msg",
@@ -986,6 +1062,7 @@ describe("episodic extractor", () => {
     });
     const llm = new FakeLLMClient({
       responses: [
+        createEpisodeToolResponse([]),
         createEpisodeToolResponse([
           {
             title: "Autonomous ticket triage",
@@ -1010,12 +1087,18 @@ describe("episodic extractor", () => {
       clock: harness.clock,
     });
 
-    await extractor.extractFromStream();
+    const result = await extractor.extractFromStream();
 
     const episodes = await harness.repo.listAll();
     const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
 
     expect(episodes).toHaveLength(1);
+    expect(result).toEqual({ inserted: 1, updated: 0, skipped: 0 });
+    expect(llm.requests).toHaveLength(2);
+    expect(prompt).not.toContain("emitting an empty episodes array is valid, expected");
+    expect(prompt).toContain("The salience gate is bypassed for the entire chunk");
+    expect(prompt).toContain("You MUST emit at least one episode covering every protected source");
+    expect(prompt).toContain(autonomousResult.id);
     expect(episodes[0]?.narrative).toContain(`\n${outcomeLine}\n${decisionLine}`);
     expect(episodes[0]?.narrative.split(/\r\n|\n|\r/u)).toContain("decision=create:ticket");
     expect(episodes[0]?.narrative.split(outcomeLine)).toHaveLength(2);
@@ -1023,6 +1106,71 @@ describe("episodic extractor", () => {
       episodes[0]?.narrative.split(/\r\n|\n|\r/u).filter((line) => line === decisionLine),
     ).toHaveLength(1);
     expect(prompt).toContain("Copy that complete line verbatim");
+  });
+
+  it("accepts an empty protected chunk and advances the watermark when the salience gate is disabled", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const protectedEntry = await harness.writer.append({
+      kind: "agent_msg",
+      content: ["Autonomous triage completed.", "OUTCOME fp=disabled-gate", "decision=create"].join(
+        "\n",
+      ),
+    });
+    const llm = new FakeLLMClient({
+      responses: [createEpisodeToolResponse([])],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "qwen3",
+      entityRepository: harness.entityRepository,
+      salienceGateEnabled: false,
+      clock: harness.clock,
+    });
+    const watermarkDb = openDatabase(":memory:", {
+      migrations: streamWatermarkMigrations,
+    });
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: watermarkDb,
+      clock: harness.clock,
+    });
+    const onError = vi.fn();
+    const coordinator = new StreamIngestionCoordinator({
+      extractor,
+      watermarkRepository,
+      dataDir: harness.tempDir,
+      minEntriesThreshold: 1,
+      onError,
+    });
+
+    cleanup.push(async () => {
+      watermarkDb.close();
+    });
+
+    const result = await coordinator.ingest(DEFAULT_SESSION_ID);
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(result).toEqual({
+      ran: true,
+      processedEntries: 1,
+      extractionResult: {
+        inserted: 0,
+        updated: 0,
+        skipped: 0,
+      },
+    });
+    expect(onError).not.toHaveBeenCalled();
+    expect(llm.requests).toHaveLength(1);
+    expect(prompt).not.toContain("The salience gate is bypassed for the entire chunk");
+    expect(prompt).not.toContain(
+      "You MUST emit at least one episode covering every protected source",
+    );
+    expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+      lastTs: protectedEntry.timestamp,
+      lastEntryId: protectedEntry.id,
+    });
   });
 
   it("uses sender display names in episode rosters and binds self.name per sender", async () => {

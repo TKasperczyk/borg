@@ -240,6 +240,12 @@ const deliberationConfigSchema = z
   })
   .strict()
   .prefault({});
+const episodicConfigSchema = z
+  .object({
+    salienceGateEnabled: z.boolean().default(true),
+  })
+  .strict()
+  .prefault({});
 const postGenerationGuardsConfigSchema = z
   .object({
     commitment: postGenerationGuardConfigSchema,
@@ -328,6 +334,7 @@ const configBaseSchema = z.object({
   attachments: attachmentsConfigSchema,
   cognition: cognitionConfigSchema,
   deliberation: deliberationConfigSchema,
+  episodic: episodicConfigSchema,
   generation: z
     .object({
       discourseStateHardCapTurns: z.number().int().positive().default(50),
@@ -927,6 +934,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["affective", "moodHalfLifeHours"],
     readOptionalEnvFloat(env, "BORG_AFFECTIVE_MOOD_HALF_LIFE_HOURS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["episodic", "salienceGateEnabled"],
+    readOptionalEnvBoolean(env, "BORG_EPISODIC_SALIENCE_GATE_ENABLED"),
   );
   setConfigOverride(
     overrides,
@@ -1802,6 +1814,9 @@ export function redactConfig(config: Config): Config {
       semantic: {
         ...config.retrieval.semantic,
       },
+    },
+    episodic: {
+      ...config.episodic,
     },
     streamIngestion: {
       settle: {

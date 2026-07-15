@@ -1,4 +1,5 @@
 import type { EmbeddingClient } from "../../embeddings/index.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import {
   callStructuredTool,
   isStructuredToolCallError,
@@ -34,7 +35,10 @@ import { valueAppearsIn } from "../../util/text-presence.js";
 import { estimatePromptTokens, stringifyPromptContent } from "../../util/token-estimate.js";
 import { normalizeEpisodeAccess } from "./access.js";
 import { episodeParticipantEntityIdTerm } from "./participant-terms.js";
-import { preserveProtectedEpisodeTokenLines } from "./protected-lines.js";
+import {
+  collectProtectedEpisodeTokenLines,
+  preserveProtectedEpisodeTokenLines,
+} from "./protected-lines.js";
 import { EpisodicRepository } from "./repository.js";
 import { type Episode } from "./types.js";
 import {
@@ -133,6 +137,8 @@ export type EpisodicExtractorOptions = {
   clock?: Clock;
   chunkTokenLimit?: number;
   maxTokens?: number;
+  salienceGateEnabled?: boolean;
+  tracer?: TurnTracer;
 };
 
 export type ExtractFromStreamOptions = {
@@ -142,6 +148,7 @@ export type ExtractFromStreamOptions = {
   untilTs?: number;
   untilCursor?: StreamCursor;
   entryIds?: readonly StreamEntryId[];
+  bypassSalienceGate?: boolean;
 };
 
 export type ExtractFromStreamResult = {
@@ -388,6 +395,10 @@ function buildExtractorPrompt(
   relationalSlotSubjects: readonly RelationalSlotSubject[],
   senderParticipants: readonly SenderParticipant[],
   selfEntity: SelfPromptEntity | null,
+  options: {
+    salienceGateEnabled: boolean;
+    protectedSourceEntryIds: readonly StreamEntryId[];
+  },
 ): string {
   const sendersById = new Map(
     senderParticipants.map((participant) => [participant.entity_id, participant]),
@@ -418,13 +429,43 @@ function buildExtractorPrompt(
     selfEntity === null
       ? GENERIC_SELF_ENTITY_VOICE_ANCHOR
       : `You are entity ${selfEntity.id} (${selfEntity.canonical_name}); messages with kind "agent_msg" are your own. Write your own actions, statements, and decisions in the first person; refer to every other sender by their name or stable handle.`;
+  const salienceGateGuidance = options.salienceGateEnabled
+    ? [
+        "Salience gate: emitting an empty episodes array is valid, expected, and preferred when the chunk has no durable informational value.",
+        "Form an episode only when at least one source turn contains at least one of:",
+        "- a decision;",
+        "- an outcome, error, or incident;",
+        "- a novel durable fact, such as a config value, system behavior, or access constraint;",
+        "- a stated preference or correction;",
+        "- an identity or relationship fact about a person;",
+        "- an explicit request to remember the content.",
+        "Form no episode for pure command echoes or directory listings; greetings or smalltalk with no informational delta; offers, intentions, or plans with no reported result; or restatements of already-covered episodic content that add no new durable information.",
+        "Do not emit an episode merely to summarize a non-salient exchange.",
+      ]
+    : [];
+  const protectedSourceGuidance =
+    options.protectedSourceEntryIds.length === 0
+      ? []
+      : [
+          "This chunk contains protected OUTCOME fp= or decision= protocol lines. The salience gate is bypassed for the entire chunk.",
+          "You MUST emit at least one episode covering every protected source entry listed below.",
+          `Protected source_stream_ids: ${JSON.stringify(options.protectedSourceEntryIds)}`,
+        ];
 
   const promptLines = [
     "You extract episodic memories from a stream chunk.",
     `Emit your result by calling the ${EXTRACT_EPISODES_TOOL_NAME} tool exactly once.`,
     "source_stream_ids MUST only reference ids present in the chunk.",
     "Perception context is advisory only; NEVER include perception context entries in source_stream_ids.",
+    ...salienceGateGuidance,
+    ...protectedSourceGuidance,
     "Narrative should be 2-5 concise sentences.",
+    "Calibrate significance as lasting importance, separate from confidence. Use the full range and interpolate between these anchors:",
+    "- about 0.2: routine lookup or minor exchange;",
+    "- about 0.4: useful durable fact or small decision;",
+    "- about 0.6: notable decision or change, or a per-person preference;",
+    "- about 0.8: incident, outage, or major decision with lasting consequences;",
+    "- about 0.95: critical incident or foundational commitment.",
     selfEntityGuidance,
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to the narrative body. Keep the title topic-neutral and scannable rather than first-person narration.`,
     "For each user_msg with sender_display_name, attribute that message to the exact display name (for example, ‘Name asked …’), never to a generic user.",
@@ -494,7 +535,10 @@ function subjectForPrompt(subject: RelationalSlotSubject): RelationalSlotSubject
   };
 }
 
-function parseLlmResponse(input: unknown): ExtractorResponse {
+function parseLlmResponse(
+  input: unknown,
+  requiredProtectedSourceEntryIds: readonly StreamEntryId[] = [],
+): ExtractorResponse {
   const parsed = extractorResponseSchema.safeParse(input);
 
   if (!parsed.success) {
@@ -502,6 +546,20 @@ function parseLlmResponse(input: unknown): ExtractorResponse {
       cause: parsed.error,
       code: "EXTRACTOR_OUTPUT_INVALID",
     });
+  }
+
+  const coveredSourceEntryIds = new Set(
+    parsed.data.episodes.flatMap((candidate) => candidate.source_stream_ids),
+  );
+  const missingProtectedSourceEntryIds = requiredProtectedSourceEntryIds.filter(
+    (entryId) => !coveredSourceEntryIds.has(entryId),
+  );
+
+  if (missingProtectedSourceEntryIds.length > 0) {
+    throw new LLMError(
+      `Extractor omitted protected source entries from episode candidates: ${missingProtectedSourceEntryIds.join(", ")}`,
+      { code: "EXTRACTOR_OUTPUT_INVALID" },
+    );
   }
 
   return parsed.data;
@@ -790,11 +848,27 @@ export class EpisodicExtractor {
   private readonly clock: Clock;
   private readonly chunkTokenLimit: number;
   private readonly maxTokens: number;
+  private readonly salienceGateEnabled: boolean;
 
   constructor(private readonly options: EpisodicExtractorOptions) {
     this.clock = options.clock ?? new SystemClock();
     this.chunkTokenLimit = options.chunkTokenLimit ?? 16_000;
     this.maxTokens = options.maxTokens ?? 16_000;
+    this.salienceGateEnabled = options.salienceGateEnabled ?? true;
+  }
+
+  private traceSalienceGateSkip(sessionId: SessionId, chunk: readonly StreamEntry[]): void {
+    if (this.options.tracer?.enabled !== true) {
+      return;
+    }
+
+    this.options.tracer.emit("episodic_extractor.skipped", {
+      turnId: sessionId,
+      session_id: sessionId,
+      reason: "no_salient_episode",
+      source_entry_count: chunk.length,
+      source_stream_ids: chunk.map((entry) => entry.id),
+    });
   }
 
   private deriveEpisodeAccess(
@@ -1081,6 +1155,18 @@ export class EpisodicExtractor {
 
     for (const chunk of chunks) {
       const chunkById = new Map(chunk.map((entry) => [entry.id, entry]));
+      const protectedSourceEntryIds = this.salienceGateEnabled
+        ? chunk.flatMap((entry) =>
+            typeof entry.content === "string" &&
+            collectProtectedEpisodeTokenLines([entry.content]).length > 0
+              ? [entry.id]
+              : [],
+          )
+        : [];
+      const salienceGateEnabled =
+        this.salienceGateEnabled &&
+        extractOptions.bypassSalienceGate !== true &&
+        protectedSourceEntryIds.length === 0;
       const perceptionContextEntries = perceptionContextEntriesForChunk(
         chunk,
         activeContextEntries,
@@ -1105,6 +1191,10 @@ export class EpisodicExtractor {
                     relationalSlotSubjects,
                     senderParticipants,
                     selfEntity,
+                    {
+                      salienceGateEnabled,
+                      protectedSourceEntryIds,
+                    },
                   ),
                 },
               ],
@@ -1114,7 +1204,7 @@ export class EpisodicExtractor {
               budget: "episodic-extraction",
             },
             toolName: EXTRACT_EPISODES_TOOL_NAME,
-            parse: parseLlmResponse,
+            parse: (input) => parseLlmResponse(input, protectedSourceEntryIds),
           })
         ).parsed;
       } catch (error) {
@@ -1127,6 +1217,11 @@ export class EpisodicExtractor {
         throw isStructuredToolCallError(error) ? (error.cause ?? error) : error;
       }
       const candidates = extracted.episodes;
+
+      if (candidates.length === 0 && salienceGateEnabled) {
+        skipped += 1;
+        this.traceSalienceGateSkip(session, chunk);
+      }
 
       for (const candidate of candidates) {
         const outcome = await this.processCandidate(candidate, chunkById, activeContextEntries);

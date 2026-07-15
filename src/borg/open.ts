@@ -249,6 +249,7 @@ export async function openBorgDependencies(
       streamWatermarkRepository,
       chatResponseWatermarkCoordinator,
       createStreamWriter: repositories.createStreamWriter,
+      tracer,
       clock,
     });
     const repairSessionStreamEntryIndex = (sessionId: SessionId) =>

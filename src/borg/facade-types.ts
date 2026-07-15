@@ -96,6 +96,7 @@ export type BorgEpisodicFacade = {
     sinceCursor?: StreamCursor;
     untilTs?: number;
     session?: SessionId;
+    bypassSalienceGate?: boolean;
   }) => Promise<ExtractFromStreamResult>;
   ingest: (options?: { session?: SessionId }) => Promise<IngestionResult>;
   list: (...args: Parameters<EpisodicRepository["list"]>) => ReturnType<EpisodicRepository["list"]>;

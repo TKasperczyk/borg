@@ -414,6 +414,8 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           relationalSlotRepository: deps.relationalSlotRepository,
           workingMemoryStore: deps.workingMemoryStore,
           defaultUser: deps.config.defaultUser,
+          salienceGateEnabled: deps.config.episodic.salienceGateEnabled,
+          tracer: deps.tracer,
           clock: deps.clock,
         });
 
@@ -422,6 +424,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           sinceTs: options.sinceTs,
           sinceCursor: options.sinceCursor,
           untilTs: options.untilTs,
+          bypassSalienceGate: options.bypassSalienceGate,
         });
       },
       ingest: (options = {}) =>

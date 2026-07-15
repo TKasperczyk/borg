@@ -19,6 +19,7 @@ type EvalConfigOverrides = {
   retrieval?: Partial<Omit<Config["retrieval"], "semantic">> & {
     semantic?: Partial<Config["retrieval"]["semantic"]>;
   };
+  episodic?: Partial<Config["episodic"]>;
   commitments?: Partial<Omit<Config["commitments"], "enforce">> & {
     enforce?: Partial<Config["commitments"]["enforce"]>;
   };
@@ -139,6 +140,10 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
         ...DEFAULT_CONFIG.retrieval.semantic,
         ...options.config?.retrieval?.semantic,
       },
+    },
+    episodic: {
+      ...DEFAULT_CONFIG.episodic,
+      ...options.config?.episodic,
     },
     commitments: {
       ...DEFAULT_CONFIG.commitments,

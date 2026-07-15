@@ -46,6 +46,7 @@ type Recorder = {
   resolvedExternalSenders: unknown[];
   externalSenderIds: Map<string, EntityId>;
   ingestSessions: string[];
+  extractOptions: unknown[];
 };
 
 function testEpisode(id: Episode["id"] = "ep_aaaaaaaaaaaaaaaa" as Episode["id"]): Episode {
@@ -107,7 +108,10 @@ function stubBorg(rec: Recorder): Borg {
     },
     episodic: {
       // Real facade returns numeric counts.
-      extract: async () => ({ inserted: 1, updated: 0, skipped: 0 }),
+      extract: async (options: unknown) => {
+        rec.extractOptions.push(options);
+        return { inserted: 1, updated: 0, skipped: 0 };
+      },
       ingest: async (options?: { session?: string }) => {
         rec.ingestSessions.push(options?.session ?? "");
         return { ran: true, processedEntries: 2 };
@@ -141,6 +145,7 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     resolvedExternalSenders: [],
     externalSenderIds: new Map(),
     ingestSessions: [],
+    extractOptions: [],
   };
   const pool: MemoryPool = {
     async withTenant(tenantId, fn, opts) {
@@ -860,6 +865,12 @@ describe("memory sidecar handler", () => {
       extracted: { inserted: 1, updated: 0, skipped: 0 },
     });
     expect(rec.tenants).toEqual(["acme"]);
+    expect(rec.extractOptions).toEqual([
+      {
+        sinceTs: 1000,
+        bypassSalienceGate: true,
+      },
+    ]);
   });
 
   it("appends a raw turn and schedules background ingestion", async () => {

@@ -228,6 +228,10 @@ export function createTestConfig(
         },
       },
     },
+    episodic: {
+      ...DEFAULT_CONFIG.episodic,
+      ...overrides.episodic,
+    },
     commitments: {
       ...DEFAULT_CONFIG.commitments,
       ...overrides.commitments,

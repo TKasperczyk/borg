@@ -597,7 +597,10 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           tenant,
           async (borg) => {
             const entry = await borg.stream.append({ kind: "user_msg", content: text });
-            return borg.episodic.extract({ sinceTs: entry.timestamp });
+            return borg.episodic.extract({
+              sinceTs: entry.timestamp,
+              bypassSalienceGate: true,
+            });
           },
           { exclusive: true },
         );

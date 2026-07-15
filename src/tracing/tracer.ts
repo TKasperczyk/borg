@@ -150,6 +150,7 @@ export type TurnTraceEventName =
   | "semantic_extractor.started"
   | "semantic_extractor.degraded"
   | "semantic_insert.skipped"
+  | "episodic_extractor.skipped"
   | "semantic_node.status.transitioned"
   | "maintenance_snapshot.completed"
   | "storage.optimize.completed"

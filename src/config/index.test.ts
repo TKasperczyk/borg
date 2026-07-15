@@ -53,6 +53,7 @@ describe("config", () => {
     expect(config.host_capabilities).toContain("Proactive outbound messaging");
     expect(config.perception.llmEnabled).toBe(true);
     expect(config.affective.llmEnabled).toBe(true);
+    expect(config.episodic.salienceGateEnabled).toBe(true);
     expect(config.offline.curator.episodeDecayIntervalMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.offline.curator.episodeSalienceHalfLifeDays).toBe(30);
     expect(config.offline.curator.episodeHeatHalfLifeDays).toBe(7);
@@ -497,6 +498,7 @@ describe("config", () => {
         BORG_EMBEDDING_MODEL: "env-model",
         BORG_EMBEDDING_DIMS: "1024",
         BORG_PERCEPTION_LLM_ENABLED: "false",
+        BORG_EPISODIC_SALIENCE_GATE_ENABLED: "false",
         BORG_OFFLINE_CURATOR_RETRIEVAL_LOG_RETENTION_DAYS: "45",
         BORG_OFFLINE_BELIEF_REVISER_MAX_LLM_CALLS: "7",
         BORG_OFFLINE_CREATOR_DIRECTIVE_RECONCILER_MAX_FAMILIES_PER_RUN: "6",
@@ -540,6 +542,7 @@ describe("config", () => {
     expect(config.embedding.model).toBe("env-model");
     expect(config.embedding.dims).toBe(1024);
     expect(config.perception.llmEnabled).toBe(false);
+    expect(config.episodic.salienceGateEnabled).toBe(false);
     expect(config.anthropic.auth).toBe("auto");
     expect(config.anthropic.apiKey).toBe("secret");
     expect(config.anthropic.models.cognition).toBe("file-cognition");
