@@ -12,6 +12,7 @@ import {
   memoryDisclosurePayloadFields,
 } from "../../memory/common/disclosure-serializers.js";
 import type { MemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
+import { mapWithDisclosureConcurrency } from "../../retrieval/index.js";
 import type { ToolDefinition, ToolInvocationContext } from "../dispatcher.js";
 
 const identityEventsListInputSchema = z.object({
@@ -42,6 +43,12 @@ export type IdentityEventsListForCognitionToolOptions = {
     event: IdentityEvent,
     context: ToolInvocationContext,
   ) => MemoryDisclosureLabel | Promise<MemoryDisclosureLabel>;
+  disclosureLabelsForEvents?: (
+    events: readonly IdentityEvent[],
+    context: ToolInvocationContext,
+  ) =>
+    | ReadonlyMap<IdentityEvent["id"], MemoryDisclosureLabel>
+    | Promise<ReadonlyMap<IdentityEvent["id"], MemoryDisclosureLabel>>;
 };
 
 export function createIdentityEventsListForCognitionTool(
@@ -66,17 +73,20 @@ export function createIdentityEventsListForCognitionTool(
         },
         context,
       );
+      const disclosureLabels = await options.disclosureLabelsForEvents?.(events, context);
 
       return {
-        events: await Promise.all(
-          events.map(async (event) => ({
+        events: await mapWithDisclosureConcurrency(events, async (event) => {
+          const disclosureLabel =
+            disclosureLabels?.get(event.id) ??
+            (await (options.disclosureLabelForEvent?.(event, context) ??
+              identityEventMemoryDisclosureLabel(event)));
+
+          return {
             ...event,
-            ...memoryDisclosurePayloadFields(
-              await (options.disclosureLabelForEvent?.(event, context) ??
-                identityEventMemoryDisclosureLabel(event)),
-            ),
-          })),
-        ),
+            ...memoryDisclosurePayloadFields(disclosureLabel),
+          };
+        }),
       };
     },
   };

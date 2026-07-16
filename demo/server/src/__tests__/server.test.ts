@@ -42,8 +42,10 @@ import type { ReviewQueueRepository } from "../../../../src/memory/review-queue/
 import type { TrainOfThoughtRepository } from "../../../../src/memory/train-of-thought/index.js";
 import { TestEmbeddingClient, createTestConfig } from "../../../../src/offline/test-support.js";
 import type { AuditLog } from "../../../../src/offline/audit-log.js";
+import type { LanceDbTable } from "../../../../src/storage/lancedb/index.js";
 import type { StreamWriter } from "../../../../src/stream/index.js";
 import {
+  broadcastMaintenanceTick,
   createDemoServerApp,
   runtimeConfigFromConfig,
   wireMaintenanceSchedulerLiveObserver,
@@ -2496,6 +2498,74 @@ describe("demo server", () => {
         }),
       ]),
     );
+  });
+
+  it("counts pending semantic extraction from SQLite projections and coalesces diagnostics", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-pending-extraction-"));
+    tempDirs.push(tempDir);
+    const { borg, clock, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    let now = 2_000_000_000_000;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+    closers.push(async () => dateNow.mockRestore());
+    const processedEpisode = await seedCorrectionEpisode(borg, clock, {
+      title: "Already extracted episode",
+    });
+    const pendingEpisode = await seedCorrectionEpisode(borg, clock, {
+      title: "Pending extraction episode",
+    });
+    await borg.semantic.nodes.add({
+      kind: "concept",
+      label: "Extracted episode marker",
+      description: "Semantic provenance marks one episode as processed.",
+      sourceEpisodeIds: [processedEpisode.id],
+    });
+    const internal = borg as unknown as BorgTestInternals;
+    await internal.deps.episodicRepository.reconcileCrossStoreState();
+    const episodeLanceTable = (
+      internal.deps.episodicRepository as unknown as { readonly table: LanceDbTable }
+    ).table;
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const countPending = vi.spyOn(borg.maintenance, "countPendingSemanticExtractionEpisodes");
+    const episodeLanceList = vi.spyOn(episodeLanceTable, "list");
+    const episodicListAll = vi.spyOn(borg.episodic, "listAll");
+    const semanticNodeList = vi.spyOn(borg.semantic.nodes, "list");
+    const semanticEdgeList = vi.spyOn(borg.semantic.edges, "list");
+
+    const first = await app.request("/api/dream/state");
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ pending_extraction_episodes: 1 });
+
+    await broadcastMaintenanceTick({
+      borg,
+      live,
+      cadence: "light",
+      status: "ok",
+      result: null,
+    });
+    expect(countPending).toHaveBeenCalledTimes(1);
+    expect(episodeLanceList).not.toHaveBeenCalled();
+    expect(episodicListAll).not.toHaveBeenCalled();
+    expect(semanticNodeList).not.toHaveBeenCalled();
+    expect(semanticEdgeList).not.toHaveBeenCalled();
+
+    internal.deps.auditLog.record({
+      run_id: createMaintenanceRunId(),
+      process: "semantic-extractor",
+      action: "record extracted episode",
+      targets: { episode_ids: [pendingEpisode.id] },
+      reversal: {},
+    });
+
+    const cached = await app.request("/api/dream/state");
+    expect(await cached.json()).toMatchObject({ pending_extraction_episodes: 1 });
+    expect(countPending).toHaveBeenCalledTimes(1);
+
+    now += 60_001;
+    const refreshed = await app.request("/api/dream/state");
+    expect(await refreshed.json()).toMatchObject({ pending_extraction_episodes: 0 });
+    expect(countPending).toHaveBeenCalledTimes(2);
+    expect(episodeLanceList).not.toHaveBeenCalled();
   });
 
   it("exposes correction endpoints for why, forget, correct, edge invalidation, and review resolution", async () => {

@@ -220,6 +220,23 @@ describe("episodic repository", () => {
     );
   });
 
+  it("projects unarchived episode ids from the SQLite lifecycle index", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const active = createEpisode("ep_activeidsxxxxxxx", harness.clock.now());
+    const archived = createEpisode("ep_archivedidsxxxxx", harness.clock.now() + 1_000);
+
+    await harness.repo.createEpisode(active);
+    await harness.repo.createEpisode(archived);
+    harness.repo.archiveEpisode(archived.id, {
+      caller: "repository.test",
+      reason: "exercise active id projection",
+      process: "curator",
+    });
+
+    await expect(harness.repo.listUnarchivedEpisodeIds()).resolves.toEqual([active.id]);
+  });
+
   it("does not inject stats defaults when applying partial stat patches", async () => {
     const harness = await createHarness();
     closers.push(harness.close);

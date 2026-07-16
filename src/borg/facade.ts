@@ -26,7 +26,10 @@ import { OFFLINE_PROCESS_NAMES, revalidateReviewQueue } from "../offline/index.j
 import type { MaintenancePlan, OfflineProcessName, OrchestratorResult } from "../offline/index.js";
 import type { DisclosureRetrievalOptions } from "../retrieval/index.js";
 import {
+  mapWithDisclosureConcurrency,
+  memoryDisclosureLabelForEpisodeIds,
   resolveMemoryDisclosureLabelForEpisodeIds,
+  resolveMemoryDisclosureLabelsByEpisodeId,
   type MemoryDisclosureLabel,
 } from "../retrieval/index.js";
 import { StreamReader } from "../stream/index.js";
@@ -101,6 +104,38 @@ function createActionsFacade(deps: BorgDependencies): BorgFacades["actions"] {
   });
 }
 
+async function countPendingSemanticExtractionEpisodes(
+  deps: Pick<
+    BorgDependencies,
+    "auditLog" | "episodicRepository" | "semanticEdgeRepository" | "semanticNodeRepository"
+  >,
+): Promise<number> {
+  const episodeIds = await deps.episodicRepository.listUnarchivedEpisodeIds();
+  const processedEpisodeIds = new Set([
+    ...deps.semanticNodeRepository.listAllSourceEpisodeIds(),
+    ...deps.semanticEdgeRepository.listAllEvidenceEpisodeIds(),
+  ]);
+
+  for (const audit of deps.auditLog.list({ process: "semantic-extractor", reverted: false })) {
+    const auditEpisodeIds = audit.targets.episode_ids;
+
+    if (!Array.isArray(auditEpisodeIds)) {
+      continue;
+    }
+
+    for (const episodeId of auditEpisodeIds) {
+      if (typeof episodeId === "string") {
+        processedEpisodeIds.add(episodeId as (typeof episodeIds)[number]);
+      }
+    }
+  }
+
+  return episodeIds.reduce(
+    (pending, episodeId) => pending + (processedEpisodeIds.has(episodeId) ? 0 : 1),
+    0,
+  );
+}
+
 type CreatorDirectivesFacadeDeps = Pick<BorgDependencies, "creatorDirectiveRepository">;
 
 export function createCreatorDirectivesFacade(
@@ -135,6 +170,30 @@ async function semanticNodeWithDisclosure(
   };
 }
 
+function semanticNodeWithBatchedDisclosure(
+  node: SemanticNode,
+  labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
+): SemanticNode & { disclosureLabel: MemoryDisclosureLabel } {
+  return {
+    ...node,
+    disclosureLabel: memoryDisclosureLabelForEpisodeIds(node.source_episode_ids, labelsByEpisodeId),
+  };
+}
+
+async function semanticNodesWithDisclosure(
+  deps: BorgDependencies,
+  nodes: readonly SemanticNode[],
+): Promise<Array<SemanticNode & { disclosureLabel: MemoryDisclosureLabel }>> {
+  const labelsByEpisodeId = await resolveMemoryDisclosureLabelsByEpisodeId(
+    deps.episodicRepository,
+    nodes.flatMap((node) => node.source_episode_ids),
+  );
+
+  return mapWithDisclosureConcurrency(nodes, async (node) =>
+    semanticNodeWithBatchedDisclosure(node, labelsByEpisodeId),
+  );
+}
+
 async function semanticEdgeWithDisclosure(
   deps: BorgDependencies,
   edge: SemanticEdge,
@@ -145,34 +204,80 @@ async function semanticEdgeWithDisclosure(
   };
 }
 
-async function semanticSearchCandidateWithDisclosure(
-  deps: BorgDependencies,
-  candidate: SemanticNodeSearchCandidate,
-): Promise<
-  SemanticNodeSearchCandidate & { node: SemanticNode & { disclosureLabel: MemoryDisclosureLabel } }
-> {
+function semanticEdgeWithBatchedDisclosure(
+  edge: SemanticEdge,
+  labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
+): SemanticEdge & { disclosureLabel: MemoryDisclosureLabel } {
   return {
-    ...candidate,
-    node: await semanticNodeWithDisclosure(deps, candidate.node),
+    ...edge,
+    disclosureLabel: memoryDisclosureLabelForEpisodeIds(
+      edge.evidence_episode_ids,
+      labelsByEpisodeId,
+    ),
   };
 }
 
-async function semanticWalkStepWithDisclosure(
+async function semanticEdgesWithDisclosure(
   deps: BorgDependencies,
-  step: SemanticWalkStep,
+  edges: readonly SemanticEdge[],
+): Promise<Array<SemanticEdge & { disclosureLabel: MemoryDisclosureLabel }>> {
+  const labelsByEpisodeId = await resolveMemoryDisclosureLabelsByEpisodeId(
+    deps.episodicRepository,
+    edges.flatMap((edge) => edge.evidence_episode_ids),
+  );
+
+  return mapWithDisclosureConcurrency(edges, async (edge) =>
+    semanticEdgeWithBatchedDisclosure(edge, labelsByEpisodeId),
+  );
+}
+
+async function semanticSearchCandidatesWithDisclosure(
+  deps: BorgDependencies,
+  candidates: readonly SemanticNodeSearchCandidate[],
 ): Promise<
-  Omit<SemanticWalkStep, "node" | "edgePath"> & {
-    node: SemanticNode & { disclosureLabel: MemoryDisclosureLabel };
-    edgePath: Array<SemanticEdge & { disclosureLabel: MemoryDisclosureLabel }>;
-  }
+  Array<
+    SemanticNodeSearchCandidate & {
+      node: SemanticNode & { disclosureLabel: MemoryDisclosureLabel };
+    }
+  >
 > {
-  return {
+  const labelsByEpisodeId = await resolveMemoryDisclosureLabelsByEpisodeId(
+    deps.episodicRepository,
+    candidates.flatMap((candidate) => candidate.node.source_episode_ids),
+  );
+
+  return mapWithDisclosureConcurrency(candidates, async (candidate) => ({
+    ...candidate,
+    node: semanticNodeWithBatchedDisclosure(candidate.node, labelsByEpisodeId),
+  }));
+}
+
+async function semanticWalkStepsWithDisclosure(
+  deps: BorgDependencies,
+  steps: readonly SemanticWalkStep[],
+): Promise<
+  Array<
+    Omit<SemanticWalkStep, "node" | "edgePath"> & {
+      node: SemanticNode & { disclosureLabel: MemoryDisclosureLabel };
+      edgePath: Array<SemanticEdge & { disclosureLabel: MemoryDisclosureLabel }>;
+    }
+  >
+> {
+  const labelsByEpisodeId = await resolveMemoryDisclosureLabelsByEpisodeId(
+    deps.episodicRepository,
+    steps.flatMap((step) => [
+      ...step.node.source_episode_ids,
+      ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
+    ]),
+  );
+
+  return mapWithDisclosureConcurrency(steps, async (step) => ({
     ...step,
-    node: await semanticNodeWithDisclosure(deps, step.node),
-    edgePath: await Promise.all(
-      step.edgePath.map((edge) => semanticEdgeWithDisclosure(deps, edge)),
+    node: semanticNodeWithBatchedDisclosure(step.node, labelsByEpisodeId),
+    edgePath: step.edgePath.map((edge) =>
+      semanticEdgeWithBatchedDisclosure(edge, labelsByEpisodeId),
     ),
-  };
+  }));
 }
 
 export function createBorgFacades(deps: BorgDependencies): BorgFacades {
@@ -613,15 +718,13 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         },
         list: async (...args) => {
           const nodes = await deps.semanticNodeRepository.list(...args);
-          return Promise.all(nodes.map((node) => semanticNodeWithDisclosure(deps, node)));
+          return semanticNodesWithDisclosure(deps, nodes);
         },
         listPage: async (...args) => {
           const page = await deps.semanticNodeRepository.listPage(...args);
           return {
             ...page,
-            items: await Promise.all(
-              page.items.map((node) => semanticNodeWithDisclosure(deps, node)),
-            ),
+            items: await semanticNodesWithDisclosure(deps, page.items),
           };
         },
         countByStatus: () => deps.semanticNodeRepository.countByStatus(),
@@ -630,9 +733,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           const results = await deps.semanticNodeRepository.searchByVector(vector, {
             limit: options.limit,
           });
-          return Promise.all(
-            results.map((candidate) => semanticSearchCandidateWithDisclosure(deps, candidate)),
-          );
+          return semanticSearchCandidatesWithDisclosure(deps, results);
         },
       },
       edges: {
@@ -642,15 +743,11 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           return edge === null ? null : semanticEdgeWithDisclosure(deps, edge);
         },
         list: async (...args) =>
-          Promise.all(
-            deps.semanticEdgeRepository
-              .listEdges(...args)
-              .map((edge) => semanticEdgeWithDisclosure(deps, edge)),
-          ),
+          semanticEdgesWithDisclosure(deps, deps.semanticEdgeRepository.listEdges(...args)),
       },
       walk: async (fromId, ...args) => {
         const steps = await deps.semanticGraph.walk(fromId, ...args);
-        return Promise.all(steps.map((step) => semanticWalkStepWithDisclosure(deps, step)));
+        return semanticWalkStepsWithDisclosure(deps, steps);
       },
       extract: async (episodes) => {
         const selfEntity = deps.entityRepository.getSelf();
@@ -852,6 +949,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     maintenance: {
       scheduler: deps.maintenanceScheduler,
       config: maintenanceConfigSnapshot,
+      countPendingSemanticExtractionEpisodes: () => countPendingSemanticExtractionEpisodes(deps),
     },
     inbox: {
       catchUp: deps.chatResponseCatchUpWorker,

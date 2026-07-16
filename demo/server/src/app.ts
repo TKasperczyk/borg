@@ -78,12 +78,16 @@ type CursorPayload = {
   entryId: string;
 };
 
-type SemanticExtractionEpisodicFacade = Borg["episodic"] & {
-  listAll: () => Promise<Episode[]>;
-  getStats: (id: Episode["id"]) => { archived?: boolean } | null;
+type DemoMaintenanceAuditRow = ReturnType<Borg["audit"]["list"]>[number];
+type SemanticExtractionMaintenanceFacade = Borg["maintenance"] & {
+  countPendingSemanticExtractionEpisodes: () => Promise<number>;
 };
 
-type DemoMaintenanceAuditRow = ReturnType<Borg["audit"]["list"]>[number];
+const PENDING_SEMANTIC_EXTRACTION_TTL_MS = 45_000;
+const pendingSemanticExtractionMemo = new WeakMap<
+  Borg,
+  { expiresAt: number; promise: Promise<number> }
+>();
 
 const cursorPayloadSchema = z.object({
   ts: z.number().finite(),
@@ -2833,53 +2837,32 @@ function selfSnapshot(borg: Borg) {
 }
 
 async function pendingSemanticExtractionEpisodes(borg: Borg): Promise<number> {
-  const episodic = borg.episodic as SemanticExtractionEpisodicFacade;
-  const processed = new Set<Episode["id"]>();
-  const [episodes, semanticNodes, semanticEdges] = await Promise.all([
-    episodic.listAll(),
-    borg.semantic.nodes.list({ includeArchived: true, limit: 100_000 }),
-    borg.semantic.edges.list({ includeInvalid: true }),
-  ]);
+  const now = Date.now();
+  const cached = pendingSemanticExtractionMemo.get(borg);
 
-  for (const node of semanticNodes) {
-    for (const episodeId of node.source_episode_ids) {
-      processed.add(episodeId);
-    }
+  if (cached !== undefined && cached.expiresAt > now) {
+    return cached.promise;
   }
 
-  for (const edge of semanticEdges) {
-    for (const episodeId of edge.evidence_episode_ids) {
-      processed.add(episodeId);
+  const promise = Promise.resolve().then(() =>
+    (
+      borg.maintenance as SemanticExtractionMaintenanceFacade
+    ).countPendingSemanticExtractionEpisodes(),
+  );
+  const entry = {
+    expiresAt: now + PENDING_SEMANTIC_EXTRACTION_TTL_MS,
+    promise,
+  };
+  pendingSemanticExtractionMemo.set(borg, entry);
+
+  try {
+    return await promise;
+  } catch (error) {
+    if (pendingSemanticExtractionMemo.get(borg) === entry) {
+      pendingSemanticExtractionMemo.delete(borg);
     }
+    throw error;
   }
-
-  for (const audit of borg.audit.list({ process: "semantic-extractor", reverted: false })) {
-    const episodeIds = audit.targets.episode_ids;
-
-    if (!Array.isArray(episodeIds)) {
-      continue;
-    }
-
-    for (const episodeId of episodeIds) {
-      if (typeof episodeId === "string") {
-        processed.add(episodeId as Episode["id"]);
-      }
-    }
-  }
-
-  let pending = 0;
-
-  for (const episode of episodes) {
-    if (episodic.getStats(episode.id)?.archived === true) {
-      continue;
-    }
-
-    if (!processed.has(episode.id)) {
-      pending += 1;
-    }
-  }
-
-  return pending;
 }
 
 async function dreamState(borg: Borg) {

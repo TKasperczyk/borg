@@ -1192,6 +1192,7 @@ export type BorgMaintenanceScheduler = {
 
 export type BorgMaintenanceFacade = {
   scheduler: BorgMaintenanceScheduler;
+  countPendingSemanticExtractionEpisodes(): Promise<number>;
   config(): {
     enabled: boolean;
     lightIntervalMs: number;

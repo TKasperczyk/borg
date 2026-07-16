@@ -81,7 +81,10 @@ export {
   type RetrievalSearchOptions,
 } from "./pipeline.js";
 export {
+  mapWithDisclosureConcurrency,
+  memoryDisclosureLabelForEpisodeIds,
   resolveMemoryDisclosureLabelForEpisodeIds,
+  resolveMemoryDisclosureLabelsByEpisodeId,
   resolveSemanticContextForCognition,
   resolveSemanticContextForDisclosure,
   resolveSemanticDisclosureSourceAdapter,

@@ -14,12 +14,19 @@ import {
 import type { CommitmentRepository } from "../memory/commitments/index.js";
 import type { EntityRepository } from "../memory/commitments/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
-import type { IdentityService } from "../memory/identity/index.js";
+import {
+  parseIdentityEventDisclosureSources,
+  type IdentityEvent,
+  type IdentityService,
+} from "../memory/identity/index.js";
 import type { SkillRepository } from "../memory/procedural/index.js";
 import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
 import {
   SELF_RECALL_SCOPE,
+  mapWithDisclosureConcurrency,
+  memoryDisclosureLabelForEpisodeIds,
   resolveMemoryDisclosureLabelForEpisodeIds,
+  resolveMemoryDisclosureLabelsByEpisodeId,
   type MemoryDisclosureLabel,
   type RetrievalPipeline,
 } from "../retrieval/index.js";
@@ -64,34 +71,72 @@ export type BuildToolDispatcherOptions = {
   clock: Clock;
 };
 
-async function annotateSemanticWalkStep(
-  step: SemanticWalkStep,
+async function identityEventDisclosureLabelsForCollection(
+  events: readonly IdentityEvent[],
+  episodicRepository: EpisodicRepository,
+): Promise<ReadonlyMap<IdentityEvent["id"], MemoryDisclosureLabel>> {
+  const episodeIds = [
+    ...new Set(
+      events.flatMap(
+        (event) => parseIdentityEventDisclosureSources(event).sourceEpisodeIds,
+      ),
+    ),
+  ];
+  const episodes = episodeIds.length === 0 ? [] : await episodicRepository.getMany(episodeIds);
+  const episodesById = new Map(episodes.map((episode) => [episode.id, episode]));
+  const cachedEpisodicRepository: Pick<EpisodicRepository, "getMany"> = {
+    async getMany(ids) {
+      return ids
+        .map((id) => episodesById.get(id))
+        .filter((episode) => episode !== undefined);
+    },
+  };
+  const labels = await mapWithDisclosureConcurrency(events, async (event) => [
+    event.id,
+    await identityEventMemoryDisclosureLabel(event, {
+      episodicRepository: cachedEpisodicRepository,
+    }),
+  ] as const);
+
+  return new Map(labels);
+}
+
+async function annotateSemanticWalkSteps(
+  steps: readonly SemanticWalkStep[],
   episodicRepository: EpisodicRepository,
 ): Promise<
-  Omit<SemanticWalkStep, "node" | "edgePath"> & {
-    node: SemanticNode & { disclosureLabel: MemoryDisclosureLabel };
-    edgePath: Array<SemanticEdge & { disclosureLabel: MemoryDisclosureLabel }>;
-  }
+  Array<
+    Omit<SemanticWalkStep, "node" | "edgePath"> & {
+      node: SemanticNode & { disclosureLabel: MemoryDisclosureLabel };
+      edgePath: Array<SemanticEdge & { disclosureLabel: MemoryDisclosureLabel }>;
+    }
+  >
 > {
-  return {
+  const labelsByEpisodeId = await resolveMemoryDisclosureLabelsByEpisodeId(
+    episodicRepository,
+    steps.flatMap((step) => [
+      ...step.node.source_episode_ids,
+      ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
+    ]),
+  );
+
+  return mapWithDisclosureConcurrency(steps, async (step) => ({
     ...step,
     node: {
       ...step.node,
-      disclosureLabel: await resolveMemoryDisclosureLabelForEpisodeIds(
-        episodicRepository,
+      disclosureLabel: memoryDisclosureLabelForEpisodeIds(
         step.node.source_episode_ids,
+        labelsByEpisodeId,
       ),
     },
-    edgePath: await Promise.all(
-      step.edgePath.map(async (edge) => ({
-        ...edge,
-        disclosureLabel: await resolveMemoryDisclosureLabelForEpisodeIds(
-          episodicRepository,
-          edge.evidence_episode_ids,
-        ),
-      })),
-    ),
-  };
+    edgePath: step.edgePath.map((edge) => ({
+      ...edge,
+      disclosureLabel: memoryDisclosureLabelForEpisodeIds(
+        edge.evidence_episode_ids,
+        labelsByEpisodeId,
+      ),
+    })),
+  }));
 }
 
 export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDispatcher {
@@ -137,10 +182,9 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
             return [];
           }
 
-          return Promise.all(
-            (await options.semanticGraph.walk(fromId, walkOptions)).map((step) =>
-              annotateSemanticWalkStep(step, options.episodicRepository),
-            ),
+          return annotateSemanticWalkSteps(
+            await options.semanticGraph.walk(fromId, walkOptions),
+            options.episodicRepository,
           );
         },
       }),
@@ -205,10 +249,8 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     .register(
       createIdentityEventsListForCognitionTool({
         listEvents: (listOptions) => options.identityService.listEvents(listOptions),
-        disclosureLabelForEvent: (event) =>
-          identityEventMemoryDisclosureLabel(event, {
-            episodicRepository: options.episodicRepository,
-          }),
+        disclosureLabelsForEvents: (events) =>
+          identityEventDisclosureLabelsForCollection(events, options.episodicRepository),
       }),
     )
     .register(

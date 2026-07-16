@@ -2294,6 +2294,23 @@ export class EpisodicRepository {
     return rows.map((row) => fromEpisodeRow(row)).sort(compareEpisodes);
   }
 
+  async listUnarchivedEpisodeIds(): Promise<EpisodeId[]> {
+    await this.ensureEpisodeIndexBackfilled();
+
+    const rows = this.db
+      .prepare(
+        `
+          SELECT episode_id
+          FROM episode_index
+          WHERE archived = 0
+          ORDER BY episode_id ASC
+        `,
+      )
+      .all() as IndexedEpisodeIdRow[];
+
+    return rows.map((row) => parseEpisodeId(row.episode_id));
+  }
+
   async listEffectivelyVisible(): Promise<Episode[]> {
     const episodes = await this.listAll();
     await this.ensureEpisodeIndexBackfilled();

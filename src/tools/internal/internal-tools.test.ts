@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Borg, DEFAULT_SESSION_ID } from "../../index.js";
 import { ScheduledWakesRepository } from "../../autonomy/index.js";
@@ -984,6 +984,20 @@ describe("internal tools", () => {
         reason: "unresolved source label fixture",
         provenance: { kind: "manual" },
       });
+      harness.identityEventRepository.record({
+        record_type: "value",
+        record_id: "val_shared_evidence_ids",
+        action: "create",
+        old_value: null,
+        new_value: {
+          id: "val_shared_evidence_ids",
+          label: "shared evidence id fixture",
+          evidence_episode_ids: [privateEpisode.id, missingEpisodeId],
+        },
+        reason: "deduplicated source label fixture",
+        provenance: { kind: "manual" },
+      });
+      const getMany = vi.spyOn(harness.episodicRepository, "getMany");
       const dispatcher = createHarnessToolDispatcher(harness);
 
       const result = await dispatcher.dispatch({
@@ -1028,6 +1042,12 @@ describe("internal tools", () => {
         disclosure_class: "unknown",
       });
       expect(traitEvent?.disclosure_label?.disclosure_class).not.toBe("public");
+      expect(getMany).toHaveBeenCalledTimes(1);
+      const lookedUpEpisodeIds = getMany.mock.calls[0]?.[0] ?? [];
+      expect(lookedUpEpisodeIds).toHaveLength(2);
+      expect(new Set(lookedUpEpisodeIds)).toEqual(
+        new Set([privateEpisode.id, missingEpisodeId]),
+      );
     } finally {
       await harness.cleanup();
     }
