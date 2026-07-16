@@ -104,6 +104,10 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
       ...options.config?.perception,
       llmEnabled: options.config?.perception?.llmEnabled ?? false,
     },
+    frameAnomaly: {
+      ...DEFAULT_CONFIG.frameAnomaly,
+      peerChannelSourceTypes: [...DEFAULT_CONFIG.frameAnomaly.peerChannelSourceTypes],
+    },
     affective: {
       ...DEFAULT_CONFIG.affective,
       ...options.config?.affective,

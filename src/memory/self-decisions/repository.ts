@@ -11,6 +11,7 @@ import {
   type SessionId,
   type StreamEntryId,
 } from "../../util/ids.js";
+import { timestampFromUtcDayKey } from "../../util/utc-day.js";
 import {
   selfDecisionEventSchema,
   type SelfDecisionEvent,
@@ -44,6 +45,15 @@ export type SelfDecisionProjectionSourceEvent = {
   decisionSummary: string;
   decisionRationale: string | null;
   sourceStreamEntryIds: readonly StreamEntryId[];
+};
+
+export type SelfDecisionDailyDensityRow = {
+  dayKey: string;
+  dayStartMs: number;
+  decisionCount: number;
+  distinctDecisionShapeCount: number;
+  firstOccurredAt: number;
+  lastOccurredAt: number;
 };
 
 export type SelfDecisionRepositoryOptions = {
@@ -109,6 +119,19 @@ function mapProjectionRow(row: Record<string, unknown>): SelfDecisionProjectionS
       String(row.source_stream_entry_ids ?? "[]"),
       "source_stream_entry_ids",
     ),
+  };
+}
+
+function mapDailyDensityRow(row: Record<string, unknown>): SelfDecisionDailyDensityRow {
+  const dayKey = String(row.day_key);
+
+  return {
+    dayKey,
+    dayStartMs: timestampFromUtcDayKey(dayKey),
+    decisionCount: Number(row.decision_count),
+    distinctDecisionShapeCount: Number(row.distinct_decision_shape_count ?? 0),
+    firstOccurredAt: Number(row.first_occurred_at),
+    lastOccurredAt: Number(row.last_occurred_at),
   };
 }
 
@@ -231,5 +254,105 @@ export class SelfDecisionRepository {
       .all(input.sinceMs, input.limit) as Record<string, unknown>[];
 
     return rows.map(mapProjectionRow);
+  }
+
+  listAutonomousSelfPrivateForRange(input: {
+    sinceMs: number;
+    untilMs: number;
+    limit: number;
+  }): SelfDecisionProjectionSourceEvent[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            occurred_at, trigger_name, trigger_type, decision_summary, decision_rationale,
+            source_stream_entry_ids
+          FROM self_decision_events
+          WHERE
+            origin = 'autonomous'
+            AND disclosure_class = 'self_private'
+            AND occurred_at >= ?
+            AND occurred_at <= ?
+          ORDER BY occurred_at ASC, id ASC
+          LIMIT ?
+        `,
+      )
+      .all(input.sinceMs, input.untilMs, Math.max(1, Math.floor(input.limit))) as Record<
+      string,
+      unknown
+    >[];
+
+    return rows.map(mapProjectionRow);
+  }
+
+  listDailyAutonomousSelfPrivateDensity(input: {
+    sinceMs: number;
+    untilMs?: number;
+    limit: number;
+  }): SelfDecisionDailyDensityRow[] {
+    const filters = [
+      "origin = 'autonomous'",
+      "disclosure_class = 'self_private'",
+      "occurred_at >= ?",
+    ];
+    const values: unknown[] = [input.sinceMs];
+
+    if (input.untilMs !== undefined) {
+      filters.push("occurred_at <= ?");
+      values.push(input.untilMs);
+    }
+
+    values.push(Math.max(1, Math.floor(input.limit)));
+
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            strftime('%Y-%m-%d', occurred_at / 1000, 'unixepoch') AS day_key,
+            COUNT(*) AS decision_count,
+            COUNT(DISTINCT (
+              session_id || '|' ||
+              trigger_type || '|' ||
+              CASE WHEN decision_rationale IS NULL OR decision_rationale = '' THEN 'r0' ELSE 'r1' END || '|' ||
+              CASE WHEN turn_result_id IS NULL THEN 't0' ELSE 't1' END
+            )) AS distinct_decision_shape_count,
+            MIN(occurred_at) AS first_occurred_at,
+            MAX(occurred_at) AS last_occurred_at
+          FROM self_decision_events
+          WHERE ${filters.join(" AND ")}
+          GROUP BY day_key
+          ORDER BY last_occurred_at DESC
+          LIMIT ?
+        `,
+      )
+      .all(...values) as Record<string, unknown>[];
+
+    return rows.map(mapDailyDensityRow);
+  }
+
+  countAutonomousSelfPrivateDecisions(input: { sinceMs: number; untilMs?: number }): number {
+    const filters = [
+      "origin = 'autonomous'",
+      "disclosure_class = 'self_private'",
+      "occurred_at >= ?",
+    ];
+    const values: unknown[] = [input.sinceMs];
+
+    if (input.untilMs !== undefined) {
+      filters.push("occurred_at <= ?");
+      values.push(input.untilMs);
+    }
+
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS decision_count
+          FROM self_decision_events
+          WHERE ${filters.join(" AND ")}
+        `,
+      )
+      .get(...values) as { decision_count: number | null } | undefined;
+
+    return row === undefined || row.decision_count === null ? 0 : Number(row.decision_count);
   }
 }

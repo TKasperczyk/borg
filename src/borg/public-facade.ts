@@ -545,7 +545,7 @@ export type BorgActionRecordListFilter = {
   limit?: number;
 };
 
-export type BorgActionRecordCreationSource = "extractor" | "reflector" | "api" | "unknown";
+export type BorgActionRecordCreationSource = "extractor" | "reflector" | "api" | "tool" | "unknown";
 export type BorgActionCountByState = Record<ActionState, number>;
 export type BorgActionCreationCountsBySource = Record<BorgActionRecordCreationSource, number>;
 

@@ -12,6 +12,11 @@ import { type LLMClient } from "../llm/index.js";
 import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import { MoodRepository, affectiveMigrations } from "../memory/affective/index.js";
 import {
+  ActivityRepository,
+  LivedExperienceDaySummaryRepository,
+  activityMigrations,
+} from "../memory/activity/index.js";
+import {
   ActionRepository,
   actionMigrations,
   createActionRecordsTableSchema,
@@ -61,7 +66,7 @@ import {
   createOpenQuestionsTableSchema,
   selfMigrations,
 } from "../memory/self/index.js";
-import { selfDecisionMigrations } from "../memory/self-decisions/index.js";
+import { SelfDecisionRepository, selfDecisionMigrations } from "../memory/self-decisions/index.js";
 import { trainOfThoughtMigrations } from "../memory/train-of-thought/index.js";
 import {
   appendOpenQuestionHookFailureEvent,
@@ -92,6 +97,7 @@ import {
   type RetrievedEpisode,
 } from "../retrieval/index.js";
 import { RetrievalPipeline } from "../retrieval/index.js";
+import { sessionMigrations } from "../sessions/index.js";
 import {
   StreamEntryIndexRepository,
   StreamWriter,
@@ -192,6 +198,14 @@ export function createTestConfig(
       ...DEFAULT_CONFIG.perception,
       ...overrides.perception,
     },
+    frameAnomaly: {
+      ...DEFAULT_CONFIG.frameAnomaly,
+      ...overrides.frameAnomaly,
+      peerChannelSourceTypes: [
+        ...(overrides.frameAnomaly?.peerChannelSourceTypes ??
+          DEFAULT_CONFIG.frameAnomaly.peerChannelSourceTypes),
+      ],
+    },
     affective: {
       ...DEFAULT_CONFIG.affective,
       ...overrides.affective,
@@ -278,6 +292,10 @@ export function createTestConfig(
         // ledger behavior.
         enabled: overrides.generation?.evidenceLedger?.enabled ?? false,
         ...overrides.generation?.evidenceLedger,
+        recentLivedExperience: {
+          ...DEFAULT_CONFIG.generation.evidenceLedger.recentLivedExperience,
+          ...overrides.generation?.evidenceLedger?.recentLivedExperience,
+        },
         decisionArtifact: {
           ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact,
           ...overrides.generation?.evidenceLedger?.decisionArtifact,
@@ -376,6 +394,10 @@ export function createTestConfig(
       selfNarrator: {
         ...DEFAULT_CONFIG.offline.selfNarrator,
         ...overrides.offline?.selfNarrator,
+      },
+      livedExperienceDaySummarizer: {
+        ...DEFAULT_CONFIG.offline.livedExperienceDaySummarizer,
+        ...overrides.offline?.livedExperienceDaySummarizer,
       },
       beliefReviser: {
         ...DEFAULT_CONFIG.offline.beliefReviser,
@@ -489,6 +511,9 @@ export type OfflineTestHarness = {
   growthMarkersRepository: GrowthMarkersRepository;
   openQuestionsRepository: OpenQuestionsRepository;
   moodRepository: MoodRepository;
+  activityRepository: ActivityRepository;
+  selfDecisionRepository: SelfDecisionRepository;
+  livedExperienceDaySummaryRepository: LivedExperienceDaySummaryRepository;
   actionRepository: ActionRepository;
   socialRepository: SocialRepository;
   entityRepository: EntityRepository;
@@ -553,6 +578,8 @@ export async function createOfflineTestHarness(
       autonomyMigrations,
       streamWatermarkMigrations,
       streamEntryIndexMigrations,
+      sessionMigrations,
+      activityMigrations,
       selfDecisionMigrations,
       trainOfThoughtMigrations,
       promptSurfaceHistoryMigrations,
@@ -612,6 +639,18 @@ export async function createOfflineTestHarness(
     clock,
     defaultHalfLifeHours: config.affective.moodHalfLifeHours,
     incomingWeight: config.affective.incomingMoodWeight,
+  });
+  const activityRepository = new ActivityRepository({
+    db,
+    clock,
+  });
+  const selfDecisionRepository = new SelfDecisionRepository({
+    db,
+    clock,
+  });
+  const livedExperienceDaySummaryRepository = new LivedExperienceDaySummaryRepository({
+    db,
+    clock,
   });
   let reviewQueueRepository: ReviewQueueRepository;
   const semanticEdgeRepository = new SemanticEdgeRepository({
@@ -845,6 +884,9 @@ export async function createOfflineTestHarness(
     growthMarkersRepository,
     openQuestionsRepository,
     moodRepository,
+    activityRepository,
+    selfDecisionRepository,
+    livedExperienceDaySummaryRepository,
     actionRepository,
     socialRepository,
     entityRepository,
@@ -888,6 +930,9 @@ export async function createOfflineTestHarness(
       growthMarkersRepository,
       openQuestionsRepository,
       moodRepository,
+      activityRepository,
+      selfDecisionRepository,
+      livedExperienceDaySummaryRepository,
       actionRepository,
       socialRepository,
       entityRepository,

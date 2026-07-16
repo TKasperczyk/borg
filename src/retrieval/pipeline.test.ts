@@ -35,6 +35,7 @@ import {
   createImagePerceptionId,
   createSessionId,
   createStreamEntryId,
+  type AttachmentId,
   type StreamEntryId,
 } from "../util/ids.js";
 import { attachmentMigrations } from "../attachments/repository.js";
@@ -43,6 +44,7 @@ import {
   createImagePerceptionTableSchema,
   imagePerceptionMigrations,
   type ImagePerceptionRecord,
+  type ImagePerceptionSearchHit,
 } from "../attachments/perception.js";
 import { OpenQuestionsRepository, createOpenQuestionsTableSchema } from "../memory/self/index.js";
 import { selfMigrations } from "../memory/self/migrations.js";
@@ -110,6 +112,49 @@ function createEpisode(id: string, sourceId: string, embedding: number[]): Episo
     embedding: Float32Array.from(embedding),
     created_at: 1_000,
     updated_at: 1_000,
+  };
+}
+
+function createImagePerceptionRecord(input: {
+  attachmentId: AttachmentId;
+  perceptionId?: ImagePerceptionRecord["perception_id"];
+  payloadId?: ImagePerceptionRecord["payload_id"];
+  caption?: string;
+  createdAt?: number;
+}): ImagePerceptionRecord {
+  const perceptionId = input.perceptionId ?? createImagePerceptionId();
+  const payloadId = input.payloadId ?? createImagePerceptionId();
+
+  return {
+    perception_id: perceptionId,
+    payload_id: payloadId,
+    attachment_id: input.attachmentId,
+    parent_entry_id: createStreamEntryId(),
+    parent_turn_id: "turn-image",
+    stream_entry_id: createStreamEntryId(),
+    sha256: `image-sha-${perceptionId}`,
+    media_type: "image/png",
+    perception_prompt_version: "test-v1",
+    model: "haiku-test",
+    caption: input.caption ?? "A diagram of the Atlas deployment path.",
+    image_kind: "diagram",
+    visible_text: ["Atlas deploy"],
+    objects: ["deployment diagram"],
+    people_or_roles: [],
+    scene: "A technical diagram.",
+    colors_and_visual_attributes: ["blue arrows"],
+    spatial_relationships: ["arrows point from build to deploy"],
+    possible_user_relevant_details: ["Atlas deployment path"],
+    search_terms: ["Atlas deploy diagram", "deployment path"],
+    uncertainties: [],
+    audience: null,
+    audience_entity_id: null,
+    active: true,
+    created_turn_global: null,
+    created_at: input.createdAt ?? 1_000,
+    text_embedding_ref: `image_perception_embeddings:${payloadId}`,
+    embedding_text: "Atlas deploy diagram deployment path",
+    embedding_status: "complete",
   };
 }
 
@@ -590,6 +635,10 @@ describe("retrieval pipeline", () => {
     });
     const imageEvidence = context.evidence.find((item) => item.source === "image_perception");
     expect(imageEvidence?.text).toContain("Atlas deployment path");
+    expect(imageEvidence?.imageLabel).toBe("Image: remembered user-uploaded diagram");
+    expect(imageEvidence?.imageOriginFrame).toBe(
+      "[remembered image -- not sent in this message; first shared ~9s ago]",
+    );
     expect(imageEvidence?.imageAttachmentId).toBe(attachmentId);
     expect(imageEvidence?.provenance?.streamIds).toContain(attachmentStreamId);
     expect(imageEvidence?.disclosureLabel).toEqual({
@@ -620,6 +669,22 @@ describe("retrieval pipeline", () => {
       privateToEntityIds: [aliceEntityId],
       publicToEntityIds: [],
     });
+    const currentTurnExcludedContext = await pipeline.recallEpisodesForCognition(
+      "Atlas deployment path",
+      {
+        limit: 5,
+        currentTurnAttachmentIds: [attachmentId],
+        recallContext: {
+          reader: SELF_RECALL_SCOPE,
+          currentSessionId: DEFAULT_SESSION_ID,
+          currentAudienceEntityId: bobEntityId,
+          currentParticipantEntityIds: [bobEntityId],
+        },
+      },
+    );
+    expect(
+      currentTurnExcludedContext.evidence.some((item) => item.source === "image_perception"),
+    ).toBe(false);
 
     const builder = new EvidenceLedgerBuilder({
       createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
@@ -662,6 +727,7 @@ describe("retrieval pipeline", () => {
     expect(ledger.imageAttachments).toEqual([
       expect.objectContaining({
         attachment_id: attachmentId,
+        originFrame: "[remembered image -- not sent in this message; first shared ~9s ago]",
       }),
     ]);
 
@@ -696,6 +762,169 @@ describe("retrieval pipeline", () => {
       budget: "test",
     });
     expect(JSON.stringify(create.mock.calls[0]?.[0])).toContain(attachmentBytes.toString("base64"));
+  });
+
+  it("overfetches fresh image recall so current-turn exclusion preserves older image count", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-image-fresh-overfetch-"));
+    const { store, db, episodicRepository } = await openRetrievalFixture(tempDir);
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const currentAttachmentId = createAttachmentId();
+    const olderAttachmentId = createAttachmentId();
+    const currentRecord = createImagePerceptionRecord({
+      attachmentId: currentAttachmentId,
+      caption: "Current-turn Atlas deployment image.",
+    });
+    const olderRecord = createImagePerceptionRecord({
+      attachmentId: olderAttachmentId,
+      caption: "Older Atlas deployment diagram.",
+    });
+    const hits: ImagePerceptionSearchHit[] = [
+      { record: currentRecord, similarity: 0.99 },
+      { record: olderRecord, similarity: 0.8 },
+    ];
+    const recallForCognition = vi.fn(
+      async (input: { vector: Float32Array; limit: number }) => hits.slice(0, input.limit),
+    );
+    const imagePerceptionRepository = {
+      recallForCognition,
+    } as unknown as ImagePerceptionRepository;
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository,
+      imagePerceptionRepository,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+    });
+
+    const context = await pipeline.recallEpisodesForCognition("Atlas deployment path", {
+      limit: 1,
+      currentTurnAttachmentIds: [currentAttachmentId],
+      recallContext: {
+        reader: SELF_RECALL_SCOPE,
+        currentSessionId: DEFAULT_SESSION_ID,
+        currentAudienceEntityId: null,
+        currentParticipantEntityIds: [],
+      },
+    });
+    const imageEvidence = context.evidence.filter((item) => item.source === "image_perception");
+
+    expect(recallForCognition.mock.calls[0]?.[0].limit).toBe(2);
+    expect(imageEvidence).toHaveLength(1);
+    expect(imageEvidence[0]?.provenance?.imagePerceptionId).toBe(olderRecord.perception_id);
+    expect(imageEvidence[0]?.imageAttachmentId).toBe(olderAttachmentId);
+    expect(
+      imageEvidence.some(
+        (item) => item.provenance?.imagePerceptionId === currentRecord.perception_id,
+      ),
+    ).toBe(false);
+  });
+
+  it("pre-filters warm image recall so current-turn exclusion preserves older image count", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-image-warm-overfetch-"));
+    const { store, db, episodicRepository } = await openRetrievalFixture(tempDir);
+    const recallStateRepository = new RecallStateRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const currentAttachmentId = createAttachmentId();
+    const olderAttachmentId = createAttachmentId();
+    const currentRecord = createImagePerceptionRecord({
+      attachmentId: currentAttachmentId,
+      caption: "Current-turn Atlas deployment image.",
+    });
+    const olderRecord = createImagePerceptionRecord({
+      attachmentId: olderAttachmentId,
+      caption: "Older Atlas deployment diagram.",
+    });
+    const records = new Map([
+      [currentRecord.perception_id, currentRecord],
+      [olderRecord.perception_id, olderRecord],
+    ]);
+    const get = vi.fn((perceptionId: ImagePerceptionRecord["perception_id"]) => {
+      return records.get(perceptionId) ?? null;
+    });
+    const imagePerceptionRepository = {
+      get,
+      recallForCognition: vi.fn(async () => []),
+    } as unknown as ImagePerceptionRepository;
+    recallStateRepository.save({
+      scopeKey: SELF_RECALL_SCOPE,
+      activeHandles: [
+        {
+          handle: {
+            source: "image_perception",
+            perceptionId: currentRecord.perception_id,
+            attachmentId: currentAttachmentId,
+          },
+          firstSeenTurn: 0,
+          lastSeenTurn: 0,
+          lastRenderedTurn: null,
+          expiresAfterTurn: 10,
+          reinforcementCount: 10,
+        },
+        {
+          handle: {
+            source: "image_perception",
+            perceptionId: olderRecord.perception_id,
+            attachmentId: olderAttachmentId,
+          },
+          firstSeenTurn: 0,
+          lastSeenTurn: 0,
+          lastRenderedTurn: null,
+          expiresAfterTurn: 10,
+          reinforcementCount: 1,
+        },
+      ],
+      suppressedHandles: {},
+      lastRefreshTurn: 0,
+      updatedAt: 10_000,
+      ttlTurns: 6,
+    });
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository,
+      imagePerceptionRepository,
+      recallStateRepository,
+      recallStateMaxWarmEvidenceRendered: 1,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+    });
+
+    const context = await pipeline.recallEpisodesForCognition("Atlas deployment path", {
+      limit: 1,
+      turnCounter: 1,
+      currentTurnAttachmentIds: [currentAttachmentId],
+      recallContext: {
+        reader: SELF_RECALL_SCOPE,
+        currentSessionId: DEFAULT_SESSION_ID,
+        currentAudienceEntityId: null,
+        currentParticipantEntityIds: [],
+      },
+    });
+    const imageEvidence = context.evidence.filter((item) => item.source === "image_perception");
+
+    expect(get).not.toHaveBeenCalledWith(currentRecord.perception_id);
+    expect(get).toHaveBeenCalledWith(olderRecord.perception_id);
+    expect(imageEvidence).toHaveLength(1);
+    expect(imageEvidence[0]?.recallIntentId).toBe("warm_recall");
+    expect(imageEvidence[0]?.provenance?.imagePerceptionId).toBe(olderRecord.perception_id);
+    expect(imageEvidence[0]?.imageAttachmentId).toBe(olderAttachmentId);
+    expect(
+      imageEvidence.some(
+        (item) => item.provenance?.imagePerceptionId === currentRecord.perception_id,
+      ),
+    ).toBe(false);
   });
 
   it("does not rehydrate image perception warm recall across audience terms", async () => {
@@ -1335,6 +1564,7 @@ describe("retrieval pipeline", () => {
           {
             id: "goal_aaaaaaaaaaaaaaaa" as never,
             description: "release goal",
+            terminal_condition: null,
             priority: 1,
             parent_goal_id: null,
             status: "active",

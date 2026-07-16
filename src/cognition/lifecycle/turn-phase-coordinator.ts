@@ -22,7 +22,7 @@ import type {
 } from "../../stream/index.js";
 import { buildObservedEventEmission } from "../../memory/observed-events/index.js";
 import { CognitionError } from "../../util/errors.js";
-import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
+import type { AttachmentId, EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import { isCreatorInOperatorContext } from "../authority.js";
 import { isUserTurnOrigin, persistsPerception } from "../types.js";
 import {
@@ -1145,6 +1145,12 @@ export class TurnPhaseCoordinator {
     const sourceUserEntries = currentTurnUserInput.sourceUserEntries;
     const sourceUserEntryIds = currentTurnUserInput.sourceUserEntryIds;
     const currentUserContent = currentTurnUserInput.currentUserContent;
+    const currentTurnAttachmentIds: AttachmentId[] = [
+      ...openingPersistence.persistedAttachments.map((attachment) => attachment.attachmentId),
+      ...(batchEntries ?? []).flatMap((entry) =>
+        (entry.attachments ?? []).map((attachment) => attachment.attachment_id),
+      ),
+    ];
 
     for (const attachment of openingPersistence.persistedAttachments) {
       await this.options.imagePerceptionService?.perceiveAttachment({
@@ -1234,6 +1240,7 @@ export class TurnPhaseCoordinator {
           conversationContext: frameAnomalyConversationContext,
           currentSenderBorgRole: creatorContext.currentSenderBorgRole,
           sessionAudienceRole,
+          sessionSourceType: sessionRecord?.source_type ?? null,
           persistedUserEntryId,
           sourceUserEntryIds,
           streamWriter,
@@ -1357,6 +1364,12 @@ export class TurnPhaseCoordinator {
       workingMemory = this.options.discourseStateService.clearClosureLoop({
         workingMemory,
         reason: closureLoopAssessment.reason,
+        turnId,
+        sessionId,
+      });
+      workingMemory = this.options.discourseStateService.clearStopState({
+        workingMemory,
+        reason: `Closure-loop classifier marked the current turn substantive: ${closureLoopAssessment.reason}`,
         turnId,
         sessionId,
       });
@@ -1502,6 +1515,7 @@ export class TurnPhaseCoordinator {
           currentUserEntries: currentTurnUserInput.persistUserMessage
             ? undefined
             : sourceUserEntries,
+          currentTurnAttachmentIds,
           currentTurnFrameAnomaly,
           closureLoopAssessment,
         }),

@@ -11,6 +11,7 @@ import { TurnGoalPromotionService } from "./turn-goal-promotion-service.js";
 type GoalPromotionFixture = {
   classification?: GoalPromotionClassification;
   description?: string;
+  terminal_condition?: string | null;
   priority?: number;
   target_at?: number | null;
   reason?: string;
@@ -44,6 +45,8 @@ function goalPromotionResponse(
           promotions: promotions.map((promotion) => ({
             classification: promotion.classification ?? "durable_borg_goal",
             description: promotion.description ?? "Track Alice drafting the launch brief",
+            terminal_condition:
+              promotion.terminal_condition ?? "Alice's launch brief tracking reaches handoff",
             priority: promotion.priority ?? 6,
             target_at: promotion.target_at ?? null,
             reason: promotion.reason ?? "Borg was asked to keep the work task organized.",
@@ -64,6 +67,7 @@ function goalRecord(
     id: overrides.id ?? createGoalId(),
     record_version: overrides.record_version ?? 1,
     description: overrides.description ?? "Track code review follow-up",
+    terminal_condition: overrides.terminal_condition ?? null,
     priority: overrides.priority ?? 6,
     parent_goal_id: overrides.parent_goal_id ?? null,
     status: overrides.status ?? "active",
@@ -158,6 +162,7 @@ describe("TurnGoalPromotionService", () => {
         id: goalId,
         record_version: 1,
         description: input.description,
+        terminal_condition: input.terminalCondition ?? null,
         priority: input.priority,
         parent_goal_id: null,
         status: "active",
@@ -178,6 +183,7 @@ describe("TurnGoalPromotionService", () => {
       responses: [
         goalPromotionResponse({
           description: "Track the user preparing the quarterly review packet",
+          terminal_condition: "The quarterly review packet is ready for review",
           reason: "Borg was asked to keep the review preparation organized.",
           initial_step: {
             description: "Wait for the finance team update",
@@ -216,6 +222,11 @@ describe("TurnGoalPromotionService", () => {
       executiveStepIds: [],
     });
     expect(addGoal).toHaveBeenCalledOnce();
+    expect(addGoal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminalCondition: "The quarterly review packet is ready for review",
+      }),
+    );
     expect(addStep).not.toHaveBeenCalled();
     expect(onHookFailure).not.toHaveBeenCalled();
     expect(emit).toHaveBeenCalledWith(
@@ -299,6 +310,7 @@ describe("TurnGoalPromotionService", () => {
         goalRecord({
           id: persistedGoalId,
           description: input.description,
+          terminal_condition: input.terminalCondition ?? null,
           priority: input.priority,
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
@@ -356,6 +368,7 @@ describe("TurnGoalPromotionService", () => {
         goalRecord({
           id: persistedGoalId,
           description: input.description,
+          terminal_condition: input.terminalCondition ?? null,
           priority: input.priority,
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
@@ -423,6 +436,7 @@ describe("TurnGoalPromotionService", () => {
         goalRecord({
           id: persistedGoalId,
           description: input.description,
+          terminal_condition: input.terminalCondition ?? null,
           priority: input.priority,
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
@@ -489,6 +503,7 @@ describe("TurnGoalPromotionService", () => {
         goalRecord({
           id: persistedGoalId,
           description: input.description,
+          terminal_condition: input.terminalCondition ?? null,
           priority: input.priority,
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
@@ -619,6 +634,7 @@ describe("TurnGoalPromotionService", () => {
         goalRecord({
           id: firstGoalId,
           description: input.description,
+          terminal_condition: input.terminalCondition ?? null,
           priority: input.priority,
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
@@ -692,6 +708,7 @@ describe("TurnGoalPromotionService", () => {
         goalRecord({
           id: persistedGoalId,
           description: input.description,
+          terminal_condition: input.terminalCondition ?? null,
           priority: input.priority,
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
@@ -756,6 +773,7 @@ describe("TurnGoalPromotionService", () => {
         goalRecord({
           id: persistedGoalId,
           description: input.description,
+          terminal_condition: input.terminalCondition ?? null,
           priority: input.priority,
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,

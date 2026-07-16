@@ -1,6 +1,7 @@
 export { selfDecisionMigrations } from "./migrations.js";
 export {
   SelfDecisionRepository,
+  type SelfDecisionDailyDensityRow,
   type SelfDecisionEventRecordInput,
   type SelfDecisionProjectionSourceEvent,
   type SelfDecisionRepositoryOptions,

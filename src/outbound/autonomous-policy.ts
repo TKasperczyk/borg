@@ -18,6 +18,7 @@ import type { EntityId, SessionId } from "../util/ids.js";
 
 const AUTONOMOUS_OUTBOUND_CAP_SCAN_MAX_ENTRIES = 4_096;
 const AUTONOMOUS_OUTBOUND_CAP_SCAN_MAX_BYTES = 8 * 1024 * 1024;
+const AUTONOMOUS_OUTBOUND_CAP_SCAN_OLD_ENTRY_TOLERANCE = 12;
 
 export const PROACTIVE_OUTBOUND_CREATOR_DIRECTIVE_TOPIC_TAG = "proactive_outbound";
 
@@ -325,10 +326,22 @@ export class AutonomousOutboundPolicy {
     // Caps intentionally count autonomous outbound tool_call attempts, regardless of
     // delivery result. That keeps retry storms bounded without joining result rows.
     const cutoff = this.options.clock.now() - this.options.config.windowMs;
+    // A short old-entry run tolerates minor wall-clock regressions without making
+    // long-lived streams scan weeks of history for a one-day rolling window.
+    let consecutiveOlderThanWindow = 0;
     const scan = this.options.createStreamReader(input.sessionId).scanReverse({
       maxEntries: AUTONOMOUS_OUTBOUND_CAP_SCAN_MAX_ENTRIES,
       maxBytes: AUTONOMOUS_OUTBOUND_CAP_SCAN_MAX_BYTES,
       budgetFilter: (entry) => entry.kind === "tool_call",
+      stopScan: (entry) => {
+        if (entry.timestamp >= cutoff) {
+          consecutiveOlderThanWindow = 0;
+          return false;
+        }
+
+        consecutiveOlderThanWindow += 1;
+        return consecutiveOlderThanWindow >= AUTONOMOUS_OUTBOUND_CAP_SCAN_OLD_ENTRY_TOLERANCE;
+      },
       filter: (entry) =>
         entry.timestamp >= cutoff &&
         isAutonomousOutboundToolCall(entry, input.targetSessionId, input.excludeTurnId),

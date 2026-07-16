@@ -5,6 +5,10 @@ import type { TurnTracer } from "../tracing/tracer.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
+import type {
+  ActivityRepository,
+  LivedExperienceDaySummaryRepository,
+} from "../memory/activity/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { CreatorDirectiveRepository } from "../memory/creator-directives/index.js";
@@ -12,6 +16,7 @@ import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import type { ProceduralEvidenceRepository, SkillRepository } from "../memory/procedural/index.js";
 import type { RelationalSlotRepository } from "../memory/relational-slots/index.js";
+import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import type {
   AutobiographicalRepository,
   GoalsRepository,
@@ -39,6 +44,7 @@ import {
   CreatorDirectiveReconcilerProcess,
   CuratorProcess,
   MaintenanceOrchestrator,
+  LivedExperienceDaySummarizerProcess,
   OverseerProcess,
   ProceduralSynthesizerProcess,
   ReflectorProcess,
@@ -85,6 +91,9 @@ export type BuildOfflineSetupOptions = {
   growthMarkersRepository: GrowthMarkersRepository;
   openQuestionsRepository: OpenQuestionsRepository;
   moodRepository: MoodRepository;
+  activityRepository: ActivityRepository;
+  selfDecisionRepository: SelfDecisionRepository;
+  livedExperienceDaySummaryRepository: LivedExperienceDaySummaryRepository;
   actionRepository: ActionRepository;
   socialRepository: SocialRepository;
   entityRepository: EntityRepository;
@@ -157,6 +166,10 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       growthMarkersRepository: options.growthMarkersRepository,
       registry: reverserRegistry,
     }),
+    "lived-experience-day-summarizer": new LivedExperienceDaySummarizerProcess({
+      livedExperienceDaySummaryRepository: options.livedExperienceDaySummaryRepository,
+      registry: reverserRegistry,
+    }),
     "procedural-synthesizer": new ProceduralSynthesizerProcess({
       skillRepository: options.skillRepository,
       proceduralEvidenceRepository: options.proceduralEvidenceRepository,
@@ -221,6 +234,9 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       growthMarkersRepository: options.growthMarkersRepository,
       openQuestionsRepository: options.openQuestionsRepository,
       moodRepository: options.moodRepository,
+      activityRepository: options.activityRepository,
+      selfDecisionRepository: options.selfDecisionRepository,
+      livedExperienceDaySummaryRepository: options.livedExperienceDaySummaryRepository,
       actionRepository: options.actionRepository,
       socialRepository: options.socialRepository,
       entityRepository: options.entityRepository,

@@ -224,6 +224,9 @@ export async function openBorgDependencies(
       growthMarkersRepository: repositories.growthMarkersRepository,
       openQuestionsRepository: repositories.openQuestionsRepository,
       moodRepository: repositories.moodRepository,
+      activityRepository: repositories.activityRepository,
+      selfDecisionRepository: repositories.selfDecisionRepository,
+      livedExperienceDaySummaryRepository: repositories.livedExperienceDaySummaryRepository,
       actionRepository: repositories.actionRepository,
       socialRepository: repositories.socialRepository,
       entityRepository: repositories.entityRepository,
@@ -331,6 +334,7 @@ export async function openBorgDependencies(
       creatorDirectiveRepository: repositories.creatorDirectiveRepository,
       sharedStateRepository: repositories.sharedStateRepository,
       activityRepository: repositories.activityRepository,
+      livedExperienceDaySummaryRepository: repositories.livedExperienceDaySummaryRepository,
       selfDecisionRepository: repositories.selfDecisionRepository,
       trainOfThoughtRepository: repositories.trainOfThoughtRepository,
       observedEventRepository: repositories.observedEventRepository,
@@ -375,6 +379,8 @@ export async function openBorgDependencies(
         sessionsRepository: repositories.sessionsRepository,
         connectorRegistry: outboundConnectorRegistry,
         autonomousOutboundPolicy,
+        actionRepository: repositories.actionRepository,
+        clock,
         postOutbound: (input) =>
           runDirectedOutboundTurn(
             {
@@ -476,6 +482,7 @@ export async function openBorgDependencies(
       creatorDirectiveRepository: repositories.creatorDirectiveRepository,
       sharedStateRepository: repositories.sharedStateRepository,
       activityRepository: repositories.activityRepository,
+      livedExperienceDaySummaryRepository: repositories.livedExperienceDaySummaryRepository,
       correctionService: repositories.correctionService,
       skillRepository: repositories.skillRepository,
       proceduralContextStatsRepository: repositories.proceduralContextStatsRepository,

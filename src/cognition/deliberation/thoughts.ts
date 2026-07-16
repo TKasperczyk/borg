@@ -34,6 +34,11 @@ export async function persistDeliberationThoughts(
  */
 export function formatTurnPlanForThought(plan: TurnPlan): string {
   const parts: string[] = [];
+  const want = plan.want?.trim() ?? "";
+
+  if (want.length > 0) {
+    parts.push(`want: ${want}`);
+  }
 
   if (plan.uncertainty.trim().length > 0) {
     parts.push(`uncertainty: ${plan.uncertainty.trim()}`);

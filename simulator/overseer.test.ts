@@ -186,6 +186,7 @@ function metricsRow(turn: number): MetricsRow {
       extractor: 0,
       reflector: 0,
       api: 0,
+      tool: 0,
       unknown: 0,
     },
     action_record_creation_count_this_turn: 0,

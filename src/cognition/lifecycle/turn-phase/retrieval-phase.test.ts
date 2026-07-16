@@ -30,6 +30,7 @@ import {
   createStreamEntryId,
   type EntityId,
   type SessionId,
+  type StreamEntryId,
 } from "../../../util/ids.js";
 import type { ActionRecord } from "../../../memory/actions/index.js";
 import {
@@ -1179,7 +1180,7 @@ describe("creator directive retrieval briefing", () => {
           }),
         ]),
       );
-      expect(rendered).toContain("## 13. Autobiographical Recall");
+      expect(rendered).toContain("## 14. Autobiographical Recall");
       expect(rendered).toContain("window_source");
       expect(rendered).toContain("private-to=");
       expect(rendered).not.toContain("Sol did");
@@ -2286,6 +2287,560 @@ describe("creator directive retrieval briefing", () => {
       db.close();
     }
   });
+
+  it("computes current-time lived-experience context when the recent-lived band is gap-gated off", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const options = minimalRetrievalPhaseOptions(repository);
+    const nowMs = Date.UTC(2026, 5, 18, 12, 0, 0);
+    const previousUserAt = nowMs - 10 * 60_000;
+    const previousAgentAt = nowMs - 9 * 60_000;
+    const windowMs = 3 * 24 * 60 * 60_000;
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-current-time-context-"));
+    const priorWriter = new StreamWriter({
+      dataDir: tempDir,
+      clock: new FixedClock(previousUserAt),
+    });
+    const priorAgentWriter = new StreamWriter({
+      dataDir: tempDir,
+      clock: new FixedClock(previousAgentAt),
+    });
+    const currentWriter = new StreamWriter({
+      dataDir: tempDir,
+      clock: new FixedClock(nowMs),
+    });
+    await priorWriter.append({
+      kind: "user_msg",
+      content: "Previous same-session turn.",
+    });
+    await priorAgentWriter.append({
+      kind: "agent_msg",
+      content: "Previous same-session reply.",
+    });
+    const currentUserEntry = await currentWriter.append({
+      kind: "user_msg",
+      content: "Current same-session turn.",
+    });
+
+    options.clock = new FixedClock(nowMs);
+    options.config = {
+      ...options.config,
+      generation: {
+        ...options.config.generation,
+        evidenceLedger: {
+          ...options.config.generation.evidenceLedger,
+          enabled: true,
+          recentLivedExperience: {
+            ...options.config.generation.evidenceLedger.recentLivedExperience,
+            recencyWindowMs: windowMs,
+            densityCap: 1,
+            gapThresholdMs: 3 * 60 * 60_000,
+          },
+        },
+      },
+    };
+    options.openQuestionsRepository = {
+      ...options.openQuestionsRepository,
+      findByHandles: () => [],
+      get: () => null,
+      resolve: vi.fn(),
+    };
+    options.createStreamReader = (sessionId: SessionId) =>
+      new StreamReader({ dataDir: tempDir, sessionId });
+    const listDailyOtherActiveSessionDensity = vi.fn(() => [
+      {
+        dayKey: "2026-06-18",
+        dayStartMs: Date.UTC(2026, 5, 18),
+        sessionId: createSessionId(),
+        sessionLabel: "botarena run",
+        audienceLabel: "arena",
+        audienceEntityId: null,
+        eventCount: 2,
+        conversationTurnCount: 1,
+        kindCounts: {
+          userContact: 1,
+          borgReplied: 1,
+          turnCompleted: 0,
+        },
+        firstOccurredAt: nowMs - 6 * 60_000,
+        lastOccurredAt: nowMs - 2 * 60_000,
+      },
+    ]);
+    const listDailyAutonomousSelfPrivateDensity = vi.fn(() => [
+      {
+        dayKey: "2026-06-18",
+        dayStartMs: Date.UTC(2026, 5, 18),
+        decisionCount: 2,
+        distinctDecisionShapeCount: 2,
+        firstOccurredAt: nowMs - 8 * 60_000,
+        lastOccurredAt: nowMs - 1 * 60_000,
+      },
+    ]);
+    const countOtherActiveSessionConversationTurns = vi.fn(() => 40);
+    const countAutonomousSelfPrivateDecisions = vi.fn(() => 138);
+    options.activityRepository = {
+      record: vi.fn(),
+      getMostRecentOtherActiveSessionEventOccurredAt: vi.fn(() => nowMs - 2 * 60_000),
+      listRecentOtherActiveSessionEvents: vi.fn(() => []),
+      listDailyOtherActiveSessionDensity,
+      countOtherActiveSessionConversationTurns,
+    };
+    options.selfDecisionRepository = {
+      listRecentAutonomousSelfPrivate: vi.fn(() => []),
+      listDailyAutonomousSelfPrivateDensity,
+      countAutonomousSelfPrivateDecisions,
+    };
+
+    try {
+      const result = await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-current-time-lived-experience-gap-gated",
+        turnInput: {
+          userMessage: "Current same-session turn.",
+          audience: "operator",
+          origin: "user",
+        },
+        isSelfAudience: false,
+        isUserTurn: true,
+        cognitionInput: "Current same-session turn.",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: null,
+        audienceEntity: null,
+        audienceProfile: null,
+        sessionAudienceRole: "operator",
+        perception: {
+          entities: [],
+          mode: "relational",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 2,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [],
+        participantRoster: null,
+        participantProfiles: [],
+        persistedUserEntry: currentUserEntry,
+        currentUserEntries: [currentUserEntry],
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+
+      expect(listDailyOtherActiveSessionDensity).toHaveBeenCalledWith({
+        currentSessionId: DEFAULT_SESSION_ID,
+        sinceMs: nowMs - windowMs,
+        untilMs: nowMs,
+        limit: options.config.generation.evidenceLedger.recentLivedExperience.densityCap,
+      });
+      expect(listDailyAutonomousSelfPrivateDensity).toHaveBeenCalledWith({
+        sinceMs: nowMs - windowMs,
+        untilMs: nowMs,
+        limit: options.config.generation.evidenceLedger.recentLivedExperience.densityCap,
+      });
+      expect(countOtherActiveSessionConversationTurns).toHaveBeenCalledWith({
+        currentSessionId: DEFAULT_SESSION_ID,
+        sinceMs: nowMs - windowMs,
+        untilMs: nowMs,
+      });
+      expect(countAutonomousSelfPrivateDecisions).toHaveBeenCalledWith({
+        sinceMs: nowMs - windowMs,
+        untilMs: nowMs,
+      });
+      expect(result.currentTimeContext).toEqual({
+        previousUserMessageAt: previousUserAt,
+        recentLifeElsewhere: {
+          windowMs,
+          autonomousReflectionCount: 138,
+          crossSessionConversationTurnCount: 40,
+        },
+      });
+      expect(
+        result.evidenceLedgerContext.ledger?.audienceStanding?.renderRecentLivedExperience,
+      ).toBe(false);
+      expect(
+        result.evidenceLedgerContext.ledger?.sections.find(
+          (section) => section.id === "recent_lived_experience",
+        ),
+      ).toBeUndefined();
+
+      const autonomousResult = await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-autonomous-lived-experience-renders",
+        turnInput: {
+          userMessage: "Autonomous wake.",
+          audience: "operator",
+          origin: "autonomous",
+        },
+        isSelfAudience: false,
+        isUserTurn: false,
+        cognitionInput: "Autonomous wake.",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: null,
+        audienceEntity: null,
+        audienceProfile: null,
+        sessionAudienceRole: "operator",
+        perception: {
+          entities: [],
+          mode: "relational",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 3,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [],
+        participantRoster: null,
+        participantProfiles: [],
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+      const autonomousRecentLivedSection =
+        autonomousResult.evidenceLedgerContext.ledger?.sections.find(
+          (section) => section.id === "recent_lived_experience",
+        );
+
+      expect(
+        autonomousResult.evidenceLedgerContext.ledger?.audienceStanding
+          ?.renderRecentLivedExperience,
+      ).toBe(true);
+      expect(autonomousRecentLivedSection?.entries.length).toBeGreaterThan(0);
+    } finally {
+      priorWriter.close();
+      priorAgentWriter.close();
+      currentWriter.close();
+      rmSync(tempDir, { recursive: true, force: true });
+      db.close();
+    }
+  });
+
+  it("derives previous user-message time through the entry-index fast path", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    type IndexedUserRecord = {
+      entry_id: StreamEntryId;
+      session_id: SessionId;
+      timestamp: number;
+      entry_index: number | null;
+      kind: "user_msg";
+      turn_id: string | null;
+      turn_status: "active" | "aborted" | null;
+      active: boolean;
+    };
+    const record = (input: {
+      id?: StreamEntryId;
+      timestamp: number;
+      entryIndex: number;
+      active?: boolean;
+      turnStatus?: "active" | "aborted" | null;
+    }): IndexedUserRecord => ({
+      entry_id: input.id ?? createStreamEntryId(),
+      session_id: DEFAULT_SESSION_ID,
+      timestamp: input.timestamp,
+      entry_index: input.entryIndex,
+      kind: "user_msg",
+      turn_id: `turn-${input.entryIndex}`,
+      turn_status: input.turnStatus ?? "active",
+      active: input.active ?? true,
+    });
+    const streamEntry = (indexed: IndexedUserRecord, content: string): StreamEntry => ({
+      id: indexed.entry_id,
+      timestamp: indexed.timestamp,
+      entry_index: indexed.entry_index ?? undefined,
+      kind: "user_msg",
+      content,
+      session_id: indexed.session_id,
+      turn_id: indexed.turn_id ?? undefined,
+      turn_status: indexed.turn_status ?? undefined,
+      compressed: false,
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+    });
+    const runCase = async (input: {
+      records: readonly IndexedUserRecord[];
+      currentRecords: readonly IndexedUserRecord[];
+    }): Promise<number | null> => {
+      const options = minimalRetrievalPhaseOptions(repository);
+      const recordsById = new Map(input.records.map((item) => [item.entry_id, item]));
+      const currentUserEntries = input.currentRecords.map((item, index) =>
+        streamEntry(item, `Current ${index}`),
+      );
+
+      options.entryIndex = {
+        lookup: (entryId: StreamEntryId) => recordsById.get(entryId) ?? null,
+        lookupMany: (entryIds: readonly StreamEntryId[]) =>
+          new Map(
+            entryIds.flatMap((entryId) => {
+              const found = recordsById.get(entryId);
+
+              return found === undefined ? [] : [[entryId, found] as const];
+            }),
+          ),
+        lookupEntriesById: () => new Map(),
+        lookupSessionEntriesByKind: (lookupInput: { sessionId: SessionId; kind: string }) =>
+          input.records.filter(
+            (item) => item.session_id === lookupInput.sessionId && item.kind === lookupInput.kind,
+          ),
+        countSessionEntriesByKind: (countInput: {
+          sessionId: SessionId;
+          kind: string;
+          excludeEntryId?: StreamEntryId;
+        }) =>
+          input.records
+            .filter(
+              (item) => item.session_id === countInput.sessionId && item.kind === countInput.kind,
+            )
+            .filter((item) => item.active)
+            .filter((item) => item.entry_id !== countInput.excludeEntryId).length,
+        quarantinedSharedStateArtifactRefs: () => new Set(),
+      } as unknown as NonNullable<TurnPhaseCoordinatorOptions["entryIndex"]>;
+      options.createStreamReader = () =>
+        ({
+          async *iterate() {
+            throw new Error("entry-index fast path should not load the session stream");
+          },
+        }) as unknown as StreamReader;
+
+      const result = await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-current-time-entry-index",
+        turnInput: {
+          userMessage: "Current indexed turn.",
+          audience: "operator",
+          origin: "user",
+        },
+        isSelfAudience: false,
+        isUserTurn: true,
+        cognitionInput: "Current indexed turn.",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: null,
+        audienceEntity: null,
+        audienceProfile: null,
+        sessionAudienceRole: "operator",
+        perception: {
+          entities: [],
+          mode: "relational",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 1,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [],
+        participantRoster: null,
+        participantProfiles: [],
+        persistedUserEntry: currentUserEntries[0],
+        currentUserEntries,
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+
+      return result.currentTimeContext.previousUserMessageAt;
+    };
+
+    try {
+      const firstCurrent = record({ timestamp: 3_000, entryIndex: 1 });
+      await expect(
+        runCase({
+          records: [firstCurrent],
+          currentRecords: [firstCurrent],
+        }),
+      ).resolves.toBeNull();
+
+      const prior = record({ timestamp: 4_000, entryIndex: 1 });
+      const currentPartA = record({ timestamp: 5_000, entryIndex: 2 });
+      const currentPartB = record({ timestamp: 5_100, entryIndex: 3 });
+      await expect(
+        runCase({
+          records: [prior, currentPartA, currentPartB],
+          currentRecords: [currentPartA, currentPartB],
+        }),
+      ).resolves.toBe(prior.timestamp);
+
+      const activePrior = record({ timestamp: 6_000, entryIndex: 1 });
+      const inactiveLaterPrior = record({
+        timestamp: 7_000,
+        entryIndex: 2,
+        active: false,
+        turnStatus: "active",
+      });
+      const currentAfterInactive = record({ timestamp: 8_000, entryIndex: 3 });
+      await expect(
+        runCase({
+          records: [activePrior, inactiveLaterPrior, currentAfterInactive],
+          currentRecords: [currentAfterInactive],
+        }),
+      ).resolves.toBe(activePrior.timestamp);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("skips later-aborted prior user messages in the stream-reader fallback", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: creatorDirectiveMigrations,
+    });
+    const repository = new CreatorDirectiveRepository({
+      db,
+      clock: new FixedClock(2_000),
+    });
+    const options = minimalRetrievalPhaseOptions(repository);
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-current-time-aborted-fallback-"));
+    const activePriorAt = 1_000;
+    const abortedPriorAt = 2_000;
+    const currentAt = 3_000;
+    const activePriorWriter = new StreamWriter({
+      dataDir: tempDir,
+      clock: new FixedClock(activePriorAt),
+    });
+    const abortedPriorWriter = new StreamWriter({
+      dataDir: tempDir,
+      clock: new FixedClock(abortedPriorAt),
+    });
+    const abortMarkerWriter = new StreamWriter({
+      dataDir: tempDir,
+      clock: new FixedClock(abortedPriorAt + 100),
+    });
+    const currentWriter = new StreamWriter({
+      dataDir: tempDir,
+      clock: new FixedClock(currentAt),
+    });
+
+    await activePriorWriter.append({
+      kind: "user_msg",
+      content: "Active prior user message.",
+    });
+    const abortedPrior = await abortedPriorWriter.append({
+      kind: "user_msg",
+      content: "Aborted prior user message.",
+      turn_id: "turn-aborted-prior",
+      turn_status: "active",
+    });
+    await abortMarkerWriter.append({
+      kind: "internal_event",
+      content: {
+        event: "aborted_turn",
+        turn_id: "turn-aborted-prior",
+        aborted_stream_entry_ids: [abortedPrior.id],
+      },
+      turn_id: "turn-aborted-prior",
+      turn_status: "aborted",
+    });
+    const currentUserEntry = await currentWriter.append({
+      kind: "user_msg",
+      content: "Current user message.",
+    });
+
+    options.clock = new FixedClock(currentAt);
+    options.createStreamReader = (sessionId: SessionId) =>
+      new StreamReader({ dataDir: tempDir, sessionId });
+
+    try {
+      const result = await runRetrievalPhase({
+        options,
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-current-time-aborted-fallback",
+        turnInput: {
+          userMessage: "Current user message.",
+          audience: "operator",
+          origin: "user",
+        },
+        isSelfAudience: false,
+        isUserTurn: true,
+        cognitionInput: "Current user message.",
+        llmClient: new FakeLLMClient({ responses: [] }),
+        recencyMessages: [],
+        audienceEntityId: null,
+        audienceEntity: null,
+        audienceProfile: null,
+        sessionAudienceRole: "operator",
+        perception: {
+          entities: [],
+          mode: "relational",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        } satisfies PerceptionResult,
+        workingMemory: {
+          turn_counter: 1,
+        } as never,
+        suppressionSet: {} as never,
+        actionLinkSelfContext: null,
+        persistedPromotions: {
+          goalIds: [],
+          executiveStepIds: [],
+        },
+        correctiveCommitment: null,
+        activeParticipants: [],
+        participantRoster: null,
+        participantProfiles: [],
+        persistedUserEntry: currentUserEntry,
+        currentUserEntries: [currentUserEntry],
+        currentTurnFrameAnomaly: null,
+        closureLoopAssessment: null,
+      });
+
+      expect(result.currentTimeContext.previousUserMessageAt).toBe(activePriorAt);
+    } finally {
+      activePriorWriter.close();
+      abortedPriorWriter.close();
+      abortMarkerWriter.close();
+      currentWriter.close();
+      rmSync(tempDir, { recursive: true, force: true });
+      db.close();
+    }
+  });
 });
 
 describe("compileSharedStateArtifactForEvidenceLedger", () => {
@@ -2572,10 +3127,9 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
       requestPayload.canonicalization_candidates?.active_commitments?.find(
         (candidate) => candidate.id === commitmentId,
       );
-    const openQuestionCandidate =
-      requestPayload.canonicalization_candidates?.open_questions?.find(
-        (candidate) => candidate.id === openQuestionId,
-      );
+    const openQuestionCandidate = requestPayload.canonicalization_candidates?.open_questions?.find(
+      (candidate) => candidate.id === openQuestionId,
+    );
 
     expect(commitmentCandidate).toMatchObject({
       disclosure_label: {
@@ -2583,18 +3137,14 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
         private_to_entity_ids: [audienceEntityId],
       },
     });
-    expect(commitmentCandidate?.disclosure).toContain(
-      "disclosure_class=relationship_private",
-    );
+    expect(commitmentCandidate?.disclosure).toContain("disclosure_class=relationship_private");
     expect(openQuestionCandidate).toMatchObject({
       disclosure_label: {
         disclosure_class: "relationship_private",
         private_to_entity_ids: [audienceEntityId],
       },
     });
-    expect(openQuestionCandidate?.disclosure).toContain(
-      "disclosure_class=relationship_private",
-    );
+    expect(openQuestionCandidate?.disclosure).toContain("disclosure_class=relationship_private");
 
     expect(update).toHaveBeenCalledWith(
       actionId,

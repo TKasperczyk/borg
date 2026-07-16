@@ -11,6 +11,7 @@ export { DemoMessageConnector } from "./demo-connector.js";
 export { OutboundDelivery } from "./delivery.js";
 export {
   runDirectedOutboundTurn,
+  type DirectedOutboundDeliveryOutcome,
   type DirectedOutboundTurnInput,
   type DirectedOutboundTurnResult,
   type DirectedOutboundTurnRunnerOptions,

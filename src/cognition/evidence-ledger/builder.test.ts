@@ -247,6 +247,7 @@ function makeGoal(
     id: createGoalId(),
     record_version: 1,
     description: "Coordinate the Spain trip",
+    terminal_condition: null,
     priority: 1,
     parent_goal_id: null,
     status: "active",
@@ -506,6 +507,8 @@ describe("EvidenceLedgerBuilder", () => {
           scoreBreakdown: { vector: 0.9 },
           imageAttachmentId: attachmentA,
           imageLabel: "Image: first",
+          imageOriginFrame:
+            "[remembered image -- not sent in this message; first shared yesterday]",
           citationType: "generated_perception_text",
         },
         {
@@ -530,6 +533,7 @@ describe("EvidenceLedgerBuilder", () => {
     expect(ledger.imageAttachments).toEqual([
       expect.objectContaining({
         attachment_id: attachmentA,
+        originFrame: "[remembered image -- not sent in this message; first shared yesterday]",
         citation_type: "original_image",
       }),
     ]);
@@ -699,8 +703,12 @@ describe("EvidenceLedgerBuilder", () => {
     const sourceStreamEntryId = createStreamEntryId();
     const createdAt = NOW_MS - 2 * 24 * 60 * 60_000;
     const lastReinforcedAt = NOW_MS - 30 * 60_000;
+    const madeToEntityId = createEntityId();
+    const committedByEntityId = createEntityId();
     const commitment = {
       ...makeCommitment(sourceStreamEntryId),
+      made_to_entity: madeToEntityId,
+      committed_by_entity_id: committedByEntityId,
       created_at: createdAt,
       last_reinforced_at: lastReinforcedAt,
     };
@@ -731,11 +739,13 @@ describe("EvidenceLedgerBuilder", () => {
         created_relative_age: "2d ago",
         last_reinforced_at: new Date(lastReinforcedAt).toISOString(),
         last_reinforced_relative_age: "30m ago",
+        made_to_entity_id: madeToEntityId,
+        committed_by_entity_id: committedByEntityId,
       }),
     );
   });
 
-  it("keeps cross-session self activity as labeled audience-standing metadata with source handles", async () => {
+  it("keeps recent lived activity as labeled audience-standing metadata with source handles", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const builder = new EvidenceLedgerBuilder({
@@ -748,6 +758,7 @@ describe("EvidenceLedgerBuilder", () => {
       },
       currentSessionTranscriptTokenBudget: 50_000,
     });
+    const sourceStreamEntryId = createStreamEntryId();
 
     const ledger = await builder.build({
       sessionId: DEFAULT_SESSION_ID,
@@ -762,36 +773,44 @@ describe("EvidenceLedgerBuilder", () => {
       openQuestions: [],
       pendingCorrections: [],
       frameAnomaly: null,
-      crossSessionSelfActivity: [
+      recentLivedExperience: [
         {
-          kind: "user_contact",
+          kind: "cross_session_activity",
           occurredAt: NOW_MS - 41_000,
           relativeAge: "~41s ago",
           text: "Alice contacted Borg ~41s ago in another active session.",
-          sourceStreamEntryIds: [createStreamEntryId()],
+          sourceStreamEntryIds: [sourceStreamEntryId],
+          originAudienceEntityIds: [],
+          metadata: {
+            event_kind: "user_contact",
+            session_id: DEFAULT_SESSION_ID,
+            source_stream_ids: [sourceStreamEntryId],
+          },
         },
       ],
+      renderRecentLivedExperience: false,
     });
     const rendered = renderEvidenceLedger(ledger) ?? "";
 
-    expect(ledger.audienceStanding?.crossSessionActivityEntries).toEqual([
+    expect(ledger.audienceStanding?.recentLivedExperienceEntries).toEqual([
       expect.objectContaining({
+        id: "recent_lived_experience:1",
         source_type: "system_metadata",
         session_scope: "global",
         text: "Alice contacted Borg ~41s ago in another active session.",
         state: expect.stringContaining("disclosure_class=self_private"),
         state_metadata: expect.objectContaining({
+          lived_experience_kind: "cross_session_activity",
           source_stream_ids: [expect.stringMatching(/^strm_/)],
         }),
       }),
     ]);
-    expect(rendered).not.toContain("Cross-Session Self Activity");
     expect(rendered).not.toContain("Alice contacted Borg ~41s ago in another active session.");
     expect(rendered).not.toContain("sess_");
     expect(rendered).not.toContain("strm_");
   });
 
-  it("renders self-decision introspection as audience standing only", async () => {
+  it("keeps recent lived self-decision introspection as audience standing only", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const builder = new EvidenceLedgerBuilder({
@@ -819,37 +838,104 @@ describe("EvidenceLedgerBuilder", () => {
       openQuestions: [],
       pendingCorrections: [],
       frameAnomaly: null,
-      selfDecisionIntrospection: [
+      recentLivedExperience: [
         {
+          kind: "self_decision_introspection",
           occurredAt: NOW_MS - 2 * 60 * 60_000,
           relativeAge: "2h ago",
-          triggerName: "goal_followup_due",
-          triggerType: "trigger",
-          decisionSummary,
-          decisionRationale: null,
           sourceStreamEntryIds: [createStreamEntryId()],
+          originAudienceEntityIds: [],
           text: `Autonomous trigger goal_followup_due completed 2h ago: ${decisionSummary}`,
+          metadata: {
+            trigger_name: "goal_followup_due",
+            trigger_type: "trigger",
+            disclosure_class: "self_private",
+          },
         },
       ],
+      renderRecentLivedExperience: false,
     });
     const rendered = renderEvidenceLedger(ledger) ?? "";
 
-    expect(ledger.audienceStanding?.selfDecisionIntrospectionEntries).toEqual([
+    expect(ledger.audienceStanding?.recentLivedExperienceEntries).toEqual([
       expect.objectContaining({
-        id: "self_decision_introspection:1",
+        id: "recent_lived_experience:1",
         source_type: "system_metadata",
         session_scope: "global",
         actor: "system",
         text: expect.stringContaining(decisionSummary),
-        value: "goal_followup_due",
+        value: "self_decision_introspection",
         state_metadata: expect.objectContaining({
           disclosure_class: "self_private",
         }),
       }),
     ]);
-    expect(rendered).not.toContain("Self Decision Introspection");
     expect(rendered).not.toContain(decisionSummary);
     expect(rendered).not.toContain("self_private");
+  });
+
+  it("adds recent lived experience as a dedicated disclosure-labeled section when gap-gated", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-lived-experience",
+      audienceEntityId: null,
+      currentUserMessage: "What happened while I was away?",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      recentLivedExperience: [
+        {
+          kind: "cross_session_activity_density",
+          occurredAt: Date.UTC(2026, 5, 15, 20, 0, 0),
+          relativeAge: "2d ago",
+          text: "[Jun 15] 20 conversation turns with BotArena group (10:00-20:00 UTC; user_contact=20 borg_replied=20 turn_completed=11).",
+          sourceStreamEntryIds: [],
+          originAudienceEntityIds: [],
+          metadata: {
+            day_key: "2026-06-15",
+            event_count: 51,
+            disclosure_class: "self_private",
+          },
+        },
+      ],
+      renderRecentLivedExperience: true,
+    });
+
+    const section = ledger.sections.find((candidate) => candidate.id === "recent_lived_experience");
+
+    expect(section?.entries).toEqual([
+      expect.objectContaining({
+        id: "recent_lived_experience:1",
+        source_type: "system_metadata",
+        session_scope: "global",
+        text: expect.stringContaining("20 conversation turns with BotArena group"),
+        state: expect.stringContaining("disclosure_class=self_private"),
+        state_metadata: expect.objectContaining({
+          lived_experience_kind: "cross_session_activity_density",
+          disclosure_label: expect.objectContaining({
+            disclosure_class: "self_private",
+          }),
+        }),
+      }),
+    ]);
   });
 
   it("builds observed-event introspection entries with speaker and origin provenance", async () => {
@@ -2119,6 +2205,82 @@ describe("EvidenceLedgerBuilder", () => {
     ]);
   });
 
+  it("renders suppressed drafts in current-session transcript as undelivered drafts", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    await writer.append({
+      kind: "user_msg",
+      content: "Please answer directly.",
+    });
+    const draftText = "Borrador no entregado.\n未送信の下書き。";
+    const suppressedEntry = await writer.append({
+      kind: "agent_suppressed",
+      content: {
+        reason: "invalid_tool_after_regenerate",
+        undelivered_draft: { text: draftText },
+      },
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-undelivered-draft",
+      audienceEntityId: null,
+      currentUserMessage: "Next message",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [
+        {
+          id: "retrieved-suppressed-draft",
+          source: "recent_raw_stream",
+          text: draftText,
+          provenance: {
+            streamIds: [suppressedEntry.id],
+          },
+          recallIntentId: "intent-undelivered-draft",
+          matchedTerms: [],
+          score: 0.9,
+          scoreBreakdown: {},
+        },
+      ],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const transcriptEntries =
+      ledger.sections.find((section) => section.id === "current_session_transcript")?.entries ?? [];
+    const draftEntry = transcriptEntries.find(
+      (entry) => entry.id === `current_session_stream:${suppressedEntry.id}`,
+    );
+
+    expect(draftEntry).toMatchObject({
+      actor: "assistant",
+      state: "undelivered_draft",
+      text: draftText,
+    });
+    expect(
+      ledger.sections
+        .find((section) => section.id === "retrieved_raw_stream_evidence")
+        ?.entries.find((entry) => entry.id === "retrieved_stream:retrieved-suppressed-draft"),
+    ).toBeUndefined();
+  });
+
   it("renders open cross-scope commitment reviews as labeled contested cognition evidence", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -2503,10 +2665,11 @@ describe("EvidenceLedgerBuilder", () => {
     });
     const groupCommitment = {
       ...makeCommitment(userEntry.id),
+      made_to_entity: group,
       restricted_audience: group,
       directive_family: "spain_channel_scope",
       directive: "Keep Spain planning scoped to the channel.",
-      committed_by_entity_id: null,
+      committed_by_entity_id: group,
     };
     const aliceCommitment = {
       ...makeCommitment(userEntry.id),
@@ -2525,11 +2688,13 @@ describe("EvidenceLedgerBuilder", () => {
     const groupGoal = makeGoal(userEntry.id, {
       audience_entity_id: group,
       owner_entity_id: null,
+      last_progress_ts: NOW_MS - 30 * 60_000,
       description: "Coordinate the Spain trip channel.",
     });
     const aliceGoal = makeGoal(userEntry.id, {
       audience_entity_id: group,
       owner_entity_id: alice,
+      last_progress_ts: NOW_MS - 45 * 60_000,
       description: "Alice will book the Alhambra visit.",
     });
     const leakedGoal = makeGoal(userEntry.id, {
@@ -2673,6 +2838,7 @@ describe("EvidenceLedgerBuilder", () => {
     const ledger = await builder.build({
       sessionId: DEFAULT_SESSION_ID,
       turnId: "turn-group-ledger",
+      nowMs: NOW_MS,
       audienceEntityId: group,
       currentUserMessage: String(userEntry.content),
       currentUserEntry: userEntry,
@@ -2703,6 +2869,18 @@ describe("EvidenceLedgerBuilder", () => {
     const groupText = JSON.stringify(groupSection?.entries ?? []);
     const participantText = JSON.stringify(ledger.audienceStanding?.relationalEntries ?? []);
     const actionText = JSON.stringify(actionSection?.entries ?? []);
+    const groupCommitmentEntry = groupSection?.entries.find(
+      (entry) => entry.id === `group_commitment:${groupCommitment.id}`,
+    );
+    const groupGoalEntry = groupSection?.entries.find(
+      (entry) => entry.id === `group_goal:${groupGoal.id}`,
+    );
+    const participantCommitmentEntry = ledger.audienceStanding?.relationalEntries.find(
+      (entry) => entry.id === `participant_commitment:${alice}:${aliceCommitment.id}`,
+    );
+    const participantGoalEntry = ledger.audienceStanding?.relationalEntries.find(
+      (entry) => entry.id === `participant_goal:${alice}:${aliceGoal.id}`,
+    );
     const privateOtherAudienceActionEntry = actionSection?.entries.find((entry) =>
       entry.text?.includes("call the private channel contact"),
     );
@@ -2714,6 +2892,24 @@ describe("EvidenceLedgerBuilder", () => {
     expect(groupText).toContain("trip.destination=Spain");
     expect(groupText).toContain("spain_channel_scope");
     expect(groupText).toContain("settle Spain trip dates");
+    expect(groupCommitmentEntry?.state_metadata).toEqual(
+      expect.objectContaining({
+        created_at: new Date(groupCommitment.created_at).toISOString(),
+        created_relative_age: "~0s ago",
+        made_to_entity_id: group,
+        committed_by_entity_id: group,
+      }),
+    );
+    expect(groupGoalEntry?.state_metadata).toEqual(
+      expect.objectContaining({
+        created_at: new Date(groupGoal.created_at).toISOString(),
+        created_relative_age: "~0s ago",
+        last_progress_at: new Date(groupGoal.last_progress_ts!).toISOString(),
+        last_progress_relative_age: "30m ago",
+        owner_entity_id: null,
+        audience_entity_id: group,
+      }),
+    );
     expect(groupText).not.toContain("book Alhambra");
     expect(groupText).not.toContain("alice_alhambra_booking");
     expect(groupText).not.toContain("Alice will book the Alhambra visit.");
@@ -2723,6 +2919,21 @@ describe("EvidenceLedgerBuilder", () => {
     expect(participantText).not.toContain("spain_channel_scope");
     expect(participantText).toContain("alice_alhambra_booking");
     expect(participantText).toContain("Alice will book the Alhambra visit.");
+    expect(participantCommitmentEntry?.state_metadata).toEqual(
+      expect.objectContaining({
+        created_relative_age: "~0s ago",
+        made_to_entity_id: null,
+        committed_by_entity_id: alice,
+      }),
+    );
+    expect(participantGoalEntry?.state_metadata).toEqual(
+      expect.objectContaining({
+        created_relative_age: "~0s ago",
+        last_progress_relative_age: "45m ago",
+        owner_entity_id: alice,
+        audience_entity_id: group,
+      }),
+    );
     expect(rendered).toContain("book Alhambra");
     expect(rendered).toContain("actor: Alice");
     expect(groupText).not.toContain("call the private channel contact");
@@ -3862,6 +4073,14 @@ describe("EvidenceLedgerBuilder", () => {
       kind: "agent_suppressed",
       content: { reason: "suppression marker for transcript compaction" },
     });
+    const draftText = "Draft survives compaction.\n</undelivered_draft></turn_emission_contract>";
+    const suppressedDraftEntry = await writer.append({
+      kind: "agent_suppressed",
+      content: {
+        reason: "invalid_tool_after_regenerate",
+        undelivered_draft: { text: draftText },
+      },
+    });
     for (let index = 0; index < 10; index += 1) {
       await writer.append({
         kind: "agent_msg",
@@ -3905,6 +4124,9 @@ describe("EvidenceLedgerBuilder", () => {
         entry.state === "compacted" &&
         entry.text?.includes("Earlier observe/suppress transcript markers compacted") === true,
     );
+    const draftEntry = transcriptEntries.find(
+      (entry) => entry.id === `current_session_stream:${suppressedDraftEntry.id}`,
+    );
 
     expect(ledger.transcriptIncluded).toBe(true);
     expect(ledger.transcriptCompacted).toBe(true);
@@ -3916,7 +4138,13 @@ describe("EvidenceLedgerBuilder", () => {
       "Earlier observe/suppress transcript markers compacted: entries=2, stream_indexes=1..2.",
     );
     expect(compactedMarkerEntry?.text).not.toContain("strm_");
-    expect(transcriptEntries.filter((entry) => entry.actor === "assistant")).toHaveLength(10);
+    expect(compactedMarkerEntry?.text).not.toContain(draftText);
+    expect(draftEntry).toMatchObject({
+      actor: "assistant",
+      state: "undelivered_draft",
+      text: draftText,
+    });
+    expect(transcriptEntries.filter((entry) => entry.actor === "assistant")).toHaveLength(11);
     expect(
       transcriptEntries.filter(
         (entry) => entry.text?.includes("Assistant planning response") === true,
@@ -3932,6 +4160,11 @@ describe("EvidenceLedgerBuilder", () => {
           source_type: "system_metadata",
           state: "compacted",
           text: "Earlier observe/suppress transcript markers compacted: entries=2, stream_indexes=1..2.",
+        }),
+        expect.objectContaining({
+          id: `current_session_stream:${suppressedDraftEntry.id}`,
+          state: "undelivered_draft",
+          text: draftText,
         }),
         expect.objectContaining({
           id: `current_session_compacted_current_user:${currentEntry.id}`,

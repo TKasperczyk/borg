@@ -90,6 +90,13 @@ describe("runDirectedOutboundTurn", () => {
         sourceType: "demo",
         externalMessageId: "demo-message-1",
       },
+      deliveryOutcome: {
+        state: "delivered",
+        agentMessageId,
+        deliveryStatus: "transported",
+        sourceType: "demo",
+        externalMessageId: "demo-message-1",
+      },
     });
     expect(turnOrchestrator.run).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -122,6 +129,65 @@ describe("runDirectedOutboundTurn", () => {
         ),
       }),
     );
+  });
+
+  it("propagates target-scoped suppression as a structural delivery outcome", async () => {
+    const targetSession = session();
+    const markerEntryId = createStreamEntryId();
+    const turnOrchestrator = {
+      run: vi.fn(async () => ({
+        turn_id: "turn-target",
+        mode: "relational" as const,
+        path: "suppressed" as const,
+        response: "",
+        emitted: false,
+        emission: {
+          kind: "suppressed" as const,
+          reason: "finalizer_no_output" as const,
+          markerEntryId,
+          no_output_categories: ["closure" as const, "with_state_delta" as const],
+          primary_no_output_reason: "closure" as const,
+          structural_no_output_flags: ["with_state_delta" as const],
+        },
+        thoughts: [],
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: null,
+        },
+        retrievedEpisodeIds: [],
+        referencedEpisodeIds: [],
+        intents: [],
+        toolCalls: [],
+      })),
+    };
+
+    await expect(
+      runDirectedOutboundTurn(
+        {
+          turnOrchestrator,
+        },
+        {
+          targetSession,
+          instruction: "Reach out.",
+          authorizationKind: "manual_creator_operator",
+        },
+      ),
+    ).resolves.toMatchObject({
+      targetSessionId: targetSession.session_id,
+      status: "completed",
+      turnId: "turn-target",
+      emitted: false,
+      response: "",
+      deliveryOutcome: {
+        state: "suppressed",
+        reason: "finalizer_no_output",
+        markerEntryId,
+        noOutputCategories: ["closure", "with_state_delta"],
+        primaryNoOutputReason: "closure",
+        structuralNoOutputFlags: ["with_state_delta"],
+      },
+    });
   });
 
   it("renders autonomous policy provenance truthfully", async () => {
@@ -257,6 +323,10 @@ describe("runDirectedOutboundTurn", () => {
       status: "target_busy",
       emitted: false,
       response: "",
+      deliveryOutcome: {
+        state: "target_busy",
+        reason: "target_session_busy",
+      },
     });
   });
 });

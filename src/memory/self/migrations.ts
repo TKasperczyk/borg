@@ -17,6 +17,7 @@ export const selfMigrations = [
           last_affirmed INTEGER,
           provenance_kind TEXT,
           provenance_episode_ids TEXT,
+          provenance_stream_entry_ids TEXT,
           provenance_process TEXT,
           state TEXT,
           established_at INTEGER,
@@ -37,6 +38,7 @@ export const selfMigrations = [
           id TEXT PRIMARY KEY,
           record_version INTEGER NOT NULL DEFAULT 1,
           description TEXT NOT NULL,
+          terminal_condition TEXT,
           priority REAL NOT NULL,
           parent_goal_id TEXT,
           status TEXT NOT NULL CHECK (status IN ('active', 'done', 'abandoned', 'blocked')),
@@ -379,6 +381,24 @@ export const selfMigrations = [
     up: (db) => {
       if (!tableHasColumn(db, "open_questions", "disclosure_label")) {
         db.exec("ALTER TABLE open_questions ADD COLUMN disclosure_label TEXT");
+      }
+    },
+  },
+  {
+    id: 6,
+    name: "goal_terminal_condition",
+    up: (db) => {
+      if (!tableHasColumn(db, "goals", "terminal_condition")) {
+        db.exec("ALTER TABLE goals ADD COLUMN terminal_condition TEXT");
+      }
+    },
+  },
+  {
+    id: 7,
+    name: "goal_provenance_stream_entry_ids",
+    up: (db) => {
+      if (!tableHasColumn(db, "goals", "provenance_stream_entry_ids")) {
+        db.exec("ALTER TABLE goals ADD COLUMN provenance_stream_entry_ids TEXT");
       }
     },
   },

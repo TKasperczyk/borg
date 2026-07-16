@@ -75,6 +75,13 @@ const goalPromotionSchema = z
       .describe(
         `Concise description of the candidate memory item. For durable_borg_goal, apply this voice guidance: ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE}`,
       ),
+    terminal_condition: z
+      .string()
+      .min(1)
+      .nullable()
+      .describe(
+        "Model-stated structural completion condition in the user's own language when one exists; null only for a genuinely open-ended but actionable Borg responsibility.",
+      ),
     priority: z
       .number()
       .finite()
@@ -153,6 +160,7 @@ export type GoalPromotionInitialStep = {
 
 export type GoalPromotionCandidate = {
   description: string;
+  terminal_condition: string | null;
   priority: number;
   target_at: number | null;
   reason: string;
@@ -204,7 +212,7 @@ export type ExtractGoalPromotionInput = {
   temporalCue: unknown;
   activeGoals: readonly Pick<
     GoalRecord,
-    "id" | "description" | "priority" | "target_at" | "owner_entity_id"
+    "id" | "description" | "terminal_condition" | "priority" | "target_at" | "owner_entity_id"
   >[];
 };
 
@@ -272,6 +280,7 @@ function rejectedPromotion(input: {
 function candidateFromPromotion(promotion: ParsedGoalPromotion): GoalPromotionCandidate {
   return {
     description: promotion.description.trim(),
+    terminal_condition: promotion.terminal_condition,
     priority: promotion.priority,
     target_at: promotion.target_at,
     reason: promotion.reason.trim(),
@@ -496,6 +505,7 @@ function buildGoalPromotionMessages(input: ExtractGoalPromotionInput): LLMMessag
         active_goals: input.activeGoals.map((goal) => ({
           id: goal.id,
           description: goal.description,
+          terminal_condition: goal.terminal_condition ?? null,
           priority: goal.priority,
           target_at: goal.target_at,
           audience_entity_id: "audience_entity_id" in goal ? goal.audience_entity_id : null,

@@ -8,6 +8,12 @@ import {
 } from "../cognition/evidence-ledger/types.js";
 import { DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD } from "../executive/index.js";
 import { OFFLINE_PROCESS_NAMES, type OfflineProcessName } from "../contracts/offline-process.js";
+import {
+  DEFAULT_RECENT_LIVED_EXPERIENCE_CAP,
+  DEFAULT_RECENT_LIVED_EXPERIENCE_DENSITY_CAP,
+  DEFAULT_RECENT_LIVED_EXPERIENCE_GAP_THRESHOLD_MS,
+  DEFAULT_RECENT_LIVED_EXPERIENCE_RECENCY_WINDOW_MS,
+} from "../memory/activity/lived-experience.js";
 import { sessionIdSchema, sessionSourceTypeSchema } from "../sessions/index.js";
 import { readJsonFile } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
@@ -44,6 +50,12 @@ const perceptionConfigSchema = z
       })
       .strict(),
   )
+  .prefault({});
+const frameAnomalyConfigSchema = z
+  .object({
+    peerChannelSourceTypes: z.array(sessionSourceTypeSchema).default(["kira"]),
+  })
+  .strict()
   .prefault({});
 const affectiveConfigSchema = z
   .preprocess(
@@ -156,6 +168,23 @@ const sharedStateConfigSchema = z
   })
   .strict()
   .prefault({});
+const recentLivedExperienceConfigSchema = z
+  .object({
+    recencyWindowMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(DEFAULT_RECENT_LIVED_EXPERIENCE_RECENCY_WINDOW_MS),
+    cap: z.number().int().positive().default(DEFAULT_RECENT_LIVED_EXPERIENCE_CAP),
+    densityCap: z.number().int().positive().default(DEFAULT_RECENT_LIVED_EXPERIENCE_DENSITY_CAP),
+    gapThresholdMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(DEFAULT_RECENT_LIVED_EXPERIENCE_GAP_THRESHOLD_MS),
+  })
+  .strict()
+  .prefault({});
 const evidenceLedgerConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -166,6 +195,7 @@ const evidenceLedgerConfigSchema = z
     finalizerTargetTokens: z.number().int().positive().default(60_000),
     finalizerHardCapTokens: z.number().int().positive().default(100_000),
     finalizerMaxEntryTextTokens: z.number().int().positive().default(1_200),
+    recentLivedExperience: recentLivedExperienceConfigSchema,
     sectionOptions: z
       .partialRecord(evidenceLedgerSectionIdSchema, evidenceLedgerSectionOptionsSchema)
       .default({}),
@@ -296,6 +326,7 @@ const configBaseSchema = z.object({
   defaultUser: z.string().min(1).optional(),
   host_capabilities: z.string().min(1).default(DEFAULT_HOST_CAPABILITIES_SECTION),
   perception: perceptionConfigSchema,
+  frameAnomaly: frameAnomalyConfigSchema,
   affective: affectiveConfigSchema,
   embedding: z
     .object({
@@ -478,6 +509,16 @@ const configBaseSchema = z.object({
           cadenceHintDays: z.number().positive().default(7),
         })
         .prefault({}),
+      livedExperienceDaySummarizer: z
+        .object({
+          budget: z.number().int().positive().default(160_000),
+          windowDays: z.number().int().positive().default(7),
+          maxDaysPerRun: z.number().int().positive().default(3),
+          maxSelfDecisionEventsPerDay: z.number().int().positive().default(96),
+          maxActivityEventsPerDay: z.number().int().positive().default(256),
+          maxEpisodesPerDay: z.number().int().positive().default(12),
+        })
+        .prefault({}),
       beliefReviser: z
         .object({
           confidenceDropMultiplier: z.number().min(0).max(1).default(0.5),
@@ -535,6 +576,7 @@ const configBaseSchema = z.object({
           "review-resolver",
           "ruminator",
           "self-narrator",
+          "lived-experience-day-summarizer",
           "procedural-synthesizer",
           "belief-reviser",
           "creator-directive-reconciler",
@@ -587,6 +629,13 @@ const configBaseSchema = z.object({
           stalenessSec: z.number().int().positive().default(86_400),
           dueLeadSec: z.number().int().nonnegative().default(0),
           wakeCooldownSec: z.number().int().nonnegative().default(3_600),
+          emptyWakeBackoffMultiplier: z.number().min(1).default(2),
+          wakeCooldownMaxSec: z.number().int().positive().default(86_400),
+          // After this many consecutive empty wakes a stale goal goes dormant
+          // (exits exec-focus selection) until it makes headway, instead of
+          // merely slowing to the cooldown cap. Keeps a pool of never-
+          // progressing goals from summing into a steady drip of empty wakes.
+          emptyWakeDormancyCount: z.number().int().positive().default(3),
         })
         .prefault({}),
       triggers: z
@@ -1181,6 +1230,35 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
+    ["generation", "evidenceLedger", "recentLivedExperience", "recencyWindowMs"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_GENERATION_EVIDENCE_LEDGER_RECENT_LIVED_EXPERIENCE_RECENCY_WINDOW_MS",
+    ),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "recentLivedExperience", "cap"],
+    readOptionalEnvNumber(env, "BORG_GENERATION_EVIDENCE_LEDGER_RECENT_LIVED_EXPERIENCE_CAP"),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "recentLivedExperience", "densityCap"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_GENERATION_EVIDENCE_LEDGER_RECENT_LIVED_EXPERIENCE_DENSITY_CAP",
+    ),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "recentLivedExperience", "gapThresholdMs"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_GENERATION_EVIDENCE_LEDGER_RECENT_LIVED_EXPERIENCE_GAP_THRESHOLD_MS",
+    ),
+  );
+  setConfigOverride(
+    overrides,
     ["streamIngestion", "preTurnCatchup", "maxEntries"],
     readOptionalEnvNumber(env, "BORG_STREAM_INGESTION_PRE_TURN_CATCHUP_MAX_ENTRIES"),
   );
@@ -1447,6 +1525,42 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
+    ["offline", "livedExperienceDaySummarizer", "budget"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_LIVED_EXPERIENCE_DAY_SUMMARIZER_BUDGET"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "livedExperienceDaySummarizer", "windowDays"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_LIVED_EXPERIENCE_DAY_SUMMARIZER_WINDOW_DAYS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "livedExperienceDaySummarizer", "maxDaysPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_LIVED_EXPERIENCE_DAY_SUMMARIZER_MAX_DAYS_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "livedExperienceDaySummarizer", "maxSelfDecisionEventsPerDay"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_OFFLINE_LIVED_EXPERIENCE_DAY_SUMMARIZER_MAX_SELF_DECISION_EVENTS_PER_DAY",
+    ),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "livedExperienceDaySummarizer", "maxActivityEventsPerDay"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_OFFLINE_LIVED_EXPERIENCE_DAY_SUMMARIZER_MAX_ACTIVITY_EVENTS_PER_DAY",
+    ),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "livedExperienceDaySummarizer", "maxEpisodesPerDay"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_LIVED_EXPERIENCE_DAY_SUMMARIZER_MAX_EPISODES_PER_DAY"),
+  );
+  setConfigOverride(
+    overrides,
     ["offline", "beliefReviser", "confidenceDropMultiplier"],
     readOptionalEnvUnitInterval(env, "BORG_OFFLINE_BELIEF_REVISER_CONFIDENCE_DROP_MULTIPLIER"),
   );
@@ -1642,6 +1756,21 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
+    ["autonomy", "executiveFocus", "emptyWakeBackoffMultiplier"],
+    readOptionalEnvFloat(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_EMPTY_WAKE_BACKOFF_MULTIPLIER"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "executiveFocus", "wakeCooldownMaxSec"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_WAKE_COOLDOWN_MAX_SEC"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "executiveFocus", "emptyWakeDormancyCount"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_EMPTY_WAKE_DORMANCY_COUNT"),
+  );
+  setConfigOverride(
+    overrides,
     ["autonomy", "triggers", "commitmentExpiring", "enabled"],
     readOptionalEnvBoolean(env, "BORG_AUTONOMY_TRIGGER_COMMITMENT_EXPIRING_ENABLED"),
   );
@@ -1794,6 +1923,9 @@ export function redactConfig(config: Config): Config {
     ...config,
     perception: {
       ...config.perception,
+    },
+    frameAnomaly: {
+      peerChannelSourceTypes: [...config.frameAnomaly.peerChannelSourceTypes],
     },
     affective: {
       ...config.affective,

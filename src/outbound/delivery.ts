@@ -26,9 +26,9 @@ export class OutboundDelivery {
     input: DeliverOutboundMessageInput,
   ): Promise<StreamEntry> {
     return writer.append({
+      ...(input.message.streamInput ?? {}),
       kind: "agent_msg",
       content: input.message.content,
-      ...(input.message.streamInput ?? {}),
     });
   }
 

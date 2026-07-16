@@ -30,10 +30,13 @@ import {
   GoalsRepository,
   TraitsRepository,
   buildOpenQuestionDedupeKey,
+  goalIdSchema,
   openQuestionIdSchema,
   type GoalRecord,
+  type GoalStatus,
   type OpenQuestion,
   type OpenQuestionsRepository,
+  type TraitRecord,
 } from "../../memory/self/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
 import { resolveOpenQuestionThroughIdentityService } from "../../memory/lifecycle-ops/index.js";
@@ -130,6 +133,9 @@ export type ReflectionResult = {
 const SURFACED_TTL_TURNS = 4;
 const REFLECTION_TOOL_NAME = "EmitTurnReflection";
 const DEFAULT_REFLECTION_MAX_TOKENS = 768;
+// Candidate labels can grow quickly; established traits are the stable vocabulary,
+// while the strongest 40 candidates give the reflector reuse handles without unbounded prompt growth.
+const CURRENT_TRAIT_VOCABULARY_CANDIDATE_LIMIT = 40;
 
 const traitDemonstrationSchema = z.object({
   trait_label: z.string().min(1),
@@ -163,6 +169,18 @@ const resolvedOpenQuestionSchema = z.object({
   resolution_note: z.string().min(1),
   evidence_episode_ids: z.array(episodeIdSchema).default([]),
   evidence_stream_entry_ids: z.array(streamEntryIdSchema).default([]),
+});
+
+const retiredGoalSchema = z.object({
+  goal_id: goalIdSchema,
+  disposition: z.enum(["satisfied", "no_longer_pursued"]),
+  evidence: z
+    .object({
+      note: z.string().min(1),
+      evidence_episode_ids: z.array(episodeIdSchema).default([]),
+      evidence_stream_entry_ids: z.array(streamEntryIdSchema).default([]),
+    })
+    .strict(),
 });
 
 const reflectionIntentUpdateSchema = intentRecordSchema.extend({
@@ -254,6 +272,13 @@ const strictReflectionOutputSchema = z.object({
       `Previously active open questions clearly answered by my completed turn. I use only question ids and evidence ids supplied in the reflection input, and include episode or stream evidence. I apply this voice guidance to resolution_note unless resolving a verbatim user-sourced question whose exact wording must be preserved: ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE}`,
     )
     .default([]),
+  retired_goals: z
+    .array(retiredGoalSchema)
+    .max(5)
+    .describe(
+      "Previously active goals to retire only when their stated terminal condition is met or the goal is genuinely no longer being pursued. Use only goal ids and evidence ids supplied in the reflection input.",
+    )
+    .default([]),
 });
 
 type ReflectionOutput = z.infer<typeof strictReflectionOutputSchema>;
@@ -261,7 +286,7 @@ type ReflectionOutput = z.infer<typeof strictReflectionOutputSchema>;
 const REFLECTION_TOOL: LLMToolDefinition = {
   name: REFLECTION_TOOL_NAME,
   description:
-    "I emit structured post-turn reflection. I mark advanced_goals only for concrete progress, procedural_outcomes only from user follow-up evidence with grounded set explicitly, trait_demonstrations only from turn content, intent_updates only for my prior pending actions resolved by the completed turn, executive step outcomes/proposals only when the turn directly supports them, open_questions only for durable unresolved questions worth remembering, and resolved_open_questions only for active questions clearly answered by supplied evidence.",
+    "I emit structured post-turn reflection. I mark advanced_goals only for concrete progress, procedural_outcomes only from user follow-up evidence with grounded set explicitly, trait_demonstrations only from turn content, intent_updates only for my prior pending actions resolved by the completed turn, executive step outcomes/proposals only when the turn directly supports them, open_questions only for durable unresolved questions worth remembering, resolved_open_questions only for active questions clearly answered by supplied evidence, and retired_goals only for active goals whose stated terminal condition is met or no longer pursued.",
   inputSchema: toToolInputSchema(strictReflectionOutputSchema),
 };
 
@@ -275,6 +300,7 @@ function emptyReflectionOutput(): ReflectionOutput {
     proposed_steps: [],
     open_questions: [],
     resolved_open_questions: [],
+    retired_goals: [],
   };
 }
 
@@ -472,6 +498,7 @@ function summarizeExecutiveFocusForReflection(focus: ExecutiveFocus | null | und
     selected_goal: {
       goal_id: focus.selected_goal.id,
       description: focus.selected_goal.description,
+      terminal_condition: focus.selected_goal.terminal_condition ?? null,
       progress_notes: focus.selected_goal.progress_notes,
       ...memoryDisclosurePayloadFields(selectedGoalDisclosureLabel),
     },
@@ -487,6 +514,33 @@ function summarizeExecutiveFocusForReflection(focus: ExecutiveFocus | null | und
             ...memoryDisclosurePayloadFields(selectedGoalDisclosureLabel),
           },
   };
+}
+
+type CurrentTraitVocabularyEntry = Pick<TraitRecord, "label" | "state" | "strength">;
+
+function currentTraitVocabularyForReflection(
+  traits: readonly TraitRecord[],
+): CurrentTraitVocabularyEntry[] {
+  const vocabulary: CurrentTraitVocabularyEntry[] = [];
+  let candidateCount = 0;
+
+  for (const trait of traits) {
+    if (trait.state === "candidate") {
+      if (candidateCount >= CURRENT_TRAIT_VOCABULARY_CANDIDATE_LIMIT) {
+        continue;
+      }
+
+      candidateCount += 1;
+    }
+
+    vocabulary.push({
+      label: trait.label,
+      state: trait.state,
+      strength: trait.strength,
+    });
+  }
+
+  return vocabulary;
 }
 
 export type ReflectorOptions = {
@@ -564,7 +618,14 @@ export class Reflector {
     );
     await this.applyProposedExecutiveSteps(context, proposedSteps, streamWriter, effects);
 
-    const advancedGoals = isAutonomousTurn ? [] : reflectionOutput.advanced_goals;
+    const retiredGoalIds = new Set(
+      reflectionOutput.retired_goals.map((retirement) => retirement.goal_id),
+    );
+    const advancedGoals = isAutonomousTurn
+      ? []
+      : reflectionOutput.advanced_goals.filter(
+          (advancedGoal) => !retiredGoalIds.has(advancedGoal.goal_id as GoalRecord["id"]),
+        );
 
     for (const advancedGoal of advancedGoals) {
       const goal = activeGoalsById.get(advancedGoal.goal_id as GoalRecord["id"]);
@@ -610,6 +671,12 @@ export class Reflector {
         effects.updatedGoals.push(goal);
       }
     }
+
+    this.applyRetiredGoals(
+      context,
+      reflectionOutput.retired_goals,
+      effects,
+    );
 
     const retrievedEpisodeIdSet = new Set(
       context.retrievedEpisodes.map((result) => result.episode.id),
@@ -1337,6 +1404,68 @@ export class Reflector {
     });
   }
 
+  private emitGoalRetirementDegraded(
+    context: ReflectionContext,
+    details: Record<string, unknown>,
+  ): void {
+    const tracer = this.options.tracer;
+
+    if (tracer?.enabled !== true || context.turnId === undefined) {
+      return;
+    }
+
+    if (typeof details.goal_id === "string") {
+      tracer.emit("goal_retirement.started", {
+        turnId: context.turnId,
+        ...(context.sessionId !== undefined ? { session_id: context.sessionId } : {}),
+        goal_id: details.goal_id,
+        source_path: "online_reflection",
+        decision: "rejected",
+        decision_reason: typeof details.reason === "string" ? details.reason : "degraded",
+      });
+    }
+
+    tracer.emit("goal_retirement.degraded", {
+      turnId: context.turnId,
+      ...(context.sessionId !== undefined ? { session_id: context.sessionId } : {}),
+      ...details,
+    });
+  }
+
+  private emitGoalRetirementAttempt(
+    context: ReflectionContext,
+    input: {
+      goalId: string;
+      disposition: string;
+      status: GoalStatus;
+      evidenceNote: string;
+      decisionReason: string;
+    },
+  ): void {
+    const tracer = this.options.tracer;
+
+    if (tracer?.enabled !== true || context.turnId === undefined) {
+      return;
+    }
+
+    const common = {
+      turnId: context.turnId,
+      ...(context.sessionId !== undefined ? { session_id: context.sessionId } : {}),
+      goal_id: input.goalId,
+      source_path: "online_reflection",
+      disposition: input.disposition,
+      status: input.status,
+      evidence_note: input.evidenceNote,
+      decision_reason: input.decisionReason,
+    };
+
+    tracer.emit("goal_retirement.started", {
+      ...common,
+      decision: input.status,
+    });
+    tracer.emit("goal_retirement.transitioned", common);
+  }
+
   private emitIntentUpdateSuppressed(context: ReflectionContext, count: number): void {
     const tracer = this.options.tracer;
 
@@ -1351,6 +1480,141 @@ export class Reflector {
       kind: context.frameAnomaly?.kind ?? "unknown",
       count,
     });
+  }
+
+  private applyRetiredGoals(
+    context: ReflectionContext,
+    retirements: readonly ReflectionOutput["retired_goals"][number][],
+    effects: ReflectionEffects,
+  ): void {
+    if (retirements.length === 0) {
+      return;
+    }
+
+    const activeGoalsById = new Map(
+      context.selfSnapshot.goals
+        .filter((goal) => goal.status === "active")
+        .map((goal) => [goal.id, goal]),
+    );
+    const allowedEpisodeIds = new Set(context.retrievedEpisodes.map((result) => result.episode.id));
+    const allowedStreamEntryIds = new Set(context.currentTurnStreamEntryIds ?? []);
+
+    for (const retirement of retirements) {
+      const snapshotGoal = activeGoalsById.get(retirement.goal_id);
+
+      if (snapshotGoal === undefined) {
+        this.emitGoalRetirementDegraded(context, {
+          reason: "unknown_goal",
+          goal_id: retirement.goal_id,
+        });
+        continue;
+      }
+
+      if (snapshotGoal.record_version === undefined) {
+        this.emitGoalRetirementDegraded(context, {
+          reason: "missing_snapshot_version",
+          goal_id: retirement.goal_id,
+        });
+        continue;
+      }
+
+      const evidenceEpisodeIds = [...new Set(retirement.evidence.evidence_episode_ids)];
+      const evidenceStreamEntryIds = [...new Set(retirement.evidence.evidence_stream_entry_ids)];
+
+      if (evidenceEpisodeIds.length === 0 && evidenceStreamEntryIds.length === 0) {
+        this.emitGoalRetirementDegraded(context, {
+          reason: "no_evidence",
+          goal_id: retirement.goal_id,
+        });
+        continue;
+      }
+
+      const unknownEpisodeId = evidenceEpisodeIds.find(
+        (episodeId) => !allowedEpisodeIds.has(episodeId),
+      );
+
+      if (unknownEpisodeId !== undefined) {
+        this.emitGoalRetirementDegraded(context, {
+          reason: "unknown_episode",
+          goal_id: retirement.goal_id,
+          evidence_episode_id: unknownEpisodeId,
+        });
+        continue;
+      }
+
+      const unknownStreamEntryId = evidenceStreamEntryIds.find(
+        (streamEntryId) => !allowedStreamEntryIds.has(streamEntryId),
+      );
+
+      if (unknownStreamEntryId !== undefined) {
+        this.emitGoalRetirementDegraded(context, {
+          reason: "unknown_stream",
+          goal_id: retirement.goal_id,
+          evidence_stream_entry_id: unknownStreamEntryId,
+        });
+        continue;
+      }
+
+      const current = this.options.goalsRepository.get(snapshotGoal.id);
+
+      if (current === null) {
+        this.emitGoalRetirementDegraded(context, {
+          reason: "missing_goal",
+          goal_id: retirement.goal_id,
+        });
+        continue;
+      }
+
+      if (current.status !== "active") {
+        this.emitGoalRetirementDegraded(context, {
+          reason: "not_active",
+          goal_id: retirement.goal_id,
+          status: current.status,
+        });
+        continue;
+      }
+
+      if (current.record_version !== snapshotGoal.record_version) {
+        this.emitGoalRetirementDegraded(context, {
+          reason: "stale_goal",
+          goal_id: retirement.goal_id,
+          snapshot_record_version: snapshotGoal.record_version,
+          current_record_version: current.record_version ?? null,
+        });
+        continue;
+      }
+
+      const nextStatus: GoalStatus =
+        retirement.disposition === "satisfied" ? "done" : "abandoned";
+      const retirementProvenance = {
+        kind: "online_reflector" as const,
+        evidence_episode_ids: evidenceEpisodeIds,
+        evidence_stream_entry_ids: evidenceStreamEntryIds,
+      };
+
+      try {
+        this.options.goalsRepository.updateStatus(
+          snapshotGoal.id,
+          nextStatus,
+          retirementProvenance,
+          { expectedVersion: snapshotGoal.record_version },
+        );
+        effects.updatedGoals.push(current);
+        this.emitGoalRetirementAttempt(context, {
+          goalId: retirement.goal_id,
+          disposition: retirement.disposition,
+          status: nextStatus,
+          evidenceNote: retirement.evidence.note,
+          decisionReason: "evidence_accepted",
+        });
+      } catch (error) {
+        this.emitGoalRetirementDegraded(context, {
+          reason: error instanceof IdentityCasMismatchError ? "stale_goal" : "retirement_failed",
+          goal_id: retirement.goal_id,
+          error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+        });
+      }
+    }
   }
 
   private async applyResolvedOpenQuestions(
@@ -1630,6 +1894,7 @@ export class Reflector {
                   active_goals: context.selfSnapshot.goals.map((goal) => ({
                     goal_id: goal.id,
                     description: goal.description,
+                    terminal_condition: goal.terminal_condition ?? null,
                     progress_notes: goal.progress_notes,
                     audience_entity_id: goal.audience_entity_id,
                     owner_entity_id: goal.owner_entity_id ?? null,
@@ -1639,6 +1904,9 @@ export class Reflector {
                   origin: context.origin ?? "user",
                   pending_procedural_attempts: pendingProceduralAttempts,
                   pending_actions: pendingActions,
+                  current_trait_vocabulary: currentTraitVocabularyForReflection(
+                    context.selfSnapshot.traits,
+                  ),
                   active_open_questions: activeOpenQuestions.map((question) => ({
                     id: question.id,
                     question: question.question,

@@ -33,7 +33,10 @@ import type { TurnOrchestratorInput } from "../../turn-input.js";
 import type { Config } from "../../../config/index.js";
 import type { EmbeddingClient } from "../../../embeddings/index.js";
 import type { LLMClient } from "../../../llm/index.js";
-import type { ActivityRepository } from "../../../memory/activity/index.js";
+import type {
+  ActivityRepository,
+  LivedExperienceDaySummaryRepository,
+} from "../../../memory/activity/index.js";
 import type { ActionRepository } from "../../../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../../../memory/commitments/index.js";
 import type { CreatorDirectiveRepository } from "../../../memory/creator-directives/index.js";
@@ -126,8 +129,23 @@ export type TurnPhaseCoordinatorOptions = {
   sharedStateRepository: Pick<SharedStateRepository, "get" | "upsert"> &
     Partial<Pick<SharedStateRepository, "listRecentEntriesForCognition">>;
   activityRepository?: Pick<ActivityRepository, "record" | "listRecentOtherActiveSessionEvents"> &
-    Partial<Pick<ActivityRepository, "listRecentGlobalEvents">>;
-  selfDecisionRepository?: Pick<SelfDecisionRepository, "listRecentAutonomousSelfPrivate">;
+    Partial<
+      Pick<
+        ActivityRepository,
+        | "listRecentGlobalEvents"
+        | "getMostRecentOtherActiveSessionEventOccurredAt"
+        | "listDailyOtherActiveSessionDensity"
+        | "countOtherActiveSessionConversationTurns"
+      >
+    >;
+  selfDecisionRepository?: Pick<SelfDecisionRepository, "listRecentAutonomousSelfPrivate"> &
+    Partial<
+      Pick<
+        SelfDecisionRepository,
+        "listDailyAutonomousSelfPrivateDensity" | "countAutonomousSelfPrivateDecisions"
+      >
+    >;
+  livedExperienceDaySummaryRepository?: Pick<LivedExperienceDaySummaryRepository, "listForWindow">;
   trainOfThoughtRepository?: Pick<TrainOfThoughtRepository, "append">;
   observedEventRepository?: Pick<
     ObservedEventRepository,

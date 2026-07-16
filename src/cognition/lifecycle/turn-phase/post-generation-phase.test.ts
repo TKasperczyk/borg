@@ -1237,14 +1237,18 @@ describe("runPostGenerationPhase", () => {
       turn_counter: 70,
     };
     const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const undeliveredDraft = {
+      text: "Borrador no entregado.\n未送信の下書き。",
+    };
     const suppressedEntry = {
       id: createStreamEntryId(),
       kind: "event",
       turn_id: "turn_post_generation_suppressed_archive",
       content: "",
     };
+    const appendSuppressionMarker = vi.fn(async () => suppressedEntry);
 
-    await runPostGenerationPhase({
+    const result = await runPostGenerationPhase({
       options: {
         config: DEFAULT_CONFIG,
         clock: { now: () => 20_000 },
@@ -1269,6 +1273,7 @@ describe("runPostGenerationPhase", () => {
               no_output_categories: ["closure", "with_open_question"],
               primary_no_output_reason: "closure",
               structural_no_output_flags: ["with_open_question", "open_question_rendered"],
+              undelivered_draft: undeliveredDraft,
             },
             deliberation: {
               path: "system_1",
@@ -1284,7 +1289,7 @@ describe("runPostGenerationPhase", () => {
           })),
         },
         discourseStateService: {
-          appendSuppressionMarker: vi.fn(async () => suppressedEntry),
+          appendSuppressionMarker,
           applySuppressedEmissionState: vi.fn(({ workingMemory: memory }) => memory),
         },
         workingMemoryStore: {
@@ -1379,6 +1384,15 @@ describe("runPostGenerationPhase", () => {
         structural_no_output_flags: ["with_open_question", "open_question_rendered"],
       }),
     });
+    expect(appendSuppressionMarker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        undeliveredDraft,
+      }),
+    );
+    expect(result.response).toBe("");
+    expect(result.emitted).toBe(false);
+    expect(result).not.toHaveProperty("outboundDelivery");
+    expect(result.emission).not.toHaveProperty("undelivered_draft");
   });
 });
 

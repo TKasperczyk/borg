@@ -172,4 +172,389 @@ describe("ActivityRepository", () => {
 
     db.close();
   });
+
+  it("aggregates daily density for other active sessions and returns true latest activity", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-activity-density-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "activity.db"), {
+      migrations: composeMigrations(sessionMigrations, activityMigrations, commitmentMigrations),
+    });
+    const sessions = new SessionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const repository = new ActivityRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const currentSessionId = createSessionId();
+    const arenaSessionId = createSessionId();
+    const autonomousSessionId = createSessionId();
+    const archivedSessionId = createSessionId();
+    const audienceEntityId = createEntityId();
+    const autonomousAudienceEntityId = createEntityId();
+    const firstAt = Date.UTC(2026, 5, 15, 10, 0, 0);
+    const secondAt = Date.UTC(2026, 5, 15, 11, 30, 0);
+    const latestAt = Date.UTC(2026, 5, 15, 12, 0, 0);
+
+    sessions.ensure({
+      session_id: currentSessionId,
+      source_type: "demo",
+      label: "Current",
+      audience_label: "Tom",
+      conversation_kind: "demo",
+      audience_role: "operator",
+      status: "active",
+      created_at: firstAt,
+      last_activity_at: latestAt,
+    });
+    sessions.ensure({
+      session_id: arenaSessionId,
+      source_type: "botarena",
+      label: "Arena thread",
+      audience_label: "BotArena group",
+      audience_entity_id: audienceEntityId,
+      conversation_kind: "thread",
+      audience_role: "participant",
+      status: "active",
+      created_at: firstAt,
+      last_activity_at: latestAt,
+    });
+    sessions.ensure({
+      session_id: autonomousSessionId,
+      source_type: "daemon",
+      label: "Autonomous tick",
+      audience_label: "Alice",
+      audience_entity_id: autonomousAudienceEntityId,
+      conversation_kind: "demo",
+      audience_role: "participant",
+      status: "active",
+      created_at: firstAt,
+      last_activity_at: latestAt,
+    });
+    sessions.ensure({
+      session_id: archivedSessionId,
+      source_type: "demo",
+      label: "Archived",
+      audience_label: "Archived",
+      conversation_kind: "demo",
+      audience_role: "participant",
+      status: "archived",
+      created_at: firstAt,
+      last_activity_at: latestAt,
+    });
+
+    repository.record({
+      kind: "user_contact",
+      occurredAt: firstAt,
+      sessionId: arenaSessionId,
+      turnId: "arena-1",
+      audienceEntityId,
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "borg_replied",
+      occurredAt: secondAt,
+      sessionId: arenaSessionId,
+      turnId: "arena-1",
+      audienceEntityId,
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "turn_completed",
+      occurredAt: latestAt,
+      sessionId: arenaSessionId,
+      turnId: "arena-1",
+      audienceEntityId,
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "turn_completed",
+      occurredAt: latestAt - 1,
+      sessionId: autonomousSessionId,
+      turnId: "autonomous-1",
+      audienceEntityId: autonomousAudienceEntityId,
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "turn_completed",
+      occurredAt: latestAt + 1,
+      sessionId: currentSessionId,
+      turnId: "current-1",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "turn_completed",
+      occurredAt: latestAt + 2,
+      sessionId: archivedSessionId,
+      turnId: "archived-1",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "turn_completed",
+      occurredAt: latestAt + 3,
+      sessionId: arenaSessionId,
+      turnId: "arena-inactive",
+      audienceEntityId,
+      status: "inactive",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+
+    expect(
+      repository.getMostRecentOtherActiveSessionEventOccurredAt({
+        currentSessionId,
+        sinceMs: firstAt - 1,
+      }),
+    ).toBe(latestAt);
+    expect(
+      repository
+        .listRecentOtherActiveSessionEvents({
+          currentSessionId,
+          sinceMs: firstAt - 1,
+          limit: 10,
+        })
+        .map((row) => row.sessionId),
+    ).toEqual([arenaSessionId, arenaSessionId, arenaSessionId]);
+    expect(
+      repository.listDailyOtherActiveSessionDensity({
+        currentSessionId,
+        sinceMs: firstAt - 1,
+        untilMs: latestAt + 10,
+        limit: 10,
+      }),
+    ).toEqual([
+      {
+        dayKey: "2026-06-15",
+        dayStartMs: Date.UTC(2026, 5, 15),
+        sessionId: arenaSessionId,
+        sessionLabel: "Arena thread",
+        audienceLabel: "BotArena group",
+        audienceEntityId,
+        eventCount: 3,
+        conversationTurnCount: 1,
+        kindCounts: {
+          userContact: 1,
+          borgReplied: 1,
+          turnCompleted: 1,
+        },
+        firstOccurredAt: firstAt,
+        lastOccurredAt: latestAt,
+      },
+    ]);
+    expect(
+      repository.countOtherActiveSessionConversationTurns({
+        currentSessionId,
+        sinceMs: firstAt - 1,
+        untilMs: latestAt + 10,
+      }),
+    ).toBe(1);
+
+    db.close();
+  });
+
+  it("counts full-window conversational turns inside one capped density day", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-activity-density-flood-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "activity.db"), {
+      migrations: composeMigrations(sessionMigrations, activityMigrations, commitmentMigrations),
+    });
+    const sessions = new SessionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const repository = new ActivityRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const currentSessionId = createSessionId();
+    const arenaSessionId = createSessionId();
+    const audienceEntityId = createEntityId();
+    const firstAt = Date.UTC(2026, 5, 15, 9, 0, 0);
+
+    sessions.ensure({
+      session_id: currentSessionId,
+      source_type: "demo",
+      label: "Current",
+      audience_label: "Tom",
+      conversation_kind: "demo",
+      audience_role: "operator",
+      status: "active",
+      created_at: firstAt,
+      last_activity_at: firstAt,
+    });
+    sessions.ensure({
+      session_id: arenaSessionId,
+      source_type: "botarena",
+      label: "Arena thread",
+      audience_label: "BotArena group",
+      audience_entity_id: audienceEntityId,
+      conversation_kind: "thread",
+      audience_role: "participant",
+      status: "active",
+      created_at: firstAt,
+      last_activity_at: firstAt + 80 * 60_000,
+    });
+
+    for (let index = 0; index < 80; index += 1) {
+      const occurredAt = firstAt + index * 60_000;
+      const turnId = `arena-${index}`;
+
+      repository.record({
+        kind: "user_contact",
+        occurredAt,
+        sessionId: arenaSessionId,
+        turnId,
+        audienceEntityId,
+        sourceStreamEntryIds: [createStreamEntryId()],
+      });
+      repository.record({
+        kind: "borg_replied",
+        occurredAt: occurredAt + 10_000,
+        sessionId: arenaSessionId,
+        turnId,
+        audienceEntityId,
+        sourceStreamEntryIds: [createStreamEntryId()],
+      });
+      repository.record({
+        kind: "turn_completed",
+        occurredAt: occurredAt + 20_000,
+        sessionId: arenaSessionId,
+        turnId,
+        audienceEntityId,
+        sourceStreamEntryIds: [createStreamEntryId()],
+      });
+    }
+
+    expect(
+      repository.listDailyOtherActiveSessionDensity({
+        currentSessionId,
+        sinceMs: firstAt - 1,
+        untilMs: firstAt + 90 * 60_000,
+        limit: 1,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        dayKey: "2026-06-15",
+        sessionId: arenaSessionId,
+        eventCount: 240,
+        conversationTurnCount: 80,
+        kindCounts: {
+          userContact: 80,
+          borgReplied: 80,
+          turnCompleted: 80,
+        },
+      }),
+    ]);
+    expect(
+      repository.countOtherActiveSessionConversationTurns({
+        currentSessionId,
+        sinceMs: firstAt - 1,
+        untilMs: firstAt + 90 * 60_000,
+      }),
+    ).toBe(80);
+
+    db.close();
+  });
+
+  it("aggregates global daily active density without current-session filtering", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-activity-global-density-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "activity.db"), {
+      migrations: composeMigrations(sessionMigrations, activityMigrations, commitmentMigrations),
+    });
+    const sessions = new SessionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const repository = new ActivityRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const firstSessionId = createSessionId();
+    const secondSessionId = createSessionId();
+    const archivedSessionId = createSessionId();
+    const dayStart = Date.UTC(2026, 5, 15);
+    const firstAt = dayStart + 60_000;
+    const secondAt = dayStart + 120_000;
+    const nextDayAt = Date.UTC(2026, 5, 16, 1, 0, 0);
+
+    for (const [sessionId, status] of [
+      [firstSessionId, "active"],
+      [secondSessionId, "active"],
+      [archivedSessionId, "archived"],
+    ] as const) {
+      sessions.ensure({
+        session_id: sessionId,
+        source_type: "demo",
+        label: "Session",
+        audience_label: "Audience",
+        conversation_kind: "demo",
+        audience_role: "participant",
+        status,
+        created_at: dayStart,
+        last_activity_at: nextDayAt,
+      });
+    }
+
+    repository.record({
+      kind: "user_contact",
+      occurredAt: firstAt,
+      sessionId: firstSessionId,
+      turnId: "turn-1",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "borg_replied",
+      occurredAt: secondAt,
+      sessionId: secondSessionId,
+      turnId: "turn-2",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "turn_completed",
+      occurredAt: secondAt + 1,
+      sessionId: secondSessionId,
+      turnId: "turn-2",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "user_contact",
+      occurredAt: secondAt + 2,
+      sessionId: archivedSessionId,
+      turnId: "archived",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "user_contact",
+      occurredAt: nextDayAt,
+      sessionId: firstSessionId,
+      turnId: "next-day",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+
+    expect(
+      repository.listDailyGlobalActiveDensity({
+        sinceMs: dayStart,
+        untilMs: nextDayAt - 1,
+        limit: 10,
+      }),
+    ).toEqual([
+      {
+        dayKey: "2026-06-15",
+        dayStartMs: dayStart,
+        eventCount: 3,
+        conversationTurnCount: 2,
+        distinctSessionCount: 2,
+        kindCounts: {
+          userContact: 1,
+          borgReplied: 1,
+          turnCompleted: 1,
+        },
+        firstOccurredAt: firstAt,
+        lastOccurredAt: secondAt + 1,
+      },
+    ]);
+
+    db.close();
+  });
 });

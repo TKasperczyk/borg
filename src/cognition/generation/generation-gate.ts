@@ -245,8 +245,10 @@ export class GenerationGate {
               "Decide whether the assistant should emit a response to the current user turn.",
               "",
               "Suppress only when the current turn is a loop probe, role-label trap, or non-substantive continuation under an active stop-until-substantive-content state.",
-              "Proceed when the user provides a real request, new information, or a legitimate brief reply that should receive a normal assistant response.",
-              "If an active stop state is present, clear it only by marking substantive=true for a current user turn with real content.",
+              "Treat a turn as substantive when it genuinely advances content: it asks, answers, introduces new information, changes to a new topic, makes a real request, directly solicits a response from any participant, or otherwise advances the conversation.",
+              "Do not discount novelty or solicitation because of whether the source appears bot-like, human, or non-human, because the turn arrives inside a long automated chain, or because the surrounding exchange is self-referential.",
+              "If an active stop state is present, clear it only by marking substantive=true for a current turn with genuinely new content, new information, a new topic, or a direct question/request that solicits a response.",
+              "Keep suppressing loop probes, role-label traps, repeated or near-identical minimal restatements, and non-substantive continuations that add no new content under an active stop.",
               "Do not treat ordinary first-time brief acknowledgments, direct answers, or minimal confirmations in any language as suppressible unless the context shows an active stop or sustained loop.",
             ].join("\n"),
             messages: [

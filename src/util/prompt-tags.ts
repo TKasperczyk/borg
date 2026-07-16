@@ -5,6 +5,13 @@ export function escapeReservedBorgTags(content: string): string {
   return content.replace(/<(\/?)borg_/gi, "<$1-borg_");
 }
 
+// Mechanical XML text escaping for model-authored or operator-authored text
+// wrapped inside substrate-owned prompt tags. This preserves the text content
+// while preventing it from closing or forging surrounding prompt structure.
+export function escapeXmlText(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
 // Mechanical removal of tool-call serialization scaffolding that a model can
 // bleed into a string argument value -- e.g. a finalizer `reason` whose stored
 // text ends with `...real reason.</reason><parameter name="...">value`. This is

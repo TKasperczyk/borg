@@ -152,7 +152,8 @@ describe("withLedgerImageContentBlocks", () => {
       estimatedTokens: 0,
       imageAttachments: [
         {
-          label: "Image A: user-uploaded screenshot from turn 42 (audience: Alice)",
+          originFrame: "[remembered image -- not sent in this message; first shared 21d ago]",
+          label: "Image A: remembered user-uploaded screenshot",
           attachment_id: attachmentId,
           citation_type: "original_image",
         },
@@ -164,7 +165,11 @@ describe("withLedgerImageContentBlocks", () => {
       content: [
         {
           type: "text",
-          text: "Image A: user-uploaded screenshot from turn 42 (audience: Alice)",
+          text: "[remembered image -- not sent in this message; first shared 21d ago]",
+        },
+        {
+          type: "text",
+          text: "Image A: remembered user-uploaded screenshot",
         },
         {
           type: "image_ref",

@@ -676,6 +676,9 @@ export class AutobiographicalRecallService {
           `status=${goal.status}`,
           `priority=${goal.priority.toFixed(2)}`,
           `description=${sanitizePromptText(goal.description)}`,
+          goal.terminal_condition === null
+            ? null
+            : `terminal_condition=${sanitizePromptText(goal.terminal_condition)}`,
           goal.progress_notes === null
             ? null
             : `progress=${sanitizePromptText(goal.progress_notes)}`,

@@ -973,6 +973,7 @@ describe("semantic extractor process", () => {
         lastTs: input.lastTs,
         lastEntryId: input.lastEntryId,
         updatedAt: harness.clock.now(),
+        metadata: input.metadata ?? null,
       }),
     };
     const scheduler = new MaintenanceScheduler({

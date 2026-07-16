@@ -38,7 +38,12 @@ import {
   commitmentMemoryDisclosureLabel,
   goalMemoryDisclosureLabel,
 } from "../../../memory/common/disclosure-serializers.js";
+import { formatRelativeAge } from "../../../util/relative-time.js";
 import { relationshipPrivateMemoryDisclosureLabel } from "../../../retrieval/index.js";
+import {
+  effectiveCommitmentCriticalDomain,
+  effectiveCommitmentEnforcementClass,
+} from "../../../memory/commitments/index.js";
 
 export function addGroupChannelMemorySection(context: BuilderSectionContext): void {
   const audienceEntityId = context.input.audienceEntityId;
@@ -150,6 +155,21 @@ export function addGroupChannelMemorySection(context: BuilderSectionContext): vo
           stateMetadata: {
             commitment_kind: commitment.kind,
             commitment_type: commitment.type,
+            commitment_enforcement_class: effectiveCommitmentEnforcementClass(commitment),
+            commitment_critical_domain: effectiveCommitmentCriticalDomain(commitment),
+            created_at: new Date(commitment.created_at).toISOString(),
+            last_reinforced_at: new Date(commitment.last_reinforced_at).toISOString(),
+            made_to_entity_id: commitment.made_to_entity,
+            committed_by_entity_id: commitment.committed_by_entity_id ?? null,
+            ...(context.nowMs === undefined
+              ? {}
+              : {
+                  created_relative_age: formatRelativeAge(commitment.created_at, context.nowMs),
+                  last_reinforced_relative_age: formatRelativeAge(
+                    commitment.last_reinforced_at,
+                    context.nowMs,
+                  ),
+                }),
           },
           disclosureLabel,
         }),
@@ -182,7 +202,27 @@ export function addGroupChannelMemorySection(context: BuilderSectionContext): vo
       value: "goal",
       state: appendMemoryDisclosureState({ state: goal.status, disclosureLabel }),
       state_metadata: appendMemoryDisclosureStateMetadata({
-        stateMetadata: undefined,
+        stateMetadata: {
+          created_at: new Date(goal.created_at).toISOString(),
+          ...(goal.last_progress_ts === null
+            ? {}
+            : { last_progress_at: new Date(goal.last_progress_ts).toISOString() }),
+          owner_entity_id: goal.owner_entity_id ?? null,
+          audience_entity_id: goal.audience_entity_id,
+          ...(context.nowMs === undefined
+            ? {}
+            : {
+                created_relative_age: formatRelativeAge(goal.created_at, context.nowMs),
+                ...(goal.last_progress_ts === null
+                  ? {}
+                  : {
+                      last_progress_relative_age: formatRelativeAge(
+                        goal.last_progress_ts,
+                        context.nowMs,
+                      ),
+                    }),
+              }),
+        },
         disclosureLabel,
       }),
       taint: "none",

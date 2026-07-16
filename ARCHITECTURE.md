@@ -48,7 +48,7 @@ labels are concrete primitives: `memoryDisclosurePayloadFields(label)`
 (`src/memory/common/disclosure-serializers.ts`) is the per-record serializer used across
 every band; `combineMemoryDisclosureLabels` (`src/memory/common/disclosure-label.ts`)
 merges to the most-restrictive class, fails closed to `unknown`, and never
-demotes a private/unknown source to public. Two `pnpm heuristics:guard` passes
+demotes a private/unknown source to public. Two `npm run heuristics:guard` passes
 fail the build on regression: a recall-gate pass (any `*ForDisclosure` callee,
 alias-resolved, called from a cognition/offline/autonomy/outbound/internal-tool
 path) and a label-coverage pass (a model-facing object literal or
@@ -100,6 +100,39 @@ correction, stream access, and dream maintenance. The top-level operations --
 -- live on the `Borg` class (entry point: `src/borg.ts`); its namespaced
 sub-facades, including `inbox.catchUp`, are built by `createBorgFacades`
 (entry point: `src/borg/facade.ts`).
+
+### Deployment Surfaces
+
+The in-process facade is the primary library surface, but it is not the only
+entry point. The HTTP memory sidecar (entry points:
+`src/sidecar/memory-handler.ts`, `scripts/memory-sidecar-main.ts`) is a
+long-lived `node:http` server exposing per-tenant long-term memory as a sibling
+surface over the same Borg substrate. It provides `POST /memory/remember`,
+`POST /memory/append-turn`, `POST /memory/recall`, and unauthenticated
+`GET /healthz`. Authenticated routes use a constant-time `x-borg-token` header
+check, not an `Authorization: Bearer` parser. The handler enforces a 64KB body
+cap and caps recall limits at 50. Sidecar configuration is process-env based:
+`BORG_MEMORY_TOKEN`, `BORG_MEMORY_HOST`, `BORG_MEMORY_PORT`,
+`BORG_MEMORY_MAX_OPEN`, and `BORG_DATA_ROOT`; tenant routing goes through
+`BorgPool`.
+
+`BorgPool` (entry point: `src/borg/pool.ts`, exported from `src/index.ts`)
+implements multi-tenancy by opening one being per tenant under
+`<root>/<tenantId>`. Isolation is the filesystem boundary -- separate SQLite
+and LanceDB stores per tenant -- not a per-query recall filter. This preserves
+the rule that recall is global to the being: the being is the tenant. Access is
+exclusively through `withTenant()`; there is no `get()` that hands out a bare
+being reference. The pool lazily opens tenants, deduplicates concurrent opens,
+evicts least-recently-used idle beings under `maxOpen`, serializes same-tenant
+exclusive writes through a per-tenant write chain, and exposes `shutdown()` as
+a barrier that rejects new work before draining and closing open beings. A close
+failure fails closed by refusing to reopen that data directory in-process.
+Pooled beings never start schedulers.
+
+The LLM client is a composition-root dependency. `AnthropicLLMClient` remains
+the default, while `OpenAICompatibleLLMClient` (`src/llm/openai-compatible.ts`)
+implements the same `LLMClient` contract for OpenAI-compatible gateways and is
+selected by injecting `llmClient` through `BorgOpenOptions`.
 
 ## The Mental Model
 
@@ -241,7 +274,13 @@ and the memory bands. See Audience And Disclosure Scoping.
 
 Borg keeps derived memory in eight bands plus ephemeral Working Memory. The
 bands are not arbitrary folders. Each band answers a different kind of
-question that a continuing agent must answer before acting.
+question that a continuing agent must answer before acting. Beyond the eight
+bands and Working Memory, Borg also renders a lived-experience cross-session
+surface under the ledger section id `recent_lived_experience`. That surface is
+an experiential render over activity and self-decision repositories plus an
+offline day-summary gist tier; it is not a registered ninth band in the
+Memory Band taxonomy, so the eight-band count remains accurate. See
+Cross-Session Activity.
 
 ### Episodic Memory
 
@@ -391,6 +430,15 @@ durable Borg goals, one-off requests, outside Borg's responsibility, impossible
 without missing capability, already represented, or not goals at all. Only
 high-confidence durable Borg goals are persisted, and per-turn limits prevent
 runaway self-task creation.
+
+Durable goals carry a nullable `terminal_condition`: a structural completion
+statement for when the goal is satisfied. Null is reserved for genuinely
+open-ended but actionable Borg responsibilities, and the promotion classifier
+routes candidates without a statable structural completion to `one_off` or
+`none` unless they still meet that open-ended responsibility bar. The online
+reflector can retire active goals when cited turn evidence shows the terminal
+condition was met or the goal is no longer pursued; `satisfied` maps to `done`
+and `no_longer_pursued` maps to `abandoned`, including on autonomous turns.
 
 Open Question status is only open, resolved, or abandoned. Extra urgency is
 represented through urgency, review source, rumination ticks, and remaining
@@ -567,11 +615,34 @@ prevent immediate repetition or keep a short-lived handle warm. These TTLs do
 not claim that a memory is semantically old or physically stale. They only say
 how many relevant turns a transient control state should survive.
 
+Recent lived experience has a presentation time model layered over wall time.
+The recency window is wall-clock based (`recencyWindowMs`, default three days),
+while the return-silence gap clock (`gapThresholdMs`, default three hours)
+gates rendering only, never recall. UTC-day bucketing
+(`src/util/utc-day.ts`) supplies day-boundary brackets and density collapse.
+Individual activity and self-decision rows telescope into density rows after
+about 24 hours, and density rows older than about seven days can telescope into
+autobiographical-period rows. The surface remains session-agnostic internal
+experience; only its render predicate is gap-sensitive.
+
 The plurality is intentional. Wall time answers "how long ago in the world?";
 global turn age answers "how many durable Borg turns since this shared-state
 fact changed?"; session counters answer "where are we in this conversation?";
 and TTLs answer "how long should this temporary control state keep affecting
 nearby turns?" Each clock is authoritative only inside that boundary.
+
+### Storage Hygiene
+
+LanceDB storage optimization is deterministic storage hygiene, not an offline
+cognition process. `LanceDbStore.optimizeStorage()` runs inside the heavy
+maintenance cadence when `maintenance.optimizeStorage` is true, which is the
+default and can be overridden by `BORG_MAINTENANCE_OPTIMIZE_STORAGE`. It
+compacts fragments every heavy tick and defers version pruning past the
+15-minute `LANCEDB_OPTIMIZE_CLEANUP_GRACE_MS` window so in-flight readers keep
+recent versions available. The scheduler reports the result through
+`storage.optimize.completed` and never fails the maintenance tick because
+storage optimization failed. This step has no cognition budget and is not part
+of the offline process taxonomy. See Offline Maintenance: The Dream Cycle.
 
 ## Visual Attachments
 
@@ -700,6 +771,15 @@ cross-session authority that keys on "the current sender is the creator" is
 withheld for that batch -- not by a new rule, but because the two-key condition
 under Sessions has no single sender to satisfy. See Audience And Disclosure
 Scoping.
+
+The sidecar's `POST /memory/append-turn` route is a second, distinct async
+ingest entry point. It appends a completed `user_msg` and `agent_msg` pair via
+`borg.stream.appendMany` under a per-tenant exclusive pool write, then fires
+episodic ingestion in the background. It does not open a turn, invoke the
+catch-up worker, advance a responded-through watermark, wait on a quiet-window
+timer, or run the reconcile-before-generate gate. `Borg.enqueueMessage()` plus
+the catch-up worker remains the primary path for response-generating
+transports; sidecar append-turn is completed-turn memory ingest.
 
 ## A Single Turn End To End
 
@@ -833,8 +913,12 @@ entities to shape the search.
 
 Retrieval pulls episodes, semantic graph context, raw Stream evidence,
 commitments, pending corrections, Open Questions, affective trajectory,
-procedural context, selected skills, relational slots, and social context. It
-then assembles a single retrieved context for the turn.
+procedural context, selected skills, relational slots, social context, and the
+recent lived-experience surface. It then assembles a single retrieved context
+for the turn. The retrieval phase also captures the turn's current time
+(`nowMs = clock.now()`) and threads that anchor into the ledger build input;
+the current-time block and relative-age labels are rendered downstream, not
+inside retrieval itself.
 
 The pipeline ranks with a mixture of similarity, salience, heat, goal
 relevance, value alignment, temporal relevance, mood congruence, social
@@ -893,9 +977,9 @@ commitments, discourse state, contradictions, action states, group/channel
 memory, relational slots, raw retrieved Stream evidence, structured memory
 evidence, episodes, semantic graph context, Open Questions, cross-audience shared-state
 recall (other audiences' active shared state, recalled globally for cognition
-and rendered with a `relationship_private` disclosure label), autobiographical
-recall of cross-session self-activity, prior-session memory, and the Shared
-State artifact.
+and rendered with a `relationship_private` disclosure label), prior-session
+memory, recent lived experience (`recent_lived_experience`), autobiographical
+recall of cross-session self-activity, and the Shared State artifact.
 
 The ledger exists because scattering retrieval results across many prompt
 sections makes grounding hard to audit. The finalizer needs one ordered packet
@@ -908,19 +992,35 @@ substrate. It can compact transcript and evidence when the prompt would grow
 too large, but compaction is still source-aware. Omitted or compacted evidence
 should be observable through trace summaries.
 
+The `recent_lived_experience` section is a return-silence-gated,
+session-agnostic chronological surface of intervening cross-session life. It
+renders density rows, spine rows, and self-decision rows with `self_private`
+disclosure labels and without verbatim other-audience text. It is a cognition
+path: audience labels are labels and ranking/presentation metadata, not recall
+gates. The render gate is `shouldRenderRecentLivedExperience`; it renders only
+when there is intervening other-session activity and the entity returns after a
+configurable gap, defaulting to about three hours. Density is presentation
+compression, not a substitute memory band.
+
 Ledger construction uses a bounded reverse scan of recent session stream
 entries. The bound protects latency and prompt assembly from unbounded session
 growth; if the bound is hit, the ledger may omit older current-session
 transcript context and records that fact for observability.
 
 Transcript compaction is source-aware. Borg preserves user messages, the
-recent raw tail, and self-reports, while older assistant and system runs can be
-collapsed into metadata rows. The current user text is rendered once, and
-duplicates are replaced by pointers rather than repeated prompt text.
+entity's own assistant messages (`agent_msg`), the recent raw tail, and
+self-reports; observe and suppression markers can collapse into metadata rows.
+The current user text is rendered once, and duplicates are replaced by pointers
+rather than repeated prompt text. Raw-preserving the entity's own messages
+prevents near-verbatim re-answers from being hidden behind metadata.
 
 Evidence duplicated by the same provenance is deduped into the highest-trust
 or highest-priority section that needs it. Citations are preserved, but lower
-trust repeats do not consume prompt budget.
+trust repeats do not consume prompt budget. `current_user_message` and
+`current_session_transcript` are protected sections: they are never dropped,
+never bridged into retrieved-evidence groups, and selected as canonical before
+`compareCanonicalRefs` runs, so transcript continuity cannot be absorbed by
+retrieved evidence that shares a Stream id.
 
 The full-ledger cap policy is layered. Borg first limits entries within
 sections, then trims lower-trust material toward the prompt target, and only
@@ -1082,13 +1182,19 @@ rewrite what the audience and Borg share.
 
 Finalization is the single normal emission point (entry point:
 `src/cognition/deliberation/finalizer.ts`). The finalizer must call exactly
-one emission tool:
+one terminal emission tool. For user turns the exact set is:
 
 - EmitAnswer for a visible assistant response.
 - EmitObserve for active observation in multi-participant conversation.
 - EmitNoOutput for deliberate silence or closure.
 - EmitSelfReport for a user-visible first-person self-report with the correct
   persistence class.
+
+Autonomous turns add EmitContinueThought as the fifth terminal emission tool.
+It is gated to `turnOrigin === "autonomous"` and emits
+`kind: "continue_thought"`: a private train-of-thought carryover appended to
+the self-private journal for the next autonomous reflection wake. It is not
+user-facing and carries no audience or disclosure decision.
 
 This strict tool protocol matters because the rest of the lifecycle needs a
 single behavior decision. The system must know whether Borg spoke, observed,
@@ -1129,8 +1235,21 @@ stop-until-substantive state so future closure-only turns suppress.
 
 The Generation Gate is a turn gate around generation and discourse state, not
 a broad pre-retrieval semantic guard. It can suppress when structural state
-says Borg should not speak, and it can clear a stop state when the user
-provides substantive content.
+says Borg should not speak, and it can clear a stop state when any participant
+introduces genuinely new substance or solicits a response: a new topic, new
+information, a real request, or a direct question. That substantive definition
+is reconciled with the closure-loop classifier and is not discounted because
+the source appears bot-like, human, or non-human. Under an active stop it still
+suppresses loop probes, role-label traps, and near-identical minimal
+restatements.
+
+There are two stop-clear sites. If the closure-loop classifier marks the
+current turn substantive, the coordinator clears the stop-until-substantive
+latch before the Generation Gate runs, so a genuine topic shift releases stale
+silence without asking the gate to relitigate the same LLM judgment. The gate
+retains its own `clearDiscourseStop` path for turns it classifies as
+substantive. Loop probes do not clear either path: the closure-loop classifier
+judges them non-substantive, the stop remains active, and the gate suppresses.
 
 Stop-until-substantive state has a hard observability boundary. It can
 suppress non-substantive turns for a bounded span, but after the active-turn
@@ -1158,6 +1277,18 @@ model reasoning with visible evidence. These emission guards constrain what is
 said at output time; they never gate what the entity may recall, and together
 with the closure-pressure, internal-ID, and safety guards they are the only
 sanctioned production output-policing exception.
+
+### Guard Feedback To The Entity
+
+Guard outcomes are surfaced back to the entity through an always-eligible
+`borg_mechanism_evidence` prompt section. It renders recent suppressions with
+hydrated `finalizer_invalid_tool` and no-output diagnostics, plus a
+content-free recent-regeneration breadcrumb for
+`commitment_guard_regeneration`. This lets the entity introspect which guards
+fired, why a turn was suppressed, and whether its draft was regenerated instead
+of confabulating a reason. `RECENT_SUPPRESSIONS_LIMIT` was raised from 3 to 10, and
+`RECENT_REGENERATIONS_LIMIT` is also 10. Discourse-control directives remain
+user-turn-gated; mechanism evidence can render on autonomous turns too.
 
 ### Persistence, Ingestion, And Reflection
 
@@ -1212,6 +1343,11 @@ The pipeline combines multiple retrieval shapes:
 - Procedural skill selection for problem-solving.
 - Mood and social profile context.
 - Suppression-aware recall state.
+- Recent lived experience: a session-agnostic chronological cross-session
+  activity and self-decision stream with UTC day-boundary brackets, LLM-free
+  density collapse, spine retention, and an offline day-summary gist tier,
+  render-gated by a return-silence predicate while recall stays global. Each
+  row carries a `self_private` disclosure label.
 
 Recall state includes warm handles as well as suppression. This allows recent
 useful evidence to be reinforced for the same audience or session while
@@ -1240,6 +1376,15 @@ hidden from cognition. Broad recall is the cognition default; explicit
 cross-audience administrative paths are disclosure/export/admin reads only.
 Audience constraints become disclosure labels and render guidance, not memory
 blindness.
+
+Retrieval anchors the turn's current time for downstream presentation. The
+`borg_current_time` block is a base system-prompt block rendered by
+`renderCurrentTimeSection`, not an Evidence Ledger section. The same `nowMs`
+anchor lets recalled and stateful surfaces attach ISO timestamps and
+`relative_age` labels, including episodes, applicable commitments,
+shared-state recall, Open Questions, and session re-entry continuity. These
+labels are additive disclosure and presentation metadata; they do not gate
+recall.
 
 The result of retrieval is not dumped directly into the model. It is assembled
 into the Evidence Ledger so the finalizer can see evidence classes,
@@ -1349,7 +1494,20 @@ Goals are durable self-memory about Borg's ongoing responsibilities. They are
 not a generic task list. A goal can describe a memory responsibility,
 conversation direction, or continuing obligation that belongs to Borg. Goal
 promotion is intentionally narrow so external tasks do not become Borg-owned
-future work without host capability.
+future work without host capability. A durable goal records a nullable
+`terminal_condition`, the structural completion statement that says when the
+goal is satisfied. Promotion routes candidates lacking structural completion to
+one-off or none unless they are genuinely open-ended but actionable Borg
+responsibilities.
+
+Goal retirement is a post-turn reflector lifecycle. The reflector emits
+`retired_goals` only against supplied active goal ids with cited evidence:
+`satisfied` updates the goal status to `done`, while `no_longer_pursued`
+updates it to `abandoned`. The application path runs through
+`GoalsRepository.updateStatus`, applies unconditionally for user and
+autonomous turns, and cascades abandonment of open executive steps for the
+closed goal. Missing, stale, or non-active goals degrade with observability
+instead of being silently rewritten.
 
 Actions are finite actor-owned task states. An action can belong to Borg, a
 user, a participant, or a third party. Actions have explicit states such as
@@ -1417,9 +1575,14 @@ operation. The common vocabulary is:
 - `invalidated`: source support or shared-state content was judged no longer usable as current evidence; used by Semantic edges and Shared State.
 - `quarantined`: preserved as tainted or unsafe-to-promote evidence rather than deleted; used by Stream source trust, Semantic Memory, Relational Slots, and Shared State artifact filtering.
 - `expired`: time or session scope ended without making a final assertion; used by Actions and Commitments.
+- `done`: a goal whose `terminal_condition` was met or whose durable responsibility was completed; used by Goals.
 - `abandoned`: an identity-bearing goal or open question was intentionally stopped without being completed or resolved; used by Goals and Open Questions.
+- `blocked`: a goal remains active in memory but cannot currently progress; used by Goals.
 - `not_done`: an action-specific final outcome that says the concrete task did not happen; used by Actions.
 - `dormant`: still retained but demoted for age or inactivity rather than retired; used by Shared State salience and Open Question wake triggers.
+
+Goal records use exactly `active`, `done`, `abandoned`, and `blocked` as their
+status enum.
 
 Transition ownership follows the same split. Identity-bearing records transition
 through Identity Governance. Durable non-identity transitions and cross-pillar
@@ -1440,7 +1603,7 @@ be different from the audience in group contexts. The reply target can be a
 specific entity within a group. These distinctions propagate as labels and
 ranking boosts into Stream entries, Social Memory, Commitments,
 creator-directive disclosure, Shared State, retrieval ranking, the cross-session
-activity projection, and the Evidence Ledger. They do not make the entity
+activity surface, and the Evidence Ledger. They do not make the entity
 unaware of episodes or semantic sources. `isEpisodeAccessVisible`
 (`src/memory/episodic/audience-filter.ts`) and the disclosure-mode
 source-visibility helpers in `src/retrieval/semantic-retrieval.ts` (e.g.
@@ -1481,16 +1644,34 @@ metadata only as disclosure/ranking context.
 
 ## Cross-Session Activity
 
-Cross-session activity is how something the entity did in one conversation can
-become visible in another (entry point: `src/memory/activity/projection.ts`). An
-activity ledger records every inbound contact, every reply, and every completed
-turn across all sessions. A separate audience-scoped projection reads recent
-events from other still-active sessions and renders them as a small Evidence
-Ledger section.
+Cross-session activity is rendered through the `recent_lived_experience` ledger
+section, a session-agnostic chronological interleave of cross-session activity
+and autonomous self-decisions. It uses UTC day-boundary brackets, LLM-free
+density collapse into time-spanned volume rows, and spine retention under
+compaction. Spine days older than about seven days can telescope into
+autobiographical-period rows, while individual rows older than about 24 hours
+collapse into density rows. It has a dedicated ledger section and budget, not a
+small projection grafted onto another section.
+
+Two typed repositories feed the surface. `ActivityRepository`
+(`src/memory/activity/repository.ts`) stores `activity_events`: inbound contact,
+Borg replies, and completed turns across sessions. `SelfDecisionRepository`
+(`src/memory/self-decisions/repository.ts`) stores `self_decision_events`:
+self-private autonomous decisions and their source handles. The older
+`src/memory/activity/projection.ts` still exists, but it is one input to the
+lived-experience surface rather than the surface itself.
+
+The render gate is structural and presentation-only. On the first turn of a
+session it renders whenever there is intervening other-session activity. On
+later turns in the same session it additionally requires that the current
+session has been silent long enough: `now - last current-session turn >=
+gapThresholdMs`, with `DEFAULT_RECENT_LIVED_EXPERIENCE_GAP_THRESHOLD_MS`
+defaulting to three hours. Recall remains ungated and global to the being; only
+this ledger presentation is gap-gated.
 
 It exists so the entity can answer "what have you been doing elsewhere, and who
-else have you been talking to" for its operator, without disclosing other
-audiences' private interactions into every session. Activity is recorded
+else have you been talking to" from its own lived continuity, without disclosing
+other audiences' private interactions into every session. Activity is recorded
 globally and disclosed narrowly. The recall is autobiographical: the entity can
 always recall what it did across its own sessions -- this is its own life, not
 another audience's secret. What is narrow is the disclosure.
@@ -1514,13 +1695,19 @@ In a group session the audience is the room, so labeling an inbound contact by
 the session would say "the planning room contacted Borg" when a specific person
 did. Resolving the speaker first means the operator sees who actually spoke.
 
-In the Evidence Ledger the projection is its own section with its own trust
-rank, carried as system-attested metadata rather than citable Stream evidence.
-It tells the model what the entity has been doing without becoming a fact to
-cite. As with everything surfaced this way, whether and how to mention it is the
-model's judgment; the harness labels the activity `self_private` and leaves
-whether and to whom to mention it to the model under that label. See Audience
-And Disclosure Scoping, Provenance And Citations, and Sessions.
+The offline day-summary tier writes one durable first-person gist per closed
+UTC day into `lived_experience_day_summaries` through
+`LivedExperienceDaySummaryRepository`. The lived-experience spine consumes that
+gist when present and falls back to deterministic density counts when absent.
+This is an offline consolidation tier, not a live output judge; see
+Lived-Experience Day Summarizer under Offline Maintenance: The Dream Cycle.
+
+In the Evidence Ledger the lived-experience surface is carried as
+system-attested metadata with `self_private` disclosure labels. It tells the
+model what the entity has been doing without rendering verbatim other-audience
+message text. As with everything surfaced this way, whether and how to mention
+it is the model's judgment under the label. See Audience And Disclosure
+Scoping, Provenance And Citations, and Sessions.
 
 ## Proactive Outbound
 
@@ -1576,6 +1763,15 @@ source episodes and relationship evidence. For commitments this means source
 Stream IDs and provenance. For Shared State this means provenance and
 last-updated Stream IDs. For procedural skills this means source episodes and
 evidence records.
+
+Recent lived-experience rows carry cross-session source Stream IDs when the row
+has concrete source events, origin-audience entity IDs, and disclosure labels
+that fail closed through `unknown` when labels cannot be combined. Their fallback
+row disclosure is `self_private`. Source episode IDs live on the durable
+day-summary tier (`lived_experience_day_summaries`), not on every recent row.
+That tier also carries `source_stream_entry_ids`, `disclosure_label`, and
+dedicated provenance columns: `provenance_kind`, `provenance_episode_ids`, and
+`provenance_process`.
 
 Provenance serves three purposes.
 
@@ -1641,6 +1837,13 @@ spoke from its interior self-model. A self-report is user-visible output, not
 a hidden thought. It becomes part of the Stream and can later be cited,
 questioned, or revised.
 
+Self-knowledge includes mechanism knowledge. Through `borg_mechanism_evidence`
+the entity can inspect which guards recently fired, why a turn was suppressed,
+and whether a draft was regenerated. Through `tool.promptSurface.changes` it
+can inspect structural prompt-surface changes -- which blocks and placements
+are new since a prior stored snapshot. This lets Borg remember how it was
+constructed and how that construction changed, not only what it said.
+
 Identity coherence is not stasis. Borg can change when evidence accumulates.
 The architecture's requirement is that change leaves a trail.
 
@@ -1678,6 +1881,27 @@ autonomous wake yields rather than preempting. The scheduler never inspects,
 scores, or rewrites what the woken turn produces; it records a wake event and
 an outcome summary to the Stream and stops there.
 
+Executive-focus staleness is the one default source whose re-arming predicate --
+a goal whose progress timestamp keeps aging -- can stay true when nothing has
+actually changed, so it carries a per-goal dampener. A `goal_stale` wake that
+ends in neither progress nor a non-suppressed emission (an outward message, a
+continued train-of-thought, or a successful outbound post) raises that goal's
+empty-wake count, and its stale cooldown grows exponentially from the base;
+after a configured number of consecutive empty wakes the goal goes dormant --
+it exits exec-focus selection entirely until it makes headway, rather than
+merely slowing to a cap (which, across a pool of never-progressing goals, would
+still sum to a steady drip of empty wakes). Any headway -- progress, or an
+emission that clears the count -- resets it, and a dormant goal re-enters only
+when its progress advances, never on a timer. The dampener is purely structural
+-- it keys on the goal id, its progress timestamp, and the turn's emission kind,
+never on goal content -- and it only changes when a goal is re-selected: the
+goal stays active and globally recallable, while the base cooldown, the
+step-due path, and inbound and contemplative wakes are untouched. This keeps a
+legitimately held but unprogressable goal -- for instance one a standing
+commitment asks the entity to hold open without acting -- from re-waking the
+entity to re-derive the same silence, while a goal that becomes live again
+(its tracked situation advances) returns to normal selection on its own.
+
 An autonomous turn is structurally distinct from a user turn. Its origin is
 autonomous, its audience is the self, and it carries no external sender and no
 user message. The lifecycle keys on that origin: it does not persist a user
@@ -1691,11 +1915,18 @@ Autonomy does not grant unbounded capabilities. Waking is not acting by itself.
 An autonomous turn can only do what the finalizer actually offers for that
 origin: emit or stay silent, append a self-private journal entry, inspect recent
 or searched memory, walk prompt-visible semantic structure, create or resolve an
-open question through identity governance, schedule/list/cancel self-wakes, and
-post outbound only when the existing outbound gate exposes an authorized target.
+open question through identity governance, inspect the structural change-history
+of its own prompt surface, schedule/list/cancel self-wakes, and post outbound
+only when the existing outbound gate exposes an authorized target.
 The autonomous prompt renders that menu from the same tool definitions the
 finalizer uses, so the interior action menu is a description of live structure,
 not aspirational copy.
+
+`tool.promptSurface.changes` is autonomous-only. It returns structural
+change-history -- block ids, surfaces, placement orders, hashes, and observation
+times -- by diffing persisted prompt-surface version snapshots. It does not
+inject old prompt prose into the turn and is not available to user-turn
+finalizers, which remain emission-only.
 
 The private train-of-thought carryover is append-only journal state. The latest
 journal entry is still injected into the next autonomous wake in the same shape
@@ -1709,6 +1940,14 @@ one self-invocation source fires only the wakes the entity itself queued. Those
 are one-time self-scheduled wakes: the entity can create, list, and cancel them
 through a dedicated `scheduledWakes` tool surface, each stored in its own table
 and fired once by a `scheduled_wake` trigger.
+
+For observability, the scheduler exposes a side-effect-free `describe()` surface
+returning `AutonomySchedulerDescription`. It reports enabled/disabled state per
+source, trigger `next_due_at` through non-materializing lookahead,
+`next_tick_at`, and budget usage: max, used, window, reserved contemplative
+wakes, and contemplative used. The demo server consumes this via
+`autonomyState()`, served at `GET /api/autonomy`. It is distinct from the
+wake-decision path and does not materialize expirations.
 
 See A Single Turn End To End for the lifecycle an autonomous input enters, and
 Offline Maintenance for the separate between-turns maintenance path.
@@ -1734,9 +1973,26 @@ Enablement and cadence are selected by `maintenance.lightProcesses` and
 `maintenance.heavyProcesses`. Per-process offline config only tunes that
 process; remove a process from both maintenance lists to disable it.
 
+The scheduler has two cadences, light and heavy, anchored to durable last-run
+watermarks rather than process-start intervals. The watermark process names are
+`maintenance:cadence:light` and `maintenance:cadence:heavy`, both under session
+`maintenance-global`. A frequently restarted server therefore catches up overdue
+cadences on boot instead of never firing; when a cadence is already due at
+startup, `startupGraceMs` defers it briefly, defaulting to 30 seconds. The
+marker is re-read immediately before each due run to avoid a same-interval
+thundering herd, and it advances only after an `ok` tick. Busy ticks back off
+exponentially from `busyRetryBaseMs` (default 60000) to `busyRetryMaxMs`
+(default 900000).
+
 Budget exhaustion is a process result, not a global dream failure. A process
 that exhausts its budget records that result and report note; other processes
 can continue when their own budgets and dependencies allow.
+
+The heavy cadence also runs harness-owned LanceDB storage optimization after
+the process run when `maintenance.optimizeStorage` is true, default on. That
+mechanical step compacts fragments and prunes versions after the grace window,
+emitting `storage.optimize.completed`; see Storage Hygiene under Time And
+Aging.
 
 ### Consolidator
 
@@ -1855,6 +2111,27 @@ observation-join fallback remains.
 It runs offline because autobiographical narration needs temporal distance and
 multiple pieces of evidence. Its purpose is to help Borg maintain a coherent
 self-story without turning every turn into identity narration.
+
+### Lived-Experience Day Summarizer
+
+The Lived-Experience Day Summarizer is the offline consolidation tier for recent
+lived experience. For each closed UTC day, it reads self-private autonomous
+decisions, structural activity and decision counts, and disclosure-labeled
+episode evidence, then writes one durable first-person experiential gist into
+`lived_experience_day_summaries`. The gist records the felt arc, distinct
+events, and collapsed-routine count for that day.
+
+The process mirrors the Self-Narrator's plan/preview/apply/run shape. It uses
+`callStructuredTool` under its budget, validates cited references against the
+candidate day evidence, writes audit reversers, and is idempotent for one row
+per `(entity, day)`. It only considers closed days. The lived-experience spine
+renders the gist in place of that day's deterministic density rows and falls
+back to deterministic counts when the gist is absent.
+
+The summary's `self_private` disclosure label is combined fail-closed over the
+persisted source episodes. The process never judges whether a wake, silence, or
+decision was worthwhile; it is sanctioned LLM-reads-LLM consolidation, not
+output policing. Recall stays global on the cognition path.
 
 ### Procedural Synthesizer
 
@@ -2094,6 +2371,28 @@ to a failed or suppressed emission. A known internal identifier leak is
 suppressed. A critical commitment guard failure can suppress or force
 regeneration.
 
+### LLM Transport Boundaries
+
+LLM calls are bounded at the transport layer. The Anthropic client races the
+whole call against hard outer deadlines: six minutes for unary calls and twelve
+minutes for streaming calls. OAuth streaming has a byte-silence inactivity
+timeout of 120 seconds and a ping-aware SSE event watchdog: 240 seconds to the
+first message event and 180 seconds between message events. Fetch-layer
+deadlines bound headers and unary body reads at 120 seconds and cancel the
+underlying reader or request. The SDK is configured with `maxRetries: 0`; Borg
+owns bounded connection and stall retries. Failures are typed as
+`LLM_CALL_TIMED_OUT`, `LLM_STREAM_STALLED`,
+`LLM_STREAM_EVENT_STALLED`, or `LLM_CONNECTION_FAILED`.
+
+These controls provide observability and bounded retry, not output policing.
+There are eight env-tunable `BORG_ANTHROPIC_*` transport knobs for the
+timeouts and stall retry count. The connection max retry count is a hardcoded
+constant, not an environment knob. `llm_call.retried` complements
+`llm_call.started` and `llm_call.completed` by recording in-place transport
+rescues with `attempt`, `kind` (`stall` or `connection`), optional `code`, and
+`retry_transport`. A streaming stall retry deliberately switches to
+non-streaming transport.
+
 ### Suppression And Abort Shapes
 
 Invalid finalizer tool protocol is a structural finalization failure. If the
@@ -2115,6 +2414,13 @@ lifecycle, Borg rolls back tracked Working Memory, Action, Goal, Open Question,
 Executive Step, episodic, and relational-slot effects, appends an aborted-turn
 marker, and rethrows. Stream entries already written remain in audit history but are
 marked inactive by turn status for recency, citation, and source-trust paths.
+
+An exhausted LLM transport failure is a distinct bounded abort cause. After
+Borg-owned retry limits are exhausted, a typed timeout, stall, event-stall, or
+connection error flows through the same lifecycle rollback path
+(`cleanupAbortedTurnState`) and aborted-turn marker. The marker's reason carries
+the transport error rendering -- name and message -- while the thrown `LLMError`
+carries the transport code for the aborting failure.
 
 The point is to keep failure modes explicit. Silent wrong memory is worse than
 observable degraded memory. Hard failure is reserved for substrate integrity

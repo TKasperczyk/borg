@@ -163,6 +163,8 @@ For a group audience, origin_audience means a memory was shared in that venue, n
         <commitment_type>boundary</commitment_type>
         <commitment_enforcement_class>critical</commitment_enforcement_class>
         <commitment_critical_domain>privacy</commitment_critical_domain>
+        <created_at>2023-11-14T22:13:20.000Z</created_at>
+        <created_relative_age>~0s ago</created_relative_age>
         <audience entity_id="ent_aaaaaaaaaaaaaaaa">Backend Cleanup Room</audience>
         <about entity_id="ent_bbbbbbbbbbbbbbbb">Ada Creator</about>
         <committed_by entity_id="ent_bbbbbbbbbbbbbbbb">Ada Creator</committed_by>
@@ -180,8 +182,6 @@ For a group audience, origin_audience means a memory was shared in that venue, n
   </relational_identity>
   <cross_session_awareness>
     <session_status_snapshot status="none" />
-    <cross_session_activity_entries status="not_available" />
-    <self_decision_introspection_entries status="not_available" />
     <social_memory_entries status="not_available" />
   </cross_session_awareness>
 </borg_standing_with_audience>

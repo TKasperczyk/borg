@@ -15,6 +15,7 @@ const CANONICAL_SECTION_PRIORITY = {
   shared_state_recall: 64,
   episodes: 52,
   retrieved_memory_evidence: 50,
+  recent_lived_experience: 49,
   autobiographical_recall: 48,
   semantic_graph: 42,
   open_questions: 38,

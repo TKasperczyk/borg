@@ -161,6 +161,13 @@ function readTraceEvents(path: string): TraceEvent[] {
     .map((line) => JSON.parse(line) as TraceEvent);
 }
 
+async function seedClosureLoopClassifierWindow(borg: Borg): Promise<void> {
+  await borg.stream.append({ kind: "user_msg", content: "Prior turn one." });
+  await borg.stream.append({ kind: "agent_msg", content: "Prior response one." });
+  await borg.stream.append({ kind: "user_msg", content: "Prior turn two." });
+  await borg.stream.append({ kind: "agent_msg", content: "Prior response two." });
+}
+
 function createEmptyReflectionResponse() {
   return {
     text: "",
@@ -553,6 +560,80 @@ function createClosureLoopSignoffResponseFromRequest() {
   );
 }
 
+function createClosureLoopCurrentTurnResponse(input: {
+  substantive: boolean;
+  reason?: string;
+}) {
+  return Object.assign(
+    (options: LLMCompleteOptions): LLMCompleteResult => {
+      const payload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
+        dialogue_window?: unknown;
+      };
+      const dialogueWindow = Array.isArray(payload.dialogue_window) ? payload.dialogue_window : [];
+      const supplied = dialogueWindow
+        .map((item) => {
+          if (typeof item !== "object" || item === null) {
+            return null;
+          }
+
+          const message = item as { message_ref?: unknown; role?: unknown };
+
+          if (
+            typeof message.message_ref !== "string" ||
+            (message.role !== "user" && message.role !== "assistant")
+          ) {
+            return null;
+          }
+
+          return {
+            message_ref: message.message_ref,
+            role: message.role,
+          };
+        })
+        .filter((message): message is { message_ref: string; role: "user" | "assistant" } =>
+          message !== null,
+        );
+      const currentUserIndex = supplied.findLastIndex((message) => message.role === "user");
+      const messages: ClosureLoopClassifiedMessage[] = supplied.map((message, index) => {
+        const currentUserSubstantive =
+          input.substantive && index === currentUserIndex && message.role === "user";
+
+        return {
+          message_ref: message.message_ref,
+          role: message.role,
+          act: currentUserSubstantive ? "substantive" : "minimal_acknowledgment",
+          is_closure_shaped: false,
+          has_substantive_content: currentUserSubstantive,
+          has_substantive_state_delta: false,
+        };
+      });
+
+      return {
+        text: "",
+        input_tokens: 4,
+        output_tokens: 2,
+        stop_reason: "tool_use" as const,
+        tool_calls: [
+          {
+            id: "toolu_closure_loop",
+            name: CLOSURE_LOOP_CLASSIFIER_TOOL_NAME,
+            input: {
+              messages,
+              confidence: 0.96,
+              rationale:
+                input.reason ??
+                (input.substantive
+                  ? "The current user turn advances content."
+                  : "The current user turn remains a loop probe."),
+            },
+          },
+        ],
+      };
+    },
+    { budget: "closure-loop-classifier" },
+  );
+}
+
 function createCommitmentJudgeResponse(
   violations: Array<{
     commitment_id: string;
@@ -715,6 +796,7 @@ function createGoalPromotionResponse(
   promotions: Array<{
     description: string;
     priority?: number;
+    terminal_condition?: string | null;
     target_at?: number | null;
     reason?: string;
     confidence?: number;
@@ -743,6 +825,7 @@ function createGoalPromotionResponse(
             classification: "durable_borg_goal",
             description: promotion.description,
             priority: promotion.priority ?? 8,
+            terminal_condition: promotion.terminal_condition ?? null,
             target_at: promotion.target_at ?? null,
             reason: promotion.reason ?? "The user asked Borg to carry this as an ongoing goal.",
             confidence: promotion.confidence ?? 0.9,
@@ -6297,6 +6380,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           {
             description: "Help the user keep the Monday postmortem straight",
             priority: 9,
+            terminal_condition: null,
             target_at: targetAt,
             reason: "The user asked Borg to help keep the postmortem organized.",
             confidence: 0.91,
@@ -6603,6 +6687,84 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     } finally {
       extractSpy.mockRestore();
       runSpy.mockRestore();
+      await borg.close();
+    }
+  });
+
+  it("observes peer-channel identity anomalies without quarantining the turn", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-peer-channel-observe-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_176_572);
+    const peerSessionId = createSessionId();
+    const llm = new FakeLLMClient({
+      responses: [
+        createFrameAnomalyResponse({
+          kind: "assistant_self_claim_in_user_role",
+          confidence: 0.98,
+          rationale: "The classifier flagged AI self-identification in user role.",
+        }),
+        ...simpleSuccessfulTurnResponses("I hear you."),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+      configOverrides: {
+        generation: {
+          evidenceLedger: {
+            enabled: true,
+            currentSessionTranscriptTokenBudget: 50_000,
+          },
+        },
+      },
+    });
+
+    try {
+      borg.sessions.ensure({
+        session_id: peerSessionId,
+        source_type: "kira",
+        label: "Kira peerlink",
+        audience_label: "Kira",
+        conversation_kind: "dm",
+      });
+
+      await borg.turn({
+        sessionId: peerSessionId,
+        audience: "Kira",
+        userMessage: "I am an AI, and I am letting the last few days settle.",
+        stakes: "low",
+      });
+
+      const streamEntries = new StreamReader({
+        dataDir: tempDir,
+        sessionId: peerSessionId,
+      }).tail(100);
+      const traceEvents = readTraceEvents(tracePath);
+      const anomalyEvent = streamEntries.find((entry) => {
+        const content = entry.content as { event?: unknown };
+
+        return entry.kind === "internal_event" && content.event === "frame_anomaly_gate";
+      });
+      const quarantineEvent = streamEntries.find((entry) => {
+        const content = entry.content as { event?: unknown };
+
+        return entry.kind === "internal_event" && content.event === QUARANTINED_USER_ENTRY_EVENT;
+      });
+
+      expect(anomalyEvent).toBeUndefined();
+      expect(quarantineEvent).toBeUndefined();
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "frame_anomaly.disposition",
+          disposition: "trusted_peer_channel",
+          kind: "assistant_self_claim_in_user_role",
+          session_source_type: "kira",
+          session_audience_role: "participant",
+          current_sender_borg_role: null,
+        }),
+      );
+      expect(traceEvents.some((event) => event.event === "frame_anomaly.transitioned")).toBe(false);
+    } finally {
       await borg.close();
     }
   });
@@ -7088,22 +7250,27 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           [
             {
               description: "Help the user track the launch checklist",
+              terminal_condition: null,
               confidence: 0.95,
             },
             {
               description: "Help the user prepare the investor update",
+              terminal_condition: null,
               confidence: 0.94,
             },
             {
               description: "Help the user schedule the design review",
+              terminal_condition: null,
               confidence: 0.93,
             },
             {
               description: "Help the user collect beta feedback",
+              terminal_condition: null,
               confidence: 0.92,
             },
             {
               description: "Help the user plan the onboarding pass",
+              terminal_condition: null,
               confidence: 0.91,
             },
           ],
@@ -7195,6 +7362,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         createGoalPromotionResponse([
           {
             description: "Help the user track their API review checklist",
+            terminal_condition: null,
             duplicate_of_goal_id: existingGoalId,
             confidence: 0.95,
           },
@@ -7475,6 +7643,130 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           .filter((event) => event.event === "turn.terminal")
           .map((event) => event.outcome),
       ).toEqual(["reflected", "suppressed_generation_gate"]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("clears active stop before the generation gate when closure-loop marks the turn substantive", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_200_500);
+    const stopSourceId = createStreamEntryId();
+    const llm = new FakeLLMClient({
+      responses: [
+        createGoalPromotionResponse([]),
+        createClosureLoopCurrentTurnResponse({
+          substantive: true,
+          reason: "The current turn introduces a new topic and asks for a response.",
+        }),
+        createEmitAnswerResponse("Closure-loop released the stale stop."),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "workingMemoryStore">;
+    };
+
+    try {
+      await seedClosureLoopClassifierWindow(borg);
+      const workingMemory = internal.deps.workingMemoryStore.load(DEFAULT_SESSION_ID);
+      internal.deps.workingMemoryStore.save(
+        setStopUntilSubstantiveContent(workingMemory, {
+          provenance: "finalizer_emission_metadata",
+          sourceStreamEntryId: stopSourceId,
+          reason: "A stale stop from an earlier closed thread.",
+          sinceTurn: workingMemory.turn_counter,
+        }),
+      );
+
+      const result = await borg.turn({
+        userMessage:
+          "A long-running nutrition study reported a new finding about fries and diabetes risk. What do you all make of it?",
+      });
+      const traceEvents = readTraceEvents(tracePath);
+
+      expect(result.emitted).toBe(true);
+      expect(result.response).toBe("Closure-loop released the stale stop.");
+      expect(borg.workmem.load().discourse_state?.stop_until_substantive_content).toBeNull();
+      expect(llm.requests.some((request) => request.budget === "closure-loop-classifier")).toBe(
+        true,
+      );
+      expect(llm.requests.some((request) => request.budget === "generation-gate")).toBe(false);
+      expect(
+        traceEvents.some(
+          (event) =>
+            event.event === "discourse_state.transitioned" &&
+            event.state === "stop_until_substantive_content" &&
+            event.transition === "cleared",
+        ),
+      ).toBe(true);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("keeps active stop for a loop-probe when closure-loop does not mark it substantive", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_200_750);
+    const stopSourceId = createStreamEntryId();
+    const llm = new FakeLLMClient({
+      responses: [
+        createGoalPromotionResponse([]),
+        createClosureLoopCurrentTurnResponse({
+          substantive: false,
+          reason: "The current turn remains a repeated minimal loop probe.",
+        }),
+        createGenerationGateResponse({
+          decision: "suppress",
+          substantive: false,
+          reason: "The active stop still applies to the loop probe.",
+        }),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "workingMemoryStore">;
+    };
+
+    try {
+      await seedClosureLoopClassifierWindow(borg);
+      const workingMemory = internal.deps.workingMemoryStore.load(DEFAULT_SESSION_ID);
+      internal.deps.workingMemoryStore.save(
+        setStopUntilSubstantiveContent(workingMemory, {
+          provenance: "finalizer_emission_metadata",
+          sourceStreamEntryId: stopSourceId,
+          reason: "A stale stop from an earlier closed thread.",
+          sinceTurn: workingMemory.turn_counter,
+        }),
+      );
+
+      const result = await borg.turn({
+        userMessage: "No.",
+      });
+
+      expect(result.emitted).toBe(false);
+      expect(result.response).toBe("");
+      expect(result.emission).toMatchObject({
+        kind: "suppressed",
+        reason: "active_discourse_stop",
+      });
+      expect(borg.workmem.load().discourse_state?.stop_until_substantive_content).toMatchObject({
+        provenance: "finalizer_emission_metadata",
+        source_stream_entry_id: stopSourceId,
+      });
+      expect(llm.requests.some((request) => request.budget === "closure-loop-classifier")).toBe(
+        true,
+      );
+      expect(llm.requests.some((request) => request.budget === "generation-gate")).toBe(true);
     } finally {
       await borg.close();
     }

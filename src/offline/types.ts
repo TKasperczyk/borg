@@ -3,6 +3,10 @@ import type { TurnTracer } from "../tracing/tracer.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
+import type {
+  ActivityRepository,
+  LivedExperienceDaySummaryRepository,
+} from "../memory/activity/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { CreatorDirectiveRepository } from "../memory/creator-directives/index.js";
@@ -28,6 +32,7 @@ import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemoryStore } from "../memory/working/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
 import type { RelationalSlotRepository } from "../memory/relational-slots/index.js";
+import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import type { StreamEntryIndexRepository, StreamWriter } from "../stream/index.js";
 import type { Clock } from "../util/clock.js";
 import type { MaintenanceRunId } from "../util/ids.js";
@@ -106,6 +111,9 @@ export type OfflineContext = {
   growthMarkersRepository: GrowthMarkersRepository;
   openQuestionsRepository: OpenQuestionsRepository;
   moodRepository: MoodRepository;
+  activityRepository: ActivityRepository;
+  selfDecisionRepository: SelfDecisionRepository;
+  livedExperienceDaySummaryRepository: LivedExperienceDaySummaryRepository;
   actionRepository: ActionRepository;
   socialRepository: SocialRepository;
   entityRepository: EntityRepository;

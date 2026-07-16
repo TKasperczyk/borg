@@ -1,8 +1,5 @@
 import type { RelationalSlot } from "../../memory/relational-slots/index.js";
-import {
-  selfPrivateMemoryDisclosureLabel,
-  type MemoryDisclosureLabel,
-} from "../../retrieval/index.js";
+import type { MemoryDisclosureLabel } from "../../retrieval/index.js";
 import type { ActiveParticipant } from "../participants.js";
 import {
   dedupeCommitments,
@@ -48,6 +45,7 @@ import {
   observedEventMemoryDisclosureLabel,
   relationalSlotMemoryDisclosureLabel,
 } from "../../memory/common/disclosure-serializers.js";
+import { buildRecentLivedExperienceLedgerEntry } from "./recent-lived-experience.js";
 
 function participantForSlot(
   slot: RelationalSlot,
@@ -72,59 +70,16 @@ function slotSubjectStateMetadata(
   };
 }
 
-function buildCrossSessionActivityEntries(context: BuilderSectionContext): EvidenceLedgerEntry[] {
-  const rows = context.input.crossSessionSelfActivity ?? [];
-  const disclosureLabel = selfPrivateMemoryDisclosureLabel();
+function buildRecentLivedExperienceEntries(context: BuilderSectionContext): EvidenceLedgerEntry[] {
+  const rows = context.input.recentLivedExperience ?? [];
 
-  return rows.map((row, index) => ({
-    id: `cross_session_self_activity:${index + 1}`,
-    source_type: "system_metadata",
-    session_scope: scopeFromStreamIds(row.sourceStreamEntryIds, context.resolver),
-    actor: "system",
-    trust_rank: CROSS_SESSION_ACTIVITY_TRUST_RANK,
-    text: row.text,
-    value: row.kind,
-    state: appendMemoryDisclosureState({ state: "active", disclosureLabel }),
-    state_metadata: appendMemoryDisclosureStateMetadata({
-      stateMetadata: {
-        event_kind: row.kind,
-        occurred_at: row.occurredAt,
-        relative_age: row.relativeAge,
-        source_stream_ids: [...row.sourceStreamEntryIds],
-      },
-      disclosureLabel,
+  return rows.map((row, index) =>
+    buildRecentLivedExperienceLedgerEntry({
+      row,
+      index,
+      audienceEntityId: context.input.audienceEntityId,
     }),
-    taint: "none",
-  }));
-}
-
-function buildSelfDecisionIntrospectionEntries(
-  context: BuilderSectionContext,
-): EvidenceLedgerEntry[] {
-  const rows = context.input.selfDecisionIntrospection ?? [];
-  const disclosureLabel = selfPrivateMemoryDisclosureLabel();
-
-  return rows.map((row, index) => ({
-    id: `self_decision_introspection:${index + 1}`,
-    source_type: "system_metadata",
-    session_scope: "global",
-    actor: "system",
-    trust_rank: CROSS_SESSION_ACTIVITY_TRUST_RANK,
-    text: row.text,
-    value: row.triggerName,
-    state: appendMemoryDisclosureState({ state: "active", disclosureLabel }),
-    state_metadata: appendMemoryDisclosureStateMetadata({
-      stateMetadata: {
-        trigger_name: row.triggerName,
-        trigger_type: row.triggerType,
-        occurred_at: row.occurredAt,
-        relative_age: row.relativeAge,
-        disclosure_class: "self_private",
-      },
-      disclosureLabel,
-    }),
-    taint: "none",
-  }));
+  );
 }
 
 function originAudienceKind(
@@ -248,6 +203,8 @@ function buildCommitmentEntries(context: BuilderSectionContext): EvidenceLedgerE
           commitment_critical_domain: effectiveCommitmentCriticalDomain(commitment),
           created_at: new Date(commitment.created_at).toISOString(),
           last_reinforced_at: new Date(commitment.last_reinforced_at).toISOString(),
+          made_to_entity_id: commitment.made_to_entity,
+          committed_by_entity_id: commitment.committed_by_entity_id ?? null,
           ...(context.nowMs === undefined
             ? {}
             : {
@@ -365,6 +322,21 @@ function buildRelationalEntries(context: BuilderSectionContext): EvidenceLedgerE
               subject_role: participant.role,
               commitment_kind: commitment.kind,
               commitment_type: commitment.type,
+              commitment_enforcement_class: effectiveCommitmentEnforcementClass(commitment),
+              commitment_critical_domain: effectiveCommitmentCriticalDomain(commitment),
+              created_at: new Date(commitment.created_at).toISOString(),
+              last_reinforced_at: new Date(commitment.last_reinforced_at).toISOString(),
+              made_to_entity_id: commitment.made_to_entity,
+              committed_by_entity_id: commitment.committed_by_entity_id ?? null,
+              ...(context.nowMs === undefined
+                ? {}
+                : {
+                    created_relative_age: formatRelativeAge(commitment.created_at, context.nowMs),
+                    last_reinforced_relative_age: formatRelativeAge(
+                      commitment.last_reinforced_at,
+                      context.nowMs,
+                    ),
+                  }),
             },
             disclosureLabel,
           }),
@@ -409,6 +381,25 @@ function buildRelationalEntries(context: BuilderSectionContext): EvidenceLedgerE
           stateMetadata: {
             subject_display_name: participant.displayName ?? "participant",
             subject_role: participant.role,
+            created_at: new Date(goal.created_at).toISOString(),
+            ...(goal.last_progress_ts === null
+              ? {}
+              : { last_progress_at: new Date(goal.last_progress_ts).toISOString() }),
+            owner_entity_id: goal.owner_entity_id ?? null,
+            audience_entity_id: goal.audience_entity_id,
+            ...(context.nowMs === undefined
+              ? {}
+              : {
+                  created_relative_age: formatRelativeAge(goal.created_at, context.nowMs),
+                  ...(goal.last_progress_ts === null
+                    ? {}
+                    : {
+                        last_progress_relative_age: formatRelativeAge(
+                          goal.last_progress_ts,
+                          context.nowMs,
+                        ),
+                      }),
+                }),
           },
           disclosureLabel,
         }),
@@ -424,8 +415,8 @@ export function buildAudienceStandingLedgerContext(
   context: BuilderSectionContext,
 ): EvidenceLedgerAudienceStanding {
   return {
-    crossSessionActivityEntries: buildCrossSessionActivityEntries(context),
-    selfDecisionIntrospectionEntries: buildSelfDecisionIntrospectionEntries(context),
+    recentLivedExperienceEntries: buildRecentLivedExperienceEntries(context),
+    renderRecentLivedExperience: context.input.renderRecentLivedExperience === true,
     observedEventIntrospectionEntries: buildObservedEventIntrospectionEntries(context),
     commitmentEntries: buildCommitmentEntries(context),
     relationalEntries: buildRelationalEntries(context),

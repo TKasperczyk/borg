@@ -40,12 +40,14 @@ import { SystemClock, type Clock } from "../util/clock.js";
 import { StorageError } from "../util/errors.js";
 import {
   DEFAULT_SESSION_ID,
+  type AttachmentId,
   type EntityId,
   type EpisodeId,
   type SessionId,
   type StreamEntryId,
 } from "../util/ids.js";
 import type { JsonValue } from "../util/json-value.js";
+import { formatRelativeAge } from "../util/relative-time.js";
 
 import { CitationResolver, type CitationResolverOptions } from "./citations.js";
 import { assembleRetrievedContext, type RetrievedContext } from "./context-assembly.js";
@@ -197,6 +199,7 @@ export type RetrievalSharedOptions = EpisodeCognitionRecallOptions & {
   audienceProfile?: SocialProfile | null;
   audienceTerms?: readonly string[];
   entityTerms?: readonly string[];
+  currentTurnAttachmentIds?: readonly AttachmentId[];
   sessionId?: SessionId;
   turnCounter?: number;
   traceTurnId?: string;
@@ -508,7 +511,9 @@ export class RetrievalPipeline {
       item,
     }));
     const openQuestionEvidence = openQuestionEvidenceSources.map((item) => item.evidence);
-    const imagePerceptionEvidence = imagePerceptions.map(imagePerceptionToEvidence);
+    const imagePerceptionEvidence = imagePerceptions.map((item) =>
+      imagePerceptionToEvidence(item, nowMs),
+    );
     const commitmentEvidence = await this.collectCommitmentEvidence(intents, options);
     const rawStreamEvidence = [
       ...streamEntriesToEvidence(citationEntries, episodeCandidates),
@@ -630,11 +635,29 @@ export class RetrievalPipeline {
     mode: RetrievalExecutionMode,
   ): Promise<EvidenceItem[]> {
     const evidence: EvidenceItem[] = [];
+    const maxWarmEvidenceRendered = this.maxWarmEvidenceRendered();
+    const currentTurnAttachmentIds = new Set(options.currentTurnAttachmentIds ?? []);
+
+    if (maxWarmEvidenceRendered <= 0) {
+      return evidence;
+    }
+
+    const activeHandles =
+      currentTurnAttachmentIds.size === 0
+        ? context.state.activeHandles
+        : context.state.activeHandles.filter((stateHandle) => {
+            const handle = normalizeRecallEvidenceHandle(stateHandle.handle);
+
+            return (
+              handle.source !== "image_perception" ||
+              !currentTurnAttachmentIds.has(handle.attachmentId)
+            );
+          });
     const candidates = selectWarmRecallCandidates(
-      context.state.activeHandles,
+      activeHandles,
       context.state,
       context.turn,
-      this.maxWarmEvidenceRendered(),
+      maxWarmEvidenceRendered,
     );
 
     for (const { handle, stateHandle } of candidates) {
@@ -651,6 +674,10 @@ export class RetrievalPipeline {
 
       if (item !== null) {
         evidence.push(item);
+
+        if (evidence.length >= maxWarmEvidenceRendered) {
+          break;
+        }
       }
     }
 
@@ -685,7 +712,7 @@ export class RetrievalPipeline {
     }
 
     if (handle.source === "image_perception") {
-      return this.rehydrateImagePerceptionHandle(handle, stateHandle, options, mode);
+      return this.rehydrateImagePerceptionHandle(handle, stateHandle, options, nowMs, mode);
     }
 
     return this.rehydrateOpenQuestionHandle(handle, stateHandle);
@@ -695,11 +722,16 @@ export class RetrievalPipeline {
     handle: Extract<RecallEvidenceHandle, { source: "image_perception" }>,
     stateHandle: RecallStateHandle,
     options: RetrievalExecutionOptions,
+    nowMs: number,
     mode: RetrievalExecutionMode,
   ): EvidenceItem | null {
     const record = this.options.imagePerceptionRepository?.get(handle.perceptionId);
 
     if (record === undefined || record === null || !record.active) {
+      return null;
+    }
+
+    if ((options.currentTurnAttachmentIds ?? []).includes(record.attachment_id)) {
       return null;
     }
 
@@ -712,20 +744,23 @@ export class RetrievalPipeline {
       return null;
     }
 
-    return imagePerceptionToEvidence({
-      intent: {
-        id: WARM_RECALL_INTENT_ID,
-        kind: "recent",
-        query: record.caption,
-        terms: [],
-        priority: 0.4,
-        source: "recency",
+    return imagePerceptionToEvidence(
+      {
+        intent: {
+          id: WARM_RECALL_INTENT_ID,
+          kind: "recent",
+          query: record.caption,
+          terms: [],
+          priority: 0.4,
+          source: "recency",
+        },
+        hit: {
+          record,
+          similarity: warmRecallScore(stateHandle),
+        },
       },
-      hit: {
-        record,
-        similarity: warmRecallScore(stateHandle),
-      },
-    });
+      nowMs,
+    );
   }
 
   private async rehydrateEpisodeHandle(
@@ -1613,15 +1648,17 @@ export class RetrievalPipeline {
 
     const byId = new Map<string, ImagePerceptionEvidenceCandidate>();
     const relevantIntents = intents.filter((intent) => isSemanticIntentKind(intent.kind));
+    const currentTurnAttachmentIds = new Set(options.currentTurnAttachmentIds ?? []);
     const results = await mapWithConcurrency(
       relevantIntents,
       RETRIEVAL_FANOUT_CONCURRENCY,
       async (intent): Promise<ImagePerceptionEvidenceCandidate[]> => {
         try {
           const vector = await this.options.embeddingClient.embed(intent.query);
+          const imageRecallLimit = Math.max(1, options.limit ?? 5);
           const imageRecallInput = {
             vector,
-            limit: Math.max(1, options.limit ?? 5),
+            limit: imageRecallLimit + currentTurnAttachmentIds.size,
           };
           const hits =
             mode === "cognition"
@@ -1632,10 +1669,13 @@ export class RetrievalPipeline {
                   crossAudience: options.crossAudience,
                 });
 
-          return hits.map((hit) => ({
-            intent,
-            hit,
-          }));
+          return hits
+            .filter((hit) => !currentTurnAttachmentIds.has(hit.record.attachment_id))
+            .slice(0, imageRecallLimit)
+            .map((hit) => ({
+              intent,
+              hit,
+            }));
         } catch (error) {
           this.emitRetrievalDegraded(options, "image_perception", error);
           return [];
@@ -2556,12 +2596,14 @@ function openQuestionToEvidence(
   };
 }
 
-function imagePerceptionToEvidence(item: ImagePerceptionEvidenceCandidate): EvidenceItem {
+function imagePerceptionToEvidence(
+  item: ImagePerceptionEvidenceCandidate,
+  nowMs: number,
+): EvidenceItem {
   const record = item.hit.record;
-  const turnLabel =
-    record.created_turn_global === null ? "unknown turn" : `turn ${record.created_turn_global}`;
-  const audienceLabel = record.audience ?? "global";
-  const imageLabel = `Image: user-uploaded ${record.image_kind} from ${turnLabel} (audience: ${audienceLabel})`;
+  const originAge = formatRelativeAge(record.created_at, nowMs);
+  const originFrame = `[remembered image -- not sent in this message; first shared ${originAge}]`;
+  const imageLabel = `Image: remembered user-uploaded ${record.image_kind}`;
   const disclosureLabel = imagePerceptionMemoryDisclosureLabel(record);
 
   return {
@@ -2596,6 +2638,7 @@ function imagePerceptionToEvidence(item: ImagePerceptionEvidenceCandidate): Evid
     },
     imageAttachmentId: record.attachment_id,
     imageLabel,
+    imageOriginFrame: originFrame,
     disclosureLabel,
     citationType:
       record.stream_entry_id === null ? "parent_user_message" : "generated_perception_text",

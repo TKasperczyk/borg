@@ -17,6 +17,7 @@ type PromotionInput = {
   classification?: GoalPromotionClassification | string;
   omitClassification?: boolean;
   description?: string;
+  terminal_condition?: string | null;
   priority?: number;
   target_at?: number | null;
   reason?: string;
@@ -35,8 +36,14 @@ type GoalPromotionResponseOptions = {
 };
 
 function promotionPayload(promotion: PromotionInput, index: number): Record<string, unknown> {
+  const classification = promotion.classification ?? "durable_borg_goal";
   const payload: Record<string, unknown> = {
     description: promotion.description ?? `Goal ${index}`,
+    terminal_condition:
+      promotion.terminal_condition ??
+      (classification === "durable_borg_goal"
+        ? `Goal ${index} reaches its stated completion condition`
+        : null),
     priority: promotion.priority ?? 5,
     target_at: promotion.target_at ?? null,
     reason: promotion.reason ?? "Borg has an ongoing role.",
@@ -46,7 +53,7 @@ function promotionPayload(promotion: PromotionInput, index: number): Record<stri
   };
 
   if (promotion.omitClassification !== true) {
-    payload.classification = promotion.classification ?? "durable_borg_goal";
+    payload.classification = classification;
   }
 
   return payload;
@@ -122,6 +129,7 @@ describe("GoalPromotionExtractor", () => {
     expect(result).toEqual([
       {
         description: "Help the user track the refactor across sessions",
+        terminal_condition: "Goal 0 reaches its stated completion condition",
         priority: 8,
         target_at: null,
         reason: "The user asked Borg to track the refactor over time.",
@@ -137,6 +145,8 @@ describe("GoalPromotionExtractor", () => {
     });
     expect(llm.requests[0]?.max_tokens).toBe(EXTRACTOR_MAX_TOKENS_DEFAULT);
     expect(llm.requests[0]?.system).toContain("not_borg_responsibility");
+    expect(llm.requests[0]?.system).toContain("terminal_condition");
+    expect(llm.requests[0]?.system).toContain("structural completion condition");
     expect(llm.requests[0]?.system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
   });
 
@@ -427,6 +437,7 @@ describe("GoalPromotionExtractor", () => {
           {
             id: existingGoalId,
             description: "Help the user track their release checklist",
+            terminal_condition: "The release checklist is settled",
             priority: 8,
             target_at: null,
             owner_entity_id: owner,
@@ -444,6 +455,7 @@ describe("GoalPromotionExtractor", () => {
     const payload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
       active_goals?: Array<{
         owner_entity_id?: string | null;
+        terminal_condition?: string | null;
         disclosure?: string;
         disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
       }>;
@@ -451,6 +463,7 @@ describe("GoalPromotionExtractor", () => {
     const activeGoal = payload.active_goals?.[0];
 
     expect(activeGoal?.owner_entity_id).toBe(owner);
+    expect(activeGoal?.terminal_condition).toBe("The release checklist is settled");
     expect(activeGoal?.disclosure).toContain("disclosure_class=relationship_private");
     expect(activeGoal?.disclosure).toContain(`private-to=${owner}`);
     expect(activeGoal?.disclosure_label).toMatchObject({

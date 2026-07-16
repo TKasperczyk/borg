@@ -151,6 +151,7 @@ function createFakeCadenceWatermarks(clock: ManualClock): {
         lastTs: input.lastTs,
         lastEntryId: input.lastEntryId,
         updatedAt: clock.now(),
+        metadata: input.metadata ?? null,
       };
       records.set(watermarkKey(processName, sessionId), record);
       return record;

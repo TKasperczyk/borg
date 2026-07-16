@@ -540,8 +540,8 @@ describe("compactEvidenceLedger", () => {
     const ledger = makeLedger();
 
     ledger.audienceStanding = {
-      crossSessionActivityEntries: [],
-      selfDecisionIntrospectionEntries: [],
+      recentLivedExperienceEntries: [],
+      renderRecentLivedExperience: false,
       observedEventIntrospectionEntries: [
         {
           id: "observed_event_introspection:1",
@@ -642,6 +642,50 @@ describe("compactEvidenceLedger", () => {
     expect(section(compacted.ledger, "prior_session_memory").entries).toEqual([]);
     expect(compacted.traceSummary.dedupedEntryCount).toBe(3);
     expect(rendered).toContain("[citation: ep_route, semn_route, strm_route]");
+  });
+
+  it("keeps richer retrieved evidence canonical over recent lived experience with shared provenance", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "recent_lived_experience").entries.push(
+      syntheticEntry({
+        id: "recent_lived_experience:1",
+        source_type: "system_metadata",
+        text: "Density row: 1 conversation turn with the arena.",
+        trust_rank: 84,
+        state_metadata: {
+          source_stream_ids: ["strm_shared_recall"],
+        },
+      }),
+    );
+    section(ledger, "retrieved_memory_evidence").entries.push(
+      syntheticEntry({
+        id: "retrieved_evidence:rich_shared",
+        source_type: "episode",
+        text: "Rich retrieved memory with topical detail.",
+        trust_rank: 52,
+        state_metadata: {
+          episode_id: "ep_rich_shared",
+          source_stream_ids: ["strm_shared_recall"],
+        },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+    });
+    const retrievedEntries = section(compacted.ledger, "retrieved_memory_evidence").entries;
+
+    expect(retrievedEntries).toEqual([
+      expect.objectContaining({
+        id: "retrieved_evidence:rich_shared",
+        text: "Rich retrieved memory with topical detail.",
+        citations: expect.arrayContaining(["ep_rich_shared", "strm_shared_recall"]),
+      }),
+    ]);
+    expect(section(compacted.ledger, "recent_lived_experience").entries).toEqual([]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
   });
 
   it("does not collapse multiple transcript rows through a shared episode provenance handle", () => {
@@ -877,6 +921,192 @@ describe("compactEvidenceLedger", () => {
     );
     expect(rendered).toContain("Evidence ledger omitted");
     expect(rendered).toContain("lower-priority entries from prior_session_memory");
+  });
+
+  it("trims recent lived experience before core retrieved evidence sections", () => {
+    const ledger = makeLedger();
+    const pressureText = "recent lived experience pressure ".repeat(60);
+
+    section(ledger, "recent_lived_experience").entries = Array.from({ length: 12 }, (_, index) =>
+      syntheticEntry({
+        id: `recent_lived_experience:${index}`,
+        source_type: "system_metadata",
+        text: `${index} ${pressureText}`,
+        trust_rank: 84,
+        state_metadata: {
+          day_key: "2026-06-15",
+        },
+      }),
+    );
+    section(ledger, "episodes").entries = [
+      syntheticEntry({
+        id: "episode:ep_core_retained",
+        source_type: "episode",
+        text: "Core episode should remain.",
+        trust_rank: 52,
+        state_metadata: {
+          episode_id: "ep_core_retained",
+        },
+      }),
+    ];
+    section(ledger, "retrieved_memory_evidence").entries = [
+      syntheticEntry({
+        id: "retrieved_evidence:memory_core_retained",
+        source_type: "episode",
+        text: "Core retrieved memory should remain.",
+        trust_rank: 52,
+        state_metadata: {
+          episode_id: "ep_memory_core_retained",
+        },
+      }),
+    ];
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 1_200,
+      hardCapTokens: 5_000,
+      maxEntryTextTokens: 80,
+      sectionOptions: {
+        recent_lived_experience: {
+          maxEntries: 12,
+          maxTokens: 20_000,
+        },
+        episodes: {
+          maxEntries: 4,
+          maxTokens: 20_000,
+        },
+        retrieved_memory_evidence: {
+          maxEntries: 4,
+          maxTokens: 20_000,
+        },
+      },
+    });
+
+    expect(
+      compacted.traceSummary.omittedEntryCountsBySection.recent_lived_experience,
+    ).toBeGreaterThan(0);
+    expect(compacted.traceSummary.omittedEntryCountsBySection.episodes).toBe(0);
+    expect(compacted.traceSummary.omittedEntryCountsBySection.retrieved_memory_evidence).toBe(0);
+    expect(section(compacted.ledger, "episodes").entries).toEqual([
+      expect.objectContaining({ id: "episode:ep_core_retained" }),
+    ]);
+    expect(section(compacted.ledger, "retrieved_memory_evidence").entries).toEqual([
+      expect.objectContaining({ id: "retrieved_evidence:memory_core_retained" }),
+    ]);
+  });
+
+  it("retains recent lived experience spine rows while trimming individual detail", () => {
+    const ledger = makeLedger();
+    const pressureText = "individual lived detail ".repeat(120);
+    const densityEntries = Array.from({ length: 4 }, (_, index) =>
+      syntheticEntry({
+        id: `recent_lived_experience:spine_${index}`,
+        source_type: "system_metadata",
+        text:
+          index === 0
+            ? "[Jun 16] I held the same restraint across about 28 wakes."
+            : index % 2 === 0
+              ? `[Jun ${16 + index}] ${index + 1} conversation turns with BotArena group.`
+              : `[Jun ${16 + index}] ${index + 1} autonomous reflections; 1 distinct structural pattern.`,
+        trust_rank: 84,
+        state_metadata: {
+          lived_experience_kind:
+            index === 0
+              ? "lived_experience_day_summary"
+              : index % 2 === 0
+                ? "cross_session_activity_density"
+                : "self_decision_density",
+          occurred_at: Date.UTC(2026, 5, 16 + index, 12, 0, 0),
+        },
+      }),
+    );
+    const detailEntries = Array.from({ length: 30 }, (_, index) =>
+      syntheticEntry({
+        id: `recent_lived_experience:detail_${index}`,
+        source_type: "system_metadata",
+        text: `${index} ${pressureText}`,
+        trust_rank: 84,
+        state_metadata: {
+          lived_experience_kind: "self_decision_introspection",
+          occurred_at: Date.UTC(2026, 5, 19, 13, index, 0),
+        },
+      }),
+    );
+
+    section(ledger, "recent_lived_experience").entries = [...densityEntries, ...detailEntries];
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+      maxEntryTextTokens: 120,
+      sectionOptions: {
+        recent_lived_experience: {
+          maxEntries: 4,
+          maxTokens: 20_000,
+        },
+      },
+    });
+    const recentEntries = section(compacted.ledger, "recent_lived_experience").entries;
+    const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
+
+    expect(recentEntries.map((entry) => entry.id)).toEqual(
+      expect.arrayContaining(densityEntries.map((entry) => entry.id)),
+    );
+    expect(
+      recentEntries.some((entry) => entry.id.startsWith("recent_lived_experience:detail_")),
+    ).toBe(false);
+    expect(rendered).toContain("Recent lived experience omitted 30 detail entries from Jun 19");
+    expect(rendered).toContain("omitted detail is summarized in the dated spine above");
+    expect(
+      recentEntries.find((entry) => entry.id === "evidence_ledger_omitted:recent_lived_experience"),
+    ).toMatchObject({
+      state: expect.stringContaining("disclosure_class=self_private"),
+      state_metadata: expect.objectContaining({
+        disclosure_label: expect.objectContaining({
+          disclosure_class: "self_private",
+        }),
+      }),
+    });
+    expect(compacted.traceSummary.omittedEntryCountsBySection.recent_lived_experience).toBe(30);
+  });
+
+  it("labels recent lived experience dropped-section breadcrumbs as self-private", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "recent_lived_experience").entries = [
+      syntheticEntry({
+        id: "recent_lived_experience:spine_drop",
+        source_type: "system_metadata",
+        text: "Recent lived experience spine under hard-cap pressure. ".repeat(200),
+        trust_rank: 84,
+        state_metadata: {
+          lived_experience_kind: "self_decision_density",
+          occurred_at: Date.UTC(2026, 5, 19, 12, 0, 0),
+        },
+      }),
+    ];
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 1,
+      hardCapTokens: 1,
+      maxEntryTextTokens: 120,
+      sectionOptions: {
+        recent_lived_experience: {
+          maxEntries: 1,
+          maxTokens: 20_000,
+        },
+      },
+    });
+    const dropped = section(compacted.ledger, "recent_lived_experience").entries[0];
+
+    expect(dropped).toMatchObject({
+      id: "evidence_ledger_dropped_section:recent_lived_experience",
+      state: expect.stringContaining("disclosure_class=self_private"),
+      state_metadata: expect.objectContaining({
+        disclosure_label: expect.objectContaining({
+          disclosure_class: "self_private",
+        }),
+      }),
+    });
   });
 
   it("drops lowest-trust sections when the hard cap is exceeded", () => {

@@ -3,6 +3,65 @@ import { describe, expect, it, vi } from "vitest";
 import { FakeLLMClient, createFakeStreamingResponse } from "../../llm/test-support/fake-client.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import { runS2Planner } from "./s2-planner.js";
+import type { TurnOrigin } from "../types.js";
+
+type ToolInputSchema = {
+  properties: Record<string, unknown>;
+  required?: string[];
+  [key: string]: unknown;
+};
+
+const EXPECTED_USER_TURN_PLAN_INPUT_SCHEMA_JSON = JSON.stringify({
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  type: "object",
+  properties: {
+    uncertainty: {
+      type: "string",
+      description:
+        "What's unclear about the current participant input that matters for the engagement decision or answer? Empty string if nothing.",
+    },
+    verification_steps: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "Short phrases describing what I should double-check or re-retrieve before engaging. Empty array if nothing.",
+    },
+    tensions: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "Conflicts or contradictions in what I already know that need to be reconciled if I respond. Empty array if none.",
+    },
+    voice_note: {
+      type: "string",
+      description:
+        "How the voice and posture should land for this specific turn. Empty string if default voice fits.",
+    },
+    emission_recommendation: {
+      default: "emit",
+      description:
+        "I use no_output only when the conversation has naturally closed and the correct current-turn behavior is to emit no visible message at all; otherwise I use emit and let the finalizer choose visible speech or observation.",
+      type: "string",
+      enum: ["emit", "no_output"],
+    },
+    intents: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          description: { type: "string", minLength: 1 },
+          next_action: {
+            anyOf: [{ type: "string", minLength: 1 }, { type: "null" }],
+          },
+        },
+        required: ["description", "next_action"],
+      },
+      description:
+        "Follow-up intent records to carry into working memory after this turn. I include only concrete future actions I actually intend to track, not stylistic next-step wording.",
+    },
+  },
+  required: ["uncertainty", "verification_steps", "tensions", "voice_note", "intents"],
+});
 
 function createTracer() {
   const emit = vi.fn<TurnTracer["emit"]>();
@@ -14,7 +73,121 @@ function createTracer() {
   } satisfies TurnTracer & { emit: typeof emit };
 }
 
+function validPlanInput(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    uncertainty: "",
+    verification_steps: [],
+    tensions: [],
+    voice_note: "",
+    emission_recommendation: "emit",
+    intents: [],
+    ...overrides,
+  };
+}
+
+function expectToolInputSchema(schema: unknown): asserts schema is ToolInputSchema {
+  expect(schema).toMatchObject({ type: "object" });
+  expect(schema).toHaveProperty("properties");
+}
+
+async function capturePlannerToolInputSchema(turnOrigin?: TurnOrigin): Promise<ToolInputSchema> {
+  const llm = new FakeLLMClient({
+    responses: [
+      {
+        text: "",
+        input_tokens: 1,
+        output_tokens: 1,
+        stop_reason: "tool_use",
+        tool_calls: [
+          {
+            id: "toolu_plan_schema",
+            name: "EmitTurnPlan",
+            input: validPlanInput(),
+          },
+        ],
+      },
+    ],
+  });
+
+  await runS2Planner({
+    llmClient: llm,
+    model: "sonnet",
+    baseSystemPrompt: "base",
+    dialogueMessages: [{ role: "user", content: "Think this through." }],
+    selfSnapshot: { values: [], goals: [], traits: [] },
+    maxTokens: 512,
+    ...(turnOrigin === undefined ? {} : { turnOrigin }),
+  });
+
+  const schema = llm.requests[0]?.tools?.[0]?.inputSchema;
+
+  expectToolInputSchema(schema);
+
+  return schema;
+}
+
 describe("s2 planner", () => {
+  it("keeps the user tool schema byte-identical while adding autonomous want first", async () => {
+    const defaultSchema = await capturePlannerToolInputSchema();
+    const userSchema = await capturePlannerToolInputSchema("user");
+    const directedOutboundSchema = await capturePlannerToolInputSchema("directed_outbound");
+    const autonomousSchema = await capturePlannerToolInputSchema("autonomous");
+
+    expect(JSON.stringify(defaultSchema)).toBe(EXPECTED_USER_TURN_PLAN_INPUT_SCHEMA_JSON);
+    expect(JSON.stringify(userSchema)).toBe(EXPECTED_USER_TURN_PLAN_INPUT_SCHEMA_JSON);
+    expect(JSON.stringify(directedOutboundSchema)).toBe(EXPECTED_USER_TURN_PLAN_INPUT_SCHEMA_JSON);
+    expect(defaultSchema.properties).not.toHaveProperty("want");
+    expect(userSchema.properties).not.toHaveProperty("want");
+
+    expect(JSON.stringify(autonomousSchema)).not.toBe(EXPECTED_USER_TURN_PLAN_INPUT_SCHEMA_JSON);
+    expect(Object.keys(autonomousSchema.properties)[0]).toBe("want");
+    expect(autonomousSchema.required ?? []).not.toContain("want");
+    expect(autonomousSchema.properties.want).toMatchObject({
+      default: "",
+      description:
+        "Answered before every field below: setting aside whether it is justified, is there anything I want in this interval? Named plainly in my own words. Naming a want does not oblige me to act on it. Empty string when nothing genuinely surfaces -- an empty answer is complete, and I do not manufacture a want to fill it.",
+      type: "string",
+    });
+  });
+
+  it("accepts and drops a stray want key on user-origin plan input", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 5,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_user_stray_want",
+              name: "EmitTurnPlan",
+              input: validPlanInput({
+                want: "stray user-origin field",
+                voice_note: "stay direct",
+              }),
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = await runS2Planner({
+      llmClient: llm,
+      model: "sonnet",
+      baseSystemPrompt: "base",
+      dialogueMessages: [{ role: "user", content: "Think this through." }],
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      maxTokens: 512,
+      turnOrigin: "user",
+    });
+
+    expect(result.plan).toMatchObject({ voice_note: "stay direct" });
+    // Current user-schema parse behavior strips unknown keys instead of failing.
+    // Pin that compatibility while keeping the user tool schema want-free.
+    expect(Object.hasOwn(result.plan ?? {}, "want")).toBe(false);
+  });
+
   it("retries once when the first response omits EmitTurnPlan", async () => {
     const llm = new FakeLLMClient({
       responses: [

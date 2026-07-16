@@ -17,6 +17,7 @@ import { reflectorPlanSchema } from "./reflector/index.js";
 import { reviewResolverPlanSchema } from "./review-resolver/index.js";
 import { semanticExtractorProcessPlanSchema } from "./semantic-extractor/index.js";
 import { selfNarratorPlanSchema } from "./self-narrator/index.js";
+import { livedExperienceDaySummarizerPlanSchema } from "./lived-experience-day-summarizer/index.js";
 import { overseerPlanSchema } from "./overseer/index.js";
 import { proceduralSynthesizerPlanSchema } from "./procedural-synthesizer/index.js";
 
@@ -30,6 +31,7 @@ export const offlineProcessPlanSchema = z.discriminatedUnion("process", [
   reviewResolverPlanSchema,
   ruminatorPlanSchema,
   selfNarratorPlanSchema,
+  livedExperienceDaySummarizerPlanSchema,
   proceduralSynthesizerPlanSchema,
   beliefReviserPlanSchema,
   creatorDirectiveReconcilerPlanSchema,

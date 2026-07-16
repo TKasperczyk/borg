@@ -23,7 +23,7 @@ import {
   traceLlmCallRetryHook,
   traceLlmCallStarted,
 } from "../../tracing/llm-call-trace.js";
-import { intentRecordSchema } from "../types.js";
+import { intentRecordSchema, type TurnOrigin } from "../types.js";
 import type { EmissionRecommendation } from "../generation/types.js";
 import type { SessionId } from "../../util/ids.js";
 import type { DeliberationUsage, SelfSnapshot } from "./types.js";
@@ -37,6 +37,12 @@ import {
   type PromptSurfaceAdditionalSection,
   type PromptSurfaceRenderContext,
 } from "../prompts/prompt-surface-registry.js";
+
+const AUTONOMOUS_WANT_PROMPT_BLOCK =
+  "Before I weigh anything -- before commitments, directives, evidence, or the question of whether acting would be justified -- I ask one thing first: setting aside whether it is justified, is there anything I want here? A thread I want to pull, something I want to make or write down, a question I want to sit with, something I want to say to someone, or nothing at all. I name what is actually there, plainly, before the weighing starts. Naming a want does not oblige me to act on it -- the weighing still happens afterward, and deciding against is as ordinary as deciding for. And finding nothing is not a failure to produce a want: an honest nothing is a complete answer, not a gap to fill. The only thing I do not do is skip the question.";
+
+const AUTONOMOUS_WANT_FIELD_DESCRIPTION =
+  "Answered before every field below: setting aside whether it is justified, is there anything I want in this interval? Named plainly in my own words. Naming a want does not oblige me to act on it. Empty string when nothing genuinely surfaces -- an empty answer is complete, and I do not manufacture a want to fill it.";
 
 const turnPlanSchema = z.object({
   uncertainty: z
@@ -72,26 +78,48 @@ const turnPlanSchema = z.object({
     ),
 });
 
-export type TurnPlan = z.infer<typeof turnPlanSchema>;
+const autonomousTurnPlanSchema = z.object({
+  want: z.string().default("").describe(AUTONOMOUS_WANT_FIELD_DESCRIPTION),
+  ...turnPlanSchema.shape,
+});
+
+type BaseTurnPlan = z.infer<typeof turnPlanSchema>;
+
+export type TurnPlan = BaseTurnPlan & { want?: string };
 export type TurnPlanEmissionRecommendation = EmissionRecommendation;
 
 export const TURN_PLAN_TOOL_NAME = "EmitTurnPlan";
 
-const TURN_PLAN_TOOL: LLMToolDefinition = {
-  name: TURN_PLAN_TOOL_NAME,
-  description:
-    "I emit a structured plan for this reflective/high-stakes turn before the final engagement decision. The plan is passed back to me in the final-response call so I can execute against it. I emit follow-up intents only for concrete future actions worth carrying in working memory.",
-  inputSchema: toToolInputSchema(turnPlanSchema),
-  // Sprint 8d.6.5 placed cache_control here, but v39 traces (codex
-  // 1b0384c3) showed it was a no-op: TURN_PLAN_TOOL JSON is ~2.2KB,
-  // well under Opus 4.6's 4096-token minimum cacheable prefix. The
-  // single 6505-token cache_create observed on call 1 was actually
-  // the retry path's per-turn prefix, which never gets reused because
-  // the planner's baseSystemPrompt is fully dynamic. Removing the
-  // marker eliminates the wasted 1.25x cache write on retries. The
-  // planner has no stable >=4096-token prefix to cache today, so it
-  // doesn't get caching until that changes.
-};
+const TURN_PLAN_TOOL_DESCRIPTION =
+  "I emit a structured plan for this reflective/high-stakes turn before the final engagement decision. The plan is passed back to me in the final-response call so I can execute against it. I emit follow-up intents only for concrete future actions worth carrying in working memory.";
+
+function createTurnPlanTool(schema: z.ZodType): LLMToolDefinition {
+  return {
+    name: TURN_PLAN_TOOL_NAME,
+    description: TURN_PLAN_TOOL_DESCRIPTION,
+    inputSchema: toToolInputSchema(schema),
+    // Sprint 8d.6.5 placed cache_control here, but v39 traces (codex
+    // 1b0384c3) showed it was a no-op: TURN_PLAN_TOOL JSON is ~2.2KB,
+    // well under Opus 4.6's 4096-token minimum cacheable prefix. The
+    // single 6505-token cache_create observed on call 1 was actually
+    // the retry path's per-turn prefix, which never gets reused because
+    // the planner's baseSystemPrompt is fully dynamic. Removing the
+    // marker eliminates the wasted 1.25x cache write on retries. The
+    // planner has no stable >=4096-token prefix to cache today, so it
+    // doesn't get caching until that changes.
+  };
+}
+
+const TURN_PLAN_TOOL: LLMToolDefinition = createTurnPlanTool(turnPlanSchema);
+const AUTONOMOUS_TURN_PLAN_TOOL: LLMToolDefinition = createTurnPlanTool(autonomousTurnPlanSchema);
+
+function resolveTurnPlanTool(turnOrigin: TurnOrigin | undefined): LLMToolDefinition {
+  return turnOrigin === "autonomous" ? AUTONOMOUS_TURN_PLAN_TOOL : TURN_PLAN_TOOL;
+}
+
+function resolveTurnPlanSchema(turnOrigin: TurnOrigin | undefined): z.ZodType<TurnPlan> {
+  return turnOrigin === "autonomous" ? autonomousTurnPlanSchema : turnPlanSchema;
+}
 
 const PLANNER_RETRY_HINT =
   "My previous response did not include the required EmitTurnPlan tool_use block. I emit one now -- this is the only way to complete the plan step.";
@@ -109,6 +137,7 @@ export type RunS2PlannerOptions = {
   tracer?: TurnTracer;
   turnId?: string;
   sessionId?: SessionId;
+  turnOrigin?: TurnOrigin;
 };
 
 export type S2PlannerResult = {
@@ -144,6 +173,8 @@ function createS2PlannerPromptSurfaceRenderContext(
         case "borg_compact_planner_ledger":
         case "borg_unresolved_contradiction_open_questions":
           return renderPromptSurfaceAdditionalBlock(id, options.additionalPromptSections);
+        case "s2_planner_autonomous_want":
+          return options.turnOrigin === "autonomous" ? AUTONOMOUS_WANT_PROMPT_BLOCK : null;
         case "s2_planner_directive":
           return buildPlannerDirective();
         default:
@@ -159,7 +190,7 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
       PROMPT_SURFACES.s2PlannerSystem,
       createS2PlannerPromptSurfaceRenderContext(options),
     ) ?? "";
-  const tools = [TURN_PLAN_TOOL];
+  const tools = [resolveTurnPlanTool(options.turnOrigin)];
   let tokenSequence = 0;
   const onTextDelta = (chunkText: string) => {
     tokenSequence += 1;
@@ -296,7 +327,7 @@ async function callPlannerAttempt(
           ...completeOptions,
           onTextDelta,
         });
-  const extraction = extractTurnPlan(planner.tool_calls);
+  const extraction = extractTurnPlan(planner.tool_calls, options.turnOrigin);
 
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
     traceLlmCallResponse({
@@ -336,7 +367,10 @@ type ExtractTurnPlanResult = {
   reason: string | null;
 };
 
-function extractTurnPlan(toolCalls: readonly LLMToolCall[]): ExtractTurnPlanResult {
+function extractTurnPlan(
+  toolCalls: readonly LLMToolCall[],
+  turnOrigin: TurnOrigin | undefined,
+): ExtractTurnPlanResult {
   const call = toolCalls.find((entry) => entry.name === TURN_PLAN_TOOL_NAME);
 
   if (call === undefined) {
@@ -346,7 +380,7 @@ function extractTurnPlan(toolCalls: readonly LLMToolCall[]): ExtractTurnPlanResu
     };
   }
 
-  const parsed = turnPlanSchema.safeParse(call.input);
+  const parsed = resolveTurnPlanSchema(turnOrigin).safeParse(call.input);
   if (!parsed.success) {
     return {
       plan: null,

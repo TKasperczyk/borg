@@ -21,6 +21,7 @@ import { createCommitmentExpiringTrigger, createScheduledReflectionTrigger } fro
 import { AutonomyScheduler, type AutonomySchedulerOptions } from "./scheduler.js";
 import type { AutonomyWakeSource } from "./types.js";
 import { AutonomyWakesRepository } from "./wakes-repository.js";
+import { getExecutiveFocusGoalStaleBackoffProcessName } from "./executive-focus-stale-backoff.js";
 
 function createScheduler(
   options: Omit<AutonomySchedulerOptions, "budgetWindowMs" | "wakeRepository"> & {
@@ -71,6 +72,39 @@ function createTestDueSource(
         audience: "self",
         stakes: "low",
         userMessage: "Follow up on a goal.",
+      };
+    },
+  };
+}
+
+function createExecutiveFocusGoalStaleSource(goalId: string): AutonomyWakeSource {
+  return {
+    name: "executive_focus_due",
+    type: "trigger",
+    sourceCategory: "operational",
+    async scan() {
+      return [
+        {
+          id: `${goalId}:stale:1000`,
+          sourceName: "executive_focus_due",
+          sourceType: "trigger",
+          watermarkProcessName: `autonomy:test:${goalId}:stale`,
+          sortTs: 1_000,
+          payload: {
+            reason: "goal_stale",
+            selected_goal_id: goalId,
+            selected_goal: {
+              last_progress_ts: 500,
+            },
+          },
+        },
+      ];
+    },
+    buildTurn() {
+      return {
+        audience: "self",
+        stakes: "low",
+        userMessage: "Revisit the stale executive-focus goal.",
       };
     },
   };
@@ -481,6 +515,148 @@ describe("AutonomyScheduler", () => {
     expect(recallRows).toHaveLength(1);
     expect(recallRows[0]?.text).toContain(rows[0]?.decisionSummary);
     expect(recallRows[0]?.text).toContain(`because ${decisionRationale}`);
+  });
+
+  it("resets stale-goal wake backoff only for delivered outbound outcomes", async () => {
+    const runCase = async (input: {
+      deliveryOutcome: Record<string, unknown>;
+      emitted: boolean;
+    }) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({
+        clock,
+      });
+      const watermarkRepository = new StreamWatermarkRepository({
+        db: harness.db,
+        clock,
+      });
+      const goalId = "goal_aaaaaaaaaaaaaaaa";
+      const backoffProcessName = getExecutiveFocusGoalStaleBackoffProcessName(goalId);
+      watermarkRepository.set(backoffProcessName, DEFAULT_SESSION_ID, {
+        lastTs: 750,
+        lastEntryId: "previous-stale-wake",
+        metadata: {
+          empty_count: 2,
+        },
+      });
+      const scheduler = createScheduler({
+        db: harness.db,
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerWindow: 6,
+        clock,
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({
+            dataDir: harness.tempDir,
+            sessionId,
+            clock,
+          }),
+        watermarkRepository,
+        turnOrchestrator: {
+          run: vi.fn().mockResolvedValue({
+            turn_id: "turn-stale-goal",
+            mode: "idle",
+            path: "suppressed",
+            response: "",
+            emitted: false,
+            emission: {
+              kind: "suppressed",
+              reason: "finalizer_no_output",
+            },
+            thoughts: [],
+            usage: {
+              input_tokens: 1,
+              output_tokens: 1,
+              stop_reason: "end_turn",
+            },
+            retrievedEpisodeIds: [],
+            referencedEpisodeIds: [],
+            intents: [],
+            toolCalls: [
+              {
+                callId: "toolu_outbound",
+                name: "tool.outbound.post",
+                input: {},
+                output: {
+                  outbound: {
+                    emitted: input.emitted,
+                    delivery_outcome: input.deliveryOutcome,
+                  },
+                },
+                ok: true,
+                durationMs: 1,
+              },
+            ],
+            agentMessageId: "strm_stale_goal",
+          }),
+        },
+        toolDispatcher: new ToolDispatcher({
+          createStreamWriter: (sessionId) =>
+            new StreamWriter({
+              dataDir: harness.tempDir,
+              sessionId,
+              clock,
+            }),
+          clock,
+        }),
+        sources: [createExecutiveFocusGoalStaleSource(goalId)],
+      });
+
+      try {
+        const result = await scheduler.tick();
+
+        expect(result.firedEvents).toBe(1);
+        return watermarkRepository.get(backoffProcessName, DEFAULT_SESSION_ID);
+      } finally {
+        await harness.cleanup();
+      }
+    };
+
+    await expect(
+      runCase({
+        deliveryOutcome: {
+          state: "delivered",
+          agent_message_id: "strm_delivered",
+        },
+        emitted: true,
+      }),
+    ).resolves.toBeNull();
+
+    await expect(
+      runCase({
+        deliveryOutcome: {
+          state: "suppressed",
+          reason: "finalizer_no_output",
+        },
+        emitted: false,
+      }),
+    ).resolves.toMatchObject({
+      lastTs: 1_000,
+      lastEntryId: "goal_aaaaaaaaaaaaaaaa:stale:1000",
+      metadata: {
+        empty_count: 3,
+      },
+    });
+
+    await expect(
+      runCase({
+        deliveryOutcome: {
+          state: "transport_failed",
+          reason: "transport_failed",
+          agent_message_id: "strm_transport_failed",
+          stream_entry_id: "strm_transport_failed",
+          source_type: "demo",
+          error: "connector unavailable",
+        },
+        emitted: true,
+      }),
+    ).resolves.toMatchObject({
+      lastTs: 1_000,
+      lastEntryId: "goal_aaaaaaaaaaaaaaaa:stale:1000",
+      metadata: {
+        empty_count: 3,
+      },
+    });
   });
 
   it("does not record a self decision when the watermark commit fails", async () => {

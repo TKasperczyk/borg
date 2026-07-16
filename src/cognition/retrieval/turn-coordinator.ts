@@ -34,7 +34,7 @@ import {
   type RetrievalScoringFeatures,
 } from "../../retrieval/scoring-features.js";
 import type { Clock } from "../../util/clock.js";
-import type { EntityId } from "../../util/ids.js";
+import type { AttachmentId, EntityId } from "../../util/ids.js";
 import type { LLMClient } from "../../llm/index.js";
 import { NOOP_TRACER, type TurnTracer } from "../../tracing/tracer.js";
 import { computeRetrievalLimit, computeWeights, type SuppressionSet } from "../attention/index.js";
@@ -133,6 +133,7 @@ export type TurnRetrievalCoordinatorInput = {
   activeValues?: readonly SelfSnapshot["values"][number][];
   scoringFeatures?: RetrievalScoringFeatures;
   suppressionSet: SuppressionSet;
+  currentTurnAttachmentIds?: readonly AttachmentId[];
   llmClient?: LLMClient;
   proceduralContextModel?: string;
 };
@@ -258,6 +259,9 @@ export class TurnRetrievalCoordinator {
               ...(input.inputAudience === undefined ? [] : [input.inputAudience]),
             ],
       entityTerms: input.perception.entities,
+      ...(input.currentTurnAttachmentIds === undefined || input.currentTurnAttachmentIds.length === 0
+        ? {}
+        : { currentTurnAttachmentIds: input.currentTurnAttachmentIds }),
       suppressionSet: input.suppressionSet,
       includeOpenQuestions: input.perception.mode === "reflective",
       turnCounter: input.workingMemory.turn_counter,

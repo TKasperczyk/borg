@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -9,10 +9,20 @@ import {
   CreatorDirectiveRepository,
   creatorDirectiveMigrations,
 } from "../memory/creator-directives/index.js";
-import { SessionsRepository, sessionMigrations, type SessionSourceType } from "../sessions/index.js";
+import {
+  SessionsRepository,
+  sessionMigrations,
+  type SessionSourceType,
+} from "../sessions/index.js";
 import { composeMigrations, openDatabase, type SqliteDatabase } from "../storage/sqlite/index.js";
-import { StreamReader, StreamWriter } from "../stream/index.js";
+import {
+  getSessionStreamPath,
+  StreamReader,
+  StreamWriter,
+  type StreamEntry,
+} from "../stream/index.js";
 import { ManualClock } from "../util/clock.js";
+import { ToolError } from "../util/errors.js";
 import {
   createEntityId,
   createSessionId,
@@ -85,6 +95,89 @@ function setup(): {
         clock,
       }),
   };
+}
+
+const LARGE_STREAM_FILLER = "x".repeat(256 * 1024);
+const LARGE_STREAM_FILLER_ENTRY_COUNT = 40;
+
+type RawStreamEntryInput = {
+  timestamp: number;
+  kind: StreamEntry["kind"];
+  content: unknown;
+  turn_id?: string;
+};
+
+function appendStreamEntries(
+  dataDir: string,
+  sessionId: SessionId,
+  entries: readonly RawStreamEntryInput[],
+): void {
+  const streamPath = getSessionStreamPath(dataDir, sessionId);
+
+  mkdirSync(dirname(streamPath), { recursive: true });
+  appendFileSync(
+    streamPath,
+    entries
+      .map((entry) =>
+        JSON.stringify({
+          id: createStreamEntryId(),
+          timestamp: entry.timestamp,
+          kind: entry.kind,
+          content: entry.content,
+          ...(entry.turn_id === undefined ? {} : { turn_id: entry.turn_id }),
+          session_id: sessionId,
+          compressed: false,
+        }),
+      )
+      .map((line) => `${line}\n`)
+      .join(""),
+    { encoding: "utf8", flag: "a" },
+  );
+}
+
+function largeFillerEntries(timestamp: number): RawStreamEntryInput[] {
+  return Array.from({ length: LARGE_STREAM_FILLER_ENTRY_COUNT }, (_, index) => ({
+    timestamp,
+    kind: "internal_event",
+    content: {
+      event: "scan_filler",
+      index,
+      payload: LARGE_STREAM_FILLER,
+    },
+  }));
+}
+
+function outboundAttemptEntry(
+  timestamp: number,
+  targetSessionId: SessionId,
+  callId: string,
+): RawStreamEntryInput {
+  return {
+    timestamp,
+    kind: "tool_call",
+    content: {
+      call_id: callId,
+      tool_name: "tool.outbound.post",
+      input: {
+        target_session_id: targetSessionId,
+        instruction: "Prior autonomous attempt.",
+      },
+      origin: "autonomous",
+    },
+  };
+}
+
+function expectToolErrorCode(action: () => void, code: string): void {
+  let thrown: unknown;
+
+  try {
+    action();
+  } catch (error) {
+    thrown = error;
+  }
+
+  expect(thrown).toBeInstanceOf(ToolError);
+  expect((thrown as ToolError).code).toBe(code);
 }
 
 describe("AutonomousOutboundPolicy", () => {
@@ -600,5 +693,147 @@ describe("AutonomousOutboundPolicy", () => {
         targetSession,
       }),
     ).toThrow(/target rolling cap/);
+  });
+
+  it("counts waking-session attempts in a stream larger than the byte cap", () => {
+    const harness = setup();
+    cleanups.push(() => {
+      harness.db.close();
+      rmSync(harness.tempDir, { recursive: true, force: true });
+    });
+    harness.clock.set(10_000);
+    const currentSessionId = createSessionId();
+    const targetSession = harness.sessionsRepository.ensure({
+      session_id: createSessionId(),
+      source_type: "demo",
+      label: "alice",
+      audience_label: "Alice",
+      conversation_kind: "demo",
+    });
+    appendStreamEntries(harness.tempDir, currentSessionId, [
+      ...largeFillerEntries(1_000),
+      outboundAttemptEntry(9_400, targetSession.session_id, "toolu_recent_one"),
+      outboundAttemptEntry(9_500, targetSession.session_id, "toolu_recent_two"),
+    ]);
+    const policy = harness.createPolicy(
+      policyConfig({
+        enabled: true,
+        windowMs: 1_000,
+        maxPostsPerWindow: 3,
+        maxPostsPerTargetPerWindow: 10,
+        allowByConfig: {
+          sessionIds: [targetSession.session_id],
+          sourceTypes: [],
+        },
+      }),
+      ["demo"],
+    );
+
+    expect(policy.promptContext(currentSessionId)).toEqual(
+      expect.objectContaining({
+        remainingPostsInWindow: 1,
+        targets: [
+          expect.objectContaining({
+            session_id: targetSession.session_id,
+          }),
+        ],
+      }),
+    );
+    expect(() =>
+      policy.assertAuthorized({
+        currentSessionId,
+        targetSession,
+      }),
+    ).not.toThrow();
+  });
+
+  it("counts per-target attempts in large active streams without hitting scan limits", () => {
+    const harness = setup();
+    cleanups.push(() => {
+      harness.db.close();
+      rmSync(harness.tempDir, { recursive: true, force: true });
+    });
+    harness.clock.set(10_000);
+    const currentSessionId = createSessionId();
+    const otherWakeSession = harness.sessionsRepository.ensure({
+      session_id: createSessionId(),
+      source_type: "autonomy",
+      label: "autonomy",
+      audience_label: "Borg",
+      conversation_kind: "demo",
+    });
+    const targetSession = harness.sessionsRepository.ensure({
+      session_id: createSessionId(),
+      source_type: "demo",
+      label: "alice",
+      audience_label: "Alice",
+      conversation_kind: "demo",
+    });
+    appendStreamEntries(harness.tempDir, otherWakeSession.session_id, [
+      ...largeFillerEntries(1_000),
+      outboundAttemptEntry(9_500, targetSession.session_id, "toolu_target_prior"),
+    ]);
+    const policy = harness.createPolicy(
+      policyConfig({
+        enabled: true,
+        windowMs: 1_000,
+        maxPostsPerWindow: 10,
+        maxPostsPerTargetPerWindow: 1,
+        allowByConfig: {
+          sessionIds: [targetSession.session_id],
+          sourceTypes: [],
+        },
+      }),
+      ["demo"],
+    );
+
+    expectToolErrorCode(
+      () =>
+        policy.assertAuthorized({
+          currentSessionId,
+          targetSession,
+        }),
+      "AUTONOMOUS_OUTBOUND_TARGET_CAP_EXCEEDED",
+    );
+  });
+
+  it("still fails closed when the byte cap is hit before cutoff-age entries", () => {
+    const harness = setup();
+    cleanups.push(() => {
+      harness.db.close();
+      rmSync(harness.tempDir, { recursive: true, force: true });
+    });
+    harness.clock.set(10_000);
+    const currentSessionId = createSessionId();
+    const targetSession = harness.sessionsRepository.ensure({
+      session_id: createSessionId(),
+      source_type: "demo",
+      label: "alice",
+      audience_label: "Alice",
+      conversation_kind: "demo",
+    });
+    appendStreamEntries(harness.tempDir, currentSessionId, largeFillerEntries(9_500));
+    const policy = harness.createPolicy(
+      policyConfig({
+        enabled: true,
+        windowMs: 1_000,
+        maxPostsPerWindow: 10,
+        maxPostsPerTargetPerWindow: 10,
+        allowByConfig: {
+          sessionIds: [targetSession.session_id],
+          sourceTypes: [],
+        },
+      }),
+      ["demo"],
+    );
+
+    expectToolErrorCode(
+      () =>
+        policy.assertAuthorized({
+          currentSessionId,
+          targetSession,
+        }),
+      "AUTONOMOUS_OUTBOUND_CAP_SCAN_LIMIT",
+    );
   });
 });

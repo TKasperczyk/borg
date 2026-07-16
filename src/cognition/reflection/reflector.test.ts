@@ -18,6 +18,7 @@ import {
   OpenQuestionsRepository,
   TraitsRepository,
   ValuesRepository,
+  type TraitRecord,
 } from "../../memory/self/index.js";
 import { retrievalMigrations } from "../../retrieval/migrations.js";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
@@ -28,6 +29,7 @@ import {
   createEntityId,
   createExecutiveStepId,
   createStreamEntryId,
+  createTraitId,
 } from "../../util/ids.js";
 import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
@@ -82,6 +84,15 @@ function createReflectionResponse(
     evidence_episode_ids: string[];
     evidence_stream_entry_ids: string[];
   }> = [],
+  retiredGoals: Array<{
+    goal_id: string;
+    disposition: "satisfied" | "no_longer_pursued";
+    evidence: {
+      note: string;
+      evidence_episode_ids?: string[];
+      evidence_stream_entry_ids?: string[];
+    };
+  }> = [],
 ) {
   return {
     text: "",
@@ -109,6 +120,7 @@ function createReflectionResponse(
           proposed_steps: proposedSteps,
           open_questions: openQuestions,
           resolved_open_questions: resolvedOpenQuestions,
+          retired_goals: retiredGoals,
         },
       },
     ],
@@ -167,6 +179,30 @@ function createRetrievalConfidence(
     sourceDiversity: overrides.sourceDiversity ?? 1,
     contradictionPresent: overrides.contradictionPresent ?? false,
     sampleSize: overrides.sampleSize ?? 3,
+  };
+}
+
+function createTraitRecord(
+  overrides: Pick<TraitRecord, "label" | "state" | "strength"> & Partial<TraitRecord>,
+): TraitRecord {
+  return {
+    ...overrides,
+    id: overrides.id ?? createTraitId(),
+    label: overrides.label,
+    strength: overrides.strength,
+    last_reinforced: 0,
+    last_decayed: null,
+    state: overrides.state,
+    established_at: overrides.state === "established" ? 0 : null,
+    confidence: 0.8,
+    last_tested_at: null,
+    last_contradicted_at: null,
+    support_count: overrides.state === "established" ? 5 : 1,
+    contradiction_count: 0,
+    evidence_episode_ids: [],
+    provenance: {
+      kind: "manual",
+    },
   };
 }
 
@@ -1450,6 +1486,247 @@ describe("reflector", () => {
     expect(harness.goalsRepository.get(goal.id)?.progress_notes).toBeNull();
   });
 
+  it("retires goals from autonomous reflection output through the goal status path", async () => {
+    const harness = await createExecutiveReflectionHarness(new FixedClock(4_800));
+    cleanup.push(harness.cleanup);
+    const tracer = new CaptureTracer();
+    const evidenceStreamEntryId = createStreamEntryId();
+    const goal = harness.goalsRepository.add({
+      description: "Apollo launch plan",
+      terminalCondition: "Launch readiness review is complete",
+      priority: 8,
+      provenance: { kind: "manual" },
+    });
+    const step = harness.executiveStepsRepository.add({
+      goalId: goal.id,
+      description: "Start launch readiness review",
+      kind: "act",
+      provenance: { kind: "manual" },
+    });
+    const cascadingGoalsRepository = new GoalsRepository({
+      db: harness.db,
+      clock: harness.clock,
+      executiveStepsRepository: harness.executiveStepsRepository,
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse(
+          [],
+          [],
+          [],
+          [],
+          [
+            {
+              step_id: step.id,
+              new_status: "doing",
+              evidence: "Keeps executive reflection work present.",
+            },
+          ],
+          [],
+          [],
+          [],
+          [
+            {
+              goal_id: goal.id,
+              disposition: "satisfied",
+              evidence: {
+                note: "The launch readiness review is complete.",
+                evidence_stream_entry_ids: [evidenceStreamEntryId],
+              },
+            },
+          ],
+        ),
+      ],
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: cascadingGoalsRepository,
+      traitsRepository: harness.traitsRepository,
+      executiveStepsRepository: harness.executiveStepsRepository,
+      tracer,
+    });
+
+    await reflector.reflect(
+      {
+        ...createExecutiveReflectionContext({
+          origin: "autonomous",
+          goal,
+          nextStep: step,
+        }),
+        turnId: "turn_autonomous_goal_retirement",
+        currentTurnStreamEntryIds: [evidenceStreamEntryId],
+      },
+      harness.writer,
+    );
+
+    expect(cascadingGoalsRepository.get(goal.id)).toMatchObject({
+      status: "done",
+      terminal_condition: "Launch readiness review is complete",
+      provenance: {
+        kind: "online_reflector",
+        evidence_episode_ids: [],
+        evidence_stream_entry_ids: [evidenceStreamEntryId],
+      },
+    });
+    expect(harness.executiveStepsRepository.get(step.id)?.status).toBe("abandoned");
+    expect(tracer.events).toEqual(
+      expect.arrayContaining([
+        {
+          event: "goal_retirement.transitioned",
+          data: expect.objectContaining({
+            turnId: "turn_autonomous_goal_retirement",
+            goal_id: goal.id,
+            disposition: "satisfied",
+            status: "done",
+            evidence_note: "The launch readiness review is complete.",
+          }),
+        },
+      ]),
+    );
+  });
+
+  it("retires a user-turn goal when reflection also marks it advanced", async () => {
+    const harness = await createExecutiveReflectionHarness(new FixedClock(4_900));
+    cleanup.push(harness.cleanup);
+    const evidenceStreamEntryId = createStreamEntryId();
+    const goal = harness.goalsRepository.add({
+      description: "Apollo launch plan",
+      terminalCondition: "Launch readiness review is complete",
+      priority: 8,
+      provenance: { kind: "manual" },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse(
+          [
+            {
+              goal_id: goal.id,
+              evidence: "The launch readiness review moved forward.",
+            },
+          ],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [
+            {
+              goal_id: goal.id,
+              disposition: "satisfied",
+              evidence: {
+                note: "The launch readiness review is complete.",
+                evidence_stream_entry_ids: [evidenceStreamEntryId],
+              },
+            },
+          ],
+        ),
+      ],
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: harness.goalsRepository,
+      traitsRepository: harness.traitsRepository,
+      executiveStepsRepository: harness.executiveStepsRepository,
+    });
+
+    await reflector.reflect(
+      {
+        ...createExecutiveReflectionContext({
+          origin: "user",
+          goal,
+        }),
+        currentTurnStreamEntryIds: [evidenceStreamEntryId],
+      },
+      harness.writer,
+    );
+
+    expect(harness.goalsRepository.get(goal.id)).toMatchObject({
+      status: "done",
+      progress_notes: null,
+      provenance: {
+        kind: "online_reflector",
+        evidence_episode_ids: [],
+        evidence_stream_entry_ids: [evidenceStreamEntryId],
+      },
+    });
+  });
+
+  it("skips goal retirement without supplied evidence ids", async () => {
+    const harness = await createExecutiveReflectionHarness(new FixedClock(4_950));
+    cleanup.push(harness.cleanup);
+    const tracer = new CaptureTracer();
+    const goal = harness.goalsRepository.add({
+      description: "Apollo launch plan",
+      terminalCondition: "Launch readiness review is complete",
+      priority: 8,
+      provenance: { kind: "manual" },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse(
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [
+            {
+              goal_id: goal.id,
+              disposition: "satisfied",
+              evidence: {
+                note: "The launch readiness review is complete.",
+              },
+            },
+          ],
+        ),
+      ],
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: harness.goalsRepository,
+      traitsRepository: harness.traitsRepository,
+      tracer,
+    });
+
+    await reflector.reflect(
+      {
+        ...createExecutiveReflectionContext({
+          origin: "user",
+          goal,
+        }),
+        turnId: "turn_goal_retirement_no_evidence",
+      },
+      harness.writer,
+    );
+
+    expect(harness.goalsRepository.get(goal.id)?.status).toBe("active");
+    expect(tracer.events).toEqual(
+      expect.arrayContaining([
+        {
+          event: "goal_retirement.degraded",
+          data: expect.objectContaining({
+            reason: "no_evidence",
+            goal_id: goal.id,
+          }),
+        },
+      ]),
+    );
+  });
+
   it("does not update goal progress when reflection output is empty even if text overlaps", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(5_000),
@@ -2227,7 +2504,117 @@ describe("reflector", () => {
       "the answer should be able to land within a few days of additional context",
     );
     expect(llm.requests[0]?.system).toContain("not predictions about long-arc behavior");
+    expect(llm.requests[0]?.system).toContain(
+      "When the trait my completed turn demonstrated matches by meaning one of the labels in current_trait_vocabulary, I reuse that exact existing label string; I coin a new trait_label only for a genuinely new trait not already in my vocabulary.",
+    );
+    expect(llm.requests[0]?.system).toContain("For retired_goals");
+    expect(llm.requests[0]?.system).toContain("The default is to leave goals active.");
     expect(llm.requests[0]?.system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
+  });
+
+  it("passes current trait vocabulary with established traits and capped strongest candidates", async () => {
+    const llm = new FakeLLMClient({
+      responses: [createReflectionResponse()],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const establishedHigh = createTraitRecord({
+      label: "established-high",
+      state: "established",
+      strength: 0.99,
+    });
+    const candidateTraits = Array.from({ length: 45 }, (_, index) =>
+      createTraitRecord({
+        label: `candidate-${String(index).padStart(2, "0")}`,
+        state: "candidate",
+        strength: 0.9 - index * 0.01,
+      }),
+    );
+    const establishedLow = createTraitRecord({
+      label: "established-low",
+      state: "established",
+      strength: 0.01,
+    });
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-4-6",
+    });
+
+    await reflector.reflect(
+      {
+        ...createOpenQuestionReflectionContext(),
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [establishedHigh, ...candidateTraits, establishedLow],
+        },
+      },
+      harness.streamWriter,
+    );
+    const payload = JSON.parse(llm.requests[0]?.messages[0]?.content ?? "{}") as {
+      current_trait_vocabulary?: Array<{
+        label?: string;
+        state?: string;
+        strength?: number;
+        support_count?: number;
+      }>;
+    };
+    const vocabulary = payload.current_trait_vocabulary ?? [];
+
+    expect(vocabulary).toEqual([
+      {
+        label: "established-high",
+        state: "established",
+        strength: 0.99,
+      },
+      ...candidateTraits.slice(0, 40).map((trait) => ({
+        label: trait.label,
+        state: "candidate",
+        strength: trait.strength,
+      })),
+      {
+        label: "established-low",
+        state: "established",
+        strength: 0.01,
+      },
+    ]);
+    expect(vocabulary.map((trait) => trait.label)).not.toContain("candidate-40");
+    expect(vocabulary.every((trait) => trait.support_count === undefined)).toBe(true);
+  });
+
+  it("passes an empty current trait vocabulary when no traits exist yet", async () => {
+    const llm = new FakeLLMClient({
+      responses: [createReflectionResponse()],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-4-6",
+    });
+
+    await reflector.reflect(
+      {
+        ...createOpenQuestionReflectionContext(),
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+      },
+      harness.streamWriter,
+    );
+    const payload = JSON.parse(llm.requests[0]?.messages[0]?.content ?? "{}") as {
+      current_trait_vocabulary?: unknown;
+    };
+
+    expect(payload.current_trait_vocabulary).toEqual([]);
   });
 
   it("passes disclosure labels for active goals and open questions into reflection payloads", async () => {
@@ -2250,6 +2637,7 @@ describe("reflector", () => {
     const retrieved = createRetrievedEpisode(privateEpisode);
     const goal = harness.goalsRepository.add({
       description: "Track Alice's private launch follow-up",
+      terminalCondition: "Alice's private launch follow-up reaches a handoff decision",
       priority: 8,
       ownerEntityId: alice,
       provenance: { kind: "manual" },
@@ -2297,6 +2685,7 @@ describe("reflector", () => {
     );
     const payload = JSON.parse(llm.requests[0]?.messages[0]?.content ?? "{}") as {
       active_goals?: Array<{
+        terminal_condition?: string | null;
         disclosure?: string;
         disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
       }>;
@@ -2311,6 +2700,7 @@ describe("reflector", () => {
       }>;
       executive_focus?: {
         selected_goal?: {
+          terminal_condition?: string | null;
           disclosure?: string;
           disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
         };
@@ -2321,6 +2711,9 @@ describe("reflector", () => {
       };
     };
 
+    expect(payload.active_goals?.[0]?.terminal_condition).toBe(
+      "Alice's private launch follow-up reaches a handoff decision",
+    );
     expect(payload.active_goals?.[0]?.disclosure).toContain(
       "disclosure_class=relationship_private",
     );
@@ -2350,6 +2743,9 @@ describe("reflector", () => {
       disclosure_class: "relationship_private",
       private_to_entity_ids: [alice],
     });
+    expect(payload.executive_focus?.selected_goal?.terminal_condition).toBe(
+      "Alice's private launch follow-up reaches a handoff decision",
+    );
     expect(payload.executive_focus?.next_step?.disclosure_label).toMatchObject({
       disclosure_class: "relationship_private",
       private_to_entity_ids: [alice],

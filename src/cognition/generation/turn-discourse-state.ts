@@ -71,6 +71,7 @@ export type AppendSuppressionMarkerInput = {
   primaryNoOutputReason?: FinalizerNoOutputPrimaryReason;
   structuralNoOutputFlags?: readonly FinalizerNoOutputStructuralFlag[];
   finalizerInvalidTool?: FinalizerInvalidToolDiagnostic;
+  undeliveredDraft?: AgentSuppressedStreamContent["undelivered_draft"];
 };
 
 export type AppendObservationMarkerInput = {
@@ -303,6 +304,12 @@ export class TurnDiscourseStateService {
         ...(input.finalizerInvalidTool === undefined
           ? {}
           : { finalizer_invalid_tool: input.finalizerInvalidTool }),
+        // Undelivered drafts are memory/operator-visible suppression context only.
+        // They must not enter delivery/transport paths: connector egress, outbound
+        // posts, peerlink envelopes, or TurnEmission delivered-message variants.
+        ...(input.undeliveredDraft === undefined
+          ? {}
+          : { undelivered_draft: input.undeliveredDraft }),
       } satisfies AgentSuppressedStreamContent,
       ...(input.responseTo === undefined ? {} : { response_to: input.responseTo }),
       ...(input.audience === undefined ? {} : { audience: input.audience }),

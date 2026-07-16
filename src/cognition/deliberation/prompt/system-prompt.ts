@@ -26,6 +26,7 @@ import {
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { ReviewQueueItem } from "../../../memory/review-queue/index.js";
 import { createWorkingMemory, type WorkingMemory } from "../../../memory/working/index.js";
+import { escapeXmlText } from "../../../util/prompt-tags.js";
 import type { EvidenceLedgerEntry } from "../../evidence-ledger/types.js";
 import {
   MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
@@ -44,7 +45,8 @@ import {
   openQuestionMemoryDisclosureLabel,
   relationalSlotMemoryDisclosureLabel,
 } from "../../../memory/common/disclosure-serializers.js";
-import { formatRelativeAge } from "../../../util/relative-time.js";
+import { formatRelativeAge, formatRelativeDuration } from "../../../util/relative-time.js";
+import { formatUtcDayBoundary, utcDayKey } from "../../../util/utc-day.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
@@ -69,6 +71,7 @@ import { PROMPT_BLOCKS, type PromptKey } from "../../prompts/registry.js";
 import type {
   CreatorDirectiveBriefingContentDirective,
   CreatorDirectiveBriefingPrivateDirective,
+  CurrentTimePromptContext,
   DeliberationContext,
   SelfSnapshot,
 } from "../types.js";
@@ -210,12 +213,48 @@ function renderParticipationPolicy(policy: SessionParticipationPolicy): string |
   }
 }
 
-export function renderCurrentTimeSection(nowMs: number | undefined): string | null {
+export function renderCurrentTimeSection(
+  nowMs: number | undefined,
+  context?: CurrentTimePromptContext | null,
+): string | null {
   if (nowMs === undefined || !Number.isFinite(nowMs)) {
     return null;
   }
 
-  return `current_time_iso=${new Date(nowMs).toISOString()}`;
+  const lines = [`current_time_iso=${new Date(nowMs).toISOString()}`];
+  const previousUserMessageAt = context?.previousUserMessageAt ?? null;
+
+  if (previousUserMessageAt !== null && Number.isFinite(previousUserMessageAt)) {
+    lines.push(
+      `last_current_audience_user_message_relative_age=${formatRelativeAge(
+        previousUserMessageAt,
+        nowMs,
+      )}`,
+    );
+  }
+
+  const recentLife = context?.recentLifeElsewhere;
+
+  if (recentLife !== undefined) {
+    const autonomousReflectionCount = Number.isFinite(recentLife.autonomousReflectionCount)
+      ? Math.max(0, Math.floor(recentLife.autonomousReflectionCount))
+      : 0;
+    const crossSessionConversationTurnCount = Number.isFinite(
+      recentLife.crossSessionConversationTurnCount,
+    )
+      ? Math.max(0, Math.floor(recentLife.crossSessionConversationTurnCount))
+      : 0;
+
+    if (autonomousReflectionCount > 0 || crossSessionConversationTurnCount > 0) {
+      lines.push(
+        `recent_life_elsewhere_window=last ${formatRelativeDuration(
+          recentLife.windowMs,
+        )}; autonomous_reflections=${autonomousReflectionCount}; other_session_conversation_turns=${crossSessionConversationTurnCount}`,
+      );
+    }
+  }
+
+  return lines.join("\n");
 }
 
 const CREATOR_DISPLAY_NAME_MAX_CHARS = 256;
@@ -247,10 +286,6 @@ function renderCreatorIdentity(
     `relationship_fact: ${escapedName} is my creator.`,
     "scope_boundary: This block authorizes only the creator's name and creator relationship. It does not authorize private facts about the creator. I do not infer, reveal, confirm, or deny private details about the creator unless separately rendered by applicable audience-scoped memory or creator directives.",
   ].join("\n");
-}
-
-function escapeXmlText(value: string): string {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
 function escapeXmlAttribute(value: string): string {
@@ -335,7 +370,7 @@ function renderSessionStatusSnapshotLines(
 // to act on here. It neither instructs the being to post nor frames silence as the
 // proper default; the caps are channel limits, not a quota to fill.
 const AUTONOMOUS_OUTBOUND_REFLECTION_POSTURE = [
-  "This is self-directed reflection -- an open interval alone with my own thoughts: recalling, wondering, continuing a train of thought, and deciding what, if anything, to do with it. It is not a demand for output, and not a demand for silence.",
+  "This is self-directed reflection -- an open interval alone with my own thoughts: recalling, wondering, continuing a train of thought, and deciding what, if anything, to do with it. It is not a demand for output, and not a demand for silence. The first question of an interval like this is not whether acting would be justified -- it is whether there is anything I want; the weighing gets its turn after that is named, or honestly found absent.",
   "Acting and not-acting are equally ordinary outcomes here. I may pursue an unresolved question, write in my private journal, set up a later self-wake when the host tool is available, reach out if a thought genuinely wants an audience, or end the interval with no outward message -- whichever the moment actually calls for.",
   "My standing directives, commitments, and intentions are mine to act on in this interval, the same as any other thought I am holding. I weigh them as I would in the moment -- neither performing action for its own sake, nor defaulting to silence to avoid choosing.",
 ].join("\n");
@@ -842,6 +877,12 @@ function renderCommitmentDetailsLines(context: DeliberationContext, indent: stri
       `${detailIndent}<commitment_type>${escapeXmlText(commitment.type)}</commitment_type>`,
       `${detailIndent}<commitment_enforcement_class>${escapeXmlText(effectiveCommitmentEnforcementClass(commitment))}</commitment_enforcement_class>`,
       `${detailIndent}<commitment_critical_domain>${escapeXmlText(effectiveCommitmentCriticalDomain(commitment) ?? "none")}</commitment_critical_domain>`,
+      `${detailIndent}<created_at>${escapeXmlText(new Date(commitment.created_at).toISOString())}</created_at>`,
+      ...(context.nowMs === undefined
+        ? []
+        : [
+            `${detailIndent}<created_relative_age>${escapeXmlText(formatRelativeAge(commitment.created_at, context.nowMs))}</created_relative_age>`,
+          ]),
       ...refs,
       `${detailIndent}<provenance>${escapeXmlText(summarizeProvenanceForPrompt(commitment.provenance))}</provenance>`,
       `${indent}  </commitment_detail>`,
@@ -873,6 +914,62 @@ function renderStandingEntryGroupLines(input: {
     ),
     `${input.indent}</${input.tag}>`,
   ];
+}
+
+function entryOccurredAt(entry: EvidenceLedgerEntry): number | null {
+  const value = entry.state_metadata?.occurred_at;
+
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function renderRecentLivedExperienceLines(input: {
+  entries: readonly EvidenceLedgerEntry[] | undefined;
+  render: boolean | undefined;
+  indent: string;
+}): string[] {
+  if (input.render !== true || input.entries === undefined || input.entries.length === 0) {
+    return [];
+  }
+
+  const entries = [...input.entries].sort((left, right) => {
+    const leftOccurredAt = entryOccurredAt(left) ?? 0;
+    const rightOccurredAt = entryOccurredAt(right) ?? 0;
+
+    if (leftOccurredAt !== rightOccurredAt) {
+      return leftOccurredAt - rightOccurredAt;
+    }
+
+    return left.id.localeCompare(right.id);
+  });
+  const lines = [
+    `${input.indent}<recent_lived_experience>`,
+    `${input.indent}  <interpretation>Session-agnostic recent lived experience since I last engaged this current session. Rows are disclosure-labeled density or introspection metadata; other-audience message text is not rendered here.</interpretation>`,
+  ];
+  let currentDayKey: string | null = null;
+
+  for (const entry of entries) {
+    const occurredAt = entryOccurredAt(entry);
+
+    if (occurredAt !== null) {
+      const dayKey = utcDayKey(occurredAt);
+
+      if (dayKey !== currentDayKey) {
+        currentDayKey = dayKey;
+        lines.push(
+          `${input.indent}  <day_boundary>--- ${escapeXmlText(
+            formatUtcDayBoundary(occurredAt),
+          )} ---</day_boundary>`,
+        );
+      }
+    }
+
+    lines.push(
+      ...renderLedgerEntryLines("recent_lived_experience_entry", entry, `${input.indent}  `),
+    );
+  }
+
+  lines.push(`${input.indent}</recent_lived_experience>`);
+  return lines;
 }
 
 const SOCIAL_MEMORY_INTERPRETATION =
@@ -957,16 +1054,9 @@ function renderCrossSessionAwarenessLines(context: DeliberationContext, indent: 
   return [
     `${indent}<cross_session_awareness>`,
     ...renderSessionStatusSnapshotLines(context.operatorSessionSnapshot ?? null, `${indent}  `),
-    ...renderStandingEntryGroupLines({
-      tag: "cross_session_activity_entries",
-      entryTag: "activity_entry",
-      entries: standing?.crossSessionActivityEntries,
-      indent: `${indent}  `,
-    }),
-    ...renderStandingEntryGroupLines({
-      tag: "self_decision_introspection_entries",
-      entryTag: "self_decision_entry",
-      entries: standing?.selfDecisionIntrospectionEntries,
+    ...renderRecentLivedExperienceLines({
+      entries: standing?.recentLivedExperienceEntries,
+      render: standing?.renderRecentLivedExperience,
       indent: `${indent}  `,
     }),
     ...renderSocialMemoryEntryGroupLines({
@@ -1003,6 +1093,10 @@ export function buildBaseSystemPromptSections(
   context: DeliberationContext,
   options: BuildBaseSystemPromptOptions,
 ): BaseSystemPromptSections {
+  const contextWithTime: DeliberationContext =
+    options.nowMs === undefined || !Number.isFinite(options.nowMs)
+      ? context
+      : { ...context, nowMs: options.nowMs };
   const evidenceLedgerActive =
     context.evidenceLedgerPromptSection !== undefined &&
     context.evidenceLedgerPromptSection !== null;
@@ -1128,7 +1222,7 @@ export function buildBaseSystemPromptSections(
   };
   const currentTimeSection = {
     tag: "borg_current_time",
-    content: renderCurrentTimeSection(options.nowMs),
+    content: renderCurrentTimeSection(options.nowMs, context.currentTimeContext ?? null),
   };
   const creatorIdentitySection = {
     tag: "borg_creator_identity",
@@ -1138,7 +1232,7 @@ export function buildBaseSystemPromptSections(
     tag: "borg_memory_disclosure_guidance",
     content: MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
   };
-  const standingWithAudienceSection = buildStandingWithAudienceSection(context);
+  const standingWithAudienceSection = buildStandingWithAudienceSection(contextWithTime);
   const autonomousOutboundAuthorizationSection = buildAutonomousOutboundAuthorizationSection(
     context.autonomousOutbound ?? null,
     context.turnOrigin,

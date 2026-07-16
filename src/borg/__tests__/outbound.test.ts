@@ -275,8 +275,35 @@ describe("proactive outbound", () => {
               status: "transported",
               source_type: "demo",
             },
+            delivery_outcome: {
+              state: "delivered",
+              agent_message_id: targetAgentAppends[0]?.id,
+              delivery_status: "transported",
+              source_type: "demo",
+            },
           },
         },
+      });
+      const outboundCompletedActions = borg.actions
+        .list({ state: "completed", limit: 10 })
+        .filter((action) => action.description.includes("Outbound post"));
+      expect(outboundCompletedActions).toHaveLength(1);
+      expect(outboundCompletedActions[0]).toMatchObject({
+        actor: "borg",
+        audience_entity_id: groupId,
+        state: "completed",
+        completed_at: expect.any(Number),
+        not_done_at: null,
+        session_scope: "current_session",
+        session_anchor_id: targetSessionId,
+      });
+      expect(outboundCompletedActions[0]?.description).toContain("delivered");
+      expect(outboundCompletedActions[0]?.provenance_stream_entry_ids).toEqual(
+        expect.arrayContaining([targetAgentAppends[0]?.id]),
+      );
+      expect(borg.actions.getCreationCountsBySource()).toMatchObject({
+        api: 0,
+        tool: 1,
       });
 
       const targetScopedRequests = llm.requests
@@ -287,6 +314,148 @@ describe("proactive outbound", () => {
         expect(text).not.toContain(directingOnlySecret);
         expect(text).toContain(targetVisibleContext);
       }
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("records suppressed directed outbound as a not_done ActionRecord", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-outbound-suppressed-"));
+    tempDirs.push(tempDir);
+    const operatorSessionId = createSessionId();
+    const targetSessionId = createSessionId();
+    const targetInstruction = "Tell Alice the maintenance window moved if useful.";
+    const llm = new FakeLLMClient({
+      responses: [
+        createNoCreatorDirectiveResponse(),
+        createOutboundToolResponse({
+          targetSessionId,
+          instruction: targetInstruction,
+        }),
+        createEmitNoOutputResponse("The target-scoped finalizer chose no visible message."),
+        createEmitAnswerResponse("I handed the note to Alice's session; no message was emitted."),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await Borg.open({
+      config: createTestConfig({
+        dataDir: tempDir,
+        perception: {
+          llmEnabled: false,
+        },
+        affective: {
+          llmEnabled: false,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      }),
+      liveExtraction: false,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: llm,
+      outboundConnectors: [new DemoMessageConnector()],
+    });
+
+    try {
+      const tomId = borg.entities.resolve("Tom");
+      borg.entities.setBorgRole(tomId, "creator");
+      const aliceId = borg.entities.resolve("Alice");
+
+      borg.sessions.ensure({
+        session_id: operatorSessionId,
+        source_type: "demo",
+        label: "operator",
+        audience_label: "Tom",
+        audience_entity_id: tomId,
+        conversation_kind: "demo",
+        audience_role: "operator",
+      });
+      borg.sessions.ensure({
+        session_id: targetSessionId,
+        source_type: "demo",
+        label: "alice",
+        audience_label: "Alice",
+        audience_entity_id: aliceId,
+        conversation_kind: "demo",
+      });
+
+      const result = await borg.turn({
+        sessionId: operatorSessionId,
+        audience: "Tom",
+        userMessage: "Send Alice a maintenance-window note.",
+      });
+
+      expect(result.response).toBe("I handed the note to Alice's session; no message was emitted.");
+
+      const targetEntries = new StreamReader({
+        dataDir: tempDir,
+        sessionId: targetSessionId,
+      }).tail(20);
+      expect(targetEntries.filter((entry) => entry.kind === "agent_msg")).toHaveLength(0);
+      const suppressionMarker = targetEntries.find((entry) => entry.kind === "agent_suppressed");
+      expect(suppressionMarker?.content).toMatchObject({
+        reason: "finalizer_no_output",
+      });
+
+      const operatorEntries = new StreamReader({
+        dataDir: tempDir,
+        sessionId: operatorSessionId,
+      }).tail(20);
+      const outboundToolResult = operatorEntries.find((entry) => {
+        const content = entry.content as { output?: { outbound?: unknown } };
+
+        return entry.kind === "tool_result" && content.output?.outbound !== undefined;
+      });
+      expect(outboundToolResult?.content).toMatchObject({
+        ok: true,
+        output: {
+          outbound: {
+            target_session_id: targetSessionId,
+            status: "completed",
+            emitted: false,
+            delivery_outcome: {
+              state: "suppressed",
+              reason: "finalizer_no_output",
+              marker_entry_id: suppressionMarker?.id,
+            },
+          },
+        },
+      });
+
+      const outboundNotDoneActions = borg.actions
+        .list({ state: "not_done", limit: 10 })
+        .filter((action) => action.description.includes("Outbound post"));
+      expect(outboundNotDoneActions).toHaveLength(1);
+      expect(outboundNotDoneActions[0]).toMatchObject({
+        actor: "borg",
+        audience_entity_id: aliceId,
+        state: "not_done",
+        completed_at: null,
+        not_done_at: expect.any(Number),
+        session_scope: "current_session",
+        session_anchor_id: targetSessionId,
+      });
+      expect(outboundNotDoneActions[0]?.description).toContain("finalizer_no_output");
+      expect(outboundNotDoneActions[0]?.provenance_stream_entry_ids).toEqual(
+        expect.arrayContaining([suppressionMarker?.id]),
+      );
+      expect(borg.actions.getCreationCountsBySource()).toMatchObject({
+        api: 0,
+        tool: 1,
+      });
     } finally {
       await borg.close();
     }
@@ -638,9 +807,7 @@ describe("proactive outbound", () => {
       );
       expect(targetMessages).toHaveLength(1);
       expect(
-        llm.requests.some((request) =>
-          requestText(request).includes("borg_autonomous_reflection"),
-        ),
+        llm.requests.some((request) => requestText(request).includes("borg_autonomous_reflection")),
       ).toBe(true);
 
       internal.deps.scheduledWakesRepository.schedule({

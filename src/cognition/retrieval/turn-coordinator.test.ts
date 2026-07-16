@@ -183,6 +183,7 @@ function makeSelfSnapshot(): SelfSnapshot {
       {
         id: "goal_1" as GoalId,
         description: "Ship the sprint",
+        terminal_condition: null,
         priority: 1,
         parent_goal_id: null,
         status: "active",
@@ -1062,6 +1063,7 @@ describe("TurnRetrievalCoordinator", () => {
     const selectedGoal = {
       id: "goal_2" as GoalId,
       description: "Resolve Atlas incident",
+      terminal_condition: null,
       priority: 2,
       parent_goal_id: null,
       status: "active" as const,

@@ -26,6 +26,11 @@ import type { TurnTracer } from "../../tracing/tracer.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type EpisodeId, type SessionId } from "../../util/ids.js";
 import type { AutonomyTrigger, DueEvent } from "../types.js";
+import {
+  executiveFocusGoalStaleBackoffCooldownMs,
+  getExecutiveFocusGoalStaleBackoffProcessName,
+  readExecutiveFocusGoalStaleBackoffMetadata,
+} from "../executive-focus-stale-backoff.js";
 
 const TRIGGER_NAME = "executive_focus_due" as const;
 const WATERMARK_PREFIX = "autonomy:executive-focus-due";
@@ -89,6 +94,9 @@ export type ExecutiveFocusDueTriggerOptions = {
   stalenessMs: number;
   dueLeadMs: number;
   wakeCooldownMs: number;
+  wakeCooldownBackoffMultiplier: number;
+  wakeCooldownMaxMs: number;
+  wakeEmptyDormancyCount: number;
   deadlineLookaheadMs: number;
   goalFollowupDue?: {
     enabled: boolean;
@@ -316,6 +324,59 @@ export function createExecutiveFocusDueTrigger(
     return cooldownEnd !== null && cooldownEnd > nowMs;
   }
 
+  function getGoalStaleBackoffEnd(input: {
+    goal_id: GoalRecord["id"];
+    last_progress_ts: number | null;
+  }): number | null {
+    const backoff = options.watermarkRepository.get(
+      getExecutiveFocusGoalStaleBackoffProcessName(input.goal_id),
+      sessionId,
+    );
+
+    if (backoff === null) {
+      return null;
+    }
+
+    if (input.last_progress_ts !== null && input.last_progress_ts >= backoff.updatedAt) {
+      return null;
+    }
+
+    const metadata = readExecutiveFocusGoalStaleBackoffMetadata(backoff);
+
+    if (metadata.empty_count <= 0) {
+      return null;
+    }
+
+    if (metadata.empty_count >= options.wakeEmptyDormancyCount) {
+      // Dormant: after this many consecutive empty wakes the goal exits
+      // exec-focus eligibility entirely until it makes headway -- the progress
+      // reset above, or an emission that clears the count in the scheduler. It
+      // never re-enters on a timer, so a perpetually empty goal stops consuming
+      // wake slots instead of merely slowing to the cooldown cap (which, with a
+      // pool of stale goals, would still sum to a steady drip of empty wakes).
+      return Number.POSITIVE_INFINITY;
+    }
+
+    return (
+      backoff.updatedAt +
+      executiveFocusGoalStaleBackoffCooldownMs({
+        baseCooldownMs: options.wakeCooldownMs,
+        multiplier: options.wakeCooldownBackoffMultiplier,
+        maxCooldownMs: options.wakeCooldownMaxMs,
+        emptyCount: metadata.empty_count,
+      })
+    );
+  }
+
+  function isGoalStaleBackedOff(goal: GoalRecord, nowMs: number): boolean {
+    const backoffEnd = getGoalStaleBackoffEnd({
+      goal_id: goal.id,
+      last_progress_ts: goal.last_progress_ts,
+    });
+
+    return backoffEnd !== null && backoffEnd > nowMs;
+  }
+
   function shouldDeferToGoalFollowup(goal: GoalRecord, nowMs: number): boolean {
     if (options.goalFollowupDue?.enabled !== true) {
       return false;
@@ -482,21 +543,26 @@ export function createExecutiveFocusDueTrigger(
           reason: "goal_stale",
         },
       });
-      const selectedScore = focus.selected_score;
-      const selectedGoal =
-        focus.selected_goal === null ? null : (goalsById.get(focus.selected_goal.id) ?? null);
+      const topEligibleCandidate = focus.candidates.find((candidate) => {
+        const candidateGoal = goalsById.get(candidate.goal_id) ?? candidate.goal;
 
-      if (
-        selectedGoal !== null &&
-        selectedScore !== null &&
-        !eventGoalIds.has(selectedGoal.id) &&
-        !isGoalCoolingDown(selectedGoal, nowMs) &&
-        !shouldDeferToGoalFollowup(selectedGoal, nowMs)
-      ) {
+        return (
+          candidate.score >= threshold &&
+          !eventGoalIds.has(candidateGoal.id) &&
+          !isGoalCoolingDown(candidateGoal, nowMs) &&
+          !isGoalStaleBackedOff(candidateGoal, nowMs) &&
+          !shouldDeferToGoalFollowup(candidateGoal, nowMs)
+        );
+      });
+
+      if (topEligibleCandidate !== undefined) {
+        const selectedGoal =
+          goalsById.get(topEligibleCandidate.goal_id) ?? topEligibleCandidate.goal;
         const progressAnchor = selectedGoal.last_progress_ts ?? selectedGoal.created_at;
-        const staleDue = progressAnchor + options.stalenessMs <= nowMs;
 
-        if (staleDue) {
+        // Keep staleness out of the skip predicate: a fresh top-eligible goal
+        // must suppress goal_stale rather than reaching past it to a lower stale one.
+        if (progressAnchor + options.stalenessMs <= nowMs) {
           events.push({
             id: `goal:${selectedGoal.id}:${progressAnchor}`,
             sourceName: TRIGGER_NAME,
@@ -505,7 +571,7 @@ export function createExecutiveFocusDueTrigger(
             sortTs: progressAnchor + options.stalenessMs,
             payload: buildScorePayload({
               goal: selectedGoal,
-              score: selectedScore,
+              score: topEligibleCandidate,
               threshold,
               topOpenStep: options.executiveStepsRepository.topOpen(selectedGoal.id),
               reason: "goal_stale",

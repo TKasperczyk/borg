@@ -5,6 +5,8 @@ import {
   type StreamEntry,
 } from "../../stream/index.js";
 import type { StreamEntryId } from "../../util/ids.js";
+import { escapeXmlText } from "../../util/prompt-tags.js";
+import { undeliveredDraftFromContent } from "../generation/types.js";
 
 import type { RecencyMessage, RecencyWindow } from "./types.js";
 
@@ -139,8 +141,18 @@ function suppressionCategoryContext(reason: string): string {
 function renderEntryContent(entry: StreamEntry): string {
   if (entry.kind === "agent_suppressed") {
     const reason = markerReason(entry);
+    const undeliveredDraft = undeliveredDraftFromContent(entry.content);
 
-    return `[system: prior turn suppressed -- reason: ${reason}; category: ${suppressionCategoryContext(reason)}; no user-visible response was emitted]`;
+    if (undeliveredDraft !== undefined) {
+      return [
+        `[system: prior turn suppressed -- reason: ${reason}; category: ${suppressionCategoryContext(reason)}; state=undelivered_draft; no user-visible response was emitted]`,
+        "<undelivered_draft>",
+        escapeXmlText(undeliveredDraft.text),
+        "</undelivered_draft>",
+      ].join("\n");
+    }
+
+    return `[system: prior turn suppressed -- reason: ${reason}; category: ${suppressionCategoryContext(reason)}; state=suppressed; no user-visible response was emitted]`;
   }
 
   if (entry.kind === "agent_observed") {

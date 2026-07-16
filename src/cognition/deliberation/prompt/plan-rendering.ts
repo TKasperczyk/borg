@@ -10,8 +10,10 @@ import { renderTaggedPromptBlock } from "./sections.js";
  * memory so the plan cannot forge system authority.
  */
 export function formatTurnPlanForPrompt(plan: TurnPlan): string | null {
-  const lines: string[] = ["S2 planner advisory:"];
+  const want = plan.want?.trim() ?? "";
+  const lines: string[] = [];
   const hasContent =
+    want.length > 0 ||
     plan.uncertainty.trim().length > 0 ||
     plan.verification_steps.length > 0 ||
     plan.tensions.length > 0 ||
@@ -22,6 +24,12 @@ export function formatTurnPlanForPrompt(plan: TurnPlan): string | null {
   if (!hasContent) {
     return null;
   }
+
+  if (want.length > 0) {
+    lines.push(`Named want: ${want}`);
+  }
+
+  lines.push("S2 planner advisory:");
 
   if (plan.uncertainty.trim().length > 0) {
     lines.push(`  Uncertainty: ${plan.uncertainty.trim()}`);

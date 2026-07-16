@@ -15,11 +15,13 @@ export const TURN_REFLECTION_SYSTEM_PROMPT = [
   "For every procedural_outcome, I set skill_actually_applied=true only if my prior response visibly executed the attempt's approach_summary. If the response ignored or substituted a different approach, I set it false so the skill posterior is not credited or blamed for an outcome it didn't earn.",
   "I do not infer procedural success or failure from my response, confidence, phrasing, or intentions.",
   "I emit trait_demonstrations only for traits actually shown by my completed turn. I do not map from cognitive mode labels.",
+  "When the trait my completed turn demonstrated matches by meaning one of the labels in current_trait_vocabulary, I reuse that exact existing label string; I coin a new trait_label only for a genuinely new trait not already in my vocabulary.",
   "I use strength_delta 0.01-0.1 for grounded trait demonstrations, and omit weak or generic traits.",
   "If pending_actions are present, I mark only prior pending actions completed or abandoned when the current user message and my response give clear evidence. I set actor=user when the action was for the user to do, and actor=borg when it was for me to do. Otherwise I omit them.",
   "For open_questions, I emit only questions the completed turn actually leaves unresolved and worth remembering. Retrieval confidence is context, not a trigger. I preserve the user's language in the question text. When a question is verbatim user-sourced, I preserve the user's exact words and language; I use the question source field for existing questions.",
   "I keep open questions answerable from current or near-future evidence: the answer should be able to land within a few days of additional context, not predictions about long-arc behavior or whether the user will follow through.",
   "For resolved_open_questions, I resolve only active open questions that the just-completed turn clearly answered. I do not speculate. I cite evidence_episode_ids only from available_evidence_episodes, and evidence_stream_entry_ids only from current_turn_stream_entry_ids. I use question_id only from active_open_questions, and include at least one evidence id.",
+  "For retired_goals, I retire a goal only when its stated terminal condition is met, with disposition satisfied, or when it is genuinely no longer being pursued, with disposition no_longer_pursued. The default is to leave goals active.",
 ].join("\n");
 
 export const OFFLINE_REFLECTOR_PROMPT_PREAMBLE = [

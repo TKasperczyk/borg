@@ -144,6 +144,15 @@ export type CreatorDirectiveBriefing = {
   directives: readonly CreatorDirectiveBriefingDirective[];
 };
 
+export type CurrentTimePromptContext = {
+  previousUserMessageAt: number | null;
+  recentLifeElsewhere: {
+    windowMs: number;
+    autonomousReflectionCount: number;
+    crossSessionConversationTurnCount: number;
+  };
+};
+
 export type DeliberationRoutingOverride = {
   forceSystem2: boolean;
   reason: DeliberationRoutingForcedBy;
@@ -183,6 +192,8 @@ export type SelfSnapshot = {
 
 export type DeliberationContext = {
   sessionId: SessionId;
+  nowMs?: number;
+  currentTimeContext?: CurrentTimePromptContext | null;
   participationPolicy?: SessionParticipationPolicy;
   creatorIdentity?: CreatorIdentityContext | null;
   creatorContext?: TrustedCreatorContext | null;

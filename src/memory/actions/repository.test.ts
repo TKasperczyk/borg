@@ -255,6 +255,7 @@ describe("ActionRepository", () => {
       extractor: 1,
       reflector: 1,
       api: 1,
+      tool: 0,
       unknown: 1,
     });
   });

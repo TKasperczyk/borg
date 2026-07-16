@@ -60,9 +60,10 @@ export type GoalFollowupDueCandidateOptions = {
 };
 
 const GOAL_SELECT_COLUMNS = `
-  id, record_version, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
-  created_at, target_at, audience_entity_id, owner_entity_id, source_stream_entry_ids,
-  canonicalized_by_artifact_entry_id, provenance_kind, provenance_episode_ids, provenance_process
+  id, record_version, description, terminal_condition, priority, parent_goal_id, status,
+  progress_notes, last_progress_ts, created_at, target_at, audience_entity_id, owner_entity_id,
+  source_stream_entry_ids, canonicalized_by_artifact_entry_id, provenance_kind,
+  provenance_episode_ids, provenance_stream_entry_ids, provenance_process
 `;
 
 export type GoalStatusUpdateOptions = IdentityCasOptions & {
@@ -131,6 +132,7 @@ export class GoalsRepository {
   add(input: {
     id?: GoalId;
     description: string;
+    terminalCondition?: string | null;
     priority: number;
     parentId?: GoalId | null;
     status?: GoalStatus;
@@ -162,6 +164,7 @@ export class GoalsRepository {
       id: input.id ?? createGoalId(),
       record_version: 1,
       description: input.description,
+      terminal_condition: input.terminalCondition ?? null,
       priority: input.priority,
       parent_goal_id: parentGoalId,
       status: input.status ?? "active",
@@ -185,16 +188,17 @@ export class GoalsRepository {
         .prepare(
           `
             INSERT INTO goals (
-              id, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
-              created_at, target_at, audience_entity_id, owner_entity_id, source_stream_entry_ids,
-              canonicalized_by_artifact_entry_id, provenance_kind, provenance_episode_ids,
-              provenance_process
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              id, description, terminal_condition, priority, parent_goal_id, status, progress_notes,
+              last_progress_ts, created_at, target_at, audience_entity_id, owner_entity_id,
+              source_stream_entry_ids, canonicalized_by_artifact_entry_id, provenance_kind,
+              provenance_episode_ids, provenance_stream_entry_ids, provenance_process
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
         .run(
           goal.id,
           goal.description,
+          goal.terminal_condition,
           goal.priority,
           goal.parent_goal_id,
           goal.status,
@@ -210,6 +214,7 @@ export class GoalsRepository {
           goal.canonicalized_by_artifact_entry_id,
           storedProvenance.provenance_kind,
           storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_stream_entry_ids ?? null,
           storedProvenance.provenance_process,
         );
       recordIdentityEvent(this.identityEventRepository, {
@@ -345,7 +350,8 @@ export class GoalsRepository {
         .prepare(
           `
             UPDATE goals
-            SET status = ?, provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?,
+            SET status = ?, provenance_kind = ?, provenance_episode_ids = ?,
+                provenance_stream_entry_ids = ?, provenance_process = ?,
                 canonicalized_by_artifact_entry_id = ?,
                 record_version = record_version + 1
             WHERE id = ? AND record_version = ?
@@ -355,6 +361,7 @@ export class GoalsRepository {
           parsedStatus,
           storedProvenance.provenance_kind,
           storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_stream_entry_ids ?? null,
           storedProvenance.provenance_process,
           options.canonicalizedByArtifactEntryId === undefined
             ? (current.canonicalized_by_artifact_entry_id ?? null)
@@ -419,7 +426,8 @@ export class GoalsRepository {
           `
             UPDATE goals
             SET progress_notes = ?, last_progress_ts = ?, provenance_kind = ?, provenance_episode_ids = ?,
-                provenance_process = ?, record_version = record_version + 1
+                provenance_stream_entry_ids = ?, provenance_process = ?,
+                record_version = record_version + 1
             WHERE id = ? AND record_version = ?
           `,
         )
@@ -428,6 +436,7 @@ export class GoalsRepository {
           nowMs,
           storedProvenance.provenance_kind,
           storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_stream_entry_ids ?? null,
           storedProvenance.provenance_process,
           goalId,
           expectedVersion,
@@ -506,17 +515,19 @@ export class GoalsRepository {
         .prepare(
           `
             UPDATE goals
-            SET description = ?, priority = ?, parent_goal_id = ?, status = ?, progress_notes = ?,
-                last_progress_ts = ?, target_at = ?, audience_entity_id = ?, owner_entity_id = ?,
-                source_stream_entry_ids = ?,
+            SET description = ?, terminal_condition = ?, priority = ?, parent_goal_id = ?,
+                status = ?, progress_notes = ?, last_progress_ts = ?, target_at = ?,
+                audience_entity_id = ?, owner_entity_id = ?, source_stream_entry_ids = ?,
                 canonicalized_by_artifact_entry_id = ?,
-                provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?,
+                provenance_kind = ?, provenance_episode_ids = ?, provenance_stream_entry_ids = ?,
+                provenance_process = ?,
                 record_version = record_version + 1
             WHERE id = ? AND record_version = ?
           `,
         )
         .run(
           next.description,
+          next.terminal_condition,
           next.priority,
           next.parent_goal_id,
           next.status,
@@ -531,6 +542,7 @@ export class GoalsRepository {
           next.canonicalized_by_artifact_entry_id ?? null,
           storedProvenance.provenance_kind,
           storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_stream_entry_ids ?? null,
           storedProvenance.provenance_process,
           goalId,
           expectedVersion,
@@ -573,16 +585,17 @@ export class GoalsRepository {
         .prepare(
           `
             UPDATE goals
-            SET description = ?, priority = ?, parent_goal_id = ?, status = ?, progress_notes = ?,
-                last_progress_ts = ?, created_at = ?, target_at = ?, audience_entity_id = ?,
-                owner_entity_id = ?, source_stream_entry_ids = ?,
+            SET description = ?, terminal_condition = ?, priority = ?, parent_goal_id = ?,
+                status = ?, progress_notes = ?, last_progress_ts = ?, created_at = ?,
+                target_at = ?, audience_entity_id = ?, owner_entity_id = ?, source_stream_entry_ids = ?,
                 canonicalized_by_artifact_entry_id = ?, provenance_kind = ?, provenance_episode_ids = ?,
-                provenance_process = ?
+                provenance_stream_entry_ids = ?, provenance_process = ?
             WHERE id = ?
           `,
         )
         .run(
           parsed.description,
+          parsed.terminal_condition,
           parsed.priority,
           parsed.parent_goal_id,
           parsed.status,
@@ -598,6 +611,7 @@ export class GoalsRepository {
           parsed.canonicalized_by_artifact_entry_id ?? null,
           storedProvenance.provenance_kind,
           storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_stream_entry_ids ?? null,
           storedProvenance.provenance_process,
           parsed.id,
         );

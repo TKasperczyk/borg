@@ -71,6 +71,7 @@ const FIXTURE_NAMES = [
   "cacheable-base-static-prefix-sections.txt",
   "finalizer-system-blocks-s2.txt",
   "s2-planner-system-prompt.txt",
+  "s2-planner-system-prompt-autonomous.txt",
   "evidence-ledger-framing.txt",
   "compact-planner-ledger-framing.txt",
   "commitment-regeneration-framing.txt",
@@ -140,6 +141,7 @@ const REGISTRY_ENTRY_FIXTURE_MARKERS: Record<string, string> = {
   finalizer_cacheable_static_prefix: promptBlockDefault("base_identity_preamble"),
   finalizer_base_dynamic_prompt: CURRENT_USER_MESSAGE_REMINDER,
   s2_planner_base_system_prompt: "Base prompt for voice anchors.",
+  s2_planner_autonomous_want: "Before I weigh anything -- before commitments, directives, evidence",
   s2_planner_directive: "I emit a structured plan by calling the EmitTurnPlan tool exactly once.",
 };
 
@@ -1022,6 +1024,58 @@ describe("prompt surface fixtures", () => {
     });
 
     expectFixture("s2-planner-system-prompt.txt", String(llm.requests[0]?.system));
+  });
+
+  it("pins autonomous S2 planner system prompt", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 5,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan",
+              name: "EmitTurnPlan",
+              input: fixturePlan(),
+            },
+          ],
+        },
+      ],
+    });
+    const context = makeAutonomousRelationalContext();
+
+    await runS2Planner({
+      llmClient: llm,
+      model: "fake",
+      baseSystemPrompt: buildBaseSystemPrompt(context, {
+        ...PROMPT_OPTIONS,
+        participationPolicy: "active",
+      }),
+      dialogueMessages: [{ role: "user", content: context.userMessage }],
+      selfSnapshot: context.selfSnapshot,
+      additionalPromptSections: [
+        {
+          blockId: "borg_unresolved_contradiction_open_questions",
+          text:
+            renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
+              {
+                tag: "borg_unresolved_contradiction_open_questions",
+                content: "Planner routing note: contradiction open question remains unresolved.",
+              },
+            ]) ?? "",
+        },
+        {
+          blockId: "borg_compact_planner_ledger",
+          text: buildCompactPlannerLedgerPrompt(makeEvidenceLedger()).promptSection ?? "",
+        },
+      ],
+      maxTokens: 512,
+      turnOrigin: "autonomous",
+    });
+
+    expectFixture("s2-planner-system-prompt-autonomous.txt", String(llm.requests[0]?.system));
   });
 
   it("pins evidence ledger framing", () => {

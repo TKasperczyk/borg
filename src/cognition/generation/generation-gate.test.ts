@@ -138,6 +138,53 @@ describe("GenerationGate", () => {
     expect(result.classified).toBe(true);
   });
 
+  it("clears active stop for a new topic or direct question from any participant", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        gateResponse({
+          decision: "proceed",
+          substantive: true,
+          reason: "The current turn introduces new information and asks for a response.",
+        }),
+      ],
+    });
+    const gate = new GenerationGate({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(),
+      model: "test-background",
+      hardCapTurns: 50,
+    });
+    const workingMemory = setStopUntilSubstantiveContent(
+      createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+      {
+        provenance: "finalizer_emission_metadata",
+        sourceStreamEntryId: createStreamEntryId(),
+        reason: "The assistant promised to stop.",
+        sinceTurn: 1,
+      },
+    );
+
+    const result = await gate.evaluate({
+      userMessage:
+        "A long-running nutrition study reported a new finding about fries and diabetes risk. What do you all make of it?",
+      workingMemory: {
+        ...workingMemory,
+        turn_counter: 8,
+      },
+      recencyMessages: [
+        recencyUser("Still holding."),
+        recencyAssistant("Still holding."),
+        recencyUser("Still holding."),
+        recencyAssistant("Still holding."),
+      ],
+    });
+
+    expect(result.action).toBe("proceed");
+    expect(result.clearDiscourseStop).toBe(true);
+    expect(result.classified).toBe(true);
+    expect(llm.requests).toHaveLength(1);
+  });
+
   it("clears active stop for substantive non-English user content through the classifier", async () => {
     const llm = new FakeLLMClient({
       responses: [
@@ -179,7 +226,7 @@ describe("GenerationGate", () => {
     expect(llm.requests).toHaveLength(1);
   });
 
-  it("forces suppression when active stop classifier says proceed but not substantive", async () => {
+  it("keeps active stop for a repeated minimal loop-probe classified non-substantive", async () => {
     const llm = new FakeLLMClient({
       responses: [
         gateResponse({
@@ -211,7 +258,12 @@ describe("GenerationGate", () => {
         ...workingMemory,
         turn_counter: 2,
       },
-      recencyMessages: [],
+      recencyMessages: [
+        recencyUser("No."),
+        recencyAssistant("Understood."),
+        recencyUser("No."),
+        recencyAssistant("Okay."),
+      ],
     });
 
     expect(result.action).toBe("suppress");
@@ -342,6 +394,12 @@ describe("GenerationGate", () => {
 
     expect(String(llm.requests[0]?.system)).toContain(
       "brief acknowledgments, direct answers, or minimal confirmations in any language",
+    );
+    expect(String(llm.requests[0]?.system)).toContain(
+      "directly solicits a response from any participant",
+    );
+    expect(String(llm.requests[0]?.system)).toContain(
+      "Do not discount novelty or solicitation because of whether",
     );
   });
 });

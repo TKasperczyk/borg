@@ -52,6 +52,7 @@ describe("config", () => {
     expect(config.host_capabilities).toContain("Inputs available to me");
     expect(config.host_capabilities).toContain("Proactive outbound messaging");
     expect(config.perception.llmEnabled).toBe(true);
+    expect(config.frameAnomaly.peerChannelSourceTypes).toEqual(["kira"]);
     expect(config.affective.llmEnabled).toBe(true);
     expect(config.episodic.salienceGateEnabled).toBe(true);
     expect(config.offline.curator.episodeDecayIntervalMs).toBe(24 * 60 * 60 * 1_000);
@@ -79,6 +80,14 @@ describe("config", () => {
       maxGroupsPerRun: 8,
       budget: 60_000,
     });
+    expect(config.offline.livedExperienceDaySummarizer).toEqual({
+      budget: 160_000,
+      windowDays: 7,
+      maxDaysPerRun: 3,
+      maxSelfDecisionEventsPerDay: 96,
+      maxActivityEventsPerDay: 256,
+      maxEpisodesPerDay: 12,
+    });
     expect(config.offline.overseer.budget).toBeNull();
     expect(config.maintenance.lightProcesses).toEqual([
       "consolidator",
@@ -98,6 +107,7 @@ describe("config", () => {
       "review-resolver",
       "ruminator",
       "self-narrator",
+      "lived-experience-day-summarizer",
       "procedural-synthesizer",
       "belief-reviser",
       "creator-directive-reconciler",
@@ -126,6 +136,9 @@ describe("config", () => {
       },
     });
     expect(config.autonomy.executiveFocus.wakeCooldownSec).toBe(3_600);
+    expect(config.autonomy.executiveFocus.emptyWakeBackoffMultiplier).toBe(2);
+    expect(config.autonomy.executiveFocus.wakeCooldownMaxSec).toBe(86_400);
+    expect(config.autonomy.executiveFocus.emptyWakeDormancyCount).toBe(3);
     expect(config.streamIngestion.settle).toEqual({
       settleMs: 0,
       maxSettleMs: 30_000,
@@ -151,6 +164,12 @@ describe("config", () => {
       finalizerTargetTokens: 60_000,
       finalizerHardCapTokens: 100_000,
       finalizerMaxEntryTextTokens: 1_200,
+      recentLivedExperience: {
+        recencyWindowMs: 3 * 24 * 60 * 60_000,
+        cap: 64,
+        densityCap: 48,
+        gapThresholdMs: 3 * 60 * 60_000,
+      },
       sectionOptions: {},
       decisionArtifact: {
         maxActiveEntries: 40,
@@ -218,6 +237,16 @@ describe("config", () => {
 
   it("derives exported defaults from schema defaults", () => {
     expect(configSchema.parse({})).toEqual(DEFAULT_CONFIG);
+  });
+
+  it("loads frame-anomaly peer channel source types from config", () => {
+    const config = configSchema.parse({
+      frameAnomaly: {
+        peerChannelSourceTypes: ["kira", "peerlink"],
+      },
+    });
+
+    expect(config.frameAnomaly.peerChannelSourceTypes).toEqual(["kira", "peerlink"]);
   });
 
   it("accepts deprecated llm fallback aliases as llmEnabled config", () => {
@@ -349,6 +378,24 @@ describe("config", () => {
     expect(config.autonomy.maxWakesPerWindow).toBe(9);
     expect(config.autonomy.budgetWindowMs).toBe(7_200_000);
     expect(config.autonomy.reservedContemplativeWakesPerWindow).toBe(2);
+  });
+
+  it("loads executive focus empty-wake backoff config from env", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {
+        BORG_AUTONOMY_EXECUTIVE_FOCUS_EMPTY_WAKE_BACKOFF_MULTIPLIER: "3.5",
+        BORG_AUTONOMY_EXECUTIVE_FOCUS_WAKE_COOLDOWN_MAX_SEC: "7200",
+        BORG_AUTONOMY_EXECUTIVE_FOCUS_EMPTY_WAKE_DORMANCY_COUNT: "5",
+      },
+    });
+
+    expect(config.autonomy.executiveFocus.emptyWakeBackoffMultiplier).toBe(3.5);
+    expect(config.autonomy.executiveFocus.wakeCooldownMaxSec).toBe(7_200);
+    expect(config.autonomy.executiveFocus.emptyWakeDormancyCount).toBe(5);
   });
 
   it("loads autonomous proactive outbound gates from config and env", () => {
@@ -507,6 +554,7 @@ describe("config", () => {
         BORG_OFFLINE_ASSOCIATOR_BUDGET: "13000",
         BORG_OFFLINE_SEMANTIC_EXTRACTOR_MAX_INPUT_TOKENS_PER_RUN: "90000",
         BORG_OFFLINE_SEMANTIC_EXTRACTOR_BUDGET: "12000",
+        BORG_OFFLINE_LIVED_EXPERIENCE_DAY_SUMMARIZER_BUDGET: "123000",
         BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD: "0.6",
         BORG_STREAM_INGESTION_PRE_TURN_CATCHUP_MAX_ENTRIES: "8",
         BORG_GENERATION_EVIDENCE_LEDGER_CURRENT_SESSION_TRANSCRIPT_TOKEN_BUDGET: "16000",
@@ -516,6 +564,10 @@ describe("config", () => {
         BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_TARGET_TOKENS: "60000",
         BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_HARD_CAP_TOKENS: "100000",
         BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_MAX_ENTRY_TEXT_TOKENS: "900",
+        BORG_GENERATION_EVIDENCE_LEDGER_RECENT_LIVED_EXPERIENCE_RECENCY_WINDOW_MS: "172800000",
+        BORG_GENERATION_EVIDENCE_LEDGER_RECENT_LIVED_EXPERIENCE_CAP: "72",
+        BORG_GENERATION_EVIDENCE_LEDGER_RECENT_LIVED_EXPERIENCE_DENSITY_CAP: "24",
+        BORG_GENERATION_EVIDENCE_LEDGER_RECENT_LIVED_EXPERIENCE_GAP_THRESHOLD_MS: "60000",
         BORG_COGNITION_ACTION_LIFECYCLE_ARCHIVE_STALE_AFTER_INACTIVE_TURNS: "18",
         BORG_DELIBERATION_CONTRADICTION_ROUTING_ENABLED: "false",
         BORG_DELIBERATION_CONTRADICTION_ROUTING_COOLDOWN_TURNS: "3",
@@ -578,6 +630,12 @@ describe("config", () => {
     expect(config.generation.evidenceLedger.finalizerTargetTokens).toBe(60_000);
     expect(config.generation.evidenceLedger.finalizerHardCapTokens).toBe(100_000);
     expect(config.generation.evidenceLedger.finalizerMaxEntryTextTokens).toBe(900);
+    expect(config.generation.evidenceLedger.recentLivedExperience).toEqual({
+      recencyWindowMs: 172_800_000,
+      cap: 72,
+      densityCap: 24,
+      gapThresholdMs: 60_000,
+    });
     expect(config.generation.evidenceLedger.decisionArtifact).toMatchObject({
       maxActiveEntries: 40,
       maxLiveEntriesPerKey: 2,
@@ -612,6 +670,7 @@ describe("config", () => {
     expect(config.offline.semanticExtractor.maxEpisodesPerRun).toBe(3);
     expect(config.offline.semanticExtractor.maxInputTokensPerRun).toBe(90_000);
     expect(config.offline.semanticExtractor.budget).toBe(12_000);
+    expect(config.offline.livedExperienceDaySummarizer.budget).toBe(123_000);
   });
 
   it("accepts post-generation guard simple modes", () => {
@@ -832,6 +891,9 @@ describe("config", () => {
     });
 
     expect(redactConfig(config)).toMatchObject({
+      frameAnomaly: {
+        peerChannelSourceTypes: ["kira"],
+      },
       embedding: {
         apiKey: "[REDACTED]",
       },

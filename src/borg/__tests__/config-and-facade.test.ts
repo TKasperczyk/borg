@@ -104,6 +104,33 @@ describe("Borg", () => {
     }
   });
 
+  it("reports the lived-experience day summarizer maintenance budget", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const borg = await Borg.open({
+      config: createTestConfig({
+        dataDir: tempDir,
+        offline: {
+          livedExperienceDaySummarizer: {
+            budget: 123_000,
+          },
+        },
+      }),
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      expect(borg.maintenance.config().processBudgets["lived-experience-day-summarizer"]).toBe(
+        123_000,
+      );
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("opens the sprint 2 facade and reuses injected clients", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

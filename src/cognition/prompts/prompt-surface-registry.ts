@@ -568,6 +568,14 @@ export const PROMPT_SURFACE_BLOCKS = [
     surfaces: [{ surface: PROMPT_SURFACES.s2PlannerSystem, order: 50 }],
   }),
   block({
+    id: "s2_planner_autonomous_want",
+    owner: "cognition.deliberation",
+    purpose: "Autonomous S2 planner first question for naming any want before weighing.",
+    renderCondition: "autonomous S2 planner calls",
+    source: { file: "src/cognition/deliberation/s2-planner.ts" },
+    surfaces: [{ surface: PROMPT_SURFACES.s2PlannerSystem, order: 55 }],
+  }),
+  block({
     id: "s2_planner_directive",
     owner: "cognition.deliberation",
     purpose: "Directive to emit exactly one structured S2 plan.",
