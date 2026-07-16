@@ -27,6 +27,7 @@ import {
   parseEpisodeId,
   parseSemanticEdgeId,
   parseSemanticNodeId,
+  type EpisodeId,
   type SemanticEdgeId,
   type SemanticNodeId,
 } from "../../util/ids.js";
@@ -1259,6 +1260,30 @@ export class SemanticNodeRepository {
     };
   }
 
+  listAllSourceEpisodeIds(): EpisodeId[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT source_episode_ids
+          FROM semantic_nodes
+          ORDER BY id ASC
+        `,
+      )
+      .all() as Array<{ source_episode_ids: string }>;
+
+    return [
+      ...new Set(
+        rows.flatMap((row) =>
+          parseJsonArray<string>(
+            row.source_episode_ids,
+            "source_episode_ids",
+            SEMANTIC_JSON_ARRAY_CODEC,
+          ).map((value) => parseEpisodeId(value)),
+        ),
+      ),
+    ];
+  }
+
   listDistinctKinds(): SemanticNodeKind[] {
     const rows = this.db
       .prepare(
@@ -1763,6 +1788,30 @@ export class SemanticEdgeRepository {
       | undefined;
 
     return row === undefined ? null : edgeFromRow(row);
+  }
+
+  listAllEvidenceEpisodeIds(): EpisodeId[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT evidence_episode_ids
+          FROM semantic_edges
+          ORDER BY id ASC
+        `,
+      )
+      .all() as Array<{ evidence_episode_ids: string }>;
+
+    return [
+      ...new Set(
+        rows.flatMap((row) =>
+          parseJsonArray<string>(
+            row.evidence_episode_ids,
+            "evidence_episode_ids",
+            SEMANTIC_JSON_ARRAY_CODEC,
+          ).map((value) => parseEpisodeId(value)),
+        ),
+      ),
+    ];
   }
 
   listEdges(options: SemanticEdgeListOptions = {}): SemanticEdge[] {

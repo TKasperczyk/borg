@@ -545,6 +545,7 @@ export type BorgMaintenanceFacade = {
   optimizeStorage: (options?: {
     runId?: MaintenanceRunId;
   }) => Promise<LanceDbOptimizeStorageResult>;
+  countPendingSemanticExtractionEpisodes: () => Promise<number>;
   config: () => {
     enabled: boolean;
     lightIntervalMs: number;

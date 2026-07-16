@@ -296,6 +296,47 @@ describe("semantic repositories", () => {
     expect(await fixture.nodeRepository.get(inserted.id)).toBeNull();
   });
 
+  it("projects all semantic provenance episode ids from SQLite without hydrating vectors", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const firstEpisodeId = "ep_aaaaaaaaaaaaaaaa" as EpisodeId;
+    const secondEpisodeId = "ep_bbbbbbbbbbbbbbbb" as EpisodeId;
+    const danglingEpisodeId = "ep_cccccccccccccccc" as EpisodeId;
+    const first = await fixture.nodeRepository.insert({
+      ...buildNode(createSemanticNodeId(), "First provenance node"),
+      source_episode_ids: [firstEpisodeId, secondEpisodeId],
+    });
+    const second = await fixture.nodeRepository.insert({
+      ...buildNode(createSemanticNodeId(), "Archived provenance node"),
+      source_episode_ids: [secondEpisodeId, danglingEpisodeId],
+      archived: true,
+    });
+    const edge = fixture.edgeRepository.addEdge({
+      ...buildEdgeInput(first.id, second.id),
+      evidence_episode_ids: [danglingEpisodeId, firstEpisodeId],
+    });
+    fixture.edgeRepository.invalidateEdge(edge.id, {
+      at: 1_500,
+      by_process: "manual",
+    });
+    const lanceList = vi.spyOn(fixture.table, "list");
+
+    const nodeEpisodeIds = fixture.nodeRepository.listAllSourceEpisodeIds();
+    const edgeEpisodeIds = fixture.edgeRepository.listAllEvidenceEpisodeIds();
+
+    expect(new Set(nodeEpisodeIds)).toEqual(
+      new Set([firstEpisodeId, secondEpisodeId, danglingEpisodeId]),
+    );
+    expect(new Set(edgeEpisodeIds)).toEqual(new Set([danglingEpisodeId, firstEpisodeId]));
+    expect(lanceList).not.toHaveBeenCalled();
+  });
+
   it("paginates semantic nodes by updated time descending and id ascending", async () => {
     const fixture = await createSemanticFixture();
 

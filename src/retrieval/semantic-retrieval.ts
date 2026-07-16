@@ -22,6 +22,7 @@ import type {
 } from "../memory/semantic/types.js";
 import { SEMANTIC_NODE_STATUSES } from "../memory/semantic/types.js";
 import type { EntityId } from "../util/ids.js";
+import { mapWithConcurrency } from "../util/collections.js";
 import {
   combineDisclosureLabelForEpisodeIds,
   combineMemoryDisclosureLabels,
@@ -44,6 +45,10 @@ const MAX_SEMANTIC_CANDIDATE_FETCH_LIMIT = 50;
 
 // Tunes the default number of vector semantic matches.
 const DEFAULT_VECTOR_MATCH_LIMIT = 3;
+
+// Collection decoration is normally synchronous after one batched access lookup.
+// Keep a generous bound as a circuit breaker if per-item async work is added later.
+const MAX_CONCURRENT_DISCLOSURE_DECORATIONS = 8;
 
 // Tunes the default number of exact-term semantic matches.
 const DEFAULT_EXACT_MATCH_LIMIT = 5;
@@ -220,7 +225,7 @@ async function resolveSemanticSourceEpisodeIdsForDisclosure(
   );
 }
 
-async function resolveEpisodeDisclosureLabels(
+export async function resolveMemoryDisclosureLabelsByEpisodeId(
   episodicRepository: EpisodicRepository,
   episodeIds: readonly Episode["id"][],
 ): Promise<Map<string, MemoryDisclosureLabel>> {
@@ -229,7 +234,7 @@ async function resolveEpisodeDisclosureLabels(
   );
 }
 
-function disclosureLabelForEpisodeIds(
+export function memoryDisclosureLabelForEpisodeIds(
   episodeIds: readonly Episode["id"][],
   labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>,
 ): MemoryDisclosureLabel {
@@ -238,6 +243,13 @@ function disclosureLabelForEpisodeIds(
       (episodeId) => labelsByEpisodeId.get(episodeId) ?? unknownMemoryDisclosureLabel(),
     ),
   );
+}
+
+export function mapWithDisclosureConcurrency<T, U>(
+  items: readonly T[],
+  mapper: (item: T, index: number) => Promise<U>,
+): Promise<U[]> {
+  return mapWithConcurrency(items, MAX_CONCURRENT_DISCLOSURE_DECORATIONS, mapper);
 }
 
 function adaptSemanticSourceEpisodes(input: {
@@ -264,7 +276,10 @@ function adaptSemanticSourceEpisodes(input: {
           sourceVisibilityFraction: admittedSourceEpisodeIds.length / input.sourceEpisodeIds.length,
         }
       : {}),
-    disclosureLabel: disclosureLabelForEpisodeIds(input.sourceEpisodeIds, input.labelsByEpisodeId),
+    disclosureLabel: memoryDisclosureLabelForEpisodeIds(
+      input.sourceEpisodeIds,
+      input.labelsByEpisodeId,
+    ),
   };
 }
 
@@ -285,7 +300,7 @@ export async function resolveSemanticDisclosureSourceAdapter(input: {
   const adapted = adaptSemanticSourceEpisodes({
     sourceEpisodeIds: input.sourceEpisodeIds,
     admittedSourceEpisodeIds,
-    labelsByEpisodeId: await resolveEpisodeDisclosureLabels(
+    labelsByEpisodeId: await resolveMemoryDisclosureLabelsByEpisodeId(
       input.episodicRepository,
       input.sourceEpisodeIds,
     ),
@@ -951,7 +966,7 @@ async function resolveSemanticContextWithDisclosureSourceMode(
           options,
         )
       : null;
-  const disclosureLabelsByEpisodeId = await resolveEpisodeDisclosureLabels(
+  const disclosureLabelsByEpisodeId = await resolveMemoryDisclosureLabelsByEpisodeId(
     episodicRepository,
     semanticSourceEpisodeIds,
   );

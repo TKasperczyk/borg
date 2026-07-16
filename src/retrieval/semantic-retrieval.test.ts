@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createEpisodeFixture,
@@ -8,8 +8,11 @@ import {
 import { summarizeSemanticContext } from "../cognition/deliberation/prompt/retrieval.js";
 import { SemanticGraph, type SemanticEdge } from "../memory/semantic/index.js";
 import { ManualClock } from "../util/clock.js";
-import type { EntityId } from "../util/ids.js";
+import { createEpisodeId, type EntityId } from "../util/ids.js";
 import {
+  memoryDisclosureLabelForEpisodeIds,
+  resolveMemoryDisclosureLabelForEpisodeIds,
+  resolveMemoryDisclosureLabelsByEpisodeId,
   resolveSemanticContext,
   resolveSemanticContextForDisclosure,
   toRetrievedSemantic,
@@ -81,6 +84,66 @@ function expectRelationshipPrivateLabel(
     publicToEntityIds: [],
   });
 }
+
+describe("semantic disclosure label batching", () => {
+  let harness: OfflineTestHarness | undefined;
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await harness?.cleanup();
+    harness = undefined;
+  });
+
+  it("matches per-record labels with one deduplicated lookup and fails dangling ids closed", async () => {
+    harness = await createOfflineTestHarness();
+    const audienceEntityId = harness.entityRepository.resolve("Audience");
+    const privateEpisode = createEpisodeFixture({
+      audience_entity_id: audienceEntityId,
+      origin_audience_entity_ids: [audienceEntityId],
+      shared: false,
+    });
+    const publicEpisode = createEpisodeFixture({
+      audience_entity_id: null,
+      origin_audience_entity_ids: [],
+      shared: true,
+    });
+    const danglingEpisodeId = createEpisodeId();
+    const episodeIdCollections = [
+      [privateEpisode.id],
+      [publicEpisode.id],
+      [privateEpisode.id, danglingEpisodeId],
+      [danglingEpisodeId],
+    ] as const;
+
+    await harness.episodicRepository.createEpisode(privateEpisode);
+    await harness.episodicRepository.createEpisode(publicEpisode);
+
+    const perRecordLabels = await Promise.all(
+      episodeIdCollections.map((episodeIds) =>
+        resolveMemoryDisclosureLabelForEpisodeIds(harness!.episodicRepository, episodeIds),
+      ),
+    );
+    const getMany = vi.spyOn(harness.episodicRepository, "getMany");
+    const labelsByEpisodeId = await resolveMemoryDisclosureLabelsByEpisodeId(
+      harness.episodicRepository,
+      episodeIdCollections.flat(),
+    );
+    const batchedLabels = episodeIdCollections.map((episodeIds) =>
+      memoryDisclosureLabelForEpisodeIds(episodeIds, labelsByEpisodeId),
+    );
+
+    expect(getMany).toHaveBeenCalledTimes(1);
+    expect(getMany).toHaveBeenCalledWith([privateEpisode.id, publicEpisode.id, danglingEpisodeId]);
+    expect(batchedLabels).toEqual(perRecordLabels);
+    expect(batchedLabels[2]?.disclosureClass).toBe("unknown");
+    expect(batchedLabels[3]).toEqual({
+      disclosureClass: "unknown",
+      originAudienceEntityIds: [],
+      privateToEntityIds: [],
+      publicToEntityIds: [],
+    });
+  });
+});
 
 describe("resolveSemanticContext temporal validity", () => {
   let harness: Awaited<ReturnType<typeof createOfflineTestHarness>> | undefined;

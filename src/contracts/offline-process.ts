@@ -11,6 +11,7 @@ export const OFFLINE_PROCESS_NAMES = [
   "procedural-synthesizer",
   "belief-reviser",
   "creator-directive-reconciler",
+  "lived-experience-day-summarizer",
   "commitment-reconciler",
 ] as const;
 

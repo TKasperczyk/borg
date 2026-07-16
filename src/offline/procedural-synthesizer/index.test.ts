@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { DEFAULT_CONFIG } from "../../config/index.js";
@@ -17,6 +17,7 @@ import {
   createSkillId,
   createStreamEntryId,
   type EntityId,
+  type EpisodeId,
   type SkillId,
 } from "../../util/ids.js";
 import {
@@ -171,6 +172,7 @@ async function addSuccessEvidence(
     skillActuallyApplied?: boolean;
     audienceEntityId?: EntityId | null;
     selectedSkillId?: SkillId | null;
+    additionalResolvedEpisodeIds?: readonly EpisodeId[];
   } = {},
 ) {
   const sourceStreamIds = [createStreamEntryId(), createStreamEntryId()];
@@ -202,7 +204,7 @@ async function addSuccessEvidence(
     evidenceText: input.evidenceText ?? "User confirmed the deploy worked.",
     grounded: input.grounded ?? true,
     skillActuallyApplied: input.skillActuallyApplied ?? true,
-    resolvedEpisodeIds: [episode.id],
+    resolvedEpisodeIds: [episode.id, ...(input.additionalResolvedEpisodeIds ?? [])],
     audienceEntityId: input.audienceEntityId ?? null,
   });
 }
@@ -406,6 +408,41 @@ describe("ProceduralSynthesizerProcess", () => {
         applies_when: "deployment rollback comparison",
       }),
     ]);
+  });
+
+  it("batches disclosure hydration once for a procedural evidence collection", async () => {
+    const evidenceCount = 24;
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({ minSupport: evidenceCount, maxSkillsPerRun: 1 }),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSkillCandidateResponse({
+            applies_when: "deployment rollback comparison",
+          }),
+        ],
+      }),
+    });
+    const evidenceRows = [];
+    const sharedEpisode = await harness.episodicRepository.createEpisode(createEpisodeFixture());
+
+    for (let index = 0; index < evidenceCount; index += 1) {
+      evidenceRows.push(
+        await addSuccessEvidence(harness, {
+          additionalResolvedEpisodeIds: [sharedEpisode.id],
+        }),
+      );
+    }
+
+    const getMany = vi.spyOn(harness.episodicRepository, "getMany");
+    const process = createProcess(harness);
+    const plan = await process.plan(harness.createContext());
+
+    expect(plan.items).toHaveLength(1);
+    expect(getMany).toHaveBeenCalledTimes(1);
+    const lookedUpEpisodeIds = getMany.mock.calls[0]?.[0] ?? [];
+    const expectedEpisodeIds = evidenceRows.flatMap((evidence) => evidence.resolved_episode_ids);
+    expect(lookedUpEpisodeIds).toHaveLength(evidenceCount + 1);
+    expect(new Set(lookedUpEpisodeIds)).toEqual(new Set(expectedEpisodeIds));
   });
 
   it("records one synthesized posterior outcome per supporting evidence row", async () => {

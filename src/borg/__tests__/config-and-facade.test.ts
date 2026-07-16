@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   DEFAULT_CONFIG,
+  EpisodicRepository,
   FakeLLMClient,
   LanceDbStore,
   SqliteDatabase,
@@ -14,6 +15,7 @@ import {
   createTestConfig,
   resolveBorgConfig,
   Borg,
+  borgInternals,
   EPISODE_TOOL_NAME,
   ScriptedEmbeddingClient,
   join,
@@ -22,6 +24,19 @@ import {
   tmpdir,
 } from "./test-helpers.js";
 import { DemoMessageConnector } from "../../outbound/index.js";
+import {
+  createEpisodeFixture,
+  createSemanticNodeFixture,
+} from "../../offline/test-support.js";
+import { resolveMemoryDisclosureLabelForEpisodeIds } from "../../retrieval/index.js";
+import { createBorgFacades } from "../facade.js";
+import type { BorgDependencies } from "../types.js";
+
+type DisclosureBatchingInternals = {
+  deps: {
+    episodicRepository: EpisodicRepository;
+  };
+};
 
 describe("Borg", () => {
   const tempDirs: string[] = [];
@@ -548,6 +563,152 @@ describe("Borg", () => {
     } finally {
       await borg.close();
     }
+  });
+
+  it("batches collection disclosure lookups without changing labels", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_000);
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      const episodicRepository =
+        borgInternals<DisclosureBatchingInternals>(borg).deps.episodicRepository;
+      const audienceEntityId = borg.entities.resolve("Alice");
+      const privateEpisode = createEpisodeFixture({
+        audience_entity_id: audienceEntityId,
+        origin_audience_entity_ids: [audienceEntityId],
+        shared: false,
+      });
+      const publicEpisode = createEpisodeFixture({
+        audience_entity_id: null,
+        origin_audience_entity_ids: [],
+        shared: true,
+      });
+      const danglingEpisodeId = createEpisodeId();
+
+      await episodicRepository.createEpisode(privateEpisode);
+      await episodicRepository.createEpisode(publicEpisode);
+
+      const first = await borg.semantic.nodes.add({
+        kind: "concept",
+        label: "Batched private source",
+        description: "Private source fixture.",
+        sourceEpisodeIds: [privateEpisode.id],
+      });
+      const second = await borg.semantic.nodes.add({
+        kind: "proposition",
+        label: "Batched public source",
+        description: "Public source fixture.",
+        sourceEpisodeIds: [publicEpisode.id],
+      });
+      const dangling = await borg.semantic.nodes.add({
+        kind: "proposition",
+        label: "Batched dangling source",
+        description: "Private and historical tombstone fixture.",
+        sourceEpisodeIds: [privateEpisode.id, danglingEpisodeId],
+      });
+      const edge = borg.semantic.edges.add({
+        from_node_id: first.id,
+        to_node_id: second.id,
+        relation: "supports",
+        confidence: 0.8,
+        evidence_episode_ids: [privateEpisode.id, danglingEpisodeId],
+        created_at: clock.now(),
+        last_verified_at: clock.now(),
+      });
+      const expectedNodeLabels = new Map(
+        await Promise.all(
+          [first, second, dangling].map(
+            async (node) =>
+              [
+                node.id,
+                await resolveMemoryDisclosureLabelForEpisodeIds(
+                  episodicRepository,
+                  node.source_episode_ids,
+                ),
+              ] as const,
+          ),
+        ),
+      );
+      const expectedEdgeLabel = await resolveMemoryDisclosureLabelForEpisodeIds(
+        episodicRepository,
+        edge.evidence_episode_ids,
+      );
+      const getMany = vi.spyOn(episodicRepository, "getMany");
+
+      const listed = await borg.semantic.nodes.list({ includeArchived: true, limit: 100 });
+      expect(getMany).toHaveBeenCalledTimes(1);
+      for (const node of listed) {
+        expect(node.disclosureLabel).toEqual(expectedNodeLabels.get(node.id));
+      }
+      expect(listed.find((node) => node.id === dangling.id)?.disclosureLabel.disclosureClass).toBe(
+        "unknown",
+      );
+
+      getMany.mockClear();
+      const page = await borg.semantic.nodes.listPage({ includeArchived: true, limit: 100 });
+      expect(page.items).toHaveLength(3);
+      expect(getMany).toHaveBeenCalledTimes(1);
+
+      getMany.mockClear();
+      const searched = await borg.semantic.nodes.search("batched disclosure", { limit: 10 });
+      expect(searched.length).toBeGreaterThan(0);
+      expect(getMany).toHaveBeenCalledTimes(1);
+
+      getMany.mockClear();
+      const edges = await borg.semantic.edges.list({ includeInvalid: true });
+      expect(getMany).toHaveBeenCalledTimes(1);
+      expect(edges.find((candidate) => candidate.id === edge.id)?.disclosureLabel).toEqual(
+        expectedEdgeLabel,
+      );
+
+      getMany.mockClear();
+      const walked = await borg.semantic.walk(first.id, { depth: 1 });
+      expect(walked).toHaveLength(1);
+      expect(getMany).toHaveBeenCalledTimes(1);
+      expect(walked[0]?.edgePath[0]?.disclosureLabel).toEqual(expectedEdgeLabel);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("deduplicates hundreds of source ids into one semantic list disclosure lookup", async () => {
+    const sourceEpisodeIds = Array.from({ length: 200 }, () => createEpisodeId());
+    const nodes = Array.from({ length: 400 }, (_, index) =>
+      createSemanticNodeFixture({
+        label: `Large disclosure fixture ${index}`,
+        source_episode_ids: [
+          sourceEpisodeIds[index % sourceEpisodeIds.length]!,
+          sourceEpisodeIds[(index * 37 + 1) % sourceEpisodeIds.length]!,
+        ],
+      }),
+    );
+    const getMany = vi.fn(
+      async (_episodeIds: readonly ReturnType<typeof createEpisodeId>[]) => [],
+    );
+    const facades = createBorgFacades({
+      actionRepository: {},
+      episodicRepository: { getMany },
+      semanticNodeRepository: {
+        list: async () => nodes,
+      },
+    } as unknown as BorgDependencies);
+
+    const listed = await facades.semantic.nodes.list({ includeArchived: true, limit: 500 });
+
+    expect(listed).toHaveLength(nodes.length);
+    expect(listed.every((node) => node.disclosureLabel.disclosureClass === "unknown")).toBe(true);
+    expect(getMany).toHaveBeenCalledTimes(1);
+    const lookedUpEpisodeIds = getMany.mock.calls[0]?.[0] ?? [];
+    expect(lookedUpEpisodeIds).toHaveLength(sourceEpisodeIds.length);
+    expect(new Set(lookedUpEpisodeIds)).toEqual(new Set(sourceEpisodeIds));
   });
 
   it("exposes self writes through the identity guard instead of raw repositories", async () => {

@@ -1211,6 +1211,7 @@ export type BorgMaintenanceScheduler = {
 export type BorgMaintenanceFacade = {
   scheduler: BorgMaintenanceScheduler;
   optimizeStorage(options?: { runId?: MaintenanceRunId }): Promise<BorgStorageOptimizationResult>;
+  countPendingSemanticExtractionEpisodes(): Promise<number>;
   config(): {
     enabled: boolean;
     lightIntervalMs: number;

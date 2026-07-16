@@ -9,6 +9,7 @@ import {
 } from "../../llm/index.js";
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import {
+  memoryDisclosureLabelFromEpisodeAccess,
   memoryDisclosureLabelSchema,
   unknownMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
@@ -27,7 +28,11 @@ import {
 import type { ReviewQueueItem, SkillSplitReviewPayload } from "../../memory/review-queue/index.js";
 import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
-import { combineMemoryDisclosureLabels } from "../../retrieval/index.js";
+import {
+  combineMemoryDisclosureLabels,
+  mapWithDisclosureConcurrency,
+  memoryDisclosureLabelForEpisodeIds,
+} from "../../retrieval/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
 import { type EpisodeId } from "../../util/ids.js";
@@ -247,27 +252,32 @@ async function collectEvidenceClusters(
       }
     }
 
-    const labeledEvidenceRows = await Promise.all(
-      clusterEvidence.map(async (evidence): Promise<LabeledProceduralEvidenceRow> => {
-        const sourceEpisodeIds = await resolveEvidenceEpisodeIds(ctx, evidence);
-        const disclosureLabel = await disclosureLabelForEpisodeIds(
-          ctx.episodicRepository,
-          sourceEpisodeIds,
-        );
-
-        return {
-          evidence,
-          sourceEpisodeIds,
-          disclosureLabel,
-        };
+    const resolvedEvidenceRows = await mapWithDisclosureConcurrency(
+      clusterEvidence,
+      async (evidence) => ({
+        evidence,
+        sourceEpisodeIds: await resolveEvidenceEpisodeIds(ctx, evidence),
       }),
     );
     const sourceEpisodeIds = uniqueEpisodeIds(
-      labeledEvidenceRows.flatMap((evidenceRow) => evidenceRow.sourceEpisodeIds),
+      resolvedEvidenceRows.flatMap((evidenceRow) => evidenceRow.sourceEpisodeIds),
     );
-
-    const sourceEpisodes = (await ctx.episodicRepository.getMany(sourceEpisodeIds)).filter(
-      (episode): episode is Episode => episode !== null,
+    const sourceEpisodes = await ctx.episodicRepository.getMany(sourceEpisodeIds);
+    const labelsByEpisodeId = new Map(
+      sourceEpisodes.map((episode) => [
+        episode.id,
+        memoryDisclosureLabelFromEpisodeAccess(episode),
+      ]),
+    );
+    const labeledEvidenceRows: LabeledProceduralEvidenceRow[] = resolvedEvidenceRows.map(
+      ({ evidence, sourceEpisodeIds: evidenceSourceEpisodeIds }) => ({
+        evidence,
+        sourceEpisodeIds: evidenceSourceEpisodeIds,
+        disclosureLabel: memoryDisclosureLabelForEpisodeIds(
+          evidenceSourceEpisodeIds,
+          labelsByEpisodeId,
+        ),
+      }),
     );
 
     clusters.push({

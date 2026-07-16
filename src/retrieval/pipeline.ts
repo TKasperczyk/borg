@@ -37,6 +37,7 @@ import type { SocialProfile } from "../memory/social/index.js";
 import type { StreamEntry, StreamEntryIndexRepository } from "../stream/index.js";
 import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
 import { SystemClock, type Clock } from "../util/clock.js";
+import { mapWithConcurrency } from "../util/collections.js";
 import { StorageError } from "../util/errors.js";
 import {
   DEFAULT_SESSION_ID,
@@ -2329,22 +2330,6 @@ function mergeRawEpisodeCandidates(
   }
 
   return [...byId.values()];
-}
-
-async function mapWithConcurrency<T, U>(
-  items: readonly T[],
-  limit: number,
-  mapper: (item: T, index: number) => Promise<U>,
-): Promise<U[]> {
-  const normalizedLimit = Math.max(1, Math.floor(limit));
-  const results: U[] = [];
-
-  for (let start = 0; start < items.length; start += normalizedLimit) {
-    const batch = items.slice(start, start + normalizedLimit);
-    results.push(...(await Promise.all(batch.map((item, index) => mapper(item, start + index)))));
-  }
-
-  return results;
 }
 
 function isSemanticIntentKind(kind: RecallIntentKind): boolean {
