@@ -237,6 +237,78 @@ describe("episodic repository", () => {
     await expect(harness.repo.listUnarchivedEpisodeIds()).resolves.toEqual([active.id]);
   });
 
+  it("unarchives an episode with a CAS transition and restores effective visibility", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const episode = createEpisode(createEpisodeId(), harness.clock.now());
+
+    await harness.repo.createEpisode(episode);
+    harness.repo.updateStats(episode.id, {
+      use_count: 4,
+      heat_multiplier: 0.35,
+    });
+    const beforeArchive = harness.repo.getStats(episode.id)!;
+
+    harness.repo.archiveEpisode(episode.id, {
+      caller: "repository.test",
+      reason: "exercise explicit archive reversal",
+      process: "curator",
+    });
+
+    await expect(harness.repo.listUnarchivedEpisodeIds()).resolves.toEqual([]);
+    await expect(harness.repo.listEffectivelyVisible()).resolves.toEqual([]);
+
+    const unarchived = harness.repo.unarchiveEpisode(episode.id, {
+      caller: "repository.test",
+      reason: "reverse explicit archival",
+      process: "curator",
+    });
+    const archiveFlags = harness.db
+      .prepare(
+        `
+          SELECT stats.archived AS stats_archived, episode_index.archived AS index_archived
+          FROM episode_stats AS stats
+          JOIN episode_index ON episode_index.episode_id = stats.episode_id
+          WHERE stats.episode_id = ?
+        `,
+      )
+      .get(episode.id) as { stats_archived: number; index_archived: number };
+    const unarchiveAuditCount = () =>
+      (
+        harness.db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM maintenance_audit WHERE action = 'unarchive_episode'",
+          )
+          .get() as { count: number }
+      ).count;
+
+    expect(unarchived).toEqual(beforeArchive);
+    expect(archiveFlags).toEqual({
+      stats_archived: 0,
+      index_archived: 0,
+    });
+    expect(await harness.repo.get(episode.id)).toEqual(
+      expect.objectContaining({
+        id: episode.id,
+        significance: episode.significance,
+      }),
+    );
+    await expect(harness.repo.listUnarchivedEpisodeIds()).resolves.toEqual([episode.id]);
+    await expect(harness.repo.listEffectivelyVisible()).resolves.toEqual([
+      expect.objectContaining({ id: episode.id }),
+    ]);
+    expect(unarchiveAuditCount()).toBe(1);
+
+    const noOp = harness.repo.unarchiveEpisode(episode.id, {
+      caller: "repository.test",
+      reason: "exercise non-archived no-op",
+      process: "curator",
+    });
+
+    expect(noOp).toEqual(unarchived);
+    expect(unarchiveAuditCount()).toBe(1);
+  });
+
   it("does not inject stats defaults when applying partial stat patches", async () => {
     const harness = await createHarness();
     closers.push(harness.close);

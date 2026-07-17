@@ -146,6 +146,79 @@ describe("curator process", () => {
     ).toEqual(["archive", "archive_episode", "decay", "demote", "promote"]);
   });
 
+  it("round-trips an archive reversal without restoring archived through stats", async () => {
+    const nowMs = 100 * DAY_MS;
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+    });
+    cleanup.push(harness.cleanup);
+    const episode = createEpisodeFixture(
+      {
+        title: "Explicit archive reversal",
+        significance: 0.73,
+        created_at: nowMs - 50 * DAY_MS,
+        updated_at: nowMs - 50 * DAY_MS,
+      },
+      [0, 1, 0, 0],
+    );
+
+    await harness.episodicRepository.createEpisode(episode);
+    harness.episodicRepository.updateStats(episode.id, {
+      tier: "T1",
+      retrieval_count: 2,
+      use_count: 3,
+      win_rate: 0.25,
+      heat_multiplier: 0.01,
+      last_decayed_at: nowMs,
+    });
+    recordSemanticExtractionAudit(harness, [episode.id]);
+    const beforeArchive = harness.episodicRepository.getStats(episode.id)!;
+    const process = new CuratorProcess({
+      episodicRepository: harness.episodicRepository,
+      traitsRepository: harness.traitsRepository,
+      moodRepository: harness.moodRepository,
+      socialRepository: harness.socialRepository,
+      registry: harness.registry,
+    });
+
+    const result = await process.run(harness.createContext(), {
+      dryRun: false,
+    });
+    const archiveAudit = harness.auditLog
+      .list({ process: "curator" })
+      .find((row) => row.action === "archive");
+
+    expect(result.changes.map((change) => change.action)).toEqual(["archive"]);
+    expect(await harness.episodicRepository.get(episode.id)).toBeNull();
+    expect(harness.episodicRepository.getStats(episode.id)).toMatchObject({
+      archived: true,
+    });
+
+    harness.episodicRepository.updateStats(episode.id, {
+      tier: "T2",
+      retrieval_count: 20,
+      use_count: 30,
+      heat_multiplier: 0.8,
+    });
+    await harness.auditLog.revert(archiveAudit!.id, "test");
+
+    expect(harness.episodicRepository.getStats(episode.id)).toEqual(beforeArchive);
+    expect(await harness.episodicRepository.get(episode.id)).toEqual(
+      expect.objectContaining({
+        id: episode.id,
+        significance: 0.73,
+      }),
+    );
+    await expect(harness.episodicRepository.listUnarchivedEpisodeIds()).resolves.toContain(
+      episode.id,
+    );
+    expect(
+      harness.auditLog
+        .list({ process: "curator" })
+        .filter((row) => row.action === "unarchive_episode"),
+    ).toHaveLength(1);
+  });
+
   it("does not heat-archive a current consolidation version even when it meets archive criteria", async () => {
     const nowMs = 100 * DAY_MS;
     const harness = await createOfflineTestHarness({

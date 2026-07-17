@@ -533,7 +533,26 @@ export class CuratorProcess implements OfflineProcess<CuratorPlan> {
 
     this.options.registry.register(this.name, "promote", revertStats);
     this.options.registry.register(this.name, "demote", revertStats);
-    this.options.registry.register(this.name, "archive", revertStats);
+    this.options.registry.register(this.name, "archive", async (input) => {
+      const previous = input.reversal.previous;
+
+      if (Array.isArray(previous)) {
+        for (const item of previous) {
+          const parsed = episodeStatsSchema.safeParse(item);
+
+          if (parsed.success) {
+            this.options.episodicRepository.unarchiveEpisode(parsed.data.episode_id, {
+              caller: "curator.archive.revert",
+              reason: "explicit reversal of curator archive action",
+              process: this.name,
+              runId: input.audit.run_id,
+            });
+          }
+        }
+      }
+
+      await revertStats(input);
+    });
     this.options.registry.register(this.name, "decay", revertStats);
     this.options.registry.register(this.name, "decay_trait", async ({ reversal }) => {
       const parsed = traitSchema.safeParse(reversal.previous);

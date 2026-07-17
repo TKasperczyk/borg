@@ -1646,7 +1646,7 @@ export class EpisodicRepository {
   }
 
   private recordEpisodeLifecycleAudit(input: {
-    action: "archive_episode" | "reactivate_episode";
+    action: "archive_episode" | "reactivate_episode" | "unarchive_episode";
     episodeId: EpisodeId;
     previousArchived: boolean;
     nextArchived: boolean;
@@ -1757,7 +1757,11 @@ export class EpisodicRepository {
     return apply() as EpisodeStats;
   }
 
-  reactivateEpisode(episodeId: EpisodeId, audit: EpisodeLifecycleAuditInput): EpisodeStats {
+  private transitionArchivedEpisodeToActive(
+    episodeId: EpisodeId,
+    audit: EpisodeLifecycleAuditInput,
+    action: "reactivate_episode" | "unarchive_episode",
+  ): EpisodeStats {
     const apply = this.db.transaction(() => {
       const current = this.getStats(episodeId);
 
@@ -1783,8 +1787,9 @@ export class EpisodicRepository {
         .run(episodeId);
 
       if (result.changes !== 1) {
-        throw new StorageError(`Stale episode reactivation transition for ${episodeId}`, {
-          code: "EPISODE_REACTIVATE_STALE",
+        throw new StorageError(`Stale episode activation transition for ${episodeId}`, {
+          code:
+            action === "unarchive_episode" ? "EPISODE_UNARCHIVE_STALE" : "EPISODE_REACTIVATE_STALE",
         });
       }
 
@@ -1798,7 +1803,7 @@ export class EpisodicRepository {
 
       this.syncEpisodeIndexStats(next);
       this.recordEpisodeLifecycleAudit({
-        action: "reactivate_episode",
+        action,
         episodeId,
         previousArchived: true,
         nextArchived: false,
@@ -1809,6 +1814,16 @@ export class EpisodicRepository {
     });
 
     return apply() as EpisodeStats;
+  }
+
+  reactivateEpisode(episodeId: EpisodeId, audit: EpisodeLifecycleAuditInput): EpisodeStats {
+    return this.transitionArchivedEpisodeToActive(episodeId, audit, "reactivate_episode");
+  }
+
+  // Explicit operator-invoked reversal paths only, never happy-path writers. The June lockdown
+  // intentionally keeps every generic restore patch archived-neutral.
+  unarchiveEpisode(episodeId: EpisodeId, audit: EpisodeLifecycleAuditInput): EpisodeStats {
+    return this.transitionArchivedEpisodeToActive(episodeId, audit, "unarchive_episode");
   }
 
   updateStats(episodeId: EpisodeId, patch: EpisodeStatsPatch): EpisodeStats {
@@ -1831,7 +1846,7 @@ export class EpisodicRepository {
 
     if (parsedPatch.data.archived !== undefined) {
       throw new StorageError(
-        `Episode ${episodeId} archive state must change via archiveEpisode/reactivateEpisode, not updateStats`,
+        `Episode ${episodeId} archive state must change via archiveEpisode/reactivateEpisode/unarchiveEpisode, not updateStats`,
         {
           code: "EPISODE_ARCHIVED_REQUIRES_LIFECYCLE_API",
         },

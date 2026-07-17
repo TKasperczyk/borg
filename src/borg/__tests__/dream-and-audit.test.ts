@@ -159,7 +159,12 @@ describe("Borg", () => {
 
       const reverted = await borg.audit.revert(archiveAudit!.id);
       expect(reverted?.reverted_at).not.toBeNull();
-      expect((await borg.episodic.get("ep_cccccccccccccccc" as never))?.episode.id).toBeUndefined();
+      // Reverting the archive action un-archives the episode again (CAS-guarded
+      // unarchiveEpisode); before this fix the revert restored stats but left the
+      // episode archived and retrieval-invisible.
+      expect((await borg.episodic.get("ep_cccccccccccccccc" as never))?.episode.id).toBe(
+        "ep_cccccccccccccccc",
+      );
     } finally {
       await borg.close();
     }
