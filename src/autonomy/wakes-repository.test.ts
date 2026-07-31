@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { openDatabase } from "../storage/sqlite/index.js";
@@ -46,6 +50,93 @@ describe("AutonomyWakesRepository", () => {
       ]);
     } finally {
       db.close();
+    }
+  });
+
+  it("records outcomes and filters counts without excluding legacy null outcomes", () => {
+    const clock = new ManualClock(1_000);
+    const db = openDatabase(":memory:", {
+      migrations: autonomyMigrations,
+    });
+    const repository = new AutonomyWakesRepository({ db, clock });
+
+    try {
+      const headwayWake = repository.record({
+        trigger_name: "goal_followup_due",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+      });
+      clock.advance(1);
+      const legacyNullWake = repository.record({
+        trigger_name: "scheduled_reflection",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+        source_category: "contemplative",
+      });
+
+      repository.recordOutcome(headwayWake.id, "headway");
+
+      expect(repository.countSince(0)).toBe(2);
+      expect(repository.countSince(0, { outcome: "headway" })).toBe(1);
+      expect(repository.countSince(0, { outcome: "silent" })).toBe(0);
+      expect(
+        repository.countSince(0, {
+          sourceCategory: "operational",
+          outcome: "headway",
+        }),
+      ).toBe(1);
+      expect(repository.listSince(0, 10)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: headwayWake.id, outcome: "headway" }),
+          expect.objectContaining({ id: legacyNullWake.id, outcome: null }),
+        ]),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("applies the additive outcome migration over legacy wake rows", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-autonomy-migration-"));
+    const dbPath = join(tempDir, "borg.db");
+    let db = openDatabase(dbPath, {
+      migrations: autonomyMigrations.slice(0, 2),
+    });
+
+    try {
+      db.prepare(
+        `
+          INSERT INTO autonomy_wakes (
+            id, ts, trigger_name, condition_name, session_id, wake_source_type, source_category
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `,
+      ).run(
+        "autonomy_wake_aaaaaaaaaaaaaaaa",
+        1_000,
+        "goal_followup_due",
+        null,
+        DEFAULT_SESSION_ID,
+        "trigger",
+        "operational",
+      );
+      db.close();
+
+      db = openDatabase(dbPath, { migrations: autonomyMigrations });
+      const repository = new AutonomyWakesRepository({ db, clock: new ManualClock(2_000) });
+      const columns = db.prepare("PRAGMA table_info(autonomy_wakes)").all() as Array<{
+        name: string;
+      }>;
+
+      expect(columns.map((column) => column.name)).toContain("outcome");
+      expect(repository.listSince(0, 10)).toEqual([
+        expect.objectContaining({
+          id: "autonomy_wake_aaaaaaaaaaaaaaaa",
+          outcome: null,
+        }),
+      ]);
+    } finally {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 

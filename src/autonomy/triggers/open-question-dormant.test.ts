@@ -50,6 +50,7 @@ describe("open question dormant trigger", () => {
 
     const events = await trigger.scan();
     expect(events.map((event) => event.payload.open_question_id)).toEqual([dormant.id]);
+    expect(events[0]?.stateTs).toBe(dormant.last_touched);
   });
 
   it("describes the next dormancy threshold without firing", async () => {

@@ -55,6 +55,7 @@ export function createCommitmentRevokedCondition(
             sourceType: "condition",
             watermarkProcessName,
             sortTs: commitment.revoked_at,
+            stateTs: commitment.revoked_at,
             payload: {
               commitment_id: commitment.id,
               directive: commitment.directive,

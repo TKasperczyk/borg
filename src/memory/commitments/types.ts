@@ -137,6 +137,10 @@ export const commitmentSchema = z.object({
   provenance: provenanceSchema,
   source_stream_entry_ids: z.array(streamEntryIdSchema).min(1).optional(),
   created_at: z.number().finite(),
+  // Additive/nullable on disk so pre-migration rows remain readable. The
+  // repository always supplies a number, falling back to created_at only when
+  // it maps one of those historical rows.
+  updated_at: z.number().finite().optional(),
   expires_at: z.number().finite().nullable(),
   expired_at: z.number().finite().nullable(),
   revoked_at: z.number().finite().nullable(),
@@ -188,6 +192,7 @@ function normalizeLegacyCommitmentValue(value: unknown): unknown {
     ...value,
     kind: kind.data,
     enforcement_class: effectiveEnforcementClass,
+    updated_at: value.updated_at ?? value.created_at,
     critical_domain:
       typeof criticalDomain === "string"
         ? criticalDomain
@@ -207,6 +212,7 @@ export const commitmentPatchSchema = commitmentSchema
     id: true,
     record_version: true,
     created_at: true,
+    updated_at: true,
   })
   .partial()
   .strict();

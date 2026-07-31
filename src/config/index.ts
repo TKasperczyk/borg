@@ -590,15 +590,11 @@ const configBaseSchema = z.object({
       // being" framing. The scheduler skeleton is default on (a runtime calls
       // scheduler.start(); library callers stay in control because start() is
       // explicit, and maxWakesPerWindow caps the cost). But only the wake
-      // sources that can actually fire in the current regime are enabled by
-      // default: the event-driven conditions (commitment_revoked,
-      // open_question_urgency_bump), executive-focus-due, and the deliberate
-      // scheduled-wake lever. The time-threshold triggers (commitment_expiring,
-      // open_question_dormant, goal_followup_due) are default OFF -- they are
-      // structurally inert until the underlying data carries the signal they
-      // key on (commitments rarely set expires_at; dormancy/staleness windows
-      // are 7-14 days against memory that is currently days old). Their modules
-      // are retained; flip them on per-deployment once that data matures.
+      // sources enabled by default are the event-driven conditions
+      // (commitment_revoked, open_question_urgency_bump), executive-focus-due,
+      // and the deliberate scheduled-wake lever. Time-threshold triggers keep
+      // conservative library defaults but may be enabled by long-lived
+      // deployments once their records have matured.
       enabled: z.boolean().default(true),
       intervalMs: z.number().int().positive().default(60_000),
       maxWakesPerWindow: z.number().int().positive().default(6),
@@ -618,6 +614,19 @@ const configBaseSchema = z.object({
               sourceTypes: z.array(sessionSourceTypeSchema).default([]),
             })
             .prefault({}),
+        })
+        .prefault({}),
+      fleetBrake: z
+        .object({
+          enabled: z.boolean().default(true),
+          emptyStreakThreshold: z.number().int().positive().default(5),
+          baseCooldownMs: z.number().int().positive().default(1_800_000),
+          cooldownMultiplier: z.number().min(1).default(2),
+          maxCooldownMs: z.number().int().positive().default(21_600_000),
+          errorStreakThreshold: z.number().int().positive().default(3),
+          errorBasePauseMs: z.number().int().positive().default(300_000),
+          errorMaxPauseMs: z.number().int().positive().default(1_800_000),
+          freshnessBypassCap: z.number().int().nonnegative().default(3),
         })
         .prefault({}),
       executiveFocus: z
@@ -672,11 +681,12 @@ const configBaseSchema = z.object({
             .prefault({}),
           goalFollowupDue: z
             .object({
-              // Default off: the 7-14 day follow-up/stale windows are inert
-              // against memory that is currently days old. See comment above.
+              // Conservative library default; long-lived deployments may
+              // enable this once goal records have matured.
               enabled: z.boolean().default(false),
               lookaheadMs: z.number().int().positive().default(604_800_000),
               staleMs: z.number().int().positive().default(1_209_600_000),
+              respectStaleBackoff: z.boolean().default(true),
             })
             .prefault({}),
         })
@@ -1736,6 +1746,51 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
+    ["autonomy", "fleetBrake", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_AUTONOMY_FLEET_BRAKE_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "fleetBrake", "emptyStreakThreshold"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_FLEET_BRAKE_EMPTY_STREAK_THRESHOLD"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "fleetBrake", "baseCooldownMs"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_FLEET_BRAKE_BASE_COOLDOWN_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "fleetBrake", "cooldownMultiplier"],
+    readOptionalEnvFloat(env, "BORG_AUTONOMY_FLEET_BRAKE_COOLDOWN_MULTIPLIER"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "fleetBrake", "maxCooldownMs"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_FLEET_BRAKE_MAX_COOLDOWN_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "fleetBrake", "errorStreakThreshold"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_FLEET_BRAKE_ERROR_STREAK_THRESHOLD"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "fleetBrake", "errorBasePauseMs"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_FLEET_BRAKE_ERROR_BASE_PAUSE_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "fleetBrake", "errorMaxPauseMs"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_FLEET_BRAKE_ERROR_MAX_PAUSE_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "fleetBrake", "freshnessBypassCap"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_FLEET_BRAKE_FRESHNESS_BYPASS_CAP"),
+  );
+  setConfigOverride(
+    overrides,
     ["autonomy", "executiveFocus", "enabled"],
     readOptionalEnvBoolean(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_ENABLED"),
   );
@@ -1813,6 +1868,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["autonomy", "triggers", "goalFollowupDue", "staleMs"],
     readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_GOAL_FOLLOWUP_DUE_STALE_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "triggers", "goalFollowupDue", "respectStaleBackoff"],
+    readOptionalEnvBoolean(env, "BORG_AUTONOMY_TRIGGER_GOAL_FOLLOWUP_DUE_RESPECT_STALE_BACKOFF"),
   );
   setConfigOverride(
     overrides,
@@ -1971,6 +2031,9 @@ export function redactConfig(config: Config): Config {
     },
     autonomy: {
       ...config.autonomy,
+      fleetBrake: {
+        ...config.autonomy.fleetBrake,
+      },
       executiveFocus: {
         ...config.autonomy.executiveFocus,
       },

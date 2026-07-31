@@ -15,6 +15,11 @@ describe("commitment patch schema", () => {
         created_at: 123,
       }),
     ).toThrow();
+    expect(() =>
+      commitmentPatchSchema.parse({
+        updated_at: 123,
+      }),
+    ).toThrow();
   });
 });
 
@@ -62,5 +67,6 @@ describe("legacy commitment enforcement normalization", () => {
 
     expect(parsed.enforcement_class).toBe("critical");
     expect(parsed.critical_domain).toBe("audience_scope");
+    expect(parsed.updated_at).toBe(parsed.created_at);
   });
 });

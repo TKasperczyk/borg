@@ -73,6 +73,7 @@ export function createScheduledReflectionTrigger(
           sourceType: "trigger",
           watermarkProcessName: WATERMARK_PROCESS_NAME,
           sortTs: dueWindowStartMs,
+          stateTs: dueWindowStartMs,
           payload: {
             interval_ms: options.intervalMs,
           },

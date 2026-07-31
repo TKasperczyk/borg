@@ -54,6 +54,7 @@ describe("mood valence drop condition", () => {
 
     const firstScan = await condition.scan();
     expect(firstScan).toHaveLength(1);
+    expect(firstScan[0]?.stateTs).toBe(firstScan[0]?.payload.latest_ts);
     expect(firstScan[0]?.payload.average_valence).toBeLessThan(-0.5);
 
     watermarkRepository.set(firstScan[0]!.watermarkProcessName, "default" as never, {

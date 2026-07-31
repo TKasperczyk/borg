@@ -34,6 +34,7 @@ describe("scheduled reflection trigger", () => {
     const firstScan = await trigger.scan();
     expect(firstScan).toHaveLength(1);
     expect(firstScan[0]?.id).toBe("scheduled-reflection:1000000");
+    expect(firstScan[0]?.stateTs).toBe(1_000_000);
 
     clock.advance(30_000);
     const sameWindowScan = await trigger.scan();
@@ -50,6 +51,7 @@ describe("scheduled reflection trigger", () => {
     const nextWindowScan = await trigger.scan();
     expect(nextWindowScan).toHaveLength(1);
     expect(nextWindowScan[0]?.id).not.toBe(firstScan[0]?.id);
+    expect(nextWindowScan[0]?.stateTs).toBe(1_090_000);
   });
 
   it("describes the next reflection boundary from its watermark", async () => {

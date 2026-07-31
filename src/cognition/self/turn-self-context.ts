@@ -64,16 +64,29 @@ export type TurnSelfContext = {
 function getForcedExecutiveFocusGoalId(
   autonomyTrigger: AutonomyTriggerContext | null | undefined,
 ): GoalId | null {
-  if (
-    autonomyTrigger?.source_name !== "executive_focus_due" ||
-    autonomyTrigger.payload.reason !== "step_due"
-  ) {
+  if (autonomyTrigger?.source_name === "executive_focus_due") {
+    if (autonomyTrigger.payload.reason !== "step_due") {
+      return null;
+    }
+
+    const candidate = autonomyTrigger.payload.force_executive_focus_goal_id;
+
+    return typeof candidate === "string" && goalIdHelpers.is(candidate) ? candidate : null;
+  }
+
+  if (autonomyTrigger?.source_name !== "goal_followup_due") {
     return null;
   }
 
-  const candidate = autonomyTrigger.payload.force_executive_focus_goal_id;
+  const candidate = autonomyTrigger.payload.selected_goal_id;
+  const selectedGoal = autonomyTrigger.payload.selected_goal;
 
-  return typeof candidate === "string" && goalIdHelpers.is(candidate) ? candidate : null;
+  return typeof candidate === "string" &&
+    goalIdHelpers.is(candidate) &&
+    isRecord(selectedGoal) &&
+    selectedGoal.id === candidate
+    ? candidate
+    : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -83,7 +96,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function executiveFocusGoalDisclosureLabelsFromTrigger(
   autonomyTrigger: AutonomyTriggerContext | null | undefined,
 ): ReadonlyMap<GoalId, MemoryDisclosureLabel> {
-  if (autonomyTrigger?.source_name !== "executive_focus_due") {
+  if (
+    autonomyTrigger?.source_name !== "executive_focus_due" &&
+    autonomyTrigger?.source_name !== "goal_followup_due"
+  ) {
     return new Map();
   }
 
@@ -98,9 +114,7 @@ function executiveFocusGoalDisclosureLabelsFromTrigger(
     return new Map();
   }
 
-  const disclosureLabel = memoryDisclosureLabelFromMetadata(
-    selectedGoalPayload.disclosure_label,
-  );
+  const disclosureLabel = memoryDisclosureLabelFromMetadata(selectedGoalPayload.disclosure_label);
 
   return disclosureLabel === null ? new Map() : new Map([[selectedGoalId, disclosureLabel]]);
 }

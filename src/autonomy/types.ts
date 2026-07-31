@@ -28,6 +28,9 @@ export type AutonomyWakeSourceName = (typeof AUTONOMY_WAKE_SOURCE_NAMES)[number]
 export type AutonomyWakeSourceType = "trigger" | "condition";
 export type AutonomyWakeSourceCategory = "contemplative" | "operational";
 
+export const AUTONOMY_WAKE_OUTCOMES = ["headway", "silent", "error", "busy"] as const;
+export type AutonomyWakeOutcome = (typeof AUTONOMY_WAKE_OUTCOMES)[number];
+
 export const AUTONOMY_WAKE_SOURCE_METADATA = {
   commitment_expiring: {
     type: "trigger",
@@ -79,6 +82,7 @@ export type DueEvent<Payload extends Record<string, unknown> = Record<string, un
   sourceType: AutonomyWakeSourceType;
   watermarkProcessName: string;
   sortTs: number;
+  stateTs?: number;
   payload: Payload;
 };
 
@@ -131,11 +135,23 @@ export type AutonomySchedulerSourceDescription =
   | AutonomySchedulerTriggerSourceDescription
   | AutonomySchedulerConditionSourceDescription;
 
+export type AutonomySchedulerFleetBrakeDescription = {
+  enabled: boolean;
+  empty_streak: number;
+  streak_anchor_ts: number | null;
+  cooldown_until: number | null;
+  error_streak: number;
+  error_paused_until: number | null;
+  bypass_count: number;
+  window_outcomes: Record<AutonomyWakeOutcome, number>;
+};
+
 export type AutonomySchedulerDescription = {
   enabled: boolean;
   interval_ms: number;
   next_tick_at: number | null;
   budget: AutonomySchedulerBudgetDescription;
+  fleet_brake: AutonomySchedulerFleetBrakeDescription;
   sources: AutonomySchedulerSourceDescription[];
 };
 
@@ -144,7 +160,14 @@ export type AutonomyTickEventResult = {
   sourceName: AutonomyWakeSourceName;
   sourceType: AutonomyWakeSourceType;
   sourceCategory: AutonomyWakeSourceCategory;
-  status: "fired" | "budget_skipped" | "busy_skipped" | "error";
+  status:
+    | "fired"
+    | "budget_skipped"
+    | "fleet_cooldown_skipped"
+    | "error_circuit_skipped"
+    | "busy_skipped"
+    | "bookkeeping_error"
+    | "error";
   payload: Record<string, unknown>;
   outcomeSummary?: string;
   turnResultId?: string | null;
@@ -158,7 +181,11 @@ export type TickResult = {
   dueEvents: number;
   firedEvents: number;
   budgetSkipped: number;
+  fleetCooldownSkipped: number;
+  errorCircuitSkipped: number;
   busySkipped: number;
   errorCount: number;
+  sourceErrorCount: number;
+  bookkeepingErrorCount: number;
   events: AutonomyTickEventResult[];
 };

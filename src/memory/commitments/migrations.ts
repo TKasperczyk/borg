@@ -98,4 +98,14 @@ export const commitmentMigrations = [
       `);
     },
   },
+  {
+    id: 3,
+    name: "commitments_updated_at",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE commitments
+        ADD COLUMN updated_at INTEGER NULL;
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

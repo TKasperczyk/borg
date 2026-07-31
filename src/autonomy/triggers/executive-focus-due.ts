@@ -27,9 +27,8 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type EpisodeId, type SessionId } from "../../util/ids.js";
 import type { AutonomyTrigger, DueEvent } from "../types.js";
 import {
-  executiveFocusGoalStaleBackoffCooldownMs,
   getExecutiveFocusGoalStaleBackoffProcessName,
-  readExecutiveFocusGoalStaleBackoffMetadata,
+  goalStaleBackoffEndMs,
 } from "../executive-focus-stale-backoff.js";
 
 const TRIGGER_NAME = "executive_focus_due" as const;
@@ -328,44 +327,17 @@ export function createExecutiveFocusDueTrigger(
     goal_id: GoalRecord["id"];
     last_progress_ts: number | null;
   }): number | null {
-    const backoff = options.watermarkRepository.get(
-      getExecutiveFocusGoalStaleBackoffProcessName(input.goal_id),
-      sessionId,
-    );
-
-    if (backoff === null) {
-      return null;
-    }
-
-    if (input.last_progress_ts !== null && input.last_progress_ts >= backoff.updatedAt) {
-      return null;
-    }
-
-    const metadata = readExecutiveFocusGoalStaleBackoffMetadata(backoff);
-
-    if (metadata.empty_count <= 0) {
-      return null;
-    }
-
-    if (metadata.empty_count >= options.wakeEmptyDormancyCount) {
-      // Dormant: after this many consecutive empty wakes the goal exits
-      // exec-focus eligibility entirely until it makes headway -- the progress
-      // reset above, or an emission that clears the count in the scheduler. It
-      // never re-enters on a timer, so a perpetually empty goal stops consuming
-      // wake slots instead of merely slowing to the cooldown cap (which, with a
-      // pool of stale goals, would still sum to a steady drip of empty wakes).
-      return Number.POSITIVE_INFINITY;
-    }
-
-    return (
-      backoff.updatedAt +
-      executiveFocusGoalStaleBackoffCooldownMs({
-        baseCooldownMs: options.wakeCooldownMs,
-        multiplier: options.wakeCooldownBackoffMultiplier,
-        maxCooldownMs: options.wakeCooldownMaxMs,
-        emptyCount: metadata.empty_count,
-      })
-    );
+    return goalStaleBackoffEndMs({
+      watermark: options.watermarkRepository.get(
+        getExecutiveFocusGoalStaleBackoffProcessName(input.goal_id),
+        sessionId,
+      ),
+      lastProgressTs: input.last_progress_ts,
+      baseCooldownMs: options.wakeCooldownMs,
+      multiplier: options.wakeCooldownBackoffMultiplier,
+      maxCooldownMs: options.wakeCooldownMaxMs,
+      dormancyCount: options.wakeEmptyDormancyCount,
+    });
   }
 
   function isGoalStaleBackedOff(goal: GoalRecord, nowMs: number): boolean {
@@ -516,6 +488,7 @@ export function createExecutiveFocusDueTrigger(
           sourceType: "trigger",
           watermarkProcessName: getGoalCooldownProcessName(goal.id),
           sortTs: dueAt,
+          stateTs: dueStep.updated_at,
           payload: buildScorePayload({
             goal,
             score,
@@ -569,6 +542,7 @@ export function createExecutiveFocusDueTrigger(
             sourceType: "trigger",
             watermarkProcessName: getGoalCooldownProcessName(selectedGoal.id),
             sortTs: progressAnchor + options.stalenessMs,
+            stateTs: progressAnchor,
             payload: buildScorePayload({
               goal: selectedGoal,
               score: topEligibleCandidate,

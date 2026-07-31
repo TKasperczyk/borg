@@ -15,8 +15,10 @@ import {
 
 import {
   AUTONOMY_CONDITION_NAMES,
+  AUTONOMY_WAKE_OUTCOMES,
   AUTONOMY_WAKE_SOURCE_NAMES,
   type AutonomyConditionName,
+  type AutonomyWakeOutcome,
   type AutonomyWakeSourceCategory,
   type AutonomyWakeSourceName,
   type AutonomyWakeSourceType,
@@ -26,6 +28,7 @@ const autonomyWakeSourceTypeSchema = z.enum(["trigger", "condition"]);
 const autonomyWakeSourceCategorySchema = z.enum(["contemplative", "operational"]);
 const autonomyWakeSourceNameSchema = z.enum(AUTONOMY_WAKE_SOURCE_NAMES);
 const autonomyConditionNameSchema = z.enum(AUTONOMY_CONDITION_NAMES);
+const autonomyWakeOutcomeSchema = z.enum(AUTONOMY_WAKE_OUTCOMES);
 
 const autonomyWakeInputSchema = z.object({
   trigger_name: autonomyWakeSourceNameSchema,
@@ -61,6 +64,7 @@ const autonomyWakeRowSchema = z.object({
     .nullable(),
   wake_source_type: autonomyWakeSourceTypeSchema,
   source_category: autonomyWakeSourceCategorySchema,
+  outcome: autonomyWakeOutcomeSchema.nullable(),
 });
 
 export type AutonomyWakeRecord = {
@@ -71,6 +75,7 @@ export type AutonomyWakeRecord = {
   session_id: SessionId | null;
   wake_source_type: AutonomyWakeSourceType;
   source_category: AutonomyWakeSourceCategory;
+  outcome: AutonomyWakeOutcome | null;
 };
 
 export type AutonomyWakeRecordInput = {
@@ -96,6 +101,7 @@ function mapWakeRow(row: Record<string, unknown>): AutonomyWakeRecord {
     session_id: row.session_id === null || row.session_id === undefined ? null : row.session_id,
     wake_source_type: row.wake_source_type,
     source_category: row.source_category ?? "operational",
+    outcome: row.outcome ?? null,
   });
 
   if (!parsed.success) {
@@ -129,6 +135,7 @@ export class AutonomyWakesRepository {
       session_id: parsed.session_id ?? null,
       wake_source_type: parsed.wake_source_type,
       source_category: parsed.source_category,
+      outcome: null,
     };
 
     this.db
@@ -156,18 +163,27 @@ export class AutonomyWakesRepository {
     ts: number,
     options: {
       sourceCategory?: AutonomyWakeSourceCategory;
+      outcome?: AutonomyWakeOutcome;
     } = {},
   ): number {
     const categoryFilter = options.sourceCategory;
+    const outcomeFilter = options.outcome;
+    const conditions = ["ts >= ?"];
+    const values: unknown[] = [ts];
+
+    if (categoryFilter !== undefined) {
+      conditions.push("source_category = ?");
+      values.push(categoryFilter);
+    }
+
+    if (outcomeFilter !== undefined) {
+      conditions.push("outcome = ?");
+      values.push(outcomeFilter);
+    }
+
     const row = this.db
-      .prepare(
-        categoryFilter === undefined
-          ? "SELECT COUNT(*) AS count FROM autonomy_wakes WHERE ts >= ?"
-          : "SELECT COUNT(*) AS count FROM autonomy_wakes WHERE ts >= ? AND source_category = ?",
-      )
-      .get(...(categoryFilter === undefined ? [ts] : [ts, categoryFilter])) as
-      | { count: number }
-      | undefined;
+      .prepare(`SELECT COUNT(*) AS count FROM autonomy_wakes WHERE ${conditions.join(" AND ")}`)
+      .get(...values) as { count: number } | undefined;
 
     return Number(row?.count ?? 0);
   }
@@ -177,7 +193,8 @@ export class AutonomyWakesRepository {
     const rows = this.db
       .prepare(
         `
-          SELECT id, ts, trigger_name, condition_name, session_id, wake_source_type, source_category
+          SELECT id, ts, trigger_name, condition_name, session_id, wake_source_type, source_category,
+                 outcome
           FROM autonomy_wakes
           WHERE ts >= ?
           ORDER BY ts DESC, id DESC
@@ -187,6 +204,10 @@ export class AutonomyWakesRepository {
       .all(ts, boundedLimit) as Record<string, unknown>[];
 
     return rows.map((row) => mapWakeRow(row));
+  }
+
+  recordOutcome(id: AutonomyWakeId, outcome: AutonomyWakeOutcome): void {
+    this.db.prepare("UPDATE autonomy_wakes SET outcome = ? WHERE id = ?").run(outcome, id);
   }
 
   prune(olderThan: number): number {

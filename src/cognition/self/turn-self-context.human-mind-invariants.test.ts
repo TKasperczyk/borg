@@ -214,4 +214,77 @@ describe("turn self-context human-mind invariants", () => {
       },
     });
   });
+
+  it("forces a validated followup goal below threshold over a higher-scoring competitor", async () => {
+    const clock = new ManualClock(3_000_000);
+    const selectedGoal: GoalRecord = {
+      id: createGoalId(),
+      description: "Low-priority followup target",
+      terminal_condition: "The followup is complete",
+      priority: 1,
+      parent_goal_id: null,
+      status: "active",
+      progress_notes: null,
+      last_progress_ts: null,
+      created_at: clock.now(),
+      target_at: null,
+      audience_entity_id: null,
+      owner_entity_id: null,
+      source_stream_entry_ids: [],
+      provenance: { kind: "manual" },
+    };
+    const competitor: GoalRecord = {
+      ...selectedGoal,
+      id: createGoalId(),
+      description: "Higher-scoring competing goal",
+      terminal_condition: null,
+      priority: 10,
+    };
+    const builder = new TurnSelfContextBuilder({
+      embeddingClient,
+      valuesRepository: { list: () => [] },
+      goalsRepository: {
+        list: () => [
+          { ...selectedGoal, children: [] },
+          { ...competitor, children: [] },
+        ],
+      },
+      traitsRepository: { list: () => [] },
+      executiveStepsRepository: { topOpen: () => null },
+      clock,
+      tracer: NOOP_TRACER,
+      goalFocusThreshold: 0.45,
+      goalFollowupLookaheadMs: 20_000,
+      goalFollowupStaleMs: 100_000,
+    });
+
+    const context = await builder.build({
+      turnId: "turn_followup_forced_focus",
+      cognitionInput: "",
+      perception: {
+        entities: [],
+        mode: "reflective",
+        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+        temporalCue: null,
+      },
+      autonomyTrigger: {
+        source_name: "goal_followup_due",
+        source_type: "trigger",
+        event_id: "followup-forced-focus",
+        sort_ts: clock.now(),
+        payload: {
+          selected_goal_id: selectedGoal.id,
+          selected_goal: selectedGoal,
+        },
+      },
+      audienceEntityId: null,
+    });
+
+    expect(context.executiveFocus.candidates[0]?.goal_id).toBe(competitor.id);
+    expect(
+      context.executiveFocus.candidates.find((candidate) => candidate.goal_id === selectedGoal.id)
+        ?.score,
+    ).toBeLessThan(context.executiveFocus.threshold);
+    expect(context.executiveFocus.selected_goal?.id).toBe(selectedGoal.id);
+  });
 });

@@ -781,7 +781,7 @@ describe("commitment repository", () => {
 
     try {
       const legacyDb = openDatabase(dbPath, {
-        migrations: commitmentMigrations.filter((migration) => migration.id <= 9),
+        migrations: commitmentMigrations.filter((migration) => migration.id <= 2),
       });
 
       legacyDb
@@ -822,7 +822,7 @@ describe("commitment repository", () => {
 
     try {
       const legacyDb = openDatabase(dbPath, {
-        migrations: commitmentMigrations.filter((migration) => migration.id <= 9),
+        migrations: commitmentMigrations.filter((migration) => migration.id <= 2),
       });
 
       legacyDb
@@ -864,6 +864,88 @@ describe("commitment repository", () => {
       }
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("adds nullable updated_at over legacy rows and maps null to created_at", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-commitments-updated-at-"));
+    const dbPath = join(tempDir, "borg.db");
+    const commitmentId = createCommitmentId();
+    const createdAt = 1_700_000_000_000;
+
+    try {
+      const legacyDb = openDatabase(dbPath, {
+        migrations: commitmentMigrations.filter((migration) => migration.id <= 2),
+      });
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO commitments (
+              id, type, directive, priority, source_episode_ids, created_at,
+              directive_family, last_reinforced_at, provenance_kind
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          commitmentId,
+          "rule",
+          "Keep the legacy mutation anchor.",
+          5,
+          "[]",
+          createdAt,
+          "legacy_mutation_anchor",
+          createdAt,
+          "manual",
+        );
+      legacyDb.close();
+
+      const db = openDatabase(dbPath, { migrations: commitmentMigrations });
+      const commitments = new CommitmentRepository({ db, clock: new FixedClock(createdAt + 1) });
+
+      try {
+        expect(
+          (
+            db.prepare("SELECT updated_at FROM commitments WHERE id = ?").get(commitmentId) as {
+              updated_at: number | null;
+            }
+          ).updated_at,
+        ).toBeNull();
+        expect(commitments.get(commitmentId)?.updated_at).toBe(createdAt);
+      } finally {
+        db.close();
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("advances updated_at for expiration patches and materialized expiry", () => {
+    const db = openDatabase(":memory:", { migrations: commitmentMigrations });
+    const clock = new ManualClock(1_000);
+    const commitments = new CommitmentRepository({ db, clock });
+
+    try {
+      const commitment = commitments.add({
+        type: "promise",
+        directiveFamily: "updated_at_expiration",
+        directive: "Keep expiration changes fresh.",
+        priority: 5,
+        provenance: manualProvenance,
+      });
+      expect(commitment.updated_at).toBe(1_000);
+
+      const patched = commitments.update(commitment.id, { expires_at: 1_500 }, manualProvenance);
+      expect(patched?.updated_at).toBe(1_001);
+
+      clock.set(2_000);
+      expect(commitments.list({ activeOnly: true })).toEqual([]);
+      expect(commitments.get(commitment.id)).toMatchObject({
+        expires_at: 1_500,
+        expired_at: 1_500,
+        updated_at: 2_000,
+      });
+    } finally {
+      db.close();
     }
   });
 

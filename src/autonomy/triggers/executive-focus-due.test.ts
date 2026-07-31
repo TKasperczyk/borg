@@ -279,6 +279,13 @@ describe("executive focus due trigger", () => {
       watermarkRepository: harness.watermarkRepository,
       lookaheadMs: 604_800_000,
       staleMs: 1_209_600_000,
+      staleBackoff: {
+        baseCooldownMs: 3_600_000,
+        multiplier: 2,
+        maxCooldownMs: 86_400_000,
+        dormancyCount: 3,
+      },
+      respectStaleBackoff: true,
       clock: harness.clock,
     });
   }
@@ -489,6 +496,7 @@ describe("executive focus due trigger", () => {
       reason: "goal_stale",
       selected_goal_id: goal.id,
     });
+    expect(events[0]?.stateTs).toBe(goal.created_at);
     expect(events[0]?.payload.selected_score.components.progress_debt).toBe(1);
   });
 
@@ -1022,6 +1030,7 @@ describe("executive focus due trigger", () => {
         id: step.id,
       },
     });
+    expect(events[0]?.stateTs).toBe(step.updated_at);
   });
 
   it("keeps stale-goal executive focus subordinate to goal followup across ticks", async () => {

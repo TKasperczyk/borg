@@ -60,6 +60,7 @@ export function createScheduledWakeTrigger(
           sourceType: "trigger",
           watermarkProcessName,
           sortTs: wake.fire_at,
+          stateTs: wake.updated_at,
           payload: {
             note: wake.note,
             scheduled_at: wake.created_at,
