@@ -11,6 +11,7 @@ import { createServer } from "node:http";
 
 import OpenAI from "openai";
 
+import { createCachingEmbeddingClient } from "../src/embeddings/cache.js";
 import {
   BorgPool,
   OpenAICompatibleEmbeddingClient,
@@ -79,11 +80,19 @@ const openai = new OpenAI({ apiKey, baseURL: baseUrl, timeout: requestTimeoutMs,
 const llmClient = new OpenAICompatibleLLMClient({
   client: openai as unknown as OpenAIChatCompletionsClient,
 });
-const embeddingClient = new OpenAICompatibleEmbeddingClient({
-  client: openai,
-  model: embeddingModel,
-  dims: embeddingDims,
-});
+// Wrapped in the same LRU cache Borg.open would apply to its own client
+// (borg/clients.ts): injecting a bare client here bypassed it, so every recall
+// re-embedded identical intent queries (and each tenant's active commitment
+// directives) over the network — ~24 embedding calls per /memory/recall.
+// One cache instance is shared by all tenants; keys are model+dims+text.
+const embeddingClient = createCachingEmbeddingClient(
+  new OpenAICompatibleEmbeddingClient({
+    client: openai,
+    model: embeddingModel,
+    dims: embeddingDims,
+  }),
+  { model: embeddingModel, dims: embeddingDims },
+);
 const traceRegistry = memoryTraceEnabledFromEnv(process.env)
   ? new MemoryTraceRegistry({
       capacity: memoryTraceCapacityFromEnv(process.env),
