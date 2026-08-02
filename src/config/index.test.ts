@@ -773,6 +773,9 @@ describe("config", () => {
         BORG_MAINTENANCE_LIGHT_BUDGET: "1200",
         BORG_MAINTENANCE_HEAVY_BUDGET: "3400",
         BORG_OFFLINE_REVIEW_RESOLVER_BUDGET: "560",
+        BORG_OFFLINE_REVIEW_RESOLVER_MAX_ITEMS_PER_PASS: "16",
+        BORG_OFFLINE_REVIEW_RESOLVER_AUTONOMOUS: "true",
+        BORG_OFFLINE_REVIEW_RESOLVER_MAX_NEEDS_MANUAL_ATTEMPTS: "2",
       },
     });
 
@@ -781,12 +784,27 @@ describe("config", () => {
     expect(config.maintenance.lightBudget).toBe(1_200);
     expect(config.maintenance.heavyBudget).toBe(3_400);
     expect(config.offline.reviewResolver.budget).toBe(560);
+    expect(config.offline.reviewResolver.maxItemsPerPass).toBe(16);
+    expect(config.offline.reviewResolver.autonomous).toBe(true);
+    expect(config.offline.reviewResolver.maxNeedsManualAttempts).toBe(2);
+  });
+
+  it("defaults review resolver autonomous mode off", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const config = loadConfig({ dataDir: tempDir, env: {} });
+
+    expect(config.offline.reviewResolver.autonomous).toBe(false);
+    expect(config.offline.reviewResolver.maxNeedsManualAttempts).toBe(3);
   });
 
   it.each([
     ["BORG_MAINTENANCE_LIGHT_BUDGET", "0"],
     ["BORG_MAINTENANCE_HEAVY_BUDGET", "-1"],
     ["BORG_OFFLINE_REVIEW_RESOLVER_BUDGET", "1.5"],
+    ["BORG_OFFLINE_REVIEW_RESOLVER_MAX_ITEMS_PER_PASS", "0"],
+    ["BORG_OFFLINE_REVIEW_RESOLVER_MAX_NEEDS_MANUAL_ATTEMPTS", "-2"],
   ])("rejects invalid positive integer budget %s=%s", (name, value) => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

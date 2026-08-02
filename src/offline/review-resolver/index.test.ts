@@ -2133,3 +2133,162 @@ describe("review resolver process", () => {
     expect(llm.requests).toHaveLength(0);
   });
 });
+
+describe("review resolver autonomous mode", () => {
+  const cleanup: Array<() => Promise<void>> = [];
+
+  afterEach(async () => {
+    while (cleanup.length > 0) {
+      await cleanup.pop()?.();
+    }
+    vi.restoreAllMocks();
+  });
+
+  const AUTONOMOUS_OVERRIDES = {
+    offline: {
+      reviewResolver: {
+        autonomous: true,
+        maxNeedsManualAttempts: 2,
+      },
+    },
+  };
+
+  function identityResolverResponse(input: Record<string, unknown>): LLMCompleteResult {
+    return {
+      text: "",
+      input_tokens: 7,
+      output_tokens: 4,
+      stop_reason: "tool_use",
+      tool_calls: [
+        {
+          id: "toolu_identity_review_resolver",
+          name: "EmitIdentityInconsistencyVerdict",
+          input,
+        },
+      ],
+    };
+  }
+
+  it("resolves identity_inconsistency items when autonomous", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+      configOverrides: AUTONOMOUS_OVERRIDES,
+    });
+    cleanup.push(harness.cleanup);
+    const value = harness.valuesRepository.add({
+      label: "groundedness",
+      description: "Stay grounded in cited evidence.",
+      priority: 5,
+      provenance: {
+        kind: "manual",
+      },
+    });
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "identity_inconsistency",
+      reason: "The value has new supporting evidence.",
+      refs: {
+        target_type: "value",
+        target_id: value.id,
+        repair_op: "reinforce",
+        evidence_episode_ids: [createEpisodeFixture().id],
+        proposed_provenance: {
+          kind: "offline",
+          process: "overseer",
+        },
+      },
+    });
+    llm.pushResponse(
+      identityResolverResponse({
+        verdict: "accept_repair",
+        reason: "The reinforcement is supported by the stated evidence.",
+      }),
+    );
+
+    const result = await runResolver(harness);
+    const resolved = harness.reviewQueueRepository.get(item.id);
+
+    expect(result.changes).toHaveLength(1);
+    expect(resolved?.resolved_at).not.toBeNull();
+    expect(resolved?.resolution).toBe("accept");
+    expect(llm.requests).toHaveLength(1);
+  });
+
+  it("retries needs_manual items and terminally dismisses at the attempt cap", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+      configOverrides: AUTONOMOUS_OVERRIDES,
+    });
+    cleanup.push(harness.cleanup);
+    const { item } = await enqueueSemanticMisattribution(harness, {
+      descriptionPatch: "Ben wrote the deployment script.",
+    });
+
+    llm.pushResponse(
+      resolverResponse({
+        verdict: "needs_manual",
+        reason: "First pass could not decide.",
+        cited_stream_ids: [],
+      }),
+    );
+    await runResolver(harness);
+    const stamped = harness.reviewQueueRepository.get(item.id);
+
+    expect(stamped?.resolved_at).toBeNull();
+    expect(stamped?.refs.__borg_review_resolver_diagnostic).toMatchObject({
+      verdict: "needs_manual",
+      attempts: 1,
+    });
+
+    llm.pushResponse(
+      resolverResponse({
+        verdict: "needs_manual",
+        reason: "Second pass could not decide either.",
+        cited_stream_ids: [],
+      }),
+    );
+    await runResolver(harness);
+    const finalized = harness.reviewQueueRepository.get(item.id);
+
+    expect(finalized?.resolved_at).not.toBeNull();
+    expect(finalized?.resolution).toBe("dismiss");
+    expect(finalized?.refs.__borg_review_resolver_repair).toMatchObject({
+      mode: "resolver_finalized_without_handler",
+      bypass_handler_reason: "autonomous_needs_manual_exhausted",
+    });
+    expect(llm.requests).toHaveLength(2);
+  });
+
+  it("keeps stamped items parked when autonomous is off", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const { item } = await enqueueSemanticMisattribution(harness, {
+      descriptionPatch: "Ben wrote the deployment script.",
+    });
+    llm.pushResponse(
+      resolverResponse({
+        verdict: "needs_manual",
+        reason: "Needs a human canonicalization decision.",
+        cited_stream_ids: [],
+      }),
+    );
+
+    await runResolver(harness);
+    await runResolver(harness);
+    const open = harness.reviewQueueRepository.get(item.id);
+
+    expect(open?.resolved_at).toBeNull();
+    expect(open?.refs.__borg_review_resolver_diagnostic).toMatchObject({
+      verdict: "needs_manual",
+      attempts: 1,
+    });
+    expect(llm.requests).toHaveLength(1);
+  });
+});

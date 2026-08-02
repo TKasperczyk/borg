@@ -1558,6 +1558,26 @@ The shape is to auto-resolve bounded cases through offline LLM judges, escalate
 genuine ambiguity and disclosure widening, and keep operator-undo paths where
 authority is mutated.
 
+That default shape assumes a human is behind the escalation hatch. Deployments
+where no human review surface exists (for example the team-agent memory
+sidecar, which exposes no review endpoints) can set
+`offline.reviewResolver.autonomous` (`BORG_OFFLINE_REVIEW_RESOLVER_AUTONOMOUS`)
+to make the LLM decide everything the resolver covers. Autonomous mode changes
+three things and nothing else: `identity_inconsistency` joins the resolver's
+kind roster (its apply handler is unchanged; only the decision path opens up,
+overriding the manual-only carve-out above); a `needs_manual` outcome becomes a
+bounded retry — the diagnostic stamp carries an attempt counter and after
+`maxNeedsManualAttempts` the item is terminally dismissed without mutation —
+instead of parking the item forever; and the overseer-flag judge prompt biases
+toward deciding rather than defaulting to escalation. The anti-self-confirmation
+safety gates (citation and taint checks, the semantic-node temporal-drift
+block) still apply in autonomous mode; their failures feed the bounded retry.
+Kinds with no LLM consumer today (`correction`, `skill_split`,
+`creator_directive_reconciliation`, `commitment_reconciliation`) are NOT
+covered by the switch and still accumulate open items if their producers run —
+autonomous deployments should keep an eye on those counts in the maintenance
+reports.
+
 Review enqueue hooks can create Open Questions from contradiction,
 misattribution, and identity inconsistency reviews. Similar existing questions
 are reinforced rather than duplicated, so uncertainty accumulates around a
