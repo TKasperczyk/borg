@@ -69,9 +69,12 @@ describe("consolidator process", () => {
   it("creates a family version, hides covered raws without archiving them, and supports reversal", async () => {
     const outcomeLine = "OUTCOME fp=consolidation-receipt role=planner tenant=tenant_42";
     const decisionLine = "decision=create";
+    const ticketActionLine = "ticket=AININJAS-1187 action=created";
+    const teamsCardLine = "action=teams_card";
     const uncheckedMergedNarrative = [
       "The team merged two overlapping planning notes into one grounded summary.",
       "decision=create:ticket",
+      ticketActionLine,
     ].join("\n");
     const llm = new FakeLLMClient({
       responses: [
@@ -87,7 +90,11 @@ describe("consolidator process", () => {
     const first = createEpisodeFixture(
       {
         title: "Sprint planning note",
-        narrative: `The team planned the sprint and listed the deploy checklist.\n${outcomeLine}`,
+        narrative: [
+          "The team planned the sprint and listed the deploy checklist.",
+          outcomeLine,
+          ticketActionLine,
+        ].join("\n"),
         tags: ["planning", "deploy"],
         created_at: 10_000,
         updated_at: 10_000,
@@ -97,7 +104,12 @@ describe("consolidator process", () => {
     const second = createEpisodeFixture(
       {
         title: "Sprint planning follow-up",
-        narrative: `The same planning session captured the deploy checklist again.\n${decisionLine}`,
+        narrative: [
+          "The same planning session captured the deploy checklist again.",
+          decisionLine,
+          teamsCardLine,
+          ticketActionLine,
+        ].join("\n"),
         tags: ["planning", "deploy"],
         created_at: 20_000,
         updated_at: 20_000,
@@ -150,8 +162,10 @@ describe("consolidator process", () => {
     expect(merged?.narrative.split(/\r\n|\n|\r/u)).toEqual([
       "The team merged two overlapping planning notes into one grounded summary.",
       "decision=create:ticket",
+      ticketActionLine,
       outcomeLine,
       decisionLine,
+      teamsCardLine,
     ]);
     expect(members.map((member) => member.raw_episode_id).sort()).toEqual(
       [first.id, second.id].sort(),
@@ -168,6 +182,8 @@ describe("consolidator process", () => {
     expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
       "copy that complete line verbatim",
     );
+    expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain("ticket=<X> action=<Y>");
+    expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain("action=teams_card");
 
     await harness.auditLog.revert(auditEntry!.id, "test");
 

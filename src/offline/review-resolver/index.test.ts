@@ -91,6 +91,81 @@ function semanticPairResolverResponse(input: Record<string, unknown>): LLMComple
   };
 }
 
+const DISTINCT_IDENTIFIER_REPLAY_FIXTURE = [
+  {
+    name: "distinct AININJAS tickets",
+    labels: ["Ticket AININJAS-1110", "Ticket AININJAS-1111"],
+    blocked: true,
+  },
+  {
+    name: "distinct OPS tickets",
+    labels: ["Ticket OPS-701 transition", "Ticket OPS-702 transition"],
+    blocked: true,
+  },
+  {
+    name: "distinct DEVX tickets",
+    labels: ["DEVX-44 creation outcome", "DEVX-45 creation outcome"],
+    blocked: true,
+  },
+  {
+    name: "distinct autonomous run ids",
+    labels: [
+      "Autonomous Run f0bec94550ab5cd0e0d4408f710727fe",
+      "Autonomous Run 8c16745d9ce140ed90c92f6ef06fb921",
+    ],
+    blocked: true,
+  },
+  {
+    name: "distinct merge-request URLs",
+    labels: [
+      "MR (https://gitlab.example/Team/Project/-/merge_requests/34).",
+      "MR https://gitlab.example/Team/Project/-/merge_requests/35",
+    ],
+    blocked: true,
+  },
+  {
+    name: "distinct long digit runs",
+    labels: ["Call record 48123456789", "Call record 48123456780"],
+    blocked: true,
+  },
+  {
+    name: "same ticket key",
+    labels: ["ticket AININJAS-1088", "AININJAS-1088"],
+    blocked: false,
+  },
+  {
+    name: "same autonomous run id",
+    labels: [
+      "Run F0BEC94550AB5CD0E0D4408F710727FE",
+      "Autonomous run f0bec94550ab5cd0e0d4408f710727fe",
+    ],
+    blocked: false,
+  },
+  {
+    name: "same normalized URL path",
+    labels: [
+      "MR https://one.example/Team/Project/-/merge_requests/42?view=changes",
+      "Merge request https://two.example/Team/Project/-/merge_requests/42/.",
+    ],
+    blocked: false,
+  },
+  {
+    name: "shared independent batch id",
+    labels: ["Ticket ABC-1 batch 123456789", "Ticket ABC-2 batch 123456789"],
+    blocked: false,
+  },
+  {
+    name: "one-sided identifier",
+    labels: ["Ticket AININJAS-1090", "Ticket creation outcome"],
+    blocked: false,
+  },
+  {
+    name: "no identifiers",
+    labels: ["Atlas platform", "Deployment platform"],
+    blocked: false,
+  },
+] as const;
+
 async function runResolver(harness: OfflineHarness, maxItemsPerPass = 3) {
   const process = new ReviewResolverProcess({
     db: harness.db,
@@ -569,6 +644,166 @@ describe("review resolver process", () => {
     expect(promptPayload.review?.refs?.overseer_flag).toBeUndefined();
   });
 
+  it.each([
+    { autonomous: false, mode: "default", path: "vector" },
+    { autonomous: true, mode: "autonomous", path: "vector" },
+    { autonomous: false, mode: "default", path: "semantic-pair" },
+    { autonomous: true, mode: "autonomous", path: "semantic-pair" },
+  ] as const)(
+    "replays the distinct-identifier matrix through the $path path in $mode mode",
+    async ({ autonomous, path }) => {
+      const llm = new FakeLLMClient();
+      const tracer = new ArrayTracer();
+      const harness = await createOfflineTestHarness({
+        llmClient: llm,
+        reviewOpenQuestionExtractor: null,
+        tracer,
+        configOverrides: {
+          offline: {
+            reviewResolver: {
+              autonomous,
+            },
+          },
+        },
+      });
+      cleanup.push(harness.cleanup);
+      const replayRows: Array<{
+        fixture: (typeof DISTINCT_IDENTIFIER_REPLAY_FIXTURE)[number];
+        item: ReviewQueueItem;
+        nodeIds: [ReturnType<typeof createSemanticNodeId>, ReturnType<typeof createSemanticNodeId>];
+        sourceEpisodeId: Episode["id"];
+      }> = [];
+
+      for (const fixture of DISTINCT_IDENTIFIER_REPLAY_FIXTURE) {
+        const sourceEpisode = await harness.episodicRepository.createEpisode(
+          createEpisodeFixture({
+            narrative: `Sanitized replay evidence for ${fixture.name}.`,
+          }),
+        );
+        const first = await harness.semanticNodeRepository.insert(
+          createSemanticNodeFixture({
+            label: fixture.labels[0],
+            description: `Sanitized replay node A for ${fixture.name}.`,
+            source_episode_ids: [sourceEpisode.id],
+          }),
+        );
+        const second = await harness.semanticNodeRepository.insert(
+          createSemanticNodeFixture({
+            label: fixture.labels[1],
+            description: `Sanitized replay node B for ${fixture.name}.`,
+            source_episode_ids: [sourceEpisode.id],
+          }),
+        );
+        const item = harness.reviewQueueRepository.enqueue({
+          kind: "duplicate",
+          reason:
+            path === "vector"
+              ? "Vector-only semantic merge candidate with similarity 0.990"
+              : "Sanitized semantic-pair replay candidate",
+          refs: {
+            node_ids: [first.id, second.id],
+            node_labels: [first.label, second.label],
+            ...(path === "vector"
+              ? {
+                  duplicate_subtype: "vector_only_merge_candidate" as const,
+                  vector_similarity: 0.99,
+                  source_overlap: {
+                    candidate_source_episode_ids: [sourceEpisode.id],
+                    matched_source_episode_ids: [sourceEpisode.id],
+                    overlapping_source_episode_ids: [sourceEpisode.id],
+                    overlap_count: 1,
+                  },
+                }
+              : {}),
+          },
+        });
+        replayRows.push({
+          fixture,
+          item,
+          nodeIds: [first.id, second.id],
+          sourceEpisodeId: sourceEpisode.id,
+        });
+
+        if (!fixture.blocked) {
+          llm.pushResponse(
+            path === "vector"
+              ? resolverResponse({
+                  verdict: "dismiss_false_positive",
+                  reason: "The replay pair reached the vector LLM judge.",
+                })
+              : semanticPairResolverResponse({
+                  decision: "keep_both",
+                  rationale: "The replay pair reached the semantic-pair LLM judge.",
+                  confidence: "high",
+                }),
+          );
+        }
+      }
+
+      const episodeGetMany = vi.spyOn(harness.episodicRepository, "getMany");
+      const result = await runResolver(harness, DISTINCT_IDENTIFIER_REPLAY_FIXTURE.length);
+      const requestPrompts = llm.requests.map((request) =>
+        String(request.messages[0]?.content ?? ""),
+      );
+      const fallthroughCount = DISTINCT_IDENTIFIER_REPLAY_FIXTURE.filter(
+        (fixture) => !fixture.blocked,
+      ).length;
+      const evidenceReadEpisodeIds = new Set(
+        episodeGetMany.mock.calls.flatMap(([episodeIds]) => episodeIds),
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(llm.requests).toHaveLength(fallthroughCount);
+      expect(
+        llm.requests.every(
+          (request) =>
+            request.tools?.[0]?.name ===
+            (path === "vector"
+              ? REVIEW_RESOLVER_TOOL_NAME
+              : SEMANTIC_PAIR_REVIEW_RESOLVER_TOOL_NAME),
+        ),
+      ).toBe(true);
+
+      for (const { fixture, item, nodeIds, sourceEpisodeId } of replayRows) {
+        const pairReachedLlm = requestPrompts.some(
+          (prompt) => prompt.includes(fixture.labels[0]) && prompt.includes(fixture.labels[1]),
+        );
+        const resolved = harness.reviewQueueRepository.get(item.id);
+        const stored = await harness.semanticNodeRepository.getMany(nodeIds);
+
+        expect(
+          stored.map((node) => node?.status),
+          fixture.name,
+        ).toEqual(["active", "active"]);
+
+        if (fixture.blocked) {
+          const queueTrace = tracer.events.find(
+            (event) =>
+              event.event === "review_queue.completed" &&
+              event.item_id === item.id &&
+              event.resolution === "keep_both",
+          );
+
+          expect(pairReachedLlm, fixture.name).toBe(false);
+          expect(evidenceReadEpisodeIds.has(sourceEpisodeId), fixture.name).toBe(false);
+          expect(resolved, fixture.name).toMatchObject({
+            resolved_at: expect.any(Number),
+            resolution: "keep_both",
+          });
+          expect(queueTrace, fixture.name).toMatchObject({
+            decision_reason: expect.stringContaining("machine-identifier integrity guard"),
+          });
+        } else {
+          expect(pairReachedLlm, fixture.name).toBe(true);
+          expect(evidenceReadEpisodeIds.has(sourceEpisodeId), fixture.name).toBe(true);
+          expect(resolved?.resolution, fixture.name).toBe(
+            path === "vector" ? "dismiss" : "keep_both",
+          );
+        }
+      }
+    },
+  );
+
   it("fails closed to unknown labels for review and overseer flags without source episodes", async () => {
     const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({
@@ -707,7 +942,7 @@ describe("review resolver process", () => {
     expect(promptPayload.review?.refs?.overseer_flag).toBeUndefined();
   });
 
-  it("dismisses vector-only duplicate false positives without stream citations", async () => {
+  it("leaves identifiers found only in aliases to the vector duplicate LLM", async () => {
     const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({
       llmClient: llm,
@@ -722,6 +957,7 @@ describe("review resolver process", () => {
       createSemanticNodeFixture({
         label: "Atlas platform",
         description: "Atlas is the deployment service.",
+        aliases: ["AININJAS-1110"],
         confidence: 0.9,
         source_episode_ids: [source.episode.id],
       }),
@@ -730,6 +966,7 @@ describe("review resolver process", () => {
       createSemanticNodeFixture({
         label: "Atlas expedition planning",
         description: "Atlas is an expedition planning codename.",
+        aliases: ["AININJAS-1111"],
         confidence: 0.8,
         source_episode_ids: [source.episode.id],
       }),
@@ -773,6 +1010,7 @@ describe("review resolver process", () => {
     });
     expect(storedFirst?.status).toBe("active");
     expect(storedSecond?.status).toBe("active");
+    expect(llm.requests).toHaveLength(1);
   });
 
   it("resolves contradiction supersede verdicts with a validated semantic-pair winner", async () => {

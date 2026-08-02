@@ -25,6 +25,7 @@ import {
   type SemanticEdge,
   type SemanticNode,
 } from "../../memory/semantic/index.js";
+import { disjointDistinctIdentifiers } from "../../memory/semantic/distinct-identifiers.js";
 import {
   identityInconsistencyReviewRefsSchema,
   misattributionReviewRefsSchema,
@@ -258,9 +259,11 @@ type LoadedReviewContext = {
   taintedReviewedAssistantStreamIds: StreamEntryId[];
   payload: z.infer<typeof overseerFlagAuditPayloadSchema>;
 };
-type LoadedVectorDuplicateContext = {
+type LoadedVectorDuplicateNodes = {
   refs: z.infer<typeof vectorOnlyDuplicateReviewRefsSchema>;
   nodes: [SemanticNode, SemanticNode];
+};
+type LoadedVectorDuplicateContext = LoadedVectorDuplicateNodes & {
   labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>;
 };
 type LoadedSemanticPairEvidence = {
@@ -270,9 +273,11 @@ type LoadedSemanticPairEvidence = {
   missing_sampled_episode_ids: Episode["id"][];
   episodes: Episode[];
 };
-type LoadedSemanticPairContext = {
+type LoadedSemanticPairNodes = {
   refs: SemanticPairNodeReviewRefs;
   nodes: [SemanticNode, SemanticNode];
+};
+type LoadedSemanticPairContext = LoadedSemanticPairNodes & {
   labelsByEpisodeId: ReadonlyMap<string, MemoryDisclosureLabel>;
   evidence: [LoadedSemanticPairEvidence, LoadedSemanticPairEvidence];
 };
@@ -1084,8 +1089,7 @@ function selectOpenReviewItems(
   const kinds: readonly (typeof AUTONOMOUS_REVIEW_RESOLVER_KINDS)[number][] =
     resolverConfig.autonomous ? AUTONOMOUS_REVIEW_RESOLVER_KINDS : REVIEW_RESOLVER_KINDS;
   const eligible = resolverConfig.autonomous
-    ? (item: ReviewQueueItem) =>
-        needsManualAttempts(item) < resolverConfig.maxNeedsManualAttempts
+    ? (item: ReviewQueueItem) => needsManualAttempts(item) < resolverConfig.maxNeedsManualAttempts
     : (item: ReviewQueueItem) => !Object.hasOwn(item.refs, REVIEW_RESOLVER_DIAGNOSTIC_REF_KEY);
   const candidates = kinds.flatMap((kind) =>
     ctx.reviewQueueRepository
@@ -1370,10 +1374,10 @@ async function loadReviewContext(
   };
 }
 
-async function loadVectorDuplicateContext(
+async function loadVectorDuplicateNodes(
   ctx: OfflineContext,
   item: ReviewQueueItem,
-): Promise<LoadedVectorDuplicateContext | null> {
+): Promise<LoadedVectorDuplicateNodes | null> {
   const parsed = vectorOnlyDuplicateReviewRefsSchema.safeParse(item.refs);
 
   if (!parsed.success) {
@@ -1393,7 +1397,16 @@ async function loadVectorDuplicateContext(
   return {
     refs: parsed.data,
     nodes: [first, second],
-    labelsByEpisodeId: await disclosureLabelsForSemanticNodes(ctx, [first, second]),
+  };
+}
+
+async function expandVectorDuplicateContext(
+  ctx: OfflineContext,
+  loaded: LoadedVectorDuplicateNodes,
+): Promise<LoadedVectorDuplicateContext> {
+  return {
+    ...loaded,
+    labelsByEpisodeId: await disclosureLabelsForSemanticNodes(ctx, loaded.nodes),
   };
 }
 
@@ -1414,10 +1427,10 @@ async function loadSemanticPairEvidence(
   };
 }
 
-async function loadSemanticPairContext(
+async function loadSemanticPairNodes(
   ctx: OfflineContext,
   item: ReviewQueueItem,
-): Promise<LoadedSemanticPairContext | null> {
+): Promise<LoadedSemanticPairNodes | null> {
   const parsed = semanticPairReviewRefsSchema.safeParse(item.refs);
 
   if (!parsed.success || !("node_ids" in parsed.data)) {
@@ -1438,10 +1451,19 @@ async function loadSemanticPairContext(
   return {
     refs,
     nodes: [first, second],
-    labelsByEpisodeId: await disclosureLabelsForSemanticNodes(ctx, [first, second]),
+  };
+}
+
+async function expandSemanticPairContext(
+  ctx: OfflineContext,
+  loaded: LoadedSemanticPairNodes,
+): Promise<LoadedSemanticPairContext> {
+  return {
+    ...loaded,
+    labelsByEpisodeId: await disclosureLabelsForSemanticNodes(ctx, loaded.nodes),
     evidence: [
-      await loadSemanticPairEvidence(ctx, first),
-      await loadSemanticPairEvidence(ctx, second),
+      await loadSemanticPairEvidence(ctx, loaded.nodes[0]),
+      await loadSemanticPairEvidence(ctx, loaded.nodes[1]),
     ],
   };
 }
@@ -1650,14 +1672,30 @@ function vectorDuplicateWinner(nodes: [SemanticNode, SemanticNode]): SemanticNod
   )[0] as SemanticNode;
 }
 
+function distinctIdentifierKeepBoth(nodes: [SemanticNode, SemanticNode]): PreparedDecision | null {
+  const conflict = disjointDistinctIdentifiers(nodes[0].label, nodes[1].label);
+
+  if (conflict === null) {
+    return null;
+  }
+
+  return {
+    action: "resolve",
+    verdict: "keep_both",
+    resolution: "keep_both",
+    reason: `machine-identifier integrity guard: disjoint label identifiers (${conflict.left.join(", ")} vs ${conflict.right.join(", ")})`,
+    appliedResolution: "keep_both",
+  };
+}
+
 async function prepareVectorDuplicateDecision(input: {
   ctx: OfflineContext;
   llmClient: LLMClient;
   item: ReviewQueueItem;
 }): Promise<PreparedDecision> {
-  const loaded = await loadVectorDuplicateContext(input.ctx, input.item);
+  const loadedNodes = await loadVectorDuplicateNodes(input.ctx, input.item);
 
-  if (loaded === null) {
+  if (loadedNodes === null) {
     return {
       action: "resolve",
       verdict: "reject_malformed",
@@ -1667,6 +1705,14 @@ async function prepareVectorDuplicateDecision(input: {
       bypassHandlerReason: "malformed_vector_duplicate_refs",
     };
   }
+
+  const guarded = distinctIdentifierKeepBoth(loadedNodes.nodes);
+
+  if (guarded !== null) {
+    return guarded;
+  }
+
+  const loaded = await expandVectorDuplicateContext(input.ctx, loadedNodes);
 
   const verdict = await evaluateVectorDuplicateDecision({
     ctx: input.ctx,
@@ -1732,14 +1778,22 @@ async function prepareSemanticPairDecision(input: {
   llmClient: LLMClient;
   item: ReviewQueueItem;
 }): Promise<PreparedDecision> {
-  const loaded = await loadSemanticPairContext(input.ctx, input.item);
+  const loadedNodes = await loadSemanticPairNodes(input.ctx, input.item);
 
-  if (loaded === null) {
+  if (loadedNodes === null) {
     return needsManual(
       "semantic pair refs are malformed or targets could not be loaded",
       "malformed_or_missing_semantic_pair_refs",
     );
   }
+
+  const guarded = distinctIdentifierKeepBoth(loadedNodes.nodes);
+
+  if (guarded !== null) {
+    return guarded;
+  }
+
+  const loaded = await expandSemanticPairContext(input.ctx, loadedNodes);
 
   const verdict = await evaluateSemanticPairDecision({
     ctx: input.ctx,
@@ -1886,9 +1940,7 @@ async function evaluateIdentityInconsistencyDecision(input: {
         created_at: input.item.created_at,
       },
       proposal: input.refs,
-      evidence_episodes: input.evidenceEpisodes.map((episode) =>
-        episodeEvidencePromptRow(episode),
-      ),
+      evidence_episodes: input.evidenceEpisodes.map((episode) => episodeEvidencePromptRow(episode)),
     },
     null,
     2,

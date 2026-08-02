@@ -1,4 +1,9 @@
-const PROTECTED_EPISODE_TOKEN_PATTERNS = [/OUTCOME fp=\S+/u, /decision=\S+/u] as const;
+const PROTECTED_EPISODE_TOKEN_PATTERNS = [
+  /OUTCOME fp=\S+/u,
+  /decision=\S+/u,
+  /^[\t ]*ticket=\S+ action=\S+(?:[\t ]+.*)?$/u,
+  /^[\t ]*action=teams_card[\t ]*$/u,
+] as const;
 const COMPLETE_LINE_PATTERN = /\r\n|\n|\r/u;
 
 export function collectProtectedEpisodeTokenLines(sourceTexts: readonly string[]): string[] {
