@@ -232,6 +232,37 @@ type RetrievalExecutionOptions = CognitionRetrievalOptions | DisclosureRetrieval
 
 type RetrievalExecutionMode = "cognition" | "disclosure";
 
+// What the caller will actually consume from RetrievedContext.
+//
+// "episodes-only" is the searchEpisodesForDisclosure() contract: that entry
+// returns `result.episodes` and discards the rest, and projectEpisodes() can
+// only ever select candidates produced by the EPISODIC lane (it filters the
+// evidence pool to source === "episode" and requires a hydrated projection
+// source from collectEpisodicEvidenceCandidates — see evidence-projections.ts).
+// The semantic, open-question, image-perception, and commitment-evidence lanes
+// are therefore provably unobservable to episodes-only callers, yet they cost
+// the bulk of a recall: each lane re-embeds its intents over the network and
+// runs its own vector scans (~20+ embedding round-trips per call before the
+// 2026-08 embedding cache, and most of the CPU after it). The memory sidecar's
+// POST /memory/recall — team-agent's ambient-recall hot path with a 5s client
+// deadline — is the main episodes-only caller, and these lanes were the reason
+// it couldn't meet that deadline.
+//
+// Observable differences when "episodes-only" is active, all accepted:
+//   - retrieval.completed trace: semanticHits is 0 and `confidence` reflects
+//     episodic evidence only;
+//   - recall_state (warm-recall continuity) is saved with episodic-lane fresh
+//     evidence only — inconsequential for sidecar calls, which carry no
+//     sessionId and thus use their own recall-state scope;
+//   - RetrievedContext.semantic / open_questions / image perceptions come back
+//     empty (the caller discards them by definition).
+// Everything else is unchanged: recall expansion, the episodic lane itself,
+// citation resolution, retrieval_log/episode_stats recording, MMR projection.
+//
+// "full" keeps the complete pipeline and stays the default for
+// recallEpisodesForCognition() and searchWithContextForDisclosure().
+type RetrievalProjection = "full" | "episodes-only";
+
 export type RetrievalGetEpisodeOptions = {
   audienceEntityId?: EntityId | null;
   crossAudience?: boolean;
@@ -421,11 +452,20 @@ export class RetrievalPipeline {
     return this.searchWithContextInternal(query, options, "cognition");
   }
 
+  // Episodes-only contract: callers get RetrievedEpisode[] and nothing else,
+  // so the context lanes are skipped wholesale — see RetrievalProjection for
+  // the proof and the accepted observable differences. This is the memory
+  // sidecar's /memory/recall path (borg.episodic.search via the facade).
   async searchEpisodesForDisclosure(
     query: string,
     options: DisclosureRetrievalOptions = {},
   ): Promise<RetrievedEpisode[]> {
-    const result = await this.searchWithContextInternal(query, options, "disclosure");
+    const result = await this.searchWithContextInternal(
+      query,
+      options,
+      "disclosure",
+      "episodes-only",
+    );
     return result.episodes;
   }
 
@@ -433,6 +473,7 @@ export class RetrievalPipeline {
     query: string,
     options: RetrievalExecutionOptions,
     mode: RetrievalExecutionMode,
+    projection: RetrievalProjection = "full",
   ): Promise<RetrievedContext> {
     if (this.tracer.enabled && options.traceTurnId !== undefined) {
       this.tracer.emit("retrieval.started", {
@@ -491,14 +532,21 @@ export class RetrievalPipeline {
     const citationEntries = await citationResolver.resolveCitationEntries(
       episodeCandidates.flatMap((item) => item.candidate.episode.source_stream_ids),
     );
-    const semanticRetrievals = await this.collectSemanticRetrievals(intents, options, mode);
+    // Context lanes (semantic, open-question, image-perception, and — below —
+    // commitment-evidence) cannot contribute episodes to projectEpisodes(), so
+    // for episodes-only callers they are skipped entirely. Empty results flow
+    // through the pool/projections unchanged. See RetrievalProjection.
+    const collectContextLanes = projection !== "episodes-only";
+    const semanticRetrievals = collectContextLanes
+      ? await this.collectSemanticRetrievals(intents, options, mode)
+      : [];
     const semantic = mergeSemanticRetrievals(semanticRetrievals.map((item) => item.semantic));
-    const openQuestions = await this.collectOpenQuestions(intents, semantic, options);
-    const imagePerceptions = await this.collectImagePerceptionEvidenceWithDisclosureMode(
-      intents,
-      options,
-      mode,
-    );
+    const openQuestions = collectContextLanes
+      ? await this.collectOpenQuestions(intents, semantic, options)
+      : [];
+    const imagePerceptions = collectContextLanes
+      ? await this.collectImagePerceptionEvidenceWithDisclosureMode(intents, options, mode)
+      : [];
     const episodeEvidenceSources = episodeCandidates.map((item) => ({
       evidence: episodeCandidateToEvidence(item),
       item,
@@ -515,7 +563,9 @@ export class RetrievalPipeline {
     const imagePerceptionEvidence = imagePerceptions.map((item) =>
       imagePerceptionToEvidence(item, nowMs),
     );
-    const commitmentEvidence = await this.collectCommitmentEvidence(intents, options);
+    const commitmentEvidence = collectContextLanes
+      ? await this.collectCommitmentEvidence(intents, options)
+      : [];
     const rawStreamEvidence = [
       ...streamEntriesToEvidence(citationEntries, episodeCandidates),
       ...this.collectCurrentSessionRecentRawStreamEvidence(intents, options),

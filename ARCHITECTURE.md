@@ -43,7 +43,22 @@ audience gate: `CognitionRetrievalOptions` (`src/retrieval/pipeline.ts`) has no
 `audienceEntityId`/`crossAudience`, while `DisclosureRetrievalOptions` is the
 only shape that carries them. The naming convention encodes the boundary --
 cognition-recall functions are suffixed `*ForCognition` (global recall),
-audience-filtered disclosure/export functions `*ForDisclosure`. Disclosure
+audience-filtered disclosure/export functions `*ForDisclosure`.
+
+One retrieval entry deliberately runs a reduced pipeline:
+`searchEpisodesForDisclosure` (the facade's `episodic.search`, and therefore the
+memory sidecar's `POST /memory/recall`) returns `RetrievedEpisode[]` only, and
+`projectEpisodes` can only select candidates produced by the episodic lane — so
+that entry skips the semantic, open-question, image-perception, and
+commitment-evidence lanes entirely (`RetrievalProjection = "episodes-only"` in
+`src/retrieval/pipeline.ts`). This is a pure cost cut for a latency-bound
+interactive path (team-agent aborts recall at 5s), not a disclosure boundary:
+the skipped lanes were computed and discarded, at the price of most of the
+recall's embedding round-trips and vector scans. `searchWithContextForDisclosure`
+and `recallEpisodesForCognition` still run the full pipeline. The full
+justification, and the accepted observable differences (trace `semanticHits`,
+`confidence`, thinner recall-state fresh evidence), live on the
+`RetrievalProjection` type. Disclosure
 labels are concrete primitives: `memoryDisclosurePayloadFields(label)`
 (`src/memory/common/disclosure-serializers.ts`) is the per-record serializer used across
 every band; `combineMemoryDisclosureLabels` (`src/memory/common/disclosure-label.ts`)
