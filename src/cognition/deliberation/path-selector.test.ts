@@ -39,6 +39,7 @@ function makeEpisode(score: number, tags: string[] = []): RetrievedEpisode {
       updated_at: 0,
     },
     score,
+    rawScore: score,
     scoreBreakdown: {
       similarity: score,
       decayedSalience: 0.3,

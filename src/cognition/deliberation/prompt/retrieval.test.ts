@@ -132,6 +132,7 @@ describe("retrieval confidence prompt rendering", () => {
         shared: false,
       }),
       score: 0.72,
+      rawScore: 0.72,
       scoreBreakdown: createRetrievalScoreFixture(),
       citationChain: [],
     };

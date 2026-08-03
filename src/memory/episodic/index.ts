@@ -20,6 +20,7 @@ export {
 } from "./extractor.js";
 export { computeEpisodeHeat } from "./heat.js";
 export {
+  buildConsolidationEpisodeEmbeddingText,
   collectProtectedEpisodeTokenLines,
   preserveProtectedEpisodeTokenLines,
 } from "./protected-lines.js";

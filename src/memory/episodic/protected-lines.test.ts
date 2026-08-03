@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildConsolidationEpisodeEmbeddingText,
   collectProtectedEpisodeTokenLines,
   preserveProtectedEpisodeTokenLines,
 } from "./protected-lines.js";
@@ -92,5 +93,49 @@ describe("protected episode token lines", () => {
         ].join("\n"),
       ]),
     ).toEqual([]);
+  });
+
+  it("builds consolidation embeddings from prose and fp headers without mixed-grammar payloads", () => {
+    const prose = "The triage run created and transitioned tickets.";
+    const source = [
+      `${prose} decision=created:AININJAS-1187 action=created ticket=AININJAS-1187 summary=Example`,
+      `${outcomeLine} ticket=AININJAS-1188 action=created summary=Prepare release`,
+      outcomeLine,
+      oldGrammarLine,
+      ticketActionLine,
+      bareTeamsCardLine,
+    ].join("\n");
+
+    expect(
+      buildConsolidationEpisodeEmbeddingText({
+        title: "Daily triage rollup",
+        synthesizedNarrative: source,
+        protectedSourceTexts: [source],
+        tags: ["triage", "daily"],
+        participants: ["team"],
+      }),
+    ).toBe(["Daily triage rollup", prose, outcomeLine, "triage daily", "team"].join("\n"));
+  });
+
+  it("falls back to the fp token when a legacy outcome has no standalone header line", () => {
+    const legacy = "I corrected the report. OUTCOME fp=legacy-correction decision=filter-by-author";
+
+    expect(
+      buildConsolidationEpisodeEmbeddingText({
+        title: "Reporting correction",
+        synthesizedNarrative: legacy,
+        protectedSourceTexts: [legacy],
+        tags: [],
+        participants: [],
+      }),
+    ).toBe(
+      [
+        "Reporting correction",
+        "I corrected the report.",
+        "OUTCOME fp=legacy-correction",
+        "",
+        "",
+      ].join("\n"),
+    );
   });
 });

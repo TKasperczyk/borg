@@ -58,6 +58,9 @@ export type RetrievedEpisode = {
   episode: Episode;
   disclosureLabel?: MemoryDisclosureLabel;
   score: number;
+  // Pre-clamp fused score (formula + intent boosts, un-clamped). Diagnostic
+  // export only: `score` remains the ranking key and the [0,1] contract.
+  rawScore: number;
   scoreBreakdown: {
     similarity: number;
     decayedSalience: number;
@@ -106,9 +109,11 @@ export type EpisodeScore = {
   entityRelevance: number;
   suppressionPenalty: number;
   score: number;
+  // Un-clamped fusion value; equals `score` until a caller clamps `score`.
+  rawScore: number;
 };
 
-type EpisodeScoreFormulaSignals = Omit<EpisodeScore, "score"> & {
+type EpisodeScoreFormulaSignals = Omit<EpisodeScore, "score" | "rawScore"> & {
   similarity: number;
 };
 
@@ -389,6 +394,7 @@ export function scoreCandidate(
     entityRelevance,
     suppressionPenalty,
   };
+  const fused = computeEpisodeScoreFormula(signals, weights);
 
   return {
     decayedSalience: signals.decayedSalience,
@@ -400,7 +406,8 @@ export function scoreCandidate(
     socialRelevance: signals.socialRelevance,
     entityRelevance: signals.entityRelevance,
     suppressionPenalty: signals.suppressionPenalty,
-    score: computeEpisodeScoreFormula(signals, weights),
+    score: fused,
+    rawScore: fused,
   };
 }
 
@@ -413,6 +420,7 @@ export function buildRetrievedEpisode(
     episode: candidate.episode,
     disclosureLabel: memoryDisclosureLabelFromEpisodeAccess(candidate.episode),
     score: score.score,
+    rawScore: score.rawScore,
     scoreBreakdown: {
       similarity: candidate.similarity,
       decayedSalience: score.decayedSalience,

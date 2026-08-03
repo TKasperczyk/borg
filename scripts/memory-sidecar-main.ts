@@ -56,6 +56,10 @@ const root = process.env.BORG_DATA_ROOT ?? "./data/borg";
 const host = process.env.BORG_MEMORY_HOST ?? "127.0.0.1";
 const port = Number(process.env.BORG_MEMORY_PORT ?? 8088);
 const maxOpen = Number(process.env.BORG_MEMORY_MAX_OPEN ?? 32);
+const recallAbstainThresholdRaw = Number(process.env.BORG_RECALL_ABSTAIN_THRESHOLD ?? 0);
+const recallAbstainThreshold = Number.isFinite(recallAbstainThresholdRaw)
+  ? recallAbstainThresholdRaw
+  : 0;
 // Bound every provider call so a hung kratos can't pin a request + pool slot
 // (and block shutdown) indefinitely.
 const requestTimeoutMs = Number(process.env.BORG_MEMORY_LLM_TIMEOUT_MS ?? 120_000);
@@ -136,6 +140,7 @@ const server = createServer(
     pool,
     token,
     maintenanceCoordinator,
+    recallAbstainThreshold,
     ...(traceRegistry === undefined ? {} : { traceRegistry }),
   }),
 );

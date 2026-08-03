@@ -35,9 +35,16 @@ function dedupeEvidenceItems(items: readonly EvidenceItem[]): EvidenceItem[] {
     const key = evidenceDedupeKey(item);
     const current = byKey.get(key);
 
-    if (current === undefined || compareEvidenceItems(item, current) < 0) {
+    if (current === undefined) {
       byKey.set(key, item);
+      continue;
     }
+
+    const representative = compareEvidenceItems(item, current) < 0 ? item : current;
+    byKey.set(key, {
+      ...representative,
+      matchedTerms: [...new Set([...current.matchedTerms, ...item.matchedTerms])],
+    });
   }
 
   return [...byKey.values()];

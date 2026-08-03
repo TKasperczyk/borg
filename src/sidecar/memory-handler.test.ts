@@ -239,7 +239,13 @@ function stubBorg(rec: Recorder): Borg {
       search: async (_query: string, opts: { limit?: number; traceTurnId?: string }) => {
         rec.lastRecallLimit = opts.limit;
         rec.lastRecallTraceTurnId = opts.traceTurnId;
-        return [{ episode: { id: "ep_1", title: "Title", narrative: "Narrative" }, score: 0.91 }];
+        return [
+          {
+            episode: { id: "ep_1", title: "Title", narrative: "Narrative" },
+            score: 0.91,
+            rawScore: 1.16,
+          },
+        ];
       },
       list: async (options?: { limit?: number; cursor?: string }) => {
         rec.lastListOptions = options;
@@ -752,7 +758,10 @@ describe("memory sidecar handler", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       ok: true,
-      episodes: [{ id: "ep_1", title: "Title", narrative: "Narrative", score: 0.91 }],
+      top_raw_score: 1.16,
+      episodes: [
+        { id: "ep_1", title: "Title", narrative: "Narrative", score: 0.91, raw_score: 1.16 },
+      ],
     });
     expect(rec.tenants).toEqual(["acme"]);
     expect(rec.lastRecallLimit).toBe(50); // clamped to maxRecallLimit
@@ -784,6 +793,44 @@ describe("memory sidecar handler", () => {
     expect(onBody).toEqual(offBody);
     expect(offRec.lastRecallTraceTurnId).toBeUndefined();
     expect(onRec.lastRecallTraceTurnId).toMatch(/^sidecar_recall:acme:/);
+  });
+
+  it("abstains only when the configured threshold is above the top raw score", async () => {
+    const { pool } = recordingPool();
+    const abstainingBase = await start(pool, TOKEN, { recallAbstainThreshold: 1.17 });
+    const abstained = await post(
+      abstainingBase,
+      "/memory/recall",
+      { tenant: "acme", query: "who leads", limit: 3 },
+      TOKEN,
+    );
+
+    expect(abstained.status).toBe(200);
+    expect(await abstained.json()).toEqual({
+      ok: true,
+      episodes: [],
+      abstained: true,
+      abstain_reason: "low_relevance",
+      top_raw_score: 1.16,
+    });
+
+    const exactThresholdBase = await start(recordingPool().pool, TOKEN, {
+      recallAbstainThreshold: 1.16,
+    });
+    const retained = await post(
+      exactThresholdBase,
+      "/memory/recall",
+      { tenant: "acme", query: "who leads", limit: 3 },
+      TOKEN,
+    );
+
+    expect(await retained.json()).toEqual({
+      ok: true,
+      top_raw_score: 1.16,
+      episodes: [
+        { id: "ep_1", title: "Title", narrative: "Narrative", score: 0.91, raw_score: 1.16 },
+      ],
+    });
   });
 
   it("lists episodes from the query tenant without a body, clamping limit and passing cursor", async () => {
@@ -1122,9 +1169,7 @@ describe("memory sidecar handler", () => {
       ],
       truncated: false,
     });
-    expect(rec.lookedUpExternalSenders).toEqual([
-      { source: "team-agent.sender", externalId },
-    ]);
+    expect(rec.lookedUpExternalSenders).toEqual([{ source: "team-agent.sender", externalId }]);
     expect(rec.resolvedExternalSenders).toEqual([]);
   });
 

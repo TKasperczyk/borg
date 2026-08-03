@@ -160,6 +160,7 @@ function createRetrievedEpisode(
   return {
     episode,
     score,
+    rawScore: score,
     scoreBreakdown: createRetrievalScoreFixture({
       similarity: score,
       decayedSalience: 0.4,
@@ -1206,6 +1207,7 @@ describe("reflector", () => {
     const retrieved: RetrievedEpisode = {
       episode,
       score: 0.9,
+      rawScore: 0.9,
       scoreBreakdown: createRetrievalScoreFixture({
         similarity: 0.9,
         decayedSalience: 0.3,
@@ -2297,6 +2299,7 @@ describe("reflector", () => {
     const retrieved: RetrievedEpisode = {
       episode,
       score: 0.9,
+      rawScore: 0.9,
       scoreBreakdown: createRetrievalScoreFixture({
         similarity: 0.9,
         decayedSalience: 0.3,
@@ -5047,6 +5050,7 @@ describe("reflector", () => {
     const retrieved: RetrievedEpisode = {
       episode,
       score: 0.7,
+      rawScore: 0.7,
       scoreBreakdown: createRetrievalScoreFixture({
         similarity: 0.7,
         decayedSalience: 0.4,
@@ -5186,6 +5190,7 @@ describe("reflector", () => {
     const retrieved: RetrievedEpisode = {
       episode,
       score: 0.7,
+      rawScore: 0.7,
       scoreBreakdown: createRetrievalScoreFixture({
         similarity: 0.7,
         decayedSalience: 0.4,

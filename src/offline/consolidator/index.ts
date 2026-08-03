@@ -10,6 +10,7 @@ import {
 import { emotionalArcSchema } from "../../memory/affective/index.js";
 import {
   buildConsolidationCoverageHash,
+  buildConsolidationEpisodeEmbeddingText,
   consolidationFamilyIdSchema,
   normalizeEpisodeAccess,
   preserveProtectedEpisodeTokenLines,
@@ -714,7 +715,13 @@ async function buildMergedEpisode(
     rawEpisodes.map((episode) => episode.narrative),
   );
   const embedding = await ctx.embeddingClient.embed(
-    `${merged.title}\n${protectedNarrative}\n${tags.join(" ")}\n${participants.join(" ")}`,
+    buildConsolidationEpisodeEmbeddingText({
+      title: merged.title,
+      synthesizedNarrative: merged.narrative,
+      protectedSourceTexts: rawEpisodes.map((episode) => episode.narrative),
+      tags,
+      participants,
+    }),
   );
   const access = episodeAccessFromCombinedDisclosureLabel(
     combineMemoryDisclosureLabels(rawEpisodes.map(memoryDisclosureLabelFromEpisodeAccess)),

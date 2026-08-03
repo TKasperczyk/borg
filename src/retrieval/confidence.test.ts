@@ -36,6 +36,7 @@ function makeEpisode(overrides: {
       updated_at: 0,
     },
     score: 0.5,
+    rawScore: 0.5,
     scoreBreakdown: {
       similarity: 0.5,
       decayedSalience: overrides.decayedSalience,

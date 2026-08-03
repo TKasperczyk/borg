@@ -202,6 +202,7 @@ describe("internal tools", () => {
           {
             episode,
             score: 0.82,
+            rawScore: 0.82,
             scoreBreakdown: {
               similarity: 0.91,
               decayedSalience: 0.73,
@@ -1045,9 +1046,7 @@ describe("internal tools", () => {
       expect(getMany).toHaveBeenCalledTimes(1);
       const lookedUpEpisodeIds = getMany.mock.calls[0]?.[0] ?? [];
       expect(lookedUpEpisodeIds).toHaveLength(2);
-      expect(new Set(lookedUpEpisodeIds)).toEqual(
-        new Set([privateEpisode.id, missingEpisodeId]),
-      );
+      expect(new Set(lookedUpEpisodeIds)).toEqual(new Set([privateEpisode.id, missingEpisodeId]));
     } finally {
       await harness.cleanup();
     }

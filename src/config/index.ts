@@ -345,6 +345,11 @@ const configBaseSchema = z.object({
   retrieval: z
     .object({
       semanticOverfetchMultiplier: z.number().int().min(1).max(10).default(3),
+      lexicalFusion: z
+        .object({
+          enabled: z.boolean().default(false),
+        })
+        .prefault({}),
       semantic: z
         .object({
           underReviewMultiplier: z.number().min(0).max(1).default(0.5),
@@ -1155,6 +1160,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["retrieval", "semantic", "underReviewMultiplier"],
     readOptionalEnvUnitInterval(env, "BORG_RETRIEVAL_SEMANTIC_UNDER_REVIEW_MULTIPLIER"),
+  );
+  setConfigOverride(
+    overrides,
+    ["retrieval", "lexicalFusion", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_RETRIEVAL_LEXICAL_FUSION_ENABLED"),
   );
   setConfigOverride(
     overrides,
@@ -1980,6 +1990,9 @@ export function redactConfig(config: Config): Config {
     },
     retrieval: {
       semanticOverfetchMultiplier: config.retrieval.semanticOverfetchMultiplier,
+      lexicalFusion: {
+        ...config.retrieval.lexicalFusion,
+      },
       semantic: {
         ...config.retrieval.semantic,
       },

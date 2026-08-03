@@ -55,6 +55,7 @@ import { assembleRetrievedContext, type RetrievedContext } from "./context-assem
 import { cosineSimilarity } from "./embedding-similarity.js";
 import { rankEvidenceItems } from "./evidence-pool.js";
 import {
+  EXACT_TERM_RESERVED_SLOTS,
   projectEpisodes,
   projectOpenQuestions,
   projectSemantic,
@@ -173,6 +174,7 @@ export type RetrievalPipelineOptions = {
   recallStateMaxNewHandlesPerTurn?: number;
   recallStateMaxWarmEvidenceRendered?: number;
   maxRetrievedImageRefs?: number;
+  lexicalFusionEnabled?: boolean;
 };
 
 export type RetrievalSharedOptions = EpisodeCognitionRecallOptions & {
@@ -294,6 +296,8 @@ type EpisodeScoreDetails = {
   entityRelevance: number;
   suppressionPenalty: number;
   score: number;
+  // Pre-clamp fused score including intent boosts (diagnostic export only).
+  rawScore: number;
 };
 
 type SemanticEvidenceCandidate = {
@@ -398,6 +402,7 @@ export class RetrievalPipeline {
   private readonly mmrLambda: number;
   private readonly decayOptions?: Omit<DecayOptions, "nowMs">;
   private readonly tracer: TurnTracer;
+  private readonly lexicalFusionEnabled: boolean;
 
   constructor(private readonly options: RetrievalPipelineOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -405,6 +410,7 @@ export class RetrievalPipeline {
     this.scoreWeights = options.scoreWeights ?? { ...DEFAULT_EPISODE_SCORE_WEIGHTS };
     this.mmrLambda = options.mmrLambda ?? DEFAULT_MMR_LAMBDA;
     this.decayOptions = options.decayOptions;
+    this.lexicalFusionEnabled = options.lexicalFusionEnabled ?? false;
   }
 
   retrieveOpenQuestionsForQuery(
@@ -600,6 +606,7 @@ export class RetrievalPipeline {
     const episodeProjection = projectEpisodes(evidencePool, episodeProjectionSources, {
       limit,
       mmrLambda: options.mmrLambda ?? this.mmrLambda,
+      exactTermReservedSlots: this.lexicalFusionEnabled ? EXACT_TERM_RESERVED_SLOTS : 0,
     });
     const semanticProjection = projectSemantic(evidencePool, toRetrievedSemantic(semantic));
     const openQuestionProjection = projectOpenQuestions(
@@ -1471,27 +1478,41 @@ export class RetrievalPipeline {
     }
 
     if (intent.kind === "known_term") {
-      const candidates =
+      const [indexed, lexical] =
         mode === "cognition"
-          ? await this.options.episodicRepository.recallByParticipantsOrTagsForCognition(
-              intent.terms,
-              {
+          ? await Promise.all([
+              this.options.episodicRepository.recallByParticipantsOrTagsForCognition(intent.terms, {
                 limit: indexedBudget,
-              },
-            )
-          : await this.options.episodicRepository.searchByParticipantsOrTagsForDisclosure(
-              intent.terms,
-              {
-                ...episodeVisibilityOptions(options),
-                limit: indexedBudget,
-              },
-            );
+              }),
+              this.lexicalFusionEnabled
+                ? this.options.episodicRepository.recallByLexicalTermsForCognition(intent.terms, {
+                    limit: indexedBudget,
+                  })
+                : Promise.resolve([]),
+            ])
+          : await Promise.all([
+              this.options.episodicRepository.searchByParticipantsOrTagsForDisclosure(
+                intent.terms,
+                {
+                  ...episodeVisibilityOptions(options),
+                  limit: indexedBudget,
+                },
+              ),
+              this.lexicalFusionEnabled
+                ? this.options.episodicRepository.searchByLexicalTermsForDisclosure(intent.terms, {
+                    ...episodeVisibilityOptions(options),
+                    limit: indexedBudget,
+                  })
+                : Promise.resolve([]),
+            ]);
 
-      return candidates.map((candidate) => ({
-        intent,
-        candidate,
-        matchedTerms: [...intent.terms],
-      }));
+      return mergeRawEpisodeCandidates(
+        [...indexed, ...lexical].map((candidate) => ({
+          intent,
+          candidate,
+          matchedTerms: [...intent.terms],
+        })),
+      );
     }
 
     if (intent.kind === "time" && intent.timeRange !== undefined) {
@@ -1576,10 +1597,12 @@ export class RetrievalPipeline {
     );
     const exactBoost = entry.intent.kind === "known_term" ? KNOWN_TERM_INTENT_SCORE_BOOST : 0;
     const recencyBoost = entry.intent.kind === "recent" ? RECENT_INTENT_SCORE_BOOST : 0;
+    const rawScore = score.score + exactBoost + recencyBoost;
 
     return {
       ...score,
-      score: clamp(score.score + exactBoost + recencyBoost, 0, 1),
+      score: clamp(rawScore, 0, 1),
+      rawScore,
     };
   }
 
@@ -1906,6 +1929,7 @@ export class RetrievalPipeline {
       {
         ...scored,
         score: 1,
+        rawScore: 1,
       },
       citationChain,
     );

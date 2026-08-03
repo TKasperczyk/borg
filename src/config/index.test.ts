@@ -145,6 +145,7 @@ describe("config", () => {
     });
     expect(config.streamIngestion.preTurnCatchup.maxEntries).toBe(100);
     expect(config.retrieval.semanticOverfetchMultiplier).toBe(3);
+    expect(config.retrieval.lexicalFusion.enabled).toBe(false);
     expect(config.deliberation.contradictionRouting).toEqual({
       enabled: true,
       cooldownTurns: 5,
@@ -281,6 +282,22 @@ describe("config", () => {
         },
       }),
     ).toThrow();
+  });
+
+  it("loads the lexical fusion flag from the environment and defaults it off", () => {
+    const enabledDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const defaultDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(enabledDir, defaultDir);
+
+    expect(
+      loadConfig({
+        dataDir: enabledDir,
+        env: { BORG_RETRIEVAL_LEXICAL_FUSION_ENABLED: "true" },
+      }).retrieval.lexicalFusion.enabled,
+    ).toBe(true);
+    expect(loadConfig({ dataDir: defaultDir, env: {} }).retrieval.lexicalFusion.enabled).toBe(
+      false,
+    );
   });
 
   it("treats associator volume settings as hard caps", () => {

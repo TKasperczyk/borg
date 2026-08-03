@@ -162,6 +162,8 @@ export type BorgExtractFromStreamResult = {
 export type BorgRetrievedEpisode = {
   episode: Episode;
   score: number;
+  // Pre-clamp fused score (diagnostic; `score` stays the [0,1] ranking key).
+  rawScore: number;
   scoreBreakdown: {
     similarity: number;
     decayedSalience: number;

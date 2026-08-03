@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { buildConsolidationCoverageHash } from "../../memory/episodic/index.js";
@@ -82,8 +82,11 @@ describe("consolidator process", () => {
         createConsolidationResponse("Merged planning incident", uncheckedMergedNarrative),
       ],
     });
+    const embeddingClient = new TestEmbeddingClient();
+    const embedSpy = vi.spyOn(embeddingClient, "embed");
     const harness = await createOfflineTestHarness({
       llmClient: llm,
+      embeddingClient,
     });
     cleanup.push(harness.cleanup);
 
@@ -167,6 +170,17 @@ describe("consolidator process", () => {
       decisionLine,
       teamsCardLine,
     ]);
+    expect(embedSpy).toHaveBeenCalledTimes(2);
+    expect(embedSpy).toHaveBeenNthCalledWith(
+      2,
+      [
+        "Merged planning incident",
+        "The team merged two overlapping planning notes into one grounded summary.",
+        outcomeLine,
+        "planning deploy",
+        "team",
+      ].join("\n"),
+    );
     expect(members.map((member) => member.raw_episode_id).sort()).toEqual(
       [first.id, second.id].sort(),
     );
