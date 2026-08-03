@@ -75,7 +75,10 @@ export function projectEpisodes(
     candidates.map((item) => ({
       item,
       vector: item.source.candidate.episode.embedding,
-      relevanceScore: item.source.score.score,
+      // Rank on the pre-clamp fusion value: the clamped score saturates at 1.0
+      // for boosted candidates, which reduced MMR relevance to pool-order
+      // tie-breaking whenever several candidates hit the ceiling.
+      relevanceScore: item.source.score.rawScore,
     })),
     {
       limit: options.limit,
@@ -89,8 +92,18 @@ export function projectEpisodes(
     enforceExactTermReservedSlots(selected, candidates, exactTermReservedSlots);
   }
 
+  // MMR emits diversity-greedy selection order; the response contract is
+  // relevance-descending. Sorting cannot displace the top-1: MMR's first pick
+  // maximizes rawScore over the same candidate pool, and the sort is stable.
+  // selectedEvidence deliberately keeps the MMR/reservation order — downstream
+  // recall-state admission derives handle priority from that order, and the
+  // diversity-ranked choice must not lose admission priority to the re-sort.
+  const ordered = [...selected].sort(
+    (left, right) => right.source.score.rawScore - left.source.score.rawScore,
+  );
+
   return {
-    episodes: selected.map(({ source }) =>
+    episodes: ordered.map(({ source }) =>
       buildRetrievedEpisode(
         source.candidate,
         {
@@ -228,7 +241,7 @@ function dedupeEpisodeProjectionCandidates(
     }
 
     const representative =
-      candidate.source.score.score > current.source.score.score ? candidate : current;
+      candidate.source.score.rawScore > current.source.score.rawScore ? candidate : current;
     byEpisodeId.set(episodeId, {
       ...representative,
       evidence: {
@@ -298,14 +311,14 @@ function enforceExactTermReservedSlots(
 
     const current = replacementByEpisodeId.get(episodeId);
 
-    if (current === undefined || candidate.source.score.score > current.source.score.score) {
+    if (current === undefined || candidate.source.score.rawScore > current.source.score.rawScore) {
       replacementByEpisodeId.set(episodeId, candidate);
     }
   }
 
   const replacements = [...replacementByEpisodeId.values()].sort(
     (left, right) =>
-      right.source.score.score - left.source.score.score ||
+      right.source.score.rawScore - left.source.score.rawScore ||
       right.evidence.id.localeCompare(left.evidence.id),
   );
   let exactSelectedCount = selected.filter(isExactSelection).length;

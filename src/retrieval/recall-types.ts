@@ -97,6 +97,9 @@ export type EvidenceItem = {
   recallIntentId: string;
   matchedTerms: string[];
   score: number;
+  // Pre-clamp fusion value for episode evidence; used to break dedup ties
+  // between saturated variants of the same episode. Absent on other sources.
+  rawScore?: number;
   scoreBreakdown: EvidenceScoreBreakdown;
   source_episode_ids?: EpisodeId[];
   partial_source_visibility?: boolean;

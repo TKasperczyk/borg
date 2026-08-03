@@ -19,7 +19,10 @@ export function applyMmr<T>(
     return [];
   }
 
-  const lambda = options.lambda ?? DEFAULT_MMR_LAMBDA;
+  const requestedLambda = options.lambda ?? DEFAULT_MMR_LAMBDA;
+  const lambda = Number.isFinite(requestedLambda)
+    ? Math.min(1, Math.max(0, requestedLambda))
+    : DEFAULT_MMR_LAMBDA;
   const remaining = [...candidates];
   const selected: MmrCandidate<T>[] = [];
 
@@ -28,12 +31,21 @@ export function applyMmr<T>(
     let bestScore = Number.NEGATIVE_INFINITY;
 
     for (const [index, candidate] of remaining.entries()) {
-      const redundancy =
-        selected.length === 0
-          ? 0
-          : Math.max(
-              ...selected.map((chosen) => cosineSimilarity(candidate.vector, chosen.vector)),
-            );
+      // The first pick has no redundancy term, so it always maximizes raw
+      // relevance — lambda only trades relevance against diversity for later
+      // picks. Without this, lambda 0 zeroed every first-pick score and
+      // degraded the top selection to pool order.
+      if (selected.length === 0) {
+        if (candidate.relevanceScore > bestScore) {
+          bestScore = candidate.relevanceScore;
+          bestIndex = index;
+        }
+        continue;
+      }
+
+      const redundancy = Math.max(
+        ...selected.map((chosen) => cosineSimilarity(candidate.vector, chosen.vector)),
+      );
       const score = lambda * candidate.relevanceScore - (1 - lambda) * redundancy;
 
       if (score > bestScore) {

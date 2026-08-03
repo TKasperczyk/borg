@@ -81,9 +81,12 @@ function evidenceDedupeKey(item: EvidenceItem): string {
 }
 
 function compareEvidenceItems(left: EvidenceItem, right: EvidenceItem): number {
+  // rawScore (pre-clamp fusion) breaks ties between saturated episode
+  // variants of the same episode across intents; other sources fall back to
+  // their clamped score.
   return (
     evidenceTruthRank(right) - evidenceTruthRank(left) ||
-    right.score - left.score ||
+    (right.rawScore ?? right.score) - (left.rawScore ?? left.score) ||
     right.id.localeCompare(left.id)
   );
 }

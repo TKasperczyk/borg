@@ -58,8 +58,9 @@ export type RetrievedEpisode = {
   episode: Episode;
   disclosureLabel?: MemoryDisclosureLabel;
   score: number;
-  // Pre-clamp fused score (formula + intent boosts, un-clamped). Diagnostic
-  // export only: `score` remains the ranking key and the [0,1] contract.
+  // Pre-clamp fused score (formula + intent boosts, un-clamped). This is the
+  // operative relevance key for MMR selection and result ordering; `score` is
+  // its clamped [0,1] representation.
   rawScore: number;
   scoreBreakdown: {
     similarity: number;
@@ -110,6 +111,7 @@ export type EpisodeScore = {
   suppressionPenalty: number;
   score: number;
   // Un-clamped fusion value; equals `score` until a caller clamps `score`.
+  // Ranking (MMR relevance, dedup representatives, output order) keys on this.
   rawScore: number;
 };
 

@@ -2513,6 +2513,7 @@ function episodeCandidateToEvidence(item: EpisodeEvidenceCandidate): EvidenceIte
     recallIntentId: item.intent.id,
     matchedTerms: [...item.matchedTerms],
     score: item.score.score,
+    rawScore: item.score.rawScore,
     scoreBreakdown: {
       vector: item.candidate.similarity,
       salience: item.score.decayedSalience,

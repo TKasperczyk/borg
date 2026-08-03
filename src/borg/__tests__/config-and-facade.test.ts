@@ -711,6 +711,36 @@ describe("Borg", () => {
     expect(new Set(lookedUpEpisodeIds)).toEqual(new Set(sourceEpisodeIds));
   });
 
+  it("injects similarity-forward default attention weights into episodic search", async () => {
+    const searchEpisodesForDisclosure = vi.fn(async () => []);
+    const facades = createBorgFacades({
+      actionRepository: {},
+      retrievalPipeline: { searchEpisodesForDisclosure },
+    } as unknown as BorgDependencies);
+
+    await facades.episodic.search("scoring defaults");
+
+    // 2026-08 scoring rebalance: semantic 0.65 (similarity 0.65 / salience
+    // 0.35) and heat 0.15. Bumping these re-opens the score-ceiling
+    // saturation and greatest-hit top-1 domination the rebalance removed.
+    expect(searchEpisodesForDisclosure).toHaveBeenCalledWith(
+      "scoring defaults",
+      expect.objectContaining({
+        attentionWeights: {
+          semantic: 0.65,
+          goal_relevance: 0,
+          value_alignment: 0,
+          mood: 0,
+          time: 0,
+          social: 0,
+          entity: 0,
+          heat: 0.15,
+          suppression_penalty: 0.5,
+        },
+      }),
+    );
+  });
+
   it("exposes self writes through the identity guard instead of raw repositories", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
