@@ -50,6 +50,7 @@ describe("open question urgency bump condition", () => {
 
     const firstScan = await condition.scan();
     expect(firstScan).toHaveLength(1);
+    expect(firstScan[0]?.stateTs).toBe(question.last_touched);
     expect(firstScan[0]?.payload).toMatchObject({
       open_question_id: question.id,
       urgency: 0.9,

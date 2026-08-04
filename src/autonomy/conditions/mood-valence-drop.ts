@@ -68,6 +68,7 @@ export function createMoodValenceDropCondition(
           sourceType: "condition",
           watermarkProcessName,
           sortTs: history[0]!.ts,
+          stateTs: history[0]!.ts,
           payload: {
             session_id: sessionId,
             average_valence: averageValence,

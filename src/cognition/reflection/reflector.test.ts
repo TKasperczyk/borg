@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SuppressionSet } from "../attention/index.js";
 import { Reflector, type ReflectorOptions } from "./reflector.js";
+import { TurnSelfContextBuilder } from "../self/turn-self-context.js";
+import type { EmbeddingClient } from "../../embeddings/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
@@ -32,7 +34,12 @@ import {
   createTraitId,
 } from "../../util/ids.js";
 import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
-import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
+import {
+  NOOP_TRACER,
+  type TurnTraceData,
+  type TurnTraceEventName,
+  type TurnTracer,
+} from "../../tracing/tracer.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
@@ -1564,6 +1571,19 @@ describe("reflector", () => {
       harness.writer,
     );
 
+    const autonomousPayload = JSON.parse(llm.requests[0]?.messages[0]?.content ?? "{}") as {
+      executive_focus?: {
+        selected_goal?: {
+          goal_id?: string;
+          terminal_condition?: string | null;
+        };
+      };
+    };
+
+    expect(autonomousPayload.executive_focus?.selected_goal).toMatchObject({
+      goal_id: goal.id,
+      terminal_condition: "Launch readiness review is complete",
+    });
     expect(cascadingGoalsRepository.get(goal.id)).toMatchObject({
       status: "done",
       terminal_condition: "Launch readiness review is complete",
@@ -1588,6 +1608,133 @@ describe("reflector", () => {
         },
       ]),
     );
+  });
+
+  it("applies retired_goals through goal-followup forced focus", async () => {
+    const harness = await createExecutiveReflectionHarness(new FixedClock(4_850));
+    cleanup.push(harness.cleanup);
+    const evidenceStreamEntryId = createStreamEntryId();
+    const followupGoal = harness.goalsRepository.add({
+      description: "Low-priority settled followup",
+      terminalCondition: "The settled followup is complete",
+      priority: 1,
+      provenance: { kind: "manual" },
+    });
+    const competitor = harness.goalsRepository.add({
+      description: "Higher-priority competing work",
+      priority: 10,
+      provenance: { kind: "manual" },
+    });
+    const embeddingClient: EmbeddingClient = {
+      async embed() {
+        return Float32Array.from([0, 0, 0, 0]);
+      },
+      async embedBatch(texts) {
+        return texts.map(() => Float32Array.from([0, 0, 0, 0]));
+      },
+    };
+    const selfContext = await new TurnSelfContextBuilder({
+      embeddingClient,
+      valuesRepository: { list: () => [] },
+      goalsRepository: harness.goalsRepository,
+      traitsRepository: harness.traitsRepository,
+      executiveStepsRepository: harness.executiveStepsRepository,
+      clock: harness.clock,
+      tracer: NOOP_TRACER,
+      goalFocusThreshold: 0.45,
+      goalFollowupLookaheadMs: 20_000,
+      goalFollowupStaleMs: 100_000,
+    }).build({
+      turnId: "turn_followup_retirement_focus",
+      cognitionInput: "",
+      perception: {
+        entities: [],
+        mode: "reflective",
+        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+        temporalCue: null,
+      },
+      autonomyTrigger: {
+        source_name: "goal_followup_due",
+        source_type: "trigger",
+        event_id: "followup-retirement",
+        sort_ts: harness.clock.now(),
+        payload: {
+          selected_goal_id: followupGoal.id,
+          selected_goal: followupGoal,
+        },
+      },
+      audienceEntityId: null,
+    });
+    const selectedCandidate = selfContext.executiveFocus.candidates.find(
+      (candidate) => candidate.goal_id === followupGoal.id,
+    );
+    expect(selfContext.executiveFocus.candidates[0]?.goal_id).toBe(competitor.id);
+    expect(selectedCandidate?.score).toBeLessThan(selfContext.executiveFocus.threshold);
+    expect(selfContext.executiveFocus.selected_goal?.id).toBe(followupGoal.id);
+
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse(
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [
+            {
+              goal_id: followupGoal.id,
+              disposition: "satisfied",
+              evidence: {
+                note: "The settled followup is complete.",
+                evidence_stream_entry_ids: [evidenceStreamEntryId],
+              },
+            },
+          ],
+        ),
+      ],
+    });
+    const cascadingGoalsRepository = new GoalsRepository({
+      db: harness.db,
+      clock: harness.clock,
+      executiveStepsRepository: harness.executiveStepsRepository,
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: cascadingGoalsRepository,
+      traitsRepository: harness.traitsRepository,
+      executiveStepsRepository: harness.executiveStepsRepository,
+    });
+    const baseContext = createExecutiveReflectionContext({
+      origin: "autonomous",
+      goal: followupGoal,
+    });
+
+    await reflector.reflect(
+      {
+        ...baseContext,
+        turnId: "turn_followup_retired_goal_application",
+        selfSnapshot: selfContext.selfSnapshot,
+        executiveFocus: selfContext.executiveFocus,
+        currentTurnStreamEntryIds: [evidenceStreamEntryId],
+      },
+      harness.writer,
+    );
+
+    expect(llm.requests).toHaveLength(1);
+    expect(cascadingGoalsRepository.get(followupGoal.id)).toMatchObject({
+      status: "done",
+      provenance: {
+        kind: "online_reflector",
+        evidence_stream_entry_ids: [evidenceStreamEntryId],
+      },
+    });
+    expect(cascadingGoalsRepository.get(competitor.id)?.status).toBe("active");
   });
 
   it("retires a user-turn goal when reflection also marks it advanced", async () => {

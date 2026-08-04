@@ -1897,15 +1897,14 @@ creator-directive authorization machinery, but autonomous outbound posting
 remains config-gated.
 
 Wake sources come in two flavors behind one interface. Triggers are time- and
-deadline-driven; conditions are state-threshold-driven. The wake sources
-enabled by default are the ones that can actually fire in the current substrate:
-`commitment_revoked`, `open_question_urgency_bump`, executive-focus due checks,
-and the deliberate `scheduled_wake` lever. The time-threshold triggers
-`commitment_expiring`, `open_question_dormant`, and `goal_followup_due` default
-off until the underlying records carry the signals they need. Scheduled
-reflection and mood-valence-drop also default off. Both trigger classes are
-scanned the same way; the split is a taxonomy of why something became due, not
-two separate engines.
+deadline-driven; conditions are state-threshold-driven. The conservative
+library defaults enable `commitment_revoked`, `open_question_urgency_bump`,
+executive-focus due checks, and the deliberate `scheduled_wake` lever.
+Long-lived deployments can and do enable the time-threshold sources once their
+records have matured, including `commitment_expiring`, `open_question_dormant`,
+`goal_followup_due`, and scheduled reflection. Both trigger classes are scanned
+the same way; the split is a taxonomy of why something became due, not two
+separate engines.
 
 The scheduler decides only whether and when to wake, structurally. Each due
 event is deduped through a watermark keyed on the state version that made it
@@ -1913,29 +1912,42 @@ due, so a source fires once per state change and re-arms when that state
 advances rather than firing forever. A budget caps wakes per rolling window,
 failures back off, and a live user turn always wins the session lock -- an
 autonomous wake yields rather than preempting. The scheduler never inspects,
-scores, or rewrites what the woken turn produces; it records a wake event and
-an outcome summary to the Stream and stops there.
+scores, or rewrites the semantic content the woken turn produces. It reads only
+structural outcomes -- emission kind, delivered-outbound state, and durable
+progress timestamps -- then records the wake and its outcome.
 
-Executive-focus staleness is the one default source whose re-arming predicate --
-a goal whose progress timestamp keeps aging -- can stay true when nothing has
-actually changed, so it carries a per-goal dampener. A `goal_stale` wake that
-ends in neither progress nor a non-suppressed emission (an outward message, a
-continued train-of-thought, or a successful outbound post) raises that goal's
-empty-wake count, and its stale cooldown grows exponentially from the base;
-after a configured number of consecutive empty wakes the goal goes dormant --
-it exits exec-focus selection entirely until it makes headway, rather than
-merely slowing to a cap (which, across a pool of never-progressing goals, would
-still sum to a steady drip of empty wakes). Any headway -- progress, or an
-emission that clears the count -- resets it, and a dormant goal re-enters only
-when its progress advances, never on a timer. The dampener is purely structural
--- it keys on the goal id, its progress timestamp, and the turn's emission kind,
-never on goal content -- and it only changes when a goal is re-selected: the
-goal stays active and globally recallable, while the base cooldown, the
-step-due path, and inbound and contemplative wakes are untouched. This keeps a
-legitimately held but unprogressable goal -- for instance one a standing
-commitment asks the entity to hold open without acting -- from re-waking the
-entity to re-derive the same silence, while a goal that becomes live again
-(its tracked situation advances) returns to normal selection on its own.
+Goal staleness can stay true when nothing has changed, so executive-focus stale
+wakes and goal-followup wakes share one durable per-goal dampener. A wake that
+ends in neither progress nor structural headway (an outward message, a
+continued train-of-thought, or a delivered outbound post) raises that goal's
+empty-wake count. Its cooldown grows exponentially; after the configured count
+the goal goes dormant until its progress timestamp advances or that goal's own
+wake makes headway. The historical
+`autonomy:executive-focus-due:goal-stale-backoff:<goalId>` name is retained so
+both paths honor existing state. A deadline-bearing followup due inside the
+configured lookahead pierces only this per-goal dormancy; its state-tuple latch
+has separate stale and deadline phases (with legacy latch rows still honored),
+and the normal wake budget still bounds it. An engaged fleet cooldown admits
+the deadline phase once its timestamp falls within that cooldown window. The
+goal remains active and globally recallable throughout.
+
+The fleet governor bounds rotation across many individually valid operational
+concerns. Five consecutive structurally silent operational wakes engage a
+durable, exponentially increasing cooldown from 30 minutes to a finite six-hour
+cap. A newer concern timestamp may bypass an engaged cooldown, capped at three
+admissions per streak; a missing timestamp fails closed. A concern whose
+structural `target_at` or `expires_at` falls within the current cooldown window
+uses a deadline lane without consuming that freshness cap. Any operational
+headway resets the streak. Contemplative sources (`scheduled_reflection` and
+`scheduled_wake`) are exempt: their silence, messages, and continued private
+thought neither increment nor reset the operational streak, while a delivered
+outbound post resets it. Three consecutive LLM/auth infrastructure turn errors
+engage a separate durable five-to-thirty-minute circuit for all sources. Source
+scan/listing and wake-preparation failures use bounded per-source retry and do
+not block healthy sources; post-turn persistence failures are reported as
+bookkeeping errors without reclassifying known headway. Admission skips occur
+before wake records, stream entries, or source watermarks, so the event
+re-presents later. Inbound user turns never enter this scheduler gate.
 
 An autonomous turn is structurally distinct from a user turn. Its origin is
 autonomous, its audience is the self, and it carries no external sender and no

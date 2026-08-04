@@ -7,6 +7,7 @@ export { autonomyMigrations } from "./migrations.js";
 export {
   AUTONOMY_CONDITION_NAMES,
   AUTONOMY_TRIGGER_NAMES,
+  AUTONOMY_WAKE_OUTCOMES,
   AUTONOMY_WAKE_SOURCE_METADATA,
   AUTONOMY_WAKE_SOURCE_NAMES,
   type AutonomyCondition,
@@ -14,6 +15,7 @@ export {
   type AutonomySchedulerBudgetDescription,
   type AutonomySchedulerConditionSourceDescription,
   type AutonomySchedulerDescription,
+  type AutonomySchedulerFleetBrakeDescription,
   type AutonomySchedulerSourceDescription,
   type AutonomySchedulerTriggerSourceDescription,
   type AutonomyTickEventResult,
@@ -21,11 +23,22 @@ export {
   type AutonomyWakeSourceCategory,
   type AutonomyWakeSourceName,
   type AutonomyWakeSourceType,
+  type AutonomyWakeOutcome,
   type AutonomyTrigger,
   type AutonomyTriggerName,
   type DueEvent,
   type TickResult,
 } from "./types.js";
+export {
+  DEFAULT_FLEET_BRAKE_OPTIONS,
+  FLEET_BRAKE_PROCESS_NAME,
+  emptyFleetBrakeMetadata,
+  fleetBrakeCooldownUntilMs,
+  fleetBrakeErrorPausedUntilMs,
+  readFleetBrakeMetadata,
+  type FleetBrakeMetadata,
+  type FleetBrakeOptions,
+} from "./fleet-brake.js";
 export {
   createCommitmentExpiringTrigger,
   createExecutiveFocusDueTrigger,

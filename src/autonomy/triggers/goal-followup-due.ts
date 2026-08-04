@@ -6,6 +6,10 @@ import {
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
+import {
+  getExecutiveFocusGoalStaleBackoffProcessName,
+  goalStaleBackoffEndMs,
+} from "../executive-focus-stale-backoff.js";
 import type { AutonomyTrigger, DueEvent } from "../types.js";
 
 const TRIGGER_NAME = "goal_followup_due" as const;
@@ -15,6 +19,8 @@ const NEXT_DUE_CANDIDATE_LIMIT = 512;
 
 export type GoalFollowupDuePayload = {
   goal_id: GoalRecord["id"];
+  selected_goal_id: GoalRecord["id"];
+  selected_goal: GoalRecord & ReturnType<typeof memoryDisclosurePayloadFields>;
   description: string;
   priority: number;
   target_at: number | null;
@@ -28,6 +34,13 @@ export type GoalFollowupDueTriggerOptions = {
   watermarkRepository: StreamWatermarkRepository;
   lookaheadMs: number;
   staleMs: number;
+  staleBackoff: {
+    baseCooldownMs: number;
+    multiplier: number;
+    maxCooldownMs: number;
+    dormancyCount: number;
+  };
+  respectStaleBackoff: boolean;
   clock?: Clock;
   sessionId?: SessionId;
 };
@@ -43,8 +56,9 @@ function flattenGoals(goals: readonly GoalTreeNode[]): GoalRecord[] {
       continue;
     }
 
-    flattened.push(next);
-    stack.push(...next.children);
+    const { children, ...goal } = next;
+    flattened.push(goal);
+    stack.push(...children);
   }
 
   return flattened;
@@ -54,11 +68,39 @@ function dueAfterStrictThreshold(thresholdTs: number): number {
   return thresholdTs + 1;
 }
 
+type GoalFollowupPhase = "deadline" | "stale";
+
+function legacyLatchProcessName(goal: GoalRecord): string {
+  const targetAtKey = goal.target_at ?? "no-target";
+  const progressKey = goal.last_progress_ts ?? goal.created_at;
+
+  return `${WATERMARK_PREFIX}:${goal.id}:${targetAtKey}:${progressKey}`;
+}
+
+function phaseLatchProcessName(goal: GoalRecord, phase: GoalFollowupPhase): string {
+  return `${legacyLatchProcessName(goal)}:${phase}`;
+}
+
 export function createGoalFollowupDueTrigger(
   options: GoalFollowupDueTriggerOptions,
 ): AutonomyTrigger<GoalFollowupDuePayload> {
   const clock = options.clock ?? new SystemClock();
   const sessionId = options.sessionId ?? DEFAULT_SESSION_ID;
+
+  function staleBackoffEnd(goal: GoalRecord): number | null {
+    if (!options.respectStaleBackoff) {
+      return null;
+    }
+
+    return goalStaleBackoffEndMs({
+      watermark: options.watermarkRepository.get(
+        getExecutiveFocusGoalStaleBackoffProcessName(goal.id),
+        sessionId,
+      ),
+      lastProgressTs: goal.last_progress_ts,
+      ...options.staleBackoff,
+    });
+  }
 
   return {
     name: TRIGGER_NAME,
@@ -80,10 +122,23 @@ export function createGoalFollowupDueTrigger(
 
           const targetAtKey = goal.target_at ?? "no-target";
           const progressKey = goal.last_progress_ts ?? goal.created_at;
-          const watermarkProcessName = `${WATERMARK_PREFIX}:${goal.id}:${targetAtKey}:${progressKey}`;
+          const phase: GoalFollowupPhase = deadlineDue ? "deadline" : "stale";
+          const legacyProcessName = legacyLatchProcessName(goal);
+          const watermarkProcessName = phaseLatchProcessName(goal, phase);
 
-          if (options.watermarkRepository.get(watermarkProcessName, sessionId) !== null) {
+          if (
+            options.watermarkRepository.get(legacyProcessName, sessionId) !== null ||
+            options.watermarkRepository.get(watermarkProcessName, sessionId) !== null
+          ) {
             return null;
+          }
+
+          if (!deadlineDue) {
+            const backoffEnd = staleBackoffEnd(goal);
+
+            if (backoffEnd !== null && backoffEnd > nowMs) {
+              return null;
+            }
           }
 
           const reason = deadlineDue && staleDue ? "both" : deadlineDue ? "deadline" : "stale";
@@ -94,13 +149,19 @@ export function createGoalFollowupDueTrigger(
               : Math.min(goal.target_at, baseProgressTs + options.staleMs);
 
           return {
-            id: `${goal.id}:${targetAtKey}:${progressKey}`,
+            id: `${goal.id}:${targetAtKey}:${progressKey}:${phase}`,
             sourceName: TRIGGER_NAME,
             sourceType: "trigger",
             watermarkProcessName,
             sortTs,
+            stateTs: baseProgressTs,
             payload: {
               goal_id: goal.id,
+              selected_goal_id: goal.id,
+              selected_goal: {
+                ...goal,
+                ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
+              },
               description: goal.description,
               priority: goal.priority,
               target_at: goal.target_at,
@@ -130,14 +191,25 @@ export function createGoalFollowupDueTrigger(
         return null;
       }
 
+      let nextCandidateAt: number | null = null;
+
       for (const candidate of candidates) {
         const goal = candidate.goal;
         const baseProgressTs = goal.last_progress_ts ?? goal.created_at;
-        const targetAtKey = goal.target_at ?? "no-target";
-        const progressKey = goal.last_progress_ts ?? goal.created_at;
-        const watermarkProcessName = `${WATERMARK_PREFIX}:${goal.id}:${targetAtKey}:${progressKey}`;
+        const deadlineDue = goal.target_at !== null && goal.target_at - nowMs < options.lookaheadMs;
+        const legacyProcessName = legacyLatchProcessName(goal);
 
-        if (options.watermarkRepository.get(watermarkProcessName, sessionId) !== null) {
+        if (options.watermarkRepository.get(legacyProcessName, sessionId) !== null) {
+          continue;
+        }
+
+        const deadlineProcessName = phaseLatchProcessName(goal, "deadline");
+
+        if (deadlineDue) {
+          if (options.watermarkRepository.get(deadlineProcessName, sessionId) === null) {
+            return nowMs;
+          }
+
           continue;
         }
 
@@ -146,12 +218,29 @@ export function createGoalFollowupDueTrigger(
           goal.target_at === null
             ? Number.POSITIVE_INFINITY
             : dueAfterStrictThreshold(goal.target_at - options.lookaheadMs);
-        const dueAt = Math.min(candidate.due_at, staleDueAt, deadlineDueAt);
+        const backoffEnd = staleBackoffEnd(goal);
+        const staleCandidateAt =
+          options.watermarkRepository.get(phaseLatchProcessName(goal, "stale"), sessionId) !==
+            null || backoffEnd === Number.POSITIVE_INFINITY
+            ? Number.POSITIVE_INFINITY
+            : Math.max(staleDueAt, backoffEnd ?? Number.NEGATIVE_INFINITY, nowMs);
+        // Deadline piercing begins at the structural lookahead boundary, even
+        // when that boundary lies in the future at describe-time.
+        const deadlineCandidateAt =
+          options.watermarkRepository.get(deadlineProcessName, sessionId) === null
+            ? Math.max(deadlineDueAt, nowMs)
+            : Number.POSITIVE_INFINITY;
+        const effectiveDueAt = Math.min(staleCandidateAt, deadlineCandidateAt);
 
-        return Math.max(dueAt, nowMs);
+        if (effectiveDueAt === Number.POSITIVE_INFINITY) {
+          continue;
+        }
+
+        nextCandidateAt =
+          nextCandidateAt === null ? effectiveDueAt : Math.min(nextCandidateAt, effectiveDueAt);
       }
 
-      return null;
+      return nextCandidateAt;
     },
     buildTurn(event) {
       return {

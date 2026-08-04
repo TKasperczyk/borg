@@ -52,6 +52,7 @@ describe("commitment revoked condition", () => {
 
     const firstScan = await condition.scan();
     expect(firstScan).toHaveLength(1);
+    expect(firstScan[0]?.stateTs).toBe(clock.now());
     expect(firstScan[0]?.payload).toMatchObject({
       commitment_id: revoked.id,
       directive: "Stop oversharing",

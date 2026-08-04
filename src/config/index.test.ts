@@ -135,10 +135,22 @@ describe("config", () => {
         sourceTypes: [],
       },
     });
+    expect(config.autonomy.fleetBrake).toEqual({
+      enabled: true,
+      emptyStreakThreshold: 5,
+      baseCooldownMs: 30 * 60 * 1_000,
+      cooldownMultiplier: 2,
+      maxCooldownMs: 6 * 60 * 60 * 1_000,
+      errorStreakThreshold: 3,
+      errorBasePauseMs: 5 * 60 * 1_000,
+      errorMaxPauseMs: 30 * 60 * 1_000,
+      freshnessBypassCap: 3,
+    });
     expect(config.autonomy.executiveFocus.wakeCooldownSec).toBe(3_600);
     expect(config.autonomy.executiveFocus.emptyWakeBackoffMultiplier).toBe(2);
     expect(config.autonomy.executiveFocus.wakeCooldownMaxSec).toBe(86_400);
     expect(config.autonomy.executiveFocus.emptyWakeDormancyCount).toBe(3);
+    expect(config.autonomy.triggers.goalFollowupDue.respectStaleBackoff).toBe(true);
     expect(config.streamIngestion.settle).toEqual({
       settleMs: 0,
       maxSettleMs: 30_000,
@@ -413,6 +425,40 @@ describe("config", () => {
     expect(config.autonomy.executiveFocus.emptyWakeBackoffMultiplier).toBe(3.5);
     expect(config.autonomy.executiveFocus.wakeCooldownMaxSec).toBe(7_200);
     expect(config.autonomy.executiveFocus.emptyWakeDormancyCount).toBe(5);
+  });
+
+  it("loads fleet-brake and followup rollback controls from env", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {
+        BORG_AUTONOMY_FLEET_BRAKE_ENABLED: "false",
+        BORG_AUTONOMY_FLEET_BRAKE_EMPTY_STREAK_THRESHOLD: "7",
+        BORG_AUTONOMY_FLEET_BRAKE_BASE_COOLDOWN_MS: "120000",
+        BORG_AUTONOMY_FLEET_BRAKE_COOLDOWN_MULTIPLIER: "3.5",
+        BORG_AUTONOMY_FLEET_BRAKE_MAX_COOLDOWN_MS: "7200000",
+        BORG_AUTONOMY_FLEET_BRAKE_ERROR_STREAK_THRESHOLD: "4",
+        BORG_AUTONOMY_FLEET_BRAKE_ERROR_BASE_PAUSE_MS: "60000",
+        BORG_AUTONOMY_FLEET_BRAKE_ERROR_MAX_PAUSE_MS: "900000",
+        BORG_AUTONOMY_FLEET_BRAKE_FRESHNESS_BYPASS_CAP: "2",
+        BORG_AUTONOMY_TRIGGER_GOAL_FOLLOWUP_DUE_RESPECT_STALE_BACKOFF: "false",
+      },
+    });
+
+    expect(config.autonomy.fleetBrake).toEqual({
+      enabled: false,
+      emptyStreakThreshold: 7,
+      baseCooldownMs: 120_000,
+      cooldownMultiplier: 3.5,
+      maxCooldownMs: 7_200_000,
+      errorStreakThreshold: 4,
+      errorBasePauseMs: 60_000,
+      errorMaxPauseMs: 900_000,
+      freshnessBypassCap: 2,
+    });
+    expect(config.autonomy.triggers.goalFollowupDue.respectStaleBackoff).toBe(false);
   });
 
   it("loads autonomous proactive outbound gates from config and env", () => {

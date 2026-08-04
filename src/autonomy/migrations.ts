@@ -64,4 +64,16 @@ export const autonomyMigrations = [
       `);
     },
   },
+  {
+    id: 3,
+    name: "autonomy_wakes_outcome",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE autonomy_wakes
+        ADD COLUMN outcome TEXT CHECK (
+          outcome IS NULL OR outcome IN ('headway', 'silent', 'error', 'busy')
+        );
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

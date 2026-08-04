@@ -46,15 +46,12 @@ export function createCommitmentExpiringTrigger(
     async scan() {
       const nowMs = clock.now();
       const dueEvents = options.commitmentRepository
-        .list({
-          activeOnly: true,
-          nowMs,
+        .listUnresolvedExpiringReadOnly({
+          limit: NEXT_DUE_CANDIDATE_LIMIT,
         })
         .filter(
           (commitment) =>
-            commitment.expires_at !== null &&
-            commitment.expires_at > nowMs &&
-            commitment.expires_at - nowMs < options.lookaheadMs,
+            commitment.expires_at !== null && commitment.expires_at - nowMs < options.lookaheadMs,
         )
         .sort(
           (left, right) =>
@@ -82,6 +79,7 @@ export function createCommitmentExpiringTrigger(
             sourceType: "trigger",
             watermarkProcessName,
             sortTs: expiresAt,
+            stateTs: commitment.updated_at ?? commitment.created_at,
             payload: {
               commitment_id: commitment.id,
               type: commitment.type,
@@ -96,8 +94,7 @@ export function createCommitmentExpiringTrigger(
     },
     async nextDueAt() {
       const nowMs = clock.now();
-      const commitments = options.commitmentRepository.listFutureExpiringReadOnly({
-        nowMs,
+      const commitments = options.commitmentRepository.listUnresolvedExpiringReadOnly({
         limit: NEXT_DUE_CANDIDATE_LIMIT + 1,
       });
 

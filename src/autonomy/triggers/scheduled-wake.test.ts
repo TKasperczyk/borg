@@ -51,6 +51,7 @@ describe("scheduled wake trigger", () => {
     expect(due).toHaveLength(1);
     expect(due[0]?.id).toBe(wake.id);
     expect(due[0]?.sortTs).toBe(wake.fire_at);
+    expect(due[0]?.stateTs).toBe(wake.updated_at);
     expect(due[0]?.payload).toEqual({
       note: "check in",
       scheduled_at: NOW,

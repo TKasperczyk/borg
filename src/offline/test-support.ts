@@ -443,6 +443,10 @@ export function createTestConfig(
           ],
         },
       },
+      fleetBrake: {
+        ...DEFAULT_CONFIG.autonomy.fleetBrake,
+        ...overrides.autonomy?.fleetBrake,
+      },
       executiveFocus: {
         ...DEFAULT_CONFIG.autonomy.executiveFocus,
         ...overrides.autonomy?.executiveFocus,

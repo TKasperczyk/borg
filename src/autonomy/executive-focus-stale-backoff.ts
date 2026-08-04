@@ -1,6 +1,9 @@
 import type { StreamWatermark } from "../stream/index.js";
 import { StorageError } from "../util/errors.js";
 
+// The name is historical: this is the per-goal empty-wake brake shared by
+// executive_focus_due and goal_followup_due. Changing it would orphan durable
+// dormancy state written under the original executive-focus name.
 const EXECUTIVE_FOCUS_GOAL_STALE_BACKOFF_PREFIX = "autonomy:executive-focus-due:goal-stale-backoff";
 
 export type ExecutiveFocusGoalStaleBackoffMetadata = {
@@ -53,4 +56,41 @@ export function executiveFocusGoalStaleBackoffCooldownMs(input: {
   );
 
   return Math.max(input.baseCooldownMs, capped);
+}
+
+export function goalStaleBackoffEndMs(input: {
+  watermark: Pick<StreamWatermark, "metadata" | "updatedAt"> | null;
+  lastProgressTs: number | null;
+  baseCooldownMs: number;
+  multiplier: number;
+  maxCooldownMs: number;
+  dormancyCount: number;
+}): number | null {
+  if (input.watermark === null) {
+    return null;
+  }
+
+  if (input.lastProgressTs !== null && input.lastProgressTs >= input.watermark.updatedAt) {
+    return null;
+  }
+
+  const metadata = readExecutiveFocusGoalStaleBackoffMetadata(input.watermark);
+
+  if (metadata.empty_count <= 0) {
+    return null;
+  }
+
+  if (metadata.empty_count >= input.dormancyCount) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  return (
+    input.watermark.updatedAt +
+    executiveFocusGoalStaleBackoffCooldownMs({
+      baseCooldownMs: input.baseCooldownMs,
+      multiplier: input.multiplier,
+      maxCooldownMs: input.maxCooldownMs,
+      emptyCount: metadata.empty_count,
+    })
+  );
 }

@@ -67,6 +67,7 @@ export function createOpenQuestionDormantTrigger(
             sourceType: "trigger",
             watermarkProcessName,
             sortTs: question.last_touched,
+            stateTs: question.last_touched,
             payload: {
               open_question_id: question.id,
               question: question.question,

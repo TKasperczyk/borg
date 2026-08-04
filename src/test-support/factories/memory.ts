@@ -119,6 +119,7 @@ export function makeCommitmentRecord(overrides: Partial<CommitmentRecord> = {}):
     provenance: overrides.provenance ?? { kind: "manual" },
     source_stream_entry_ids: overrides.source_stream_entry_ids ?? [createStreamEntryId()],
     created_at: createdAt,
+    updated_at: overrides.updated_at ?? createdAt,
     expires_at: null,
     expired_at: null,
     revoked_at: null,
