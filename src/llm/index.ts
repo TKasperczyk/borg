@@ -1683,8 +1683,12 @@ function normalizeSystemBlocks(
   }));
 }
 
+// Version-generic on purpose: every Opus generation from 4.6 onward removes or
+// deprecates the same two request fields (temperature, manual budget_tokens
+// thinking), so pinning this to a version digit silently re-enables a 400 on the
+// next model bump. Match the family, not the release.
 function isOpusModel(model: string): boolean {
-  return /^claude-opus-4(?:[-._].+)?$/i.test(model.trim());
+  return /^claude-opus-\d(?:[-._].+)?$/i.test(model.trim());
 }
 
 function resolveMaxTokens(options: Pick<LLMCallOptions, "max_tokens" | "model">): number {

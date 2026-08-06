@@ -288,7 +288,7 @@ const maintenanceProcessSchema = z.enum(OFFLINE_PROCESS_NAMES);
 export type PostGenerationGuardMode = z.infer<typeof postGenerationGuardModeSchema>;
 const anthropicModelsConfigSchema = z
   .object({
-    // The main cognition/extraction/background slots default to Opus 4.6.
+    // The main cognition/extraction/background slots default to Opus 5.
     // Recall expansion is a small structured fanout task and has its own
     // Haiku slot so it can stay fast without reusing background.
     // Creator-directive extraction is a nuanced semantic classification
@@ -296,9 +296,9 @@ const anthropicModelsConfigSchema = z
     // under-emits; it gets its own Sonnet slot -- stronger than the recall
     // Haiku, cheaper than the Opus cognition slot -- and only fires on
     // creator-in-operator turns, so the cost is bounded.
-    cognition: z.string().min(1).default("claude-opus-4-6"),
-    background: z.string().min(1).default("claude-opus-4-6"),
-    extraction: z.string().min(1).default("claude-opus-4-6"),
+    cognition: z.string().min(1).default("claude-opus-5"),
+    background: z.string().min(1).default("claude-opus-5"),
+    extraction: z.string().min(1).default("claude-opus-5"),
     recallExpansion: z.string().min(1).default("claude-haiku-4-5-20251001"),
     creatorDirective: z.string().min(1).default("claude-sonnet-4-6"),
     imagePerception: z.string().min(1).default("claude-haiku-4-5-20251001"),

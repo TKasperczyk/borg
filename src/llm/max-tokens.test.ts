@@ -7,8 +7,17 @@ describe("llm max token ceilings", () => {
     expect(getModelMaxOutputTokens("claude-opus-4-6")).toBe(64_000);
   });
 
+  it("returns the Opus/Sonnet ceiling for newer generations, not the fallback", () => {
+    // Regression guard: a version-pinned family match sent claude-opus-5 to the
+    // 8_192 fallback, silently cutting the output ceiling by ~87% on a model bump.
+    expect(getModelMaxOutputTokens("claude-opus-5")).toBe(64_000);
+    expect(getModelMaxOutputTokens("claude-sonnet-5")).toBe(64_000);
+    expect(clampMaxOutputTokens("claude-opus-5", 80_000)).toBe(64_000);
+  });
+
   it("returns the Haiku ceiling", () => {
     expect(getModelMaxOutputTokens("claude-haiku-4-5")).toBe(32_000);
+    expect(getModelMaxOutputTokens("claude-haiku-5")).toBe(32_000);
   });
 
   it("returns the Qwen 3 ceiling for gateway-prefixed and bare model names", () => {

@@ -17,7 +17,7 @@ pnpm assess --mock
 ```
 
 `--mock` uses a deterministic fake assessor and fake Borg LLM, so it is suitable for CI smoke
-checks. Real runs use `claude-opus-4-6` for the assessor and leave Borg under test on its
+checks. Real runs use `claude-opus-5` for the assessor and leave Borg under test on its
 configured model slots. Real mode is selected automatically when `ANTHROPIC_API_KEY`,
 `ANTHROPIC_AUTH_TOKEN`, or Claude OAuth credentials are present; otherwise the CLI falls back to
 mock mode. Use `--real` or `--mock` to force a mode.

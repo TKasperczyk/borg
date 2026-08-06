@@ -1775,6 +1775,43 @@ describe("llm", () => {
     });
   });
 
+  it("treats a newer Opus generation as Opus for temperature and manual thinking", async () => {
+    // Regression guard: the Opus family gate must not be pinned to a version
+    // digit. Opus 5 rejects both `temperature` and manual budget_tokens
+    // thinking, so a gate that only matched claude-opus-4* would 400 here.
+    const fetchMock = vi.fn(
+      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+
+        expect(body.temperature).toBeUndefined();
+        expect(body.thinking).toBeUndefined();
+
+        return jsonResponse(createMessageBody());
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+    });
+
+    await expect(
+      client.complete({
+        model: "claude-opus-5",
+        system: "be concise",
+        messages: [{ role: "user", content: "hello" }],
+        temperature: 0,
+        thinking: { type: "enabled", budget_tokens: 4_000 },
+        max_tokens: 32,
+        budget: "test",
+      }),
+    ).resolves.toMatchObject({
+      text: "Hello",
+    });
+  });
+
   it("sends adaptive thinking and effort for Opus with auto tool_choice", async () => {
     const fetchMock = vi.fn(
       async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
