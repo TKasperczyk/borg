@@ -17,7 +17,18 @@ describe("llm max token ceilings", () => {
 
   it("returns the Haiku ceiling", () => {
     expect(getModelMaxOutputTokens("claude-haiku-4-5")).toBe(32_000);
-    expect(getModelMaxOutputTokens("claude-haiku-5")).toBe(32_000);
+    // The exact dated id the recallExpansion/imagePerception slots run on.
+    expect(getModelMaxOutputTokens("claude-haiku-4-5-20251001")).toBe(32_000);
+  });
+
+  it("is not pinned to a version digit, so a future release keeps its ceiling", () => {
+    // NOTE: the ids below are deliberately hypothetical -- at time of writing
+    // Opus and Sonnet have shipped a 5, Haiku has not (latest is 4.5). They
+    // exist here only to prove the family matcher is version-generic: a future
+    // release must not fall through to the 8_192 default the way claude-opus-5
+    // did when these patterns were pinned to `-4`.
+    expect(getModelMaxOutputTokens("claude-haiku-6")).toBe(32_000);
+    expect(getModelMaxOutputTokens("claude-opus-9")).toBe(64_000);
   });
 
   it("returns the Qwen 3 ceiling for gateway-prefixed and bare model names", () => {
