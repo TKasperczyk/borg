@@ -427,7 +427,15 @@ const configBaseSchema = z.object({
           goalSimilarityThreshold: z.number().min(0).max(1).default(0.82),
           ceilingConfidence: z.number().positive().max(0.5).default(0.5),
           maxInsightsPerRun: z.number().int().positive().default(2),
-          budget: z.number().int().positive().default(200_000),
+          // Sized against observed usage, not guessed. The budget sink runs
+          // AFTER each call, so an abort total is a LOWER bound on what a
+          // completing run costs -- reflector aborted at 248k-271k against the
+          // old 200k cap on eight of nine consecutive nightly runs, discarding
+          // the whole phase after paying for it. Per-call prompts are now
+          // 170k-330k tokens, so two calls alone exceeded the old cap. These
+          // caps stay runaway guards (a looping process still trips them),
+          // they are no longer work limiters. Revisit if prompt size grows.
+          budget: z.number().int().positive().default(800_000),
         })
         .prefault({}),
       associator: z
@@ -498,12 +506,17 @@ const configBaseSchema = z.object({
           duplicateSimilarityThreshold: z.number().min(0).max(1).default(0.9),
           stalenessDays: z.number().positive().default(30),
           staleNoTractionTicks: z.number().int().positive().default(4),
-          budget: z.number().int().positive().default(40_000),
+          // Aborted at 40k-48k against the old 40k cap on five of nine runs.
+          // See the reflector budget comment for the sizing rationale.
+          budget: z.number().int().positive().default(150_000),
         })
         .prefault({}),
       selfNarrator: z
         .object({
-          budget: z.number().int().positive().default(80_000),
+          // Worst offender: aborted at 154k-163k against the old 80k cap
+          // (~204% of budget) on eight of nine runs. See the reflector budget
+          // comment for the sizing rationale.
+          budget: z.number().int().positive().default(500_000),
           maxObservationsPerRun: z.number().int().positive().default(4),
           minSupportEpisodes: z.number().int().positive().default(2),
           cadenceHintDays: z.number().positive().default(7),
