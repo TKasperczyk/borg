@@ -202,6 +202,12 @@ describe("LivedExperienceDaySummarizerProcess", () => {
       expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
         "I do not decide whether any wake",
       );
+      // Repetition-vs-will: a live day summary once narrated sixteen
+      // re-derivations of one settled closure as sixteen separate chosen
+      // silences. The prompt must keep instructing collapse.
+      expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
+        "repetition, not new agency",
+      );
       expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
         "I held restraint while a repeated pattern recurred.",
       );

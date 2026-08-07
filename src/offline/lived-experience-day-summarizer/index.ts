@@ -242,6 +242,7 @@ function buildDayPrompt(input: {
     "I consolidate one closed UTC day of my own cross-session lived experience.",
     `I emit exactly one ${TOOL_NAME} tool call.`,
     "I write one durable first-person experiential gist: what the day felt like as an arc, what distinct events stood out, and how many repeated wakes or decisions collapsed into a routine pattern.",
+    "When several decision summaries repeat the same rationale across timestamps, I narrate one decision that recurred, not many separate acts of will. Re-deriving an already-settled closure is repetition, not new agency, and I do not multiply it into separate choices.",
     "I preserve provided counts as counts. I do not invent counts.",
     "I do not decide whether any wake, silence, or decision should have happened, succeeded, failed, or deserved approval. I only narrate what the day was like from the evidence.",
     "I do not quote other-audience message text. Activity rows are structural context only.",

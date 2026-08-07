@@ -88,6 +88,7 @@ function createExtractorInput(
     userMessage: "Help me track the refactor across sessions.",
     recentHistory: [],
     audienceEntityId: createEntityId(),
+    nowMs: 1_700_000_000_000,
     temporalCue: null,
     activeGoals: [],
     ...overrides,
@@ -148,6 +149,26 @@ describe("GoalPromotionExtractor", () => {
     expect(llm.requests[0]?.system).toContain("terminal_condition");
     expect(llm.requests[0]?.system).toContain("structural completion condition");
     expect(llm.requests[0]?.system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
+  });
+
+  it("anchors the prompt with the current time so deadlines resolve to the right year", async () => {
+    // The schema demands absolute epoch-ms deadlines; a year-less date in the
+    // user turn ("before August 14") is unresolvable without this anchor and
+    // produced a live goal dated two years in the past.
+    const llm = new FakeLLMClient({ responses: [goalPromotionResponse([])] });
+    const extractor = new GoalPromotionExtractor({
+      llmClient: llm,
+      model: "haiku",
+    });
+    const nowMs = 1_700_000_000_000;
+
+    await extractor.extract(createExtractorInput({ nowMs }));
+
+    const payload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      current_time?: { epoch_ms?: number; iso?: string };
+    };
+    expect(payload.current_time?.epoch_ms).toBe(nowMs);
+    expect(payload.current_time?.iso).toBe(new Date(nowMs).toISOString());
   });
 
   it("emits extractor completion traces with session scope", async () => {

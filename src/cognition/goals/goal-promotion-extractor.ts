@@ -58,7 +58,9 @@ const initialExecutiveStepSchema = z
       .finite()
       .nullable()
       .optional()
-      .describe("Optional due timestamp in Unix epoch milliseconds. Use null if absent."),
+      .describe(
+        "Optional due timestamp in Unix epoch milliseconds, resolved against the supplied current_time. Use null if absent.",
+      ),
     rationale: z.string().trim().min(1).describe("Why this step follows from the goal request."),
   })
   .strict();
@@ -94,7 +96,9 @@ const goalPromotionSchema = z
       .number()
       .finite()
       .nullable()
-      .describe("Target completion timestamp in Unix epoch milliseconds, or null if no deadline."),
+      .describe(
+        "Target completion timestamp in Unix epoch milliseconds, resolved against the supplied current_time, or null if no deadline.",
+      ),
     reason: z
       .string()
       .trim()
@@ -209,6 +213,10 @@ export type ExtractGoalPromotionInput = {
   audienceEntityId: EntityId | null;
   speakerEntityId?: EntityId | null;
   speakerDisplayName?: string | null;
+  // The schema demands absolute epoch-ms deadlines, so the prompt must carry
+  // the current time: without it the model cannot resolve a relative or
+  // year-less date ("before August 14") and guesses the year.
+  nowMs: number;
   temporalCue: unknown;
   activeGoals: readonly Pick<
     GoalRecord,
@@ -493,6 +501,10 @@ function buildGoalPromotionMessages(input: ExtractGoalPromotionInput): LLMMessag
     {
       role: "user",
       content: JSON.stringify({
+        current_time: {
+          epoch_ms: input.nowMs,
+          iso: new Date(input.nowMs).toISOString(),
+        },
         current_user_message: input.userMessage,
         recent_history: input.recentHistory.slice(-8).map((message) => ({
           role: message.role,

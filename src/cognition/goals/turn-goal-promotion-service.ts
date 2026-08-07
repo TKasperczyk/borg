@@ -93,6 +93,7 @@ export class TurnGoalPromotionService {
       audienceEntityId: input.audienceEntityId,
       speakerEntityId: input.ownerEntityId ?? null,
       speakerDisplayName: input.speakerDisplayName ?? null,
+      nowMs: this.options.clock.now(),
       temporalCue: input.temporalCue,
       activeGoals: input.activeGoals.map((goal) => ({
         id: goal.id,
