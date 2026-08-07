@@ -87,6 +87,7 @@ describe("config", () => {
       maxSelfDecisionEventsPerDay: 96,
       maxActivityEventsPerDay: 256,
       maxEpisodesPerDay: 12,
+      maxActionRecordsPerDay: 64,
     });
     expect(config.offline.overseer.budget).toBeNull();
     expect(config.maintenance.lightProcesses).toEqual([

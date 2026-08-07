@@ -192,6 +192,8 @@ export type ActionRecordListFilter = {
   rankActorEntityIds?: readonly EntityId[];
   goalId?: GoalId;
   openQuestionId?: OpenQuestionId;
+  createdSinceMs?: number;
+  createdUntilMs?: number;
   limit?: number;
 };
 
@@ -561,6 +563,16 @@ export class ActionRepository {
     if (filter.openQuestionId !== undefined) {
       clauses.push("open_question_id = ?");
       values.push(filter.openQuestionId);
+    }
+
+    if (filter.createdSinceMs !== undefined) {
+      clauses.push("created_at >= ?");
+      values.push(filter.createdSinceMs);
+    }
+
+    if (filter.createdUntilMs !== undefined) {
+      clauses.push("created_at <= ?");
+      values.push(filter.createdUntilMs);
     }
 
     if (filter.rankAudienceEntityIds !== undefined) {

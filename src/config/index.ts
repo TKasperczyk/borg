@@ -591,6 +591,7 @@ const configBaseSchema = z.object({
           maxSelfDecisionEventsPerDay: z.number().int().positive().default(96),
           maxActivityEventsPerDay: z.number().int().positive().default(256),
           maxEpisodesPerDay: z.number().int().positive().default(12),
+          maxActionRecordsPerDay: z.number().int().positive().default(64),
         })
         .prefault({}),
       beliefReviser: z

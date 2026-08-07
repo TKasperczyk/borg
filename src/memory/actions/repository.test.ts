@@ -214,6 +214,25 @@ describe("ActionRepository", () => {
     ]);
   });
 
+  it("lists action records within a created-at range", async () => {
+    // The day summarizer feeds a closed day's own action records to the
+    // narrative writer; the range must not leak neighboring days' attempts.
+    const repository = await openFixture();
+    const before = makeAction({ created_at: 1_000 });
+    const inside = makeAction({ description: "Attempt inside the day", created_at: 5_000 });
+    const after = makeAction({ description: "Attempt after the day", created_at: 9_000 });
+
+    repository.add(before);
+    repository.add(inside);
+    repository.add(after);
+
+    expect(
+      repository
+        .list({ recallAllAudiences: true, createdSinceMs: 2_000, createdUntilMs: 8_000 })
+        .map((record) => record.id),
+    ).toEqual([inside.id]);
+  });
+
   it("counts active and canonicalized action records", async () => {
     const repository = await openFixture();
 
