@@ -345,6 +345,11 @@ const configBaseSchema = z.object({
   retrieval: z
     .object({
       semanticOverfetchMultiplier: z.number().int().min(1).max(10).default(3),
+      lexicalFusion: z
+        .object({
+          enabled: z.boolean().default(false),
+        })
+        .prefault({}),
       semantic: z
         .object({
           underReviewMultiplier: z.number().min(0).max(1).default(0.5),
@@ -495,6 +500,28 @@ const configBaseSchema = z.object({
         .object({
           maxItemsPerPass: z.number().int().positive().default(3),
           budget: z.number().int().positive().nullable().default(null),
+          // Autonomous mode: no human ever reviews the queue — the LLM decides
+          // everything. Default false preserves the historical contract (the
+          // resolver handles five kinds, identity_inconsistency is manual-only,
+          // and a needs_manual verdict permanently parks the item for a human).
+          // When true:
+          //   - identity_inconsistency joins the resolver's kind roster (its
+          //     apply handler always existed; only the decision path was
+          //     reserved for humans);
+          //   - needs_manual stops being a dead letter: the diagnostic stamp
+          //     gains an attempt counter, stamped items stay eligible for
+          //     retry, and after maxNeedsManualAttempts the item is terminally
+          //     dismissed (no mutation) with the diagnostic as the reason;
+          //   - the overseer-flag judge prompt biases toward deciding instead
+          //     of "default to needs_manual when in doubt".
+          // The anti-self-confirmation safety gates (citation/taint checks,
+          // the semantic-node temporal-drift block) are NOT bypassed — their
+          // failures simply feed the bounded retry instead of a human queue.
+          // Deployments without any human review surface (e.g. the team-agent
+          // memory sidecar) should set this: for them the "manual" queue is a
+          // dead letterbox and pending items rot invisibly.
+          autonomous: z.boolean().default(false),
+          maxNeedsManualAttempts: z.number().int().positive().default(3),
         })
         .prefault({}),
       ruminator: z
@@ -1159,6 +1186,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
+    ["retrieval", "lexicalFusion", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_RETRIEVAL_LEXICAL_FUSION_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
     ["deliberation", "contradictionRouting", "enabled"],
     readOptionalEnvBoolean(env, "BORG_DELIBERATION_CONTRADICTION_ROUTING_ENABLED"),
   );
@@ -1505,6 +1537,21 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "reviewResolver", "budget"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_REVIEW_RESOLVER_BUDGET"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "reviewResolver", "maxItemsPerPass"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_REVIEW_RESOLVER_MAX_ITEMS_PER_PASS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "reviewResolver", "autonomous"],
+    readOptionalEnvBoolean(env, "BORG_OFFLINE_REVIEW_RESOLVER_AUTONOMOUS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "reviewResolver", "maxNeedsManualAttempts"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_REVIEW_RESOLVER_MAX_NEEDS_MANUAL_ATTEMPTS"),
   );
   setConfigOverride(
     overrides,
@@ -2016,6 +2063,9 @@ export function redactConfig(config: Config): Config {
     },
     retrieval: {
       semanticOverfetchMultiplier: config.retrieval.semanticOverfetchMultiplier,
+      lexicalFusion: {
+        ...config.retrieval.lexicalFusion,
+      },
       semantic: {
         ...config.retrieval.semantic,
       },

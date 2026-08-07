@@ -11,6 +11,7 @@ import { createServer } from "node:http";
 
 import OpenAI from "openai";
 
+import { createCachingEmbeddingClient } from "../src/embeddings/cache.js";
 import {
   BorgPool,
   OpenAICompatibleEmbeddingClient,
@@ -55,6 +56,10 @@ const root = process.env.BORG_DATA_ROOT ?? "./data/borg";
 const host = process.env.BORG_MEMORY_HOST ?? "127.0.0.1";
 const port = Number(process.env.BORG_MEMORY_PORT ?? 8088);
 const maxOpen = Number(process.env.BORG_MEMORY_MAX_OPEN ?? 32);
+const recallAbstainThresholdRaw = Number(process.env.BORG_RECALL_ABSTAIN_THRESHOLD ?? 0);
+const recallAbstainThreshold = Number.isFinite(recallAbstainThresholdRaw)
+  ? recallAbstainThresholdRaw
+  : 0;
 // Bound every provider call so a hung kratos can't pin a request + pool slot
 // (and block shutdown) indefinitely.
 const requestTimeoutMs = Number(process.env.BORG_MEMORY_LLM_TIMEOUT_MS ?? 120_000);
@@ -79,11 +84,19 @@ const openai = new OpenAI({ apiKey, baseURL: baseUrl, timeout: requestTimeoutMs,
 const llmClient = new OpenAICompatibleLLMClient({
   client: openai as unknown as OpenAIChatCompletionsClient,
 });
-const embeddingClient = new OpenAICompatibleEmbeddingClient({
-  client: openai,
-  model: embeddingModel,
-  dims: embeddingDims,
-});
+// Wrapped in the same LRU cache Borg.open would apply to its own client
+// (borg/clients.ts): injecting a bare client here bypassed it, so every recall
+// re-embedded identical intent queries (and each tenant's active commitment
+// directives) over the network — ~24 embedding calls per /memory/recall.
+// One cache instance is shared by all tenants; keys are model+dims+text.
+const embeddingClient = createCachingEmbeddingClient(
+  new OpenAICompatibleEmbeddingClient({
+    client: openai,
+    model: embeddingModel,
+    dims: embeddingDims,
+  }),
+  { model: embeddingModel, dims: embeddingDims },
+);
 const traceRegistry = memoryTraceEnabledFromEnv(process.env)
   ? new MemoryTraceRegistry({
       capacity: memoryTraceCapacityFromEnv(process.env),
@@ -127,6 +140,7 @@ const server = createServer(
     pool,
     token,
     maintenanceCoordinator,
+    recallAbstainThreshold,
     ...(traceRegistry === undefined ? {} : { traceRegistry }),
   }),
 );

@@ -27,42 +27,58 @@ export type EpisodeProjection = {
   selectedEvidence: EvidenceItem[];
 };
 
+type EpisodeProjectionCandidate = {
+  evidence: EvidenceItem;
+  source: EpisodeProjectionSource;
+};
+
+// The lexical lane reserves two tail positions by default. The enforcement
+// helper still caps opt-in reservation at three positions.
+export const EXACT_TERM_RESERVED_SLOTS = 2;
+const MAX_EXACT_TERM_RESERVED_SLOTS = 3;
+
 export function projectEpisodes(
   pool: EvidencePool,
   sourcesByEvidenceId: ReadonlyMap<string, EpisodeProjectionSource>,
   options: {
     limit: number;
     mmrLambda: number;
+    exactTermReservedSlots?: number;
   },
 ): EpisodeProjection {
-  const candidates = pool.items
-    .filter((item) => item.source === "episode")
-    .map((evidence) => {
-      if (evidence.provenance?.episodeId === undefined) {
-        throw missingProjectionSource(
-          `Episode evidence ${evidence.id} is missing episode provenance`,
-        );
-      }
+  const candidates = dedupeEpisodeProjectionCandidates(
+    pool.items
+      .filter((item) => item.source === "episode")
+      .map((evidence) => {
+        if (evidence.provenance?.episodeId === undefined) {
+          throw missingProjectionSource(
+            `Episode evidence ${evidence.id} is missing episode provenance`,
+          );
+        }
 
-      const source = sourcesByEvidenceId.get(evidence.id);
+        const source = sourcesByEvidenceId.get(evidence.id);
 
-      if (source === undefined) {
-        throw missingProjectionSource(
-          `Episode evidence ${evidence.id} references ${evidence.provenance!.episodeId}, but no projection source was hydrated`,
-        );
-      }
+        if (source === undefined) {
+          throw missingProjectionSource(
+            `Episode evidence ${evidence.id} references ${evidence.provenance!.episodeId}, but no projection source was hydrated`,
+          );
+        }
 
-      return {
-        evidence,
-        source,
-      };
-    });
+        return {
+          evidence,
+          source,
+        };
+      }),
+  );
 
   const selected = applyMmr(
     candidates.map((item) => ({
       item,
       vector: item.source.candidate.episode.embedding,
-      relevanceScore: item.source.score.score,
+      // Rank on the pre-clamp fusion value: the clamped score saturates at 1.0
+      // for boosted candidates, which reduced MMR relevance to pool-order
+      // tie-breaking whenever several candidates hit the ceiling.
+      relevanceScore: item.source.score.rawScore,
     })),
     {
       limit: options.limit,
@@ -70,8 +86,24 @@ export function projectEpisodes(
     },
   ).map((choice) => choice.item);
 
+  const exactTermReservedSlots = options.exactTermReservedSlots ?? 0;
+
+  if (exactTermReservedSlots > 0) {
+    enforceExactTermReservedSlots(selected, candidates, exactTermReservedSlots);
+  }
+
+  // MMR emits diversity-greedy selection order; the response contract is
+  // relevance-descending. Sorting cannot displace the top-1: MMR's first pick
+  // maximizes rawScore over the same candidate pool, and the sort is stable.
+  // selectedEvidence deliberately keeps the MMR/reservation order — downstream
+  // recall-state admission derives handle priority from that order, and the
+  // diversity-ranked choice must not lose admission priority to the re-sort.
+  const ordered = [...selected].sort(
+    (left, right) => right.source.score.rawScore - left.source.score.rawScore,
+  );
+
   return {
-    episodes: selected.map(({ source }) =>
+    episodes: ordered.map(({ source }) =>
       buildRetrievedEpisode(
         source.candidate,
         {
@@ -187,6 +219,134 @@ function missingProjectionSource(message: string): RetrievalError {
   return new RetrievalError(message, {
     code: "BORG_RETRIEVAL_PROJECTION_INVARIANT",
   });
+}
+
+function dedupeEpisodeProjectionCandidates(
+  candidates: readonly EpisodeProjectionCandidate[],
+): EpisodeProjectionCandidate[] {
+  const byEpisodeId = new Map<string, EpisodeProjectionCandidate>();
+
+  for (const candidate of candidates) {
+    const episodeId = candidate.evidence.provenance?.episodeId;
+
+    if (episodeId === undefined) {
+      continue;
+    }
+
+    const current = byEpisodeId.get(episodeId);
+
+    if (current === undefined) {
+      byEpisodeId.set(episodeId, candidate);
+      continue;
+    }
+
+    const representative =
+      candidate.source.score.rawScore > current.source.score.rawScore ? candidate : current;
+    byEpisodeId.set(episodeId, {
+      ...representative,
+      evidence: {
+        ...representative.evidence,
+        matchedTerms: [
+          ...new Set([...current.evidence.matchedTerms, ...candidate.evidence.matchedTerms]),
+        ],
+      },
+    });
+  }
+
+  return [...byEpisodeId.values()];
+}
+
+/**
+ * Post-MMR guarantee for exact-term candidates. It may replace only tail
+ * entries, so the original top-1 is immutable, and it can reserve at most
+ * three final positions. Candidates and selections are deduplicated by
+ * episode id before replacement.
+ */
+function enforceExactTermReservedSlots(
+  selected: EpisodeProjectionCandidate[],
+  candidates: readonly EpisodeProjectionCandidate[],
+  requestedSlots: number,
+): void {
+  const reservedSlots = Math.min(
+    MAX_EXACT_TERM_RESERVED_SLOTS,
+    Math.max(0, Math.floor(requestedSlots)),
+  );
+
+  if (reservedSlots === 0 || selected.length <= 1) {
+    return;
+  }
+
+  const exactEpisodeIds = new Set(
+    candidates
+      .filter((candidate) => candidate.evidence.matchedTerms.length > 0)
+      .map((candidate) => candidate.evidence.provenance?.episodeId)
+      .filter((episodeId) => episodeId !== undefined),
+  );
+
+  if (exactEpisodeIds.size === 0) {
+    return;
+  }
+
+  const isExactSelection = (candidate: EpisodeProjectionCandidate): boolean => {
+    const episodeId = candidate.evidence.provenance?.episodeId;
+    return episodeId !== undefined && exactEpisodeIds.has(episodeId);
+  };
+  const selectedEpisodeIds = new Set(
+    selected
+      .map((candidate) => candidate.evidence.provenance?.episodeId)
+      .filter((episodeId) => episodeId !== undefined),
+  );
+  const replacementByEpisodeId = new Map<string, EpisodeProjectionCandidate>();
+
+  for (const candidate of candidates) {
+    if (candidate.evidence.matchedTerms.length === 0) {
+      continue;
+    }
+
+    const episodeId = candidate.evidence.provenance?.episodeId;
+
+    if (episodeId === undefined || selectedEpisodeIds.has(episodeId)) {
+      continue;
+    }
+
+    const current = replacementByEpisodeId.get(episodeId);
+
+    if (current === undefined || candidate.source.score.rawScore > current.source.score.rawScore) {
+      replacementByEpisodeId.set(episodeId, candidate);
+    }
+  }
+
+  const replacements = [...replacementByEpisodeId.values()].sort(
+    (left, right) =>
+      right.source.score.rawScore - left.source.score.rawScore ||
+      right.evidence.id.localeCompare(left.evidence.id),
+  );
+  let exactSelectedCount = selected.filter(isExactSelection).length;
+  const target = Math.min(reservedSlots, exactSelectedCount + replacements.length);
+  const selectedReplacements = replacements.slice(0, target - exactSelectedCount);
+
+  for (
+    let index = selected.length - 1;
+    index > 0 && exactSelectedCount < target && selectedReplacements.length > 0;
+    index -= 1
+  ) {
+    const current = selected[index];
+
+    if (current === undefined || isExactSelection(current)) {
+      continue;
+    }
+
+    // Fill from the tail with the lowest-ranked chosen replacement so the
+    // highest-ranked exact candidate remains first among inserted entries.
+    const replacement = selectedReplacements.pop();
+
+    if (replacement === undefined) {
+      break;
+    }
+
+    selected[index] = replacement;
+    exactSelectedCount += 1;
+  }
 }
 
 function projectContextNodes(

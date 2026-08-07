@@ -162,6 +162,9 @@ export type BorgExtractFromStreamResult = {
 export type BorgRetrievedEpisode = {
   episode: Episode;
   score: number;
+  // Pre-clamp fused score — the operative relevance value used for MMR
+  // selection and result ordering; `score` is its clamped [0,1] form.
+  rawScore: number;
   scoreBreakdown: {
     similarity: number;
     decayedSalience: number;

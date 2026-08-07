@@ -43,7 +43,22 @@ audience gate: `CognitionRetrievalOptions` (`src/retrieval/pipeline.ts`) has no
 `audienceEntityId`/`crossAudience`, while `DisclosureRetrievalOptions` is the
 only shape that carries them. The naming convention encodes the boundary --
 cognition-recall functions are suffixed `*ForCognition` (global recall),
-audience-filtered disclosure/export functions `*ForDisclosure`. Disclosure
+audience-filtered disclosure/export functions `*ForDisclosure`.
+
+One retrieval entry deliberately runs a reduced pipeline:
+`searchEpisodesForDisclosure` (the facade's `episodic.search`, and therefore the
+memory sidecar's `POST /memory/recall`) returns `RetrievedEpisode[]` only, and
+`projectEpisodes` can only select candidates produced by the episodic lane — so
+that entry skips the semantic, open-question, image-perception, and
+commitment-evidence lanes entirely (`RetrievalProjection = "episodes-only"` in
+`src/retrieval/pipeline.ts`). This is a pure cost cut for a latency-bound
+interactive path (team-agent aborts recall at 5s), not a disclosure boundary:
+the skipped lanes were computed and discarded, at the price of most of the
+recall's embedding round-trips and vector scans. `searchWithContextForDisclosure`
+and `recallEpisodesForCognition` still run the full pipeline. The full
+justification, and the accepted observable differences (trace `semanticHits`,
+`confidence`, thinner recall-state fresh evidence), live on the
+`RetrievalProjection` type. Disclosure
 labels are concrete primitives: `memoryDisclosurePayloadFields(label)`
 (`src/memory/common/disclosure-serializers.ts`) is the per-record serializer used across
 every band; `combineMemoryDisclosureLabels` (`src/memory/common/disclosure-label.ts`)
@@ -1542,6 +1557,26 @@ relationship-claim extraction is telemetry now, not a review kind.
 The shape is to auto-resolve bounded cases through offline LLM judges, escalate
 genuine ambiguity and disclosure widening, and keep operator-undo paths where
 authority is mutated.
+
+That default shape assumes a human is behind the escalation hatch. Deployments
+where no human review surface exists (for example the team-agent memory
+sidecar, which exposes no review endpoints) can set
+`offline.reviewResolver.autonomous` (`BORG_OFFLINE_REVIEW_RESOLVER_AUTONOMOUS`)
+to make the LLM decide everything the resolver covers. Autonomous mode changes
+three things and nothing else: `identity_inconsistency` joins the resolver's
+kind roster (its apply handler is unchanged; only the decision path opens up,
+overriding the manual-only carve-out above); a `needs_manual` outcome becomes a
+bounded retry — the diagnostic stamp carries an attempt counter and after
+`maxNeedsManualAttempts` the item is terminally dismissed without mutation —
+instead of parking the item forever; and the overseer-flag judge prompt biases
+toward deciding rather than defaulting to escalation. The anti-self-confirmation
+safety gates (citation and taint checks, the semantic-node temporal-drift
+block) still apply in autonomous mode; their failures feed the bounded retry.
+Kinds with no LLM consumer today (`correction`, `skill_split`,
+`creator_directive_reconciliation`, `commitment_reconciliation`) are NOT
+covered by the switch and still accumulate open items if their producers run —
+autonomous deployments should keep an eye on those counts in the maintenance
+reports.
 
 Review enqueue hooks can create Open Questions from contradiction,
 misattribution, and identity inconsistency reviews. Similar existing questions

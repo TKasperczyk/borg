@@ -534,6 +534,7 @@ export async function buildBorgRepositories(
     semanticUnderReviewMultiplier: config.retrieval.semantic.underReviewMultiplier,
     semanticStatusMultipliers: config.retrieval.semantic.statusMultipliers,
     semanticOverfetchMultiplier: config.retrieval.semanticOverfetchMultiplier,
+    lexicalFusionEnabled: config.retrieval.lexicalFusion.enabled,
     imagePerceptionRepository,
     maxRetrievedImageRefs: config.attachments.maxRetrievedImageRefs,
   });

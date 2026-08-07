@@ -1050,13 +1050,17 @@ describe("episodic extractor", () => {
       content: "Run the ticket triage role for the fresh tenant bank.",
     });
     const outcomeLine = "OUTCOME fp=9f341d56b7c44c18 role=ticket-triage tenant=tenant_42";
-    const decisionLine = "decision=create";
+    const decisionLine = "decision=create:OPS-194 action=created";
+    const ticketActionLine = "ticket=OPS-194 action=created";
+    const teamsCardLine = "action=teams_card";
     const autonomousResult = await harness.writer.append({
       kind: "agent_msg",
       content: [
         "Autonomous triage completed and created OPS-194.",
         outcomeLine,
         decisionLine,
+        ticketActionLine,
+        teamsCardLine,
         "The next run should deduplicate against these receipts.",
       ].join("\n"),
     });
@@ -1100,12 +1104,21 @@ describe("episodic extractor", () => {
     expect(prompt).toContain("You MUST emit at least one episode covering every protected source");
     expect(prompt).toContain(autonomousResult.id);
     expect(episodes[0]?.narrative).toContain(`\n${outcomeLine}\n${decisionLine}`);
+    expect(episodes[0]?.narrative).toContain(`\n${ticketActionLine}\n${teamsCardLine}`);
     expect(episodes[0]?.narrative.split(/\r\n|\n|\r/u)).toContain("decision=create:ticket");
     expect(episodes[0]?.narrative.split(outcomeLine)).toHaveLength(2);
     expect(
       episodes[0]?.narrative.split(/\r\n|\n|\r/u).filter((line) => line === decisionLine),
     ).toHaveLength(1);
+    expect(
+      episodes[0]?.narrative.split(/\r\n|\n|\r/u).filter((line) => line === ticketActionLine),
+    ).toHaveLength(1);
+    expect(
+      episodes[0]?.narrative.split(/\r\n|\n|\r/u).filter((line) => line === teamsCardLine),
+    ).toHaveLength(1);
     expect(prompt).toContain("Copy that complete line verbatim");
+    expect(prompt).toContain("ticket=<X> action=<Y>");
+    expect(prompt).toContain("action=teams_card");
   });
 
   it("does not duplicate an OUTCOME episode when a later entry processor forces replay", async () => {

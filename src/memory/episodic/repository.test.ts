@@ -23,6 +23,7 @@ import {
   HOT_LANE_RETRIEVAL_COOLDOWN_MS,
   buildConsolidationCoverageHash,
   createEpisodesTableSchema,
+  episodeLexicalSearchTokens,
 } from "./repository.js";
 import type { Episode } from "./types.js";
 import { retrievalMigrations } from "../../retrieval/migrations.js";
@@ -1064,6 +1065,187 @@ describe("episodic repository", () => {
     expect(participantOrTag[0]?.episode.id).toBe(entity.id);
     expect(hottest[0]?.episode.id).toBe(hot.id);
     expect(visibleSpy).not.toHaveBeenCalled();
+  });
+
+  it("tokenizes lexical terms without LIKE wildcards and requires both short-token boundaries", async () => {
+    expect(episodeLexicalSearchTokens("  Marcin_Oryl% Żółć  ")).toEqual(["marcin", "oryl", "żółć"]);
+    expect(episodeLexicalSearchTokens("%_%")).toEqual([]);
+
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const haryPrefix = createEpisode(createEpisodeId(), harness.clock.now(), {
+      title: "Rozmowa z Harym o projekcie",
+      narrative: "Omówiono dalsze kroki.",
+      participants: ["zespół"],
+      source_stream_ids: [createStreamEntryId()],
+    });
+    const haryParticipant = createEpisode(createEpisodeId(), harness.clock.now() + 1_000, {
+      title: "Spotkanie projektowe",
+      narrative: "Omówiono dalsze kroki.",
+      participants: ["Hary"],
+      source_stream_ids: [createStreamEntryId()],
+    });
+    const polishFalsePositive = createEpisode(createEpisodeId(), harness.clock.now() + 2_000, {
+      title: "Zbiórka charytatywna",
+      narrative: "To był plan charytatywny lokalnej grupy.",
+      participants: ["zespół"],
+      source_stream_ids: [createStreamEntryId()],
+    });
+
+    await harness.repo.createEpisode(haryPrefix);
+    await harness.repo.createEpisode(haryParticipant);
+    await harness.repo.createEpisode(polishFalsePositive);
+
+    const matches = await harness.repo.searchByLexicalTermsForDisclosure(["Hary%_"], {
+      crossAudience: true,
+      limit: 10,
+    });
+    const ids = matches.map((candidate) => candidate.episode.id);
+
+    expect(ids).toContain(haryParticipant.id);
+    expect(ids).not.toContain(haryPrefix.id);
+    expect(ids).not.toContain(polishFalsePositive.id);
+  });
+
+  it("applies audience and effective visibility to lexical candidates", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const nowMs = harness.clock.now();
+    const audienceEntityId = "ent_lexicalaudience1" as NonNullable<Episode["audience_entity_id"]>;
+    const familyId = createConsolidationFamilyId();
+    const publicEpisode = createEpisode(createEpisodeId(), nowMs, {
+      title: "Quasar public notes",
+      source_stream_ids: [createStreamEntryId()],
+    });
+    const privateEpisode = createEpisode(createEpisodeId(), nowMs + 1_000, {
+      title: "Quasar private notes",
+      audience_entity_id: audienceEntityId,
+      origin_audience_entity_ids: [audienceEntityId],
+      shared: false,
+      source_stream_ids: [createStreamEntryId()],
+    });
+    const hiddenRaw = createEpisode(createEpisodeId(), nowMs + 2_000, {
+      title: "Quasar superseded raw notes",
+      source_stream_ids: [createStreamEntryId()],
+    });
+    const currentVersion = createEpisode(createEpisodeId(), nowMs + 3_000, {
+      title: "Current consolidated notes",
+      narrative: "The current version intentionally omits the lexical handle.",
+      episode_kind: "consolidation_version",
+      consolidation_family_id: familyId,
+      consolidation_coverage_hash: buildConsolidationCoverageHash(hiddenRaw.source_stream_ids),
+      source_stream_ids: [createStreamEntryId()],
+    });
+
+    await harness.repo.createEpisode(publicEpisode);
+    await harness.repo.createEpisode(privateEpisode);
+    await harness.repo.createEpisode(hiddenRaw);
+    await harness.repo.createEpisode(currentVersion);
+    harness.db
+      .prepare(
+        `
+          INSERT INTO consolidation_families (
+            family_id, current_version_episode_id, coverage_hash, policy_version, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        familyId,
+        currentVersion.id,
+        buildConsolidationCoverageHash(hiddenRaw.source_stream_ids),
+        1,
+        nowMs,
+        nowMs,
+      );
+    harness.db
+      .prepare(
+        `
+          INSERT INTO consolidation_members (
+            family_id, raw_episode_id, source_stream_ids_json, added_by_version_episode_id
+          ) VALUES (?, ?, ?, ?)
+        `,
+      )
+      .run(familyId, hiddenRaw.id, JSON.stringify(hiddenRaw.source_stream_ids), currentVersion.id);
+
+    const publicMatches = await harness.repo.searchByLexicalTermsForDisclosure(["Quasar"], {
+      limit: 10,
+    });
+    const audienceMatches = await harness.repo.searchByLexicalTermsForDisclosure(["Quasar"], {
+      audienceEntityId,
+      limit: 10,
+    });
+    const cognitionMatches = await harness.repo.recallByLexicalTermsForCognition(["Quasar"], {
+      limit: 10,
+    });
+
+    expect(publicMatches.map((candidate) => candidate.episode.id)).toEqual([publicEpisode.id]);
+    expect(audienceMatches.map((candidate) => candidate.episode.id)).toEqual(
+      expect.arrayContaining([publicEpisode.id, privateEpisode.id]),
+    );
+    expect(cognitionMatches.map((candidate) => candidate.episode.id)).toEqual(
+      expect.arrayContaining([publicEpisode.id, privateEpisode.id]),
+    );
+    expect(cognitionMatches.some((candidate) => candidate.episode.id === hiddenRaw.id)).toBe(false);
+  });
+
+  it("pages lexical scans in recency order and applies one global limit after visibility", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const nowMs = harness.clock.now();
+
+    for (let index = 0; index < 65; index += 1) {
+      await harness.repo.createEpisode(
+        createEpisode(createEpisodeId(), nowMs + 20_000 + index, {
+          title: `Recent nonmatch ${index}`,
+          source_stream_ids: [createStreamEntryId()],
+        }),
+      );
+    }
+
+    for (let index = 0; index < 65; index += 1) {
+      const archived = createEpisode(createEpisodeId(), nowMs + 10_000 + index, {
+        title: `Quasar archived ${index}`,
+        source_stream_ids: [createStreamEntryId()],
+      });
+      await harness.repo.createEpisode(archived);
+      harness.repo.archiveEpisode(archived.id, {
+        caller: "repository.test.ts",
+        reason: "lexical visibility fixture",
+        process: "consolidator",
+      });
+    }
+
+    const visible = [
+      createEpisode(createEpisodeId(), nowMs + 5_000, {
+        title: "Quasar newest visible",
+        source_stream_ids: [createStreamEntryId()],
+      }),
+      createEpisode(createEpisodeId(), nowMs + 4_000, {
+        title: "Nebula second visible",
+        source_stream_ids: [createStreamEntryId()],
+      }),
+      createEpisode(createEpisodeId(), nowMs + 3_000, {
+        title: "Quasar third visible",
+        source_stream_ids: [createStreamEntryId()],
+      }),
+      createEpisode(createEpisodeId(), nowMs + 2_000, {
+        title: "Nebula fourth visible",
+        source_stream_ids: [createStreamEntryId()],
+      }),
+    ];
+
+    for (const episode of visible) {
+      await harness.repo.createEpisode(episode);
+    }
+
+    const matches = await harness.repo.searchByLexicalTermsForDisclosure(["Quasar", "Nebula"], {
+      crossAudience: true,
+      limit: 3,
+    });
+
+    expect(matches.map((candidate) => candidate.episode.id)).toEqual(
+      visible.slice(0, 3).map((episode) => episode.id),
+    );
   });
 
   it("deprioritizes recently retrieved episodes below less-hot uncooled hot-lane candidates", async () => {

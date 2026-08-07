@@ -233,6 +233,10 @@ export function createTestConfig(
       semanticOverfetchMultiplier:
         overrides.retrieval?.semanticOverfetchMultiplier ??
         DEFAULT_CONFIG.retrieval.semanticOverfetchMultiplier,
+      lexicalFusion: {
+        ...DEFAULT_CONFIG.retrieval.lexicalFusion,
+        ...overrides.retrieval?.lexicalFusion,
+      },
       semantic: {
         ...DEFAULT_CONFIG.retrieval.semantic,
         ...overrides.retrieval?.semantic,
@@ -837,6 +841,7 @@ export async function createOfflineTestHarness(
     clock,
     semanticUnderReviewMultiplier: config.retrieval.semantic.underReviewMultiplier,
     semanticStatusMultipliers: config.retrieval.semantic.statusMultipliers,
+    lexicalFusionEnabled: config.retrieval.lexicalFusion.enabled,
   });
   const correctionService = new CorrectionService({
     config,

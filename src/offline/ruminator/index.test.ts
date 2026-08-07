@@ -97,6 +97,7 @@ function retrievedEpisode(
   return {
     episode,
     score,
+    rawScore: score,
     scoreBreakdown: {
       similarity: score,
       decayedSalience: score,

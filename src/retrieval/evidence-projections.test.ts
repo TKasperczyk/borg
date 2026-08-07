@@ -8,6 +8,7 @@ import { RetrievalError } from "../util/errors.js";
 import type { EpisodeId, OpenQuestionId, SemanticEdgeId, SemanticNodeId } from "../util/ids.js";
 
 import type { EvidenceItem, EvidencePool, RecallIntent } from "./recall-types.js";
+import { rankEvidenceItems } from "./evidence-pool.js";
 import type { EpisodeScore } from "./scoring.js";
 import {
   projectEpisodes,
@@ -144,6 +145,303 @@ describe("EvidencePool compatibility projections", () => {
     ).toThrow(RetrievalError);
   });
 
+  it("preserves raw scores without introducing strict score-order inversions", () => {
+    const rawScores = [1.4, 1.2, 0.9, 0.4];
+    const episodes = rawScores.map((rawScore, index) =>
+      createEpisodeFixture({
+        id: `ep_rawscore000000${index}` as EpisodeId,
+        title: `Raw score ${index}`,
+      }),
+    );
+    const episodeEvidence = episodes.map((episode, index) =>
+      evidence(`evidence_episode_raw_${index}`, "episode", { episodeId: episode.id }),
+    );
+    const projection = projectEpisodes(
+      {
+        intents: [intent],
+        items: episodeEvidence,
+      },
+      new Map(
+        episodeEvidence.map((item, index) => [
+          item.id,
+          episodeSource(episodes[index]!, Math.min(1, rawScores[index]!), rawScores[index]!),
+        ]),
+      ),
+      { limit: rawScores.length, mmrLambda: 1 },
+    );
+    const violations = projection.episodes.flatMap((left) =>
+      projection.episodes.filter(
+        (right) => left.score > right.score && left.rawScore <= right.rawScore,
+      ),
+    );
+
+    expect(projection.episodes.map((item) => item.rawScore)).toEqual(rawScores);
+    expect(violations).toEqual([]);
+  });
+
+  it("ranks MMR on rawScore when clamped scores tie at the ceiling", () => {
+    const lowerRaw = createEpisodeFixture({
+      id: "ep_ceilinglow000000" as EpisodeId,
+      title: "Ceiling lower raw",
+    });
+    const higherRaw = createEpisodeFixture({
+      id: "ep_ceilinghigh00000" as EpisodeId,
+      title: "Ceiling higher raw",
+    });
+    const lowerEvidence = evidence("evidence_episode_ceiling_low", "episode", {
+      episodeId: lowerRaw.id,
+    });
+    const higherEvidence = evidence("evidence_episode_ceiling_high", "episode", {
+      episodeId: higherRaw.id,
+    });
+
+    // Pool order favors the lower-raw candidate and limit 1 makes selection
+    // membership (not output sorting) the deciding step: only a rawScore
+    // relevance key can pick the higher-raw candidate once both clamp to 1.
+    const projection = projectEpisodes(
+      {
+        intents: [intent],
+        items: [lowerEvidence, higherEvidence],
+      },
+      new Map([
+        [lowerEvidence.id, episodeSource(lowerRaw, 1, 1.1)],
+        [higherEvidence.id, episodeSource(higherRaw, 1, 1.3)],
+      ]),
+      { limit: 1, mmrLambda: 1 },
+    );
+
+    expect(projection.episodes.map((item) => item.episode.id)).toEqual([higherRaw.id]);
+    expect(projection.selectedEvidence.map((item) => item.id)).toEqual([higherEvidence.id]);
+  });
+
+  it("returns episodes in rawScore-descending order even when MMR selects diversely", () => {
+    const anchor = createEpisodeFixture(
+      { id: "ep_orderanchor00000" as EpisodeId, title: "Order anchor" },
+      [1, 0, 0, 0],
+    );
+    const nearDuplicate = createEpisodeFixture(
+      { id: "ep_orderneardup0000" as EpisodeId, title: "Order near duplicate" },
+      [1, 0, 0, 0],
+    );
+    const diverse = createEpisodeFixture(
+      { id: "ep_orderdiverse0000" as EpisodeId, title: "Order diverse" },
+      [0, 1, 0, 0],
+    );
+    const entries = [
+      { episode: anchor, rawScore: 1.3 },
+      { episode: nearDuplicate, rawScore: 1.25 },
+      { episode: diverse, rawScore: 0.9 },
+    ];
+    const items = entries.map(({ episode }, index) =>
+      evidence(`evidence_episode_order_${index}`, "episode", { episodeId: episode.id }),
+    );
+
+    // With lambda 0.5, MMR selects [anchor, diverse, nearDuplicate]; the
+    // projection contract is still relevance-descending output.
+    const projection = projectEpisodes(
+      { intents: [intent], items },
+      new Map(
+        items.map((item, index) => [
+          item.id,
+          episodeSource(
+            entries[index]!.episode,
+            Math.min(1, entries[index]!.rawScore),
+            entries[index]!.rawScore,
+          ),
+        ]),
+      ),
+      { limit: 3, mmrLambda: 0.5 },
+    );
+
+    expect(projection.episodes.map((item) => item.episode.id)).toEqual([
+      anchor.id,
+      nearDuplicate.id,
+      diverse.id,
+    ]);
+    expect(projection.episodes.map((item) => item.rawScore)).toEqual([1.3, 1.25, 0.9]);
+    // selectedEvidence keeps MMR selection order: recall-state admission
+    // priority derives from it, and the diversity-ranked pick must not lose
+    // priority to the relevance re-sort applied to the episodes output.
+    expect(projection.selectedEvidence.map((item) => item.id)).toEqual([
+      items[0]!.id,
+      items[2]!.id,
+      items[1]!.id,
+    ]);
+  });
+
+  it("keeps the max-rawScore variant when saturated duplicates of one episode collide", () => {
+    const episode = createEpisodeFixture({
+      id: "ep_saturateddup0000" as EpisodeId,
+      title: "Saturated duplicate",
+    });
+    // Ids chosen so the lexicographic tie-break would pick the LOWER-raw
+    // variant if rawScore were ignored.
+    const lowerRawVariant = {
+      ...evidence("evidence_episode_zz_lower_raw", "episode", { episodeId: episode.id }),
+      score: 1,
+      rawScore: 1.1,
+      matchedTerms: ["lower"],
+    };
+    const higherRawVariant = {
+      ...evidence("evidence_episode_aa_higher_raw", "episode", { episodeId: episode.id }),
+      score: 1,
+      rawScore: 1.3,
+      matchedTerms: ["higher"],
+    };
+
+    const ranked = rankEvidenceItems([lowerRawVariant, higherRawVariant]);
+
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0]?.id).toBe(higherRawVariant.id);
+    expect(ranked[0]?.rawScore).toBe(1.3);
+    expect([...(ranked[0]?.matchedTerms ?? [])].sort()).toEqual(["higher", "lower"]);
+  });
+
+  it("ranks exact-term replacements by rawScore when their clamped scores saturate", () => {
+    const nonExactEpisodes = Array.from({ length: 3 }, (_, index) =>
+      createEpisodeFixture({
+        id: `ep_satnonexact000${index}` as EpisodeId,
+        title: `Saturated non exact ${index}`,
+      }),
+    );
+    // Exact candidates all clamp to 1; ids are ordered so the old
+    // clamped-score + id tie-break would select the LOWEST-raw candidates.
+    const exactRawScores = [1.1, 1.2, 1.3, 1.4];
+    const exactEpisodes = exactRawScores.map((_, index) =>
+      createEpisodeFixture({
+        id: `ep_satexact0000000${index}` as EpisodeId,
+        title: `Saturated exact ${index}`,
+      }),
+    );
+    const nonExactEvidence = nonExactEpisodes.map((episode, index) =>
+      evidence(`evidence_episode_sat_non_${index}`, "episode", { episodeId: episode.id }),
+    );
+    const exactEvidence = exactEpisodes.map((episode, index) => ({
+      ...evidence(`evidence_episode_sat_exact_${9 - index}`, "episode", {
+        episodeId: episode.id,
+      }),
+      matchedTerms: ["Hary"],
+    }));
+    const sources = new Map<string, EpisodeProjectionSource>();
+
+    nonExactEvidence.forEach((item, index) => {
+      sources.set(item.id, episodeSource(nonExactEpisodes[index]!, 1, 2 - index * 0.1));
+    });
+    exactEvidence.forEach((item, index) => {
+      sources.set(item.id, episodeSource(exactEpisodes[index]!, 1, exactRawScores[index]!));
+    });
+
+    const projection = projectEpisodes(
+      {
+        intents: [intent],
+        items: [...nonExactEvidence, ...exactEvidence],
+      },
+      sources,
+      { limit: 3, mmrLambda: 1, exactTermReservedSlots: 2 },
+    );
+
+    expect(projection.episodes.map((item) => item.episode.id)).toEqual([
+      nonExactEpisodes[0]!.id,
+      exactEpisodes[3]!.id,
+      exactEpisodes[2]!.id,
+    ]);
+  });
+
+  it("reserves at most three exact-term tail slots without replacing top-1 or duplicating ids", () => {
+    const nonExactEpisodes = Array.from({ length: 5 }, (_, index) =>
+      createEpisodeFixture({
+        id: `ep_nonexact000000${index}` as EpisodeId,
+        title: `Non exact ${index}`,
+      }),
+    );
+    const exactEpisodes = Array.from({ length: 4 }, (_, index) =>
+      createEpisodeFixture({
+        id: `ep_exactterm00000${index}` as EpisodeId,
+        title: `Exact ${index}`,
+      }),
+    );
+    const nonExactEvidence = nonExactEpisodes.map((episode, index) =>
+      evidence(`evidence_episode_non_exact_${index}`, "episode", { episodeId: episode.id }),
+    );
+    const exactEvidence = exactEpisodes.map((episode, index) => ({
+      ...evidence(`evidence_episode_exact_${index}`, "episode", { episodeId: episode.id }),
+      matchedTerms: ["Hary"],
+    }));
+    const duplicateExactEvidence = {
+      ...evidence("evidence_episode_exact_duplicate", "episode", {
+        episodeId: exactEpisodes[0]!.id,
+      }),
+      matchedTerms: ["Hary"],
+    };
+    const pool: EvidencePool = {
+      intents: [intent],
+      items: [...nonExactEvidence, ...exactEvidence, duplicateExactEvidence],
+    };
+    const sources = new Map<string, EpisodeProjectionSource>();
+
+    nonExactEvidence.forEach((item, index) => {
+      sources.set(item.id, episodeSource(nonExactEpisodes[index]!, 1 - index * 0.01));
+    });
+    exactEvidence.forEach((item, index) => {
+      sources.set(item.id, episodeSource(exactEpisodes[index]!, 0.4 - index * 0.05));
+    });
+    sources.set(duplicateExactEvidence.id, episodeSource(exactEpisodes[0]!, 0.35));
+
+    const projection = projectEpisodes(pool, sources, {
+      limit: 5,
+      mmrLambda: 1,
+      exactTermReservedSlots: 99,
+    });
+    const selectedIds = projection.episodes.map((item) => item.episode.id);
+    const exactIds = new Set(exactEpisodes.map((episode) => episode.id));
+
+    expect(selectedIds[0]).toBe(nonExactEpisodes[0]!.id);
+    expect(selectedIds.filter((id) => exactIds.has(id))).toHaveLength(3);
+    expect(selectedIds.filter((id) => exactIds.has(id))).toEqual(
+      exactEpisodes.slice(0, 3).map((episode) => episode.id),
+    );
+    expect(new Set(selectedIds).size).toBe(selectedIds.length);
+  });
+
+  it("unions exact-term metadata independently of the duplicate episode representative", () => {
+    const episode = createEpisodeFixture({
+      id: "ep_exactunion000000" as EpisodeId,
+      title: "Exact metadata union",
+    });
+    const vectorEvidence = evidence("evidence_episode_vector", "episode", {
+      episodeId: episode.id,
+    });
+    const lexicalEvidence = {
+      ...evidence("evidence_episode_lexical", "episode", { episodeId: episode.id }),
+      matchedTerms: ["Hary"],
+      score: 0.4,
+    };
+    const ranked = rankEvidenceItems([{ ...vectorEvidence, score: 0.9 }, lexicalEvidence]);
+
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0]).toMatchObject({
+      id: vectorEvidence.id,
+      matchedTerms: ["Hary"],
+      score: 0.9,
+    });
+
+    const projection = projectEpisodes(
+      {
+        intents: [intent],
+        items: [{ ...vectorEvidence, score: 0.9 }, lexicalEvidence],
+      },
+      new Map([
+        [vectorEvidence.id, episodeSource(episode, 0.9)],
+        [lexicalEvidence.id, episodeSource(episode, 0.4)],
+      ]),
+      { limit: 1, mmrLambda: 1, exactTermReservedSlots: 1 },
+    );
+
+    expect(projection.selectedEvidence).toHaveLength(1);
+    expect(projection.selectedEvidence[0]?.id).toBe(vectorEvidence.id);
+    expect(projection.selectedEvidence[0]?.matchedTerms).toEqual(["Hary"]);
+  });
+
   it("throws when semantic evidence is missing hydrated nodes or hits", () => {
     const node = semanticNode("semn_aaaaaaaaaaaaaaaa" as SemanticNodeId, "Missing node");
     const support = semanticNode("semn_bbbbbbbbbbbbbbbb" as SemanticNodeId, "Missing support");
@@ -204,14 +502,18 @@ function emptySemantic(): RetrievedSemantic {
   };
 }
 
-function episodeSource(episode: ReturnType<typeof createEpisodeFixture>, score: number) {
+function episodeSource(
+  episode: ReturnType<typeof createEpisodeFixture>,
+  score: number,
+  rawScore = score,
+) {
   return {
     candidate: {
       episode,
       stats: episodeStats(episode.id),
       similarity: score,
     } satisfies EpisodeSearchCandidate,
-    score: episodeScore(score),
+    score: episodeScore(score, rawScore),
     citationChain: () => [],
   };
 }
@@ -235,7 +537,7 @@ function episodeStats(episodeId: EpisodeId): EpisodeStats {
   };
 }
 
-function episodeScore(score: number): EpisodeScore {
+function episodeScore(score: number, rawScore = score): EpisodeScore {
   return {
     decayedSalience: score,
     heat: 0,
@@ -247,6 +549,7 @@ function episodeScore(score: number): EpisodeScore {
     entityRelevance: 0,
     suppressionPenalty: 0,
     score,
+    rawScore,
   };
 }
 

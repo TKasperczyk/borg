@@ -447,7 +447,7 @@ function buildExtractorPrompt(
     options.protectedSourceEntryIds.length === 0
       ? []
       : [
-          "This chunk contains protected OUTCOME fp= or decision= protocol lines. The salience gate is bypassed for the entire chunk.",
+          "This chunk contains protected OUTCOME fp=, decision=, ticket=<X> action=<Y>, or action=teams_card protocol lines. The salience gate is bypassed for the entire chunk.",
           "You MUST emit at least one episode covering every protected source entry listed below.",
           `Protected source_stream_ids: ${JSON.stringify(options.protectedSourceEntryIds)}`,
         ];
@@ -469,7 +469,7 @@ function buildExtractorPrompt(
     selfEntityGuidance,
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to the narrative body. Keep the title topic-neutral and scannable rather than first-person narration.`,
     "For each user_msg with sender_display_name, attribute that message to the exact display name (for example, ‘Name asked …’), never to a generic user.",
-    "Any complete source line containing an OUTCOME fp= token or decision= token is an opaque dedup record. Copy that complete line verbatim into the episode narrative; never paraphrase, translate, normalize, or omit it.",
+    "Any complete source line containing an OUTCOME fp= or decision= token, or beginning with ticket=<X> action=<Y> or action=teams_card, is an opaque dedup record. Copy that complete line verbatim into the episode narrative; never paraphrase, translate, normalize, or omit it.",
     "When a source contains multiple substantive threads, the episode narrative should cover each substantive thread, not only the headline topic. Details that merely elaborate one core thread are not separate threads.",
     "A thread is substantive when the user introduces a specific name, place, observation, callback, or concrete detail; trivial filler does not count.",
     "The narrative may be slightly longer when needed for multi-thread coverage, but prioritize coverage over length.",

@@ -35,9 +35,16 @@ function dedupeEvidenceItems(items: readonly EvidenceItem[]): EvidenceItem[] {
     const key = evidenceDedupeKey(item);
     const current = byKey.get(key);
 
-    if (current === undefined || compareEvidenceItems(item, current) < 0) {
+    if (current === undefined) {
       byKey.set(key, item);
+      continue;
     }
+
+    const representative = compareEvidenceItems(item, current) < 0 ? item : current;
+    byKey.set(key, {
+      ...representative,
+      matchedTerms: [...new Set([...current.matchedTerms, ...item.matchedTerms])],
+    });
   }
 
   return [...byKey.values()];
@@ -74,9 +81,12 @@ function evidenceDedupeKey(item: EvidenceItem): string {
 }
 
 function compareEvidenceItems(left: EvidenceItem, right: EvidenceItem): number {
+  // rawScore (pre-clamp fusion) breaks ties between saturated episode
+  // variants of the same episode across intents; other sources fall back to
+  // their clamped score.
   return (
     evidenceTruthRank(right) - evidenceTruthRank(left) ||
-    right.score - left.score ||
+    (right.rawScore ?? right.score) - (left.rawScore ?? left.score) ||
     right.id.localeCompare(left.id)
   );
 }

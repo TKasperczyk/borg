@@ -249,6 +249,24 @@ export class ReviewQueueHandlerRegistry {
 
 const REVIEW_APPLYING_REF_KEY = "__borg_resolution_applying";
 const REVIEW_RESOLVER_REF_PREFIX = "__borg_review_resolver_";
+
+// Remove the review-resolver's bookkeeping keys (diagnostic/repair stamps)
+// from a refs record so the strict per-kind refs schemas can parse it. Used
+// by handler resolution here and by the resolver itself when it re-judges a
+// previously stamped item in autonomous mode.
+export function stripReviewResolverRefs(
+  refs: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...refs };
+
+  for (const key of Object.keys(next)) {
+    if (key.slice(0, REVIEW_RESOLVER_REF_PREFIX.length) === REVIEW_RESOLVER_REF_PREFIX) {
+      delete next[key];
+    }
+  }
+
+  return next;
+}
 type BeliefRevisionRefs = z.infer<typeof beliefRevisionRefsSchema>;
 export type BeliefRevisionReasonCode =
   | "evidence_invalidated"
@@ -862,15 +880,7 @@ export class ReviewQueueRepository {
     refs: Record<string, unknown>,
     applyingStateKey = REVIEW_APPLYING_REF_KEY,
   ): Record<string, unknown> {
-    const next = this.refsWithoutApplyingState(refs, applyingStateKey);
-
-    for (const key of Object.keys(next)) {
-      if (key.slice(0, REVIEW_RESOLVER_REF_PREFIX.length) === REVIEW_RESOLVER_REF_PREFIX) {
-        delete next[key];
-      }
-    }
-
-    return next;
+    return stripReviewResolverRefs(this.refsWithoutApplyingState(refs, applyingStateKey));
   }
 
   private markResolved(

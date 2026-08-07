@@ -49,6 +49,7 @@ function makeRetrievedEpisode(id: string, score: number, tags: string[] = []): R
       updated_at: 0,
     }),
     score,
+    rawScore: score,
     scoreBreakdown: createRetrievalScoreFixture({
       similarity: score,
       decayedSalience: 0.3,

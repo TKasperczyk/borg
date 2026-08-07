@@ -157,6 +157,7 @@ describe("scoreCandidate equivalence", () => {
     );
 
     expect(score.score).toBe(expectedBaseScore(candidate, score, DEFAULT_EPISODE_SCORE_WEIGHTS));
+    expect(score.rawScore).toBe(score.score);
   });
 
   it.each([

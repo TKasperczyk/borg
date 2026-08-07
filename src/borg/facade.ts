@@ -362,7 +362,12 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         (options?.scoreWeights !== undefined
           ? undefined
           : {
-              semantic: 0.35,
+              // Similarity-forward defaults (2026-08 scoring rebalance): semantic
+              // 0.65 gives similarity 0.65 / salience 0.35, heat 0.15. The old
+              // 0.35/0.65/0.45 split saturated ~90% of returned scores at the
+              // 1.0 clamp and let query-independent salience+heat crown one
+              // "greatest hit" episode as top-1 for over half the query suite.
+              semantic: 0.65,
               goal_relevance:
                 options?.goalDescriptions !== undefined && options.goalDescriptions.length > 0
                   ? 0.1
@@ -372,7 +377,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
               time: hasTemporalSignal ? 0.2 : 0,
               social: audienceTerms !== undefined && audienceTerms.length > 0 ? 0.15 : 0,
               entity: hasEntitySignal ? 0.2 : 0,
-              heat: 0.45,
+              heat: 0.15,
               suppression_penalty: 0.5,
             }),
     };

@@ -39,6 +39,7 @@ describe("evidence-ledger episode section", () => {
         shared: false,
       }),
       score: 0.81,
+      rawScore: 0.81,
       scoreBreakdown: createRetrievalScoreFixture(),
       citationChain: [],
     };

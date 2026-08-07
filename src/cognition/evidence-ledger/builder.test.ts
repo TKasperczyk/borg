@@ -99,6 +99,7 @@ function makeRetrievedEpisode(input: {
       updated_at: NOW_MS,
     }),
     score: 0.9,
+    rawScore: 0.9,
     scoreBreakdown: createRetrievalScoreFixture({ similarity: 0.9 }),
     citationChain: input.citationChain,
   };

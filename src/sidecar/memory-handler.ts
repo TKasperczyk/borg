@@ -73,6 +73,11 @@ export type MemoryHandlerOptions = {
   token: string;
   maxBodyBytes?: number;
   maxRecallLimit?: number;
+  // Mechanism only; no usable threshold currently exists. Query-independent
+  // heat + salience can give negative controls raw scores above known-positive
+  // recalls, so the planned production mechanism is similarity-gated. Keep 0
+  // (the default) until that exists.
+  recallAbstainThreshold?: number;
   traceRegistry?: MemoryTraceRegistry;
   maintenanceCoordinator?: Pick<
     MemoryMaintenanceCoordinator,
@@ -396,6 +401,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
   const { pool, token, traceRegistry, maintenanceCoordinator } = options;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const maxRecallLimit = options.maxRecallLimit ?? DEFAULT_MAX_RECALL_LIMIT;
+  const recallAbstainThreshold = options.recallAbstainThreshold ?? 0;
   let recallTraceSequence = 0;
 
   const nextRecallTraceTurnId = (tenant: string): string => {
@@ -989,13 +995,31 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           ...(traceTurnId === undefined ? {} : { traceTurnId }),
         }),
       );
+      const topRawScore = hits.length === 0 ? null : Math.max(...hits.map((hit) => hit.rawScore));
+
+      if (
+        recallAbstainThreshold > 0 &&
+        (topRawScore === null || topRawScore < recallAbstainThreshold)
+      ) {
+        send(res, 200, {
+          ok: true,
+          episodes: [],
+          abstained: true,
+          abstain_reason: "low_relevance",
+          top_raw_score: topRawScore,
+        });
+        return;
+      }
+
       send(res, 200, {
         ok: true,
+        top_raw_score: topRawScore,
         episodes: hits.map((hit) => ({
           id: hit.episode.id,
           title: hit.episode.title,
           narrative: hit.episode.narrative,
           score: hit.score,
+          raw_score: hit.rawScore,
         })),
       });
     } catch (error) {

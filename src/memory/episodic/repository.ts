@@ -349,6 +349,42 @@ function normalizeTerm(value: string): string {
   return value.trim().toLowerCase();
 }
 
+const LEXICAL_SCAN_PAGE_SIZE = 64;
+const LEXICAL_TOKEN_MIN_LENGTH = 3;
+const LEXICAL_SHORT_TOKEN_LENGTH = 5;
+const LEXICAL_TEXT_COLUMNS = ["title", "narrative", "participants"] as const;
+
+// These are source handles already identified by the recall-expansion LLM. The
+// repository only performs a bounded exact lexical lookup; it does not infer
+// entities or topics from user text.
+export function episodeLexicalSearchTokens(term: string): string[] {
+  return [
+    ...new Set(
+      term
+        .toLowerCase()
+        // The Unicode token split also strips LIKE metacharacters, so they
+        // cannot reach the query pattern as wildcards.
+        .split(/[^\p{L}\p{M}\p{N}]+/u)
+        .filter((token) => [...token].length >= LEXICAL_TOKEN_MIN_LENGTH),
+    ),
+  ];
+}
+
+function episodeLexicalTokenWhereClause(token: string): string {
+  const tokenLength = [...token].length;
+
+  return LEXICAL_TEXT_COLUMNS.map((column) => {
+    if (tokenLength < LEXICAL_SHORT_TOKEN_LENGTH) {
+      // Short names must be complete Unicode tokens. Inflected forms belong in
+      // the LLM expansion output, not in this exact-handle lookup.
+      const exactTokenPattern = `(^|[^\\p{L}\\p{M}\\p{N}])${token}($|[^\\p{L}\\p{M}\\p{N}])`;
+      return `regexp_like(lower(${column}), ${quoteSqlString(exactTokenPattern)})`;
+    }
+
+    return `lower(${column}) LIKE ${quoteSqlString(`%${token}%`)}`;
+  }).join(" OR ");
+}
+
 function sqlPlaceholders(count: number): string {
   return Array.from({ length: count }, () => "?").join(", ");
 }
@@ -2219,6 +2255,113 @@ export class EpisodicRepository {
       ) as IndexedEpisodeIdRow[];
 
     return this.hydrateCandidatesByIds(rows.map((row) => parseEpisodeId(row.episode_id)));
+  }
+
+  async recallByLexicalTermsForCognition(
+    terms: readonly string[],
+    options: {
+      limit?: number;
+    } = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    return this.searchByLexicalTermsInternal(terms, options, "cognition");
+  }
+
+  async searchByLexicalTermsForDisclosure(
+    terms: readonly string[],
+    options: EpisodeVisibilityOptions & {
+      limit?: number;
+    } = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    return this.searchByLexicalTermsInternal(terms, options, "disclosure");
+  }
+
+  private async searchByLexicalTermsInternal(
+    terms: readonly string[],
+    options: EpisodeVisibilityOptions & {
+      limit?: number;
+    },
+    visibilityMode: EpisodeSearchVisibilityMode,
+  ): Promise<EpisodeSearchCandidate[]> {
+    const limit = assertPositiveLimit(options.limit ?? DEFAULT_SEARCH_LIMIT, "Search limit");
+    const tokenGroupsByKey = new Map<string, string[]>();
+
+    for (const term of terms) {
+      const tokens = episodeLexicalSearchTokens(term);
+
+      if (tokens.length > 0) {
+        tokenGroupsByKey.set(tokens.join("\u0000"), tokens);
+      }
+    }
+
+    if (tokenGroupsByKey.size === 0) {
+      return [];
+    }
+
+    await this.ensureEpisodeIndexBackfilled();
+
+    const visibility =
+      visibilityMode === "disclosure"
+        ? this.buildIndexedVisibilityWhereClause(resolveViewerCapability(options), "ei")
+        : { sql: "1 = 1", params: [] };
+    const results: EpisodeSearchCandidate[] = [];
+    const seenIds = new Set<EpisodeId>();
+    const lexicalWhere = [...tokenGroupsByKey.values()]
+      .map((tokens) =>
+        tokens.map((token) => `(${episodeLexicalTokenWhereClause(token)})`).join(" AND "),
+      )
+      .map((group) => `(${group})`)
+      .join(" OR ");
+    const pageSize = Math.max(LEXICAL_SCAN_PAGE_SIZE, limit * 2);
+    let offset = 0;
+
+    while (results.length < limit) {
+      const indexedRows = this.db
+        .prepare(
+          `
+            SELECT ei.episode_id
+            FROM episode_index AS ei
+            WHERE ${this.buildEffectiveVisibilityWhereClause("ei")}
+              AND ${visibility.sql}
+            ORDER BY ei.updated_at DESC, ei.episode_id DESC
+            LIMIT ? OFFSET ?
+          `,
+        )
+        .all(...visibility.params, pageSize, offset) as IndexedEpisodeIdRow[];
+
+      if (indexedRows.length === 0) {
+        break;
+      }
+
+      offset += indexedRows.length;
+      const pageIds = indexedRows.map((row) => parseEpisodeId(row.episode_id));
+      const idWhere = `id IN (${pageIds.map((id) => quoteSqlString(id)).join(", ")})`;
+      const matchingRows = await this.table.list({
+        columns: ["id"],
+        where: combineWhereClauses(idWhere, `(${lexicalWhere})`),
+        limit: pageIds.length,
+      });
+      const matchingIds = new Set(matchingRows.map((row) => parseEpisodeId(String(row.id))));
+      const candidates = await this.hydrateCandidatesByIds(
+        pageIds.filter((episodeId) => matchingIds.has(episodeId)),
+      );
+
+      for (const candidate of candidates) {
+        if (!seenIds.has(candidate.episode.id)) {
+          seenIds.add(candidate.episode.id);
+          results.push(candidate);
+
+          if (results.length >= limit) {
+            break;
+          }
+        }
+      }
+
+      if (indexedRows.length < pageSize) {
+        break;
+      }
+    }
+
+    return results;
   }
 
   async listRecentForCognition(

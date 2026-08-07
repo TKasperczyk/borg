@@ -10,6 +10,7 @@ import {
 import { emotionalArcSchema } from "../../memory/affective/index.js";
 import {
   buildConsolidationCoverageHash,
+  buildConsolidationEpisodeEmbeddingText,
   consolidationFamilyIdSchema,
   normalizeEpisodeAccess,
   preserveProtectedEpisodeTokenLines,
@@ -335,7 +336,7 @@ function buildMergePrompt(
     "I merge the redundant raw episodes into one grounded consolidation version for my autobiographical memory.",
     `I emit my result by calling the ${MERGE_TOOL_NAME} tool exactly once.`,
     "I preserve facts from all raw inputs. I keep the narrative to 2-5 sentences.",
-    "Any complete raw narrative line containing an OUTCOME fp= token or decision= token is an opaque dedup record. I copy that complete line verbatim; I never paraphrase, extend, normalize, or omit it.",
+    "Any complete raw narrative line containing an OUTCOME fp= or decision= token, or beginning with ticket=<X> action=<Y> or action=teams_card, is an opaque dedup record. I copy that complete line verbatim; I never paraphrase, extend, normalize, or omit it.",
     selfEntityGuidance,
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to the merged narrative. I keep the title topic-neutral and scannable rather than first-person narration.`,
     ...previousContext,
@@ -714,7 +715,13 @@ async function buildMergedEpisode(
     rawEpisodes.map((episode) => episode.narrative),
   );
   const embedding = await ctx.embeddingClient.embed(
-    `${merged.title}\n${protectedNarrative}\n${tags.join(" ")}\n${participants.join(" ")}`,
+    buildConsolidationEpisodeEmbeddingText({
+      title: merged.title,
+      synthesizedNarrative: merged.narrative,
+      protectedSourceTexts: rawEpisodes.map((episode) => episode.narrative),
+      tags,
+      participants,
+    }),
   );
   const access = episodeAccessFromCombinedDisclosureLabel(
     combineMemoryDisclosureLabels(rawEpisodes.map(memoryDisclosureLabelFromEpisodeAccess)),
