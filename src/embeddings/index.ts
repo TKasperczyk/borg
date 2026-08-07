@@ -86,6 +86,47 @@ function isModelNotLoadedError(error: unknown): boolean {
   return message.includes("model") && (message.includes("unloaded") || message.includes("crashed"));
 }
 
+// The wrapped cause carries the only information that identifies WHY a request
+// failed (transport vs 4xx vs abort vs provider quirk), and it does not survive
+// into the trace or the journal -- every failure reads identically as "Failed to
+// generate embeddings". That cost two wrong diagnoses of a live incident, so the
+// distinguishing fields go in the message itself. Bounded, and no request
+// content: status/code/name are provider metadata, and the message is truncated.
+function describeEmbeddingCause(error: unknown): string {
+  if (typeof error !== "object" || error === null) {
+    return String(error);
+  }
+
+  const candidate = error as {
+    name?: unknown;
+    status?: unknown;
+    code?: unknown;
+    type?: unknown;
+    message?: unknown;
+    error?: { message?: unknown; type?: unknown };
+    cause?: { code?: unknown; message?: unknown };
+  };
+
+  const parts: string[] = [];
+  const push = (label: string, value: unknown): void => {
+    if (value !== undefined && value !== null && value !== "") {
+      parts.push(`${label}=${String(value)}`);
+    }
+  };
+
+  push("name", candidate.name);
+  push("status", candidate.status);
+  push("code", candidate.code ?? candidate.cause?.code);
+  push("type", candidate.type ?? candidate.error?.type);
+
+  const message = candidate.message ?? candidate.error?.message ?? candidate.cause?.message;
+  if (typeof message === "string" && message !== "") {
+    parts.push(`message="${message.slice(0, 300)}"`);
+  }
+
+  return parts.length > 0 ? parts.join(" ") : "unknown cause";
+}
+
 function validateDimensions(embedding: number[], dims: number, model: string): Float32Array {
   if (embedding.length !== dims) {
     throw new EmbeddingError(
@@ -190,9 +231,10 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
         throw error;
       }
 
-      throw new EmbeddingError("Failed to generate embeddings", {
-        cause: error,
-      });
+      throw new EmbeddingError(
+        `Failed to generate embeddings (${describeEmbeddingCause(error)})`,
+        { cause: error },
+      );
     }
   }
 

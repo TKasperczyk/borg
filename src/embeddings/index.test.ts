@@ -124,6 +124,30 @@ describe("embeddings", () => {
     expect(create).toHaveBeenCalledTimes(1);
   });
 
+  it("surfaces the underlying cause in the error message", async () => {
+    // Every embedding failure previously read as an identical, information-free
+    // "Failed to generate embeddings", which is what made a live incident take
+    // three attempts to diagnose. The distinguishing fields must reach the log.
+    const create = vi.fn().mockRejectedValue(
+      Object.assign(new Error("Model has unloaded or crashed."), {
+        name: "APIError",
+        status: 400,
+        code: "model_unloaded",
+      }),
+    );
+
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 1,
+      modelReloadRetryDelaysMs: [0],
+      client: { embeddings: { create } } as never,
+    });
+
+    await expect(client.embed("text")).rejects.toThrow(/status=400/);
+    await expect(client.embed("text")).rejects.toThrow(/code=model_unloaded/);
+    await expect(client.embed("text")).rejects.toThrow(/unloaded or crashed/);
+  });
+
   it("rejects a non-positive max batch size", () => {
     expect(
       () =>
