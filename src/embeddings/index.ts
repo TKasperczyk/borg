@@ -45,14 +45,45 @@ const DEFAULT_MODEL_RELOAD_RETRY_DELAYS_MS: readonly number[] = [1000, 4000, 10_
 // callers. 32 sits comfortably under the observed cliff.
 const DEFAULT_MAX_EMBED_BATCH_SIZE = 32;
 
+// A JIT-loading server reports an evicted model in more than one way, and the
+// reload retry below is useless unless every shape is recognised. LM Studio
+// answers 404/model_not_found when the model was never loaded, but 400 "Model
+// has unloaded or crashed." once it has evicted an idle one -- which is the
+// common case here, because a long deliberation turn leaves the embedding model
+// untouched for minutes at a time while the planner runs. Treating only the 404
+// as retryable made that second case a hard turn failure.
+//
+// This inspects a transport-layer error object, not model output: provider
+// error signatures are the one thing that legitimately has to be matched by
+// shape. Kept narrow on purpose -- a bare 400 is an ordinary bad request.
 function isModelNotLoadedError(error: unknown): boolean {
   if (typeof error !== "object" || error === null) {
     return false;
   }
 
-  const candidate = error as { status?: unknown; code?: unknown };
+  const candidate = error as {
+    status?: unknown;
+    code?: unknown;
+    message?: unknown;
+    error?: { message?: unknown };
+  };
 
-  return candidate.status === 404 && candidate.code === "model_not_found";
+  if (candidate.status === 404 && candidate.code === "model_not_found") {
+    return true;
+  }
+
+  if (candidate.status !== 400) {
+    return false;
+  }
+
+  const message = [candidate.message, candidate.error?.message]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase();
+
+  // "Model has unloaded or crashed." -- require both halves so an unrelated
+  // 400 mentioning a model in passing does not get retried forever.
+  return message.includes("model") && (message.includes("unloaded") || message.includes("crashed"));
 }
 
 function validateDimensions(embedding: number[], dims: number, model: string): Float32Array {
@@ -165,8 +196,11 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
     }
   }
 
-  // JIT-loading inference servers (LM Studio, llama.cpp) evict the model when
-  // a different one is requested, returning 404 model_not_found until reload.
+  // JIT-loading inference servers (LM Studio, llama.cpp) evict the model both
+  // when a different one is requested AND when it sits idle -- see
+  // isModelNotLoadedError for the two error shapes that means. A long turn
+  // (a multi-minute planner call) is enough idle time to lose it, so this
+  // retry is on the normal path, not an edge case.
   private async createWithModelReloadRetry(
     texts: readonly string[],
   ): ReturnType<OpenAIEmbeddingsClient["embeddings"]["create"]> {

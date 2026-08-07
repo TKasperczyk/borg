@@ -76,6 +76,54 @@ describe("embeddings", () => {
     expect(create).toHaveBeenCalledTimes(1);
   });
 
+  it("retries when the server reports an evicted model, in either error shape", async () => {
+    // 404/model_not_found = never loaded. 400 "Model has unloaded or crashed."
+    // = evicted after sitting idle, which is what a multi-minute deliberation
+    // turn actually produces. Only handling the 404 made the second a hard
+    // turn failure.
+    for (const failure of [
+      Object.assign(new Error("nope"), { status: 404, code: "model_not_found" }),
+      Object.assign(new Error("Model has unloaded or crashed."), { status: 400 }),
+      Object.assign(new Error("boom"), {
+        status: 400,
+        error: { message: "Model has unloaded or crashed." },
+      }),
+    ]) {
+      const create = vi
+        .fn()
+        .mockRejectedValueOnce(failure)
+        .mockResolvedValue({ data: [{ index: 0, embedding: [1] }] });
+
+      const client = new OpenAICompatibleEmbeddingClient({
+        model: "embed-model",
+        dims: 1,
+        modelReloadRetryDelaysMs: [0],
+        client: { embeddings: { create } } as never,
+      });
+
+      await expect(client.embed("text")).resolves.toBeInstanceOf(Float32Array);
+      expect(create).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it("does not retry an ordinary 400 that merely mentions a model", async () => {
+    const create = vi
+      .fn()
+      .mockRejectedValue(
+        Object.assign(new Error("Unknown parameter for model embed-model"), { status: 400 }),
+      );
+
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 1,
+      modelReloadRetryDelaysMs: [0],
+      client: { embeddings: { create } } as never,
+    });
+
+    await expect(client.embed("text")).rejects.toThrow(EmbeddingError);
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects a non-positive max batch size", () => {
     expect(
       () =>
