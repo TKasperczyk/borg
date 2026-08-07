@@ -47,11 +47,19 @@ const DEFAULT_MAX_EMBED_BATCH_SIZE = 32;
 
 // A JIT-loading server reports an evicted model in more than one way, and the
 // reload retry below is useless unless every shape is recognised. LM Studio
-// answers 404/model_not_found when the model was never loaded, but 400 "Model
-// has unloaded or crashed." once it has evicted an idle one -- which is the
-// common case here, because a long deliberation turn leaves the embedding model
-// untouched for minutes at a time while the planner runs. Treating only the 404
-// as retryable made that second case a hard turn failure.
+// answers 404/model_not_found when the model was never loaded, 400 "Model
+// has unloaded or crashed." once it has evicted an idle one, and 400 "Failed
+// to load model ... Model does not exist." for requests that race into the
+// window between an eviction and the JIT reload starting -- observed live when
+// the host's internal RAG engine loads a different embedding model, evicting
+// ours: the request that triggers the reload rides it out and succeeds, while
+// concurrent siblings fail instantly with that third shape. Each unrecognised
+// shape was a hard turn failure.
+//
+// "does not exist" also matches a permanently misconfigured model id; the
+// retry ladder makes that cost one bounded delay cycle before surfacing the
+// same error, which is acceptable against silently dropping the recoverable
+// race case.
 //
 // This inspects a transport-layer error object, not model output: provider
 // error signatures are the one thing that legitimately has to be matched by
@@ -81,9 +89,12 @@ function isModelNotLoadedError(error: unknown): boolean {
     .join(" ")
     .toLowerCase();
 
-  // "Model has unloaded or crashed." -- require both halves so an unrelated
-  // 400 mentioning a model in passing does not get retried forever.
-  return message.includes("model") && (message.includes("unloaded") || message.includes("crashed"));
+  // Require "model" plus a load-failure half so an unrelated 400 mentioning a
+  // model in passing does not get retried forever.
+  return (
+    message.includes("model") &&
+    (message.includes("unloaded") || message.includes("crashed") || message.includes("does not exist"))
+  );
 }
 
 // The wrapped cause carries the only information that identifies WHY a request

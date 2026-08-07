@@ -76,11 +76,12 @@ describe("embeddings", () => {
     expect(create).toHaveBeenCalledTimes(1);
   });
 
-  it("retries when the server reports an evicted model, in either error shape", async () => {
+  it("retries when the server reports an evicted model, in any observed error shape", async () => {
     // 404/model_not_found = never loaded. 400 "Model has unloaded or crashed."
-    // = evicted after sitting idle, which is what a multi-minute deliberation
-    // turn actually produces. Only handling the 404 made the second a hard
-    // turn failure.
+    // = evicted after sitting idle. 400 "Failed to load model ... Model does
+    // not exist." = a request racing into the eviction-to-JIT-reload window
+    // while another consumer's load evicted ours. Each shape was a hard turn
+    // failure until recognised here.
     for (const failure of [
       Object.assign(new Error("nope"), { status: 404, code: "model_not_found" }),
       Object.assign(new Error("Model has unloaded or crashed."), { status: 400 }),
@@ -88,6 +89,10 @@ describe("embeddings", () => {
         status: 400,
         error: { message: "Model has unloaded or crashed." },
       }),
+      Object.assign(
+        new Error('400 "Failed to load model \\"embed-model\\". Error: Model does not exist."'),
+        { status: 400 },
+      ),
     ]) {
       const create = vi
         .fn()
