@@ -30,9 +30,20 @@ export type OpenAICompatibleEmbeddingClientOptions = {
   dims: number;
   client?: OpenAIEmbeddingsClient;
   modelReloadRetryDelaysMs?: readonly number[];
+  maxBatchSize?: number;
 };
 
 const DEFAULT_MODEL_RELOAD_RETRY_DELAYS_MS: readonly number[] = [1000, 4000, 10_000];
+
+// Callers pass unbounded arrays (every action record missing an embedding,
+// every reflector tag, every retrieval intent), and a local inference server
+// does not degrade gracefully on a large one: measured against LM Studio with
+// an 8B embedding model, 16 inputs took 7s, 64 took 29s, and 128 returned
+// `400 "Model has unloaded or crashed."` -- taking the model down for every
+// other consumer on the host, not just this one. Chunking here covers every
+// call site at once, which is why it belongs in the client rather than in the
+// callers. 32 sits comfortably under the observed cliff.
+const DEFAULT_MAX_EMBED_BATCH_SIZE = 32;
 
 function isModelNotLoadedError(error: unknown): boolean {
   if (typeof error !== "object" || error === null) {
@@ -59,6 +70,7 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
   private readonly model: string;
   private readonly dims: number;
   private readonly modelReloadRetryDelaysMs: readonly number[];
+  private readonly maxBatchSize: number;
 
   constructor(options: OpenAICompatibleEmbeddingClientOptions) {
     if (!Number.isInteger(options.dims) || options.dims <= 0) {
@@ -90,6 +102,12 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
     this.dims = options.dims;
     this.modelReloadRetryDelaysMs =
       options.modelReloadRetryDelaysMs ?? DEFAULT_MODEL_RELOAD_RETRY_DELAYS_MS;
+
+    const requestedBatchSize = options.maxBatchSize ?? DEFAULT_MAX_EMBED_BATCH_SIZE;
+    if (!Number.isInteger(requestedBatchSize) || requestedBatchSize <= 0) {
+      throw new ConfigError("Embedding max batch size must be a positive integer");
+    }
+    this.maxBatchSize = requestedBatchSize;
   }
 
   async embed(text: string): Promise<Float32Array> {
@@ -106,6 +124,22 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
     if (texts.length === 0) {
       return [];
     }
+
+    // Sequential, not parallel: the point is to keep concurrent load off a
+    // shared local inference server, so firing the chunks at once would
+    // reintroduce the pressure this exists to avoid.
+    if (texts.length > this.maxBatchSize) {
+      const out: Float32Array[] = [];
+      for (let start = 0; start < texts.length; start += this.maxBatchSize) {
+        out.push(...(await this.embedChunk(texts.slice(start, start + this.maxBatchSize))));
+      }
+      return out;
+    }
+
+    return this.embedChunk(texts);
+  }
+
+  private async embedChunk(texts: readonly string[]): Promise<Float32Array[]> {
 
     try {
       const response = await this.createWithModelReloadRetry(texts);

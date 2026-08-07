@@ -31,6 +31,63 @@ describe("embeddings", () => {
     expect(Array.from(embeddings[1] ?? [])).toEqual([4, 5, 6]);
   });
 
+  it("splits an oversized batch into sequential requests, preserving order", async () => {
+    // A local inference server returns `400 "Model has unloaded or crashed."`
+    // on a large batch, taking the model down for every consumer on the host,
+    // so an unbounded caller array must never reach it in one request.
+    const seen: string[][] = [];
+    // A single-text chunk is sent as a bare string, not a one-element array.
+    const create = vi.fn(async (params: { input: string | string[] }) => {
+      const inputs = Array.isArray(params.input) ? params.input : [params.input];
+      seen.push([...inputs]);
+      return {
+        data: inputs.map((text, index) => ({ index, embedding: [Number(text)] })),
+      };
+    });
+
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 1,
+      maxBatchSize: 2,
+      client: { embeddings: { create } } as never,
+    });
+
+    const embeddings = await client.embedBatch(["1", "2", "3", "4", "5"]);
+
+    expect(seen).toEqual([["1", "2"], ["3", "4"], ["5"]]);
+    expect(embeddings.map((e) => Array.from(e)[0])).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("sends a batch at or under the cap as a single request", async () => {
+    const create = vi.fn(async (params: { input: string | string[] }) => {
+      const inputs = Array.isArray(params.input) ? params.input : [params.input];
+      return { data: inputs.map((_, index) => ({ index, embedding: [index] })) };
+    });
+
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 1,
+      maxBatchSize: 4,
+      client: { embeddings: { create } } as never,
+    });
+
+    await client.embedBatch(["a", "b", "c", "d"]);
+
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a non-positive max batch size", () => {
+    expect(
+      () =>
+        new OpenAICompatibleEmbeddingClient({
+          model: "embed-model",
+          dims: 3,
+          maxBatchSize: 0,
+          client: { embeddings: { create: vi.fn() } } as never,
+        }),
+    ).toThrow(ConfigError);
+  });
+
   it("validates configuration and dimensions", async () => {
     expect(
       () =>
