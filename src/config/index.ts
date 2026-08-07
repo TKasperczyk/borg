@@ -345,6 +345,34 @@ const configBaseSchema = z.object({
   retrieval: z
     .object({
       semanticOverfetchMultiplier: z.number().int().min(1).max(10).default(3),
+      // Live-turn attention weights. Deployment-tunable on purpose: `semantic`
+      // is fused against a RAW cosine similarity, whose spread is a property of
+      // the corpus rather than of the code. A corpus whose episodes are
+      // thematically diverse separates widely, so a high `semantic` buys real
+      // ranking signal; a thematically narrow corpus separates by a few
+      // hundredths, where the same weight mostly displaces salience without
+      // replacing it. One global constant therefore cannot serve every bank --
+      // measure a deployment with `pnpm retrieval:signal-report` before
+      // changing these. (`heat` is normalized before fusion; `semantic` is not,
+      // which is the asymmetry that makes this corpus-dependent.)
+      attentionWeights: z
+        .object({
+          semantic: z.number().min(0).default(0.65),
+          // Applied only when the turn carries goal descriptions.
+          goal_relevance: z.number().min(0).default(0.1),
+          value_alignment: z.number().min(0).default(0),
+          mood: z.number().min(0).default(0),
+          // Applied only when the query carries a temporal signal.
+          time: z.number().min(0).default(0.2),
+          // Applied only when audience terms are resolved.
+          social: z.number().min(0).default(0.15),
+          // Applied only when the query carries an entity signal.
+          entity: z.number().min(0).default(0.2),
+          heat: z.number().min(0).default(0.15),
+          suppression_penalty: z.number().min(0).default(0.5),
+        })
+        .strict()
+        .prefault({}),
       lexicalFusion: z
         .object({
           enabled: z.boolean().default(false),
@@ -2063,6 +2091,9 @@ export function redactConfig(config: Config): Config {
     },
     retrieval: {
       semanticOverfetchMultiplier: config.retrieval.semanticOverfetchMultiplier,
+      attentionWeights: {
+        ...config.retrieval.attentionWeights,
+      },
       lexicalFusion: {
         ...config.retrieval.lexicalFusion,
       },

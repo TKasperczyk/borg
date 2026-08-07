@@ -233,6 +233,10 @@ export function createTestConfig(
       semanticOverfetchMultiplier:
         overrides.retrieval?.semanticOverfetchMultiplier ??
         DEFAULT_CONFIG.retrieval.semanticOverfetchMultiplier,
+      attentionWeights: {
+        ...DEFAULT_CONFIG.retrieval.attentionWeights,
+        ...overrides.retrieval?.attentionWeights,
+      },
       lexicalFusion: {
         ...DEFAULT_CONFIG.retrieval.lexicalFusion,
         ...overrides.retrieval?.lexicalFusion,

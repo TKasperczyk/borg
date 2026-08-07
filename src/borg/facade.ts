@@ -350,6 +350,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     const hasTemporalSignal =
       options?.temporalCue !== undefined || options?.timeRange !== undefined;
     const hasEntitySignal = options?.entityTerms !== undefined && options.entityTerms.length > 0;
+    const configuredAttentionWeights = deps.config.retrieval.attentionWeights;
 
     return {
       ...options,
@@ -361,24 +362,33 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         options?.attentionWeights ??
         (options?.scoreWeights !== undefined
           ? undefined
-          : {
-              // Similarity-forward defaults (2026-08 scoring rebalance): semantic
-              // 0.65 gives similarity 0.65 / salience 0.35, heat 0.15. The old
-              // 0.35/0.65/0.45 split saturated ~90% of returned scores at the
-              // 1.0 clamp and let query-independent salience+heat crown one
-              // "greatest hit" episode as top-1 for over half the query suite.
-              semantic: 0.65,
+          : // Similarity-forward defaults (2026-08 scoring rebalance): semantic
+            // 0.65 gives similarity 0.65 / salience 0.35, heat 0.15. The old
+            // 0.35/0.65/0.45 split saturated ~90% of returned scores at the
+            // 1.0 clamp and let query-independent salience+heat crown one
+            // "greatest hit" episode as top-1 for over half the query suite.
+            //
+            // Those figures are corpus-dependent, not universal -- `semantic`
+            // is fused against a raw, un-normalized cosine whose spread varies
+            // per bank -- so every value is deployment-tunable via
+            // config.retrieval.attentionWeights. See that schema, and measure
+            // with `pnpm retrieval:signal-report` before changing them.
+            {
+              semantic: configuredAttentionWeights.semantic,
               goal_relevance:
                 options?.goalDescriptions !== undefined && options.goalDescriptions.length > 0
-                  ? 0.1
+                  ? configuredAttentionWeights.goal_relevance
                   : 0,
-              value_alignment: 0,
-              mood: 0,
-              time: hasTemporalSignal ? 0.2 : 0,
-              social: audienceTerms !== undefined && audienceTerms.length > 0 ? 0.15 : 0,
-              entity: hasEntitySignal ? 0.2 : 0,
-              heat: 0.15,
-              suppression_penalty: 0.5,
+              value_alignment: configuredAttentionWeights.value_alignment,
+              mood: configuredAttentionWeights.mood,
+              time: hasTemporalSignal ? configuredAttentionWeights.time : 0,
+              social:
+                audienceTerms !== undefined && audienceTerms.length > 0
+                  ? configuredAttentionWeights.social
+                  : 0,
+              entity: hasEntitySignal ? configuredAttentionWeights.entity : 0,
+              heat: configuredAttentionWeights.heat,
+              suppression_penalty: configuredAttentionWeights.suppression_penalty,
             }),
     };
   };
