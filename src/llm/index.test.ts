@@ -2034,6 +2034,64 @@ describe("llm", () => {
     });
   });
 
+  it("picks up a credentials-file account swap without a restart", async () => {
+    // A long-lived process resolved auth once at startup and held the previous
+    // account's token for its whole lifetime: swapping accounts after
+    // exhausting a subscription answers 429, not 401, so the auth-failure
+    // refresh path never fires. Observed live on 2026-08-09 -- new credentials
+    // were on disk at 09:24 and a wake at 09:28 still failed.
+    const credentialsPath = createTempCredentialsPath(tempDirs);
+    writeJsonFileAtomic(credentialsPath, {
+      claudeAiOauth: {
+        accessToken: "first-account-access",
+        refreshToken: "first-account-refresh",
+        expiresAt: Date.now() + 3_600_000,
+      },
+    });
+
+    const seenTokens: string[] = [];
+    const fetchMock = vi.fn(
+      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        seenTokens.push(new Headers(init?.headers).get("authorization") ?? "");
+        return jsonResponse(createMessageBody());
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AnthropicLLMClient({
+      env: {
+        BORG_CLAUDE_CREDENTIALS_PATH: credentialsPath,
+      },
+    });
+    const call = async (): Promise<unknown> =>
+      client.complete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      });
+
+    await call();
+    // Same credentials: the cached client must be reused, not re-resolved.
+    await call();
+
+    writeJsonFileAtomic(credentialsPath, {
+      claudeAiOauth: {
+        accessToken: "second-account-access",
+        refreshToken: "second-account-refresh",
+        expiresAt: Date.now() + 3_600_000,
+      },
+    });
+
+    await call();
+
+    expect(seenTokens).toEqual([
+      "Bearer first-account-access",
+      "Bearer first-account-access",
+      "Bearer second-account-access",
+    ]);
+  });
+
   it("throws an auth error when no credentials are available", async () => {
     const credentialsPath = createTempCredentialsPath(tempDirs);
     const client = new AnthropicLLMClient({

@@ -14,7 +14,11 @@ import type {
 } from "@anthropic-ai/sdk/resources/messages/messages.js";
 import { z } from "zod";
 
-import { getFreshCredentials, type GetFreshCredentialsOptions } from "../auth/claude-oauth.js";
+import {
+  getFreshCredentials,
+  readCredentialsFileStamp,
+  type GetFreshCredentialsOptions,
+} from "../auth/claude-oauth.js";
 import type { Clock } from "../util/clock.js";
 import { AuthError, ConfigError, findInErrorCauseChain, LLMError } from "../util/errors.js";
 import type { AttachmentId } from "../util/ids.js";
@@ -1842,6 +1846,7 @@ export class AnthropicLLMClient implements LLMClient {
   private client?: AnthropicClientLike;
   private auth?: ResolvedAnthropicAuth;
   private initialization?: Promise<void>;
+  private credentialsStamp?: string | null;
   private readonly usageSink?: TokenUsageSink;
   private readonly options: AnthropicLLMClientOptions;
 
@@ -1890,14 +1895,44 @@ export class AnthropicLLMClient implements LLMClient {
     });
   }
 
+  // A credentials-file swap (operator logs into a different account, typically
+  // after exhausting a subscription) leaves this process holding the previous
+  // account's access token for its entire lifetime: the swapped-out account
+  // answers 429, not 401, so the auth-failure refresh path never fires and only
+  // a restart recovers. Comparing a cheap mtime+size stamp lets the next call
+  // pick up new credentials on its own. Stat only -- no parse, no lock, no
+  // network -- and scoped to file-sourced auth, since env/api-key auth has no
+  // file to watch.
+  private credentialsFileSwapped(): boolean {
+    if (this.auth?.kind !== "oauth" || this.auth.source !== "credentials-file") {
+      return false;
+    }
+
+    const stamp = readCredentialsFileStamp(this.options);
+
+    return stamp !== null && stamp !== this.credentialsStamp;
+  }
+
   private async ensureInitialized(): Promise<void> {
     if (this.client !== undefined) {
-      return;
+      if (!this.credentialsFileSwapped()) {
+        return;
+      }
+
+      // Drop BOTH the client and the memoized initialization: the resolved
+      // promise would otherwise short-circuit straight back to the stale token.
+      this.client = undefined;
+      this.initialization = undefined;
     }
 
     if (this.initialization === undefined) {
       const initialization = (async () => {
+        // Read the stamp BEFORE resolving: a write landing during resolution
+        // then belongs to the next check rather than being masked by a stamp
+        // captured after it.
+        const stamp = readCredentialsFileStamp(this.options);
         this.auth = await resolveAnthropicAuth(this.options);
+        this.credentialsStamp = stamp;
         this.client = buildAnthropicClient(this.auth, this.options.env, this.oauthFetchOptions());
       })();
       this.initialization = initialization;
@@ -1987,6 +2022,10 @@ export class AnthropicLLMClient implements LLMClient {
       authToken: credentials.accessToken,
       source: "credentials-file",
     };
+    // This refresh rewrote the credentials file, so re-stamp from the state we
+    // just produced; otherwise the swap check reads our own write as somebody
+    // else's and re-resolves on the very next call.
+    this.credentialsStamp = readCredentialsFileStamp(this.options);
     this.client = buildAnthropicClient(this.auth, this.options.env, this.oauthFetchOptions());
     this.initialization = Promise.resolve();
   }

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 
 import { z } from "zod";
 
@@ -213,6 +213,24 @@ export async function getFreshCredentials(
 
       return merged;
     });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Cheap change-detector for the credentials file: mtime + size, no parse, no
+ * lock. A long-lived process resolves credentials once and would otherwise hold
+ * a dead access token forever when the operator logs into a different account
+ * (a swap answers 429, not 401, so the auth-failure refresh path never fires).
+ * Callers compare this stamp to re-resolve only when the file actually changed.
+ * Returns null when the file is absent or unreadable, which callers treat as
+ * "nothing new to pick up" rather than an error.
+ */
+export function readCredentialsFileStamp(options: ClaudeOAuthOptions = {}): string | null {
+  try {
+    const stats = statSync(resolveCredentialsPath(options));
+    return `${stats.mtimeMs}:${stats.size}`;
   } catch {
     return null;
   }
