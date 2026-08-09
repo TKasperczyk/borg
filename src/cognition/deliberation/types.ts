@@ -352,6 +352,7 @@ export type DeliberatorOptions = {
   tracer?: TurnTracer;
   hostCapabilities?: string;
   promptBlocks?: Partial<Record<PromptKey, string>>;
+  finalizerDynamicPromptCacheEnabled?: boolean;
   sharedStateRenderOptions?: SharedStateRenderOptions;
   maxImagesPerLlmCall?: number;
 };

@@ -267,6 +267,7 @@ const contradictionRoutingConfigSchema = z
 const deliberationConfigSchema = z
   .object({
     contradictionRouting: contradictionRoutingConfigSchema,
+    finalizerDynamicPromptCacheEnabled: z.boolean().default(true),
   })
   .strict()
   .prefault({});

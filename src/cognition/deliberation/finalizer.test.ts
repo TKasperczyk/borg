@@ -10,8 +10,16 @@ import { StreamWriter } from "../../stream/index.js";
 import { ToolDispatcher, type ToolDefinition, type ToolOrigin } from "../../tools/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, createEntityId } from "../../util/ids.js";
+import {
+  PROMPT_SURFACES,
+  promptSurfaceBlocksForSurface,
+} from "../prompts/prompt-surface-registry.js";
 import { resolveFinalizerNonTerminalTools } from "./autonomous-finalizer-tools.js";
-import { runFinalizer, type CacheableFinalizerSystemPrompt } from "./finalizer.js";
+import {
+  FINALIZER_REGENERATION_PROMPT_BLOCK_IDS,
+  runFinalizer,
+  type CacheableFinalizerSystemPrompt,
+} from "./finalizer.js";
 
 function createDispatcher(
   tempDirs: string[],
@@ -44,6 +52,7 @@ async function runEmissionFinalizer(
   options: {
     cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
     additionalPromptSections?: Parameters<typeof runFinalizer>[0]["additionalPromptSections"];
+    finalizerDynamicPromptCacheEnabled?: boolean;
     tracer?: Parameters<typeof runFinalizer>[0]["tracer"];
     turnId?: string;
     structuralNoOutputFlags?: Parameters<typeof runFinalizer>[0]["structuralNoOutputFlags"];
@@ -79,6 +88,9 @@ async function runEmissionFinalizer(
     ...(options.additionalPromptSections === undefined
       ? {}
       : { additionalPromptSections: options.additionalPromptSections }),
+    ...(options.finalizerDynamicPromptCacheEnabled === undefined
+      ? {}
+      : { finalizerDynamicPromptCacheEnabled: options.finalizerDynamicPromptCacheEnabled }),
     ...(options.structuralNoOutputFlags === undefined
       ? {}
       : { structuralNoOutputFlags: options.structuralNoOutputFlags }),
@@ -123,7 +135,49 @@ function requestSystemText(system: unknown): string {
         ? block.text
         : "",
     )
-    .join("\n\n");
+    .join("");
+}
+
+type CapturedSystemBlock = {
+  type: "text";
+  text: string;
+  cache_control?: {
+    type: "ephemeral";
+    ttl?: "5m" | "1h";
+  };
+};
+
+function createAnsweringLlm(toolUseId: string): FakeLLMClient {
+  return new FakeLLMClient({
+    responses: [
+      {
+        messageBlocks: [
+          {
+            type: "tool_use",
+            id: toolUseId,
+            name: "EmitAnswer",
+            input: { text: "Answer." },
+          },
+        ],
+        input_tokens: 4,
+        output_tokens: 2,
+        stop_reason: "tool_use",
+      },
+    ],
+  });
+}
+
+function legacyTwoBlockSystemText(
+  systemBlocks: readonly CapturedSystemBlock[],
+  dynamicPrompt: string,
+): string {
+  return requestSystemText([
+    systemBlocks[0],
+    {
+      type: "text",
+      text: dynamicPrompt,
+    },
+  ]);
 }
 
 describe("runFinalizer emission tools", () => {
@@ -639,6 +693,129 @@ describe("runFinalizer emission tools", () => {
     expect(firstSystem[0]?.text).toBe(secondSystem[0]?.text);
     expect(firstSystem[1]?.text).toBe("Dynamic context one.\n\nEvidence ledger one.");
     expect(secondSystem[1]?.text).toBe("Dynamic context two.\n\nEvidence ledger two.");
+  });
+
+  it("keeps regeneration content in a trailing uncached block without changing wire text", async () => {
+    const llm = createAnsweringLlm("toolu_cached_regeneration");
+    const rollbackLlm = createAnsweringLlm("toolu_rollback_regeneration");
+    const stableSections = [
+      { blockId: "borg_session_reentry_continuity", text: "Continuity fixture." },
+      { blockId: "borg_evidence_ledger", text: "Ledger fixture." },
+      { blockId: "borg_additional_retrieval", text: "Retrieval fixture." },
+      { blockId: "borg_s2_plan", text: "Plan fixture." },
+    ];
+    const regenerationSection = {
+      blockId: "borg_commitment_regeneration_instruction",
+      text: "Regeneration fixture.",
+    };
+    const legacyDynamicPrompt = [
+      "Base dynamic prompt.",
+      ...stableSections.map((section) => section.text),
+      regenerationSection.text,
+    ].join("\n\n");
+
+    await runEmissionFinalizer(llm, tempDirs, {
+      additionalPromptSections: [...stableSections, regenerationSection],
+    });
+    await runEmissionFinalizer(rollbackLlm, tempDirs, {
+      additionalPromptSections: [...stableSections, regenerationSection],
+      finalizerDynamicPromptCacheEnabled: false,
+    });
+
+    const systemBlocks = llm.requests[0]?.system as readonly CapturedSystemBlock[];
+    const rollbackSystemBlocks = rollbackLlm.requests[0]?.system as readonly CapturedSystemBlock[];
+
+    expect(systemBlocks).toHaveLength(3);
+    expect(rollbackSystemBlocks).toHaveLength(2);
+    expect(systemBlocks[0]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+    expect(systemBlocks[1]?.cache_control).toBeUndefined();
+    expect(systemBlocks[1]?.text).toBe(
+      ["Base dynamic prompt.", ...stableSections.map((section) => section.text)].join("\n\n"),
+    );
+    expect(systemBlocks[1]?.text).not.toContain(regenerationSection.text);
+    expect(systemBlocks[2]).toEqual({
+      type: "text",
+      text: rollbackSystemBlocks[1]!.text.slice(systemBlocks[1]!.text.length),
+    });
+    expect(
+      systemBlocks
+        .slice(1)
+        .map((block) => block.text)
+        .join(""),
+    ).toBe(legacyDynamicPrompt);
+    expect(requestSystemText(systemBlocks)).toBe(requestSystemText(rollbackSystemBlocks));
+  });
+
+  it("omits the trailing block without regeneration content and preserves prior rendering", async () => {
+    const llm = createAnsweringLlm("toolu_cached_stable");
+    const stableSections = [
+      { blockId: "borg_session_reentry_continuity", text: "Continuity fixture." },
+      { blockId: "borg_evidence_ledger", text: "Ledger fixture." },
+      { blockId: "borg_additional_retrieval", text: "Retrieval fixture." },
+      { blockId: "borg_s2_plan", text: "Plan fixture." },
+    ];
+    const legacyDynamicPrompt = [
+      "Base dynamic prompt.",
+      ...stableSections.map((section) => section.text),
+    ].join("\n\n");
+
+    await runEmissionFinalizer(llm, tempDirs, {
+      additionalPromptSections: stableSections,
+    });
+
+    const systemBlocks = llm.requests[0]?.system as readonly CapturedSystemBlock[];
+
+    expect(systemBlocks).toHaveLength(2);
+    expect(systemBlocks[1]?.cache_control).toEqual({ type: "ephemeral", ttl: "5m" });
+    expect(
+      systemBlocks
+        .slice(1)
+        .map((block) => block.text)
+        .join(""),
+    ).toBe(legacyDynamicPrompt);
+    expect(requestSystemText(systemBlocks)).toBe(
+      legacyTwoBlockSystemText(systemBlocks, legacyDynamicPrompt),
+    );
+  });
+
+  it("restores the original two-block request when dynamic prompt caching is disabled", async () => {
+    const llm = createAnsweringLlm("toolu_uncached_regeneration");
+    const regenerationSection = {
+      blockId: "borg_commitment_regeneration_instruction",
+      text: "Regeneration fixture.",
+    };
+    const legacyDynamicPrompt = ["Base dynamic prompt.", regenerationSection.text].join("\n\n");
+
+    await runEmissionFinalizer(llm, tempDirs, {
+      additionalPromptSections: [regenerationSection],
+      finalizerDynamicPromptCacheEnabled: false,
+    });
+
+    const systemBlocks = llm.requests[0]?.system as readonly CapturedSystemBlock[];
+
+    expect(systemBlocks).toHaveLength(2);
+    expect(systemBlocks[0]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+    expect(systemBlocks[1]).toEqual({
+      type: "text",
+      text: legacyDynamicPrompt,
+    });
+    expect(systemBlocks.some((block) => block.cache_control?.ttl === "5m")).toBe(false);
+    expect(requestSystemText(systemBlocks)).toBe(
+      legacyTwoBlockSystemText(systemBlocks, legacyDynamicPrompt),
+    );
+  });
+
+  it("pins regeneration block ids to the contiguous highest-order registry tail", () => {
+    const finalizerDynamicBlockIds = promptSurfaceBlocksForSurface(
+      PROMPT_SURFACES.finalizerDynamicSystem,
+    ).map((block) => block.id);
+    const tailStart =
+      finalizerDynamicBlockIds.length - FINALIZER_REGENERATION_PROMPT_BLOCK_IDS.length;
+
+    expect(tailStart).toBeGreaterThanOrEqual(0);
+    expect(finalizerDynamicBlockIds.slice(tailStart)).toEqual([
+      ...FINALIZER_REGENERATION_PROMPT_BLOCK_IDS,
+    ]);
   });
 
   it("treats free text without an emission tool as a protocol failure", async () => {

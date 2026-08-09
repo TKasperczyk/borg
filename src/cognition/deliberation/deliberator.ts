@@ -250,6 +250,7 @@ function buildFinalizerCallOptions(
     model: options.cognitionModel,
     baseSystemPrompt: context.baseSystemPrompt,
     cacheableSystemPrompt: context.cacheableSystemPrompt,
+    finalizerDynamicPromptCacheEnabled: options.finalizerDynamicPromptCacheEnabled ?? true,
     initialMessages,
     userEntryId: context.context.userEntryId,
     maxTokens: context.maxTokens,

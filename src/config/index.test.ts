@@ -163,6 +163,7 @@ describe("config", () => {
       enabled: true,
       cooldownTurns: 5,
     });
+    expect(config.deliberation.finalizerDynamicPromptCacheEnabled).toBe(true);
     expect(config.commitments).toEqual({
       enforce: {
         regenerateBeforeSuppress: true,
@@ -251,6 +252,16 @@ describe("config", () => {
 
   it("derives exported defaults from schema defaults", () => {
     expect(configSchema.parse({})).toEqual(DEFAULT_CONFIG);
+  });
+
+  it("allows the finalizer dynamic prompt cache breakpoint to be disabled", () => {
+    const config = configSchema.parse({
+      deliberation: {
+        finalizerDynamicPromptCacheEnabled: false,
+      },
+    });
+
+    expect(config.deliberation.finalizerDynamicPromptCacheEnabled).toBe(false);
   });
 
   it("loads frame-anomaly peer channel source types from config", () => {

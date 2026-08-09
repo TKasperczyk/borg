@@ -843,6 +843,7 @@ describe("deliberator", () => {
     const system = systemBlocks.map((block) => block.text).join("\n\n");
     const finalizerInstructions = finalizerInstructionPrefix(llm.requests[0]?.system);
     expect(systemBlocks[0]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+    expect(systemBlocks[1]?.cache_control).toEqual({ type: "ephemeral", ttl: "5m" });
     expect(finalizerInstructions).toContain(
       "I call exactly one of EmitAnswer, EmitObserve, EmitNoOutput, and EmitSelfReport",
     );
@@ -1563,7 +1564,14 @@ describe("deliberator", () => {
         }),
       ],
     });
-    const deliberator = createDeliberator(llm, tempDirs);
+    const deliberator = createDeliberator(llm, tempDirs, {
+      cognitionThinking: {
+        enabled: true,
+        mode: "adaptive",
+        effort: "high",
+        budget_tokens: 2048,
+      },
+    });
 
     const result = await deliberator.run(
       simpleDeliberationContext({ turnId: "turn-commitment-regenerate" }),
@@ -1591,6 +1599,20 @@ describe("deliberator", () => {
     expect(requestSystemText(llm.requests[1]?.system)).toContain(
       "<commitment_revision>Revise the answer to honor the boundary.</commitment_revision>",
     );
+    const initialSystemBlocks = llm.requests[0]?.system as readonly {
+      text: string;
+      cache_control?: unknown;
+    }[];
+    const regenerateSystemBlocks = llm.requests[1]?.system as readonly {
+      text: string;
+      cache_control?: unknown;
+    }[];
+    expect(initialSystemBlocks[1]?.cache_control).toEqual({ type: "ephemeral", ttl: "5m" });
+    expect(regenerateSystemBlocks[1]?.cache_control).toBeUndefined();
+    expect(llm.converseRequests[0]?.thinking).toEqual({ type: "adaptive" });
+    expect(llm.converseRequests[0]?.effort).toBe("high");
+    expect(llm.converseRequests[1]?.thinking).toBeUndefined();
+    expect(llm.converseRequests[1]?.effort).toBeUndefined();
     // The initial attempt carried no trailing anchor (its message array is unchanged).
     expect(requestLastMessageText(llm.requests[0]?.messages)).not.toContain(
       "I emit exactly one terminal emission tool now",

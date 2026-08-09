@@ -143,7 +143,8 @@ const EMIT_CONTINUE_THOUGHT_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_CONTINUE_THOUGHT_FINALIZER_TOOL_NAME,
   description:
     "I append a private carryover thought to the self-private journal so it is available to a later autonomous wake. I put the complete self-private thought in text. This is not user-facing, has no audience, makes no disclosure decision, and does not post a message.",
-  menuSummary: "Append the carryover thought to the private journal and end the autonomous interval.",
+  menuSummary:
+    "Append the carryover thought to the private journal and end the autonomous interval.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
   inputSchema: emitContinueThoughtToolInputSchema,
@@ -279,12 +280,9 @@ function buildEmissionToolInstructions(
     available.has(EMIT_OBSERVE_FINALIZER_TOOL_NAME) &&
     available.has(EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME)
   ) {
-    return [
-      contractPreamble,
-      "",
-      EMIT_OBSERVE_FINALIZER_INSTRUCTION,
-      ...noOutputInstructions,
-    ].join("\n");
+    return [contractPreamble, "", EMIT_OBSERVE_FINALIZER_INSTRUCTION, ...noOutputInstructions].join(
+      "\n",
+    );
   }
 
   if (availableEmissionNames.length === EMISSION_FINALIZER_TOOL_NAMES.length) {
@@ -354,6 +352,15 @@ function buildEmissionFinalizerInstructions(
 // TURN_PLAN_TOOL because there was no plausible content path; here there is.
 const FINALIZER_STATIC_PREFIX_CACHE_CONTROL = { type: "ephemeral", ttl: "1h" } as const;
 
+// The large dynamic prefix repeats within a turn, usually inside five minutes.
+// A 1h marker charges a higher write premium and loses on turns without a repeat.
+const FINALIZER_DYNAMIC_PREFIX_CACHE_CONTROL = { type: "ephemeral", ttl: "5m" } as const;
+
+export const FINALIZER_REGENERATION_PROMPT_BLOCK_IDS = [
+  "borg_commitment_regeneration_instruction",
+  "finalizer_invalid_tool_retry_instruction",
+] as const;
+
 export type CacheableFinalizerSystemPrompt = {
   staticPrefix: string;
   dynamicContent: string;
@@ -374,6 +381,7 @@ export type RunFinalizerOptions = {
   path: "system_1" | "system_2";
   additionalPromptSections?: readonly PromptSurfaceAdditionalSection[];
   cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
+  finalizerDynamicPromptCacheEnabled?: boolean;
   allowedEmissions?: readonly EmissionToolName[];
   outboundToolAvailable?: boolean;
   nonTerminalTools?: readonly ToolDefinition[];
@@ -433,6 +441,36 @@ function buildDynamicSystemPrompt(options: RunFinalizerOptions): string {
   return renderPromptSurface(PROMPT_SURFACES.finalizerDynamicSystem, renderContext) ?? "";
 }
 
+function isFinalizerRegenerationPromptBlock(blockId: string): boolean {
+  return FINALIZER_REGENERATION_PROMPT_BLOCK_IDS.some(
+    (regenerationBlockId) => regenerationBlockId === blockId,
+  );
+}
+
+function buildDynamicSystemPromptParts(options: RunFinalizerOptions): {
+  stable: string;
+  regeneration: string | null;
+} {
+  const full = buildDynamicSystemPrompt(options);
+  const stableOptions =
+    options.additionalPromptSections === undefined
+      ? options
+      : {
+          ...options,
+          additionalPromptSections: options.additionalPromptSections.filter(
+            (section) => !isFinalizerRegenerationPromptBlock(section.blockId),
+          ),
+        };
+  const stable = buildDynamicSystemPrompt(stableOptions);
+
+  return {
+    stable,
+    // Content blocks are forwarded verbatim, so retain the surface renderer's exact
+    // boundary bytes on the extracted suffix.
+    regeneration: full === stable ? null : full.slice(stable.length),
+  };
+}
+
 function createFinalizerPromptSurfaceRenderContext(
   options: RunFinalizerOptions,
 ): PromptSurfaceRenderContext {
@@ -480,20 +518,46 @@ function buildStaticSystemPrompt(options: RunFinalizerOptions): string {
 }
 
 function buildSystemPrompt(options: RunFinalizerOptions): LLMConverseOptions["system"] {
-  const dynamicPrompt = buildDynamicSystemPrompt(options);
+  const staticPromptBlock = {
+    type: "text" as const,
+    text: buildStaticSystemPrompt(options),
+    ...(options.cacheableSystemPrompt === undefined
+      ? {}
+      : { cache_control: FINALIZER_STATIC_PREFIX_CACHE_CONTROL }),
+  };
+
+  if (options.finalizerDynamicPromptCacheEnabled === false) {
+    return [
+      staticPromptBlock,
+      {
+        type: "text",
+        text: buildDynamicSystemPrompt(options),
+      },
+    ];
+  }
+
+  const dynamicPrompt = buildDynamicSystemPromptParts(options);
 
   return [
+    staticPromptBlock,
     {
       type: "text",
-      text: buildStaticSystemPrompt(options),
-      ...(options.cacheableSystemPrompt === undefined
-        ? {}
-        : { cache_control: FINALIZER_STATIC_PREFIX_CACHE_CONTROL }),
+      text: dynamicPrompt.stable,
+      // Regeneration is a one-shot whose reasoning parameters differ from the call
+      // that populated the prefix, so another five-minute write cannot amortize.
+      ...(dynamicPrompt.regeneration === null
+        ? { cache_control: FINALIZER_DYNAMIC_PREFIX_CACHE_CONTROL }
+        : {}),
     },
-    {
-      type: "text",
-      text: dynamicPrompt,
-    },
+    // Keep one-shot instructions outside the reusable dynamic prefix.
+    ...(dynamicPrompt.regeneration === null
+      ? []
+      : [
+          {
+            type: "text" as const,
+            text: dynamicPrompt.regeneration,
+          },
+        ]),
   ];
 }
 
