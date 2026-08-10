@@ -91,6 +91,7 @@ function createHarnessToolDispatcher(
     semanticGraph,
     commitmentRepository: harness.commitmentRepository,
     entityRepository: harness.entityRepository,
+    goalsRepository: harness.goalsRepository,
     identityService: harness.identityService,
     skillRepository: harness.skillRepository,
     trainOfThoughtRepository: new TrainOfThoughtRepository({ db: harness.db, clock }),

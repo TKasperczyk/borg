@@ -13,6 +13,7 @@ export {
   createCommitmentsListTool,
   createEpisodicRecentTool,
   createEpisodicSearchTool,
+  createGoalsRetireTool,
   createIdentityEventsListForCognitionTool,
   createJournalAppendTool,
   createOpenQuestionsCreateTool,

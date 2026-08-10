@@ -9,8 +9,8 @@ import { ManualClock } from "../util/clock.js";
 import { createEntityId, createEpisodeId, DEFAULT_SESSION_ID } from "../util/ids.js";
 import { buildToolDispatcher } from "./tools-setup.js";
 
-describe("buildToolDispatcher semantic walk", () => {
-  it("batches disclosure lookup across every returned step and edge", async () => {
+describe("buildToolDispatcher", () => {
+  it("batches semantic disclosure lookup and pins goal-retirement registration", async () => {
     const audienceEntityId = createEntityId();
     const privateEpisode = createEpisodeFixture({
       audience_entity_id: audienceEntityId,
@@ -57,6 +57,7 @@ describe("buildToolDispatcher semantic walk", () => {
       semanticGraph: { walk: vi.fn(async () => steps) } as never,
       commitmentRepository: {} as never,
       entityRepository: {} as never,
+      goalsRepository: { retire: vi.fn() } as never,
       identityService: {} as never,
       skillRepository: {} as never,
       trainOfThoughtRepository: {} as never,
@@ -79,5 +80,14 @@ describe("buildToolDispatcher semantic walk", () => {
       "relationship_private",
       "unknown",
     ]);
+
+    const goalsRetire = dispatcher.getDefinition("tool.goals.retire");
+
+    expect(goalsRetire).toMatchObject({
+      name: "tool.goals.retire",
+      menuSummary: "Retire one of my own goals as done/superseded, with my reason.",
+      allowedOrigins: ["autonomous", "deliberator"],
+      writeScope: "write",
+    });
   });
 });

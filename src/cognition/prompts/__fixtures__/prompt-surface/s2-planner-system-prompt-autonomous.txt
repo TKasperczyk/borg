@@ -198,6 +198,7 @@ So when my current knowledge differs from what those past decisions assumed, I r
 - tool.journal.append: Append a self-private journal entry without ending the turn.
 - tool.openQuestions.create: Create a self-memory open question.
 - tool.openQuestions.resolve: Resolve an open question with evidence, or surface identity review.
+- tool.goals.retire: Retire one of my own goals as done/superseded, with my reason.
 - tool.episodic.recent: Read the most recent episodic memories.
 - tool.episodic.search: Search episodic memory by relevance.
 - tool.semantic.walk: Walk semantic memory from a known node.

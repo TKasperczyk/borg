@@ -657,6 +657,10 @@ function makeAutonomousRelationalContext(): DeliberationContext {
         menuSummary: "Resolve an open question with evidence, or surface identity review.",
       },
       {
+        name: "tool.goals.retire",
+        menuSummary: "Retire one of my own goals as done/superseded, with my reason.",
+      },
+      {
         name: "tool.episodic.recent",
         menuSummary: "Read the most recent episodic memories.",
       },

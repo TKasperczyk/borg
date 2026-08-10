@@ -177,6 +177,7 @@ export async function openBorgDependencies(
       semanticGraph: repositories.semanticGraph,
       commitmentRepository: repositories.commitmentRepository,
       entityRepository: repositories.entityRepository,
+      goalsRepository: repositories.goalsRepository,
       identityService: repositories.identityService,
       skillRepository: repositories.skillRepository,
       trainOfThoughtRepository: repositories.trainOfThoughtRepository,

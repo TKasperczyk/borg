@@ -337,6 +337,7 @@ describe("runFinalizer emission tools", () => {
       registeredTools: [
         fakeTool("tool.unlisted.autonomous", ["autonomous"]),
         fakeTool("tool.openQuestions.create", ["autonomous", "deliberator"]),
+        fakeTool("tool.goals.retire", ["autonomous", "deliberator"]),
         fakeTool("tool.journal.append", ["autonomous"]),
         fakeTool("tool.episodic.search", ["autonomous", "deliberator"]),
         fakeTool("tool.promptSurface.changes", ["autonomous"]),
@@ -351,6 +352,7 @@ describe("runFinalizer emission tools", () => {
       "EmitContinueThought",
       "tool.journal.append",
       "tool.openQuestions.create",
+      "tool.goals.retire",
       "tool.episodic.search",
       "tool.promptSurface.changes",
     ]);

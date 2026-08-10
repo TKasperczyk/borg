@@ -70,6 +70,22 @@ export type GoalStatusUpdateOptions = IdentityCasOptions & {
   canonicalizedByArtifactEntryId?: SharedStateEntryId | null;
 };
 
+export type GoalRetirementResult =
+  | {
+      status: "applied";
+      goal: GoalRecord;
+    }
+  | {
+      status: "no_op";
+      reason: "missing";
+      goal: null;
+    }
+  | {
+      status: "no_op";
+      reason: "not_active";
+      goal: GoalRecord;
+    };
+
 export class GoalsRepository {
   private readonly clock: Clock;
 
@@ -324,6 +340,49 @@ export class GoalsRepository {
       goal: mapGoalRow(row),
       due_at: Number(row.autonomy_due_at),
     }));
+  }
+
+  retire(goalId: GoalId, reason: string, provenance: Provenance): GoalRetirementResult {
+    return this.runGoalWrite(() => {
+      const current = this.get(goalId);
+
+      if (current === null) {
+        return {
+          status: "no_op",
+          reason: "missing",
+          goal: null,
+        };
+      }
+
+      if (current.status !== "active") {
+        return {
+          status: "no_op",
+          reason: "not_active",
+          goal: current,
+        };
+      }
+
+      const note = `[${this.clock.now()}] ${reason}`;
+      const progressNotes =
+        current.progress_notes === null ? note : `${current.progress_notes}\n${note}`;
+
+      return {
+        status: "applied",
+        goal: this.update(
+          goalId,
+          {
+            status: "abandoned",
+            progress_notes: progressNotes,
+            provenance,
+          },
+          provenance,
+          {
+            reason,
+            expectedVersion: expectedRecordVersion(current),
+          },
+        ),
+      };
+    });
   }
 
   updateStatus(

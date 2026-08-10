@@ -6,6 +6,7 @@ export const AUTONOMOUS_INTERIOR_FINALIZER_TOOL_NAMES = [
   "tool.journal.append",
   "tool.openQuestions.create",
   "tool.openQuestions.resolve",
+  "tool.goals.retire",
   "tool.episodic.recent",
   "tool.episodic.search",
   "tool.semantic.walk",
