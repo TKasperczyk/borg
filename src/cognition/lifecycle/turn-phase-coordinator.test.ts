@@ -58,30 +58,39 @@ const DEPLOYMENT_WINDOW_DIRECTIVE_FAMILY = "deployment_window";
 const RELEASE_FREEZE_DIRECTIVE_FAMILY = "release_freeze";
 
 describe("cognitionInputForTurnInput", () => {
-  it("anchors autonomous cognition on structured prior self thought when present", () => {
-    expect(
-      cognitionInputForTurnInput({
-        userMessage: "",
-        autonomyTrigger: {
-          source_name: "scheduled_reflection",
-          source_type: "trigger",
-          event_id: "scheduled-reflection:1000",
-          sort_ts: 1_000,
-          payload: {
-            prior_self_thought: {
-              text: "Continue from the private question about continuity.",
-              disclosure: "self-private",
-              disclosure_label: {
-                disclosure_class: "self_private",
-                origin_audience_entity_ids: [],
-                private_to_entity_ids: [],
-                public_to_entity_ids: [],
-              },
+  it("anchors autonomous cognition on prior self thought and keeps the wake context after it", () => {
+    const input = cognitionInputForTurnInput({
+      userMessage: "",
+      autonomyTrigger: {
+        source_name: "scheduled_reflection",
+        source_type: "trigger",
+        event_id: "scheduled-reflection:1000",
+        sort_ts: 1_000,
+        payload: {
+          prior_self_thought: {
+            text: "Continue from the private question about continuity.",
+            disclosure: "self-private",
+            disclosure_label: {
+              disclosure_class: "self_private",
+              origin_audience_entity_ids: [],
+              private_to_entity_ids: [],
+              public_to_entity_ids: [],
             },
           },
+          reason: "goal_followup_due",
         },
-      }),
-    ).toBe("Continue from the private question about continuity.");
+      },
+    });
+
+    // The journal anchor leads; the structured wake context follows instead of
+    // being replaced, with prior_self_thought hoisted out of the rendered payload.
+    expect(input.startsWith("Continue from the private question about continuity.")).toBe(true);
+    expect(input).toContain("source_name: scheduled_reflection");
+    expect(input).toContain("goal_followup_due");
+    expect(input.indexOf("Continue from the private question")).toBeLessThan(
+      input.indexOf("source_name: scheduled_reflection"),
+    );
+    expect(input).not.toContain("prior_self_thought");
   });
 
   it("falls back to formatted trigger context when prior self thought is absent or empty", () => {

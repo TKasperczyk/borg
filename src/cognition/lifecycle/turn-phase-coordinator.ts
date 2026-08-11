@@ -108,10 +108,31 @@ function priorSelfThoughtText(context: AutonomyTriggerContext | null | undefined
 export function cognitionInputForTurnInput(
   turnInput: Pick<TurnPhaseInput, "autonomyTrigger" | "userMessage">,
 ): string {
-  return turnInput.autonomyTrigger === null || turnInput.autonomyTrigger === undefined
-    ? turnInput.userMessage
-    : (priorSelfThoughtText(turnInput.autonomyTrigger) ??
-        formatAutonomyTriggerContext(turnInput.autonomyTrigger));
+  const trigger = turnInput.autonomyTrigger;
+
+  if (trigger === null || trigger === undefined) {
+    return turnInput.userMessage;
+  }
+
+  const priorThought = priorSelfThoughtText(trigger);
+
+  if (priorThought === null) {
+    return formatAutonomyTriggerContext(trigger);
+  }
+
+  // Anchor autonomous cognition on where the thinking left off, and keep the
+  // structured wake context (goal ids, reasons) the anchor used to replace --
+  // now that the journal reaches every wake and not only reflection ones.
+  const { prior_self_thought: _hoisted, ...remainingPayload } = trigger.payload;
+
+  return [
+    priorThought,
+    "",
+    formatAutonomyTriggerContext({
+      ...trigger,
+      payload: remainingPayload,
+    }),
+  ].join("\n");
 }
 
 function previewItems(items: readonly string[], limit = 4): string {

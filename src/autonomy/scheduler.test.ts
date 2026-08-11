@@ -529,6 +529,95 @@ describe("AutonomyScheduler", () => {
     });
   });
 
+  it("merges prior self thought into every autonomous wake payload, not only reflection", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const trainOfThoughtRepository = new TrainOfThoughtRepository({
+      db: harness.db,
+      clock,
+    });
+    const selfEntityId = harness.entityRepository.resolve("self", {
+      kind: "self",
+      provenance: "assistant_seeded",
+    });
+    trainOfThoughtRepository.upsert({
+      text: "Third retire tonight, and it worked again.",
+      selfEntityId,
+    });
+    const turnRunner = {
+      run: vi.fn().mockResolvedValue(
+        createStructuralTurnResult({
+          emissionKind: "continue_thought",
+        }),
+      ),
+    };
+    const baseSource = createTestDueSource();
+    const passthroughSource: AutonomyWakeSource = {
+      ...baseSource,
+      buildTurn(event) {
+        return {
+          audience: "self",
+          stakes: "low",
+          userMessage: "",
+          autonomyTrigger: {
+            source_name: event.sourceName,
+            source_type: event.sourceType,
+            event_id: event.id,
+            sort_ts: event.sortTs,
+            payload: event.payload,
+          },
+        };
+      },
+    };
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      watermarkRepository: new StreamWatermarkRepository({
+        db: harness.db,
+        clock,
+      }),
+      turnOrchestrator: turnRunner,
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({
+            dataDir: harness.tempDir,
+            sessionId,
+            clock,
+          }),
+        clock,
+      }),
+      trainOfThoughtRepository,
+      sources: [passthroughSource],
+    });
+
+    await scheduler.tick();
+
+    const turnInput = turnRunner.run.mock.calls[0]?.[0];
+    expect(turnInput?.autonomyTrigger?.source_name).toBe("goal_followup_due");
+    expect(turnInput?.autonomyTrigger?.payload).toMatchObject({
+      goal_id: "goal_aaaaaaaaaaaaaaaa",
+      prior_self_thought: {
+        text: "Third retire tonight, and it worked again.",
+        self_entity_id: selfEntityId,
+        disclosure_label: {
+          disclosure_class: "self_private",
+        },
+      },
+    });
+  });
+
   it("records a self decision only after a successful autonomous turn", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({

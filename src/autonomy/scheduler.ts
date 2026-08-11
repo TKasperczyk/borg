@@ -1230,6 +1230,48 @@ export class AutonomyScheduler {
         toolError: string;
       }
   > {
+    const prepared = await this.prepareSourceEvent(dueEvent);
+
+    if ("toolError" in prepared) {
+      return prepared;
+    }
+
+    // The journal is the only place the entity narrates its own acts to itself,
+    // and it is write-only on live turns. Carry the latest entry into every
+    // autonomous wake rather than one trigger kind, so a wake that acts can see
+    // what the previous acting wake recorded.
+    const priorSelfThought = this.options.trainOfThoughtRepository?.get() ?? null;
+
+    if (priorSelfThought === null) {
+      return prepared;
+    }
+
+    return {
+      source: prepared.source,
+      event: {
+        ...prepared.event,
+        payload: {
+          ...prepared.event.payload,
+          prior_self_thought: {
+            text: priorSelfThought.text,
+            updated_at: priorSelfThought.updated_at,
+            self_entity_id: priorSelfThought.self_entity_id,
+            ...memoryDisclosurePayloadFields(selfPrivateMemoryDisclosureLabel()),
+          },
+        },
+      },
+    };
+  }
+
+  private async prepareSourceEvent(dueEvent: DueEvent): Promise<
+    | {
+        source: AutonomyWakeSource;
+        event: DueEvent;
+      }
+    | {
+        toolError: string;
+      }
+  > {
     const source = this.options.sources.find((entry) => entry.name === dueEvent.sourceName);
 
     if (source === undefined) {
@@ -1335,8 +1377,6 @@ export class AutonomyScheduler {
         const output = result.output as {
           events: unknown[];
         };
-        const priorSelfThought = this.options.trainOfThoughtRepository?.get() ?? null;
-
         return {
           source,
           event: {
@@ -1344,16 +1384,6 @@ export class AutonomyScheduler {
             payload: {
               ...dueEvent.payload,
               recent_identity_events: output.events,
-              ...(priorSelfThought === null
-                ? {}
-                : {
-                    prior_self_thought: {
-                      text: priorSelfThought.text,
-                      updated_at: priorSelfThought.updated_at,
-                      self_entity_id: priorSelfThought.self_entity_id,
-                      ...memoryDisclosurePayloadFields(selfPrivateMemoryDisclosureLabel()),
-                    },
-                  }),
             },
           },
         };
