@@ -1547,6 +1547,45 @@ describe("demo server", () => {
     });
   });
 
+  it("keeps a connector-owned session's source type when a demo turn posts into it", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-peer-session-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const peerSessionId = createSessionId();
+
+    // A connector owns this session and its source_type is a trust key: peer-channel
+    // frame tolerance and the internal-identifier guard exemption both read it.
+    borg.sessions.ensure({
+      session_id: peerSessionId,
+      source_type: "claude_code",
+      source_external_id: "main",
+      source_url: null,
+      label: "peer channel",
+      audience_label: "claude_code_dm:main",
+      audience_entity_id: null,
+      conversation_kind: "dm",
+    });
+
+    const turn = await app.request("/api/turn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: "hello peer",
+        external_message_id: "demo-peer-1",
+        audience: "claude_code_dm:main",
+        session: peerSessionId,
+      }),
+    });
+    expect(turn.status, await turn.clone().text()).toBe(200);
+    expect(borg.sessions.get(peerSessionId)).toMatchObject({
+      session_id: peerSessionId,
+      source_type: "claude_code",
+      source_external_id: "main",
+    });
+  });
+
   it("enriches stream entries consistently for REST and live append frames", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-stream-labels-"));
     tempDirs.push(tempDir);
