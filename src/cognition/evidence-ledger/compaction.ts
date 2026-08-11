@@ -6,6 +6,7 @@ import { selfPrivateMemoryDisclosureLabel } from "../../memory/common/disclosure
 import { allSectionIds, emptySectionCountRecord } from "./budget.js";
 import { estimateEvidenceLedgerTokens, cloneLedgerWithSections } from "./ledger-copy.js";
 import { dedupeEvidenceLedgerByProvenance } from "./provenance-dedupe.js";
+import { reconcileAutobiographicalRecallCapMetadata } from "./autobiographical-recall-cap-metadata.js";
 import { renderSection } from "./section-rendering.js";
 import {
   appendMemoryDisclosureState,
@@ -723,19 +724,26 @@ export function compactEvidenceLedger(
   );
   const preDedupeTokens = estimateEvidenceLedgerTokens(ledger);
   const deduped = dedupeEvidenceLedgerByProvenance(ledger);
-  const postDedupeTokens = estimateEvidenceLedgerTokens(deduped.ledger);
-  const states = compactFullLedgerSections(deduped.ledger, options);
+  const dedupedLedger = reconcileAutobiographicalRecallCapMetadata({
+    factLedger: ledger,
+    renderedLedger: deduped.ledger,
+  });
+  const postDedupeTokens = estimateEvidenceLedgerTokens(dedupedLedger);
+  const states = compactFullLedgerSections(dedupedLedger, options);
   const preCapTokens = postDedupeTokens;
-  const postSectionCapTokens = totalFullLedgerPromptTokens(deduped.ledger, states);
+  const postSectionCapTokens = totalFullLedgerPromptTokens(dedupedLedger, states);
   let droppedSections: EvidenceLedgerSectionId[] = [];
 
   if (postSectionCapTokens > hardCapTokens) {
-    droppedSections = dropFullLedgerSectionsToHardCap(deduped.ledger, states, hardCapTokens);
+    droppedSections = dropFullLedgerSectionsToHardCap(dedupedLedger, states, hardCapTokens);
   } else if (postSectionCapTokens > targetTokens) {
-    trimFullLedgerToTarget(deduped.ledger, states, targetTokens);
+    trimFullLedgerToTarget(dedupedLedger, states, targetTokens);
   }
 
-  const compactedLedger = materializeFullLedgerStates(deduped.ledger, states);
+  const compactedLedger = reconcileAutobiographicalRecallCapMetadata({
+    factLedger: dedupedLedger,
+    renderedLedger: materializeFullLedgerStates(dedupedLedger, states),
+  });
   const postCapTokens = estimateEvidenceLedgerTokens(compactedLedger);
   const omittedEntryCountsBySection = emptySectionCountRecord();
 

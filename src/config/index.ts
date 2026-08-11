@@ -57,6 +57,14 @@ const frameAnomalyConfigSchema = z
   })
   .strict()
   .prefault({});
+const internalIdentifierGuardConfigSchema = z
+  .object({
+    // Empty unless the operator authorizes a source whose audience can inspect
+    // and meaningfully use Borg substrate identifiers.
+    substratePrivilegedSourceTypes: z.array(sessionSourceTypeSchema).default([]),
+  })
+  .strict()
+  .prefault({});
 const affectiveConfigSchema = z
   .preprocess(
     normalizeLlmEnabledAlias,
@@ -328,6 +336,7 @@ const configBaseSchema = z.object({
   host_capabilities: z.string().min(1).default(DEFAULT_HOST_CAPABILITIES_SECTION),
   perception: perceptionConfigSchema,
   frameAnomaly: frameAnomalyConfigSchema,
+  internalIdentifierGuard: internalIdentifierGuardConfigSchema,
   affective: affectiveConfigSchema,
   embedding: z
     .object({
@@ -2082,6 +2091,11 @@ export function redactConfig(config: Config): Config {
     },
     frameAnomaly: {
       peerChannelSourceTypes: [...config.frameAnomaly.peerChannelSourceTypes],
+    },
+    internalIdentifierGuard: {
+      substratePrivilegedSourceTypes: [
+        ...config.internalIdentifierGuard.substratePrivilegedSourceTypes,
+      ],
     },
     affective: {
       ...config.affective,

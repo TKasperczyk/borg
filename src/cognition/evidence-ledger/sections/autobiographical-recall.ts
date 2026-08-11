@@ -1,4 +1,5 @@
 import type { AutobiographicalRecallEvidenceItem } from "../../autobiographical-recall.js";
+import { autobiographicalRecallCapStateMetadata } from "../autobiographical-recall-cap-metadata.js";
 import type { BuilderSectionContext } from "../builder-context.js";
 import {
   appendMemoryDisclosureState,
@@ -67,6 +68,7 @@ export function addAutobiographicalRecallSection(context: BuilderSectionContext)
         source_stream_ids: [...item.sourceStreamEntryIds],
         source_episode_ids: [...item.sourceEpisodeIds],
         ...item.metadata,
+        ...autobiographicalRecallCapStateMetadata(item.capMetadata),
       },
       disclosureLabel: item.disclosureLabel,
       currentAudienceEntityId: context.input.audienceEntityId,

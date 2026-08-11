@@ -43,6 +43,9 @@ export type FrameAnomalyPhaseResult = {
 const TRUSTED_PEER_CHANNEL_FRAME_ANOMALY_KINDS: ReadonlySet<FrameAnomalyKind> = new Set([
   "assistant_self_claim_in_user_role",
   "roleplay_inversion",
+  // A machine peer may truthfully claim authorship of earlier user-role dialogue.
+  // On non-peer channels this kind still guards against gaslighting about who spoke.
+  "agent_authorship_claim",
 ]);
 
 function isTrustedPeerChannelFrameAnomalyKind(kind: FrameAnomalyKind): boolean {

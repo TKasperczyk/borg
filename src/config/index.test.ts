@@ -53,6 +53,7 @@ describe("config", () => {
     expect(config.host_capabilities).toContain("Proactive outbound messaging");
     expect(config.perception.llmEnabled).toBe(true);
     expect(config.frameAnomaly.peerChannelSourceTypes).toEqual(["kira"]);
+    expect(config.internalIdentifierGuard.substratePrivilegedSourceTypes).toEqual([]);
     expect(config.affective.llmEnabled).toBe(true);
     expect(config.episodic.salienceGateEnabled).toBe(true);
     expect(config.offline.curator.episodeDecayIntervalMs).toBe(24 * 60 * 60 * 1_000);
@@ -272,6 +273,19 @@ describe("config", () => {
     });
 
     expect(config.frameAnomaly.peerChannelSourceTypes).toEqual(["kira", "peerlink"]);
+  });
+
+  it("loads substrate-privileged source types for the internal-identifier guard", () => {
+    const config = configSchema.parse({
+      internalIdentifierGuard: {
+        substratePrivilegedSourceTypes: ["claude_code", "peerlink"],
+      },
+    });
+
+    expect(config.internalIdentifierGuard.substratePrivilegedSourceTypes).toEqual([
+      "claude_code",
+      "peerlink",
+    ]);
   });
 
   it("accepts deprecated llm fallback aliases as llmEnabled config", () => {
@@ -975,6 +989,11 @@ describe("config", () => {
   it("redacts secrets for display", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      internalIdentifierGuard: {
+        substratePrivilegedSourceTypes: ["claude_code"],
+      },
+    });
 
     const config = loadConfig({
       dataDir: tempDir,
@@ -986,6 +1005,9 @@ describe("config", () => {
     expect(redactConfig(config)).toMatchObject({
       frameAnomaly: {
         peerChannelSourceTypes: ["kira"],
+      },
+      internalIdentifierGuard: {
+        substratePrivilegedSourceTypes: ["claude_code"],
       },
       embedding: {
         apiKey: "[REDACTED]",

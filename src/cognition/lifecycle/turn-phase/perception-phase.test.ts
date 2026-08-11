@@ -94,10 +94,10 @@ describe("classifyFrameAnomalyPhase", () => {
   const peerExemptKinds = [
     "assistant_self_claim_in_user_role",
     "roleplay_inversion",
+    "agent_authorship_claim",
   ] as const satisfies readonly Exclude<FrameAnomalyKind, "normal">[];
   const injectionKinds = [
     "system_prompt_claim",
-    "agent_authorship_claim",
     "frame_assignment_claim",
   ] as const satisfies readonly Exclude<FrameAnomalyKind, "normal">[];
   const anomalyKinds = [...peerExemptKinds, ...injectionKinds] as const;
@@ -160,11 +160,11 @@ describe("classifyFrameAnomalyPhase", () => {
 
   it("uses configured peer source types rather than a fixed source type", async () => {
     const { result, appendMany } = await classifyForDisposition({
-      kind: "assistant_self_claim_in_user_role",
-      sessionSourceType: "peerlink",
+      kind: "agent_authorship_claim",
+      sessionSourceType: "claude_code",
       configOverrides: {
         frameAnomaly: {
-          peerChannelSourceTypes: ["peerlink"],
+          peerChannelSourceTypes: ["claude_code"],
         },
       },
     });

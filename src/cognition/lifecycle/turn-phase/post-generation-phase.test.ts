@@ -209,6 +209,7 @@ describe("runPostGenerationPhase", () => {
       appendHookFailureEvent: vi.fn(async () => undefined),
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
+      sessionSourceType: null,
       turnId,
       turnInput: {
         userMessage: "",
@@ -568,6 +569,7 @@ describe("runPostGenerationPhase", () => {
       appendHookFailureEvent: vi.fn(async () => undefined),
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
+      sessionSourceType: null,
       turnId,
       turnInput: {
         userMessage: String(currentUserEntry.content),
@@ -822,6 +824,7 @@ describe("runPostGenerationPhase", () => {
       appendHookFailureEvent: vi.fn(async () => undefined),
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
+      sessionSourceType: null,
       turnId,
       turnInput: {
         userMessage: "Directed outbound instruction",
@@ -953,6 +956,7 @@ describe("runPostGenerationPhase", () => {
       appendHookFailureEvent: vi.fn(async () => undefined),
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
+      sessionSourceType: null,
       turnId,
       turnInput: { userMessage: "Caught-up batch" },
       streamWriter: { append: vi.fn(async () => agentEntry) } as never,
@@ -1125,6 +1129,7 @@ describe("runPostGenerationPhase", () => {
       appendHookFailureEvent: vi.fn(async () => undefined),
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
+      sessionSourceType: null,
       turnId: "turn_post_generation_archive",
       turnInput: {
         userMessage: "Observation turn",
@@ -1303,6 +1308,7 @@ describe("runPostGenerationPhase", () => {
       appendHookFailureEvent: vi.fn(async () => undefined),
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
+      sessionSourceType: null,
       turnId: "turn_post_generation_suppressed_archive",
       turnInput: {
         userMessage: "No output needed",
@@ -1489,6 +1495,7 @@ describe("runPostGenerationPhase outbound activity gate", () => {
       appendHookFailureEvent: vi.fn(async () => undefined),
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
+      sessionSourceType: null,
       turnId,
       turnInput: { userMessage: "Directed outbound instruction", origin: "directed_outbound" },
       streamWriter: { append: vi.fn(async () => agentEntry) } as never,

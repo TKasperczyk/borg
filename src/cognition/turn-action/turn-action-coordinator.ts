@@ -3,6 +3,7 @@ import type { CommitmentRecord } from "../../memory/commitments/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
+import type { SessionSourceType } from "../../sessions/index.js";
 import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
@@ -34,6 +35,7 @@ export type RunTurnActionInput = {
   llmClient: LLMClient;
   turnId: string;
   sessionId: SessionId;
+  sessionSourceType: SessionSourceType | null;
   deliberation: DeliberationResult;
   workingMemory: WorkingMemory;
   userMessage: string;
@@ -355,6 +357,7 @@ export class TurnActionCoordinator {
                   turnId: input.turnId,
                   response: commitmentEmission.content,
                   sessionId: input.sessionId,
+                  sessionSourceType: input.sessionSourceType,
                   persistedUserEntry: input.persistedUserEntry,
                   retrievedEpisodes: input.retrievedEpisodes,
                   activeCommitments: input.applicableCommitments,

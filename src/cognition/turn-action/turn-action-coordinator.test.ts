@@ -136,6 +136,7 @@ async function runCoordinator(input: {
     llmClient: input.llmClient,
     turnId: input.turnId ?? "turn-commitment-regeneration",
     sessionId: DEFAULT_SESSION_ID,
+    sessionSourceType: null,
     deliberation: input.deliberation,
     workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 20_000),
     userMessage: "Prepare the vendor-channel deployment status.",

@@ -10,6 +10,7 @@ type EvalConfigOverrides = {
   defaultUser?: Config["defaultUser"];
   host_capabilities?: Config["host_capabilities"];
   perception?: Partial<Config["perception"]>;
+  internalIdentifierGuard?: Partial<Config["internalIdentifierGuard"]>;
   affective?: Partial<Config["affective"]>;
   embedding?: Partial<Config["embedding"]>;
   anthropic?: Partial<Omit<Config["anthropic"], "models">> & {
@@ -107,6 +108,14 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
     frameAnomaly: {
       ...DEFAULT_CONFIG.frameAnomaly,
       peerChannelSourceTypes: [...DEFAULT_CONFIG.frameAnomaly.peerChannelSourceTypes],
+    },
+    internalIdentifierGuard: {
+      ...DEFAULT_CONFIG.internalIdentifierGuard,
+      ...options.config?.internalIdentifierGuard,
+      substratePrivilegedSourceTypes: [
+        ...(options.config?.internalIdentifierGuard?.substratePrivilegedSourceTypes ??
+          DEFAULT_CONFIG.internalIdentifierGuard.substratePrivilegedSourceTypes),
+      ],
     },
     affective: {
       ...DEFAULT_CONFIG.affective,

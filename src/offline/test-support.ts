@@ -206,6 +206,14 @@ export function createTestConfig(
           DEFAULT_CONFIG.frameAnomaly.peerChannelSourceTypes),
       ],
     },
+    internalIdentifierGuard: {
+      ...DEFAULT_CONFIG.internalIdentifierGuard,
+      ...overrides.internalIdentifierGuard,
+      substratePrivilegedSourceTypes: [
+        ...(overrides.internalIdentifierGuard?.substratePrivilegedSourceTypes ??
+          DEFAULT_CONFIG.internalIdentifierGuard.substratePrivilegedSourceTypes),
+      ],
+    },
     affective: {
       ...DEFAULT_CONFIG.affective,
       ...overrides.affective,

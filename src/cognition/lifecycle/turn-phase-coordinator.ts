@@ -1591,6 +1591,7 @@ export class TurnPhaseCoordinator {
       appendHookFailureEvent: appendHookFailure,
       llmClient,
       sessionId,
+      sessionSourceType: sessionRecord?.source_type ?? null,
       turnId,
       turnInput,
       streamWriter,

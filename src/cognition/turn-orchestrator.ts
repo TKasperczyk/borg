@@ -307,6 +307,8 @@ export class TurnOrchestrator {
     const postGenerationGuardRunner = new TurnPostGenerationGuardRunner({
       auditModel: options.config.anthropic.models.background,
       closurePressureMode: options.config.generation.postGenerationGuards.closurePressure.mode,
+      substratePrivilegedSourceTypes:
+        options.config.internalIdentifierGuard.substratePrivilegedSourceTypes,
       createStreamReader,
       actionRepository: options.actionRepository,
       relationalSlotRepository: options.relationalSlotRepository,
