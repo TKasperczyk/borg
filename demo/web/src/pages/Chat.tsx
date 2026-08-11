@@ -554,9 +554,17 @@ export function ChatPage({ onActiveSessionChange }: ChatPageProps) {
       retainedEntriesRef.current.sessionId === activeSessionId
         ? retainedEntriesRef.current.entries
         : [];
+    // Session switch in flight: liveEntries still holds the previous session's
+    // streamed entries until the reset effect runs (effects fire after render),
+    // and stream.data is the previous session's window. Render only what this
+    // session has already shown and write nothing back, or the old thread's
+    // messages get cached under the new session's key.
+    if (!streamMatchSession) {
+      return retained;
+    }
     const merged = mergeEntries([
       ...retained,
-      ...(streamMatchSession ? (stream.data?.response.entries ?? []) : []),
+      ...(stream.data?.response.entries ?? []),
       ...liveEntries,
     ]);
     const bounded =
