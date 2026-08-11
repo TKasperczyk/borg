@@ -1,6 +1,7 @@
 // Constants shared by deliberation prompt assembly, planning, and finalization.
 export const DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS = 8_000;
 export const DEFAULT_DELIBERATION_PLAN_MAX_TOKENS = 2_000;
+export const DEFAULT_DELIBERATION_PLAN_CALL_TIMEOUT_MS = 12 * 60_000;
 // Per-call output budget for being-cognition calls when adaptive thinking is on.
 // Thinking tokens count against max_tokens, so the budget must hold the thinking
 // AND the emission -- otherwise the model exhausts the budget mid-thought and

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { FakeLLMClient, createFakeStreamingResponse } from "../../llm/test-support/fake-client.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
+import { AuthError, LLMError } from "../../util/errors.js";
 import { runS2Planner } from "./s2-planner.js";
 import type { TurnOrigin } from "../types.js";
 
@@ -247,6 +248,7 @@ describe("s2 planner", () => {
       ],
     });
     expect(llm.requests).toHaveLength(2);
+    expect(llm.requests.map((request) => request.timeoutMs)).toEqual([720_000, 720_000]);
     expect(llm.requests[1]?.messages.at(-1)).toEqual({
       role: "user",
       content:
@@ -297,10 +299,10 @@ describe("s2 planner", () => {
     expect(result.plan?.emission_recommendation).toBe("no_output");
   });
 
-  it("emits ordered token chunks and flushes the assembled planner text", async () => {
+  it("uses unary completion and emits completion traces without streaming token traces", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        createFakeStreamingResponse(["plan ", "tokens"], {
+        {
           text: "plan tokens",
           input_tokens: 5,
           output_tokens: 4,
@@ -319,9 +321,11 @@ describe("s2 planner", () => {
               },
             },
           ],
-        }),
+        },
       ],
     });
+    const complete = vi.spyOn(llm, "complete");
+    const streamComplete = vi.spyOn(llm, "streamComplete");
     const tracer = createTracer();
 
     const result = await runS2Planner({
@@ -336,26 +340,23 @@ describe("s2 planner", () => {
     });
 
     expect(result.reasoning).toBe("plan tokens");
-    expect(tracer.emit).toHaveBeenCalledWith("turn.token", {
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(streamComplete).not.toHaveBeenCalled();
+    expect(llm.requests[0]?.timeoutMs).toBe(720_000);
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "llm_call.completed",
+      expect.objectContaining({
+        turnId: "turn-plan-stream",
+        label: "s2_planner",
+        stopReason: "tool_use",
+      }),
+    );
+    expect(tracer.emit).toHaveBeenCalledWith("deliberation.plan.completed", {
       turnId: "turn-plan-stream",
-      turn_id: "turn-plan-stream",
-      phase: "delib",
-      chunk_text: "plan ",
-      sequence: 1,
+      success: true,
     });
-    expect(tracer.emit).toHaveBeenCalledWith("turn.token", {
-      turnId: "turn-plan-stream",
-      turn_id: "turn-plan-stream",
-      phase: "delib",
-      chunk_text: "tokens",
-      sequence: 2,
-    });
-    expect(tracer.emit).toHaveBeenCalledWith("turn.token.flush", {
-      turnId: "turn-plan-stream",
-      turn_id: "turn-plan-stream",
-      phase: "delib",
-      full_text: "plan tokens",
-    });
+    expect(tracer.emit).not.toHaveBeenCalledWith("turn.token", expect.anything());
+    expect(tracer.emit).not.toHaveBeenCalledWith("turn.token.flush", expect.anything());
   });
 
   it("emits exhaustion trace when both planner attempts omit EmitTurnPlan", async () => {
@@ -377,6 +378,8 @@ describe("s2 planner", () => {
         },
       ],
     });
+    const complete = vi.spyOn(llm, "complete");
+    const streamComplete = vi.spyOn(llm, "streamComplete");
     const tracer = createTracer();
 
     const result = await runS2Planner({
@@ -391,6 +394,9 @@ describe("s2 planner", () => {
     });
 
     expect(result.plan).toBeNull();
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(streamComplete).not.toHaveBeenCalled();
+    expect(llm.requests.map((request) => request.timeoutMs)).toEqual([720_000, 720_000]);
     expect(tracer.emit).toHaveBeenCalledWith("deliberation.planner.degraded", {
       turnId: "turn-1",
       attempts: 2,
@@ -399,5 +405,121 @@ describe("s2 planner", () => {
         toolUseBlocks: [],
       },
     });
+  });
+
+  it("degrades a first-attempt transport timeout instead of failing the turn", async () => {
+    const timeoutError = new LLMError("Planner transport timed out", {
+      code: "LLM_CALL_TIMED_OUT",
+    });
+    const llm = new FakeLLMClient({
+      responses: [() => Promise.reject(timeoutError)],
+    });
+    const tracer = createTracer();
+
+    const result = await runS2Planner({
+      llmClient: llm,
+      model: "sonnet",
+      baseSystemPrompt: "base",
+      dialogueMessages: [{ role: "user", content: "Think this through." }],
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      maxTokens: 16_000,
+      tracer,
+      turnId: "turn-timeout",
+    });
+
+    expect(result).toEqual({
+      plan: null,
+      reasoning: "",
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        stop_reason: null,
+      },
+    });
+    expect(llm.requests).toHaveLength(1);
+    expect(llm.requests[0]?.timeoutMs).toBe(720_000);
+    expect(tracer.emit).toHaveBeenCalledWith("deliberation.planner.degraded", {
+      turnId: "turn-timeout",
+      attempts: 1,
+      lastResponseShape: {
+        error: "Planner transport timed out",
+        code: "LLM_CALL_TIMED_OUT",
+      },
+    });
+  });
+
+  it("preserves first-attempt usage when the repair attempt has a transport failure", async () => {
+    const connectionError = new LLMError("Planner connection failed", {
+      code: "LLM_CONNECTION_FAILED",
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "First attempt omitted the plan.",
+          input_tokens: 7,
+          output_tokens: 5,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        () => Promise.reject(connectionError),
+      ],
+    });
+    const tracer = createTracer();
+
+    const result = await runS2Planner({
+      llmClient: llm,
+      model: "sonnet",
+      baseSystemPrompt: "base",
+      dialogueMessages: [{ role: "user", content: "Think this through." }],
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      maxTokens: 16_000,
+      tracer,
+      turnId: "turn-repair-connection",
+    });
+
+    expect(result).toEqual({
+      plan: null,
+      reasoning: "First attempt omitted the plan.",
+      usage: {
+        input_tokens: 7,
+        output_tokens: 5,
+        stop_reason: "end_turn",
+      },
+    });
+    expect(llm.requests.map((request) => request.timeoutMs)).toEqual([720_000, 720_000]);
+    expect(tracer.emit).toHaveBeenCalledWith("deliberation.planner.degraded", {
+      turnId: "turn-repair-connection",
+      attempts: 2,
+      lastResponseShape: {
+        error: "Planner connection failed",
+        code: "LLM_CONNECTION_FAILED",
+      },
+    });
+  });
+
+  it.each([
+    [
+      "authentication",
+      new AuthError("Planner authentication failed", { code: "AUTH_REFRESH_FAILED" }),
+    ],
+    [
+      "schema",
+      new LLMError("Planner schema failed", { code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED" }),
+    ],
+  ])("does not degrade %s failures", async (_kind, error) => {
+    const llm = new FakeLLMClient({
+      responses: [() => Promise.reject(error)],
+    });
+
+    await expect(
+      runS2Planner({
+        llmClient: llm,
+        model: "sonnet",
+        baseSystemPrompt: "base",
+        dialogueMessages: [{ role: "user", content: "Think this through." }],
+        selfSnapshot: { values: [], goals: [], traits: [] },
+        maxTokens: 16_000,
+      }),
+    ).rejects.toBe(error);
   });
 });

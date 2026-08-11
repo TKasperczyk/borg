@@ -7,16 +7,12 @@ import {
   type LLMMessage,
   type LLMToolCall,
   type LLMToolDefinition,
+  isRetryableLlmTransportError,
   toToolInputSchema,
   willSendThinkingUnderAutoToolChoice,
 } from "../../llm/index.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
-import {
-  buildUsageTraceBlock,
-  emitTurnTokenFlushTrace,
-  emitTurnTokenTrace,
-  toTraceJsonValue,
-} from "../../tracing/tracer.js";
+import { toTraceJsonValue } from "../../tracing/tracer.js";
 import {
   summarizeToolResponseShape,
   traceLlmCallResponse,
@@ -26,7 +22,9 @@ import {
 import { intentRecordSchema, type TurnOrigin } from "../types.js";
 import type { EmissionRecommendation } from "../generation/types.js";
 import type { SessionId } from "../../util/ids.js";
+import type { JsonValue } from "../../util/json-value.js";
 import type { DeliberationUsage, SelfSnapshot } from "./types.js";
+import { DEFAULT_DELIBERATION_PLAN_CALL_TIMEOUT_MS } from "./constants.js";
 import { renderTaggedPromptSection } from "./prompt/sections.js";
 import { summarizeVoiceAnchors } from "./prompt/voice-anchors.js";
 import { mergeDeliberationUsage, usageFromCompleteResult } from "./usage.js";
@@ -146,6 +144,37 @@ export type S2PlannerResult = {
   usage: DeliberationUsage;
 };
 
+const EMPTY_S2_PLANNER_USAGE = {
+  input_tokens: 0,
+  output_tokens: 0,
+  stop_reason: null,
+} satisfies DeliberationUsage;
+
+function degradedPlannerResult(
+  options: RunS2PlannerOptions,
+  input: {
+    attempts: number;
+    lastResponseShape: JsonValue;
+    reasoning?: string;
+    usage?: DeliberationUsage;
+  },
+): S2PlannerResult {
+  if (options.tracer?.enabled === true && options.turnId !== undefined) {
+    options.tracer.emit("deliberation.planner.degraded", {
+      turnId: options.turnId,
+      ...(options.sessionId === undefined ? {} : { session_id: options.sessionId }),
+      attempts: input.attempts,
+      lastResponseShape: input.lastResponseShape,
+    });
+  }
+
+  return {
+    plan: null,
+    reasoning: input.reasoning ?? "",
+    usage: input.usage ?? { ...EMPTY_S2_PLANNER_USAGE },
+  };
+}
+
 function buildPlannerDirective(): string {
   return [
     "I am about to decide whether and how to engage with a reflective, high-stakes, or contradictory turn.",
@@ -191,66 +220,69 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
       createS2PlannerPromptSurfaceRenderContext(options),
     ) ?? "";
   const tools = [resolveTurnPlanTool(options.turnOrigin)];
-  let tokenSequence = 0;
-  const onTextDelta = (chunkText: string) => {
-    tokenSequence += 1;
-    emitTurnTokenTrace({
-      tracer: options.tracer,
-      turnId: options.turnId,
-      sessionId: options.sessionId,
-      phase: "delib",
-      chunkText,
-      sequence: tokenSequence,
+  let result: PlannerAttemptResult;
+
+  try {
+    result = await callPlannerAttempt(options, systemPrompt, tools, options.dialogueMessages);
+  } catch (error) {
+    if (!isRetryableLlmTransportError(error)) {
+      throw error;
+    }
+
+    return degradedPlannerResult(options, {
+      attempts: 1,
+      lastResponseShape: {
+        error: error.message,
+        code: error.code,
+      },
     });
-  };
-  let result = await callPlannerAttempt(
-    options,
-    systemPrompt,
-    tools,
-    options.dialogueMessages,
-    onTextDelta,
-  );
+  }
+
   let usage = result.usage;
 
   if (result.extraction.plan === null) {
     // Retry forces the plan tool (which precludes thinking) so a plan is
     // guaranteed even when the thinking-mode first attempt emitted no tool call.
-    result = await callPlannerAttempt(
-      { ...options, thinking: undefined, effort: undefined },
-      systemPrompt,
-      tools,
-      [
-        ...options.dialogueMessages,
-        {
-          role: "user",
-          content: PLANNER_RETRY_HINT,
+    const firstResult = result;
+
+    try {
+      result = await callPlannerAttempt(
+        { ...options, thinking: undefined, effort: undefined },
+        systemPrompt,
+        tools,
+        [
+          ...options.dialogueMessages,
+          {
+            role: "user",
+            content: PLANNER_RETRY_HINT,
+          },
+        ],
+      );
+    } catch (error) {
+      if (!isRetryableLlmTransportError(error)) {
+        throw error;
+      }
+
+      return degradedPlannerResult(options, {
+        attempts: 2,
+        lastResponseShape: {
+          error: error.message,
+          code: error.code,
         },
-      ],
-      onTextDelta,
-    );
+        reasoning: firstResult.planner.text,
+        usage,
+      });
+    }
+
     usage = mergeDeliberationUsage(usage, result.usage);
   }
 
-  if (
-    result.extraction.plan === null &&
-    options.tracer?.enabled === true &&
-    options.turnId !== undefined
-  ) {
-    options.tracer.emit("deliberation.planner.degraded", {
-      turnId: options.turnId,
-      ...(options.sessionId === undefined ? {} : { session_id: options.sessionId }),
+  if (result.extraction.plan === null) {
+    return degradedPlannerResult(options, {
       attempts: 2,
       lastResponseShape: summarizeToolResponseShape(result.planner),
-    });
-  }
-
-  if (tokenSequence > 0) {
-    emitTurnTokenFlushTrace({
-      tracer: options.tracer,
-      turnId: options.turnId,
-      sessionId: options.sessionId,
-      phase: "delib",
-      fullText: result.planner.text,
+      reasoning: result.planner.text,
+      usage,
     });
   }
 
@@ -272,7 +304,6 @@ async function callPlannerAttempt(
   systemPrompt: string,
   tools: readonly LLMToolDefinition[],
   messages: readonly LLMMessage[],
-  onTextDelta: (chunkText: string) => void,
 ): Promise<PlannerAttemptResult> {
   traceLlmCallStarted({
     tracer: options.tracer,
@@ -318,15 +349,10 @@ async function callPlannerAttempt(
     ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
     ...(options.effort === undefined ? {} : { effort: options.effort }),
     ...(onTransportRetry === undefined ? {} : { onTransportRetry }),
+    timeoutMs: DEFAULT_DELIBERATION_PLAN_CALL_TIMEOUT_MS,
     budget: "cognition-plan",
   } satisfies LLMCompleteOptions;
-  const planner =
-    options.llmClient.streamComplete === undefined
-      ? await options.llmClient.complete(completeOptions)
-      : await options.llmClient.streamComplete({
-          ...completeOptions,
-          onTextDelta,
-        });
+  const planner = await options.llmClient.complete(completeOptions);
   const extraction = extractTurnPlan(planner.tool_calls, options.turnOrigin);
 
   if (options.tracer?.enabled === true && options.turnId !== undefined) {

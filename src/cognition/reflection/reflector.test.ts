@@ -2767,6 +2767,256 @@ describe("reflector", () => {
     expect(payload.current_trait_vocabulary).toEqual([]);
   });
 
+  it("budgets goal progress-note tails without filtering goals or losing metadata", async () => {
+    const goalNotesBudget = 1_200;
+    const overBudgetTotalChars = 2_000;
+    const newestTailSentinel = "najnowszy wpis";
+    const maximumMarker = `[older progress_notes elided; total_chars=${overBudgetTotalChars}; retained_tail_chars=${goalNotesBudget}]\n`;
+    const tailBudget = goalNotesBudget - maximumMarker.length;
+    const prefixLength = overBudgetTotalChars - tailBudget;
+    const suffixAfterSplitPair = `${"n".repeat(
+      tailBudget - 1 - newestTailSentinel.length,
+    )}${newestTailSentinel}`;
+    // Place a surrogate pair exactly across the nominal tail boundary. The
+    // renderer must drop both halves rather than retaining a lone low surrogate.
+    const overBudgetNotes = `${"s".repeat(prefixLength - 1)}😀${suffixAfterSplitPair}`;
+    const underBudgetNotes = "Ostatni krok został wykonany bez zmian w starszych notatkach.";
+    const llm = new FakeLLMClient({
+      responses: [createReflectionResponse()],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const alice = createEntityId();
+    const overBudgetGoalSeed = harness.goalsRepository.add({
+      description: "Track Alice's multilingual launch history",
+      terminalCondition: "Alice's launch reaches a documented handoff",
+      priority: 8,
+      audienceEntityId: alice,
+      ownerEntityId: alice,
+      provenance: { kind: "manual" },
+    });
+    const underBudgetGoalSeed = harness.goalsRepository.add({
+      description: "Zachować krótką notatkę celu",
+      terminalCondition: "Krótka notatka pozostaje dostępna bez zmian",
+      priority: 5,
+      provenance: { kind: "manual" },
+    });
+    harness.goalsRepository.updateProgress(overBudgetGoalSeed.id, overBudgetNotes, {
+      kind: "manual",
+    });
+    harness.goalsRepository.updateProgress(underBudgetGoalSeed.id, underBudgetNotes, {
+      kind: "manual",
+    });
+    const overBudgetGoal = harness.goalsRepository.get(overBudgetGoalSeed.id);
+    const underBudgetGoal = harness.goalsRepository.get(underBudgetGoalSeed.id);
+
+    if (overBudgetGoal === null || underBudgetGoal === null) {
+      throw new Error("Expected reflection goal fixtures to exist");
+    }
+
+    expect(overBudgetNotes).toHaveLength(overBudgetTotalChars);
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-4-6",
+    });
+
+    await reflector.reflect(
+      {
+        ...createOpenQuestionReflectionContext(),
+        selfSnapshot: {
+          values: [],
+          goals: [overBudgetGoal, underBudgetGoal],
+          traits: [],
+        },
+        executiveFocus: {
+          selected_goal: overBudgetGoal,
+          selected_score: null,
+          next_step: null,
+          candidates: [],
+          threshold: 0.45,
+        },
+      },
+      harness.streamWriter,
+    );
+    const payload = JSON.parse(llm.requests[0]?.messages[0]?.content ?? "{}") as {
+      active_goals?: Array<{
+        goal_id?: string;
+        description?: string;
+        status?: string;
+        terminal_condition?: string | null;
+        progress_notes?: string | null;
+        audience_entity_id?: string | null;
+        owner_entity_id?: string | null;
+        disclosure?: string;
+        disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
+      }>;
+      executive_focus?: {
+        selected_goal?: {
+          goal_id?: string;
+          progress_notes?: string | null;
+          disclosure?: string;
+          disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
+        };
+      };
+    };
+    const activeGoals = payload.active_goals ?? [];
+    const renderedOverBudgetGoal = activeGoals.find((goal) => goal.goal_id === overBudgetGoal.id);
+    const renderedUnderBudgetGoal = activeGoals.find((goal) => goal.goal_id === underBudgetGoal.id);
+    const renderedNotes = renderedOverBudgetGoal?.progress_notes;
+
+    expect(activeGoals.map((goal) => goal.goal_id)).toEqual([
+      overBudgetGoal.id,
+      underBudgetGoal.id,
+    ]);
+    expect(renderedOverBudgetGoal).toMatchObject({
+      description: overBudgetGoal.description,
+      status: "active",
+      terminal_condition: overBudgetGoal.terminal_condition,
+      audience_entity_id: alice,
+      owner_entity_id: alice,
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [alice],
+      },
+    });
+    expect(renderedOverBudgetGoal?.disclosure).toContain(`private-to=${alice}`);
+    expect(renderedUnderBudgetGoal).toMatchObject({
+      status: "active",
+      progress_notes: underBudgetNotes,
+    });
+    expect(typeof renderedNotes).toBe("string");
+
+    if (typeof renderedNotes !== "string") {
+      throw new Error("Expected over-budget progress notes to be rendered");
+    }
+
+    const markerMatch =
+      /^\[older progress_notes elided; total_chars=(\d+); retained_tail_chars=(\d+)\]\n/.exec(
+        renderedNotes,
+      );
+
+    expect(markerMatch).not.toBeNull();
+
+    if (markerMatch === null) {
+      throw new Error("Expected structural progress-note elision marker");
+    }
+
+    const marker = markerMatch[0];
+    const retainedTail = renderedNotes.slice(marker.length);
+    const declaredTotalChars = Number(markerMatch[1]);
+    const declaredRetainedTailChars = Number(markerMatch[2]);
+
+    expect(renderedNotes.length).toBeLessThanOrEqual(goalNotesBudget);
+    expect(declaredTotalChars).toBe(overBudgetNotes.length);
+    expect(declaredRetainedTailChars).toBe(retainedTail.length);
+    expect(marker.length + declaredRetainedTailChars).toBe(renderedNotes.length);
+    expect(retainedTail).toBe(overBudgetNotes.slice(-declaredRetainedTailChars));
+    expect(retainedTail.endsWith(newestTailSentinel)).toBe(true);
+    expect(retainedTail.charCodeAt(0) >= 0xdc00 && retainedTail.charCodeAt(0) <= 0xdfff).toBe(
+      false,
+    );
+    expect(payload.executive_focus?.selected_goal).toMatchObject({
+      goal_id: overBudgetGoal.id,
+      progress_notes: renderedNotes,
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        private_to_entity_ids: [alice],
+      },
+    });
+    expect(payload.executive_focus?.selected_goal?.disclosure).toContain(`private-to=${alice}`);
+    expect(harness.goalsRepository.get(overBudgetGoal.id)?.progress_notes).toBe(overBudgetNotes);
+    expect(harness.goalsRepository.get(underBudgetGoal.id)?.progress_notes).toBe(underBudgetNotes);
+  });
+
+  it("applies the goal progress-note budget exactly at its UTF-16 boundaries", async () => {
+    const goalNotesBudget = 1_200;
+    const notesBelowBudget = "a".repeat(goalNotesBudget - 1);
+    const notesAtBudget = "b".repeat(goalNotesBudget);
+    const notesAboveBudget = "c".repeat(goalNotesBudget + 1);
+    const llm = new FakeLLMClient({
+      responses: [createReflectionResponse()],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const noteFixtures = [notesBelowBudget, notesAtBudget, notesAboveBudget];
+    const goals = noteFixtures.map((progressNotes, index) => {
+      const seed = harness.goalsRepository.add({
+        description: `Boundary goal ${index}`,
+        priority: noteFixtures.length - index,
+        provenance: { kind: "manual" },
+      });
+      harness.goalsRepository.updateProgress(seed.id, progressNotes, { kind: "manual" });
+      const goal = harness.goalsRepository.get(seed.id);
+
+      if (goal === null) {
+        throw new Error("Expected boundary goal fixture to exist");
+      }
+
+      return goal;
+    });
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-4-6",
+    });
+
+    await reflector.reflect(
+      {
+        ...createOpenQuestionReflectionContext(),
+        selfSnapshot: {
+          values: [],
+          goals,
+          traits: [],
+        },
+      },
+      harness.streamWriter,
+    );
+    const payload = JSON.parse(llm.requests[0]?.messages[0]?.content ?? "{}") as {
+      active_goals?: Array<{
+        goal_id?: string;
+        progress_notes?: string | null;
+      }>;
+    };
+    const renderedNotesFor = (goalId: string) =>
+      payload.active_goals?.find((goal) => goal.goal_id === goalId)?.progress_notes;
+
+    expect(renderedNotesFor(goals[0]?.id ?? "")).toBe(notesBelowBudget);
+    expect(renderedNotesFor(goals[1]?.id ?? "")).toBe(notesAtBudget);
+
+    const renderedAboveBudget = renderedNotesFor(goals[2]?.id ?? "");
+    expect(typeof renderedAboveBudget).toBe("string");
+
+    if (typeof renderedAboveBudget !== "string") {
+      throw new Error("Expected above-budget notes to be rendered");
+    }
+
+    const markerMatch =
+      /^\[older progress_notes elided; total_chars=(\d+); retained_tail_chars=(\d+)\]\n/.exec(
+        renderedAboveBudget,
+      );
+
+    expect(markerMatch).not.toBeNull();
+
+    if (markerMatch === null) {
+      throw new Error("Expected boundary elision marker");
+    }
+
+    const marker = markerMatch[0];
+    const retainedTail = renderedAboveBudget.slice(marker.length);
+    const retainedTailChars = Number(markerMatch[2]);
+
+    expect(Number(markerMatch[1])).toBe(goalNotesBudget + 1);
+    expect(renderedAboveBudget).toHaveLength(goalNotesBudget);
+    expect(retainedTailChars).toBe(retainedTail.length);
+    expect(marker.length + retainedTailChars).toBe(goalNotesBudget);
+    expect(retainedTail).toBe(notesAboveBudget.slice(-retainedTailChars));
+  });
+
   it("passes disclosure labels for active goals and open questions into reflection payloads", async () => {
     const llm = new FakeLLMClient({
       responses: [createReflectionResponse()],

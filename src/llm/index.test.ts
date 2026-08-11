@@ -63,6 +63,30 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+function delayedAbortAwareResponse(
+  signal: AbortSignal | null | undefined,
+  delayMs: number,
+  createResponse: () => Response,
+): Promise<Response> {
+  return new Promise<Response>((resolve, reject) => {
+    if (signal?.aborted === true) {
+      reject(signal.reason);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(createResponse());
+    }, delayMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 function createSseResponse(events: readonly string[]): Response {
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
@@ -222,6 +246,44 @@ describe("llm", () => {
 
     expect(create.mock.calls[0]?.[0]).toMatchObject({ max_tokens: 64_000 });
   });
+
+  it.each(["oauth", "api-key"] as const)(
+    "sets an explicit SDK client timeout for %s non-streaming max-token requests",
+    async (authKind) => {
+      let requestBody: Record<string, unknown> | undefined;
+      const fetchMock = vi.fn(
+        async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+          requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return jsonResponse(createMessageBody());
+        },
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const client = new AnthropicLLMClient(
+        authKind === "oauth"
+          ? {
+              env: {
+                ANTHROPIC_AUTH_TOKEN: "oauth-token",
+              },
+            }
+          : {
+              authMode: "api-key",
+              apiKey: "api-key",
+            },
+      );
+
+      await expect(
+        client.complete({
+          model: "claude-sonnet-4-5",
+          messages: [{ role: "user", content: "hello" }],
+          max_tokens: 64_000,
+          budget: "test",
+        }),
+      ).resolves.toMatchObject({ text: "Hello" });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(requestBody).toMatchObject({ max_tokens: 64_000 });
+    },
+  );
 
   it("passes structured output config and extracts parsed JSON text", async () => {
     const outputConfig = {
@@ -985,15 +1047,16 @@ describe("llm", () => {
     expect(observedSignal?.aborted).toBe(false);
   });
 
-  it("surfaces OAuth header deadlines through complete without SDK retries", async () => {
+  it("lets buffered OAuth complete responses outlive the generic header guard", async () => {
     vi.useFakeTimers();
+    let observedSignal: AbortSignal | undefined;
     const fetchMock = vi.fn(
-      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
-        await new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
-            once: true,
-          });
-        }),
+      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        observedSignal = init?.signal ?? undefined;
+        return await delayedAbortAwareResponse(observedSignal, 50, () =>
+          jsonResponse(createMessageBody()),
+        );
+      },
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -1002,31 +1065,72 @@ describe("llm", () => {
         ANTHROPIC_AUTH_TOKEN: "oauth-token",
       },
       oauthFetchHeadersTimeoutMs: 20,
-      unaryCallTimeoutMs: 1_000,
+      unaryCallTimeoutMs: 20,
       transportStallMaxRetries: 0,
     });
-    const resultPromise = client
-      .complete({
-        model: "claude-sonnet-4-5",
-        messages: [{ role: "user", content: "hello" }],
-        max_tokens: 32,
-        budget: "test",
-      })
-      .then(
-        (value) => ({ status: "resolved" as const, value }),
-        (reason: unknown) => ({ status: "rejected" as const, reason }),
-      );
+    let settled = false;
+    const resultPromise = client.complete({
+      model: "claude-sonnet-4-5",
+      messages: [{ role: "user", content: "hello" }],
+      max_tokens: 32,
+      timeoutMs: 100,
+      budget: "test",
+    });
+    void resultPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
 
     await vi.advanceTimersByTimeAsync(25);
-    const result = await resultPromise;
+    expect(settled).toBe(false);
+    expect(observedSignal?.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(30);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({
-      status: "rejected",
-      reason: {
-        code: "LLM_CALL_TIMED_OUT",
-        message: "Anthropic headers LLM deadline exceeded after 20ms",
+    await expect(resultPromise).resolves.toMatchObject({ text: "Hello" });
+  });
+
+  it("aligns buffered OAuth converse headers with the unary call deadline", async () => {
+    vi.useFakeTimers();
+    let observedSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn(
+      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        observedSignal = init?.signal ?? undefined;
+        return await delayedAbortAwareResponse(observedSignal, 50, () =>
+          jsonResponse(createMessageBody()),
+        );
       },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+      oauthFetchHeadersTimeoutMs: 20,
+      unaryCallTimeoutMs: 100,
+      transportStallMaxRetries: 0,
+    });
+    const resultPromise = client.converse({
+      model: "claude-sonnet-4-5",
+      messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+      max_tokens: 32,
+      budget: "test",
+    });
+
+    await vi.advanceTimersByTimeAsync(25);
+    expect(observedSignal?.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(30);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await expect(resultPromise).resolves.toMatchObject({
+      messageBlocks: [{ type: "text", text: "Hello" }],
     });
   });
 
@@ -1334,10 +1438,13 @@ describe("llm", () => {
   });
 
   it("retries a stalled OAuth SSE stream non-streaming through the real fetch path", async () => {
+    vi.useFakeTimers();
     const requestBodies: string[] = [];
+    const requestSignals: Array<AbortSignal | undefined> = [];
     const fetchMock = vi.fn(
       async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
         requestBodies.push(String(init?.body));
+        requestSignals.push(init?.signal ?? undefined);
 
         if (requestBodies.length === 1) {
           return createChunkedSseResponse(
@@ -1363,7 +1470,9 @@ describe("llm", () => {
           );
         }
 
-        return jsonResponse(createMessageBody());
+        return await delayedAbortAwareResponse(init?.signal, 50, () =>
+          jsonResponse(createMessageBody()),
+        );
       },
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -1372,66 +1481,30 @@ describe("llm", () => {
       env: {
         ANTHROPIC_AUTH_TOKEN: "oauth-token",
       },
-      oauthSseInactivityTimeoutMs: 20,
+      oauthSseInactivityTimeoutMs: 10,
+      oauthFetchHeadersTimeoutMs: 20,
+      streamingCallTimeoutMs: 200,
     });
 
-    await expect(
-      client.streamComplete({
-        model: "claude-sonnet-4-5",
-        messages: [{ role: "user", content: "hello" }],
-        max_tokens: 32,
-        budget: "test",
-      }),
-    ).resolves.toMatchObject({ text: "Hello" });
+    const resultPromise = client.streamComplete({
+      model: "claude-sonnet-4-5",
+      messages: [{ role: "user", content: "hello" }],
+      max_tokens: 32,
+      budget: "test",
+    });
+
+    await vi.advanceTimersByTimeAsync(15);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(25);
+    expect(requestSignals[1]?.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(30);
+    await expect(resultPromise).resolves.toMatchObject({ text: "Hello" });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(requestBodies[0]).toContain('"stream":true');
     expect(requestBodies[1]).not.toContain('"stream":true');
-  });
-
-  it("retries fetch-layer header deadlines once before surfacing typed", async () => {
-    vi.useFakeTimers();
-    const fetchMock = vi.fn(
-      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
-        await new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
-            once: true,
-          });
-        }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const client = new AnthropicLLMClient({
-      env: {
-        ANTHROPIC_AUTH_TOKEN: "oauth-token",
-      },
-      oauthFetchHeadersTimeoutMs: 20,
-      unaryCallTimeoutMs: 1_000,
-    });
-    const resultPromise = client
-      .complete({
-        model: "claude-sonnet-4-5",
-        messages: [{ role: "user", content: "hello" }],
-        max_tokens: 32,
-        budget: "test",
-      })
-      .then(
-        (value) => ({ status: "resolved" as const, value }),
-        (reason: unknown) => ({ status: "rejected" as const, reason }),
-      );
-
-    await vi.advanceTimersByTimeAsync(25);
-    await vi.advanceTimersByTimeAsync(25);
-    const result = await resultPromise;
-
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(result).toMatchObject({
-      status: "rejected",
-      reason: {
-        code: "LLM_CALL_TIMED_OUT",
-        message: "Anthropic headers LLM deadline exceeded after 20ms",
-      },
-    });
   });
 
   it("does not burn stall retries after the outer call deadline fires", async () => {
