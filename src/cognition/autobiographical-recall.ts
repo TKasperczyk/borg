@@ -41,6 +41,8 @@ const DEFAULT_AUTOBIOGRAPHICAL_RECALL_WINDOW_MS = 7 * 24 * 60 * 60_000;
 const DEFAULT_AUTOBIOGRAPHICAL_RECALL_SESSION_CAP = 24;
 const DEFAULT_AUTOBIOGRAPHICAL_RECALL_SOURCE_CAP = 10;
 const DEFAULT_AUTOBIOGRAPHICAL_RECALL_TOTAL_CAP = 48;
+// Matches the budget reflection already gives this field, so a single retained note is rarely cut.
+const GOAL_PROGRESS_NOTES_CHAR_BUDGET = 1_200;
 
 const AUTOBIOGRAPHICAL_STREAM_KINDS = [
   "thought",
@@ -156,6 +158,63 @@ function sanitizePromptText(value: unknown, maxChars = 520): string {
   }
 
   return `${normalized.slice(0, maxChars - 3).trimEnd()}...`;
+}
+
+// progress_notes is an append-only log: newest note last, one per line. Head truncation therefore
+// drops exactly the note that describes the most recent act and keeps the oldest ones, so retain
+// the tail instead, aligned to note boundaries, using the same elision marker as reflection.
+function sanitizeAppendedPromptText(
+  value: string,
+  maxChars = GOAL_PROGRESS_NOTES_CHAR_BUDGET,
+): string {
+  const notes = stripToolCallScaffolding(value)
+    .split(/\n+/)
+    .map((note) => note.replace(/\s+/g, " ").trim())
+    .filter((note) => note.length > 0);
+  const normalized = notes.join(" ");
+
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+
+  const renderMarker = (retainedTailChars: number) =>
+    `[older progress_notes elided; total_chars=${normalized.length}; retained_tail_chars=${retainedTailChars}] `;
+  // Reserving the widest possible retained-count field keeps the final marker within budget.
+  const tailBudget = Math.max(0, maxChars - renderMarker(normalized.length).length);
+  const retained: string[] = [];
+  let retainedChars = 0;
+
+  for (let index = notes.length - 1; index >= 0; index -= 1) {
+    const note = notes[index] ?? "";
+    const nextChars = retainedChars === 0 ? note.length : retainedChars + 1 + note.length;
+
+    if (nextChars > tailBudget) {
+      break;
+    }
+
+    retained.unshift(note);
+    retainedChars = nextChars;
+  }
+
+  // A single note wider than the budget still yields its tail rather than its head.
+  const tail =
+    retained.length > 0 ? retained.join(" ") : normalized.slice(tailStart(normalized, tailBudget));
+  return `${renderMarker(tail.length)}${tail}`;
+}
+
+// Never begin a retained suffix on the low half of a valid surrogate pair.
+function tailStart(value: string, tailBudget: number): number {
+  const start = Math.max(0, value.length - tailBudget);
+
+  if (start === 0) {
+    return start;
+  }
+
+  const first = value.charCodeAt(start);
+  const previous = value.charCodeAt(start - 1);
+  return first >= 0xdc00 && first <= 0xdfff && previous >= 0xd800 && previous <= 0xdbff
+    ? start + 1
+    : start;
 }
 
 function boundedCap(value: number | undefined, fallback: number): number {
@@ -681,7 +740,7 @@ export class AutobiographicalRecallService {
             : `terminal_condition=${sanitizePromptText(goal.terminal_condition)}`,
           goal.progress_notes === null
             ? null
-            : `progress=${sanitizePromptText(goal.progress_notes)}`,
+            : `progress=${sanitizeAppendedPromptText(goal.progress_notes)}`,
         ]
           .filter((part): part is string => part !== null)
           .join(" "),

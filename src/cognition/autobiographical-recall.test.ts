@@ -217,6 +217,55 @@ describe("AutobiographicalRecallService", () => {
     );
   });
 
+  it("retains the newest progress notes when the goal's append-only log exceeds the prompt budget", async () => {
+    const oldestNote = `[1] ${"o".repeat(800)}`;
+    const newestNote = "[3] I retired the tracker myself once its question was answered.";
+    const goal = {
+      id: createGoalId(),
+      record_version: 1,
+      description: "Track the release readiness decision",
+      terminal_condition: null,
+      priority: 5,
+      parent_goal_id: null,
+      status: "abandoned",
+      progress_notes: [oldestNote, `[2] ${"m".repeat(400)}`, newestNote].join("\n"),
+      last_progress_ts: 2_000,
+      created_at: 1_000,
+      target_at: null,
+      audience_entity_id: null,
+      owner_entity_id: null,
+      canonicalized_by_artifact_entry_id: null,
+      provenance: { kind: "manual" },
+      children: [],
+    } satisfies GoalTreeNode;
+    const service = new AutobiographicalRecallService({
+      clock: new FixedClock(NOW_MS),
+      goalsRepository: {
+        list: () => [goal],
+      },
+      sourceCap: 5,
+      totalCap: 10,
+    });
+
+    const result = await service.recall({
+      sessionId: createSessionId(),
+      temporalCue: {
+        sinceTs: 1_000,
+        untilTs: 3_000,
+        label: "release readiness window",
+      },
+      isSelfAudience: false,
+      sessionAudienceRole: "operator",
+      perceptionMode: "reflective",
+    });
+
+    const goalEvidence = result?.evidence.find((item) => item.kind === "goal");
+
+    expect(goalEvidence?.text).toContain(newestNote);
+    expect(goalEvidence?.text).toContain("older progress_notes elided");
+    expect(goalEvidence?.text).not.toContain(oldestNote);
+  });
+
   it("caps stream autobiographical evidence after selecting the most recent in-window entries", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-autobiographical-recall-"));
     tempDirs.push(tempDir);
