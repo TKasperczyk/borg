@@ -1,12 +1,69 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createWorkingMemory } from "../../../memory/working/index.js";
-import { createEntityId, createSessionId } from "../../../util/ids.js";
+import { createWorkingMemory, type WorkingMemory } from "../../../memory/working/index.js";
+import { createEntityId, createSessionId, createStreamEntryId } from "../../../util/ids.js";
+import type { SessionId } from "../../../util/ids.js";
 
 import { runExtractionPhase } from "./extraction-phase.js";
 
 function firstMockCallInput(mock: { mock: { calls: unknown[][] } }): unknown {
   return mock.mock.calls[0]?.[0];
+}
+
+function baseExtractionPhaseInput(input: {
+  sessionId: SessionId;
+  workingMemory: WorkingMemory;
+  extractActionState: Parameters<typeof runExtractionPhase>[0]["options"]["turnActionStateService"]["extract"];
+}): Parameters<typeof runExtractionPhase>[0] {
+  return {
+    options: {
+      selfContextBuilder: {
+        build: vi.fn(async () => ({ executiveFocus: { selected_goal: null } })),
+        listActiveGoalsForCognition: vi.fn(async () => []),
+      },
+      correctivePreferenceTurnService: {
+        extractAndApply: vi.fn(async () => ({
+          commitment: null,
+          commitmentSupersession: null,
+          commitmentRetirement: null,
+          workingMemory: input.workingMemory,
+        })),
+      },
+      turnActionStateService: { extract: input.extractActionState },
+      turnGoalPromotionService: {
+        extractAndPersist: vi.fn(async () => ({ goalIds: [], executiveStepIds: [] })),
+      },
+      creatorDirectiveTurnService: { extractAndPersist: vi.fn(async () => []) },
+    } as never,
+    appendHookFailureEvent: vi.fn(),
+    llmClient: {} as never,
+    turnId: "turn-speaker",
+    sessionId: input.sessionId,
+    turnInput: { userMessage: "message", origin: "user" } as never,
+    isUserTurn: true,
+    cognitionInput: "message",
+    perception: {
+      mode: "relational",
+      entities: [],
+      affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+      temporalCue: null,
+    } as never,
+    workingMemory: input.workingMemory,
+    recentHistory: [],
+    audienceEntityId: null,
+    groupSpeakerEntityId: null,
+    groupSpeakerDisplayName: null,
+    currentSenderEntityId: null,
+    currentSenderDisplayName: null,
+    currentSenderBorgRole: null,
+    sessionAudienceRole: "participant",
+    participantRoster: null,
+    persistedUserEntryId: undefined,
+    sourceUserEntryIds: [],
+    currentTurnFrameAnomaly: null,
+    streamWriter: {} as never,
+    trackAppliedSlotNegation: vi.fn(),
+  };
 }
 
 describe("runExtractionPhase", () => {
@@ -186,6 +243,65 @@ describe("runExtractionPhase", () => {
         currentSenderEntityId: null,
         currentSenderBorgRole: null,
         currentSenderDisplayName: null,
+      }),
+    );
+  });
+
+  it("names the one-to-one sender as the action-state speaker", async () => {
+    const sessionId = createSessionId();
+    const workingMemory = createWorkingMemory(sessionId, 1_000);
+    const extractActionState = vi.fn(async () => []);
+    const senderId = createEntityId();
+    const entryId = createStreamEntryId();
+
+    await runExtractionPhase({
+      ...baseExtractionPhaseInput({ sessionId, workingMemory, extractActionState }),
+      // No group speaker: a one-to-one audience has none, and the sender is
+      // only recoverable from the turn's own entries.
+      groupSpeakerEntityId: null,
+      groupSpeakerDisplayName: null,
+      currentSenderEntityId: senderId,
+      currentSenderDisplayName: "Peer",
+      sourceUserEntryIds: [entryId],
+      senderAttribution: [
+        { entryId, senderEntityId: senderId, senderDisplayName: "Peer" },
+      ],
+      distinctSenderCount: 1,
+    });
+
+    expect(extractActionState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        speakerEntityId: senderId,
+        speakerDisplayName: "Peer",
+      }),
+    );
+  });
+
+  it("leaves the action-state speaker unnamed when a batch mixes senders", async () => {
+    const sessionId = createSessionId();
+    const workingMemory = createWorkingMemory(sessionId, 1_000);
+    const extractActionState = vi.fn(async () => []);
+    const firstEntryId = createStreamEntryId();
+    const secondEntryId = createStreamEntryId();
+
+    await runExtractionPhase({
+      ...baseExtractionPhaseInput({ sessionId, workingMemory, extractActionState }),
+      groupSpeakerEntityId: null,
+      groupSpeakerDisplayName: null,
+      currentSenderEntityId: null,
+      currentSenderDisplayName: null,
+      sourceUserEntryIds: [firstEntryId, secondEntryId],
+      senderAttribution: [
+        { entryId: firstEntryId, senderEntityId: createEntityId(), senderDisplayName: "One" },
+        { entryId: secondEntryId, senderEntityId: createEntityId(), senderDisplayName: "Two" },
+      ],
+      distinctSenderCount: 2,
+    });
+
+    expect(extractActionState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        speakerEntityId: null,
+        speakerDisplayName: null,
       }),
     );
   });
