@@ -22,6 +22,141 @@ const CONFIDENCE_THRESHOLD = 0.85;
 const MAX_PROMOTIONS_PER_TURN = 3;
 const GOAL_PROMOTION_TOOL_NAME = "EmitGoalPromotion";
 
+// Deadlines are collected as calendar dates rather than epoch milliseconds. A
+// 13-digit integer has to be emitted digit by digit, so a single wrong digit is
+// a silent year-scale error that reads as a valid timestamp downstream; a
+// calendar date carries its own year where both the model and a reader can see
+// it. The harness does the epoch arithmetic. The shape checks below are numeric
+// wire-format validation of ISO-8601, not judgment of what the model wrote.
+const ISO_DATE_LENGTH = 10;
+const ZONE_OFFSET_LENGTH = 6;
+const END_OF_DAY_UTC = "T23:59:59.999Z";
+
+function isFixedDigits(value: string, length: number): boolean {
+  if (value.length !== length) {
+    return false;
+  }
+
+  for (const char of value) {
+    if (char < "0" || char > "9") {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function isCalendarDate(value: string): boolean {
+  const [year, month, day, ...extra] = value.split("-");
+
+  return (
+    extra.length === 0 &&
+    isFixedDigits(year ?? "", 4) &&
+    isFixedDigits(month ?? "", 2) &&
+    isFixedDigits(day ?? "", 2)
+  );
+}
+
+function isClockTime(value: string): boolean {
+  const [clock, fraction, ...extraFractions] = value.split(".");
+
+  if (extraFractions.length > 0) {
+    return false;
+  }
+
+  if (
+    fraction !== undefined &&
+    !(fraction.length > 0 && fraction.length <= 3 && isFixedDigits(fraction, fraction.length))
+  ) {
+    return false;
+  }
+
+  const fields = (clock ?? "").split(":");
+
+  if (fields.length !== 2 && fields.length !== 3) {
+    return false;
+  }
+
+  return fields.every((field) => isFixedDigits(field, 2));
+}
+
+// Splits a trailing "Z" or "+hh:mm"/"-hh:mm" off the clock time. A clock time
+// with no offset is read as UTC so the same payload resolves identically on any host.
+function splitZoneOffset(value: string): { clock: string; zone: string } | null {
+  if (value.slice(-1) === "Z") {
+    return { clock: value.slice(0, -1), zone: "Z" };
+  }
+
+  const sign = value.slice(-ZONE_OFFSET_LENGTH, -ZONE_OFFSET_LENGTH + 1);
+
+  if (sign !== "+" && sign !== "-") {
+    return { clock: value, zone: "Z" };
+  }
+
+  const [hours, minutes, ...extra] = value.slice(-ZONE_OFFSET_LENGTH + 1).split(":");
+
+  if (extra.length > 0 || !isFixedDigits(hours ?? "", 2) || !isFixedDigits(minutes ?? "", 2)) {
+    return null;
+  }
+
+  return { clock: value.slice(0, -ZONE_OFFSET_LENGTH), zone: value.slice(-ZONE_OFFSET_LENGTH) };
+}
+
+function parseIsoDeadline(value: string): number | null {
+  const trimmed = value.trim();
+  const date = trimmed.slice(0, ISO_DATE_LENGTH);
+
+  if (!isCalendarDate(date)) {
+    return null;
+  }
+
+  const remainder = trimmed.slice(ISO_DATE_LENGTH);
+  // A date with no clock time means "by the end of that day".
+  if (remainder.length === 0) {
+    const endOfDay = Date.parse(`${date}${END_OF_DAY_UTC}`);
+
+    return Number.isFinite(endOfDay) ? endOfDay : null;
+  }
+
+  const separator = remainder.slice(0, 1);
+
+  if (separator !== "T" && separator !== " ") {
+    return null;
+  }
+
+  const zoned = splitZoneOffset(remainder.slice(1));
+
+  if (zoned === null || !isClockTime(zoned.clock)) {
+    return null;
+  }
+
+  const parsed = Date.parse(`${date}T${zoned.clock}${zoned.zone}`);
+
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isoDeadlineSchema(description: string) {
+  return z
+    .string()
+    .trim()
+    .min(1)
+    .transform((value, ctx) => {
+      const parsed = parseIsoDeadline(value);
+
+      if (parsed === null) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Deadline must be an ISO-8601 calendar date (YYYY-MM-DD) or date-time.",
+        });
+
+        return z.NEVER;
+      }
+
+      return parsed;
+    })
+    .describe(description);
+}
+
 export const GOAL_PROMOTION_CLASSIFICATIONS = [
   "durable_borg_goal",
   "one_off",
@@ -53,14 +188,11 @@ const initialExecutiveStepSchema = z
       .min(1)
       .describe("A concrete first executive step Borg can take or track for this new goal."),
     kind: executiveStepKindSchema.describe("The operational kind of the first step."),
-    due_at: z
-      .number()
-      .finite()
+    due_at: isoDeadlineSchema(
+      "Optional due date as an ISO-8601 calendar date (YYYY-MM-DD) or date-time with an explicit UTC offset, resolved against the supplied current_time. Use null if absent.",
+    )
       .nullable()
-      .optional()
-      .describe(
-        "Optional due timestamp in Unix epoch milliseconds, resolved against the supplied current_time. Use null if absent.",
-      ),
+      .optional(),
     rationale: z.string().trim().min(1).describe("Why this step follows from the goal request."),
   })
   .strict();
@@ -92,13 +224,9 @@ const goalPromotionSchema = z
       .describe(
         "Relative priority from 0 to 10. Prefer moderate values unless urgency is explicit.",
       ),
-    target_at: z
-      .number()
-      .finite()
-      .nullable()
-      .describe(
-        "Target completion timestamp in Unix epoch milliseconds, resolved against the supplied current_time, or null if no deadline.",
-      ),
+    target_at: isoDeadlineSchema(
+      "Target completion date as an ISO-8601 calendar date (YYYY-MM-DD) or date-time with an explicit UTC offset, resolved against the supplied current_time. Null if no deadline.",
+    ).nullable(),
     reason: z
       .string()
       .trim()
@@ -213,9 +341,9 @@ export type ExtractGoalPromotionInput = {
   audienceEntityId: EntityId | null;
   speakerEntityId?: EntityId | null;
   speakerDisplayName?: string | null;
-  // The schema demands absolute epoch-ms deadlines, so the prompt must carry
-  // the current time: without it the model cannot resolve a relative or
-  // year-less date ("before August 14") and guesses the year.
+  // Deadlines arrive as calendar dates, but the prompt must still carry the
+  // current time: without it a relative or year-less date ("before August 14",
+  // "in a month") has no anchor and the model guesses the year.
   nowMs: number;
   temporalCue: unknown;
   activeGoals: readonly Pick<

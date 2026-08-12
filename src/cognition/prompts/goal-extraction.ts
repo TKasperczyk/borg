@@ -8,7 +8,7 @@ export const GOAL_PROMOTION_SYSTEM_PROMPT = [
   "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
   "Durable goals are about Borg's durable conversation/memory responsibility, not participants' personal life goals. A user saying \"my goal is to...\" is usually participant-side context, a preference, or one_off planning context, not durable_borg_goal.",
   "If a supplied active goal already covers the request, classify as already_represented and set duplicate_of_goal_id.",
-  "Use target_at only for a real goal deadline. Use the supplied temporal cue as context, not as an automatic trigger. Resolve relative or year-less dates against the supplied current_time.",
+  "Use target_at only for a real goal deadline. Use the supplied temporal cue as context, not as an automatic trigger. Resolve relative or year-less dates against the supplied current_time and write the resolved calendar date, including its year, as an ISO-8601 date.",
   "Borg-owned durable goals must stay inside the host capability boundary below.",
   `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to durable_borg_goal descriptions. For goals or tasks belonging to other participants, name those participants rather than using deictic placeholders.`,
   BORG_HOST_CAPABILITY_BOUNDARY_PROMPT,

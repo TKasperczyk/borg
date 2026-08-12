@@ -797,14 +797,14 @@ function createGoalPromotionResponse(
     description: string;
     priority?: number;
     terminal_condition?: string | null;
-    target_at?: number | null;
+    target_at?: string | null;
     reason?: string;
     confidence?: number;
     duplicate_of_goal_id?: string | null;
     initial_step?: {
       description: string;
       kind: "think" | "ask_user" | "research" | "act" | "wait";
-      due_at?: number | null;
+      due_at?: string | null;
       rationale: string;
     } | null;
   }>,
@@ -6372,8 +6372,10 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_800_000_176_500);
-    const targetAt = 1_800_100_000_000;
-    const stepDueAt = 1_800_050_000_000;
+    const targetAtIso = "2027-01-16T11:46:40Z";
+    const stepDueAtIso = "2027-01-15T21:53:20Z";
+    const targetAt = Date.parse(targetAtIso);
+    const stepDueAt = Date.parse(stepDueAtIso);
     const llm = new FakeLLMClient({
       responses: [
         createGoalPromotionResponse([
@@ -6381,13 +6383,13 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
             description: "Help the user keep the Monday postmortem straight",
             priority: 9,
             terminal_condition: null,
-            target_at: targetAt,
+            target_at: targetAtIso,
             reason: "The user asked Borg to help keep the postmortem organized.",
             confidence: 0.91,
             initial_step: {
               description: "Ask what must be included in the postmortem",
               kind: "ask_user",
-              due_at: stepDueAt,
+              due_at: stepDueAtIso,
               rationale: "Borg needs the postmortem constraints to help track it.",
             },
           },

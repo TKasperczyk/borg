@@ -19,14 +19,14 @@ type PromotionInput = {
   description?: string;
   terminal_condition?: string | null;
   priority?: number;
-  target_at?: number | null;
+  target_at?: string | null;
   reason?: string;
   confidence?: number;
   duplicate_of_goal_id?: string | null;
   initial_step?: {
     description: string;
     kind: "think" | "ask_user" | "research" | "act" | "wait";
-    due_at?: number | null;
+    due_at?: string | null;
     rationale: string;
   } | null;
 };
@@ -152,9 +152,8 @@ describe("GoalPromotionExtractor", () => {
   });
 
   it("anchors the prompt with the current time so deadlines resolve to the right year", async () => {
-    // The schema demands absolute epoch-ms deadlines; a year-less date in the
-    // user turn ("before August 14") is unresolvable without this anchor and
-    // produced a live goal dated two years in the past.
+    // A year-less date in the user turn ("before August 14") is unresolvable
+    // without this anchor and produced a live goal dated two years in the past.
     const llm = new FakeLLMClient({ responses: [goalPromotionResponse([])] });
     const extractor = new GoalPromotionExtractor({
       llmClient: llm,
@@ -301,13 +300,13 @@ describe("GoalPromotionExtractor", () => {
           {
             description: "Help the user keep the Monday planning review organized",
             priority: 9,
-            target_at: 1_800_000,
+            target_at: "2026-11-30",
             reason: "The user asked Borg to keep the planning review organized.",
             confidence: 0.92,
             initial_step: {
               description: "Ask for review constraints before Monday",
               kind: "ask_user",
-              due_at: 1_700_000,
+              due_at: "2026-11-23T17:00:00Z",
               rationale: "Borg needs the constraints to track the review well.",
             },
           },
@@ -327,14 +326,82 @@ describe("GoalPromotionExtractor", () => {
       ),
     ).resolves.toMatchObject([
       {
-        target_at: 1_800_000,
+        target_at: Date.parse("2026-11-30T23:59:59.999Z"),
         initial_step: {
           description: "Ask for review constraints before Monday",
           kind: "ask_user",
-          due_at: 1_700_000,
+          due_at: Date.parse("2026-11-23T17:00:00Z"),
         },
       },
     ]);
+  });
+
+  it("asks the model for calendar dates rather than epoch integers", async () => {
+    const llm = new FakeLLMClient({ responses: [goalPromotionResponse([])] });
+    const extractor = new GoalPromotionExtractor({ llmClient: llm, model: "haiku" });
+
+    await extractor.extract(createExtractorInput({}));
+
+    const properties = llm.requests[0]?.tools?.[0]?.inputSchema.properties as {
+      promotions?: { items?: { properties?: Record<string, { type?: string }> } };
+    };
+    const promotionProperties = properties.promotions?.items?.properties ?? {};
+
+    // A 13-digit epoch has to be written digit by digit, and one wrong digit is a
+    // silent year-scale error. The wire type is what keeps that off the record.
+    expect(promotionProperties.target_at?.type).not.toBe("number");
+    expect(JSON.stringify(promotionProperties.target_at)).toContain("string");
+  });
+
+  it("resolves a year-forward calendar date to that year rather than to the current one", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        goalPromotionResponse([
+          {
+            description: "Track the one-year verification the participants agreed on",
+            target_at: "2027-08-11",
+            confidence: 0.95,
+          },
+        ]),
+      ],
+    });
+    const extractor = new GoalPromotionExtractor({ llmClient: llm, model: "haiku" });
+
+    const candidates = await extractor.extract(
+      createExtractorInput({ nowMs: Date.parse("2026-08-11T14:40:44Z") }),
+    );
+
+    expect(candidates[0]?.target_at).toBe(Date.parse("2027-08-11T23:59:59.999Z"));
+    expect(candidates[0]?.target_at).toBeGreaterThan(Date.parse("2026-08-11T14:40:44Z"));
+  });
+
+  it("skips a promotion whose deadline is not a parseable calendar date", async () => {
+    const { emit, tracer } = tracingHarness();
+    const llm = new FakeLLMClient({
+      responses: [
+        goalPromotionResponse([
+          {
+            description: "Track something with an unusable deadline",
+            target_at: "next August sometime",
+            confidence: 0.95,
+          },
+        ]),
+      ],
+    });
+    const extractor = new GoalPromotionExtractor({
+      llmClient: llm,
+      model: "haiku",
+      tracer,
+      turnId: "turn_deadline",
+    });
+
+    await expect(extractor.extract(createExtractorInput({}))).resolves.toEqual([]);
+    expect(emit).toHaveBeenCalledWith(
+      "extraction.goals.completed",
+      expect.objectContaining({
+        skipped_promotions: [{ candidate_index: 0, reason: "invalid_target_at" }],
+      }),
+    );
   });
 
   it.each(
