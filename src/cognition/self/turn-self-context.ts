@@ -248,6 +248,7 @@ export class TurnSelfContextBuilder {
         threshold: this.options.goalFocusThreshold,
         deadlineLookaheadMs: this.options.goalFollowupLookaheadMs,
         staleMs: this.options.goalFollowupStaleMs,
+        scoreContext: "turn_selection",
         contextFitByGoalId,
       }),
       getForcedExecutiveFocusGoalId(input.autonomyTrigger),

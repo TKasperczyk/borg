@@ -1092,6 +1092,11 @@ describe("TurnRetrievalCoordinator", () => {
       },
       candidates: [],
       threshold: 0.45,
+      score_basis: {
+        score_context: "turn_selection",
+        deadline_lookahead_ms: 604_800_000,
+        progress_debt_stale_ms: 1_209_600_000,
+      },
     };
 
     await coordinator.coordinate({

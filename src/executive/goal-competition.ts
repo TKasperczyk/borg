@@ -1,6 +1,11 @@
 import type { GoalRecord } from "../memory/self/index.js";
 
-import type { ExecutiveFocus, ExecutiveGoalScore, ExecutiveGoalScoreComponents } from "./types.js";
+import type {
+  ExecutiveFocus,
+  ExecutiveGoalScore,
+  ExecutiveGoalScoreComponents,
+  ExecutiveGoalScoreContext,
+} from "./types.js";
 import type { ExecutiveContextFitByGoalId } from "./context-fit.js";
 
 export const DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD = 0.45;
@@ -19,6 +24,7 @@ export type SelectExecutiveFocusInput = {
   threshold?: number;
   deadlineLookaheadMs: number;
   staleMs: number;
+  scoreContext?: ExecutiveGoalScoreContext;
   contextFitByGoalId?: ExecutiveContextFitByGoalId;
 };
 
@@ -97,6 +103,11 @@ function compareGoalScores(left: ExecutiveGoalScore, right: ExecutiveGoalScore):
 
 export function selectExecutiveFocus(input: SelectExecutiveFocusInput): ExecutiveFocus {
   const threshold = input.threshold ?? DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD;
+  const scoreBasis = {
+    score_context: input.scoreContext ?? "turn_selection",
+    deadline_lookahead_ms: input.deadlineLookaheadMs,
+    progress_debt_stale_ms: input.staleMs,
+  } as const;
   const activeGoals = input.goals.filter((goal) => goal.status === "active");
 
   if (activeGoals.length === 0) {
@@ -105,6 +116,7 @@ export function selectExecutiveFocus(input: SelectExecutiveFocusInput): Executiv
       selected_score: null,
       candidates: [],
       threshold,
+      score_basis: scoreBasis,
     };
   }
 
@@ -136,6 +148,7 @@ export function selectExecutiveFocus(input: SelectExecutiveFocusInput): Executiv
       selected_score: null,
       candidates,
       threshold,
+      score_basis: scoreBasis,
     };
   }
 
@@ -144,5 +157,6 @@ export function selectExecutiveFocus(input: SelectExecutiveFocusInput): Executiv
     selected_score: selected,
     candidates,
     threshold,
+    score_basis: scoreBasis,
   };
 }

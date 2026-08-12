@@ -54,6 +54,11 @@ describe("selectExecutiveFocus", () => {
     expect(focus.candidates).toEqual([]);
     expect(focus.selected_goal).toBeNull();
     expect(focus.selected_score).toBeNull();
+    expect(focus.score_basis).toEqual({
+      score_context: "turn_selection",
+      deadline_lookahead_ms: 7 * dayMs,
+      progress_debt_stale_ms: 14 * dayMs,
+    });
   });
 
   it("ignores inactive goals", () => {
@@ -169,6 +174,29 @@ describe("selectExecutiveFocus", () => {
 
     expect(focus.candidates[0]?.components.progress_debt).toBe(1);
     expect(focus.candidates[0]?.score).toBeCloseTo(0.5);
+  });
+
+  it("carries the exact effective scoring horizons outside numeric components", () => {
+    const focus = select(
+      [goal({ id: "goal_aaaaaaaaaaaaaaaa", description: "Wake-selected goal" })],
+      {
+        deadlineLookaheadMs: 123_456,
+        staleMs: 654_321,
+        scoreContext: "wake_time_trigger_selection",
+      },
+    );
+
+    expect(focus.score_basis).toEqual({
+      score_context: "wake_time_trigger_selection",
+      deadline_lookahead_ms: 123_456,
+      progress_debt_stale_ms: 654_321,
+    });
+    expect(focus.selected_score?.components).toEqual({
+      priority: 1,
+      deadline_pressure: 0,
+      context_fit: 0,
+      progress_debt: 0,
+    });
   });
 
   it("uses created_at as the progress-debt anchor when last_progress_ts is null", () => {

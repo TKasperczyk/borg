@@ -48,6 +48,7 @@ import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session
 import { buildCreatorDirectiveBriefingForTurn } from "../../lifecycle/turn-phase/retrieval-phase.js";
 import type { DeliberationContext } from "../types.js";
 import { memoryDisclosurePayloadFields } from "../../../memory/common/disclosure-serializers.js";
+import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
 
 import {
   buildAutonomousOutboundAuthorizationSection,
@@ -1878,6 +1879,11 @@ describe("buildBaseSystemPrompt", () => {
           },
           candidates: [selectedScore],
           threshold: 0.5,
+          score_basis: {
+            score_context: "turn_selection",
+            deadline_lookahead_ms: 604_800_000,
+            progress_debt_stale_ms: 1_209_600_000,
+          },
         },
         selfSnapshot: {
           values: [],
@@ -1925,9 +1931,19 @@ describe("buildBaseSystemPrompt", () => {
     }
 
     const selfSnapshotBlock = extractBlock(prompt, "borg_self_snapshot");
+    const executiveBlock = extractBlock(prompt, "borg_executive_focus");
 
     expect(selfSnapshotBlock).toContain("Understand the continuity model");
     expect(selfSnapshotBlock).toContain(`private-to=${goalAudienceId}`);
+    expect(executiveBlock).toContain(
+      `Focus identity: goal_id=${goal.id} label="Understand the continuity model"`,
+    );
+    expect(executiveBlock).toContain(
+      "Score basis: score_context=turn_selection deadline_lookahead_ms=604800000 progress_debt_stale_ms=1209600000",
+    );
+    expect(executiveBlock.indexOf("Score basis:")).toBeLessThan(
+      executiveBlock.indexOf("Why selected:"),
+    );
   });
 
   it("renders propagated source disclosure for executive focus goals and inherited next steps", () => {
@@ -1983,6 +1999,11 @@ describe("buildBaseSystemPrompt", () => {
           },
           candidates: [selectedScore],
           threshold: 0.5,
+          score_basis: {
+            score_context: "turn_selection",
+            deadline_lookahead_ms: 604_800_000,
+            progress_debt_stale_ms: 1_209_600_000,
+          },
         },
         selfSnapshot: {
           values: [],
@@ -2003,6 +2024,105 @@ describe("buildBaseSystemPrompt", () => {
     expect(nextStepLine).toContain(`private-to=${alice}`);
     expect(selfSnapshotBlock).toContain("Follow the source-grounded private goal");
     expect(selfSnapshotBlock).toContain(`private-to=${alice}`);
+  });
+
+  it("bounds the executive focus identity label without splitting a surrogate pair", () => {
+    const description = `${"a".repeat(116)}😀tail`;
+    const goal = {
+      id: "goal_cccccccccccccccc" as never,
+      description,
+      terminal_condition: null,
+      priority: 8,
+      parent_goal_id: null,
+      status: "active",
+      progress_notes: null,
+      last_progress_ts: null,
+      created_at: NOW_MS,
+      target_at: null,
+      audience_entity_id: null,
+      owner_entity_id: null,
+      source_stream_entry_ids: [],
+      provenance: { kind: "manual" },
+    } as NonNullable<NonNullable<DeliberationContext["executiveFocus"]>["selected_goal"]>;
+    const selectedScore = {
+      goal_id: goal.id,
+      goal,
+      score: 0.8,
+      components: {
+        priority: 0.8,
+        deadline_pressure: 0,
+        context_fit: 0.9,
+        progress_debt: 0,
+      },
+      reason: "focus identity fixture",
+    };
+    const context = makeContext({
+      executiveFocus: {
+        selected_goal: goal,
+        selected_score: selectedScore,
+        candidates: [selectedScore],
+        threshold: 0.5,
+        score_basis: {
+          score_context: "turn_selection",
+          deadline_lookahead_ms: 604_800_000,
+          progress_debt_stale_ms: 1_209_600_000,
+        },
+      },
+    });
+    const prompt = buildBaseSystemPrompt(context, PROMPT_OPTIONS);
+    const cacheable = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
+    const executiveBlock = extractBlock(prompt, "borg_executive_focus");
+    const cacheableExecutiveBlock = extractBlock(cacheable.dynamicContent, "borg_executive_focus");
+    const identityLine = executiveBlock
+      .split("\n")
+      .find((line) => line.includes("Focus identity:"));
+    const labelMarker = " label=";
+    const labelStart = identityLine?.indexOf(labelMarker) ?? -1;
+    const renderedLabel =
+      identityLine === undefined || labelStart < 0
+        ? null
+        : JSON.parse(identityLine.slice(labelStart + labelMarker.length));
+
+    expect(identityLine).toContain(`goal_id=${goal.id}`);
+    expect(renderedLabel).toBe(`${"a".repeat(116)}...`);
+    expect(renderedLabel).toHaveLength(119);
+    expect(cacheableExecutiveBlock).toBe(executiveBlock);
+  });
+
+  it("renders wake score metadata only on the system-prompt presentation surface", () => {
+    const autonomyTrigger = {
+      source_name: "executive_focus_due",
+      source_type: "trigger" as const,
+      event_id: "goal:goal_aaaaaaaaaaaaaaaa:1000",
+      sort_ts: NOW_MS,
+      payload: {
+        reason: "goal_stale",
+        selected_goal: {
+          goal_id: "goal_aaaaaaaaaaaaaaaa",
+          description: "Wake-selected continuity goal",
+        },
+      },
+      presentation: {
+        score_basis: {
+          score_context: "wake_time_trigger_selection" as const,
+          deadline_lookahead_ms: 604_800_000,
+          progress_debt_stale_ms: 86_400_000,
+        },
+      },
+    };
+    const prompt = buildBaseSystemPrompt(makeContext({ autonomyTrigger }), PROMPT_OPTIONS);
+    const autonomyBlock = extractBlock(prompt, "borg_autonomy_trigger");
+    const formattedContext = formatAutonomyTriggerContext(autonomyTrigger);
+
+    expect(autonomyBlock).toContain("Wake-time trigger selection:");
+    expect(autonomyBlock).toContain(
+      "Score basis: score_context=wake_time_trigger_selection deadline_lookahead_ms=604800000 progress_debt_stale_ms=86400000",
+    );
+    expect(autonomyBlock.indexOf("Wake-time trigger selection:")).toBeLessThan(
+      autonomyBlock.indexOf('"reason": "goal_stale"'),
+    );
+    expect(formattedContext).not.toContain("Wake-time trigger selection:");
+    expect(formattedContext).not.toContain("score_context");
   });
 
   it("omits legacy retrieved evidence when the evidence ledger is active", () => {

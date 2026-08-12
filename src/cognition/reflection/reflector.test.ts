@@ -47,6 +47,14 @@ import {
   createWorkingMemoryFixture,
 } from "../../offline/test-support.js";
 
+function createTurnSelectionScoreBasis() {
+  return {
+    score_context: "turn_selection" as const,
+    deadline_lookahead_ms: 604_800_000,
+    progress_debt_stale_ms: 1_209_600_000,
+  };
+}
+
 function createReflectionResponse(
   advancedGoals: Array<{ goal_id: string; evidence: string }> = [],
   proceduralOutcomes: Array<{
@@ -491,6 +499,7 @@ function createExecutiveReflectionContext(input: {
       next_step: input.nextStep ?? null,
       candidates: [],
       threshold: 0.45,
+      score_basis: createTurnSelectionScoreBasis(),
     },
     selectedSkillId: null,
     suppressionSet: new SuppressionSet(1),
@@ -2837,6 +2846,7 @@ describe("reflector", () => {
           next_step: null,
           candidates: [],
           threshold: 0.45,
+          score_basis: createTurnSelectionScoreBasis(),
         },
       },
       harness.streamWriter,
@@ -3079,6 +3089,7 @@ describe("reflector", () => {
           next_step: nextStep,
           candidates: [],
           threshold: 0.45,
+          score_basis: createTurnSelectionScoreBasis(),
         },
       },
       harness.streamWriter,

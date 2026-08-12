@@ -11,7 +11,11 @@ export type BuilderSectionContext = {
   buckets: SectionBuckets;
   options: Pick<
     EvidenceLedgerBuilderOptions,
-    "actionThreadRenderLimit" | "actionThreadSimilarityThreshold" | "actionThreadSourceRecordLimit"
+    | "actionThreadRenderLimit"
+    | "actionThreadSimilarityThreshold"
+    | "actionThreadSourceRecordLimit"
+    | "actionThreadSalienceClassReservedSlots"
+    | "actionThreadAudienceReservedSlots"
   >;
   transcript: TranscriptCompactionResult;
   streamEntries: readonly StreamEntry[];

@@ -55,6 +55,7 @@ import {
 } from "../../util/ids.js";
 import { EvidenceLedgerBuilder } from "./builder.js";
 import { isPromptSalientActionSalienceClass } from "./action-threads.js";
+import { renderSection } from "./section-rendering.js";
 import { summarizeEvidenceLedgerTrace } from "./trace-summary.js";
 import {
   compactEvidenceLedger,
@@ -3558,7 +3559,7 @@ describe("EvidenceLedgerBuilder", () => {
     expect(actionEntries.some((entry) => entry.salience_class === "completed_recent")).toBe(true);
     expect(
       actionEntries.filter((entry) => entry.salience_class === "participant_pending_stale"),
-    ).toHaveLength(6);
+    ).toHaveLength(5);
     expect(
       actionEntries.filter((entry) => entry.id.startsWith("action_thread:")).slice(-5),
     ).toEqual(
@@ -3569,9 +3570,324 @@ describe("EvidenceLedgerBuilder", () => {
       ]),
     );
     expect(
-      actionEntries.find((entry) => entry.id === "action_threads:participant_pending_stale_summary")
-        ?.text,
-    ).toContain("count=2");
+      actionEntries.find((entry) => entry.id === "action_threads:older_summary")?.text,
+    ).toContain(
+      "audience_scope=global salience_class=participant_pending_stale threads=2 records=2",
+    );
+  });
+
+  it("prevents a top-ranked Borg flood from starving participant and audience reservations", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const alice = createEntityId();
+    const bob = createEntityId();
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "Keep every structural action scope legible.",
+      sender_entity_id: bob,
+    });
+    const borgFlood = Array.from({ length: 8 }, (_, index) =>
+      makeAction(userEntry.id, {
+        description: `Borg flood action ${index}`,
+        actor: "borg",
+        audience_entity_id: null,
+        state: "committed_to_do",
+        committed_at: NOW_MS + 100 - index,
+        updated_at: NOW_MS + 100 - index,
+        scheduled_at: null,
+      }),
+    );
+    const participantAction = makeAction(userEntry.id, {
+      description: "Bob participant action survives",
+      actor: bob,
+      audience_entity_id: null,
+      state: "committed_to_do",
+      committed_at: NOW_MS - 100,
+      updated_at: NOW_MS - 100,
+      scheduled_at: null,
+      last_referenced_turn_counter: 4,
+    });
+    const audienceAction = makeAction(userEntry.id, {
+      description: "Alice audience action survives",
+      actor: "borg",
+      audience_entity_id: alice,
+      state: "committed_to_do",
+      committed_at: NOW_MS - 200,
+      updated_at: NOW_MS - 200,
+      scheduled_at: null,
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: {
+        list: () => [...borgFlood, participantAction, audienceAction],
+        findSimilarDescriptionPairs: async () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+      actionThreadRenderLimit: 3,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: alice,
+      currentUserMessage: String(userEntry.content),
+      currentUserEntry: userEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      activeParticipants: [
+        { entityId: bob, displayName: "Bob", role: "speaker" },
+        { entityId: alice, displayName: "Alice", role: "audience" },
+      ],
+    });
+    const actionEntries =
+      ledger.sections
+        .find((section) => section.id === "action_states")
+        ?.entries.filter((entry) => entry.id.startsWith("action_thread:")) ?? [];
+    const renderedText = actionEntries.map((entry) => entry.text).join("\n");
+
+    expect(actionEntries).toHaveLength(3);
+    expect(renderedText).toContain("Borg flood action 0");
+    expect(renderedText).toContain("Bob participant action survives");
+    expect(renderedText).toContain("Alice audience action survives");
+  });
+
+  it("keeps legacy top-N action order when reservations create no selection pressure", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "Keep the ordinary action ordering stable.",
+    });
+    const actions = Array.from({ length: 5 }, (_, index) =>
+      makeAction(userEntry.id, {
+        description: `Ordered Borg action ${index}`,
+        actor: "borg",
+        state: "committed_to_do",
+        committed_at: NOW_MS + 100 - index,
+        updated_at: NOW_MS + 100 - index,
+        scheduled_at: null,
+      }),
+    );
+    async function buildActionStatesSection(
+      reservationOverrides: {
+        actionThreadSalienceClassReservedSlots?: number;
+        actionThreadAudienceReservedSlots?: number;
+      } = {},
+    ) {
+      const builder = new EvidenceLedgerBuilder({
+        createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+        relationalSlotRepository: { list: () => [] },
+        actionRepository: {
+          list: () => actions,
+          findSimilarDescriptionPairs: async () => [],
+        },
+        currentSessionTranscriptTokenBudget: 50_000,
+        actionThreadRenderLimit: 3,
+        ...reservationOverrides,
+      });
+      const ledger = await builder.build({
+        sessionId: DEFAULT_SESSION_ID,
+        audienceEntityId: null,
+        currentUserMessage: String(userEntry.content),
+        currentUserEntry: userEntry,
+        workingMemory: makeWorkingMemory(),
+        applicableCommitments: [],
+        retrievedEvidence: [],
+        retrievedEpisodes: [],
+        retrievedSemantic: null,
+        openQuestions: [],
+        pendingCorrections: [],
+        frameAnomaly: null,
+      });
+      const actionStatesSection = ledger.sections.find((section) => section.id === "action_states");
+
+      if (actionStatesSection === undefined) {
+        throw new Error("Expected action_states section");
+      }
+
+      return actionStatesSection;
+    }
+
+    const defaultActionStatesSection = await buildActionStatesSection();
+    const unreservedActionStatesSection = await buildActionStatesSection({
+      actionThreadSalienceClassReservedSlots: 0,
+      actionThreadAudienceReservedSlots: 0,
+    });
+    const renderedDescriptions = defaultActionStatesSection.entries
+      .filter((entry) => entry.id.startsWith("action_thread:"))
+      .map((entry) => entry.text);
+
+    expect(renderSection(defaultActionStatesSection)).toBe(
+      renderSection(unreservedActionStatesSection),
+    );
+
+    expect(renderedDescriptions).toHaveLength(3);
+    expect(renderedDescriptions[0]).toContain("Ordered Borg action 0");
+    expect(renderedDescriptions[1]).toContain("Ordered Borg action 1");
+    expect(renderedDescriptions[2]).toContain("Ordered Borg action 2");
+  });
+
+  it("groups the exact omitted-thread complement with separate disclosure labels", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const alice = createEntityId();
+    const bob = createEntityId();
+    const aliceThreadGoal = createGoalId();
+    const unknownSampleText = `Unknown sample should be dropped before its disclosure label ${"tail ".repeat(20)}`;
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "Summarize omitted action scopes independently.",
+      sender_entity_id: bob,
+    });
+    const selected = makeAction(userEntry.id, {
+      description: "Selected global Borg action",
+      actor: "borg",
+      state: "committed_to_do",
+      committed_at: NOW_MS + 30,
+      updated_at: NOW_MS + 30,
+      scheduled_at: null,
+    });
+    const aliceOmitted = makeAction(userEntry.id, {
+      description: "Alice-private omitted Borg action",
+      actor: "borg",
+      audience_entity_id: alice,
+      goal_id: aliceThreadGoal,
+      state: "committed_to_do",
+      committed_at: NOW_MS + 20,
+      updated_at: NOW_MS + 20,
+      scheduled_at: null,
+    });
+    const aliceOmittedPrior = makeAction(userEntry.id, {
+      description: "Earlier self-private phase of Alice action",
+      actor: "borg",
+      audience_entity_id: null,
+      goal_id: aliceThreadGoal,
+      state: "considering",
+      considering_at: NOW_MS + 15,
+      updated_at: NOW_MS + 15,
+      scheduled_at: null,
+    });
+    const participantOmitted = makeAction(userEntry.id, {
+      description: unknownSampleText,
+      actor: bob,
+      audience_entity_id: null,
+      state: "committed_to_do",
+      committed_at: NOW_MS + 10,
+      updated_at: NOW_MS + 10,
+      scheduled_at: null,
+      last_referenced_turn_counter: 4,
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: {
+        list: () => [selected, aliceOmitted, aliceOmittedPrior, participantOmitted],
+        findSimilarDescriptionPairs: async () => [
+          {
+            leftId: aliceOmittedPrior.id,
+            rightId: aliceOmitted.id,
+            similarity: 0.9,
+          },
+        ],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+      actionThreadRenderLimit: 1,
+      actionThreadSalienceClassReservedSlots: 0,
+      actionThreadAudienceReservedSlots: 0,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: alice,
+      currentUserMessage: String(userEntry.content),
+      currentUserEntry: userEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      activeParticipants: [
+        { entityId: bob, displayName: "Bob", role: "speaker" },
+        { entityId: alice, displayName: "Alice", role: "audience" },
+      ],
+    });
+    const actionEntries =
+      ledger.sections.find((section) => section.id === "action_states")?.entries ?? [];
+    const summaries = actionEntries.filter((entry) => entry.id === "action_threads:older_summary");
+    const summaryText = summaries[0]?.text ?? "";
+    const summaryLines = summaryText.split("\n");
+    const aliceLine = summaryLines.find((line) => line.includes(`audience_scope=${alice}`));
+    const globalLine = summaryLines.find((line) => line.includes("audience_scope=global"));
+
+    expect(actionEntries.filter((entry) => entry.id.startsWith("action_thread:"))).toHaveLength(1);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.text).toContain("threads=2, records=3");
+    expect(aliceLine).toContain(`salience_class=borg_current_turn_action threads=1 records=2`);
+    expect(aliceLine).toContain("disclosure_label=disclosure_class=self_private");
+    expect(aliceLine).toContain(`origin_audience=${alice}`);
+    expect(globalLine).toContain("salience_class=participant_pending_recent threads=1 records=1");
+    expect(globalLine).toContain("disclosure_label=disclosure_class=unknown");
+    expect(globalLine).not.toContain(alice);
+
+    const compacted = compactEvidenceLedger(ledger, {
+      maxEntryTextTokens: 195,
+    });
+    const compactedSummaryText =
+      compacted.ledger.sections
+        .find((section) => section.id === "action_states")
+        ?.entries.find((entry) => entry.id === "action_threads:older_summary")?.text ?? "";
+    const disclosureSamples = [
+      {
+        label: "disclosure_label=disclosure_class=self_private",
+        sample: "Alice-private omitted Borg action",
+      },
+      {
+        label: "disclosure_label=disclosure_class=unknown",
+        sample: "Unknown sample should be dropped",
+      },
+    ];
+
+    for (const { label, sample } of disclosureSamples) {
+      expect(summaryText.indexOf(label)).toBeLessThan(summaryText.indexOf(sample));
+
+      const survivingSampleIndex = compactedSummaryText.indexOf(sample);
+
+      if (survivingSampleIndex >= 0) {
+        expect(compactedSummaryText.indexOf(label)).toBeGreaterThanOrEqual(0);
+        expect(compactedSummaryText.indexOf(label)).toBeLessThan(survivingSampleIndex);
+      }
+    }
+
+    expect(compactedSummaryText).toContain("Alice-private omitted Borg action");
+    expect(compactedSummaryText).toContain(
+      "disclosure_label=disclosure_class=unknown private-to=unknown; I can use this internally; I do not disclose it to the current audience unless authorized",
+    );
+    expect(compactedSummaryText).not.toContain("Unknown sample should be dropped");
+    expect(compactedSummaryText).toContain("[evidence ledger entry truncated");
   });
 
   it("renders non-raw retrieved evidence sources into ledger sections", async () => {
@@ -3813,6 +4129,8 @@ describe("EvidenceLedgerBuilder", () => {
       },
       currentSessionTranscriptTokenBudget: 50_000,
       actionThreadRenderLimit: 2,
+      actionThreadSalienceClassReservedSlots: 0,
+      actionThreadAudienceReservedSlots: 0,
     });
 
     const ledger = await builder.build({
@@ -3836,6 +4154,9 @@ describe("EvidenceLedgerBuilder", () => {
     expect(actionEntries).toHaveLength(3);
     expect(summary?.text).toContain("threads=4");
     expect(summary?.text).toContain("records=4");
+    expect(summary?.text).toContain(
+      "audience_scope=global salience_class=completed_recent threads=2 records=2",
+    );
     expect(summary?.text).toContain("committed_to_do=1");
     expect(summary?.text).toContain("scheduled=1");
     expect(summary?.text).toContain("completed=2");

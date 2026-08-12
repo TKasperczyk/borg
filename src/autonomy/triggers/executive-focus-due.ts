@@ -395,6 +395,7 @@ export function createExecutiveFocusDueTrigger(
       threshold,
       deadlineLookaheadMs: options.deadlineLookaheadMs,
       staleMs: options.stalenessMs,
+      scoreContext: "wake_time_trigger_selection",
       contextFitByGoalId,
     });
   }
@@ -611,6 +612,13 @@ export function createExecutiveFocusDueTrigger(
           event_id: event.id,
           sort_ts: event.sortTs,
           payload: event.payload,
+          presentation: {
+            score_basis: {
+              score_context: "wake_time_trigger_selection",
+              deadline_lookahead_ms: options.deadlineLookaheadMs,
+              progress_debt_stale_ms: options.stalenessMs,
+            },
+          },
         },
       };
     },

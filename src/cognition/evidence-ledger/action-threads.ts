@@ -7,7 +7,10 @@ import {
   type ActionStateTimestampField,
 } from "../../memory/actions/index.js";
 import type { EntityRepository } from "../../memory/commitments/index.js";
-import type { MemoryDisclosureLabel } from "../../retrieval/index.js";
+import {
+  renderMemoryDisclosureLabelForModel,
+  type MemoryDisclosureLabel,
+} from "../../retrieval/index.js";
 import { DisjointSet } from "../../util/disjoint-set.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import { actionMemoryDisclosureLabel } from "../../memory/common/disclosure-serializers.js";
@@ -20,6 +23,8 @@ import type { EvidenceLedgerActionSalienceClass, EvidenceLedgerSessionScope } fr
 export const DEFAULT_ACTION_THREAD_RENDER_LIMIT = 12;
 export const DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD = 0.85;
 export const DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT = 256;
+export const DEFAULT_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS = 1;
+export const DEFAULT_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS = 1;
 export const PARTICIPANT_RECENT_ACTION_TURN_WINDOW = 3;
 export const PARTICIPANT_DORMANT_ACTION_TURN_WINDOW = 15;
 export const STALE_PARTICIPANT_ACTION_RENDER_LIMIT = 5;
@@ -469,6 +474,82 @@ export function orderActionThreadsBySalience(
   );
 }
 
+export type ActionThreadAudienceBucket = EntityId | "global";
+
+export function actionThreadAudienceBucket(
+  thread: Pick<ActionThread, "current">,
+): ActionThreadAudienceBucket {
+  return thread.current.audience_entity_id ?? "global";
+}
+
+export function allocateActionThreadRenderSlots(input: {
+  threads: readonly ActionThreadWithSalience[];
+  limit: number;
+  salienceClassReservedSlots: number;
+  audienceReservedSlots: number;
+  audienceOrder?: readonly ActionThreadAudienceBucket[];
+}): ActionThreadWithSalience[] {
+  const ordered = orderActionThreadsBySalience(input.threads);
+  const selectedIds = new Set<string>();
+  const selected: ActionThreadWithSalience[] = [];
+
+  function reserve(
+    groups: readonly (readonly ActionThreadWithSalience[])[],
+    reservedSlots: number,
+  ): void {
+    for (const group of groups) {
+      if (selected.length >= input.limit) {
+        return;
+      }
+
+      let remaining = reservedSlots;
+
+      for (const thread of group) {
+        if (remaining === 0 || selected.length >= input.limit) {
+          break;
+        }
+
+        if (selectedIds.has(thread.id)) {
+          continue;
+        }
+
+        selectedIds.add(thread.id);
+        selected.push(thread);
+        remaining -= 1;
+      }
+    }
+  }
+
+  const salienceGroups = ACTION_SALIENCE_ORDER.map((salienceClass) =>
+    ordered.filter((thread) => thread.salienceClass === salienceClass),
+  ).filter((group) => group.length > 0);
+  reserve(salienceGroups, input.salienceClassReservedSlots);
+
+  const audienceOrder = [
+    ...new Set([
+      ...(input.audienceOrder ?? []),
+      ...ordered.map((thread) => actionThreadAudienceBucket(thread)),
+    ]),
+  ].filter((audience) => ordered.some((thread) => actionThreadAudienceBucket(thread) === audience));
+  const audienceGroups = audienceOrder.map((audience) =>
+    ordered.filter((thread) => actionThreadAudienceBucket(thread) === audience),
+  );
+  reserve(audienceGroups, input.audienceReservedSlots);
+
+  for (const thread of ordered) {
+    if (selected.length >= input.limit) {
+      break;
+    }
+
+    if (!selectedIds.has(thread.id)) {
+      selectedIds.add(thread.id);
+      selected.push(thread);
+    }
+  }
+
+  return orderActionThreadsBySalience(selected);
+}
+
 export function isPromptSalientActionSalienceClass(
   salienceClass: EvidenceLedgerActionSalienceClass,
 ): boolean {
@@ -525,11 +606,21 @@ function truncateOlderActionThreadSample(text: string): string {
   return `${text.slice(0, OLDER_ACTION_THREAD_SAMPLE_MAX_CHARS - 3)}...`;
 }
 
-export function renderOlderActionThreadsSummary(olderThreads: readonly ActionThread[]): string {
-  const olderRecordCount = olderThreads.reduce((count, thread) => count + thread.records.length, 0);
+export type OlderActionThreadSummaryGroup = {
+  audienceScope: ActionThreadAudienceBucket;
+  salienceClass: EvidenceLedgerActionSalienceClass;
+  threads: readonly ActionThread[];
+  disclosureLabel: MemoryDisclosureLabel;
+};
+
+function actionThreadSummaryDetails(
+  threads: readonly ActionThread[],
+  disclosureLabel: MemoryDisclosureLabel,
+): string {
+  const recordCount = threads.reduce((count, thread) => count + thread.records.length, 0);
   const stateCounts = new Map<ActionState, number>(ACTION_STATES.map((state) => [state, 0]));
 
-  for (const thread of olderThreads) {
+  for (const thread of threads) {
     stateCounts.set(thread.current.state, (stateCounts.get(thread.current.state) ?? 0) + 1);
   }
 
@@ -539,7 +630,7 @@ export function renderOlderActionThreadsSummary(olderThreads: readonly ActionThr
   })
     .filter((entry): entry is string => entry !== null)
     .join(" ");
-  const samples = olderThreads
+  const samples = threads
     .slice(0, OLDER_ACTION_THREAD_SAMPLE_LIMIT)
     .map(
       (thread) =>
@@ -549,5 +640,20 @@ export function renderOlderActionThreadsSummary(olderThreads: readonly ActionThr
     )
     .join(" | ");
 
-  return `Older action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}, states=${stateSummary}, recent_samples=${samples}.`;
+  return `threads=${threads.length} records=${recordCount} states=${stateSummary} disclosure_label=${renderMemoryDisclosureLabelForModel(disclosureLabel)} recent_samples=${samples}`;
+}
+
+export function renderOlderActionThreadsSummary(
+  groups: readonly OlderActionThreadSummaryGroup[],
+): string {
+  const olderThreads = groups.flatMap((group) => group.threads);
+  const olderRecordCount = olderThreads.reduce((count, thread) => count + thread.records.length, 0);
+
+  return [
+    `Older action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}.`,
+    ...groups.map(
+      (group) =>
+        `- audience_scope=${group.audienceScope} salience_class=${group.salienceClass} ${actionThreadSummaryDetails(group.threads, group.disclosureLabel)}`,
+    ),
+  ].join("\n");
 }

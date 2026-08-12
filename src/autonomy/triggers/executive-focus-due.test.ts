@@ -361,6 +361,16 @@ describe("executive focus due trigger", () => {
         },
       },
     });
+    const turn = trigger.buildTurn(events[0]!);
+
+    expect(turn.autonomyTrigger?.presentation).toEqual({
+      score_basis: {
+        score_context: "wake_time_trigger_selection",
+        deadline_lookahead_ms: 604_800_000,
+        progress_debt_stale_ms: 86_400_000,
+      },
+    });
+    expect(events[0]?.payload).not.toHaveProperty("score_basis");
   });
 
   it("describes the next due executive step boundary without scoring", async () => {

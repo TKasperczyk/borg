@@ -1,9 +1,14 @@
+import type { ExecutiveGoalScoreBasis } from "../executive/index.js";
+
 export type AutonomyTriggerContext = {
   source_name: string;
   source_type: "trigger" | "condition";
   event_id: string;
   sort_ts: number;
   payload: Record<string, unknown>;
+  presentation?: {
+    score_basis?: ExecutiveGoalScoreBasis;
+  };
 };
 
 export function formatAutonomyTriggerContext(context: AutonomyTriggerContext): string {

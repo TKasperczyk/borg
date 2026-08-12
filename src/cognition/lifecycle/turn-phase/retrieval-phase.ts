@@ -1245,6 +1245,8 @@ export async function buildCompactedEvidenceLedgerWithoutSharedState(input: {
     actionThreadRenderLimit: config.actionThreadRenderLimit,
     actionThreadSimilarityThreshold: config.actionThreadSimilarityThreshold,
     actionThreadSourceRecordLimit: config.actionThreadSourceRecordLimit,
+    actionThreadSalienceClassReservedSlots: config.actionThreadSalienceClassReservedSlots,
+    actionThreadAudienceReservedSlots: config.actionThreadAudienceReservedSlots,
     entityRepository: input.options.entityRepository,
     attachmentRepository: input.options.attachmentRepository,
     maxImagesPerLedger: input.options.config.attachments.maxImagesPerLedger,
