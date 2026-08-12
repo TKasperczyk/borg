@@ -88,7 +88,9 @@ const actionStateCandidateSchema = z
       "Classify the candidate before persistence. Only concrete_action can become an ActionRecord.",
     ),
     description: z.string().trim().min(1),
-    actor: actionActorSchema,
+    actor: actionActorSchema.describe(
+      "Who performs the action. For anything the author of current_user_message did, is doing, or will do, use their speaker_entity_id -- including when that author is another agent or automated system reporting on its own work, and including when the work resembles work Borg does. Use borg only for actions this message asks Borg to perform or reports Borg as having performed. Use user only when no speaker entity is resolvable.",
+    ),
     state: extractedActionStateSchema,
     audience_entity_id: actionEntityIdSchema.nullable().optional(),
     session_scope: actionSessionScopeSchema.nullable().optional(),
