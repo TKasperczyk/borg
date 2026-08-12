@@ -271,6 +271,7 @@ export class TurnContextCompiler {
         role: item.role,
         content,
         stream_entry_id: item.entry.id,
+        sender_entity_id: item.entry.sender_entity_id,
         ts: item.entry.timestamp,
         kind: item.entry.kind,
       });

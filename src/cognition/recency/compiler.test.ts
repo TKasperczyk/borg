@@ -130,7 +130,7 @@ describe("TurnContextCompiler", () => {
     ]);
   });
 
-  it("preserves user message content when a sender id is present", async () => {
+  it("preserves sender identity and message content in recency", async () => {
     const dataDir = createTempDir();
     const clock = new ManualClock(1_000);
     const writer = makeWriter(dataDir, clock);
@@ -153,6 +153,10 @@ describe("TurnContextCompiler", () => {
     expect(window.messages.map((message) => message.content)).toEqual([
       "Can you check Atlas?",
       "Checking.",
+    ]);
+    expect(window.messages.map((message) => message.sender_entity_id)).toEqual([
+      senderEntityId,
+      null,
     ]);
   });
 

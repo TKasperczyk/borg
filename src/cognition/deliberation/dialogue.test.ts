@@ -16,6 +16,7 @@ function makeRecency(role: "user" | "assistant", content: string, index: number)
     role,
     content,
     stream_entry_id: createStreamEntryId(),
+    sender_entity_id: null,
     ts: 1_000 + index,
   };
 }

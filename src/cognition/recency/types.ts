@@ -11,6 +11,7 @@ export type RecencyMessage = {
   role: "user" | "assistant";
   content: string;
   stream_entry_id: StreamEntryId;
+  sender_entity_id: StreamEntry["sender_entity_id"];
   ts: number;
   kind?: StreamEntry["kind"];
 };
