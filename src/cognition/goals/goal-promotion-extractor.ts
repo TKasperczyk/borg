@@ -21,6 +21,18 @@ import type { TurnTracer } from "../../tracing/tracer.js";
 const CONFIDENCE_THRESHOLD = 0.85;
 const MAX_PROMOTIONS_PER_TURN = 3;
 const GOAL_PROMOTION_TOOL_NAME = "EmitGoalPromotion";
+// This head may be below the active model's cache minimum; keep the marker pending live measurement.
+const GOAL_PROMOTION_STATIC_PREFIX_CACHE_CONTROL = {
+  type: "ephemeral",
+  ttl: "5m",
+} as const;
+const GOAL_PROMOTION_SYSTEM_BLOCKS = [
+  {
+    type: "text" as const,
+    text: GOAL_PROMOTION_SYSTEM_PROMPT,
+    cache_control: GOAL_PROMOTION_STATIC_PREFIX_CACHE_CONTROL,
+  },
+] as const;
 
 // Deadlines are collected as calendar dates rather than epoch milliseconds. A
 // 13-digit integer has to be emitted digit by digit, so a single wrong digit is
@@ -758,7 +770,7 @@ export class GoalPromotionExtractor {
         llmClient: this.options.llmClient as LLMClient,
         request: {
           model: this.options.model as string,
-          system: GOAL_PROMOTION_SYSTEM_PROMPT,
+          system: GOAL_PROMOTION_SYSTEM_BLOCKS,
           messages: input.messages,
         tools: input.tools,
           tool_choice: { type: "tool", name: GOAL_PROMOTION_TOOL_NAME },

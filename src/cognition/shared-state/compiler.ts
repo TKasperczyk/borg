@@ -76,6 +76,11 @@ import { buildSharedStateReconciliationWorkSet } from "./canonicalization-candid
 import { buildExistingStateKeyRegistry, buildSharedStateArtifactPromptSummary } from "./summary.js";
 import { SHARED_STATE_RECENT_TURN_THRESHOLD } from "./render.js";
 
+const SHARED_STATE_COMPILER_STATIC_PREFIX_CACHE_CONTROL = {
+  type: "ephemeral",
+  ttl: "5m",
+} as const;
+
 function semanticBeliefRevisionDependencies(
   input: CompileSharedStateArtifactInput,
 ): SharedStateSemanticBeliefRevisionDependencies | undefined {
@@ -617,6 +622,15 @@ export async function compileSharedStateArtifact(
   const speakerEntityId = input.speakerEntityId ?? null;
   const compilePass = input.compilePass ?? "pre_answer";
   const systemPrompt = buildSharedStateSystemPrompt(compilePass);
+  const systemBlocks = [
+    {
+      type: "text" as const,
+      text: systemPrompt,
+      // Anthropic keys tools before system, so this breakpoint covers the
+      // compiler's stable tool definitions and compile-pass system prompt.
+      cache_control: SHARED_STATE_COMPILER_STATIC_PREFIX_CACHE_CONTROL,
+    },
+  ];
   const compileAnchorStreamEntryId =
     input.compileAnchorStreamEntryId ?? input.currentUserStreamEntryId;
   const currentUserSourceStreamEntryIds = input.currentUserSourceStreamEntryIds ?? [
@@ -740,7 +754,7 @@ export async function compileSharedStateArtifact(
       llmClient,
       request: {
         model,
-        system: systemPrompt,
+        system: systemBlocks,
         messages: toolMessages,
         tools,
         tool_choice: { type: "tool", name: SHARED_STATE_TOOL_NAME },

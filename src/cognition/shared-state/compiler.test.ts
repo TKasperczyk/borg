@@ -36,6 +36,7 @@ import {
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
 import { renderSharedStateArtifact, renderEvidenceLedger } from "../evidence-ledger/index.js";
 import { summarizeSemanticContext } from "../deliberation/prompt/retrieval.js";
+import { buildSharedStateSystemPrompt } from "../prompts/shared-state.js";
 import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import type { RelationshipClaim } from "../../memory/common/relationship-claims.js";
 import {
@@ -390,6 +391,47 @@ describe("compileSharedStateArtifact", () => {
     expect(SHARED_STATE_SYSTEM_PROMPT).toContain("Every add, update, and supersede replacement");
   });
 
+  it("marks each compile-pass tool-and-system head for five-minute caching without changing prompt text", async () => {
+    const preAnswerLlm = new FakeLLMClient({
+      responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
+    });
+    const postResponseLlm = new FakeLLMClient({
+      responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
+    });
+
+    await compileSharedStateArtifact(baseInput(preAnswerLlm));
+    await compileSharedStateArtifact({
+      ...baseInput(postResponseLlm),
+      compilePass: "post_response",
+      assistantResponse: {
+        streamEntryId: createStreamEntryId(),
+        text: "The route order is now recorded.",
+      },
+    });
+
+    expect(preAnswerLlm.requests[0]?.system).toEqual([
+      {
+        type: "text",
+        text: buildSharedStateSystemPrompt("pre_answer"),
+        cache_control: { type: "ephemeral", ttl: "5m" },
+      },
+    ]);
+    expect(postResponseLlm.requests[0]?.system).toEqual([
+      {
+        type: "text",
+        text: buildSharedStateSystemPrompt("post_response"),
+        cache_control: { type: "ephemeral", ttl: "5m" },
+      },
+    ]);
+    expect(preAnswerLlm.requests[0]?.system).not.toEqual(postResponseLlm.requests[0]?.system);
+    expect(preAnswerLlm.requests[0]?.tools?.some((tool) => tool.cache_control !== undefined)).toBe(
+      false,
+    );
+    expect(
+      postResponseLlm.requests[0]?.tools?.some((tool) => tool.cache_control !== undefined),
+    ).toBe(false);
+  });
+
   it("omits standing rules for a different audience while preserving current-audience rules", async () => {
     const otherAudience = createEntityId();
     const currentAudienceName = "Audience A";
@@ -402,9 +444,13 @@ describe("compileSharedStateArtifact", () => {
             participant_entities?: unknown;
           };
 
-          expect(options.system).toContain(
-            "Every artifact entry must pertain to the current audience",
-          );
+          expect(options.system).toEqual([
+            expect.objectContaining({
+              text: expect.stringContaining(
+                "Every artifact entry must pertain to the current audience",
+              ),
+            }),
+          ]);
           expect(requestPayload.current_audience).toEqual({
             entity_id: audience,
             display_name: currentAudienceName,

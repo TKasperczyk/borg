@@ -53,6 +53,18 @@ import type { TurnTracer } from "../../tracing/tracer.js";
 
 const ACTION_STATE_TOOL_NAME = "EmitActionStates";
 const ACTION_PERSISTENCE_DUPLICATE_SIMILARITY_THRESHOLD = 0.85;
+// This head may be below the active model's cache minimum; keep the marker pending live measurement.
+const ACTION_STATE_STATIC_PREFIX_CACHE_CONTROL = {
+  type: "ephemeral",
+  ttl: "5m",
+} as const;
+const ACTION_STATE_SYSTEM_BLOCKS = [
+  {
+    type: "text" as const,
+    text: ACTION_STATE_SYSTEM_PROMPT,
+    cache_control: ACTION_STATE_STATIC_PREFIX_CACHE_CONTROL,
+  },
+] as const;
 
 export const ACTION_CANDIDATE_CLASSIFICATIONS = [
   "concrete_action",
@@ -866,7 +878,7 @@ export class ActionStateExtractor {
           llmClient: this.options.llmClient,
           request: {
             model: this.options.model,
-            system: ACTION_STATE_SYSTEM_PROMPT,
+            system: ACTION_STATE_SYSTEM_BLOCKS,
             messages,
             tools,
             tool_choice: { type: "tool", name: ACTION_STATE_TOOL_NAME },

@@ -6,6 +6,7 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createEntityId, createGoalId, createSessionId } from "../../util/ids.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
+import { GOAL_PROMOTION_SYSTEM_PROMPT } from "../prompts/goal-extraction.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import {
   GOAL_PROMOTION_CLASSIFICATIONS,
@@ -145,10 +146,18 @@ describe("GoalPromotionExtractor", () => {
       name: "EmitGoalPromotion",
     });
     expect(llm.requests[0]?.max_tokens).toBe(EXTRACTOR_MAX_TOKENS_DEFAULT);
-    expect(llm.requests[0]?.system).toContain("not_borg_responsibility");
-    expect(llm.requests[0]?.system).toContain("terminal_condition");
-    expect(llm.requests[0]?.system).toContain("structural completion condition");
-    expect(llm.requests[0]?.system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
+    expect(llm.requests[0]?.system).toEqual([
+      {
+        type: "text",
+        text: GOAL_PROMOTION_SYSTEM_PROMPT,
+        cache_control: { type: "ephemeral", ttl: "5m" },
+      },
+    ]);
+    expect(llm.requests[0]?.tools?.some((tool) => tool.cache_control !== undefined)).toBe(false);
+    expect(GOAL_PROMOTION_SYSTEM_PROMPT).toContain("not_borg_responsibility");
+    expect(GOAL_PROMOTION_SYSTEM_PROMPT).toContain("terminal_condition");
+    expect(GOAL_PROMOTION_SYSTEM_PROMPT).toContain("structural completion condition");
+    expect(GOAL_PROMOTION_SYSTEM_PROMPT).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
   });
 
   it("anchors the prompt with the current time so deadlines resolve to the right year", async () => {
@@ -260,21 +269,23 @@ describe("GoalPromotionExtractor", () => {
         }),
       }),
     );
-    expect(llm.requests[0]?.system).toContain("monitoring p95");
-    expect(llm.requests[0]?.system).toContain("scheduled document edits");
-    expect(llm.requests[0]?.system).toContain(
+    const [systemBlock] = llm.requests[0]?.system as readonly { text: string }[];
+
+    expect(systemBlock?.text).toContain("monitoring p95");
+    expect(systemBlock?.text).toContain("scheduled document edits");
+    expect(systemBlock?.text).toContain(
       "Durable goals are about Borg's durable conversation/memory responsibility",
     );
-    expect(llm.requests[0]?.system).toContain(
+    expect(systemBlock?.text).toContain(
       'A user saying "my goal is to..." is usually participant-side context',
     );
-    expect(llm.requests[0]?.system).toContain('my goal is to deploy", "friend will respond"');
-    expect(llm.requests[0]?.system).not.toContain("treat that speaker as the goal owner");
-    expect(llm.requests[0]?.system).toContain("user will deploy -> not_borg_responsibility");
-    expect(llm.requests[0]?.system).toContain(
+    expect(systemBlock?.text).toContain('my goal is to deploy", "friend will respond"');
+    expect(systemBlock?.text).not.toContain("treat that speaker as the goal owner");
+    expect(systemBlock?.text).toContain("user will deploy -> not_borg_responsibility");
+    expect(systemBlock?.text).toContain(
       "Borg will monitor p95 -> impossible_for_borg_without_capability",
     );
-    expect(llm.requests[0]?.system).toContain("My host capability boundary");
+    expect(systemBlock?.text).toContain("My host capability boundary");
   });
 
   it("returns no candidates when the LLM finds no Borg role", async () => {
