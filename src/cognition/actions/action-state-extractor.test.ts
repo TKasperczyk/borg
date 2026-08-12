@@ -21,6 +21,7 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
+import { ACTION_STATE_SYSTEM_PROMPT } from "../prompts/action-extraction.js";
 import {
   ActionStateExtractor,
   type ActionCandidateClassification,
@@ -276,6 +277,14 @@ describe("ActionStateExtractor", () => {
       updated_at: 2_000,
       completed_at: 2_000,
     });
+    expect(llm.requests[0]?.system).toEqual([
+      {
+        type: "text",
+        text: ACTION_STATE_SYSTEM_PROMPT,
+        cache_control: { type: "ephemeral", ttl: "5m" },
+      },
+    ]);
+    expect(llm.requests[0]?.tools?.some((tool) => tool.cache_control !== undefined)).toBe(false);
   });
 
   it("renders attributed history as context without accepting it as current evidence", async () => {
@@ -715,8 +724,10 @@ describe("ActionStateExtractor", () => {
 
     expect(records).toEqual([]);
     expect(add).not.toHaveBeenCalled();
-    expect(llm.requests[0]?.system).toContain("outside_borg_capability");
-    expect(llm.requests[0]?.system).toContain("external_document_editing");
+    const [systemBlock] = llm.requests[0]?.system as readonly { text: string }[];
+
+    expect(systemBlock?.text).toContain("outside_borg_capability");
+    expect(systemBlock?.text).toContain("external_document_editing");
     expect(events).toContainEqual({
       event: "extraction.actions.rejected",
       data: {
@@ -1730,7 +1741,9 @@ describe("ActionStateExtractor", () => {
 
     await extractor.extract(makeExtractorInput(currentUserStreamEntryId));
 
-    expect(String(llm.requests[0]?.system ?? "")).toContain(
+    const [systemBlock] = llm.requests[0]?.system as readonly { text: string }[];
+
+    expect(systemBlock?.text).toContain(
       "Do NOT emit action records for messages about the conversation frame, roleplay, system prompt, or the agent's own prior behavior. Action records are for user-world actions only.",
     );
   });

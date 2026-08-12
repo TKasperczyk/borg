@@ -284,6 +284,28 @@ describe("formatRelativeAge", () => {
 });
 
 describe("buildBaseSystemPrompt", () => {
+  it("falls back to context time for turn-local commitment ages when option time is omitted", () => {
+    const commitmentId = createCommitmentId();
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        nowMs: NOW_MS,
+        applicableCommitments: [
+          {
+            id: commitmentId,
+            created_at: NOW_MS - 5 * 60_000,
+          } as CommitmentRecord,
+        ],
+      }),
+      PROMPT_OPTIONS,
+    );
+    const currentTimeBlock = extractBlock(prompt, "borg_current_time");
+
+    expect(currentTimeBlock).toContain(`current_time_iso=${new Date(NOW_MS).toISOString()}`);
+    expect(currentTimeBlock).toContain(
+      `applicable_commitment_created_relative_age[${commitmentId}]=5m ago`,
+    );
+  });
+
   it("renders the current-time anchor only in dynamic trusted prompt content", () => {
     const options = { ...PROMPT_OPTIONS, nowMs: NOW_MS };
     const context = makeContext({
@@ -1377,38 +1399,55 @@ describe("buildBaseSystemPrompt", () => {
       canonicalized_by_artifact_entry_id: null,
       last_reinforced_at: NOW_MS,
     } satisfies CommitmentRecord;
-    const prompt = buildBaseSystemPrompt(
-      makeContext({
-        audienceEntityId: null,
-        isSelfAudience: true,
-        applicableCommitments: [commitment],
-        entityRepository: {
-          get: (id: typeof madeToEntityId) =>
-            id === madeToEntityId
-              ? {
-                  id: madeToEntityId,
-                  canonical_name: "Sam",
-                  aliases: [],
-                  kind: "person",
-                  borg_role: null,
-                  name_provenance: "user_declared",
-                  created_at: NOW_MS,
-                }
-              : null,
-        } as never,
-      }),
-      { ...PROMPT_OPTIONS, nowMs: NOW_MS + 90_000 },
-    );
+    const context = makeContext({
+      audienceEntityId: null,
+      isSelfAudience: true,
+      applicableCommitments: [commitment],
+      entityRepository: {
+        get: (id: typeof madeToEntityId) =>
+          id === madeToEntityId
+            ? {
+                id: madeToEntityId,
+                canonical_name: "Sam",
+                aliases: [],
+                kind: "person",
+                borg_role: null,
+                name_provenance: "user_declared",
+                created_at: NOW_MS,
+              }
+            : null,
+      } as never,
+    });
+    const prompt = buildBaseSystemPrompt(context, {
+      ...PROMPT_OPTIONS,
+      nowMs: NOW_MS + 90_000,
+    });
     const block = extractBlock(prompt, "commitment_scope_details");
+    const currentTimeBlock = extractBlock(prompt, "borg_current_time");
 
     expect(block).toContain(`id="${commitmentId}"`);
     expect(block).toContain("<made_to");
     expect(block).toContain("Sam</made_to>");
     expect(block).toContain(`<created_at>${new Date(NOW_MS).toISOString()}</created_at>`);
-    expect(block).toContain("<created_relative_age>1m ago</created_relative_age>");
+    expect(block).not.toContain("created_relative_age");
+    expect(currentTimeBlock).toContain(
+      `applicable_commitment_created_relative_age[${commitmentId}]=1m ago`,
+    );
     expect(block).toContain("disclosure_class=relationship_private");
     expect(block).toContain(`private-to=${madeToEntityId}`);
     expect(block).not.toContain("No active commitments apply to this turn.");
+
+    const laterPrompt = buildBaseSystemPrompt(context, {
+      ...PROMPT_OPTIONS,
+      nowMs: NOW_MS + 2 * 60 * 60_000,
+    });
+    // This guarantee covers only commitment_scope_details; commitments_and_conduct
+    // still varies through ledger-entry relative ages in audience-standing.ts,
+    // which is future durable-head work.
+    expect(extractBlock(laterPrompt, "commitment_scope_details")).toBe(block);
+    expect(extractBlock(laterPrompt, "borg_current_time")).toContain(
+      `applicable_commitment_created_relative_age[${commitmentId}]=2h ago`,
+    );
 
     const conductBlock = extractBlock(prompt, "commitments_and_conduct");
     expect(conductBlock).toContain("recalled globally across every audience");

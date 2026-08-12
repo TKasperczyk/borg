@@ -216,6 +216,7 @@ function renderParticipationPolicy(policy: SessionParticipationPolicy): string |
 export function renderCurrentTimeSection(
   nowMs: number | undefined,
   context?: CurrentTimePromptContext | null,
+  applicableCommitments?: readonly CommitmentRecord[],
 ): string | null {
   if (nowMs === undefined || !Number.isFinite(nowMs)) {
     return null;
@@ -252,6 +253,15 @@ export function renderCurrentTimeSection(
         )}; autonomous_reflections=${autonomousReflectionCount}; other_session_conversation_turns=${crossSessionConversationTurnCount}`,
       );
     }
+  }
+
+  for (const commitment of applicableCommitments ?? []) {
+    lines.push(
+      `applicable_commitment_created_relative_age[${commitment.id}]=${formatRelativeAge(
+        commitment.created_at,
+        nowMs,
+      )}`,
+    );
   }
 
   return lines.join("\n");
@@ -878,11 +888,6 @@ function renderCommitmentDetailsLines(context: DeliberationContext, indent: stri
       `${detailIndent}<commitment_enforcement_class>${escapeXmlText(effectiveCommitmentEnforcementClass(commitment))}</commitment_enforcement_class>`,
       `${detailIndent}<commitment_critical_domain>${escapeXmlText(effectiveCommitmentCriticalDomain(commitment) ?? "none")}</commitment_critical_domain>`,
       `${detailIndent}<created_at>${escapeXmlText(new Date(commitment.created_at).toISOString())}</created_at>`,
-      ...(context.nowMs === undefined
-        ? []
-        : [
-            `${detailIndent}<created_relative_age>${escapeXmlText(formatRelativeAge(commitment.created_at, context.nowMs))}</created_relative_age>`,
-          ]),
       ...refs,
       `${detailIndent}<provenance>${escapeXmlText(summarizeProvenanceForPrompt(commitment.provenance))}</provenance>`,
       `${indent}  </commitment_detail>`,
@@ -1093,10 +1098,10 @@ export function buildBaseSystemPromptSections(
   context: DeliberationContext,
   options: BuildBaseSystemPromptOptions,
 ): BaseSystemPromptSections {
-  const contextWithTime: DeliberationContext =
-    options.nowMs === undefined || !Number.isFinite(options.nowMs)
-      ? context
-      : { ...context, nowMs: options.nowMs };
+  const promptNowMs =
+    options.nowMs !== undefined && Number.isFinite(options.nowMs)
+      ? options.nowMs
+      : context.nowMs;
   const evidenceLedgerActive =
     context.evidenceLedgerPromptSection !== undefined &&
     context.evidenceLedgerPromptSection !== null;
@@ -1222,7 +1227,11 @@ export function buildBaseSystemPromptSections(
   };
   const currentTimeSection = {
     tag: "borg_current_time",
-    content: renderCurrentTimeSection(options.nowMs, context.currentTimeContext ?? null),
+    content: renderCurrentTimeSection(
+      promptNowMs,
+      context.currentTimeContext ?? null,
+      context.applicableCommitments,
+    ),
   };
   const creatorIdentitySection = {
     tag: "borg_creator_identity",
@@ -1232,7 +1241,7 @@ export function buildBaseSystemPromptSections(
     tag: "borg_memory_disclosure_guidance",
     content: MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
   };
-  const standingWithAudienceSection = buildStandingWithAudienceSection(contextWithTime);
+  const standingWithAudienceSection = buildStandingWithAudienceSection(context);
   const autonomousOutboundAuthorizationSection = buildAutonomousOutboundAuthorizationSection(
     context.autonomousOutbound ?? null,
     context.turnOrigin,
