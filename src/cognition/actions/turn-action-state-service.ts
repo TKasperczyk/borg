@@ -39,6 +39,7 @@ export type ExtractTurnActionStatesInput = {
   sessionId?: SessionId | null;
   speakerEntityId?: EntityId | null;
   speakerDisplayName?: string | null;
+  senderDisplayNameById?: (entityId: EntityId) => string | null | undefined;
   goalId?: GoalId | null;
   openQuestionId?: OpenQuestionId | null;
   turnCounter?: number | null;
@@ -127,6 +128,7 @@ export class TurnActionStateService {
       sessionId: input.sessionId ?? null,
       speakerEntityId: input.speakerEntityId ?? null,
       speakerDisplayName: input.speakerDisplayName ?? null,
+      senderDisplayNameById: input.senderDisplayNameById,
       senderAttribution: input.senderAttribution,
       goalId: input.goalId ?? null,
       openQuestionId: input.openQuestionId ?? null,

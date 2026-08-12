@@ -560,10 +560,7 @@ function createClosureLoopSignoffResponseFromRequest() {
   );
 }
 
-function createClosureLoopCurrentTurnResponse(input: {
-  substantive: boolean;
-  reason?: string;
-}) {
+function createClosureLoopCurrentTurnResponse(input: { substantive: boolean; reason?: string }) {
   return Object.assign(
     (options: LLMCompleteOptions): LLMCompleteResult => {
       const payload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
@@ -590,8 +587,9 @@ function createClosureLoopCurrentTurnResponse(input: {
             role: message.role,
           };
         })
-        .filter((message): message is { message_ref: string; role: "user" | "assistant" } =>
-          message !== null,
+        .filter(
+          (message): message is { message_ref: string; role: "user" | "assistant" } =>
+            message !== null,
         );
       const currentUserIndex = supplied.findLastIndex((message) => message.role === "user");
       const messages: ClosureLoopClassifiedMessage[] = supplied.map((message, index) => {
@@ -3967,6 +3965,138 @@ describe("TurnOrchestrator participant social profiles", () => {
           stakes: "low",
         }),
       ).resolves.toMatchObject({ response: "Abstract turn ok." });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("keeps an operator direct turn without an explicit sender unattributed", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-operator-direct-unknown-sender-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_182_500);
+    const sessionId = createSessionId();
+    let extractorPayload: Record<string, unknown> | null = null;
+    const actionStateForUnknownSender = Object.assign(
+      (options: LLMCompleteOptions) => {
+        extractorPayload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as Record<
+          string,
+          unknown
+        >;
+
+        return createActionStateResponse([]);
+      },
+      { budget: "action-state-extractor" },
+    );
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({ classification: "none" }),
+        actionStateForUnknownSender,
+        createGoalPromotionResponse([]),
+        createEmitAnswerResponse("Unknown sender preserved."),
+        createClosureResponseAuditResponse(),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const aliceId = borg.entities.resolve("Alice", { kind: "person" });
+      borg.sessions.ensure({
+        session_id: sessionId,
+        source_type: "demo",
+        source_external_id: "operator-peer-dm",
+        label: "Operator Peer DM",
+        audience_label: "Alice",
+        audience_entity_id: aliceId,
+        conversation_kind: "dm",
+        audience_role: "operator",
+      });
+      const priorUserEntry = await borg.stream.append(
+        {
+          kind: "user_msg",
+          content: "Prior attributed context.",
+          audience: "Alice",
+          sender_entity_id: aliceId,
+        },
+        { session: sessionId },
+      );
+      clock.advance(10);
+
+      await borg.turn({
+        userMessage: "I reviewed the direct-turn patch.",
+        audience: "Alice",
+        sessionId,
+        stakes: "low",
+      });
+
+      const persistedUserEntry = borg.stream
+        .tail(20, { session: sessionId })
+        .find(
+          (entry) =>
+            entry.kind === "user_msg" && entry.content === "I reviewed the direct-turn patch.",
+        );
+
+      expect(extractorPayload).toEqual(
+        expect.objectContaining({
+          speaker_entity_id: null,
+          speaker_display_name: null,
+          sender_attribution: [
+            {
+              stream_entry_id: persistedUserEntry?.id,
+              sender_entity_id: null,
+              sender_display_name: null,
+            },
+          ],
+          recent_history_context: [
+            {
+              context_stream_entry_id: priorUserEntry.id,
+              role: "user",
+              kind: "user_msg",
+              sender_entity_id: aliceId,
+              sender_display_name: "Alice",
+              content: "Prior attributed context.",
+            },
+          ],
+        }),
+      );
+      expect(persistedUserEntry).toMatchObject({
+        sender_entity_id: null,
+      });
+      expect(persistedUserEntry?.sender_entity_id).not.toBe(aliceId);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("never stamps an abstract audience as the direct-turn sender", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-abstract-audience-unknown-sender-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_182_750);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("Abstract audience preserved."),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const projectId = borg.entities.resolve("Project Atlas", { kind: "abstract" });
+
+      await borg.turn({
+        userMessage: "Project-scoped note without a sender.",
+        audience: "Project Atlas",
+        stakes: "low",
+      });
+
+      const persistedUserEntry = borg.stream
+        .tail(20)
+        .find(
+          (entry) =>
+            entry.kind === "user_msg" && entry.content === "Project-scoped note without a sender.",
+        );
+
+      expect(persistedUserEntry).toMatchObject({
+        sender_entity_id: null,
+      });
+      expect(persistedUserEntry?.sender_entity_id).not.toBe(projectId);
     } finally {
       await borg.close();
     }

@@ -36,9 +36,9 @@ function dedupeCrossAudienceTargets(
 
 // Action-state extraction has to know who authored the current message, or a
 // first-person assertion in it has no owner to land on. Group turns carry a
-// resolved speaker; one-to-one turns carry none, even though every source entry
-// records its sender. Fall back to that sender when the turn's entries agree on
-// exactly one, so the extractor is never asked to attribute an unnamed author.
+// resolved speaker; one-to-one turns carry none. Fall back to a transport-supplied
+// source-entry sender when the turn's entries agree on exactly one, so an unknown
+// author stays unknown instead of being inferred from the audience.
 function currentMessageSpeaker(input: {
   groupSpeakerEntityId: EntityId | null;
   groupSpeakerDisplayName: string | null;
@@ -243,6 +243,8 @@ export async function runExtractionPhase(input: {
         sessionId: input.sessionId,
         speakerEntityId: actionSpeaker.entityId,
         speakerDisplayName: actionSpeaker.displayName,
+        senderDisplayNameById: (entityId) =>
+          input.options.entityRepository.get(entityId)?.canonical_name ?? null,
         goalId: actionLinkGoalId,
         turnCounter: input.turnInput.globalTurnCounter ?? input.workingMemory.turn_counter,
         frameAnomaly: input.currentTurnFrameAnomaly,

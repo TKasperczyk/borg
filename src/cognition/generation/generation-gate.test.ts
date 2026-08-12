@@ -37,6 +37,7 @@ function recencyUser(content: string) {
     role: "user" as const,
     content,
     stream_entry_id: createStreamEntryId(),
+    sender_entity_id: null,
     ts: 1_000,
   };
 }
@@ -46,6 +47,7 @@ function recencyAssistant(content: string) {
     role: "assistant" as const,
     content,
     stream_entry_id: createStreamEntryId(),
+    sender_entity_id: null,
     ts: 1_001,
   };
 }

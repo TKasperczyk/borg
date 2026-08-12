@@ -2,7 +2,7 @@ import { BORG_HOST_CAPABILITY_BOUNDARY_PROMPT } from "./host-capabilities.js";
 
 export const ACTION_STATE_SYSTEM_PROMPT = [
   "Extract action-state assertions from the current user message.",
-  "Use recent_history only to understand elliptical references. For normal extraction, the evidence must be in current_user_message and every emitted item must cite current_user_stream_entry_id.",
+  "Use recent_history_context only to understand elliptical references. Its context_stream_entry_id values are context handles, not current-message evidence, and must never be cited as evidence. For normal extraction, the evidence must be in current_user_message and every emitted item must cite a current_user_stream_entry_id.",
   "When active_actions_for_reference is supplied, also emit referenced_action_ids for supplied active action ids the current user message explicitly refers to, even if the message does not change their state.",
   "When post_turn_self_performance is supplied, inspect only its active_borg_actions, current_turn_shared_state_entries, and agent_response to decide whether a supplied Borg-owned action was structurally performed this turn. If it was, emit a completed concrete_action with actor=borg and matched_existing_action_id set to that action id. This is lifecycle extraction only: do not judge, rewrite, suppress, approve, or police the assistant response.",
   "Emit an empty action_states array when the current user message contains no action-state assertion.",
