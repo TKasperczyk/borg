@@ -200,6 +200,8 @@ const evidenceLedgerConfigSchema = z
     actionThreadRenderLimit: z.number().int().positive().default(12),
     actionThreadSimilarityThreshold: z.number().min(0).max(1).default(0.85),
     actionThreadSourceRecordLimit: z.number().int().positive().default(256),
+    actionThreadSalienceClassReservedSlots: z.number().int().nonnegative().default(1),
+    actionThreadAudienceReservedSlots: z.number().int().nonnegative().default(1),
     finalizerTargetTokens: z.number().int().positive().default(60_000),
     finalizerHardCapTokens: z.number().int().positive().default(100_000),
     finalizerMaxEntryTextTokens: z.number().int().positive().default(1_200),
@@ -1312,6 +1314,22 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["generation", "evidenceLedger", "actionThreadSourceRecordLimit"],
     readOptionalEnvNumber(env, "BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SOURCE_RECORD_LIMIT"),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "actionThreadSalienceClassReservedSlots"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS",
+    ),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "actionThreadAudienceReservedSlots"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS",
+    ),
   );
   setConfigOverride(
     overrides,

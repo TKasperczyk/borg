@@ -1,7 +1,7 @@
 // Assembles the base deliberation system prompt from memory, state, and guidance sections.
 import { summarizeProvenanceForPrompt, type Provenance } from "../../../memory/common/index.js";
 import type { ActionRecord } from "../../../memory/actions/index.js";
-import type { ExecutiveFocus } from "../../../executive/index.js";
+import type { ExecutiveFocus, ExecutiveGoalScoreBasis } from "../../../executive/index.js";
 import {
   effectiveCommitmentCriticalDomain,
   effectiveCommitmentEnforcementClass,
@@ -1188,7 +1188,7 @@ export function buildBaseSystemPromptSections(
       content:
         context.autonomyTrigger === null || context.autonomyTrigger === undefined
           ? null
-          : formatAutonomyTriggerContext(context.autonomyTrigger),
+          : summarizeAutonomyTriggerForPrompt(context.autonomyTrigger),
     },
   ];
   const resolvedBlocks = resolvePromptBlocks(options);
@@ -1460,6 +1460,16 @@ function summarizeSelfSnapshotGoal(goal: SelfSnapshot["goals"][number]): string 
   return `${goal.description} ${summarizeProvenanceForPrompt(goal.provenance)}${disclosure}`;
 }
 
+const EXECUTIVE_FOCUS_IDENTITY_LABEL_MAX_CHARS = 120;
+
+function renderExecutiveGoalScoreBasis(scoreBasis: ExecutiveGoalScoreBasis): string {
+  return [
+    `score_context=${scoreBasis.score_context}`,
+    `deadline_lookahead_ms=${scoreBasis.deadline_lookahead_ms}`,
+    `progress_debt_stale_ms=${scoreBasis.progress_debt_stale_ms}`,
+  ].join(" ");
+}
+
 function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): string | null {
   if (
     focus === null ||
@@ -1482,6 +1492,10 @@ function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): stri
 
   return [
     `Current driving goal: ${focus.selected_goal.description} ${selectedGoalDisclosure}`,
+    `Focus identity: goal_id=${focus.selected_goal.id} label=${JSON.stringify(
+      compactPromptText(focus.selected_goal.description, EXECUTIVE_FOCUS_IDENTITY_LABEL_MAX_CHARS),
+    )}`,
+    `Score basis: ${renderExecutiveGoalScoreBasis(focus.score_basis)}`,
     `Why selected: ${focus.selected_score.reason} (score ${focus.selected_score.score.toFixed(2)}, threshold ${focus.threshold.toFixed(2)})`,
     [
       `Components: priority=${components.priority.toFixed(2)}`,
@@ -1496,6 +1510,20 @@ function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): stri
         }) ${renderDisclosureForModelFacingRecord(nextStep, selectedGoalDisclosureLabel)}`,
     SELF_IDENTITY_DISCLOSURE_LINE,
     "I use this as a bias, not an override of the user's request or commitments.",
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\n");
+}
+
+function summarizeAutonomyTriggerForPrompt(
+  context: NonNullable<DeliberationContext["autonomyTrigger"]>,
+): string {
+  const scoreBasis = context.presentation?.score_basis;
+
+  return [
+    scoreBasis === undefined ? null : "Wake-time trigger selection:",
+    scoreBasis === undefined ? null : `Score basis: ${renderExecutiveGoalScoreBasis(scoreBasis)}`,
+    formatAutonomyTriggerContext(context),
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
@@ -2073,7 +2101,24 @@ function compactPromptText(text: string, maxLength: number): string {
     return normalized;
   }
 
-  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+  let bodyEnd = Math.max(0, maxLength - 3);
+
+  // Do not end the retained prefix on the high half of a valid surrogate pair.
+  if (bodyEnd > 0 && bodyEnd < normalized.length) {
+    const lastRetainedCodeUnit = normalized.charCodeAt(bodyEnd - 1);
+    const firstOmittedCodeUnit = normalized.charCodeAt(bodyEnd);
+
+    if (
+      lastRetainedCodeUnit >= 0xd800 &&
+      lastRetainedCodeUnit <= 0xdbff &&
+      firstOmittedCodeUnit >= 0xdc00 &&
+      firstOmittedCodeUnit <= 0xdfff
+    ) {
+      bodyEnd -= 1;
+    }
+  }
+
+  return `${normalized.slice(0, bodyEnd).trimEnd()}...`;
 }
 
 function formatPromptNumber(value: number): string {

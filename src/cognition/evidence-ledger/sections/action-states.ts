@@ -1,17 +1,22 @@
 import {
+  DEFAULT_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS,
   DEFAULT_ACTION_THREAD_RENDER_LIMIT,
+  DEFAULT_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS,
   DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD,
   DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
   STALE_PARTICIPANT_ACTION_RENDER_LIMIT,
+  actionThreadAudienceBucket,
   actionSalienceClass,
   actionActorDisplay,
   actionThreadState,
   actionThreadStateMetadata,
+  allocateActionThreadRenderSlots,
   buildActionThreads,
   listActionCandidatesForCognition,
   orderActionThreadsBySalience,
   renderActionThreadText,
   renderOlderActionThreadsSummary,
+  type OlderActionThreadSummaryGroup,
 } from "../action-threads.js";
 import {
   clampPositiveIntegerOrFallback,
@@ -27,6 +32,14 @@ import { persistenceClassFromProvenance } from "../scope-resolver.js";
 import { combineMemoryDisclosureLabels } from "../../../retrieval/index.js";
 import { actionMemoryDisclosureLabel } from "../../../memory/common/disclosure-serializers.js";
 
+function clampNonnegativeIntegerOrFallback(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.max(0, Math.floor(value));
+}
+
 export async function addActionStatesSection(context: BuilderSectionContext): Promise<void> {
   const sourceRecordLimit = clampPositiveIntegerOrFallback(
     context.options.actionThreadSourceRecordLimit,
@@ -40,6 +53,16 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
     context.options.actionThreadSimilarityThreshold,
     DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD,
   );
+  const salienceClassReservedSlots = clampNonnegativeIntegerOrFallback(
+    context.options.actionThreadSalienceClassReservedSlots,
+    DEFAULT_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS,
+  );
+  const audienceReservedSlots = clampNonnegativeIntegerOrFallback(
+    context.options.actionThreadAudienceReservedSlots,
+    DEFAULT_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS,
+  );
+  // Future work: reservations start after the bounded source pool is classified.
+  // The pre-classification 256-record pool remains repository-ranked and unreserved.
   const actionCandidates = listActionCandidatesForCognition({
     actionRepository: context.repos.actions,
     audienceEntityId: context.input.audienceEntityId,
@@ -71,9 +94,17 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
   const cappedStaleIds = new Set(
     staleParticipantThreads.slice(STALE_PARTICIPANT_ACTION_RENDER_LIMIT).map((thread) => thread.id),
   );
-  const renderedThreads = orderActionThreadsBySalience(
-    threadsWithSalience.filter((thread) => !cappedStaleIds.has(thread.id)),
-  ).slice(0, renderLimit);
+  const renderedThreads = allocateActionThreadRenderSlots({
+    threads: threadsWithSalience.filter((thread) => !cappedStaleIds.has(thread.id)),
+    limit: renderLimit,
+    salienceClassReservedSlots,
+    audienceReservedSlots,
+    audienceOrder: [
+      ...new Set(
+        actionCandidates.map((candidate) => candidate.record.audience_entity_id ?? "global"),
+      ),
+    ],
+  });
 
   for (const thread of renderedThreads) {
     const disclosureLabel = combineMemoryDisclosureLabels(
@@ -119,35 +150,51 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
     );
   }
 
-  const omittedStaleCount = cappedStaleIds.size;
+  const renderedIds = new Set(renderedThreads.map((thread) => thread.id));
+  const olderThreads = orderActionThreadsBySalience(
+    threadsWithSalience.filter((thread) => !renderedIds.has(thread.id)),
+  );
 
-  if (omittedStaleCount > 0) {
-    addEntry(context.buckets, "action_states", {
-      id: "action_threads:participant_pending_stale_summary",
-      source_type: "system_metadata",
-      session_scope: "global",
-      actor: "system",
-      trust_rank: ACTION_TRUST_RANK,
-      text: `Stale participant pending actions omitted from this section: count=${omittedStaleCount}.`,
-      value: "participant_pending_stale_summary",
-      state: "omitted",
-      salience_class: "participant_pending_stale",
-      taint: "none",
-    });
-  }
-
-  if (threadsWithSalience.length <= renderLimit) {
+  if (olderThreads.length === 0) {
     return;
   }
 
-  const olderThreads = orderActionThreadsBySalience(threadsWithSalience).slice(renderLimit);
-  const olderDisclosureLabel = combineMemoryDisclosureLabels(
-    olderThreads.flatMap((thread) =>
-      thread.records.map(
-        (record) => disclosureLabelByActionId.get(record.id) ?? actionMemoryDisclosureLabel(record),
+  const groupedThreads: Array<
+    Omit<OlderActionThreadSummaryGroup, "threads" | "disclosureLabel"> & {
+      threads: typeof olderThreads;
+    }
+  > = [];
+
+  for (const thread of olderThreads) {
+    const audienceScope = actionThreadAudienceBucket(thread);
+    const group = groupedThreads.find(
+      (candidate) =>
+        candidate.audienceScope === audienceScope &&
+        candidate.salienceClass === thread.salienceClass,
+    );
+
+    if (group === undefined) {
+      groupedThreads.push({
+        audienceScope,
+        salienceClass: thread.salienceClass,
+        threads: [thread],
+      });
+    } else {
+      group.threads.push(thread);
+    }
+  }
+
+  const summaryGroups: OlderActionThreadSummaryGroup[] = groupedThreads.map((group) => ({
+    ...group,
+    disclosureLabel: combineMemoryDisclosureLabels(
+      group.threads.flatMap((thread) =>
+        thread.records.map(
+          (record) =>
+            disclosureLabelByActionId.get(record.id) ?? actionMemoryDisclosureLabel(record),
+        ),
       ),
     ),
-  );
+  }));
 
   addEntry(context.buckets, "action_states", {
     id: "action_threads:older_summary",
@@ -155,16 +202,9 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
     session_scope: "global",
     actor: "system",
     trust_rank: ACTION_TRUST_RANK,
-    text: renderOlderActionThreadsSummary(olderThreads),
+    text: renderOlderActionThreadsSummary(summaryGroups),
     value: "older_action_threads",
-    state: appendMemoryDisclosureState({
-      state: "omitted",
-      disclosureLabel: olderDisclosureLabel,
-    }),
-    state_metadata: appendMemoryDisclosureStateMetadata({
-      stateMetadata: undefined,
-      disclosureLabel: olderDisclosureLabel,
-    }),
+    state: "omitted",
     taint: "none",
   });
 }
