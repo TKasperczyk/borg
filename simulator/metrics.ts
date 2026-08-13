@@ -2906,7 +2906,7 @@ async function actionPromptSalienceSummary(input: {
   const threadsWithSalience = threads.flatMap((thread) => {
     const salienceClass = actionSalienceClass({
       thread,
-      currentTurnCounter: input.turnCounter,
+      currentTurnGlobal: input.turnCounter,
     });
 
     return salienceClass === null ? [] : [{ ...thread, salienceClass }];

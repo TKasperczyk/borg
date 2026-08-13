@@ -1,6 +1,7 @@
 import {
   ACTION_STATE_METADATA,
   ACTION_STATES,
+  lastReferencedActionLifecycleTurn,
   type ActionDescriptionSimilarityPair,
   type ActionRecord,
   type ActionState,
@@ -386,24 +387,23 @@ function isGroupOwnedAction(action: Pick<ActionRecord, "actor" | "audience_entit
 
 function referencedWithinTurns(input: {
   action: ActionRecord;
-  currentTurnCounter: number | undefined;
+  currentTurnGlobal: number | undefined;
   windowTurns: number;
 }): boolean {
-  if (
-    input.currentTurnCounter === undefined ||
-    input.action.last_referenced_turn_counter === null
-  ) {
+  const lastReferencedTurnGlobal = lastReferencedActionLifecycleTurn(input.action);
+
+  if (input.currentTurnGlobal === undefined || lastReferencedTurnGlobal === null) {
     return false;
   }
 
-  return input.currentTurnCounter - input.action.last_referenced_turn_counter <= input.windowTurns;
+  return input.currentTurnGlobal - lastReferencedTurnGlobal <= input.windowTurns;
 }
 
 export function actionSalienceClass(input: {
   thread: ActionThread;
   currentUserStreamEntryId?: StreamEntryId;
   currentUserStreamEntryIds?: readonly StreamEntryId[];
-  currentTurnCounter?: number;
+  currentTurnGlobal?: number;
 }): EvidenceLedgerActionSalienceClass | null {
   const action = input.thread.current;
 
@@ -420,7 +420,7 @@ export function actionSalienceClass(input: {
 
     return referencedWithinTurns({
       action,
-      currentTurnCounter: input.currentTurnCounter,
+      currentTurnGlobal: input.currentTurnGlobal,
       windowTurns: PARTICIPANT_RECENT_ACTION_TURN_WINDOW,
     })
       ? "completed_recent"
@@ -443,7 +443,7 @@ export function actionSalienceClass(input: {
 
   return referencedWithinTurns({
     action,
-    currentTurnCounter: input.currentTurnCounter,
+    currentTurnGlobal: input.currentTurnGlobal,
     windowTurns: PARTICIPANT_RECENT_ACTION_TURN_WINDOW,
   })
     ? "participant_pending_recent"
