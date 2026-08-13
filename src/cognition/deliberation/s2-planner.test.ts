@@ -169,7 +169,7 @@ describe("s2 planner", () => {
           criticalOverflow: false,
         },
       },
-      targetTokens: 40_000,
+      targetTokens: 25_000,
       totalChars: 73,
       totalEstimatedTokens: 19,
       rowCount: 3,
@@ -201,7 +201,7 @@ describe("s2 planner", () => {
         planner_surface_variant: "compact",
         planner_context_summary: expect.objectContaining({
           variant: "compact",
-          target_tokens: 40_000,
+          target_tokens: 25_000,
           total_chars: 73,
           total_estimated_tokens: 19,
           row_count: 3,

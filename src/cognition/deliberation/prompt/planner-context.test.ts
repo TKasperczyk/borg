@@ -194,10 +194,33 @@ function relationalSlot(
   };
 }
 
-function rowIds(text: string, tag: "goal_index_row" | "commitment_row"): string[] {
-  return [...text.matchAll(new RegExp(`<${tag} id="([^"]+)"`, "g"))]
+function creatorDirective(
+  index: number,
+  canonicalFact: string,
+): NonNullable<DeliberationContext["creatorDirectiveBriefing"]>["directives"][number] {
+  return {
+    renderMode: "content",
+    kind: "subject_fact",
+    subjectKind: "entity",
+    subjectLabel: `subject-${index}`,
+    semanticSlot: null,
+    semanticValue: null,
+    canonicalFact,
+    operationalDirective: null,
+    mentionPolicy: "answer_if_asked",
+    priority: 1_000 - index,
+    createdAt: NOW_MS + index,
+  };
+}
+
+function rowIds(text: string, tag: "goal" | "c"): string[] {
+  return [...text.matchAll(new RegExp(`<${tag} i="([^"]+)"`, "g"))]
     .map((match) => match[1]!)
     .sort();
+}
+
+function selfClosingRows(text: string, tag: string): string[] {
+  return [...text.matchAll(new RegExp(`<${tag} [^\n]*?/>`, "g"))].map((match) => match[0]);
 }
 
 function livedEntry(input: {
@@ -313,16 +336,166 @@ describe("compact planner context", () => {
       build(context({ ...shared, audience: "Bob", audienceEntityId: bob })),
     );
 
-    expect(rowIds(aliceText, "goal_index_row")).toEqual(goals.map((entry) => entry.id).sort());
-    expect(rowIds(bobText, "goal_index_row")).toEqual(goals.map((entry) => entry.id).sort());
-    expect(rowIds(aliceText, "commitment_row")).toEqual(
-      commitments.map((entry) => entry.id).sort(),
+    expect(rowIds(aliceText, "goal")).toEqual(goals.map((entry) => entry.id).sort());
+    expect(rowIds(bobText, "goal")).toEqual(goals.map((entry) => entry.id).sort());
+    expect(rowIds(aliceText, "c")).toEqual(commitments.map((entry) => entry.id).sort());
+    expect(rowIds(bobText, "c")).toEqual(commitments.map((entry) => entry.id).sort());
+    expect(aliceText).toContain('s="active"');
+    expect(aliceText).toContain('ca="2d ago"');
+    expect(aliceText).toContain('x="10.0000"');
+    expect(aliceText).toContain('d="Global goal with a second source line" />');
+  });
+
+  it("renders goal and commitment fields as lightweight single-line rows", () => {
+    const alice = createEntityId();
+    const indexedGoal = goal("Keep the plan legible", { owner_entity_id: alice });
+    const executiveFocus = {
+      selected_goal: indexedGoal,
+      selected_score: null,
+      candidates: [
+        {
+          goal_id: indexedGoal.id,
+          goal: indexedGoal,
+          score: 9,
+          components: { priority: 5, deadline_pressure: 1, context_fit: 2, progress_debt: 3 },
+          reason: "Highest global score",
+        },
+      ],
+      threshold: 0,
+      score_basis: {
+        score_context: "turn_selection" as const,
+        deadline_lookahead_ms: 1,
+        progress_debt_stale_ms: 1,
+      },
+    };
+    const rendered = allSystemText(
+      build(
+        context({
+          selfSnapshot: { values: [], goals: [indexedGoal], traits: [] },
+          executiveFocus,
+          applicableCommitments: [
+            commitment("Keep the first line.\nKeep the second line.", { made_to_entity: alice }),
+          ],
+        }),
+      ),
     );
-    expect(rowIds(bobText, "commitment_row")).toEqual(commitments.map((entry) => entry.id).sort());
-    expect(aliceText).toContain('status="active"');
-    expect(aliceText).toContain('created_age="2d ago"');
-    expect(aliceText).toContain('global_executive_score="10.0000"');
-    expect(aliceText).toContain("Global goal with a second source line</goal_index_row>");
+    const goalRow = selfClosingRows(rendered, "goal")[0]!;
+    const detailRow = selfClosingRows(rendered, "goal_detail")[0]!;
+    const commitmentRow = selfClosingRows(rendered, "c")[0]!;
+
+    expect(goalRow.length).toBeLessThanOrEqual(250);
+    expect(goalRow).toContain(`i="${indexedGoal.id}"`);
+    expect(goalRow).toContain('s="active"');
+    expect(goalRow).toContain('x="9.0000"');
+    expect(goalRow).toContain('dc="relationship_private"');
+    expect(goalRow).toContain(`oa="${alice}"`);
+    expect(goalRow).toContain(`pt="${alice}"`);
+    expect(detailRow).toContain('tc="Complete Keep the plan legible"');
+    expect(detailRow).toContain('sp="5.0000"');
+    expect(detailRow).not.toContain("\n");
+    expect(
+      commitmentRow.length - "Keep the first line.&#10;Keep the second line.".length,
+    ).toBeLessThanOrEqual(400);
+    expect(commitmentRow).toContain(`to="${alice}"`);
+    expect(commitmentRow).toContain('dc="relationship_private"');
+    expect(commitmentRow).toContain('d="Keep the first line.&#10;Keep the second line."');
+    expect(commitmentRow).not.toContain("\n");
+    expect(rendered).toContain("i=id, s=status, ca=created_age");
+    expect(rendered).toContain("ec=enforcement_class");
+  });
+
+  it("renders every authority directive as a bounded one-line index row", () => {
+    const payload = `DIRECTIVE_HEAD_${"&".repeat(2_000)}_DIRECTIVE_TAIL`;
+    const directives: NonNullable<DeliberationContext["creatorDirectiveBriefing"]>["directives"] = [
+      ...Array.from({ length: 15 }, (_, index) => creatorDirective(index, `${index}:${payload}`)),
+      {
+        renderMode: "private",
+        privateKind: "knowledge",
+        kind: "subject_fact",
+        subjectKind: "entity",
+        subjectLabel: "private-subject",
+        semanticSlot: null,
+        semanticValue: null,
+        canonicalFact: `PRIVATE_KNOWLEDGE_HEAD_${"k".repeat(2_000)}_PRIVATE_KNOWLEDGE_TAIL`,
+        mentionPolicy: "only_if_topic_raised",
+        priority: 500,
+        createdAt: NOW_MS,
+      },
+      {
+        renderMode: "private",
+        privateKind: "operation",
+        kind: "response_policy",
+        operationalDirective: `PRIVATE_OPERATION_HEAD_${"o".repeat(2_000)}_PRIVATE_OPERATION_TAIL`,
+        priority: 400,
+        createdAt: NOW_MS,
+      },
+      {
+        renderMode: "boundary",
+        priority: 300,
+        createdAt: NOW_MS,
+      },
+    ];
+    const planner = build(
+      context({
+        creatorDirectiveBriefing: { directives },
+      }),
+    );
+    const text = taggedBlock(allSystemText(planner), "borg_planner_authority_context");
+    const rows = selfClosingRows(text, "d");
+
+    expect(text).toContain('directives_total="18"');
+    expect(text).toContain('directives_rendered="18"');
+    expect(text).toContain('<creator_directive_index rows_total="18"');
+    expect(rows).toHaveLength(18);
+    expect(rows.map((row) => row.match(/i="([^"]+)"/)?.[1])).toEqual(
+      Array.from({ length: 18 }, (_, index) => `cd_${index + 1}`),
+    );
+    expect(rows.every((row) => !row.includes("\n"))).toBe(true);
+    expect(text).toContain("DIRECTIVE_HEAD_");
+    expect(text).toContain("_DIRECTIVE_TAIL");
+    expect(text).toContain("[ELIDED]");
+    expect(text).toContain('sc="c" k="sf" dh="a" sk="entity"');
+    expect(text).toContain('sl="subject-0"');
+    expect(text).toContain('mp="a" pk="cf" px="h:');
+    expect(text).toContain('sc="pk" k="sf" dh="pk"');
+    expect(text).toContain('mp="t" pk="cf"');
+    expect(text).toContain('sc="po" k="rp" dh="po"');
+    expect(text).toContain('pk="op"');
+    expect(text).toContain('sc="b" k="db" dh="b"');
+    expect(text).toContain('pk="bp"');
+    expect(text.match(/<omitted_count>0<\/omitted_count>/g)).toHaveLength(2);
+    expect(planner.traceSummary.sections.authority_and_directives).toMatchObject({
+      rowCount: 18,
+      truncationCount: 18,
+      omissionCount: 0,
+    });
+    expect(
+      planner.traceSummary.sections.authority_and_directives?.estimatedTokens,
+    ).toBeLessThanOrEqual(4_000);
+  });
+
+  it("lets the complete authority structural floor overflow instead of dropping rows", () => {
+    const planner = build(
+      context({
+        creatorDirectiveBriefing: {
+          directives: Array.from({ length: 150 }, (_, index) => creatorDirective(index, "x")),
+        },
+      }),
+    );
+    const text = taggedBlock(allSystemText(planner), "borg_planner_authority_context");
+
+    expect(text).toContain('directives_total="150"');
+    expect(text).toContain('directives_rendered="150"');
+    expect(selfClosingRows(text, "d")).toHaveLength(150);
+    expect(text.match(/<omitted_count>0<\/omitted_count>/g)).toHaveLength(2);
+    expect(planner.traceSummary.sections.authority_and_directives).toMatchObject({
+      rowCount: 150,
+      truncationCount: 0,
+      omissionCount: 0,
+    });
+    expect(planner.traceSummary.sections.authority_and_directives?.estimatedTokens).toBeGreaterThan(
+      4_000,
+    );
   });
 
   it("matches legacy profile and relational entity membership for each assembled audience context", () => {
@@ -458,19 +631,19 @@ describe("compact planner context", () => {
     );
     const text = allSystemText(planner);
 
-    expect(text.match(/<goal_index_row /g)).toHaveLength(10);
-    expect(text.match(/<goal_expanded /g)).toHaveLength(8);
-    expect(text).toContain("<omitted_count>2</omitted_count>");
-    expect(text.match(/<decision_row /g)).toHaveLength(16);
-    expect(text.match(/<activity_row /g)).toHaveLength(16);
+    expect(text.match(/<goal /g)).toHaveLength(10);
+    expect(text.match(/<goal_detail /g)).toHaveLength(4);
     expect(text).toContain("<omitted_count>6</omitted_count>");
+    expect(text.match(/<decision_row /g)).toHaveLength(8);
+    expect(text.match(/<activity_row /g)).toHaveLength(8);
+    expect(text).toContain("<omitted_count>22</omitted_count>");
     expect(planner.traceSummary.sections.goal_index).toMatchObject({
-      rowCount: 18,
-      omissionCount: 2,
+      rowCount: 14,
+      omissionCount: 6,
     });
     expect(planner.traceSummary.sections.lived_experience).toMatchObject({
-      rowCount: 32,
-      omissionCount: 6,
+      rowCount: 16,
+      omissionCount: 22,
     });
     expect(planner.traceSummary.totalEstimatedTokens).toBeGreaterThan(0);
   });
@@ -549,8 +722,9 @@ describe("compact planner context", () => {
 
     expect(text).toContain("ADVISORY_HEAD_");
     expect(text).toContain("_ADVISORY_TAIL");
-    expect(text).toMatch(/\[ELIDED \d+ CHARS; HEAD\+TAIL EXCERPT; rendered=\d+\/total=\d+\]/);
-    expect(text).toContain('excerpt_shape="head+tail"');
+    expect(text).toContain("[ELIDED]");
+    expect(text).toContain('shape="head+tail"');
+    expect(text).toMatch(/ r="\d+" n="\d+" e="\d+"/);
     expect(text).toContain(criticalDirective);
     expect(text).toContain('critical_overflow="true"');
     expect(planner.traceSummary.criticalOverflow).toBe(true);
@@ -573,9 +747,9 @@ describe("compact planner context", () => {
     );
     const commitmentSection = planner.traceSummary.sections.commitments;
 
-    expect(Math.ceil(criticalDirective.length / 4)).toBeLessThan(16_000);
+    expect(Math.ceil(criticalDirective.length / 4)).toBeLessThan(8_000);
     expect(allSystemText(planner)).toContain("&amp;".repeat(15_000));
-    expect(commitmentSection?.estimatedTokens).toBeGreaterThan(16_000);
+    expect(commitmentSection?.estimatedTokens).toBeGreaterThan(8_000);
     expect(commitmentSection?.criticalOverflow).toBe(true);
     expect(planner.traceSummary.criticalOverflow).toBe(true);
   });
@@ -589,10 +763,10 @@ describe("compact planner context", () => {
     const text = allSystemText(planner);
     const budget = Number(text.match(/advisory_excerpt_budget_chars="(\d+)"/)?.[1]);
 
-    expect(text.match(/<commitment_row /g)).toHaveLength(30);
-    expect(budget).toBeGreaterThanOrEqual(160);
-    expect(budget).toBeLessThan(640);
-    expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(16_000);
+    expect(text.match(/<c /g)).toHaveLength(30);
+    expect(budget).toBeGreaterThanOrEqual(96);
+    expect(budget).toBeLessThan(320);
+    expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(8_000);
     expect(planner.traceSummary.sections.commitments?.criticalOverflow).toBe(false);
   });
 
@@ -635,7 +809,7 @@ describe("compact planner context", () => {
     expect(planner.traceSummary.overallOverflow).toBe(false);
   });
 
-  it("keeps a representative bounded high-water surface inside the 30-40K-token envelope", () => {
+  it("keeps a representative bounded high-water surface inside the 20-25K estimated envelope", () => {
     const freeText = `FIELD_HEAD_${"x".repeat(20_000)}_FIELD_TAIL`;
     const goals = Array.from({ length: 8 }, (_, index) =>
       goal(freeText, {
@@ -753,12 +927,80 @@ describe("compact planner context", () => {
       }),
     );
 
-    expect(planner.traceSummary.totalEstimatedTokens).toBeGreaterThanOrEqual(30_000);
+    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(5_000);
+    expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(8_000);
+    expect(planner.traceSummary.sections.lived_experience?.estimatedTokens).toBeLessThanOrEqual(
+      4_000,
+    );
+    expect(planner.traceSummary.totalEstimatedTokens).toBeGreaterThanOrEqual(20_000);
     expect(planner.traceSummary.totalEstimatedTokens).toBeLessThanOrEqual(
       COMPACT_PLANNER_TARGET_TOKENS,
     );
     expect(planner.traceSummary.overallOverflow).toBe(false);
     expect(planner.traceSummary.truncationCount).toBeGreaterThan(0);
+  });
+
+  it("keeps the complete production-shaped authority index and reports total overflow", () => {
+    const freeText = `LIVE_HEAD_${"x".repeat(2_000)}_LIVE_TAIL`;
+    const goals = Array.from({ length: 109 }, (_, index) =>
+      goal(`${index}:${freeText}`, {
+        priority: 109 - index,
+        terminal_condition: freeText,
+        progress_notes: freeText,
+      }),
+    );
+    const executiveFocus = {
+      selected_goal: goals[0]!,
+      selected_score: null,
+      candidates: goals.map((candidate, index) => ({
+        goal_id: candidate.id,
+        goal: candidate,
+        score: 1_000 - index,
+        components: { priority: 1, deadline_pressure: 1, context_fit: 1, progress_debt: 1 },
+        reason: freeText,
+      })),
+      threshold: 0,
+      score_basis: {
+        score_context: "turn_selection" as const,
+        deadline_lookahead_ms: 1,
+        progress_debt_stale_ms: 1,
+      },
+    };
+    const planner = build(
+      context({
+        selfSnapshot: { values: [], goals, traits: [] },
+        executiveFocus,
+        applicableCommitments: Array.from({ length: 126 }, (_, index) =>
+          commitment(`${index}:${freeText}`),
+        ),
+        creatorDirectiveBriefing: {
+          directives: Array.from({ length: 100 }, (_, index) =>
+            creatorDirective(index, `${index}:${freeText}`),
+          ),
+        },
+      }),
+    );
+
+    expect(planner.traceSummary.sections.goal_index?.rowCount).toBe(113);
+    expect(planner.traceSummary.sections.commitments?.rowCount).toBe(126);
+    expect(planner.traceSummary.sections.authority_and_directives).toMatchObject({
+      rowCount: 100,
+      omissionCount: 0,
+    });
+    const authorityRows = selfClosingRows(
+      taggedBlock(allSystemText(planner), "borg_planner_authority_context"),
+      "d",
+    );
+    expect(authorityRows).toHaveLength(100);
+    expect(Math.max(...authorityRows.map((row) => row.length))).toBeLessThanOrEqual(250);
+    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(8_100);
+    expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(11_200);
+    expect(
+      planner.traceSummary.sections.authority_and_directives?.estimatedTokens,
+    ).toBeLessThanOrEqual(4_000);
+    expect(planner.traceSummary.totalEstimatedTokens).toBeGreaterThanOrEqual(27_300);
+    expect(planner.traceSummary.totalEstimatedTokens).toBeLessThanOrEqual(27_500);
+    expect(planner.traceSummary.overallOverflow).toBe(true);
   });
 
   it("keeps the generic excerpt shape mechanical and announces every cut", () => {

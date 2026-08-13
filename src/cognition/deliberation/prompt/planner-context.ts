@@ -38,11 +38,16 @@ import {
   renderPromptSurfaceAdditionalBlock,
   type PromptSurfaceAdditionalSection,
 } from "../../prompts/prompt-surface-registry.js";
-import type { DeliberationContext, SelfSnapshotGoal } from "../types.js";
+import type {
+  CreatorDirectiveBriefingDirective,
+  CreatorDirectiveBriefingPrivateDirective,
+  DeliberationContext,
+  SelfSnapshotGoal,
+} from "../types.js";
 import { summarizeVoiceAnchors } from "./voice-anchors.js";
 import {
   buildAutonomousOutboundAuthorizationSection,
-  renderCreatorDirectiveDisclosureLines,
+  INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT,
   renderCreatorIdentity,
   renderCurrentTimeSection,
 } from "./system-prompt.js";
@@ -115,26 +120,43 @@ const COMPACT_PLANNER_STATIC_PREFIX_CACHE_CONTROL = {
   ttl: "1h",
 } as const;
 
-const PLANNER_ADVISORY_COMMITMENT_MAX_EXCERPT_CHARS = 640;
-const PLANNER_ADVISORY_COMMITMENT_MIN_EXCERPT_CHARS = 160;
-const PLANNER_COMMITMENT_TARGET_TOKENS = 16_000;
-export const COMPACT_PLANNER_TARGET_TOKENS = 40_000;
+const PLANNER_ADVISORY_COMMITMENT_MAX_EXCERPT_CHARS = 320;
+const PLANNER_ADVISORY_COMMITMENT_MIN_EXCERPT_CHARS = 96;
+const PLANNER_COMMITMENT_TARGET_TOKENS = 8_000;
+// The first production compact call measured provider input at 1.63x the
+// chars/4 estimate. A 25K estimated envelope therefore targets about 40K real
+// provider tokens while retaining honest overflow telemetry for critical text.
+export const COMPACT_PLANNER_TARGET_TOKENS = 25_000;
 const PLANNER_LABEL_EXCERPT_CHARS = 320;
 const PLANNER_ATTRIBUTE_EXCERPT_CHARS = 240;
-const PLANNER_GOAL_INDEX_DESCRIPTION_CHARS = 280;
-const PLANNER_GOAL_EXPANDED_FIELD_CHARS = 960;
-const PLANNER_GOAL_EXPANSION_LIMIT = 8;
+const PLANNER_GOAL_TARGET_TOKENS = 5_000;
+const PLANNER_GOAL_INDEX_DESCRIPTION_CHARS = 96;
+const PLANNER_GOAL_EXPANDED_FIELD_CHARS = 240;
+const PLANNER_GOAL_EXPANSION_LIMIT = 4;
 const PLANNER_RECENT_GROWTH_LIMIT = 5;
-const PLANNER_LIVED_DECISION_LIMIT = 16;
-const PLANNER_LIVED_ACTIVITY_LIMIT = 16;
+const PLANNER_LIVED_EXPERIENCE_TARGET_TOKENS = 4_000;
+const PLANNER_LIVED_EXPERIENCE_FIELD_CHARS = 240;
+const PLANNER_LIVED_DECISION_LIMIT = 8;
+const PLANNER_LIVED_ACTIVITY_LIMIT = 8;
 const PLANNER_PROFILE_LIMIT = 8;
 const PLANNER_SOCIAL_MEMORY_LIMIT = 12;
 const PLANNER_RELATIONAL_SLOT_LIMIT = 24;
+const PLANNER_AUTHORITY_TARGET_TOKENS = 4_000;
+const PLANNER_AUTHORITY_DIRECTIVE_MIN_EXCERPT_CHARS = 16;
+const PLANNER_AUTHORITY_DIRECTIVE_MAX_EXCERPT_CHARS = 96;
+const PLANNER_AUTHORITY_DIRECTIVE_LABEL_CHARS = 48;
 const PLANNER_TURN_HISTORY_LIMIT = 5;
 const PLANNER_TAIL_CONTEXT_EXCERPT_CHARS = 4_000;
 
 function escapeXmlAttribute(value: string): string {
   return escapeXmlText(value).replaceAll('"', "&quot;");
+}
+
+function escapeXmlSingleLineAttribute(value: string): string {
+  return escapeXmlAttribute(value)
+    .replaceAll("\r", "&#13;")
+    .replaceAll("\n", "&#10;")
+    .replaceAll("\t", "&#9;");
 }
 
 function singleLinePlannerText(value: string): string {
@@ -159,14 +181,21 @@ function relativeAge(timestamp: number | null | undefined, nowMs: number | undef
  * Mechanical presentation budget: preserve both ends and announce the cut.
  * This never attempts to identify clauses, sentences, keywords, or meaning.
  */
-export function headTailPlannerExcerpt(value: string, maxChars: number): PromptExcerpt {
+function buildHeadTailPlannerExcerpt(
+  value: string,
+  maxChars: number,
+): { excerpt: PromptExcerpt; head: string; tail: string } {
   if (value.length <= maxChars) {
     return {
-      text: value,
-      truncated: false,
-      renderedChars: value.length,
-      totalChars: value.length,
-      elidedChars: 0,
+      excerpt: {
+        text: value,
+        truncated: false,
+        renderedChars: value.length,
+        totalChars: value.length,
+        elidedChars: 0,
+      },
+      head: value,
+      tail: "",
     };
   }
 
@@ -191,12 +220,27 @@ export function headTailPlannerExcerpt(value: string, maxChars: number): PromptE
   marker = ` [ELIDED ${elidedChars} CHARS; HEAD+TAIL EXCERPT; rendered=${renderedChars}/total=${value.length}] `;
 
   return {
-    text: `${head}${marker}${tail}`,
-    truncated: true,
-    renderedChars,
-    totalChars: value.length,
-    elidedChars,
+    excerpt: {
+      text: `${head}${marker}${tail}`,
+      truncated: true,
+      renderedChars,
+      totalChars: value.length,
+      elidedChars,
+    },
+    head,
+    tail,
   };
+}
+
+export function headTailPlannerExcerpt(value: string, maxChars: number): PromptExcerpt {
+  return buildHeadTailPlannerExcerpt(value, maxChars).excerpt;
+}
+
+function compactPlannerAttributeExcerpt(value: string, maxChars: number): PromptExcerpt {
+  const built = buildHeadTailPlannerExcerpt(value, maxChars);
+  return built.excerpt.truncated
+    ? { ...built.excerpt, text: `${built.head}[ELIDED]${built.tail}` }
+    : built.excerpt;
 }
 
 function disclosureFromMetadata(
@@ -208,6 +252,22 @@ function disclosureFromMetadata(
 
 function renderedDisclosure(label: MemoryDisclosureLabel): string {
   return renderMemoryDisclosureLabelForModel(label);
+}
+
+function compactDisclosureAttributes(label: MemoryDisclosureLabel): string {
+  return [
+    `dc="${escapeXmlAttribute(label.disclosureClass)}"`,
+    ...(label.originAudienceEntityIds.length === 0
+      ? []
+      : [`oa="${escapeXmlAttribute(label.originAudienceEntityIds.join(","))}"`]),
+    ...(label.disclosureClass === "public"
+      ? []
+      : [
+          `pt="${escapeXmlAttribute(
+            label.privateToEntityIds.length === 0 ? "unknown" : label.privateToEntityIds.join(","),
+          )}"`,
+        ]),
+  ].join(" ");
 }
 
 function section(
@@ -338,8 +398,8 @@ function goalCandidateById(
   );
 }
 
-function goalDisclosure(goal: SelfSnapshotGoal): string {
-  return renderedDisclosure(
+function goalDisclosureAttributes(goal: SelfSnapshotGoal): string {
+  return compactDisclosureAttributes(
     disclosureFromMetadata(goal.disclosure_label, goalMemoryDisclosureLabel(goal)),
   );
 }
@@ -358,7 +418,7 @@ function renderGoalIndexRows(
     truncationCount += description.truncated ? 1 : 0;
     const score = scoreById.get(goal.id);
 
-    return `<goal_index_row id="${escapeXmlAttribute(goal.id)}" status="${escapeXmlAttribute(goal.status)}" created_age="${escapeXmlAttribute(relativeAge(goal.created_at, nowMs))}" last_progress_age="${escapeXmlAttribute(relativeAge(goal.last_progress_ts, nowMs))}" target_age="${escapeXmlAttribute(relativeAge(goal.target_at, nowMs))}" priority="${goal.priority}" global_executive_score="${score === undefined ? "unscored" : score.toFixed(4)}" disclosure="${escapeXmlAttribute(goalDisclosure(goal))}">${escapeXmlText(description.text)}</goal_index_row>`;
+    return `<goal i="${escapeXmlAttribute(goal.id)}" s="${escapeXmlAttribute(goal.status)}" ca="${escapeXmlAttribute(relativeAge(goal.created_at, nowMs))}" pa="${escapeXmlAttribute(relativeAge(goal.last_progress_ts, nowMs))}" ta="${escapeXmlAttribute(relativeAge(goal.target_at, nowMs))}" p="${goal.priority}" x="${score === undefined ? "unscored" : score.toFixed(4)}" ${goalDisclosureAttributes(goal)} d="${escapeXmlSingleLineAttribute(description.text)}" />`;
   });
 
   return { rows, truncationCount };
@@ -386,21 +446,7 @@ function renderExpandedGoalRow(
     PLANNER_GOAL_EXPANDED_FIELD_CHARS,
   );
   return {
-    row: [
-      `<goal_expanded id="${escapeXmlAttribute(goal.id)}" status="${escapeXmlAttribute(goal.status)}" selected="${context.executiveFocus?.selected_goal?.id === goal.id}" created_at="${new Date(goal.created_at).toISOString()}" created_age="${escapeXmlAttribute(relativeAge(goal.created_at, nowMs))}" last_progress_age="${escapeXmlAttribute(relativeAge(goal.last_progress_ts, nowMs))}" target_age="${escapeXmlAttribute(relativeAge(goal.target_at, nowMs))}" priority="${goal.priority}" global_executive_score="${(scoreById.get(goal.id) ?? 0).toFixed(4)}" disclosure="${escapeXmlAttribute(goalDisclosure(goal))}">`,
-      `  <description>${escapeXmlText(description.text)}</description>`,
-      `  <terminal_condition>${escapeXmlText(terminal.text)}</terminal_condition>`,
-      `  <progress_notes>${escapeXmlText(progress.text)}</progress_notes>`,
-      ...(candidate === undefined
-        ? []
-        : [
-            `  <score_components priority="${candidate.components.priority.toFixed(4)}" deadline_pressure="${candidate.components.deadline_pressure.toFixed(4)}" context_fit="${candidate.components.context_fit.toFixed(4)}" progress_debt="${candidate.components.progress_debt.toFixed(4)}" />`,
-          ]),
-      `  <executive_reason>${escapeXmlText(executiveReason.text)}</executive_reason>`,
-      `  <owner_entity_id>${escapeXmlText(goal.owner_entity_id ?? "none")}</owner_entity_id>`,
-      `  <audience_entity_id>${escapeXmlText(goal.audience_entity_id ?? "none")}</audience_entity_id>`,
-      "</goal_expanded>",
-    ].join("\n"),
+    row: `<goal_detail i="${escapeXmlAttribute(goal.id)}" s="${escapeXmlAttribute(goal.status)}" sel="${context.executiveFocus?.selected_goal?.id === goal.id}" cat="${new Date(goal.created_at).toISOString()}" ca="${escapeXmlAttribute(relativeAge(goal.created_at, nowMs))}" pa="${escapeXmlAttribute(relativeAge(goal.last_progress_ts, nowMs))}" ta="${escapeXmlAttribute(relativeAge(goal.target_at, nowMs))}" p="${goal.priority}" x="${(scoreById.get(goal.id) ?? 0).toFixed(4)}" ${goalDisclosureAttributes(goal)} d="${escapeXmlSingleLineAttribute(description.text)}" tc="${escapeXmlSingleLineAttribute(terminal.text)}" pn="${escapeXmlSingleLineAttribute(progress.text)}"${candidate === undefined ? "" : ` sp="${candidate.components.priority.toFixed(4)}" sd="${candidate.components.deadline_pressure.toFixed(4)}" sc="${candidate.components.context_fit.toFixed(4)}" sdebt="${candidate.components.progress_debt.toFixed(4)}"`} er="${escapeXmlSingleLineAttribute(executiveReason.text)}" owner="${escapeXmlAttribute(goal.owner_entity_id ?? "none")}" audience="${escapeXmlAttribute(goal.audience_entity_id ?? "none")}" />`,
     truncationCount: [description, terminal, progress, executiveReason].filter(
       (entry) => entry.truncated,
     ).length,
@@ -450,11 +496,8 @@ function renderExecutiveNextStep(
   }
 
   const excerpt = headTailPlannerExcerpt(nextStep.description, PLANNER_GOAL_EXPANDED_FIELD_CHARS);
-  const disclosure = renderedDisclosure(
-    disclosureFromMetadata(nextStep.disclosure_label, selfPrivateMemoryDisclosureLabel()),
-  );
   return {
-    row: `<executive_next_step id="${escapeXmlAttribute(nextStep.id)}" goal_id="${escapeXmlAttribute(nextStep.goal_id)}" kind="${escapeXmlAttribute(nextStep.kind)}" status="${escapeXmlAttribute(nextStep.status)}" due_age="${escapeXmlAttribute(relativeAge(nextStep.due_at, nowMs))}" last_attempt_age="${escapeXmlAttribute(relativeAge(nextStep.last_attempt_ts, nowMs))}" disclosure="${escapeXmlAttribute(disclosure)}">${escapeXmlText(excerpt.text)}</executive_next_step>`,
+    row: `<next_step i="${escapeXmlAttribute(nextStep.id)}" g="${escapeXmlAttribute(nextStep.goal_id)}" k="${escapeXmlAttribute(nextStep.kind)}" s="${escapeXmlAttribute(nextStep.status)}" due="${escapeXmlAttribute(relativeAge(nextStep.due_at, nowMs))}" attempt="${escapeXmlAttribute(relativeAge(nextStep.last_attempt_ts, nowMs))}" ${compactDisclosureAttributes(disclosureFromMetadata(nextStep.disclosure_label, selfPrivateMemoryDisclosureLabel()))} d="${escapeXmlSingleLineAttribute(excerpt.text)}" />`,
     truncationCount: excerpt.truncated ? 1 : 0,
   };
 }
@@ -479,19 +522,15 @@ function renderGoalDigest(context: DeliberationContext): RenderedPlannerSection 
   return section(
     "goal_index",
     [
-      `<borg_planner_goal_digest rows_total="${goals.length}">`,
+      `<borg_planner_goal_digest rows_total="${goals.length}" target_tokens="${PLANNER_GOAL_TARGET_TOKENS}">`,
       "  <interpretation>The one-line index is complete for the globally assembled self snapshot. Status and ages are comparable across rows. Expanded rows are the highest global executive-score candidates, not an audience visibility filter.</interpretation>",
+      "  <field_legend>goal: i=id, s=status, ca=created_age, pa=last_progress_age, ta=target_age, p=priority, x=global_executive_score, dc=disclosure_class, oa=origin_audience, pt=private_to, d=description. goal_detail adds sel=selected, cat=created_at, tc=terminal_condition, pn=progress_notes, sp/sd/sc/sdebt=score priority/deadline_pressure/context_fit/progress_debt, er=executive_reason, owner=owner_entity_id, audience=audience_entity_id. next_step: i=id, g=goal_id, k=kind, s=status, due=due_age, attempt=last_attempt_age, dc/oa/pt=disclosure label, d=description.</field_legend>",
       "  <complete_goal_index>",
       ...goalIndex.rows.map((row) => `    ${row}`),
       "    <omitted_count>0</omitted_count>",
       "  </complete_goal_index>",
       `  <top_global_candidates_expanded limit="${PLANNER_GOAL_EXPANSION_LIMIT}">`,
-      ...expandedGoals.rows.map((row) =>
-        row
-          .split("\n")
-          .map((line) => `    ${line}`)
-          .join("\n"),
-      ),
+      ...expandedGoals.rows.map((row) => `    ${row}`),
       `    <omitted_count>${expandedGoals.omissionCount}</omitted_count>`,
       "  </top_global_candidates_expanded>",
       ...(executiveNextStep.row === null ? [] : [`  ${executiveNextStep.row}`]),
@@ -524,10 +563,10 @@ function commitmentStatus(commitment: CommitmentRecord): string {
 
 function commitmentEntityAttributes(commitment: CommitmentRecord): string {
   return [
-    ["made_to", commitment.made_to_entity],
-    ["audience", commitment.restricted_audience],
+    ["to", commitment.made_to_entity],
+    ["aud", commitment.restricted_audience],
     ["about", commitment.about_entity],
-    ["committed_by", commitment.committed_by_entity_id ?? null],
+    ["by", commitment.committed_by_entity_id ?? null],
   ]
     .filter((entry): entry is [string, string] => entry[1] !== null)
     .map(([label, value]) => `${label}="${escapeXmlAttribute(value)}"`)
@@ -560,23 +599,21 @@ function renderCommitmentRowsAtBudget(
     const critical = enforcementClass === "critical";
     const directive = critical
       ? exactPlannerExcerpt(commitment.directive)
-      : headTailPlannerExcerpt(commitment.directive, advisoryExcerptBudget);
+      : compactPlannerAttributeExcerpt(commitment.directive, advisoryExcerptBudget);
     const directiveFamily = headTailPlannerExcerpt(
       commitment.directive_family,
       PLANNER_LABEL_EXCERPT_CHARS,
     );
     truncationCount += [directive, directiveFamily].filter((entry) => entry.truncated).length;
-    const disclosure = renderedDisclosure(commitmentMemoryDisclosureLabel(commitment));
+    const disclosureAttributes = compactDisclosureAttributes(
+      commitmentMemoryDisclosureLabel(commitment),
+    );
     const entityAttributes = commitmentEntityAttributes(commitment);
+    const directiveAttributes = critical
+      ? `ex="true" r="${directive.renderedChars}" n="${directive.totalChars}"`
+      : `ex="${directive.truncated ? "false" : "true"}" shape="${directive.truncated ? "head+tail" : "full"}" r="${directive.renderedChars}" n="${directive.totalChars}" e="${directive.elidedChars}"`;
 
-    return [
-      `<commitment_row id="${escapeXmlAttribute(commitment.id)}" status="${commitmentStatus(commitment)}" enforcement_class="${enforcementClass}" critical_domain="${escapeXmlAttribute(effectiveCommitmentCriticalDomain(commitment) ?? "none")}" kind="${escapeXmlAttribute(commitment.kind)}" type="${escapeXmlAttribute(commitment.type)}" closure_pressure_relevance="${escapeXmlAttribute(commitment.closure_pressure_relevance)}" priority="${commitment.priority}" created_at="${new Date(commitment.created_at).toISOString()}" created_age="${escapeXmlAttribute(relativeAge(commitment.created_at, nowMs))}" reinforced_age="${escapeXmlAttribute(relativeAge(commitment.last_reinforced_at, nowMs))}" expires_age="${escapeXmlAttribute(relativeAge(commitment.expires_at, nowMs))}" disclosure="${escapeXmlAttribute(disclosure)}"${entityAttributes.length === 0 ? "" : ` ${entityAttributes}`}>`,
-      critical
-        ? `  <directive exact="true" rendered_chars="${directive.renderedChars}" total_chars="${directive.totalChars}">${escapeXmlText(directive.text)}</directive>`
-        : `  <directive exact="${directive.truncated ? "false" : "true"}" excerpt_shape="${directive.truncated ? "head+tail" : "full"}" rendered_chars="${directive.renderedChars}" total_chars="${directive.totalChars}" elided_chars="${directive.elidedChars}">${escapeXmlText(directive.text)}</directive>`,
-      `  <directive_family>${escapeXmlText(directiveFamily.text)}</directive_family>`,
-      "</commitment_row>",
-    ].join("\n");
+    return `<c i="${escapeXmlAttribute(commitment.id)}" s="${commitmentStatus(commitment)}" ec="${enforcementClass}" cd="${escapeXmlAttribute(effectiveCommitmentCriticalDomain(commitment) ?? "none")}" k="${escapeXmlAttribute(commitment.kind)}" t="${escapeXmlAttribute(commitment.type)}" cp="${escapeXmlAttribute(commitment.closure_pressure_relevance)}" p="${commitment.priority}" cat="${new Date(commitment.created_at).toISOString()}" ca="${escapeXmlAttribute(relativeAge(commitment.created_at, nowMs))}" ra="${escapeXmlAttribute(relativeAge(commitment.last_reinforced_at, nowMs))}" xa="${escapeXmlAttribute(relativeAge(commitment.expires_at, nowMs))}" ${disclosureAttributes}${entityAttributes.length === 0 ? "" : ` ${entityAttributes}`} ${directiveAttributes} f="${escapeXmlSingleLineAttribute(directiveFamily.text)}" d="${escapeXmlSingleLineAttribute(directive.text)}" />`;
   });
 
   return { rows, truncationCount };
@@ -591,12 +628,8 @@ function renderCommitmentDigestText(input: {
   return [
     `<borg_planner_commitment_digest rows_total="${input.commitmentCount}" target_tokens="${PLANNER_COMMITMENT_TARGET_TOKENS}" advisory_excerpt_budget_chars="${input.advisoryExcerptBudget}" critical_overflow="${input.criticalOverflow}">`,
     "  <interpretation>This is the complete globally assembled commitment index. Critical directives are exact and never truncated; advisory directives are visibly mechanical excerpts when long, never summaries. Scope fields are disclosure/provenance, not recall gates.</interpretation>",
-    ...input.rows.map((row) =>
-      row
-        .split("\n")
-        .map((line) => `  ${line}`)
-        .join("\n"),
-    ),
+    "  <field_legend>c row: i=id, s=status, ec=enforcement_class, cd=critical_domain, k=kind, t=type, cp=closure_pressure_relevance, p=priority, cat=created_at, ca=created_age, ra=reinforced_age, xa=expires_age, dc=disclosure_class, oa=origin_audience, pt=private_to, to=made_to, aud=restricted_audience, about=about_entity, by=committed_by_entity_id, ex=directive_exact, shape=directive_excerpt_shape, r=directive_rendered_chars, n=directive_total_chars, e=directive_elided_chars, f=directive_family, d=directive.</field_legend>",
+    ...input.rows.map((row) => `  ${row}`),
     "  <omitted_count>0</omitted_count>",
     "</borg_planner_commitment_digest>",
   ].join("\n");
@@ -768,8 +801,11 @@ function renderLivedExperienceDigest(context: DeliberationContext): RenderedPlan
     const summary =
       plannerMetadataString(representative, "decision_summary") ?? representative.text ?? "";
     const rationale = plannerMetadataString(representative, "decision_rationale");
-    const summaryExcerpt = headTailPlannerExcerpt(summary, 720);
-    const rationaleExcerpt = rationale === null ? null : headTailPlannerExcerpt(rationale, 720);
+    const summaryExcerpt = headTailPlannerExcerpt(summary, PLANNER_LIVED_EXPERIENCE_FIELD_CHARS);
+    const rationaleExcerpt =
+      rationale === null
+        ? null
+        : headTailPlannerExcerpt(rationale, PLANNER_LIVED_EXPERIENCE_FIELD_CHARS);
     truncationCount += summaryExcerpt.truncated ? 1 : 0;
     truncationCount += rationaleExcerpt?.truncated === true ? 1 : 0;
     const occurredTimes = group.entries.map(entryOccurredAt).filter((timestamp) => timestamp > 0);
@@ -790,7 +826,10 @@ function renderLivedExperienceDigest(context: DeliberationContext): RenderedPlan
   const activityRows = renderedActivityEntries.map((entry) => {
     const kind = metadataString(entry, "lived_experience_kind") ?? entry.value ?? "unknown";
     const kindExcerpt = headTailPlannerExcerpt(kind, PLANNER_ATTRIBUTE_EXCERPT_CHARS);
-    const textExcerpt = headTailPlannerExcerpt(entry.text ?? entry.value ?? "", 720);
+    const textExcerpt = headTailPlannerExcerpt(
+      entry.text ?? entry.value ?? "",
+      PLANNER_LIVED_EXPERIENCE_FIELD_CHARS,
+    );
     truncationCount += [kindExcerpt, textExcerpt].filter((item) => item.truncated).length;
     const category = kind === "self_decision_density" ? "firing_volume" : "activity_or_summary";
     return `<activity_row category="${category}" kind="${escapeXmlAttribute(kindExcerpt.text)}" occurred_at="${entryOccurredAt(entry) === 0 ? "unknown" : new Date(entryOccurredAt(entry)).toISOString()}" disclosure="${escapeXmlAttribute(renderedDisclosure(entryDisclosure(entry)))}">${escapeXmlText(textExcerpt.text)}</activity_row>`;
@@ -802,7 +841,7 @@ function renderLivedExperienceDigest(context: DeliberationContext): RenderedPlan
   return section(
     "lived_experience",
     [
-      `<borg_planner_lived_experience_digest decision_groups_total="${allDecisionGroups.length}" activity_rows_total="${activityEntries.length}" standing_cadence_due="${standing?.renderRecentLivedExperience === true}">`,
+      `<borg_planner_lived_experience_digest decision_groups_total="${allDecisionGroups.length}" activity_rows_total="${activityEntries.length}" standing_cadence_due="${standing?.renderRecentLivedExperience === true}" target_tokens="${PLANNER_LIVED_EXPERIENCE_TARGET_TOKENS}">`,
       "  <interpretation>What I decided is distinct from what merely fired or occurred. Repeated derivations sharing one structural outcome reference render once with derivation_count; text is never compared to decide sameness. Density/firing rows describe volume, not N separate acts of will.</interpretation>",
       "  <decisions>",
       ...decisionRows.map((row) =>
@@ -1017,11 +1056,295 @@ function renderTrustedAuthorityRows(
   };
 }
 
+type RenderedAuthorityDirectives = {
+  lines: string[];
+  rowCount: number;
+  truncationCount: number;
+  excerptBudget: number;
+};
+
+type PlannerAuthorityDirectiveFields = {
+  scope: "c" | "pk" | "po" | "b";
+  kind: "si" | "sf" | "db" | "rp" | "ri";
+  disclosure: "a" | "pk" | "po" | "b";
+  subjectKind: string | null;
+  subjectLabel: string | null;
+  semanticSlot: string | null;
+  mentionPolicy: "p" | "a" | "t" | "n" | null;
+  payloadKind: "sv" | "cf" | "op" | "bp";
+  payload: string | null;
+};
+
+function compareCreatorDirectivePriorityAndAge(
+  left: CreatorDirectiveBriefingDirective,
+  right: CreatorDirectiveBriefingDirective,
+): number {
+  return right.priority - left.priority || left.createdAt - right.createdAt;
+}
+
+function comparePrivateCreatorDirectives(
+  left: CreatorDirectiveBriefingPrivateDirective,
+  right: CreatorDirectiveBriefingPrivateDirective,
+): number {
+  if (left.privateKind !== right.privateKind) {
+    return left.privateKind === "knowledge" ? -1 : 1;
+  }
+
+  return compareCreatorDirectivePriorityAndAge(left, right);
+}
+
+function orderedCreatorDirectives(
+  directives: readonly CreatorDirectiveBriefingDirective[],
+): CreatorDirectiveBriefingDirective[] {
+  return [
+    ...directives
+      .filter((directive) => directive.renderMode === "content")
+      .sort(compareCreatorDirectivePriorityAndAge),
+    ...directives
+      .filter(
+        (directive): directive is CreatorDirectiveBriefingPrivateDirective =>
+          directive.renderMode === "private",
+      )
+      .sort(comparePrivateCreatorDirectives),
+    ...directives
+      .filter((directive) => directive.renderMode === "boundary")
+      .sort(compareCreatorDirectivePriorityAndAge),
+  ];
+}
+
+function compactPlannerLeanAttributeExcerpt(value: string, maxChars: number): PromptExcerpt {
+  if (value.length <= maxChars) {
+    return exactPlannerExcerpt(value);
+  }
+
+  const marker = "[ELIDED]";
+  const boundedMaxChars = Math.max(marker.length + 2, Math.floor(maxChars));
+  const retainedChars = boundedMaxChars - marker.length;
+  const requestedHeadChars = Math.ceil(retainedChars / 2);
+  const headEnd = utf16SafePrefixEnd(value, requestedHeadChars);
+  const requestedTailChars = retainedChars - headEnd;
+  const tailStart = utf16SafeSuffixStart(value, value.length - requestedTailChars);
+  const head = value.slice(0, headEnd);
+  const tail = value.slice(tailStart);
+  const renderedChars = head.length + tail.length;
+
+  return {
+    text: `${head}${marker}${tail}`,
+    truncated: true,
+    renderedChars,
+    totalChars: value.length,
+    elidedChars: value.length - renderedChars,
+  };
+}
+
+function creatorDirectiveKindCode(
+  directive: Exclude<CreatorDirectiveBriefingDirective, { renderMode: "boundary" }>,
+): PlannerAuthorityDirectiveFields["kind"] {
+  switch (directive.kind) {
+    case "self_identity":
+      return "si";
+    case "subject_fact":
+      return "sf";
+    case "disclosure_boundary":
+      return "db";
+    case "response_policy":
+      return "rp";
+    case "routing_instruction":
+      return "ri";
+  }
+}
+
+function creatorDirectiveMentionPolicyCode(
+  mentionPolicy: Extract<
+    CreatorDirectiveBriefingDirective,
+    { renderMode: "content" } | { renderMode: "private"; privateKind: "knowledge" }
+  >["mentionPolicy"],
+): Exclude<PlannerAuthorityDirectiveFields["mentionPolicy"], null> {
+  switch (mentionPolicy) {
+    case "proactive":
+      return "p";
+    case "answer_if_asked":
+      return "a";
+    case "only_if_topic_raised":
+      return "t";
+    case "never_mention":
+      return "n";
+  }
+}
+
+function plannerAuthorityDirectiveFields(
+  directive: CreatorDirectiveBriefingDirective,
+): PlannerAuthorityDirectiveFields {
+  if (directive.renderMode === "boundary") {
+    return {
+      scope: "b",
+      kind: "db",
+      disclosure: "b",
+      subjectKind: null,
+      subjectLabel: null,
+      semanticSlot: null,
+      mentionPolicy: null,
+      payloadKind: "bp",
+      payload: INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT,
+    };
+  }
+  if (directive.renderMode === "private" && directive.privateKind === "operation") {
+    return {
+      scope: "po",
+      kind: creatorDirectiveKindCode(directive),
+      disclosure: "po",
+      subjectKind: null,
+      subjectLabel: null,
+      semanticSlot: null,
+      mentionPolicy: null,
+      payloadKind: "op",
+      payload: directive.operationalDirective,
+    };
+  }
+
+  const sharedFields = {
+    scope: directive.renderMode === "private" ? ("pk" as const) : ("c" as const),
+    kind: creatorDirectiveKindCode(directive),
+    disclosure: directive.renderMode === "private" ? ("pk" as const) : ("a" as const),
+    subjectKind: directive.subjectKind,
+    subjectLabel: directive.subjectLabel,
+    semanticSlot: directive.semanticSlot,
+    mentionPolicy: creatorDirectiveMentionPolicyCode(directive.mentionPolicy),
+  };
+  if (directive.semanticSlot !== null) {
+    return {
+      ...sharedFields,
+      payloadKind: "sv",
+      payload: directive.semanticValue,
+    };
+  }
+  if (directive.kind === "response_policy" || directive.kind === "routing_instruction") {
+    return {
+      ...sharedFields,
+      payloadKind: "op",
+      payload: directive.operationalDirective,
+    };
+  }
+
+  return {
+    ...sharedFields,
+    payloadKind: "cf",
+    payload: directive.canonicalFact,
+  };
+}
+
+function plannerExcerptShape(excerpt: PromptExcerpt, missing: boolean): string {
+  return `${missing ? "m" : excerpt.truncated ? "h" : "f"}:${excerpt.renderedChars}/${excerpt.totalChars}`;
+}
+
+function renderPlannerAuthorityDirectiveRow(
+  directive: CreatorDirectiveBriefingDirective,
+  index: number,
+  payloadExcerptBudget: number,
+): { row: string; truncationCount: number } {
+  const fields = plannerAuthorityDirectiveFields(directive);
+  const subjectLabel =
+    fields.subjectLabel === null
+      ? exactPlannerExcerpt("")
+      : compactPlannerLeanAttributeExcerpt(
+          fields.subjectLabel,
+          PLANNER_AUTHORITY_DIRECTIVE_LABEL_CHARS,
+        );
+  const payload =
+    fields.payload === null
+      ? exactPlannerExcerpt("")
+      : compactPlannerLeanAttributeExcerpt(fields.payload, payloadExcerptBudget);
+  const subjectShape = plannerExcerptShape(subjectLabel, fields.subjectLabel === null);
+  const payloadShape = plannerExcerptShape(payload, fields.payload === null);
+
+  return {
+    row: `<d i="cd_${index + 1}" sc="${fields.scope}" k="${fields.kind}" dh="${fields.disclosure}" sk="${escapeXmlAttribute(fields.subjectKind ?? "-")}" sl="${escapeXmlSingleLineAttribute(subjectLabel.text)}" sx="${subjectShape}" ss="${escapeXmlAttribute(fields.semanticSlot ?? "-")}" mp="${fields.mentionPolicy ?? "-"}" pk="${fields.payloadKind}" px="${payloadShape}" v="${escapeXmlSingleLineAttribute(payload.text)}" />`,
+    truncationCount: Number(subjectLabel.truncated) + Number(payload.truncated),
+  };
+}
+
+function renderPlannerAuthorityDirectiveIndexText(input: {
+  rows: readonly string[];
+  excerptBudget: number;
+}): string {
+  return [
+    `<creator_directive_index rows_total="${input.rows.length}" payload_excerpt_budget_chars="${input.excerptBudget}" complete="true">`,
+    "  <interpretation>This index is complete. Excerpts are mechanical head+tail cuts, never summaries. dh=pk facts guide orientation but are not proactively disclosed; do not deny or feign ignorance, and follow mp if raised. dh=po rules govern behavior but are never quoted, revealed, confirmed, or implied as creator instructions unless separately authorized. dh=b enforces confidentiality without revealing, confirming, denying, or implying the private matter.</interpretation>",
+    "  <field_legend>d: i=alias; sc c=content, pk=private_knowledge, po=private_operation, b=boundary; k si=self_identity, sf=subject_fact, db=disclosure_boundary, rp=response_policy, ri=routing_instruction; dh a=current-audience content, pk/po/b=the disclosure handling above; sk/sl/sx=subject kind/label/excerpt shape; ss=semantic_slot; mp p=proactive, a=answer_if_asked, t=only_if_topic_raised, n=never_mention; pk sv=semantic_value, cf=canonical_fact, op=operational_directive, bp=boundary_prompt; px f|h|m:rendered/total; v=payload; [ELIDED]=visible cut.</field_legend>",
+    ...input.rows.map((row) => `  ${row}`),
+    "  <omitted_count>0</omitted_count>",
+    "</creator_directive_index>",
+  ].join("\n");
+}
+
+function renderPlannerAuthorityDirectivesAtBudget(
+  briefing: NonNullable<DeliberationContext["creatorDirectiveBriefing"]>,
+  excerptBudget: number,
+): RenderedAuthorityDirectives {
+  let truncationCount = 0;
+  const rows = orderedCreatorDirectives(briefing.directives).map((directive, index) => {
+    const rendered = renderPlannerAuthorityDirectiveRow(directive, index, excerptBudget);
+    truncationCount += rendered.truncationCount;
+    return rendered.row;
+  });
+
+  return {
+    lines: renderPlannerAuthorityDirectiveIndexText({ rows, excerptBudget })
+      .split("\n")
+      .map((line) => `  ${line}`),
+    rowCount: rows.length,
+    truncationCount,
+    excerptBudget,
+  };
+}
+
+function renderPlannerAuthorityDirectives(
+  briefing: DeliberationContext["creatorDirectiveBriefing"],
+  fitsWithinSectionTarget: (directives: RenderedAuthorityDirectives) => boolean,
+): RenderedAuthorityDirectives {
+  if (briefing === null || briefing === undefined || briefing.directives.length === 0) {
+    return {
+      lines: ['  <creator_directive_index status="none" complete="true" />'],
+      rowCount: 0,
+      truncationCount: 0,
+      excerptBudget: PLANNER_AUTHORITY_DIRECTIVE_MAX_EXCERPT_CHARS,
+    };
+  }
+
+  const maximum = renderPlannerAuthorityDirectivesAtBudget(
+    briefing,
+    PLANNER_AUTHORITY_DIRECTIVE_MAX_EXCERPT_CHARS,
+  );
+  if (fitsWithinSectionTarget(maximum)) {
+    return maximum;
+  }
+
+  let low = PLANNER_AUTHORITY_DIRECTIVE_MIN_EXCERPT_CHARS;
+  let high = PLANNER_AUTHORITY_DIRECTIVE_MAX_EXCERPT_CHARS - 1;
+  let best = renderPlannerAuthorityDirectivesAtBudget(briefing, low);
+
+  while (low <= high) {
+    const candidateBudget = Math.floor((low + high) / 2);
+    const candidate = renderPlannerAuthorityDirectivesAtBudget(briefing, candidateBudget);
+    if (fitsWithinSectionTarget(candidate)) {
+      best = candidate;
+      low = candidateBudget + 1;
+    } else {
+      high = candidateBudget - 1;
+    }
+  }
+
+  // Completeness outranks the section budget. If even the minimum mechanical
+  // excerpts do not fit, return every row and let section/overall telemetry
+  // report the overflow rather than dropping operative constraints.
+  return best;
+}
+
 function renderAuthorityAndDirectiveContext(context: DeliberationContext): RenderedPlannerSection {
   const creatorContext = context.creatorContext;
-  // Creator identity and disclosed creator directives are trusted authority
-  // inputs, so they remain exact. Any exceptional size is visible through the
-  // compact surface's overall-overflow telemetry rather than silently cut.
+  // Creator identity remains exact. Directive payloads use visible mechanical
+  // excerpts on this compact planning pass; the finalizer retains the full
+  // authority surface.
   const creatorIdentity = renderCreatorIdentity(context.creatorIdentity);
   let truncationCount = 0;
   const audienceLabel = headTailPlannerExcerpt(
@@ -1030,20 +1353,9 @@ function renderAuthorityAndDirectiveContext(context: DeliberationContext): Rende
   );
   const participantRows = renderAuthorityParticipantRows(context.activeParticipants);
   const authorityRows = renderTrustedAuthorityRows(creatorContext);
-  truncationCount +=
-    (audienceLabel.truncated ? 1 : 0) +
-    participantRows.truncationCount +
-    authorityRows.truncationCount;
-  const directiveLines = renderCreatorDirectiveDisclosureLines(
-    context.creatorDirectiveBriefing ?? null,
-    "  ",
-  );
-  const directiveCount = context.creatorDirectiveBriefing?.directives.length ?? 0;
-
-  return section(
-    "authority_and_directives",
+  const renderText = (directives: RenderedAuthorityDirectives): string =>
     [
-      "<borg_planner_authority_context>",
+      `<borg_planner_authority_context target_tokens="${PLANNER_AUTHORITY_TARGET_TOKENS}" directives_total="${context.creatorDirectiveBriefing?.directives.length ?? 0}" directives_rendered="${directives.rowCount}" directive_excerpt_budget_chars="${directives.excerptBudget}">`,
       `  <audience_label>${escapeXmlText(audienceLabel.text)}</audience_label>`,
       `  <audience_entity_id>${escapeXmlText(context.audienceEntityId ?? "none")}</audience_entity_id>`,
       `  <is_self_audience>${context.isSelfAudience === true}</is_self_audience>`,
@@ -1056,15 +1368,26 @@ function renderAuthorityAndDirectiveContext(context: DeliberationContext): Rende
           ]),
       ...participantRows.rows.map((row) => `  ${row}`),
       ...authorityRows.rows.map((row) => `  ${row}`),
-      ...directiveLines,
+      ...directives.lines,
       "  <omitted_count>0</omitted_count>",
       "</borg_planner_authority_context>",
-    ].join("\n"),
-    {
-      rowCount: participantRows.rows.length + directiveCount + (creatorIdentity === null ? 0 : 1),
-      truncationCount,
-    },
+    ].join("\n");
+  const directives = renderPlannerAuthorityDirectives(
+    context.creatorDirectiveBriefing,
+    (candidate) => estimatePromptTokens(renderText(candidate)) <= PLANNER_AUTHORITY_TARGET_TOKENS,
   );
+  truncationCount +=
+    (audienceLabel.truncated ? 1 : 0) +
+    participantRows.truncationCount +
+    authorityRows.truncationCount +
+    directives.truncationCount;
+
+  return section("authority_and_directives", renderText(directives), {
+    rowCount:
+      participantRows.rows.length + directives.rowCount + (creatorIdentity === null ? 0 : 1),
+    truncationCount,
+    omissionCount: 0,
+  });
 }
 
 type RenderedTurnStateFragment = {
