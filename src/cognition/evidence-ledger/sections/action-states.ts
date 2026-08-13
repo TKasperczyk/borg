@@ -83,7 +83,7 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
       thread,
       currentUserStreamEntryId: context.input.currentUserEntry?.id,
       currentUserStreamEntryIds: context.input.currentUserEntries?.map((entry) => entry.id),
-      currentTurnCounter: context.input.workingMemory.turn_counter,
+      currentTurnGlobal: context.input.globalTurnCounter,
     });
 
     return salienceClass === null ? [] : [{ ...thread, salienceClass }];

@@ -65,6 +65,7 @@ function makeAction(overrides: Partial<ActionRecord> = {}): ActionRecord {
     session_anchor_id: overrides.session_anchor_id ?? null,
     last_referenced_at_ms: overrides.last_referenced_at_ms ?? nowMs,
     last_referenced_turn_counter: overrides.last_referenced_turn_counter ?? null,
+    last_referenced_turn_global: overrides.last_referenced_turn_global ?? null,
   };
 }
 
@@ -1018,7 +1019,7 @@ describe("runPostGenerationPhase", () => {
     });
   });
 
-  it("archives only inactive participant actions during the post-generation scan", async () => {
+  it("archives only globally inactive participant actions during the post-generation scan", async () => {
     const sessionId = createSessionId();
     const audienceId = createEntityId();
     const participantId = createEntityId();
@@ -1027,20 +1028,24 @@ describe("runPostGenerationPhase", () => {
       actor: participantId,
       audience_entity_id: null,
       state: "committed_to_do",
-      last_referenced_turn_counter: 25,
+      last_referenced_turn_counter: 49,
+      last_referenced_turn_global: 4_775,
     });
     const borgAction = makeAction({
       actor: "borg",
       last_referenced_turn_counter: 5,
+      last_referenced_turn_global: 4_755,
     });
     const groupAction = makeAction({
       actor: audienceId,
       audience_entity_id: audienceId,
       last_referenced_turn_counter: 5,
+      last_referenced_turn_global: 4_755,
     });
     const freshParticipantAction = makeAction({
       actor: freshParticipantId,
       last_referenced_turn_counter: 49,
+      last_referenced_turn_global: 4_799,
     });
     const unknownAction = makeAction({
       actor: participantId,
@@ -1048,6 +1053,7 @@ describe("runPostGenerationPhase", () => {
       committed_at: null,
       unknown_at: 1_000,
       last_referenced_turn_counter: 5,
+      last_referenced_turn_global: 4_755,
     });
     const terminalAction = makeAction({
       actor: participantId,
@@ -1055,6 +1061,7 @@ describe("runPostGenerationPhase", () => {
       completed_at: 1_000,
       committed_at: null,
       last_referenced_turn_counter: 5,
+      last_referenced_turn_global: 4_755,
     });
     const actionRepository = makeActionRepository([
       staleParticipantAction,
@@ -1133,6 +1140,7 @@ describe("runPostGenerationPhase", () => {
       turnId: "turn_post_generation_archive",
       turnInput: {
         userMessage: "Observation turn",
+        globalTurnCounter: 4_800,
       },
       streamWriter: {} as never,
       lifecycleTracker: {

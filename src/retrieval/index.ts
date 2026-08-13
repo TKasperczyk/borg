@@ -49,6 +49,7 @@ export {
   memoryDisclosureLabelSchema,
   publicMemoryDisclosureLabel,
   relationshipPrivateMemoryDisclosureLabel,
+  renderMemoryDisclosureLabelFieldsForModel,
   renderMemoryDisclosureLabelForModel,
   renderSemanticSourceDisclosureLabelForModel,
   resolveDisclosureLabelsByEpisodeId,

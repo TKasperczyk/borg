@@ -229,9 +229,16 @@ describe("renderSharedStateArtifact", () => {
 
     expect(compactIndexStart).toBeGreaterThanOrEqual(0);
     expect(rowStart).toBeGreaterThan(compactIndexStart);
-    expect(rendered.slice(compactIndexStart, rowStart)).toContain(
-      `private-to=${audience}; I can use this internally; I do not disclose it to the current audience unless authorized`,
-    );
+
+    // Index rows carry their own disclosure fields; the constant internal-use note is stated once
+    // for the whole index rather than repeated per row.
+    const compactIndex = rendered.slice(compactIndexStart, rowStart);
+    expect(compactIndex).toContain(`private-to=${audience} |`);
+    expect(
+      compactIndex.split(
+        "I can use this internally; I do not disclose it to the current audience unless authorized",
+      ).length - 1,
+    ).toBe(1);
     expect(rendered.slice(rowStart)).toContain("owner=null");
     expect(rendered.slice(rowStart)).toContain(
       `private-to=${audience}; I can use this internally; I do not disclose it to the current audience unless authorized`,
