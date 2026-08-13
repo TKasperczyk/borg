@@ -13,6 +13,7 @@ import type { AutonomyTriggerContext } from "../../autonomy-trigger.js";
 import type { CorrectivePreferenceTurnService } from "../../commitments/corrective-preference-service.js";
 import type { CreatorDirectiveTurnService } from "../../creator-directives/service.js";
 import type { TurnStakes } from "../../deliberation/deliberator.js";
+import type { PlannerContextCapture } from "../../deliberation/planner-context-capture.js";
 import type { TurnDiscourseStateService } from "../../generation/turn-discourse-state.js";
 import type { TurnEmission } from "../../generation/types.js";
 import type { TurnPostGenerationGuardRunner } from "../../generation/turn-post-generation-guard.js";
@@ -203,6 +204,7 @@ export type TurnPhaseCoordinatorOptions = {
   turnReflectionCoordinator: TurnReflectionCoordinator;
   clock: Clock;
   tracer: TurnTracer;
+  plannerContextCapture?: PlannerContextCapture;
   promptOverrideRepository?: Pick<PromptOverrideRepository, "get">;
   sessionsRepository?: Pick<SessionsRepository, "count" | "get" | "list">;
 };

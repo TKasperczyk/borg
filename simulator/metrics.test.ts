@@ -2334,13 +2334,15 @@ describe("MetricsCapture", () => {
         actor: "borg",
         audience_entity_id: audience,
         state: "committed_to_do",
-        last_referenced_turn_counter: 20,
+        last_referenced_turn_counter: 2,
+        last_referenced_turn_global: 20,
       }),
       makeAction({
         actor: "user",
         audience_entity_id: audience,
         state: "committed_to_do",
-        last_referenced_turn_counter: 19,
+        last_referenced_turn_counter: 1,
+        last_referenced_turn_global: 19,
       }),
       ...Array.from({ length: 7 }, (_, index) =>
         makeAction({
@@ -2350,7 +2352,10 @@ describe("MetricsCapture", () => {
           state: "committed_to_do",
           created_at: 1_000 - index,
           updated_at: 1_000 - index,
-          last_referenced_turn_counter: 0,
+          // A row can retain its legacy session stamp alongside the dedicated
+          // lifecycle-global stamp. Metrics must prefer the global field.
+          last_referenced_turn_counter: 20,
+          last_referenced_turn_global: 0,
         }),
       ),
       makeAction({

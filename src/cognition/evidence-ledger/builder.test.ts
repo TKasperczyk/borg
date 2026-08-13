@@ -3483,6 +3483,74 @@ describe("EvidenceLedgerBuilder", () => {
     );
   });
 
+  it("uses the global lifecycle clock for action recency across a small session counter", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-action-global-recency-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const priorEntry = await writer.append({
+      kind: "user_msg",
+      content: "The earlier action was completed.",
+    });
+    const currentUserEntry = await writer.append({
+      kind: "user_msg",
+      content: "What is still recent?",
+    });
+    const stampedTurnGlobal = 4_800;
+    const completed = makeAction(priorEntry.id, {
+      description: "Completed on the globally stamped turn",
+      actor: "user",
+      state: "completed",
+      completed_at: NOW_MS,
+      scheduled_at: null,
+      last_referenced_turn_counter: 67,
+      last_referenced_turn_global: stampedTurnGlobal,
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: {
+        list: () => [completed],
+        findSimilarDescriptionPairs: async () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+    const actionEntriesAt = async (globalTurnCounter: number) => {
+      const ledger = await builder.build({
+        sessionId: DEFAULT_SESSION_ID,
+        audienceEntityId: null,
+        currentUserMessage: String(currentUserEntry.content),
+        currentUserEntry,
+        globalTurnCounter,
+        workingMemory: { ...makeWorkingMemory(), turn_counter: 67 },
+        applicableCommitments: [],
+        retrievedEvidence: [],
+        retrievedEpisodes: [],
+        retrievedSemantic: null,
+        openQuestions: [],
+        pendingCorrections: [],
+        frameAnomaly: null,
+      });
+
+      return (
+        ledger.sections
+          .find((section) => section.id === "action_states")
+          ?.entries.filter((entry) => entry.id.startsWith("action_thread:")) ?? []
+      );
+    };
+
+    expect(await actionEntriesAt(stampedTurnGlobal + 4)).toHaveLength(0);
+    expect(await actionEntriesAt(stampedTurnGlobal + 2)).toEqual([
+      expect.objectContaining({
+        salience_class: "completed_recent",
+        text: expect.stringContaining("Completed on the globally stamped turn"),
+      }),
+    ]);
+  });
+
   it("renders action salience ordering and caps stale participant actions", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -3509,6 +3577,7 @@ describe("EvidenceLedgerBuilder", () => {
       committed_at: NOW_MS - 10,
       scheduled_at: null,
       last_referenced_turn_counter: 4,
+      last_referenced_turn_global: 4,
     });
     const completedRecent = makeAction(userEntry.id, {
       description: "Closed the prior clinic email action",
@@ -3517,6 +3586,7 @@ describe("EvidenceLedgerBuilder", () => {
       completed_at: NOW_MS - 5,
       scheduled_at: null,
       last_referenced_turn_counter: 4,
+      last_referenced_turn_global: 4,
     });
     const stale = Array.from({ length: 7 }, (_, index) =>
       makeAction(userEntry.id, {
@@ -3527,6 +3597,7 @@ describe("EvidenceLedgerBuilder", () => {
         updated_at: NOW_MS - 100 - index,
         scheduled_at: null,
         last_referenced_turn_counter: 0,
+        last_referenced_turn_global: 0,
       }),
     );
     const builder = new EvidenceLedgerBuilder({
@@ -3545,6 +3616,7 @@ describe("EvidenceLedgerBuilder", () => {
       audienceEntityId: null,
       currentUserMessage: String(userEntry.content),
       currentUserEntry: userEntry,
+      globalTurnCounter: 4,
       workingMemory: makeWorkingMemory(),
       applicableCommitments: [],
       retrievedEvidence: [],
@@ -3621,6 +3693,7 @@ describe("EvidenceLedgerBuilder", () => {
       updated_at: NOW_MS - 100,
       scheduled_at: null,
       last_referenced_turn_counter: 4,
+      last_referenced_turn_global: 4,
     });
     const audienceAction = makeAction(userEntry.id, {
       description: "Alice audience action survives",
@@ -3647,6 +3720,7 @@ describe("EvidenceLedgerBuilder", () => {
       audienceEntityId: alice,
       currentUserMessage: String(userEntry.content),
       currentUserEntry: userEntry,
+      globalTurnCounter: 4,
       workingMemory: makeWorkingMemory(),
       applicableCommitments: [],
       retrievedEvidence: [],
@@ -3807,6 +3881,7 @@ describe("EvidenceLedgerBuilder", () => {
       updated_at: NOW_MS + 10,
       scheduled_at: null,
       last_referenced_turn_counter: 4,
+      last_referenced_turn_global: 4,
     });
     const builder = new EvidenceLedgerBuilder({
       createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
@@ -3832,6 +3907,7 @@ describe("EvidenceLedgerBuilder", () => {
       audienceEntityId: alice,
       currentUserMessage: String(userEntry.content),
       currentUserEntry: userEntry,
+      globalTurnCounter: 4,
       workingMemory: makeWorkingMemory(),
       applicableCommitments: [],
       retrievedEvidence: [],

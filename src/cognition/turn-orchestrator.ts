@@ -62,6 +62,7 @@ import { CommitmentGuardRunner } from "./commitments/guard-runner.js";
 import { CorrectivePreferenceTurnService } from "./commitments/corrective-preference-service.js";
 import { CreatorDirectiveTurnService } from "./creator-directives/service.js";
 import type { SelfSnapshot } from "./deliberation/deliberator.js";
+import { PlannerContextCapture } from "./deliberation/planner-context-capture.js";
 import { TurnDiscourseStateService } from "./generation/turn-discourse-state.js";
 import { TurnPostGenerationGuardRunner } from "./generation/turn-post-generation-guard.js";
 import type { TurnEmission } from "./generation/types.js";
@@ -315,6 +316,15 @@ export class TurnOrchestrator {
       clock: this.clock,
       tracer: this.tracer,
     });
+    const plannerContextCapture =
+      options.config.deliberation.plannerContextCaptureSampleRate === 0
+        ? undefined
+        : new PlannerContextCapture({
+            dataDir: options.config.dataDir,
+            sampleRate: options.config.deliberation.plannerContextCaptureSampleRate,
+            clock: this.clock,
+            tracer: this.tracer,
+          });
     const turnActionCoordinator = new TurnActionCoordinator({
       commitmentGuardRunner,
       postGenerationGuardRunner,
@@ -382,6 +392,7 @@ export class TurnOrchestrator {
       turnReflectionCoordinator,
       clock: this.clock,
       tracer: this.tracer,
+      ...(plannerContextCapture === undefined ? {} : { plannerContextCapture }),
       promptOverrideRepository: options.promptOverrideRepository,
       ...(options.sessionsRepository === undefined
         ? {}

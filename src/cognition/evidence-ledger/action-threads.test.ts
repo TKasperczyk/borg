@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import { makeCompletedActionRecord } from "../../test-support/factories/memory.js";
 import { createEntityId } from "../../util/ids.js";
 import {
+  actionSalienceClass,
   allocateActionThreadRenderSlots,
+  type ActionThread,
   type ActionThreadWithSalience,
 } from "./action-threads.js";
 
@@ -11,14 +13,17 @@ const DOMINANT_AUDIENCE = createEntityId();
 const QUIET_AUDIENCE_A = createEntityId();
 const QUIET_AUDIENCE_B = createEntityId();
 
-function makeThread(input: {
+function makeCompletedThread(input: {
   audienceEntityId: ReturnType<typeof createEntityId>;
   updatedAt: number;
-  salienceClass?: ActionThreadWithSalience["salienceClass"];
-}): ActionThreadWithSalience {
+  lastReferencedTurnCounter?: number;
+  lastReferencedTurnGlobal?: number;
+}): ActionThread {
   const record = makeCompletedActionRecord({
     audience_entity_id: input.audienceEntityId,
     updated_at: input.updatedAt,
+    last_referenced_turn_counter: input.lastReferencedTurnCounter ?? null,
+    last_referenced_turn_global: input.lastReferencedTurnGlobal ?? null,
   });
 
   return {
@@ -27,21 +32,84 @@ function makeThread(input: {
     origin: record,
     current: record,
     scope: "current_session",
+  };
+}
+
+function makeThread(input: {
+  audienceEntityId: ReturnType<typeof createEntityId>;
+  updatedAt: number;
+  salienceClass?: ActionThreadWithSalience["salienceClass"];
+}): ActionThreadWithSalience {
+  return {
+    ...makeCompletedThread(input),
     salienceClass: input.salienceClass ?? "completed_recent",
   };
 }
 
+function classifyAtGlobalTurn(
+  thread: ActionThread,
+  currentTurnGlobal: number,
+): ActionThreadWithSalience[] {
+  const salienceClass = actionSalienceClass({ thread, currentTurnGlobal });
+
+  return salienceClass === null ? [] : [{ ...thread, salienceClass }];
+}
+
+describe("actionSalienceClass", () => {
+  it("compares the global reference stamp to the current global turn", () => {
+    const stampedTurnGlobal = 4_800;
+    const thread = makeCompletedThread({
+      audienceEntityId: DOMINANT_AUDIENCE,
+      updatedAt: 2_000,
+      // The dedicated field remains global even when a legacy session stamp is present.
+      lastReferencedTurnCounter: 67,
+      lastReferencedTurnGlobal: stampedTurnGlobal,
+    });
+
+    expect(actionSalienceClass({ thread, currentTurnGlobal: stampedTurnGlobal + 4 })).toBeNull();
+    expect(actionSalienceClass({ thread, currentTurnGlobal: stampedTurnGlobal + 2 })).toBe(
+      "completed_recent",
+    );
+  });
+});
+
 describe("allocateActionThreadRenderSlots", () => {
-  // Production runs 1/1 (config default). Without the audience reservation a single
-  // busy room's recency wins every slot in its class, so the render collapses onto
-  // that one audience even when other audiences have qualifying threads.
-  it("gives each audience a slot the plain recency draw would deny it", () => {
+  // Once lifecycle recency uses one global clock, the genuinely recent completion
+  // pool is thin enough that both allocation modes preserve every audience.
+  it("needs no audience rescue when the global completion window binds", () => {
+    const currentTurnGlobal = 2_000;
     const threads: ActionThreadWithSalience[] = [
-      ...Array.from({ length: 10 }, (_unused, index) =>
-        makeThread({ audienceEntityId: DOMINANT_AUDIENCE, updatedAt: 2_000 - index }),
+      ...Array.from({ length: 10 }, (_unused, index) => {
+        const referencedTurnGlobal = 2_000 - index;
+
+        return classifyAtGlobalTurn(
+          makeCompletedThread({
+            audienceEntityId: DOMINANT_AUDIENCE,
+            updatedAt: referencedTurnGlobal,
+            lastReferencedTurnCounter: referencedTurnGlobal,
+            lastReferencedTurnGlobal: referencedTurnGlobal,
+          }),
+          currentTurnGlobal,
+        );
+      }).flat(),
+      ...classifyAtGlobalTurn(
+        makeCompletedThread({
+          audienceEntityId: QUIET_AUDIENCE_A,
+          updatedAt: 1_000,
+          lastReferencedTurnCounter: 1_999,
+          lastReferencedTurnGlobal: 1_999,
+        }),
+        currentTurnGlobal,
       ),
-      makeThread({ audienceEntityId: QUIET_AUDIENCE_A, updatedAt: 1_000 }),
-      makeThread({ audienceEntityId: QUIET_AUDIENCE_B, updatedAt: 500 }),
+      ...classifyAtGlobalTurn(
+        makeCompletedThread({
+          audienceEntityId: QUIET_AUDIENCE_B,
+          updatedAt: 500,
+          lastReferencedTurnCounter: 1_998,
+          lastReferencedTurnGlobal: 1_998,
+        }),
+        currentTurnGlobal,
+      ),
     ];
     const audiencesOf = (selected: readonly ActionThreadWithSalience[]): string[] => [
       ...new Set(selected.map((thread) => thread.current.audience_entity_id ?? "global")),
@@ -60,20 +128,23 @@ describe("allocateActionThreadRenderSlots", () => {
       audienceReservedSlots: 1,
     });
 
-    expect(unreserved).toHaveLength(8);
-    expect(audiencesOf(unreserved)).toEqual([DOMINANT_AUDIENCE]);
+    expect(unreserved).toHaveLength(6);
+    expect(audiencesOf(unreserved).sort()).toEqual(
+      [DOMINANT_AUDIENCE, QUIET_AUDIENCE_A, QUIET_AUDIENCE_B].sort(),
+    );
 
-    expect(reserved).toHaveLength(8);
+    expect(reserved).toHaveLength(6);
     expect(audiencesOf(reserved).sort()).toEqual(
       [DOMINANT_AUDIENCE, QUIET_AUDIENCE_A, QUIET_AUDIENCE_B].sort(),
     );
-    // The reservation costs the dominant audience its two oldest selected threads,
-    // never its most recent ones.
+    expect(reserved.map((thread) => thread.id).sort()).toEqual(
+      unreserved.map((thread) => thread.id).sort(),
+    );
     expect(
       reserved
         .filter((thread) => thread.current.audience_entity_id === DOMINANT_AUDIENCE)
         .map((thread) => thread.current.updated_at),
-    ).toEqual([2_000, 1_999, 1_998, 1_997, 1_996, 1_995]);
+    ).toEqual([2_000, 1_999, 1_998, 1_997]);
   });
 
   // The salience reservation only bites once the higher-ranked classes can fill the

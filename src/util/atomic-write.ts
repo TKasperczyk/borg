@@ -13,7 +13,7 @@ import { isNodeError } from "./guards.js";
 
 const DIRECTORY_FSYNC_UNSUPPORTED = new Set(["EBADF", "EINVAL", "ENOTSUP"]);
 
-function syncDirectory(path: string): void {
+export function syncDirectory(path: string): void {
   let directoryFd: number | undefined;
 
   try {

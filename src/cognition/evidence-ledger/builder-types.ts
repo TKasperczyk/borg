@@ -54,6 +54,7 @@ export type EvidenceLedgerBuilderOptions = {
 export type EvidenceLedgerBuildInput = {
   sessionId: SessionId;
   turnId?: string;
+  globalTurnCounter?: number;
   nowMs?: number;
   audienceEntityId: EntityId | null;
   currentUserMessage: string;

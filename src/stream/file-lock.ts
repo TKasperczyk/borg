@@ -1,4 +1,12 @@
-import { closeSync, fsyncSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  fsyncSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { hostname } from "node:os";
 import { dirname } from "node:path";
 
@@ -10,6 +18,7 @@ import { serializeJsonValue } from "../util/json-value.js";
 type FileLockOptions = {
   timeoutMs?: number;
   retryDelayMs?: number;
+  malformedGraceMs?: number;
 };
 
 type FileLockMetadata = {
@@ -19,6 +28,35 @@ type FileLockMetadata = {
 };
 
 const LOCAL_HOSTNAME = hostname();
+const DEFAULT_MALFORMED_LOCK_GRACE_MS = 5_000;
+
+type LockFileIdentity = {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+};
+
+function lockFileIdentity(lockPath: string): LockFileIdentity | null {
+  try {
+    const stat = lstatSync(lockPath);
+    return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs };
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function sameLockFileIdentity(left: LockFileIdentity, right: LockFileIdentity): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs
+  );
+}
 
 function isFileLockMetadata(value: unknown): value is FileLockMetadata {
   return (
@@ -50,8 +88,21 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-function removeLockFile(lockPath: string): boolean {
+function removeLockFileIfOwned(
+  lockPath: string,
+  expectedIdentity: LockFileIdentity,
+  expectedContents: string,
+): boolean {
   try {
+    const currentIdentity = lockFileIdentity(lockPath);
+    if (
+      currentIdentity === null ||
+      !sameLockFileIdentity(currentIdentity, expectedIdentity) ||
+      readFileSync(lockPath, "utf8") !== expectedContents
+    ) {
+      return currentIdentity === null;
+    }
+
     unlinkSync(lockPath);
     return true;
   } catch (error) {
@@ -63,7 +114,11 @@ function removeLockFile(lockPath: string): boolean {
   }
 }
 
-function reapStaleLock(lockPath: string): boolean {
+function reapStaleLock(lockPath: string, malformedGraceMs: number): boolean {
+  const identity = lockFileIdentity(lockPath);
+  if (identity === null) {
+    return true;
+  }
   let metadataText: string;
 
   try {
@@ -81,11 +136,15 @@ function reapStaleLock(lockPath: string): boolean {
   try {
     metadata = JSON.parse(metadataText) as unknown;
   } catch {
-    return removeLockFile(lockPath);
+    return Date.now() - identity.mtimeMs < malformedGraceMs
+      ? false
+      : removeLockFileIfOwned(lockPath, identity, metadataText);
   }
 
   if (!isFileLockMetadata(metadata)) {
-    return removeLockFile(lockPath);
+    return Date.now() - identity.mtimeMs < malformedGraceMs
+      ? false
+      : removeLockFileIfOwned(lockPath, identity, metadataText);
   }
 
   if (metadata.host !== LOCAL_HOSTNAME) {
@@ -96,7 +155,7 @@ function reapStaleLock(lockPath: string): boolean {
     return false;
   }
 
-  return removeLockFile(lockPath);
+  return removeLockFileIfOwned(lockPath, identity, metadataText);
 }
 
 // Advisory check: returns true when the given lock path exists and is held by
@@ -104,7 +163,12 @@ function reapStaleLock(lockPath: string): boolean {
 // that want to skip work when a session is busy without racing to acquire the
 // lock. Stale locks (crashed owner) return false so maintenance isn't blocked
 // indefinitely after a crash.
-export function isFileLockLive(lockPath: string): boolean {
+export function isFileLockLive(
+  lockPath: string,
+  options: { malformedGraceMs?: number } = {},
+): boolean {
+  const malformedGraceMs = options.malformedGraceMs ?? DEFAULT_MALFORMED_LOCK_GRACE_MS;
+  const identity = lockFileIdentity(lockPath);
   let metadataText: string;
 
   try {
@@ -122,11 +186,11 @@ export function isFileLockLive(lockPath: string): boolean {
   try {
     metadata = JSON.parse(metadataText) as unknown;
   } catch {
-    return false;
+    return identity !== null && Date.now() - identity.mtimeMs < malformedGraceMs;
   }
 
   if (!isFileLockMetadata(metadata)) {
-    return false;
+    return identity !== null && Date.now() - identity.mtimeMs < malformedGraceMs;
   }
 
   if (metadata.host !== LOCAL_HOSTNAME) {
@@ -145,30 +209,36 @@ export async function withFileLock<T>(
 ): Promise<T> {
   const timeoutMs = options.timeoutMs ?? 2_000;
   const retryDelayMs = options.retryDelayMs ?? 20;
+  const malformedGraceMs = options.malformedGraceMs ?? DEFAULT_MALFORMED_LOCK_GRACE_MS;
   const deadline = Date.now() + timeoutMs;
 
   let lockFd: number | undefined;
+  let ownedIdentity: LockFileIdentity | undefined;
+  let ownedContents: string | undefined;
 
   while (lockFd === undefined) {
     try {
-      lockFd = openSync(lockPath, "wx");
-      writeFileSync(
-        lockFd,
-        serializeJsonValue({
-          pid: process.pid,
-          host: LOCAL_HOSTNAME,
-          timestamp: Date.now(),
-        }),
-      );
+      lockFd = openSync(lockPath, "wx", 0o600);
+      ownedContents = serializeJsonValue({
+        pid: process.pid,
+        host: LOCAL_HOSTNAME,
+        timestamp: Date.now(),
+      });
+      writeFileSync(lockFd, ownedContents);
       fsyncSync(lockFd);
+      ownedIdentity = lockFileIdentity(lockPath) ?? undefined;
     } catch (error) {
       if (!isNodeError(error) || error.code !== "EEXIST") {
+        if (lockFd !== undefined) {
+          closeSync(lockFd);
+          lockFd = undefined;
+        }
         throw new StreamError(`Failed to acquire stream lock at ${lockPath}`, {
           cause: error,
         });
       }
 
-      if (reapStaleLock(lockPath)) {
+      if (reapStaleLock(lockPath, malformedGraceMs)) {
         continue;
       }
 
@@ -185,14 +255,14 @@ export async function withFileLock<T>(
   } finally {
     closeSync(lockFd);
 
-    try {
-      unlinkSync(lockPath);
-    } catch (error) {
-      console.warn(
-        `Failed to release stream lock in ${dirname(lockPath)}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+    const released =
+      ownedIdentity !== undefined &&
+      ownedContents !== undefined &&
+      lockFileIdentity(lockPath) !== null
+        ? removeLockFileIfOwned(lockPath, ownedIdentity, ownedContents)
+        : false;
+    if (!released) {
+      console.warn(`Failed to release stream lock in ${dirname(lockPath)}: lock ownership changed`);
     }
   }
 }
