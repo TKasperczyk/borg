@@ -278,6 +278,7 @@ const deliberationConfigSchema = z
   .object({
     contradictionRouting: contradictionRoutingConfigSchema,
     finalizerDynamicPromptCacheEnabled: z.boolean().default(true),
+    plannerSurfaceVariant: z.enum(["compact", "legacy"]).default("compact"),
   })
   .strict()
   .prefault({});
@@ -1245,6 +1246,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["deliberation", "contradictionRouting", "cooldownTurns"],
     readOptionalEnvNumber(env, "BORG_DELIBERATION_CONTRADICTION_ROUTING_COOLDOWN_TURNS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["deliberation", "plannerSurfaceVariant"],
+    readOptionalEnvString(env, "BORG_DELIBERATION_PLANNER_SURFACE_VARIANT"),
   );
   setConfigOverride(
     overrides,

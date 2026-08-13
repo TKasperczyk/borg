@@ -1485,6 +1485,11 @@ describe("buildBaseSystemPrompt", () => {
                 origin_audience_entity_ids: [],
               },
             },
+            planner_metadata: {
+              decision_outcome_ref: "goal_aaaaaaaaaaaaaaaa:no-target:900",
+              decision_summary: decisionSummary,
+              decision_rationale: null,
+            },
             taint: "none",
           },
         ],
@@ -1518,6 +1523,17 @@ describe("buildBaseSystemPrompt", () => {
       }),
       PROMPT_OPTIONS,
     );
+    const baselineEvidenceLedger: EvidenceLedger = structuredClone(evidenceLedger);
+    delete baselineEvidenceLedger.audienceStanding?.recentLivedExperienceEntries[0]
+      ?.planner_metadata;
+    const baselineSelfPrompt = buildBaseSystemPrompt(
+      makeContext({
+        isSelfAudience: true,
+        audienceEntityId: null,
+        evidenceLedger: baselineEvidenceLedger,
+      }),
+      PROMPT_OPTIONS,
+    );
 
     expect(extractBlock(operatorPrompt, "borg_standing_with_audience")).toContain(decisionSummary);
     expect(extractBlock(operatorPrompt, "borg_standing_with_audience")).toContain(
@@ -1527,6 +1543,7 @@ describe("buildBaseSystemPrompt", () => {
     expect(extractBlock(selfPrompt, "borg_standing_with_audience")).toContain(
       "<recent_lived_experience>",
     );
+    expect(selfPrompt).toBe(baselineSelfPrompt);
   });
 
   it("renders recent lived experience chronologically with UTC day boundaries", () => {

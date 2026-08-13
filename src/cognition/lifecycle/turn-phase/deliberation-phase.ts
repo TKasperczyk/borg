@@ -82,6 +82,7 @@ export async function runDeliberationPhase(input: {
     promptBlocks,
     finalizerDynamicPromptCacheEnabled:
       input.options.config.deliberation.finalizerDynamicPromptCacheEnabled,
+    plannerSurfaceVariant: input.options.config.deliberation.plannerSurfaceVariant,
     sharedStateRenderOptions: sharedStateRenderOptions(input.options.config),
     maxImagesPerLlmCall: input.options.config.attachments.maxImagesPerLedger,
   });

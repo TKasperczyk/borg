@@ -136,13 +136,7 @@ describe("CorrectivePreferenceExtractor", () => {
       type: "tool",
       name: "EmitCorrectivePreference",
     });
-    expect(llm.requests[0]?.system).toEqual([
-      {
-        type: "text",
-        text: CORRECTIVE_PREFERENCE_SYSTEM_PROMPT,
-        cache_control: { type: "ephemeral", ttl: "5m" },
-      },
-    ]);
+    expect(llm.requests[0]?.system).toBe(CORRECTIVE_PREFERENCE_SYSTEM_PROMPT);
     expect(llm.requests[0]?.tools?.some((tool) => tool.cache_control !== undefined)).toBe(false);
   });
 

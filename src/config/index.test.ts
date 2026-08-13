@@ -165,6 +165,7 @@ describe("config", () => {
       cooldownTurns: 5,
     });
     expect(config.deliberation.finalizerDynamicPromptCacheEnabled).toBe(true);
+    expect(config.deliberation.plannerSurfaceVariant).toBe("compact");
     expect(config.commitments).toEqual({
       enforce: {
         regenerateBeforeSuppress: true,
@@ -265,6 +266,43 @@ describe("config", () => {
     });
 
     expect(config.deliberation.finalizerDynamicPromptCacheEnabled).toBe(false);
+  });
+
+  it("allows an immediate rollback to the legacy planner surface", () => {
+    const config = configSchema.parse({
+      deliberation: {
+        plannerSurfaceVariant: "legacy",
+      },
+    });
+
+    expect(config.deliberation.plannerSurfaceVariant).toBe("legacy");
+  });
+
+  it("lets the planner surface environment override take precedence over the config file", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      deliberation: { plannerSurfaceVariant: "compact" },
+    });
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: { BORG_DELIBERATION_PLANNER_SURFACE_VARIANT: "legacy" },
+    });
+
+    expect(config.deliberation.plannerSurfaceVariant).toBe("legacy");
+  });
+
+  it("rejects an invalid planner surface environment override", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    expect(() =>
+      loadConfig({
+        dataDir: tempDir,
+        env: { BORG_DELIBERATION_PLANNER_SURFACE_VARIANT: "experimental" },
+      }),
+    ).toThrow(ConfigError);
   });
 
   it("loads frame-anomaly peer channel source types from config", () => {

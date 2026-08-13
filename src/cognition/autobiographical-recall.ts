@@ -36,6 +36,7 @@ import type { Clock } from "../util/clock.js";
 import type { EntityId, EpisodeId, SessionId, StreamEntryId } from "../util/ids.js";
 import { stripToolCallScaffolding } from "../util/prompt-tags.js";
 import { formatRelativeAge } from "../util/relative-time.js";
+import { utf16SafeSuffixStart } from "../util/utf16-boundary.js";
 
 const DEFAULT_AUTOBIOGRAPHICAL_RECALL_WINDOW_MS = 7 * 24 * 60 * 60_000;
 const DEFAULT_AUTOBIOGRAPHICAL_RECALL_SESSION_CAP = 24;
@@ -240,23 +241,10 @@ function sanitizeAppendedPromptText(
 
   // A single note wider than the budget still yields its tail rather than its head.
   const tail =
-    retained.length > 0 ? retained.join(" ") : normalized.slice(tailStart(normalized, tailBudget));
+    retained.length > 0
+      ? retained.join(" ")
+      : normalized.slice(utf16SafeSuffixStart(normalized, normalized.length - tailBudget));
   return `${renderMarker(tail.length)}${tail}`;
-}
-
-// Never begin a retained suffix on the low half of a valid surrogate pair.
-function tailStart(value: string, tailBudget: number): number {
-  const start = Math.max(0, value.length - tailBudget);
-
-  if (start === 0) {
-    return start;
-  }
-
-  const first = value.charCodeAt(start);
-  const previous = value.charCodeAt(start - 1);
-  return first >= 0xdc00 && first <= 0xdfff && previous >= 0xd800 && previous <= 0xdbff
-    ? start + 1
-    : start;
 }
 
 function boundedCap(value: number | undefined, fallback: number): number {

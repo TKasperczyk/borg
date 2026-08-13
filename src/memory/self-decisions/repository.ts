@@ -40,6 +40,7 @@ export type SelfDecisionEventRecordInput = {
 
 export type SelfDecisionProjectionSourceEvent = {
   occurredAt: number;
+  sourceEventId: string;
   triggerName: string;
   triggerType: SelfDecisionTriggerType;
   decisionSummary: string;
@@ -108,6 +109,7 @@ function mapSelfDecisionRow(row: Record<string, unknown>): SelfDecisionEvent {
 function mapProjectionRow(row: Record<string, unknown>): SelfDecisionProjectionSourceEvent {
   return {
     occurredAt: Number(row.occurred_at),
+    sourceEventId: String(row.source_event_id),
     triggerName: String(row.trigger_name),
     triggerType: row.trigger_type as SelfDecisionTriggerType,
     decisionSummary: String(row.decision_summary ?? ""),
@@ -240,7 +242,8 @@ export class SelfDecisionRepository {
       .prepare(
         `
           SELECT
-            occurred_at, trigger_name, trigger_type, decision_summary, decision_rationale,
+            occurred_at, source_event_id, trigger_name, trigger_type,
+            decision_summary, decision_rationale,
             source_stream_entry_ids
           FROM self_decision_events
           WHERE
@@ -265,7 +268,8 @@ export class SelfDecisionRepository {
       .prepare(
         `
           SELECT
-            occurred_at, trigger_name, trigger_type, decision_summary, decision_rationale,
+            occurred_at, source_event_id, trigger_name, trigger_type,
+            decision_summary, decision_rationale,
             source_stream_entry_ids
           FROM self_decision_events
           WHERE

@@ -279,6 +279,7 @@ describe("SelfDecisionRepository", () => {
     ).toEqual([
       {
         occurredAt: firstAt,
+        sourceEventId: "inside",
         triggerName: "inside",
         triggerType: "trigger",
         decisionSummary: "Inside range.",

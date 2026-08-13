@@ -848,6 +848,11 @@ describe("EvidenceLedgerBuilder", () => {
           sourceStreamEntryIds: [createStreamEntryId()],
           originAudienceEntityIds: [],
           text: `Autonomous trigger goal_followup_due completed 2h ago: ${decisionSummary}`,
+          plannerDecision: {
+            outcomeReference: "goal_aaaaaaaaaaaaaaaa:no-target:900",
+            summary: decisionSummary,
+            rationale: null,
+          },
           metadata: {
             trigger_name: "goal_followup_due",
             trigger_type: "trigger",
@@ -870,6 +875,11 @@ describe("EvidenceLedgerBuilder", () => {
         state_metadata: expect.objectContaining({
           disclosure_class: "self_private",
         }),
+        planner_metadata: {
+          decision_outcome_ref: "goal_aaaaaaaaaaaaaaaa:no-target:900",
+          decision_summary: decisionSummary,
+          decision_rationale: null,
+        },
       }),
     ]);
     expect(rendered).not.toContain(decisionSummary);

@@ -14,6 +14,43 @@ import {
 } from "./lived-experience.js";
 
 describe("selectRecentLivedExperienceRows", () => {
+  it("carries the machine-generated decision outcome reference into lived-experience metadata", () => {
+    const nowMs = Date.UTC(2026, 5, 17, 12, 0, 0);
+    const rows = selectRecentLivedExperienceRows({
+      nowMs,
+      crossSessionSelfActivity: [],
+      selfDecisionIntrospection: [
+        {
+          occurredAt: nowMs - 60_000,
+          decisionOutcomeReference: "goal_aaaaaaaaaaaaaaaa:no-target:900",
+          relativeAge: "1m ago",
+          triggerName: "goal_followup_due",
+          triggerType: "trigger",
+          decisionSummary: "Reviewed the due goal.",
+          decisionRationale: "The global executive state made it due.",
+          sourceStreamEntryIds: [createStreamEntryId()],
+          text: "Reviewed the due goal one minute ago.",
+        },
+      ],
+      activityDensity: [],
+      selfDecisionDensity: [],
+    });
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        kind: "self_decision_introspection",
+        plannerDecision: {
+          outcomeReference: "goal_aaaaaaaaaaaaaaaa:no-target:900",
+          summary: "Reviewed the due goal.",
+          rationale: "The global executive state made it due.",
+        },
+        metadata: expect.not.objectContaining({
+          decision_outcome_ref: expect.anything(),
+        }),
+      }),
+    ]);
+  });
+
   it("keeps recent individual rows and collapses older days into density rows", () => {
     const nowMs = Date.UTC(2026, 5, 17, 12, 0, 0);
     const oldActivityAt = Date.UTC(2026, 5, 15, 10, 0, 0);
@@ -48,6 +85,7 @@ describe("selectRecentLivedExperienceRows", () => {
       selfDecisionIntrospection: [
         {
           occurredAt: oldDecisionAt,
+          decisionOutcomeReference: "scheduled-reflection:old-decision",
           relativeAge: "2d ago",
           triggerName: "scheduled_reflection",
           triggerType: "trigger",

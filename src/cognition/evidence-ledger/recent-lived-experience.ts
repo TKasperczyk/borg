@@ -34,6 +34,15 @@ export function buildRecentLivedExperienceLedgerEntry(input: {
       disclosureLabel,
       currentAudienceEntityId: input.audienceEntityId,
     }),
+    ...(input.row.plannerDecision === undefined
+      ? {}
+      : {
+          planner_metadata: {
+            decision_outcome_ref: input.row.plannerDecision.outcomeReference,
+            decision_summary: input.row.plannerDecision.summary,
+            decision_rationale: input.row.plannerDecision.rationale,
+          },
+        }),
     taint: "none",
   };
 }

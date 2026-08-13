@@ -46,6 +46,7 @@ import {
   relationalSlotMemoryDisclosureLabel,
 } from "../../../memory/common/disclosure-serializers.js";
 import { formatRelativeAge, formatRelativeDuration } from "../../../util/relative-time.js";
+import { utf16SafePrefixEnd } from "../../../util/utf16-boundary.js";
 import { formatUtcDayBoundary, utcDayKey } from "../../../util/utc-day.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
@@ -280,7 +281,7 @@ function sanitizeCreatorDisplayNameForPromptLine(value: string): string {
     .trimEnd();
 }
 
-function renderCreatorIdentity(
+export function renderCreatorIdentity(
   creatorIdentity: DeliberationContext["creatorIdentity"],
 ): string | null {
   if (creatorIdentity === null || creatorIdentity === undefined) {
@@ -514,7 +515,7 @@ function indentPayload(payload: string, indent: string): string {
     .join("\n");
 }
 
-function renderCreatorDirectiveDisclosureLines(
+export function renderCreatorDirectiveDisclosureLines(
   briefing: DeliberationContext["creatorDirectiveBriefing"],
   indent: string,
 ): string[] {
@@ -1099,9 +1100,7 @@ export function buildBaseSystemPromptSections(
   options: BuildBaseSystemPromptOptions,
 ): BaseSystemPromptSections {
   const promptNowMs =
-    options.nowMs !== undefined && Number.isFinite(options.nowMs)
-      ? options.nowMs
-      : context.nowMs;
+    options.nowMs !== undefined && Number.isFinite(options.nowMs) ? options.nowMs : context.nowMs;
   const evidenceLedgerActive =
     context.evidenceLedgerPromptSection !== undefined &&
     context.evidenceLedgerPromptSection !== null;
@@ -2110,22 +2109,7 @@ function compactPromptText(text: string, maxLength: number): string {
     return normalized;
   }
 
-  let bodyEnd = Math.max(0, maxLength - 3);
-
-  // Do not end the retained prefix on the high half of a valid surrogate pair.
-  if (bodyEnd > 0 && bodyEnd < normalized.length) {
-    const lastRetainedCodeUnit = normalized.charCodeAt(bodyEnd - 1);
-    const firstOmittedCodeUnit = normalized.charCodeAt(bodyEnd);
-
-    if (
-      lastRetainedCodeUnit >= 0xd800 &&
-      lastRetainedCodeUnit <= 0xdbff &&
-      firstOmittedCodeUnit >= 0xdc00 &&
-      firstOmittedCodeUnit <= 0xdfff
-    ) {
-      bodyEnd -= 1;
-    }
-  }
+  const bodyEnd = utf16SafePrefixEnd(normalized, Math.max(0, maxLength - 3));
 
   return `${normalized.slice(0, bodyEnd).trimEnd()}...`;
 }
