@@ -706,4 +706,45 @@ describe("OpenQuestionsRepository", () => {
       db.close();
     }
   });
+
+  // Load-bearing downstream: the evidence ledger feeds these rows into the open_questions
+  // section in the order they arrive, and compaction labels whatever it drops
+  // "lower-priority" (evidence-ledger/compaction.ts). That label is only true because the
+  // handle lookup sorts by urgency here. If this ordering changes, the breadcrumb the model
+  // reads becomes false without anything else failing -- so pin it.
+  it("returns handle matches ordered by urgency, then recency of contact", () => {
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const episodeId = createEpisodeId();
+    const add = (question: string, urgency: number) =>
+      repository.add({
+        question,
+        urgency,
+        related_episode_ids: [episodeId],
+        related_semantic_node_ids: [createSemanticNodeId()],
+        source: "user",
+      });
+
+    const low = add("What did the quiet thread settle?", 0.2);
+    const high = add("What did the loud thread settle?", 0.9);
+    const touchedTie = add("What did the first even thread settle?", 0.5);
+    const untouchedTie = add("What did the second even thread settle?", 0.5);
+
+    repository.touch(touchedTie.id, 12_000);
+
+    try {
+      expect(
+        repository
+          .findByHandles({ streamEntryIds: [], episodeIds: [episodeId] })
+          .map((question) => question.id),
+      ).toEqual([high.id, touchedTie.id, untouchedTie.id, low.id]);
+    } finally {
+      db.close();
+    }
+  });
 });
