@@ -140,6 +140,8 @@ export type RunS2PlannerOptions = {
   sessionId?: SessionId;
   turnOrigin?: TurnOrigin;
   plannerSurface?: { variant: "legacy" } | ({ variant: "compact" } & CompactPlannerSystemPrompt);
+  onRequestPrepared?: (request: S2PlannerRequestSnapshot) => void;
+  onOutcome?: (outcome: S2PlannerOutcome) => void;
 };
 
 export type S2PlannerResult = {
@@ -147,6 +149,80 @@ export type S2PlannerResult = {
   reasoning: string;
   usage: DeliberationUsage;
 };
+
+export type S2PlannerOutcome =
+  | {
+      status: "completed";
+      attempts: number;
+      structuralReason: "emit_turn_plan";
+    }
+  | {
+      status: "degraded";
+      attempts: number;
+      structuralReason:
+        | "missing_emit_turn_plan_tool_use"
+        | "invalid_emit_turn_plan_input"
+        | "retryable_transport_error";
+    }
+  | {
+      status: "threw";
+      attempts: number;
+      structuralReason: "non_retryable_planner_error";
+      error: {
+        name: string;
+        message: string;
+        code?: string;
+      };
+    };
+
+export type S2PlannerRequestSnapshot = {
+  attempt: number;
+  system: string | readonly LLMSystemBlock[];
+  messages: readonly LLMMessage[];
+  tools: readonly LLMToolDefinition[];
+  callOptions: {
+    model: string;
+    toolChoice?: LLMCompleteOptions["tool_choice"];
+    maxTokens: number;
+    thinking?: LLMCompleteOptions["thinking"];
+    effort?: LLMCompleteOptions["effort"];
+    timeoutMs: number;
+    budget: NonNullable<LLMCompleteOptions["budget"]>;
+  };
+};
+
+export type CreateS2PlannerRequestSnapshotInput = {
+  attempt: number;
+  system: string | readonly LLMSystemBlock[];
+  messages: readonly LLMMessage[];
+  model: string;
+  maxTokens: number;
+  thinking?: LLMCompleteOptions["thinking"];
+  effort?: LLMCompleteOptions["effort"];
+  turnOrigin?: TurnOrigin;
+};
+
+export function createS2PlannerRequestSnapshot(
+  input: CreateS2PlannerRequestSnapshotInput,
+): S2PlannerRequestSnapshot {
+  return {
+    attempt: input.attempt,
+    system: input.system,
+    messages: input.messages,
+    tools: [resolveTurnPlanTool(input.turnOrigin)],
+    callOptions: {
+      model: input.model,
+      ...(willSendThinkingUnderAutoToolChoice(input.model, input.thinking)
+        ? {}
+        : { toolChoice: { type: "tool" as const, name: TURN_PLAN_TOOL_NAME } }),
+      maxTokens: input.maxTokens,
+      ...(input.thinking === undefined ? {} : { thinking: input.thinking }),
+      ...(input.effort === undefined ? {} : { effort: input.effort }),
+      timeoutMs: DEFAULT_DELIBERATION_PLAN_CALL_TIMEOUT_MS,
+      budget: "cognition-plan",
+    },
+  };
+}
 
 const EMPTY_S2_PLANNER_USAGE = {
   input_tokens: 0,
@@ -161,6 +237,7 @@ function degradedPlannerResult(
     lastResponseShape: JsonValue;
     reasoning?: string;
     usage?: DeliberationUsage;
+    structuralReason: Extract<S2PlannerOutcome, { status: "degraded" }>["structuralReason"];
   },
 ): S2PlannerResult {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
@@ -172,6 +249,12 @@ function degradedPlannerResult(
     });
   }
 
+  options.onOutcome?.({
+    status: "degraded",
+    attempts: input.attempts,
+    structuralReason: input.structuralReason,
+  });
+
   return {
     plan: null,
     reasoning: input.reasoning ?? "",
@@ -180,7 +263,7 @@ function degradedPlannerResult(
 }
 
 function createS2PlannerPromptSurfaceRenderContext(
-  options: RunS2PlannerOptions,
+  options: RenderS2PlannerSurfaceOptions,
 ): PromptSurfaceRenderContext {
   return {
     renderBlock: (id) => {
@@ -258,7 +341,19 @@ function plannerContextSummaryForTrace(summary: PlannerContextTraceSummary): Jso
   };
 }
 
-export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2PlannerResult> {
+export type RenderedS2PlannerSurface = {
+  system: string | readonly LLMSystemBlock[];
+  traceSummary: PlannerContextTraceSummary;
+};
+
+export type RenderS2PlannerSurfaceOptions = Pick<
+  RunS2PlannerOptions,
+  "baseSystemPrompt" | "selfSnapshot" | "additionalPromptSections" | "turnOrigin" | "plannerSurface"
+>;
+
+export function renderS2PlannerSurface(
+  options: RenderS2PlannerSurfaceOptions,
+): RenderedS2PlannerSurface {
   const surface = options.plannerSurface;
   const legacySystemPrompt = (): string =>
     renderPromptSurface(
@@ -271,24 +366,34 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
     surface?.variant === "compact"
       ? surface.traceSummary
       : legacyPlannerTraceSummary(systemPrompt as string);
-  const tools = [resolveTurnPlanTool(options.turnOrigin)];
+
+  return { system: systemPrompt, traceSummary };
+}
+
+export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2PlannerResult> {
+  const renderedSurface = renderS2PlannerSurface(options);
+  const systemPrompt = renderedSurface.system;
+  const traceSummary = renderedSurface.traceSummary;
   let result: PlannerAttemptResult;
+  let attempts = 1;
 
   try {
     result = await callPlannerAttempt(
       options,
       systemPrompt,
       traceSummary,
-      tools,
       options.dialogueMessages,
+      attempts,
     );
   } catch (error) {
     if (!isRetryableLlmTransportError(error)) {
+      options.onOutcome?.(threwPlannerOutcome(error, attempts));
       throw error;
     }
 
     return degradedPlannerResult(options, {
       attempts: 1,
+      structuralReason: "retryable_transport_error",
       lastResponseShape: {
         error: error.message,
         code: error.code,
@@ -302,13 +407,13 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
     // Retry forces the plan tool (which precludes thinking) so a plan is
     // guaranteed even when the thinking-mode first attempt emitted no tool call.
     const firstResult = result;
+    attempts = 2;
 
     try {
       result = await callPlannerAttempt(
         { ...options, thinking: undefined, effort: undefined },
         systemPrompt,
         traceSummary,
-        tools,
         [
           ...options.dialogueMessages,
           {
@@ -316,14 +421,17 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
             content: PLANNER_RETRY_HINT,
           },
         ],
+        attempts,
       );
     } catch (error) {
       if (!isRetryableLlmTransportError(error)) {
+        options.onOutcome?.(threwPlannerOutcome(error, attempts));
         throw error;
       }
 
       return degradedPlannerResult(options, {
         attempts: 2,
+        structuralReason: "retryable_transport_error",
         lastResponseShape: {
           error: error.message,
           code: error.code,
@@ -339,16 +447,43 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
   if (result.extraction.plan === null) {
     return degradedPlannerResult(options, {
       attempts: 2,
+      structuralReason: result.extraction.reason ?? "missing_emit_turn_plan_tool_use",
       lastResponseShape: summarizeToolResponseShape(result.planner),
       reasoning: result.planner.text,
       usage,
     });
   }
 
+  options.onOutcome?.({
+    status: "completed",
+    attempts,
+    structuralReason: "emit_turn_plan",
+  });
+
   return {
     plan: result.extraction.plan,
     reasoning: result.planner.text,
     usage,
+  };
+}
+
+function threwPlannerOutcome(error: unknown, attempts: number): S2PlannerOutcome {
+  const errorRecord =
+    error instanceof Error
+      ? {
+          name: error.name,
+          message: error.message,
+          ...(typeof (error as Error & { code?: unknown }).code === "string"
+            ? { code: (error as Error & { code: string }).code }
+            : {}),
+        }
+      : { name: "UnknownThrownValue", message: String(error) };
+
+  return {
+    status: "threw",
+    attempts,
+    structuralReason: "non_retryable_planner_error",
+    error: errorRecord,
   };
 }
 
@@ -362,9 +497,19 @@ async function callPlannerAttempt(
   options: RunS2PlannerOptions,
   systemPrompt: string | readonly LLMSystemBlock[],
   traceSummary: PlannerContextTraceSummary,
-  tools: readonly LLMToolDefinition[],
   messages: readonly LLMMessage[],
+  attempt: number,
 ): Promise<PlannerAttemptResult> {
+  const request = createS2PlannerRequestSnapshot({
+    attempt,
+    system: systemPrompt,
+    messages,
+    model: options.model,
+    maxTokens: options.maxTokens,
+    ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
+    ...(options.effort === undefined ? {} : { effort: options.effort }),
+    ...(options.turnOrigin === undefined ? {} : { turnOrigin: options.turnOrigin }),
+  });
   const systemPromptForTrace =
     typeof systemPrompt === "string"
       ? systemPrompt
@@ -377,7 +522,7 @@ async function callPlannerAttempt(
     model: options.model,
     systemPrompt: systemPromptForTrace,
     messages,
-    tools,
+    tools: request.tools,
     extra: {
       planner_surface_variant: traceSummary.variant,
       planner_context_summary: plannerContextSummaryForTrace(traceSummary),
@@ -386,7 +531,7 @@ async function callPlannerAttempt(
             prompt: toTraceJsonValue({
               system: systemPrompt,
               messages,
-              tools,
+              tools: request.tools,
             }),
           }
         : {}),
@@ -399,26 +544,21 @@ async function callPlannerAttempt(
     sessionId: options.sessionId,
     label: "s2_planner",
   });
+  const callOptions = request.callOptions;
   const completeOptions = {
-    model: options.model,
-    system: systemPrompt,
-    messages,
-    tools,
-    // Thinking requires auto tool_choice (the API rejects forced tool use with
-    // thinking). When thinking will actually be sent, omit tool_choice so the
-    // model may think before emitting EmitTurnPlan; a missing plan tool-call is
-    // already handled (retry hint forces the tool, then degraded plan=null).
-    // Otherwise force the plan tool.
-    ...(willSendThinkingUnderAutoToolChoice(options.model, options.thinking)
-      ? {}
-      : { tool_choice: { type: "tool" as const, name: TURN_PLAN_TOOL_NAME } }),
-    max_tokens: options.maxTokens,
-    ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
-    ...(options.effort === undefined ? {} : { effort: options.effort }),
+    model: callOptions.model,
+    system: request.system,
+    messages: request.messages,
+    tools: request.tools,
+    ...(callOptions.toolChoice === undefined ? {} : { tool_choice: callOptions.toolChoice }),
+    max_tokens: callOptions.maxTokens,
+    ...(callOptions.thinking === undefined ? {} : { thinking: callOptions.thinking }),
+    ...(callOptions.effort === undefined ? {} : { effort: callOptions.effort }),
     ...(onTransportRetry === undefined ? {} : { onTransportRetry }),
-    timeoutMs: DEFAULT_DELIBERATION_PLAN_CALL_TIMEOUT_MS,
-    budget: "cognition-plan",
+    timeoutMs: callOptions.timeoutMs,
+    budget: callOptions.budget,
   } satisfies LLMCompleteOptions;
+  options.onRequestPrepared?.(request);
   const planner = await options.llmClient.complete(completeOptions);
   const extraction = extractTurnPlan(planner.tool_calls, options.turnOrigin);
 
@@ -457,7 +597,7 @@ async function callPlannerAttempt(
 
 type ExtractTurnPlanResult = {
   plan: TurnPlan | null;
-  reason: string | null;
+  reason: "missing_emit_turn_plan_tool_use" | "invalid_emit_turn_plan_input" | null;
 };
 
 function extractTurnPlan(

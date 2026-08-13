@@ -45,7 +45,17 @@ import {
   buildCacheableBaseSystemPromptParts,
   type BuildBaseSystemPromptOptions,
 } from "./prompt/system-prompt.js";
-import { runS2Planner } from "./s2-planner.js";
+import {
+  runS2Planner,
+  type S2PlannerOutcome,
+  type S2PlannerRequestSnapshot,
+  type S2PlannerResult,
+} from "./s2-planner.js";
+import {
+  anchorPlannerRequest,
+  createPlannerCaptureRenderInput,
+  type PlannerRequestAnchor,
+} from "./planner-context-capture.js";
 import { formatTurnPlanForThought, persistDeliberationThoughts } from "./thoughts.js";
 import { NOOP_TRACER, toTraceJsonValue, type TurnTracer } from "../../tracing/tracer.js";
 import {
@@ -1042,37 +1052,107 @@ export class Deliberator {
       });
     }
 
+    const captureSelected = this.options.plannerContextCapture?.shouldCapture() === true;
+    const captureTimestamp = captureSelected
+      ? this.options.plannerContextCapture?.capturedAt()
+      : undefined;
+    const plannerSurfaceVariant = this.options.plannerSurfaceVariant ?? "compact";
+    // In legacy mode with capture disabled, avoid copying the full assembled
+    // context solely for an unused compact-surface render closure.
+    const plannerRenderContext =
+      plannerSurfaceVariant === "compact" || captureSelected
+        ? {
+            ...effectiveContext,
+            nowMs: baseSystemPromptOptions.nowMs,
+          }
+        : null;
     const plannerSurface =
-      (this.options.plannerSurfaceVariant ?? "compact") === "compact"
+      plannerSurfaceVariant === "compact"
         ? {
             variant: "compact" as const,
             ...buildCompactPlannerSystemPrompt({
-              context: {
-                ...effectiveContext,
-                nowMs: baseSystemPromptOptions.nowMs,
-              },
+              context: plannerRenderContext!,
               staticPrefix: cacheableBaseSystemPrompt.staticPrefix,
               compactPlannerLedger,
               additionalPromptSections: plannerAdditionalPromptSections,
             }),
           }
         : ({ variant: "legacy" } as const);
-
-    const planner = await runS2Planner({
-      llmClient: this.options.llmClient,
-      model: this.options.cognitionModel,
-      baseSystemPrompt,
-      dialogueMessages,
-      selfSnapshot: context.selfSnapshot,
-      additionalPromptSections: plannerAdditionalPromptSections,
-      maxTokens: plannerCallMaxTokens,
-      ...reasoningCallOptions,
-      tracer: this.tracer,
-      turnId: context.turnId,
-      sessionId: context.sessionId,
-      turnOrigin: effectiveContext.turnOrigin,
-      plannerSurface,
-    });
+    const captureRenderInput = captureSelected
+      ? createPlannerCaptureRenderInput({
+          context: plannerRenderContext!,
+          legacyBaseSystemPrompt: baseSystemPrompt,
+          compactStaticPrefix: cacheableBaseSystemPrompt.staticPrefix,
+          compactPlannerLedger,
+          additionalPromptSections: plannerAdditionalPromptSections,
+          dialogueMessages,
+          model: this.options.cognitionModel,
+          maxTokens: plannerCallMaxTokens,
+          ...(thinking === undefined ? {} : { thinking }),
+          ...(effort === undefined ? {} : { effort }),
+        })
+      : null;
+    let livePlannerRequest: PlannerRequestAnchor | undefined;
+    let livePlannerOutcome: S2PlannerOutcome | undefined;
+    const capturePlannerOutcome = async (liveOutput?: S2PlannerResult): Promise<void> => {
+      if (
+        captureRenderInput === null ||
+        captureTimestamp === undefined ||
+        livePlannerOutcome === undefined ||
+        this.options.plannerContextCapture === undefined
+      ) {
+        return;
+      }
+      await this.options.plannerContextCapture.capture({
+        capturedAt: captureTimestamp,
+        liveSurfaceVariant: plannerSurface.variant,
+        renderInput: captureRenderInput,
+        liveOutcome: livePlannerOutcome,
+        ...(liveOutput === undefined ? {} : { liveOutput }),
+        ...(livePlannerRequest === undefined ? {} : { liveRequest: livePlannerRequest }),
+      });
+    };
+    let planner: S2PlannerResult;
+    try {
+      planner = await runS2Planner({
+        llmClient: this.options.llmClient,
+        model: this.options.cognitionModel,
+        baseSystemPrompt,
+        dialogueMessages,
+        selfSnapshot: context.selfSnapshot,
+        additionalPromptSections: plannerAdditionalPromptSections,
+        maxTokens: plannerCallMaxTokens,
+        ...reasoningCallOptions,
+        tracer: this.tracer,
+        turnId: context.turnId,
+        sessionId: context.sessionId,
+        turnOrigin: effectiveContext.turnOrigin,
+        plannerSurface,
+        ...(captureSelected
+          ? {
+              onRequestPrepared: (request: S2PlannerRequestSnapshot) => {
+                livePlannerRequest ??= anchorPlannerRequest(request);
+              },
+              onOutcome: (outcome: S2PlannerOutcome) => {
+                livePlannerOutcome = outcome;
+              },
+            }
+          : {}),
+      });
+    } catch (error) {
+      livePlannerOutcome ??= {
+        status: "threw",
+        attempts: livePlannerRequest?.attempt ?? 0,
+        structuralReason: "non_retryable_planner_error",
+        error:
+          error instanceof Error
+            ? { name: error.name, message: error.message }
+            : { name: "UnknownThrownValue", message: String(error) },
+      };
+      await capturePlannerOutcome();
+      throw error;
+    }
+    await capturePlannerOutcome(planner);
     const plan = planner.plan;
     const thoughts = plan === null ? [] : [formatTurnPlanForThought(plan)];
     const persistedThoughtEntries = await persistDeliberationThoughts(streamWriter, thoughts, {

@@ -63,6 +63,7 @@ import type { OperatorSessionSnapshot } from "../lifecycle/turn-phase/session-sn
 import type { TurnTracer } from "../../tracing/tracer.js";
 import type { IntentRecord, PerceptionResult, TurnOrigin } from "../types.js";
 import type { ContradictionRoutingCooldown } from "./contradiction-routing-cooldown.js";
+import type { PlannerContextCapture } from "./planner-context-capture.js";
 
 export type TurnStakes = "low" | "medium" | "high";
 export type DeliberationRoutingForcedBy = "open_question_contradiction";
@@ -354,6 +355,7 @@ export type DeliberatorOptions = {
   promptBlocks?: Partial<Record<PromptKey, string>>;
   finalizerDynamicPromptCacheEnabled?: boolean;
   plannerSurfaceVariant?: "compact" | "legacy";
+  plannerContextCapture?: PlannerContextCapture;
   sharedStateRenderOptions?: SharedStateRenderOptions;
   maxImagesPerLlmCall?: number;
 };

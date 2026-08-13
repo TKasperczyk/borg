@@ -166,6 +166,7 @@ describe("config", () => {
     });
     expect(config.deliberation.finalizerDynamicPromptCacheEnabled).toBe(true);
     expect(config.deliberation.plannerSurfaceVariant).toBe("compact");
+    expect(config.deliberation.plannerContextCaptureSampleRate).toBe(0);
     expect(config.commitments).toEqual({
       enforce: {
         regenerateBeforeSuppress: true,
@@ -304,6 +305,36 @@ describe("config", () => {
       }),
     ).toThrow(ConfigError);
   });
+
+  it("lets the planner context capture sample-rate environment override take precedence", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      deliberation: { plannerContextCaptureSampleRate: 0.1 },
+    });
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: { BORG_DELIBERATION_PLANNER_CONTEXT_CAPTURE_SAMPLE_RATE: "0.75" },
+    });
+
+    expect(config.deliberation.plannerContextCaptureSampleRate).toBe(0.75);
+  });
+
+  it.each(["-0.01", "1.01", "not-a-number"])(
+    "rejects invalid planner context capture sample rate %s",
+    (sampleRate) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+      tempDirs.push(tempDir);
+
+      expect(() =>
+        loadConfig({
+          dataDir: tempDir,
+          env: { BORG_DELIBERATION_PLANNER_CONTEXT_CAPTURE_SAMPLE_RATE: sampleRate },
+        }),
+      ).toThrow(ConfigError);
+    },
+  );
 
   it("loads frame-anomaly peer channel source types from config", () => {
     const config = configSchema.parse({

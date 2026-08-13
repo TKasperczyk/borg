@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -37,6 +37,12 @@ import { renderEvidenceLedger } from "../evidence-ledger/index.js";
 import type { CognitionThinkingConfig } from "./types.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
 import { buildInvalidToolFinalizerRetryPromptSection, Deliberator } from "./deliberator.js";
+import {
+  parsePlannerContextCaptureRecord,
+  PlannerContextCapture,
+  plannerContextCapturePath,
+  renderCapturedPlannerSurfacePair,
+} from "./planner-context-capture.js";
 
 function makeRetrievedEpisode(id: string, score: number, tags: string[] = []): RetrievedEpisode {
   return {
@@ -212,6 +218,7 @@ function createDeliberator(
     cognitionThinking?: CognitionThinkingConfig;
     tracer?: TurnTracer;
     plannerSurfaceVariant?: "compact" | "legacy";
+    plannerContextCapture?: PlannerContextCapture;
     clock?: FixedClock;
   } = {},
 ): Deliberator {
@@ -222,6 +229,9 @@ function createDeliberator(
     cognitionThinking: options.cognitionThinking,
     tracer: options.tracer,
     plannerSurfaceVariant: options.plannerSurfaceVariant ?? "legacy",
+    ...(options.plannerContextCapture === undefined
+      ? {}
+      : { plannerContextCapture: options.plannerContextCapture }),
     clock: options.clock,
   });
 }
@@ -2239,6 +2249,196 @@ describe("deliberator", () => {
       ]),
     );
     expect(compact.finalizerSystem).toEqual(legacy.finalizerSystem);
+  });
+
+  it("captures a planner call that round-trips to both live surface variants byte-identically", async () => {
+    const captureDataDir = mkdtempSync(join(tmpdir(), "borg-planner-capture-integration-"));
+    tempDirs.push(captureDataDir);
+    const clock = new FixedClock(1_700_000_000_000);
+    const plannerContextCapture = new PlannerContextCapture({
+      dataDir: captureDataDir,
+      sampleRate: 1,
+      clock,
+      random: () => 0,
+    });
+    const createLlm = () =>
+      new FakeLLMClient({
+        responses: [
+          {
+            text: "capture reference reasoning",
+            input_tokens: 19,
+            output_tokens: 7,
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_capture_plan",
+                name: "EmitTurnPlan",
+                input: {
+                  uncertainty: "",
+                  verification_steps: [],
+                  tensions: [],
+                  voice_note: "stay precise",
+                  emission_recommendation: "emit",
+                  intents: [],
+                },
+              },
+            ],
+          },
+          emitFinalizerTextAnswerResponse("Captured final answer."),
+        ],
+      });
+    const sourceContext = simpleDeliberationContext({
+      turnId: "turn-planner-capture-integration",
+      userMessage: "Compare both planner surfaces from this exact turn.",
+      perception: {
+        entities: [],
+        mode: "reflective",
+        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+        temporalCue: null,
+      },
+      evidenceLedger: makeEvidenceLedger(),
+      options: { stakes: "high" },
+    });
+    const compactLlm = createLlm();
+    const compactDeliberator = createDeliberator(compactLlm, tempDirs, {
+      plannerSurfaceVariant: "compact",
+      plannerContextCapture,
+      clock,
+    });
+
+    await compactDeliberator.run(sourceContext);
+
+    const legacyLlm = createLlm();
+    const legacyDeliberator = createDeliberator(legacyLlm, tempDirs, {
+      plannerSurfaceVariant: "legacy",
+      clock,
+    });
+    await legacyDeliberator.run(sourceContext);
+
+    const captureLines = readFileSync(plannerContextCapturePath(captureDataDir), "utf8")
+      .trim()
+      .split("\n");
+    expect(captureLines).toHaveLength(1);
+    const captured = parsePlannerContextCaptureRecord(
+      JSON.parse(captureLines[0] as string) as unknown,
+    );
+    const replayed = renderCapturedPlannerSurfacePair(captured.render_input);
+
+    expect(captured.live_outcome).toMatchObject({
+      status: "completed",
+      attempts: 1,
+      structuralReason: "emit_turn_plan",
+      reasoning: "capture reference reasoning",
+      usage: { input_tokens: 19, output_tokens: 7 },
+    });
+    expect(captured.fidelity.exactLiveSurfaceMatchesProjection).toBe(true);
+    expect(captured.fidelity.exactLiveRequestMatchesProjection).toBe(true);
+    expect(captured.fidelity.verified).toBe(true);
+    expect(captured.fidelity.liveRequest?.canonicalSha256).toHaveLength(64);
+    expect(captured.render_input.dialogueMessages).toEqual(compactLlm.requests[0]?.messages);
+    const capturedLedgerSection = captured.render_input.additionalPromptSections.find(
+      (section) => section.blockId === "borg_compact_planner_ledger",
+    );
+    expect(captured.render_input.compactPlannerLedgerTrace).not.toBeNull();
+    expect(capturedLedgerSection?.text).toBeTruthy();
+    expect(captured.render_input).not.toHaveProperty("compactPlannerLedger");
+    expect(replayed.compact.rendered.system).toEqual(compactLlm.requests[0]?.system);
+    expect(replayed.legacy.rendered.system).toEqual(legacyLlm.requests[0]?.system);
+    expect(replayed.compact.fingerprint).toEqual(captured.expected_surfaces.compact);
+    expect(replayed.legacy.fingerprint).toEqual(captured.expected_surfaces.legacy);
+  });
+
+  it("does not write a planner context capture when sampling is off", async () => {
+    const captureDataDir = mkdtempSync(join(tmpdir(), "borg-planner-capture-disabled-"));
+    tempDirs.push(captureDataDir);
+    const clock = new FixedClock(1_700_000_000_000);
+    const plannerContextCapture = new PlannerContextCapture({
+      dataDir: captureDataDir,
+      sampleRate: 0,
+      clock,
+      random: () => 0,
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_uncaptured_plan",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: [],
+                tensions: [],
+                voice_note: "",
+                emission_recommendation: "emit",
+                intents: [],
+              },
+            },
+          ],
+        },
+        emitFinalizerTextAnswerResponse("Uncaptured final answer."),
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs, {
+      plannerSurfaceVariant: "compact",
+      plannerContextCapture,
+      clock,
+    });
+
+    await deliberator.run(
+      simpleDeliberationContext({
+        perception: {
+          entities: [],
+          mode: "reflective",
+          affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+          temporalCue: null,
+        },
+        options: { stakes: "high" },
+      }),
+    );
+
+    expect(existsSync(plannerContextCapturePath(captureDataDir))).toBe(false);
+    expect(existsSync(join(captureDataDir, "captures"))).toBe(false);
+  });
+
+  it("captures a thrown planner outcome best-effort and rethrows the original error", async () => {
+    const captureDataDir = mkdtempSync(join(tmpdir(), "borg-planner-capture-threw-"));
+    tempDirs.push(captureDataDir);
+    const plannerContextCapture = new PlannerContextCapture({
+      dataDir: captureDataDir,
+      sampleRate: 1,
+      random: () => 0,
+    });
+    const plannerError = new Error("non-retryable planner failure");
+    const llm = new FakeLLMClient({ responses: [() => Promise.reject(plannerError)] });
+    const deliberator = createDeliberator(llm, tempDirs, {
+      plannerSurfaceVariant: "compact",
+      plannerContextCapture,
+    });
+
+    await expect(
+      deliberator.run(simpleDeliberationContext({ options: { stakes: "high" } })),
+    ).rejects.toBe(plannerError);
+
+    const [line] = readFileSync(plannerContextCapturePath(captureDataDir), "utf8")
+      .trim()
+      .split("\n");
+    const captured = parsePlannerContextCaptureRecord(JSON.parse(line!) as unknown);
+    expect(captured.live_outcome).toEqual({
+      status: "threw",
+      attempts: 1,
+      structuralReason: "non_retryable_planner_error",
+      error: {
+        name: "Error",
+        message: "non-retryable planner failure",
+      },
+    });
+    expect(captured.fidelity.exactLiveSurfaceMatchesProjection).toBe(true);
+    expect(captured.fidelity.verified).toBe(true);
   });
 
   it("gives the S2 planner compact locked-order evidence before route planning", async () => {
