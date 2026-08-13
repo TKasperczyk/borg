@@ -7,6 +7,8 @@ import {
 } from "../../memory/shared-state/index.js";
 import {
   combineMemoryDisclosureLabels,
+  memoryDisclosureInternalUseNote,
+  renderMemoryDisclosureLabelFieldsForModel,
   renderMemoryDisclosureLabelForModel,
   type MemoryDisclosureLabel,
 } from "../../retrieval/index.js";
@@ -279,7 +281,7 @@ function renderSharedStateCompactIndexRows(rows: readonly SharedStateCompactInde
       `active_count=${row.activeCount}`,
       row.disclosureLabel.disclosureClass === "public"
         ? null
-        : renderMemoryDisclosureLabelForModel(row.disclosureLabel),
+        : renderMemoryDisclosureLabelFieldsForModel(row.disclosureLabel),
       `excerpt=${JSON.stringify(row.excerpt)}`,
       row.expanded ? "expanded" : "omitted",
     ]
@@ -287,7 +289,13 @@ function renderSharedStateCompactIndexRows(rows: readonly SharedStateCompactInde
       .join(" | "),
   );
 
-  return ["SharedStateArtifact compact active-key index:", ...lines].join("\n");
+  // Every row keeps its own disclosure_class/origin_audience/private-to fields; only the constant
+  // internal-use sentence is hoisted here, so a long index does not pay for it once per line.
+  const disclosureNote = rows.some((row) => row.disclosureLabel.disclosureClass !== "public")
+    ? [`  (rows below whose disclosure_class is not public: ${memoryDisclosureInternalUseNote()})`]
+    : [];
+
+  return ["SharedStateArtifact compact active-key index:", ...disclosureNote, ...lines].join("\n");
 }
 
 function renderSharedStateCompactIndex(input: {
