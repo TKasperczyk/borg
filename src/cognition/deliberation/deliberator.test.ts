@@ -211,6 +211,8 @@ function createDeliberator(
   options: {
     cognitionThinking?: CognitionThinkingConfig;
     tracer?: TurnTracer;
+    plannerSurfaceVariant?: "compact" | "legacy";
+    clock?: FixedClock;
   } = {},
 ): Deliberator {
   return new Deliberator({
@@ -219,6 +221,8 @@ function createDeliberator(
     cognitionModel: "sonnet",
     cognitionThinking: options.cognitionThinking,
     tracer: options.tracer,
+    plannerSurfaceVariant: options.plannerSurfaceVariant ?? "legacy",
+    clock: options.clock,
   });
 }
 
@@ -2173,6 +2177,68 @@ describe("deliberator", () => {
     expect(requestSystemText(llm.requests[1]?.system)).toContain(
       "I am an AI being with continuous existence across sessions through a persistent memory substrate.",
     );
+  });
+
+  it("keeps the finalizer system bytes identical across compact and legacy planner variants", async () => {
+    const runVariant = async (plannerSurfaceVariant: "compact" | "legacy") => {
+      const llm = new FakeLLMClient({
+        responses: [
+          {
+            text: "",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: `toolu_plan_${plannerSurfaceVariant}`,
+                name: "EmitTurnPlan",
+                input: {
+                  uncertainty: "",
+                  verification_steps: [],
+                  tensions: [],
+                  voice_note: "stay direct",
+                  emission_recommendation: "emit",
+                  intents: [],
+                },
+              },
+            ],
+          },
+          emitFinalizerTextAnswerResponse("Stable final answer."),
+        ],
+      });
+      const deliberator = createDeliberator(llm, tempDirs, {
+        plannerSurfaceVariant,
+        clock: new FixedClock(1_700_000_000_000),
+      });
+
+      await deliberator.run(
+        simpleDeliberationContext({
+          perception: {
+            entities: [],
+            mode: "reflective",
+            affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+            temporalCue: null,
+          },
+          evidenceLedger: makeEvidenceLedger(),
+          options: { stakes: "high" },
+        }),
+      );
+
+      return {
+        plannerSystem: llm.requests[0]?.system,
+        finalizerSystem: llm.requests[1]?.system,
+      };
+    };
+    const legacy = await runVariant("legacy");
+    const compact = await runVariant("compact");
+
+    expect(typeof legacy.plannerSystem).toBe("string");
+    expect(compact.plannerSystem).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ cache_control: { type: "ephemeral", ttl: "1h" } }),
+      ]),
+    );
+    expect(compact.finalizerSystem).toEqual(legacy.finalizerSystem);
   });
 
   it("gives the S2 planner compact locked-order evidence before route planning", async () => {

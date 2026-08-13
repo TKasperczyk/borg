@@ -37,6 +37,7 @@ import {
 } from "./finalizer.js";
 import { chooseDeliberationPath } from "./path-selector.js";
 import { formatTurnPlanForPrompt } from "./prompt/plan-rendering.js";
+import { buildCompactPlannerSystemPrompt } from "./prompt/planner-context.js";
 import { summarizeRetrievedEvidence } from "./prompt/retrieval.js";
 import { renderTaggedPromptBlock } from "./prompt/sections.js";
 import {
@@ -991,12 +992,10 @@ export class Deliberator {
       });
     }
 
-    // S2 staged: both calls share the full baseSystemPrompt (identity, voice,
-    // tagged memory context, trusted guidance) so voice consistency is
-    // guaranteed across the plan and the final response. The planner call
-    // emits a structured plan via tool-use; the finalizer consumes that
-    // plan as explicit structured context rather than "scratchpad text"
-    // jammed into its system prompt.
+    // S2 staged: the planner emits advisory structured context for the fully
+    // grounded finalizer. The compact variant gives that internal pass a
+    // planning-specific presentation of the already assembled context; the
+    // legacy rollback variant retains the prior full-base surface exactly.
     const compactPlannerLedger =
       context.evidenceLedger === undefined || context.evidenceLedger === null
         ? null
@@ -1043,6 +1042,22 @@ export class Deliberator {
       });
     }
 
+    const plannerSurface =
+      (this.options.plannerSurfaceVariant ?? "compact") === "compact"
+        ? {
+            variant: "compact" as const,
+            ...buildCompactPlannerSystemPrompt({
+              context: {
+                ...effectiveContext,
+                nowMs: baseSystemPromptOptions.nowMs,
+              },
+              staticPrefix: cacheableBaseSystemPrompt.staticPrefix,
+              compactPlannerLedger,
+              additionalPromptSections: plannerAdditionalPromptSections,
+            }),
+          }
+        : ({ variant: "legacy" } as const);
+
     const planner = await runS2Planner({
       llmClient: this.options.llmClient,
       model: this.options.cognitionModel,
@@ -1056,6 +1071,7 @@ export class Deliberator {
       turnId: context.turnId,
       sessionId: context.sessionId,
       turnOrigin: effectiveContext.turnOrigin,
+      plannerSurface,
     });
     const plan = planner.plan;
     const thoughts = plan === null ? [] : [formatTurnPlanForThought(plan)];

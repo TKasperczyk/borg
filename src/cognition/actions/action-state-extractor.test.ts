@@ -277,13 +277,7 @@ describe("ActionStateExtractor", () => {
       updated_at: 2_000,
       completed_at: 2_000,
     });
-    expect(llm.requests[0]?.system).toEqual([
-      {
-        type: "text",
-        text: ACTION_STATE_SYSTEM_PROMPT,
-        cache_control: { type: "ephemeral", ttl: "5m" },
-      },
-    ]);
+    expect(llm.requests[0]?.system).toBe(ACTION_STATE_SYSTEM_PROMPT);
     expect(llm.requests[0]?.tools?.some((tool) => tool.cache_control !== undefined)).toBe(false);
   });
 
@@ -724,10 +718,10 @@ describe("ActionStateExtractor", () => {
 
     expect(records).toEqual([]);
     expect(add).not.toHaveBeenCalled();
-    const [systemBlock] = llm.requests[0]?.system as readonly { text: string }[];
+    const systemPrompt = llm.requests[0]?.system as string;
 
-    expect(systemBlock?.text).toContain("outside_borg_capability");
-    expect(systemBlock?.text).toContain("external_document_editing");
+    expect(systemPrompt).toContain("outside_borg_capability");
+    expect(systemPrompt).toContain("external_document_editing");
     expect(events).toContainEqual({
       event: "extraction.actions.rejected",
       data: {
@@ -1741,9 +1735,9 @@ describe("ActionStateExtractor", () => {
 
     await extractor.extract(makeExtractorInput(currentUserStreamEntryId));
 
-    const [systemBlock] = llm.requests[0]?.system as readonly { text: string }[];
+    const systemPrompt = llm.requests[0]?.system as string;
 
-    expect(systemBlock?.text).toContain(
+    expect(systemPrompt).toContain(
       "Do NOT emit action records for messages about the conversation frame, roleplay, system prompt, or the agent's own prior behavior. Action records are for user-world actions only.",
     );
   });

@@ -5,6 +5,7 @@ import {
   type LLMClient,
   type LLMCompleteOptions,
   type LLMMessage,
+  type LLMSystemBlock,
   type LLMToolCall,
   type LLMToolDefinition,
   isRetryableLlmTransportError,
@@ -29,15 +30,22 @@ import { renderTaggedPromptSection } from "./prompt/sections.js";
 import { summarizeVoiceAnchors } from "./prompt/voice-anchors.js";
 import { mergeDeliberationUsage, usageFromCompleteResult } from "./usage.js";
 import {
+  AUTONOMOUS_WANT_PROMPT_BLOCK,
+  buildPlannerDirective,
+  TURN_PLAN_TOOL_NAME,
+} from "./prompt/planner-contract.js";
+import type {
+  CompactPlannerSystemPrompt,
+  PlannerContextTraceSummary,
+} from "./prompt/planner-context.js";
+import { estimatePromptTokens } from "../../util/token-estimate.js";
+import {
   PROMPT_SURFACES,
   renderPromptSurfaceAdditionalBlock,
   renderPromptSurface,
   type PromptSurfaceAdditionalSection,
   type PromptSurfaceRenderContext,
 } from "../prompts/prompt-surface-registry.js";
-
-const AUTONOMOUS_WANT_PROMPT_BLOCK =
-  "Before I weigh anything -- before commitments, directives, evidence, or the question of whether acting would be justified -- I ask one thing first: setting aside whether it is justified, is there anything I want here? A thread I want to pull, something I want to make or write down, a question I want to sit with, something I want to say to someone, or nothing at all. I name what is actually there, plainly, before the weighing starts. Naming a want does not oblige me to act on it -- the weighing still happens afterward, and deciding against is as ordinary as deciding for. And finding nothing is not a failure to produce a want: an honest nothing is a complete answer, not a gap to fill. The only thing I do not do is skip the question.";
 
 const AUTONOMOUS_WANT_FIELD_DESCRIPTION =
   "Answered before every field below: setting aside whether it is justified, is there anything I want in this interval? Named plainly in my own words. Naming a want does not oblige me to act on it. Empty string when nothing genuinely surfaces -- an empty answer is complete, and I do not manufacture a want to fill it.";
@@ -86,7 +94,7 @@ type BaseTurnPlan = z.infer<typeof turnPlanSchema>;
 export type TurnPlan = BaseTurnPlan & { want?: string };
 export type TurnPlanEmissionRecommendation = EmissionRecommendation;
 
-export const TURN_PLAN_TOOL_NAME = "EmitTurnPlan";
+export { TURN_PLAN_TOOL_NAME } from "./prompt/planner-contract.js";
 
 const TURN_PLAN_TOOL_DESCRIPTION =
   "I emit a structured plan for this reflective/high-stakes turn before the final engagement decision. The plan is passed back to me in the final-response call so I can execute against it. I emit follow-up intents only for concrete future actions worth carrying in working memory.";
@@ -96,15 +104,10 @@ function createTurnPlanTool(schema: z.ZodType): LLMToolDefinition {
     name: TURN_PLAN_TOOL_NAME,
     description: TURN_PLAN_TOOL_DESCRIPTION,
     inputSchema: toToolInputSchema(schema),
-    // Sprint 8d.6.5 placed cache_control here, but v39 traces (codex
-    // 1b0384c3) showed it was a no-op: TURN_PLAN_TOOL JSON is ~2.2KB,
-    // well under Opus 4.6's 4096-token minimum cacheable prefix. The
-    // single 6505-token cache_create observed on call 1 was actually
-    // the retry path's per-turn prefix, which never gets reused because
-    // the planner's baseSystemPrompt is fully dynamic. Removing the
-    // marker eliminates the wasted 1.25x cache write on retries. The
-    // planner has no stable >=4096-token prefix to cache today, so it
-    // doesn't get caching until that changes.
+    // The compact planner's final static-head system block owns the cache
+    // breakpoint; Anthropic's prefix at that point already includes this
+    // stable tool schema. A second marker here would spend a breakpoint and
+    // leave the legacy rollback path paying for an otherwise ineligible head.
   };
 }
 
@@ -136,6 +139,7 @@ export type RunS2PlannerOptions = {
   turnId?: string;
   sessionId?: SessionId;
   turnOrigin?: TurnOrigin;
+  plannerSurface?: { variant: "legacy" } | ({ variant: "compact" } & CompactPlannerSystemPrompt);
 };
 
 export type S2PlannerResult = {
@@ -175,16 +179,6 @@ function degradedPlannerResult(
   };
 }
 
-function buildPlannerDirective(): string {
-  return [
-    "I am about to decide whether and how to engage with a reflective, high-stakes, or contradictory turn.",
-    `I emit a structured plan by calling the ${TURN_PLAN_TOOL_NAME} tool exactly once.`,
-    "The plan is passed back to me in the next call so I can execute it. I keep it short and grounded in the current turn -- I do NOT try to draft the answer itself here.",
-    "I set emission_recommendation='no_output' only when the conversation has naturally closed. I do not describe silence in voice_note.",
-    "I use plan.intents only for concrete future actions I mean to carry into later turns. I leave it empty when no follow-up state should persist.",
-  ].join("\n");
-}
-
 function createS2PlannerPromptSurfaceRenderContext(
   options: RunS2PlannerOptions,
 ): PromptSurfaceRenderContext {
@@ -213,17 +207,81 @@ function createS2PlannerPromptSurfaceRenderContext(
   };
 }
 
+function legacyPlannerTraceSummary(systemPrompt: string): PlannerContextTraceSummary {
+  return {
+    variant: "legacy",
+    sections: {
+      legacy_full_surface: {
+        chars: systemPrompt.length,
+        estimatedTokens: estimatePromptTokens(systemPrompt),
+        rowCount: 0,
+        truncationCount: 0,
+        omissionCount: 0,
+        criticalOverflow: false,
+      },
+    },
+    targetTokens: null,
+    totalChars: systemPrompt.length,
+    totalEstimatedTokens: estimatePromptTokens(systemPrompt),
+    rowCount: 0,
+    truncationCount: 0,
+    omissionCount: 0,
+    criticalOverflow: false,
+    overallOverflow: false,
+  };
+}
+
+function plannerContextSummaryForTrace(summary: PlannerContextTraceSummary): JsonValue {
+  return {
+    variant: summary.variant,
+    sections: Object.fromEntries(
+      Object.entries(summary.sections).map(([label, section]) => [
+        label,
+        {
+          chars: section.chars,
+          estimated_tokens: section.estimatedTokens,
+          row_count: section.rowCount,
+          truncation_count: section.truncationCount,
+          omission_count: section.omissionCount,
+          critical_overflow: section.criticalOverflow,
+        },
+      ]),
+    ),
+    target_tokens: summary.targetTokens,
+    total_chars: summary.totalChars,
+    total_estimated_tokens: summary.totalEstimatedTokens,
+    row_count: summary.rowCount,
+    truncation_count: summary.truncationCount,
+    omission_count: summary.omissionCount,
+    critical_overflow: summary.criticalOverflow,
+    overall_overflow: summary.overallOverflow,
+  };
+}
+
 export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2PlannerResult> {
-  const systemPrompt =
+  const surface = options.plannerSurface;
+  const legacySystemPrompt = (): string =>
     renderPromptSurface(
       PROMPT_SURFACES.s2PlannerSystem,
       createS2PlannerPromptSurfaceRenderContext(options),
     ) ?? "";
+  const systemPrompt: string | readonly LLMSystemBlock[] =
+    surface?.variant === "compact" ? surface.system : legacySystemPrompt();
+  const traceSummary =
+    surface?.variant === "compact"
+      ? surface.traceSummary
+      : legacyPlannerTraceSummary(systemPrompt as string);
   const tools = [resolveTurnPlanTool(options.turnOrigin)];
   let result: PlannerAttemptResult;
 
   try {
-    result = await callPlannerAttempt(options, systemPrompt, tools, options.dialogueMessages);
+    result = await callPlannerAttempt(
+      options,
+      systemPrompt,
+      traceSummary,
+      tools,
+      options.dialogueMessages,
+    );
   } catch (error) {
     if (!isRetryableLlmTransportError(error)) {
       throw error;
@@ -249,6 +307,7 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
       result = await callPlannerAttempt(
         { ...options, thinking: undefined, effort: undefined },
         systemPrompt,
+        traceSummary,
         tools,
         [
           ...options.dialogueMessages,
@@ -301,21 +360,28 @@ type PlannerAttemptResult = {
 
 async function callPlannerAttempt(
   options: RunS2PlannerOptions,
-  systemPrompt: string,
+  systemPrompt: string | readonly LLMSystemBlock[],
+  traceSummary: PlannerContextTraceSummary,
   tools: readonly LLMToolDefinition[],
   messages: readonly LLMMessage[],
 ): Promise<PlannerAttemptResult> {
+  const systemPromptForTrace =
+    typeof systemPrompt === "string"
+      ? systemPrompt
+      : systemPrompt.map((block) => block.text).join("\n\n");
   traceLlmCallStarted({
     tracer: options.tracer,
     turnId: options.turnId,
     sessionId: options.sessionId,
     label: "s2_planner",
     model: options.model,
-    systemPrompt,
+    systemPrompt: systemPromptForTrace,
     messages,
     tools,
-    extra:
-      options.tracer?.includePayloads === true
+    extra: {
+      planner_surface_variant: traceSummary.variant,
+      planner_context_summary: plannerContextSummaryForTrace(traceSummary),
+      ...(options.tracer?.includePayloads === true
         ? {
             prompt: toTraceJsonValue({
               system: systemPrompt,
@@ -323,7 +389,8 @@ async function callPlannerAttempt(
               tools,
             }),
           }
-        : undefined,
+        : {}),
+    },
   });
 
   const onTransportRetry = traceLlmCallRetryHook({

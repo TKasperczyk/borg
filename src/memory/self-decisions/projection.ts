@@ -8,6 +8,7 @@ export const DEFAULT_SELF_DECISION_INTROSPECTION_CAP = 8;
 
 export type SelfDecisionIntrospectionRow = {
   occurredAt: number;
+  decisionOutcomeReference: string;
   relativeAge: string;
   triggerName: string;
   triggerType: SelfDecisionTriggerType;
@@ -57,6 +58,10 @@ export function selectSelfDecisionIntrospection(
 
     return {
       occurredAt: event.occurredAt,
+      // The scheduler's source-event id is a machine-generated structural
+      // reference. Recurring derivations of the same due outcome therefore
+      // share an identity without comparing their natural-language content.
+      decisionOutcomeReference: event.sourceEventId,
       relativeAge,
       triggerName: event.triggerName,
       triggerType: event.triggerType,

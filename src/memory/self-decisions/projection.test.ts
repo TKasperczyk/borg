@@ -71,6 +71,7 @@ describe("selectSelfDecisionIntrospection", () => {
 
     expect(visible).toEqual([
       expect.objectContaining({
+        decisionOutcomeReference: "goal_aaaaaaaaaaaaaaaa:no-target:900",
         decisionSummary,
         triggerName: "goal_followup_due",
         triggerType: "trigger",

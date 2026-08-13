@@ -1025,6 +1025,7 @@ describe("prompt surface fixtures", () => {
         },
       ],
       maxTokens: 512,
+      plannerSurface: { variant: "legacy" },
     });
 
     expectFixture("s2-planner-system-prompt.txt", String(llm.requests[0]?.system));
@@ -1077,6 +1078,7 @@ describe("prompt surface fixtures", () => {
       ],
       maxTokens: 512,
       turnOrigin: "autonomous",
+      plannerSurface: { variant: "legacy" },
     });
 
     expectFixture("s2-planner-system-prompt-autonomous.txt", String(llm.requests[0]?.system));
@@ -1174,6 +1176,7 @@ describe("prompt surface fixtures", () => {
       dialogueMessages: [{ role: "user", content: context.userMessage }],
       selfSnapshot: context.selfSnapshot,
       maxTokens: 512,
+      plannerSurface: { variant: "legacy" },
     });
 
     expectFixture("s2-planner-voice-anchors.txt", String(llm.requests[0]?.system));

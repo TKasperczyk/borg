@@ -12,6 +12,8 @@ function cloneEntry(entry: EvidenceLedgerEntry): EvidenceLedgerEntry {
     ...entry,
     citations: entry.citations === undefined ? undefined : [...entry.citations],
     state_metadata: entry.state_metadata === undefined ? undefined : { ...entry.state_metadata },
+    planner_metadata:
+      entry.planner_metadata === undefined ? undefined : { ...entry.planner_metadata },
   };
 }
 

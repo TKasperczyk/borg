@@ -353,6 +353,7 @@ export type DeliberatorOptions = {
   hostCapabilities?: string;
   promptBlocks?: Partial<Record<PromptKey, string>>;
   finalizerDynamicPromptCacheEnabled?: boolean;
+  plannerSurfaceVariant?: "compact" | "legacy";
   sharedStateRenderOptions?: SharedStateRenderOptions;
   maxImagesPerLlmCall?: number;
 };

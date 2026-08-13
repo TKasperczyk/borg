@@ -48,17 +48,6 @@ import {
 
 const CONFIDENCE_THRESHOLD = 0.8;
 const CORRECTIVE_PREFERENCE_TOOL_NAME = "EmitCorrectivePreference";
-const CORRECTIVE_PREFERENCE_STATIC_PREFIX_CACHE_CONTROL = {
-  type: "ephemeral",
-  ttl: "5m",
-} as const;
-const CORRECTIVE_PREFERENCE_SYSTEM_BLOCKS = [
-  {
-    type: "text" as const,
-    text: CORRECTIVE_PREFERENCE_SYSTEM_PROMPT,
-    cache_control: CORRECTIVE_PREFERENCE_STATIC_PREFIX_CACHE_CONTROL,
-  },
-] as const;
 
 const correctivePreferenceEntityIdSchema = z
   .string()
@@ -588,7 +577,7 @@ export class CorrectivePreferenceExtractor {
         llmClient: this.options.llmClient,
         request: {
           model: this.options.model,
-          system: CORRECTIVE_PREFERENCE_SYSTEM_BLOCKS,
+          system: CORRECTIVE_PREFERENCE_SYSTEM_PROMPT,
           messages,
           tools,
           tool_choice: { type: "tool", name: CORRECTIVE_PREFERENCE_TOOL_NAME },

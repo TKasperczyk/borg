@@ -43,6 +43,12 @@ export type EvidenceLedgerEntry = {
   state?: string;
   salience_class?: EvidenceLedgerActionSalienceClass;
   state_metadata?: Record<string, unknown>;
+  /** Planner-only presentation metadata. Prompt renderers intentionally ignore it. */
+  planner_metadata?: {
+    decision_outcome_ref?: string;
+    decision_summary?: string;
+    decision_rationale?: string | null;
+  };
   taint?: EvidenceLedgerTaint;
   persistence_class?: StreamEntryPersistenceClass;
   via_retrieval?: boolean;

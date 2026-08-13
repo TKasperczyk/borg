@@ -66,7 +66,7 @@ function sessionRecord(sessionId: SessionId, lastActivityAt: number): SessionRec
   };
 }
 
-function goalNode(index: number): GoalTreeNode {
+function goalNode(index: number, overrides: Partial<GoalTreeNode> = {}): GoalTreeNode {
   return {
     id: createGoalId(),
     record_version: 1,
@@ -84,12 +84,14 @@ function goalNode(index: number): GoalTreeNode {
     canonicalized_by_artifact_entry_id: null,
     provenance: { kind: "manual" },
     children: [],
+    ...overrides,
   };
 }
 
 function selfDecisionEvents(count: number): SelfDecisionProjectionSourceEvent[] {
   return Array.from({ length: count }, (_, index) => ({
     occurredAt: 2_000 + index,
+    sourceEventId: `structural-outcome-${index}`,
     triggerName: `trigger-${index}`,
     triggerType: "trigger",
     decisionSummary: `Decision ${index}`,
@@ -188,6 +190,11 @@ async function recallGoals(input: {
   goals: readonly GoalTreeNode[];
   sourceCap: number;
   totalCap: number;
+  temporalCue?: {
+    sinceTs: number;
+    untilTs: number;
+    label: string;
+  };
 }): Promise<AutobiographicalRecallResult> {
   const service = new AutobiographicalRecallService({
     clock: new FixedClock(NOW_MS),
@@ -199,7 +206,7 @@ async function recallGoals(input: {
   });
   const result = await service.recall({
     sessionId: createSessionId(),
-    temporalCue: {
+    temporalCue: input.temporalCue ?? {
       sinceTs: 1_000,
       untilTs: 9_000,
       label: "goal window",
@@ -225,6 +232,7 @@ describe("AutobiographicalRecallService", () => {
         listRecentAutonomousSelfPrivate: () => [
           {
             occurredAt: 2_000,
+            sourceEventId: "scheduled-reflection:arena-exchange",
             triggerName: "scheduled_reflection",
             triggerType: "trigger",
             decisionSummary: "Sol reviewed the last arena exchange.",
@@ -329,43 +337,22 @@ describe("AutobiographicalRecallService", () => {
   });
 
   it("renders goal terminal conditions on the autobiographical surface", async () => {
-    const goal = {
-      id: createGoalId(),
-      record_version: 1,
+    const goal = goalNode(0, {
       description: "Track the release readiness decision",
       terminal_condition: "The release readiness decision is made",
       priority: 5,
-      parent_goal_id: null,
       status: "active",
       progress_notes: "Compared rollback and launch options.",
-      last_progress_ts: 2_000,
-      created_at: 1_000,
-      target_at: null,
-      audience_entity_id: null,
-      owner_entity_id: null,
-      canonicalized_by_artifact_entry_id: null,
-      provenance: { kind: "manual" },
-      children: [],
-    } satisfies GoalTreeNode;
-    const service = new AutobiographicalRecallService({
-      clock: new FixedClock(NOW_MS),
-      goalsRepository: {
-        list: () => [goal],
-      },
+    });
+    const result = await recallGoals({
+      goals: [goal],
       sourceCap: 5,
       totalCap: 10,
-    });
-
-    const result = await service.recall({
-      sessionId: createSessionId(),
       temporalCue: {
         sinceTs: 1_000,
         untilTs: 3_000,
         label: "release readiness window",
       },
-      isSelfAudience: false,
-      sessionAudienceRole: "operator",
-      perceptionMode: "reflective",
     });
 
     expect(result?.evidence).toEqual(
@@ -383,43 +370,22 @@ describe("AutobiographicalRecallService", () => {
   it("retains the newest progress notes when the goal's append-only log exceeds the prompt budget", async () => {
     const oldestNote = `[1] ${"o".repeat(800)}`;
     const newestNote = "[3] I retired the tracker myself once its question was answered.";
-    const goal = {
-      id: createGoalId(),
-      record_version: 1,
+    const goal = goalNode(0, {
       description: "Track the release readiness decision",
       terminal_condition: null,
       priority: 5,
-      parent_goal_id: null,
       status: "abandoned",
       progress_notes: [oldestNote, `[2] ${"m".repeat(400)}`, newestNote].join("\n"),
-      last_progress_ts: 2_000,
-      created_at: 1_000,
-      target_at: null,
-      audience_entity_id: null,
-      owner_entity_id: null,
-      canonicalized_by_artifact_entry_id: null,
-      provenance: { kind: "manual" },
-      children: [],
-    } satisfies GoalTreeNode;
-    const service = new AutobiographicalRecallService({
-      clock: new FixedClock(NOW_MS),
-      goalsRepository: {
-        list: () => [goal],
-      },
+    });
+    const result = await recallGoals({
+      goals: [goal],
       sourceCap: 5,
       totalCap: 10,
-    });
-
-    const result = await service.recall({
-      sessionId: createSessionId(),
       temporalCue: {
         sinceTs: 1_000,
         untilTs: 3_000,
         label: "release readiness window",
       },
-      isSelfAudience: false,
-      sessionAudienceRole: "operator",
-      perceptionMode: "reflective",
     });
 
     const goalEvidence = result?.evidence.find((item) => item.kind === "goal");
@@ -427,6 +393,28 @@ describe("AutobiographicalRecallService", () => {
     expect(goalEvidence?.text).toContain(newestNote);
     expect(goalEvidence?.text).toContain("older progress_notes elided");
     expect(goalEvidence?.text).not.toContain(oldestNote);
+  });
+
+  it("does not begin a retained progress-note tail with half an astral character", async () => {
+    const progressNotes = "😀".repeat(1_000);
+    const goal = goalNode(0, {
+      description: "Preserve a Unicode-safe progress tail",
+      terminal_condition: null,
+      priority: 5,
+      status: "active",
+      progress_notes: progressNotes,
+    });
+    const result = await recallGoals({
+      goals: [goal],
+      sourceCap: 5,
+      totalCap: 10,
+      temporalCue: { sinceTs: 1_000, untilTs: 3_000, label: "Unicode boundary window" },
+    });
+    const text = result?.evidence.find((item) => item.kind === "goal")?.text ?? "";
+    const retainedTail = text.match(/retained_tail_chars=\d+\] ([\s\S]*)$/)?.[1] ?? "";
+
+    expect(retainedTail.length).toBeGreaterThan(0);
+    expect(Array.from(retainedTail)[0]).toBe("😀");
   });
 
   it("caps stream autobiographical evidence after selecting the most recent in-window entries", async () => {

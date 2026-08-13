@@ -5,6 +5,7 @@ import type { TurnTracer } from "../../tracing/tracer.js";
 import { AuthError, LLMError } from "../../util/errors.js";
 import { runS2Planner } from "./s2-planner.js";
 import type { TurnOrigin } from "../types.js";
+import type { PlannerContextTraceSummary } from "./prompt/planner-context.js";
 
 type ToolInputSchema = {
   properties: Record<string, unknown>;
@@ -128,6 +129,101 @@ async function capturePlannerToolInputSchema(turnOrigin?: TurnOrigin): Promise<T
 }
 
 describe("s2 planner", () => {
+  it("sends the compact system blocks unchanged and traces their surface budget", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 5,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_compact_plan",
+              name: "EmitTurnPlan",
+              input: validPlanInput(),
+            },
+          ],
+        },
+      ],
+    });
+    const tracer = createTracer();
+    const system = [
+      {
+        type: "text" as const,
+        text: "static planner head",
+        cache_control: { type: "ephemeral" as const, ttl: "1h" as const },
+      },
+      { type: "text" as const, text: "durable self digest" },
+      { type: "text" as const, text: "turn-local planner context" },
+    ];
+    const traceSummary = {
+      variant: "compact",
+      sections: {
+        static_head: {
+          chars: 19,
+          estimatedTokens: 5,
+          rowCount: 0,
+          truncationCount: 0,
+          omissionCount: 0,
+          criticalOverflow: false,
+        },
+      },
+      targetTokens: 40_000,
+      totalChars: 73,
+      totalEstimatedTokens: 19,
+      rowCount: 3,
+      truncationCount: 1,
+      omissionCount: 2,
+      criticalOverflow: false,
+      overallOverflow: false,
+    } satisfies PlannerContextTraceSummary;
+
+    await runS2Planner({
+      llmClient: llm,
+      model: "sonnet",
+      baseSystemPrompt: "legacy must not be sent",
+      dialogueMessages: [{ role: "user", content: "Think this through." }],
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      maxTokens: 512,
+      tracer,
+      turnId: "turn-compact-planner",
+      plannerSurface: { variant: "compact", system, traceSummary },
+    });
+
+    expect(llm.requests[0]?.system).toEqual(system);
+    expect(llm.requests[0]?.tools?.some((tool) => tool.cache_control !== undefined)).toBe(false);
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "llm_call.started",
+      expect.objectContaining({
+        turnId: "turn-compact-planner",
+        label: "s2_planner",
+        planner_surface_variant: "compact",
+        planner_context_summary: expect.objectContaining({
+          variant: "compact",
+          target_tokens: 40_000,
+          total_chars: 73,
+          total_estimated_tokens: 19,
+          row_count: 3,
+          truncation_count: 1,
+          omission_count: 2,
+          critical_overflow: false,
+          overall_overflow: false,
+          sections: {
+            static_head: {
+              chars: 19,
+              estimated_tokens: 5,
+              row_count: 0,
+              truncation_count: 0,
+              omission_count: 0,
+              critical_overflow: false,
+            },
+          },
+        }),
+      }),
+    );
+  });
+
   it("keeps the user tool schema byte-identical while adding autonomous want first", async () => {
     const defaultSchema = await capturePlannerToolInputSchema();
     const userSchema = await capturePlannerToolInputSchema("user");

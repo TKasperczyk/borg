@@ -146,13 +146,7 @@ describe("GoalPromotionExtractor", () => {
       name: "EmitGoalPromotion",
     });
     expect(llm.requests[0]?.max_tokens).toBe(EXTRACTOR_MAX_TOKENS_DEFAULT);
-    expect(llm.requests[0]?.system).toEqual([
-      {
-        type: "text",
-        text: GOAL_PROMOTION_SYSTEM_PROMPT,
-        cache_control: { type: "ephemeral", ttl: "5m" },
-      },
-    ]);
+    expect(llm.requests[0]?.system).toBe(GOAL_PROMOTION_SYSTEM_PROMPT);
     expect(llm.requests[0]?.tools?.some((tool) => tool.cache_control !== undefined)).toBe(false);
     expect(GOAL_PROMOTION_SYSTEM_PROMPT).toContain("not_borg_responsibility");
     expect(GOAL_PROMOTION_SYSTEM_PROMPT).toContain("terminal_condition");
@@ -269,23 +263,23 @@ describe("GoalPromotionExtractor", () => {
         }),
       }),
     );
-    const [systemBlock] = llm.requests[0]?.system as readonly { text: string }[];
+    const systemPrompt = llm.requests[0]?.system as string;
 
-    expect(systemBlock?.text).toContain("monitoring p95");
-    expect(systemBlock?.text).toContain("scheduled document edits");
-    expect(systemBlock?.text).toContain(
+    expect(systemPrompt).toContain("monitoring p95");
+    expect(systemPrompt).toContain("scheduled document edits");
+    expect(systemPrompt).toContain(
       "Durable goals are about Borg's durable conversation/memory responsibility",
     );
-    expect(systemBlock?.text).toContain(
+    expect(systemPrompt).toContain(
       'A user saying "my goal is to..." is usually participant-side context',
     );
-    expect(systemBlock?.text).toContain('my goal is to deploy", "friend will respond"');
-    expect(systemBlock?.text).not.toContain("treat that speaker as the goal owner");
-    expect(systemBlock?.text).toContain("user will deploy -> not_borg_responsibility");
-    expect(systemBlock?.text).toContain(
+    expect(systemPrompt).toContain('my goal is to deploy", "friend will respond"');
+    expect(systemPrompt).not.toContain("treat that speaker as the goal owner");
+    expect(systemPrompt).toContain("user will deploy -> not_borg_responsibility");
+    expect(systemPrompt).toContain(
       "Borg will monitor p95 -> impossible_for_borg_without_capability",
     );
-    expect(systemBlock?.text).toContain("My host capability boundary");
+    expect(systemPrompt).toContain("My host capability boundary");
   });
 
   it("returns no candidates when the LLM finds no Borg role", async () => {

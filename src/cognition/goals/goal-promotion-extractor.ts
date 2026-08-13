@@ -15,24 +15,15 @@ import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-v
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { GOAL_PROMOTION_SYSTEM_PROMPT } from "../prompts/goal-extraction.js";
 import type { RecencyMessage } from "../recency/index.js";
-import { goalMemoryDisclosureLabel, memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
+import {
+  goalMemoryDisclosureLabel,
+  memoryDisclosurePayloadFields,
+} from "../../memory/common/disclosure-serializers.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 
 const CONFIDENCE_THRESHOLD = 0.85;
 const MAX_PROMOTIONS_PER_TURN = 3;
 const GOAL_PROMOTION_TOOL_NAME = "EmitGoalPromotion";
-// This head may be below the active model's cache minimum; keep the marker pending live measurement.
-const GOAL_PROMOTION_STATIC_PREFIX_CACHE_CONTROL = {
-  type: "ephemeral",
-  ttl: "5m",
-} as const;
-const GOAL_PROMOTION_SYSTEM_BLOCKS = [
-  {
-    type: "text" as const,
-    text: GOAL_PROMOTION_SYSTEM_PROMPT,
-    cache_control: GOAL_PROMOTION_STATIC_PREFIX_CACHE_CONTROL,
-  },
-] as const;
 
 // Deadlines are collected as calendar dates rather than epoch milliseconds. A
 // 13-digit integer has to be emitted digit by digit, so a single wrong digit is
@@ -770,9 +761,9 @@ export class GoalPromotionExtractor {
         llmClient: this.options.llmClient as LLMClient,
         request: {
           model: this.options.model as string,
-          system: GOAL_PROMOTION_SYSTEM_BLOCKS,
+          system: GOAL_PROMOTION_SYSTEM_PROMPT,
           messages: input.messages,
-        tools: input.tools,
+          tools: input.tools,
           tool_choice: { type: "tool", name: GOAL_PROMOTION_TOOL_NAME },
           max_tokens: EXTRACTOR_MAX_TOKENS_DEFAULT,
           budget: "goal-promotion-extractor",
@@ -817,14 +808,13 @@ export class GoalPromotionExtractor {
         );
       }
 
-      const degradedError =
-        isStructuredToolCallError(error, "missing_tool_call")
-          ? new MissingGoalPromotionToolCallError(
-              `Goal promotion extractor did not emit ${GOAL_PROMOTION_TOOL_NAME}`,
-            )
-          : isStructuredToolCallError(error, "invalid_payload")
-            ? (error.cause ?? error)
-            : error;
+      const degradedError = isStructuredToolCallError(error, "missing_tool_call")
+        ? new MissingGoalPromotionToolCallError(
+            `Goal promotion extractor did not emit ${GOAL_PROMOTION_TOOL_NAME}`,
+          )
+        : isStructuredToolCallError(error, "invalid_payload")
+          ? (error.cause ?? error)
+          : error;
       traceExtractorCompleted({
         tracer: this.options.tracer,
         turnId: this.options.turnId,
