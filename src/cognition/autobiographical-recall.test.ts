@@ -695,6 +695,51 @@ describe("AutobiographicalRecallService", () => {
     );
   });
 
+  it("sums goal and action candidates into the shared goals source group", async () => {
+    // collectGoals and collectActions both file under groupId "goals", so the group's candidate
+    // count is a sum across two record kinds. The lower-bound precision comes from the saturated
+    // action fetch alone: the goal side is counted exactly and fetched without a limit.
+    const fetchedActions = [
+      completedAction(1, 2_500, 2_500),
+      completedAction(2, 2_400, 2_400),
+      completedAction(3, 500, 500),
+    ];
+    const service = new AutobiographicalRecallService({
+      clock: new FixedClock(NOW_MS),
+      goalsRepository: {
+        list: () => [goalNode(1), goalNode(2), goalNode(3)],
+      },
+      actionRepository: {
+        list: (input) => fetchedActions.slice(0, input?.limit),
+      },
+      sourceCap: 1,
+      totalCap: 10,
+    });
+
+    const result = await service.recall({
+      sessionId: createSessionId(),
+      temporalCue: {
+        sinceTs: 1_000,
+        untilTs: 3_000,
+        label: "mixed window",
+      },
+      isSelfAudience: false,
+      sessionAudienceRole: "operator",
+      perceptionMode: "reflective",
+    });
+
+    expect(result?.evidence.map((item) => item.kind)).toEqual(["goal", "action"]);
+    expect(result?.evidence.every((item) => item.groupId === "goals")).toBe(true);
+    expect(result?.evidence[0]?.capMetadata).toEqual({
+      sourceGroup: {
+        // 3 in-window goals (exact) + 2 in-window actions off a saturated fetch (lower bound).
+        candidateCountLowerBound: 5,
+        renderedCount: 2,
+      },
+    });
+    expect(result?.evidence[1]?.capMetadata).toBeUndefined();
+  });
+
   it("omits cap metadata when a source group fits within its cap", async () => {
     const result = await recallGoals({
       goals: [goalNode(1), goalNode(2)],
