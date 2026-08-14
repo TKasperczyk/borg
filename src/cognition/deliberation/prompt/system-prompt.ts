@@ -132,6 +132,8 @@ export type BuildBaseSystemPromptOptions = {
   promptBlocks?: Partial<Record<PromptKey, string>>;
   participationPolicy?: SessionParticipationPolicy;
   nowMs?: number;
+  /** Internal compact-surface seam: avoid eagerly rendering the legacy standing monolith. */
+  omitStandingAssembly?: boolean;
 };
 
 export type ResolvedPromptBlocks = Record<PromptKey, string>;
@@ -174,7 +176,7 @@ export type BaseSystemPromptSections = {
 
 export type PromptSection = TaggedPromptSection | string | null | undefined;
 
-function renderPromptSection(section: PromptSection): string | null {
+export function renderPromptSection(section: PromptSection): string | null {
   if (section === null || section === undefined) {
     return null;
   }
@@ -328,7 +330,7 @@ function escapeCreatorDirectiveXmlText(value: string): string {
   return escapeXmlText(scrubCreatorDirectiveInternalIds(value));
 }
 
-function renderSessionStatusSnapshotLines(
+export function renderSessionStatusSnapshotLines(
   snapshot: OperatorSessionSnapshot | null,
   indent: string,
 ): string[] {
@@ -708,7 +710,10 @@ function renderAudienceIdentityLines(context: DeliberationContext, indent: strin
   return lines;
 }
 
-function renderAuthorityContextLines(context: DeliberationContext, indent: string): string[] {
+export function renderAuthorityContextLines(
+  context: DeliberationContext,
+  indent: string,
+): string[] {
   const creatorContext = context.creatorContext;
 
   if (creatorContext === null || creatorContext === undefined) {
@@ -1095,16 +1100,14 @@ export function buildStandingWithAudienceSection(context: DeliberationContext): 
   return lines.join("\n");
 }
 
-export function buildBaseSystemPromptSections(
+function buildUntrustedBasePromptSections(
   context: DeliberationContext,
   options: BuildBaseSystemPromptOptions,
-): BaseSystemPromptSections {
-  const promptNowMs =
-    options.nowMs !== undefined && Number.isFinite(options.nowMs) ? options.nowMs : context.nowMs;
+): TaggedPromptSection[] {
   const evidenceLedgerActive =
     context.evidenceLedgerPromptSection !== undefined &&
     context.evidenceLedgerPromptSection !== null;
-  const untrustedSections: TaggedPromptSection[] = [
+  return [
     {
       tag: "borg_self_snapshot",
       content: summarizeIdentity(context.selfSnapshot, context.workingMemory.turn_counter),
@@ -1195,7 +1198,14 @@ export function buildBaseSystemPromptSections(
           : summarizeAutonomyTriggerForPrompt(context.autonomyTrigger),
     },
   ];
-  const resolvedBlocks = resolvePromptBlocks(options);
+}
+
+function buildTrustedBasePromptSections(
+  context: DeliberationContext,
+  options: BuildBaseSystemPromptOptions,
+  promptNowMs: number | undefined,
+  resolvedBlocks: ResolvedPromptBlocks,
+): TaggedPromptSection[] {
   const hostCapabilitiesSection = {
     tag: "borg_host_capabilities",
     content: resolvedBlocks.host_capabilities,
@@ -1240,19 +1250,7 @@ export function buildBaseSystemPromptSections(
     tag: "borg_memory_disclosure_guidance",
     content: MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
   };
-  const standingWithAudienceSection = buildStandingWithAudienceSection(context);
-  const autonomousOutboundAuthorizationSection = buildAutonomousOutboundAuthorizationSection(
-    context.autonomousOutbound ?? null,
-    context.turnOrigin,
-    context.autonomousFinalizerToolMenu,
-  );
-  const promptSectionsById = new Map<string, PromptSection>();
-
-  for (const section of untrustedSections) {
-    promptSectionsById.set(section.tag, section);
-  }
-
-  for (const section of [
+  return [
     currentTimeSection,
     participationPolicySection,
     creatorIdentitySection,
@@ -1263,15 +1261,69 @@ export function buildBaseSystemPromptSections(
     mechanismEvidenceSection,
     discourseControlSection,
     frameAnomalyGateSection,
-  ]) {
+  ];
+}
+
+function buildAudienceBasePromptSections(
+  context: DeliberationContext,
+  options: BuildBaseSystemPromptOptions,
+): { standingWithAudience: PromptSection; autonomousReflection: PromptSection } {
+  const standingWithAudienceSection =
+    options.omitStandingAssembly === true ? null : buildStandingWithAudienceSection(context);
+  const autonomousOutboundAuthorizationSection = buildAutonomousOutboundAuthorizationSection(
+    context.autonomousOutbound ?? null,
+    context.turnOrigin,
+    context.autonomousFinalizerToolMenu,
+  );
+  return {
+    standingWithAudience: standingWithAudienceSection,
+    autonomousReflection: autonomousOutboundAuthorizationSection,
+  };
+}
+
+function indexBasePromptSections(
+  untrustedSections: readonly TaggedPromptSection[],
+  trustedSections: readonly TaggedPromptSection[],
+  audienceSections: ReturnType<typeof buildAudienceBasePromptSections>,
+): ReadonlyMap<string, PromptSection> {
+  const promptSectionsById = new Map<string, PromptSection>();
+
+  for (const section of untrustedSections) {
     promptSectionsById.set(section.tag, section);
   }
 
-  promptSectionsById.set("borg_standing_with_audience", standingWithAudienceSection);
-  promptSectionsById.set("borg_autonomous_reflection", autonomousOutboundAuthorizationSection);
+  for (const section of trustedSections) {
+    promptSectionsById.set(section.tag, section);
+  }
+
+  promptSectionsById.set("borg_standing_with_audience", audienceSections.standingWithAudience);
+  promptSectionsById.set("borg_autonomous_reflection", audienceSections.autonomousReflection);
+
+  return promptSectionsById;
+}
+
+export function buildBaseSystemPromptSections(
+  context: DeliberationContext,
+  options: BuildBaseSystemPromptOptions,
+): BaseSystemPromptSections {
+  const promptNowMs =
+    options.nowMs !== undefined && Number.isFinite(options.nowMs) ? options.nowMs : context.nowMs;
+  const untrustedSections = buildUntrustedBasePromptSections(context, options);
+  const resolvedBlocks = resolvePromptBlocks(options);
+  const trustedSections = buildTrustedBasePromptSections(
+    context,
+    options,
+    promptNowMs,
+    resolvedBlocks,
+  );
+  const audienceSections = buildAudienceBasePromptSections(context, options);
 
   return {
-    promptSectionsById,
+    promptSectionsById: indexBasePromptSections(
+      untrustedSections,
+      trustedSections,
+      audienceSections,
+    ),
     resolvedBlocks,
   };
 }

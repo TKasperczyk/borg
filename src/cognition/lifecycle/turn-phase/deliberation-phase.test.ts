@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createWorkingMemory } from "../../../memory/working/index.js";
 import { ManualClock } from "../../../util/clock.js";
-import { DEFAULT_SESSION_ID, createStreamEntryId } from "../../../util/ids.js";
+import { DEFAULT_SESSION_ID, createEntityId, createStreamEntryId } from "../../../util/ids.js";
 import { runDeliberationPhase } from "./deliberation-phase.js";
 
 const deliberatorRun = vi.hoisted(() => vi.fn());
@@ -179,5 +179,38 @@ describe("runDeliberationPhase", () => {
 
     expect(setStopState).not.toHaveBeenCalled();
     expect(result.workingMemory).toBe(input.workingMemory);
+  });
+
+  it("preassembles canonical commitment entity labels without finalizer repository reads", async () => {
+    const setStopState = vi.fn();
+    const input = makeInput("user", setStopState);
+    const madeTo = createEntityId();
+    const about = createEntityId();
+    input.retrievalPhase.applicableCommitments = [
+      {
+        made_to_entity: madeTo,
+        restricted_audience: madeTo,
+        about_entity: about,
+        committed_by_entity_id: null,
+      },
+    ] as never;
+    input.options.entityRepository = {
+      get: vi.fn((id) => ({ canonical_name: id === madeTo ? "Alice" : "Project Atlas" })),
+    } as never;
+    deliberatorRun.mockResolvedValue({
+      response: "",
+      emissionRecommendation: "emit",
+      thoughtStreamEntryIds: [],
+    });
+
+    await runDeliberationPhase(input);
+
+    expect(deliberatorRun.mock.calls[0]?.[0]).toMatchObject({
+      commitmentEntityLabels: {
+        [madeTo]: "Alice",
+        [about]: "Project Atlas",
+      },
+    });
+    expect(input.options.entityRepository.get).toHaveBeenCalledTimes(2);
   });
 });

@@ -158,6 +158,7 @@ type FinalizerCallOptionsContext = {
   effectiveContext: DeliberationContext;
   baseSystemPrompt: string;
   cacheableSystemPrompt: RunFinalizerOptions["cacheableSystemPrompt"];
+  baseSystemPromptOptions: BuildBaseSystemPromptOptions;
   initialMessages: RunFinalizerOptions["initialMessages"];
   maxTokens: number;
   reasoningCallOptions: Partial<Pick<RunFinalizerOptions, "thinking" | "effort">>;
@@ -262,6 +263,20 @@ function buildFinalizerCallOptions(
     baseSystemPrompt: context.baseSystemPrompt,
     cacheableSystemPrompt: context.cacheableSystemPrompt,
     finalizerDynamicPromptCacheEnabled: options.finalizerDynamicPromptCacheEnabled ?? true,
+    finalizerSurfaceVariant: options.finalizerSurfaceVariant ?? "legacy",
+    finalizerContextCapture: options.finalizerContextCapture,
+    ...((options.finalizerSurfaceVariant ?? "legacy") === "legacy" &&
+    options.finalizerContextCapture === undefined
+      ? {}
+      : {
+          compactSurface: {
+            context: {
+              ...context.effectiveContext,
+              nowMs: context.baseSystemPromptOptions.nowMs,
+            },
+            baseSystemPromptOptions: context.baseSystemPromptOptions,
+          },
+        }),
     initialMessages,
     userEntryId: context.context.userEntryId,
     maxTokens: context.maxTokens,
@@ -960,9 +975,13 @@ export class Deliberator {
     };
     const baseFinalizerCallContext = {
       context,
-      effectiveContext,
+      effectiveContext: {
+        ...effectiveContext,
+        evidenceLedger: finalizerEvidenceLedger ?? null,
+      },
       baseSystemPrompt,
       cacheableSystemPrompt: cacheableBaseSystemPrompt,
+      baseSystemPromptOptions,
       initialMessages: dialogueBlockMessages,
       reasoningCallOptions,
       allowedEmissions,

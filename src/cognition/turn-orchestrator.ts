@@ -63,6 +63,7 @@ import { CorrectivePreferenceTurnService } from "./commitments/corrective-prefer
 import { CreatorDirectiveTurnService } from "./creator-directives/service.js";
 import type { SelfSnapshot } from "./deliberation/deliberator.js";
 import { PlannerContextCapture } from "./deliberation/planner-context-capture.js";
+import { FinalizerContextCapture } from "./deliberation/finalizer-context-capture.js";
 import { TurnDiscourseStateService } from "./generation/turn-discourse-state.js";
 import { TurnPostGenerationGuardRunner } from "./generation/turn-post-generation-guard.js";
 import type { TurnEmission } from "./generation/types.js";
@@ -325,6 +326,17 @@ export class TurnOrchestrator {
             clock: this.clock,
             tracer: this.tracer,
           });
+    const finalizerContextCapture =
+      options.config.deliberation.finalizerContextCaptureSampleRate === 0
+        ? undefined
+        : new FinalizerContextCapture({
+            dataDir: options.config.dataDir,
+            sampleRate: options.config.deliberation.finalizerContextCaptureSampleRate,
+            clock: this.clock,
+            tracer: this.tracer,
+            attachmentResolver: (attachmentId) =>
+              options.attachmentService.fetchImageForLlm(attachmentId),
+          });
     const turnActionCoordinator = new TurnActionCoordinator({
       commitmentGuardRunner,
       postGenerationGuardRunner,
@@ -393,6 +405,7 @@ export class TurnOrchestrator {
       clock: this.clock,
       tracer: this.tracer,
       ...(plannerContextCapture === undefined ? {} : { plannerContextCapture }),
+      ...(finalizerContextCapture === undefined ? {} : { finalizerContextCapture }),
       promptOverrideRepository: options.promptOverrideRepository,
       ...(options.sessionsRepository === undefined
         ? {}

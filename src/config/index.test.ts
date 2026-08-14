@@ -165,6 +165,8 @@ describe("config", () => {
       cooldownTurns: 5,
     });
     expect(config.deliberation.finalizerDynamicPromptCacheEnabled).toBe(true);
+    expect(config.deliberation.finalizerSurfaceVariant).toBe("legacy");
+    expect(config.deliberation.finalizerContextCaptureSampleRate).toBe(0);
     expect(config.deliberation.plannerSurfaceVariant).toBe("compact");
     expect(config.deliberation.plannerContextCaptureSampleRate).toBe(0);
     expect(config.commitments).toEqual({
@@ -277,6 +279,51 @@ describe("config", () => {
     });
 
     expect(config.deliberation.plannerSurfaceVariant).toBe("legacy");
+  });
+
+  it("defaults the finalizer diet to the byte-identical legacy surface", () => {
+    expect(configSchema.parse({}).deliberation.finalizerSurfaceVariant).toBe("legacy");
+    expect(configSchema.parse({}).deliberation.finalizerContextCaptureSampleRate).toBe(0);
+  });
+
+  it("lets finalizer surface and capture environment overrides take precedence", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      deliberation: {
+        finalizerSurfaceVariant: "legacy",
+        finalizerContextCaptureSampleRate: 0.1,
+      },
+    });
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {
+        BORG_DELIBERATION_FINALIZER_SURFACE_VARIANT: "compact",
+        BORG_DELIBERATION_FINALIZER_CONTEXT_CAPTURE_SAMPLE_RATE: "0.75",
+      },
+    });
+
+    expect(config.deliberation.finalizerSurfaceVariant).toBe("compact");
+    expect(config.deliberation.finalizerContextCaptureSampleRate).toBe(0.75);
+  });
+
+  it("rejects invalid finalizer surface and capture environment overrides", () => {
+    const firstDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const secondDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(firstDir, secondDir);
+    expect(() =>
+      loadConfig({
+        dataDir: firstDir,
+        env: { BORG_DELIBERATION_FINALIZER_SURFACE_VARIANT: "experimental" },
+      }),
+    ).toThrow(ConfigError);
+    expect(() =>
+      loadConfig({
+        dataDir: secondDir,
+        env: { BORG_DELIBERATION_FINALIZER_CONTEXT_CAPTURE_SAMPLE_RATE: "1.1" },
+      }),
+    ).toThrow(ConfigError);
   });
 
   it("lets the planner surface environment override take precedence over the config file", () => {

@@ -146,9 +146,10 @@ export function assertReplayOAuthCredentialsOutsideDataDir(input: {
   }
 }
 
-function createLiveLlmClient(
+export function createLiveLlmClient(
   config: ReturnType<typeof loadConfig>,
   env: NodeJS.ProcessEnv,
+  attachmentResolver?: ConstructorParameters<typeof AnthropicLLMClient>[0]["attachmentResolver"],
 ): LLMClient {
   return new AnthropicLLMClient({
     authMode: config.anthropic.auth,
@@ -162,6 +163,7 @@ function createLiveLlmClient(
     unaryCallTimeoutMs: config.anthropic.unaryCallTimeoutMs,
     streamingCallTimeoutMs: config.anthropic.streamingCallTimeoutMs,
     transportStallMaxRetries: config.anthropic.transportStallMaxRetries,
+    ...(attachmentResolver === undefined ? {} : { attachmentResolver }),
   });
 }
 
