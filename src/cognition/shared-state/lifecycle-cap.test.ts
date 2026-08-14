@@ -58,6 +58,29 @@ function sharedStateArtifact(entries: readonly SharedStateEntry[]): SharedStateA
   };
 }
 
+function lifecycleCapFixture(
+  audience: EntityId,
+  counts: Partial<Record<SharedStateEntryKind, number>>,
+): SharedStateEntry[] {
+  const entries: SharedStateEntry[] = [];
+
+  for (const [kind, count] of Object.entries(counts) as [SharedStateEntryKind, number][]) {
+    for (let index = 0; index < count; index += 1) {
+      entries.push(
+        sharedStateEntry({
+          audience,
+          kind,
+          rank: entries.length,
+          updatedAt: 1_000 + entries.length,
+          stateKey: `${kind}.entry.${index}`,
+        }),
+      );
+    }
+  }
+
+  return entries;
+}
+
 describe("applySharedStateArtifactLifecycleCap", () => {
   it("reserves newest state changes while applying kind soft caps", () => {
     const audience = createEntityId();
@@ -338,5 +361,60 @@ describe("applySharedStateArtifactLifecycleCap", () => {
     // The third death is the oldest of the untouched newer entries, not the updated sibling.
     expect(pruned).toEqual(["birth.round.rank38", "birth.round.rank39", "locked.entry.0"]);
     expect(pruned).not.toContain("birth.round.rank40");
+  });
+
+  it("leaves a below-cap active set where it is even when a kind sits far over its soft cap", () => {
+    const audience = createEntityId();
+    // The kind soft caps do not prune on their own -- they only order the draw once the global
+    // ceiling is exceeded. locked at 36 against a soft cap of 24 is twelve over and still costs
+    // nothing, because the cap loop is never entered.
+    const entries = lifecycleCapFixture(audience, { locked: 36, dormant_live: 1, tentative: 2 });
+
+    const capped = applySharedStateArtifactLifecycleCap({
+      previousArtifact: sharedStateArtifact(entries),
+      operations: [],
+      nowMs: 20_000,
+    });
+
+    expect(entries).toHaveLength(39);
+    expect(capped.operations.filter((operation) => operation.type === "prune")).toHaveLength(0);
+    // Nothing tops the set back up either: the cap is a ceiling, not a target, so 39 is a stable
+    // resting state and not a transient on the way to 40.
+    expect(capped.postPlanActiveEntryCount).toBe(39);
+    expect(capped.maxActiveEntries).toBe(40);
+    expect(capped.overCapDelta).toBe(0);
+  });
+
+  it("starts pruning when the active set exceeds the cap, not when it reaches it", () => {
+    const audience = createEntityId();
+    const atCap = applySharedStateArtifactLifecycleCap({
+      previousArtifact: sharedStateArtifact(
+        lifecycleCapFixture(audience, { locked: 37, dormant_live: 1, tentative: 2 }),
+      ),
+      operations: [],
+      nowMs: 20_000,
+    });
+
+    // `while (activeEntries.length > maxActiveEntries)` is strict: equality is not over-cap.
+    expect(atCap.operations.filter((operation) => operation.type === "prune")).toHaveLength(0);
+    expect(atCap.postPlanActiveEntryCount).toBe(40);
+
+    const overCap = lifecycleCapFixture(audience, { locked: 38, dormant_live: 1, tentative: 2 });
+    const byId = new Map(overCap.map((entry) => [entry.id, entry]));
+    const capped = applySharedStateArtifactLifecycleCap({
+      previousArtifact: sharedStateArtifact(overCap),
+      operations: [],
+      nowMs: 20_000,
+    });
+    const pruned = capped.operations
+      .filter((operation) => operation.type === "prune")
+      .map((operation) => byId.get(operation.id));
+
+    // One over the ceiling costs exactly one entry, drawn from the only band above its soft cap
+    // -- dormant_live and tentative are each at theirs, so the loop skips both and reaches locked.
+    expect(pruned).toHaveLength(1);
+    expect(pruned[0]?.kind).toBe("locked");
+    expect(pruned[0]?.state_key).toBe("locked.entry.0");
+    expect(capped.postPlanActiveEntryCount).toBe(40);
   });
 });
