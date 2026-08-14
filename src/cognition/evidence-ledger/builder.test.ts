@@ -3551,6 +3551,92 @@ describe("EvidenceLedgerBuilder", () => {
     ]);
   });
 
+  it("drops out-of-window completed threads instead of counting them as older", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-action-terminal-drop-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const priorEntry = await writer.append({
+      kind: "user_msg",
+      content: "Everything here happened well before this turn.",
+    });
+    const currentUserEntry = await writer.append({
+      kind: "user_msg",
+      content: "What is still open?",
+    });
+    const staleTurnGlobal = 4_800;
+    const outOfWindowCompleted = makeAction(priorEntry.id, {
+      description: "Closed long before this turn",
+      actor: "user",
+      state: "completed",
+      completed_at: NOW_MS,
+      scheduled_at: null,
+      last_referenced_turn_counter: 1,
+      last_referenced_turn_global: staleTurnGlobal,
+    });
+    const stalePending = Array.from({ length: 2 }, (_, index) =>
+      makeAction(priorEntry.id, {
+        description: `Still open long before this turn ${index}`,
+        actor: "user",
+        state: "committed_to_do",
+        committed_at: NOW_MS - index,
+        updated_at: NOW_MS - index,
+        scheduled_at: null,
+        last_referenced_turn_counter: 1,
+        last_referenced_turn_global: staleTurnGlobal,
+      }),
+    );
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: {
+        list: () => [outOfWindowCompleted, ...stalePending],
+        findSimilarDescriptionPairs: async () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+      actionThreadRenderLimit: 1,
+      actionThreadSalienceClassReservedSlots: 0,
+      actionThreadAudienceReservedSlots: 0,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      currentUserMessage: String(currentUserEntry.content),
+      currentUserEntry,
+      globalTurnCounter: staleTurnGlobal + 40,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const actionEntries =
+      ledger.sections.find((section) => section.id === "action_states")?.entries ?? [];
+    const summary = actionEntries.find((entry) => entry.id === "action_threads:older_summary");
+
+    // Stale *pending* backlog stays countable: one takes the render slot, one is summarized.
+    expect(actionEntries.filter((entry) => entry.id.startsWith("action_thread:"))).toHaveLength(1);
+    expect(summary?.text).toContain("threads=1, records=1");
+    expect(summary?.text).toContain(
+      "audience_scope=global salience_class=participant_pending_stale threads=1 records=1",
+    );
+
+    // The out-of-window terminal thread is neither rendered nor summarized: a null salience
+    // class removes it from the pool before the older-thread summary is built, so "omitted"
+    // means "omitted from the render", not "omitted from consideration".
+    expect(summary?.text).not.toContain("completed=");
+    expect(
+      actionEntries.some((entry) => String(entry.text).includes("Closed long before this turn")),
+    ).toBe(false);
+  });
+
   it("renders action salience ordering and caps stale participant actions", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
