@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { makeCompletedActionRecord } from "../../test-support/factories/memory.js";
+import {
+  makeActionRecord,
+  makeCompletedActionRecord,
+} from "../../test-support/factories/memory.js";
 import { createEntityId } from "../../util/ids.js";
 import {
   actionSalienceClass,
@@ -70,6 +73,39 @@ describe("actionSalienceClass", () => {
     expect(actionSalienceClass({ thread, currentTurnGlobal: stampedTurnGlobal + 2 })).toBe(
       "completed_recent",
     );
+  });
+
+  it("drops archived threads on state, not on the recency window", () => {
+    const stampedTurnGlobal = 4_800;
+    const archived = makeActionRecord({
+      state: "archived",
+      audience_entity_id: DOMINANT_AUDIENCE,
+      updated_at: 2_000,
+      last_referenced_turn_global: stampedTurnGlobal,
+    });
+    const archivedThread: ActionThread = {
+      id: archived.id,
+      records: [archived],
+      origin: archived,
+      current: archived,
+      scope: "current_session",
+    };
+
+    // Same stamp, same current turn: the window admits the completed thread and the archived
+    // thread still classifies null, so widening the window can never surface it.
+    expect(
+      actionSalienceClass({ thread: archivedThread, currentTurnGlobal: stampedTurnGlobal }),
+    ).toBeNull();
+    expect(
+      actionSalienceClass({
+        thread: makeCompletedThread({
+          audienceEntityId: DOMINANT_AUDIENCE,
+          updatedAt: 2_000,
+          lastReferencedTurnGlobal: stampedTurnGlobal,
+        }),
+        currentTurnGlobal: stampedTurnGlobal,
+      }),
+    ).toBe("completed_recent");
   });
 });
 
