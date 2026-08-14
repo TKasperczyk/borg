@@ -1,7 +1,8 @@
-import { realpathSync } from "node:fs";
+import { chmodSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 
 import { appendDurableJsonl } from "../../util/durable-jsonl.js";
+import { writeJsonFileAtomic } from "../../util/atomic-write.js";
 import { isPathWithin, resolveRealPathForCreation } from "../../util/path.js";
 
 export function resolveContextCaptureStoragePath(
@@ -48,4 +49,20 @@ export async function appendBoundedContextCapture(input: {
     privateDirectory: captureDirectory,
   });
   return { status: result.status, path, bytes };
+}
+
+export function writePrivateContextCaptureJson(input: {
+  dataDir: string;
+  fileName: string;
+  value: unknown;
+}): string {
+  const { path, captureDirectory } = resolveContextCaptureStoragePath(
+    input.dataDir,
+    input.fileName,
+  );
+  mkdirSync(captureDirectory, { recursive: true, mode: 0o700 });
+  chmodSync(captureDirectory, 0o700);
+  writeJsonFileAtomic(path, input.value, { mode: 0o600 });
+  chmodSync(path, 0o600);
+  return path;
 }
