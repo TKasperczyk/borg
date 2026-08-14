@@ -18,13 +18,14 @@ function sharedStateEntry(input: {
   kind: SharedStateEntryKind;
   rank: number;
   updatedAt: number;
+  stateKey?: string;
 }): SharedStateEntry {
   const streamEntryId = createStreamEntryId();
 
   return {
     id: createSharedStateEntryId(),
     audience_entity_id: input.audience,
-    state_key: `${input.kind}.entry`,
+    state_key: input.stateKey ?? `${input.kind}.entry`,
     kind: input.kind,
     text: `${input.kind} entry ${input.rank}`,
     owner_entity_id: null,
@@ -155,5 +156,95 @@ describe("applySharedStateArtifactLifecycleCap", () => {
       .map((operation) => byId.get(operation.id)?.kind);
 
     expect(prunedKinds).toEqual(["dormant_live", "low_salience_live", "live"]);
+  });
+
+  it("skips bands at their soft cap and prunes the last band in the order instead", () => {
+    const audience = createEntityId();
+    // The prune order is a scan over an over-cap predicate, not a priority queue: a band at or
+    // under its soft cap is skipped entirely, however old its entries are, so the band listed
+    // last can be the only one ever drawn from.
+    const dormant = sharedStateEntry({
+      audience,
+      kind: "dormant_live",
+      rank: 7,
+      updatedAt: 1_000,
+      stateKey: "oldest.entry.of.the.whole.set",
+    });
+    const tentative = Array.from({ length: 2 }, (_, index) =>
+      sharedStateEntry({
+        audience,
+        kind: "tentative",
+        rank: 17 + index,
+        updatedAt: 2_000 + index,
+      }),
+    );
+    const locked = Array.from({ length: 38 }, (_, index) =>
+      sharedStateEntry({
+        audience,
+        kind: "locked",
+        rank: 37 + index,
+        updatedAt: 3_000 + index,
+        stateKey: `locked.entry.${index}`,
+      }),
+    );
+    const entries = [dormant, ...tentative, ...locked];
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+
+    const capped = applySharedStateArtifactLifecycleCap({
+      previousArtifact: sharedStateArtifact(entries),
+      operations: [],
+      nowMs: 20_000,
+    });
+    const pruned = capped.operations
+      .filter((operation) => operation.type === "prune")
+      .map((operation) => byId.get(operation.id));
+
+    expect(capped.maxActiveEntries).toBe(40);
+    expect(capped.postPlanActiveEntryCount).toBe(40);
+    // dormant_live is first in the prune order and holds the oldest entry in the set, but its
+    // band sits exactly at its soft cap of 1, so it is never a candidate.
+    expect(pruned.map((entry) => entry?.kind)).toEqual(["locked"]);
+    expect(pruned.map((entry) => entry?.state_key)).toEqual(["locked.entry.0"]);
+    // No live entries exist, and the reservation filters on kind "live", so the three reserved
+    // slots protect nothing here.
+    expect(capped.newestReservedEntryCount).toBe(0);
+  });
+
+  it("prunes an over-cap earlier band before an older floor in a later band", () => {
+    const audience = createEntityId();
+    const locked = Array.from({ length: 39 }, (_, index) =>
+      sharedStateEntry({
+        audience,
+        kind: "locked",
+        rank: index,
+        updatedAt: 1_000 + index,
+        stateKey: `locked.entry.${index}`,
+      }),
+    );
+    const dormant = Array.from({ length: 2 }, (_, index) =>
+      sharedStateEntry({
+        audience,
+        kind: "dormant_live",
+        rank: 100 + index,
+        updatedAt: 9_000 + index,
+        stateKey: `dormant.entry.${index}`,
+      }),
+    );
+    const entries = [...locked, ...dormant];
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+
+    const capped = applySharedStateArtifactLifecycleCap({
+      previousArtifact: sharedStateArtifact(entries),
+      operations: [],
+      nowMs: 20_000,
+    });
+    const pruned = capped.operations
+      .filter((operation) => operation.type === "prune")
+      .map((operation) => byId.get(operation.id));
+
+    expect(capped.postPlanActiveEntryCount).toBe(40);
+    // Both bands are over cap. Every locked entry is older than both dormant entries, but band
+    // selection runs before the within-band comparator, so the newer band loses.
+    expect(pruned.map((entry) => entry?.state_key)).toEqual(["dormant.entry.0"]);
   });
 });
