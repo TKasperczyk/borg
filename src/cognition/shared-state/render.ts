@@ -198,8 +198,14 @@ function renderSharedStateEntry(entry: SharedStateEntry): string {
       ? ""
       : ` ${renderMemoryDisclosureLabelForModel(disclosureLabel)}`;
 
+  // A body rewritten by a later update carries one stamp for the whole text, so
+  // last_updated_at dates the newest sentence and nothing else. Surface created_at
+  // only when the two differ: on those entries the stamp does not date the body.
+  const created =
+    entry.created_at === entry.last_updated_at ? "" : ` created_at=${entry.created_at}`;
+
   return [
-    `- kind=${entry.kind} id=${entry.id} ${stateKey} ${owner} last_updated_at=${entry.last_updated_at}${disclosure} ${citations}`,
+    `- kind=${entry.kind} id=${entry.id} ${stateKey} ${owner}${created} last_updated_at=${entry.last_updated_at}${disclosure} ${citations}`,
     `  text: ${entry.text}`,
   ].join("\n");
 }

@@ -27,6 +27,7 @@ function entry(input: {
   kind: SharedStateEntryKind;
   rank: number;
   updatedAt: number;
+  createdAt?: number;
   stateKey?: string | null;
   text?: string;
   provenanceStreamEntryIds?: StreamEntryId[];
@@ -52,7 +53,7 @@ function entry(input: {
     owner_entity_id: null,
     provenance_stream_entry_ids: provenanceStreamEntryIds,
     last_updated_stream_entry_ids: lastUpdatedStreamEntryIds,
-    created_at: input.updatedAt,
+    created_at: input.createdAt ?? input.updatedAt,
     last_updated_at: input.updatedAt,
     last_updated_turn_global: input.lastUpdatedTurnGlobal ?? null,
     superseded_by_id: null,
@@ -695,5 +696,44 @@ describe("renderSharedStateArtifact", () => {
     expect(rendered).toContain("text: newest reserved detail");
     expect(rendered).not.toContain("state_key_bucket=critical.locked");
     expect(rendered).not.toContain("text: critical commitment detail");
+  });
+
+  it("renders created_at only on entries whose body was rewritten after it was first written", () => {
+    const audience = createEntityId();
+    const rewritten = entry({
+      audience,
+      kind: "locked",
+      rank: 0,
+      createdAt: 1_000,
+      updatedAt: 9_000,
+      stateKey: "audit.rewritten",
+      text: "body carried forward by a later update",
+    });
+    const original = entry({
+      audience,
+      kind: "locked",
+      rank: 1,
+      updatedAt: 9_000,
+      stateKey: "audit.original",
+      text: "body still as first written",
+    });
+
+    const rendered =
+      renderSharedStateArtifact(artifact([rewritten, original]), {
+        maxEntries: 10,
+        maxTokens: 50_000,
+        lockedMaxEntries: 10,
+      }) ?? "";
+
+    const lineFor = (id: string): string =>
+      rendered.split("\n").find((line) => line.includes(`id=${id}`)) ?? "";
+
+    // The rewritten entry's stamp dates its newest sentence, not the whole body:
+    // both stamps render so the span is visible.
+    expect(lineFor(rewritten.id)).toContain("created_at=1000 last_updated_at=9000");
+    // The untouched entry's stamp is the write instant of every sentence in it;
+    // a redundant created_at would only cost prompt budget.
+    expect(lineFor(original.id)).toContain("last_updated_at=9000");
+    expect(lineFor(original.id)).not.toContain("created_at=");
   });
 });
