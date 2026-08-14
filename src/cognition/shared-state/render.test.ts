@@ -736,4 +736,40 @@ describe("renderSharedStateArtifact", () => {
     expect(lineFor(original.id)).toContain("last_updated_at=9000");
     expect(lineFor(original.id)).not.toContain("created_at=");
   });
+
+  it("carries created_at onto the compact index line so its absence reads the same there", () => {
+    const audience = createEntityId();
+    const rewritten = entry({
+      audience,
+      kind: "locked",
+      rank: 0,
+      createdAt: 1_000,
+      updatedAt: 9_000,
+      stateKey: "audit.rewritten",
+      text: "body carried forward by a later update",
+    });
+    const original = entry({
+      audience,
+      kind: "locked",
+      rank: 1,
+      updatedAt: 9_000,
+      stateKey: "audit.original",
+      text: "body still as first written",
+    });
+
+    // Nothing expanded: the index line is the only thing said about either entry, which is
+    // the position every omitted row is in.
+    const rendered =
+      renderSharedStateArtifact(artifact([rewritten, original]), {
+        maxEntries: 0,
+        maxTokens: 50_000,
+      }) ?? "";
+
+    const indexLineFor = (stateKey: string): string =>
+      rendered.split("\n").find((line) => line.startsWith(`- ${stateKey} |`)) ?? "";
+
+    expect(indexLineFor("audit.rewritten")).toContain("created_at=1000 | last_updated_at=9000");
+    expect(indexLineFor("audit.original")).toContain("last_updated_at=9000");
+    expect(indexLineFor("audit.original")).not.toContain("created_at=");
+  });
 });

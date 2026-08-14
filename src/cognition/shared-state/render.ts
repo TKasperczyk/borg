@@ -247,6 +247,7 @@ function latestSharedStateEntry(entries: readonly SharedStateEntry[]): SharedSta
 type SharedStateCompactIndexRow = {
   stateKey: string;
   kinds: SharedStateEntryKind[];
+  createdAt: number;
   lastUpdatedAt: number;
   activeCount: number;
   excerpt: string;
@@ -267,6 +268,9 @@ function buildSharedStateCompactIndexRows(input: {
     return {
       stateKey: group.stateKey,
       kinds,
+      // The excerpt is the latest entry's body, so its created_at is what dates the
+      // text on this line -- the same span the expanded entry line reports.
+      createdAt: latestEntry.created_at,
       lastUpdatedAt: Math.max(...group.entries.map((entry) => entry.last_updated_at)),
       activeCount: group.entries.length,
       excerpt: sharedStateCompactExcerpt(latestEntry.text),
@@ -283,6 +287,11 @@ function renderSharedStateCompactIndexRows(rows: readonly SharedStateCompactInde
     [
       `- ${row.stateKey}`,
       `kinds=${row.kinds.join(",")}`,
+      // Same predicate as the expanded entry line: print the creation stamp only where it
+      // differs, so its absence means "body never rewritten" on an index line too. Without
+      // this the omitted rows -- the ones only ever seen through the index -- carry no
+      // signal either way, and absence there would read as unknown rather than unrewritten.
+      row.createdAt === row.lastUpdatedAt ? null : `created_at=${row.createdAt}`,
       `last_updated_at=${row.lastUpdatedAt}`,
       `active_count=${row.activeCount}`,
       row.disclosureLabel.disclosureClass === "public"
