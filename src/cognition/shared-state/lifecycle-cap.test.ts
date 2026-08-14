@@ -18,6 +18,7 @@ function sharedStateEntry(input: {
   kind: SharedStateEntryKind;
   rank: number;
   updatedAt: number;
+  createdAt?: number;
   stateKey?: string;
 }): SharedStateEntry {
   const streamEntryId = createStreamEntryId();
@@ -31,7 +32,7 @@ function sharedStateEntry(input: {
     owner_entity_id: null,
     provenance_stream_entry_ids: [streamEntryId],
     last_updated_stream_entry_ids: [streamEntryId],
-    created_at: input.updatedAt,
+    created_at: input.createdAt ?? input.updatedAt,
     last_updated_at: input.updatedAt,
     last_updated_turn_global: null,
     superseded_by_id: null,
@@ -246,5 +247,96 @@ describe("applySharedStateArtifactLifecycleCap", () => {
     // Both bands are over cap. Every locked entry is older than both dormant entries, but band
     // selection runs before the within-band comparator, so the newer band loses.
     expect(pruned.map((entry) => entry?.state_key)).toEqual(["dormant.entry.0"]);
+  });
+
+  it("breaks a last_updated_at tie by rank without letting rank outrank a later update", () => {
+    const audience = createEntityId();
+    // Rank is not a position in the prune queue. It orders entries only when their
+    // last_updated_at values are identical -- i.e. within a single write round -- and it is
+    // read ascending, so the lowest rank of a tied round dies first.
+    const birthRound = [40, 38, 39].map((rank) =>
+      sharedStateEntry({
+        audience,
+        kind: "locked",
+        rank,
+        updatedAt: 1_000,
+        stateKey: `birth.round.rank${rank}`,
+      }),
+    );
+    const newer = Array.from({ length: 40 }, (_, index) =>
+      sharedStateEntry({
+        audience,
+        kind: "locked",
+        rank: 41 + index,
+        updatedAt: 3_000 + index,
+        stateKey: `locked.entry.${index}`,
+      }),
+    );
+    const entries = [...birthRound, ...newer];
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+
+    const capped = applySharedStateArtifactLifecycleCap({
+      previousArtifact: sharedStateArtifact(entries),
+      operations: [],
+      nowMs: 20_000,
+    });
+    const pruned = capped.operations
+      .filter((operation) => operation.type === "prune")
+      .map((operation) => byId.get(operation.id)?.state_key);
+
+    expect(capped.postPlanActiveEntryCount).toBe(40);
+    // Every entry that ranks above 40 outlives the round tied at 1_000, and inside that round
+    // rank decides the order of death.
+    expect(pruned).toEqual(["birth.round.rank38", "birth.round.rank39", "birth.round.rank40"]);
+  });
+
+  it("lifts an entry out of its birth round when an update moves last_updated_at", () => {
+    const audience = createEntityId();
+    // Same three entries, except the highest-ranked one was updated in place afterwards. An
+    // update rewrites last_updated_at while created_at and rank stay put, and last_updated_at
+    // dominates the comparator -- so the touched entry leaves the tie its siblings still die in,
+    // and a numerically worse rank survives while lower ranks are pruned.
+    const untouched = [38, 39].map((rank) =>
+      sharedStateEntry({
+        audience,
+        kind: "locked",
+        rank,
+        updatedAt: 1_000,
+        stateKey: `birth.round.rank${rank}`,
+      }),
+    );
+    const touched = sharedStateEntry({
+      audience,
+      kind: "locked",
+      rank: 40,
+      updatedAt: 9_000,
+      createdAt: 1_000,
+      stateKey: "birth.round.rank40",
+    });
+    const newer = Array.from({ length: 40 }, (_, index) =>
+      sharedStateEntry({
+        audience,
+        kind: "locked",
+        rank: 41 + index,
+        updatedAt: 3_000 + index,
+        stateKey: `locked.entry.${index}`,
+      }),
+    );
+    const entries = [...untouched, touched, ...newer];
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+
+    const capped = applySharedStateArtifactLifecycleCap({
+      previousArtifact: sharedStateArtifact(entries),
+      operations: [],
+      nowMs: 20_000,
+    });
+    const pruned = capped.operations
+      .filter((operation) => operation.type === "prune")
+      .map((operation) => byId.get(operation.id)?.state_key);
+
+    expect(capped.postPlanActiveEntryCount).toBe(40);
+    // The third death is the oldest of the untouched newer entries, not the updated sibling.
+    expect(pruned).toEqual(["birth.round.rank38", "birth.round.rank39", "locked.entry.0"]);
+    expect(pruned).not.toContain("birth.round.rank40");
   });
 });
