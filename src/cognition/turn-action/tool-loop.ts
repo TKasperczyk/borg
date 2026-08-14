@@ -73,6 +73,8 @@ export type ExecuteToolLoopOptions = {
   tracer?: TurnTracer;
   turnId?: string;
   traceLabel?: string;
+  /** Exact transport request snapshot, synchronously exposed before each LLM attempt. */
+  onRequestPrepared?: (request: LLMConverseOptions, attempt: number) => void;
 };
 
 export type ToolLoopResult = {
@@ -298,6 +300,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
       ...(onTransportRetry === undefined ? {} : { onTransportRetry }),
       budget: options.budget,
     } satisfies LLMConverseOptions;
+    options.onRequestPrepared?.(converseOptions, iterations + 1);
     const response =
       options.stream === true && options.llmClient.streamConverse !== undefined
         ? await options.llmClient.streamConverse({

@@ -44,6 +44,7 @@
     "test:dist-smoke": "npm run build && NODE_OPTIONS= node --import tsx scripts/dist-smoke.ts",
     "heuristics:guard": "tsx scripts/heuristics-guard.ts",
     "planner:ab-replay": "tsx scripts/planner-ab-replay.ts",
+    "finalizer:ab-replay": "tsx scripts/finalizer-ab-replay.ts",
     "retrieval:signal-report": "tsx scripts/retrieval-signal-report.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.eval.json && tsc --noEmit -p tsconfig.assessor.json && tsc --noEmit -p tsconfig.simulator.json && tsc --noEmit -p tsconfig.test.json",

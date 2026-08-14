@@ -1,7 +1,12 @@
 // Routes S1/S2 final response generation through the deliberator tool loop.
 import { z } from "zod";
 
-import type { LLMClient, LLMContentBlockMessage, LLMConverseOptions } from "../../llm/index.js";
+import type {
+  LLMClient,
+  LLMContentBlockMessage,
+  LLMConverseOptions,
+  LLMSystemBlock,
+} from "../../llm/index.js";
 import { willSendThinkingUnderAutoToolChoice } from "../../llm/index.js";
 import type { ToolDefinition, ToolDispatcher } from "../../tools/dispatcher.js";
 import type { BorgRole } from "../../memory/commitments/index.js";
@@ -36,6 +41,23 @@ import {
 import { RELATIONSHIP_LABELS_PROMPT } from "../prompts/relationship-labels.js";
 import { resolveFinalizerNonTerminalTools } from "./autonomous-finalizer-tools.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
+import {
+  buildCompactFinalizerSystemPrompt,
+  type FinalizerContextTraceSummary,
+  type FinalizerSurfaceVariant,
+} from "./prompt/finalizer-context.js";
+import type { BuildBaseSystemPromptOptions } from "./prompt/system-prompt.js";
+import type { DeliberationContext } from "./types.js";
+import { toTraceJsonValue } from "../../tracing/tracer.js";
+import type {
+  FinalizerCaptureOutcome,
+  FinalizerContextCapture,
+} from "./finalizer-context-capture.js";
+import {
+  fingerprintCanonicalRequest,
+  type CanonicalRequestFingerprint,
+} from "./request-fingerprint.js";
+import { estimatePromptTokens } from "../../util/token-estimate.js";
 
 export const EMIT_ANSWER_FINALIZER_TOOL_NAME = "EmitAnswer";
 export const EMIT_OBSERVE_FINALIZER_TOOL_NAME = "EmitObserve";
@@ -382,6 +404,11 @@ export type RunFinalizerOptions = {
   additionalPromptSections?: readonly PromptSurfaceAdditionalSection[];
   cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
   finalizerDynamicPromptCacheEnabled?: boolean;
+  finalizerSurfaceVariant?: FinalizerSurfaceVariant;
+  compactSurface?: {
+    context: DeliberationContext;
+    baseSystemPromptOptions: BuildBaseSystemPromptOptions;
+  };
   allowedEmissions?: readonly EmissionToolName[];
   outboundToolAvailable?: boolean;
   nonTerminalTools?: readonly ToolDefinition[];
@@ -392,6 +419,8 @@ export type RunFinalizerOptions = {
   tracer?: TurnTracer;
   turnId?: string;
   finalizerAttempt?: "initial" | "regenerate";
+  onRequestPrepared?: (request: LLMConverseOptions, attempt: number) => void;
+  finalizerContextCapture?: FinalizerContextCapture;
 };
 
 export type EmissionDecision =
@@ -517,7 +546,89 @@ function buildStaticSystemPrompt(options: RunFinalizerOptions): string {
   );
 }
 
-function buildSystemPrompt(options: RunFinalizerOptions): LLMConverseOptions["system"] {
+function legacyFinalizerTraceSummary(
+  path: RunFinalizerOptions["path"],
+  system: readonly LLMSystemBlock[],
+): FinalizerContextTraceSummary {
+  const staticText = system[0]?.text ?? "";
+  const turnText = system
+    .slice(1)
+    .map((block) => block.text)
+    .join("\n\n");
+  const totalText = system.map((block) => block.text).join("\n\n");
+  const sections = Object.fromEntries(
+    system.map((block, index) => {
+      const label =
+        index === 0 ? "legacy_static" : index === 1 ? "legacy_dynamic" : "legacy_suffix";
+      return [
+        label,
+        {
+          chars: block.text.length,
+          estimatedTokens: estimatePromptTokens(block.text),
+          rowCount: 0,
+          truncationCount: 0,
+          omissionCount: 0,
+          cacheTier: index === 0 ? "terminal_static_head" : "terminal_turn_context",
+        },
+      ];
+    }),
+  ) as FinalizerContextTraceSummary["sections"];
+  return {
+    variant: "legacy",
+    path,
+    sections,
+    blocks: {
+      terminal_static_head: {
+        chars: staticText.length,
+        estimatedTokens: estimatePromptTokens(staticText),
+        ttl: "1h",
+      },
+      terminal_durable_global: { chars: 0, estimatedTokens: 0, ttl: "1h" },
+      terminal_durable_audience: { chars: 0, estimatedTokens: 0, ttl: "1h" },
+      terminal_turn_context: {
+        chars: turnText.length,
+        estimatedTokens: estimatePromptTokens(turnText),
+        ttl: "5m",
+      },
+    },
+    totalChars: totalText.length,
+    totalEstimatedTokens: estimatePromptTokens(totalText),
+    rowCount: 0,
+    truncationCount: 0,
+    omissionCount: 0,
+  };
+}
+
+export function buildFinalizerSystemPrompt(options: RunFinalizerOptions): {
+  system: readonly LLMSystemBlock[];
+  traceSummary: FinalizerContextTraceSummary | null;
+} {
+  if (options.finalizerSurfaceVariant === "compact") {
+    if (options.compactSurface === undefined) {
+      throw new TypeError("Compact finalizer surface requires compactSurface context");
+    }
+    const dynamicPrompt = buildDynamicSystemPromptParts(options);
+    const stableAdditionalSections = options.additionalPromptSections?.filter(
+      (section) => !isFinalizerRegenerationPromptBlock(section.blockId),
+    );
+    const compact = buildCompactFinalizerSystemPrompt({
+      context: options.compactSurface.context,
+      baseSystemPromptOptions: options.compactSurface.baseSystemPromptOptions,
+      staticHead: buildStaticSystemPrompt(options),
+      path: options.path,
+      additionalPromptSections: stableAdditionalSections,
+    });
+    return {
+      system: [
+        ...compact.system,
+        ...(dynamicPrompt.regeneration === null
+          ? []
+          : [{ type: "text" as const, text: dynamicPrompt.regeneration }]),
+      ],
+      traceSummary: compact.traceSummary,
+    };
+  }
+
   const staticPromptBlock = {
     type: "text" as const,
     text: buildStaticSystemPrompt(options),
@@ -527,18 +638,22 @@ function buildSystemPrompt(options: RunFinalizerOptions): LLMConverseOptions["sy
   };
 
   if (options.finalizerDynamicPromptCacheEnabled === false) {
-    return [
+    const system: LLMSystemBlock[] = [
       staticPromptBlock,
       {
-        type: "text",
+        type: "text" as const,
         text: buildDynamicSystemPrompt(options),
       },
     ];
+    return {
+      system,
+      traceSummary: legacyFinalizerTraceSummary(options.path, system),
+    };
   }
 
   const dynamicPrompt = buildDynamicSystemPromptParts(options);
 
-  return [
+  const system: LLMSystemBlock[] = [
     staticPromptBlock,
     {
       type: "text",
@@ -559,6 +674,10 @@ function buildSystemPrompt(options: RunFinalizerOptions): LLMConverseOptions["sy
           },
         ]),
   ];
+  return {
+    system,
+    traceSummary: legacyFinalizerTraceSummary(options.path, system),
+  };
 }
 
 function invalidToolDecision(toolName: string, reason: string): EmissionDecision {
@@ -741,6 +860,163 @@ function finalizerFlushText(result: ToolLoopResult, decision: EmissionDecision):
   return "";
 }
 
+type FinalizerCaptureState = {
+  selected: boolean;
+  timestamp: number | undefined;
+  systems: {
+    legacy: NonNullable<LLMConverseOptions["system"]>;
+    compact: NonNullable<LLMConverseOptions["system"]>;
+  } | null;
+  request: LLMConverseOptions | null;
+  requestFingerprint: CanonicalRequestFingerprint | null;
+  attempts: number;
+};
+
+type PreparedFinalizerPrompt = {
+  rendered: ReturnType<typeof buildFinalizerSystemPrompt>;
+  capture: FinalizerCaptureState;
+};
+
+function prepareFinalizerPrompt(
+  options: RunFinalizerOptions,
+  nonTerminalTools: readonly ToolDefinition[],
+): PreparedFinalizerPrompt {
+  const rendered = buildFinalizerSystemPrompt({
+    ...options,
+    nonTerminalTools,
+  });
+  const captureSelected = options.finalizerContextCapture?.shouldCapture() === true;
+  const captureTimestamp = captureSelected
+    ? options.finalizerContextCapture?.capturedAt()
+    : undefined;
+  let captureSystems: FinalizerCaptureState["systems"] = null;
+
+  if (captureSelected && options.compactSurface !== undefined) {
+    try {
+      captureSystems = {
+        legacy: buildFinalizerSystemPrompt({
+          ...options,
+          nonTerminalTools,
+          finalizerSurfaceVariant: "legacy",
+        }).system,
+        compact: buildFinalizerSystemPrompt({
+          ...options,
+          nonTerminalTools,
+          finalizerSurfaceVariant: "compact",
+        }).system,
+      };
+    } catch (error) {
+      // Evaluation capture is best-effort. The already-rendered live surface
+      // remains authoritative; failure to assemble its alternative must not
+      // interrupt a production finalizer call.
+      captureSystems = null;
+      options.finalizerContextCapture?.recordAssemblyFailure(
+        { turnId: options.turnId, sessionId: options.sessionId },
+        error,
+      );
+    }
+  }
+
+  return {
+    rendered,
+    capture: {
+      selected: captureSelected,
+      timestamp: captureTimestamp,
+      systems: captureSystems,
+      request: null,
+      requestFingerprint: null,
+      attempts: 0,
+    },
+  };
+}
+
+function recordPreparedFinalizerRequest(
+  state: FinalizerCaptureState,
+  request: LLMConverseOptions,
+  attempt: number,
+): void {
+  state.attempts = Math.max(state.attempts, attempt);
+  if (state.request !== null || !state.selected) {
+    return;
+  }
+
+  try {
+    state.request = JSON.parse(JSON.stringify(request)) as LLMConverseOptions;
+    state.requestFingerprint = fingerprintCanonicalRequest(request);
+  } catch {
+    // Missing request fidelity makes the record ineligible for live replay;
+    // observation must never block the live call.
+    state.request = null;
+    state.requestFingerprint = null;
+  }
+}
+
+async function captureFinalizerOutcome(
+  options: RunFinalizerOptions,
+  state: FinalizerCaptureState,
+  outcome: FinalizerCaptureOutcome,
+  usedNonTerminalTools: boolean,
+): Promise<void> {
+  if (
+    state.timestamp === undefined ||
+    state.systems === null ||
+    options.finalizerContextCapture === undefined ||
+    options.compactSurface === undefined
+  ) {
+    return;
+  }
+
+  await options.finalizerContextCapture.capture({
+    capturedAt: state.timestamp,
+    turnId: options.turnId,
+    sessionId: options.sessionId,
+    path: options.path,
+    attemptKind: options.finalizerAttempt ?? "initial",
+    liveSurfaceVariant: options.finalizerSurfaceVariant ?? "legacy",
+    context: options.compactSurface.context,
+    legacySystem: state.systems.legacy,
+    compactSystem: state.systems.compact,
+    liveRequest: state.request,
+    liveRequestFingerprint: state.requestFingerprint,
+    outcome,
+    usedNonTerminalTools,
+  });
+}
+
+function emitFinalizerContextTrace(
+  options: RunFinalizerOptions,
+  summary: FinalizerContextTraceSummary | null,
+): void {
+  if (summary === null || options.tracer?.enabled !== true || options.turnId === undefined) {
+    return;
+  }
+
+  options.tracer.emit("deliberation.finalizer_context.completed", {
+    turnId: options.turnId,
+    session_id: options.sessionId,
+    path: options.path,
+    attempt: options.finalizerAttempt ?? "initial",
+    variant: summary.variant,
+    sections: toTraceJsonValue(summary.sections),
+    blocks: toTraceJsonValue(summary.blocks),
+    total_chars: summary.totalChars,
+    total_estimated_tokens: summary.totalEstimatedTokens,
+    row_count: summary.rowCount,
+    truncation_count: summary.truncationCount,
+    omission_count: summary.omissionCount,
+    message_count: options.initialMessages.length,
+    message_chars: options.initialMessages.reduce(
+      (sum, message) =>
+        sum +
+        message.content.reduce(
+          (messageSum, block) => messageSum + (block.type === "text" ? block.text.length : 0),
+          0,
+        ),
+      0,
+    ),
+  });
+}
+
 export async function runFinalizer(options: RunFinalizerOptions): Promise<FinalizerResult> {
   const toolProvenance =
     options.userEntryId === undefined ? undefined : { user_entry_id: options.userEntryId };
@@ -750,10 +1026,11 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
     turnOrigin: options.turnOrigin,
     outboundToolAvailable: options.outboundToolAvailable,
   });
-  const systemPrompt = buildSystemPrompt({
-    ...options,
-    nonTerminalTools,
-  });
+  const preparedPrompt = prepareFinalizerPrompt(options, nonTerminalTools);
+  const renderedSystemPrompt = preparedPrompt.rendered;
+  const systemPrompt = renderedSystemPrompt.system;
+  const captureState = preparedPrompt.capture;
+  emitFinalizerContextTrace(options, renderedSystemPrompt.traceSummary);
   const availableTools = [...emissionTools, ...nonTerminalTools];
   const terminalToolNames = emissionTools.map((tool) => tool.name);
   const effectiveThinking =
@@ -765,54 +1042,102 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
   const useAutoToolChoice = willSendThinkingUnderAutoToolChoice(options.model, effectiveThinking);
   let tokenSequence = 0;
 
-  const result = await executeToolLoop({
-    llmClient: options.llmClient,
-    dispatcher: options.dispatcher,
-    sessionId: options.sessionId,
-    audienceEntityId: options.audienceEntityId,
-    model: options.model,
-    systemPrompt,
-    initialMessages: options.initialMessages,
-    tools: availableTools,
-    origin: options.turnOrigin === "autonomous" ? "autonomous" : "deliberator",
-    turnOrigin: options.turnOrigin,
-    currentSenderBorgRole: options.currentSenderBorgRole,
-    sessionAudienceRole: options.sessionAudienceRole,
-    provenance: toolProvenance,
-    maxTokens: options.maxTokens,
-    ...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
-    ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
-    // Emission-tool protocol: the answer lives in the terminal tool input, so any
-    // loose text the model emits under auto tool_choice must not reach the stream.
-    suppressRawTextStream: true,
-    // Thinking requires auto tool_choice -- the API rejects forced tool use with
-    // thinking active. When thinking will be sent, omit toolChoice (auto): the
-    // model thinks, then calls exactly one emission tool. The emission is read
-    // from the terminal tool (loose text never leaks), and the invalid-tool retry
-    // net covers the rare turn that emits no terminal tool. Otherwise force a tool
-    // ("any") so an emission is guaranteed.
-    ...(useAutoToolChoice || emissionTools.length === 0
-      ? {}
-      : { toolChoice: { type: "any" as const } }),
-    budget: options.path === "system_1" ? "cognition-system-1" : "cognition-system-2",
-    tracer: options.tracer,
-    turnId: options.turnId,
-    traceLabel: `${options.path}_finalizer`,
-    terminalToolNames,
-    stream: true,
-    onTextDelta: (chunkText) => {
-      tokenSequence += 1;
-      emitTurnTokenTrace({
-        tracer: options.tracer,
-        turnId: options.turnId,
-        sessionId: options.sessionId,
-        phase: "final",
-        chunkText,
-        sequence: tokenSequence,
-      });
-    },
-  });
+  let result: ToolLoopResult;
+  try {
+    result = await executeToolLoop({
+      llmClient: options.llmClient,
+      dispatcher: options.dispatcher,
+      sessionId: options.sessionId,
+      audienceEntityId: options.audienceEntityId,
+      model: options.model,
+      systemPrompt,
+      initialMessages: options.initialMessages,
+      tools: availableTools,
+      origin: options.turnOrigin === "autonomous" ? "autonomous" : "deliberator",
+      turnOrigin: options.turnOrigin,
+      currentSenderBorgRole: options.currentSenderBorgRole,
+      sessionAudienceRole: options.sessionAudienceRole,
+      provenance: toolProvenance,
+      maxTokens: options.maxTokens,
+      ...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
+      ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
+      // Emission-tool protocol: the answer lives in the terminal tool input, so any
+      // loose text the model emits under auto tool_choice must not reach the stream.
+      suppressRawTextStream: true,
+      // Thinking requires auto tool_choice -- the API rejects forced tool use with
+      // thinking active. When thinking will be sent, omit toolChoice (auto): the
+      // model thinks, then calls exactly one emission tool. The emission is read
+      // from the terminal tool (loose text never leaks), and the invalid-tool retry
+      // net covers the rare turn that emits no terminal tool. Otherwise force a tool
+      // ("any") so an emission is guaranteed.
+      ...(useAutoToolChoice || emissionTools.length === 0
+        ? {}
+        : { toolChoice: { type: "any" as const } }),
+      budget: options.path === "system_1" ? "cognition-system-1" : "cognition-system-2",
+      tracer: options.tracer,
+      turnId: options.turnId,
+      traceLabel: `${options.path}_finalizer`,
+      terminalToolNames,
+      stream: true,
+      onTextDelta: (chunkText) => {
+        tokenSequence += 1;
+        emitTurnTokenTrace({
+          tracer: options.tracer,
+          turnId: options.turnId,
+          sessionId: options.sessionId,
+          phase: "final",
+          chunkText,
+          sequence: tokenSequence,
+        });
+      },
+      onRequestPrepared: (request, attempt) => {
+        recordPreparedFinalizerRequest(captureState, request, attempt);
+        options.onRequestPrepared?.(request, attempt);
+      },
+    });
+  } catch (error) {
+    const code =
+      error !== null && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code)
+        : undefined;
+    await captureFinalizerOutcome(
+      options,
+      captureState,
+      {
+        status: "threw",
+        attempts: captureState.attempts,
+        structuralReason: "finalizer_error",
+        error: {
+          name: error instanceof Error ? error.name : "UnknownThrownValue",
+          message: error instanceof Error ? error.message : String(error),
+          ...(code === undefined ? {} : { code }),
+        },
+      },
+      false,
+    );
+    throw error;
+  }
   const decision = decisionFromEmissionToolResult(result);
+  await captureFinalizerOutcome(
+    options,
+    captureState,
+    {
+      status: "completed",
+      attempts: captureState.attempts,
+      structuralReason:
+        result.toolCallsMade.length > 0
+          ? "nonterminal_tool_loop"
+          : result.terminalToolCalls.length === 1
+            ? "terminal_emission"
+            : "no_terminal_emission",
+      decisionKind: decision.kind,
+      decision,
+      terminalToolCalls: result.terminalToolCalls,
+      reasoningText: result.text,
+      usage: result.usage,
+    },
+    result.toolCallsMade.length > 0,
+  );
 
   if (tokenSequence > 0) {
     emitTurnTokenFlushTrace({

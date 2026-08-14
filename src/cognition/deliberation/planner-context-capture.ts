@@ -1,5 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
 
@@ -13,9 +12,7 @@ import type { TurnTracer } from "../../tracing/tracer.js";
 import { NOOP_TRACER } from "../../tracing/tracer.js";
 import type { Clock } from "../../util/clock.js";
 import { SystemClock } from "../../util/clock.js";
-import { appendDurableJsonl } from "../../util/durable-jsonl.js";
 import type { SessionId } from "../../util/ids.js";
-import { isPathWithin, resolveRealPathForCreation } from "../../util/path.js";
 import type { CompactPlannerLedgerPrompt } from "../evidence-ledger/index.js";
 import type { PromptSurfaceAdditionalSection } from "../prompts/prompt-surface-registry.js";
 import { buildCompactPlannerSystemPrompt } from "./prompt/planner-context.js";
@@ -28,6 +25,15 @@ import {
   type S2PlannerResult,
 } from "./s2-planner.js";
 import type { DeliberationContext, SelfSnapshot } from "./types.js";
+import {
+  fingerprintCanonicalRequest,
+  fingerprintSystemSurface,
+  llmSystemText,
+} from "./request-fingerprint.js";
+import {
+  appendBoundedContextCapture,
+  resolveContextCaptureStoragePath,
+} from "./context-capture-storage.js";
 
 export const PLANNER_CONTEXT_CAPTURE_SCHEMA_VERSION = 2 as const;
 export const PLANNER_CONTEXT_CAPTURE_RELATIVE_PATH = join("captures", "planner-contexts.jsonl");
@@ -909,61 +915,25 @@ function restoreCompactPlannerContext(context: CompactPlannerContextCapture): De
   } as unknown as DeliberationContext;
 }
 
-function systemBlocks(system: string | readonly LLMSystemBlock[]): readonly LLMSystemBlock[] {
-  return typeof system === "string" ? [{ type: "text", text: system }] : system;
-}
-
 export function plannerSurfaceText(system: string | readonly LLMSystemBlock[]): string {
-  return systemBlocks(system)
-    .map((block) => block.text)
-    .join("\n\n");
-}
-
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
+  return llmSystemText(system);
 }
 
 export function fingerprintPlannerSurface(
   surface: Pick<RenderedS2PlannerSurface, "system">,
 ): PlannerSurfaceFingerprint {
-  const blocks = systemBlocks(surface.system);
-  const text = plannerSurfaceText(surface.system);
-  return {
-    systemChars: text.length,
-    systemSha256: sha256(text),
-    transportSha256: sha256(JSON.stringify(surface.system)),
-    systemBlockCount: blocks.length,
-    cacheBreakpointCount: blocks.filter((block) => block.cache_control !== undefined).length,
-  };
-}
-
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(canonicalize);
-  }
-  if (!isJsonObject(value)) {
-    return value;
-  }
-  return Object.fromEntries(
-    Object.keys(value)
-      .sort()
-      .filter((key) => value[key] !== undefined)
-      .map((key) => [key, canonicalize(value[key])]),
-  );
+  return fingerprintSystemSurface(surface.system);
 }
 
 export function fingerprintPlannerRequest(
   request: S2PlannerRequestSnapshot,
 ): PlannerRequestFingerprint {
-  const canonical = JSON.stringify(
-    canonicalize({
-      system: request.system,
-      messages: request.messages,
-      tools: request.tools,
-      callOptions: request.callOptions,
-    }),
-  );
-  return { canonicalChars: canonical.length, canonicalSha256: sha256(canonical) };
+  return fingerprintCanonicalRequest({
+    system: request.system,
+    messages: request.messages,
+    tools: request.tools,
+    ...request.callOptions,
+  });
 }
 
 /** Compute immutable fidelity evidence synchronously before transport starts. */
@@ -1117,16 +1087,7 @@ export class PlannerContextCapture {
   }
 
   private resolvedStoragePath(): { path: string; captureDirectory: string } {
-    const dataDirectory = realpathSync(this.options.dataDir);
-    const captureDirectory = resolveRealPathForCreation(join(dataDirectory, "captures"));
-    if (!isPathWithin(dataDirectory, captureDirectory) || captureDirectory === dataDirectory) {
-      throw new Error("Planner context capture directory must resolve below the Borg data dir");
-    }
-    const path = resolveRealPathForCreation(join(captureDirectory, "planner-contexts.jsonl"));
-    if (!isPathWithin(captureDirectory, path)) {
-      throw new Error("Planner context capture file must resolve below the captures directory");
-    }
-    return { path, captureDirectory };
+    return resolveContextCaptureStoragePath(this.options.dataDir, "planner-contexts.jsonl");
   }
 
   shouldCapture(): boolean {
@@ -1167,10 +1128,12 @@ export class PlannerContextCapture {
     }
 
     try {
-      const { path, captureDirectory } = this.resolvedStoragePath();
-      const result = await appendDurableJsonl(path, record, {
+      const { path } = this.resolvedStoragePath();
+      const result = await appendBoundedContextCapture({
+        dataDir: this.options.dataDir,
+        fileName: "planner-contexts.jsonl",
+        record,
         maxFileBytes: this.maxFileBytes,
-        privateDirectory: captureDirectory,
       });
       if (result.status === "file_full") {
         this.stats.fileFullSkipped += 1;

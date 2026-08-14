@@ -93,7 +93,7 @@ export type BuildCompactPlannerSystemPromptInput = {
   additionalPromptSections?: readonly PromptSurfaceAdditionalSection[];
 };
 
-type RenderedPlannerSection = {
+export type RenderedPlannerSection = {
   label: string;
   text: string;
   rowCount: number;
@@ -502,7 +502,7 @@ function renderExecutiveNextStep(
   };
 }
 
-function renderGoalDigest(context: DeliberationContext): RenderedPlannerSection {
+export function renderGoalDigest(context: DeliberationContext): RenderedPlannerSection {
   const nowMs = promptTimestamp(context);
   const scoreById = goalScoreById(context);
   const candidateById = goalCandidateById(context);
@@ -777,7 +777,7 @@ function livedDecisionGroups(entries: readonly EvidenceLedgerEntry[]): LivedDeci
     );
 }
 
-function renderLivedExperienceDigest(context: DeliberationContext): RenderedPlannerSection {
+export function renderLivedExperienceDigest(context: DeliberationContext): RenderedPlannerSection {
   const standing = context.evidenceLedger?.audienceStanding;
   const entries = standing?.recentLivedExperienceEntries ?? [];
 

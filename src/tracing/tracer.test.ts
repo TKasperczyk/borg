@@ -625,6 +625,7 @@ describe("TurnTracer", () => {
       "deliberation.plan.completed",
       "deliberation.plan_persistence.completed",
       "turn_phase.started",
+      "deliberation.finalizer_context.completed",
       "llm_call.started",
       "turn.token",
       "turn.token",

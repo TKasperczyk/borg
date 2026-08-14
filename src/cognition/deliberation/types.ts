@@ -64,6 +64,7 @@ import type { TurnTracer } from "../../tracing/tracer.js";
 import type { IntentRecord, PerceptionResult, TurnOrigin } from "../types.js";
 import type { ContradictionRoutingCooldown } from "./contradiction-routing-cooldown.js";
 import type { PlannerContextCapture } from "./planner-context-capture.js";
+import type { FinalizerContextCapture } from "./finalizer-context-capture.js";
 
 export type TurnStakes = "low" | "medium" | "high";
 export type DeliberationRoutingForcedBy = "open_question_contradiction";
@@ -229,6 +230,8 @@ export type DeliberationContext = {
   deliberationPath?: "system_1" | "system_2";
   retrievalConfidence?: RetrievalConfidence | null;
   applicableCommitments?: readonly CommitmentRecord[];
+  /** Canonical names resolved during turn assembly for commitment scope refs. */
+  commitmentEntityLabels?: Readonly<Record<string, string>>;
   openQuestionsContext?: readonly OpenQuestion[];
   pendingCorrectionsContext?: readonly ReviewQueueItem[];
   relationalSlots?: readonly RelationalSlot[];
@@ -354,6 +357,8 @@ export type DeliberatorOptions = {
   hostCapabilities?: string;
   promptBlocks?: Partial<Record<PromptKey, string>>;
   finalizerDynamicPromptCacheEnabled?: boolean;
+  finalizerSurfaceVariant?: "compact" | "legacy";
+  finalizerContextCapture?: FinalizerContextCapture;
   plannerSurfaceVariant?: "compact" | "legacy";
   plannerContextCapture?: PlannerContextCapture;
   sharedStateRenderOptions?: SharedStateRenderOptions;

@@ -53,6 +53,7 @@ async function runEmissionFinalizer(
     cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
     additionalPromptSections?: Parameters<typeof runFinalizer>[0]["additionalPromptSections"];
     finalizerDynamicPromptCacheEnabled?: boolean;
+    finalizerSurfaceVariant?: Parameters<typeof runFinalizer>[0]["finalizerSurfaceVariant"];
     tracer?: Parameters<typeof runFinalizer>[0]["tracer"];
     turnId?: string;
     structuralNoOutputFlags?: Parameters<typeof runFinalizer>[0]["structuralNoOutputFlags"];
@@ -91,6 +92,9 @@ async function runEmissionFinalizer(
     ...(options.finalizerDynamicPromptCacheEnabled === undefined
       ? {}
       : { finalizerDynamicPromptCacheEnabled: options.finalizerDynamicPromptCacheEnabled }),
+    ...(options.finalizerSurfaceVariant === undefined
+      ? {}
+      : { finalizerSurfaceVariant: options.finalizerSurfaceVariant }),
     ...(options.structuralNoOutputFlags === undefined
       ? {}
       : { structuralNoOutputFlags: options.structuralNoOutputFlags }),
@@ -695,6 +699,24 @@ describe("runFinalizer emission tools", () => {
     expect(firstSystem[0]?.text).toBe(secondSystem[0]?.text);
     expect(firstSystem[1]?.text).toBe("Dynamic context one.\n\nEvidence ledger one.");
     expect(secondSystem[1]?.text).toBe("Dynamic context two.\n\nEvidence ledger two.");
+  });
+
+  it("keeps the default and explicit legacy finalizer block serialization byte-identical", async () => {
+    const defaultLlm = createAnsweringLlm("toolu_default_legacy");
+    const explicitLlm = createAnsweringLlm("toolu_explicit_legacy");
+    const sections = [
+      { blockId: "borg_evidence_ledger", text: "Exact ledger bytes." },
+      { blockId: "borg_s2_plan", text: "Exact plan bytes." },
+    ];
+    await runEmissionFinalizer(defaultLlm, tempDirs, { additionalPromptSections: sections });
+    await runEmissionFinalizer(explicitLlm, tempDirs, {
+      additionalPromptSections: sections,
+      finalizerSurfaceVariant: "legacy",
+    });
+    expect(explicitLlm.requests[0]?.system).toEqual(defaultLlm.requests[0]?.system);
+    expect(JSON.stringify(explicitLlm.requests[0]?.system)).toBe(
+      JSON.stringify(defaultLlm.requests[0]?.system),
+    );
   });
 
   it("keeps regeneration content in a trailing uncached block without changing wire text", async () => {
