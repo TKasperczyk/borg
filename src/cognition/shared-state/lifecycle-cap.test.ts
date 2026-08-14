@@ -534,4 +534,41 @@ describe("applySharedStateArtifactLifecycleCap", () => {
     // entry at the back of the queue and costs a locked entry that never moved.
     expect(planFor("update")).toEqual(["locked.entry.0"]);
   });
+
+  it("takes the top of the rendered index first when only part of a tied round dies", () => {
+    const audience = createEntityId();
+    // One compile pass stamps every entry it writes with the same `last_updated_at`, so a band
+    // sharing one stamp is the settled state of a real artifact rather than an edge case, and
+    // rank is then the only discriminator. The two existing tie tests kill whole rounds, where
+    // the direction only reorders the plan; this one caps mid-round so the direction decides
+    // which entries survive. Ascending rank means the survivors are the tail of the round --
+    // i.e. the entries the repository lists last, since it too reads `rank ASC`.
+    const tied = Array.from({ length: 4 }, (_, index) =>
+      sharedStateEntry({
+        audience,
+        kind: "locked",
+        rank: index,
+        updatedAt: 1_000,
+        stateKey: `locked.tied.${index}`,
+      }),
+    );
+    const byId = new Map(tied.map((entry) => [entry.id, entry]));
+
+    const capped = applySharedStateArtifactLifecycleCap({
+      previousArtifact: sharedStateArtifact(tied),
+      operations: [],
+      nowMs: 2_000,
+      options: {
+        maxActiveEntries: 2,
+        newestStateChangeReservedSlots: 0,
+        kindSoftCaps: { locked: 2 },
+      },
+    });
+
+    expect(
+      capped.operations
+        .filter((operation) => operation.type === "prune")
+        .map((operation) => byId.get(operation.id)?.state_key),
+    ).toEqual(["locked.tied.0", "locked.tied.1"]);
+  });
 });

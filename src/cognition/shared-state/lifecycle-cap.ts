@@ -216,6 +216,21 @@ function lifecycleKindCounts(
   return counts;
 }
 
+/**
+ * Orders entries prune-first. Staleness dominates: the oldest `last_updated_at`
+ * goes first. Ties on that stamp are the normal case rather than the edge case,
+ * because every entry a single compile pass writes carries that pass's stamp --
+ * so `rank` decides most real evictions, and it is read ascending here just as
+ * the repository reads it ascending when listing. The member of a tied round
+ * that renders at the top of the index is therefore the first one pruned.
+ *
+ * That direction is load-bearing in both directions and the two readings of
+ * `rank` are not reconciled: as a salience position it argues for descending
+ * (keep what renders first), as a within-patch emission sequence it argues for
+ * ascending (a later `add` supersedes an earlier duplicate, which is what
+ * compiler.test.ts's canonicalization case depends on). Do not flip it without
+ * settling which `rank` means.
+ */
 function compareLifecyclePrunePriority(left: LifecycleEntry, right: LifecycleEntry): number {
   return (
     left.last_updated_at - right.last_updated_at ||
