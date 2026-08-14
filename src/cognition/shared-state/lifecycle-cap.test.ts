@@ -417,4 +417,121 @@ describe("applySharedStateArtifactLifecycleCap", () => {
     expect(pruned[0]?.state_key).toBe("locked.entry.0");
     expect(capped.postPlanActiveEntryCount).toBe(40);
   });
+
+  it("reserves the newest state changes by kind rather than by recency", () => {
+    const audience = createEntityId();
+    const capForNewestKind = (kind: "tentative" | "live") => {
+      const locked = Array.from({ length: 24 }, (_, index) =>
+        sharedStateEntry({
+          audience,
+          kind: "locked",
+          rank: index,
+          updatedAt: 1_000 + index,
+          stateKey: `locked.entry.${index}`,
+        }),
+      );
+      // The three newest entries in the store, and the entirety of an over-cap band.
+      const newest = Array.from({ length: 3 }, (_, index) =>
+        sharedStateEntry({
+          audience,
+          kind,
+          rank: 100 + index,
+          updatedAt: 9_000 + index,
+          stateKey: `newest.entry.${index}`,
+        }),
+      );
+      const entries = [...locked, ...newest];
+      const byId = new Map(entries.map((entry) => [entry.id, entry]));
+      const capped = applySharedStateArtifactLifecycleCap({
+        previousArtifact: sharedStateArtifact(entries),
+        operations: [],
+        nowMs: 20_000,
+        options: {
+          maxActiveEntries: 26,
+          newestStateChangeReservedSlots: 3,
+          kindSoftCaps: { locked: 24, live: 2, tentative: 2 },
+        },
+      });
+
+      return {
+        reserved: capped.newestReservedEntryCount,
+        pruned: capped.operations
+          .filter((operation) => operation.type === "prune")
+          .map((operation) => byId.get(operation.id)?.state_key),
+      };
+    };
+
+    // The reservation filters on `kind === "live"`, so a store with an empty live band reserves
+    // nothing however fresh its entries are: the draw reaches past 24 older locked entries and
+    // takes the third-newest entry in the store.
+    expect(capForNewestKind("tentative")).toEqual({
+      reserved: 0,
+      pruned: ["newest.entry.0"],
+    });
+
+    // Same stamps, same census, one word different in the kind field -- now all three are
+    // reserved, the band's effective count falls under its soft cap, and the entry that dies is
+    // the oldest in the store rather than one of the newest.
+    expect(capForNewestKind("live")).toEqual({
+      reserved: 3,
+      pruned: ["locked.entry.0"],
+    });
+  });
+
+  it("carries a transitioned entry's original stamp into its new band, where an update would not", () => {
+    const audience = createEntityId();
+    const planFor = (move: "transition_kind" | "update") => {
+      const locked = Array.from({ length: 6 }, (_, index) =>
+        sharedStateEntry({
+          audience,
+          kind: "locked",
+          rank: index,
+          updatedAt: 5_000 + index,
+          stateKey: `locked.entry.${index}`,
+        }),
+      );
+      const moved = sharedStateEntry({
+        audience,
+        kind: "live",
+        rank: 100,
+        updatedAt: 1_000,
+        stateKey: "moved.entry",
+      });
+      const entries = [...locked, moved];
+      const byId = new Map(entries.map((entry) => [entry.id, entry]));
+      const capped = applySharedStateArtifactLifecycleCap({
+        previousArtifact: sharedStateArtifact(entries),
+        operations: [
+          move === "transition_kind"
+            ? { type: "transition_kind", id: moved.id, kind: "locked" }
+            : {
+                type: "update",
+                id: moved.id,
+                state_key: "moved.entry",
+                kind: "locked",
+                last_updated_stream_entry_ids: moved.last_updated_stream_entry_ids,
+              },
+        ],
+        nowMs: 9_000,
+        options: {
+          maxActiveEntries: 6,
+          newestStateChangeReservedSlots: 0,
+          kindSoftCaps: { locked: 5 },
+        },
+      });
+
+      return capped.operations
+        .filter((operation) => operation.type === "prune")
+        .map((operation) => byId.get(operation.id)?.state_key);
+    };
+
+    // The cap planner materializes its own copy of the patch, and its `transition_kind` case
+    // rewrites `kind` and nothing else -- so the entry arrives in `locked` still stamped 1_000,
+    // oldest in the band it just joined and first out of it.
+    expect(planFor("transition_kind")).toEqual(["moved.entry"]);
+
+    // The same band move spelled as an update takes `last_updated_at ?? nowMs`, which puts the
+    // entry at the back of the queue and costs a locked entry that never moved.
+    expect(planFor("update")).toEqual(["locked.entry.0"]);
+  });
 });
