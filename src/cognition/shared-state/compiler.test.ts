@@ -2062,6 +2062,15 @@ describe("compileSharedStateArtifact", () => {
         }),
       }),
     );
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "shared_state.compile.degraded",
+        data: expect.objectContaining({
+          reason: "all_operations_rejected",
+          error: expect.stringContaining("disallowed_source_stream_entry_id"),
+        }),
+      }),
+    );
   });
 
   it("keeps quarantined ledger entries visible while removing their stream ids from the source allow-list", () => {

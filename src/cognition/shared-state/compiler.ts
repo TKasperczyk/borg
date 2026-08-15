@@ -514,6 +514,14 @@ function patchRejectionRepairMessage(rejections: readonly PatchRejection[]): str
   return `Your previous patch violated structural shared-state key compaction: ${details}. Emit a corrected patch.`;
 }
 
+function allOperationsRejectedMessage(rejections: readonly PatchRejection[]): string {
+  const details = rejections
+    .map((rejection) => `operation ${rejection.operationIndex} ${rejection.reason}`)
+    .join(" | ");
+
+  return `All ${rejections.length} proposed operations were rejected: ${details}`;
+}
+
 function traceRepairablePatchRejection(
   input: CompileSharedStateArtifactInput,
   rejection: PatchRejection,
@@ -1038,7 +1046,11 @@ export async function compileSharedStateArtifact(
       nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
     });
 
-    return degraded(input, "invalid_patch");
+    return degraded(
+      input,
+      "all_operations_rejected",
+      new Error(allOperationsRejectedMessage(normalized.rejected)),
+    );
   }
 
   const clock = input.clock ?? new SystemClock();

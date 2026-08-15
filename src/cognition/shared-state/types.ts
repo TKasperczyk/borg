@@ -198,6 +198,7 @@ export type SharedStateCompileDegradedReason =
   | "missing_tool_call"
   | "invalid_payload"
   | "invalid_patch"
+  | "all_operations_rejected"
   | "repository_failed";
 
 export type SharedStateLifecycleOptions = {

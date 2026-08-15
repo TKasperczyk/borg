@@ -412,6 +412,7 @@ export function traceCompileOverBudget(options: {
   options.tracer.emit("shared_state.compile.degraded", {
     turnId: options.turnId,
     audienceEntityId: options.audienceEntityId,
+    reason: "prompt_over_budget",
     ledger_mode: options.ledgerMode,
     input_token_estimate: options.promptBudget.inputTokenEstimate,
     input_token_budget: SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,
