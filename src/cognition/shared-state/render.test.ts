@@ -772,4 +772,95 @@ describe("renderSharedStateArtifact", () => {
     expect(indexLineFor("audit.original")).toContain("last_updated_at=9000");
     expect(indexLineFor("audit.original")).not.toContain("created_at=");
   });
+
+  it("names what a successor retracted, so a supersede does not read like a prune", () => {
+    const audience = createEntityId();
+    const successor = entry({
+      audience,
+      kind: "locked",
+      rank: 0,
+      updatedAt: 9_000,
+      stateKey: "audit.replaced",
+      text: "corrected body",
+    });
+    const retracted: SharedStateEntry = {
+      ...entry({
+        audience,
+        kind: "locked",
+        rank: 1,
+        updatedAt: 9_000,
+        stateKey: "audit.replaced",
+        text: "the wording that was withdrawn",
+      }),
+      superseded_by_id: successor.id,
+    };
+    const untouched = entry({
+      audience,
+      kind: "locked",
+      rank: 2,
+      updatedAt: 9_000,
+      stateKey: "audit.untouched",
+      text: "body that replaced nothing",
+    });
+
+    const rendered =
+      renderSharedStateArtifact(artifact([successor, retracted, untouched]), {
+        maxEntries: 10,
+        maxTokens: 50_000,
+        lockedMaxEntries: 10,
+      }) ?? "";
+
+    const lineFor = (id: string): string =>
+      rendered.split("\n").find((line) => line.includes(`id=${id}`)) ?? "";
+
+    // The retracted body stays off this surface -- that is what retraction means -- but the
+    // fact that it was retracted does not.
+    expect(rendered).not.toContain("text: the wording that was withdrawn");
+    expect(lineFor(successor.id)).toContain(`supersedes=${retracted.id}`);
+    expect(lineFor(untouched.id)).not.toContain("supersedes=");
+  });
+
+  it("carries the retraction onto the compact index line, where omitted rows live", () => {
+    const audience = createEntityId();
+    const successor = entry({
+      audience,
+      kind: "locked",
+      rank: 0,
+      updatedAt: 9_000,
+      stateKey: "audit.replaced",
+      text: "corrected body",
+    });
+    const retracted: SharedStateEntry = {
+      ...entry({
+        audience,
+        kind: "locked",
+        rank: 1,
+        updatedAt: 9_000,
+        stateKey: "audit.replaced",
+        text: "the wording that was withdrawn",
+      }),
+      superseded_by_id: successor.id,
+    };
+    const untouched = entry({
+      audience,
+      kind: "locked",
+      rank: 2,
+      updatedAt: 9_000,
+      stateKey: "audit.untouched",
+      text: "body that replaced nothing",
+    });
+
+    // Nothing expanded: the index line is the only thing said about either key.
+    const rendered =
+      renderSharedStateArtifact(artifact([successor, retracted, untouched]), {
+        maxEntries: 0,
+        maxTokens: 50_000,
+      }) ?? "";
+
+    const indexLineFor = (stateKey: string): string =>
+      rendered.split("\n").find((line) => line.startsWith(`- ${stateKey} |`)) ?? "";
+
+    expect(indexLineFor("audit.replaced")).toContain("superseded_count=1");
+    expect(indexLineFor("audit.untouched")).not.toContain("superseded_count=");
+  });
 });

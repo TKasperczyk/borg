@@ -188,7 +188,35 @@ function formatSharedStateKindCounts(
   return parts.length === 0 ? "0 entries" : parts.join(", ");
 }
 
-function renderSharedStateEntry(entry: SharedStateEntry): string {
+// A supersede keeps the retracted body in the artifact and points it at its replacement, but
+// the active set is exactly the rows whose superseded_by_id is null -- so the predecessor drops
+// off this surface as completely as a prune deletes one. Without the backward pointer the
+// successor is indistinguishable from an entry that replaced nothing, and a retraction that
+// happened reads here as if it never did. The pointer is already on the record; only the render
+// was dropping it.
+function supersededPredecessorIdsBySuccessor(
+  artifact: SharedStateArtifact,
+): Map<string, string[]> {
+  const bySuccessor = new Map<string, string[]>();
+
+  for (const entry of artifact.entries) {
+    if (entry.superseded_by_id === null) {
+      continue;
+    }
+
+    bySuccessor.set(entry.superseded_by_id, [
+      ...(bySuccessor.get(entry.superseded_by_id) ?? []),
+      entry.id,
+    ]);
+  }
+
+  return bySuccessor;
+}
+
+function renderSharedStateEntry(
+  entry: SharedStateEntry,
+  supersededPredecessorIds: ReadonlyMap<string, string[]>,
+): string {
   const owner = entry.owner_entity_id === null ? "owner=null" : `owner=${entry.owner_entity_id}`;
   const stateKey = `state_key=${sharedStateKeyBucket(entry.state_key)}`;
   const citations = `[citation: ${entry.provenance_stream_entry_ids.join(", ")}]`;
@@ -204,8 +232,13 @@ function renderSharedStateEntry(entry: SharedStateEntry): string {
   const created =
     entry.created_at === entry.last_updated_at ? "" : ` created_at=${entry.created_at}`;
 
+  // Name what this entry retracted. Absent means it replaced nothing, so the field's absence
+  // carries as much as its presence -- the same predicate created_at uses one field over.
+  const predecessors = supersededPredecessorIds.get(entry.id) ?? [];
+  const supersedes = predecessors.length === 0 ? "" : ` supersedes=${predecessors.join(",")}`;
+
   return [
-    `- kind=${entry.kind} id=${entry.id} ${stateKey} ${owner}${created} last_updated_at=${entry.last_updated_at}${disclosure} ${citations}`,
+    `- kind=${entry.kind} id=${entry.id} ${stateKey} ${owner}${created}${supersedes} last_updated_at=${entry.last_updated_at}${disclosure} ${citations}`,
     `  text: ${entry.text}`,
   ].join("\n");
 }
@@ -250,6 +283,7 @@ type SharedStateCompactIndexRow = {
   createdAt: number;
   lastUpdatedAt: number;
   activeCount: number;
+  supersededCount: number;
   excerpt: string;
   disclosureLabel: MemoryDisclosureLabel;
   expanded: boolean;
@@ -257,6 +291,7 @@ type SharedStateCompactIndexRow = {
 
 function buildSharedStateCompactIndexRows(input: {
   activeEntries: readonly SharedStateEntry[];
+  supersededPredecessorIds: ReadonlyMap<string, string[]>;
   expandedBuckets: ReadonlySet<string>;
 }): SharedStateCompactIndexRow[] {
   return entriesGroupedByStateKey(input.activeEntries).map((group) => {
@@ -273,6 +308,10 @@ function buildSharedStateCompactIndexRows(input: {
       createdAt: latestEntry.created_at,
       lastUpdatedAt: Math.max(...group.entries.map((entry) => entry.last_updated_at)),
       activeCount: group.entries.length,
+      supersededCount: group.entries.reduce(
+        (sum, entry) => sum + (input.supersededPredecessorIds.get(entry.id)?.length ?? 0),
+        0,
+      ),
       excerpt: sharedStateCompactExcerpt(latestEntry.text),
       disclosureLabel: combineMemoryDisclosureLabels(
         group.entries.map((entry) => sharedStateEntryDisclosureLabel(entry)),
@@ -294,6 +333,9 @@ function renderSharedStateCompactIndexRows(rows: readonly SharedStateCompactInde
       row.createdAt === row.lastUpdatedAt ? null : `created_at=${row.createdAt}`,
       `last_updated_at=${row.lastUpdatedAt}`,
       `active_count=${row.activeCount}`,
+      // Only where something was retracted under this key, so an omitted row -- the only
+      // thing ever said about most entries -- can still tell a replacement from a first draft.
+      row.supersededCount === 0 ? null : `superseded_count=${row.supersededCount}`,
       row.disclosureLabel.disclosureClass === "public"
         ? null
         : renderMemoryDisclosureLabelFieldsForModel(row.disclosureLabel),
@@ -315,6 +357,7 @@ function renderSharedStateCompactIndexRows(rows: readonly SharedStateCompactInde
 
 function renderSharedStateCompactIndex(input: {
   activeEntries: readonly SharedStateEntry[];
+  supersededPredecessorIds: ReadonlyMap<string, string[]>;
   expandedBuckets: ReadonlySet<string>;
 }): string {
   return renderSharedStateCompactIndexRows(buildSharedStateCompactIndexRows(input));
@@ -342,6 +385,7 @@ function renderSharedStateArtifactContent(input: {
   renderedByKind: SharedStateKindCounts;
 }): string {
   const omittedCount = Object.values(input.omittedByKind).reduce((sum, count) => sum + count, 0);
+  const supersededPredecessorIds = supersededPredecessorIdsBySuccessor(input.artifact);
   const expandedBuckets = new Set(
     input.entries.map((entry) => sharedStateKeyBucket(entry.state_key)),
   );
@@ -360,11 +404,14 @@ function renderSharedStateArtifactContent(input: {
     `record_version=${input.artifact.record_version}`,
     renderSharedStateCompactIndex({
       activeEntries: input.activeEntries,
+      supersededPredecessorIds,
       expandedBuckets,
     }),
     ...entriesGroupedByStateKey(input.entries).flatMap((group) => [
       `state_key_bucket=${group.stateKey}`,
-      ...group.entries.map(renderSharedStateEntry),
+      ...group.entries.map((groupEntry) =>
+        renderSharedStateEntry(groupEntry, supersededPredecessorIds),
+      ),
     ]),
     omission,
   ]
@@ -385,6 +432,7 @@ function renderSharedStateArtifactOmissionOnly(input: {
     `record_version=${input.artifact.record_version}`,
     renderSharedStateCompactIndex({
       activeEntries: input.activeEntries,
+      supersededPredecessorIds: supersededPredecessorIdsBySuccessor(input.artifact),
       expandedBuckets: new Set(),
     }),
     `SharedStateArtifact omitted: ${formatSharedStateKindCounts(
@@ -853,6 +901,7 @@ function cappedSharedStateArtifactRender(input: {
   const expandedBuckets = new Set(entries.map((entry) => sharedStateKeyBucket(entry.state_key)));
   const compactIndexRows = buildSharedStateCompactIndexRows({
     activeEntries,
+    supersededPredecessorIds: supersededPredecessorIdsBySuccessor(input.artifact),
     expandedBuckets,
   });
   const indexedStateKeyBuckets = new Set(compactIndexRows.map((row) => row.stateKey));
