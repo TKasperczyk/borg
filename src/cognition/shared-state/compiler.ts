@@ -1119,6 +1119,10 @@ export async function compileSharedStateArtifact(
     ...compileCompletedTraceBase,
     maxActiveEntries: lifecycle.maxActiveEntries,
     lifecycleCapEvictions: lifecycle.capEvictions,
+    // Paired with the cap's evictions on purpose: both remove an entry with no
+    // tombstone, and only these two fields together say which deletions this turn were
+    // asked for and which were forced.
+    modelPruneRequests: normalized.modelPruneRequests,
     lifecycleAgingBlockerCountsLiveToLowSalience: aging.blockerCountsLiveToLowSalience,
     lifecycleAgingBlockerCountsLowSalienceToDormant: aging.blockerCountsLowSalienceToDormant,
     lifecycleAgingBlockedSample: aging.blockedSample,

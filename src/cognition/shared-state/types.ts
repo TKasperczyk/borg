@@ -289,6 +289,21 @@ export type EmptyUpdateDrop = {
   };
 };
 
+// A prune is an unqualified delete with no tombstone: once it lands, the row is gone
+// and the only thing that could say why is the reason the model attached to the
+// operation. Normalization drops that reason on the way to the store, so without this
+// the trace cannot tell a deliberate retraction from the lifecycle cap's forced
+// eviction -- both surface as one fewer entry. Kept as the model wrote it; the reason
+// is optional in the tool schema, so null here means "pruned without saying why".
+export type ModelPruneRequest = {
+  operationIndex: number;
+  operationId: SharedStateEntryId;
+  stateKey: string | null;
+  kind: SharedStateEntryKind;
+  lastUpdatedAt: number;
+  reason: string | null;
+};
+
 export type AllowedCanonicalizationIds = {
   goalIds: ReadonlySet<GoalId>;
   commitmentIds: ReadonlySet<CommitmentId>;

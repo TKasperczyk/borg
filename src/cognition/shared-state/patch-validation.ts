@@ -31,6 +31,7 @@ import type {
   DroppedCanonicalizeId,
   EmptyUpdateDrop,
   EmitSharedStatePatch,
+  ModelPruneRequest,
   NonLockedCanonicalizesDrop,
   ParsedCanonicalizes,
   ParsedPatchOperation,
@@ -467,6 +468,7 @@ export function normalizePatch(input: {
   nonLockedCanonicalizesDrops: NonLockedCanonicalizesDrop[];
   emptyUpdateDrops: EmptyUpdateDrop[];
   emptyUpdateAttemptedCount: number;
+  modelPruneRequests: ModelPruneRequest[];
 } {
   const allowedOwnerEntityIds = new Set<EntityId>([
     input.audienceEntityId,
@@ -487,6 +489,7 @@ export function normalizePatch(input: {
   const droppedCanonicalizeIds: DroppedCanonicalizeId[] = [];
   const nonLockedCanonicalizesDrops: NonLockedCanonicalizesDrop[] = [];
   const emptyUpdateDrops: EmptyUpdateDrop[] = [];
+  const modelPruneRequests: ModelPruneRequest[] = [];
   let emptyUpdateAttemptedCount = 0;
   const baseRank = input.previousArtifact?.entries.length ?? 0;
   const maxLiveEntriesPerKey = normalizeMaxLiveEntriesPerKey(input.maxLiveEntriesPerKey);
@@ -923,6 +926,16 @@ export function normalizePatch(input: {
           return;
         }
 
+        // The store operation carries no reason field, so this is the last point at
+        // which the model's stated why still exists. Record it before it is dropped.
+        modelPruneRequests.push({
+          operationIndex,
+          operationId: id,
+          stateKey: entry.state_key,
+          kind: entry.kind,
+          lastUpdatedAt: entry.last_updated_at,
+          reason: operation.reason ?? null,
+        });
         operations.push({
           type: "prune",
           id,
@@ -939,6 +952,7 @@ export function normalizePatch(input: {
     nonLockedCanonicalizesDrops,
     emptyUpdateDrops,
     emptyUpdateAttemptedCount,
+    modelPruneRequests,
   };
 }
 

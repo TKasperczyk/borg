@@ -21,6 +21,7 @@ import {
   type CanonicalizationDuplicateDrop,
   type EmptyUpdateDrop,
   type EmitSharedStatePatch,
+  type ModelPruneRequest,
   type NonLockedCanonicalizesDrop,
   type PatchRejection,
   type SharedStateLedgerMode,
@@ -79,6 +80,7 @@ export function traceCompileCompleted(options: {
   lifecycleAgingBlockedSample?: readonly LifecycleAgingBlockedSampleEntry[];
   lifecycleAgingUnknownAgeSample?: readonly LifecycleAgingUnknownAgeSampleEntry[];
   lifecycleCapEvictions?: readonly SharedStateLifecycleCapEviction[];
+  modelPruneRequests?: readonly ModelPruneRequest[];
 }): void {
   const renderOptions =
     options.currentTurnCounter === undefined || options.currentUserStreamEntryId === undefined
@@ -186,6 +188,16 @@ export function traceCompileCompleted(options: {
         (options.lifecycleCapEvictions ?? []).map((eviction) => eviction.state_key),
       ),
       lifecycle_cap_evictions: toTraceJsonValue(options.lifecycleCapEvictions ?? []),
+      // The other half of the same question. artifact_pruned_entry_count_this_turn
+      // counts prunes without saying which were the model's; lifecycle_cap_evictions
+      // names the forced ones. This names the asked-for ones and carries the reason the
+      // operation schema accepts but the store drops -- so a deletion that was a
+      // decision can be told apart from one that was a slot running out.
+      model_prune_requested_count: (options.modelPruneRequests ?? []).length,
+      model_prune_requested_without_reason_count: (options.modelPruneRequests ?? []).filter(
+        (request) => request.reason === null,
+      ).length,
+      model_prune_requests: toTraceJsonValue(options.modelPruneRequests ?? []),
       operation_counts_by_kind: toTraceJsonValue(
         options.operationCountsByKind ?? {
           add: 0,
