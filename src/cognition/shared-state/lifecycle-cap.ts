@@ -37,8 +37,23 @@ const SHARED_STATE_LIFECYCLE_PRUNE_ORDER = [
 
 type LifecycleEntry = Pick<
   SharedStateEntry,
-  "id" | "kind" | "created_at" | "last_updated_at" | "superseded_by_id" | "rank"
+  "id" | "state_key" | "kind" | "created_at" | "last_updated_at" | "superseded_by_id" | "rank"
 >;
+
+/**
+ * An entry the cap deleted to hold the artifact at `maxActiveEntries`. The
+ * entity never asked for these: they are emitted as ordinary `prune`
+ * operations, so without this record the trace cannot tell a deletion the
+ * compiler requested from one the store forced. Carries the state key because
+ * the id is gone from the artifact by the time anyone reads the trace.
+ */
+export type SharedStateLifecycleCapEviction = {
+  id: SharedStateEntryId;
+  state_key: string | null;
+  kind: SharedStateEntryKind;
+  last_updated_at: number;
+  rank: number;
+};
 
 function normalizeLifecycleKindSoftCaps(
   options: SharedStateLifecycleOptions | undefined,
@@ -99,6 +114,7 @@ export function materializeSharedStateOperationIds(
 function lifecycleEntryFromSharedStateEntry(entry: SharedStateEntry): LifecycleEntry {
   return {
     id: entry.id,
+    state_key: entry.state_key,
     kind: entry.kind,
     created_at: entry.created_at,
     last_updated_at: entry.last_updated_at,
@@ -125,6 +141,7 @@ function materializePostPatchLifecycleEntries(input: {
         const id = operation.id ?? createSharedStateEntryId();
         entries.set(id, {
           id,
+          state_key: operation.state_key,
           kind: operation.kind,
           created_at: operation.created_at ?? input.nowMs,
           last_updated_at: operation.last_updated_at ?? operation.created_at ?? input.nowMs,
@@ -142,6 +159,7 @@ function materializePostPatchLifecycleEntries(input: {
 
         entries.set(operation.id, {
           ...current,
+          state_key: operation.state_key,
           kind: operation.kind ?? current.kind,
           last_updated_at: operation.last_updated_at ?? input.nowMs,
           rank: operation.rank ?? current.rank,
@@ -175,6 +193,7 @@ function materializePostPatchLifecycleEntries(input: {
 
         entries.set(replacementId, {
           id: replacementId,
+          state_key: operation.replacement.state_key,
           kind: operation.replacement.kind,
           created_at: operation.replacement.created_at ?? input.nowMs,
           last_updated_at:
@@ -441,6 +460,7 @@ export function applySharedStateArtifactLifecycleCap(input: {
   postPlanActiveEntryCount: number;
   overCapDelta: number;
   newestReservedEntryCount: number;
+  capEvictions: SharedStateLifecycleCapEviction[];
 } {
   const operations = materializeSharedStateOperationIds(input.operations);
   const entries = materializePostPatchLifecycleEntries({
@@ -456,6 +476,7 @@ export function applySharedStateArtifactLifecycleCap(input: {
   );
   const prunedIds = new Set<SharedStateEntryId>();
   const pruneOperations: SharedStateOperation[] = [];
+  const capEvictions: SharedStateLifecycleCapEviction[] = [];
   let activeEntries = activeLifecycleEntries(entries);
   let activeCounts = lifecycleKindCounts(activeEntries);
   let reservedCounts = lifecycleKindCountsForIds(activeEntries, reservedIds);
@@ -477,6 +498,13 @@ export function applySharedStateArtifactLifecycleCap(input: {
     pruneOperations.push({
       type: "prune",
       id: candidate.id,
+    });
+    capEvictions.push({
+      id: candidate.id,
+      state_key: candidate.state_key,
+      kind: candidate.kind,
+      last_updated_at: candidate.last_updated_at,
+      rank: candidate.rank,
     });
     activeCounts[candidate.kind] -= 1;
     if (reservedIds.has(candidate.id)) {
@@ -538,5 +566,6 @@ export function applySharedStateArtifactLifecycleCap(input: {
     postPlanActiveEntryCount,
     overCapDelta: Math.max(0, postPlanActiveEntryCount - maxActiveEntries),
     newestReservedEntryCount: [...reservedIds].filter((id) => !prunedIds.has(id)).length,
+    capEvictions,
   };
 }

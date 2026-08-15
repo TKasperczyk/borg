@@ -31,6 +31,7 @@ import type {
   LifecycleAgingUnknownAgeSampleEntry,
   SharedStateLifecycleTransition,
 } from "./lifecycle-aging.js";
+import type { SharedStateLifecycleCapEviction } from "./lifecycle-cap.js";
 
 type PublicSharedStateOperation = Exclude<SharedStateOperation, { type: "transition_kind" }>;
 
@@ -77,6 +78,7 @@ export function traceCompileCompleted(options: {
   lifecycleAgingBlockerCountsLowSalienceToDormant?: LifecycleAgingBlockerCounts;
   lifecycleAgingBlockedSample?: readonly LifecycleAgingBlockedSampleEntry[];
   lifecycleAgingUnknownAgeSample?: readonly LifecycleAgingUnknownAgeSampleEntry[];
+  lifecycleCapEvictions?: readonly SharedStateLifecycleCapEviction[];
 }): void {
   const renderOptions =
     options.currentTurnCounter === undefined || options.currentUserStreamEntryId === undefined
@@ -179,6 +181,11 @@ export function traceCompileCompleted(options: {
         artifactSummary.omittedByKind.live > 0 && artifactSummary.renderedByKind.locked > 0,
       artifact_pruned_entry_count_this_turn: options.prunedEntryCountThisTurn,
       artifact_superseded_count_this_turn: options.supersededEntryCountThisTurn,
+      lifecycle_cap_evicted_entry_count: (options.lifecycleCapEvictions ?? []).length,
+      lifecycle_cap_evicted_state_keys: toTraceJsonValue(
+        (options.lifecycleCapEvictions ?? []).map((eviction) => eviction.state_key),
+      ),
+      lifecycle_cap_evictions: toTraceJsonValue(options.lifecycleCapEvictions ?? []),
       operation_counts_by_kind: toTraceJsonValue(
         options.operationCountsByKind ?? {
           add: 0,

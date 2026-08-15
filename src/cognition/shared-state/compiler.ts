@@ -1118,6 +1118,7 @@ export async function compileSharedStateArtifact(
   const compileCompletedTraceWithLifecycle = {
     ...compileCompletedTraceBase,
     maxActiveEntries: lifecycle.maxActiveEntries,
+    lifecycleCapEvictions: lifecycle.capEvictions,
     lifecycleAgingBlockerCountsLiveToLowSalience: aging.blockerCountsLiveToLowSalience,
     lifecycleAgingBlockerCountsLowSalienceToDormant: aging.blockerCountsLowSalienceToDormant,
     lifecycleAgingBlockedSample: aging.blockedSample,
