@@ -191,6 +191,59 @@ describe("semantic pair review handler", () => {
     });
   }
 
+  it("settles contradictions on nodes and leaves the recorded edge open", async () => {
+    // SemanticEdgeRepository.insertEdge enqueues contradiction items with the
+    // originating edge under `edge_id` (node-pair refs), while the closure
+    // branch keys on `loser_edge_id`. No resolution reads `edge_id`, so
+    // settling a contradiction never reaches the edge that raised it.
+    const refs = semanticPairReviewRefsSchema.parse({
+      node_ids: [firstNode.id, secondNode.id],
+      edge_id: edge.id,
+    });
+    const markContradicted = vi.fn(async () => null);
+    const getEdge = vi.fn(() => edge);
+    const invalidateEdge = vi.fn(() => edge);
+    const handler = createSemanticPairReviewQueueHandler("contradiction");
+    const ctx = ctxWith({
+      semanticNodeRepository: {
+        getMany: vi.fn(async () => [firstNode, secondNode]),
+        markContradicted,
+      } as never,
+      semanticEdgeRepository: { getEdge, invalidateEdge } as never,
+    });
+
+    await handler.apply({
+      item: itemFor("contradiction", refs),
+      refs,
+      resolution: {
+        decision: "invalidate",
+        winner_node_id: secondNode.id,
+      },
+      applyingState: {
+        decision: "invalidate",
+        operation: "node_invalidate",
+        winner_node_id: secondNode.id,
+        started_at: 5_000,
+      },
+      ctx,
+    });
+
+    expect(markContradicted).toHaveBeenCalledWith(firstNode.id, secondNode.id, 5_000);
+    expect(invalidateEdge).not.toHaveBeenCalled();
+    expect(getEdge).not.toHaveBeenCalled();
+
+    await handler.apply({
+      item: itemFor("contradiction", refs),
+      refs,
+      resolution: { decision: "keep_both" },
+      applyingState: null,
+      ctx,
+    });
+
+    expect(markContradicted).toHaveBeenCalledTimes(1);
+    expect(invalidateEdge).not.toHaveBeenCalled();
+  });
+
   it("requires winners to be members of the node pair", async () => {
     const refs = semanticPairReviewRefsSchema.parse({
       node_ids: [firstNode.id, secondNode.id],
