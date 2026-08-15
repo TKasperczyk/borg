@@ -4,16 +4,20 @@ import { openQuestionMemoryDisclosureLabel } from "../../../memory/common/disclo
 import {
   memoryDisclosureLabelFromEpisodeAccess,
   renderMemoryDisclosureLabelForModel,
+  unknownMemoryDisclosureLabel,
   type EvidenceItem,
+  type MemoryDisclosureLabel,
   type RetrievalConfidence,
   type RetrievedContradictionRouting,
   type RetrievedEpisode,
+  type RetrievedContext,
   type RetrievedSemantic,
   type RetrievedSemanticHit,
   type RetrievedSemanticNode,
 } from "../../../retrieval/index.js";
 import { estimatePromptTokens } from "../../../util/token-estimate.js";
 import type { EntityId } from "../../../util/ids.js";
+import { escapeXmlText } from "../../../util/prompt-tags.js";
 import { renderEvidenceItemDisclosureLabel } from "../../evidence-item-disclosure.js";
 import { DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET } from "../constants.js";
 import type { ContradictionRoutingTier } from "../types.js";
@@ -191,6 +195,233 @@ export function summarizeRetrievedEvidence(
   }
 
   return fallbackSections.join("\n\n");
+}
+
+type VerificationRetrievalCandidate = {
+  handle: string;
+  sourceClass: "evidence" | "episode" | "semantic_node" | "semantic_edge" | "open_question";
+  disclosure: string;
+  structuralFields: Record<string, string | number | boolean | null>;
+  payload: unknown;
+};
+
+function verificationXmlAttribute(value: string): string {
+  return escapeXmlText(value)
+    .replaceAll('"', "&quot;")
+    .replaceAll("\r", "&#13;")
+    .replaceAll("\n", "&#10;")
+    .replaceAll("\t", "&#9;");
+}
+
+function verificationDisclosure(label: MemoryDisclosureLabel | undefined): string {
+  const exact = label ?? unknownMemoryDisclosureLabel();
+  const list = (values: readonly string[]) => (values.length === 0 ? "none" : values.join(","));
+  return [
+    `disclosure_class=${exact.disclosureClass}`,
+    `origin_audience=${list(exact.originAudienceEntityIds)}`,
+    `private-to=${list(exact.privateToEntityIds)}`,
+    `public-to=${list(exact.publicToEntityIds)}`,
+  ].join(" ");
+}
+
+function verificationEvidenceCandidates(
+  evidence: readonly EvidenceItem[],
+): VerificationRetrievalCandidate[] {
+  return evidence.map((item) => ({
+    handle: item.id,
+    sourceClass: "evidence",
+    disclosure: verificationDisclosure(item.disclosureLabel),
+    structuralFields: {
+      source: item.source,
+      recall_intent_id: item.recallIntentId,
+      score: item.score,
+      provenance_episode_id: item.provenance?.episodeId ?? null,
+      provenance_node_id: item.provenance?.nodeId ?? null,
+      provenance_edge_id: item.provenance?.edgeId ?? null,
+      provenance_commitment_id: item.provenance?.commitmentId ?? null,
+      provenance_open_question_id: item.provenance?.openQuestionId ?? null,
+      provenance_stream_ids: item.provenance?.streamIds?.join(",") ?? "none",
+      partial_source_visibility: item.partial_source_visibility === true,
+      source_visibility_fraction: item.source_visibility_fraction ?? null,
+    },
+    payload: {
+      text: item.text,
+      matched_terms: item.matchedTerms,
+      image_label: item.imageLabel ?? null,
+      image_origin_frame: item.imageOriginFrame ?? null,
+      image_unavailable_reason: item.imageUnavailableReason ?? null,
+    },
+  }));
+}
+
+function verificationFallbackCandidates(
+  input: Pick<RetrievedContext, "episodes" | "semantic" | "open_questions">,
+): VerificationRetrievalCandidate[] {
+  const episodes: VerificationRetrievalCandidate[] = input.episodes.map((result) => ({
+    handle: result.episode.id,
+    sourceClass: "episode",
+    disclosure: verificationDisclosure(
+      result.disclosureLabel ?? memoryDisclosureLabelFromEpisodeAccess(result.episode),
+    ),
+    structuralFields: {
+      score: result.score,
+      source_stream_ids: result.episode.source_stream_ids.join(","),
+      start_time: result.episode.start_time,
+      end_time: result.episode.end_time,
+    },
+    payload: {
+      title: result.episode.title,
+      narrative: result.episode.narrative,
+      participants: result.episode.participants,
+      tags: result.episode.tags,
+      citations: result.citationChain.map((entry) => ({ id: entry.id, content: entry.content })),
+    },
+  }));
+  const hits = [
+    ...input.semantic.support_hits,
+    ...input.semantic.causal_hits,
+    ...input.semantic.contradiction_hits,
+    ...input.semantic.category_hits,
+  ];
+  const nodesById = new Map(
+    [...input.semantic.matched_nodes, ...hits.map((hit) => hit.node)].map((node) => [
+      node.id,
+      node,
+    ]),
+  );
+  const edgesById = new Map(hits.flatMap((hit) => hit.edgePath.map((edge) => [edge.id, edge])));
+  const nodes: VerificationRetrievalCandidate[] = [...nodesById.values()].map((node) => ({
+    handle: node.id,
+    sourceClass: "semantic_node",
+    disclosure: verificationDisclosure(node.disclosureLabel),
+    structuralFields: {
+      kind: node.kind,
+      status: node.status,
+      confidence: node.confidence,
+      source_episode_ids: node.source_episode_ids.join(","),
+      partial_source_visibility: node.partial_source_visibility === true,
+      source_visibility_fraction: node.source_visibility_fraction ?? null,
+    },
+    payload: {
+      label: node.label,
+      description: node.description,
+      domain: node.domain,
+      aliases: node.aliases,
+      observation_metadata: node.observation_metadata,
+      under_review_reason: node.under_review?.reason ?? null,
+    },
+  }));
+  const edges: VerificationRetrievalCandidate[] = [...edgesById.values()].map((edge) => ({
+    handle: edge.id,
+    sourceClass: "semantic_edge",
+    disclosure: verificationDisclosure(edge.disclosureLabel),
+    structuralFields: {
+      from_node_id: edge.from_node_id,
+      to_node_id: edge.to_node_id,
+      relation: edge.relation,
+      confidence: edge.confidence,
+      evidence_episode_ids: edge.evidence_episode_ids.join(","),
+      valid_from: edge.valid_from,
+      valid_to: edge.valid_to,
+    },
+    payload: { invalidated_reason: edge.invalidated_reason },
+  }));
+  const openQuestions: VerificationRetrievalCandidate[] = input.open_questions.map((question) => ({
+    handle: question.id,
+    sourceClass: "open_question",
+    disclosure: verificationDisclosure(openQuestionMemoryDisclosureLabel(question)),
+    structuralFields: {
+      status: question.status,
+      urgency: question.urgency,
+      source: question.source,
+      audience_entity_id: question.audience_entity_id,
+      goal_id: question.goal_id,
+    },
+    payload: {
+      question: question.question,
+      resolution_note: question.resolution_note,
+      abandoned_reason: question.abandoned_reason,
+    },
+  }));
+  return [...episodes, ...nodes, ...edges, ...openQuestions];
+}
+
+function renderVerificationRetrievalCandidate(
+  candidate: VerificationRetrievalCandidate,
+  includePayload: boolean,
+): string {
+  const payloadJson = JSON.stringify(candidate.payload) ?? "null";
+  const structural = Object.entries(candidate.structuralFields)
+    .map(([key, value]) => `${key}="${verificationXmlAttribute(String(value ?? "none"))}"`)
+    .join(" ");
+  return [
+    `<verification_source handle="${verificationXmlAttribute(candidate.handle)}"`,
+    `source_class="${candidate.sourceClass}"`,
+    `disclosure="${verificationXmlAttribute(candidate.disclosure)}"`,
+    structural,
+    `payload_status="${includePayload ? "exact" : "check_not_completed_budget"}"`,
+    `payload_included_chars="${includePayload ? payloadJson.length : 0}"`,
+    `payload_total_chars="${payloadJson.length}"`,
+    `payload_json="${includePayload ? verificationXmlAttribute(payloadJson) : ""}" />`,
+  ].join(" ");
+}
+
+function renderVerificationRetrievalRows(
+  candidates: readonly VerificationRetrievalCandidate[],
+  included: ReadonlySet<number>,
+  maxTokens: number,
+): string {
+  const rows = candidates.map((candidate, index) =>
+    renderVerificationRetrievalCandidate(candidate, included.has(index)),
+  );
+  const incompleteCount = candidates.length - included.size;
+  return [
+    `<plan_requested_verification_retrieval complete_membership="true" rows_total="${rows.length}" target_tokens="${maxTokens}" check_not_completed_count="${incompleteCount}">`,
+    "  <interpretation>This retrieval was requested by the advisory plan. Every returned source handle is present. A payload_status=exact row carries its complete payload with no excerpt; payload_status=check_not_completed_budget carries the handle and structural fields but zero payload, so the requested check is explicitly incomplete rather than silently truncated.</interpretation>",
+    ...rows.map((row) => `  ${row}`),
+    "  <omitted_count>0</omitted_count>",
+    `  <check_not_completed_count>${incompleteCount}</check_not_completed_count>`,
+    "</plan_requested_verification_retrieval>",
+  ].join("\n");
+}
+
+/**
+ * Compact-terminal rendering for secondary retrieval driven structurally by
+ * an S2 plan's non-empty verification_steps. Payloads are all-or-nothing:
+ * exact when they fit, otherwise an explicit incomplete-check row.
+ */
+export function renderPlanRequestedVerificationRetrieval(
+  input: Pick<RetrievedContext, "evidence" | "episodes" | "semantic" | "open_questions">,
+  maxTokens = DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET,
+): string {
+  const candidates = [
+    ...verificationEvidenceCandidates(input.evidence),
+    ...verificationFallbackCandidates(input),
+  ];
+  const included = new Set<number>();
+
+  for (let index = 0; index < candidates.length; index += 1) {
+    included.add(index);
+    if (
+      estimatePromptTokens(renderVerificationRetrievalRows(candidates, included, maxTokens)) >
+      maxTokens
+    ) {
+      included.delete(index);
+    }
+  }
+
+  return renderVerificationRetrievalRows(candidates, included, maxTokens);
+}
+
+export function renderPlanRequestedVerificationNotCompleted(): string {
+  return [
+    '<plan_requested_verification_retrieval complete_membership="false" rows_total="1" check_not_completed_count="1">',
+    "  <interpretation>The advisory plan requested a verification pass, but secondary retrieval was unavailable. The request handle remains visible with an explicit incomplete status and zero payload characters.</interpretation>",
+    '  <verification_source handle="plan:verification_steps" source_class="verification_request" payload_status="check_not_completed_retrieval_unavailable" payload_included_chars="0" payload_total_chars="0" payload_json="" />',
+    "  <omitted_count>0</omitted_count>",
+    "  <check_not_completed_count>1</check_not_completed_count>",
+    "</plan_requested_verification_retrieval>",
+  ].join("\n");
 }
 
 function summarizeEvidenceItems(

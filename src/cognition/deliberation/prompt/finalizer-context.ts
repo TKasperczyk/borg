@@ -13,7 +13,6 @@ import {
   combineMemoryDisclosureLabels,
   MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
   memoryDisclosureLabelFromMetadata,
-  renderMemoryDisclosureLabelForModel,
   selfPrivateMemoryDisclosureLabel,
   unknownMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
@@ -28,7 +27,11 @@ import {
 import type { PromptSurfaceAdditionalSection } from "../../prompts/prompt-surface-registry.js";
 import { GROUP_CHAT_SENDER_SCOPING_REMINDER } from "../../prompts/participation.js";
 import type { EvidenceLedgerEntry } from "../../evidence-ledger/index.js";
-import type { DeliberationContext } from "../types.js";
+import type {
+  CreatorDirectiveBriefingDirective,
+  CreatorDirectiveBriefingPrivateDirective,
+  DeliberationContext,
+} from "../types.js";
 import {
   headTailPlannerExcerpt,
   renderGoalDigest,
@@ -39,11 +42,11 @@ import {
   buildAutonomousOutboundAuthorizationSection,
   buildBaseSystemPromptSections,
   renderAuthorityContextLines,
-  renderCreatorDirectiveDisclosureLines,
   renderCreatorIdentity,
   renderCurrentTimeSection,
   renderPromptSection,
   renderSessionStatusSnapshotLines,
+  INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT,
   type BaseSystemPromptSections,
   type BuildBaseSystemPromptOptions,
 } from "./system-prompt.js";
@@ -89,6 +92,9 @@ export type BuildCompactFinalizerSystemPromptInput = {
   additionalPromptSections?: readonly PromptSurfaceAdditionalSection[];
 };
 
+export const COMPACT_FINALIZER_VERIFICATION_RETRIEVAL_BLOCK_ID =
+  "borg_compact_finalizer_verification_retrieval";
+
 type RenderedTerminalSection = {
   label: string;
   text: string;
@@ -128,6 +134,10 @@ const STABLE_AUTHORITY_FRAMING = [
   "Its content and disclosure modes govern use and mention; audience scope does not erase globally recalled memory.",
   "Current-sender identity, role, roster, and participation state are turn-local and appear later.",
 ].join(" ");
+
+const TERMINAL_ADVISORY_COMMITMENT_EXCERPT_CHARS = 480;
+const TERMINAL_CREATOR_DIRECTIVE_FACT_EXCERPT_CHARS = 480;
+const TERMINAL_CREATOR_DIRECTIVE_LABEL_EXCERPT_CHARS = 240;
 
 function escapeXmlAttribute(value: string): string {
   return escapeXmlText(value).replaceAll('"', "&quot;");
@@ -179,7 +189,13 @@ function tagged(tag: string, content: string | null): string | null {
 }
 
 function compactDisclosure(label: MemoryDisclosureLabel): string {
-  return renderMemoryDisclosureLabelForModel(label);
+  const list = (values: readonly string[]) => (values.length === 0 ? "none" : values.join(","));
+  return [
+    `disclosure_class=${label.disclosureClass}`,
+    `origin_audience=${list(label.originAudienceEntityIds)}`,
+    `private-to=${list(label.privateToEntityIds)}`,
+    `public-to=${list(label.publicToEntityIds)}`,
+  ].join(" ");
 }
 
 function evidenceEntryDisclosure(entry: EvidenceLedgerEntry): MemoryDisclosureLabel {
@@ -287,54 +303,81 @@ function renderCommitmentRecord(
   commitment: CommitmentRecord,
   ledgerEntry: EvidenceLedgerEntry | undefined,
   ordinal: number,
-): string {
+): { row: string; truncationCount: number } {
   const disclosure = combinedCommitmentDisclosure(commitment, ledgerEntry);
-  return [
-    ...renderCommitmentIdentityFields(commitment, ordinal),
-    ...renderCommitmentTimelineAndScopeFields(commitment, disclosure),
-    ...renderCommitmentLedgerFields(commitment, ledgerEntry),
-    `directive_exact="true" directive_chars="${commitment.directive.length}" directive="${escapeXmlSingleLineAttribute(commitment.directive)}" />`,
-  ].join(" ");
+  const critical = effectiveCommitmentEnforcementClass(commitment) === "critical";
+  const directive = critical
+    ? headTailPlannerExcerpt(commitment.directive, Number.MAX_SAFE_INTEGER)
+    : headTailPlannerExcerpt(commitment.directive, TERMINAL_ADVISORY_COMMITMENT_EXCERPT_CHARS);
+  return {
+    row: [
+      ...renderCommitmentIdentityFields(commitment, ordinal),
+      ...renderCommitmentTimelineAndScopeFields(commitment, disclosure),
+      ...renderCommitmentLedgerFields(commitment, ledgerEntry),
+      `directive_exact="${!directive.truncated}"`,
+      `directive_excerpt_shape="${directive.truncated ? "head+tail" : "full"}"`,
+      `directive_included_chars="${directive.renderedChars}"`,
+      `directive_total_chars="${directive.totalChars}"`,
+      `directive="${escapeXmlSingleLineAttribute(directive.text)}" />`,
+    ].join(" "),
+    truncationCount: directive.truncated ? 1 : 0,
+  };
 }
 
-function renderLedgerOnlyCommitmentRecord(entry: EvidenceLedgerEntry): string {
+function renderLedgerOnlyCommitmentRecord(entry: EvidenceLedgerEntry): {
+  row: string;
+  truncationCount: number;
+} {
   const metadata = entry.state_metadata ?? {};
   const directive = entry.text ?? "";
-  const disclosure = renderMemoryDisclosureLabelForModel(
+  const disclosure = compactDisclosure(
     memoryDisclosureLabelFromMetadata(metadata.disclosure_label) ?? unknownMemoryDisclosureLabel(),
   );
   const attribute = (key: string, fallback = "unknown") => {
     const value = metadata[key];
     return typeof value === "string" || typeof value === "number" ? String(value) : fallback;
   };
-  return [
-    `<commitment id="${escapeXmlAttribute(entry.id)}" canonical_record="false"`,
-    `status="${escapeXmlAttribute(entry.state ?? "unknown")}"`,
-    `enforcement_class="${escapeXmlAttribute(attribute("commitment_enforcement_class"))}"`,
-    `critical_domain="${escapeXmlAttribute(attribute("commitment_critical_domain", "none"))}"`,
-    `kind="${escapeXmlAttribute(attribute("commitment_kind"))}"`,
-    `type="${escapeXmlAttribute(attribute("commitment_type"))}"`,
-    `family="${escapeXmlSingleLineAttribute(entry.value ?? "unknown")}"`,
-    `created_at="${escapeXmlAttribute(attribute("created_at"))}"`,
-    `last_reinforced_at="${escapeXmlAttribute(attribute("last_reinforced_at"))}"`,
-    `made_to_entity_id="${escapeXmlAttribute(attribute("made_to_entity_id", "none"))}"`,
-    `committed_by_entity_id="${escapeXmlAttribute(attribute("committed_by_entity_id", "none"))}"`,
-    `disclosure="${escapeXmlAttribute(disclosure)}"`,
-    `ledger_ref="${escapeXmlAttribute(entry.id)}"`,
-    `ledger_source_type="${escapeXmlAttribute(entry.source_type)}"`,
-    `ledger_actor="${escapeXmlAttribute(entry.actor)}"`,
-    `ledger_trust_rank="${entry.trust_rank}"`,
-    `ledger_state="${escapeXmlAttribute(entry.state ?? "unknown")}"`,
-    `ledger_salience_class="${escapeXmlAttribute(entry.salience_class ?? "none")}"`,
-    `ledger_taint="${escapeXmlAttribute(entry.taint ?? "none")}"`,
-    `ledger_value="same_as_family"`,
-    `ledger_text="same_as_directive"`,
-    `persistence_class="${escapeXmlAttribute(entry.persistence_class ?? "unknown")}"`,
-    `stream_index="${entry.stream_index ?? "none"}"`,
-    `citation_type="${escapeXmlAttribute(entry.citation_type ?? "none")}"`,
-    `citations="${escapeXmlSingleLineAttribute(joinedAttribute(entry.citations))}"`,
-    `directive_exact="true" directive_chars="${directive.length}" directive="${escapeXmlSingleLineAttribute(directive)}" />`,
-  ].join(" ");
+  const critical = attribute("commitment_enforcement_class") === "critical";
+  const excerpt = critical
+    ? headTailPlannerExcerpt(directive, Number.MAX_SAFE_INTEGER)
+    : headTailPlannerExcerpt(directive, TERMINAL_ADVISORY_COMMITMENT_EXCERPT_CHARS);
+  return {
+    row: [
+      `<commitment id="${escapeXmlAttribute(entry.id)}" canonical_record="false"`,
+      `status="${escapeXmlAttribute(entry.state ?? "unknown")}"`,
+      `enforcement_class="${escapeXmlAttribute(attribute("commitment_enforcement_class"))}"`,
+      `critical_domain="${escapeXmlAttribute(attribute("commitment_critical_domain", "none"))}"`,
+      `kind="${escapeXmlAttribute(attribute("commitment_kind"))}"`,
+      `type="${escapeXmlAttribute(attribute("commitment_type"))}"`,
+      `family="${escapeXmlSingleLineAttribute(entry.value ?? "unknown")}"`,
+      `created_at="${escapeXmlAttribute(attribute("created_at"))}"`,
+      `last_reinforced_at="${escapeXmlAttribute(attribute("last_reinforced_at"))}"`,
+      `made_to_entity_id="${escapeXmlAttribute(attribute("made_to_entity_id", "none"))}"`,
+      `restricted_audience_id="${escapeXmlAttribute(attribute("restricted_audience_id", "none"))}"`,
+      `about_entity_id="${escapeXmlAttribute(attribute("about_entity_id", "none"))}"`,
+      `committed_by_entity_id="${escapeXmlAttribute(attribute("committed_by_entity_id", "none"))}"`,
+      `disclosure="${escapeXmlAttribute(disclosure)}"`,
+      `ledger_ref="${escapeXmlAttribute(entry.id)}"`,
+      `ledger_source_type="${escapeXmlAttribute(entry.source_type)}"`,
+      `ledger_actor="${escapeXmlAttribute(entry.actor)}"`,
+      `ledger_trust_rank="${entry.trust_rank}"`,
+      `ledger_state="${escapeXmlAttribute(entry.state ?? "unknown")}"`,
+      `ledger_salience_class="${escapeXmlAttribute(entry.salience_class ?? "none")}"`,
+      `ledger_taint="${escapeXmlAttribute(entry.taint ?? "none")}"`,
+      `ledger_value="same_as_family"`,
+      `ledger_text="same_as_directive"`,
+      `persistence_class="${escapeXmlAttribute(entry.persistence_class ?? "unknown")}"`,
+      `stream_index="${entry.stream_index ?? "none"}"`,
+      `citation_type="${escapeXmlAttribute(entry.citation_type ?? "none")}"`,
+      `citations="${escapeXmlSingleLineAttribute(joinedAttribute(entry.citations))}"`,
+      `directive_exact="${!excerpt.truncated}"`,
+      `directive_excerpt_shape="${excerpt.truncated ? "head+tail" : "full"}"`,
+      `directive_included_chars="${excerpt.renderedChars}"`,
+      `directive_total_chars="${excerpt.totalChars}"`,
+      `directive="${escapeXmlSingleLineAttribute(excerpt.text)}" />`,
+    ].join(" "),
+    truncationCount: excerpt.truncated ? 1 : 0,
+  };
 }
 
 function renderCommitments(context: DeliberationContext): RenderedTerminalSection {
@@ -342,32 +385,36 @@ function renderCommitments(context: DeliberationContext): RenderedTerminalSectio
   const ledgerEntries = context.evidenceLedger?.audienceStanding?.commitmentEntries ?? [];
   const ledgerByCanonicalId = new Map(ledgerEntries.map((entry) => [entry.id, entry]));
   const matchedLedgerIds = new Set<string>();
-  const canonicalRows = commitments.map((commitment, index) => {
+  const canonicalRendered = commitments.map((commitment, index) => {
     const ledgerEntry = ledgerByCanonicalId.get(`commitment:${commitment.id}`);
     if (ledgerEntry !== undefined) matchedLedgerIds.add(ledgerEntry.id);
     return renderCommitmentRecord(commitment, ledgerEntry, index + 1);
   });
-  const ledgerOnlyRows = ledgerEntries
+  const ledgerOnlyRendered = ledgerEntries
     .filter((entry) => !matchedLedgerIds.has(entry.id))
     .map(renderLedgerOnlyCommitmentRecord);
-  const rows = [...canonicalRows, ...ledgerOnlyRows];
+  const rows = [...canonicalRendered, ...ledgerOnlyRendered].map((entry) => entry.row);
+  const truncationCount = [...canonicalRendered, ...ledgerOnlyRendered].reduce(
+    (sum, entry) => sum + entry.truncationCount,
+    0,
+  );
   return terminalSection(
     "commitments",
     "terminal_durable_global",
     [
-      `<borg_terminal_commitments complete="true" rows_total="${rows.length}" canonical_rows="${canonicalRows.length}" ledger_only_rows="${ledgerOnlyRows.length}">`,
-      "  <interpretation>One row per globally assembled commitment: canonical records first, then any distinct standing-ledger-only records. Every directive payload is exact and untruncated. Entity scope and disclosure are provenance and handling constraints, never audience-dependent recall selection. Relative ages are intentionally separated into the turn-local overlay keyed by id.</interpretation>",
-      "  <field_legend>Absolute record fields and the semantic field-set union of canonical scope/detail and standing-ledger rows are carried by each durable row plus its ID-keyed turn overlay. Legacy prompt_summary is not duplicated because its exact directive, entity IDs/labels, enforcement, and provenance components are present independently; directive_exact=true guarantees no excerpting.</field_legend>",
+      `<borg_terminal_commitments complete="true" rows_total="${rows.length}" canonical_rows="${canonicalRendered.length}" ledger_only_rows="${ledgerOnlyRendered.length}" advisory_excerpt_budget_chars="${TERMINAL_ADVISORY_COMMITMENT_EXCERPT_CHARS}">`,
+      "  <interpretation>One row per globally assembled commitment: canonical records first, then any distinct standing-ledger-only records. Critical directives are exact. A long advisory directive is a visibly annotated mechanical head+tail cut carrying both included and total source-character counts, never a clean-looking summary. Entity scope and disclosure are exact provenance and handling constraints, never audience-dependent recall selection. Relative ages are intentionally separated into the turn-local overlay keyed by id.</interpretation>",
+      "  <field_legend>Absolute record fields and the semantic field-set union of canonical scope/detail and standing-ledger rows are carried by each durable row plus its ID-keyed turn overlay. directive_exact, directive_excerpt_shape, directive_included_chars, and directive_total_chars state whether the directive is complete and, when cut, exactly how much source text is present.</field_legend>",
       ...rows.map((row) => `  ${row}`),
       "  <omitted_count>0</omitted_count>",
       "</borg_terminal_commitments>",
     ].join("\n"),
-    { rowCount: rows.length },
+    { rowCount: rows.length, truncationCount },
   );
 }
 
 function renderDurableSelf(context: DeliberationContext): RenderedTerminalSection {
-  const disclosure = renderMemoryDisclosureLabelForModel(selfPrivateMemoryDisclosureLabel());
+  const disclosure = compactDisclosure(selfPrivateMemoryDisclosureLabel());
   const valueRows = context.selfSnapshot.values.map(
     (value) =>
       `<value id="${escapeXmlAttribute(value.id)}" created_at="${iso(value.created_at)}" established_at="${iso(value.established_at)}" disclosure="${escapeXmlAttribute(disclosure)}" provenance="${escapeXmlSingleLineAttribute(summarizeProvenanceForPrompt(value.provenance, Number.MAX_SAFE_INTEGER))}" label="${escapeXmlSingleLineAttribute(value.label)}" description="${escapeXmlSingleLineAttribute(value.description)}" />`,
@@ -414,11 +461,237 @@ function renderDurableGlobal(context: DeliberationContext): RenderedTerminalSect
   ];
 }
 
-function renderDurableAudience(context: DeliberationContext): RenderedTerminalSection[] {
-  const directiveLines = renderCreatorDirectiveDisclosureLines(
-    context.creatorDirectiveBriefing ?? null,
-    "  ",
+function compareCreatorDirectivePriorityAndAge(
+  left: CreatorDirectiveBriefingDirective,
+  right: CreatorDirectiveBriefingDirective,
+): number {
+  return right.priority - left.priority || left.createdAt - right.createdAt;
+}
+
+function orderedCreatorDirectives(
+  directives: readonly CreatorDirectiveBriefingDirective[],
+): CreatorDirectiveBriefingDirective[] {
+  return [
+    ...directives
+      .filter((directive) => directive.renderMode === "content")
+      .sort(compareCreatorDirectivePriorityAndAge),
+    ...directives
+      .filter(
+        (directive): directive is CreatorDirectiveBriefingPrivateDirective =>
+          directive.renderMode === "private",
+      )
+      .sort((left, right) => {
+        if (left.privateKind !== right.privateKind) {
+          return left.privateKind === "knowledge" ? -1 : 1;
+        }
+        return compareCreatorDirectivePriorityAndAge(left, right);
+      }),
+    ...directives
+      .filter((directive) => directive.renderMode === "boundary")
+      .sort(compareCreatorDirectivePriorityAndAge),
+  ];
+}
+
+function creatorDirectivePayload(directive: CreatorDirectiveBriefingDirective): {
+  kind: "boundary_prompt" | "operational_directive" | "semantic_value" | "canonical_fact";
+  payloadText: string | null;
+  exactRequired: boolean;
+} {
+  if (directive.renderMode === "boundary") {
+    return {
+      kind: "boundary_prompt",
+      payloadText: INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT,
+      exactRequired: true,
+    };
+  }
+  if (directive.renderMode === "private" && directive.privateKind === "operation") {
+    return {
+      kind: "operational_directive",
+      payloadText: directive.operationalDirective,
+      exactRequired: true,
+    };
+  }
+  if (directive.kind === "response_policy" || directive.kind === "routing_instruction") {
+    return {
+      kind: "operational_directive",
+      payloadText: directive.operationalDirective,
+      exactRequired: true,
+    };
+  }
+  if (directive.semanticSlot !== null) {
+    return {
+      kind: "semantic_value",
+      payloadText: directive.semanticValue,
+      exactRequired: false,
+    };
+  }
+  return {
+    kind: "canonical_fact",
+    payloadText: directive.canonicalFact,
+    exactRequired: false,
+  };
+}
+
+function directiveMode(directive: CreatorDirectiveBriefingDirective): string {
+  return directive.renderMode !== "private"
+    ? directive.renderMode
+    : directive.privateKind === "operation"
+      ? "private_operation"
+      : "private_knowledge";
+}
+
+function directiveKind(directive: CreatorDirectiveBriefingDirective): string {
+  return directive.renderMode === "boundary" ? "boundary" : directive.kind;
+}
+
+function directiveSubjectFields(directive: CreatorDirectiveBriefingDirective): {
+  kind: string;
+  label: string;
+  semanticSlot: string;
+} {
+  if (
+    directive.renderMode === "boundary" ||
+    (directive.renderMode === "private" && directive.privateKind === "operation")
+  ) {
+    return { kind: "none", label: "", semanticSlot: "none" };
+  }
+  return {
+    kind: directive.subjectKind,
+    label: directive.subjectLabel,
+    semanticSlot: directive.semanticSlot ?? "none",
+  };
+}
+
+function compactCreatorDirectivePayloadAttributes(directive: CreatorDirectiveBriefingDirective): {
+  attributes: string[];
+  truncationCount: number;
+} {
+  const source = creatorDirectivePayload(directive);
+  const value = source.payloadText ?? "";
+  const payload = headTailPlannerExcerpt(
+    value,
+    source.exactRequired ? Number.MAX_SAFE_INTEGER : TERMINAL_CREATOR_DIRECTIVE_FACT_EXCERPT_CHARS,
   );
+  const status =
+    source.payloadText === null ? "missing" : payload.truncated ? "head+tail_excerpt" : "exact";
+  return {
+    attributes: [
+      `payload_kind="${source.kind}"`,
+      `payload_status="${status}"`,
+      `payload_included_chars="${payload.renderedChars}"`,
+      `payload_total_chars="${payload.totalChars}"`,
+      `payload="${escapeXmlSingleLineAttribute(payload.text)}"`,
+    ],
+    truncationCount: Number(payload.truncated),
+  };
+}
+
+function compactCreatorDirectiveSubjectAttributes(directive: CreatorDirectiveBriefingDirective): {
+  attributes: string[];
+  truncationCount: number;
+} {
+  const subject = directiveSubjectFields(directive);
+  const label = headTailPlannerExcerpt(
+    subject.label,
+    TERMINAL_CREATOR_DIRECTIVE_LABEL_EXCERPT_CHARS,
+  );
+  return {
+    attributes: [
+      `subject_kind="${escapeXmlAttribute(subject.kind)}"`,
+      `subject_label_exact="${!label.truncated}"`,
+      `subject_label_included_chars="${label.renderedChars}"`,
+      `subject_label_total_chars="${label.totalChars}"`,
+      `subject_label="${escapeXmlSingleLineAttribute(label.text)}"`,
+      `semantic_slot="${escapeXmlAttribute(subject.semanticSlot)}"`,
+    ],
+    truncationCount: Number(label.truncated),
+  };
+}
+
+function compactCreatorDirectiveScopeAttributes(
+  directive: CreatorDirectiveBriefingDirective,
+): string[] {
+  const scope = directive.scope;
+  const scopeList = (values: readonly string[] | undefined) =>
+    scope === undefined ? "unknown" : joinedAttribute(values);
+  const fallbackMentionPolicy =
+    directive.renderMode === "boundary" ||
+    (directive.renderMode === "private" && directive.privateKind === "operation")
+      ? "unknown"
+      : directive.mentionPolicy;
+  return [
+    `scope_status="${scope === undefined ? "not_captured" : "exact"}"`,
+    `directive_id="${escapeXmlAttribute(scope?.directiveId ?? "unknown")}"`,
+    `created_by_entity_id="${escapeXmlAttribute(scope?.createdByEntityId ?? "unknown")}"`,
+    `source_session_id="${escapeXmlAttribute(scope?.sourceSessionId ?? "unknown")}"`,
+    `content_scope="${escapeXmlAttribute(scope?.contentScope ?? "unknown")}"`,
+    `allowed_entity_ids="${escapeXmlAttribute(scopeList(scope?.allowedEntityIds))}"`,
+    `excluded_entity_ids="${escapeXmlAttribute(scopeList(scope?.excludedEntityIds))}"`,
+    `subject_may_know="${scope === undefined ? "unknown" : String(scope.subjectMayKnow ?? "null")}"`,
+    `mention_policy="${escapeXmlAttribute(scope?.mentionPolicy ?? fallbackMentionPolicy)}"`,
+    `denied_audience_behavior="${escapeXmlAttribute(scope?.deniedAudienceBehavior ?? "unknown")}"`,
+    `activation_scope="${escapeXmlAttribute(scope?.activationScope ?? "unknown")}"`,
+    `activation_allowed_entity_ids="${escapeXmlAttribute(scopeList(scope?.activationAllowedEntityIds))}"`,
+    `activation_excluded_entity_ids="${escapeXmlAttribute(scopeList(scope?.activationExcludedEntityIds))}"`,
+  ];
+}
+
+function renderCompactCreatorDirectiveRow(
+  directive: CreatorDirectiveBriefingDirective,
+  index: number,
+): { row: string; truncationCount: number } {
+  const scopeAttributes = compactCreatorDirectiveScopeAttributes(directive);
+  const subject = compactCreatorDirectiveSubjectAttributes(directive);
+  const payload = compactCreatorDirectivePayloadAttributes(directive);
+  return {
+    row: [
+      `<creator_directive id_alias="cd_${index + 1}"`,
+      `mode="${directiveMode(directive)}"`,
+      `kind="${escapeXmlAttribute(directiveKind(directive))}"`,
+      `priority="${directive.priority}"`,
+      `created_at="${iso(directive.createdAt)}"`,
+      ...scopeAttributes,
+      ...subject.attributes,
+      ...payload.attributes,
+      "/>",
+    ].join(" "),
+    truncationCount: subject.truncationCount + payload.truncationCount,
+  };
+}
+
+function renderCompactCreatorDirectives(
+  briefing: DeliberationContext["creatorDirectiveBriefing"],
+): { lines: string[]; rowCount: number; truncationCount: number } {
+  if (briefing === null || briefing === undefined || briefing.directives.length === 0) {
+    return {
+      lines: [
+        '  <creator_directive_index complete="true" rows_total="0"><omitted_count>0</omitted_count></creator_directive_index>',
+      ],
+      rowCount: 0,
+      truncationCount: 0,
+    };
+  }
+  let truncationCount = 0;
+  const rows = orderedCreatorDirectives(briefing.directives).map((directive, index) => {
+    const rendered = renderCompactCreatorDirectiveRow(directive, index);
+    truncationCount += rendered.truncationCount;
+    return rendered.row;
+  });
+  return {
+    lines: [
+      `  <creator_directive_index complete="true" rows_total="${rows.length}" fact_excerpt_budget_chars="${TERMINAL_CREATOR_DIRECTIVE_FACT_EXCERPT_CHARS}">`,
+      "    <interpretation>Boundary and operational directives are exact. Fact-bearing payloads may be visibly annotated mechanical head+tail excerpts with included and total source-character counts. Every structural disclosure and activation scope field is exact; none is inferred from payload language.</interpretation>",
+      ...rows.map((row) => `    ${row}`),
+      "    <omitted_count>0</omitted_count>",
+      "  </creator_directive_index>",
+    ],
+    rowCount: rows.length,
+    truncationCount,
+  };
+}
+
+function renderDurableAudience(context: DeliberationContext): RenderedTerminalSection[] {
+  const directives = renderCompactCreatorDirectives(context.creatorDirectiveBriefing ?? null);
   return [
     terminalSection(
       "audience_authority_and_directives",
@@ -426,10 +699,10 @@ function renderDurableAudience(context: DeliberationContext): RenderedTerminalSe
       [
         `<borg_terminal_audience_durable audience_entity_id="${escapeXmlAttribute(context.audienceEntityId ?? "none")}" self_audience="${context.isSelfAudience === true}">`,
         `  <authority_framing>${escapeXmlText(STABLE_AUTHORITY_FRAMING)}</authority_framing>`,
-        ...directiveLines,
+        ...directives.lines,
         "</borg_terminal_audience_durable>",
       ].join("\n"),
-      { rowCount: context.creatorDirectiveBriefing?.directives.length ?? 0 },
+      { rowCount: directives.rowCount, truncationCount: directives.truncationCount },
     ),
   ];
 }
@@ -702,13 +975,21 @@ function plannerSectionToTerminal(
 const FINALIZER_ADDITIONAL_SECTION_ORDER: Readonly<Record<string, number>> = {
   borg_evidence_ledger: 30,
   borg_additional_retrieval: 40,
+  [COMPACT_FINALIZER_VERIFICATION_RETRIEVAL_BLOCK_ID]: 40,
   borg_s2_plan: 50,
 };
 
 function orderedUntrustedAdditionalSections(
   sections: readonly PromptSurfaceAdditionalSection[],
 ): PromptSurfaceAdditionalSection[] {
+  const hasCompactVerificationRetrieval = sections.some(
+    (section) => section.blockId === COMPACT_FINALIZER_VERIFICATION_RETRIEVAL_BLOCK_ID,
+  );
   return sections
+    .filter(
+      (section) =>
+        !hasCompactVerificationRetrieval || section.blockId !== "borg_additional_retrieval",
+    )
     .map((section, inputIndex) => ({ section, inputIndex }))
     .sort((left, right) => {
       const leftOrder = FINALIZER_ADDITIONAL_SECTION_ORDER[left.section.blockId] ?? 45;

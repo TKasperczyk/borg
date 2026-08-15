@@ -10,6 +10,9 @@ import type {
   EntityRepository,
 } from "../../memory/commitments/index.js";
 import type {
+  CreatorDirectiveActivationScope,
+  CreatorDirectiveContentScope,
+  CreatorDirectiveDeniedAudienceBehavior,
   CreatorDirectiveKind,
   CreatorDirectiveMentionPolicy,
   CreatorDirectiveSemanticSlot,
@@ -91,7 +94,31 @@ export type CreatorIdentityContext = {
   displayName: string;
 };
 
-export type CreatorDirectiveBriefingContentDirective = {
+export type CreatorDirectiveBriefingScope = {
+  directiveId: string;
+  createdByEntityId: EntityId;
+  sourceSessionId: SessionId;
+  contentScope: CreatorDirectiveContentScope;
+  allowedEntityIds: readonly EntityId[];
+  excludedEntityIds: readonly EntityId[];
+  subjectMayKnow: boolean | null;
+  mentionPolicy: CreatorDirectiveMentionPolicy;
+  deniedAudienceBehavior: CreatorDirectiveDeniedAudienceBehavior;
+  activationScope: CreatorDirectiveActivationScope;
+  activationAllowedEntityIds: readonly EntityId[];
+  activationExcludedEntityIds: readonly EntityId[];
+};
+
+type CreatorDirectiveBriefingScoped = {
+  /**
+   * Exact structural policy fields used by compact terminal presentation.
+   * Optional for historical captures and direct test fixtures; production
+   * turn assembly always supplies it.
+   */
+  scope?: CreatorDirectiveBriefingScope;
+};
+
+export type CreatorDirectiveBriefingContentDirective = CreatorDirectiveBriefingScoped & {
   renderMode: "content";
   kind: CreatorDirectiveKind;
   subjectKind: CreatorDirectiveSubjectKind;
@@ -105,25 +132,25 @@ export type CreatorDirectiveBriefingContentDirective = {
   createdAt: number;
 };
 
-export type CreatorDirectiveBriefingBoundaryDirective = {
+export type CreatorDirectiveBriefingBoundaryDirective = CreatorDirectiveBriefingScoped & {
   renderMode: "boundary";
   priority: number;
   createdAt: number;
 };
 
 export type CreatorDirectiveBriefingPrivateDirective =
-  | {
+  | (CreatorDirectiveBriefingScoped & {
       renderMode: "private";
       privateKind: "operation";
       kind: "response_policy" | "routing_instruction";
       operationalDirective: string;
       priority: number;
       createdAt: number;
-    }
+    })
   // A fact-bearing directive that governs the current session (activation active) but
   // whose content may NOT be disclosed to the current audience. Borg holds it privately
   // for orientation/action; it must not be volunteered or confirmed.
-  | {
+  | (CreatorDirectiveBriefingScoped & {
       renderMode: "private";
       privateKind: "knowledge";
       kind: "self_identity" | "subject_fact" | "disclosure_boundary";
@@ -135,7 +162,7 @@ export type CreatorDirectiveBriefingPrivateDirective =
       mentionPolicy: CreatorDirectiveMentionPolicy;
       priority: number;
       createdAt: number;
-    };
+    });
 
 export type CreatorDirectiveBriefingDirective =
   | CreatorDirectiveBriefingContentDirective

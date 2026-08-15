@@ -55,13 +55,15 @@ export type ReplayFinalizerContextCaptureOptions =
   | { mode: "dry"; pairIndex?: number; now?: () => number }
   | { mode: "live"; llmClient: LLMClient; pairIndex?: number; now?: () => number };
 
-const TERMINAL_FINALIZER_TOOL_NAMES = new Set([
+export const TERMINAL_FINALIZER_TOOL_NAMES = [
   "EmitAnswer",
   "EmitObserve",
   "EmitNoOutput",
   "EmitSelfReport",
   "EmitContinueThought",
-]);
+] as const;
+
+const TERMINAL_FINALIZER_TOOL_NAME_SET = new Set<string>(TERMINAL_FINALIZER_TOOL_NAMES);
 
 function requestForVariant(
   record: FinalizerContextCaptureRecord,
@@ -71,7 +73,7 @@ function requestForVariant(
     throw new TypeError("Finalizer capture has no live request");
   }
   const terminalTools = record.live_request.tools?.filter((tool) =>
-    TERMINAL_FINALIZER_TOOL_NAMES.has(tool.name),
+    TERMINAL_FINALIZER_TOOL_NAME_SET.has(tool.name),
   );
   // Replay receives fake terminal schemas only. No dispatcher, repository,
   // stream writer, retrieval callback, or working-memory service is reachable.

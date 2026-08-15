@@ -6,7 +6,6 @@
 import { createReadStream, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { pathToFileURL } from "node:url";
 
 import { resolveClaudeOAuthCredentialsPath } from "../src/auth/claude-oauth.ts";
 import { loadConfig } from "../src/config/index.ts";
@@ -15,91 +14,16 @@ import {
   parsePlannerContextCaptureRecord,
   plannerContextCapturePath,
 } from "../src/cognition/deliberation/planner-context-capture.ts";
-import {
-  replayPlannerContextCapture,
-  type PlannerAbReplayMode,
-} from "../src/cognition/deliberation/planner-ab-replay.ts";
+import { replayPlannerContextCapture } from "../src/cognition/deliberation/planner-ab-replay.ts";
 import { appendDurableJsonl } from "../src/util/durable-jsonl.ts";
 import { isPathWithin, resolveRealPathForCreation } from "../src/util/path.ts";
+import { parseAbReplayCliArgs, runAbCliEntrypoint, type AbReplayCliArgs } from "./ab-cli.ts";
 
-type Args = {
-  mode: PlannerAbReplayMode;
-  dataDir?: string;
-  inputPath?: string;
-  outputPath?: string;
-  limit?: number;
-  includeNonCompleted: boolean;
-};
-
-function usage(message?: string): never {
-  if (message !== undefined) {
-    console.error(message);
-    console.error("");
-  }
-  console.error(
-    [
-      "Usage: pnpm planner:ab-replay -- [--dry|--live] [--data-dir DIR] [--input FILE] [--output FILE] [--limit N] [--include-non-completed]",
-      "",
-      "--dry is the default and performs no LLM calls.",
-      "--live runs both planner variants through the existing unary LLM transport.",
-      "Degraded/threw source captures are excluded unless --include-non-completed is set.",
-    ].join("\n"),
-  );
-  process.exit(1);
-}
-
-function requiredValue(argv: readonly string[], index: number, flag: string): string {
-  const value = argv[index + 1];
-  if (value === undefined || value.length === 0) usage(`${flag} requires a value`);
-  return value;
-}
-
-export function parsePlannerAbReplayArgs(argv: readonly string[]): Args {
-  const args: Args = { mode: "dry", includeNonCompleted: false };
-  let modeSeen: PlannerAbReplayMode | undefined;
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    switch (arg) {
-      case "--dry":
-      case "--live": {
-        const requestedMode = arg === "--live" ? "live" : "dry";
-        if (modeSeen !== undefined && modeSeen !== requestedMode) {
-          usage("Choose exactly one of --dry or --live");
-        }
-        args.mode = requestedMode;
-        modeSeen = requestedMode;
-        break;
-      }
-      case "--data-dir":
-        args.dataDir = requiredValue(argv, index, arg);
-        index += 1;
-        break;
-      case "--input":
-        args.inputPath = requiredValue(argv, index, arg);
-        index += 1;
-        break;
-      case "--output":
-        args.outputPath = requiredValue(argv, index, arg);
-        index += 1;
-        break;
-      case "--limit": {
-        const limit = Number(requiredValue(argv, index, arg));
-        if (!Number.isInteger(limit) || limit <= 0) usage("--limit must be a positive integer");
-        args.limit = limit;
-        index += 1;
-        break;
-      }
-      case "--include-non-completed":
-        args.includeNonCompleted = true;
-        break;
-      case "--help":
-      case "-h":
-        usage();
-      default:
-        usage(`Unknown argument: ${arg}`);
-    }
-  }
-  return args;
+export function parsePlannerAbReplayArgs(argv: readonly string[]): AbReplayCliArgs {
+  return parseAbReplayCliArgs(argv, {
+    command: "planner:ab-replay",
+    includeNonCompleted: true,
+  });
 }
 
 export type ResolvedPlannerAbReplayPaths = {
@@ -265,9 +189,4 @@ export async function runPlannerAbReplayCli(
   );
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  runPlannerAbReplayCli(process.argv.slice(2)).catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  });
-}
+runAbCliEntrypoint(import.meta.url, runPlannerAbReplayCli);

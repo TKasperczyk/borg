@@ -4,6 +4,7 @@ import type { CommitmentRecord } from "../../../memory/commitments/index.js";
 import {
   DEFAULT_SESSION_ID,
   createCommitmentId,
+  createCreatorDirectiveId,
   createEntityId,
   createGoalId,
   createRelationalSlotId,
@@ -13,10 +14,14 @@ import {
 } from "../../../util/ids.js";
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../../evidence-ledger/index.js";
 import type { DeliberationContext, SelfSnapshotGoal } from "../types.js";
-import { buildCompactFinalizerSystemPrompt } from "./finalizer-context.js";
+import {
+  buildCompactFinalizerSystemPrompt,
+  COMPACT_FINALIZER_VERIFICATION_RETRIEVAL_BLOCK_ID,
+} from "./finalizer-context.js";
 import { buildFinalizerSystemPrompt } from "../finalizer.js";
 import { TRUSTED_GUIDANCE_PREAMBLE } from "../../prompts/base-identity.js";
 import { buildCacheableBaseSystemPromptParts } from "./system-prompt.js";
+import { headTailPlannerExcerpt } from "./planner-context.js";
 
 const NOW_MS = Date.UTC(2026, 7, 14, 12, 0, 0);
 
@@ -164,26 +169,171 @@ describe("compact terminal finalizer context", () => {
     expect(result.traceSummary.blocks.terminal_turn_context.ttl).toBe("5m");
   });
 
-  it("keeps complete commitment membership, disclosure, and every exact directive", () => {
+  it("keeps critical directives exact and visibly annotates advisory head-tail cuts", () => {
     const alice = createEntityId();
     const rows = [
       commitment('Keep <all> & "every" line.\nSecond line.', {
         restricted_audience: alice,
       }),
-      commitment("Advisory payload remains exact too.", {
+      commitment(`ADVISORY-HEAD-${"x".repeat(900)}-ADVISORY-TAIL`, {
         enforcement_class: "advisory",
         critical_domain: null,
       }),
     ];
     const rendered = text(build(context({ applicableCommitments: rows })));
+    const advisoryExcerpt = headTailPlannerExcerpt(rows[1]!.directive, 480);
     expect([...rendered.matchAll(/<commitment id="([^"]+)"/g)].map((match) => match[1])).toEqual(
       rows.map((row) => row.id),
     );
     expect(rendered).toContain('directive_exact="true"');
+    expect(rendered).toContain(`origin_audience=${alice}`);
+    expect(rendered).toContain(`private-to=${alice}`);
+    expect(rendered).toContain("public-to=none");
     expect(rendered).toContain("Keep &lt;all&gt; &amp; &quot;every&quot; line.&#10;Second line.");
-    expect(rendered).toContain("Advisory payload remains exact too.");
+    expect(rendered).toContain('directive_exact="false"');
+    expect(rendered).toContain('directive_excerpt_shape="head+tail"');
+    expect(rendered).toContain(`directive_included_chars="${advisoryExcerpt.renderedChars}"`);
+    expect(rendered).toContain('directive_total_chars="928"');
+    expect(rendered).toContain(
+      `HEAD+TAIL EXCERPT; rendered=${advisoryExcerpt.renderedChars}/total=928`,
+    );
+    expect(rendered).toContain("ADVISORY-HEAD-");
+    expect(rendered).toContain("-ADVISORY-TAIL");
     expect(rendered).toContain("relationship_private");
     expect(rendered).toContain("omitted_count>0</omitted_count>");
+  });
+
+  it("uses structural directive kinds for exact versus visibly excerpted payloads", () => {
+    const creatorId = createEntityId();
+    const allowedId = createEntityId();
+    const excludedId = createEntityId();
+    const exactOperation = `PRIVATE-OP-${"o".repeat(800)}-END`;
+    const exactSlottedOperation = `SLOTTED-OP-${"s".repeat(800)}-END`;
+    const fact = `FACT-HEAD-${"f".repeat(900)}-FACT-TAIL`;
+    const scope = {
+      directiveId: createCreatorDirectiveId(),
+      createdByEntityId: creatorId,
+      sourceSessionId: DEFAULT_SESSION_ID,
+      contentScope: "allow_list" as const,
+      allowedEntityIds: [allowedId],
+      excludedEntityIds: [excludedId],
+      subjectMayKnow: false,
+      mentionPolicy: "never_mention" as const,
+      deniedAudienceBehavior: "omit" as const,
+      activationScope: "allow_list" as const,
+      activationAllowedEntityIds: [allowedId],
+      activationExcludedEntityIds: [excludedId],
+    };
+    const factDirectiveId = createCreatorDirectiveId();
+    const boundaryDirectiveId = createCreatorDirectiveId();
+    const slottedOperationDirectiveId = createCreatorDirectiveId();
+    const rendered = text(
+      build(
+        context({
+          creatorDirectiveBriefing: {
+            directives: [
+              {
+                renderMode: "private",
+                privateKind: "operation",
+                kind: "routing_instruction",
+                operationalDirective: exactOperation,
+                priority: 10,
+                createdAt: NOW_MS,
+                scope,
+              },
+              {
+                renderMode: "content",
+                kind: "response_policy",
+                subjectKind: "entity",
+                subjectLabel: "subject",
+                semanticSlot: "public_name",
+                semanticValue: "fact-like slot value",
+                canonicalFact: null,
+                operationalDirective: exactSlottedOperation,
+                mentionPolicy: "never_mention",
+                priority: 6,
+                createdAt: NOW_MS,
+                scope: { ...scope, directiveId: slottedOperationDirectiveId },
+              },
+              {
+                renderMode: "content",
+                kind: "subject_fact",
+                subjectKind: "entity",
+                subjectLabel: "subject",
+                semanticSlot: null,
+                semanticValue: null,
+                canonicalFact: fact,
+                operationalDirective: null,
+                mentionPolicy: "never_mention",
+                priority: 5,
+                createdAt: NOW_MS,
+                scope: { ...scope, directiveId: factDirectiveId },
+              },
+              {
+                renderMode: "boundary",
+                priority: 4,
+                createdAt: NOW_MS,
+                scope: { ...scope, directiveId: boundaryDirectiveId },
+              },
+            ],
+          },
+        }),
+      ),
+    );
+    const factExcerpt = headTailPlannerExcerpt(fact, 480);
+
+    expect(rendered).toContain(`payload="${exactOperation}"`);
+    expect(rendered).toContain(`payload="${exactSlottedOperation}"`);
+    expect(rendered).toContain('payload_kind="operational_directive" payload_status="exact"');
+    expect(rendered).toContain('mode="boundary" kind="boundary"');
+    expect(rendered).toContain(`directive_id="${boundaryDirectiveId}"`);
+    expect(rendered).toContain('payload_kind="boundary_prompt" payload_status="exact"');
+    expect(rendered).toContain(`directive_id="${factDirectiveId}"`);
+    expect(rendered).toContain('payload_status="head+tail_excerpt"');
+    expect(rendered).toContain(`payload_included_chars="${factExcerpt.renderedChars}"`);
+    expect(rendered).toContain('payload_total_chars="920"');
+    expect(rendered).toContain(
+      `HEAD+TAIL EXCERPT; rendered=${factExcerpt.renderedChars}/total=920`,
+    );
+    expect(rendered).toContain('scope_status="exact"');
+    expect(rendered).toContain('content_scope="allow_list"');
+    expect(rendered).toContain(`allowed_entity_ids="${allowedId}"`);
+    expect(rendered).toContain(`excluded_entity_ids="${excludedId}"`);
+    expect(rendered).toContain('mention_policy="never_mention"');
+    expect(rendered).toContain('activation_scope="allow_list"');
+  });
+
+  it("marks historical directive scope fields unknown instead of exact-empty", () => {
+    const rendered = text(
+      build(
+        context({
+          creatorDirectiveBriefing: {
+            directives: [
+              {
+                renderMode: "content",
+                kind: "subject_fact",
+                subjectKind: "borg_self",
+                subjectLabel: "Borg",
+                semanticSlot: null,
+                semanticValue: null,
+                canonicalFact: "Historical captured fact",
+                operationalDirective: null,
+                mentionPolicy: "answer_if_asked",
+                priority: 1,
+                createdAt: NOW_MS,
+              },
+            ],
+          },
+        }),
+      ),
+    );
+
+    expect(rendered).toContain('scope_status="not_captured"');
+    expect(rendered).toContain('allowed_entity_ids="unknown"');
+    expect(rendered).toContain('excluded_entity_ids="unknown"');
+    expect(rendered).toContain('activation_allowed_entity_ids="unknown"');
+    expect(rendered).toContain('activation_excluded_entity_ids="unknown"');
+    expect(rendered).toContain('mention_policy="answer_if_asked"');
   });
 
   it("never changes global commitment or goal index membership with the audience", () => {
@@ -728,6 +878,35 @@ describe("compact terminal finalizer context", () => {
     expect(text(s2)).toContain("<borg_s2_plan>EXACT PLAN</borg_s2_plan>");
     expect(s1.traceSummary.path).toBe("system_1");
     expect(s2.traceSummary.path).toBe("system_2");
+  });
+
+  it("keeps the compact-only verification block out of the legacy byte surface", () => {
+    const base = {
+      llmClient: {} as never,
+      dispatcher: {} as never,
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      baseSystemPrompt: "legacy dynamic",
+      cacheableSystemPrompt: { staticPrefix: "legacy static", dynamicContent: "legacy dynamic" },
+      initialMessages: [],
+      userEntryId: undefined,
+      maxTokens: 100,
+      path: "system_2" as const,
+      finalizerSurfaceVariant: "legacy" as const,
+    };
+    const baseline = buildFinalizerSystemPrompt(base);
+    const withCompactOnlySection = buildFinalizerSystemPrompt({
+      ...base,
+      additionalPromptSections: [
+        {
+          blockId: COMPACT_FINALIZER_VERIFICATION_RETRIEVAL_BLOCK_ID,
+          text: "COMPACT ONLY",
+        },
+      ],
+    });
+
+    expect(withCompactOnlySection.system).toEqual(baseline.system);
+    expect(withCompactOnlySection.traceSummary).toEqual(baseline.traceSummary);
   });
 
   it("keeps decided outcomes aggregated separately from mere firings", () => {

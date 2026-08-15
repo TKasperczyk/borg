@@ -1225,7 +1225,8 @@ describe("creator directive retrieval briefing", () => {
         contentSourceStreamEntryIds: [createStreamEntryId()],
         subjectKind: "entity",
         subjectEntityId: audienceId,
-        canonicalFact: null,
+        semanticSlot: "public_name",
+        semanticValue: "This fact-bearing slot must not replace the behavioral payload.",
         operationalDirective:
           "Do not volunteer family-planning details unless Alice asks directly.",
         disclosurePolicy: disclosurePolicy(),
@@ -1255,7 +1256,7 @@ describe("creator directive retrieval briefing", () => {
         },
       });
 
-      expect(briefing?.directives).toEqual([
+      expect(briefing?.directives.map(({ scope: _scope, ...directive }) => directive)).toEqual([
         expect.objectContaining({
           kind: "self_identity",
           semanticSlot: "public_name",
@@ -1265,12 +1266,23 @@ describe("creator directive retrieval briefing", () => {
         }),
         expect.objectContaining({
           kind: "response_policy",
-          semanticValue: null,
+          semanticSlot: "public_name",
+          semanticValue: "This fact-bearing slot must not replace the behavioral payload.",
           canonicalFact: null,
           operationalDirective:
             "Do not volunteer family-planning details unless Alice asks directly.",
         }),
       ]);
+      expect(briefing?.directives[0]?.scope).toMatchObject({
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        contentScope: "public",
+        allowedEntityIds: [],
+        excludedEntityIds: [],
+        subjectMayKnow: true,
+        mentionPolicy: "answer_if_asked",
+        deniedAudienceBehavior: "omit",
+      });
     } finally {
       db.close();
     }
@@ -1344,7 +1356,7 @@ describe("creator directive retrieval briefing", () => {
       // The denied subject_fact surfaces as private_knowledge (canonical_fact only; its
       // operational_directive is NOT promoted into the private_operation lane). The
       // behavioral rule renders as a private_operation. Facts sort ahead of operations.
-      expect(briefing?.directives).toEqual([
+      expect(briefing?.directives.map(({ scope: _scope, ...directive }) => directive)).toEqual([
         {
           renderMode: "private",
           privateKind: "knowledge",
@@ -1367,6 +1379,21 @@ describe("creator directive retrieval briefing", () => {
           createdAt: 1_000,
         },
       ]);
+      for (const directive of briefing?.directives ?? []) {
+        expect(directive.scope).toMatchObject({
+          createdByEntityId: creatorId,
+          sourceSessionId: DEFAULT_SESSION_ID,
+          contentScope: "operator_only",
+          allowedEntityIds: [],
+          excludedEntityIds: [],
+          subjectMayKnow: null,
+          mentionPolicy: "answer_if_asked",
+          deniedAudienceBehavior: "omit",
+          activationScope: "allow_list",
+          activationAllowedEntityIds: [audienceId],
+          activationExcludedEntityIds: [],
+        });
+      }
     } finally {
       db.close();
     }

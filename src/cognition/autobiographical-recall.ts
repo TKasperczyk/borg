@@ -50,6 +50,7 @@ const AUTOBIOGRAPHICAL_STREAM_KINDS = [
   "agent_suppressed",
   "agent_observed",
   "tool_call",
+  "tool_result",
 ] as const satisfies readonly StreamEntryKind[];
 
 // Aggregates structured autobiographical evidence for the finalizer. It intentionally does not
@@ -443,6 +444,46 @@ type StreamEventCandidate = {
   session: SessionRecord;
 };
 
+function streamContentRecord(entry: StreamEntry): Record<string, unknown> | null {
+  return entry.content !== null &&
+    typeof entry.content === "object" &&
+    !Array.isArray(entry.content)
+    ? (entry.content as Record<string, unknown>)
+    : null;
+}
+
+function streamToolCallId(entry: StreamEntry): string | null {
+  const callId = streamContentRecord(entry)?.call_id;
+  return typeof callId === "string" && callId.length > 0 ? callId : null;
+}
+
+function streamToolResultKey(sessionId: SessionId, callId: string): string {
+  return `${sessionId}:${callId}`;
+}
+
+function outboundAttemptMetadata(
+  callEntry: StreamEntry,
+  resultEntry: StreamEntry | undefined,
+): Record<string, unknown> {
+  const call = streamContentRecord(callEntry);
+  const callId = streamToolCallId(callEntry);
+  if (call?.skipped === true) {
+    return {
+      status: "not_attempted",
+      outcome: "skipped",
+      ...(callId === null ? {} : { call_id: callId }),
+      ...(typeof call.skip_reason === "string" ? { skip_reason: call.skip_reason } : {}),
+    };
+  }
+  const result = resultEntry === undefined ? null : streamContentRecord(resultEntry);
+  return {
+    status: "attempted",
+    outcome: result?.ok === true ? "succeeded" : result?.ok === false ? "failed" : "unknown",
+    ...(callId === null ? {} : { call_id: callId }),
+    ...(resultEntry === undefined ? {} : { tool_result_stream_id: resultEntry.id }),
+  };
+}
+
 function provenanceEpisodeIds(provenance: Provenance | null): EpisodeId[] {
   if (provenance === null) {
     return [];
@@ -755,6 +796,7 @@ export class AutobiographicalRecallService {
     });
     const sessions = fetchedSessions.slice(0, sessionLimit);
     const candidates: StreamEventCandidate[] = [];
+    const toolResults = new Map<string, StreamEntry>();
 
     for (const session of sessions) {
       for await (const entry of this.options.createStreamReader(session.session_id).iterate({
@@ -762,6 +804,13 @@ export class AutobiographicalRecallService {
         untilTs: input.window.endMs,
         kinds: AUTOBIOGRAPHICAL_STREAM_KINDS,
       })) {
+        if (entry.kind === "tool_result") {
+          const callId = streamToolCallId(entry);
+          if (callId !== null) {
+            toolResults.set(streamToolResultKey(session.session_id, callId), entry);
+          }
+          continue;
+        }
         const kind = streamItemKind(entry);
 
         if (kind === null) {
@@ -795,6 +844,11 @@ export class AutobiographicalRecallService {
     for (const candidate of selected) {
       const { entry, kind, session } = candidate;
       const groupId = streamGroupId(kind);
+      const callId = kind === "outbound_attempt" ? streamToolCallId(entry) : null;
+      const toolResult =
+        callId === null
+          ? undefined
+          : toolResults.get(streamToolResultKey(session.session_id, callId));
       input.addItem({
         id: `stream:${entry.id}`,
         kind,
@@ -809,12 +863,13 @@ export class AutobiographicalRecallService {
           `content=${sanitizePromptText(entry.content)}`,
         ].join(" "),
         disclosureLabel: streamDisclosureLabel(entry),
-        sourceStreamEntryIds: [entry.id],
+        sourceStreamEntryIds: toolResult === undefined ? [entry.id] : [entry.id, toolResult.id],
         sourceEpisodeIds: [],
         metadata: {
           stream_kind: entry.kind,
           session_source_type: session.source_type,
           session_audience_role: session.audience_role,
+          ...(kind === "outbound_attempt" ? outboundAttemptMetadata(entry, toolResult) : {}),
         },
       });
     }

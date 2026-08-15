@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { LLMCompleteResult } from "../../llm/index.js";
-import { DEFAULT_SESSION_ID } from "../../util/ids.js";
+import { DEFAULT_SESSION_ID, createCreatorDirectiveId, createEntityId } from "../../util/ids.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { DeliberationContext } from "./types.js";
 import {
@@ -29,6 +29,7 @@ import {
   parsePlannerContextCaptureRecord,
   PlannerContextCapture,
   plannerContextCapturePath,
+  plannerSurfaceText,
   renderCapturedPlannerSurfacePair,
   type PlannerContextCaptureRecord,
 } from "./planner-context-capture.js";
@@ -187,6 +188,94 @@ describe("planner context capture", () => {
     expect(reRetrieve).not.toHaveBeenCalled();
   });
 
+  it("reads a pre-projection capture and safely fidelity-gates live replay", async () => {
+    const creatorId = createEntityId();
+    const directiveId = createCreatorDirectiveId();
+    const baseContext = context();
+    const source = record(
+      renderInput(
+        context({
+          turnOrigin: "autonomous",
+          workingMemory: {
+            ...baseContext.workingMemory,
+            pending_actions: [
+              {
+                description: "Historical pending action",
+                next_action: "Continue later",
+                created_at: NOW_MS - 1_000,
+              },
+            ],
+          },
+          creatorDirectiveBriefing: {
+            directives: [
+              {
+                renderMode: "content",
+                kind: "subject_fact",
+                subjectKind: "borg_self",
+                subjectLabel: "Borg",
+                semanticSlot: null,
+                semanticValue: null,
+                canonicalFact: "Captured fact",
+                operationalDirective: null,
+                mentionPolicy: "answer_if_asked",
+                priority: 1,
+                createdAt: NOW_MS,
+                scope: {
+                  directiveId,
+                  createdByEntityId: creatorId,
+                  sourceSessionId: DEFAULT_SESSION_ID,
+                  contentScope: "public",
+                  allowedEntityIds: [],
+                  excludedEntityIds: [],
+                  subjectMayKnow: true,
+                  mentionPolicy: "answer_if_asked",
+                  deniedAudienceBehavior: "omit",
+                  activationScope: "same_as_disclosure",
+                  activationAllowedEntityIds: [],
+                  activationExcludedEntityIds: [],
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    );
+    const raw = JSON.parse(JSON.stringify(source)) as {
+      render_input: {
+        compactContext: {
+          workingMemory: Record<string, unknown>;
+          creatorDirectiveBriefing: { directives: Record<string, unknown>[] };
+          evidenceLedger?: Record<string, unknown>;
+          openQuestionsContext?: unknown;
+        };
+      };
+    };
+    delete raw.render_input.compactContext.workingMemory.pending_actions;
+    delete raw.render_input.compactContext.workingMemory.updated_at;
+    delete raw.render_input.compactContext.openQuestionsContext;
+    if (
+      raw.render_input.compactContext.evidenceLedger !== undefined &&
+      raw.render_input.compactContext.evidenceLedger !== null
+    ) {
+      delete raw.render_input.compactContext.evidenceLedger.sections;
+    }
+    for (const directive of raw.render_input.compactContext.creatorDirectiveBriefing.directives) {
+      delete directive.scope;
+    }
+
+    const parsed = parsePlannerContextCaptureRecord(raw);
+    const pair = renderCapturedPlannerSurfacePair(parsed.render_input);
+    const llm = new FakeLLMClient();
+    const replay = await replayPlannerContextCapture(parsed, {
+      mode: "live",
+      llmClient: llm,
+    });
+
+    expect(plannerSurfaceText(pair.compact.rendered.system)).toContain('sps="not_captured"');
+    expect(replay.pairing_status).toBe("skipped_fidelity");
+    expect(llm.requests).toHaveLength(0);
+  });
+
   it("skips oversized records and counts the skip without creating a capture file", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "borg-planner-capture-size-"));
     tempDirs.push(dataDir);
@@ -304,7 +393,12 @@ describe("planner context capture", () => {
       workingMemory: {
         ...context().workingMemory,
         pending_actions: [
-          { description: "UNUSED_PENDING_ACTION", next_action: null, created_at: NOW_MS },
+          {
+            description: "VISIBLE_PENDING_ACTION",
+            next_action: null,
+            created_at: NOW_MS,
+            unused_sensitive_payload: "UNUSED_PENDING_ACTION_DETAIL",
+          },
         ],
         suppressed: [{ id: "unused", reason: "UNUSED_SUPPRESSION", until_turn: 99 }],
         pending_procedural_attempts: [
@@ -317,7 +411,7 @@ describe("planner context capture", () => {
             audience_entity_id: null,
           },
         ],
-      } as DeliberationContext["workingMemory"],
+      } as unknown as DeliberationContext["workingMemory"],
       selectedSkill: {
         skill: {
           id: "skill_selected",
@@ -376,7 +470,8 @@ describe("planner context capture", () => {
     expect(serialized).not.toContain("UNUSED_PERCEPTION_ENTITY");
     expect(serialized).not.toContain("UNUSED_ENTITY_MENTION");
     expect(serialized).not.toContain("UNUSED_TEMPORAL_PAYLOAD");
-    expect(serialized).not.toContain("UNUSED_PENDING_ACTION");
+    expect(serialized).toContain("VISIBLE_PENDING_ACTION");
+    expect(serialized).not.toContain("UNUSED_PENDING_ACTION_DETAIL");
     expect(serialized).not.toContain("UNUSED_PROCEDURAL_ATTEMPT");
     expect(serialized).not.toContain("UNUSED_SUPPRESSION");
     expect(serialized).not.toContain("UNUSED_EVALUATED_CANDIDATE");

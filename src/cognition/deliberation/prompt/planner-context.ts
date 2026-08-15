@@ -7,13 +7,14 @@ import {
   commitmentMemoryDisclosureLabel,
   goalMemoryDisclosureLabel,
   memoryDisclosureLabelFromMetadata,
+  openQuestionMemoryDisclosureLabel,
   relationalSlotMemoryDisclosureLabel,
 } from "../../../memory/common/disclosure-serializers.js";
+import { ACTIVE_ACTION_STATES, type ActionState } from "../../../memory/actions/index.js";
 import {
   combineMemoryDisclosureLabels,
   MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
   relationshipPrivateMemoryDisclosureLabel,
-  renderMemoryDisclosureLabelForModel,
   selfPrivateMemoryDisclosureLabel,
   unknownMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
@@ -135,9 +136,12 @@ const PLANNER_GOAL_EXPANDED_FIELD_CHARS = 240;
 const PLANNER_GOAL_EXPANSION_LIMIT = 4;
 const PLANNER_RECENT_GROWTH_LIMIT = 5;
 const PLANNER_LIVED_EXPERIENCE_TARGET_TOKENS = 4_000;
+const PLANNER_AUTONOMOUS_LIVED_EXPERIENCE_TARGET_TOKENS = 8_000;
 const PLANNER_LIVED_EXPERIENCE_FIELD_CHARS = 240;
 const PLANNER_LIVED_DECISION_LIMIT = 8;
 const PLANNER_LIVED_ACTIVITY_LIMIT = 8;
+const PLANNER_AUTONOMOUS_LIVED_ACTIVITY_LIMIT = 4;
+const PLANNER_AUTONOMOUS_OPEN_LOOP_LIMIT = 20;
 const PLANNER_PROFILE_LIMIT = 8;
 const PLANNER_SOCIAL_MEMORY_LIMIT = 12;
 const PLANNER_RELATIONAL_SLOT_LIMIT = 24;
@@ -251,22 +255,22 @@ function disclosureFromMetadata(
 }
 
 function renderedDisclosure(label: MemoryDisclosureLabel): string {
-  return renderMemoryDisclosureLabelForModel(label);
+  const list = (values: readonly string[]) => (values.length === 0 ? "none" : values.join(","));
+  return [
+    `disclosure_class=${label.disclosureClass}`,
+    `origin_audience=${list(label.originAudienceEntityIds)}`,
+    `private-to=${list(label.privateToEntityIds)}`,
+    `public-to=${list(label.publicToEntityIds)}`,
+  ].join(" ");
 }
 
 function compactDisclosureAttributes(label: MemoryDisclosureLabel): string {
+  const list = (values: readonly string[]) => (values.length === 0 ? "none" : values.join(","));
   return [
     `dc="${escapeXmlAttribute(label.disclosureClass)}"`,
-    ...(label.originAudienceEntityIds.length === 0
-      ? []
-      : [`oa="${escapeXmlAttribute(label.originAudienceEntityIds.join(","))}"`]),
-    ...(label.disclosureClass === "public"
-      ? []
-      : [
-          `pt="${escapeXmlAttribute(
-            label.privateToEntityIds.length === 0 ? "unknown" : label.privateToEntityIds.join(","),
-          )}"`,
-        ]),
+    `oa="${escapeXmlAttribute(list(label.originAudienceEntityIds))}"`,
+    `pt="${escapeXmlAttribute(list(label.privateToEntityIds))}"`,
+    `pub="${escapeXmlAttribute(list(label.publicToEntityIds))}"`,
   ].join(" ");
 }
 
@@ -524,7 +528,7 @@ export function renderGoalDigest(context: DeliberationContext): RenderedPlannerS
     [
       `<borg_planner_goal_digest rows_total="${goals.length}" target_tokens="${PLANNER_GOAL_TARGET_TOKENS}">`,
       "  <interpretation>The one-line index is complete for the globally assembled self snapshot. Status and ages are comparable across rows. Expanded rows are the highest global executive-score candidates, not an audience visibility filter.</interpretation>",
-      "  <field_legend>goal: i=id, s=status, ca=created_age, pa=last_progress_age, ta=target_age, p=priority, x=global_executive_score, dc=disclosure_class, oa=origin_audience, pt=private_to, d=description. goal_detail adds sel=selected, cat=created_at, tc=terminal_condition, pn=progress_notes, sp/sd/sc/sdebt=score priority/deadline_pressure/context_fit/progress_debt, er=executive_reason, owner=owner_entity_id, audience=audience_entity_id. next_step: i=id, g=goal_id, k=kind, s=status, due=due_age, attempt=last_attempt_age, dc/oa/pt=disclosure label, d=description.</field_legend>",
+      "  <field_legend>goal: i=id, s=status, ca=created_age, pa=last_progress_age, ta=target_age, p=priority, x=global_executive_score, dc=disclosure_class, oa=origin_audience, pt=private_to, pub=public_to, d=description. goal_detail adds sel=selected, cat=created_at, tc=terminal_condition, pn=progress_notes, sp/sd/sc/sdebt=score priority/deadline_pressure/context_fit/progress_debt, er=executive_reason, owner=owner_entity_id, audience=audience_entity_id. next_step: i=id, g=goal_id, k=kind, s=status, due=due_age, attempt=last_attempt_age, dc/oa/pt/pub=disclosure label, d=description.</field_legend>",
       "  <complete_goal_index>",
       ...goalIndex.rows.map((row) => `    ${row}`),
       "    <omitted_count>0</omitted_count>",
@@ -628,7 +632,7 @@ function renderCommitmentDigestText(input: {
   return [
     `<borg_planner_commitment_digest rows_total="${input.commitmentCount}" target_tokens="${PLANNER_COMMITMENT_TARGET_TOKENS}" advisory_excerpt_budget_chars="${input.advisoryExcerptBudget}" critical_overflow="${input.criticalOverflow}">`,
     "  <interpretation>This is the complete globally assembled commitment index. Critical directives are exact and never truncated; advisory directives are visibly mechanical excerpts when long, never summaries. Scope fields are disclosure/provenance, not recall gates.</interpretation>",
-    "  <field_legend>c row: i=id, s=status, ec=enforcement_class, cd=critical_domain, k=kind, t=type, cp=closure_pressure_relevance, p=priority, cat=created_at, ca=created_age, ra=reinforced_age, xa=expires_age, dc=disclosure_class, oa=origin_audience, pt=private_to, to=made_to, aud=restricted_audience, about=about_entity, by=committed_by_entity_id, ex=directive_exact, shape=directive_excerpt_shape, r=directive_rendered_chars, n=directive_total_chars, e=directive_elided_chars, f=directive_family, d=directive.</field_legend>",
+    "  <field_legend>c row: i=id, s=status, ec=enforcement_class, cd=critical_domain, k=kind, t=type, cp=closure_pressure_relevance, p=priority, cat=created_at, ca=created_age, ra=reinforced_age, xa=expires_age, dc=disclosure_class, oa=origin_audience, pt=private_to, pub=public_to, to=made_to, aud=restricted_audience, about=about_entity, by=committed_by_entity_id, ex=directive_exact, shape=directive_excerpt_shape, r=directive_rendered_chars, n=directive_total_chars, e=directive_elided_chars, f=directive_family, d=directive.</field_legend>",
     ...input.rows.map((row) => `  ${row}`),
     "  <omitted_count>0</omitted_count>",
     "</borg_planner_commitment_digest>",
@@ -777,9 +781,223 @@ function livedDecisionGroups(entries: readonly EvidenceLedgerEntry[]): LivedDeci
     );
 }
 
+function compareLivedEntriesChronologically(
+  left: EvidenceLedgerEntry,
+  right: EvidenceLedgerEntry,
+): number {
+  return (
+    entryOccurredAt(left) - entryOccurredAt(right) ||
+    (left.stream_index ?? Number.MAX_SAFE_INTEGER) -
+      (right.stream_index ?? Number.MAX_SAFE_INTEGER) ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+function livedDerivationOrder(entries: readonly EvidenceLedgerEntry[]): string {
+  return [...entries]
+    .sort(compareLivedEntriesChronologically)
+    .map((entry, index) =>
+      [
+        index + 1,
+        entry.id,
+        entryOccurredAt(entry) === 0 ? "unknown" : new Date(entryOccurredAt(entry)).toISOString(),
+        entry.stream_index ?? "none",
+        `stance=${metadataString(entry, "stance") ?? "none"}`,
+        `belief_effect=${metadataString(entry, "belief_effect") ?? "none"}`,
+      ].join(":"),
+    )
+    .join("|");
+}
+
+type LivedOpenLoop = {
+  structuralKey: string;
+  id: string;
+  kind: "open_question" | "outbound_attempt" | "action" | "working_intent";
+  status: string;
+  outcome: string;
+  occurredAt: number;
+  text: string;
+  disclosure: MemoryDisclosureLabel;
+  sourceStreamIndex: number | null;
+};
+
+function autobiographicalRecallEntries(context: DeliberationContext): EvidenceLedgerEntry[] {
+  return (
+    context.evidenceLedger?.sections.find((section) => section.id === "autobiographical_recall")
+      ?.entries ?? []
+  );
+}
+
+function activeActionState(value: string | null): value is ActionState {
+  return value !== null && (ACTIVE_ACTION_STATES as readonly string[]).includes(value);
+}
+
+function mergeAutonomousOpenLoop(loops: Map<string, LivedOpenLoop>, loop: LivedOpenLoop): void {
+  const existing = loops.get(loop.structuralKey);
+  if (existing === undefined) {
+    loops.set(loop.structuralKey, loop);
+    return;
+  }
+  const selected =
+    loop.occurredAt > existing.occurredAt ||
+    (loop.occurredAt === existing.occurredAt && loop.id.localeCompare(existing.id) < 0)
+      ? loop
+      : existing;
+  loops.set(loop.structuralKey, {
+    ...selected,
+    disclosure: combineMemoryDisclosureLabels([existing.disclosure, loop.disclosure]),
+  });
+}
+
+function currentOpenQuestionLoops(context: DeliberationContext): LivedOpenLoop[] {
+  const loops: LivedOpenLoop[] = [];
+  for (const question of context.openQuestionsContext ?? []) {
+    if (question.status !== "open") continue;
+    loops.push({
+      structuralKey: `open_question:${question.id}`,
+      id: question.id,
+      kind: "open_question",
+      status: question.status,
+      outcome: "pending",
+      occurredAt: question.last_touched,
+      text: question.question,
+      disclosure: openQuestionMemoryDisclosureLabel(question),
+      sourceStreamIndex: null,
+    });
+  }
+  return loops;
+}
+
+function workingIntentLoops(context: DeliberationContext): LivedOpenLoop[] {
+  const loops: LivedOpenLoop[] = [];
+  for (const [index, intent] of context.workingMemory.pending_actions.entries()) {
+    loops.push({
+      structuralKey: `working_intent:${index}`,
+      id: `working_intent:${index + 1}`,
+      kind: "working_intent",
+      status: "pending",
+      outcome: "pending",
+      occurredAt: intent.created_at ?? context.workingMemory.updated_at,
+      text: [intent.description, intent.next_action]
+        .filter((value): value is string => value !== null)
+        .join(" | "),
+      disclosure: selfPrivateMemoryDisclosureLabel(
+        context.audienceEntityId === null || context.audienceEntityId === undefined
+          ? []
+          : [context.audienceEntityId],
+      ),
+      sourceStreamIndex: null,
+    });
+  }
+  return loops;
+}
+
+function recalledOpenQuestionLoop(entry: EvidenceLedgerEntry): LivedOpenLoop | null {
+  if (metadataString(entry, "status") !== "open") return null;
+  const questionId = metadataString(entry, "open_question_id") ?? entry.id;
+  return {
+    structuralKey: `open_question:${questionId}`,
+    id: questionId,
+    kind: "open_question",
+    status: "open",
+    outcome: "pending",
+    occurredAt: entryOccurredAt(entry),
+    text: entry.text ?? entry.value ?? "",
+    disclosure: entryDisclosure(entry),
+    sourceStreamIndex: entry.stream_index ?? null,
+  };
+}
+
+function recalledActionLoop(entry: EvidenceLedgerEntry): LivedOpenLoop | null {
+  const state = metadataString(entry, "state");
+  if (!activeActionState(state)) return null;
+  const actionId = metadataString(entry, "action_id") ?? entry.id;
+  return {
+    structuralKey: `action:${actionId}`,
+    id: actionId,
+    kind: "action",
+    status: state,
+    outcome: state === "unknown" ? "unknown" : "pending",
+    occurredAt: entryOccurredAt(entry),
+    text: entry.text ?? entry.value ?? "",
+    disclosure: entryDisclosure(entry),
+    sourceStreamIndex: entry.stream_index ?? null,
+  };
+}
+
+function unresolvedOutboundOutcome(outcome: string): boolean {
+  return outcome === "pending" || outcome === "unknown" || outcome === "failed";
+}
+
+function recalledOutboundAttemptLoop(entry: EvidenceLedgerEntry): LivedOpenLoop | null {
+  const status = metadataString(entry, "status") ?? "attempted";
+  const outcome = metadataString(entry, "outcome") ?? "unknown";
+  if (status !== "attempted" || !unresolvedOutboundOutcome(outcome)) return null;
+  return {
+    // Each machine-authored stream handle remains a distinct attempted act.
+    // No payload text is compared, so a failed/unknown attempt can never be
+    // collapsed with another attempt or with the absence of an attempt.
+    structuralKey: `outbound_attempt:${entry.id}`,
+    id: entry.id,
+    kind: "outbound_attempt",
+    status,
+    outcome,
+    occurredAt: entryOccurredAt(entry),
+    text: entry.text ?? entry.value ?? "",
+    disclosure: entryDisclosure(entry),
+    sourceStreamIndex: entry.stream_index ?? null,
+  };
+}
+
+function recalledOpenLoop(entry: EvidenceLedgerEntry): LivedOpenLoop | null {
+  switch (metadataString(entry, "source_kind")) {
+    case "open_question":
+      return recalledOpenQuestionLoop(entry);
+    case "action":
+      return recalledActionLoop(entry);
+    case "outbound_attempt":
+      return recalledOutboundAttemptLoop(entry);
+    default:
+      return null;
+  }
+}
+
+function compareAutonomousOpenLoops(left: LivedOpenLoop, right: LivedOpenLoop): number {
+  const kindPriority: Record<LivedOpenLoop["kind"], number> = {
+    open_question: 0,
+    outbound_attempt: 1,
+    action: 2,
+    working_intent: 3,
+  };
+  return (
+    kindPriority[left.kind] - kindPriority[right.kind] ||
+    right.occurredAt - left.occurredAt ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+function autonomousOpenLoops(context: DeliberationContext): LivedOpenLoop[] {
+  if (context.turnOrigin !== "autonomous") return [];
+  const loops = new Map<string, LivedOpenLoop>();
+  const candidates = [
+    ...currentOpenQuestionLoops(context),
+    ...workingIntentLoops(context),
+    ...autobiographicalRecallEntries(context)
+      .map(recalledOpenLoop)
+      .filter((loop): loop is LivedOpenLoop => loop !== null),
+  ];
+
+  for (const candidate of candidates) mergeAutonomousOpenLoop(loops, candidate);
+  return [...loops.values()].sort(compareAutonomousOpenLoops);
+}
+
 export function renderLivedExperienceDigest(context: DeliberationContext): RenderedPlannerSection {
   const standing = context.evidenceLedger?.audienceStanding;
   const entries = standing?.recentLivedExperienceEntries ?? [];
+  const autonomous = context.turnOrigin === "autonomous";
+  const targetTokens = autonomous
+    ? PLANNER_AUTONOMOUS_LIVED_EXPERIENCE_TARGET_TOKENS
+    : PLANNER_LIVED_EXPERIENCE_TARGET_TOKENS;
 
   const decisionEntries = entries.filter(
     (entry) => metadataString(entry, "lived_experience_kind") === "self_decision_introspection",
@@ -794,7 +1012,12 @@ export function renderLivedExperienceDigest(context: DeliberationContext): Rende
     );
   const allDecisionGroups = livedDecisionGroups(decisionEntries);
   const renderedDecisionGroups = allDecisionGroups.slice(0, PLANNER_LIVED_DECISION_LIMIT);
-  const renderedActivityEntries = activityEntries.slice(0, PLANNER_LIVED_ACTIVITY_LIMIT);
+  const renderedActivityEntries = activityEntries.slice(
+    0,
+    autonomous ? PLANNER_AUTONOMOUS_LIVED_ACTIVITY_LIMIT : PLANNER_LIVED_ACTIVITY_LIMIT,
+  );
+  const allOpenLoops = autonomousOpenLoops(context);
+  const renderedOpenLoops = allOpenLoops.slice(0, PLANNER_AUTONOMOUS_OPEN_LOOP_LIMIT);
   let truncationCount = 0;
   const decisionRows = renderedDecisionGroups.map((group) => {
     const representative = group.representative;
@@ -813,7 +1036,7 @@ export function renderLivedExperienceDigest(context: DeliberationContext): Rende
     const lastOccurredAt = occurredTimes.length === 0 ? null : Math.max(...occurredTimes);
 
     return [
-      `<decision_row outcome_ref="${escapeXmlAttribute(group.reference)}" derivation_count="${group.entries.length}" first_occurred_at="${firstOccurredAt === null ? "unknown" : new Date(firstOccurredAt).toISOString()}" last_occurred_at="${lastOccurredAt === null ? "unknown" : new Date(lastOccurredAt).toISOString()}" disclosure="${escapeXmlAttribute(renderedDisclosure(group.disclosure))}">`,
+      `<decision_row outcome_ref="${escapeXmlAttribute(group.reference)}" derivation_count="${group.entries.length}" derivation_order="${escapeXmlAttribute(livedDerivationOrder(group.entries))}" first_occurred_at="${firstOccurredAt === null ? "unknown" : new Date(firstOccurredAt).toISOString()}" last_occurred_at="${lastOccurredAt === null ? "unknown" : new Date(lastOccurredAt).toISOString()}" disclosure="${escapeXmlAttribute(renderedDisclosure(group.disclosure))}">`,
       `  <representative_decision selection="latest_for_structural_outcome_ref">${escapeXmlText(summaryExcerpt.text)}</representative_decision>`,
       ...(rationaleExcerpt === null
         ? []
@@ -832,17 +1055,32 @@ export function renderLivedExperienceDigest(context: DeliberationContext): Rende
     );
     truncationCount += [kindExcerpt, textExcerpt].filter((item) => item.truncated).length;
     const category = kind === "self_decision_density" ? "firing_volume" : "activity_or_summary";
-    return `<activity_row category="${category}" kind="${escapeXmlAttribute(kindExcerpt.text)}" occurred_at="${entryOccurredAt(entry) === 0 ? "unknown" : new Date(entryOccurredAt(entry)).toISOString()}" disclosure="${escapeXmlAttribute(renderedDisclosure(entryDisclosure(entry)))}">${escapeXmlText(textExcerpt.text)}</activity_row>`;
+    return `<activity_row id="${escapeXmlAttribute(entry.id)}" category="${category}" kind="${escapeXmlAttribute(kindExcerpt.text)}" occurred_at="${entryOccurredAt(entry) === 0 ? "unknown" : new Date(entryOccurredAt(entry)).toISOString()}" stream_index="${entry.stream_index ?? "none"}" stance="${escapeXmlAttribute(metadataString(entry, "stance") ?? "none")}" belief_effect="${escapeXmlAttribute(metadataString(entry, "belief_effect") ?? "none")}" disclosure="${escapeXmlAttribute(renderedDisclosure(entryDisclosure(entry)))}">${escapeXmlText(textExcerpt.text)}</activity_row>`;
+  });
+  const openLoopRows = renderedOpenLoops.map((loop) => {
+    const text = headTailPlannerExcerpt(loop.text, PLANNER_LIVED_EXPERIENCE_FIELD_CHARS);
+    truncationCount += text.truncated ? 1 : 0;
+    return `<open_loop_row id="${escapeXmlAttribute(loop.id)}" kind="${loop.kind}" status="${escapeXmlAttribute(loop.status)}" outcome="${escapeXmlAttribute(loop.outcome)}" occurred_at="${loop.occurredAt === 0 ? "unknown" : new Date(loop.occurredAt).toISOString()}" stream_index="${loop.sourceStreamIndex ?? "none"}" disclosure="${escapeXmlAttribute(renderedDisclosure(loop.disclosure))}" text_exact="${!text.truncated}" text_included_chars="${text.renderedChars}" text_total_chars="${text.totalChars}">${escapeXmlText(text.text)}</open_loop_row>`;
   });
   const omissionCount =
     Math.max(0, allDecisionGroups.length - decisionRows.length) +
-    Math.max(0, activityEntries.length - activityRows.length);
+    Math.max(0, activityEntries.length - activityRows.length) +
+    Math.max(0, allOpenLoops.length - openLoopRows.length);
 
   return section(
     "lived_experience",
     [
-      `<borg_planner_lived_experience_digest decision_groups_total="${allDecisionGroups.length}" activity_rows_total="${activityEntries.length}" standing_cadence_due="${standing?.renderRecentLivedExperience === true}" target_tokens="${PLANNER_LIVED_EXPERIENCE_TARGET_TOKENS}">`,
-      "  <interpretation>What I decided is distinct from what merely fired or occurred. Repeated derivations sharing one structural outcome reference render once with derivation_count; text is never compared to decide sameness. Density/firing rows describe volume, not N separate acts of will.</interpretation>",
+      `<borg_planner_lived_experience_digest decision_groups_total="${allDecisionGroups.length}" activity_rows_total="${activityEntries.length}" open_loop_rows_total="${allOpenLoops.length}" autonomous_open_loop_priority="${autonomous}" standing_cadence_due="${standing?.renderRecentLivedExperience === true}" target_tokens="${targetTokens}">`,
+      "  <interpretation>What I decided is distinct from what merely fired or occurred. Repeated derivations sharing one structural outcome reference render once with derivation_count; text is never compared to decide sameness. derivation_order and each distinct activity row's timestamp/stream index preserve source chronology, including which structurally separate row came later. Density/firing rows describe volume, not N separate acts of will. Outbound attempts remain one row per structural stream handle with an explicit outcome; unknown and failed attempts are not treated as unmade attempts.</interpretation>",
+      ...(autonomous
+        ? [
+            "  <autonomous_selection_policy>Structurally open questions, pending/unknown/failed outbound attempts, pending/unknown actions, and pending working intents are selected before completed-activity volume. No payload language is inspected to decide openness.</autonomous_selection_policy>",
+            "  <open_loops>",
+            ...openLoopRows.map((row) => `    ${row}`),
+            `    <omitted_count>${Math.max(0, allOpenLoops.length - openLoopRows.length)}</omitted_count>`,
+            "  </open_loops>",
+          ]
+        : []),
       "  <decisions>",
       ...decisionRows.map((row) =>
         row
@@ -858,7 +1096,7 @@ export function renderLivedExperienceDigest(context: DeliberationContext): Rende
       "</borg_planner_lived_experience_digest>",
     ].join("\n"),
     {
-      rowCount: decisionRows.length + activityRows.length,
+      rowCount: decisionRows.length + activityRows.length + openLoopRows.length,
       truncationCount,
       omissionCount,
     },
@@ -1070,9 +1308,10 @@ type PlannerAuthorityDirectiveFields = {
   subjectKind: string | null;
   subjectLabel: string | null;
   semanticSlot: string | null;
-  mentionPolicy: "p" | "a" | "t" | "n" | null;
+  mentionPolicy: string | null;
   payloadKind: "sv" | "cf" | "op" | "bp";
   payload: string | null;
+  payloadExactRequired: boolean;
 };
 
 function compareCreatorDirectivePriorityAndAge(
@@ -1154,24 +1393,6 @@ function creatorDirectiveKindCode(
   }
 }
 
-function creatorDirectiveMentionPolicyCode(
-  mentionPolicy: Extract<
-    CreatorDirectiveBriefingDirective,
-    { renderMode: "content" } | { renderMode: "private"; privateKind: "knowledge" }
-  >["mentionPolicy"],
-): Exclude<PlannerAuthorityDirectiveFields["mentionPolicy"], null> {
-  switch (mentionPolicy) {
-    case "proactive":
-      return "p";
-    case "answer_if_asked":
-      return "a";
-    case "only_if_topic_raised":
-      return "t";
-    case "never_mention":
-      return "n";
-  }
-}
-
 function plannerAuthorityDirectiveFields(
   directive: CreatorDirectiveBriefingDirective,
 ): PlannerAuthorityDirectiveFields {
@@ -1183,9 +1404,10 @@ function plannerAuthorityDirectiveFields(
       subjectKind: null,
       subjectLabel: null,
       semanticSlot: null,
-      mentionPolicy: null,
+      mentionPolicy: directive.scope?.mentionPolicy ?? null,
       payloadKind: "bp",
       payload: INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT,
+      payloadExactRequired: true,
     };
   }
   if (directive.renderMode === "private" && directive.privateKind === "operation") {
@@ -1196,9 +1418,10 @@ function plannerAuthorityDirectiveFields(
       subjectKind: null,
       subjectLabel: null,
       semanticSlot: null,
-      mentionPolicy: null,
+      mentionPolicy: directive.scope?.mentionPolicy ?? null,
       payloadKind: "op",
       payload: directive.operationalDirective,
+      payloadExactRequired: true,
     };
   }
 
@@ -1209,20 +1432,22 @@ function plannerAuthorityDirectiveFields(
     subjectKind: directive.subjectKind,
     subjectLabel: directive.subjectLabel,
     semanticSlot: directive.semanticSlot,
-    mentionPolicy: creatorDirectiveMentionPolicyCode(directive.mentionPolicy),
+    mentionPolicy: directive.scope?.mentionPolicy ?? directive.mentionPolicy,
   };
-  if (directive.semanticSlot !== null) {
-    return {
-      ...sharedFields,
-      payloadKind: "sv",
-      payload: directive.semanticValue,
-    };
-  }
   if (directive.kind === "response_policy" || directive.kind === "routing_instruction") {
     return {
       ...sharedFields,
       payloadKind: "op",
       payload: directive.operationalDirective,
+      payloadExactRequired: true,
+    };
+  }
+  if (directive.semanticSlot !== null) {
+    return {
+      ...sharedFields,
+      payloadKind: "sv",
+      payload: directive.semanticValue,
+      payloadExactRequired: false,
     };
   }
 
@@ -1230,7 +1455,30 @@ function plannerAuthorityDirectiveFields(
     ...sharedFields,
     payloadKind: "cf",
     payload: directive.canonicalFact,
+    payloadExactRequired: false,
   };
+}
+
+function plannerAuthorityDirectiveScopeAttributes(
+  directive: CreatorDirectiveBriefingDirective,
+): string[] {
+  const scope = directive.scope;
+  if (scope === undefined) return ['sps="not_captured"'];
+  const list = (values: readonly string[]) => (values.length === 0 ? "none" : values.join(","));
+  return [
+    'sps="exact"',
+    `di="${escapeXmlAttribute(scope.directiveId)}"`,
+    `cb="${escapeXmlAttribute(scope.createdByEntityId)}"`,
+    `os="${escapeXmlAttribute(scope.sourceSessionId)}"`,
+    `cs="${escapeXmlAttribute(scope.contentScope)}"`,
+    `ae="${escapeXmlAttribute(list(scope.allowedEntityIds))}"`,
+    `xe="${escapeXmlAttribute(list(scope.excludedEntityIds))}"`,
+    `smk="${scope.subjectMayKnow === null ? "null" : String(scope.subjectMayKnow)}"`,
+    `dab="${escapeXmlAttribute(scope.deniedAudienceBehavior)}"`,
+    `as="${escapeXmlAttribute(scope.activationScope)}"`,
+    `aae="${escapeXmlAttribute(list(scope.activationAllowedEntityIds))}"`,
+    `axe="${escapeXmlAttribute(list(scope.activationExcludedEntityIds))}"`,
+  ];
 }
 
 function plannerExcerptShape(excerpt: PromptExcerpt, missing: boolean): string {
@@ -1253,12 +1501,15 @@ function renderPlannerAuthorityDirectiveRow(
   const payload =
     fields.payload === null
       ? exactPlannerExcerpt("")
-      : compactPlannerLeanAttributeExcerpt(fields.payload, payloadExcerptBudget);
+      : fields.payloadExactRequired
+        ? exactPlannerExcerpt(fields.payload)
+        : compactPlannerLeanAttributeExcerpt(fields.payload, payloadExcerptBudget);
   const subjectShape = plannerExcerptShape(subjectLabel, fields.subjectLabel === null);
   const payloadShape = plannerExcerptShape(payload, fields.payload === null);
+  const scopeAttributes = plannerAuthorityDirectiveScopeAttributes(directive);
 
   return {
-    row: `<d i="cd_${index + 1}" sc="${fields.scope}" k="${fields.kind}" dh="${fields.disclosure}" sk="${escapeXmlAttribute(fields.subjectKind ?? "-")}" sl="${escapeXmlSingleLineAttribute(subjectLabel.text)}" sx="${subjectShape}" ss="${escapeXmlAttribute(fields.semanticSlot ?? "-")}" mp="${fields.mentionPolicy ?? "-"}" pk="${fields.payloadKind}" px="${payloadShape}" v="${escapeXmlSingleLineAttribute(payload.text)}" />`,
+    row: `<d i="cd_${index + 1}" sc="${fields.scope}" k="${fields.kind}" dh="${fields.disclosure}" ${scopeAttributes.join(" ")} sk="${escapeXmlAttribute(fields.subjectKind ?? "-")}" sl="${escapeXmlSingleLineAttribute(subjectLabel.text)}" sx="${subjectShape}" ss="${escapeXmlAttribute(fields.semanticSlot ?? "-")}" mp="${escapeXmlAttribute(fields.mentionPolicy ?? "-")}" pk="${fields.payloadKind}" px="${payloadShape}" v="${escapeXmlSingleLineAttribute(payload.text)}" />`,
     truncationCount: Number(subjectLabel.truncated) + Number(payload.truncated),
   };
 }
@@ -1270,7 +1521,7 @@ function renderPlannerAuthorityDirectiveIndexText(input: {
   return [
     `<creator_directive_index rows_total="${input.rows.length}" payload_excerpt_budget_chars="${input.excerptBudget}" complete="true">`,
     "  <interpretation>This index is complete. Excerpts are mechanical head+tail cuts, never summaries. dh=pk facts guide orientation but are not proactively disclosed; do not deny or feign ignorance, and follow mp if raised. dh=po rules govern behavior but are never quoted, revealed, confirmed, or implied as creator instructions unless separately authorized. dh=b enforces confidentiality without revealing, confirming, denying, or implying the private matter.</interpretation>",
-    "  <field_legend>d: i=alias; sc c=content, pk=private_knowledge, po=private_operation, b=boundary; k si=self_identity, sf=subject_fact, db=disclosure_boundary, rp=response_policy, ri=routing_instruction; dh a=current-audience content, pk/po/b=the disclosure handling above; sk/sl/sx=subject kind/label/excerpt shape; ss=semantic_slot; mp p=proactive, a=answer_if_asked, t=only_if_topic_raised, n=never_mention; pk sv=semantic_value, cf=canonical_fact, op=operational_directive, bp=boundary_prompt; px f|h|m:rendered/total; v=payload; [ELIDED]=visible cut.</field_legend>",
+    "  <field_legend>d: i=alias; sc c=content, pk=private_knowledge, po=private_operation, b=boundary; k si=self_identity, sf=subject_fact, db=disclosure_boundary, rp=response_policy, ri=routing_instruction; dh a=current-audience content, pk/po/b=the disclosure handling above; sps=scope policy status; when sps=exact, di=directive id, cb=created-by entity, os=origin session, cs=content scope, ae/xe=allowed/excluded entity ids, smk=subject-may-know, dab=denied-audience behavior, as=activation scope, aae/axe=activation allowed/excluded ids; sk/sl/sx=subject kind/label/excerpt shape; ss=semantic_slot; mp=exact mention_policy; pk sv=semantic_value, cf=canonical_fact, op=operational_directive, bp=boundary_prompt; px f|h|m:included/total; v=payload; [ELIDED]=visible cut.</field_legend>",
     ...input.rows.map((row) => `  ${row}`),
     "  <omitted_count>0</omitted_count>",
     "</creator_directive_index>",

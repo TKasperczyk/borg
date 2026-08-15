@@ -38,7 +38,12 @@ import {
 import { chooseDeliberationPath } from "./path-selector.js";
 import { formatTurnPlanForPrompt } from "./prompt/plan-rendering.js";
 import { buildCompactPlannerSystemPrompt } from "./prompt/planner-context.js";
-import { summarizeRetrievedEvidence } from "./prompt/retrieval.js";
+import {
+  renderPlanRequestedVerificationNotCompleted,
+  renderPlanRequestedVerificationRetrieval,
+  summarizeRetrievedEvidence,
+} from "./prompt/retrieval.js";
+import { COMPACT_FINALIZER_VERIFICATION_RETRIEVAL_BLOCK_ID } from "./prompt/finalizer-context.js";
 import { renderTaggedPromptBlock } from "./prompt/sections.js";
 import {
   buildBaseSystemPrompt,
@@ -1230,10 +1235,29 @@ export class Deliberator {
           },
         ])
       : null;
+    const compactVerificationRetrievalBlock =
+      verificationQuery.length === 0
+        ? null
+        : renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
+            {
+              tag: "borg_additional_retrieval",
+              content:
+                secondaryRetrieval === null
+                  ? renderPlanRequestedVerificationNotCompleted()
+                  : renderPlanRequestedVerificationRetrieval(
+                      secondaryRetrieval,
+                      retrievalContextBudget,
+                    ),
+            },
+          ]);
     const planSection = plan === null ? null : formatTurnPlanForPrompt(plan);
     const additionalPromptSections = compactPromptSurfaceAdditionalSections([
       promptSurfaceAdditionalSection("borg_s2_plan", planSection),
       promptSurfaceAdditionalSection("borg_additional_retrieval", additionalRetrievalBlock),
+      promptSurfaceAdditionalSection(
+        COMPACT_FINALIZER_VERIFICATION_RETRIEVAL_BLOCK_ID,
+        compactVerificationRetrievalBlock,
+      ),
       ...finalizerGroundingPromptSections,
     ]);
     const finalizerStructuralFlags = structuralNoOutputFlags(effectiveContext, {
