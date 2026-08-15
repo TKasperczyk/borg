@@ -2058,6 +2058,15 @@ describe("compileSharedStateArtifact", () => {
         data: expect.objectContaining({
           rejectedCount: 1,
           rejectionReasons: ["disallowed_source_stream_entry_id"] satisfies JsonValue,
+          rejections: [
+            expect.objectContaining({
+              operation_index: 0,
+              operation_type: "add",
+              reason: "disallowed_source_stream_entry_id",
+              state_key: expect.stringContaining("decision.fixture_"),
+              source_stream_entry_id: olderSource,
+            }),
+          ],
           applied: false,
         }),
       }),

@@ -649,6 +649,7 @@ export function normalizePatch(input: {
         if (citations.reason !== null) {
           rejected.push(
             rejection(operation, operationIndex, citations.reason, {
+              stateKey: operation.state_key,
               sourceStreamEntryId: citations.rejectedStreamEntryId,
               sourceTrustReason: citations.sourceTrustReason,
             }),
@@ -758,6 +759,7 @@ export function normalizePatch(input: {
         if (citations.reason !== null) {
           rejected.push(
             rejection(operation, operationIndex, citations.reason, {
+              stateKey: operation.state_key,
               sourceStreamEntryId: citations.rejectedStreamEntryId,
               sourceTrustReason: citations.sourceTrustReason,
             }),
@@ -833,6 +835,8 @@ export function normalizePatch(input: {
         if (replacementCitations.reason !== null) {
           rejected.push(
             rejection(operation, operationIndex, replacementCitations.reason, {
+              stateKey: operation.replacement.state_key,
+              targetEntryId: id,
               sourceStreamEntryId: replacementCitations.rejectedStreamEntryId,
               sourceTrustReason: replacementCitations.sourceTrustReason,
             }),
@@ -851,6 +855,8 @@ export function normalizePatch(input: {
         if (updateCitations.reason !== null) {
           rejected.push(
             rejection(operation, operationIndex, updateCitations.reason, {
+              stateKey: operation.replacement.state_key,
+              targetEntryId: id,
               sourceStreamEntryId: updateCitations.rejectedStreamEntryId,
               sourceTrustReason: updateCitations.sourceTrustReason,
             }),

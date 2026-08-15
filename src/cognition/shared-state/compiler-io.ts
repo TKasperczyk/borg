@@ -104,6 +104,20 @@ export function traceCompileCompleted(options: {
       operationCount: options.operationCount,
       rejectedCount: options.rejected.length,
       rejectionReasons: options.rejected.map((rejection) => rejection.reason),
+      // The reason list alone cannot say *which* entry was dropped, so a patch
+      // whose adds die here leaves no record of the keys that failed to land --
+      // only the per-reason events (missing_new_key_reason, near_duplicate_state_key)
+      // name their operand. Name every rejection's operand, not just those two.
+      rejections: toTraceJsonValue(
+        options.rejected.map((rejection) => ({
+          operation_index: rejection.operationIndex,
+          operation_type: rejection.operationType,
+          reason: rejection.reason,
+          state_key: rejection.stateKey ?? null,
+          target_entry_id: rejection.targetEntryId ?? null,
+          source_stream_entry_id: rejection.sourceStreamEntryId ?? null,
+        })),
+      ),
       source_trust_rejections: toTraceJsonValue(
         options.rejected
           .filter((rejection) => rejection.sourceTrustReason !== undefined)
