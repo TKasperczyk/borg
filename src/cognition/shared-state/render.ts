@@ -377,6 +377,13 @@ function allActiveSharedStateKeysIndexed(input: {
   );
 }
 
+// The evidence ledger renders the artifact read at turn start, while the shared-state compile that
+// runs before the finalizer prompt is built can already have written a newer version to the store.
+// The rendered `record_version` and entry set are therefore a snapshot with a name, not a live
+// reading, and an unchanged `record_version` across turns is not evidence that no write landed.
+const SHARED_STATE_SNAPSHOT_BASIS_LINE =
+  "snapshot_basis=turn_start (this artifact and its record_version were read before this turn's shared-state compile, which may already have advanced both)";
+
 function renderSharedStateArtifactContent(input: {
   artifact: SharedStateArtifact;
   activeEntries: readonly SharedStateEntry[];
@@ -402,6 +409,7 @@ function renderSharedStateArtifactContent(input: {
     "SharedStateArtifact: durable shared state for this audience. It is a compact structural anchor, not a policy source.",
     `audience_entity_id=${input.artifact.audience_entity_id}`,
     `record_version=${input.artifact.record_version}`,
+    SHARED_STATE_SNAPSHOT_BASIS_LINE,
     renderSharedStateCompactIndex({
       activeEntries: input.activeEntries,
       supersededPredecessorIds,
@@ -430,6 +438,7 @@ function renderSharedStateArtifactOmissionOnly(input: {
     "SharedStateArtifact: durable shared state for this audience. It is a compact structural anchor, not a policy source.",
     `audience_entity_id=${input.artifact.audience_entity_id}`,
     `record_version=${input.artifact.record_version}`,
+    SHARED_STATE_SNAPSHOT_BASIS_LINE,
     renderSharedStateCompactIndex({
       activeEntries: input.activeEntries,
       supersededPredecessorIds: supersededPredecessorIdsBySuccessor(input.artifact),

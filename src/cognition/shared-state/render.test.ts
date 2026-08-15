@@ -447,6 +447,52 @@ describe("summarizeSharedStateArtifactRender", () => {
 });
 
 describe("renderSharedStateArtifact", () => {
+  it("names the instant record_version was read, so a flat version is not read as a still store", () => {
+    const audience = createEntityId();
+    const entries = [
+      entry({
+        audience,
+        kind: "live",
+        rank: 0,
+        updatedAt: 20,
+        stateKey: "project.alpha",
+        text: "alpha detail",
+      }),
+    ];
+
+    const rendered =
+      renderSharedStateArtifact(artifact(entries), {
+        maxEntries: 4,
+        maxTokens: 50_000,
+      }) ?? "";
+
+    expect(rendered).toContain("record_version=1\nsnapshot_basis=turn_start");
+    expect(rendered).toContain("read before this turn's shared-state compile");
+  });
+
+  it("names the snapshot basis on the omission-only render too", () => {
+    const audience = createEntityId();
+    const entries = [
+      entry({
+        audience,
+        kind: "live",
+        rank: 0,
+        updatedAt: 20,
+        stateKey: "project.alpha",
+        text: "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho",
+      }),
+    ];
+
+    const rendered =
+      renderSharedStateArtifact(artifact(entries), {
+        maxEntries: 4,
+        maxTokens: 40,
+      }) ?? "";
+
+    expect(rendered).toContain("SharedStateArtifact omitted:");
+    expect(rendered).toContain("record_version=1\nsnapshot_basis=turn_start");
+  });
+
   it("renders a compact all-key index before detailed entries", () => {
     const audience = createEntityId();
     const entries = [
