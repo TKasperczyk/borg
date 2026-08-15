@@ -11,6 +11,7 @@ import type {
   SharedStateUnsettledReconciliationSummary,
 } from "./reconciliation.js";
 import { type SharedStateArtifactPromptBudget } from "./compiler-prompt.js";
+import { type SharedStateCompilePass } from "../prompts/shared-state.js";
 import {
   SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,
   SHARED_STATE_TOOL_NAME,
@@ -63,6 +64,9 @@ export function traceCompileCompleted(options: {
   newStateKeys?: readonly string[];
   ledgerMode: SharedStateLedgerMode;
   promptBudget: SharedStateArtifactPromptBudget;
+  compilePass?: SharedStateCompilePass;
+  citationEligibleSourceStreamEntryIds?: readonly StreamEntryId[];
+  offLimitsSourceStreamEntryIds?: readonly StreamEntryId[];
   nonLockedCanonicalizesDrops?: readonly NonLockedCanonicalizesDrop[];
   emptyUpdateAttemptedCount?: number;
   emptyUpdateDroppedCount?: number;
@@ -117,6 +121,23 @@ export function traceCompileCompleted(options: {
           target_entry_id: rejection.targetEntryId ?? null,
           source_stream_entry_id: rejection.sourceStreamEntryId ?? null,
         })),
+      ),
+      // A rejection names the id the compiler reached for but never the ids it
+      // was permitted to reach for, so `disallowed_source_stream_entry_id` reads
+      // the same whether the eligible set held a usable id or was empty -- the
+      // difference between the compiler ignoring the allowlist and the allowlist
+      // being impossible to satisfy. The prompt is not captured anywhere, so name
+      // both sets it offered here, alongside which of the turn's two passes this is.
+      compile_pass: options.compilePass ?? null,
+      citation_eligible_source_stream_entry_id_count:
+        options.citationEligibleSourceStreamEntryIds?.length ?? null,
+      citation_eligible_source_stream_entry_ids: toTraceJsonValue(
+        options.citationEligibleSourceStreamEntryIds ?? null,
+      ),
+      off_limits_source_stream_entry_id_count:
+        options.offLimitsSourceStreamEntryIds?.length ?? null,
+      off_limits_source_stream_entry_ids: toTraceJsonValue(
+        options.offLimitsSourceStreamEntryIds ?? null,
       ),
       source_trust_rejections: toTraceJsonValue(
         options.rejected
