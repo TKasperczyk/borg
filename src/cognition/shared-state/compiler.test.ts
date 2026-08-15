@@ -3070,6 +3070,119 @@ describe("compileSharedStateArtifact", () => {
     );
   });
 
+  it("names every lifecycle-evicted entry by state key in the compile trace", async () => {
+    const source = createStreamEntryId();
+
+    repository.upsert(
+      audience,
+      Array.from({ length: 45 }, (_, index) => ({
+        type: "add" as const,
+        state_key: `decision.evicted_${index}`,
+        kind: "locked" as const,
+        text: `Locked planning entry ${index}`,
+        provenance_stream_entry_ids: [source],
+        created_at: 1_000 + index,
+        last_updated_at: 1_000 + index,
+        rank: index,
+      })),
+      {
+        lastCompiledStreamEntryId: source,
+      },
+    );
+
+    const llmClient = new FakeLLMClient({
+      responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
+    });
+    const trace = createTraceRecorder();
+    await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      allowedSourceStreamEntryIds: [source, priorAllowedStreamEntryId],
+      tracer: trace,
+    });
+
+    const completed = trace.events
+      .filter((event) => event.event === "shared_state.compile.completed")
+      .at(-1);
+    const countsByStateKey = completed?.data.operation_counts_by_state_key as
+      | Record<string, Record<string, number>>
+      | undefined;
+    const prunedStateKeys = Object.entries(countsByStateKey ?? {})
+      .filter(([, counts]) => (counts.prune ?? 0) > 0)
+      .map(([stateKey]) => stateKey);
+    const survivingStateKeys = new Set(activeEntries().map((entry) => entry.state_key));
+
+    expect(completed?.data.artifact_pruned_entry_count_this_turn).toBe(5);
+    expect(prunedStateKeys.sort()).toEqual([
+      "decision.evicted_0",
+      "decision.evicted_1",
+      "decision.evicted_2",
+      "decision.evicted_3",
+      "decision.evicted_4",
+    ]);
+    expect(prunedStateKeys.some((stateKey) => survivingStateKeys.has(stateKey))).toBe(false);
+  });
+
+  it("names a lifecycle eviction of an entry the same patch added", async () => {
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              state_key: "route.granada_nights",
+              kind: "locked",
+              text: "Granada is locked for 3 nights",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
+            },
+            {
+              type: "add",
+              state_key: "budget.museum_pass",
+              kind: "locked",
+              text: "Museum pass bought in advance",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
+            },
+          ],
+        }),
+      ],
+    });
+    const trace = createTraceRecorder();
+
+    await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+      lifecycle: {
+        maxActiveEntries: 1,
+      },
+    });
+
+    const completed = trace.events
+      .filter((event) => event.event === "shared_state.compile.completed")
+      .at(-1);
+    const countsByStateKey = completed?.data.operation_counts_by_state_key as
+      | Record<string, Record<string, number>>
+      | undefined;
+    const prunedStateKeys = Object.entries(countsByStateKey ?? {})
+      .filter(([, counts]) => (counts.prune ?? 0) > 0)
+      .map(([stateKey]) => stateKey);
+    const namedPruneCount = Object.values(countsByStateKey ?? {}).reduce(
+      (total, counts) => total + (counts.prune ?? 0),
+      0,
+    );
+    const survivingStateKeys = activeEntries().map((entry) => entry.state_key);
+
+    expect(survivingStateKeys).toHaveLength(1);
+    expect(completed?.data.artifact_pruned_entry_count_this_turn).toBe(1);
+    expect(namedPruneCount).toBe(completed?.data.artifact_pruned_entry_count_this_turn);
+    expect(prunedStateKeys).toHaveLength(1);
+    expect(survivingStateKeys).not.toContain(prunedStateKeys[0]);
+    expect([...survivingStateKeys, ...prunedStateKeys].sort()).toEqual([
+      "budget.museum_pass",
+      "route.granada_nights",
+    ]);
+  });
+
   it("keeps long compile sequences inside the active artifact budget while reserving live render slots", async () => {
     const maxActiveEntries = 40;
     const liveRenderReservation = 8;

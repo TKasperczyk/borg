@@ -168,6 +168,33 @@ function entryStateKeyById(
   return new Map((artifact?.entries ?? []).map((entry) => [entry.id, entry.state_key]));
 }
 
+/**
+ * State keys an id can resolve to for trace attribution, including entries this patch
+ * introduces. A cap eviction can select an entry the same patch added -- the reserved-slot
+ * passes fall back to `allowReserved` -- and that id is in no previous artifact, so resolving
+ * against the artifact alone drops the operation from the per-key counts while it still counts
+ * in the totals. Eviction identity is only recoverable from the trace by state key, so a prune
+ * that raises the count without naming a key is a silent hole in that record.
+ */
+function operationStateKeysById(
+  operations: readonly SharedStateOperation[],
+  previousArtifact: SharedStateArtifact | null,
+): Map<SharedStateEntry["id"], string | null> {
+  const stateKeysById = entryStateKeyById(previousArtifact);
+
+  for (const operation of operations) {
+    if (operation.type === "add" && operation.id !== undefined) {
+      stateKeysById.set(operation.id, operation.state_key ?? null);
+    }
+
+    if (operation.type === "supersede" && operation.replacement.id !== undefined) {
+      stateKeysById.set(operation.replacement.id, operation.replacement.state_key ?? null);
+    }
+  }
+
+  return stateKeysById;
+}
+
 function operationStateKey(
   operation: SharedStateOperation,
   previousStateKeysById: ReadonlyMap<SharedStateEntry["id"], string | null>,
@@ -357,11 +384,11 @@ function operationCountsByStateKey(
   operations: readonly PublicSharedStateOperation[],
   previousArtifact: SharedStateArtifact | null,
 ): Record<string, Record<SharedStateOperationKind, number>> {
-  const previousStateKeysById = entryStateKeyById(previousArtifact);
+  const stateKeysById = operationStateKeysById(operations, previousArtifact);
   const counts: Record<string, Record<SharedStateOperationKind, number>> = {};
 
   for (const operation of operations) {
-    const stateKey = operationStateKey(operation, previousStateKeysById);
+    const stateKey = operationStateKey(operation, stateKeysById);
 
     if (stateKey === null) {
       continue;
