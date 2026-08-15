@@ -38,7 +38,13 @@ import {
 // Tunes the default maximum number of shared-state entries rendered.
 const DEFAULT_SHARED_STATE_MAX_ENTRIES = 40;
 
-// Tunes the default token budget for rendered shared-state content.
+// Tunes the default token budget for rendered shared-state content. This budget covers the whole
+// section, so the compact index of every active key competes with the expanded bodies for it, and
+// the index cost grows with the active set while the entry cap does not. In a saturated audience
+// that inverts: measured on a live 40-entry artifact the index alone took 3,514 of these 5,000
+// tokens (~88/line over 40 lines), leaving 3-4 bodies rendered out of the 16-40 the selection pass
+// had already chosen. The drop loops below, not the selection caps, are what bind there -- so a
+// short expanded body count is evidence about this budget, not about `lockedMaxEntries`.
 const DEFAULT_SHARED_STATE_MAX_TOKENS = 5_000;
 
 // Tunes reserved render slots by shared-state entry kind.
