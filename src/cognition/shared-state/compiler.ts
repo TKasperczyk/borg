@@ -678,6 +678,10 @@ export async function compileSharedStateArtifact(
   const existingStateKeyRegistry = buildExistingStateKeyRegistry(previousArtifact);
   const canonicalizationCandidates = input.canonicalizationCandidates ?? {};
   const relationalSlotSourceStreamEntryIds = relationalSlotEvidenceStreamEntryIds(input);
+  // The re-subtraction is not a duplicate of the caller's filter: trusted relational-slot
+  // evidence is unioned in above, and a slot whose evidence happens to include the current
+  // message would otherwise re-admit it to the allowlist. Filtering after the union closes
+  // that one bypass of the N+1 durability boundary (8599f733).
   const allowedSourceStreamEntryIdsForPrompt =
     input.allowedSourceStreamEntryIds === undefined
       ? undefined

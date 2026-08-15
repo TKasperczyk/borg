@@ -2195,6 +2195,11 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     promptVisibleLedger: ledgerPromptContext.promptVisibleLedger,
     previousArtifact,
     relationalSlotsContext,
+    // N+1 durability boundary (8599f733): the message being answered is context for this
+    // turn, never source material for a durable entry written during it. The compiler runs
+    // in retrieval, before deliberation, so without this a fresh artifact citing the current
+    // message could be read back as prior shared state inside the same turn. The message
+    // stays citable from the next compile on, for as long as the ledger still shows it.
     allowedSourceStreamEntryIds: uniqueStreamEntryIds([
       ...ledgerPromptContext.visibleStreamEntryIds,
       ...trustedPostResponseStreamEntryIds,
