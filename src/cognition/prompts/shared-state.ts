@@ -69,6 +69,7 @@ export function buildSharedStateSystemPrompt(
     "",
     "Identity and ownership:",
     "- Cite stream ids for every add, update, and supersede replacement.",
+    "- Citation is enforced as an allowlist: source_trust.citation_eligible_source_stream_entry_ids is the complete set a citation may name. A stream id visible elsewhere in this input but absent from that list is not citable, and off_limits_source_stream_entry_ids names some but not all of the ineligible ids. An operation citing an ineligible id is discarded on its own, with no repair attempt and no other signal.",
     "- Preserve stable entry ids when updating or superseding existing entries.",
     "- Every add, update, and supersede replacement MUST include state_key.",
     "- An update must carry at least one field it changes: kind, text, owner_entity_id, or canonicalizes. An update naming only an entry and its state_key changes nothing and is dropped. There is no touch-only update; to keep an entry current, restate its text.",

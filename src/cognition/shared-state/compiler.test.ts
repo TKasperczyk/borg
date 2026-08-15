@@ -2150,6 +2150,7 @@ describe("compileSharedStateArtifact", () => {
     expect(repository.get(audience)?.entries ?? []).toHaveLength(0);
     expect(requestPayload.source_trust).toEqual({
       citation_eligible_source_stream_entry_id_count: 1,
+      citation_eligible_source_stream_entry_ids: [trustedSource],
       off_limits_source_stream_entry_ids: [quarantinedSource],
     });
     expect(completed?.data).toEqual(
@@ -2217,6 +2218,7 @@ describe("compileSharedStateArtifact", () => {
     expect(repository.get(audience)?.entries ?? []).toHaveLength(0);
     expect(requestPayload.source_trust).toEqual({
       citation_eligible_source_stream_entry_id_count: 1,
+      citation_eligible_source_stream_entry_ids: [trustedSource],
       off_limits_source_stream_entry_ids: [currentStreamEntryId],
     });
     expect(completed?.data).toEqual(
@@ -2264,6 +2266,7 @@ describe("compileSharedStateArtifact", () => {
     expect(repository.get(audience)?.entries ?? []).toHaveLength(0);
     expect(requestPayload.source_trust).toEqual({
       citation_eligible_source_stream_entry_id_count: 1,
+      citation_eligible_source_stream_entry_ids: [trustedSource],
       off_limits_source_stream_entry_ids: [currentStreamEntryId],
     });
     expect(completed?.data).toEqual(

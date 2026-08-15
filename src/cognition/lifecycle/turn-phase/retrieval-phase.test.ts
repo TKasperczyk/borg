@@ -4782,6 +4782,7 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
     expect(sharedStateRepository.get(audienceEntityId)?.entries ?? []).toHaveLength(0);
     expect(requestPayload.source_trust).toEqual({
       citation_eligible_source_stream_entry_id_count: 0,
+      citation_eligible_source_stream_entry_ids: [],
       off_limits_source_stream_entry_ids: [currentSourceEntryId],
     });
     expect(completed?.data).toEqual(

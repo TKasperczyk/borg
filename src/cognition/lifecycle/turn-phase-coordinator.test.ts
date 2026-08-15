@@ -2057,6 +2057,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
       expect(upsertCount).toBe(0);
       expect(requestPayload.source_trust).toEqual({
         citation_eligible_source_stream_entry_id_count: 0,
+        citation_eligible_source_stream_entry_ids: [],
         off_limits_source_stream_entry_ids: [currentSource, quarantinedSource],
       });
       expect(completed?.data).toEqual(
