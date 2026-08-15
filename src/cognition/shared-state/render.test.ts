@@ -493,6 +493,54 @@ describe("renderSharedStateArtifact", () => {
     expect(rendered).toContain("record_version=1\nsnapshot_basis=turn_start");
   });
 
+  it("names omission as a render budget rather than a store cap", () => {
+    const audience = createEntityId();
+    const entries = Array.from({ length: 6 }, (_, index) =>
+      entry({
+        audience,
+        kind: "live",
+        rank: index,
+        updatedAt: 20 + index,
+        stateKey: `project.key${index}`,
+        text: `body ${index}`,
+      }),
+    );
+
+    const rendered =
+      renderSharedStateArtifact(artifact(entries), {
+        maxEntries: 2,
+        maxTokens: 50_000,
+      }) ?? "";
+
+    expect(rendered).toContain("SharedStateArtifact omitted:");
+    expect(rendered).toContain("omission_basis=render_budget");
+    expect(rendered).toContain("still active and unchanged in the store");
+    expect(rendered).toContain("not the store's lifecycle cap");
+  });
+
+  it("names the omission basis on the omission-only render too", () => {
+    const audience = createEntityId();
+    const entries = [
+      entry({
+        audience,
+        kind: "live",
+        rank: 0,
+        updatedAt: 20,
+        stateKey: "project.alpha",
+        text: "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho",
+      }),
+    ];
+
+    const rendered =
+      renderSharedStateArtifact(artifact(entries), {
+        maxEntries: 4,
+        maxTokens: 40,
+      }) ?? "";
+
+    expect(rendered).toContain("SharedStateArtifact omitted:");
+    expect(rendered).toContain("omission_basis=render_budget");
+  });
+
   it("renders a compact all-key index before detailed entries", () => {
     const audience = createEntityId();
     const entries = [

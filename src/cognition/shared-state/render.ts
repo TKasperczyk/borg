@@ -384,6 +384,15 @@ function allActiveSharedStateKeysIndexed(input: {
 const SHARED_STATE_SNAPSHOT_BASIS_LINE =
   "snapshot_basis=turn_start (this artifact and its record_version were read before this turn's shared-state compile, which may already have advanced both)";
 
+// Omission here is this render's token budget spent over the entries the store already returned as
+// active -- a different mechanism from the store's lifecycle cap, which is the one that deletes.
+// Without saying so, `omitted` on an index row next to a store known to evict at a cap reads as
+// "there is no room for this", and the entry's own body looks unreachable until something else
+// leaves. Nothing has to leave: the omitted rows are still active and unchanged, and what promotes
+// one into the rendered body is render salience (a current-turn update ranks first), not a free slot.
+const SHARED_STATE_OMISSION_BASIS_LINE =
+  "omission_basis=render_budget (omitted entries are still active and unchanged in the store; omission is this render's token budget over the active set, not the store's lifecycle cap, so expanding an omitted key costs render salience, not a stored slot)";
+
 function renderSharedStateArtifactContent(input: {
   artifact: SharedStateArtifact;
   activeEntries: readonly SharedStateEntry[];
@@ -402,6 +411,7 @@ function renderSharedStateArtifactContent(input: {
       : [
           `SharedStateArtifact omitted: ${formatSharedStateKindCounts(input.omittedByKind)}.`,
           `Retained: ${formatSharedStateKindCounts(input.renderedByKind)}.`,
+          SHARED_STATE_OMISSION_BASIS_LINE,
         ].join(" ");
 
   return [
@@ -446,7 +456,7 @@ function renderSharedStateArtifactOmissionOnly(input: {
     }),
     `SharedStateArtifact omitted: ${formatSharedStateKindCounts(
       input.omittedByKind,
-    )}. Reason: ${input.reason}.`,
+    )}. Reason: ${input.reason}. ${SHARED_STATE_OMISSION_BASIS_LINE}`,
   ].join("\n");
 }
 
