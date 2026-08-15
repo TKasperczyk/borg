@@ -292,6 +292,48 @@ describe("SharedStateRepository", () => {
     });
   });
 
+  it("writes a new state key on update while keeping the entry identity", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const entryId = createSharedStateEntryId();
+
+    const initial = repository.upsert(audience, [
+      {
+        type: "add",
+        id: entryId,
+        state_key: "audit.inference.supersede_as_durable_correction_path",
+        kind: "locked",
+        text: "Supersede was recorded as the durable correction path.",
+        provenance_stream_entry_ids: [source],
+        created_at: 1_000,
+      },
+    ]);
+
+    expect(initial?.entries[0]?.created_at).toBe(1_000);
+
+    // No text field: the key alone is the change, and the store applies it to the same row.
+    const renamed = repository.upsert(audience, [
+      {
+        type: "update",
+        id: entryId,
+        state_key: "audit.inference.supersede_binds_old_body_to_new_fate",
+        last_updated_stream_entry_ids: [source],
+        last_updated_at: 2_000,
+      },
+    ]);
+
+    expect(renamed?.entries).toHaveLength(1);
+    expect(renamed?.entries[0]).toMatchObject({
+      id: entryId,
+      state_key: "audit.inference.supersede_binds_old_body_to_new_fate",
+      kind: "locked",
+      text: "Supersede was recorded as the durable correction path.",
+      created_at: 1_000,
+      last_updated_at: 2_000,
+      superseded_by_id: null,
+    });
+  });
+
   it("persists last updated global turn on add update and supersede but not kind transitions", () => {
     const audience = createEntityId();
     const firstSource = createStreamEntryId();

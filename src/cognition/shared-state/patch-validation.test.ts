@@ -18,6 +18,7 @@ import type { RelationshipClaim } from "../../memory/common/relationship-claims.
 import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import type { EmitSharedStatePatch, SharedStateCanonicalizationCandidates } from "./types.js";
 import { allowedCanonicalizationIds, normalizePatch } from "./patch-validation.js";
+import { stateKeysAreNearDuplicate } from "./state-key.js";
 
 const EMPTY_CANONICALIZES = {
   goal_ids: [],
@@ -543,6 +544,49 @@ describe("normalizePatch empty update no-op handling", () => {
 });
 
 describe("normalizePatch state_key validation", () => {
+  it("renames an entry in place when an update carries a different state_key", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const previousStateKey = "audit.inference.supersede_as_durable_correction_path";
+    const nextStateKey = "audit.inference.supersede_as_durable_correction_route";
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: previousStateKey,
+      kind: "locked",
+      text: "Supersede was recorded as the durable correction path.",
+    });
+
+    const result = normalizeKeyedPatch({
+      previousEntries: [entry],
+      operations: [
+        {
+          type: "update",
+          id: entry.id,
+          state_key: nextStateKey,
+          source_stream_entry_ids: [sourceStreamEntryId],
+        },
+      ],
+      audienceEntityId,
+      sourceStreamEntryId,
+    });
+
+    // The key guards -- near-duplicate, locked collision, new_key_reason -- live in
+    // validateAddStateKey, which only the add case calls. An add carrying this key against this
+    // artifact would be rejected as a near duplicate; the same key lands on an update.
+    expect(stateKeysAreNearDuplicate(nextStateKey, previousStateKey)).toBe(true);
+    expect(result.rejected).toEqual([]);
+    // A key-only change is material, so it does not fall into the empty-update drop.
+    expect(result.emptyUpdateDrops).toEqual([]);
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "update",
+        id: entry.id,
+        state_key: nextStateKey,
+      }),
+    ]);
+  });
+
   it("rejects required relationship claims without grounding evidence", () => {
     const audienceEntityId = createEntityId();
     const sourceStreamEntryId = createStreamEntryId();
