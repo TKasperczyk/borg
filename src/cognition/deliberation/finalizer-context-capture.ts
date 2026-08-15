@@ -36,8 +36,12 @@ import type { FinalizerSurfaceVariant } from "./prompt/finalizer-context.js";
 import type { DeliberationContext } from "./types.js";
 
 const FINALIZER_CONTEXT_CAPTURE_SCHEMA_VERSION = 1 as const;
-const DEFAULT_FINALIZER_CONTEXT_CAPTURE_MAX_RECORD_BYTES = 32 * 1024 * 1024;
-const DEFAULT_FINALIZER_CONTEXT_CAPTURE_MAX_FILE_BYTES = 512 * 1024 * 1024;
+// Sized to real captured records: the paired-replay projection (both rendered
+// surfaces + render input + exact request) runs 42-65 MB per record on live
+// finalizer contexts; the previous 32 MB cap silently skipped every one
+// (trace: finalizer_context_capture.skipped record_oversized, 2026-08-15).
+const DEFAULT_FINALIZER_CONTEXT_CAPTURE_MAX_RECORD_BYTES = 96 * 1024 * 1024;
+const DEFAULT_FINALIZER_CONTEXT_CAPTURE_MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024;
 const DEFAULT_FINALIZER_CONTEXT_CAPTURE_MAX_SIDECAR_BYTES = 512 * 1024 * 1024;
 const FINALIZER_CAPTURE_FILE_NAME = "finalizer-contexts.jsonl";
 
