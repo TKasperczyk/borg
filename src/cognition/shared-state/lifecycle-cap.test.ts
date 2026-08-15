@@ -234,6 +234,65 @@ describe("applySharedStateArtifactLifecycleCap", () => {
     expect(capped.newestReservedEntryCount).toBe(0);
   });
 
+  it("draws from a band the patch's own add pushed over cap before the band already over it", () => {
+    const audience = createEntityId();
+    // Band protection is recomputed against post-patch counts, not the counts the previous pass
+    // ran on. A band sitting exactly at its soft cap is untouchable for as long as it stays
+    // there, so its floor can outlast every entry in a band that is far over -- and a single add
+    // of that kind, in the same patch, makes that same floor the first thing drawn. "Protected by
+    // its band" and "stalest entry in the artifact" are true of the same entry at once, and which
+    // one decides is settled by what the patch adds rather than by anything about the entry.
+    const tentative = [1_000, 2_000].map((updatedAt, index) =>
+      sharedStateEntry({
+        audience,
+        kind: "tentative",
+        rank: index,
+        updatedAt,
+        stateKey: `tentative.entry.${index}`,
+      }),
+    );
+    const locked = Array.from({ length: 38 }, (_, index) =>
+      sharedStateEntry({
+        audience,
+        kind: "locked",
+        rank: 2 + index,
+        updatedAt: 3_000 + index,
+        stateKey: `locked.entry.${index}`,
+      }),
+    );
+    const entries = [...tentative, ...locked];
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+
+    const capped = applySharedStateArtifactLifecycleCap({
+      previousArtifact: sharedStateArtifact(entries),
+      operations: (["locked", "locked", "tentative"] as const).map((kind, index) => ({
+        type: "add" as const,
+        state_key: `${kind}.entry.added.${index}`,
+        kind,
+        text: `added ${kind} ${index}`,
+        provenance_stream_entry_ids: [createStreamEntryId()],
+      })),
+      nowMs: 20_000,
+    });
+    const pruned = capped.operations
+      .filter((operation) => operation.type === "prune")
+      .map((operation) => byId.get(operation.id));
+
+    expect(capped.postPlanActiveEntryCount).toBe(40);
+    // Three adds, three evictions -- and they do not all come from one band. The first pass finds
+    // tentative at 3 over a cap of 2 and takes its floor; that returns the band to its cap and
+    // puts it out of reach again, so the remaining two come from locked, which was over its own
+    // cap by fourteen the whole time and still lost the first draw.
+    expect(pruned.map((entry) => entry?.kind)).toEqual(["tentative", "locked", "locked"]);
+    // tentative.entry.1 is older than all 38 locked entries and is evicted by none of them: age
+    // is not what exposes an entry here, its band's count is.
+    expect(pruned.map((entry) => entry?.state_key)).toEqual([
+      "tentative.entry.0",
+      "locked.entry.0",
+      "locked.entry.1",
+    ]);
+  });
+
   it("prunes an over-cap earlier band before an older floor in a later band", () => {
     const audience = createEntityId();
     const locked = Array.from({ length: 39 }, (_, index) =>
