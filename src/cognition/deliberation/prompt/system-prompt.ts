@@ -1881,10 +1881,14 @@ function summarizeWorkingMemory(workingMemory: WorkingMemory): string {
   // live in the stream. What's left here is derived live-turn state
   // (hot entities, mood) that the model uses to anchor the turn in the
   // *right now*.
+  // `hot_entities` is replaced wholesale each turn from one perception call
+  // (perception/gateway.ts) -- no accumulation, no decay, no salience ranking.
+  // The head of that list used to be rendered separately as `focus=`, which
+  // named an ordering artifact as if it were a ranked, persistent field and
+  // restated `entities[0]` on the same line. Render the list only.
   const mood = workingMemory.mood;
-  const focus = workingMemory.hot_entities[0] ?? "none";
   const lines = [
-    `Working memory: focus=${focus}; entities=${workingMemory.hot_entities.join(", ") || "none"}; mood=${
+    `Working memory: entities=${workingMemory.hot_entities.join(", ") || "none"}; mood=${
       mood === null || mood === undefined
         ? "neutral"
         : `${mood.valence.toFixed(2)}/${mood.arousal.toFixed(2)}`

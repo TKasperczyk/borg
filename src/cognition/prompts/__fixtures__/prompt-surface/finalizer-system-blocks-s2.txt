@@ -262,7 +262,7 @@ disclosure: disclosure_class=self_private private-to=unknown; I can use this int
 </borg_recent_growth>
 
 <borg_working_state>
-Working memory: focus=rollout; entities=rollout, backend debt; mood=0.30/0.40
+Working memory: entities=rollout, backend debt; mood=0.30/0.40
 <pending_actions>
 These are unresolved operational follow-ups, not facts about the user.
 I do not treat them as authoritative claims about identity, relationships, or biography.

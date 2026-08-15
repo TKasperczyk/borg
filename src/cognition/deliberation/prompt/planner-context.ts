@@ -1894,7 +1894,9 @@ function renderTurnState(context: DeliberationContext): RenderedPlannerSection {
       ...currentTimeLines,
       `  <participation_policy>${escapeXmlText(context.participationPolicy ?? "active")}</participation_policy>`,
       `  <perception mode="${escapeXmlAttribute(context.perception.mode)}" valence="${context.perception.affectiveSignal.valence.toFixed(2)}" arousal="${context.perception.affectiveSignal.arousal.toFixed(2)}" />`,
-      `  <working_memory focus="${escapeXmlAttribute(context.workingMemory.hot_entities[0] ?? "none")}" pending_actions="${context.workingMemory.pending_actions.length}" pending_procedural_attempts="${context.workingMemory.pending_procedural_attempts.length}" disclosure="${disclosureAttribute}" />`,
+      // `first_extracted_entity`, not `focus`: this is the head of an unranked
+      // per-turn extraction list, not a salience-ranked or persistent field.
+      `  <working_memory first_extracted_entity="${escapeXmlAttribute(context.workingMemory.hot_entities[0] ?? "none")}" pending_actions="${context.workingMemory.pending_actions.length}" pending_procedural_attempts="${context.workingMemory.pending_procedural_attempts.length}" disclosure="${disclosureAttribute}" />`,
       ...affectiveContext.lines,
       ...closureContext.lines,
       ...mechanismHistory.lines,
