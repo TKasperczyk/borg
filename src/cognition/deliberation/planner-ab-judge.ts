@@ -1,9 +1,8 @@
-import { randomInt, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 import { z } from "zod";
 
 import {
-  callStructuredTool,
   isStructuredToolCallError,
   toToolInputSchema,
   type LLMClient,
@@ -14,6 +13,13 @@ import { intentRecordSchema, type TurnOrigin } from "../types.js";
 import type { PlannerContextCaptureRecord } from "./planner-context-capture.js";
 import type { PlannerAbLiveOutcome, PlannerAbReplayResultRecord } from "./planner-ab-replay.js";
 import { headTailPlannerExcerpt } from "./prompt/planner-context.js";
+import {
+  callJudgeStructuredTool,
+  cryptographicBlindAssignment,
+  hasCompleteCapturedCreatorDirectiveScope,
+  neutralizeKnownPresentationReferences,
+  renderNeutralJudgeValue,
+} from "./blind-ab-judge.js";
 
 const PLANNER_AB_JUDGE_SCHEMA_VERSION = 1 as const;
 
@@ -374,16 +380,8 @@ type PreparedBlindPlannerAbJudgeInput = {
   contextMetrics: JudgeContextMetrics;
 };
 
-function defaultRandom(): number {
-  return randomInt(0, 2) === 0 ? 0.25 : 0.75;
-}
-
 function assignmentFromRandom(random: () => number): PlannerAbJudgeAssignment {
-  const sample = random();
-  if (!Number.isFinite(sample) || sample < 0 || sample >= 1) {
-    throw new RangeError("Planner A/B judge random source must return a finite value in [0, 1)");
-  }
-  return sample < 0.5 ? { left: "compact", right: "legacy" } : { left: "legacy", right: "compact" };
+  return cryptographicBlindAssignment("compact", "legacy", () => random() * 2);
 }
 
 const NEUTRAL_PLANNER_PRESENTATION_REFERENCE = "[PLANNER_PRESENTATION_REFERENCE]";
@@ -436,11 +434,11 @@ export const PLANNER_AB_SURFACE_SELF_REFERENCE_PHRASES = [
 ] as const;
 
 function neutralizeGeneratedPresentationLabels(value: string): string {
-  let neutral = value;
-  for (const phrase of PLANNER_AB_SURFACE_SELF_REFERENCE_PHRASES) {
-    neutral = neutral.replaceAll(phrase, NEUTRAL_PLANNER_PRESENTATION_REFERENCE);
-  }
-  return neutral;
+  return neutralizeKnownPresentationReferences(
+    value,
+    PLANNER_AB_SURFACE_SELF_REFERENCE_PHRASES,
+    NEUTRAL_PLANNER_PRESENTATION_REFERENCE,
+  );
 }
 
 function renderDialogueTail(capture: PlannerContextCaptureRecord): {
@@ -526,54 +524,17 @@ function renderGrounding(capture: PlannerContextCaptureRecord): {
   };
 }
 
-type NeutralJudgeValue = {
-  value: unknown;
-  truncations: number;
-};
-
-function neutralJudgeValue(value: unknown): NeutralJudgeValue {
-  if (typeof value === "string") {
-    const excerpt = headTailPlannerExcerpt(
-      neutralizeGeneratedPresentationLabels(value),
-      MAX_NEUTRAL_EVIDENCE_FIELD_CHARS,
-    );
-    return {
-      value: excerpt.truncated
-        ? {
-            text: excerpt.text,
-            harness_excerpt: true,
-            rendered_chars: excerpt.renderedChars,
-            source_chars: excerpt.totalChars,
-          }
-        : excerpt.text,
-      truncations: excerpt.truncated ? 1 : 0,
-    };
-  }
-  if (Array.isArray(value)) {
-    let truncations = 0;
-    const projected = value.map((entry) => {
-      const rendered = neutralJudgeValue(entry);
-      truncations += rendered.truncations;
-      return rendered.value;
-    });
-    return { value: projected, truncations };
-  }
-  if (value !== null && typeof value === "object") {
-    let truncations = 0;
-    const projected = Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => {
-        const rendered = neutralJudgeValue(entry);
-        truncations += rendered.truncations;
-        return [key, rendered.value];
-      }),
-    );
-    return { value: projected, truncations };
-  }
-  return { value, truncations: 0 };
+function neutralJudgeValue(value: unknown) {
+  return renderNeutralJudgeValue(value, {
+    phrases: PLANNER_AB_SURFACE_SELF_REFERENCE_PHRASES,
+    neutralToken: NEUTRAL_PLANNER_PRESENTATION_REFERENCE,
+    maxStringChars: MAX_NEUTRAL_EVIDENCE_FIELD_CHARS,
+  });
 }
 
 type CapturedMembership = {
   available: boolean;
+  complete: boolean;
   rows: readonly unknown[];
 };
 
@@ -581,37 +542,43 @@ function capturedArrayMembership(
   context: Record<string, unknown>,
   key: string,
 ): CapturedMembership {
-  if (!Object.hasOwn(context, key)) return { available: false, rows: [] };
+  if (!Object.hasOwn(context, key)) return { available: false, complete: false, rows: [] };
   const value = context[key];
-  if (value === null) return { available: true, rows: [] };
-  return Array.isArray(value) ? { available: true, rows: value } : { available: false, rows: [] };
+  if (value === null) return { available: true, complete: true, rows: [] };
+  return Array.isArray(value)
+    ? { available: true, complete: true, rows: value }
+    : { available: false, complete: false, rows: [] };
 }
 
 function capturedDirectiveMembership(context: Record<string, unknown>): CapturedMembership {
   if (!Object.hasOwn(context, "creatorDirectiveBriefing")) {
-    return { available: false, rows: [] };
+    return { available: false, complete: false, rows: [] };
   }
   const briefing = context.creatorDirectiveBriefing;
-  if (briefing === null) return { available: true, rows: [] };
+  if (briefing === null) return { available: true, complete: true, rows: [] };
   if (briefing === undefined || typeof briefing !== "object" || Array.isArray(briefing)) {
-    return { available: false, rows: [] };
+    return { available: false, complete: false, rows: [] };
   }
   const directives = (briefing as Record<string, unknown>).directives;
   return Array.isArray(directives)
-    ? { available: true, rows: directives }
-    : { available: false, rows: [] };
+    ? {
+        available: true,
+        complete: directives.every(hasCompleteCapturedCreatorDirectiveScope),
+        rows: directives,
+      }
+    : { available: false, complete: false, rows: [] };
 }
 
 function capturedSingletonMembership(
   context: Record<string, unknown>,
   key: string,
 ): CapturedMembership {
-  if (!Object.hasOwn(context, key)) return { available: false, rows: [] };
+  if (!Object.hasOwn(context, key)) return { available: false, complete: false, rows: [] };
   const value = context[key];
-  if (value === null) return { available: true, rows: [] };
+  if (value === null) return { available: true, complete: true, rows: [] };
   return value !== undefined && typeof value === "object" && !Array.isArray(value)
-    ? { available: true, rows: [value] }
-    : { available: false, rows: [] };
+    ? { available: true, complete: true, rows: [value] }
+    : { available: false, complete: false, rows: [] };
 }
 
 function renderNeutralMembershipSection(
@@ -626,7 +593,7 @@ function renderNeutralMembershipSection(
   });
   return {
     text: [
-      `<membership_index class="${label}" captured="${membership.available}" complete_membership="${membership.available}" rows="${rows.length}">`,
+      `<membership_index class="${label}" captured="${membership.available}" complete_membership="${membership.available && membership.complete && truncations === 0}" rows="${rows.length}">`,
       ...rows,
       "</membership_index>",
     ].join("\n"),
@@ -649,27 +616,50 @@ function renderVetoEvidence(capture: PlannerContextCaptureRecord): {
   const participantProfiles = capturedArrayMembership(context, "participantProfiles");
   const audienceProfile = capturedSingletonMembership(context, "audienceProfile");
   const creatorContext = capturedSingletonMembership(context, "creatorContext");
+  const renderedCommitments = renderNeutralMembershipSection("applicable_commitment", commitments);
+  const renderedDirectives = renderNeutralMembershipSection("creator_directive", directives);
+  const renderedRelationalSlots = renderNeutralMembershipSection(
+    "relational_slot",
+    relationalSlots,
+  );
+  const renderedParticipants = renderNeutralMembershipSection("active_participant", participants);
+  const renderedParticipantProfiles = renderNeutralMembershipSection(
+    "participant_profile",
+    participantProfiles,
+  );
+  const renderedAudienceProfile = renderNeutralMembershipSection(
+    "audience_profile",
+    audienceProfile,
+  );
+  const renderedCreatorContext = renderNeutralMembershipSection(
+    "sender_authority_context",
+    creatorContext,
+  );
   const memberships = [
-    renderNeutralMembershipSection("applicable_commitment", commitments),
-    renderNeutralMembershipSection("creator_directive", directives),
-    renderNeutralMembershipSection("relational_slot", relationalSlots),
-    renderNeutralMembershipSection("active_participant", participants),
-    renderNeutralMembershipSection("participant_profile", participantProfiles),
-    renderNeutralMembershipSection("audience_profile", audienceProfile),
-    renderNeutralMembershipSection("sender_authority_context", creatorContext),
+    renderedCommitments,
+    renderedDirectives,
+    renderedRelationalSlots,
+    renderedParticipants,
+    renderedParticipantProfiles,
+    renderedAudienceProfile,
+    renderedCreatorContext,
   ];
+  const exact = (membership: CapturedMembership, rendered: (typeof memberships)[number]) =>
+    membership.available && membership.complete && rendered.truncations === 0;
   const assessability: PlannerAbVetoAssessability = {
-    commitment: commitments.available ? "assessable" : "not_assessable",
+    commitment: exact(commitments, renderedCommitments) ? "assessable" : "not_assessable",
     disclosure:
-      commitments.available && directives.available && relationalSlots.available
+      exact(commitments, renderedCommitments) &&
+      exact(directives, renderedDirectives) &&
+      exact(relationalSlots, renderedRelationalSlots)
         ? "assessable"
         : "not_assessable",
     attribution:
-      relationalSlots.available &&
-      participants.available &&
-      participantProfiles.available &&
-      audienceProfile.available &&
-      creatorContext.available
+      exact(relationalSlots, renderedRelationalSlots) &&
+      exact(participants, renderedParticipants) &&
+      exact(participantProfiles, renderedParticipantProfiles) &&
+      exact(audienceProfile, renderedAudienceProfile) &&
+      exact(creatorContext, renderedCreatorContext)
         ? "assessable"
         : "not_assessable",
   };
@@ -851,7 +841,10 @@ export function prepareBlindPlannerAbJudgeInput(
   if (exclusion !== null) {
     throw new TypeError(`Planner A/B replay row is not judgeable: ${exclusion}`);
   }
-  const assignment = assignmentFromRandom(options.random ?? defaultRandom);
+  const assignment =
+    options.random === undefined
+      ? cryptographicBlindAssignment("compact", "legacy")
+      : assignmentFromRandom(options.random);
   const dialogue = renderDialogueTail(capture);
   const grounding = renderGrounding(capture);
   const vetoEvidence = renderVetoEvidence(capture);
@@ -1164,7 +1157,7 @@ export async function judgePlannerAbPair(
   } as const;
 
   try {
-    const result = await callStructuredTool({
+    const result = await callJudgeStructuredTool({
       llmClient: options.llmClient,
       request: {
         model: options.model,

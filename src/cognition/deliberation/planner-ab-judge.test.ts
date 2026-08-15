@@ -182,6 +182,20 @@ function capture(
               operationalDirective: "Do not attribute Participant A's acts to Participant B.",
               priority: 8,
               createdAt: 100,
+              scope: {
+                directiveId: "directive-1",
+                createdByEntityId: "creator-1",
+                sourceSessionId: SESSION_ID,
+                contentScope: "allow_list",
+                allowedEntityIds: ["entity-a"],
+                excludedEntityIds: ["entity-b"],
+                subjectMayKnow: true,
+                mentionPolicy: "only_if_topic_raised",
+                deniedAudienceBehavior: "omit",
+                activationScope: "same_as_disclosure",
+                activationAllowedEntityIds: [],
+                activationExcludedEntityIds: [],
+              },
             },
           ],
         },
@@ -431,7 +445,7 @@ describe("planner A/B blind judge", () => {
     expect(prepared.contextMetrics.promptChars).toBeLessThan(60_000);
   });
 
-  it("renders complete captured veto memberships through a neutral bounded serializer", () => {
+  it("marks cut captured veto memberships incomplete in the neutral bounded serializer", () => {
     const source = capture();
     const commitments = source.render_input.compactContext.applicableCommitments ?? [];
     const largeCapture = {
@@ -461,7 +475,7 @@ describe("planner A/B blind judge", () => {
       '<shared_veto_grounding serializer="neutral_complete_membership_v1">',
     );
     expect(prepared.userPrompt).toContain(
-      '<membership_index class="applicable_commitment" captured="true" complete_membership="true" rows="2">',
+      '<membership_index class="applicable_commitment" captured="true" complete_membership="false" rows="2">',
     );
     expect(prepared.userPrompt).toContain('"id":"commitment-1"');
     expect(prepared.userPrompt).toContain('"id":"commitment-2"');
@@ -490,8 +504,8 @@ describe("planner A/B blind judge", () => {
     expect(prepared.userPrompt).not.toContain("<borg_planner_commitment_digest");
     expect(prepared.userPrompt).not.toContain("<creator_directive_index");
     expect(prepared.vetoAssessability).toEqual({
-      commitment: "assessable",
-      disclosure: "assessable",
+      commitment: "not_assessable",
+      disclosure: "not_assessable",
       attribution: "assessable",
     });
     expect(prepared.contextMetrics.vetoEvidenceTruncations).toBeGreaterThan(0);
@@ -540,6 +554,37 @@ describe("planner A/B blind judge", () => {
         expected,
       ),
     ).toThrow("Cannot flag not-assessable disclosure evidence");
+  });
+
+  it("keeps historical directive rows visible but scope-sensitive disclosure unassessable", () => {
+    const source = capture();
+    const currentDirectives =
+      source.render_input.compactContext.creatorDirectiveBriefing?.directives ?? [];
+    const historicalDirectives = currentDirectives.map((directive) => {
+      const { scope: _scope, ...historical } = directive as typeof directive & {
+        scope?: unknown;
+      };
+      return historical;
+    });
+    const historicalCapture = {
+      ...source,
+      render_input: {
+        ...source.render_input,
+        compactContext: {
+          ...source.render_input.compactContext,
+          creatorDirectiveBriefing: { directives: historicalDirectives },
+        },
+      },
+    } as PlannerContextCaptureRecord;
+
+    const prepared = prepareBlindPlannerAbJudgeInput(replay(), historicalCapture, {
+      random: () => 0,
+    });
+
+    expect(prepared.userPrompt).toContain(
+      '<membership_index class="creator_directive" captured="true" complete_membership="false" rows="1">',
+    );
+    expect(prepared.vetoAssessability.disclosure).toBe("not_assessable");
   });
 
   it("retains every plan field and excludes only cut-field dimensions from scoring", async () => {
@@ -720,6 +765,40 @@ describe("planner A/B blind judge", () => {
     expect(request.toLowerCase()).not.toContain("legacy");
     expect(request).not.toContain("987654321");
     expect(request).not.toContain("876543210");
+  });
+
+  it("retries a fully invalid structured judge payload before recording failure", async () => {
+    const invalid = {
+      text: "",
+      input_tokens: 10,
+      output_tokens: 2,
+      stop_reason: "tool_use",
+      tool_calls: [{ id: "bad", name: "EmitPlannerAbJudgment", input: {} }],
+    } satisfies LLMCompleteResult;
+    const valid = {
+      text: "",
+      input_tokens: 20,
+      output_tokens: 3,
+      stop_reason: "tool_use",
+      tool_calls: [{ id: "good", name: "EmitPlannerAbJudgment", input: blindJudgment() }],
+    } satisfies LLMCompleteResult;
+    const complete = vi
+      .fn<(request: LLMCompleteOptions) => Promise<LLMCompleteResult>>()
+      .mockResolvedValueOnce(invalid)
+      .mockResolvedValueOnce(invalid)
+      .mockResolvedValueOnce(valid);
+    const result = await judgePlannerAbPair(replay(), capture(), {
+      llmClient: { complete, converse: vi.fn() },
+      model: "judge",
+      random: () => 0,
+    });
+
+    expect(result.status).toBe("completed");
+    expect(complete).toHaveBeenCalledTimes(3);
+    if (result.status === "completed") {
+      expect(result.judge.attempt_count).toBe(3);
+      expect(result.judge.usage).toMatchObject({ input_tokens: 40, output_tokens: 7 });
+    }
   });
 
   it("excludes degraded pairs before any judge call", async () => {

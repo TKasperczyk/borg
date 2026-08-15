@@ -9,6 +9,7 @@ import {
 import {
   DEFAULT_SESSION_ID,
   createCommitmentId,
+  createCreatorDirectiveId,
   createEntityId,
   createGoalId,
   createRelationalSlotId,
@@ -230,6 +231,8 @@ function livedEntry(input: {
   text: string;
   outcomeReference?: string;
   disclosureClass?: "public" | "self_private" | "sensitive";
+  stance?: string;
+  beliefEffect?: string;
 }): EvidenceLedgerEntry {
   const disclosureClass = input.disclosureClass ?? "self_private";
   return {
@@ -244,6 +247,8 @@ function livedEntry(input: {
     state_metadata: {
       lived_experience_kind: input.kind,
       occurred_at: input.occurredAt,
+      ...(input.stance === undefined ? {} : { stance: input.stance }),
+      ...(input.beliefEffect === undefined ? {} : { belief_effect: input.beliefEffect }),
       disclosure_label: {
         disclosure_class: disclosureClass,
         origin_audience_entity_ids: [],
@@ -390,6 +395,7 @@ describe("compact planner context", () => {
     expect(goalRow).toContain('dc="relationship_private"');
     expect(goalRow).toContain(`oa="${alice}"`);
     expect(goalRow).toContain(`pt="${alice}"`);
+    expect(goalRow).toContain('pub="none"');
     expect(detailRow).toContain('tc="Complete Keep the plan legible"');
     expect(detailRow).toContain('sp="5.0000"');
     expect(detailRow).not.toContain("\n");
@@ -404,7 +410,7 @@ describe("compact planner context", () => {
     expect(rendered).toContain("ec=enforcement_class");
   });
 
-  it("renders every authority directive as a bounded one-line index row", () => {
+  it("renders every authority directive in one line while keeping structural payloads exact", () => {
     const payload = `DIRECTIVE_HEAD_${"&".repeat(2_000)}_DIRECTIVE_TAIL`;
     const directives: NonNullable<DeliberationContext["creatorDirectiveBriefing"]>["directives"] = [
       ...Array.from({ length: 15 }, (_, index) => creatorDirective(index, `${index}:${payload}`)),
@@ -454,24 +460,89 @@ describe("compact planner context", () => {
     expect(text).toContain("DIRECTIVE_HEAD_");
     expect(text).toContain("_DIRECTIVE_TAIL");
     expect(text).toContain("[ELIDED]");
-    expect(text).toContain('sc="c" k="sf" dh="a" sk="entity"');
+    expect(text).toContain('sc="c" k="sf" dh="a" sps="not_captured" sk="entity"');
     expect(text).toContain('sl="subject-0"');
-    expect(text).toContain('mp="a" pk="cf" px="h:');
-    expect(text).toContain('sc="pk" k="sf" dh="pk"');
-    expect(text).toContain('mp="t" pk="cf"');
-    expect(text).toContain('sc="po" k="rp" dh="po"');
+    expect(text).toContain('mp="answer_if_asked" pk="cf" px="h:');
+    expect(text).toContain('sc="pk" k="sf" dh="pk" sps="not_captured"');
+    expect(text).toContain('mp="only_if_topic_raised" pk="cf"');
+    expect(text).toContain('sc="po" k="rp" dh="po" sps="not_captured"');
     expect(text).toContain('pk="op"');
-    expect(text).toContain('sc="b" k="db" dh="b"');
+    expect(text).toContain('sc="b" k="db" dh="b" sps="not_captured"');
     expect(text).toContain('pk="bp"');
     expect(text.match(/<omitted_count>0<\/omitted_count>/g)).toHaveLength(2);
     expect(planner.traceSummary.sections.authority_and_directives).toMatchObject({
       rowCount: 18,
-      truncationCount: 18,
+      truncationCount: 16,
       omissionCount: 0,
     });
     expect(
       planner.traceSummary.sections.authority_and_directives?.estimatedTokens,
     ).toBeLessThanOrEqual(4_000);
+  });
+
+  it("keys exact authority payloads on structural kind and renders every captured scope field", () => {
+    const creatorId = createEntityId();
+    const allowedId = createEntityId();
+    const excludedId = createEntityId();
+    const directiveId = createCreatorDirectiveId();
+    const operation = `OPERATION_HEAD_${"o".repeat(1_000)}_OPERATION_TAIL`;
+    const rendered = allSystemText(
+      build(
+        context({
+          creatorDirectiveBriefing: {
+            directives: [
+              {
+                renderMode: "content",
+                kind: "response_policy",
+                subjectKind: "entity",
+                subjectLabel: "subject",
+                semanticSlot: "public_name",
+                semanticValue: "slot value that must not select the fact lane",
+                canonicalFact: null,
+                operationalDirective: operation,
+                mentionPolicy: "never_mention",
+                priority: 9,
+                createdAt: NOW_MS,
+                scope: {
+                  directiveId,
+                  createdByEntityId: creatorId,
+                  sourceSessionId: DEFAULT_SESSION_ID,
+                  contentScope: "allow_list",
+                  allowedEntityIds: [allowedId],
+                  excludedEntityIds: [excludedId],
+                  subjectMayKnow: null,
+                  mentionPolicy: "never_mention",
+                  deniedAudienceBehavior: "render_boundary_when_relevant",
+                  activationScope: "all_except",
+                  activationAllowedEntityIds: [],
+                  activationExcludedEntityIds: [excludedId],
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    );
+    const row = selfClosingRows(rendered, "d")[0]!;
+
+    expect(row).toContain('k="rp"');
+    expect(row).toContain('pk="op"');
+    expect(row).toContain(`px="f:${operation.length}/${operation.length}"`);
+    expect(row).toContain(`v="${operation}"`);
+    expect(row).not.toContain("[ELIDED]");
+    expect(row).toContain('sps="exact"');
+    expect(row).toContain(`di="${directiveId}"`);
+    expect(row).toContain(`cb="${creatorId}"`);
+    expect(row).toContain(`os="${DEFAULT_SESSION_ID}"`);
+    expect(row).toContain('cs="allow_list"');
+    expect(row).toContain(`ae="${allowedId}"`);
+    expect(row).toContain(`xe="${excludedId}"`);
+    expect(row).toContain('smk="null"');
+    expect(row).toContain('mp="never_mention"');
+    expect(row).toContain('dab="render_boundary_when_relevant"');
+    expect(row).toContain('as="all_except"');
+    expect(row).toContain('aae="none"');
+    expect(row).toContain(`axe="${excludedId}"`);
   });
 
   it("lets the complete authority structural floor overflow instead of dropping rows", () => {
@@ -555,6 +626,8 @@ describe("compact planner context", () => {
         text: "First wording for the settled outcome.",
         outcomeReference: "goal_aaaaaaaaaaaaaaaa",
         disclosureClass: "public",
+        stance: "claim",
+        beliefEffect: "introduced",
       }),
       livedEntry({
         id: "decision_new",
@@ -563,6 +636,8 @@ describe("compact planner context", () => {
         text: "Different wording from the later derivation.",
         outcomeReference: "goal_aaaaaaaaaaaaaaaa",
         disclosureClass: "sensitive",
+        stance: "correction",
+        beliefEffect: "revised",
       }),
       livedEntry({
         id: "density",
@@ -579,7 +654,169 @@ describe("compact planner context", () => {
     expect(text).toContain("Different wording from the later derivation.");
     expect(text).not.toContain("First wording for the settled outcome.");
     expect(text).toContain('disclosure="disclosure_class=unknown');
-    expect(text).toContain('<activity_row category="firing_volume" kind="self_decision_density"');
+    expect(text).toContain('category="firing_volume" kind="self_decision_density"');
+    expect(text).toContain(
+      'derivation_order="1:decision_unlabeled:2026-08-12T23:59:57.000Z:none:stance=none:belief_effect=none|2:decision_old:2026-08-12T23:59:58.000Z:none:stance=claim:belief_effect=introduced|3:decision_new:2026-08-12T23:59:59.000Z:none:stance=correction:belief_effect=revised"',
+    );
+  });
+
+  it("prioritizes structural open loops and expands the lived budget on autonomous turns", () => {
+    const outbound = ["attempt-one", "attempt-two"].map(
+      (id, index) =>
+        ({
+          id,
+          source_type: "assistant_stream",
+          session_scope: "global",
+          actor: "assistant",
+          trust_rank: 80,
+          text: `outbound ${index}`,
+          occurred_at: NOW_MS - index,
+          stream_index: 20 + index,
+          state_metadata: { source_kind: "outbound_attempt", outcome: "unknown" },
+        }) as EvidenceLedgerEntry,
+    );
+    outbound.push(
+      {
+        id: "attempt-failed",
+        source_type: "assistant_stream",
+        session_scope: "global",
+        actor: "assistant",
+        trust_rank: 80,
+        text: "failed outbound",
+        occurred_at: NOW_MS - 3,
+        stream_index: 23,
+        state_metadata: { source_kind: "outbound_attempt", outcome: "failed" },
+      } as EvidenceLedgerEntry,
+      {
+        id: "attempt-succeeded",
+        source_type: "assistant_stream",
+        session_scope: "global",
+        actor: "assistant",
+        trust_rank: 80,
+        text: "completed outbound",
+        occurred_at: NOW_MS - 4,
+        stream_index: 24,
+        state_metadata: { source_kind: "outbound_attempt", outcome: "succeeded" },
+      } as EvidenceLedgerEntry,
+      {
+        id: "attempt-not-made",
+        source_type: "assistant_stream",
+        session_scope: "global",
+        actor: "assistant",
+        trust_rank: 80,
+        text: "skipped outbound",
+        occurred_at: NOW_MS - 5,
+        stream_index: 25,
+        state_metadata: {
+          source_kind: "outbound_attempt",
+          status: "not_attempted",
+          outcome: "failed",
+        },
+      } as EvidenceLedgerEntry,
+    );
+    const source = context({
+      turnOrigin: "autonomous",
+      workingMemory: {
+        ...context().workingMemory,
+        pending_actions: [
+          { description: "unfinished reach", next_action: "wait", created_at: NOW_MS - 500 },
+        ],
+      },
+      evidenceLedger: {
+        ...evidenceLedger(),
+        sections: [
+          { id: "autobiographical_recall", label: "Autobiographical recall", entries: outbound },
+        ],
+        audienceStanding: {
+          ...evidenceLedger().audienceStanding!,
+          recentLivedExperienceEntries: Array.from({ length: 12 }, (_, index) =>
+            livedEntry({
+              id: `completed-${index}`,
+              kind: "cross_session_activity",
+              occurredAt: NOW_MS - 10_000 - index,
+              text: `completed ${index}`,
+            }),
+          ),
+        },
+      } as EvidenceLedger,
+    });
+    const rendered = build(source);
+    const lived = rendered.system.map((block) => block.text).join("\n");
+
+    expect(lived).toContain('autonomous_open_loop_priority="true"');
+    expect(lived).toContain('target_tokens="8000"');
+    expect(lived.match(/<open_loop_row /g)).toHaveLength(4);
+    expect(lived).toContain('id="attempt-one" kind="outbound_attempt"');
+    expect(lived).toContain('id="attempt-two" kind="outbound_attempt"');
+    expect(lived).toContain(
+      'id="attempt-failed" kind="outbound_attempt" status="attempted" outcome="failed"',
+    );
+    expect(lived).not.toContain('id="attempt-succeeded"');
+    expect(lived).not.toContain('id="attempt-not-made"');
+    expect(lived.match(/<activity_row /g)).toHaveLength(4);
+    expect(lived.indexOf("<open_loops>")).toBeLessThan(lived.indexOf("<firings_and_activity>"));
+  });
+
+  it("combines disclosure fail-closed when the same open loop has two structural sources", () => {
+    const questionId = "oq_open_loop";
+    const source = context({
+      turnOrigin: "autonomous",
+      openQuestionsContext: [
+        {
+          id: questionId,
+          question: "What remains unfinished?",
+          status: "open",
+          urgency: 0.5,
+          source: "user",
+          audience_entity_id: null,
+          goal_id: null,
+          created_at: NOW_MS - 2_000,
+          last_touched: NOW_MS - 1_000,
+          resolution_note: null,
+          resolved_at: null,
+          abandoned_reason: null,
+          provenance: { kind: "manual" },
+          disclosure_label: {
+            disclosureClass: "public",
+            originAudienceEntityIds: [],
+            privateToEntityIds: [],
+            publicToEntityIds: [],
+          },
+        } as never,
+      ],
+      evidenceLedger: {
+        ...evidenceLedger(),
+        sections: [
+          {
+            id: "autobiographical_recall",
+            label: "Autobiographical recall",
+            entries: [
+              {
+                id: "recalled-question",
+                source_type: "system_metadata",
+                session_scope: "global",
+                actor: "memory",
+                trust_rank: 70,
+                text: "What remains unfinished?",
+                state_metadata: {
+                  source_kind: "open_question",
+                  open_question_id: questionId,
+                  status: "open",
+                  occurred_at: NOW_MS,
+                },
+              },
+            ],
+          },
+        ],
+      } as EvidenceLedger,
+    });
+    const rendered = allSystemText(build(source));
+
+    expect(rendered.match(new RegExp(`id="${questionId}"`, "g"))).toHaveLength(1);
+    expect(rendered).toContain(
+      `id="${questionId}" kind="open_question" status="open" outcome="pending"`,
+    );
+    expect(rendered).toContain('disclosure="disclosure_class=unknown');
   });
 
   it("renders complete indexes, explicit omission counts, and trace budget metrics", () => {
@@ -940,7 +1177,7 @@ describe("compact planner context", () => {
     expect(planner.traceSummary.truncationCount).toBeGreaterThan(0);
   });
 
-  it("keeps the complete production-shaped authority index and reports total overflow", () => {
+  it("keeps the complete large authority index and reports total overflow", () => {
     const freeText = `LIVE_HEAD_${"x".repeat(2_000)}_LIVE_TAIL`;
     const goals = Array.from({ length: 109 }, (_, index) =>
       goal(`${index}:${freeText}`, {
@@ -993,13 +1230,12 @@ describe("compact planner context", () => {
     );
     expect(authorityRows).toHaveLength(100);
     expect(Math.max(...authorityRows.map((row) => row.length))).toBeLessThanOrEqual(250);
-    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(8_100);
-    expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(11_200);
-    expect(
-      planner.traceSummary.sections.authority_and_directives?.estimatedTokens,
-    ).toBeLessThanOrEqual(4_000);
-    expect(planner.traceSummary.totalEstimatedTokens).toBeGreaterThanOrEqual(27_300);
-    expect(planner.traceSummary.totalEstimatedTokens).toBeLessThanOrEqual(27_500);
+    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(8_700);
+    expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(11_800);
+    expect(planner.traceSummary.sections.authority_and_directives?.estimatedTokens).toBeGreaterThan(
+      4_000,
+    );
+    expect(planner.traceSummary.totalEstimatedTokens).toBeGreaterThanOrEqual(28_000);
     expect(planner.traceSummary.overallOverflow).toBe(true);
   });
 
@@ -1013,6 +1249,16 @@ describe("compact planner context", () => {
     expect(excerpt.text).toContain("HEAD+TAIL EXCERPT");
     expect(excerpt.text).toContain(`total=${source.length}`);
     expect(excerpt.elidedChars).toBeGreaterThan(0);
+  });
+
+  it("renders a zero-length source as an exact zero-character excerpt", () => {
+    expect(headTailPlannerExcerpt("", 120)).toEqual({
+      text: "",
+      truncated: false,
+      renderedChars: 0,
+      totalChars: 0,
+      elidedChars: 0,
+    });
   });
 
   it("keeps astral characters whole across both planner head and tail cuts", () => {

@@ -73,7 +73,21 @@ function projectDisclosureLabel(
 function projectCreatorDirective(
   directive: NonNullable<DeliberationContext["creatorDirectiveBriefing"]>["directives"][number],
 ) {
-  const common = { priority: directive.priority, createdAt: directive.createdAt };
+  const common = {
+    priority: directive.priority,
+    createdAt: directive.createdAt,
+    ...(directive.scope === undefined
+      ? {}
+      : {
+          scope: {
+            ...directive.scope,
+            allowedEntityIds: [...directive.scope.allowedEntityIds],
+            excludedEntityIds: [...directive.scope.excludedEntityIds],
+            activationAllowedEntityIds: [...directive.scope.activationAllowedEntityIds],
+            activationExcludedEntityIds: [...directive.scope.activationExcludedEntityIds],
+          },
+        }),
+  };
   if (directive.renderMode === "boundary") {
     return { renderMode: directive.renderMode, ...common };
   }
@@ -97,14 +111,14 @@ function projectCreatorDirective(
     mentionPolicy: directive.mentionPolicy,
     ...common,
   };
-  if (directive.semanticSlot !== null) {
-    return { ...shared, semanticValue: directive.semanticValue };
-  }
   if (
     directive.renderMode === "content" &&
     (directive.kind === "response_policy" || directive.kind === "routing_instruction")
   ) {
     return { ...shared, operationalDirective: directive.operationalDirective };
+  }
+  if (directive.semanticSlot !== null) {
+    return { ...shared, semanticValue: directive.semanticValue };
   }
   return { ...shared, canonicalFact: directive.canonicalFact };
 }
@@ -131,7 +145,14 @@ function projectEvidenceMetadata(metadata: Record<string, unknown> | undefined) 
   for (const key of [
     "occurred_at",
     "lived_experience_kind",
+    "source_kind",
+    "status",
+    "state",
+    "outcome",
+    "action_id",
+    "open_question_id",
     "stance",
+    "belief_effect",
     "recurrence_count",
     "relative_age",
     "disclosure_label",
@@ -150,8 +171,14 @@ function projectEvidenceMetadata(metadata: Record<string, unknown> | undefined) 
 function projectEvidenceEntry(entry: EvidenceLedgerEntry) {
   return {
     id: entry.id,
+    source_type: entry.source_type,
+    session_scope: entry.session_scope,
+    actor: entry.actor,
+    trust_rank: entry.trust_rank,
     ...(entry.text === undefined ? {} : { text: entry.text }),
     ...(entry.value === undefined ? {} : { value: entry.value }),
+    ...(entry.state === undefined ? {} : { state: entry.state }),
+    ...(entry.stream_index === undefined ? {} : { stream_index: entry.stream_index }),
     ...(entry.taint === undefined ? {} : { taint: entry.taint }),
     ...(projectEvidenceMetadata(entry.state_metadata) === undefined
       ? {}
@@ -181,6 +208,13 @@ function projectEvidenceLedger(ledger: EvidenceLedger | null | undefined) {
 
   const standing = ledger.audienceStanding;
   return {
+    sections: ledger.sections
+      .filter((section) => section.id === "autobiographical_recall")
+      .map((section) => ({
+        id: section.id,
+        label: section.label,
+        entries: section.entries.map(projectEvidenceEntry),
+      })),
     sectionEntryCounts: ledger.sections.map((section) => ({
       id: section.id,
       count: section.entries.length,
@@ -428,6 +462,12 @@ function projectWorkingMemory(context: DeliberationContext) {
   return {
     focus: working.hot_entities[0] ?? null,
     pendingActionCount: working.pending_actions.length,
+    pending_actions: working.pending_actions.map((action) => ({
+      description: action.description,
+      next_action: action.next_action,
+      ...(action.created_at === undefined ? {} : { created_at: action.created_at }),
+    })),
+    updated_at: working.updated_at,
     pendingProceduralAttemptCount: working.pending_procedural_attempts.length,
     mood:
       working.mood === null
@@ -552,6 +592,17 @@ export function captureCompactPlannerContext(context: DeliberationContext) {
       },
     },
     applicableCommitments: context.applicableCommitments?.map(projectCommitment),
+    openQuestionsContext: context.openQuestionsContext?.map((question) => ({
+      id: question.id,
+      question: question.question,
+      status: question.status,
+      urgency: question.urgency,
+      audience_entity_id: question.audience_entity_id,
+      last_touched: question.last_touched,
+      ...(projectDisclosureLabel(question.disclosure_label) === undefined
+        ? {}
+        : { disclosure_label: projectDisclosureLabel(question.disclosure_label) }),
+    })),
     relationalSlots: context.relationalSlots?.map(projectRelationalSlot),
     activeParticipants: context.activeParticipants?.map(projectActiveParticipant),
     participantProfiles: context.participantProfiles?.map(projectParticipantProfile),
@@ -820,12 +871,24 @@ function restoreEvidenceLedger(
   if (captured === null) {
     return null;
   }
+  const capturedAutobiographical = new Map(
+    (captured.sections ?? []).map((section) => [section.id, section]),
+  );
   return {
-    sections: captured.sectionEntryCounts.map((section) => ({
-      id: section.id,
-      label: "",
-      entries: Array.from({ length: section.count }, () => ({}) as EvidenceLedgerEntry),
-    })),
+    sections: captured.sectionEntryCounts.map((section) => {
+      const exact = capturedAutobiographical.get(section.id);
+      return exact === undefined
+        ? {
+            id: section.id,
+            label: "",
+            entries: Array.from({ length: section.count }, () => ({}) as EvidenceLedgerEntry),
+          }
+        : {
+            id: exact.id,
+            label: exact.label,
+            entries: exact.entries as EvidenceLedgerEntry[],
+          };
+    }),
     ...(captured.audienceStanding === undefined
       ? {}
       : {
@@ -870,7 +933,10 @@ function restoreCompactPlannerContext(context: CompactPlannerContextCapture): De
       session_id: context.sessionId,
       turn_counter: 0,
       hot_entities: working.focus === null ? [] : [working.focus],
-      pending_actions: Array.from({ length: working.pendingActionCount }, () => ({})) as never[],
+      pending_actions:
+        working.pending_actions === undefined
+          ? (Array.from({ length: working.pendingActionCount }, () => ({})) as never[])
+          : (working.pending_actions as DeliberationContext["workingMemory"]["pending_actions"]),
       pending_social_attribution: null,
       pending_trait_attribution: null,
       suppressed: [],
@@ -882,7 +948,7 @@ function restoreCompactPlannerContext(context: CompactPlannerContextCapture): De
       discourse_state:
         working.discourseState as unknown as DeliberationContext["workingMemory"]["discourse_state"],
       mode: null,
-      updated_at: 0,
+      updated_at: working.updated_at ?? 0,
     },
     selfSnapshot: context.selfSnapshot as unknown as SelfSnapshot,
     selectedSkill: context.selectedSkill as DeliberationContext["selectedSkill"],

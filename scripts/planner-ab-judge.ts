@@ -6,7 +6,6 @@
  */
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "../src/config/index.ts";
 import {
@@ -33,78 +32,13 @@ import {
   createLiveLlmClient,
   openPlannerCaptureSnapshot,
 } from "./planner-ab-replay.ts";
+import { parseAbJudgeCliArgs, runAbCliEntrypoint, type AbJudgeCliArgs } from "./ab-cli.ts";
 
-type Args = {
-  dataDir?: string;
-  inputPath?: string;
-  capturesPath?: string;
-  outputPath?: string;
-  summaryPath?: string;
-  limit?: number;
-};
-
-function usage(message?: string): never {
-  if (message !== undefined) {
-    console.error(message);
-    console.error("");
-  }
-  console.error(
-    [
-      "Usage: pnpm planner:ab-judge -- [--data-dir DIR] [--input FILE] [--captures FILE] [--output FILE] [--summary FILE] [--limit N]",
-      "",
-      "The cognition model judges eligible live replay pairs through the unary LLM transport.",
-      "Outputs must be direct children of <dataDir>/captures.",
-    ].join("\n"),
-  );
-  process.exit(1);
-}
-
-function requiredValue(argv: readonly string[], index: number, flag: string): string {
-  const value = argv[index + 1];
-  if (value === undefined || value.length === 0) usage(`${flag} requires a value`);
-  return value;
-}
-
-export function parsePlannerAbJudgeArgs(argv: readonly string[]): Args {
-  const args: Args = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    switch (arg) {
-      case "--data-dir":
-        args.dataDir = requiredValue(argv, index, arg);
-        index += 1;
-        break;
-      case "--input":
-        args.inputPath = requiredValue(argv, index, arg);
-        index += 1;
-        break;
-      case "--captures":
-        args.capturesPath = requiredValue(argv, index, arg);
-        index += 1;
-        break;
-      case "--output":
-        args.outputPath = requiredValue(argv, index, arg);
-        index += 1;
-        break;
-      case "--summary":
-        args.summaryPath = requiredValue(argv, index, arg);
-        index += 1;
-        break;
-      case "--limit": {
-        const limit = Number(requiredValue(argv, index, arg));
-        if (!Number.isInteger(limit) || limit <= 0) usage("--limit must be a positive integer");
-        args.limit = limit;
-        index += 1;
-        break;
-      }
-      case "--help":
-      case "-h":
-        usage();
-      default:
-        usage(`Unknown argument: ${arg}`);
-    }
-  }
-  return args;
+export function parsePlannerAbJudgeArgs(
+  argv: readonly string[],
+  command = "planner:ab-judge",
+): AbJudgeCliArgs {
+  return parseAbJudgeCliArgs(argv, command);
 }
 
 export type ResolvedPlannerAbJudgePaths = {
@@ -264,9 +198,6 @@ export async function runPlannerAbJudgeCli(
     await appendDurableJsonl(paths.outputPath, judgment, {
       privateDirectory: paths.capturesDirectory,
     });
-    console.log(
-      `${replay.capture_id} status=${judgment.status}${judgment.status === "completed" ? ` winner=${judgment.deblinded.overall.winner}` : judgment.status === "excluded" ? ` reason=${judgment.reason}` : ""}`,
-    );
   }
 
   const summary = aggregatePlannerAbJudgments(judgments, {
@@ -279,14 +210,6 @@ export async function runPlannerAbJudgeCli(
     value: summary,
   });
   console.log(JSON.stringify(plannerAbStdoutSummary(summary), null, 2));
-  console.log(
-    `planner A/B judging complete: records=${replayRows.length} judgments=${paths.outputPath} summary=${paths.summaryPath}`,
-  );
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  runPlannerAbJudgeCli(process.argv.slice(2)).catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  });
-}
+runAbCliEntrypoint(import.meta.url, runPlannerAbJudgeCli);

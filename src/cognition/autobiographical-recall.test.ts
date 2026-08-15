@@ -15,6 +15,7 @@ import { createWorkingMemory } from "../memory/working/index.js";
 import { selfPrivateMemoryDisclosureLabel } from "../retrieval/index.js";
 import type { SessionRecord } from "../sessions/index.js";
 import { StreamReader, StreamWriter } from "../stream/index.js";
+import { OUTBOUND_POST_TOOL_NAME } from "../tools/internal/outbound-post-name.js";
 import { FixedClock, ManualClock } from "../util/clock.js";
 import {
   createActionId,
@@ -480,6 +481,107 @@ describe("AutobiographicalRecallService", () => {
         },
       }),
     ]);
+  });
+
+  it("joins outbound tool results so failed attempts stay distinct from skipped calls", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-autobiographical-outbound-"));
+    tempDirs.push(tempDir);
+    const sessionId = createSessionId();
+    const clock = new ManualClock(2_000);
+    const writer = new StreamWriter({ dataDir: tempDir, sessionId, clock });
+    const failedCallId = createStreamEntryId();
+    const failedCall = await writer.append({
+      kind: "tool_call",
+      content: {
+        call_id: failedCallId,
+        tool_name: OUTBOUND_POST_TOOL_NAME,
+        input: { channel: "release-room" },
+        origin: "autonomy",
+        turn_origin: "autonomous",
+      },
+    });
+    clock.set(2_100);
+    const failedResult = await writer.append({
+      kind: "tool_result",
+      content: {
+        call_id: failedCallId,
+        ok: false,
+        error: "delivery failed",
+        duration_ms: 100,
+      },
+    });
+    clock.set(3_000);
+    const skippedCallId = createStreamEntryId();
+    const skippedCall = await writer.append({
+      kind: "tool_call",
+      content: {
+        call_id: skippedCallId,
+        tool_name: OUTBOUND_POST_TOOL_NAME,
+        input: { channel: "release-room" },
+        origin: "autonomy",
+        turn_origin: "autonomous",
+        skipped: true,
+        skip_reason: "tool_not_available_in_context",
+      },
+    });
+    clock.set(3_100);
+    const skippedResult = await writer.append({
+      kind: "tool_result",
+      content: {
+        call_id: skippedCallId,
+        ok: false,
+        error: "tool_not_available_in_context",
+        duration_ms: 0,
+      },
+    });
+    writer.close();
+
+    const service = new AutobiographicalRecallService({
+      clock: new FixedClock(NOW_MS),
+      sessionsRepository: {
+        list: () => [sessionRecord(sessionId, 3_100)],
+      },
+      createStreamReader: (readerSessionId) =>
+        new StreamReader({ dataDir: tempDir, sessionId: readerSessionId }),
+      sourceCap: 10,
+      totalCap: 10,
+    });
+
+    const result = await service.recall({
+      sessionId,
+      temporalCue: {
+        sinceTs: 1_000,
+        untilTs: 4_000,
+        label: "outbound delivery window",
+      },
+      isSelfAudience: false,
+      sessionAudienceRole: "operator",
+      perceptionMode: "reflective",
+    });
+    const outbound = result?.evidence.filter((item) => item.kind === "outbound_attempt");
+
+    expect(outbound).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceStreamEntryIds: [failedCall.id, failedResult.id],
+          metadata: expect.objectContaining({
+            call_id: failedCallId,
+            status: "attempted",
+            outcome: "failed",
+            tool_result_stream_id: failedResult.id,
+          }),
+        }),
+        expect.objectContaining({
+          sourceStreamEntryIds: [skippedCall.id, skippedResult.id],
+          metadata: expect.objectContaining({
+            call_id: skippedCallId,
+            status: "not_attempted",
+            outcome: "skipped",
+            skip_reason: "tool_not_available_in_context",
+          }),
+        }),
+      ]),
+    );
   });
 
   it("marks stream candidate counts as lower bounds when the session fetch saturates", async () => {

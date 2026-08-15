@@ -15,10 +15,23 @@ import { publicMemoryDisclosureLabel } from "../../../retrieval/index.js";
 import { ManualClock } from "../../../util/clock.js";
 import {
   summarizeRetrievalConfidence,
+  renderPlanRequestedVerificationNotCompleted,
+  renderPlanRequestedVerificationRetrieval,
   summarizeRetrievedEpisodes,
   summarizeRetrievedEvidence,
   summarizeSemanticContext,
 } from "./retrieval.js";
+
+function verificationEvidence(id: string, text: string): EvidenceItem {
+  return {
+    id,
+    source: "episodic",
+    recallIntentId: "intent-verification",
+    score: 0.8,
+    text,
+    matchedTerms: [],
+  } as unknown as EvidenceItem;
+}
 
 function makeRetrievalConfidence(
   overrides: Partial<RetrievalConfidence> = {},
@@ -299,6 +312,124 @@ describe("retrieval confidence prompt rendering", () => {
     expect(summary).toContain(
       "supported by private source episodes; I can use this internally; I do not reveal source details to the current audience unless authorized",
     );
+  });
+});
+
+describe("plan-requested compact terminal retrieval", () => {
+  it("carries requested payload exactly, accounting after XML escaping", () => {
+    const payload = `<verified attr="x">${'&<>"'.repeat(40)}</verified>`;
+    const rendered = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: [verificationEvidence("evidence:exact", payload)],
+        episodes: [],
+        semantic: {
+          matched_node_ids: [],
+          matched_nodes: [],
+          supports: [],
+          contradicts: [],
+          categories: [],
+          support_hits: [],
+          causal_hits: [],
+          contradiction_hits: [],
+          category_hits: [],
+        },
+        open_questions: [],
+      } as never,
+      2_000,
+    );
+
+    expect(rendered).toContain('handle="evidence:exact"');
+    expect(rendered).toContain('payload_status="exact"');
+    expect(rendered).toContain(
+      "disclosure_class=unknown origin_audience=none private-to=none public-to=none",
+    );
+    expect(rendered).toContain(
+      `payload_total_chars="${JSON.stringify({ text: payload, matched_terms: [], image_label: null, image_origin_frame: null, image_unavailable_reason: null }).length}"`,
+    );
+    expect(rendered).toContain("&lt;verified attr=\\&quot;x\\&quot;&gt;");
+    expect(rendered).not.toContain("HEAD+TAIL EXCERPT");
+  });
+
+  it("keeps fallback source handles even when unified evidence is also present", () => {
+    const rendered = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: [verificationEvidence("evidence:mixed", "evidence payload")],
+        episodes: [],
+        semantic: {
+          matched_node_ids: [],
+          matched_nodes: [],
+          supports: [],
+          contradicts: [],
+          categories: [],
+          support_hits: [],
+          causal_hits: [],
+          contradiction_hits: [],
+          category_hits: [],
+        },
+        open_questions: [
+          {
+            id: "oq_mixed",
+            question: "What must still be checked?",
+            status: "open",
+            urgency: 0.8,
+            source: "user",
+            audience_entity_id: null,
+            goal_id: null,
+            resolution_note: null,
+            abandoned_reason: null,
+          },
+        ],
+      } as never,
+      2_000,
+    );
+
+    expect(rendered).toContain('handle="evidence:mixed"');
+    expect(rendered).toContain('handle="oq_mixed"');
+    expect(rendered).toContain('rows_total="2"');
+    expect(rendered).toContain("<omitted_count>0</omitted_count>");
+  });
+
+  it("keeps every source handle and reports a structurally incomplete check instead of an excerpt", () => {
+    const rendered = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: [
+          verificationEvidence("evidence:one", "x".repeat(10_000)),
+          verificationEvidence("evidence:two", "y".repeat(10_000)),
+        ],
+        episodes: [],
+        semantic: {
+          matched_node_ids: [],
+          matched_nodes: [],
+          supports: [],
+          contradicts: [],
+          categories: [],
+          support_hits: [],
+          causal_hits: [],
+          contradiction_hits: [],
+          category_hits: [],
+        },
+        open_questions: [],
+      } as never,
+      200,
+    );
+
+    expect(rendered).toContain('handle="evidence:one"');
+    expect(rendered).toContain('handle="evidence:two"');
+    expect(rendered.match(/payload_status="check_not_completed_budget"/g)).toHaveLength(2);
+    expect(rendered).toContain('payload_included_chars="0"');
+    expect(rendered).toContain("<omitted_count>0</omitted_count>");
+    expect(rendered).not.toContain("HEAD+TAIL EXCERPT");
+  });
+
+  it("renders an unavailable plan-requested check with a handle and zero payload", () => {
+    const rendered = renderPlanRequestedVerificationNotCompleted();
+
+    expect(rendered).toContain('handle="plan:verification_steps"');
+    expect(rendered).toContain('payload_status="check_not_completed_retrieval_unavailable"');
+    expect(rendered).toContain('payload_included_chars="0"');
+    expect(rendered).toContain('payload_total_chars="0"');
+    expect(rendered).toContain('payload_json=""');
+    expect(rendered).toContain("<check_not_completed_count>1</check_not_completed_count>");
   });
 });
 

@@ -273,6 +273,18 @@ function contentPayloadForCreatorDirective(directive: CreatorDirective): {
   canonicalFact: string | null;
   operationalDirective: string | null;
 } | null {
+  if (isPrivateOperationCreatorDirectiveKind(directive.kind)) {
+    return {
+      // Preserve the pre-compact auxiliary semantic value for the byte-pinned
+      // legacy renderer, which dispatches semantic slots first. Compact
+      // renderers dispatch the structural kind first and use the exact
+      // operational directive below.
+      semanticValue: directive.semantic_slot === null ? null : directive.canonical_fact,
+      canonicalFact: null,
+      operationalDirective: directive.operational_directive,
+    };
+  }
+
   if (directive.semantic_slot !== null) {
     return directive.canonical_fact === null
       ? null
@@ -283,9 +295,7 @@ function contentPayloadForCreatorDirective(directive: CreatorDirective): {
         };
   }
 
-  const kind: CreatorDirectiveKind = directive.kind;
-
-  switch (kind) {
+  switch (directive.kind) {
     case "self_identity":
     case "subject_fact":
     case "disclosure_boundary":
@@ -296,13 +306,6 @@ function contentPayloadForCreatorDirective(directive: CreatorDirective): {
             canonicalFact: directive.canonical_fact,
             operationalDirective: null,
           };
-    case "response_policy":
-    case "routing_instruction":
-      return {
-        semanticValue: null,
-        canonicalFact: null,
-        operationalDirective: directive.operational_directive,
-      };
   }
 }
 
@@ -412,6 +415,20 @@ export function buildCreatorDirectiveBriefing(input: {
   applicable: readonly CreatorDirectiveApplicable[];
   entityRepository: Pick<EntityRepository, "get">;
 }): CreatorDirectiveBriefing | null {
+  const briefingScope = (item: CreatorDirectiveApplicable) => ({
+    directiveId: item.directive.id,
+    createdByEntityId: item.directive.created_by_entity_id,
+    sourceSessionId: item.directive.source_session_id,
+    contentScope: item.directive.disclosure_policy.content_scope,
+    allowedEntityIds: [...item.directive.disclosure_policy.allowed_entity_ids],
+    excludedEntityIds: [...item.directive.disclosure_policy.excluded_entity_ids],
+    subjectMayKnow: item.directive.disclosure_policy.subject_may_know,
+    mentionPolicy: item.directive.disclosure_policy.mention_policy,
+    deniedAudienceBehavior: item.directive.disclosure_policy.denied_audience_behavior,
+    activationScope: item.directive.activation_policy.scope,
+    activationAllowedEntityIds: [...item.directive.activation_policy.allowed_entity_ids],
+    activationExcludedEntityIds: [...item.directive.activation_policy.excluded_entity_ids],
+  });
   const contentDirectives = input.applicable
     .flatMap((item) => {
       if (item.render_mode !== "content") {
@@ -439,6 +456,7 @@ export function buildCreatorDirectiveBriefing(input: {
           canonicalFact: payload.canonicalFact,
           operationalDirective: payload.operationalDirective,
           mentionPolicy: item.directive.disclosure_policy.mention_policy,
+          scope: briefingScope(item),
           priority: item.directive.priority,
           createdAt: item.directive.created_at,
         },
@@ -466,6 +484,7 @@ export function buildCreatorDirectiveBriefing(input: {
             semanticValue: payload.semanticValue,
             canonicalFact: payload.canonicalFact,
             mentionPolicy: item.directive.disclosure_policy.mention_policy,
+            scope: briefingScope(item),
             priority: item.directive.priority,
             createdAt: item.directive.created_at,
           },
@@ -479,6 +498,7 @@ export function buildCreatorDirectiveBriefing(input: {
         privateKind: "operation" as const,
         kind: item.directive.kind,
         operationalDirective: item.directive.operational_directive,
+        scope: briefingScope(item),
         priority: item.directive.priority,
         createdAt: item.directive.created_at,
       }))
@@ -493,6 +513,7 @@ export function buildCreatorDirectiveBriefing(input: {
     )
     .map((item) => ({
       renderMode: "boundary" as const,
+      scope: briefingScope(item),
       priority: item.directive.priority,
       createdAt: item.directive.created_at,
     }))
