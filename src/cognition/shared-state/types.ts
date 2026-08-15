@@ -39,6 +39,12 @@ const stateKeySchema = z
   .describe(
     "Stable, domain-neutral dotted key for the shared-state dimension this entry belongs to.",
   );
+// On an update the key is written, not matched -- the store sets state_key from this field, and a
+// key-only change is material enough to survive the empty-update drop. Say so, because the shared
+// description reads as "restate where this entry lives" and a wrong key is otherwise permanent.
+const updateStateKeySchema = stateKeySchema.describe(
+  "Stable, domain-neutral dotted key for the shared-state dimension this entry belongs to. On an update this value is written, not matched: repeating the entry's current key leaves it where it is, and a different key renames the entry in place -- same id, created_at, rank, body and supersede history, under the new name, with last_updated_at moved as for any update.",
+);
 export const canonicalizesSchema = z
   .object({
     goal_ids: z.array(z.string().trim().min(1)).optional(),
@@ -83,7 +89,7 @@ const updateOperationSchema = z
   .object({
     type: z.literal("update"),
     id: z.string().trim().min(1),
-    state_key: stateKeySchema,
+    state_key: updateStateKeySchema,
     kind: sharedStateToolKindSchema.optional(),
     text: z.string().trim().min(1).optional(),
     owner_entity_id: ownerEntityIdSchema,
