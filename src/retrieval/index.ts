@@ -62,6 +62,7 @@ export {
   type MemoryDisclosureLabelMetadata,
   type MemoryDisclosureLabelRenderContext,
 } from "./recall-context.js";
+export { countRetrievedContradictionRelations } from "./context-assembly.js";
 export {
   RetrievalPipeline,
   type CognitionRecallSearchOptions,

@@ -3,6 +3,7 @@ import { stringifyPromptContent } from "../../../util/token-estimate.js";
 import { commitmentReconciliationReviewDisclosureLabel } from "../../../memory/review-queue/index.js";
 import { correctionMemoryDisclosureLabel } from "../../../memory/common/disclosure-serializers.js";
 import {
+  countRetrievedContradictionRelations,
   renderMemoryDisclosureLabelForModel,
   unknownMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
@@ -137,17 +138,31 @@ export function addContradictionsAndQuarantinesSection(context: BuilderSectionCo
     );
   }
 
-  const contradictionCount = context.input.retrievedSemantic?.contradiction_hits.length ?? 0;
+  const retrievedSemantic = context.input.retrievedSemantic;
+  const contradictionCount = retrievedSemantic?.contradiction_hits.length ?? 0;
 
-  if (contradictionCount > 0) {
+  if (retrievedSemantic !== null && retrievedSemantic !== undefined && contradictionCount > 0) {
+    // Two different quantities used to be reported as one. This entry counts graph
+    // traversals; the deliberation contradiction line counts relations after
+    // fingerprint collapse. They diverge whenever a contradicts relation was reached
+    // from both of its nodes, and nothing rendered said so -- leaving the being with
+    // two counts of "the same thing" and no way to reconcile them. Name the basis of
+    // each instead of picking a winner: the traversal count is real evidence about
+    // how the graph was reached, and the relation count is what the line reports.
+    const relationCount = countRetrievedContradictionRelations(retrievedSemantic);
+
     addEntry(context.buckets, "contradictions_quarantines", {
       id: "semantic_contradictions:retrieved",
       source_type: "system_metadata",
       session_scope: "global",
       actor: "memory",
       trust_rank: QUARANTINE_TRUST_RANK,
-      text: `Retrieved semantic contradiction hits: ${contradictionCount}`,
+      text: `Retrieved semantic contradiction hits: ${contradictionCount} graph traversal(s) over ${relationCount} distinct contradiction relation(s) (a relation reached from both of its nodes yields two traversals).`,
       state: "present",
+      state_metadata: {
+        contradiction_traversal_count: contradictionCount,
+        distinct_contradiction_relation_count: relationCount,
+      },
       taint: "contested",
     });
   }

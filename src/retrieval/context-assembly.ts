@@ -72,6 +72,23 @@ export function assembleRetrievedContext(input: {
   };
 }
 
+/**
+ * How many distinct contradiction *relations* a turn retrieved, as opposed to how
+ * many graph traversals landed on one. `contradiction_hits` is per-traversal: the
+ * contradicts walk runs in both directions, so a relation whose two nodes were both
+ * matched is hit twice. Routing collapses those by fingerprint, which is why the
+ * deliberation contradiction line can name fewer contradictions than the evidence
+ * ledger counts hits.
+ *
+ * Deliberately routed through `buildContradictionRouting` rather than reimplementing
+ * the fingerprint, so the count the ledger reports and the count the line reports
+ * cannot drift apart. Open questions only annotate the items with links; they cannot
+ * change how many items there are, so passing none here is safe.
+ */
+export function countRetrievedContradictionRelations(semantic: RetrievedSemantic): number {
+  return buildContradictionRouting(semantic, []).contradictions.length;
+}
+
 function buildContradictionRouting(
   semantic: RetrievedSemantic,
   openQuestions: readonly OpenQuestion[],
