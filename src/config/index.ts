@@ -278,7 +278,9 @@ const deliberationConfigSchema = z
   .object({
     contradictionRouting: contradictionRoutingConfigSchema,
     finalizerDynamicPromptCacheEnabled: z.boolean().default(true),
-    finalizerSurfaceVariant: z.enum(["compact", "legacy"]).default("legacy"),
+    finalizerSurfaceVariant: z
+      .enum(["compact", "compact_conversational", "legacy"])
+      .default("legacy"),
     finalizerContextCaptureSampleRate: z.number().min(0).max(1).default(0),
     plannerSurfaceVariant: z.enum(["compact", "legacy"]).default("compact"),
     plannerContextCaptureSampleRate: z.number().min(0).max(1).default(0),

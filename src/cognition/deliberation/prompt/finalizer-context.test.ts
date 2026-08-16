@@ -869,6 +869,72 @@ describe("compact terminal finalizer context", () => {
     expect(rendered.match(/<borg_host_capabilities>/g)).toHaveLength(1);
   });
 
+  it("routes the conversationally scoped policy only for the structural user origin", () => {
+    const render = (turnOrigin: unknown) => {
+      const inputContext = context({ turnOrigin: turnOrigin as never });
+      const baseOptions = {
+        retrievalContextBudget: 10_000,
+        semanticContextBudget: 10_000,
+        nowMs: NOW_MS,
+      };
+      const cacheable = buildCacheableBaseSystemPromptParts(inputContext, baseOptions);
+      return buildFinalizerSystemPrompt({
+        llmClient: {} as never,
+        dispatcher: {} as never,
+        sessionId: DEFAULT_SESSION_ID,
+        model: "fake",
+        baseSystemPrompt: cacheable.dynamicContent,
+        cacheableSystemPrompt: cacheable,
+        initialMessages: [],
+        userEntryId: undefined,
+        maxTokens: 100,
+        path: "system_1",
+        finalizerSurfaceVariant: "compact_conversational",
+        turnOrigin: turnOrigin as never,
+        compactSurface: { context: inputContext, baseSystemPromptOptions: baseOptions },
+      });
+    };
+
+    expect(render("user").traceSummary?.variant).toBe("compact");
+    expect(render("autonomous").traceSummary?.variant).toBe("legacy");
+    expect(render("directed_outbound").traceSummary?.variant).toBe("legacy");
+    expect(render(undefined).traceSummary?.variant).toBe("legacy");
+    expect(render("future_origin").traceSummary?.variant).toBe("legacy");
+  });
+
+  it("renders scoped autonomous calls byte-identically to explicit legacy", () => {
+    const inputContext = context({ turnOrigin: "autonomous" });
+    const baseOptions = {
+      retrievalContextBudget: 10_000,
+      semanticContextBudget: 10_000,
+      nowMs: NOW_MS,
+    };
+    const cacheable = buildCacheableBaseSystemPromptParts(inputContext, baseOptions);
+    const base = {
+      llmClient: {} as never,
+      dispatcher: {} as never,
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      baseSystemPrompt: cacheable.dynamicContent,
+      cacheableSystemPrompt: cacheable,
+      initialMessages: [],
+      userEntryId: undefined,
+      maxTokens: 100,
+      path: "system_2" as const,
+      turnOrigin: "autonomous" as const,
+      compactSurface: { context: inputContext, baseSystemPromptOptions: baseOptions },
+    };
+    const legacy = buildFinalizerSystemPrompt({ ...base, finalizerSurfaceVariant: "legacy" });
+    const scoped = buildFinalizerSystemPrompt({
+      ...base,
+      finalizerSurfaceVariant: "compact_conversational",
+    });
+
+    expect(scoped.system).toEqual(legacy.system);
+    expect(JSON.stringify(scoped.system)).toBe(JSON.stringify(legacy.system));
+    expect(scoped.traceSummary).toEqual(legacy.traceSummary);
+  });
+
   it("preserves full ledger and exact plan bytes and shares the core across S1/S2", () => {
     const input = context();
     const s1 = build(input, "system_1");

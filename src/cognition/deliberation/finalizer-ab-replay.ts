@@ -2,6 +2,7 @@ import { performance } from "node:perf_hooks";
 
 import type { LLMClient, LLMConverseOptions } from "../../llm/index.js";
 import type { FinalizerContextCaptureRecord } from "./finalizer-context-capture.js";
+import type { FinalizerSurfaceVariant } from "./prompt/finalizer-context.js";
 import {
   fingerprintCanonicalRequest,
   fingerprintSystemSurface,
@@ -31,6 +32,7 @@ export type FinalizerAbReplayResult = {
   source_turn_id: string | null;
   source_path: "system_1" | "system_2";
   source_attempt_kind: "initial" | "regenerate";
+  source_configured_surface_variant?: FinalizerSurfaceVariant;
   source_live_surface_variant: "compact" | "legacy";
   replayed_at: number;
   mode: FinalizerAbReplayMode;
@@ -166,6 +168,8 @@ export async function replayFinalizerContextCapture(
     source_turn_id: record.turn_id,
     source_path: record.path,
     source_attempt_kind: record.attempt_kind,
+    source_configured_surface_variant:
+      record.configured_surface_variant ?? record.live_surface_variant,
     source_live_surface_variant: record.live_surface_variant,
     replayed_at: (options.now ?? Date.now)(),
     mode: options.mode,

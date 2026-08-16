@@ -286,6 +286,14 @@ describe("config", () => {
     expect(configSchema.parse({}).deliberation.finalizerContextCaptureSampleRate).toBe(0);
   });
 
+  it("accepts the conversationally scoped finalizer surface policy", () => {
+    const config = configSchema.parse({
+      deliberation: { finalizerSurfaceVariant: "compact_conversational" },
+    });
+
+    expect(config.deliberation.finalizerSurfaceVariant).toBe("compact_conversational");
+  });
+
   it("lets finalizer surface and capture environment overrides take precedence", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -306,6 +314,21 @@ describe("config", () => {
 
     expect(config.deliberation.finalizerSurfaceVariant).toBe("compact");
     expect(config.deliberation.finalizerContextCaptureSampleRate).toBe(0.75);
+  });
+
+  it("accepts the conversationally scoped finalizer policy from the existing environment flag", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      deliberation: { finalizerSurfaceVariant: "compact" },
+    });
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: { BORG_DELIBERATION_FINALIZER_SURFACE_VARIANT: "compact_conversational" },
+    });
+
+    expect(config.deliberation.finalizerSurfaceVariant).toBe("compact_conversational");
   });
 
   it("rejects invalid finalizer surface and capture environment overrides", () => {

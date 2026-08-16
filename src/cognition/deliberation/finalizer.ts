@@ -44,6 +44,7 @@ import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name
 import {
   buildCompactFinalizerSystemPrompt,
   type FinalizerContextTraceSummary,
+  type FinalizerResolvedSurfaceVariant,
   type FinalizerSurfaceVariant,
 } from "./prompt/finalizer-context.js";
 import type { BuildBaseSystemPromptOptions } from "./prompt/system-prompt.js";
@@ -388,6 +389,17 @@ export type CacheableFinalizerSystemPrompt = {
   dynamicContent: string;
 };
 
+export function resolveFinalizerSurfaceVariant(
+  configuredVariant: FinalizerSurfaceVariant | undefined,
+  turnOrigin: unknown,
+): FinalizerResolvedSurfaceVariant {
+  if (configuredVariant === "compact") return "compact";
+  if (configuredVariant === "compact_conversational" && turnOrigin === "user") {
+    return "compact";
+  }
+  return "legacy";
+}
+
 export type RunFinalizerOptions = {
   llmClient: LLMClient;
   dispatcher: ToolDispatcher;
@@ -603,7 +615,11 @@ export function buildFinalizerSystemPrompt(options: RunFinalizerOptions): {
   system: readonly LLMSystemBlock[];
   traceSummary: FinalizerContextTraceSummary | null;
 } {
-  if (options.finalizerSurfaceVariant === "compact") {
+  const resolvedVariant = resolveFinalizerSurfaceVariant(
+    options.finalizerSurfaceVariant,
+    options.turnOrigin,
+  );
+  if (resolvedVariant === "compact") {
     if (options.compactSurface === undefined) {
       throw new TypeError("Compact finalizer surface requires compactSurface context");
     }
@@ -863,6 +879,8 @@ function finalizerFlushText(result: ToolLoopResult, decision: EmissionDecision):
 type FinalizerCaptureState = {
   selected: boolean;
   timestamp: number | undefined;
+  configuredSurfaceVariant: FinalizerSurfaceVariant;
+  resolvedSurfaceVariant: FinalizerResolvedSurfaceVariant;
   systems: {
     legacy: NonNullable<LLMConverseOptions["system"]>;
     compact: NonNullable<LLMConverseOptions["system"]>;
@@ -881,6 +899,11 @@ function prepareFinalizerPrompt(
   options: RunFinalizerOptions,
   nonTerminalTools: readonly ToolDefinition[],
 ): PreparedFinalizerPrompt {
+  const configuredSurfaceVariant = options.finalizerSurfaceVariant ?? "legacy";
+  const resolvedSurfaceVariant = resolveFinalizerSurfaceVariant(
+    configuredSurfaceVariant,
+    options.turnOrigin,
+  );
   const rendered = buildFinalizerSystemPrompt({
     ...options,
     nonTerminalTools,
@@ -922,6 +945,8 @@ function prepareFinalizerPrompt(
     capture: {
       selected: captureSelected,
       timestamp: captureTimestamp,
+      configuredSurfaceVariant,
+      resolvedSurfaceVariant,
       systems: captureSystems,
       request: null,
       requestFingerprint: null,
@@ -972,7 +997,8 @@ async function captureFinalizerOutcome(
     sessionId: options.sessionId,
     path: options.path,
     attemptKind: options.finalizerAttempt ?? "initial",
-    liveSurfaceVariant: options.finalizerSurfaceVariant ?? "legacy",
+    configuredSurfaceVariant: state.configuredSurfaceVariant,
+    liveSurfaceVariant: state.resolvedSurfaceVariant,
     context: options.compactSurface.context,
     legacySystem: state.systems.legacy,
     compactSystem: state.systems.compact,

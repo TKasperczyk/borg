@@ -142,6 +142,9 @@ const replaySchema = z
     source_turn_id: z.string().nullable(),
     source_path: z.enum(["system_1", "system_2"]),
     source_attempt_kind: z.enum(["initial", "regenerate"]),
+    source_configured_surface_variant: z
+      .enum(["compact", "compact_conversational", "legacy"])
+      .optional(),
     source_live_surface_variant: z.enum(["compact", "legacy"]),
     replayed_at: z.number().finite(),
     mode: z.enum(["dry", "live"]),
@@ -646,6 +649,9 @@ export async function judgeFinalizerAbPair(
     source_metrics: {
       replayed_at: replay.replayed_at,
       attempt_kind: replay.source_attempt_kind,
+      configured_surface_variant:
+        replay.source_configured_surface_variant ?? replay.source_live_surface_variant,
+      resolved_surface_variant: replay.source_live_surface_variant,
       fidelity: replay.fidelity,
       surfaces: replay.surfaces,
       size_delta: replay.size_delta,
