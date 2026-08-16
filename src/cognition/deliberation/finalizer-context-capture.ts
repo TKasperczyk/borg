@@ -32,7 +32,10 @@ import {
   type CanonicalRequestFingerprint,
   type RequestSurfaceFingerprint,
 } from "./request-fingerprint.js";
-import type { FinalizerSurfaceVariant } from "./prompt/finalizer-context.js";
+import type {
+  FinalizerResolvedSurfaceVariant,
+  FinalizerSurfaceVariant,
+} from "./prompt/finalizer-context.js";
 import type { DeliberationContext } from "./types.js";
 
 const FINALIZER_CONTEXT_CAPTURE_SCHEMA_VERSION = 1 as const;
@@ -79,7 +82,10 @@ export type FinalizerContextCaptureRecord = {
   session_id: SessionId;
   path: "system_1" | "system_2";
   attempt_kind: "initial" | "regenerate";
-  live_surface_variant: FinalizerSurfaceVariant;
+  /** Configured policy is absent on schema-v1 records written before scoped routing. */
+  configured_surface_variant?: FinalizerSurfaceVariant;
+  /** Concrete surface placed on the live request. */
+  live_surface_variant: FinalizerResolvedSurfaceVariant;
   turn_origin: DeliberationContext["turnOrigin"];
   projected_context: Record<string, unknown>;
   evidence_ledger: DeliberationContext["evidenceLedger"];
@@ -134,7 +140,8 @@ export type BuildFinalizerContextCaptureRecordInput = {
   sessionId: SessionId;
   path: "system_1" | "system_2";
   attemptKind: "initial" | "regenerate";
-  liveSurfaceVariant: FinalizerSurfaceVariant;
+  configuredSurfaceVariant: FinalizerSurfaceVariant;
+  liveSurfaceVariant: FinalizerResolvedSurfaceVariant;
   context: DeliberationContext;
   legacySystem: NonNullable<LLMConverseOptions["system"]>;
   compactSystem: NonNullable<LLMConverseOptions["system"]>;
@@ -167,6 +174,7 @@ const captureRecordSchema = z
     session_id: z.string().min(1),
     path: z.enum(["system_1", "system_2"]),
     attempt_kind: z.enum(["initial", "regenerate"]),
+    configured_surface_variant: z.enum(["compact", "compact_conversational", "legacy"]).optional(),
     live_surface_variant: z.enum(["compact", "legacy"]),
     turn_origin: z.unknown().optional(),
     projected_context: z.record(z.string(), z.unknown()),
@@ -429,6 +437,7 @@ export function buildFinalizerContextCaptureRecord(
       session_id: input.sessionId,
       path: input.path,
       attempt_kind: input.attemptKind,
+      configured_surface_variant: input.configuredSurfaceVariant,
       live_surface_variant: input.liveSurfaceVariant,
       ...(input.context.turnOrigin === undefined ? {} : { turn_origin: input.context.turnOrigin }),
       projected_context: projectFinalizerContext(input.context),

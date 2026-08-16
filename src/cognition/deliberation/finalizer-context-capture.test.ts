@@ -109,6 +109,7 @@ function input() {
     sessionId: DEFAULT_SESSION_ID,
     path: "system_2" as const,
     attemptKind: "initial" as const,
+    configuredSurfaceVariant: "legacy" as const,
     liveSurfaceVariant: "legacy" as const,
     context: context(),
     legacySystem,
@@ -160,12 +161,38 @@ describe("finalizer context capture and replay", () => {
     const parsed = parseFinalizerContextCaptureRecord(JSON.parse(JSON.stringify(record)));
     expect(parsed.surfaces.legacy.system).toEqual(legacySystem);
     expect(parsed.surfaces.compact.system).toEqual(compactSystem);
+    expect(parsed.configured_surface_variant).toBe("legacy");
+    expect(parsed.live_surface_variant).toBe("legacy");
     expect(parsed.fidelity.verified).toBe(true);
     const serialized = JSON.stringify(parsed.projected_context);
     expect(serialized).not.toContain("UNUSED_PERCEPTION_ENTITY");
     expect(serialized).not.toContain("UNUSED_TEMPORAL_PAYLOAD");
     expect(serialized).not.toContain("unused raw user payload");
     expect(parsed.evidence_ledger).toEqual(context().evidenceLedger);
+  });
+
+  it("round-trips scoped policy and resolved variant while accepting older records", async () => {
+    const scoped = buildFinalizerContextCaptureRecord({
+      ...input(),
+      configuredSurfaceVariant: "compact_conversational",
+      liveSurfaceVariant: "compact",
+      context: { ...context(), turnOrigin: "user" },
+      liveRequest: { ...input().liveRequest, system: compactSystem },
+    });
+    const parsed = parseFinalizerContextCaptureRecord(JSON.parse(JSON.stringify(scoped)));
+    expect(parsed.configured_surface_variant).toBe("compact_conversational");
+    expect(parsed.live_surface_variant).toBe("compact");
+    const replayed = await replayFinalizerContextCapture(parsed, { mode: "dry" });
+    expect(replayed.source_configured_surface_variant).toBe("compact_conversational");
+    expect(replayed.source_live_surface_variant).toBe("compact");
+
+    const historical = JSON.parse(JSON.stringify(buildFinalizerContextCaptureRecord(input()))) as {
+      configured_surface_variant?: unknown;
+    };
+    delete historical.configured_surface_variant;
+    const parsedHistorical = parseFinalizerContextCaptureRecord(historical);
+    expect(parsedHistorical.configured_surface_variant).toBeUndefined();
+    expect(parsedHistorical.live_surface_variant).toBe("legacy");
   });
 
   it("captures the exact live request boundary and completed terminal outcome", async () => {
@@ -205,9 +232,10 @@ describe("finalizer context capture and replay", () => {
       userEntryId: undefined,
       maxTokens: 100,
       path: "system_1",
-      finalizerSurfaceVariant: "legacy",
+      finalizerSurfaceVariant: "compact_conversational",
+      turnOrigin: "user",
       compactSurface: {
-        context: context(),
+        context: { ...context(), turnOrigin: "user" },
         baseSystemPromptOptions: {
           retrievalContextBudget: 1_000,
           semanticContextBudget: 1_000,
@@ -220,6 +248,8 @@ describe("finalizer context capture and replay", () => {
       JSON.parse(readFileSync(join(dataDir, "captures", "finalizer-contexts.jsonl"), "utf8")),
     );
     expect(record.live_request?.system).toEqual(llm.requests[0]?.system);
+    expect(record.configured_surface_variant).toBe("compact_conversational");
+    expect(record.live_surface_variant).toBe("compact");
     expect(record.live_request?.messages).toEqual([
       { role: "user", content: [{ type: "text", text: "boundary message" }] },
     ]);
@@ -413,14 +443,24 @@ describe("finalizer context capture and replay", () => {
       ],
     });
     const result = await replayFinalizerContextCapture(
-      buildFinalizerContextCaptureRecord(input()),
+      buildFinalizerContextCaptureRecord({
+        ...input(),
+        configuredSurfaceVariant: "compact_conversational",
+        liveSurfaceVariant: "compact",
+        context: { ...context(), turnOrigin: "user" },
+        liveRequest: { ...input().liveRequest, system: compactSystem },
+      }),
       {
         mode: "live",
         llmClient: llm,
       },
     );
     expect(result.pairing_status).toBe("paired");
+    expect(result.source_configured_surface_variant).toBe("compact_conversational");
+    expect(result.source_live_surface_variant).toBe("compact");
     expect(llm.requests).toHaveLength(2);
+    expect(llm.requests[0]?.system).toEqual(compactSystem);
+    expect(llm.requests[1]?.system).toEqual(legacySystem);
     expect(
       llm.requests.every((request) => request.tools?.every((tool) => tool.name === "EmitAnswer")),
     ).toBe(true);

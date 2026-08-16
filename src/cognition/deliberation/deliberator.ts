@@ -29,6 +29,7 @@ import {
   EMIT_SELF_REPORT_FINALIZER_TOOL_NAME,
   resolveAvailableEmissionNames,
   resolveAvailableEmissionTools,
+  resolveFinalizerSurfaceVariant,
   runFinalizer,
   type EmissionDecision,
   type EmissionToolName,
@@ -258,6 +259,11 @@ function buildFinalizerCallOptions(
           buildEmissionContractRegenerateAnchor(availableEmissionNames, invalidToolCorrective),
         )
       : [...context.initialMessages];
+  const configuredSurfaceVariant = options.finalizerSurfaceVariant ?? "legacy";
+  const resolvedSurfaceVariant = resolveFinalizerSurfaceVariant(
+    configuredSurfaceVariant,
+    context.effectiveContext.turnOrigin,
+  );
 
   return {
     llmClient: options.llmClient,
@@ -268,10 +274,9 @@ function buildFinalizerCallOptions(
     baseSystemPrompt: context.baseSystemPrompt,
     cacheableSystemPrompt: context.cacheableSystemPrompt,
     finalizerDynamicPromptCacheEnabled: options.finalizerDynamicPromptCacheEnabled ?? true,
-    finalizerSurfaceVariant: options.finalizerSurfaceVariant ?? "legacy",
+    finalizerSurfaceVariant: configuredSurfaceVariant,
     finalizerContextCapture: options.finalizerContextCapture,
-    ...((options.finalizerSurfaceVariant ?? "legacy") === "legacy" &&
-    options.finalizerContextCapture === undefined
+    ...(resolvedSurfaceVariant === "legacy" && options.finalizerContextCapture === undefined
       ? {}
       : {
           compactSurface: {

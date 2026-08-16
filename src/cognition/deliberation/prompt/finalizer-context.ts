@@ -51,7 +51,8 @@ import {
   type BuildBaseSystemPromptOptions,
 } from "./system-prompt.js";
 
-export type FinalizerSurfaceVariant = "compact" | "legacy";
+export type FinalizerResolvedSurfaceVariant = "compact" | "legacy";
+export type FinalizerSurfaceVariant = FinalizerResolvedSurfaceVariant | "compact_conversational";
 export type FinalizerCacheTier =
   | "terminal_static_head"
   | "terminal_durable_global"
@@ -68,7 +69,7 @@ export type FinalizerSectionTraceSummary = {
 };
 
 export type FinalizerContextTraceSummary = {
-  variant: FinalizerSurfaceVariant;
+  variant: FinalizerResolvedSurfaceVariant;
   path: "system_1" | "system_2";
   sections: Record<string, FinalizerSectionTraceSummary>;
   blocks: Record<FinalizerCacheTier, { chars: number; estimatedTokens: number; ttl: "1h" | "5m" }>;

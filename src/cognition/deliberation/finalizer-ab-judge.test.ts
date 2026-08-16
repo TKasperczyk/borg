@@ -78,6 +78,7 @@ function replay(text = "A grounded terminal answer."): FinalizerAbReplayResult {
     source_turn_id: TURN_ID,
     source_path: "system_2",
     source_attempt_kind: "initial",
+    source_configured_surface_variant: "compact_conversational",
     source_live_surface_variant: "compact",
     replayed_at: 123,
     mode: "live",
@@ -157,6 +158,7 @@ describe("finalizer A/B blind judge", () => {
     }
     expect(prompt.toLowerCase()).not.toContain("compact");
     expect(prompt.toLowerCase()).not.toContain("legacy");
+    expect(prompt).not.toContain("compact_conversational");
     expect(prompt).not.toContain("987654321");
     expect(prompt).not.toContain("876543210");
     expect(prompt).not.toContain("a".repeat(64));
@@ -354,6 +356,11 @@ describe("finalizer A/B blind judge", () => {
     expect(result).toMatchObject({ status: "excluded", reason: "not_paired" });
     expect(fake.complete).not.toHaveBeenCalled();
     expect(parseFinalizerAbReplayResultForJudge(replay()).capture_id).toBe(CAPTURE_ID);
+    const historicalReplay = { ...replay() } as Partial<FinalizerAbReplayResult>;
+    delete historicalReplay.source_configured_surface_variant;
+    expect(
+      parseFinalizerAbReplayResultForJudge(historicalReplay).source_configured_surface_variant,
+    ).toBeUndefined();
 
     const missingTerminal = replay();
     missingTerminal.live!.compact.messageBlocks = [];
