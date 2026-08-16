@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { ActionRecord } from "../memory/actions/index.js";
+import type { EpisodeStats } from "../memory/episodic/types.js";
 import type { ObservedEventRepository } from "../memory/observed-events/index.js";
 import type { GoalTreeNode, OpenQuestion } from "../memory/self/index.js";
 import type {
@@ -12,6 +13,7 @@ import type {
   SelfDecisionRepository,
 } from "../memory/self-decisions/index.js";
 import { createWorkingMemory } from "../memory/working/index.js";
+import { createEpisodeFixture } from "../offline/test-support.js";
 import { selfPrivateMemoryDisclosureLabel } from "../retrieval/index.js";
 import type { SessionRecord } from "../sessions/index.js";
 import { StreamReader, StreamWriter } from "../stream/index.js";
@@ -25,6 +27,7 @@ import {
   createOpenQuestionId,
   createSessionId,
   createStreamEntryId,
+  type EpisodeId,
   type SessionId,
 } from "../util/ids.js";
 import {
@@ -224,7 +227,80 @@ async function recallGoals(input: {
   return result;
 }
 
+function episodeStatsFixture(episodeId: EpisodeId): EpisodeStats {
+  return {
+    episode_id: episodeId,
+    retrieval_count: 0,
+    use_count: 0,
+    last_retrieved: null,
+    win_rate: 0,
+    tier: "T2",
+    promoted_at: 0,
+    promoted_from: null,
+    gist: null,
+    gist_generated_at: null,
+    last_decayed_at: null,
+    heat_multiplier: 1,
+    valence_mean: 0,
+    archived: false,
+  };
+}
+
 describe("AutobiographicalRecallService", () => {
+  // DELIBERATE: autobiographical recall is a second, independent path that puts an episode into the
+  // turn prompt. It reads through listRecentForCognition and records nothing, while the retrieval
+  // pipeline's projection loop is the only caller of recordRetrieval. So retrieval_count/last_retrieved
+  // count pipeline exposures, not prompt exposures, and an episode surfaced only through this path
+  // stays at count 0 however often the entity actually saw it. That undercount is an input to episodic
+  // heat, decay half-life, curator tiering/archival and associator anchor scoring -- do not read the
+  // counter as "times this was in front of the entity". This test pins the asymmetry so a later
+  // refactor cannot quietly make it look like one path.
+  it("renders episodes into recall evidence without recording a retrieval", async () => {
+    const episode = createEpisodeFixture({
+      title: "Arena exchange",
+      narrative: "Sol and the operator reviewed the last arena exchange.",
+      created_at: 2_000,
+      start_time: 2_000,
+      end_time: 2_500,
+    });
+    const recordedRetrievals: EpisodeId[] = [];
+    const episodicRepository = {
+      listRecentForCognition: () =>
+        Promise.resolve([{ episode, stats: episodeStatsFixture(episode.id), similarity: 0.9 }]),
+      recordRetrieval: (episodeId: EpisodeId) => {
+        recordedRetrievals.push(episodeId);
+      },
+    };
+    const service = new AutobiographicalRecallService({
+      clock: new FixedClock(NOW_MS),
+      episodicRepository,
+      sourceCap: 5,
+      totalCap: 10,
+    });
+
+    const result = await service.recall({
+      sessionId: createSessionId(),
+      temporalCue: {
+        sinceTs: 1_000,
+        untilTs: 3_000,
+        label: "recent activity",
+      },
+      isSelfAudience: false,
+      sessionAudienceRole: "operator",
+      perceptionMode: "reflective",
+    });
+
+    expect(result?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "episode",
+          sourceEpisodeIds: [episode.id],
+        }),
+      ]),
+    );
+    expect(recordedRetrievals).toEqual([]);
+  });
+
   it("preserves self-decision and observed-event source stream anchors", async () => {
     const selfDecisionSourceEntryId = createStreamEntryId();
     const observedEventSourceEntryId = createStreamEntryId();
