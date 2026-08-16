@@ -443,6 +443,16 @@ function renderSharedStateArtifactContent(input: {
     .join("\n");
 }
 
+// The zero-body render that carries a reason. Reached from exactly one place -- the single-entry cap
+// below, after the drop loops have already narrowed to one entry that still does not fit -- so it is
+// never "the budget bought no bodies at all". That outcome is the drop loop stopping at three or four
+// bodies, which is a different code path with a different surface. What gates this one is
+// SHARED_STATE_SINGLE_ENTRY_FLOOR_TOKENS measured against the compact index, not against the body
+// pool: the index's token cost keeps growing with key length and per-row optional fields long after
+// its line count has hit the active-entry cap, so a full index is not a bounded index. The other
+// zero-body outcome renders through renderSharedStateArtifactContent with an empty entry list (see
+// `remainingTokens <= 0` below); the two are told apart by the footer, which prints `Retained:` with
+// zero counts there and `Reason:` here.
 function renderSharedStateArtifactOmissionOnly(input: {
   artifact: SharedStateArtifact;
   activeEntries: readonly SharedStateEntry[];
@@ -567,6 +577,10 @@ function renderTruncatedEntriesWithinSharedStateArtifactCap(input: {
   });
   const remainingTokens = input.maxTokens - estimatePromptTokens(emptyEntryContent);
 
+  // The second zero-body outcome, and not the omission-only one above: this keeps the full content
+  // shape with no entries, so it still prints `Retained:` (all zeros) and never a reason string.
+  // Reaching it takes an index that exceeds the whole budget on its own -- one step past the floor
+  // that trips the omission-only render.
   if (remainingTokens <= 0) {
     return {
       content: renderSharedStateArtifactContent({
