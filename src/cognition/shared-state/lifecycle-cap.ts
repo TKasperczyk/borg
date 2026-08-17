@@ -260,15 +260,24 @@ function lifecycleKindCounts(
  * goes first. Ties on that stamp are the normal case rather than the edge case,
  * because every entry a single compile pass writes carries that pass's stamp --
  * so `rank` decides most real evictions, and it is read ascending here just as
- * the repository reads it ascending when listing. The member of a tied round
- * that renders at the top of the index is therefore the first one pruned.
+ * the repository reads it ascending when listing. That order is not visible on
+ * the rendered index: `renderSharedStateArtifact` groups by state key and sorts
+ * the groups with `localeCompare`, and `rank` is not a field on an index line at
+ * all -- so index position reports alphabet, never prune position. Do not read
+ * one off the other.
  *
- * That direction is load-bearing in both directions and the two readings of
- * `rank` are not reconciled: as a salience position it argues for descending
- * (keep what renders first), as a within-patch emission sequence it argues for
- * ascending (a later `add` supersedes an earlier duplicate, which is what
- * compiler.test.ts's canonicalization case depends on). Do not flip it without
- * settling which `rank` means.
+ * The direction is settled by the only writer. Nothing in production supplies a
+ * salience `rank`: `patch-validation.ts` computes it as `baseRank +
+ * operations.length` -- the previous artifact's entry count plus the operation's
+ * position in the accepted list -- and `update` preserves whatever the row
+ * already had. It is a within-patch emission index, which is why ascending is
+ * correct (a later `add` supersedes an earlier duplicate, which is what
+ * compiler.test.ts's canonicalization case depends on) and why the descending
+ * "keep what renders first" reading has no writer behind it. Two consequences
+ * worth keeping: on an artifact pinned at cap `baseRank` is constant, so `rank`
+ * carries no age information across passes; and updates keep their old value
+ * while same-pass adds take fresh ones, so `rank` is not unique and ties fall
+ * through to `created_at`.
  */
 function compareLifecyclePrunePriority(left: LifecycleEntry, right: LifecycleEntry): number {
   return (

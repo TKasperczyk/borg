@@ -598,6 +598,35 @@ describe("renderSharedStateArtifact", () => {
     expect(summary.allActiveKeysIndexed).toBe(true);
   });
 
+  // The index is the only surface most entries ever get, so it invites being read as
+  // an ordering over them -- in particular as the lifecycle-cap prune queue, whose
+  // tiebreak within a shared `last_updated_at` is `rank ASC`. It is not that. Keys
+  // here sort alphabetically in exactly the reverse of their rank, so an index that
+  // leaked rank would fail; `rank` is not even a field on an index line.
+  it("orders the compact index by state key, not by rank or prune position", () => {
+    const audience = createEntityId();
+    const entries = [
+      entry({ audience, kind: "locked", rank: 40, updatedAt: 500, stateKey: "audit.zeta" }),
+      entry({ audience, kind: "locked", rank: 41, updatedAt: 500, stateKey: "audit.mid" }),
+      entry({ audience, kind: "locked", rank: 42, updatedAt: 500, stateKey: "audit.alpha" }),
+    ];
+
+    const rendered =
+      renderSharedStateArtifact(artifact(entries), {
+        maxEntries: 1,
+        maxTokens: 50_000,
+        newestStateChangeReservedSlots: 1,
+      }) ?? "";
+
+    const indexedKeys = rendered
+      .split("\n")
+      .map((line) => /^- (?<key>[^ |]+) \| kinds=/u.exec(line)?.groups?.key)
+      .filter((key): key is string => key !== undefined);
+
+    expect(indexedKeys).toEqual(["audit.alpha", "audit.mid", "audit.zeta"]);
+    expect(rendered).not.toContain("rank=");
+  });
+
   it("keeps demoted live entries in the compact index without default detail expansion", () => {
     const audience = createEntityId();
     const entries = [
