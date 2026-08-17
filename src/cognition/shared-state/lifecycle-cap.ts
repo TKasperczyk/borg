@@ -278,6 +278,17 @@ function lifecycleKindCounts(
  * carries no age information across passes; and updates keep their old value
  * while same-pass adds take fresh ones, so `rank` is not unique and ties fall
  * through to `created_at`.
+ *
+ * The order is band-local, not global. `nextLifecyclePruneCandidate` filters to
+ * one `kind` before sorting, so this function never compares two kinds and a
+ * row's place in a whole-artifact stamp ordering predicts nothing until the
+ * scan's pool is known: `SHARED_STATE_LIFECYCLE_PRUNE_ORDER` reaches
+ * `dormant_live` before `locked`, so a `dormant_live` row stamped minutes ago
+ * dies ahead of a `locked` row stamped two days earlier. Observed twice in one
+ * hour on a live artifact -- two `dormant_live` evictions stamped the same
+ * morning taken in the same draw as `locked` rows stamped two days before them.
+ * A global stamp ordering only becomes the eviction queue once exactly one kind
+ * is over its soft cap.
  */
 function compareLifecyclePrunePriority(left: LifecycleEntry, right: LifecycleEntry): number {
   return (
