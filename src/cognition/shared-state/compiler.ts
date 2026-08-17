@@ -443,6 +443,19 @@ function introducedStateKeys(
   return introduced.sort((left, right) => left.localeCompare(right));
 }
 
+// DELIBERATE: `disallowed_source_stream_entry_id` is absent from this list, and its absence is not an
+// oversight to be tidied up later. Every other repairable reason has a repair the model can make
+// without changing what it claims: name the missing reason, pick update over add, drop the near
+// duplicate. The citation reason does not. The one id the N+1 boundary withholds is the message being
+// answered (see retrieval-phase.ts), so an entry that cited it is an entry sourced from that message,
+// and the only truthful repairs are "wait for the next compile, when it becomes citable" or "do not
+// write it". A repair prompt saying "that id is off limits, cite an eligible one instead" invites the
+// third option -- reattaching the same text to whichever allowed id is nearest -- which buys an
+// applied patch at the cost of manufactured provenance. Losing the operations is the cheaper failure.
+// Measured 2026-08-16 on turn 85489fdf: both passes cited the off-limits id on every operation (5 then
+// 6) with 21 and 6 eligible ids named in the prompt, so the information was present and the choice was
+// the model's. If this is ever revisited, the question to answer first is how the repair avoids
+// soliciting a citation the model does not believe.
 function repairablePatchRejections(rejections: readonly PatchRejection[]): PatchRejection[] {
   return rejections.filter(
     (rejection) =>
