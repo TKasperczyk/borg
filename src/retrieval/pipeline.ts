@@ -616,6 +616,13 @@ export class RetrievalPipeline {
       ),
     );
 
+    // Counted set = the MMR projection, not the evidence pool. Every episode
+    // candidate is already in `evidencePool.items` as a source_type=episode
+    // item, and that pool -- not this list -- is what
+    // summarizeRetrievedEvidence() renders into the prompt. So an episode can
+    // be shown to the model on many turns while incrementing retrieval_count on
+    // none of them; heat, decay, the curator and the associator all read the
+    // narrower number.
     if (options.recordRetrieval !== false) {
       for (const result of episodeProjection.episodes) {
         this.options.episodicRepository.recordRetrieval(result.episode.id, nowMs, result.score);

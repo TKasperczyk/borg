@@ -159,6 +159,43 @@ describe("retrieval confidence prompt rendering", () => {
     );
   });
 
+  it("renders the evidence pool rather than the projected episodes when both are present", () => {
+    // The rendered set and the counted set are different populations. Only
+    // `episodeProjection.episodes` is walked by recordRetrieval
+    // (src/retrieval/pipeline.ts:619-623); the summary below is built from the
+    // ranked evidence pool, which carries every episode candidate. An episode
+    // can therefore render into <borg_additional_retrieval> on turn after turn
+    // without its retrieval_count ever moving. Pin the precedence so a later
+    // refactor cannot quietly make the two populations look like one.
+    const projected: RetrievedEpisode = {
+      episode: createEpisodeFixture({ title: "Projected and counted" }),
+      score: 0.72,
+      rawScore: 0.72,
+      scoreBreakdown: createRetrievalScoreFixture(),
+      citationChain: [],
+    };
+    const pooled: EvidenceItem = {
+      id: "evidence_episode_ep_bbbbbbbbbbbbbbbb_intent",
+      source: "episode",
+      text: "Pooled but never projected",
+      provenance: { episodeId: "ep_bbbbbbbbbbbbbbbb" as never },
+      recallIntentId: "intent",
+      matchedTerms: [],
+      score: 0.4,
+      scoreBreakdown: {},
+      disclosureLabel: publicMemoryDisclosureLabel(),
+    } as unknown as EvidenceItem;
+
+    const summary = summarizeRetrievedEvidence(
+      "Additional retrieval",
+      { evidence: [pooled], episodes: [projected] },
+      1_000,
+    );
+
+    expect(summary).toContain("Pooled but never projected");
+    expect(summary).not.toContain("Projected and counted");
+  });
+
   it("renders disclosure labels on episode evidence items", () => {
     const evidence: EvidenceItem = {
       id: "evidence_episode_ep_aaaaaaaaaaaaaaaa_intent",
