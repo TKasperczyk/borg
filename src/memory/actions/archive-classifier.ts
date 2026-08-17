@@ -2,6 +2,8 @@ import type { ActionRecord, ActionState } from "./types.js";
 
 export const ACTION_ARCHIVE_SCAN_LIMIT = 256;
 
+// `scheduled` is scanned but can never be classified eligible — see the scheduled_or_due skip in
+// classifyActionArchiveCandidate.
 export const ACTION_ARCHIVE_ACTIVE_STATES: readonly ActionState[] = [
   "considering",
   "committed_to_do",
@@ -66,6 +68,12 @@ export function classifyActionArchiveCandidate(
     return { status: "skipped", reason: "non_participant_owned" };
   }
 
+  // The "or due" half has no referent: `scheduled_at` is the state-entry stamp for `scheduled`
+  // (ACTION_STATE_METADATA), not a due time, and the record carries no due-date column at all. So
+  // the second clause is true wherever the first is, and a `scheduled` action is exempt from
+  // archiving for its whole life however long it goes unreferenced -- unlike `committed_to_do`,
+  // which is the stronger commitment and does age out. Whether stale `scheduled` rows should age
+  // out the same way changes what the entity sees, so it is a design call rather than a cleanup.
   if (action.state === "scheduled" || action.scheduled_at !== null) {
     return { status: "skipped", reason: "scheduled_or_due" };
   }
