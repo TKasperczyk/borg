@@ -46,6 +46,15 @@ type LifecycleEntry = Pick<
  * operations, so without this record the trace cannot tell a deletion the
  * compiler requested from one the store forced. Carries the state key because
  * the id is gone from the artifact by the time anyone reads the trace.
+ *
+ * `selection_pass` names which of the loop's three scans drew it, because the
+ * first scan only considers kinds above their own soft cap. Without it an
+ * eviction record read against the rendered index looks like the comparator
+ * skipped the oldest row: on a live 40-entry artifact the globally-oldest
+ * entry was a `tentative` row three days staler than anything else, sitting
+ * at its cap of 2 and therefore never a candidate, while the draw ran inside
+ * `locked` (38 against a cap of 24) and took a much newer entry. Staleness
+ * orders candidates; it does not choose the pool they come from.
  */
 export type SharedStateLifecycleCapEviction = {
   id: SharedStateEntryId;
@@ -53,7 +62,18 @@ export type SharedStateLifecycleCapEviction = {
   kind: SharedStateEntryKind;
   last_updated_at: number;
   rank: number;
+  selection_pass: SharedStateLifecycleCapSelectionPass;
 };
+
+/**
+ * Which scan of the eviction loop drew an entry: the kind was over its own
+ * soft cap, or nothing was and the prune order alone decided, or the pool had
+ * to be widened to entries the newest-state-change reservation was holding.
+ */
+export type SharedStateLifecycleCapSelectionPass =
+  | "over_soft_cap"
+  | "any_kind"
+  | "any_kind_reserved_allowed";
 
 function normalizeLifecycleKindSoftCaps(
   options: SharedStateLifecycleOptions | undefined,
@@ -481,7 +501,11 @@ export function applySharedStateArtifactLifecycleCap(input: {
   let activeCounts = lifecycleKindCounts(activeEntries);
   let reservedCounts = lifecycleKindCountsForIds(activeEntries, reservedIds);
 
-  const selectFromKind = (kind: SharedStateEntryKind, allowReserved = false): boolean => {
+  const selectFromKind = (
+    kind: SharedStateEntryKind,
+    selectionPass: SharedStateLifecycleCapSelectionPass,
+    allowReserved = false,
+  ): boolean => {
     const candidate = nextLifecyclePruneCandidate({
       entries,
       kind,
@@ -505,6 +529,7 @@ export function applySharedStateArtifactLifecycleCap(input: {
       kind: candidate.kind,
       last_updated_at: candidate.last_updated_at,
       rank: candidate.rank,
+      selection_pass: selectionPass,
     });
     activeCounts[candidate.kind] -= 1;
     if (reservedIds.has(candidate.id)) {
@@ -522,7 +547,7 @@ export function applySharedStateArtifactLifecycleCap(input: {
         continue;
       }
 
-      pruned = selectFromKind(kind);
+      pruned = selectFromKind(kind, "over_soft_cap");
 
       if (pruned) {
         break;
@@ -534,7 +559,7 @@ export function applySharedStateArtifactLifecycleCap(input: {
     }
 
     for (const kind of SHARED_STATE_LIFECYCLE_PRUNE_ORDER) {
-      pruned = selectFromKind(kind);
+      pruned = selectFromKind(kind, "any_kind");
 
       if (pruned) {
         break;
@@ -546,7 +571,7 @@ export function applySharedStateArtifactLifecycleCap(input: {
     }
 
     for (const kind of SHARED_STATE_LIFECYCLE_PRUNE_ORDER) {
-      pruned = selectFromKind(kind, true);
+      pruned = selectFromKind(kind, "any_kind_reserved_allowed", true);
 
       if (pruned) {
         break;

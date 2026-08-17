@@ -630,4 +630,70 @@ describe("applySharedStateArtifactLifecycleCap", () => {
         .map((operation) => byId.get(operation.id)?.state_key),
     ).toEqual(["locked.tied.0", "locked.tied.1"]);
   });
+
+  it("records which scan drew each eviction, because the first one only sees over-cap kinds", () => {
+    const audience = createEntityId();
+    // The staler entry is the only one of its kind and sits at that kind's cap, so it is never a
+    // candidate while another kind is over its own -- the shape a live artifact reaches routinely.
+    // Read without the pass, the resulting record looks like the comparator ignored the oldest
+    // entry in the artifact.
+    const oldestOfCappedKind = sharedStateEntry({
+      audience,
+      kind: "tentative",
+      rank: 0,
+      updatedAt: 1_000,
+      stateKey: "tentative.oldest",
+    });
+    const overCapKind = Array.from({ length: 3 }, (_, index) =>
+      sharedStateEntry({
+        audience,
+        kind: "locked",
+        rank: index + 1,
+        updatedAt: 2_000 + index,
+        stateKey: `locked.newer.${index}`,
+      }),
+    );
+    const entries = [oldestOfCappedKind, ...overCapKind];
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+
+    const overSoftCap = applySharedStateArtifactLifecycleCap({
+      previousArtifact: sharedStateArtifact(entries),
+      operations: [],
+      nowMs: 3_000,
+      options: {
+        maxActiveEntries: 3,
+        newestStateChangeReservedSlots: 0,
+        kindSoftCaps: { locked: 2, tentative: 1 },
+      },
+    });
+
+    expect(
+      overSoftCap.operations
+        .filter((operation) => operation.type === "prune")
+        .map((operation) => byId.get(operation.id)?.state_key),
+    ).toEqual(["locked.newer.0"]);
+    expect(
+      overSoftCap.capEvictions.map((eviction) => [eviction.state_key, eviction.selection_pass]),
+    ).toEqual([["locked.newer.0", "over_soft_cap"]]);
+
+    // Drop one locked entry and no kind exceeds its cap, so the same artifact shape now draws on
+    // the prune order alone -- which reaches `tentative` first and takes the entry the previous
+    // pass could not touch. Same comparator, different pool.
+    const withoutOverCapKind = [oldestOfCappedKind, ...overCapKind.slice(0, 2)];
+
+    const anyKind = applySharedStateArtifactLifecycleCap({
+      previousArtifact: sharedStateArtifact(withoutOverCapKind),
+      operations: [],
+      nowMs: 3_000,
+      options: {
+        maxActiveEntries: 2,
+        newestStateChangeReservedSlots: 0,
+        kindSoftCaps: { locked: 2, tentative: 1 },
+      },
+    });
+
+    expect(
+      anyKind.capEvictions.map((eviction) => [eviction.state_key, eviction.selection_pass]),
+    ).toEqual([["tentative.oldest", "any_kind"]]);
+  });
 });
