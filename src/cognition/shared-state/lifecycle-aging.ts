@@ -605,6 +605,15 @@ function recordUnknownAgeSample(
 // 2026-08-17, that clock ran ~3.05 turns/hour over the preceding 39 hours, so the 5/15-turn defaults
 // above are roughly 1.6h and 5h of wall clock for an audience that is not itself talking. A quiet
 // room ages at the whole host's cadence.
+//
+// Demotion is not a soft shelf, and what it costs is decided in lifecycle-cap.ts: `dormant_live` is
+// both the first kind SHARED_STATE_LIFECYCLE_PRUNE_ORDER scans and the kind with the smallest
+// default soft cap (1, against 24 for `locked`), so the bottom rung of this ladder is the head of
+// the eviction queue. Observed on the live demo data dir 2026-08-17: one over-cap draw took two
+// `dormant_live` rows -- the younger of them last written five hours earlier -- while 15 `locked`
+// rows staler than it survived the same draw, because kind chooses the pool before staleness orders
+// it. So an entry nobody touches for ~15 host turns is not shelved, it is queued: the band it lands
+// in holds one.
 export function applyLifecycleAging(input: ApplyLifecycleAgingInput): {
   transitions: SharedStateLifecycleTransition[];
   blockerCountsLiveToLowSalience: LifecycleAgingBlockerCounts;

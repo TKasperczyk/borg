@@ -697,3 +697,49 @@ describe("applySharedStateArtifactLifecycleCap", () => {
     ).toEqual([["tentative.oldest", "any_kind"]]);
   });
 });
+
+describe("shipped kind soft caps", () => {
+  it("draws the aging ladder's bottom rung before locked entries staler than it", () => {
+    const audience = createEntityId();
+    // Every other cap case in this file supplies its own kindSoftCaps, so none of them pins what the
+    // defaults couple: `dormant_live` is the terminal kind of the lifecycle ladder, and it is also
+    // first in the prune order with the smallest cap. A demoted entry therefore reaches the head of
+    // the eviction queue while much older locked rows are still nowhere near a draw.
+    const dormant = [9_000, 9_100, 9_200].map((updatedAt, index) =>
+      sharedStateEntry({
+        audience,
+        kind: "dormant_live",
+        rank: 40 + index,
+        updatedAt,
+        stateKey: `ladder.bottom.${index}`,
+      }),
+    );
+    const locked = [1_000, 1_001, 1_002].map((updatedAt, index) =>
+      sharedStateEntry({
+        audience,
+        kind: "locked",
+        rank: index,
+        updatedAt,
+        stateKey: `locked.older.${index}`,
+      }),
+    );
+
+    const result = applySharedStateArtifactLifecycleCap({
+      previousArtifact: sharedStateArtifact([...locked, ...dormant]),
+      operations: [],
+      nowMs: 10_000,
+      options: { maxActiveEntries: 4 },
+    });
+
+    expect(
+      result.capEvictions.map((eviction) => [
+        eviction.state_key,
+        eviction.kind,
+        eviction.selection_pass,
+      ]),
+    ).toEqual([
+      ["ladder.bottom.0", "dormant_live", "over_soft_cap"],
+      ["ladder.bottom.1", "dormant_live", "over_soft_cap"],
+    ]);
+  });
+});
