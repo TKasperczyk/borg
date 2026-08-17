@@ -54,6 +54,7 @@ import type {
   FinalizerCaptureOutcome,
   FinalizerContextCapture,
 } from "./finalizer-context-capture.js";
+import { FinalizerToolTranscriptCollector } from "./finalizer-tool-transcript.js";
 import {
   fingerprintCanonicalRequest,
   type CanonicalRequestFingerprint,
@@ -888,6 +889,7 @@ type FinalizerCaptureState = {
   request: LLMConverseOptions | null;
   requestFingerprint: CanonicalRequestFingerprint | null;
   attempts: number;
+  toolTranscriptCollector: FinalizerToolTranscriptCollector | null;
 };
 
 type PreparedFinalizerPrompt = {
@@ -951,6 +953,8 @@ function prepareFinalizerPrompt(
       request: null,
       requestFingerprint: null,
       attempts: 0,
+      toolTranscriptCollector:
+        captureSystems === null ? null : new FinalizerToolTranscriptCollector(),
     },
   };
 }
@@ -968,11 +972,12 @@ function recordPreparedFinalizerRequest(
   try {
     state.request = JSON.parse(JSON.stringify(request)) as LLMConverseOptions;
     state.requestFingerprint = fingerprintCanonicalRequest(request);
-  } catch {
+  } catch (error) {
     // Missing request fidelity makes the record ineligible for live replay;
     // observation must never block the live call.
     state.request = null;
     state.requestFingerprint = null;
+    state.toolTranscriptCollector?.markIncomplete(error);
   }
 }
 
@@ -980,7 +985,7 @@ async function captureFinalizerOutcome(
   options: RunFinalizerOptions,
   state: FinalizerCaptureState,
   outcome: FinalizerCaptureOutcome,
-  usedNonTerminalTools: boolean,
+  expectedToolEventCount: number | null,
 ): Promise<void> {
   if (
     state.timestamp === undefined ||
@@ -990,6 +995,16 @@ async function captureFinalizerOutcome(
   ) {
     return;
   }
+
+  const toolTranscript = state.toolTranscriptCollector?.finish({
+    requestBinding: state.requestFingerprint,
+    expectedEventCount: expectedToolEventCount,
+    sourceCompleted: outcome.status === "completed",
+  });
+  const usedNonTerminalTools =
+    expectedToolEventCount === null
+      ? (toolTranscript?.transcript.event_count ?? 0) > 0
+      : expectedToolEventCount > 0;
 
   await options.finalizerContextCapture.capture({
     capturedAt: state.timestamp,
@@ -1006,6 +1021,7 @@ async function captureFinalizerOutcome(
     liveRequestFingerprint: state.requestFingerprint,
     outcome,
     usedNonTerminalTools,
+    ...(toolTranscript === undefined ? {} : { toolTranscript }),
   });
 }
 
@@ -1120,6 +1136,7 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
         recordPreparedFinalizerRequest(captureState, request, attempt);
         options.onRequestPrepared?.(request, attempt);
       },
+      toolResultObserver: captureState.toolTranscriptCollector ?? undefined,
     });
   } catch (error) {
     const code =
@@ -1139,7 +1156,7 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
           ...(code === undefined ? {} : { code }),
         },
       },
-      false,
+      null,
     );
     throw error;
   }
@@ -1162,7 +1179,7 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
       reasoningText: result.text,
       usage: result.usage,
     },
-    result.toolCallsMade.length > 0,
+    result.toolCallsMade.length,
   );
 
   if (tokenSequence > 0) {

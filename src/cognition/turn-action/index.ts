@@ -15,5 +15,7 @@ export {
   type ExecuteToolLoopOptions,
   type ToolLoopCallRecord,
   type ToolLoopResult,
+  type ToolLoopResultObservation,
+  type ToolLoopResultObserver,
   type ToolLoopUsage,
 } from "./tool-loop.js";

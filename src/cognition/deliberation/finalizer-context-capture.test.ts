@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import type { LLMClient } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
@@ -23,6 +24,15 @@ import {
   buildFinalizerContextCaptureRecord,
   parseFinalizerContextCaptureRecord,
 } from "./finalizer-context-capture.js";
+import {
+  FINALIZER_TOOL_TRANSCRIPT_MAX_BYTES,
+  FinalizerToolTranscriptCollector,
+  parseFinalizerToolTranscript,
+  prepareFinalizerToolTranscript,
+  type FinalizerToolTranscriptSnapshot,
+} from "./finalizer-tool-transcript.js";
+import { readContentAddressedCaptureSidecar } from "./context-capture-storage.js";
+import { fingerprintCanonicalRequest } from "./request-fingerprint.js";
 import { replayFinalizerContextCapture } from "./finalizer-ab-replay.js";
 import type { DeliberationContext } from "./types.js";
 import { runFinalizer } from "./finalizer.js";
@@ -147,13 +157,114 @@ function input() {
   };
 }
 
+function toolTranscriptSnapshot(inputOverrides?: {
+  payload?: string;
+}): FinalizerToolTranscriptSnapshot {
+  const collector = new FinalizerToolTranscriptCollector();
+  collector.observe({
+    ordinal: 1,
+    iteration: 1,
+    batchPosition: 1,
+    callId: "toolu_recorded_result",
+    toolName: "tool.episodic.search",
+    rawArguments: { query: "wspomnienie 🌌" },
+    disposition: "dispatched",
+    result: {
+      ok: true,
+      output: { payload: inputOverrides?.payload ?? "full recorded result" },
+    },
+    durationMs: 17,
+  });
+  return collector.finish({
+    requestBinding: fingerprintCanonicalRequest(input().liveRequest),
+    expectedEventCount: 1,
+    sourceCompleted: true,
+  });
+}
+
 describe("finalizer context capture and replay", () => {
   it("does no capture work when the default-off sampler is disabled", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "borg-finalizer-capture-"));
     tempDirs.push(dataDir);
-    const capture = new FinalizerContextCapture({ dataDir, sampleRate: 0, random: () => 0 });
+    const random = vi.fn(() => 0);
+    const capture = new FinalizerContextCapture({ dataDir, sampleRate: 0, random });
     expect(capture.shouldCapture()).toBe(false);
+    expect(random).not.toHaveBeenCalled();
     expect(existsSync(join(dataDir, "captures"))).toBe(false);
+  });
+
+  it("does not observe live tool results when capture sampling is disabled", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "borg-finalizer-capture-"));
+    tempDirs.push(dataDir);
+    const clock = new FixedClock(1_000);
+    const random = vi.fn(() => 0);
+    const capture = new FinalizerContextCapture({ dataDir, sampleRate: 0, random, clock });
+    const observe = vi.spyOn(FinalizerToolTranscriptCollector.prototype, "observe");
+    const dispatcher = new ToolDispatcher({
+      clock,
+      createStreamWriter: (sessionId) => new StreamWriter({ dataDir, sessionId, clock }),
+    });
+    dispatcher.register({
+      name: "tool.episodic.search",
+      description: "Search recorded episodes.",
+      allowedOrigins: ["autonomous"],
+      writeScope: "read",
+      inputSchema: z.object({ query: z.string() }).strict(),
+      outputSchema: z.object({ matches: z.array(z.string()) }).strict(),
+      async invoke() {
+        return { matches: [] };
+      },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        [
+          {
+            type: "tool_use",
+            id: "toolu_uncaptured",
+            name: "tool.episodic.search",
+            input: { query: "uncaptured" },
+          },
+        ],
+        [
+          {
+            type: "tool_use",
+            id: "toolu_uncaptured_terminal",
+            name: "EmitNoOutput",
+            input: { reason: "done" },
+          },
+        ],
+      ],
+    });
+
+    try {
+      await runFinalizer({
+        llmClient: llm,
+        dispatcher,
+        sessionId: DEFAULT_SESSION_ID,
+        model: "fake",
+        baseSystemPrompt: "legacy dynamic",
+        cacheableSystemPrompt: { staticPrefix: "static", dynamicContent: "legacy dynamic" },
+        initialMessages: [{ role: "user", content: [{ type: "text", text: "wake" }] }],
+        userEntryId: undefined,
+        maxTokens: 100,
+        path: "system_2",
+        turnOrigin: "autonomous",
+        compactSurface: {
+          context: { ...context(), turnOrigin: "autonomous" },
+          baseSystemPromptOptions: {
+            retrievalContextBudget: 1_000,
+            semanticContextBudget: 1_000,
+            nowMs: 1_000,
+          },
+        },
+        finalizerContextCapture: capture,
+      });
+      expect(observe).not.toHaveBeenCalled();
+      expect(random).not.toHaveBeenCalled();
+      expect(existsSync(join(dataDir, "captures"))).toBe(false);
+    } finally {
+      observe.mockRestore();
+    }
   });
 
   it("round-trips both exact block serializations and omits raw unused perception payloads", () => {
@@ -163,6 +274,9 @@ describe("finalizer context capture and replay", () => {
     expect(parsed.surfaces.compact.system).toEqual(compactSystem);
     expect(parsed.configured_surface_variant).toBe("legacy");
     expect(parsed.live_surface_variant).toBe("legacy");
+    expect(parsed.schema_version).toBe(2);
+    if (parsed.schema_version !== 2) throw new Error("expected V2 capture");
+    expect(parsed.tool_transcript.status).toBe("none");
     expect(parsed.fidelity.verified).toBe(true);
     const serialized = JSON.stringify(parsed.projected_context);
     expect(serialized).not.toContain("UNUSED_PERCEPTION_ENTITY");
@@ -187,10 +301,21 @@ describe("finalizer context capture and replay", () => {
     expect(replayed.source_live_surface_variant).toBe("compact");
 
     const historical = JSON.parse(JSON.stringify(buildFinalizerContextCaptureRecord(input()))) as {
+      schema_version: number;
       configured_surface_variant?: unknown;
+      tool_transcript?: unknown;
+      replay: {
+        eligible: boolean;
+        exclusion_reason: string | null;
+        recorded_results_eligible?: boolean;
+      };
     };
+    historical.schema_version = 1;
     delete historical.configured_surface_variant;
+    delete historical.tool_transcript;
+    delete historical.replay.recorded_results_eligible;
     const parsedHistorical = parseFinalizerContextCaptureRecord(historical);
+    expect(parsedHistorical.schema_version).toBe(1);
     expect(parsedHistorical.configured_surface_variant).toBeUndefined();
     expect(parsedHistorical.live_surface_variant).toBe("legacy");
   });
@@ -265,6 +390,157 @@ describe("finalizer context capture and replay", () => {
     });
   });
 
+  it("captures a multi-iteration autonomous tool trajectory through terminal emission", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "borg-finalizer-capture-"));
+    tempDirs.push(dataDir);
+    const clock = new FixedClock(1_000);
+    const capture = new FinalizerContextCapture({ dataDir, sampleRate: 1, clock });
+    const dispatcher = new ToolDispatcher({
+      clock,
+      createStreamWriter: (sessionId) => new StreamWriter({ dataDir, sessionId, clock }),
+    });
+    dispatcher.register({
+      name: "tool.episodic.search",
+      description: "Search recorded episodes.",
+      allowedOrigins: ["autonomous"],
+      writeScope: "read",
+      inputSchema: z.object({ query: z.string().min(1) }).strict(),
+      outputSchema: z.object({ matches: z.array(z.string()) }).strict(),
+      async invoke(input: { query: string }) {
+        return { matches: [`match:${input.query}`] };
+      },
+    });
+    const dispatch = dispatcher.dispatch.bind(dispatcher);
+    vi.spyOn(dispatcher, "dispatch").mockImplementation(async (call) => {
+      if (call.callId === "toolu_dispatch_failure") {
+        throw new Error("dispatcher unavailable");
+      }
+      return dispatch(call);
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        [
+          {
+            type: "tool_use",
+            id: "toolu_dispatch_success",
+            name: "tool.episodic.search",
+            input: { query: "pamięć 🌌" },
+          },
+          {
+            type: "tool_use",
+            id: "toolu_validation_failure",
+            name: "tool.episodic.search",
+            input: { query: "" },
+          },
+          {
+            type: "tool_use",
+            id: "toolu_dispatch_failure",
+            name: "tool.episodic.search",
+            input: { query: "dispatcher failure" },
+          },
+          {
+            type: "tool_use",
+            id: "toolu_iteration_cap",
+            name: "tool.episodic.search",
+            input: { query: "deferred" },
+          },
+        ],
+        [
+          {
+            type: "tool_use",
+            id: "toolu_unavailable",
+            name: "tool.not.available",
+            input: { query: "structural" },
+          },
+        ],
+        [
+          {
+            type: "tool_use",
+            id: "toolu_terminal_after_results",
+            name: "EmitNoOutput",
+            input: { reason: "trajectory complete" },
+          },
+        ],
+      ],
+    });
+
+    await runFinalizer({
+      llmClient: llm,
+      dispatcher,
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      baseSystemPrompt: "legacy dynamic",
+      cacheableSystemPrompt: { staticPrefix: "static", dynamicContent: "legacy dynamic" },
+      initialMessages: [{ role: "user", content: [{ type: "text", text: "autonomous wake" }] }],
+      userEntryId: undefined,
+      maxTokens: 100,
+      path: "system_2",
+      finalizerSurfaceVariant: "legacy",
+      turnOrigin: "autonomous",
+      compactSurface: {
+        context: { ...context(), turnOrigin: "autonomous" },
+        baseSystemPromptOptions: {
+          retrievalContextBudget: 1_000,
+          semanticContextBudget: 1_000,
+          nowMs: 1_000,
+        },
+      },
+      finalizerContextCapture: capture,
+    });
+
+    const record = parseFinalizerContextCaptureRecord(
+      JSON.parse(readFileSync(join(dataDir, "captures", "finalizer-contexts.jsonl"), "utf8")),
+    );
+    if (record.schema_version !== 2 || record.tool_transcript.status !== "complete") {
+      throw new Error("expected complete V2 tool transcript");
+    }
+    expect(record.live_outcome).toMatchObject({
+      status: "completed",
+      structuralReason: "nonterminal_tool_loop",
+      terminalToolCalls: [{ id: "toolu_terminal_after_results", name: "EmitNoOutput" }],
+    });
+    expect(record.replay).toEqual({
+      eligible: false,
+      exclusion_reason: "autonomous",
+      recorded_results_eligible: true,
+    });
+    const transcript = parseFinalizerToolTranscript(
+      JSON.parse(
+        Buffer.from(
+          readContentAddressedCaptureSidecar({
+            dataDir,
+            relativePath: record.tool_transcript.relative_path,
+            sha256: record.tool_transcript.canonical_sha256,
+          }),
+        ).toString("utf8"),
+      ) as unknown,
+    );
+    expect(transcript.events.map((event) => event.disposition)).toEqual([
+      "dispatched",
+      "dispatched",
+      "dispatched",
+      "skipped_iteration_cap",
+      "skipped_unavailable",
+    ]);
+    expect(transcript.events[0]).toMatchObject({
+      raw_arguments: { query: "pamięć 🌌" },
+      result: { ok: true, output: { matches: ["match:pamięć 🌌"] } },
+    });
+    expect(transcript.events[1]?.result).toMatchObject({ ok: false, error: expect.any(String) });
+    expect(transcript.events[2]?.result).toEqual({
+      ok: false,
+      error: "Error: dispatcher unavailable",
+    });
+    expect(transcript.events[3]?.result).toEqual({
+      ok: false,
+      error: "Skipped because this turn allows at most 3 tool calls per iteration.",
+    });
+    expect(transcript.events[4]?.result).toEqual({
+      ok: false,
+      error: "tool tool.not.available not available in this context",
+    });
+  });
+
   it("captures a thrown live outcome best-effort and rethrows the original error", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "borg-finalizer-capture-"));
     tempDirs.push(dataDir);
@@ -323,7 +599,18 @@ describe("finalizer context capture and replay", () => {
       structuralReason: "finalizer_error",
       error: { name: "Error", message: "provider unavailable" },
     });
-    expect(record.replay).toEqual({ eligible: false, exclusion_reason: "source_threw" });
+    if (record.schema_version !== 2) throw new Error("expected V2 capture");
+    expect(record.tool_transcript).toMatchObject({
+      status: "incomplete",
+      event_count: 0,
+      replay_eligible: false,
+      incomplete_reasons: ["source_incomplete"],
+    });
+    expect(record.replay).toMatchObject({
+      eligible: false,
+      exclusion_reason: "source_threw",
+      recorded_results_eligible: false,
+    });
   });
 
   it("writes private JSONL and content-addressed image sidecars under a 0022 umask", async () => {
@@ -358,6 +645,138 @@ describe("finalizer context capture and replay", () => {
     } finally {
       process.umask(previous);
     }
+  });
+
+  it("writes a complete V2 tool transcript sidecar and derives stage-two material eligibility", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "borg-finalizer-capture-"));
+    tempDirs.push(dataDir);
+    const emit = vi.fn();
+    const capture = new FinalizerContextCapture({
+      dataDir,
+      sampleRate: 1,
+      tracer: { enabled: true, includePayloads: false, emit },
+    });
+    const result = await capture.capture({
+      ...input(),
+      outcome: {
+        ...input().outcome,
+        structuralReason: "nonterminal_tool_loop",
+      },
+      usedNonTerminalTools: true,
+      toolTranscript: toolTranscriptSnapshot(),
+    });
+
+    expect(result.status).toBe("captured");
+    if (result.status !== "captured" || result.record.schema_version !== 2) return;
+    expect(result.record.tool_transcript).toMatchObject({
+      status: "complete",
+      event_count: 1,
+      dispatched_count: 1,
+      replay_eligible: true,
+    });
+    expect(result.record.replay).toEqual({
+      eligible: false,
+      exclusion_reason: "nonterminal_tools",
+      recorded_results_eligible: true,
+    });
+    const manifest = result.record.tool_transcript;
+    if (manifest.status !== "complete") throw new Error("expected complete transcript");
+    expect(statSync(join(dataDir, "captures", "finalizer-tool-transcripts")).mode & 0o777).toBe(
+      0o700,
+    );
+    expect(statSync(join(dataDir, "captures", manifest.relative_path)).mode & 0o777).toBe(0o600);
+    const transcript = parseFinalizerToolTranscript(
+      JSON.parse(
+        Buffer.from(
+          readContentAddressedCaptureSidecar({
+            dataDir,
+            relativePath: manifest.relative_path,
+            sha256: manifest.canonical_sha256,
+            byteSize: manifest.payload_bytes,
+          }),
+        ).toString("utf8"),
+      ) as unknown,
+    );
+    expect(transcript.events[0]).toMatchObject({
+      call_id: "toolu_recorded_result",
+      raw_arguments: { query: "wspomnienie 🌌" },
+      result: { ok: true, output: { payload: "full recorded result" } },
+    });
+    expect(emit).toHaveBeenCalledWith(
+      "deliberation.finalizer_context_capture.captured",
+      expect.objectContaining({
+        turnId: "turn_capture",
+        tool_transcript_status: "complete",
+        tool_transcript_events: 1,
+        tool_transcript_dispatched: 1,
+        tool_transcript_bytes: manifest.payload_bytes,
+      }),
+    );
+  });
+
+  it("records an oversized transcript as omitted and ineligible without truncating it", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "borg-finalizer-capture-"));
+    tempDirs.push(dataDir);
+    const capture = new FinalizerContextCapture({ dataDir, sampleRate: 1 });
+    const payload = "x".repeat(FINALIZER_TOOL_TRANSCRIPT_MAX_BYTES);
+    const result = await capture.capture({
+      ...input(),
+      outcome: {
+        ...input().outcome,
+        structuralReason: "nonterminal_tool_loop",
+      },
+      usedNonTerminalTools: true,
+      toolTranscript: toolTranscriptSnapshot({ payload }),
+    });
+
+    expect(result.status).toBe("captured");
+    if (result.status !== "captured" || result.record.schema_version !== 2) return;
+    expect(result.record.tool_transcript).toMatchObject({
+      status: "omitted_oversized",
+      event_count: 1,
+      relative_path: null,
+      replay_eligible: false,
+    });
+    expect(result.record.tool_transcript.payload_bytes).toBeGreaterThan(
+      FINALIZER_TOOL_TRANSCRIPT_MAX_BYTES,
+    );
+    expect(result.record.replay.recorded_results_eligible).toBe(false);
+    expect(existsSync(join(dataDir, "captures", "finalizer-tool-transcripts"))).toBe(false);
+  });
+
+  it("counts image and transcript payloads against one auxiliary-byte cap", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "borg-finalizer-capture-"));
+    tempDirs.push(dataDir);
+    const transcript = toolTranscriptSnapshot();
+    const transcriptBytes = prepareFinalizerToolTranscript({ snapshot: transcript }).manifest
+      .payload_bytes;
+    const imageBytes = Buffer.alloc(100, 1);
+    const capture = new FinalizerContextCapture({
+      dataDir,
+      sampleRate: 1,
+      maxSidecarBytes: transcriptBytes + imageBytes.byteLength - 1,
+      attachmentResolver: () => ({ mediaType: "image/png", bytes: imageBytes }),
+    });
+    const result = await capture.capture({
+      ...input(),
+      outcome: { ...input().outcome, structuralReason: "nonterminal_tool_loop" },
+      usedNonTerminalTools: true,
+      toolTranscript: transcript,
+      liveRequest: {
+        ...input().liveRequest,
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "image_ref", attachment_id: "att_dddddddddddddddd" as never }],
+          },
+        ],
+      },
+    });
+
+    expect(result).toMatchObject({ status: "skipped", reason: "file_full" });
+    expect(existsSync(join(dataDir, "captures", "finalizer-contexts.jsonl"))).toBe(false);
+    expect(existsSync(join(dataDir, "captures", "finalizer-images"))).toBe(false);
+    expect(existsSync(join(dataDir, "captures", "finalizer-tool-transcripts"))).toBe(false);
   });
 
   it("skips oversized records without creating the capture file", async () => {
@@ -396,7 +815,7 @@ describe("finalizer context capture and replay", () => {
     expect(readdirSync(join(dataDir, "captures", "finalizer-images"))).toEqual([]);
   });
 
-  it("removes staged image sidecars when the JSONL append fails", async () => {
+  it("removes staged image and tool-transcript sidecars when the JSONL append fails", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "borg-finalizer-capture-"));
     tempDirs.push(dataDir);
     mkdirSync(join(dataDir, "captures", "finalizer-contexts.jsonl"), { recursive: true });
@@ -407,6 +826,12 @@ describe("finalizer context capture and replay", () => {
     });
     const result = await capture.capture({
       ...input(),
+      outcome: {
+        ...input().outcome,
+        structuralReason: "nonterminal_tool_loop",
+      },
+      usedNonTerminalTools: true,
+      toolTranscript: toolTranscriptSnapshot(),
       liveRequest: {
         ...input().liveRequest,
         messages: [
@@ -419,6 +844,7 @@ describe("finalizer context capture and replay", () => {
     });
     expect(result.status).toBe("failed");
     expect(readdirSync(join(dataDir, "captures", "finalizer-images"))).toEqual([]);
+    expect(readdirSync(join(dataDir, "captures", "finalizer-tool-transcripts"))).toEqual([]);
   });
 
   it("replays only the unary fake-terminal request without reaching repositories", async () => {

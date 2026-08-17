@@ -1,19 +1,4 @@
 import { randomUUID } from "node:crypto";
-import {
-  chmodSync,
-  closeSync,
-  existsSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { basename, join } from "node:path";
 import { z } from "zod";
 
 import type { LLMConverseOptions } from "../../llm/index.js";
@@ -23,12 +8,26 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import type { AttachmentId, SessionId } from "../../util/ids.js";
 import {
   appendBoundedContextCapture,
-  resolveContextCaptureSubdirectory,
+  commitStagedContentAddressedCaptureSidecars,
+  contentAddressedCaptureSidecarStorageBytes,
+  createContentAddressedCaptureSidecar,
+  discardStagedContentAddressedCaptureSidecars,
+  pendingNewContentAddressedCaptureSidecarBytes,
+  stageContentAddressedCaptureSidecars,
+  type PendingContentAddressedCaptureSidecar,
+  type StagedContentAddressedCaptureSidecar,
 } from "./context-capture-storage.js";
+import {
+  FINALIZER_TOOL_TRANSCRIPT_MAX_BYTES,
+  FinalizerToolTranscriptCollector,
+  finalizerToolTranscriptManifestSchema,
+  prepareFinalizerToolTranscript,
+  type FinalizerToolTranscriptManifest,
+  type FinalizerToolTranscriptSnapshot,
+} from "./finalizer-tool-transcript.js";
 import {
   fingerprintCanonicalRequest,
   fingerprintSystemSurface,
-  sha256Bytes,
   type CanonicalRequestFingerprint,
   type RequestSurfaceFingerprint,
 } from "./request-fingerprint.js";
@@ -38,7 +37,8 @@ import type {
 } from "./prompt/finalizer-context.js";
 import type { DeliberationContext } from "./types.js";
 
-const FINALIZER_CONTEXT_CAPTURE_SCHEMA_VERSION = 1 as const;
+const FINALIZER_CONTEXT_CAPTURE_SCHEMA_VERSION = 2 as const;
+const LEGACY_FINALIZER_CONTEXT_CAPTURE_SCHEMA_VERSION = 1 as const;
 // Sized to real captured records: the paired-replay projection (both rendered
 // surfaces + render input + exact request) runs 42-65 MB per record on live
 // finalizer contexts; the previous 32 MB cap silently skipped every one
@@ -74,8 +74,7 @@ export type FinalizerImageSidecar = {
   relative_path: string;
 };
 
-export type FinalizerContextCaptureRecord = {
-  schema_version: typeof FINALIZER_CONTEXT_CAPTURE_SCHEMA_VERSION;
+type FinalizerContextCaptureRecordBase = {
   capture_id: string;
   captured_at: number;
   turn_id: string | null;
@@ -106,6 +105,11 @@ export type FinalizerContextCaptureRecord = {
     surfaceMatchesRequest: boolean;
   };
   image_sidecars: readonly FinalizerImageSidecar[];
+  live_outcome: FinalizerCaptureOutcome;
+};
+
+type FinalizerContextCaptureRecordV1 = FinalizerContextCaptureRecordBase & {
+  schema_version: typeof LEGACY_FINALIZER_CONTEXT_CAPTURE_SCHEMA_VERSION;
   replay: {
     eligible: boolean;
     exclusion_reason:
@@ -116,8 +120,20 @@ export type FinalizerContextCaptureRecord = {
       | "missing_request"
       | null;
   };
-  live_outcome: FinalizerCaptureOutcome;
 };
+
+type FinalizerContextCaptureRecordV2 = FinalizerContextCaptureRecordBase & {
+  schema_version: typeof FINALIZER_CONTEXT_CAPTURE_SCHEMA_VERSION;
+  tool_transcript: FinalizerToolTranscriptManifest;
+  replay: FinalizerContextCaptureRecordV1["replay"] & {
+    /** Material readiness for the stage-two recorded-result dispatcher. */
+    recorded_results_eligible: boolean;
+  };
+};
+
+export type FinalizerContextCaptureRecord =
+  | FinalizerContextCaptureRecordV1
+  | FinalizerContextCaptureRecordV2;
 
 export type FinalizerContextCaptureOptions = {
   dataDir: string;
@@ -149,6 +165,7 @@ export type BuildFinalizerContextCaptureRecordInput = {
   liveRequestFingerprint?: CanonicalRequestFingerprint | null;
   outcome: FinalizerCaptureOutcome;
   usedNonTerminalTools: boolean;
+  toolTranscript?: FinalizerToolTranscriptSnapshot;
   captureId?: string;
 };
 
@@ -157,70 +174,86 @@ export type FinalizerContextCaptureWriteResult =
   | { status: "skipped"; reason: "record_oversized" | "file_full"; bytes: number }
   | { status: "failed"; reason: string };
 
-type PendingSidecar = FinalizerImageSidecar & { bytes: Uint8Array };
-type StagedSidecar = {
-  sha256: string;
-  stagedPath: string | null;
-  finalPath: string;
-  directory: string;
+type PendingImageSidecar = {
+  record: FinalizerImageSidecar;
+  sidecar: PendingContentAddressedCaptureSidecar;
 };
 
-const captureRecordSchema = z
+const captureRecordBaseShape = {
+  capture_id: z.string().min(1),
+  captured_at: z.number().finite(),
+  turn_id: z.string().nullable(),
+  session_id: z.string().min(1),
+  path: z.enum(["system_1", "system_2"]),
+  attempt_kind: z.enum(["initial", "regenerate"]),
+  configured_surface_variant: z.enum(["compact", "compact_conversational", "legacy"]).optional(),
+  live_surface_variant: z.enum(["compact", "legacy"]),
+  turn_origin: z.unknown().optional(),
+  projected_context: z.record(z.string(), z.unknown()),
+  evidence_ledger: z.unknown().nullish(),
+  surfaces: z
+    .object({
+      legacy: z.object({ system: z.unknown(), fingerprint: z.record(z.string(), z.unknown()) }),
+      compact: z.object({ system: z.unknown(), fingerprint: z.record(z.string(), z.unknown()) }),
+    })
+    .strict(),
+  live_request: z.unknown().nullable(),
+  fidelity: z
+    .object({
+      verified: z.boolean(),
+      request: z.unknown().nullable(),
+      surfaceMatchesRequest: z.boolean(),
+    })
+    .strict(),
+  image_sidecars: z.array(
+    z
+      .object({
+        attachment_id: z.string().min(1),
+        media_type: z.string().min(1),
+        sha256: z.string().regex(/^[a-f0-9]{64}$/),
+        byte_size: z.number().int().nonnegative(),
+        relative_path: z.string().regex(/^finalizer-images\/[a-f0-9]{64}$/),
+      })
+      .strict(),
+  ),
+  live_outcome: z.record(z.string(), z.unknown()),
+};
+const replayBaseShape = {
+  eligible: z.boolean(),
+  exclusion_reason: z
+    .enum([
+      "autonomous",
+      "nonterminal_tools",
+      "nonterminal_outcome",
+      "source_threw",
+      "missing_request",
+    ])
+    .nullable(),
+};
+const captureRecordV1Schema = z
   .object({
-    schema_version: z.literal(FINALIZER_CONTEXT_CAPTURE_SCHEMA_VERSION),
-    capture_id: z.string().min(1),
-    captured_at: z.number().finite(),
-    turn_id: z.string().nullable(),
-    session_id: z.string().min(1),
-    path: z.enum(["system_1", "system_2"]),
-    attempt_kind: z.enum(["initial", "regenerate"]),
-    configured_surface_variant: z.enum(["compact", "compact_conversational", "legacy"]).optional(),
-    live_surface_variant: z.enum(["compact", "legacy"]),
-    turn_origin: z.unknown().optional(),
-    projected_context: z.record(z.string(), z.unknown()),
-    evidence_ledger: z.unknown().nullish(),
-    surfaces: z
-      .object({
-        legacy: z.object({ system: z.unknown(), fingerprint: z.record(z.string(), z.unknown()) }),
-        compact: z.object({ system: z.unknown(), fingerprint: z.record(z.string(), z.unknown()) }),
-      })
-      .strict(),
-    live_request: z.unknown().nullable(),
-    fidelity: z
-      .object({
-        verified: z.boolean(),
-        request: z.unknown().nullable(),
-        surfaceMatchesRequest: z.boolean(),
-      })
-      .strict(),
-    image_sidecars: z.array(
-      z
-        .object({
-          attachment_id: z.string().min(1),
-          media_type: z.string().min(1),
-          sha256: z.string().regex(/^[a-f0-9]{64}$/),
-          byte_size: z.number().int().nonnegative(),
-          relative_path: z.string().regex(/^finalizer-images\/[a-f0-9]{64}$/),
-        })
-        .strict(),
-    ),
-    replay: z
-      .object({
-        eligible: z.boolean(),
-        exclusion_reason: z
-          .enum([
-            "autonomous",
-            "nonterminal_tools",
-            "nonterminal_outcome",
-            "source_threw",
-            "missing_request",
-          ])
-          .nullable(),
-      })
-      .strict(),
-    live_outcome: z.record(z.string(), z.unknown()),
+    schema_version: z.literal(LEGACY_FINALIZER_CONTEXT_CAPTURE_SCHEMA_VERSION),
+    ...captureRecordBaseShape,
+    replay: z.object(replayBaseShape).strict(),
   })
   .strict();
+const captureRecordV2Schema = z
+  .object({
+    schema_version: z.literal(FINALIZER_CONTEXT_CAPTURE_SCHEMA_VERSION),
+    ...captureRecordBaseShape,
+    tool_transcript: finalizerToolTranscriptManifestSchema,
+    replay: z
+      .object({
+        ...replayBaseShape,
+        recorded_results_eligible: z.boolean(),
+      })
+      .strict(),
+  })
+  .strict();
+const captureRecordSchema = z.discriminatedUnion("schema_version", [
+  captureRecordV1Schema,
+  captureRecordV2Schema,
+]);
 
 function jsonRoundTrip<T>(value: T): T {
   const text = JSON.stringify(value);
@@ -264,144 +297,99 @@ function imageAttachmentIds(request: LLMConverseOptions | null): AttachmentId[] 
   return [...new Set(ids)];
 }
 
-function buildSidecars(
+function buildImageSidecars(
   request: LLMConverseOptions | null,
   resolver: FinalizerContextCaptureOptions["attachmentResolver"],
-): PendingSidecar[] {
+): PendingImageSidecar[] {
   if (resolver === undefined) return [];
   return imageAttachmentIds(request).map((attachmentId) => {
     const resolved = resolver(attachmentId);
-    const bytes = Buffer.from(resolved.bytes);
-    const sha256 = sha256Bytes(bytes);
+    const sidecar = createContentAddressedCaptureSidecar({
+      subdirectory: "finalizer-images",
+      bytes: resolved.bytes,
+    });
     return {
-      attachment_id: attachmentId,
-      media_type: resolved.mediaType,
-      sha256,
-      byte_size: bytes.byteLength,
-      relative_path: join("finalizer-images", sha256),
-      bytes,
+      record: {
+        attachment_id: attachmentId,
+        media_type: resolved.mediaType,
+        sha256: sidecar.sha256,
+        byte_size: sidecar.byteSize,
+        relative_path: sidecar.relativePath,
+      },
+      sidecar,
     };
   });
 }
 
-function stagePrivateSidecars(
-  dataDir: string,
-  sidecars: readonly PendingSidecar[],
-): StagedSidecar[] {
-  if (sidecars.length === 0) return [];
-  const sidecarDirectory = resolveContextCaptureSubdirectory(dataDir, "finalizer-images");
-  mkdirSync(sidecarDirectory, { recursive: true, mode: 0o700 });
-  chmodSync(sidecarDirectory, 0o700);
-  const staged: StagedSidecar[] = [];
-  try {
-    for (const sidecar of sidecars) {
-      const finalPath = join(sidecarDirectory, basename(sidecar.relative_path));
-      if (existsSync(finalPath)) {
-        const existingStat = lstatSync(finalPath);
-        if (existingStat.isSymbolicLink() || !existingStat.isFile()) {
-          throw new Error(`Finalizer capture sidecar is not a regular file: ${finalPath}`);
-        }
-        if (sha256Bytes(readFileSync(finalPath)) !== sidecar.sha256) {
-          throw new Error(`Finalizer capture sidecar hash mismatch: ${sidecar.sha256}`);
-        }
-        chmodSync(finalPath, 0o600);
-        staged.push({
-          sha256: sidecar.sha256,
-          stagedPath: null,
-          finalPath,
-          directory: sidecarDirectory,
-        });
-        continue;
-      }
-      const stagedPath = join(
-        sidecarDirectory,
-        `.staged-${randomUUID()}-${basename(sidecar.relative_path)}`,
-      );
-      const fd = openSync(stagedPath, "wx", 0o600);
-      try {
-        writeFileSync(fd, sidecar.bytes);
-        fsyncSync(fd);
-      } catch (error) {
-        try {
-          closeSync(fd);
-        } finally {
-          unlinkSync(stagedPath);
-        }
-        throw error;
-      }
-      closeSync(fd);
-      chmodSync(stagedPath, 0o600);
-      staged.push({ sha256: sidecar.sha256, stagedPath, finalPath, directory: sidecarDirectory });
-    }
-    return staged;
-  } catch (error) {
-    for (const sidecar of staged) {
-      if (sidecar.stagedPath !== null && existsSync(sidecar.stagedPath)) {
-        unlinkSync(sidecar.stagedPath);
-      }
-    }
-    throw error;
-  }
+function resolveToolTranscriptSnapshot(
+  input: BuildFinalizerContextCaptureRecordInput,
+  requestFingerprint: CanonicalRequestFingerprint | null,
+): FinalizerToolTranscriptSnapshot {
+  return (
+    input.toolTranscript ??
+    new FinalizerToolTranscriptCollector().finish({
+      requestBinding: requestFingerprint,
+      expectedEventCount: input.usedNonTerminalTools ? 1 : 0,
+      sourceCompleted: input.outcome.status === "completed",
+    })
+  );
 }
 
-function discardStagedSidecars(sidecars: readonly StagedSidecar[]): void {
-  for (const sidecar of sidecars) {
-    if (sidecar.stagedPath !== null && existsSync(sidecar.stagedPath)) {
-      unlinkSync(sidecar.stagedPath);
-    }
-  }
+function toolTranscriptTraceDetails(
+  manifest: FinalizerToolTranscriptManifest,
+): Record<string, string | number> {
+  return {
+    tool_transcript_status: manifest.status,
+    tool_transcript_events: manifest.event_count,
+    tool_transcript_dispatched: manifest.dispatched_count,
+    tool_transcript_bytes: manifest.payload_bytes,
+    tool_transcript_incomplete_reasons: manifest.incomplete_reasons.length,
+    tool_transcript_replay_eligible: manifest.replay_eligible ? 1 : 0,
+  };
 }
 
-function commitStagedSidecars(sidecars: readonly StagedSidecar[]): void {
-  const syncedDirectories = new Set<string>();
-  for (const sidecar of sidecars) {
-    if (sidecar.stagedPath === null) continue;
-    if (existsSync(sidecar.finalPath)) {
-      if (sha256Bytes(readFileSync(sidecar.finalPath)) !== sidecar.sha256) {
-        throw new Error(`Finalizer capture sidecar hash mismatch: ${sidecar.sha256}`);
-      }
-      unlinkSync(sidecar.stagedPath);
-    } else {
-      renameSync(sidecar.stagedPath, sidecar.finalPath);
-      chmodSync(sidecar.finalPath, 0o600);
-    }
-    syncedDirectories.add(sidecar.directory);
-  }
-  for (const directory of syncedDirectories) {
-    const directoryFd = openSync(directory, "r");
-    try {
-      fsyncSync(directoryFd);
-    } finally {
-      closeSync(directoryFd);
-    }
-  }
+function replayExclusionReason(
+  input: BuildFinalizerContextCaptureRecordInput,
+): FinalizerContextCaptureRecordV1["replay"]["exclusion_reason"] {
+  if (input.context.turnOrigin === "autonomous") return "autonomous";
+  if (input.usedNonTerminalTools) return "nonterminal_tools";
+  if (input.outcome.status === "threw") return "source_threw";
+  if (input.outcome.structuralReason !== "terminal_emission") return "nonterminal_outcome";
+  return input.liveRequest === null ? "missing_request" : null;
 }
 
-function sidecarStorageBytes(dataDir: string): number {
-  const directory = resolveContextCaptureSubdirectory(dataDir, "finalizer-images");
-  if (!existsSync(directory)) return 0;
-  return readdirSync(directory).reduce((sum, name) => {
-    const path = join(directory, name);
-    const stats = lstatSync(path);
-    if (stats.isSymbolicLink()) {
-      throw new Error(`Finalizer capture sidecar must not be a symlink: ${path}`);
-    }
-    return sum + (stats.isFile() ? stats.size : 0);
-  }, 0);
+function transcriptRequestMatches(
+  transcript: FinalizerToolTranscriptManifest,
+  requestFingerprint: CanonicalRequestFingerprint | null,
+): boolean {
+  return (
+    requestFingerprint !== null &&
+    transcript.request_binding !== null &&
+    transcript.request_binding.canonicalChars === requestFingerprint.canonicalChars &&
+    transcript.request_binding.canonicalSha256 === requestFingerprint.canonicalSha256
+  );
 }
 
-function pendingNewSidecarBytes(dataDir: string, sidecars: readonly PendingSidecar[]): number {
-  const directory = resolveContextCaptureSubdirectory(dataDir, "finalizer-images");
-  const unique = new Map(sidecars.map((sidecar) => [sidecar.sha256, sidecar]));
-  return [...unique.values()].reduce(
-    (sum, sidecar) => sum + (existsSync(join(directory, sidecar.sha256)) ? 0 : sidecar.byte_size),
-    0,
+function recordedResultsReplayEligible(input: {
+  source: BuildFinalizerContextCaptureRecordInput;
+  surfaceMatchesRequest: boolean;
+  requestFingerprint: CanonicalRequestFingerprint | null;
+  transcript: FinalizerToolTranscriptManifest;
+}): boolean {
+  return (
+    input.surfaceMatchesRequest &&
+    transcriptRequestMatches(input.transcript, input.requestFingerprint) &&
+    input.transcript.replay_eligible &&
+    input.source.outcome.status === "completed" &&
+    input.source.outcome.structuralReason !== "no_terminal_emission" &&
+    (!input.source.usedNonTerminalTools || input.transcript.event_count > 0)
   );
 }
 
 export function buildFinalizerContextCaptureRecord(
   input: BuildFinalizerContextCaptureRecordInput,
   sidecars: readonly FinalizerImageSidecar[] = [],
+  preparedToolTranscript?: FinalizerToolTranscriptManifest,
 ): FinalizerContextCaptureRecord {
   const liveSurface =
     input.liveSurfaceVariant === "compact" ? input.compactSystem : input.legacySystem;
@@ -416,18 +404,18 @@ export function buildFinalizerContextCaptureRecord(
   const surfaceMatchesRequest =
     requestSurfaceFingerprint !== null &&
     requestSurfaceFingerprint.transportSha256 === liveSurfaceFingerprint.transportSha256;
-  const exclusionReason =
-    input.context.turnOrigin === "autonomous"
-      ? ("autonomous" as const)
-      : input.usedNonTerminalTools
-        ? ("nonterminal_tools" as const)
-        : input.outcome.status === "threw"
-          ? ("source_threw" as const)
-          : input.outcome.structuralReason !== "terminal_emission"
-            ? ("nonterminal_outcome" as const)
-            : input.liveRequest === null
-              ? ("missing_request" as const)
-              : null;
+  const toolTranscript =
+    preparedToolTranscript ??
+    prepareFinalizerToolTranscript({
+      snapshot: resolveToolTranscriptSnapshot(input, requestFingerprint),
+    }).manifest;
+  const exclusionReason = replayExclusionReason(input);
+  const recordedResultsEligible = recordedResultsReplayEligible({
+    source: input,
+    surfaceMatchesRequest,
+    requestFingerprint,
+    transcript: toolTranscript,
+  });
   return parseFinalizerContextCaptureRecord(
     jsonRoundTrip({
       schema_version: FINALIZER_CONTEXT_CAPTURE_SCHEMA_VERSION,
@@ -459,7 +447,12 @@ export function buildFinalizerContextCaptureRecord(
         surfaceMatchesRequest,
       },
       image_sidecars: sidecars,
-      replay: { eligible: exclusionReason === null, exclusion_reason: exclusionReason },
+      tool_transcript: toolTranscript,
+      replay: {
+        eligible: exclusionReason === null,
+        exclusion_reason: exclusionReason,
+        recorded_results_eligible: recordedResultsEligible,
+      },
       live_outcome: input.outcome,
     }),
   );
@@ -512,35 +505,69 @@ export class FinalizerContextCapture {
     details: Record<string, string | number>,
   ): void {
     if (!this.tracer.enabled || input.turnId === undefined) return;
-    this.tracer.emit(`deliberation.finalizer_context_capture.${status}`, {
-      turnId: input.turnId,
-      session_id: input.sessionId,
-      ...details,
-    });
+    try {
+      this.tracer.emit(`deliberation.finalizer_context_capture.${status}`, {
+        turnId: input.turnId,
+        session_id: input.sessionId,
+        ...details,
+      });
+    } catch {
+      // Capture telemetry is observational and cannot become a live-turn
+      // dependency if a custom tracer fails.
+    }
   }
 
   async capture(
     input: BuildFinalizerContextCaptureRecordInput,
   ): Promise<FinalizerContextCaptureWriteResult> {
-    let stagedSidecars: StagedSidecar[] = [];
+    let stagedSidecars: StagedContentAddressedCaptureSidecar[] = [];
+    let transcriptTraceDetails: Record<string, string | number> = {};
     try {
-      const pendingSidecars = buildSidecars(input.liveRequest, this.options.attachmentResolver);
-      const sidecarRecords = pendingSidecars.map(({ bytes: _bytes, ...record }) => record);
-      const record = buildFinalizerContextCaptureRecord(input, sidecarRecords);
+      const requestFingerprint =
+        input.liveRequestFingerprint ??
+        (input.liveRequest === null ? null : fingerprintCanonicalRequest(input.liveRequest));
+      const imageSidecars = buildImageSidecars(input.liveRequest, this.options.attachmentResolver);
+      const preparedToolTranscript = prepareFinalizerToolTranscript({
+        snapshot: resolveToolTranscriptSnapshot(input, requestFingerprint),
+        maxBytes: FINALIZER_TOOL_TRANSCRIPT_MAX_BYTES,
+      });
+      transcriptTraceDetails = toolTranscriptTraceDetails(preparedToolTranscript.manifest);
+      const pendingSidecars = [
+        ...imageSidecars.map((sidecar) => sidecar.sidecar),
+        ...(preparedToolTranscript.pendingSidecar === null
+          ? []
+          : [preparedToolTranscript.pendingSidecar]),
+      ];
+      const record = buildFinalizerContextCaptureRecord(
+        input,
+        imageSidecars.map((sidecar) => sidecar.record),
+        preparedToolTranscript.manifest,
+      );
       const bytes = Buffer.byteLength(`${JSON.stringify(record)}\n`);
       if (bytes > this.maxRecordBytes) {
-        this.emit(input, "skipped", { reason: "record_oversized", record_bytes: bytes });
+        this.emit(input, "skipped", {
+          reason: "record_oversized",
+          record_bytes: bytes,
+          ...transcriptTraceDetails,
+        });
         return { status: "skipped", reason: "record_oversized", bytes };
       }
       if (
-        sidecarStorageBytes(this.options.dataDir) +
-          pendingNewSidecarBytes(this.options.dataDir, pendingSidecars) >
+        contentAddressedCaptureSidecarStorageBytes(this.options.dataDir, [
+          "finalizer-images",
+          "finalizer-tool-transcripts",
+        ]) +
+          pendingNewContentAddressedCaptureSidecarBytes(this.options.dataDir, pendingSidecars) >
         this.maxSidecarBytes
       ) {
-        this.emit(input, "skipped", { reason: "file_full", record_bytes: bytes });
+        this.emit(input, "skipped", {
+          reason: "file_full",
+          record_bytes: bytes,
+          ...transcriptTraceDetails,
+        });
         return { status: "skipped", reason: "file_full", bytes };
       }
-      stagedSidecars = stagePrivateSidecars(this.options.dataDir, pendingSidecars);
+      stagedSidecars = stageContentAddressedCaptureSidecars(this.options.dataDir, pendingSidecars);
       const result = await appendBoundedContextCapture({
         dataDir: this.options.dataDir,
         fileName: FINALIZER_CAPTURE_FILE_NAME,
@@ -548,19 +575,32 @@ export class FinalizerContextCapture {
         maxFileBytes: this.maxFileBytes,
       });
       if (result.status === "file_full") {
-        discardStagedSidecars(stagedSidecars);
+        discardStagedContentAddressedCaptureSidecars(stagedSidecars);
         stagedSidecars = [];
-        this.emit(input, "skipped", { reason: "file_full", record_bytes: bytes });
+        this.emit(input, "skipped", {
+          reason: "file_full",
+          record_bytes: bytes,
+          ...transcriptTraceDetails,
+        });
         return { status: "skipped", reason: "file_full", bytes };
       }
-      commitStagedSidecars(stagedSidecars);
+      commitStagedContentAddressedCaptureSidecars(stagedSidecars);
       stagedSidecars = [];
-      this.emit(input, "captured", { record_bytes: bytes });
+      this.emit(input, "captured", {
+        record_bytes: bytes,
+        ...transcriptTraceDetails,
+      });
       return { status: "captured", path: result.path, bytes, record };
     } catch (error) {
-      discardStagedSidecars(stagedSidecars);
-      const reason = error instanceof Error ? error.message : String(error);
-      this.emit(input, "failed", { reason });
+      let reason = error instanceof Error ? error.message : String(error);
+      try {
+        discardStagedContentAddressedCaptureSidecars(stagedSidecars);
+      } catch (cleanupError) {
+        const cleanupReason =
+          cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        reason = `${reason}; staged sidecar cleanup failed: ${cleanupReason}`;
+      }
+      this.emit(input, "failed", { reason, ...transcriptTraceDetails });
       return { status: "failed", reason };
     }
   }

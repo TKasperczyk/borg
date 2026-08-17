@@ -44,6 +44,23 @@ export type ToolLoopCallRecord = {
   durationMs: number;
 };
 
+export type ToolLoopResultObservation = {
+  ordinal: number;
+  iteration: number;
+  batchPosition: number;
+  callId: string;
+  toolName: string;
+  rawArguments: unknown;
+  disposition: "dispatched" | "skipped_unavailable" | "skipped_iteration_cap";
+  result: { ok: true; output: unknown } | { ok: false; error: string };
+  durationMs: number;
+};
+
+export type ToolLoopResultObserver = {
+  observe(observation: ToolLoopResultObservation): void;
+  markIncomplete(error: unknown): void;
+};
+
 export type ExecuteToolLoopOptions = {
   llmClient: LLMClient;
   dispatcher: ToolDispatcher;
@@ -75,6 +92,8 @@ export type ExecuteToolLoopOptions = {
   traceLabel?: string;
   /** Exact transport request snapshot, synchronously exposed before each LLM attempt. */
   onRequestPrepared?: (request: LLMConverseOptions, attempt: number) => void;
+  /** Best-effort capture hook. Observer failures never alter the live tool loop. */
+  toolResultObserver?: ToolLoopResultObserver;
 };
 
 export type ToolLoopResult = {
@@ -179,6 +198,23 @@ function toCallRecord(block: LLMToolUseBlock, result: ToolDispatchResult): ToolL
     ok: result.ok,
     durationMs: result.durationMs,
   };
+}
+
+function observeToolResult(
+  observer: ToolLoopResultObserver | undefined,
+  observation: ToolLoopResultObservation,
+): void {
+  if (observer === undefined) return;
+  try {
+    observer.observe(observation);
+  } catch (error) {
+    try {
+      observer.markIncomplete(error);
+    } catch {
+      // Capture is observational. Even a broken failure callback must not
+      // reach or alter the live tool loop.
+    }
+  }
 }
 
 async function dispatchToolUseBlock(
@@ -390,7 +426,21 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
           skipReason: "tool_not_available_in_context",
         });
         toolCallsMade.push(toCallRecord(block, skippedResult));
-        toolResultBlocks.push(buildUnavailableToolResultBlock(block));
+        const toolResultBlock = buildUnavailableToolResultBlock(block);
+        toolResultBlocks.push(toolResultBlock);
+        if (options.toolResultObserver !== undefined) {
+          observeToolResult(options.toolResultObserver, {
+            ordinal: toolCallsMade.length,
+            iteration: iterations + 1,
+            batchPosition: toolResultBlocks.length,
+            callId: skippedResult.callId,
+            toolName: skippedResult.toolName,
+            rawArguments: block.input,
+            disposition: "skipped_unavailable",
+            result: { ok: false, error: String(toolResultBlock.content) },
+            durationMs: skippedResult.durationMs,
+          });
+        }
         if (traceEnabled && options.turnId !== undefined) {
           options.tracer?.emit("tool_call.completed", {
             turnId: options.turnId,
@@ -420,6 +470,21 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
       );
       toolCallsMade.push(toCallRecord(block, dispatchResult));
       toolResultBlocks.push(buildToolResultBlock(dispatchResult));
+      if (options.toolResultObserver !== undefined) {
+        observeToolResult(options.toolResultObserver, {
+          ordinal: toolCallsMade.length,
+          iteration: iterations + 1,
+          batchPosition: toolResultBlocks.length,
+          callId: dispatchResult.callId,
+          toolName: dispatchResult.toolName,
+          rawArguments: block.input,
+          disposition: "dispatched",
+          result: dispatchResult.ok
+            ? { ok: true, output: dispatchResult.output }
+            : { ok: false, error: dispatchResult.error },
+          durationMs: dispatchResult.durationMs,
+        });
+      }
       if (traceEnabled && options.turnId !== undefined) {
         options.tracer?.emit("tool_call.completed", {
           turnId: options.turnId,
@@ -458,7 +523,21 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
         skipReason: "max_tool_calls_per_iteration",
       });
       toolCallsMade.push(toCallRecord(block, skippedResult));
-      toolResultBlocks.push(buildDroppedToolResultBlock(block, maxToolCallsPerIteration));
+      const toolResultBlock = buildDroppedToolResultBlock(block, maxToolCallsPerIteration);
+      toolResultBlocks.push(toolResultBlock);
+      if (options.toolResultObserver !== undefined) {
+        observeToolResult(options.toolResultObserver, {
+          ordinal: toolCallsMade.length,
+          iteration: iterations + 1,
+          batchPosition: toolResultBlocks.length,
+          callId: skippedResult.callId,
+          toolName: skippedResult.toolName,
+          rawArguments: block.input,
+          disposition: "skipped_iteration_cap",
+          result: { ok: false, error: String(toolResultBlock.content) },
+          durationMs: skippedResult.durationMs,
+        });
+      }
       if (traceEnabled && options.turnId !== undefined) {
         options.tracer?.emit("tool_call.completed", {
           turnId: options.turnId,
