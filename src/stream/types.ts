@@ -42,6 +42,10 @@ export const streamSourceMessageKeySchema = z.object({
   external_message_id: z.string().min(1),
 });
 
+// Stamped on the emitted entry only, so an inbound entry never carries it. `source_entry_ids`
+// is the authoritative record of which entries a reply answered; index adjacency is not a
+// substitute for it, because a session can interleave inbound and outbound entries and the
+// entry immediately preceding a reply need not be the one it answered.
 export const streamResponseToSchema = z.object({
   kind: z.literal("stream_backlog"),
   from_cursor_exclusive: streamCursorSchema.nullable(),
