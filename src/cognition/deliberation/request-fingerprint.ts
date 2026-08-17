@@ -41,6 +41,19 @@ function canonicalize(value: unknown): unknown {
   );
 }
 
+export function serializeCanonicalValue(value: unknown): string {
+  // JSON's native treatment is part of the fingerprint contract: undefined
+  // object properties are absent, undefined array positions are null, and a
+  // top-level undefined receives its own non-JSON sentinel rather than
+  // colliding with null or the string "undefined".
+  return JSON.stringify(canonicalize(value)) ?? "undefined";
+}
+
+export function fingerprintCanonicalValue(value: unknown): CanonicalRequestFingerprint {
+  const canonical = serializeCanonicalValue(value);
+  return { canonicalChars: canonical.length, canonicalSha256: sha256(canonical) };
+}
+
 export function fingerprintSystemSurface(
   system: NonNullable<LLMConverseOptions["system"]>,
 ): RequestSurfaceFingerprint {
@@ -62,8 +75,7 @@ export function fingerprintCanonicalRequest(request: {
   [key: string]: unknown;
 }): CanonicalRequestFingerprint {
   const { system, messages, tools, ...callOptions } = request;
-  const canonical = JSON.stringify(canonicalize({ system, messages, tools, callOptions }));
-  return { canonicalChars: canonical.length, canonicalSha256: sha256(canonical) };
+  return fingerprintCanonicalValue({ system, messages, tools, callOptions });
 }
 
 export function sha256Bytes(value: Uint8Array): string {

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { Borg } from "../../borg.js";
@@ -17,6 +17,7 @@ import { ManualClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { type LLMContentBlockMessage, type LLMConverseOptions } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import { FinalizerToolTranscriptCollector } from "../deliberation/finalizer-tool-transcript.js";
 import { executeToolLoop } from "./tool-loop.js";
 
 function createDispatcher(tempDir: string, clock = new ManualClock(1_000)): ToolDispatcher {
@@ -924,6 +925,174 @@ describe("executeToolLoop", () => {
       error: "max_tool_calls_per_iteration",
       duration_ms: 0,
     });
+  });
+
+  it("observes every nonterminal result across iterations without treating the terminal call as replayable", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const dispatcher = createDispatcher(tempDir);
+    const strictTool: ToolDefinition = {
+      name: "tool.test.observed",
+      description: "Observed test tool.",
+      allowedOrigins: ["deliberator"],
+      writeScope: "read",
+      inputSchema: z.object({ value: z.string().min(1) }).strict(),
+      outputSchema: z.object({ echoed: z.string() }).strict(),
+      async invoke(input: { value: string }) {
+        return { echoed: input.value };
+      },
+    };
+    const terminalTool: ToolDefinition = {
+      name: "EmitAnswer",
+      description: "Terminal test tool.",
+      allowedOrigins: ["deliberator"],
+      writeScope: "read",
+      inputSchema: z.object({ text: z.string() }).strict(),
+      outputSchema: z.object({}).strict(),
+      async invoke() {
+        throw new Error("terminal tools are not dispatched");
+      },
+    };
+    dispatcher.register(strictTool);
+    const collector = new FinalizerToolTranscriptCollector();
+    const llm = new FakeLLMClient({
+      responses: [
+        [
+          {
+            type: "tool_use",
+            id: "toolu_success",
+            name: strictTool.name,
+            input: { value: "🌌" },
+          },
+          {
+            type: "tool_use",
+            id: "toolu_validation",
+            name: strictTool.name,
+            input: { value: "" },
+          },
+          {
+            type: "tool_use",
+            id: "toolu_cap",
+            name: strictTool.name,
+            input: { value: "capped" },
+          },
+        ],
+        [
+          {
+            type: "tool_use",
+            id: "toolu_unavailable",
+            name: "tool.test.not_advertised",
+            input: { value: "unavailable" },
+          },
+        ],
+        [
+          {
+            type: "tool_use",
+            id: "toolu_terminal",
+            name: terminalTool.name,
+            input: { text: "done" },
+          },
+        ],
+      ],
+    });
+
+    const result = await executeToolLoop({
+      llmClient: llm,
+      dispatcher,
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      initialMessages: baseMessages(),
+      tools: [strictTool, terminalTool],
+      terminalToolNames: [terminalTool.name],
+      origin: "deliberator",
+      budget: "test",
+      maxToolCallsPerIteration: 2,
+      toolResultObserver: collector,
+    });
+    const transcript = collector.finish({
+      requestBinding: null,
+      expectedEventCount: result.toolCallsMade.length,
+      sourceCompleted: true,
+    }).transcript;
+
+    expect(result.stopReason).toBe("terminal_tool");
+    expect(result.terminalToolCalls.map((call) => call.id)).toEqual(["toolu_terminal"]);
+    expect(transcript.complete).toBe(true);
+    expect(transcript.events.map((event) => event.disposition)).toEqual([
+      "dispatched",
+      "dispatched",
+      "skipped_iteration_cap",
+      "skipped_unavailable",
+    ]);
+    expect(
+      transcript.events.map((event) => [event.ordinal, event.iteration, event.batch_position]),
+    ).toEqual([
+      [1, 1, 1],
+      [2, 1, 2],
+      [3, 1, 3],
+      [4, 2, 1],
+    ]);
+    expect(transcript.events[0]).toMatchObject({
+      call_id: "toolu_success",
+      raw_arguments: { value: "🌌" },
+      result: { ok: true, output: { echoed: "🌌" } },
+    });
+    expect(transcript.events[1]?.result).toMatchObject({ ok: false, error: expect.any(String) });
+    expect(transcript.events[2]?.result).toEqual({
+      ok: false,
+      error: "Skipped because this turn allows at most 2 tool calls per iteration.",
+    });
+    expect(transcript.events[3]?.result).toEqual({
+      ok: false,
+      error: "tool tool.test.not_advertised not available in this context",
+    });
+  });
+
+  it("swallows observer failures and marks the observer incomplete", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const dispatcher = createDispatcher(tempDir);
+    const tool: ToolDefinition = {
+      name: "tool.test.observer_failure",
+      description: "Observer failure test tool.",
+      allowedOrigins: ["deliberator"],
+      writeScope: "read",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({ ok: z.literal(true) }).strict(),
+      async invoke() {
+        return { ok: true } as const;
+      },
+    };
+    dispatcher.register(tool);
+    const observer = {
+      observe() {
+        throw new Error("capture observer failed");
+      },
+      markIncomplete: vi.fn(() => {
+        throw new Error("capture failure marker also failed");
+      }),
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        [{ type: "tool_use", id: "toolu_observer", name: tool.name, input: {} }],
+        "live loop continued",
+      ],
+    });
+
+    await expect(
+      executeToolLoop({
+        llmClient: llm,
+        dispatcher,
+        sessionId: DEFAULT_SESSION_ID,
+        model: "fake",
+        initialMessages: baseMessages(),
+        tools: [tool],
+        origin: "deliberator",
+        budget: "test",
+        toolResultObserver: observer,
+      }),
+    ).resolves.toMatchObject({ text: "live loop continued" });
+    expect(observer.markIncomplete).toHaveBeenCalledOnce();
   });
 
   it("allows deliberator-origin write tools and records deliberator open questions", async () => {
