@@ -74,6 +74,22 @@ function modeResponse(mode: string, isOperational = false) {
   };
 }
 
+function temporalCueResponse(input: { since?: string; until?: string; label?: string }) {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_temporal",
+        name: "EmitTemporalCue",
+        input: { has_cue: true, ...input },
+      },
+    ],
+  };
+}
+
 describe("perception", () => {
   it("returns classifier results without notifying on the safe-wrapper success path", async () => {
     const onFailure = vi.fn();
@@ -578,27 +594,13 @@ describe("perception", () => {
 
   it("extracts a temporal cue via the LLM when one is configured", async () => {
     const nowMs = new Date("2026-04-21T12:00:00Z").getTime();
-    const sinceTs = nowMs - 24 * 60 * 60 * 1_000;
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "",
-          input_tokens: 4,
-          output_tokens: 2,
-          stop_reason: "tool_use",
-          tool_calls: [
-            {
-              id: "toolu_temporal",
-              name: "EmitTemporalCue",
-              input: {
-                has_cue: true,
-                since_ts: sinceTs,
-                until_ts: nowMs,
-                label: "yesterday",
-              },
-            },
-          ],
-        },
+        temporalCueResponse({
+          since: "2026-04-20T12:00:00Z",
+          until: "2026-04-21T12:00:00Z",
+          label: "yesterday",
+        }),
       ],
     });
 
@@ -608,9 +610,63 @@ describe("perception", () => {
     });
 
     expect(cue).toEqual({
-      sinceTs,
+      sinceTs: nowMs - 24 * 60 * 60 * 1_000,
       untilTs: nowMs,
       label: "yesterday",
     });
+  });
+
+  it("hands the classifier an ISO 'now' rather than raw epoch milliseconds", async () => {
+    // The window arithmetic is the harness's job, not the model's: asking for
+    // epoch numbers produced windows two years off their own label.
+    const nowMs = new Date("2026-04-21T12:00:00Z").getTime();
+    const llm = new FakeLLMClient({
+      responses: [temporalCueResponse({ since: "2026-04-20T12:00:00Z", label: "yesterday" })],
+    });
+
+    await detectTemporalCue("Jane said yesterday was rough", nowMs, {
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    const payload = llm.requests[0]?.messages[0]?.content ?? "";
+    expect(payload).toContain("2026-04-21T12:00:00.000Z");
+    expect(payload).not.toContain(String(nowMs));
+  });
+
+  it("drops a cue bound that does not parse as an instant, keeping the one that does", async () => {
+    const nowMs = new Date("2026-04-21T12:00:00Z").getTime();
+    const llm = new FakeLLMClient({
+      responses: [
+        temporalCueResponse({
+          since: "2026-04-20T12:00:00Z",
+          until: "sometime",
+          label: "yesterday",
+        }),
+      ],
+    });
+
+    const cue = await detectTemporalCue("Jane said yesterday was rough", nowMs, {
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    expect(cue).toEqual({ sinceTs: nowMs - 24 * 60 * 60 * 1_000, label: "yesterday" });
+  });
+
+  it("treats an unparseable window as no cue at all", async () => {
+    const nowMs = new Date("2026-04-21T12:00:00Z").getTime();
+    const llm = new FakeLLMClient({
+      responses: [
+        temporalCueResponse({ since: "last-ish", until: "not a date", label: "yesterday" }),
+      ],
+    });
+
+    const cue = await detectTemporalCue("Jane said yesterday was rough", nowMs, {
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    expect(cue).toBeNull();
   });
 });
