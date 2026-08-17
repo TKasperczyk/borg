@@ -354,6 +354,14 @@ function renderSharedStateCompactIndexRows(rows: readonly SharedStateCompactInde
 
   // Every row keeps its own disclosure_class/origin_audience/private-to fields; only the constant
   // internal-use sentence is hoisted here, so a long index does not pay for it once per line.
+  // The fields themselves are the larger cost, and on a single-peer audience they are byte-identical
+  // on every line. Measured against a live 40-row DM register (2026-08-17, record_version 101): one
+  // distinct field string, 109 chars a line, 1090 of the index block's 3487 tokens -- a bigger term
+  // than the state key (2210 chars) or the excerpt, and bigger than that register's whole remaining
+  // 972 tokens of headroom before the single-entry floor trips. Hoisting them under the same
+  // "identical across every indexed row" condition would be lossless, mixed labels keeping the
+  // per-row form. It is deliberately not done here: it would move the token trajectory of every
+  // audience at once, which is a decision rather than a cleanup.
   const disclosureNote = rows.some((row) => row.disclosureLabel.disclosureClass !== "public")
     ? [`  (rows below whose disclosure_class is not public: ${memoryDisclosureInternalUseNote()})`]
     : [];
