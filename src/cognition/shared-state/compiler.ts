@@ -380,6 +380,18 @@ function traceSharedStateLifecycleTransitions(input: {
   }
 }
 
+/**
+ * Counts the operations the pass actually applied, per state key -- which is the
+ * only place a vanished key's history is readable, since a deletion leaves no
+ * tombstone. Read it for *what happened to a row*, never for *who asked*: by the
+ * time operations reach here the list carries three kinds of `prune` that look
+ * identical, the entity's own request, a cap eviction (emitted as an ordinary
+ * prune by `applySharedStateArtifactLifecycleCap`), and a dependent prune
+ * appended by `expandPruneDependencies`. Only `model_prune_requests` and
+ * `lifecycle_cap_evicted_state_keys` on the same trace event separate them, and
+ * both postdate this counter -- so on any event that lacks them a `prune: 1`
+ * here dates a death exactly and attributes it not at all.
+ */
 function operationCountsByStateKey(
   operations: readonly PublicSharedStateOperation[],
   previousArtifact: SharedStateArtifact | null,
