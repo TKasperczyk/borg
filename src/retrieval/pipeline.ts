@@ -80,7 +80,11 @@ import {
   type RecallStateHandle,
   type RecallStateRepository,
 } from "./recall-state.js";
-import { DEFAULT_RECALL_EXPANSION_MODEL, expandRecall } from "./recall-expansion.js";
+import {
+  DEFAULT_RECALL_EXPANSION_MODEL,
+  expandRecall,
+  type RecallExpansionResult,
+} from "./recall-expansion.js";
 import type {
   EvidenceItem,
   EvidencePool,
@@ -144,6 +148,9 @@ export type RetrievalPipelineOptions = {
   embeddingClient: EmbeddingClient;
   llmClient?: LLMClient;
   recallExpansionModel?: string;
+  // Hard cap for the recall-expansion LLM call; on timeout recall proceeds
+  // without expansion via the existing degraded path. Unset or 0 disables it.
+  recallExpansionTimeoutMs?: number;
   episodicRepository: EpisodicRepository;
   dataDir: string;
   entryIndex?: StreamEntryIndexRepository;
@@ -1314,14 +1321,17 @@ export class RetrievalPipeline {
     }
 
     try {
-      const expansion = await expandRecall({
-        llmClient: this.options.llmClient,
-        model: this.options.recallExpansionModel ?? DEFAULT_RECALL_EXPANSION_MODEL,
-        userMessage: query,
-        tracer: this.tracer,
-        turnId: options.traceTurnId,
-        sessionId: options.sessionId,
-      });
+      const expansion = await this.raceExpansionDeadline(
+        expandRecall({
+          llmClient: this.options.llmClient,
+          model: this.options.recallExpansionModel ?? DEFAULT_RECALL_EXPANSION_MODEL,
+          userMessage: query,
+          timeoutMs: this.options.recallExpansionTimeoutMs,
+          tracer: this.tracer,
+          turnId: options.traceTurnId,
+          sessionId: options.sessionId,
+        }),
+      );
       const namedTerms = dedupeStrings(expansion.named_terms);
       const facetIntents = expansion.facets.map((facet, index): RecallIntent => {
         const kind: RecallIntentKind = facet.kind;
@@ -1356,6 +1366,40 @@ export class RetrievalPipeline {
         facetIntents: [],
         namedTerms: [],
       };
+    }
+  }
+
+  // The abort signal inside expandRecall is advisory: the SDK's retry backoff
+  // does not observe it, so a 429/5xx retry can keep the call pending past the
+  // deadline. This race is the hard cap; the losing call is left to settle on
+  // its own (its rejection is swallowed) and the caller's degraded path runs.
+  private async raceExpansionDeadline(
+    expansion: Promise<RecallExpansionResult>,
+  ): Promise<RecallExpansionResult> {
+    const timeoutMs = this.options.recallExpansionTimeoutMs;
+
+    if (timeoutMs === undefined || timeoutMs <= 0) {
+      return expansion;
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    expansion.catch(() => undefined);
+
+    try {
+      return await Promise.race([
+        expansion,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`recall expansion exceeded ${timeoutMs}ms deadline`)),
+            timeoutMs,
+          );
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
     }
   }
 

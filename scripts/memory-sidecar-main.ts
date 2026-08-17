@@ -12,6 +12,7 @@ import { createServer } from "node:http";
 import OpenAI from "openai";
 
 import { createCachingEmbeddingClient } from "../src/embeddings/cache.js";
+import { StallGuardEmbeddingClient } from "../src/embeddings/stall-guard.js";
 import {
   BorgPool,
   OpenAICompatibleEmbeddingClient,
@@ -63,6 +64,12 @@ const recallAbstainThreshold = Number.isFinite(recallAbstainThresholdRaw)
 // Bound every provider call so a hung kratos can't pin a request + pool slot
 // (and block shutdown) indefinitely.
 const requestTimeoutMs = Number(process.env.BORG_MEMORY_LLM_TIMEOUT_MS ?? 120_000);
+// Tight per-attempt stall guard for embedding calls (see StallGuardEmbeddingClient).
+const embeddingStallTimeoutMs = Number(process.env.BORG_EMBEDDING_STALL_TIMEOUT_MS ?? 1000);
+const embeddingStallBatchTimeoutMs = Number(
+  process.env.BORG_EMBEDDING_STALL_BATCH_TIMEOUT_MS ?? 20_000,
+);
+const embeddingStallRetries = Number(process.env.BORG_EMBEDDING_STALL_RETRIES ?? 1);
 const shutdownTimeoutMs = Number(process.env.BORG_MEMORY_SHUTDOWN_MS ?? 15_000);
 
 // borg picks the LLM model per cognition slot from config (which reads process.env
@@ -89,12 +96,24 @@ const llmClient = new OpenAICompatibleLLMClient({
 // re-embedded identical intent queries (and each tenant's active commitment
 // directives) over the network — ~24 embedding calls per /memory/recall.
 // One cache instance is shared by all tenants; keys are model+dims+text.
+// Stall guard inside the cache: cache hits never race a timer, misses get a
+// short per-attempt cap + retry instead of inheriting the 120s client bound.
+// The gateway's embedding backend intermittently hangs single requests while
+// a fresh retry completes at healthy latency (~0.2-0.35s), and the recall
+// path must answer within its client's hard 5s budget.
 const embeddingClient = createCachingEmbeddingClient(
-  new OpenAICompatibleEmbeddingClient({
-    client: openai,
-    model: embeddingModel,
-    dims: embeddingDims,
-  }),
+  new StallGuardEmbeddingClient(
+    new OpenAICompatibleEmbeddingClient({
+      client: openai,
+      model: embeddingModel,
+      dims: embeddingDims,
+    }),
+    {
+      timeoutMs: embeddingStallTimeoutMs,
+      batchTimeoutMs: embeddingStallBatchTimeoutMs,
+      maxRetries: embeddingStallRetries,
+    },
+  ),
   { model: embeddingModel, dims: embeddingDims },
 );
 const traceRegistry = memoryTraceEnabledFromEnv(process.env)

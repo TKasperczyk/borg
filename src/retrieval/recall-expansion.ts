@@ -49,6 +49,11 @@ export type RecallExpansionOptions = {
   llmClient: LLMClient;
   model: string;
   userMessage: string;
+  // Hard cap for the expansion LLM call. Recall degrades gracefully without
+  // expansion (raw-query intent only), so callers with a latency budget cap
+  // the call instead of inheriting the client's request timeout during
+  // gateway stalls. Unset or 0 disables the cap.
+  timeoutMs?: number;
   tracer?: TurnTracer;
   turnId?: string;
   sessionId?: SessionId;
@@ -156,6 +161,9 @@ export async function expandRecall(
           tool_choice: { type: "tool", name: RECALL_EXPANSION_TOOL_NAME },
           max_tokens: 512,
           budget: "recall-expansion",
+          ...(options.timeoutMs !== undefined && options.timeoutMs > 0
+            ? { signal: AbortSignal.timeout(options.timeoutMs) }
+            : {}),
         },
         toolName: RECALL_EXPANSION_TOOL_NAME,
         parse: (input) => recallExpansionParserSchema.parse(input),

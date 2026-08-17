@@ -458,6 +458,61 @@ describe("Recall Core", () => {
     });
   });
 
+  it("degrades to raw-query intents when recall expansion exceeds its timeout", async () => {
+    const tracer = createTracer();
+    const seenSignals: Array<AbortSignal | undefined> = [];
+    // A stalled gateway call: never resolves on its own, rejects only when
+    // the caller's abort signal fires (mirrors the SDK contract).
+    const stallingLlmClient = {
+      complete: vi.fn(
+        (request: { signal?: AbortSignal | null }) =>
+          new Promise<LLMCompleteResult>((_, reject) => {
+            seenSignals.push(request.signal ?? undefined);
+
+            if (request.signal?.aborted === true) {
+              reject(request.signal.reason ?? new Error("aborted"));
+              return;
+            }
+
+            request.signal?.addEventListener("abort", () =>
+              reject(request.signal?.reason ?? new Error("aborted")),
+            );
+          }),
+      ),
+    };
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createEmbeddingClient(),
+    });
+    const { mayaEpisode } = await insertMayaAndDesignReview(harness);
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: harness.embeddingClient,
+      llmClient: stallingLlmClient as never,
+      recallExpansionTimeoutMs: 25,
+      episodicRepository: harness.episodicRepository,
+      dataDir: harness.tempDir,
+      clock: harness.clock,
+      tracer,
+    });
+
+    const result = await pipeline.searchEpisodesForDisclosure(MAYA_TURN, {
+      limit: 3,
+      entityTerms: ["Maya"],
+      traceTurnId: "turn-recall-expansion-timeout",
+      crossAudience: true,
+    });
+
+    expect(result.map((item) => item.episode.id)).toContain(mayaEpisode.id);
+    expect(seenSignals[0]).toBeInstanceOf(AbortSignal);
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "retrieval.degraded",
+      expect.objectContaining({
+        turnId: "turn-recall-expansion-timeout",
+        subsystem: "recall_expansion",
+      }),
+    );
+  });
+
   it("unions perception entities when recall expansion succeeds with no named terms", async () => {
     const llmClient = new FakeLLMClient({
       responses: [recallExpansion({ named_terms: [] })],
