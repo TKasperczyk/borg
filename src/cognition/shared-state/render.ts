@@ -50,6 +50,15 @@ const DEFAULT_SHARED_STATE_MAX_ENTRIES = 40;
 // index cost fell by 19-962 tokens (largest registers most), expanded bodies rose from 2-4 to 4-5,
 // and the maxTokens at which the single-entry floor first trips fell from 4,126-4,248 to 3,245-3,622
 // on the three registers that reach it at all. The index is still the dominant term at 40 rows.
+//
+// The rendered body *count* is a residual of this budget, never a property of the register: the drop
+// loop below terminates on total token size, so how many bodies survive depends on the byte lengths
+// of the ones the turn's salience happened to spare. Measured over 12 consecutive renders of one
+// live 40-row audience (2026-08-17, record_version 98-106, all 40 rows active throughout and the
+// index within 13,863-14,217 chars): 3, 4 and 5 bodies all appeared while the bodies' own byte spend
+// stayed flat -- 5 bodies in 5,089 chars at rv 102 against 3 bodies in 5,104 chars at rv 106. Two
+// readings that differ by two bodies are therefore not evidence that the register changed, and a
+// per-body token cost read off one render does not carry to the next.
 const DEFAULT_SHARED_STATE_MAX_TOKENS = 5_000;
 
 // Tunes reserved render slots by shared-state entry kind.
