@@ -45,6 +45,11 @@ const DEFAULT_SHARED_STATE_MAX_ENTRIES = 40;
 // tokens (~88/line over 40 lines), leaving 3-4 bodies rendered out of the 16-40 the selection pass
 // had already chosen. The drop loops below, not the selection caps, are what bind there -- so a
 // short expanded body count is evidence about this budget, not about `lockedMaxEntries`.
+//
+// Re-measured 2026-08-17 across all seven live audiences after the index disclosure hoist below:
+// index cost fell by 19-962 tokens (largest registers most), expanded bodies rose from 2-4 to 4-5,
+// and the maxTokens at which the single-entry floor first trips fell from 4,126-4,248 to 3,245-3,622
+// on the three registers that reach it at all. The index is still the dominant term at 40 rows.
 const DEFAULT_SHARED_STATE_MAX_TOKENS = 5_000;
 
 // Tunes reserved render slots by shared-state entry kind.
@@ -327,7 +332,95 @@ function buildSharedStateCompactIndexRows(input: {
   });
 }
 
+const SHARED_STATE_COMPACT_INDEX_FIELD_SEPARATOR = " | ";
+
+function sharedStateIndexDisclosureDefaultLine(fields: string): string {
+  return `  (disclosure label of every index row below that does not print its own: ${fields})`;
+}
+
+// What an index row prints for its own label, given whatever was hoisted above the index. With
+// nothing hoisted this is the long-standing shape: fields on every non-public row, nothing on a
+// public one. With a default hoisted, a row prints its fields exactly when they differ from that
+// default -- including a public row, which has to say so rather than inherit a private default by
+// silence.
+function sharedStateIndexDisclosureFields(
+  row: SharedStateCompactIndexRow,
+  hoistedFields: string | null,
+): string | null {
+  const fields = renderMemoryDisclosureLabelFieldsForModel(row.disclosureLabel);
+
+  if (hoistedFields === null) {
+    return row.disclosureLabel.disclosureClass === "public" ? null : fields;
+  }
+
+  return fields === hoistedFields ? null : fields;
+}
+
+// The disclosure fields are the largest term on an index line and, in a register whose rows all came
+// from the same audience, the same bytes over and over: measured on a live 40-row DM register
+// (2026-08-17, record_version 105) 34 of 40 lines carried one 106-char string and the other 6 a
+// 148-char variant, 4612 chars of the index's 15719 -- more than the state keys and more than the
+// whole remaining headroom before the single-entry floor trips. So hoist the most-repeated field
+// string to one line above the index and let the rows that differ print their own; a row saying
+// nothing is a row that carries the hoisted label, which the line above states in those words.
+// Nothing is dropped from any row -- this is the same compaction already applied to the constant
+// internal-use note, one field group over.
+//
+// The gate is the arithmetic, not a tuned threshold: hoisting only happens where repeating the
+// string costs more than stating it once plus what the exception rows then have to spend. Public
+// rows print no fields today, so they are never the hoist candidate, and where a non-public default
+// wins they must start printing their own class -- that added cost is charged to the gate below.
+function hoistedSharedStateIndexDisclosureFields(
+  rows: readonly SharedStateCompactIndexRow[],
+): string | null {
+  const countsByFields = new Map<string, number>();
+
+  for (const row of rows) {
+    if (row.disclosureLabel.disclosureClass === "public") {
+      continue;
+    }
+
+    const fields = renderMemoryDisclosureLabelFieldsForModel(row.disclosureLabel);
+
+    countsByFields.set(fields, (countsByFields.get(fields) ?? 0) + 1);
+  }
+
+  let candidate: { fields: string; count: number } | null = null;
+
+  for (const [fields, count] of countsByFields) {
+    const better =
+      candidate === null ||
+      count > candidate.count ||
+      (count === candidate.count && fields.length > candidate.fields.length);
+
+    if (better) {
+      candidate = { fields, count };
+    }
+  }
+
+  if (candidate === null) {
+    return null;
+  }
+
+  const savedChars =
+    candidate.count * (candidate.fields.length + SHARED_STATE_COMPACT_INDEX_FIELD_SEPARATOR.length);
+  const addedChars = rows
+    .filter((row) => row.disclosureLabel.disclosureClass === "public")
+    .reduce(
+      (sum, row) =>
+        sum +
+        renderMemoryDisclosureLabelFieldsForModel(row.disclosureLabel).length +
+        SHARED_STATE_COMPACT_INDEX_FIELD_SEPARATOR.length,
+      0,
+    );
+
+  return savedChars > sharedStateIndexDisclosureDefaultLine(candidate.fields).length + addedChars
+    ? candidate.fields
+    : null;
+}
+
 function renderSharedStateCompactIndexRows(rows: readonly SharedStateCompactIndexRow[]): string {
+  const hoistedDisclosureFields = hoistedSharedStateIndexDisclosureFields(rows);
   const lines = rows.map((row) =>
     [
       `- ${row.stateKey}`,
@@ -342,31 +435,31 @@ function renderSharedStateCompactIndexRows(rows: readonly SharedStateCompactInde
       // Only where something was retracted under this key, so an omitted row -- the only
       // thing ever said about most entries -- can still tell a replacement from a first draft.
       row.supersededCount === 0 ? null : `superseded_count=${row.supersededCount}`,
-      row.disclosureLabel.disclosureClass === "public"
-        ? null
-        : renderMemoryDisclosureLabelFieldsForModel(row.disclosureLabel),
+      sharedStateIndexDisclosureFields(row, hoistedDisclosureFields),
       `excerpt=${JSON.stringify(row.excerpt)}`,
       row.expanded ? "expanded" : "omitted",
     ]
       .filter((part): part is string => part !== null)
-      .join(" | "),
+      .join(SHARED_STATE_COMPACT_INDEX_FIELD_SEPARATOR),
   );
 
-  // Every row keeps its own disclosure_class/origin_audience/private-to fields; only the constant
-  // internal-use sentence is hoisted here, so a long index does not pay for it once per line.
-  // The fields themselves are the larger cost, and on a single-peer audience they are byte-identical
-  // on every line. Measured against a live 40-row DM register (2026-08-17, record_version 101): one
-  // distinct field string, 109 chars a line, 1090 of the index block's 3487 tokens -- a bigger term
-  // than the state key (2210 chars) or the excerpt, and bigger than that register's whole remaining
-  // 972 tokens of headroom before the single-entry floor trips. Hoisting them under the same
-  // "identical across every indexed row" condition would be lossless, mixed labels keeping the
-  // per-row form. It is deliberately not done here: it would move the token trajectory of every
-  // audience at once, which is a decision rather than a cleanup.
+  // The constant internal-use sentence is hoisted here rather than repeated per line. It stays a
+  // separate line from the hoisted fields above: this one says what non-public means for the rows
+  // that are non-public, which is true whether or not their fields happen to be repeated bytes.
   const disclosureNote = rows.some((row) => row.disclosureLabel.disclosureClass !== "public")
     ? [`  (rows below whose disclosure_class is not public: ${memoryDisclosureInternalUseNote()})`]
     : [];
+  const disclosureDefault =
+    hoistedDisclosureFields === null
+      ? []
+      : [sharedStateIndexDisclosureDefaultLine(hoistedDisclosureFields)];
 
-  return ["SharedStateArtifact compact active-key index:", ...disclosureNote, ...lines].join("\n");
+  return [
+    "SharedStateArtifact compact active-key index:",
+    ...disclosureNote,
+    ...disclosureDefault,
+    ...lines,
+  ].join("\n");
 }
 
 function renderSharedStateCompactIndex(input: {
