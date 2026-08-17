@@ -595,6 +595,16 @@ function recordUnknownAgeSample(
   });
 }
 
+// The ladder is one-way and narrow: live -> low_salience_live -> dormant_live, with reactivation
+// only ever back to `live`. `locked` and `tentative` are outside it entirely -- they are never
+// demotion candidates and are never produced, so an entry that reads as locked was written locked by
+// the model on an add/update, never aged into it.
+//
+// `currentTurnCounter` is the host-wide action_lifecycle_turn_counter, not a per-audience one: every
+// session on the host advances the same integer once per turn. Measured on the live demo data dir
+// 2026-08-17, that clock ran ~3.05 turns/hour over the preceding 39 hours, so the 5/15-turn defaults
+// above are roughly 1.6h and 5h of wall clock for an audience that is not itself talking. A quiet
+// room ages at the whole host's cadence.
 export function applyLifecycleAging(input: ApplyLifecycleAgingInput): {
   transitions: SharedStateLifecycleTransition[];
   blockerCountsLiveToLowSalience: LifecycleAgingBlockerCounts;

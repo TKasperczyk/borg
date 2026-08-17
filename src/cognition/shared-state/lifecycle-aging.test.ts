@@ -1071,3 +1071,48 @@ describe("entry protection tiers", () => {
     ).toBeNull();
   });
 });
+
+describe("applyLifecycleAging kind boundaries", () => {
+  it("leaves locked and tentative entries untouched however old they are", () => {
+    const locked = makeSharedStateEntry({ kind: "locked", last_updated_turn_global: 1 });
+    const tentative = makeSharedStateEntry({ kind: "tentative", last_updated_turn_global: 1 });
+
+    const result = applyLifecycleAging({
+      entries: [locked, tentative],
+      currentTurnCounter: 500,
+      recentTurnThreshold: 5,
+      dormantTurnThreshold: 15,
+    });
+
+    expect(result.transitions).toEqual([]);
+    expect(result.blockerCountsLiveToLowSalience.demotable_count).toBe(0);
+    expect(result.blockerCountsLowSalienceToDormant.demotable_count).toBe(0);
+  });
+
+  it("reactivates a demoted entry to live, never to locked", () => {
+    const currentUserStreamEntryId = createStreamEntryId();
+    const dormant = makeSharedStateEntry({
+      kind: "dormant_live",
+      last_updated_turn_global: 1,
+      last_updated_stream_entry_ids: [currentUserStreamEntryId],
+    });
+
+    const result = applyLifecycleAging({
+      entries: [dormant],
+      currentTurnCounter: 500,
+      currentUserStreamEntryId,
+      recentTurnThreshold: 5,
+      dormantTurnThreshold: 15,
+    });
+
+    expect(result.transitions).toEqual([
+      {
+        entryId: dormant.id,
+        fromKind: "dormant_live",
+        toKind: "live",
+        reason: "current_turn_update",
+        transition: "reactivated",
+      },
+    ]);
+  });
+});
