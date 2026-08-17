@@ -8,5 +8,10 @@ export const DEFAULT_DELIBERATION_PLAN_CALL_TIMEOUT_MS = 12 * 60_000;
 // emits no tool. Sized so high/xhigh effort completes with headroom (max effort
 // is intentionally unsupported: it thinks without bound and never emits).
 export const THINKING_DELIBERATION_MAX_TOKENS = 16_000;
-export const DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET = 120_000;
+// At 120K this single block was 55% of every finalizer call's turn context
+// (~700K chars of plan-requested verification payloads per call, measured
+// 2026-08-17) - the dominant share of live burn. Over-budget checks degrade
+// to the explicit check_not_completed flag, never silent truncation, per the
+// entity's consulted exact-or-flagged policy.
+export const DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET = 32_000;
 export const DEFAULT_SEMANTIC_CONTEXT_BUDGET = 8_000;
