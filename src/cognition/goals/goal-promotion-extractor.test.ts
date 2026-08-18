@@ -150,8 +150,54 @@ describe("GoalPromotionExtractor", () => {
     expect(llm.requests[0]?.tools?.some((tool) => tool.cache_control !== undefined)).toBe(false);
     expect(GOAL_PROMOTION_SYSTEM_PROMPT).toContain("not_borg_responsibility");
     expect(GOAL_PROMOTION_SYSTEM_PROMPT).toContain("terminal_condition");
-    expect(GOAL_PROMOTION_SYSTEM_PROMPT).toContain("structural completion condition");
+    expect(GOAL_PROMOTION_SYSTEM_PROMPT).toContain("meaningful future completion condition");
     expect(GOAL_PROMOTION_SYSTEM_PROMPT).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
+  });
+
+  it("describes global duplicate coverage and prospective completion in the prompt and tool schema", async () => {
+    const llm = new FakeLLMClient({ responses: [goalPromotionResponse([])] });
+    const extractor = new GoalPromotionExtractor({ llmClient: llm, model: "haiku" });
+
+    await extractor.extract(createExtractorInput());
+
+    const systemPrompt = String(llm.requests[0]?.system ?? "");
+    const properties = llm.requests[0]?.tools?.[0]?.inputSchema.properties as {
+      promotions?: {
+        items?: {
+          properties?: Record<string, { description?: string }>;
+        };
+      };
+    };
+    const promotionProperties = properties.promotions?.items?.properties ?? {};
+
+    expect(systemPrompt).toContain(
+      "active_goals list is the complete global set of active goals across audiences and owners",
+    );
+    expect(systemPrompt).toContain("same underlying Borg responsibility or completion outcome");
+    expect(systemPrompt).toContain("rephrased, translated, renewed later");
+    expect(systemPrompt).toContain("the current turn need not refer to the prior goal");
+    expect(systemPrompt).toContain(
+      "A description of the current conversation, topic, exchange, or what Borg is presently tracking is context, not a goal",
+    );
+    expect(systemPrompt).toContain(
+      "do not invent a terminal condition merely to qualify the candidate",
+    );
+    expect(systemPrompt).not.toContain("genuinely open-ended but actionable");
+    expect(promotionProperties.duplicate_of_goal_id?.description).toContain(
+      "same underlying Borg responsibility or completion outcome",
+    );
+    expect(promotionProperties.duplicate_of_goal_id?.description).toContain(
+      "the current turn need not refer to the prior goal",
+    );
+    expect(promotionProperties.terminal_condition?.description).toContain(
+      "meaningful future completion condition",
+    );
+    expect(promotionProperties.terminal_condition?.description).toContain(
+      "null for non-durable classifications",
+    );
+    expect(promotionProperties.terminal_condition?.description).not.toContain(
+      "genuinely open-ended",
+    );
   });
 
   it("anchors the prompt with the current time so deadlines resolve to the right year", async () => {
@@ -506,6 +552,7 @@ describe("GoalPromotionExtractor", () => {
 
   it("preserves duplicate references for persistence-time dedup", async () => {
     const existingGoalId = createGoalId();
+    const audience = createEntityId();
     const owner = createEntityId();
     const llm = new FakeLLMClient({
       responses: [
@@ -533,6 +580,7 @@ describe("GoalPromotionExtractor", () => {
             terminal_condition: "The release checklist is settled",
             priority: 8,
             target_at: null,
+            audience_entity_id: audience,
             owner_entity_id: owner,
           },
         ],
@@ -547,6 +595,7 @@ describe("GoalPromotionExtractor", () => {
     ]);
     const payload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
       active_goals?: Array<{
+        audience_entity_id?: string | null;
         owner_entity_id?: string | null;
         terminal_condition?: string | null;
         disclosure?: string;
@@ -555,13 +604,14 @@ describe("GoalPromotionExtractor", () => {
     };
     const activeGoal = payload.active_goals?.[0];
 
+    expect(activeGoal?.audience_entity_id).toBe(audience);
     expect(activeGoal?.owner_entity_id).toBe(owner);
     expect(activeGoal?.terminal_condition).toBe("The release checklist is settled");
     expect(activeGoal?.disclosure).toContain("disclosure_class=relationship_private");
-    expect(activeGoal?.disclosure).toContain(`private-to=${owner}`);
+    expect(activeGoal?.disclosure).toContain(`private-to=${audience},${owner}`);
     expect(activeGoal?.disclosure_label).toMatchObject({
       disclosure_class: "relationship_private",
-      private_to_entity_ids: [owner],
+      private_to_entity_ids: [audience, owner],
     });
   });
 

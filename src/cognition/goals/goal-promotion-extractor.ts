@@ -217,7 +217,7 @@ const goalPromotionSchema = z
       .min(1)
       .nullable()
       .describe(
-        "Model-stated structural completion condition in the user's own language when one exists; null only for a genuinely open-ended but actionable Borg responsibility.",
+        "For durable_borg_goal, the meaningful future completion condition in the user's own language that later evidence can establish; null for non-durable classifications. Do not use a paraphrase of the current conversation state as a completion condition.",
       ),
     priority: z
       .number()
@@ -242,7 +242,9 @@ const goalPromotionSchema = z
       .describe("Confidence that the current user turn creates a durable Borg-carried goal."),
     duplicate_of_goal_id: goalIdSchema
       .nullable()
-      .describe("Existing active goal id if this turn refers to an existing goal; null otherwise."),
+      .describe(
+        "ID of the supplied active goal that already covers the same underlying Borg responsibility or completion outcome, including when rephrased, translated, renewed later, or surfaced through another audience or owner; the current turn need not refer to the prior goal. Null only when no supplied active goal covers the candidate.",
+      ),
     initial_step: initialExecutiveStepSchema
       .nullable()
       .optional()
@@ -351,7 +353,13 @@ export type ExtractGoalPromotionInput = {
   temporalCue: unknown;
   activeGoals: readonly Pick<
     GoalRecord,
-    "id" | "description" | "terminal_condition" | "priority" | "target_at" | "owner_entity_id"
+    | "id"
+    | "description"
+    | "terminal_condition"
+    | "priority"
+    | "target_at"
+    | "audience_entity_id"
+    | "owner_entity_id"
   >[];
 };
 
@@ -651,7 +659,7 @@ function buildGoalPromotionMessages(input: ExtractGoalPromotionInput): LLMMessag
           terminal_condition: goal.terminal_condition ?? null,
           priority: goal.priority,
           target_at: goal.target_at,
-          audience_entity_id: "audience_entity_id" in goal ? goal.audience_entity_id : null,
+          audience_entity_id: goal.audience_entity_id,
           owner_entity_id: goal.owner_entity_id ?? null,
           ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
         })),

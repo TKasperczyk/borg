@@ -239,7 +239,7 @@ describe("TurnGoalPromotionService", () => {
     );
   });
 
-  it("skips extractor-flagged duplicates on the same active axis without returning their ids", async () => {
+  it("skips extractor-flagged duplicates in the global active set without returning their ids", async () => {
     const audience = createEntityId();
     const owner = createEntityId();
     const existingGoalId = createGoalId();
@@ -423,7 +423,7 @@ describe("TurnGoalPromotionService", () => {
     );
   });
 
-  it("treats different-owner extractor duplicate references as advisory and persists", async () => {
+  it("honors active extractor duplicate references across owners", async () => {
     const audience = createEntityId();
     const owner = createEntityId();
     const otherOwner = createEntityId();
@@ -480,17 +480,20 @@ describe("TurnGoalPromotionService", () => {
       onHookFailure: vi.fn(),
     });
 
-    expect(result.goalIds).toEqual([persistedGoalId]);
-    expect(addGoal).toHaveBeenCalledOnce();
-    expect(emit).not.toHaveBeenCalledWith(
+    expect(result).toEqual({ goalIds: [], executiveStepIds: [] });
+    expect(addGoal).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledWith(
       "extraction.goals.skipped",
       expect.objectContaining({
+        turnId: "turn-goal-owner-mismatch-duplicate-reference",
         candidate_description: description,
+        duplicate_of_goal_id: referencedGoalId,
+        reason: "extractor_signal",
       }),
     );
   });
 
-  it("treats different-audience extractor duplicate references as advisory and persists", async () => {
+  it("honors active extractor duplicate references across audiences", async () => {
     const audience = createEntityId();
     const otherAudience = createEntityId();
     const owner = createEntityId();
@@ -547,17 +550,20 @@ describe("TurnGoalPromotionService", () => {
       onHookFailure: vi.fn(),
     });
 
-    expect(result.goalIds).toEqual([persistedGoalId]);
-    expect(addGoal).toHaveBeenCalledOnce();
-    expect(emit).not.toHaveBeenCalledWith(
+    expect(result).toEqual({ goalIds: [], executiveStepIds: [] });
+    expect(addGoal).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledWith(
       "extraction.goals.skipped",
       expect.objectContaining({
+        turnId: "turn-goal-audience-mismatch-duplicate-reference",
         candidate_description: description,
+        duplicate_of_goal_id: referencedGoalId,
+        reason: "extractor_signal",
       }),
     );
   });
 
-  it("skips embedding duplicates against active same-axis goals", async () => {
+  it("skips embedding duplicates against active goals", async () => {
     const audience = createEntityId();
     const owner = createEntityId();
     const existingGoalId = createGoalId();
@@ -696,13 +702,16 @@ describe("TurnGoalPromotionService", () => {
     );
   });
 
-  it("does not embedding-dedup goals across different owners or audiences", async () => {
+  it("embedding-dedups goals across different owners and audiences", async () => {
     const audience = createEntityId();
     const otherAudience = createEntityId();
     const currentOwner = createEntityId();
     const otherOwner = createEntityId();
+    const otherOwnerGoalId = createGoalId();
+    const otherAudienceGoalId = createGoalId();
     const persistedGoalId = createGoalId();
     const description = "Track the release notes checklist";
+    const emit = vi.fn();
     const addGoal = vi.fn(
       (input): GoalRecord =>
         goalRecord({
@@ -727,11 +736,13 @@ describe("TurnGoalPromotionService", () => {
       goalsRepository: {
         list: () => [
           goalRecord({
+            id: otherOwnerGoalId,
             description,
             audience_entity_id: audience,
             owner_entity_id: otherOwner,
           }),
           goalRecord({
+            id: otherAudienceGoalId,
             description,
             audience_entity_id: otherAudience,
             owner_entity_id: currentOwner,
@@ -741,7 +752,7 @@ describe("TurnGoalPromotionService", () => {
       executiveStepsRepository: { add: vi.fn() },
       embeddingClient,
       clock: new FixedClock(2_000),
-      tracer: { enabled: true, includePayloads: false, emit: vi.fn() },
+      tracer: { enabled: true, includePayloads: false, emit },
     });
 
     const result = await service.extractAndPersist({
@@ -757,9 +768,19 @@ describe("TurnGoalPromotionService", () => {
       onHookFailure: vi.fn(),
     });
 
-    expect(result.goalIds).toEqual([persistedGoalId]);
-    expect(addGoal).toHaveBeenCalledOnce();
-    expect(embeddingClient.embeddedBatchTexts).toEqual([]);
+    expect(result).toEqual({ goalIds: [], executiveStepIds: [] });
+    expect(addGoal).not.toHaveBeenCalled();
+    expect(embeddingClient.embeddedBatchTexts).toEqual([[description, description]]);
+    expect(emit).toHaveBeenCalledWith(
+      "extraction.goals.skipped",
+      expect.objectContaining({
+        turnId: "turn-goal-different-owner",
+        candidate_description: description,
+        matched_existing_id: otherOwnerGoalId,
+        reason: "embedding",
+        similarity: expect.any(Number),
+      }),
+    );
   });
 
   it("fails open when embedding dedup is unavailable", async () => {

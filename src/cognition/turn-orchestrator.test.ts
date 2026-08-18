@@ -794,7 +794,7 @@ function createGoalPromotionResponse(
   promotions: Array<{
     description: string;
     priority?: number;
-    terminal_condition?: string | null;
+    terminal_condition: string | null;
     target_at?: string | null;
     reason?: string;
     confidence?: number;
@@ -823,7 +823,7 @@ function createGoalPromotionResponse(
             classification: "durable_borg_goal",
             description: promotion.description,
             priority: promotion.priority ?? 8,
-            terminal_condition: promotion.terminal_condition ?? null,
+            terminal_condition: promotion.terminal_condition,
             target_at: promotion.target_at ?? null,
             reason: promotion.reason ?? "The user asked Borg to carry this as an ongoing goal.",
             confidence: promotion.confidence ?? 0.9,
@@ -6512,7 +6512,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           {
             description: "Help the user keep the Monday postmortem straight",
             priority: 9,
-            terminal_condition: null,
+            terminal_condition: "The Monday postmortem is ready for review",
             target_at: targetAtIso,
             reason: "The user asked Borg to help keep the postmortem organized.",
             confidence: 0.91,
@@ -7382,27 +7382,27 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           [
             {
               description: "Help the user track the launch checklist",
-              terminal_condition: null,
+              terminal_condition: "The launch checklist is complete",
               confidence: 0.95,
             },
             {
               description: "Help the user prepare the investor update",
-              terminal_condition: null,
+              terminal_condition: "The investor update is ready for review",
               confidence: 0.94,
             },
             {
               description: "Help the user schedule the design review",
-              terminal_condition: null,
+              terminal_condition: "The design review is scheduled",
               confidence: 0.93,
             },
             {
               description: "Help the user collect beta feedback",
-              terminal_condition: null,
+              terminal_condition: "The beta feedback summary is complete",
               confidence: 0.92,
             },
             {
               description: "Help the user plan the onboarding pass",
-              terminal_condition: null,
+              terminal_condition: "The onboarding plan is agreed",
               confidence: 0.91,
             },
           ],
@@ -7494,7 +7494,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         createGoalPromotionResponse([
           {
             description: "Help the user track their API review checklist",
-            terminal_condition: null,
+            terminal_condition: "The API review checklist reaches sign-off",
             duplicate_of_goal_id: existingGoalId,
             confidence: 0.95,
           },
@@ -7531,6 +7531,65 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       });
 
       expect(goals.map((goal) => goal.id)).toEqual([existingGoal.id]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("does not create a duplicate goal when the extractor points across audiences", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_176_750);
+    const existingGoalId = createGoalId();
+    const llm = new FakeLLMClient({
+      responses: [
+        createGoalPromotionResponse([
+          {
+            description: "Help carry the API review checklist to sign-off",
+            terminal_condition: "The API review checklist reaches sign-off",
+            duplicate_of_goal_id: existingGoalId,
+            confidence: 0.95,
+          },
+        ]),
+        createEmitAnswerResponse("I will keep the existing checklist in view."),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "entityRepository">;
+    };
+
+    try {
+      const aliceEntityId = internal.deps.entityRepository.resolve("Alice");
+      const existingGoal = borg.self.goals.add({
+        id: existingGoalId,
+        description: "Help carry the API review checklist to sign-off",
+        priority: 8,
+        audienceEntityId: aliceEntityId,
+        provenance: {
+          kind: "manual",
+        },
+      });
+
+      await borg.turn({
+        userMessage: "Keep carrying the API review checklist to sign-off.",
+        audience: "Sam",
+      });
+
+      const goals = borg.self.goals.list({ status: "active" });
+      const promotionRequest = llm.requests.find(
+        (request) => request.budget === "goal-promotion-extractor",
+      );
+      const payload = JSON.parse(String(promotionRequest?.messages[0]?.content ?? "{}")) as {
+        active_goals?: Array<{ id?: string; audience_entity_id?: string | null }>;
+      };
+      const renderedExistingGoal = payload.active_goals?.find(
+        (goal) => goal.id === existingGoal.id,
+      );
+
+      expect(goals.map((goal) => goal.id)).toEqual([existingGoal.id]);
+      expect(renderedExistingGoal?.audience_entity_id).toBe(aliceEntityId);
     } finally {
       await borg.close();
     }

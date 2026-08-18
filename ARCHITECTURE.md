@@ -446,14 +446,18 @@ without missing capability, already represented, or not goals at all. Only
 high-confidence durable Borg goals are persisted, and per-turn limits prevent
 runaway self-task creation.
 
-Durable goals carry a nullable `terminal_condition`: a structural completion
-statement for when the goal is satisfied. Null is reserved for genuinely
-open-ended but actionable Borg responsibilities, and the promotion classifier
-routes candidates without a statable structural completion to `one_off` or
-`none` unless they still meet that open-ended responsibility bar. The online
-reflector can retire active goals when cited turn evidence shows the terminal
-condition was met or the goal is no longer pursued; `satisfied` maps to `done`
-and `no_longer_pursued` maps to `abandoned`, including on autonomous turns.
+Durable goals carry a nullable `terminal_condition` storage field. Every newly
+promoted durable goal must state a meaningful future completion condition that
+later evidence can establish; a snapshot of the current conversation, topic,
+exchange, or what Borg is presently tracking is context rather than a goal.
+Candidates without that prospective completion semantics route to `one_off` or
+`none`, and the model must not invent a terminal condition merely to qualify a
+candidate. Null remains in the stored schema for compatibility and in extractor
+output for non-durable classifications, not as a turn-time durable-goal escape
+hatch. The online reflector can retire active goals when cited turn evidence
+shows the terminal condition was met or the goal is no longer pursued;
+`satisfied` maps to `done` and `no_longer_pursued` maps to `abandoned`, including
+on autonomous turns.
 
 Open Question status is only open, resolved, or abandoned. Extra urgency is
 represented through urgency, review source, rumination ticks, and remaining
@@ -1510,10 +1514,12 @@ not a generic task list. A goal can describe a memory responsibility,
 conversation direction, or continuing obligation that belongs to Borg. Goal
 promotion is intentionally narrow so external tasks do not become Borg-owned
 future work without host capability. A durable goal records a nullable
-`terminal_condition`, the structural completion statement that says when the
-goal is satisfied. Promotion routes candidates lacking structural completion to
-one-off or none unless they are genuinely open-ended but actionable Borg
-responsibilities.
+`terminal_condition` storage field, but every newly promoted durable goal must
+state a meaningful future completion condition that later evidence can establish.
+Current-conversation or topic snapshots are context rather than goals. Promotion
+routes candidates lacking prospective completion semantics to one-off or none,
+and null remains available for compatibility and non-durable extractor output,
+not as a turn-time durable-goal escape hatch.
 
 Goal retirement is a post-turn reflector lifecycle. The reflector emits
 `retired_goals` only against supplied active goal ids with cited evidence:
