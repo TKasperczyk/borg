@@ -2062,6 +2062,7 @@ describe("compileSharedStateArtifact", () => {
             expect.objectContaining({
               operation_index: 0,
               operation_type: "add",
+              entry_kind: "locked",
               reason: "disallowed_source_stream_entry_id",
               state_key: expect.stringContaining("decision.fixture_"),
               source_stream_entry_id: olderSource,
@@ -2115,6 +2116,74 @@ describe("compileSharedStateArtifact", () => {
     expect(context.offLimitsSourceStreamEntryIds).toEqual([quarantinedSource]);
     expect(context.promptVisibleLedger).toContain("Quarantined context remains visible.");
     expect(context.promptVisibleLedger).toContain(quarantinedSource);
+  });
+
+  it("names the kind a refused operation asked for, not the kind anything landed with", async () => {
+    const trace = createTraceRecorder();
+    const olderSource = createStreamEntryId();
+    const anchorSource = createStreamEntryId();
+    const deltaSource = createStreamEntryId();
+    repository.upsert(audience, [], {
+      lastCompiledStreamEntryId: anchorSource,
+    });
+    const ledger = evidenceLedger([
+      ledgerEntry({ streamEntryId: olderSource, streamIndex: 0, text: "older hidden turn" }),
+      ledgerEntry({ streamEntryId: anchorSource, streamIndex: 1, text: "anchor turn" }),
+      ledgerEntry({ streamEntryId: deltaSource, streamIndex: 2, text: "visible delta turn" }),
+    ]);
+    const context = buildSharedStateLedgerPromptContext({
+      ledger,
+      previousArtifact: repository.get(audience),
+      fullPromptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
+      enabled: true,
+      minTailPerSection: 1,
+    });
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "invalidated",
+              text: "An earlier claim of mine that turned out to be false",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [olderSource],
+            },
+          ],
+        }),
+      ],
+    });
+
+    await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      currentUserStreamEntryId: deltaSource,
+      promptVisibleLedger: context.promptVisibleLedger,
+      previousArtifact: repository.get(audience),
+      allowedSourceStreamEntryIds: context.visibleStreamEntryIds,
+      tracer: trace,
+      ledgerMode: context.ledgerMode,
+    });
+
+    // Nothing landed, so the store cannot answer what kind was asked for. If the trace does not
+    // carry it either, a kind that was proposed and refused reads exactly like one the entity
+    // never reached for -- which is a claim about its judgement, not about the gate.
+    expect(repository.get(audience)?.entries ?? []).toHaveLength(0);
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "shared_state.compile.completed",
+        data: expect.objectContaining({
+          rejections: [
+            expect.objectContaining({
+              operation_index: 0,
+              operation_type: "add",
+              entry_kind: "invalidated",
+              reason: "disallowed_source_stream_entry_id",
+            }),
+          ],
+          applied: false,
+        }),
+      }),
+    );
   });
 
   it("marks citation-guard rejections for quarantined stream ids with source trust details", async () => {

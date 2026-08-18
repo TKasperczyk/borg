@@ -240,6 +240,10 @@ export type PatchRejection = {
     | "relationship_claim_ungrounded";
   operationType: ParsedPatchOperation["type"];
   operationIndex: number;
+  // The kind the operation asked for, not the kind anything ended up with. Only the store records
+  // kinds, and the store only holds what landed, so without this a refused operation loses the one
+  // property that says what it was trying to be.
+  entryKind?: SharedStateEntryKind;
   sourceStreamEntryId?: string;
   sourceTrustReason?: SharedStateSourceTrustRejectionReason | "unknown";
   stateKey?: string;

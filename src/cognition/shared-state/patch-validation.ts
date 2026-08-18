@@ -418,6 +418,26 @@ function mostRecentPreviousEntry(
   );
 }
 
+// DELIBERATE: read off the operation, not off the details bag, so every rejection site carries it
+// without opting in. A refused operation is the only place a proposed kind ever exists -- the store
+// records kinds but holds only what landed, and `operation_counts_by_kind` on the compile trace is
+// keyed by operation *type*. Without this, an `add` proposing `invalidated` and an `add` proposing
+// `locked` are byte-identical once refused, so "this kind was never proposed" cannot be told apart
+// from "it was proposed and refused" -- and the first is a fact about the entity's judgement while
+// the second is a fact about the gate. `prune` names an id and proposes no kind; `supersede`
+// proposes one on its replacement.
+function proposedEntryKind(operation: ParsedPatchOperation): SharedStateEntryKind | undefined {
+  if (operation.type === "add" || operation.type === "update") {
+    return operation.kind;
+  }
+
+  if (operation.type === "supersede") {
+    return operation.replacement.kind;
+  }
+
+  return undefined;
+}
+
 function rejection(
   operation: ParsedPatchOperation,
   operationIndex: number,
@@ -440,10 +460,13 @@ function rejection(
     | "rejectedRelationshipClaimEvidenceStreamEntryIds"
   > = {},
 ): PatchRejection {
+  const entryKind = proposedEntryKind(operation);
+
   return {
     reason,
     operationType: operation.type,
     operationIndex,
+    ...(entryKind === undefined ? {} : { entryKind }),
     ...details,
   };
 }

@@ -116,10 +116,17 @@ export function traceCompileCompleted(options: {
       // whose adds die here leaves no record of the keys that failed to land --
       // only the per-reason events (missing_new_key_reason, near_duplicate_state_key)
       // name their operand. Name every rejection's operand, not just those two.
+      // `entry_kind` is the kind the refused operation asked for, and it is named
+      // separately from `operation_type` because `operation_counts_by_kind` below is
+      // keyed by type -- "kind" is overloaded on this event. Nothing else records it:
+      // the store keeps kinds but only for entries that landed, so a refused `add`
+      // proposing `invalidated` and one proposing `locked` are otherwise identical,
+      // and a zero count for a kind cannot be read as "never proposed".
       rejections: toTraceJsonValue(
         options.rejected.map((rejection) => ({
           operation_index: rejection.operationIndex,
           operation_type: rejection.operationType,
+          entry_kind: rejection.entryKind ?? null,
           reason: rejection.reason,
           state_key: rejection.stateKey ?? null,
           target_entry_id: rejection.targetEntryId ?? null,
