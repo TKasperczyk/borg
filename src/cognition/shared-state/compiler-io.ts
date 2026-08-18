@@ -205,6 +205,14 @@ export function traceCompileCompleted(options: {
         (request) => request.reason === null,
       ).length,
       model_prune_requests: toTraceJsonValue(options.modelPruneRequests ?? []),
+      // Not an operation ledger of what the model asked for. `compiler.ts` counts these
+      // over the operations the *lifecycle* pass emitted, so every cap eviction has
+      // already been materialized as a `prune` by the time the tally runs -- on an
+      // artifact pinned at cap that makes `prune` here equal to
+      // `lifecycle_cap_evicted_entry_count`, and equal to `add`, whatever
+      // `model_prune_requested_count` says. Read that field, not this one, to learn
+      // whether a deletion was a decision. `add` and `prune` moving together is the
+      // cap's arithmetic, not a habit of the model's.
       operation_counts_by_kind: toTraceJsonValue(
         options.operationCountsByKind ?? {
           add: 0,
