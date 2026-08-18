@@ -104,6 +104,35 @@ export function traceCompileCompleted(options: {
   ).length;
   const similarKeyClusterCount = similarStateKeyClusterCount(Object.keys(activeEntryCountsByKey));
 
+  // `disallowed_source_stream_entry_id` is one code for two structurally different refusals:
+  // the citation was the message this turn is answering (deliberately barred by the N+1
+  // durability boundary, and permanent for this turn), or it was simply not in the eligible
+  // set the ledger render happened to expose (an id that has aged out, and citable again the
+  // moment the ledger shows it). The validator only ever asks "is this in the allowlist", so
+  // the reason cannot tell them apart, and a reader who assumes the first explanation reads a
+  // window that moved as a boundary that held. Both sets are on this event; name which one the
+  // cited id landed in rather than leaving every reader to diff them.
+  const offLimitsIds = options.offLimitsSourceStreamEntryIds;
+  const eligibleIds = options.citationEligibleSourceStreamEntryIds;
+  const disallowedCitationBarrier = (rejection: PatchRejection): string | null => {
+    if (rejection.reason !== "disallowed_source_stream_entry_id") {
+      return null;
+    }
+    const citedId = rejection.sourceStreamEntryId;
+    if (citedId === undefined) {
+      return null;
+    }
+    if (
+      citedId === options.currentUserStreamEntryId ||
+      offLimitsIds?.some((id) => id === citedId) === true
+    ) {
+      return "off_limits";
+    }
+    // Only the eligible set can distinguish "fell out of the window" from "we were never told
+    // what the window was" -- without it, silence is the honest answer.
+    return eligibleIds === undefined ? null : "not_eligible";
+  };
+
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
     options.tracer.emit("shared_state.compile.completed", {
       turnId: options.turnId,
@@ -131,6 +160,7 @@ export function traceCompileCompleted(options: {
           state_key: rejection.stateKey ?? null,
           target_entry_id: rejection.targetEntryId ?? null,
           source_stream_entry_id: rejection.sourceStreamEntryId ?? null,
+          disallowed_citation_barrier: disallowedCitationBarrier(rejection),
         })),
       ),
       // A rejection names the id the compiler reached for but never the ids it

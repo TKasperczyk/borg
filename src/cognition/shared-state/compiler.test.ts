@@ -2186,6 +2186,76 @@ describe("compileSharedStateArtifact", () => {
     );
   });
 
+  it("separates a citation barred as the current message from one that only fell out of the window", async () => {
+    const olderSource = createStreamEntryId();
+    const anchorSource = createStreamEntryId();
+    const deltaSource = createStreamEntryId();
+    const ledger = evidenceLedger([
+      ledgerEntry({ streamEntryId: olderSource, streamIndex: 0, text: "older hidden turn" }),
+      ledgerEntry({ streamEntryId: anchorSource, streamIndex: 1, text: "anchor turn" }),
+      ledgerEntry({ streamEntryId: deltaSource, streamIndex: 2, text: "visible delta turn" }),
+    ]);
+
+    const compileCiting = async (citedSource: string): Promise<Record<string, unknown>> => {
+      const trace = createTraceRecorder();
+      repository.upsert(audience, [], { lastCompiledStreamEntryId: anchorSource });
+      const context = buildSharedStateLedgerPromptContext({
+        ledger,
+        previousArtifact: repository.get(audience),
+        fullPromptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
+        enabled: true,
+        minTailPerSection: 1,
+      });
+      const llmClient = new FakeLLMClient({
+        responses: [
+          emitSharedStateArtifactPatchResponse({
+            operations: [
+              {
+                type: "add",
+                kind: "locked",
+                text: "A durable claim citing a source the gate refuses",
+                owner_entity_id: audience,
+                source_stream_entry_ids: [citedSource],
+              },
+            ],
+          }),
+        ],
+      });
+
+      await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        currentUserStreamEntryId: deltaSource,
+        promptVisibleLedger: context.promptVisibleLedger,
+        previousArtifact: repository.get(audience),
+        allowedSourceStreamEntryIds: context.visibleStreamEntryIds.filter(
+          (streamEntryId) => streamEntryId !== deltaSource,
+        ),
+        offLimitsSourceStreamEntryIds: [deltaSource],
+        tracer: trace,
+        ledgerMode: context.ledgerMode,
+      });
+
+      const completed = trace.events.find(
+        (event) => event.event === "shared_state.compile.completed",
+      );
+      return (
+        (completed?.data as unknown as { rejections: Record<string, unknown>[] }).rejections[0] ?? {}
+      );
+    };
+
+    // Both refusals carry the same reason, so without the barrier a window that moved reads as a
+    // boundary that held -- the first is permanent for this turn, the second citable again as soon
+    // as the ledger shows the id.
+    expect(await compileCiting(deltaSource)).toMatchObject({
+      reason: "disallowed_source_stream_entry_id",
+      disallowed_citation_barrier: "off_limits",
+    });
+    expect(await compileCiting(olderSource)).toMatchObject({
+      reason: "disallowed_source_stream_entry_id",
+      disallowed_citation_barrier: "not_eligible",
+    });
+  });
+
   it("marks citation-guard rejections for quarantined stream ids with source trust details", async () => {
     const trace = createTraceRecorder();
     const quarantinedSource = createStreamEntryId();
