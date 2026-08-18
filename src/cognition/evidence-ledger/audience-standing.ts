@@ -152,6 +152,7 @@ function buildObservedEventIntrospectionEntries(
           recall_score: row.recallScore,
           recall_reasons: row.recallReasons,
           recurrence_count: row.recurrenceCount,
+          // Raw epoch ms, not ISO -- see the convention note in ../recent-lived-experience.ts.
           occurred_at: row.occurredAt,
           relative_age: row.relativeAge,
           speaker_entity_id: row.speakerEntityId,

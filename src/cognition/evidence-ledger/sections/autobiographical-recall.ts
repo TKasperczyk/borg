@@ -59,6 +59,7 @@ export function addAutobiographicalRecallSection(context: BuilderSectionContext)
         group_id: item.groupId,
         group_label: item.groupLabel,
         source_kind: item.kind,
+        // Raw epoch ms, not ISO -- see the convention note in ../recent-lived-experience.ts.
         occurred_at: item.occurredAt,
         relative_age: item.relativeAge,
         window_start_ms: recall.window.startMs,
