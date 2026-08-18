@@ -614,6 +614,21 @@ function recordUnknownAgeSample(
 // rows staler than it survived the same draw, because kind chooses the pool before staleness orders
 // it. So an entry nobody touches for ~15 host turns is not shelved, it is queued: the band it lands
 // in holds one.
+//
+// Order inside a single pass is decided by the two loops below, not by wall clock: reactivations are
+// emitted first and their entry ids are excluded from the demotion loop, so a row that reactivates
+// cannot also be demoted in the same compile, and the converse cannot happen at all. The compiler
+// calls this after the model's operations are materialized and appends the resulting
+// `transition_kind` operations after them, ahead of applySharedStateArtifactLifecycleCap -- so a row
+// demoted here is already `dormant_live` when the cap scans it on the same turn.
+//
+// The protection sets are asymmetric on purpose, and that asymmetry is what decides whether a
+// demoted row can come back. `reactivatesDemoted` reads only the HARD reasons (touched_by_patch,
+// current_turn_update, ledger_overlap, active_canonicalizer_critical), while
+// `blocksLowSalienceToDormantDemotion` reads hard OR soft. So `recent_retrieval` and
+// `active_canonicalizer_operational` can hold an entry at `low_salience_live` but can never lift one
+// off `dormant_live`: being read does not rescue an entry. Writing to it does, and so does citing a
+// stream entry that is still in the visible ledger.
 export function applyLifecycleAging(input: ApplyLifecycleAgingInput): {
   transitions: SharedStateLifecycleTransition[];
   blockerCountsLiveToLowSalience: LifecycleAgingBlockerCounts;
