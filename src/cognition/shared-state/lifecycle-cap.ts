@@ -377,6 +377,15 @@ function lifecycleEntriesById(
   return byId;
 }
 
+// Superseded predecessors point forward at their replacement under an ON DELETE RESTRICT foreign
+// key, so a successor cannot be deleted while a predecessor still references it. The prune walk
+// below satisfies that by cascading: evicting a successor takes every predecessor with it, in the
+// same operation. The consequence is that a completed supersede has no residue in the store once
+// its successor reaches a cap -- both halves go together, and no tombstone is left behind. So
+// `superseded_by_id` answers "was this retracted" only while the successor is still active; after
+// that the store cannot distinguish a key that was retracted from one that never existed, and
+// `operation_counts_by_state_key` on `shared_state.compile.completed` is the only surface where
+// the retraction stays readable. A correction erases its own evidence before it erases the claim.
 function lifecycleReferrersByReplacement(
   entries: readonly LifecycleEntry[],
 ): Map<SharedStateEntryId, LifecycleEntry[]> {

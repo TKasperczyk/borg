@@ -80,6 +80,19 @@ export type SharedStatePromptSummary = {
   recent_superseded: SharedStatePromptSummarySupersededEntry[];
 };
 
+// The registry names every active key; it carries no text, and that asymmetry decides which
+// operations are reachable. `add` and `prune` need only an id or a key, so they work over the
+// whole register. `update` and `supersede` write replacement text, which means judging the text
+// that is there -- so they are reachable only for entries whose body the summary above actually
+// carried, i.e. the per-kind recency slice in DEFAULT_SHARED_STATE_PROMPT_SUMMARY_MAX_ENTRIES.
+// Everything below that slice can be pointed at and deleted but not corrected in place.
+//
+// The aging ladder walks a row across that line: 8 body slots at `live`, 2 at `low_salience_live`,
+// 0 at `dormant_live`. Demotion therefore does not merely lower a row's correction priority, it
+// removes the row from the correctable set, and `dormant_live` is a hard zero. Nothing marks the
+// crossing, so a claim that was correctable while fresh becomes uncorrectable by the same clock
+// that made it stale -- which is why observed supersedes cluster on rows written minutes earlier
+// and never appear on aged ones.
 export type ExistingStateKeyRegistryEntry = {
   state_key: string;
   bucket: string;
