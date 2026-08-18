@@ -339,6 +339,10 @@ async function appendFrameAnomalyEvents(input: {
     input.sourceUserEntryIds.length === 1 ? input.sourceUserEntryIds[0] : undefined;
 
   try {
+    // Two rows with the same payload under two event names. Only
+    // QUARANTINED_USER_ENTRY_EVENT is a strike marker (src/stream/turn-status.ts), so the
+    // `frame_anomaly_gate` copy stays active after the quarantine takes effect -- and with it
+    // the classifier rationale, which quotes the message it struck.
     await input.streamWriter.appendMany([
       {
         kind: "internal_event",

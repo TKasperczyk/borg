@@ -84,6 +84,11 @@ export function collectInactiveStreamEntryRefs(
       continue;
     }
 
+    // Unlike the aborted-turn branch above, quarantine does not add the turn id: it strikes
+    // the marker and the entries it cites, nothing else. The rest of that turn stays active --
+    // the perception of the struck message, the thought, and the reply -- so the record keeps
+    // an answer whose prompt is gone. The classifier rationale survives too, because
+    // perception-phase writes it twice and only this copy is a marker.
     if (isQuarantinedUserEntryMarker(entry)) {
       const sourceStreamEntryId = entry.content.source_stream_entry_id;
 
