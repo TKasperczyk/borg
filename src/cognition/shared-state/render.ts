@@ -59,6 +59,17 @@ const DEFAULT_SHARED_STATE_MAX_ENTRIES = 40;
 // stayed flat -- 5 bodies in 5,089 chars at rv 102 against 3 bodies in 5,104 chars at rv 106. Two
 // readings that differ by two bodies are therefore not evidence that the register changed, and a
 // per-body token cost read off one render does not carry to the next.
+//
+// That sweep is entirely pre-hoist and does not carry across the deploy that landed the hoist below.
+// Re-measured on the same register from the rendered prompt bytes (2026-08-17/18, rv 100-114, 40
+// index rows throughout): the index fell from 13,921-14,218 chars to 10,453-10,559 at the first
+// post-deploy render, and the bodies took nearly all of it back -- body spend 3,745-4,701 chars
+// before against 6,994-7,963 after, with the whole section still landing at 18,810-19,995 chars on
+// either side. The budget was re-allocated, not reduced. The count followed: 3-5 bodies pre-hoist
+// (three of nine renders at 3), 5-6 after, never below 5 in eight renders. So a body count read
+// before the hoist is not comparable to one read after it, and the one six-body render is the freed
+// index budget plus a turn whose spared bodies ran short (1,327 chars each at rv 109 against
+// 1,399-1,488 on the neighbouring five-body renders), not a register that grew.
 const DEFAULT_SHARED_STATE_MAX_TOKENS = 5_000;
 
 // Tunes reserved render slots by shared-state entry kind.
