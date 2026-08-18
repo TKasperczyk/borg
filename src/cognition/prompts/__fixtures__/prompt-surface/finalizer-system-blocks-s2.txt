@@ -120,6 +120,7 @@ Sensitive relationship claim grounding:
 --- system[1] ---
 <borg_current_time>
 current_time_iso=2023-11-14T22:13:20.000Z
+current_time_ms=1700000000000
 applicable_commitment_created_relative_age[cmt_aaaaaaaaaaaaaaaa]=~0s ago
 </borg_current_time>
 

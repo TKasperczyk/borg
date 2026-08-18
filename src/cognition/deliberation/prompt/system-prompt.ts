@@ -226,7 +226,18 @@ export function renderCurrentTimeSection(
     return null;
   }
 
-  const lines = [`current_time_iso=${new Date(nowMs).toISOString()}`];
+  // Raw-epoch anchor. Several durable surfaces render their timestamps as bare epoch
+  // milliseconds rather than ISO -- the shared-state compact index (`created_at=`,
+  // `last_updated_at=`), and the ledger sections named in the epoch-convention note at the
+  // top of evidence-ledger/recent-lived-experience.ts. Without
+  // a paired epoch value for "now" anywhere in the prompt, those fields can only be placed
+  // in time by hand-converting a 13-digit integer, and a carry error there is silent and
+  // large. Emitting both units of the same instant once per prompt makes every raw-epoch
+  // field on the surface convertible by subtraction from a known pair.
+  const lines = [
+    `current_time_iso=${new Date(nowMs).toISOString()}`,
+    `current_time_ms=${Math.trunc(nowMs)}`,
+  ];
   const previousUserMessageAt = context?.previousUserMessageAt ?? null;
 
   if (previousUserMessageAt !== null && Number.isFinite(previousUserMessageAt)) {
