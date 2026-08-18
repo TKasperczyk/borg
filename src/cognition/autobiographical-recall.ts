@@ -461,6 +461,44 @@ function streamToolResultKey(sessionId: SessionId, callId: string): string {
   return `${sessionId}:${callId}`;
 }
 
+// `outcome` below is derived from the dispatcher's `ok` flag, which records only that the tool
+// call returned a schema-valid result -- not that anything reached a destination. A target session
+// that was busy, a turn that emitted nothing, a session with no wired connector, and a connector
+// that threw all return `ok: true` and so all read as "succeeded". The discriminator between them
+// lives in the same tool result, so surface it rather than leaving one word to carry five states.
+function outboundDeliveryFields(result: Record<string, unknown> | null): Record<string, unknown> {
+  const output = result?.output;
+  const outbound =
+    typeof output === "object" && output !== null
+      ? (output as Record<string, unknown>).outbound
+      : undefined;
+
+  if (typeof outbound !== "object" || outbound === null) {
+    return {};
+  }
+
+  const record = outbound as Record<string, unknown>;
+  const delivery = record.delivery;
+  const deliveryStatus =
+    typeof delivery === "object" && delivery !== null
+      ? (delivery as Record<string, unknown>).status
+      : undefined;
+  // Older results predate `delivery_outcome`; absence is a schema generation, not a failure.
+  const deliveryOutcome = record.delivery_outcome;
+  const deliveryOutcomeState =
+    typeof deliveryOutcome === "object" && deliveryOutcome !== null
+      ? (deliveryOutcome as Record<string, unknown>).state
+      : undefined;
+
+  return {
+    ...(typeof record.emitted === "boolean" ? { emitted: record.emitted } : {}),
+    ...(typeof deliveryOutcomeState === "string"
+      ? { delivery_outcome_state: deliveryOutcomeState }
+      : {}),
+    ...(typeof deliveryStatus === "string" ? { delivery_status: deliveryStatus } : {}),
+  };
+}
+
 function outboundAttemptMetadata(
   callEntry: StreamEntry,
   resultEntry: StreamEntry | undefined,
@@ -479,6 +517,7 @@ function outboundAttemptMetadata(
   return {
     status: "attempted",
     outcome: result?.ok === true ? "succeeded" : result?.ok === false ? "failed" : "unknown",
+    ...outboundDeliveryFields(result),
     ...(callId === null ? {} : { call_id: callId }),
     ...(resultEntry === undefined ? {} : { tool_result_stream_id: resultEntry.id }),
   };

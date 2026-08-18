@@ -660,6 +660,105 @@ describe("AutobiographicalRecallService", () => {
     );
   });
 
+  it("surfaces delivery fields so a transported attempt stays distinct from a failed transport", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-autobiographical-delivery-"));
+    tempDirs.push(tempDir);
+    const sessionId = createSessionId();
+    const clock = new ManualClock(2_000);
+    const writer = new StreamWriter({ dataDir: tempDir, sessionId, clock });
+
+    const appendAttempt = async (outbound: Record<string, unknown>) => {
+      const callId = createStreamEntryId();
+      const call = await writer.append({
+        kind: "tool_call",
+        content: {
+          call_id: callId,
+          tool_name: OUTBOUND_POST_TOOL_NAME,
+          input: { channel: "release-room" },
+          origin: "autonomy",
+          turn_origin: "autonomous",
+        },
+      });
+      clock.set(clock.now() + 100);
+      const result = await writer.append({
+        kind: "tool_result",
+        content: { call_id: callId, ok: true, output: { outbound }, duration_ms: 100 },
+      });
+      clock.set(clock.now() + 100);
+      return { callId, call, result };
+    };
+
+    const transported = await appendAttempt({
+      status: "completed",
+      emitted: true,
+      delivery: { status: "transported", source_type: "demo" },
+      delivery_outcome: { state: "delivered" },
+    });
+    const failed = await appendAttempt({
+      status: "completed",
+      emitted: true,
+      delivery: { status: "transport_failed", source_type: "demo" },
+      delivery_outcome: { state: "transport_failed" },
+    });
+    // Results written before `delivery_outcome` existed still join; absence is a schema generation.
+    const legacy = await appendAttempt({ status: "target_busy", emitted: false });
+    writer.close();
+
+    const service = new AutobiographicalRecallService({
+      clock: new FixedClock(NOW_MS),
+      sessionsRepository: {
+        list: () => [sessionRecord(sessionId, clock.now())],
+      },
+      createStreamReader: (readerSessionId) =>
+        new StreamReader({ dataDir: tempDir, sessionId: readerSessionId }),
+      sourceCap: 10,
+      totalCap: 10,
+    });
+
+    const result = await service.recall({
+      sessionId,
+      temporalCue: { sinceTs: 1_000, untilTs: 4_000, label: "outbound delivery window" },
+      isSelfAudience: false,
+      sessionAudienceRole: "operator",
+      perceptionMode: "reflective",
+    });
+    const outbound = result?.evidence.filter((item) => item.kind === "outbound_attempt");
+
+    expect(outbound).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            call_id: transported.callId,
+            outcome: "succeeded",
+            emitted: true,
+            delivery_outcome_state: "delivered",
+            delivery_status: "transported",
+          }),
+        }),
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            call_id: failed.callId,
+            outcome: "succeeded",
+            emitted: true,
+            delivery_outcome_state: "transport_failed",
+            delivery_status: "transport_failed",
+          }),
+        }),
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            call_id: legacy.callId,
+            outcome: "succeeded",
+            emitted: false,
+          }),
+        }),
+      ]),
+    );
+
+    const legacyItem = outbound?.find((item) => item.metadata.call_id === legacy.callId);
+    expect(legacyItem?.metadata).not.toHaveProperty("delivery_outcome_state");
+    expect(legacyItem?.metadata).not.toHaveProperty("delivery_status");
+  });
+
   it("marks stream candidate counts as lower bounds when the session fetch saturates", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-autobiographical-session-cap-"));
     tempDirs.push(tempDir);
