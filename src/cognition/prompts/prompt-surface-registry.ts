@@ -14,6 +14,7 @@ export const PROMPT_SURFACES = {
   compactPlannerFraming: "compact_planner_framing",
   commitmentRegenerationInstruction: "commitment_regeneration_instruction",
   directedOutboundFraming: "directed_outbound_framing",
+  autonomousOutboundActionFraming: "autonomous_outbound_action_framing",
 } as const;
 
 export type PromptSurface = (typeof PROMPT_SURFACES)[keyof typeof PROMPT_SURFACES];
@@ -685,14 +686,18 @@ export const PROMPT_SURFACE_BLOCKS = [
   block({
     id: "borg_directed_outbound_instruction",
     owner: "outbound",
-    purpose: "Directed outbound user-message framing.",
-    renderCondition: "directed outbound turn",
+    purpose: "Directed outbound composition and autonomous action-availability framing.",
+    renderCondition:
+      "directed outbound turn, or autonomous turn with a structurally available outbound tool and target",
     source: {
-      file: "src/outbound/outbound-turn.ts",
-      exportName: "formatDirectedOutboundInstruction",
+      file: "src/outbound/outbound-prompt.ts",
+      exportName: "renderDirectedOutboundInstructionSurface",
     },
     tag: "borg_directed_outbound_instruction",
-    surfaces: [{ surface: PROMPT_SURFACES.directedOutboundFraming, order: 10 }],
+    surfaces: [
+      { surface: PROMPT_SURFACES.directedOutboundFraming, order: 10 },
+      { surface: PROMPT_SURFACES.autonomousOutboundActionFraming, order: 10 },
+    ],
   }),
 ] as const satisfies readonly PromptSurfaceBlock[];
 

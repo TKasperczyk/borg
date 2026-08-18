@@ -206,6 +206,7 @@ function createPersistentDueSource(input: {
   sortTs?: (eventId: string, index: number) => number;
   stateTs?: (eventId: string, index: number) => number | undefined;
   payload?: (eventId: string, index: number) => Record<string, unknown>;
+  goalStaleBackoffActionAvailabilityKey?: string;
 }): AutonomyWakeSource {
   const sourceName = input.sourceName ?? "goal_followup_due";
   const sourceCategory = input.sourceCategory ?? "operational";
@@ -232,6 +233,12 @@ function createPersistentDueSource(input: {
             watermarkProcessName,
             sortTs: input.sortTs?.(eventId, index) ?? index + 1,
             ...(stateTs === undefined ? {} : { stateTs }),
+            ...(input.goalStaleBackoffActionAvailabilityKey === undefined
+              ? {}
+              : {
+                  goalStaleBackoffActionAvailabilityKey:
+                    input.goalStaleBackoffActionAvailabilityKey,
+                }),
             payload: input.payload?.(eventId, index) ?? {},
           },
         ];
@@ -1029,6 +1036,7 @@ describe("AutonomyScheduler", () => {
     const source = createPersistentDueSource({
       watermarkRepository,
       eventIds: ["followup-empty", "followup-headway"],
+      goalStaleBackoffActionAvailabilityKey: "outbound_action_surface_v1:test",
       payload: (_eventId, index) => ({
         goal_id: index === 0 ? emptyGoalId : headwayGoalId,
         last_progress_ts: 500,
@@ -1071,7 +1079,12 @@ describe("AutonomyScheduler", () => {
         getExecutiveFocusGoalStaleBackoffProcessName(emptyGoalId),
         DEFAULT_SESSION_ID,
       ),
-    ).toMatchObject({ metadata: { empty_count: 3 } });
+    ).toMatchObject({
+      metadata: {
+        empty_count: 3,
+        action_availability_key: "outbound_action_surface_v1:test",
+      },
+    });
     expect(
       watermarkRepository.get(
         getExecutiveFocusGoalStaleBackoffProcessName(headwayGoalId),
@@ -1086,6 +1099,60 @@ describe("AutonomyScheduler", () => {
     ).toMatchObject({
       lastEntryId: `prior-${untouchedGoalId}`,
       metadata: { empty_count: 2 },
+    });
+  });
+
+  it("preserves the stamped action topology across an empty wake with no available action", async () => {
+    const clock = new ManualClock(1_125_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    const goalId = "goal_aaaaaaaaaaaaaaaa";
+    const processName = getExecutiveFocusGoalStaleBackoffProcessName(goalId);
+    const actionAvailabilityKey = "outbound_action_surface_v1:stable-topology";
+    watermarkRepository.set(processName, DEFAULT_SESSION_ID, {
+      lastTs: 500,
+      lastEntryId: "prior-empty-wake",
+      metadata: {
+        empty_count: 2,
+        action_availability_key: actionAvailabilityKey,
+      },
+    });
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+      watermarkRepository,
+      turnOrchestrator: {
+        run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+      },
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        clock,
+      }),
+      sources: [
+        createPersistentDueSource({
+          watermarkRepository,
+          eventIds: ["followup-empty-without-action"],
+          payload: () => ({
+            goal_id: goalId,
+            last_progress_ts: 500,
+          }),
+        }),
+      ],
+    });
+
+    expect((await scheduler.tick()).firedEvents).toBe(1);
+    expect(watermarkRepository.get(processName, DEFAULT_SESSION_ID)).toMatchObject({
+      metadata: {
+        empty_count: 3,
+        action_availability_key: actionAvailabilityKey,
+      },
     });
   });
 

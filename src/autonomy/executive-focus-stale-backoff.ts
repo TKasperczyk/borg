@@ -8,6 +8,7 @@ const EXECUTIVE_FOCUS_GOAL_STALE_BACKOFF_PREFIX = "autonomy:executive-focus-due:
 
 export type ExecutiveFocusGoalStaleBackoffMetadata = {
   empty_count: number;
+  action_availability_key?: string;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -31,7 +32,10 @@ export function readExecutiveFocusGoalStaleBackoffMetadata(
     !isRecord(metadata) ||
     typeof metadata.empty_count !== "number" ||
     !Number.isInteger(metadata.empty_count) ||
-    metadata.empty_count < 0
+    metadata.empty_count < 0 ||
+    (metadata.action_availability_key !== undefined &&
+      (typeof metadata.action_availability_key !== "string" ||
+        metadata.action_availability_key.length === 0))
   ) {
     throw new StorageError("Executive focus stale-backoff watermark metadata is invalid", {
       code: "EXECUTIVE_FOCUS_STALE_BACKOFF_METADATA_INVALID",
@@ -40,6 +44,9 @@ export function readExecutiveFocusGoalStaleBackoffMetadata(
 
   return {
     empty_count: metadata.empty_count,
+    ...(metadata.action_availability_key === undefined
+      ? {}
+      : { action_availability_key: metadata.action_availability_key }),
   };
 }
 
@@ -58,39 +65,65 @@ export function executiveFocusGoalStaleBackoffCooldownMs(input: {
   return Math.max(input.baseCooldownMs, capped);
 }
 
-export function goalStaleBackoffEndMs(input: {
+export type GoalStaleBackoffState = {
+  endMs: number | null;
+  actionAvailabilityChanged: boolean;
+};
+
+export function goalStaleBackoffState(input: {
   watermark: Pick<StreamWatermark, "metadata" | "updatedAt"> | null;
   lastProgressTs: number | null;
   baseCooldownMs: number;
   multiplier: number;
   maxCooldownMs: number;
   dormancyCount: number;
-}): number | null {
+  actionAvailabilityKey?: string | null;
+}): GoalStaleBackoffState {
   if (input.watermark === null) {
-    return null;
+    return { endMs: null, actionAvailabilityChanged: false };
   }
 
   if (input.lastProgressTs !== null && input.lastProgressTs >= input.watermark.updatedAt) {
-    return null;
+    return { endMs: null, actionAvailabilityChanged: false };
   }
 
   const metadata = readExecutiveFocusGoalStaleBackoffMetadata(input.watermark);
 
+  // Empty-wake dormancy is otherwise infinite. A newly rendered, structurally
+  // executable action path invalidates the old brake once; the next empty wake
+  // stamps the new key. Null never releases dormancy, so an unavailable action
+  // cannot generate retry churn.
   if (metadata.empty_count <= 0) {
-    return null;
+    return { endMs: null, actionAvailabilityChanged: false };
   }
 
   if (metadata.empty_count >= input.dormancyCount) {
-    return Number.POSITIVE_INFINITY;
+    const actionAvailabilityChanged =
+      input.actionAvailabilityKey !== undefined &&
+      input.actionAvailabilityKey !== null &&
+      metadata.action_availability_key !== input.actionAvailabilityKey;
+
+    return {
+      endMs: actionAvailabilityChanged ? null : Number.POSITIVE_INFINITY,
+      actionAvailabilityChanged,
+    };
   }
 
-  return (
-    input.watermark.updatedAt +
-    executiveFocusGoalStaleBackoffCooldownMs({
-      baseCooldownMs: input.baseCooldownMs,
-      multiplier: input.multiplier,
-      maxCooldownMs: input.maxCooldownMs,
-      emptyCount: metadata.empty_count,
-    })
-  );
+  return {
+    endMs:
+      input.watermark.updatedAt +
+      executiveFocusGoalStaleBackoffCooldownMs({
+        baseCooldownMs: input.baseCooldownMs,
+        multiplier: input.multiplier,
+        maxCooldownMs: input.maxCooldownMs,
+        emptyCount: metadata.empty_count,
+      }),
+    actionAvailabilityChanged: false,
+  };
+}
+
+export function goalStaleBackoffEndMs(
+  input: Parameters<typeof goalStaleBackoffState>[0],
+): number | null {
+  return goalStaleBackoffState(input).endMs;
 }

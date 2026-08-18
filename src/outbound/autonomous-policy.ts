@@ -42,6 +42,11 @@ export type AutonomousOutboundPromptTarget = {
   authorization: AutonomousOutboundAuthorizationKind;
 };
 
+export type AutonomousOutboundRouteTopologyTarget = Pick<
+  AutonomousOutboundPromptTarget,
+  "session_id" | "source_type" | "authorization"
+>;
+
 export type AutonomousOutboundPromptContext = {
   maxPostsPerWindow: number;
   maxPostsPerTargetPerWindow: number;
@@ -140,6 +145,37 @@ function promptTarget(
 
 export class AutonomousOutboundPolicy {
   constructor(private readonly options: AutonomousOutboundPolicyOptions) {}
+
+  actionRouteTopology(currentSessionId: SessionId): AutonomousOutboundRouteTopologyTarget[] {
+    if (!this.options.config.enabled) {
+      return [];
+    }
+
+    // This projection deliberately ignores rolling attempt caps and prompt
+    // labels. Dormancy release follows durable route structure only; temporary
+    // capacity exhaustion must not manufacture a new topology fingerprint when
+    // the window rolls over. The wider read also keeps unauthorized recent
+    // sessions from hiding an authorized route from the structural census.
+    return this.options.sessionsRepository
+      .list({
+        status: "active",
+        excludeSessionId: currentSessionId,
+        limit: 1_000,
+      })
+      .flatMap((session) => {
+        const authorization = this.authorizationForTarget(session);
+
+        return authorization === null
+          ? []
+          : [
+              {
+                session_id: session.session_id,
+                source_type: session.source_type,
+                authorization,
+              },
+            ];
+      });
+  }
 
   promptContext(currentSessionId: SessionId): AutonomousOutboundPromptContext | null {
     if (!this.options.config.enabled) {

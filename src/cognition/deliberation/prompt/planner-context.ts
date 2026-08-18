@@ -24,6 +24,7 @@ import { escapeXmlText } from "../../../util/prompt-tags.js";
 import { formatRelativeAge } from "../../../util/relative-time.js";
 import { estimatePromptTokens } from "../../../util/token-estimate.js";
 import { utf16SafePrefixEnd, utf16SafeSuffixStart } from "../../../util/utf16-boundary.js";
+import { renderAutonomousOutboundActionAvailabilitySection } from "../../../outbound/outbound-prompt.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
 import type {
   CompactPlannerLedgerPrompt,
@@ -2001,6 +2002,11 @@ function renderPlannerTail(input: BuildCompactPlannerSystemPromptInput): Rendere
     input.context.turnOrigin,
     input.context.autonomousFinalizerToolMenu,
   );
+  const autonomousOutboundAction = renderAutonomousOutboundActionAvailabilitySection(
+    input.context.autonomousOutbound ?? null,
+    input.context.autonomousFinalizerToolMenu,
+    input.context.turnOrigin,
+  );
   // Reachability and host authorization are control-plane guidance, not
   // non-critical memory prose; keep that block exact and report envelope
   // overflow rather than risking a cut through an authorization boundary.
@@ -2035,6 +2041,7 @@ function renderPlannerTail(input: BuildCompactPlannerSystemPromptInput): Rendere
         ? `<borg_planner_contradiction_excerpt source_format="escaped_prompt_block">${escapeXmlText(contradictionExcerpt.text)}</borg_planner_contradiction_excerpt>`
         : contradictionExcerpt.text,
     autonomousAuthorization,
+    autonomousOutboundAction,
     groupReminder,
     input.context.turnOrigin === "autonomous" ? AUTONOMOUS_WANT_PROMPT_BLOCK : null,
     buildPlannerDirective(),

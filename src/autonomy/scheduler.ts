@@ -909,12 +909,23 @@ export class AutonomyScheduler {
       concern.lastProgressTs >= previousBackoff.updatedAt;
     const previousMetadata = readExecutiveFocusGoalStaleBackoffMetadata(previousBackoff);
     const previousEmptyCount = progressSincePreviousBackoff ? 0 : previousMetadata.empty_count;
+    // An absent event key means no action path was available for this wake; it
+    // is not evidence that the last structural topology should be forgotten.
+    // Preserving it prevents rolling-cap/unavailable intervals from turning a
+    // later return to the same topology into another migration retry.
+    const actionAvailabilityKey =
+      event.goalStaleBackoffActionAvailabilityKey ?? previousMetadata.action_availability_key;
 
     this.options.watermarkRepository.set(processName, this.sessionId, {
       lastTs: event.sortTs,
       lastEntryId: event.id,
       metadata: {
         empty_count: previousEmptyCount + 1,
+        ...(actionAvailabilityKey === undefined
+          ? {}
+          : {
+              action_availability_key: actionAvailabilityKey,
+            }),
       },
     });
   }

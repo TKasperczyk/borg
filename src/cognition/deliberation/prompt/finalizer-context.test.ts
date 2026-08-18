@@ -8,6 +8,7 @@ import {
   createEntityId,
   createGoalId,
   createRelationalSlotId,
+  createSessionId,
   createStreamEntryId,
   createTraitId,
   createValueId,
@@ -22,6 +23,7 @@ import { buildFinalizerSystemPrompt } from "../finalizer.js";
 import { TRUSTED_GUIDANCE_PREAMBLE } from "../../prompts/base-identity.js";
 import { buildCacheableBaseSystemPromptParts } from "./system-prompt.js";
 import { headTailPlannerExcerpt } from "./planner-context.js";
+import { OUTBOUND_POST_TOOL_NAME } from "../../../tools/internal/outbound-post-name.js";
 
 const NOW_MS = Date.UTC(2026, 7, 14, 12, 0, 0);
 
@@ -153,6 +155,57 @@ function text(result: ReturnType<typeof build>): string {
 }
 
 describe("compact terminal finalizer context", () => {
+  it("keeps autonomous outbound availability in the 5m turn-context tier", () => {
+    const outboundContext = {
+      maxPostsPerWindow: 3,
+      maxPostsPerTargetPerWindow: 1,
+      remainingPostsInWindow: 2,
+      windowMs: 86_400_000,
+      targets: [
+        {
+          session_id: createSessionId(),
+          source_type: "peerlink",
+          label: "Kira",
+          audience_label: "Kira",
+          audience_entity_id: null,
+          conversation_kind: "dm" as const,
+          participation_policy: "active" as const,
+          authorization: "config" as const,
+        },
+      ],
+    };
+    const withAction = build(
+      context({
+        turnOrigin: "autonomous",
+        autonomousOutbound: outboundContext,
+        autonomousFinalizerToolMenu: [
+          { name: OUTBOUND_POST_TOOL_NAME, menuSummary: "Structurally available." },
+        ],
+      }),
+    );
+
+    expect(withAction.system[3]?.cache_control?.ttl).toBe("5m");
+    expect(withAction.system[3]?.text).toContain(
+      '<borg_directed_outbound_instruction mode="action_available">',
+    );
+    expect(
+      withAction.system
+        .slice(0, 3)
+        .map((block) => block.text)
+        .join("\n"),
+    ).not.toContain("borg_directed_outbound_instruction");
+
+    const withoutAction = build(
+      context({
+        turnOrigin: "autonomous",
+        autonomousOutbound: outboundContext,
+        autonomousFinalizerToolMenu: [],
+      }),
+    );
+    expect(text(withoutAction)).not.toContain("borg_directed_outbound_instruction");
+    expect(withAction.system.slice(0, 3)).toEqual(withoutAction.system.slice(0, 3));
+  });
+
   it("renders the four cache tiers in order with exactly four breakpoints", () => {
     const result = build(context());
     expect(result.system).toHaveLength(4);

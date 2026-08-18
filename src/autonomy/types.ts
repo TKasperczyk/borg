@@ -83,6 +83,7 @@ export type DueEvent<Payload extends Record<string, unknown> = Record<string, un
   watermarkProcessName: string;
   sortTs: number;
   stateTs?: number;
+  goalStaleBackoffActionAvailabilityKey?: string;
   payload: Payload;
 };
 

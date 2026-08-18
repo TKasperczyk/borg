@@ -259,6 +259,7 @@ describe("executive focus due trigger", () => {
     harness: Awaited<ReturnType<typeof createHarness>>;
     goalId: string;
     emptyCount: number;
+    actionAvailabilityKey?: string;
   }): void {
     input.harness.watermarkRepository.set(
       goalBackoffProcessName(input.goalId),
@@ -268,6 +269,9 @@ describe("executive focus due trigger", () => {
         lastEntryId: "stale-backoff",
         metadata: {
           empty_count: input.emptyCount,
+          ...(input.actionAvailabilityKey === undefined
+            ? {}
+            : { action_availability_key: input.actionAvailabilityKey }),
         },
       },
     );
@@ -1000,6 +1004,42 @@ describe("executive focus due trigger", () => {
     });
     harness.clock.advance(2_000);
     expect(await trigger.scan()).toHaveLength(1);
+  });
+
+  it("re-enters once when a structurally new outbound action path becomes available", async () => {
+    const harness = await createHarness(5_000_000);
+    const goal = harness.goalsRepository.add({
+      description: "Dormant goal with a newly executable action",
+      priority: 10,
+      provenance: { kind: "manual" },
+      createdAt: harness.clock.now() - 20_000,
+    });
+    const actionAvailabilityKey = "outbound_action_surface_v1:test";
+    const trigger = createTrigger(harness, {
+      stalenessMs: 1_000,
+      wakeCooldownMs: 1_000,
+      wakeCooldownBackoffMultiplier: 2,
+      wakeCooldownMaxMs: 60_000,
+      wakeEmptyDormancyCount: 2,
+      goalStaleBackoffActionAvailabilityKey: () => actionAvailabilityKey,
+    });
+
+    // A pre-fix watermark has no action key, so the newly rendered executable
+    // path releases it and is carried to scheduler bookkeeping.
+    setGoalStaleBackoff({ harness, goalId: goal.id, emptyCount: 2 });
+    const released = await trigger.scan();
+    expect(released).toHaveLength(1);
+    expect(released[0]?.goalStaleBackoffActionAvailabilityKey).toBe(actionAvailabilityKey);
+
+    // Once an empty wake has stamped the same structural key, ordinary
+    // infinite dormancy resumes rather than retrying every scan.
+    setGoalStaleBackoff({
+      harness,
+      goalId: goal.id,
+      emptyCount: 2,
+      actionAvailabilityKey,
+    });
+    expect(await trigger.scan()).toHaveLength(0);
   });
 
   it("does not delay step_due wakes with stale-goal empty wake backoff", async () => {

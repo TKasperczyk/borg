@@ -429,6 +429,7 @@ export async function openBorgDependencies(
       trainOfThoughtRepository: repositories.trainOfThoughtRepository,
       turnOrchestrator,
       toolDispatcher,
+      autonomousOutboundPolicy,
       createStreamWriter: repositories.createStreamWriter,
       clock,
       tracer,
