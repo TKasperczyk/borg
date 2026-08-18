@@ -184,6 +184,14 @@ export class Perceiver {
         // ('Good', 'If', '[End.]') that poisoned downstream
         // retrieval. Empty is the honest signal when the LLM call
         // fails -- the turn proceeds with no entities for this turn.
+        // Note for anyone reading traces: this fallback is indistinguishable
+        // in `perception.completed` from a successful extraction that
+        // legitimately found nothing -- both emit `entities: []`. The only
+        // discriminator is a `perception.classifier.degraded` event for
+        // classifier `entity_extractor` on the same turn. Empty is also a
+        // frequent *honest* output on long identifier-dense text, because the
+        // extractor's rubric covers named entities (people, places, products,
+        // organizations, handles) and not ids, hashes, keys or paths.
         fallback: () => ({
           entities: [],
           entityMentions: [],

@@ -138,6 +138,14 @@ export class PerceptionGateway {
     const workingMemory = {
       ...input.workingMemory,
       turn_counter: input.workingMemory.turn_counter + 1,
+      // Wholesale replacement, never a merge: this turn's extraction IS the
+      // whole list, and last turn's entities are dropped even when the new
+      // list is empty. The extractor reads `cognitionInput` alone --
+      // `recentHistoryStrings` goes to the mood and mode classifiers, not to
+      // it -- so no term can survive from an earlier turn by any path. A name
+      // on the working-memory line is therefore evidence about the current
+      // message only; it is not a register, and its disappearance next turn
+      // carries no information about salience.
       hot_entities: perception.entities,
       mood: workingMood,
       mode: perception.mode,

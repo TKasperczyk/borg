@@ -130,6 +130,48 @@ describe("PerceptionGateway", () => {
     });
   });
 
+  it("replaces hot entities wholesale instead of merging the previous turn's", async () => {
+    const gateway = new PerceptionGateway({
+      config: makeConfig(false),
+      llmFactory: vi.fn(() => {
+        throw new Error("should not be called");
+      }),
+      clock: new ManualClock(1_000),
+      tracer: makeTracer(),
+      getAffectiveSignalDetector: () =>
+        vi.fn(async () => ({
+          valence: 0.6,
+          arousal: 0.2,
+          dominant_emotion: "curiosity" as const,
+        })),
+      turnContextCompiler: {
+        compile: vi.fn(() => makeRecencyWindow()),
+      },
+      createStreamReader: vi.fn(() => ({}) as StreamReader),
+    });
+
+    const result = await gateway
+      .beginTurn({
+        turnId: "turn-1",
+        onHookFailure: vi.fn(),
+      })
+      .perceive({
+        sessionId: DEFAULT_SESSION_ID,
+        isSelfAudience: true,
+        origin: "user",
+        cognitionInput: "plain lower text",
+        workingMemory: {
+          ...createWorkingMemory(DEFAULT_SESSION_ID, 500),
+          hot_entities: ["Tom", "borg.db"],
+        },
+      });
+
+    // No LLM, so the extractor yields nothing for this message. The prior
+    // entities must not survive: hot_entities is a per-turn readout of the
+    // current message, not an accumulating register.
+    expect(result.workingMemory.hot_entities).toEqual([]);
+  });
+
   it("preserves existing mood for autonomous turns", async () => {
     const existingMood = {
       valence: -0.2,
