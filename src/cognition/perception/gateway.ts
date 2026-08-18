@@ -146,6 +146,17 @@ export class PerceptionGateway {
       // on the working-memory line is therefore evidence about the current
       // message only; it is not a register, and its disappearance next turn
       // carries no information about salience.
+      //
+      // The exact window is worth naming, because "current message" and
+      // "current input" come apart: `cognitionInputForTurnInput` returns the
+      // rendered inbound batch on an inbound turn and the wake context on an
+      // autonomous one, so the window is this turn's batch, not one message.
+      // On a two-message batch a term from the earlier message is in scope and
+      // reads afterwards as if it came from nowhere. Resolving that from a
+      // trace means reading `count` off the `<inbound_batch>` envelope in
+      // `retrieval.started`, not assuming either shape -- one audience's 73
+      // consecutive turns were all `count="1"`, which is a property of that
+      // transport's delivery, not of this code.
       hot_entities: perception.entities,
       mood: workingMood,
       mode: perception.mode,

@@ -983,6 +983,21 @@ function cappedSharedStateArtifactRender(input: {
     renderedByKind: counts.renderedByKind,
   });
 
+  // The stopping condition here and in both loops below is the token total and nothing else --
+  // there is no target, band or floor for how many bodies survive. The retained count is a
+  // residual: the budget left after the compact index, divided by the actual lengths of the
+  // bodies that happen to rank highest. So it moves without anything about the render changing,
+  // and reading a change in it as a change in policy is a misreading. Measured over one audience's
+  // record_versions 66-127, retained bodies against mean body length in characters: 2 bodies at
+  // 1,994-2,113; 3 at 1,310-1,862; 4 at 1,090-1,426; 5 at 1,029-1,711; 6 at 946-1,412; 7 at 1,186 --
+  // monotone, with the body pool itself near-constant (the section lands at 18.4k-20.0k chars in
+  // every one of those versions).
+  //
+  // The corollary matters more than the mechanism: rewriting one entry longer costs a slot that
+  // some other entry was occupying. Two keys in that series grew by ~900 chars each across eleven
+  // versions and the render went from seven bodies to five with the pool unchanged. An update is
+  // therefore not free at render time even though it is free at the store's cap, and the entry it
+  // evicts is not the one that grew.
   while (estimatePromptTokens(content) > options.maxTokens && entries.length > 1) {
     const dropIndex = tokenDropIndex({
       entries,
