@@ -26,7 +26,7 @@ import {
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { ReviewQueueItem } from "../../../memory/review-queue/index.js";
 import { createWorkingMemory, type WorkingMemory } from "../../../memory/working/index.js";
-import { escapeXmlText } from "../../../util/prompt-tags.js";
+import { escapeXmlText, scrubCreatorDirectiveInternalIds } from "../../../util/prompt-tags.js";
 import type { EvidenceLedgerEntry } from "../../evidence-ledger/types.js";
 import {
   MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
@@ -88,6 +88,7 @@ import {
 } from "../../generation/discourse-state.js";
 
 export { formatRelativeAge } from "../../../util/relative-time.js";
+export { scrubCreatorDirectiveInternalIds } from "../../../util/prompt-tags.js";
 
 // Interim mitigation (v94.1.1): boundary_prompt is extractor-authored and not yet
 // operator-reviewed. Render a fixed generic string so unreviewed boundary text can
@@ -303,27 +304,6 @@ export function renderCreatorIdentity(
 
 function escapeXmlAttribute(value: string): string {
   return escapeXmlText(value).replaceAll('"', "&quot;");
-}
-
-// Input-side substrate hygiene: strips internal ids that an operator might
-// paste into creator-directive text or a directed-outbound instruction before
-// that text enters the model-facing prompt. This is defense-in-depth, not a
-// critical leak path -- the instruction is composed into the model's prompt
-// (the model is separately told not to surface internal ids), it is never
-// delivered verbatim to a target audience.
-//
-// The band is a deliberate CURATED SUBSET, not every id prefix in util/ids.ts.
-// It covers the "addressable" ids that actually surface in operator-facing
-// views (creator-directive, entity, session, stream, turn, shared-state), which
-// are the ones an operator could realistically copy back into directive text.
-// It intentionally omits prefixes that collide with ordinary words once the
-// `_[a-z0-9]+` tail is allowed -- e.g. goal_, act_ ("act_now"), run_
-// ("run_tests"), val_, att_ -- because a blanket widen would scrub legitimate
-// operator prose. Widen only with prefixes distinctive enough to avoid that.
-const CREATOR_DIRECTIVE_INTERNAL_ID_PATTERN = /\b(?:cdir|ent|sess|strm|turn|dart)_[a-z0-9]+\b/g;
-
-export function scrubCreatorDirectiveInternalIds(value: string): string {
-  return value.replace(CREATOR_DIRECTIVE_INTERNAL_ID_PATTERN, "[internal_id]");
 }
 
 function escapeCreatorDirectiveXmlText(value: string): string {

@@ -12,6 +12,16 @@ export function escapeXmlText(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
+// Input-side substrate hygiene for the small set of addressable internal ids
+// that can appear in operator-authored directive or outbound-instruction text.
+// This is mechanical prompt-boundary scrubbing, not interpretation of prose.
+// Keep this set curated: broader short prefixes collide with ordinary words.
+const CREATOR_DIRECTIVE_INTERNAL_ID_PATTERN = /\b(?:cdir|ent|sess|strm|turn|dart)_[a-z0-9]+\b/g;
+
+export function scrubCreatorDirectiveInternalIds(value: string): string {
+  return value.replace(CREATOR_DIRECTIVE_INTERNAL_ID_PATTERN, "[internal_id]");
+}
+
 // Mechanical removal of tool-call serialization scaffolding that a model can
 // bleed into a string argument value -- e.g. a finalizer `reason` whose stored
 // text ends with `...real reason.</reason><parameter name="...">value`. This is

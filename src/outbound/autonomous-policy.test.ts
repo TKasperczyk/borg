@@ -206,6 +206,7 @@ describe("AutonomousOutboundPolicy", () => {
     const policy = harness.createPolicy(policyConfig(), ["demo"]);
 
     expect(policy.promptContext(currentSessionId)).toBeNull();
+    expect(policy.actionRouteTopology(currentSessionId)).toEqual([]);
     expect(() =>
       policy.assertAuthorized({
         currentSessionId,
@@ -564,6 +565,13 @@ describe("AutonomousOutboundPolicy", () => {
     );
 
     expect(policy.promptContext(currentSessionId)).toBeNull();
+    expect(policy.actionRouteTopology(currentSessionId)).toEqual([
+      {
+        session_id: targetSession.session_id,
+        source_type: targetSession.source_type,
+        authorization: "config",
+      },
+    ]);
     expect(() =>
       policy.assertAuthorized({
         currentSessionId,

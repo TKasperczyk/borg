@@ -105,6 +105,7 @@ export type ExecutiveFocusDueTriggerOptions = {
   clock?: Clock;
   tracer?: TurnTracer;
   sessionId?: SessionId;
+  goalStaleBackoffActionAvailabilityKey?: () => string | null;
 };
 
 type ProvenanceScopedSelfRecord = {
@@ -323,10 +324,13 @@ export function createExecutiveFocusDueTrigger(
     return cooldownEnd !== null && cooldownEnd > nowMs;
   }
 
-  function getGoalStaleBackoffEnd(input: {
-    goal_id: GoalRecord["id"];
-    last_progress_ts: number | null;
-  }): number | null {
+  function getGoalStaleBackoffEnd(
+    input: {
+      goal_id: GoalRecord["id"];
+      last_progress_ts: number | null;
+    },
+    actionAvailabilityKey: string | null,
+  ): number | null {
     return goalStaleBackoffEndMs({
       watermark: options.watermarkRepository.get(
         getExecutiveFocusGoalStaleBackoffProcessName(input.goal_id),
@@ -337,14 +341,22 @@ export function createExecutiveFocusDueTrigger(
       multiplier: options.wakeCooldownBackoffMultiplier,
       maxCooldownMs: options.wakeCooldownMaxMs,
       dormancyCount: options.wakeEmptyDormancyCount,
+      actionAvailabilityKey,
     });
   }
 
-  function isGoalStaleBackedOff(goal: GoalRecord, nowMs: number): boolean {
-    const backoffEnd = getGoalStaleBackoffEnd({
-      goal_id: goal.id,
-      last_progress_ts: goal.last_progress_ts,
-    });
+  function isGoalStaleBackedOff(
+    goal: GoalRecord,
+    nowMs: number,
+    actionAvailabilityKey: string | null,
+  ): boolean {
+    const backoffEnd = getGoalStaleBackoffEnd(
+      {
+        goal_id: goal.id,
+        last_progress_ts: goal.last_progress_ts,
+      },
+      actionAvailabilityKey,
+    );
 
     return backoffEnd !== null && backoffEnd > nowMs;
   }
@@ -410,6 +422,7 @@ export function createExecutiveFocusDueTrigger(
       }
 
       const nowMs = clock.now();
+      const actionAvailabilityKey = options.goalStaleBackoffActionAvailabilityKey?.() ?? null;
       const goals = listActiveGoalsForCognition(options.goalsRepository);
       const goalDisclosureById = await buildGoalDisclosurePayloads({
         goals,
@@ -524,7 +537,7 @@ export function createExecutiveFocusDueTrigger(
           candidate.score >= threshold &&
           !eventGoalIds.has(candidateGoal.id) &&
           !isGoalCoolingDown(candidateGoal, nowMs) &&
-          !isGoalStaleBackedOff(candidateGoal, nowMs) &&
+          !isGoalStaleBackedOff(candidateGoal, nowMs, actionAvailabilityKey) &&
           !shouldDeferToGoalFollowup(candidateGoal, nowMs)
         );
       });
@@ -544,6 +557,9 @@ export function createExecutiveFocusDueTrigger(
             watermarkProcessName: getGoalCooldownProcessName(selectedGoal.id),
             sortTs: progressAnchor + options.stalenessMs,
             stateTs: progressAnchor,
+            ...(actionAvailabilityKey === null
+              ? {}
+              : { goalStaleBackoffActionAvailabilityKey: actionAvailabilityKey }),
             payload: buildScorePayload({
               goal: selectedGoal,
               score: topEligibleCandidate,

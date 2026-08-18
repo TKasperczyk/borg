@@ -13,11 +13,13 @@ import {
   createEntityId,
   createGoalId,
   createRelationalSlotId,
+  createSessionId,
   createStreamEntryId,
   createTraitId,
   createValueId,
 } from "../../../util/ids.js";
 import type { DeliberationContext, SelfSnapshotGoal } from "../types.js";
+import { OUTBOUND_POST_TOOL_NAME } from "../../../tools/internal/outbound-post-name.js";
 import { buildBaseSystemPrompt } from "./system-prompt.js";
 import {
   buildCompactPlannerSystemPrompt,
@@ -270,6 +272,52 @@ function livedEntry(input: {
 }
 
 describe("compact planner context", () => {
+  it("renders the structurally available outbound action in the turn-local autonomous surface", () => {
+    const outboundContext = {
+      maxPostsPerWindow: 3,
+      maxPostsPerTargetPerWindow: 1,
+      remainingPostsInWindow: 2,
+      windowMs: 86_400_000,
+      targets: [
+        {
+          session_id: createSessionId(),
+          source_type: "peerlink",
+          label: "Kira",
+          audience_label: "Kira",
+          audience_entity_id: null,
+          conversation_kind: "dm" as const,
+          participation_policy: "active" as const,
+          authorization: "config" as const,
+        },
+      ],
+    };
+    const withAction = build(
+      context({
+        turnOrigin: "autonomous",
+        autonomousOutbound: outboundContext,
+        autonomousFinalizerToolMenu: [
+          { name: OUTBOUND_POST_TOOL_NAME, menuSummary: "Structurally available." },
+        ],
+      }),
+    );
+
+    expect(withAction.system[2]?.text).toContain(
+      '<borg_directed_outbound_instruction mode="action_available">',
+    );
+    expect(withAction.system[2]?.text).toContain("target_session_id");
+    expect(withAction.system[0]?.text).not.toContain("borg_directed_outbound_instruction");
+    expect(withAction.system[1]?.text).not.toContain("borg_directed_outbound_instruction");
+
+    const withoutAction = build(
+      context({
+        turnOrigin: "autonomous",
+        autonomousOutbound: outboundContext,
+        autonomousFinalizerToolMenu: [],
+      }),
+    );
+    expect(allSystemText(withoutAction)).not.toContain("borg_directed_outbound_instruction");
+  });
+
   it("marks only the final static-head block for one-hour caching and preserves block order", () => {
     const planner = build(context());
 

@@ -200,6 +200,58 @@ describe("goal followup due trigger", () => {
     await expect(trigger.nextDueAt!()).resolves.toBeNull();
   });
 
+  it("releases stale followup dormancy for a new structural action key", async () => {
+    const clock = new ManualClock(2_550_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    const goal = harness.goalsRepository.add({
+      description: "Dormant followup with a newly executable action",
+      priority: 7,
+      provenance: { kind: "manual" },
+      createdAt: clock.now() - 200_000,
+    });
+    const processName = getExecutiveFocusGoalStaleBackoffProcessName(goal.id);
+    const actionAvailabilityKey = "outbound_action_surface_v1:test";
+    const staleLatchProcessName = `autonomy:goal-followup-due:${goal.id}:no-target:${goal.created_at}:stale`;
+    watermarkRepository.set(processName, DEFAULT_SESSION_ID, {
+      lastTs: clock.now(),
+      lastEntryId: "empty-wake-3",
+      metadata: { empty_count: 3 },
+    });
+    watermarkRepository.set(staleLatchProcessName, DEFAULT_SESSION_ID, {
+      lastTs: clock.now(),
+      lastEntryId: "pre-fix-stale-latch",
+    });
+    const trigger = createGoalFollowupDueTrigger({
+      goalsRepository: harness.goalsRepository,
+      watermarkRepository,
+      lookaheadMs: 20_000,
+      staleMs: 100_000,
+      staleBackoff: STALE_BACKOFF,
+      respectStaleBackoff: true,
+      goalStaleBackoffActionAvailabilityKey: () => actionAvailabilityKey,
+      clock,
+    });
+
+    const released = await trigger.scan();
+    expect(released).toHaveLength(1);
+    expect(released[0]?.watermarkProcessName).toBe(staleLatchProcessName);
+    expect(released[0]?.goalStaleBackoffActionAvailabilityKey).toBe(actionAvailabilityKey);
+    await expect(trigger.nextDueAt!()).resolves.toBe(clock.now());
+
+    watermarkRepository.set(processName, DEFAULT_SESSION_ID, {
+      lastTs: clock.now(),
+      lastEntryId: "empty-wake-4",
+      metadata: {
+        empty_count: 3,
+        action_availability_key: actionAvailabilityKey,
+      },
+    });
+    await expect(trigger.scan()).resolves.toEqual([]);
+    await expect(trigger.nextDueAt!()).resolves.toBeNull();
+  });
+
   it("defers cooling goals until the shared backoff ends", async () => {
     const clock = new ManualClock(2_600_000);
     const harness = await createOfflineTestHarness({ clock });

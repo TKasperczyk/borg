@@ -20,6 +20,7 @@ import {
 import { escapeXmlText } from "../../../util/prompt-tags.js";
 import { formatRelativeAge } from "../../../util/relative-time.js";
 import { estimatePromptTokens } from "../../../util/token-estimate.js";
+import { renderAutonomousOutboundActionAvailabilitySection } from "../../../outbound/outbound-prompt.js";
 import {
   CURRENT_USER_MESSAGE_REMINDER,
   UNTRUSTED_DATA_PREAMBLE,
@@ -1022,6 +1023,11 @@ function renderTurnContext(
     input.context.turnOrigin,
     input.context.autonomousFinalizerToolMenu,
   );
+  const autonomousOutboundAction = renderAutonomousOutboundActionAvailabilitySection(
+    input.context.autonomousOutbound ?? null,
+    input.context.autonomousFinalizerToolMenu,
+    input.context.turnOrigin,
+  );
   const trustedAdditional = (input.additionalPromptSections ?? [])
     .filter((entry) => entry.blockId === "borg_session_reentry_continuity")
     .map((entry) => terminalSection(entry.blockId, "terminal_turn_context", entry.text));
@@ -1059,6 +1065,15 @@ function renderTurnContext(
     ...(autonomous === null
       ? []
       : [terminalSection("borg_autonomous_reflection", "terminal_turn_context", autonomous)]),
+    ...(autonomousOutboundAction === null
+      ? []
+      : [
+          terminalSection(
+            "borg_directed_outbound_instruction",
+            "terminal_turn_context",
+            autonomousOutboundAction,
+          ),
+        ]),
     ...trustedAdditional,
     terminalSection("turn_data_boundary", "terminal_turn_context", UNTRUSTED_DATA_PREAMBLE),
     ...untrustedBaseSections,
