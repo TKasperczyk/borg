@@ -157,6 +157,17 @@ export class PerceptionGateway {
       // `retrieval.started`, not assuming either shape -- one audience's 73
       // consecutive turns were all `count="1"`, which is a property of that
       // transport's delivery, not of this code.
+      //
+      // That trace field carries more than the envelope: `retrieval.started`'s
+      // `query` is the extractor's input string itself, char for char
+      // (`perception.started.inputCharCount` is `text.length` of the same
+      // value), so attributing any single term on this line is a grep against
+      // one field rather than an inference. Worth doing before concluding a
+      // term came from somewhere else, because the terms that read as foreign
+      // are usually the ones the message quoted while discussing an *earlier*
+      // turn's list: reporting what was in turn N-1's readout puts those terms
+      // into turn N's readout, and the report and its apparent counterexample
+      // are then the same sentence.
       hot_entities: perception.entities,
       mood: workingMood,
       mode: perception.mode,

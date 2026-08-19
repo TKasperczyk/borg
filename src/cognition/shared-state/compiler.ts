@@ -994,6 +994,18 @@ export async function compileSharedStateArtifact(
     } catch (error) {
       const cause = structuredToolErrorCause(error);
 
+      // A transport/provider failure on the repair call discards the WHOLE
+      // patch, not just the rejected operations: `previousArtifact` is kept
+      // and `operationCount` is 0, so operations that passed validation on the
+      // first pass die with the ones that did not. The emitted
+      // `shared_state.compile.completed` then carries all-zero
+      // `operation_counts_by_kind`, which is byte-identical to the trace a
+      // model that emitted nothing would leave. The only discriminator is the
+      // adjacent `repair_attempted` / `repair_failed` pair plus the
+      // `degraded` reason -- none of which reaches any surface the entity
+      // reads, so from inside, a lost patch and an unwritten one look the
+      // same. Do not read an all-zero compile as evidence about what the
+      // model proposed.
       traceCompileRepairFailed({
         tracer: input.tracer,
         turnId: input.turnId,
