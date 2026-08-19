@@ -251,6 +251,13 @@ export function traceCompileCompleted(options: {
           prune: 0,
         },
       ),
+      // Same provenance one level down, and the conflation bites harder here because this map
+      // is the only one that names the row. A key carrying `prune: 1` may never have been
+      // proposed for deletion by anyone: `lifecycle-cap.ts` sends readers here to recover a
+      // retraction whose supersede chain the cap already cascaded away, but a forced eviction
+      // arrives under the same count. `model_prune_requests` carries the state key of every
+      // asked-for deletion, so a key counted `prune` here and absent there was taken, not
+      // retracted -- and the two are indistinguishable from this field alone.
       operation_counts_by_state_key: toTraceJsonValue(options.operationCountsByStateKey ?? {}),
       new_state_key_count: options.newStateKeys?.length ?? 0,
       new_state_keys: toTraceJsonValue(options.newStateKeys ?? []),
