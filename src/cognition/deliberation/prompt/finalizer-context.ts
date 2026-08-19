@@ -123,6 +123,15 @@ const FINALIZER_COMPACT_TURN_CACHE_CONTROL = {
   ttl: "5m",
 } as const;
 
+// The omitted_count clause below describes two different kinds of field with one
+// sentence. At a bounded expansion or digest the count is computed from the draw
+// (top_global_candidates_expanded, the lived-experience digest, the per-section
+// omission map), so a nonzero print is a live measurement. At a complete index it
+// is a string literal in the renderer -- the index is complete by construction, so
+// the zero restates that construction rather than measuring it. Both print the same
+// syntax, and nothing in the rendered surface distinguishes them, so a reader of the
+// prompt alone cannot tell a measured zero from a constant one. Keep that in mind
+// before treating a zero here as evidence about the underlying store.
 const TERMINAL_PASS_CONTRACT = [
   "<borg_terminal_pass_contract>",
   "This is my terminal response pass. I make the final emission decision from the complete request surface below; any system-2 plan is advisory, not authority.",
@@ -382,6 +391,14 @@ function renderLedgerOnlyCommitmentRecord(entry: EvidenceLedgerEntry): {
   };
 }
 
+// applicableCommitments arrives from recallActiveCommitmentsForCognition, whose
+// predicate (CommitmentRepository.isActiveCommitment) is exactly "no retirement mark
+// set". So expires_at / expired_at / revoked_at / superseded_by render as `none` on
+// every row here by construction: carrying a value on any of the four is what removes
+// a row from this draw. That makes the four columns a survivorship artifact of the
+// render, not a report on the store -- reading `none` across all rows says nothing
+// about whether the retirement paths ever fire. complete="true" and rows_total are
+// likewise statements about the active set, not about the commitments table.
 function renderCommitments(context: DeliberationContext): RenderedTerminalSection {
   const commitments = context.applicableCommitments ?? [];
   const ledgerEntries = context.evidenceLedger?.audienceStanding?.commitmentEntries ?? [];
