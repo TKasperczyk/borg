@@ -4,7 +4,7 @@
  * indefinitely while healthy calls complete in ~0.2-0.35s. Without a guard,
  * a stalled call inherits the SDK's default timeout (minutes) and any caller
  * with a latency budget — most critically the sidecar recall path and its
- * client's hard 5s cap — times out instead. A stalled call retried on a fresh
+ * client's hard recall cap — times out instead. A stalled call retried on a fresh
  * request almost always completes at healthy latency, so the guard caps each
  * attempt and retries immediately. Non-timeout errors are NOT retried here:
  * the wrapped client already handles model-reload retries and the SDK retries

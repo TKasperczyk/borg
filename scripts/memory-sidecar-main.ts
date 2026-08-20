@@ -63,10 +63,10 @@ const recallAbstainThreshold = Number.isFinite(recallAbstainThresholdRaw)
   : 0;
 // Hard ceiling on a single recall, so the client's own timeout never fires
 // first and downgrades a structured degradation into an opaque transport
-// error. Keep it below the caller's recall timeout (team-agent:
-// memory.recall_timeout).
-const recallDeadlineMsRaw = Number(process.env.BORG_RECALL_DEADLINE_MS ?? 4000);
-const recallDeadlineMs = Number.isFinite(recallDeadlineMsRaw) ? recallDeadlineMsRaw : 4000;
+// error. Sits above borg's worst-case graceful path (~4.6s) and below the
+// caller's recall timeout (team-agent: memory.recall_timeout, 6s on prod).
+const recallDeadlineMsRaw = Number(process.env.BORG_RECALL_DEADLINE_MS ?? 5000);
+const recallDeadlineMs = Number.isFinite(recallDeadlineMsRaw) ? recallDeadlineMsRaw : 5000;
 // Bound every provider call so a hung kratos can't pin a request + pool slot
 // (and block shutdown) indefinitely.
 const requestTimeoutMs = Number(process.env.BORG_MEMORY_LLM_TIMEOUT_MS ?? 120_000);
@@ -106,7 +106,7 @@ const llmClient = new OpenAICompatibleLLMClient({
 // short per-attempt cap + retry instead of inheriting the 120s client bound.
 // The gateway's embedding backend intermittently hangs single requests while
 // a fresh retry completes at healthy latency (~0.2-0.35s), and the recall
-// path must answer within its client's hard 5s budget.
+// path must answer within its client's recall budget.
 const embeddingClient = createCachingEmbeddingClient(
   new StallGuardEmbeddingClient(
     new OpenAICompatibleEmbeddingClient({

@@ -80,12 +80,14 @@ export type MemoryHandlerOptions = {
   // recalls, so the planned production mechanism is similarity-gated. Keep 0
   // (the default) until that exists.
   recallAbstainThreshold?: number;
-  // Hard ceiling on a single /memory/recall (ms). The internal guards
-  // (expansion 2000 + a double-stalled query embedding 2x1000 + local
-  // retrieval) only add up to the client's budget by assumption; this makes it
-  // a guarantee, so the client never gives up first and turns a structured
-  // degradation into an opaque transport timeout. Must stay BELOW the caller's
-  // recall timeout. 0 disables the ceiling.
+  // Hard ceiling on a single /memory/recall (ms), so the client never gives up
+  // first and turns a structured degradation into an opaque transport timeout.
+  // This is a BACKSTOP for a wedged call, not the operative limit: it must sit
+  // ABOVE borg's own worst-case graceful path (measured healthy prod recall
+  // 2.0-2.6s + a double-stalled query embedding 2x1000 = ~4.6s) so the partial
+  // results and degraded reason still get reported, and BELOW the caller's
+  // recall timeout. Set it too low and it pre-empts the very degradation it
+  // exists to deliver. 0 disables the ceiling.
   recallDeadlineMs?: number;
   traceRegistry?: MemoryTraceRegistry;
   maintenanceCoordinator?: Pick<
@@ -98,7 +100,7 @@ type RequestHandler = (req: IncomingMessage, res: ServerResponse) => void;
 
 const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
 const DEFAULT_MAX_RECALL_LIMIT = 50;
-const DEFAULT_RECALL_DEADLINE_MS = 4000;
+const DEFAULT_RECALL_DEADLINE_MS = 5000;
 const DEFAULT_EPISODE_LIST_LIMIT = 20;
 const MAX_EPISODE_LIST_LIMIT = 100;
 const MAX_COMMITMENT_RESPONSE_ITEMS = 100;
