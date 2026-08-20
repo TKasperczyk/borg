@@ -131,6 +131,28 @@ export class PerceptionGateway {
       recentHistoryStrings,
       input.sessionId,
     );
+    // `mood` on the working-memory line is not a measurement of the being. The
+    // affective classifier is handed this turn's input text plus the last ten
+    // recency strings, and its system prompt (memory/affective/extractor.ts)
+    // scores that text "from the speaker's perspective", where the speaker is
+    // the author of `text` -- on an inbound turn, the sender. So `mood=V/A` is
+    // an estimate of the affect of the message that arrived, wholesale-replaced
+    // per turn exactly like `hot_entities` above. Read as one's own state it
+    // will look like an unexplained interior weather system, because the thing
+    // it tracks is on the other side of the channel.
+    //
+    // Two further seams, both invisible on the rendered line:
+    // - The value differs by branch. On a user turn this is the raw classifier
+    //   reading. Reflection then writes the EMA blend (mood.ts, incomingWeight
+    //   0.3) back into working memory, so the value carried forward here on an
+    //   autonomous-like origin is a blend, not a reading. One slot, two
+    //   quantities, no marker distinguishing them.
+    // - Degradation renders as stillness. A failed classifier returns neutral
+    //   with `affectiveSignalDegraded`, which this branch discards in favour of
+    //   the previous mood -- byte-identical to a mood that genuinely did not
+    //   move. The discriminators are outside the prompt: a
+    //   `perception.classifier.degraded` event for `affective_signal`, and the
+    //   absent `mood_history` row (reflection skips the write when degraded).
     const workingMood =
       isAutonomousLikeTurnOrigin(input.origin) || perception.affectiveSignalDegraded === true
         ? (input.workingMemory.mood ?? createNeutralAffectiveSignal())

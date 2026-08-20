@@ -222,6 +222,16 @@ export function computeRetrievalConfidence(
     participantSignatures.add(`semantic:${signature}`);
   }
 
+  // Note the denominator: `topEpisodes.length`, capped at topN, not the
+  // `episodes.length` used by the reported `sampleSize` below. Once retrieval
+  // returns more than topN episodes the two diverge, and diversity stops being
+  // readable against the sample figure that ships beside it -- a shrinking
+  // sample does not narrow this denominator at all while it stays above topN.
+  // The other half of the reading: in a two-participant session every episode
+  // signature collapses to the same string, so episodes contribute exactly 1 to
+  // the numerator no matter how many there are, and every further point of
+  // diversity comes from distinct `semantic:` source sets. A 1.00 there is not
+  // evidence of breadth across conversations; it is the small-denominator case.
   const diversitySampleSize = topEpisodes.length + semanticEvidence.count;
   const sourceDiversity =
     diversitySampleSize === 0 ? 0 : clamp01(participantSignatures.size / diversitySampleSize);

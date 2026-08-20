@@ -30,6 +30,14 @@ export function createMoodValenceDropCondition(
   options: MoodValenceDropConditionOptions,
 ): AutonomyCondition<MoodValenceDropPayload> {
   const clock = options.clock ?? new SystemClock();
+  // Single-session scan. `mood_history` is keyed per session, and the wiring in
+  // borg/autonomy-setup.ts passes no `sessionId`, so this falls to
+  // DEFAULT_SESSION_ID -- a session that carries no conversational traffic in a
+  // multi-session deployment. Conversational sessions can then run deeply
+  // negative for days without this condition seeing a single row, and the
+  // `history.length < windowN` guard below turns that into a silent no-op
+  // rather than an error. Enabling the condition is not enough to make it
+  // observe anything; it also has to be pointed at the sessions that have mood.
   const sessionId = options.sessionId ?? DEFAULT_SESSION_ID;
   const activationPeriodMs = options.activationPeriodMs ?? DEFAULT_ACTIVATION_PERIOD_MS;
 
