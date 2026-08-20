@@ -52,6 +52,7 @@ import {
   INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT,
   renderCreatorIdentity,
   renderCurrentTimeSection,
+  summarizeAutonomySchedulerState,
 } from "./system-prompt.js";
 import {
   AUTONOMOUS_WANT_PROMPT_BLOCK,
@@ -1864,6 +1865,33 @@ function renderTurnStateMechanismHistory(
   };
 }
 
+function renderTurnStateAutonomyScheduler(
+  context: DeliberationContext,
+  nowMs: number | undefined,
+): RenderedTurnStateFragment {
+  const schedulerState = context.turnMechanismEvidence?.autonomySchedulerState;
+
+  if (schedulerState === undefined) {
+    return { lines: [], rowCount: 0, truncationCount: 0, omissionCount: 0 };
+  }
+
+  const summary = summarizeAutonomySchedulerState(
+    schedulerState,
+    nowMs ?? schedulerState.observedAt,
+  );
+
+  return {
+    lines: [
+      '  <autonomy_scheduler_state source="harness_mechanism">',
+      ...summary.split("\n").map((line) => `    ${escapeXmlText(line)}`),
+      "  </autonomy_scheduler_state>",
+    ],
+    rowCount: 2 + schedulerState.budget.wakes_in_current_window_by_trigger.length,
+    truncationCount: 0,
+    omissionCount: 0,
+  };
+}
+
 function renderTurnState(context: DeliberationContext): RenderedPlannerSection {
   const nowMs = promptTimestamp(context);
   const currentTimeLines = renderTurnStateCurrentTimeLines(context, nowMs);
@@ -1872,6 +1900,7 @@ function renderTurnState(context: DeliberationContext): RenderedPlannerSection {
   const affectiveContext = renderTurnStateAffectiveContext(context, nowMs, disclosureAttribute);
   const closureContext = renderTurnStateClosureContext(context, nowMs, disclosureAttribute);
   const mechanismHistory = renderTurnStateMechanismHistory(context, nowMs, disclosureAttribute);
+  const autonomyScheduler = renderTurnStateAutonomyScheduler(context, nowMs);
   const skill = renderTurnStateSkill(context);
   const autonomyTrigger = renderTurnStateAutonomyTrigger(context, disclosureAttribute);
   const frameAnomaly = renderTurnStateFrameAnomaly(context, disclosureAttribute);
@@ -1879,6 +1908,7 @@ function renderTurnState(context: DeliberationContext): RenderedPlannerSection {
     affectiveContext,
     closureContext,
     mechanismHistory,
+    autonomyScheduler,
     skill,
     autonomyTrigger,
     frameAnomaly,
@@ -1901,6 +1931,7 @@ function renderTurnState(context: DeliberationContext): RenderedPlannerSection {
       ...affectiveContext.lines,
       ...closureContext.lines,
       ...mechanismHistory.lines,
+      ...autonomyScheduler.lines,
       ...skill.lines,
       ...autonomyTrigger.lines,
       ...frameAnomaly.lines,

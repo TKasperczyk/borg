@@ -72,6 +72,7 @@ import type { ToolDispatcher } from "../../../tools/dispatcher.js";
 import type { Clock } from "../../../util/clock.js";
 import type { EntityId, SessionId } from "../../../util/ids.js";
 import type { TurnLifecycleTracker } from "../turn-lifecycle-tracker.js";
+import type { AutonomySchedulerBudgetDescription } from "../../../autonomy/index.js";
 
 type WithoutLockMode<T> = T extends unknown ? Omit<T, "lockMode"> & { lockMode?: never } : never;
 
@@ -185,6 +186,7 @@ export type TurnPhaseCoordinatorOptions = {
   chatResponseWatermarkCoordinator?: ChatResponseWatermarkCoordinator;
   outboundDelivery?: Pick<OutboundDelivery, "deliver">;
   autonomousOutboundPolicy?: Pick<AutonomousOutboundPolicy, "promptContext">;
+  autonomySchedulerBudgetProvider?: () => Promise<AutonomySchedulerBudgetDescription | null>;
   outboundSourceTypes?: readonly SessionSourceType[];
   llmFactory: () => LLMClient;
   perceptionGateway: PerceptionGateway;

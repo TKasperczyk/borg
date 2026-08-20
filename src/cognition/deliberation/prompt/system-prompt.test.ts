@@ -2584,6 +2584,82 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("turn-autonomous-silence:finalizer_no_output");
   });
 
+  it.each(["user", "autonomous", "directed_outbound"] as const)(
+    "renders raw harness scheduler state on %s turns",
+    (turnOrigin) => {
+      const prompt = buildBaseSystemPrompt(
+        makeContext({
+          turnOrigin,
+          turnMechanismEvidence: {
+            recentSuppressions: [],
+            recentRegenerations: [],
+            autonomySchedulerState: {
+              observedAt: NOW_MS,
+              budget: {
+                max_wakes_per_window: 6,
+                window_ms: 60 * 60_000,
+                used_in_current_window: 5,
+                reserved_contemplative_wakes_per_window: 2,
+                contemplative_used_in_current_window: 4,
+                wakes_in_current_window_by_trigger: [
+                  {
+                    trigger_name: "scheduled_reflection",
+                    wake_count: 4,
+                    outcome_counts: {
+                      headway: 2,
+                      silent: 1,
+                      error: 0,
+                      busy: 1,
+                    },
+                  },
+                  {
+                    trigger_name: "goal_followup_due",
+                    wake_count: 1,
+                    outcome_counts: {
+                      headway: 0,
+                      silent: 0,
+                      error: 1,
+                      busy: 0,
+                    },
+                  },
+                ],
+                next_budget_slot_frees_at: NOW_MS + 30 * 60_000,
+              },
+            },
+          },
+        }),
+        { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+      );
+      const block = extractBlock(prompt, "borg_mechanism_evidence");
+
+      expect(block).toContain(
+        "Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.",
+      );
+      expect(block).toContain("Wake budget: used=5 / limit=6 / window=1h.");
+      expect(block).toContain(
+        "trigger_name=scheduled_reflection wake_count=4 outcome_counts(headway=2 silent=1 error=0 busy=1)",
+      );
+      expect(block).toContain(
+        "trigger_name=goal_followup_due wake_count=1 outcome_counts(headway=0 silent=0 error=1 busy=0)",
+      );
+      expect(block).toContain("Next budget slot frees: 2023-11-14T22:43:20.000Z (in 30m).");
+    },
+  );
+
+  it("omits mechanism evidence when scheduler and turn-mechanism state are absent", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        turnMechanismEvidence: {
+          recentSuppressions: [],
+          recentRegenerations: [],
+        },
+      }),
+      { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+    );
+
+    expect(prompt).not.toContain("<borg_mechanism_evidence>");
+  });
+
   it("renders closure-loop finalizer guidance in trusted discourse control", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({

@@ -45,7 +45,11 @@ import {
   openQuestionMemoryDisclosureLabel,
   relationalSlotMemoryDisclosureLabel,
 } from "../../../memory/common/disclosure-serializers.js";
-import { formatRelativeAge, formatRelativeDuration } from "../../../util/relative-time.js";
+import {
+  formatRelativeAge,
+  formatRelativeDuration,
+  formatRelativeUntil,
+} from "../../../util/relative-time.js";
 import { utf16SafePrefixEnd } from "../../../util/utf16-boundary.js";
 import { formatUtcDayBoundary, utcDayKey } from "../../../util/utc-day.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
@@ -1215,7 +1219,7 @@ function buildTrustedBasePromptSections(
   };
   const mechanismEvidenceSection = {
     tag: "borg_mechanism_evidence",
-    content: summarizeMechanismEvidence(context),
+    content: summarizeMechanismEvidence(context, promptNowMs),
   };
   const frameAnomalyGateSection = {
     tag: "borg_frame_anomaly_gate",
@@ -1744,30 +1748,75 @@ function summarizeDiscourseControl(
   return lines.length === 0 ? null : lines.join("\n");
 }
 
-function summarizeMechanismEvidence(context: DeliberationContext): string | null {
-  const evidence = context.turnMechanismEvidence ?? {
-    recentSuppressions:
-      context.workingMemory.discourse_state?.recent_suppressions?.map((entry) => ({
-        turnId: entry.turn_id,
-        reason: entry.reason,
-        ts: entry.ts,
-        ...(entry.source_stream_entry_id === undefined
-          ? {}
-          : { sourceStreamEntryId: entry.source_stream_entry_id }),
-      })) ?? [],
-    recentRegenerations:
-      context.workingMemory.discourse_state?.recent_regenerations?.map((entry) => ({
-        turnId: entry.turn_id,
-        mechanism: entry.mechanism,
-        ts: entry.ts,
-        ...(entry.source_stream_entry_id === undefined
-          ? {}
-          : { sourceStreamEntryId: entry.source_stream_entry_id }),
-      })) ?? [],
-  };
+export function summarizeAutonomySchedulerState(
+  schedulerState: NonNullable<
+    NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
+  >,
+  renderNowMs: number,
+): string {
+  const budget = schedulerState.budget;
+  const lines = [
+    "Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.",
+    `Wake budget: used=${budget.used_in_current_window} / limit=${budget.max_wakes_per_window} / window=${formatRelativeDuration(budget.window_ms)}.`,
+  ];
+
+  if (budget.wakes_in_current_window_by_trigger.length === 0) {
+    lines.push("Wakes in current window by trigger_name: none.");
+  } else {
+    lines.push(
+      "Wakes in current window by trigger_name:",
+      ...budget.wakes_in_current_window_by_trigger.map(
+        (group) =>
+          `- trigger_name=${group.trigger_name} wake_count=${group.wake_count} outcome_counts(headway=${group.outcome_counts.headway} silent=${group.outcome_counts.silent} error=${group.outcome_counts.error} busy=${group.outcome_counts.busy})`,
+      ),
+    );
+  }
+
+  lines.push(
+    budget.next_budget_slot_frees_at === null
+      ? "Next budget slot frees: none."
+      : `Next budget slot frees: ${new Date(
+          budget.next_budget_slot_frees_at,
+        ).toISOString()} (${formatRelativeUntil(budget.next_budget_slot_frees_at, renderNowMs)}).`,
+  );
+
+  return lines.join("\n");
+}
+
+function summarizeMechanismEvidence(
+  context: DeliberationContext,
+  promptNowMs?: number,
+): string | null {
+  const evidence: NonNullable<DeliberationContext["turnMechanismEvidence"]> =
+    context.turnMechanismEvidence ?? {
+      recentSuppressions:
+        context.workingMemory.discourse_state?.recent_suppressions?.map((entry) => ({
+          turnId: entry.turn_id,
+          reason: entry.reason,
+          ts: entry.ts,
+          ...(entry.source_stream_entry_id === undefined
+            ? {}
+            : { sourceStreamEntryId: entry.source_stream_entry_id }),
+        })) ?? [],
+      recentRegenerations:
+        context.workingMemory.discourse_state?.recent_regenerations?.map((entry) => ({
+          turnId: entry.turn_id,
+          mechanism: entry.mechanism,
+          ts: entry.ts,
+          ...(entry.source_stream_entry_id === undefined
+            ? {}
+            : { sourceStreamEntryId: entry.source_stream_entry_id }),
+        })) ?? [],
+    };
   const recentSuppressions = evidence.recentSuppressions.slice(-RECENT_SUPPRESSIONS_LIMIT);
   const recentRegenerations = evidence.recentRegenerations.slice(-RECENT_REGENERATIONS_LIMIT);
   const lines: string[] = [];
+  const schedulerState = evidence.autonomySchedulerState;
+
+  if (schedulerState !== undefined) {
+    const renderNowMs = promptNowMs ?? context.nowMs ?? schedulerState.observedAt;
+    lines.push(summarizeAutonomySchedulerState(schedulerState, renderNowMs));
+  }
 
   if (recentSuppressions.length > 0) {
     lines.push(

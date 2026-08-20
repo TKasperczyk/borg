@@ -398,8 +398,9 @@ export const PROMPT_SURFACE_BLOCKS = [
   block({
     id: "borg_mechanism_evidence",
     owner: "cognition.generation",
-    purpose: "Model-visible evidence about recent turn machinery outcomes.",
-    renderCondition: "recent suppression or regeneration evidence exists",
+    purpose:
+      "Model-visible evidence about harness scheduler state and recent turn machinery outcomes.",
+    renderCondition: "scheduler state or recent suppression/regeneration evidence exists",
     source: {
       file: "src/cognition/deliberation/prompt/system-prompt.ts",
       exportName: "summarizeMechanismEvidence",

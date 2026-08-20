@@ -24,6 +24,7 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { buildRegenerationPromptSection } from "../commitments/guard-runner.js";
 import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
 import { formatTurnPlanForPrompt } from "../deliberation/prompt/plan-rendering.js";
+import { buildCompactPlannerSystemPrompt } from "../deliberation/prompt/planner-context.js";
 import { summarizeRetrievedEvidence } from "../deliberation/prompt/retrieval.js";
 import {
   buildBaseSystemPrompt,
@@ -63,6 +64,42 @@ const PROMPT_OPTIONS = {
   participationPolicy: "observing" as const,
   nowMs: NOW_MS,
 };
+const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
+  NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
+> = {
+  observedAt: NOW_MS,
+  budget: {
+    max_wakes_per_window: 6,
+    window_ms: 24 * 60 * 60_000,
+    used_in_current_window: 4,
+    reserved_contemplative_wakes_per_window: 2,
+    contemplative_used_in_current_window: 3,
+    wakes_in_current_window_by_trigger: [
+      {
+        trigger_name: "scheduled_reflection",
+        wake_count: 3,
+        outcome_counts: {
+          headway: 1,
+          silent: 2,
+          error: 0,
+          busy: 0,
+        },
+      },
+      {
+        trigger_name: "goal_followup_due",
+        wake_count: 1,
+        outcome_counts: {
+          headway: 0,
+          silent: 0,
+          error: 1,
+          busy: 0,
+        },
+      },
+    ],
+    next_budget_slot_frees_at: NOW_MS + 6 * 60 * 60_000,
+  },
+};
+const COMPACT_PLANNER_FIXTURE_NAME = "s2-planner-system-prompt-compact.txt";
 const FIXTURE_NAMES = [
   "base-system-user-group-problem-solving.txt",
   "base-system-autonomous-dm-relational.txt",
@@ -582,6 +619,23 @@ function makeContext(overrides: Partial<DeliberationContext> = {}): Deliberation
     },
     entityRepository: makeEntityRepository(),
     workingMemory: makeWorkingMemory(),
+    turnMechanismEvidence: {
+      recentSuppressions: [
+        {
+          turnId: "turn_fixture_suppressed",
+          reason: "finalizer_no_output",
+          ts: NOW_MS - 800,
+        },
+      ],
+      recentRegenerations: [
+        {
+          turnId: "turn_fixture_regenerated",
+          mechanism: "commitment_guard_regeneration",
+          ts: NOW_MS - 700,
+        },
+      ],
+      autonomySchedulerState: FIXTURE_AUTONOMY_SCHEDULER_STATE,
+    },
     evidenceLedgerPromptSection: null,
     evidenceLedger: null,
     ...overrides,
@@ -697,6 +751,11 @@ function makeAutonomousRelationalContext(): DeliberationContext {
       discourse_state: { stop_until_substantive_content: null },
       mode: "relational",
     }),
+    turnMechanismEvidence: {
+      recentSuppressions: [],
+      recentRegenerations: [],
+      autonomySchedulerState: FIXTURE_AUTONOMY_SCHEDULER_STATE,
+    },
     frameAnomaly: null,
   });
 }
@@ -1028,7 +1087,48 @@ describe("prompt surface fixtures", () => {
       plannerSurface: { variant: "legacy" },
     });
 
-    expectFixture("s2-planner-system-prompt.txt", String(llm.requests[0]?.system));
+    const legacySystem = String(llm.requests[0]?.system);
+    expect(legacySystem).toContain("Harness scheduler state");
+    expectFixture("s2-planner-system-prompt.txt", legacySystem);
+  });
+
+  it("pins compact S2 planner system prompt", () => {
+    const workingMemory = makeWorkingMemory();
+    const context = makeContext({
+      workingMemory: {
+        ...workingMemory,
+        discourse_state: {
+          ...workingMemory.discourse_state,
+          stop_until_substantive_content: null,
+        },
+      },
+    });
+    const cacheable = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
+    const compact = buildCompactPlannerSystemPrompt({
+      context,
+      staticPrefix: cacheable.staticPrefix,
+      compactPlannerLedger: buildCompactPlannerLedgerPrompt(makeEvidenceLedger()),
+      additionalPromptSections: [
+        {
+          blockId: "borg_unresolved_contradiction_open_questions",
+          text:
+            renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
+              {
+                tag: "borg_unresolved_contradiction_open_questions",
+                content: "Planner routing note: contradiction open question remains unresolved.",
+              },
+            ]) ?? "",
+        },
+      ],
+    });
+    const compactSystem = systemBlocksToFixture(compact.system);
+    const compactTurnState = compact.system[2]?.text.match(
+      /<borg_planner_turn_state>[\s\S]*?<\/borg_planner_turn_state>/,
+    )?.[0];
+
+    expect(compactSystem).toContain("Harness scheduler state");
+    expect(compactTurnState).toContain('<autonomy_scheduler_state source="harness_mechanism">');
+    expectFixture(COMPACT_PLANNER_FIXTURE_NAME, compactSystem);
   });
 
   it("pins autonomous S2 planner system prompt", async () => {

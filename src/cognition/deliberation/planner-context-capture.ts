@@ -452,6 +452,23 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
       mechanism: entry.mechanism,
       ts: entry.ts,
     })),
+    ...(value.autonomySchedulerState === undefined
+      ? {}
+      : {
+          autonomySchedulerState: {
+            observedAt: value.autonomySchedulerState.observedAt,
+            budget: {
+              ...value.autonomySchedulerState.budget,
+              wakes_in_current_window_by_trigger:
+                value.autonomySchedulerState.budget.wakes_in_current_window_by_trigger.map(
+                  (group) => ({
+                    ...group,
+                    outcome_counts: { ...group.outcome_counts },
+                  }),
+                ),
+            },
+          },
+        }),
   };
 }
 

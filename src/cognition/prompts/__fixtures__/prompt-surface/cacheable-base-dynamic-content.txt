@@ -108,6 +108,12 @@ disclosure: disclosure_class=self_private private-to=unknown; I can use this int
 </borg_procedural_guidance>
 
 <borg_mechanism_evidence>
+Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.
+Wake budget: used=4 / limit=6 / window=1d.
+Wakes in current window by trigger_name:
+- trigger_name=scheduled_reflection wake_count=3 outcome_counts(headway=1 silent=2 error=0 busy=0)
+- trigger_name=goal_followup_due wake_count=1 outcome_counts(headway=0 silent=0 error=1 busy=0)
+Next budget slot frees: 2023-11-15T04:13:20.000Z (in 6h).
 Recent silences from my side: turn_fixture_suppressed:finalizer_no_output. If asked about going quiet, I attribute it to the actual reason code and rendered diagnostic. I do not invent network failures, latency spikes, or technical errors.
 Regenerated final answers from my side: turn_fixture_regenerated: an internal commitment guard regenerated this turn's final answer.
 </borg_mechanism_evidence>

@@ -167,6 +167,33 @@ describe("planner context capture", () => {
           get: repositoryGet,
         } as unknown as DeliberationContext["entityRepository"],
         reRetrieve,
+        turnMechanismEvidence: {
+          recentSuppressions: [],
+          recentRegenerations: [],
+          autonomySchedulerState: {
+            observedAt: NOW_MS,
+            budget: {
+              max_wakes_per_window: 6,
+              window_ms: 60 * 60_000,
+              used_in_current_window: 1,
+              reserved_contemplative_wakes_per_window: 2,
+              contemplative_used_in_current_window: 1,
+              wakes_in_current_window_by_trigger: [
+                {
+                  trigger_name: "scheduled_wake",
+                  wake_count: 1,
+                  outcome_counts: {
+                    headway: 0,
+                    silent: 1,
+                    error: 0,
+                    busy: 0,
+                  },
+                },
+              ],
+              next_budget_slot_frees_at: NOW_MS + 20 * 60_000,
+            },
+          },
+        },
       }),
     );
     const livePair = renderCapturedPlannerSurfacePair(input);
@@ -176,6 +203,10 @@ describe("planner context capture", () => {
 
     expect(replayPair.compact.rendered.system).toEqual(livePair.compact.rendered.system);
     expect(replayPair.legacy.rendered.system).toEqual(livePair.legacy.rendered.system);
+    expect(plannerSurfaceText(replayPair.compact.rendered.system)).toContain(
+      "Harness scheduler state",
+    );
+    expect(replayPair.legacy.rendered.system).toContain("Harness scheduler state");
     expect(replayPair.compact.fingerprint).toEqual(livePair.compact.fingerprint);
     expect(replayPair.legacy.fingerprint).toEqual(livePair.legacy.fingerprint);
     expect(parsed.expected_surfaces).toEqual({

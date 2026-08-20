@@ -187,6 +187,120 @@ function minimalRetrievalPhaseOptions(
   } as unknown as TurnPhaseCoordinatorOptions;
 }
 
+function runMinimalRetrievalPhase(options: TurnPhaseCoordinatorOptions, turnId: string) {
+  return runRetrievalPhase({
+    options,
+    sessionId: DEFAULT_SESSION_ID,
+    turnId,
+    turnInput: {
+      userMessage: "Inspect the current mechanism state.",
+      audience: "operator",
+      origin: "user",
+    },
+    isSelfAudience: false,
+    isUserTurn: true,
+    cognitionInput: "Inspect the current mechanism state.",
+    llmClient: new FakeLLMClient({ responses: [] }),
+    recencyMessages: [],
+    audienceEntityId: null,
+    audienceEntity: null,
+    audienceProfile: null,
+    sessionAudienceRole: "operator",
+    perception: {
+      entities: [],
+      mode: "relational",
+      affectiveSignal: {
+        valence: 0,
+        arousal: 0,
+        dominant_emotion: null,
+      },
+      temporalCue: null,
+    } satisfies PerceptionResult,
+    workingMemory: {
+      turn_counter: 1,
+    } as never,
+    suppressionSet: {} as never,
+    actionLinkSelfContext: null,
+    persistedPromotions: {
+      goalIds: [],
+      executiveStepIds: [],
+    },
+    correctiveCommitment: null,
+    activeParticipants: [],
+    participantRoster: null,
+    participantProfiles: [],
+    currentTurnFrameAnomaly: null,
+    closureLoopAssessment: null,
+  });
+}
+
+describe("autonomy scheduler mechanism-evidence provider", () => {
+  it("continues without a scheduler section when the provider is absent", async () => {
+    const db = openDatabase(":memory:", { migrations: creatorDirectiveMigrations });
+    const repository = new CreatorDirectiveRepository({ db, clock: new FixedClock(2_000) });
+    const options = minimalRetrievalPhaseOptions(repository);
+
+    try {
+      const result = await runMinimalRetrievalPhase(options, "turn-scheduler-provider-absent");
+
+      expect(options).not.toHaveProperty("autonomySchedulerBudgetProvider");
+      expect(result.turnMechanismEvidence.autonomySchedulerState).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("continues without a scheduler section when the provider returns null", async () => {
+    const db = openDatabase(":memory:", { migrations: creatorDirectiveMigrations });
+    const repository = new CreatorDirectiveRepository({ db, clock: new FixedClock(2_000) });
+    const options = minimalRetrievalPhaseOptions(repository);
+    const provider = vi.fn(async () => null);
+    options.autonomySchedulerBudgetProvider = provider;
+
+    try {
+      const result = await runMinimalRetrievalPhase(options, "turn-scheduler-provider-null");
+
+      expect(provider).toHaveBeenCalledOnce();
+      expect(result.turnMechanismEvidence.autonomySchedulerState).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("emits a degraded trace and continues when the provider rejects", async () => {
+    const db = openDatabase(":memory:", { migrations: creatorDirectiveMigrations });
+    const repository = new CreatorDirectiveRepository({ db, clock: new FixedClock(2_000) });
+    const options = minimalRetrievalPhaseOptions(repository);
+    const emit = vi.fn();
+    options.tracer = {
+      enabled: true,
+      includePayloads: true,
+      emit,
+    };
+    options.autonomySchedulerBudgetProvider = vi.fn(async () => {
+      throw new Error("scheduler unavailable");
+    });
+
+    try {
+      const result = await runMinimalRetrievalPhase(options, "turn-scheduler-provider-rejected");
+
+      expect(result.turnMechanismEvidence.autonomySchedulerState).toBeUndefined();
+      expect(emit).toHaveBeenCalledWith(
+        "retrieval.degraded",
+        expect.objectContaining({
+          turnId: "turn-scheduler-provider-rejected",
+          turn_id: "turn-scheduler-provider-rejected",
+          component: "autonomy_scheduler_mechanism_evidence",
+          reason: "scheduler_budget_unavailable",
+          error: "scheduler unavailable",
+        }),
+      );
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe("creator directive retrieval briefing", () => {
   it("filters current-turn authorized directives from the briefing", () => {
     const db = openDatabase(":memory:", {

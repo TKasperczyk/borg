@@ -22,6 +22,7 @@ import type {
   AutonomyConditionName,
   AutonomySchedulerDescription,
   AutonomySchedulerSourceDescription,
+  AutonomySchedulerWakeGroupDescription,
   AutonomyTickEventResult,
   AutonomyTriggerName,
   AutonomyWakeSource,
@@ -384,6 +385,42 @@ export class AutonomyScheduler {
     }
 
     const fleetBrakeMetadata = this.readFleetBrakeState();
+    const usedInCurrentWindow = this.options.wakeRepository.countSince(budgetCutoff);
+    const currentWindowWakes = this.options.wakeRepository.listSince(
+      budgetCutoff,
+      usedInCurrentWindow,
+    );
+    const wakeGroups = new Map<AutonomyWakeSource["name"], AutonomySchedulerWakeGroupDescription>();
+    let oldestWakeAt: number | null = null;
+
+    for (const wake of currentWindowWakes) {
+      let group = wakeGroups.get(wake.trigger_name);
+
+      if (group === undefined) {
+        group = {
+          trigger_name: wake.trigger_name,
+          wake_count: 0,
+          outcome_counts: {
+            headway: 0,
+            silent: 0,
+            error: 0,
+            busy: 0,
+          },
+        };
+        wakeGroups.set(wake.trigger_name, group);
+      }
+
+      group.wake_count += 1;
+      if (wake.outcome !== null) {
+        group.outcome_counts[wake.outcome] += 1;
+      }
+      oldestWakeAt = oldestWakeAt === null ? wake.ts : Math.min(oldestWakeAt, wake.ts);
+    }
+
+    const wakesInCurrentWindowByTrigger = AUTONOMY_WAKE_SOURCE_NAMES.flatMap((name) => {
+      const group = wakeGroups.get(name);
+      return group === undefined ? [] : [group];
+    });
 
     return {
       enabled: this.options.enabled,
@@ -392,7 +429,7 @@ export class AutonomyScheduler {
       budget: {
         max_wakes_per_window: this.options.maxWakesPerWindow,
         window_ms: this.options.budgetWindowMs,
-        used_in_current_window: this.options.wakeRepository.countSince(budgetCutoff),
+        used_in_current_window: usedInCurrentWindow,
         reserved_contemplative_wakes_per_window: Math.min(
           this.options.maxWakesPerWindow,
           Math.max(0, Math.floor(this.options.reservedContemplativeWakesPerWindow ?? 0)),
@@ -400,6 +437,11 @@ export class AutonomyScheduler {
         contemplative_used_in_current_window: this.options.wakeRepository.countSince(budgetCutoff, {
           sourceCategory: "contemplative",
         }),
+        wakes_in_current_window_by_trigger: wakesInCurrentWindowByTrigger,
+        // countSince/listSince admit ts === cutoff, so the oldest wake remains
+        // in-window through oldestWakeAt + budgetWindowMs.
+        next_budget_slot_frees_at:
+          oldestWakeAt === null ? null : oldestWakeAt + this.options.budgetWindowMs + 1,
       },
       fleet_brake: {
         enabled: this.fleetBrakeOptions.enabled,

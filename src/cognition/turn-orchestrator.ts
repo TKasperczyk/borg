@@ -8,6 +8,7 @@ import type {
   ImagePerceptionService,
 } from "../attachments/index.js";
 import type { Config } from "../config/index.js";
+import type { AutonomySchedulerBudgetDescription } from "../autonomy/index.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
@@ -181,6 +182,7 @@ export type TurnOrchestratorOptions = {
   chatResponseWatermarkCoordinator?: ChatResponseWatermarkCoordinator;
   outboundDelivery?: Pick<OutboundDelivery, "deliver">;
   autonomousOutboundPolicy?: Pick<AutonomousOutboundPolicy, "promptContext">;
+  autonomySchedulerBudgetProvider?: () => Promise<AutonomySchedulerBudgetDescription | null>;
   outboundSourceTypes?: readonly SessionSourceType[];
   affectiveSignalDetector?: typeof detectAffectiveSignal;
   sessionLock?: SessionLock;
@@ -387,6 +389,7 @@ export class TurnOrchestrator {
       chatResponseWatermarkCoordinator: options.chatResponseWatermarkCoordinator,
       outboundDelivery: options.outboundDelivery,
       autonomousOutboundPolicy: options.autonomousOutboundPolicy,
+      autonomySchedulerBudgetProvider: options.autonomySchedulerBudgetProvider,
       outboundSourceTypes: options.outboundSourceTypes,
       llmFactory: () => options.llmFactory(),
       perceptionGateway,

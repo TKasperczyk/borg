@@ -109,12 +109,20 @@ export type AutonomyTrigger<Payload extends Record<string, unknown> = Record<str
 export type AutonomyCondition<Payload extends Record<string, unknown> = Record<string, unknown>> =
   AutonomyWakeSource<Payload>;
 
+export type AutonomySchedulerWakeGroupDescription = {
+  trigger_name: AutonomyWakeSourceName;
+  wake_count: number;
+  outcome_counts: Record<AutonomyWakeOutcome, number>;
+};
+
 export type AutonomySchedulerBudgetDescription = {
   max_wakes_per_window: number;
   window_ms: number;
   used_in_current_window: number;
   reserved_contemplative_wakes_per_window: number;
   contemplative_used_in_current_window: number;
+  wakes_in_current_window_by_trigger: AutonomySchedulerWakeGroupDescription[];
+  next_budget_slot_frees_at: number | null;
 };
 
 export type AutonomySchedulerTriggerSourceDescription = {
@@ -133,8 +141,7 @@ export type AutonomySchedulerConditionSourceDescription = {
 };
 
 export type AutonomySchedulerSourceDescription =
-  | AutonomySchedulerTriggerSourceDescription
-  | AutonomySchedulerConditionSourceDescription;
+  AutonomySchedulerTriggerSourceDescription | AutonomySchedulerConditionSourceDescription;
 
 export type AutonomySchedulerFleetBrakeDescription = {
   enabled: boolean;

@@ -11,6 +11,7 @@ import type {
   RecentSuppressionEntry,
   WorkingMemory,
 } from "../memory/working/index.js";
+import type { AutonomySchedulerBudgetDescription } from "../autonomy/index.js";
 import {
   RECENT_REGENERATIONS_LIMIT,
   RECENT_SUPPRESSIONS_LIMIT,
@@ -45,15 +46,22 @@ export type HydratedRecentRegeneration = {
   sourceStreamEntryId?: StreamEntryId;
 };
 
+export type AutonomySchedulerMechanismEvidence = {
+  observedAt: number;
+  budget: AutonomySchedulerBudgetDescription;
+};
+
 export type TurnMechanismEvidence = {
   recentSuppressions: readonly HydratedRecentSuppression[];
   recentRegenerations: readonly HydratedRecentRegeneration[];
+  autonomySchedulerState?: AutonomySchedulerMechanismEvidence;
 };
 
 export type HydrateTurnMechanismEvidenceInput = {
   dataDir: string;
   sessionId: SessionId;
   workingMemory: WorkingMemory;
+  autonomySchedulerState?: AutonomySchedulerMechanismEvidence;
   entryIndex?: Pick<StreamEntryIndexRepository, "lookupMany">;
   createStreamReader: (sessionId: SessionId) => StreamReader;
 };
@@ -162,5 +170,8 @@ export async function hydrateTurnMechanismEvidence(
           }),
     })),
     recentRegenerations: recentRegenerations.map(hydratedRecentRegeneration),
+    ...(input.autonomySchedulerState === undefined
+      ? {}
+      : { autonomySchedulerState: input.autonomySchedulerState }),
   };
 }

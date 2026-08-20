@@ -324,6 +324,12 @@ export async function openBorgDependencies(
       },
       clock,
     });
+    // The scheduler runs the turn orchestrator, so it is composed second. This
+    // read-only late-bound ref lets turn assembly ask that same scheduler for
+    // its authoritative budget snapshot after openBorgDependencies completes.
+    const autonomySchedulerRef: {
+      current: ReturnType<typeof buildAutonomyScheduler> | null;
+    } = { current: null };
     const turnOrchestrator = buildTurnOrchestrator({
       config,
       retrievalPipeline: repositories.retrievalPipeline,
@@ -363,6 +369,10 @@ export async function openBorgDependencies(
       chatResponseWatermarkCoordinator,
       outboundDelivery,
       autonomousOutboundPolicy,
+      autonomySchedulerBudgetProvider: async () => {
+        const scheduler = autonomySchedulerRef.current;
+        return scheduler === null ? null : (await scheduler.describe()).budget;
+      },
       outboundSourceTypes: outboundConnectorRegistry.sourceTypes(),
       createStreamWriter: repositories.createStreamWriter,
       entryIndex: repositories.entryIndex,
@@ -434,6 +444,7 @@ export async function openBorgDependencies(
       clock,
       tracer,
     });
+    autonomySchedulerRef.current = autonomyScheduler;
     const maintenanceScheduler = buildMaintenanceScheduler({
       config,
       lance,

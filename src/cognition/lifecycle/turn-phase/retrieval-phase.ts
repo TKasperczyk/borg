@@ -790,10 +790,37 @@ export async function runRetrievalPhase(input: {
   const retrievedSemantic = retrievalContext.retrievedSemantic;
   const proceduralContext = retrievalContext.proceduralContext;
   const selectedSkill = retrievalContext.selectedSkill;
+  let autonomySchedulerState: TurnMechanismEvidence["autonomySchedulerState"];
+
+  if (input.options.autonomySchedulerBudgetProvider !== undefined) {
+    try {
+      const budget = await input.options.autonomySchedulerBudgetProvider();
+
+      if (budget !== null) {
+        autonomySchedulerState = {
+          observedAt: nowMs,
+          budget,
+        };
+      }
+    } catch (error) {
+      if (input.options.tracer.enabled) {
+        input.options.tracer.emit("retrieval.degraded", {
+          turnId: input.turnId,
+          turn_id: input.turnId,
+          component: "autonomy_scheduler_mechanism_evidence",
+          reason: "scheduler_budget_unavailable",
+          ...(input.options.tracer.includePayloads
+            ? { error: error instanceof Error ? error.message : String(error) }
+            : {}),
+        });
+      }
+    }
+  }
   const turnMechanismEvidence = await hydrateTurnMechanismEvidence({
     dataDir: input.options.config.dataDir,
     sessionId: input.sessionId,
     workingMemory: input.workingMemory,
+    ...(autonomySchedulerState === undefined ? {} : { autonomySchedulerState }),
     entryIndex: input.options.entryIndex,
     createStreamReader: input.options.createStreamReader,
   });

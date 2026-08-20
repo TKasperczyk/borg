@@ -2952,8 +2952,8 @@ describe("AutonomyScheduler", () => {
     });
   });
 
-  it("describes registered sources, unregistered sources, next tick, and budget", async () => {
-    const clock = new ManualClock(1_000_000);
+  it("describes sources and budget while counting a null-outcome wake only in wake_count", async () => {
+    const clock = new ManualClock(950_000);
     const harness = await createOfflineTestHarness({
       clock,
     });
@@ -2962,12 +2962,46 @@ describe("AutonomyScheduler", () => {
       db: harness.db,
       clock,
     });
-    wakeRepository.record({
+    const headwayWake = wakeRepository.record({
       trigger_name: "scheduled_wake",
       session_id: DEFAULT_SESSION_ID,
       wake_source_type: "trigger",
       source_category: "contemplative",
     });
+    wakeRepository.recordOutcome(headwayWake.id, "headway");
+    clock.set(980_000);
+    const silentWake = wakeRepository.record({
+      trigger_name: "scheduled_wake",
+      session_id: DEFAULT_SESSION_ID,
+      wake_source_type: "trigger",
+      source_category: "contemplative",
+    });
+    wakeRepository.recordOutcome(silentWake.id, "silent");
+    const errorWake = wakeRepository.record({
+      trigger_name: "commitment_revoked",
+      condition_name: "commitment_revoked",
+      session_id: DEFAULT_SESSION_ID,
+      wake_source_type: "condition",
+      source_category: "operational",
+    });
+    wakeRepository.recordOutcome(errorWake.id, "error");
+    const busyWake = wakeRepository.record({
+      trigger_name: "commitment_revoked",
+      condition_name: "commitment_revoked",
+      session_id: DEFAULT_SESSION_ID,
+      wake_source_type: "condition",
+      source_category: "operational",
+    });
+    wakeRepository.recordOutcome(busyWake.id, "busy");
+    const nullOutcomeWake = wakeRepository.record({
+      trigger_name: "commitment_revoked",
+      condition_name: "commitment_revoked",
+      session_id: DEFAULT_SESSION_ID,
+      wake_source_type: "condition",
+      source_category: "operational",
+    });
+    expect(nullOutcomeWake.outcome).toBeNull();
+    clock.set(1_000_000);
     const setIntervalFn = vi.fn((callback: () => void) => {
       void callback;
       return 1 as unknown as ReturnType<typeof setInterval>;
@@ -3044,9 +3078,32 @@ describe("AutonomyScheduler", () => {
       budget: {
         max_wakes_per_window: 6,
         window_ms: 60_000,
-        used_in_current_window: 1,
+        used_in_current_window: 5,
         reserved_contemplative_wakes_per_window: 2,
-        contemplative_used_in_current_window: 1,
+        contemplative_used_in_current_window: 2,
+        wakes_in_current_window_by_trigger: [
+          {
+            trigger_name: "scheduled_wake",
+            wake_count: 2,
+            outcome_counts: {
+              headway: 1,
+              silent: 1,
+              error: 0,
+              busy: 0,
+            },
+          },
+          {
+            trigger_name: "commitment_revoked",
+            wake_count: 3,
+            outcome_counts: {
+              headway: 0,
+              silent: 0,
+              error: 1,
+              busy: 1,
+            },
+          },
+        ],
+        next_budget_slot_frees_at: 1_010_001,
       },
       sources: expect.arrayContaining([
         {
@@ -3082,6 +3139,73 @@ describe("AutonomyScheduler", () => {
       next_tick_at: 1_005_000,
     });
     await scheduler.stop();
+  });
+
+  it("reports the first millisecond after the inclusive budget window as the next slot", async () => {
+    const clock = new ManualClock(1_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const wakeRepository = new AutonomyWakesRepository({
+      db: harness.db,
+      clock,
+    });
+    wakeRepository.record({
+      trigger_name: "scheduled_wake",
+      session_id: DEFAULT_SESSION_ID,
+      wake_source_type: "trigger",
+      source_category: "contemplative",
+    });
+    const scheduler = createScheduler({
+      db: harness.db,
+      wakeRepository,
+      enabled: true,
+      intervalMs: 5_000,
+      maxWakesPerWindow: 6,
+      budgetWindowMs: 60_000,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      watermarkRepository: new StreamWatermarkRepository({
+        db: harness.db,
+        clock,
+      }),
+      turnOrchestrator: {
+        run: vi.fn(),
+      },
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({
+            dataDir: harness.tempDir,
+            sessionId,
+            clock,
+          }),
+        clock,
+      }),
+      sources: [],
+      setIntervalFn: vi.fn() as unknown as typeof setInterval,
+      clearIntervalFn: vi.fn(),
+    });
+
+    clock.set(61_000);
+    await expect(scheduler.describe()).resolves.toMatchObject({
+      budget: {
+        used_in_current_window: 1,
+        next_budget_slot_frees_at: 61_001,
+      },
+    });
+
+    clock.set(61_001);
+    await expect(scheduler.describe()).resolves.toMatchObject({
+      budget: {
+        used_in_current_window: 0,
+        wakes_in_current_window_by_trigger: [],
+        next_budget_slot_frees_at: null,
+      },
+    });
   });
 
   it("keeps next_tick_at null while stopped and resets stale tick anchors on start", async () => {
