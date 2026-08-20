@@ -14,6 +14,7 @@ import { MemoryTraceRegistry } from "./memory-trace.js";
 import type { Borg } from "../borg.js";
 import { commitmentSchema, type CommitmentRecord } from "../memory/commitments/index.js";
 import type { Episode } from "../memory/episodic/index.js";
+import { EmbeddingError } from "../util/errors.js";
 import {
   createCommitmentId,
   createEntityId,
@@ -793,6 +794,128 @@ describe("memory sidecar handler", () => {
     expect(onBody).toEqual(offBody);
     expect(offRec.lastRecallTraceTurnId).toBeUndefined();
     expect(onRec.lastRecallTraceTurnId).toMatch(/^sidecar_recall:acme:/);
+  });
+
+  it("labels a partial recall as degraded so the caller can tell it from an empty memory", async () => {
+    const pool: MemoryPool = {
+      async withTenant(_tenantId, fn) {
+        return fn({
+          episodic: {
+            search: async (
+              _query: string,
+              opts: { onDegraded?: (d: { subsystem: string; reason: string }) => void },
+            ) => {
+              opts.onDegraded?.({
+                subsystem: "episodic_candidates",
+                reason: "1/2 episodic intent lane(s) failed: EmbeddingError: stalled",
+              });
+              return [
+                {
+                  episode: { id: "ep_1", title: "Title", narrative: "Narrative" },
+                  score: 0.91,
+                  rawScore: 1.16,
+                },
+              ];
+            },
+          },
+        } as unknown as Borg);
+      },
+    };
+    const base = await start(pool);
+    const res = await post(
+      base,
+      "/memory/recall",
+      { tenant: "acme", query: "who leads", limit: 3 },
+      TOKEN,
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      degraded?: boolean;
+      degraded_reason?: string;
+      episodes?: unknown[];
+    };
+    expect(body.degraded).toBe(true);
+    expect(body.degraded_reason).toContain("episodic_candidates");
+    expect(body.episodes).toHaveLength(1);
+  });
+
+  it("omits the degraded flag on a healthy recall", async () => {
+    const { pool } = recordingPool();
+    const base = await start(pool);
+    const res = await post(
+      base,
+      "/memory/recall",
+      { tenant: "acme", query: "who leads", limit: 3 },
+      TOKEN,
+    );
+
+    const body = (await res.json()) as {
+      degraded?: boolean;
+      degraded_reason?: string;
+      episodes?: unknown[];
+    };
+    expect(body.degraded).toBeUndefined();
+    expect(body.degraded_reason).toBeUndefined();
+  });
+
+  it("answers within its deadline when the recall itself stalls", async () => {
+    const pool: MemoryPool = {
+      async withTenant(_tenantId, fn) {
+        return fn({
+          episodic: {
+            // Never settles: the shape of a wedged provider call.
+            search: () => new Promise(() => {}),
+          },
+        } as unknown as Borg);
+      },
+    };
+    const base = await start(pool, TOKEN, { recallDeadlineMs: 25 });
+    const res = await post(
+      base,
+      "/memory/recall",
+      { tenant: "acme", query: "who leads", limit: 3 },
+      TOKEN,
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      degraded?: boolean;
+      degraded_reason?: string;
+      episodes?: unknown[];
+    };
+    expect(body.degraded).toBe(true);
+    expect(body.degraded_reason).toContain("deadline");
+    expect(body.episodes).toEqual([]);
+  });
+
+  it("answers an embedding stall as a degradation instead of a 500", async () => {
+    const pool: MemoryPool = {
+      async withTenant(_tenantId, fn) {
+        return fn({
+          episodic: {
+            search: async () => {
+              throw new EmbeddingError("Embedding call stalled: 2 attempt(s) exceeded 1000ms each");
+            },
+          },
+        } as unknown as Borg);
+      },
+    };
+    const base = await start(pool);
+    const res = await post(
+      base,
+      "/memory/recall",
+      { tenant: "acme", query: "who leads", limit: 3 },
+      TOKEN,
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      episodes: [],
+      degraded: true,
+      degraded_reason: "embeddings: Embedding call stalled: 2 attempt(s) exceeded 1000ms each",
+    });
   });
 
   it("abstains only when the configured threshold is above the top raw score", async () => {

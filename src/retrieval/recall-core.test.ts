@@ -14,8 +14,9 @@ import {
 } from "../offline/test-support.js";
 import { StreamWriter } from "../stream/index.js";
 import { FixedClock, ManualClock } from "../util/clock.js";
+import { EmbeddingError } from "../util/errors.js";
 import { createEntityId, createSessionId } from "../util/ids.js";
-import { RetrievalPipeline } from "./pipeline.js";
+import { RetrievalPipeline, type RetrievalDegradation } from "./pipeline.js";
 import { expandRecall } from "./recall-expansion.js";
 
 const NOW_MS = 10_000_000_000;
@@ -456,6 +457,52 @@ describe("Recall Core", () => {
       stopReason: null,
       usage: null,
     });
+  });
+
+  it("keeps surviving lanes and reports degradation when an episodic embedding stalls", async () => {
+    const tracer = createTracer();
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createEmbeddingClient(),
+    });
+    const { mayaEpisode } = await insertMayaAndDesignReview(harness);
+    // How an exhausted stall guard surfaces. The vector lanes depend on this
+    // call; the known-term lexical/indexed lanes never touch the embedding
+    // backend, so they must still produce candidates.
+    const stalledEmbeddingClient = {
+      embed: vi.fn(async () => {
+        throw new EmbeddingError("Embedding call stalled: 2 attempt(s) exceeded 1000ms each");
+      }),
+      embedBatch: vi.fn(async () => {
+        throw new EmbeddingError("Embedding call stalled: 2 attempt(s) exceeded 1000ms each");
+      }),
+    };
+    const degradations: RetrievalDegradation[] = [];
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: stalledEmbeddingClient as never,
+      episodicRepository: harness.episodicRepository,
+      dataDir: harness.tempDir,
+      clock: harness.clock,
+      tracer,
+    });
+
+    const result = await pipeline.searchEpisodesForDisclosure(MAYA_TURN, {
+      limit: 3,
+      entityTerms: ["Maya"],
+      traceTurnId: "turn-episodic-embedding-stall",
+      crossAudience: true,
+      onDegraded: (degradation) => degradations.push(degradation),
+    });
+
+    expect(result.map((item) => item.episode.id)).toContain(mayaEpisode.id);
+    expect(degradations.map((entry) => entry.subsystem)).toContain("episodic_candidates");
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "retrieval.degraded",
+      expect.objectContaining({
+        turnId: "turn-episodic-embedding-stall",
+        subsystem: "episodic_candidates",
+      }),
+    );
   });
 
   it("degrades to raw-query intents when recall expansion exceeds its timeout", async () => {

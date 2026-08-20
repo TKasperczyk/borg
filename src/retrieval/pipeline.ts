@@ -38,7 +38,7 @@ import type { StreamEntry, StreamEntryIndexRepository } from "../stream/index.js
 import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { mapWithConcurrency } from "../util/collections.js";
-import { StorageError } from "../util/errors.js";
+import { describeError, StorageError } from "../util/errors.js";
 import {
   DEFAULT_SESSION_ID,
   type AttachmentId,
@@ -184,7 +184,18 @@ export type RetrievalPipelineOptions = {
   lexicalFusionEnabled?: boolean;
 };
 
+// A retrieval subsystem that failed without failing the whole recall. The
+// tracer already records these, but an interactive caller (the memory
+// sidecar's /memory/recall) needs them inline so it can label a partial answer
+// rather than presenting it as a complete one — "no memories found" and "the
+// search itself broke" must not look identical to the consumer.
+export type RetrievalDegradation = {
+  subsystem: string;
+  reason: string;
+};
+
 export type RetrievalSharedOptions = EpisodeCognitionRecallOptions & {
+  onDegraded?: (degradation: RetrievalDegradation) => void;
   rankingAudienceEntityId?: EntityId | null;
   mmrLambda?: number;
   scoreWeights?: ScoreWeights;
@@ -1369,6 +1380,30 @@ export class RetrievalPipeline {
     }
   }
 
+  // Record a subsystem that degraded without failing the recall: to the trace
+  // (for offline debugging) and to the caller (so an interactive consumer can
+  // label the partial answer). A throwing callback must not take down the
+  // recall it is only reporting on.
+  private reportDegraded(
+    options: RetrievalExecutionOptions,
+    degradation: RetrievalDegradation,
+  ): void {
+    if (this.tracer.enabled && options.traceTurnId !== undefined) {
+      this.tracer.emit("retrieval.degraded", {
+        turnId: options.traceTurnId,
+        session_id: options.sessionId,
+        subsystem: degradation.subsystem,
+        reason: degradation.reason,
+      });
+    }
+
+    try {
+      options.onDegraded?.(degradation);
+    } catch {
+      // Reporting is best-effort; the recall result still stands.
+    }
+  }
+
   // The abort signal inside expandRecall is advisory: the SDK's retry backoff
   // does not observe it, so a 429/5xx retry can keep the call pending past the
   // deadline. This race is the hard cap; the losing call is left to settle on
@@ -1411,13 +1446,35 @@ export class RetrievalPipeline {
     limit: number,
     mode: RetrievalExecutionMode,
   ): Promise<EpisodeEvidenceCandidate[]> {
-    const rawCandidates = (
-      await Promise.all(
-        intents.map((intent) =>
-          this.collectEpisodicCandidatesForDisclosureModeIntent(intent, options, limit, mode),
-        ),
+    // Per-intent lanes settle independently: a stalled query embedding kills
+    // the vector lanes for its own intent, but the lexical/indexed lanes of the
+    // other intents still hold usable candidates. Failing the whole recall
+    // there (Promise.all) turned an intermittent gateway stall into a total
+    // recall outage for the caller, so collect what survived and report the
+    // rest as a degradation.
+    const settled = await Promise.allSettled(
+      intents.map((intent) =>
+        this.collectEpisodicCandidatesForDisclosureModeIntent(intent, options, limit, mode),
+      ),
+    );
+    const rawCandidates = settled
+      .filter(
+        (outcome): outcome is PromiseFulfilledResult<RawEpisodeEvidenceCandidate[]> =>
+          outcome.status === "fulfilled",
       )
-    ).flat();
+      .flatMap((outcome) => outcome.value);
+    const failed = settled.filter(
+      (outcome): outcome is PromiseRejectedResult => outcome.status === "rejected",
+    );
+
+    if (failed.length > 0) {
+      this.reportDegraded(options, {
+        subsystem: "episodic_candidates",
+        reason:
+          `${failed.length}/${settled.length} episodic intent lane(s) failed: ` +
+          describeError(failed[0]?.reason),
+      });
+    }
     const participantEntityIds = this.resolveParticipantEntityIds(
       rawCandidates,
       rankingAudienceEntityId(options),

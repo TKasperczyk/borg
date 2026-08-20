@@ -38,7 +38,9 @@ import {
   type CommitmentRecord,
 } from "../memory/commitments/index.js";
 import type { Episode } from "../memory/episodic/index.js";
+import type { RetrievalDegradation } from "../retrieval/pipeline.js";
 import type { StreamEntryInput } from "../stream/index.js";
+import { EmbeddingError } from "../util/errors.js";
 import {
   parseAuditId,
   parseCommitmentId,
@@ -78,6 +80,13 @@ export type MemoryHandlerOptions = {
   // recalls, so the planned production mechanism is similarity-gated. Keep 0
   // (the default) until that exists.
   recallAbstainThreshold?: number;
+  // Hard ceiling on a single /memory/recall (ms). The internal guards
+  // (expansion 2000 + a double-stalled query embedding 2x1000 + local
+  // retrieval) only add up to the client's budget by assumption; this makes it
+  // a guarantee, so the client never gives up first and turns a structured
+  // degradation into an opaque transport timeout. Must stay BELOW the caller's
+  // recall timeout. 0 disables the ceiling.
+  recallDeadlineMs?: number;
   traceRegistry?: MemoryTraceRegistry;
   maintenanceCoordinator?: Pick<
     MemoryMaintenanceCoordinator,
@@ -89,9 +98,44 @@ type RequestHandler = (req: IncomingMessage, res: ServerResponse) => void;
 
 const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
 const DEFAULT_MAX_RECALL_LIMIT = 50;
+const DEFAULT_RECALL_DEADLINE_MS = 4000;
 const DEFAULT_EPISODE_LIST_LIMIT = 20;
 const MAX_EPISODE_LIST_LIMIT = 100;
 const MAX_COMMITMENT_RESPONSE_ITEMS = 100;
+
+class RecallDeadlineExceeded extends Error {
+  constructor(deadlineMs: number) {
+    super(`recall exceeded ${deadlineMs}ms deadline`);
+    this.name = "RecallDeadlineExceeded";
+  }
+}
+
+// Mirrors the pipeline's expansion guard: the abandoned search keeps running
+// and is left to settle on its own (its rejection swallowed) while the caller
+// gets an answer within the deadline.
+async function raceRecallDeadline<T>(search: Promise<T>, deadlineMs: number): Promise<T> {
+  if (deadlineMs <= 0) {
+    return search;
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  search.catch(() => undefined);
+
+  try {
+    return await Promise.race([
+      search,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new RecallDeadlineExceeded(deadlineMs)), deadlineMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 const APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE = "team-agent.sender";
 
 const operatorCommitmentBodySchema = z
@@ -402,6 +446,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const maxRecallLimit = options.maxRecallLimit ?? DEFAULT_MAX_RECALL_LIMIT;
   const recallAbstainThreshold = options.recallAbstainThreshold ?? 0;
+  const recallDeadlineMs = options.recallDeadlineMs ?? DEFAULT_RECALL_DEADLINE_MS;
   let recallTraceSequence = 0;
 
   const nextRecallTraceTurnId = (tenant: string): string => {
@@ -989,13 +1034,45 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         typeof body.limit === "number" && Number.isFinite(body.limit) ? body.limit : 10;
       const limit = Math.max(1, Math.min(maxRecallLimit, Math.floor(rawLimit)));
       const traceTurnId = traceRegistry === undefined ? undefined : nextRecallTraceTurnId(tenant);
-      const hits = await pool.withTenant(tenant, (borg) =>
-        borg.episodic.search(query, {
-          limit,
-          ...(traceTurnId === undefined ? {} : { traceTurnId }),
-        }),
-      );
+      const degradations: RetrievalDegradation[] = [];
+      let hits;
+      try {
+        hits = await raceRecallDeadline(
+          pool.withTenant(tenant, (borg) =>
+            borg.episodic.search(query, {
+              limit,
+              onDegraded: (degradation) => degradations.push(degradation),
+              ...(traceTurnId === undefined ? {} : { traceTurnId }),
+            }),
+          ),
+          recallDeadlineMs,
+        );
+      } catch (error) {
+        if (!(error instanceof RecallDeadlineExceeded)) {
+          throw error;
+        }
+        console.error(`memory-sidecar: /memory/recall hit its deadline for tenant "${tenant}"`);
+        send(res, 200, {
+          ok: true,
+          episodes: [],
+          degraded: true,
+          degraded_reason: `deadline: ${error.message}`,
+        });
+        return;
+      }
       const topRawScore = hits.length === 0 ? null : Math.max(...hits.map((hit) => hit.rawScore));
+      // A partial recall must say so: the client cannot otherwise tell "nothing
+      // is stored" from "the search broke", and only the latter justifies
+      // telling the user their memory is unavailable.
+      const degraded =
+        degradations.length === 0
+          ? {}
+          : {
+              degraded: true,
+              degraded_reason: degradations
+                .map((entry) => `${entry.subsystem}: ${entry.reason}`)
+                .join("; "),
+            };
 
       if (
         recallAbstainThreshold > 0 &&
@@ -1007,6 +1084,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           abstained: true,
           abstain_reason: "low_relevance",
           top_raw_score: topRawScore,
+          ...degraded,
         });
         return;
       }
@@ -1014,6 +1092,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       send(res, 200, {
         ok: true,
         top_raw_score: topRawScore,
+        ...degraded,
         episodes: hits.map((hit) => ({
           id: hit.episode.id,
           title: hit.episode.title,
@@ -1027,6 +1106,19 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       // failure (open / storage / provider) that may carry sensitive detail —
       // log server-side, return a generic error.
       console.error(`memory-sidecar: ${rawPath} failed for tenant "${tenant}"`, error);
+      // An embedding stall on the recall path is a known-transient gateway
+      // fault, not a broken request. Answering it as an explicit degradation
+      // lets the caller distinguish it from an empty memory and keeps it off
+      // the 5xx path, where a retry-happy client would only add load.
+      if (rawPath === "/memory/recall" && error instanceof EmbeddingError) {
+        send(res, 200, {
+          ok: true,
+          episodes: [],
+          degraded: true,
+          degraded_reason: `embeddings: ${error.message}`,
+        });
+        return;
+      }
       send(res, 500, { error: "internal error" });
     }
   }
