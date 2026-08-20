@@ -2668,6 +2668,15 @@ function imagePerceptionToEvidence(
   nowMs: number,
 ): EvidenceItem {
   const record = item.hit.record;
+  // originAge is the only part of this evidence item that varies between turns:
+  // caption, scene, kind, terms and provenance all derive from the immutable
+  // perception row, so a re-attached image is otherwise byte-identical every
+  // time it is recalled. The age is recomputed here against the turn's nowMs
+  // (the rehydration path routes through this function for exactly that
+  // reason), so it rolls over at the upload's time of day rather than at
+  // midnight, and it can differ between two turns inside one calendar day.
+  // Do not memoize the returned item per record: that would silently freeze
+  // the one field on a remembered image that still carries information.
   const originAge = formatRelativeAge(record.created_at, nowMs);
   const originFrame = `[remembered image -- not sent in this message; first shared ${originAge}]`;
   const imageLabel = `Image: remembered user-uploaded ${record.image_kind}`;
