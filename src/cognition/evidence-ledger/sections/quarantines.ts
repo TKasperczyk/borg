@@ -138,6 +138,25 @@ export function addContradictionsAndQuarantinesSection(context: BuilderSectionCo
     );
   }
 
+  // `contradictions_quarantines` is one bucket over two independent populations:
+  // everything above is quarantine-family (frame anomaly, stream quarantine,
+  // review-queue corrections and reviews), and the single entry below is the only
+  // contradiction row the section ever carries. A being reading the section as
+  // "my contradictions" counts quarantine rows and gets a number that no
+  // contradiction machinery produced.
+  //
+  // The row's basis is also narrower than the confidence penalty's, in both
+  // directions, and nothing rendered says so:
+  //   - This row keys on `contradiction_hits.length > 0`. The penalty keys on
+  //     `contradiction_hits.length > 0 || contradicts.length > 0`
+  //     (retrieval/pipeline.ts), so a contradicts *node* with no traversal hit
+  //     applies the 0.7 multiplier with no row here at all -- a silent penalty.
+  //   - Where there are hits, the penalty is gated again on edge validity
+  //     (retrieval/confidence.ts `isEdgeValidAt` over every edge of every hit's
+  //     edgePath), which this row does not consult. An all-expired path renders
+  //     the row with the multiplier back at 1.
+  // So "the section is non-empty" and "confidence was penalized" are separate
+  // facts. Report the basis of each rather than implying one from the other.
   const retrievedSemantic = context.input.retrievedSemantic;
   const contradictionCount = retrievedSemantic?.contradiction_hits.length ?? 0;
 

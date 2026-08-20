@@ -45,6 +45,13 @@ export function assembleRetrievedContext(input: {
   nowMs: number;
   expectedCount?: number;
 }): RetrievedContext {
+  // Two booleans leave here under one name. `contradiction_present` below is the
+  // caller's raw flag; `confidence.contradictionPresent` is that flag *and* a
+  // temporal gate -- some edge on some hit's path still valid at `asOf`. They
+  // disagree whenever every contradiction path has expired, and only the second
+  // one moves the 0.7 multiplier. Note the gate reads `hit.edgePath` whole, not
+  // just its `contradicts` edge, so an unrelated still-valid hop on a multi-hop
+  // path is enough to keep the penalty on.
   const contradictionEdges = input.semantic.contradiction_hits.flatMap((hit) => hit.edgePath);
   const confidence = computeRetrievalConfidence({
     episodes: input.episodes,
