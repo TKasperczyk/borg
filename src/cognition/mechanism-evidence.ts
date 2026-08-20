@@ -135,6 +135,19 @@ function hydratedRecentRegeneration(entry: RecentRegenerationEntry): HydratedRec
   };
 }
 
+// Scope of "recent silences from my side" (system-prompt.ts renders this list): it is a
+// POST-GENERATION register, not a register of turns that produced nothing. Its only writer is
+// `discourseStateService.appendSuppressionMarker`, called exclusively from post-generation-phase --
+// so an entry exists only for a turn that generated a candidate and then had it suppressed by a
+// guard. A turn that died before or during generation (provider error, superseding inbound) never
+// reaches that call site and is therefore absent here by construction, not by filtering: nothing
+// removes aborts from this list, they were never added. Measured on the live demo store
+// (2026-08-20): 2165 stream-index rows carry turn_status='aborted', every one active=0; 1463
+// `agent_suppressed` rows, every one active=1 -- the two classes do not overlap and only the
+// second one can ever appear below. See the comment on `isAbortedTurnMarker` in
+// src/stream/turn-status.ts for the independent second reason the abort's `reason` string is
+// unreadable. Consequence worth stating plainly before anyone reasons from this block: a run of
+// aborted turns renders here as an unbroken record of turns that spoke.
 export async function hydrateTurnMechanismEvidence(
   input: HydrateTurnMechanismEvidenceInput,
 ): Promise<TurnMechanismEvidence> {
