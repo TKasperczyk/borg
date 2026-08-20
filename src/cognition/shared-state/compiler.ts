@@ -700,7 +700,10 @@ export async function compileSharedStateArtifact(
     previousArtifact,
     input.previousArtifactSummaryOptions,
   );
-  const existingStateKeyRegistry = buildExistingStateKeyRegistry(previousArtifact);
+  const existingStateKeyRegistry = buildExistingStateKeyRegistry(
+    previousArtifact,
+    previousArtifactSummary,
+  );
   const canonicalizationCandidates = input.canonicalizationCandidates ?? {};
   const relationalSlotSourceStreamEntryIds = relationalSlotEvidenceStreamEntryIds(input);
   // The re-subtraction is not a duplicate of the caller's filter: trusted relational-slot

@@ -2654,6 +2654,52 @@ describe("compileSharedStateArtifact", () => {
     expect(prompt.previous_artifact_summary?.active_entries?.pending).toEqual([]);
   });
 
+  it("names which registry ids the summary still gives a body to", async () => {
+    repository.upsert(audience, [
+      {
+        type: "add",
+        state_key: "observation.nora.video_call_repeated_question",
+        kind: "live",
+        text: "The active observation thread is preserved.",
+        provenance_stream_entry_ids: [currentStreamEntryId],
+      },
+    ]);
+
+    const registryFor = async (
+      summaryOptions?: { maxEntries: Partial<Record<SharedStateEntryKind, number>> },
+    ): Promise<{ active_entry_ids: string[]; correctable_entry_ids: string[] | null }> => {
+      const llmClient = new FakeLLMClient({
+        responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
+      });
+
+      await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        ...(summaryOptions === undefined ? {} : { previousArtifactSummaryOptions: summaryOptions }),
+      });
+
+      const prompt = JSON.parse(String(llmClient.requests[0]?.messages[0]?.content)) as {
+        existing_state_key_registry?: Array<{
+          state_key: string;
+          active_entry_ids: string[];
+          correctable_entry_ids: string[] | null;
+        }>;
+      };
+
+      return prompt.existing_state_key_registry?.[0]!;
+    };
+
+    // `update` and `supersede` write replacement text, so they can only be aimed at ids whose body
+    // the summary carried. Aging walks a row out of that slice without changing anything the
+    // registry used to show, which is how a claim that was correctable while fresh becomes
+    // pointable-but-uncorrectable purely by the clock.
+    const withBody = await registryFor();
+    expect(withBody.correctable_entry_ids).toEqual(withBody.active_entry_ids);
+
+    const withoutBody = await registryFor({ maxEntries: { live: 0 } });
+    expect(withoutBody.active_entry_ids).toEqual(withBody.active_entry_ids);
+    expect(withoutBody.correctable_entry_ids).toEqual([]);
+  });
+
   it("warns when the compiler input estimate exceeds the prompt budget", async () => {
     const trace = createTraceRecorder();
     const llmClient = new FakeLLMClient({

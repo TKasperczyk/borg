@@ -93,6 +93,12 @@ export type SharedStatePromptSummary = {
 // crossing, so a claim that was correctable while fresh becomes uncorrectable by the same clock
 // that made it stale -- which is why observed supersedes cluster on rows written minutes earlier
 // and never appear on aged ones.
+//
+// Nothing in the prompt marked that crossing: `kinds` is here, but reading it as a correction
+// budget requires knowing the per-kind body-slot table, which the prompt does not carry. So name
+// the reachable set directly -- which of this key's ids the summary actually gave a body to, and
+// therefore which of them `update` and `supersede` can still be aimed at. This is a structural
+// fact about what this prompt carries, not a judgment about the entries.
 export type ExistingStateKeyRegistryEntry = {
   state_key: string;
   bucket: string;
@@ -101,6 +107,9 @@ export type ExistingStateKeyRegistryEntry = {
   kinds: SharedStateEntryKind[];
   most_recent_update_at: number;
   most_recent_stream_entry_id: SharedStateEntry["last_updated_stream_entry_ids"][number] | null;
+  // Null when no summary was supplied to compare against: absent evidence, not "nothing here is
+  // correctable". Empty means the summary was built and gave this key no body at all.
+  correctable_entry_ids: SharedStateEntry["id"][] | null;
 };
 
 function sharedStatePromptSummaryOptions(options: SharedStatePromptSummaryOptions = {}): {
@@ -177,7 +186,16 @@ function stateKeyRegistryKinds(entries: readonly SharedStateEntry[]): SharedStat
 
 export function buildExistingStateKeyRegistry(
   artifact: SharedStateArtifact | null | undefined,
+  summary?: SharedStatePromptSummary | null,
 ): ExistingStateKeyRegistryEntry[] {
+  const bodyCarriedEntryIds =
+    summary === undefined || summary === null
+      ? null
+      : new Set(
+          Object.values(summary.active_entries_by_state_key ?? {}).flatMap((entries) =>
+            (entries ?? []).map((entry) => entry.id),
+          ),
+        );
   const groups = new Map<string, SharedStateEntry[]>();
 
   for (const entry of activeSharedStateArtifactEntries(artifact)) {
@@ -202,6 +220,12 @@ export function buildExistingStateKeyRegistry(
         kinds: stateKeyRegistryKinds(entries),
         most_recent_update_at: mostRecent.last_updated_at,
         most_recent_stream_entry_id: lastUpdatedStreamEntryId(mostRecent),
+        correctable_entry_ids:
+          bodyCarriedEntryIds === null
+            ? null
+            : entriesByRecency
+                .map((entry) => entry.id)
+                .filter((entryId) => bodyCarriedEntryIds.has(entryId)),
       };
     });
 }
