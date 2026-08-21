@@ -105,6 +105,13 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
             },
             respectStaleBackoff:
               options.config.autonomy.triggers.goalFollowupDue.respectStaleBackoff,
+            executiveScoring: {
+              embeddingClient: options.embeddingClient,
+              threshold: options.config.executive.goalFocusThreshold,
+              deadlineLookaheadMs: options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
+              staleMs: options.config.autonomy.executiveFocus.stalenessSec * 1_000,
+              tracer: options.tracer,
+            },
             goalStaleBackoffActionAvailabilityKey,
             clock: options.clock,
           }),
@@ -205,6 +212,7 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
     enabled: options.config.autonomy.enabled,
     intervalMs: options.config.autonomy.intervalMs,
     maxWakesPerWindow: options.config.autonomy.maxWakesPerWindow,
+    goalWakeBatchMax: options.config.autonomy.goalWakeBatchMax,
     budgetWindowMs: options.config.autonomy.budgetWindowMs,
     reservedContemplativeWakesPerWindow:
       options.config.autonomy.reservedContemplativeWakesPerWindow,

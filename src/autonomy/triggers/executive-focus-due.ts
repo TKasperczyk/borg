@@ -503,6 +503,10 @@ export function createExecutiveFocusDueTrigger(
           watermarkProcessName: getGoalCooldownProcessName(goal.id),
           sortTs: dueAt,
           stateTs: dueStep.updated_at,
+          executiveGoalScore: score,
+          executiveGoalRank: focus.candidates.findIndex(
+            (candidate) => candidate.goal_id === goal.id,
+          ),
           payload: buildScorePayload({
             goal,
             score,
@@ -557,6 +561,10 @@ export function createExecutiveFocusDueTrigger(
             watermarkProcessName: getGoalCooldownProcessName(selectedGoal.id),
             sortTs: progressAnchor + options.stalenessMs,
             stateTs: progressAnchor,
+            executiveGoalScore: topEligibleCandidate,
+            executiveGoalRank: focus.candidates.findIndex(
+              (candidate) => candidate.goal_id === selectedGoal.id,
+            ),
             ...(actionAvailabilityKey === null
               ? {}
               : { goalStaleBackoffActionAvailabilityKey: actionAvailabilityKey }),

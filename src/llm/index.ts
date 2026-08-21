@@ -390,6 +390,10 @@ export type LLMCompleteResult = {
 
 export type LLMConverseOptions = LLMCallOptions & {
   messages: readonly LLMContentBlockMessage[];
+  // Overrides the outer deadline for this call; forwarded verbatim by the
+  // converse->complete compatibility mapping (same semantics as
+  // LLMCompleteOptions.timeoutMs).
+  timeoutMs?: number;
 };
 
 export type LLMConverseStreamOptions = LLMConverseOptions & {

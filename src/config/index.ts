@@ -691,6 +691,7 @@ const configBaseSchema = z.object({
       enabled: z.boolean().default(true),
       intervalMs: z.number().int().positive().default(60_000),
       maxWakesPerWindow: z.number().int().positive().default(6),
+      goalWakeBatchMax: z.number().int().positive().default(5),
       budgetWindowMs: z.number().int().positive().default(86_400_000),
       reservedContemplativeWakesPerWindow: z.number().int().nonnegative().default(1),
       proactiveOutbound: z
@@ -1852,6 +1853,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["autonomy", "maxWakesPerWindow"],
     readOptionalEnvNumber(env, "BORG_AUTONOMY_MAX_WAKES_PER_WINDOW"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "goalWakeBatchMax"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_GOAL_WAKE_BATCH_MAX"),
   );
   setConfigOverride(
     overrides,

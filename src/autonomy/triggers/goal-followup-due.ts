@@ -1,11 +1,15 @@
+import { computeExecutiveContextFits, selectExecutiveFocus } from "../../executive/index.js";
+import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { GoalRecord, GoalTreeNode, GoalsRepository } from "../../memory/self/index.js";
 import {
   goalMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
 } from "../../memory/common/disclosure-serializers.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
+import { buildSelfScoringFeatureSet } from "../../retrieval/scoring-features.js";
 import {
   getExecutiveFocusGoalStaleBackoffProcessName,
   goalStaleBackoffState,
@@ -42,6 +46,13 @@ export type GoalFollowupDueTriggerOptions = {
     dormancyCount: number;
   };
   respectStaleBackoff: boolean;
+  executiveScoring?: {
+    embeddingClient: EmbeddingClient;
+    threshold: number;
+    deadlineLookaheadMs: number;
+    staleMs: number;
+    tracer?: TurnTracer;
+  };
   clock?: Clock;
   sessionId?: SessionId;
   goalStaleBackoffActionAvailabilityKey?: () => string | null;
@@ -105,6 +116,90 @@ export function createGoalFollowupDueTrigger(
       lastProgressTs: goal.last_progress_ts,
       actionAvailabilityKey,
       ...options.staleBackoff,
+    });
+  }
+
+  async function attachExecutiveScores(
+    goals: readonly GoalRecord[],
+    dueEvents: readonly DueEvent<GoalFollowupDuePayload>[],
+    nowMs: number,
+  ): Promise<DueEvent<GoalFollowupDuePayload>[]> {
+    const scoring = options.executiveScoring;
+
+    if (scoring === undefined || dueEvents.length === 0) {
+      return [...dueEvents];
+    }
+
+    let goalVectors: Awaited<ReturnType<typeof buildSelfScoringFeatureSet>>["goalVectors"] = [];
+
+    try {
+      goalVectors = (
+        await buildSelfScoringFeatureSet({
+          embeddingClient: scoring.embeddingClient,
+          goals,
+          activeValues: [],
+        })
+      ).goalVectors;
+    } catch (error) {
+      if (scoring.tracer?.enabled === true) {
+        scoring.tracer.emit("retrieval.degraded", {
+          turnId: "autonomy:goal_followup_due",
+          subsystem: "scoring_features",
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    // Use the same wake-time scoring context as today's executive stale-goal
+    // selection so a batch's primary is the goal that path would have named.
+    const autonomyPayload = {
+      trigger: "executive_focus_due",
+      reason: "goal_stale",
+    };
+    const contextText = JSON.stringify(autonomyPayload);
+    let contextFitByGoalId: Awaited<ReturnType<typeof computeExecutiveContextFits>> = new Map();
+
+    try {
+      contextFitByGoalId = await computeExecutiveContextFits({
+        embeddingClient: scoring.embeddingClient,
+        goalVectors,
+        contextText,
+      });
+    } catch (error) {
+      if (scoring.tracer?.enabled === true) {
+        scoring.tracer.emit("retrieval.degraded", {
+          turnId: "autonomy:goal_followup_due",
+          subsystem: "executive_context_fit",
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const focus = selectExecutiveFocus({
+      goals,
+      cognitionInput: contextText,
+      autonomyPayload,
+      nowMs,
+      threshold: scoring.threshold,
+      deadlineLookaheadMs: scoring.deadlineLookaheadMs,
+      staleMs: scoring.staleMs,
+      scoreContext: "wake_time_trigger_selection",
+      contextFitByGoalId,
+    });
+    const scoreByGoalId = new Map(
+      focus.candidates.map((candidate, rank) => [candidate.goal_id, { candidate, rank }]),
+    );
+
+    return dueEvents.map((event) => {
+      const ranked = scoreByGoalId.get(event.payload.goal_id);
+
+      return ranked === undefined
+        ? event
+        : {
+            ...event,
+            executiveGoalScore: ranked.candidate,
+            executiveGoalRank: ranked.rank,
+          };
     });
   }
 
@@ -188,7 +283,9 @@ export function createGoalFollowupDueTrigger(
         })
         .filter((event): event is DueEvent<GoalFollowupDuePayload> => event !== null);
 
-      return dueEvents.sort(
+      const scoredEvents = await attachExecutiveScores(goals, dueEvents, nowMs);
+
+      return scoredEvents.sort(
         (left, right) =>
           left.sortTs - right.sortTs || right.payload.priority - left.payload.priority,
       );

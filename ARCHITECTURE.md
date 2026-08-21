@@ -1922,6 +1922,21 @@ scores, or rewrites the semantic content the woken turn produces. It reads only
 structural outcomes -- emission kind, delivered-outbound state, and durable
 progress timestamps -- then records the wake and its outcome.
 
+Due `goal_followup_due` events and `executive_focus_due` events whose reason is
+`goal_stale` are the bounded batching exception. The scheduler admits deadline
+goals before stale-only goals, but when both lanes are populated it reserves at
+least one batch slot for stale demand so continuing deadline arrivals cannot
+starve dormancy progress. It ranks the admitted set with the existing
+executive-focus score and presents one primary focus plus secondary due goals in
+a single turn (default maximum five, configurable through
+`autonomy.goalWakeBatchMax` or `BORG_AUTONOMY_GOAL_WAKE_BATCH_MAX`). The batch
+uses one rolling-budget slot and one `autonomy_wakes` row, while every source
+event keeps its own watermark and every presented goal independently keeps the
+same progress/empty-wake backoff accounting it would have received alone. Those
+per-goal outcomes and all source watermarks commit in one SQLite transaction,
+with outcome writes attempted first, so a failed write cannot latch away an
+unaccounted presentation.
+
 Goal staleness can stay true when nothing has changed, so executive-focus stale
 wakes and goal-followup wakes share one durable per-goal dampener. A wake that
 ends in neither progress nor structural headway (an outward message, a
@@ -1973,7 +1988,10 @@ of its own prompt surface, schedule/list/cancel self-wakes, and post outbound
 only when the existing outbound gate exposes an authorized target.
 The autonomous prompt renders that menu from the same tool definitions the
 finalizer uses, so the interior action menu is a description of live structure,
-not aspirational copy.
+not aspirational copy. Its tool loop permits up to eight tool rounds and five
+calls per round by default. A 24-minute aggregate wall-clock budget reserves the
+last 12 minutes for the existing text-only finalization path; reaching either
+deadline stops granting more tool rounds and completes with work already done.
 
 `tool.promptSurface.changes` is autonomous-only. It returns structural
 change-history -- block ids, surfaces, placement orders, hashes, and observation

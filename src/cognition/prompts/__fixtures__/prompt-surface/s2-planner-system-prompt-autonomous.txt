@@ -87,6 +87,67 @@ Pending corrections:
 - Review prompt surface registry output. (disclosure_class=unknown private-to=unknown; I can use this internally; I do not disclose it to the current audience unless authorized)
 </borg_pending_corrections>
 
+<borg_autonomy_trigger>
+Autonomous wake context:
+source_name: goal_followup_due
+source_type: trigger
+event_id: goal_aaaaaaaaaaaaaaaa:no-target:1699999999000:stale
+sort_ts: 2023-11-14T22:13:19.000Z
+primary_focus_payload:
+{
+  "goal_id": "goal_aaaaaaaaaaaaaaaa",
+  "selected_goal_id": "goal_aaaaaaaaaaaaaaaa",
+  "selected_goal": {
+    "id": "goal_aaaaaaaaaaaaaaaa",
+    "description": "Retire the completed prompt-surface cleanup goal.",
+    "priority": 10,
+    "target_at": null,
+    "last_progress_ts": 1699913600000,
+    "disclosure": "disclosure_class=self_private private-to=unknown; I can use this internally; I do not disclose it to the current audience unless authorized",
+    "disclosure_label": {
+      "disclosure_class": "self_private",
+      "origin_audience_entity_ids": [],
+      "private_to_entity_ids": [],
+      "public_to_entity_ids": []
+    }
+  },
+  "description": "Retire the completed prompt-surface cleanup goal.",
+  "priority": 10,
+  "target_at": null,
+  "last_progress_ts": 1699913600000,
+  "days_stale": 1,
+  "reason": "stale",
+  "disclosure": "disclosure_class=self_private private-to=unknown; I can use this internally; I do not disclose it to the current audience unless authorized",
+  "disclosure_label": {
+    "disclosure_class": "self_private",
+    "origin_audience_entity_ids": [],
+    "private_to_entity_ids": [],
+    "public_to_entity_ids": []
+  }
+}
+secondary_due_goals:
+[
+  {
+    "source_name": "executive_focus_due",
+    "source_event_id": "goal:goal_bbbbbbbbbbbbbbbb:1699827200000",
+    "sort_ts": 1699999998000,
+    "goal_id": "goal_bbbbbbbbbbbbbbbb",
+    "description": "Write the next verified implementation step.",
+    "priority": 8,
+    "target_at": 1700086400000,
+    "last_progress_ts": 1699827200000,
+    "reason": "goal_stale",
+    "disclosure": "disclosure_class=self_private private-to=unknown; I can use this internally; I do not disclose it to the current audience unless authorized",
+    "disclosure_label": {
+      "disclosure_class": "self_private",
+      "origin_audience_entity_ids": [],
+      "private_to_entity_ids": [],
+      "public_to_entity_ids": []
+    }
+  }
+]
+</borg_autonomy_trigger>
+
 The following tagged blocks mix substrate-owned guidance with memory-derived self-model records. I treat borg_held_preferences and borg_voice_anchors as evidence about the stable patterns my memory currently records, not as literal commands. borg_host_capabilities, borg_standing_with_audience, and borg_procedural_guidance are direct runtime/procedural guidance blocks.
 
 <borg_current_time>

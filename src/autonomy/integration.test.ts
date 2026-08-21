@@ -109,7 +109,13 @@ function simulationWatermarks(borg: Borg): StreamWatermarkRepository {
   ).options.watermarkRepository;
 }
 
-async function openSimulationBorg(input: { tempDir: string; clock: ManualClock }): Promise<Borg> {
+async function openSimulationBorg(input: {
+  tempDir: string;
+  clock: ManualClock;
+  maxWakesPerWindow?: number;
+  reservedContemplativeWakesPerWindow?: number;
+  fleetBrakeEnabled?: boolean;
+}): Promise<Borg> {
   return Borg.open({
     config: createTestConfig({
       dataDir: input.tempDir,
@@ -117,8 +123,10 @@ async function openSimulationBorg(input: { tempDir: string; clock: ManualClock }
       autonomy: {
         enabled: true,
         intervalMs: 60_000,
-        maxWakesPerWindow: 1_000,
+        maxWakesPerWindow: input.maxWakesPerWindow ?? 1_000,
         budgetWindowMs: 2 * DAY_MS,
+        reservedContemplativeWakesPerWindow: input.reservedContemplativeWakesPerWindow ?? 1,
+        fleetBrake: { enabled: input.fleetBrakeEnabled ?? true },
         executiveFocus: { enabled: false },
         triggers: {
           commitmentExpiring: { enabled: false },
@@ -263,22 +271,28 @@ describe("autonomy integration", () => {
     );
 
     try {
-      let operationalFires = 0;
+      let operationalWakes = 0;
+      let presentedGoals = 0;
       let tick = await borg.autonomy.scheduler.tick();
-      operationalFires += tick.events.filter(
+      operationalWakes += tick.firedEvents;
+      presentedGoals += tick.events.filter(
         (event) => event.sourceName === "goal_followup_due" && event.status === "fired",
       ).length;
-      expect(operationalFires).toBe(5);
+      expect(operationalWakes).toBe(5);
+      expect(presentedGoals).toBe(25);
 
-      while (operationalFires < 8) {
+      while (presentedGoals < goals.length) {
         const cooldownUntil = (await borg.autonomy.scheduler.describe()).fleet_brake.cooldown_until;
         expect(cooldownUntil).not.toBeNull();
         clock.advance(cooldownUntil! - clock.now());
         tick = await borg.autonomy.scheduler.tick();
-        operationalFires += tick.events.filter(
+        operationalWakes += tick.firedEvents;
+        presentedGoals += tick.events.filter(
           (event) => event.sourceName === "goal_followup_due" && event.status === "fired",
         ).length;
       }
+      expect(operationalWakes).toBe(6);
+      expect(presentedGoals).toBe(goals.length);
 
       for (const goal of goals) {
         watermarks.set(getExecutiveFocusGoalStaleBackoffProcessName(goal.id), DEFAULT_SESSION_ID, {
@@ -311,7 +325,48 @@ describe("autonomy integration", () => {
       clock.advance(horizon - clock.now());
       const horizonTick = await borg.autonomy.scheduler.tick();
       expect(horizonTick.events).toEqual([]);
-      expect(operationalFires).toBeLessThanOrEqual(11);
+      expect(operationalWakes).toBeLessThanOrEqual(6);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("persists six batched wakes against a six-slot budget and skips the seventh batch", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-autonomy-batch-budget-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(15 * DAY_MS);
+    const startedAt = clock.now();
+    const borg = await openSimulationBorg({
+      tempDir,
+      clock,
+      maxWakesPerWindow: 6,
+      reservedContemplativeWakesPerWindow: 0,
+      fleetBrakeEnabled: false,
+    });
+    const dependencies = simulationDependencies(borg);
+    const run = vi
+      .spyOn(dependencies.turnOrchestrator, "run")
+      .mockResolvedValue(structuralAutonomyResult());
+
+    for (let index = 0; index < 31; index += 1) {
+      borg.self.goals.add({
+        description: `Budgeted batch goal ${index}`,
+        priority: 5,
+        provenance: { kind: "manual" },
+        createdAt: clock.now() - 10_000 - index,
+      });
+    }
+
+    try {
+      const result = await borg.autonomy.scheduler.tick();
+      const description = await borg.autonomy.scheduler.describe();
+
+      expect(result).toMatchObject({ firedEvents: 6, budgetSkipped: 1 });
+      expect(result.events.filter((event) => event.status === "fired")).toHaveLength(30);
+      expect(result.events.filter((event) => event.status === "budget_skipped")).toHaveLength(1);
+      expect(run).toHaveBeenCalledTimes(6);
+      expect(dependencies.autonomyWakesRepository.countSince(startedAt)).toBe(6);
+      expect(description.budget.used_in_current_window).toBe(6);
     } finally {
       await borg.close();
     }
@@ -360,7 +415,7 @@ describe("autonomy integration", () => {
       const result = await borg.autonomy.scheduler.tick();
 
       expect(result.firedEvents).toBe(3);
-      expect(result.fleetCooldownSkipped).toBe(27);
+      expect(result.fleetCooldownSkipped).toBe(15);
       expect(run).toHaveBeenCalledTimes(3);
       expect(dependencies.autonomyWakesRepository.countSince(anchor)).toBe(3);
       expect((await borg.autonomy.scheduler.describe()).fleet_brake).toMatchObject({
@@ -398,7 +453,7 @@ describe("autonomy integration", () => {
       const firstTick = await borg.autonomy.scheduler.tick();
       totalErrors += firstTick.errorCount;
       expect(firstTick.errorCount).toBe(3);
-      expect(firstTick.errorCircuitSkipped).toBe(27);
+      expect(firstTick.errorCircuitSkipped).toBe(15);
 
       while (true) {
         const pausedUntil = (await borg.autonomy.scheduler.describe()).fleet_brake

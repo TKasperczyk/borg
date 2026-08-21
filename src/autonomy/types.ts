@@ -1,4 +1,5 @@
 import type { TurnInput } from "../cognition/index.js";
+import type { ExecutiveGoalScore } from "../executive/index.js";
 
 export const AUTONOMY_TRIGGER_NAMES = [
   "commitment_expiring",
@@ -84,6 +85,10 @@ export type DueEvent<Payload extends Record<string, unknown> = Record<string, un
   sortTs: number;
   stateTs?: number;
   goalStaleBackoffActionAvailabilityKey?: string;
+  // Internal wake-selection metadata. It is deliberately outside payload so
+  // the single-goal model-facing shape remains byte-for-byte unchanged.
+  executiveGoalScore?: ExecutiveGoalScore;
+  executiveGoalRank?: number;
   payload: Payload;
 };
 
