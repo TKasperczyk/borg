@@ -226,6 +226,14 @@ export class TurnRetrievalCoordinator {
     // nothing on the rendered line to mark it. Reading `mood=` as "the value
     // steering retrieval" is exact only above the threshold.
     //
+    // The two stale-mood regimes age in opposite directions, and which one is
+    // in force is invisible. A carried-forward `perceivedMood` (autonomous-like
+    // origin, or a degraded classifier -- perception/gateway.ts) is copied
+    // verbatim through working memory and never decays, so if its original
+    // magnitude cleared the threshold it keeps the mood term on indefinitely,
+    // ranking on an arbitrarily old reading while the decayed fallback below it
+    // has long since gone inactive and unused.
+    //
     // What the term does when on: a ranking weight (ACTIVE_MOOD_WEIGHT 0.2 in
     // an un-normalised linear fusion, scoring.ts), never a filter, so recall
     // stays global. It scores each episode by distance from that episode's
