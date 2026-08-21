@@ -123,6 +123,7 @@ describe("config", () => {
     ).toBe(OFFLINE_PROCESS_NAMES.length);
     expect(config.executive.goalFocusThreshold).toBe(0.45);
     expect(config.autonomy.maxWakesPerWindow).toBe(6);
+    expect(config.autonomy.goalWakeBatchMax).toBe(5);
     expect(config.autonomy.budgetWindowMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.autonomy.reservedContemplativeWakesPerWindow).toBe(1);
     expect(config.autonomy.proactiveOutbound).toEqual({
@@ -566,12 +567,14 @@ describe("config", () => {
       dataDir: tempDir,
       env: {
         BORG_AUTONOMY_MAX_WAKES_PER_WINDOW: "9",
+        BORG_AUTONOMY_GOAL_WAKE_BATCH_MAX: "4",
         BORG_AUTONOMY_BUDGET_WINDOW_MS: "7200000",
         BORG_AUTONOMY_RESERVED_CONTEMPLATIVE_WAKES_PER_WINDOW: "2",
       },
     });
 
     expect(config.autonomy.maxWakesPerWindow).toBe(9);
+    expect(config.autonomy.goalWakeBatchMax).toBe(4);
     expect(config.autonomy.budgetWindowMs).toBe(7_200_000);
     expect(config.autonomy.reservedContemplativeWakesPerWindow).toBe(2);
   });

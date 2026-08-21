@@ -519,7 +519,10 @@ describe("finalizer context capture and replay", () => {
       "dispatched",
       "dispatched",
       "dispatched",
-      "skipped_iteration_cap",
+      // Autonomous turns allow 5 calls per iteration (raised for goal-wake
+      // batching), so the fourth call dispatches; the cap-skip disposition is
+      // pinned by the tool-loop boundary tests instead.
+      "dispatched",
       "skipped_unavailable",
     ]);
     expect(transcript.events[0]).toMatchObject({
@@ -532,8 +535,8 @@ describe("finalizer context capture and replay", () => {
       error: "Error: dispatcher unavailable",
     });
     expect(transcript.events[3]?.result).toEqual({
-      ok: false,
-      error: "Skipped because this turn allows at most 3 tool calls per iteration.",
+      ok: true,
+      output: { matches: ["match:deferred"] },
     });
     expect(transcript.events[4]?.result).toEqual({
       ok: false,

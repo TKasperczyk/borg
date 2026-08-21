@@ -512,6 +512,8 @@ describe("executive focus due trigger", () => {
     });
     expect(events[0]?.stateTs).toBe(goal.created_at);
     expect(events[0]?.payload.selected_score.components.progress_debt).toBe(1);
+    expect(events[0]?.executiveGoalRank).toBe(0);
+    expect(events[0]?.executiveGoalScore?.goal_id).toBe(goal.id);
   });
 
   it("does not reach past a fresh top eligible goal to fire on a lower stale goal", async () => {

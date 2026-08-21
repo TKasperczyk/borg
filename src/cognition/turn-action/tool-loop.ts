@@ -3,6 +3,7 @@ import type {
   LLMContentBlock,
   LLMContentBlockMessage,
   LLMConverseOptions,
+  LLMConverseResult,
   LLMStreamTextHandler,
   LLMToolDefinition,
   LLMToolUseBlock,
@@ -18,14 +19,23 @@ import type { BorgRole } from "../../memory/commitments/index.js";
 import type { SessionAudienceRole } from "../../sessions/index.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import type { TurnOrigin } from "../types.js";
+import { DEFAULT_DELIBERATION_PLAN_CALL_TIMEOUT_MS } from "../deliberation/constants.js";
 import { buildUsageTraceBlock, toTraceJsonValue } from "../../tracing/tracer.js";
 import { summarizeToolSchemas, traceLlmCallRetryHook } from "../../tracing/llm-call-trace.js";
+import { SystemClock, type Clock } from "../../util/clock.js";
+import { LLMError } from "../../util/errors.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 
 const DEFAULT_MAX_ITERATIONS = 5;
 const DEFAULT_MAX_TOOL_CALLS_PER_ITERATION = 3;
+const AUTONOMOUS_MAX_ITERATIONS = 8;
+const AUTONOMOUS_MAX_TOOL_CALLS_PER_ITERATION = 5;
+export const AUTONOMOUS_TOOL_LOOP_WALL_CLOCK_BUDGET_MS =
+  2 * DEFAULT_DELIBERATION_PLAN_CALL_TIMEOUT_MS;
+export const AUTONOMOUS_TOOL_LOOP_TOOL_ROUND_BUDGET_MS =
+  AUTONOMOUS_TOOL_LOOP_WALL_CLOCK_BUDGET_MS - DEFAULT_DELIBERATION_PLAN_CALL_TIMEOUT_MS;
 
 export type ToolLoopUsage = {
   input_tokens: number;
@@ -84,6 +94,7 @@ export type ExecuteToolLoopOptions = {
   toolChoice?: LLMConverseOptions["tool_choice"];
   maxIterations?: number;
   maxToolCallsPerIteration?: number;
+  clock?: Pick<Clock, "now">;
   terminalToolNames?: readonly string[];
   stream?: boolean;
   onTextDelta?: LLMStreamTextHandler;
@@ -269,9 +280,18 @@ async function dispatchToolUseBlock(
  * passed into this loop plus the dispatcher's origin checks.
  */
 export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<ToolLoopResult> {
-  const maxIterations = options.maxIterations ?? DEFAULT_MAX_ITERATIONS;
+  const maxIterations =
+    options.maxIterations ??
+    (options.origin === "autonomous" ? AUTONOMOUS_MAX_ITERATIONS : DEFAULT_MAX_ITERATIONS);
   const maxToolCallsPerIteration =
-    options.maxToolCallsPerIteration ?? DEFAULT_MAX_TOOL_CALLS_PER_ITERATION;
+    options.maxToolCallsPerIteration ??
+    (options.origin === "autonomous"
+      ? AUTONOMOUS_MAX_TOOL_CALLS_PER_ITERATION
+      : DEFAULT_MAX_TOOL_CALLS_PER_ITERATION);
+  const wallClock = options.clock ?? new SystemClock();
+  const loopStartedAt = wallClock.now();
+  const autonomousToolRoundDeadline = loopStartedAt + AUTONOMOUS_TOOL_LOOP_TOOL_ROUND_BUDGET_MS;
+  const autonomousLoopDeadline = loopStartedAt + AUTONOMOUS_TOOL_LOOP_WALL_CLOCK_BUDGET_MS;
   const messages = options.initialMessages.map((message) => cloneMessage(message));
   const anthropicTools = toAnthropicToolDefinitions(options.tools);
   const allowedToolNames = new Set(options.tools.map((tool) => tool.name));
@@ -280,6 +300,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
   let iterations = 0;
   let toolsEnabled = anthropicTools.length > 0;
   let forcedTextOnly = false;
+  let lastResponseText = "";
   let usage: ToolLoopUsage = {
     input_tokens: 0,
     output_tokens: 0,
@@ -295,6 +316,32 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
   });
 
   while (true) {
+    let autonomousRequestDeadline: number | null = null;
+
+    if (options.origin === "autonomous") {
+      const nowMs = wallClock.now();
+
+      if (toolsEnabled && nowMs >= autonomousToolRoundDeadline) {
+        toolsEnabled = false;
+        forcedTextOnly = true;
+      }
+
+      if (nowMs >= autonomousLoopDeadline) {
+        return {
+          text: lastResponseText,
+          iterations,
+          toolCallsMade,
+          terminalToolCalls: [],
+          stopReason: "max_iterations",
+          usage,
+        };
+      }
+
+      autonomousRequestDeadline = toolsEnabled
+        ? autonomousToolRoundDeadline
+        : autonomousLoopDeadline;
+    }
+
     if (traceEnabled && options.turnId !== undefined) {
       options.tracer?.emit("llm_call.started", {
         turnId: options.turnId,
@@ -334,17 +381,58 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
         ? {}
         : { suppressRawTextStream: options.suppressRawTextStream }),
       ...(onTransportRetry === undefined ? {} : { onTransportRetry }),
+      ...(autonomousRequestDeadline === null
+        ? {}
+        : {
+            timeoutMs: Math.max(
+              1,
+              Math.min(
+                DEFAULT_DELIBERATION_PLAN_CALL_TIMEOUT_MS,
+                Math.floor(autonomousRequestDeadline - wallClock.now()),
+              ),
+            ),
+          }),
       budget: options.budget,
     } satisfies LLMConverseOptions;
     options.onRequestPrepared?.(converseOptions, iterations + 1);
-    const response =
-      options.stream === true && options.llmClient.streamConverse !== undefined
-        ? await options.llmClient.streamConverse({
-            ...converseOptions,
-            ...(options.onTextDelta === undefined ? {} : { onTextDelta: options.onTextDelta }),
-          })
-        : await options.llmClient.converse(converseOptions);
+    let response: LLMConverseResult;
+
+    try {
+      response =
+        options.stream === true && options.llmClient.streamConverse !== undefined
+          ? await options.llmClient.streamConverse({
+              ...converseOptions,
+              ...(options.onTextDelta === undefined ? {} : { onTextDelta: options.onTextDelta }),
+            })
+          : await options.llmClient.converse(converseOptions);
+    } catch (error) {
+      const autonomousBudgetExpired =
+        autonomousRequestDeadline !== null &&
+        wallClock.now() >= autonomousRequestDeadline &&
+        error instanceof LLMError &&
+        error.code === "LLM_CALL_TIMED_OUT";
+
+      if (!autonomousBudgetExpired) {
+        throw error;
+      }
+
+      if (toolsEnabled) {
+        toolsEnabled = false;
+        forcedTextOnly = true;
+        continue;
+      }
+
+      return {
+        text: lastResponseText,
+        iterations,
+        toolCallsMade,
+        terminalToolCalls: [],
+        stopReason: "max_iterations",
+        usage,
+      };
+    }
     usage = aggregateUsage(usage, response);
+    lastResponseText = extractText(response.messageBlocks) || lastResponseText;
 
     const toolUseBlocks = response.messageBlocks.filter(isToolUseBlock);
     const terminalToolCalls = toolUseBlocks.filter(

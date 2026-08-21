@@ -64,6 +64,16 @@ const PROMPT_OPTIONS = {
   participationPolicy: "observing" as const,
   nowMs: NOW_MS,
 };
+const FIXTURE_SELF_PRIVATE_DISCLOSURE = {
+  disclosure:
+    "disclosure_class=self_private private-to=unknown; I can use this internally; I do not disclose it to the current audience unless authorized",
+  disclosure_label: {
+    disclosure_class: "self_private" as const,
+    origin_audience_entity_ids: [],
+    private_to_entity_ids: [],
+    public_to_entity_ids: [],
+  },
+};
 const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
   NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
 > = {
@@ -196,8 +206,6 @@ const REGISTRY_ENTRY_FIXTURE_EXEMPTIONS = new Map<string, string>([
   ["contradiction_signal", "contradiction routing signal is covered by separate routing tests"],
   // Reflective-mode open questions are not rendered in the problem-solving/relational fixtures.
   ["borg_open_questions", "open-question base prompt rendering is reflective-mode gated"],
-  // Requires a concrete autonomy trigger payload; the autonomy fixture covers outbound posture only.
-  ["borg_autonomy_trigger", "autonomy trigger rendering needs wake-trigger context"],
   // Requires an intentionally invalid finalizer tool response; finalizer retry behavior tests cover it.
   [
     "finalizer_invalid_tool_retry_instruction",
@@ -676,6 +684,45 @@ function makeAutonomousRelationalContext(): DeliberationContext {
         },
       ],
     },
+    autonomyTrigger: {
+      source_name: "goal_followup_due",
+      source_type: "trigger",
+      event_id: "goal_aaaaaaaaaaaaaaaa:no-target:1699999999000:stale",
+      sort_ts: NOW_MS - 1_000,
+      payload: {
+        goal_id: "goal_aaaaaaaaaaaaaaaa",
+        selected_goal_id: "goal_aaaaaaaaaaaaaaaa",
+        selected_goal: {
+          id: "goal_aaaaaaaaaaaaaaaa",
+          description: "Retire the completed prompt-surface cleanup goal.",
+          priority: 10,
+          target_at: null,
+          last_progress_ts: NOW_MS - 86_400_000,
+          ...FIXTURE_SELF_PRIVATE_DISCLOSURE,
+        },
+        description: "Retire the completed prompt-surface cleanup goal.",
+        priority: 10,
+        target_at: null,
+        last_progress_ts: NOW_MS - 86_400_000,
+        days_stale: 1,
+        reason: "stale",
+        ...FIXTURE_SELF_PRIVATE_DISCLOSURE,
+        secondary_due_goals: [
+          {
+            source_name: "executive_focus_due",
+            source_event_id: "goal:goal_bbbbbbbbbbbbbbbb:1699827200000",
+            sort_ts: NOW_MS - 2_000,
+            goal_id: "goal_bbbbbbbbbbbbbbbb",
+            description: "Write the next verified implementation step.",
+            priority: 8,
+            target_at: NOW_MS + 86_400_000,
+            last_progress_ts: NOW_MS - 172_800_000,
+            reason: "goal_stale",
+            ...FIXTURE_SELF_PRIVATE_DISCLOSURE,
+          },
+        ],
+      },
+    },
     autonomousFinalizerToolMenu: [
       {
         name: "EmitAnswer",
@@ -979,6 +1026,20 @@ describe("prompt surface fixtures", () => {
       "cacheable-base-static-prefix-sections.txt",
       parts.staticPrefixSections.join("\n"),
     );
+  });
+
+  it("keeps batched autonomous goal identities out of the one-hour static prefix", () => {
+    const parts = buildCacheableBaseSystemPromptParts(
+      makeAutonomousRelationalContext(),
+      PROMPT_OPTIONS,
+    );
+    const staticSections = parts.staticPrefixSections.join("\n");
+
+    for (const goalId of ["goal_aaaaaaaaaaaaaaaa", "goal_bbbbbbbbbbbbbbbb"]) {
+      expect(parts.dynamicContent).toContain(goalId);
+      expect(parts.staticPrefix).not.toContain(goalId);
+      expect(staticSections).not.toContain(goalId);
+    }
   });
 
   it("pins finalizer static and dynamic system blocks with S2 extras", async () => {

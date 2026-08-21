@@ -12,7 +12,10 @@ export type AutonomyTriggerContext = {
 };
 
 export function formatAutonomyTriggerContext(context: AutonomyTriggerContext): string {
-  const payload = JSON.stringify(context.payload, null, 2) ?? "{}";
+  const secondaryDueGoals = context.payload.secondary_due_goals;
+  const hasGoalBatch = Array.isArray(secondaryDueGoals) && secondaryDueGoals.length > 0;
+  const { secondary_due_goals: _secondaryDueGoals, ...primaryPayload } = context.payload;
+  const payload = JSON.stringify(hasGoalBatch ? primaryPayload : context.payload, null, 2) ?? "{}";
   const sortTs = Number.isFinite(context.sort_ts)
     ? new Date(context.sort_ts).toISOString()
     : String(context.sort_ts);
@@ -23,7 +26,11 @@ export function formatAutonomyTriggerContext(context: AutonomyTriggerContext): s
     `source_type: ${context.source_type}`,
     `event_id: ${context.event_id}`,
     `sort_ts: ${sortTs}`,
-    "payload:",
+    hasGoalBatch ? "primary_focus_payload:" : "payload:",
     payload,
-  ].join("\n");
+    hasGoalBatch ? "secondary_due_goals:" : null,
+    hasGoalBatch ? (JSON.stringify(secondaryDueGoals, null, 2) ?? "[]") : null,
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\n");
 }

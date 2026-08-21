@@ -166,6 +166,59 @@ describe("goal followup due trigger", () => {
     expect(events[0]?.payload.days_stale).toBe(20);
   });
 
+  it("attaches the existing executive score order outside the model-facing payload", async () => {
+    const clock = new ManualClock(2_100_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    const topGoal = harness.goalsRepository.add({
+      description: "High-priority deadline goal",
+      priority: 10,
+      provenance: { kind: "manual" },
+      createdAt: clock.now() - 200_000,
+      targetAt: clock.now() + 1_000,
+    });
+    const otherGoal = harness.goalsRepository.add({
+      description: "Lower-priority stale goal",
+      priority: 1,
+      provenance: { kind: "manual" },
+      createdAt: clock.now() - 200_000,
+    });
+    const trigger = createGoalFollowupDueTrigger({
+      goalsRepository: harness.goalsRepository,
+      watermarkRepository,
+      lookaheadMs: 20_000,
+      staleMs: 100_000,
+      staleBackoff: STALE_BACKOFF,
+      respectStaleBackoff: true,
+      executiveScoring: {
+        embeddingClient: harness.embeddingClient,
+        threshold: 0.45,
+        deadlineLookaheadMs: 20_000,
+        staleMs: 100_000,
+      },
+      clock,
+    });
+
+    const events = await trigger.scan();
+    const topEvent = events.find((event) => event.payload.goal_id === topGoal.id);
+    const otherEvent = events.find((event) => event.payload.goal_id === otherGoal.id);
+
+    expect(topEvent?.executiveGoalRank).toBe(0);
+    expect(otherEvent?.executiveGoalRank).toBe(1);
+    expect(topEvent?.executiveGoalScore).toMatchObject({
+      goal_id: topGoal.id,
+      components: {
+        priority: 1,
+        deadline_pressure: expect.any(Number),
+        context_fit: expect.any(Number),
+        progress_debt: expect.any(Number),
+      },
+    });
+    expect(topEvent?.payload).not.toHaveProperty("executiveGoalScore");
+    expect(topEvent?.payload).not.toHaveProperty("executiveGoalRank");
+  });
+
   it("excludes dormant goals from scan and nextDueAt", async () => {
     const clock = new ManualClock(2_500_000);
     const harness = await createOfflineTestHarness({ clock });
