@@ -339,6 +339,14 @@ function buildSharedStateCompactIndexRows(input: {
       createdAt: latestEntry.created_at,
       lastUpdatedAt: Math.max(...group.entries.map((entry) => entry.last_updated_at)),
       activeCount: group.entries.length,
+      // Reduced over the *active* rows only, so this is one hop deep: in a chain A -> B -> C the
+      // line prints 1, because B points at C and A points at a row that is no longer active. It
+      // is therefore a fact about the artifact's current population -- retracted rows still held
+      // against a still-live successor -- and not a running total of how often this key was
+      // corrected, which is what the name invites. The two readings coincide at depth 1 (a
+      // predecessor cannot be pruned alone: the cap walk only considers active rows and cascades
+      // to their predecessors), and they part at depth 2. The mark also dies with the survivor
+      // rather than with the retraction -- see the cascade note in lifecycle-cap.ts.
       supersededCount: group.entries.reduce(
         (sum, entry) => sum + (input.supersededPredecessorIds.get(entry.id)?.length ?? 0),
         0,
