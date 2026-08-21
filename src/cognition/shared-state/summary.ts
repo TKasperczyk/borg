@@ -80,25 +80,25 @@ export type SharedStatePromptSummary = {
   recent_superseded: SharedStatePromptSummarySupersededEntry[];
 };
 
-// The registry names every active key; it carries no text, and that asymmetry decides which
-// operations are reachable. `add` and `prune` need only an id or a key, so they work over the
-// whole register. `update` and `supersede` write replacement text, which means judging the text
-// that is there -- so they are reachable only for entries whose body the summary above actually
-// carried, i.e. the per-kind recency slice in DEFAULT_SHARED_STATE_PROMPT_SUMMARY_MAX_ENTRIES.
-// Everything below that slice can be pointed at and deleted but not corrected in place.
+// The registry names every active key; it carries no text, and that asymmetry decides how well
+// informed each operation can be -- not which are permitted. Validation resolves `update` and
+// `supersede` targets from the full previous artifact (see patch-validation.ts), never from this
+// summary, so every active id is a legal target of every operation. What the summary decides is
+// whether the model can see the text it is replacing: bodies come from the per-kind recency slice
+// in DEFAULT_SHARED_STATE_PROMPT_SUMMARY_MAX_ENTRIES, and rows below that slice can still be
+// rewritten, but only blind.
 //
 // The aging ladder walks a row across that line: 8 body slots at `live`, 2 at `low_salience_live`,
-// 0 at `dormant_live`. Demotion therefore does not merely lower a row's correction priority, it
-// removes the row from the correctable set, and `dormant_live` is a hard zero. Nothing marks the
-// crossing, so a claim that was correctable while fresh becomes uncorrectable by the same clock
-// that made it stale -- which is why observed supersedes cluster on rows written minutes earlier
-// and never appear on aged ones.
+// 0 at `dormant_live`. Demotion therefore does not remove a row from the writable set; it removes
+// the old wording from view, so a correction aimed at an aged row is a wholesale replacement
+// composed without the claim it is correcting in front of you. Nothing marks the crossing, and
+// `kinds` only implies it for a reader who already knows the body-slot table, which the prompt
+// does not carry.
 //
-// Nothing in the prompt marked that crossing: `kinds` is here, but reading it as a correction
-// budget requires knowing the per-kind body-slot table, which the prompt does not carry. So name
-// the reachable set directly -- which of this key's ids the summary actually gave a body to, and
-// therefore which of them `update` and `supersede` can still be aimed at. This is a structural
-// fact about what this prompt carries, not a judgment about the entries.
+// So name the informed set directly -- which of this key's ids the summary actually gave a body
+// to. A row absent from it is still correctable; its current text simply is not on this surface.
+// This is a structural fact about what this prompt carries, not a permission and not a judgment
+// about the entries.
 export type ExistingStateKeyRegistryEntry = {
   state_key: string;
   bucket: string;
@@ -108,8 +108,9 @@ export type ExistingStateKeyRegistryEntry = {
   most_recent_update_at: number;
   most_recent_stream_entry_id: SharedStateEntry["last_updated_stream_entry_ids"][number] | null;
   // Null when no summary was supplied to compare against: absent evidence, not "nothing here is
-  // correctable". Empty means the summary was built and gave this key no body at all.
-  correctable_entry_ids: SharedStateEntry["id"][] | null;
+  // visible". Empty means the summary was built and gave this key no body at all -- the key's
+  // entries remain writable, they are just being written without their current text in view.
+  text_visible_entry_ids: SharedStateEntry["id"][] | null;
 };
 
 function sharedStatePromptSummaryOptions(options: SharedStatePromptSummaryOptions = {}): {
@@ -220,7 +221,7 @@ export function buildExistingStateKeyRegistry(
         kinds: stateKeyRegistryKinds(entries),
         most_recent_update_at: mostRecent.last_updated_at,
         most_recent_stream_entry_id: lastUpdatedStreamEntryId(mostRecent),
-        correctable_entry_ids:
+        text_visible_entry_ids:
           bodyCarriedEntryIds === null
             ? null
             : entriesByRecency

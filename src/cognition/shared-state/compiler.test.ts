@@ -2667,7 +2667,7 @@ describe("compileSharedStateArtifact", () => {
 
     const registryFor = async (
       summaryOptions?: { maxEntries: Partial<Record<SharedStateEntryKind, number>> },
-    ): Promise<{ active_entry_ids: string[]; correctable_entry_ids: string[] | null }> => {
+    ): Promise<{ active_entry_ids: string[]; text_visible_entry_ids: string[] | null }> => {
       const llmClient = new FakeLLMClient({
         responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
       });
@@ -2681,23 +2681,23 @@ describe("compileSharedStateArtifact", () => {
         existing_state_key_registry?: Array<{
           state_key: string;
           active_entry_ids: string[];
-          correctable_entry_ids: string[] | null;
+          text_visible_entry_ids: string[] | null;
         }>;
       };
 
       return prompt.existing_state_key_registry?.[0]!;
     };
 
-    // `update` and `supersede` write replacement text, so they can only be aimed at ids whose body
-    // the summary carried. Aging walks a row out of that slice without changing anything the
-    // registry used to show, which is how a claim that was correctable while fresh becomes
-    // pointable-but-uncorrectable purely by the clock.
+    // Every active id stays a legal target of every operation -- validation resolves `update` and
+    // `supersede` against the full previous artifact, not against this summary. What aging removes
+    // is the old wording, so a row walked out of the body slice is still writable and merely no
+    // longer shows the text a correction would be replacing.
     const withBody = await registryFor();
-    expect(withBody.correctable_entry_ids).toEqual(withBody.active_entry_ids);
+    expect(withBody.text_visible_entry_ids).toEqual(withBody.active_entry_ids);
 
     const withoutBody = await registryFor({ maxEntries: { live: 0 } });
     expect(withoutBody.active_entry_ids).toEqual(withBody.active_entry_ids);
-    expect(withoutBody.correctable_entry_ids).toEqual([]);
+    expect(withoutBody.text_visible_entry_ids).toEqual([]);
   });
 
   it("warns when the compiler input estimate exceeds the prompt budget", async () => {
