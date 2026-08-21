@@ -213,6 +213,28 @@ export class TurnRetrievalCoordinator {
       this.options.reviewQueueRepository.listOpenCommitmentReconciliationsForCognition?.({
         subkinds: ["cross_scope_conflict", "cross_scope_redundancy"],
       }) ?? [];
+    // Three quantities pass through the `mood` slot; only the first is ever
+    // rendered. `perceivedMood` is this turn's classifier reading of the
+    // INBOUND text (see perception/gateway.ts) -- the value the working-memory
+    // line prints as `mood=V/A`. It is the operative value only while its
+    // magnitude clears MOOD_ACTIVITY_THRESHOLD. Below that line retrieval
+    // silently substitutes `moodRepository.current()`, which is (a) the EMA
+    // blend written by reflection, not a reading, and (b) half-life decayed by
+    // elapsed wall-clock time at read (mood.ts `decayFactor`, 24h default). So
+    // a long enough silence shrinks the fallback toward neutral and switches
+    // `moodActive` off by the clock alone -- no event, no mood_history row,
+    // nothing on the rendered line to mark it. Reading `mood=` as "the value
+    // steering retrieval" is exact only above the threshold.
+    //
+    // What the term does when on: a ranking weight (ACTIVE_MOOD_WEIGHT 0.2 in
+    // an un-normalised linear fusion, scoring.ts), never a filter, so recall
+    // stays global. It scores each episode by distance from that episode's
+    // `emotional_arc`; when the episodic extractor emits none, the fallback
+    // `buildEmotionalArc` synthesises one from the affective signals of the
+    // episode's USER entries -- the same sender-side readings. On an inbound
+    // turn both sides of the comparison are therefore estimates of how the
+    // other party sounded, and the term ranks past episodes by how closely the
+    // sender's affect then matches the sender's affect now.
     const perceivedMood = input.workingMemory.mood ?? createNeutralAffectiveSignal();
     const perceivedMoodActive =
       Math.abs(perceivedMood.valence) + Math.abs(perceivedMood.arousal) > MOOD_ACTIVITY_THRESHOLD;
