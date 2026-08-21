@@ -147,7 +147,14 @@ const STABLE_AUTHORITY_FRAMING = [
 ].join(" ");
 
 const TERMINAL_ADVISORY_COMMITMENT_EXCERPT_CHARS = 480;
-const TERMINAL_CREATOR_DIRECTIVE_FACT_EXCERPT_CHARS = 480;
+// The head+tail cut is deliberately meaning-blind (see `buildHeadTailPlannerExcerpt`), so whatever
+// sits in the middle of a fact is what disappears. At 480 that was routine rather than exceptional:
+// 13 of 112 active directives exceeded it, and a directive row costs ~1,240 chars to render of
+// which the fact was capped at 417 -- the structural scope attributes, most of them at their
+// defaults, outweighed the payload roughly three to one. Raising the cap above the longest fact an
+// operator has written (1,132) costs ~2,715 chars across the whole directive set and makes elision
+// the exception. Revisit by measuring the distribution again, not by trimming to fit one row.
+const TERMINAL_CREATOR_DIRECTIVE_FACT_EXCERPT_CHARS = 1_200;
 const TERMINAL_CREATOR_DIRECTIVE_LABEL_EXCERPT_CHARS = 240;
 
 function escapeXmlAttribute(value: string): string {

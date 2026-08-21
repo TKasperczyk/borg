@@ -262,7 +262,7 @@ describe("compact terminal finalizer context", () => {
     const excludedId = createEntityId();
     const exactOperation = `PRIVATE-OP-${"o".repeat(800)}-END`;
     const exactSlottedOperation = `SLOTTED-OP-${"s".repeat(800)}-END`;
-    const fact = `FACT-HEAD-${"f".repeat(900)}-FACT-TAIL`;
+    const fact = `FACT-HEAD-${"f".repeat(1_400)}-FACT-TAIL`;
     const scope = {
       directiveId: createCreatorDirectiveId(),
       createdByEntityId: creatorId,
@@ -333,7 +333,7 @@ describe("compact terminal finalizer context", () => {
         }),
       ),
     );
-    const factExcerpt = headTailPlannerExcerpt(fact, 480);
+    const factExcerpt = headTailPlannerExcerpt(fact, 1_200);
 
     expect(rendered).toContain(`payload="${exactOperation}"`);
     expect(rendered).toContain(`payload="${exactSlottedOperation}"`);
@@ -344,9 +344,9 @@ describe("compact terminal finalizer context", () => {
     expect(rendered).toContain(`directive_id="${factDirectiveId}"`);
     expect(rendered).toContain('payload_status="head+tail_excerpt"');
     expect(rendered).toContain(`payload_included_chars="${factExcerpt.renderedChars}"`);
-    expect(rendered).toContain('payload_total_chars="920"');
+    expect(rendered).toContain(`payload_total_chars="${fact.length}"`);
     expect(rendered).toContain(
-      `HEAD+TAIL EXCERPT; rendered=${factExcerpt.renderedChars}/total=920`,
+      `HEAD+TAIL EXCERPT; rendered=${factExcerpt.renderedChars}/total=${fact.length}`,
     );
     expect(rendered).toContain('scope_status="exact"');
     expect(rendered).toContain('content_scope="allow_list"');
