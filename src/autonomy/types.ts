@@ -117,6 +117,7 @@ export type AutonomyCondition<Payload extends Record<string, unknown> = Record<s
 export type AutonomySchedulerWakeGroupDescription = {
   trigger_name: AutonomyWakeSourceName;
   wake_count: number;
+  in_flight: number;
   outcome_counts: Record<AutonomyWakeOutcome, number>;
 };
 

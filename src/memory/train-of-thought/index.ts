@@ -3,6 +3,8 @@ export {
   TrainOfThoughtRepository,
   type TrainOfThoughtAppendInput,
   type TrainOfThoughtListOptions,
+  type TrainOfThoughtRangeCursor,
+  type TrainOfThoughtRangeListOptions,
   type TrainOfThoughtRepositoryOptions,
 } from "./repository.js";
 export {

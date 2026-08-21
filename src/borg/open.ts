@@ -171,6 +171,8 @@ export async function openBorgDependencies(
       entryIndex: repositories.entryIndex,
     });
     const toolDispatcher = buildToolDispatcher({
+      dataDir: config.dataDir,
+      entryIndex: repositories.entryIndex,
       retrievalPipeline: repositories.retrievalPipeline,
       episodicRepository: repositories.episodicRepository,
       semanticNodeRepository: repositories.semanticNodeRepository,

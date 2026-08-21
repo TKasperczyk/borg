@@ -90,6 +90,7 @@ import {
   RECENT_REGENERATIONS_LIMIT,
   RECENT_SUPPRESSIONS_LIMIT,
 } from "../../generation/discourse-state.js";
+import { LIVE_TURN_READ_FINALIZER_TOOL_MENU } from "../autonomous-finalizer-tools.js";
 
 export { formatRelativeAge } from "../../../util/relative-time.js";
 export { scrubCreatorDirectiveInternalIds } from "../../../util/prompt-tags.js";
@@ -1359,6 +1360,8 @@ export function createBasePromptSurfaceRenderContext(
           return LOOP_BREAKING_POSTURE_SECTION;
         case "trusted_guidance_preamble":
           return TRUSTED_GUIDANCE_PREAMBLE;
+        case "live_turn_read_tool_menu":
+          return LIVE_TURN_READ_FINALIZER_TOOL_MENU;
         case "current_user_message_reminder":
           return CURRENT_USER_MESSAGE_REMINDER;
         case "group_chat_sender_scoping_reminder":
@@ -1767,7 +1770,7 @@ export function summarizeAutonomySchedulerState(
       "Wakes in current window by trigger_name:",
       ...budget.wakes_in_current_window_by_trigger.map(
         (group) =>
-          `- trigger_name=${group.trigger_name} wake_count=${group.wake_count} outcome_counts(headway=${group.outcome_counts.headway} silent=${group.outcome_counts.silent} error=${group.outcome_counts.error} busy=${group.outcome_counts.busy})`,
+          `- trigger_name=${group.trigger_name} wake_count=${group.wake_count} in_flight=${group.in_flight} outcome_counts(headway=${group.outcome_counts.headway} silent=${group.outcome_counts.silent} error=${group.outcome_counts.error} busy=${group.outcome_counts.busy})`,
       ),
     );
   }

@@ -51,6 +51,8 @@ describe("buildToolDispatcher", () => {
       episodeIds.includes(privateEpisode.id) ? [privateEpisode] : [],
     );
     const dispatcher = buildToolDispatcher({
+      dataDir: "/tmp/borg-tools-setup-test",
+      entryIndex: {} as never,
       retrievalPipeline: {} as never,
       episodicRepository: { getMany } as never,
       semanticNodeRepository: { get: vi.fn(async () => root) } as never,
@@ -88,6 +90,12 @@ describe("buildToolDispatcher", () => {
       menuSummary: "Retire one of my own goals as done/superseded, with my reason.",
       allowedOrigins: ["autonomous", "deliberator"],
       writeScope: "write",
+    });
+
+    expect(dispatcher.getDefinition("tool.ownRecords.list")).toMatchObject({
+      name: "tool.ownRecords.list",
+      allowedOrigins: ["autonomous", "deliberator"],
+      writeScope: "read",
     });
   });
 });

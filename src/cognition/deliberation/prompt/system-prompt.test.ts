@@ -49,6 +49,7 @@ import { buildCreatorDirectiveBriefingForTurn } from "../../lifecycle/turn-phase
 import type { DeliberationContext } from "../types.js";
 import { memoryDisclosurePayloadFields } from "../../../memory/common/disclosure-serializers.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
+import { LIVE_TURN_READ_FINALIZER_TOOL_MENU } from "../autonomous-finalizer-tools.js";
 
 import {
   buildAutonomousOutboundAuthorizationSection,
@@ -2605,16 +2606,18 @@ describe("buildBaseSystemPrompt", () => {
                   {
                     trigger_name: "scheduled_reflection",
                     wake_count: 4,
+                    in_flight: 1,
                     outcome_counts: {
                       headway: 2,
                       silent: 1,
                       error: 0,
-                      busy: 1,
+                      busy: 0,
                     },
                   },
                   {
                     trigger_name: "goal_followup_due",
                     wake_count: 1,
+                    in_flight: 0,
                     outcome_counts: {
                       headway: 0,
                       silent: 0,
@@ -2637,10 +2640,10 @@ describe("buildBaseSystemPrompt", () => {
       );
       expect(block).toContain("Wake budget: used=5 / limit=6 / window=1h.");
       expect(block).toContain(
-        "trigger_name=scheduled_reflection wake_count=4 outcome_counts(headway=2 silent=1 error=0 busy=1)",
+        "trigger_name=scheduled_reflection wake_count=4 in_flight=1 outcome_counts(headway=2 silent=1 error=0 busy=0)",
       );
       expect(block).toContain(
-        "trigger_name=goal_followup_due wake_count=1 outcome_counts(headway=0 silent=0 error=1 busy=0)",
+        "trigger_name=goal_followup_due wake_count=1 in_flight=0 outcome_counts(headway=0 silent=0 error=1 busy=0)",
       );
       expect(block).toContain("Next budget slot frees: 2023-11-14T22:43:20.000Z (in 30m).");
     },
@@ -2879,6 +2882,9 @@ describe("buildBaseSystemPrompt", () => {
       first.staticPrefix.indexOf("<borg_host_capabilities>"),
     );
     expect(first.staticPrefix).toContain(DEFAULT_HOST_CAPABILITIES_SECTION);
+    expect(first.staticPrefixSections).toContain("live_turn_read_tool_menu");
+    expect(first.staticPrefix).toContain(LIVE_TURN_READ_FINALIZER_TOOL_MENU);
+    expect(first.dynamicContent).not.toContain(LIVE_TURN_READ_FINALIZER_TOOL_MENU);
     expect(first.dynamicContent).not.toBe(second.dynamicContent);
     expect(first.dynamicContent).toContain(UNTRUSTED_DATA_PREAMBLE);
     expect(first.dynamicContent).toContain("<borg_working_state>");

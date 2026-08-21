@@ -244,6 +244,7 @@ describe("Borg", () => {
         "loop_breaking_posture",
         "trusted_guidance_preamble",
         "borg_host_capabilities",
+        "live_turn_read_tool_menu",
       ]);
       expect(initial.segments.map((segment) => segment.id)).toEqual(initial.sections);
       for (const segment of initial.segments) {
@@ -263,6 +264,8 @@ describe("Borg", () => {
       );
       expect(initial.text).toContain("<borg_host_capabilities>");
       expect(initial.text).toContain("</borg_host_capabilities>");
+      expect(initial.text).toContain("<borg_live_turn_read_tools>");
+      expect(initial.text).toContain("tool.ownRecords.list");
       expect(initial.text).toContain(
         "Proactive outbound messaging via wired source_type connector(s): demo",
       );

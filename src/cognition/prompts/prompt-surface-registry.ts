@@ -253,6 +253,18 @@ export const PROMPT_SURFACE_BLOCKS = [
     ],
   }),
   block({
+    id: "live_turn_read_tool_menu",
+    owner: "cognition.deliberation",
+    purpose: "Deployment-stable menu of read tools available inside every live turn.",
+    renderCondition: "always in the cacheable finalizer static prefix",
+    source: {
+      file: "src/cognition/deliberation/autonomous-finalizer-tools.ts",
+      exportName: "LIVE_TURN_READ_FINALIZER_TOOL_MENU",
+    },
+    tag: "borg_live_turn_read_tools",
+    surfaces: [{ surface: PROMPT_SURFACES.cacheableStaticPrefix, order: 100 }],
+  }),
+  block({
     id: "base_trusted_dynamic_guidance_block",
     owner: "cognition.deliberation",
     purpose: "Trusted dynamic guidance block in the cacheable finalizer dynamic content.",

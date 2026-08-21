@@ -4752,6 +4752,7 @@ describe("demo server", () => {
       "loop_breaking_posture",
       "trusted_guidance_preamble",
       "borg_host_capabilities",
+      "live_turn_read_tool_menu",
     ]);
     expect(body.segments.map((segment) => segment.id)).toEqual(body.sections);
     const hostSegment = body.segments.find((segment) => segment.id === "borg_host_capabilities");
@@ -4761,6 +4762,8 @@ describe("demo server", () => {
     );
     expect(body.text).toContain("<borg_host_capabilities>");
     expect(body.text).toContain("</borg_host_capabilities>");
+    expect(body.text).toContain("<borg_live_turn_read_tools>");
+    expect(body.text).toContain("tool.ownRecords.list");
     expect(body.text).toContain(
       "Proactive outbound messaging via wired source_type connector(s): demo",
     );

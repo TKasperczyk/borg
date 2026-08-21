@@ -56,4 +56,14 @@ export const trainOfThoughtMigrations = [
       `);
     },
   },
+  {
+    id: 3,
+    name: "train_of_thought_journal_created_at_cursor",
+    up: (db) => {
+      db.exec(`
+        CREATE INDEX idx_train_of_thought_journal_created_at
+        ON train_of_thought_journal_entries (created_at DESC, id DESC);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

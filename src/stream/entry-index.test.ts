@@ -42,6 +42,61 @@ describe("stream entry index", () => {
     }
   });
 
+  it("upgrades a populated v2 database when the v3 index already exists", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-own-record-index-upgrade-"));
+    tempDirs.push(tempDir);
+    const databasePath = join(tempDir, "borg.db");
+    const v2Db = openDatabase(databasePath, {
+      migrations: streamEntryIndexMigrations.slice(0, 2),
+    });
+    const v2Index = new StreamEntryIndexRepository({ db: v2Db, dataDir: tempDir });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+      entryIndex: v2Index,
+    });
+    const thought = await writer.append({
+      kind: "thought",
+      content: "record present before the v3 migration",
+    });
+
+    v2Db.exec(`
+      CREATE INDEX idx_stream_entry_kind_active_time
+      ON stream_entry_index(kind, active, timestamp DESC, entry_id DESC)
+    `);
+    expect(v2Db.listAppliedMigrations().map((migration) => migration.id)).toEqual([1, 2]);
+    writer.close();
+    v2Db.close();
+
+    const upgradedDb = openDatabase(databasePath, {
+      migrations: [...streamEntryIndexMigrations],
+    });
+
+    try {
+      const upgradedIndex = new StreamEntryIndexRepository({
+        db: upgradedDb,
+        dataDir: tempDir,
+      });
+      const indexes = upgradedDb.prepare("PRAGMA index_list('stream_entry_index')").all();
+
+      expect(upgradedDb.listAppliedMigrations().map((migration) => migration.id)).toEqual([
+        1, 2, 3,
+      ]);
+      expect(indexes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "idx_stream_entry_kind_active_time" }),
+        ]),
+      );
+      expect(upgradedIndex.lookup(thought.id)).toMatchObject({
+        entry_id: thought.id,
+        kind: "thought",
+        active: true,
+      });
+    } finally {
+      upgradedDb.close();
+    }
+  });
+
   it("backfills missing rows from the middle of a session stream", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -1077,6 +1132,110 @@ describe("stream entry index", () => {
       expect(entryIndex.lookupEntriesById([marker.id]).get(marker.id)?.active).toBe(false);
     } finally {
       writer.close();
+      db.close();
+    }
+  });
+
+  it("lists active thought records globally with inclusive bounds and stable equal-time cursors", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-own-record-index-"));
+    tempDirs.push(tempDir);
+    const otherSessionId = createSessionId();
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...streamEntryIndexMigrations],
+    });
+    const entryIndex = new StreamEntryIndexRepository({ db, dataDir: tempDir });
+    const clock = new ManualClock(100);
+    const writer = new StreamWriter({ dataDir: tempDir, clock, entryIndex });
+    const otherWriter = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: otherSessionId,
+      clock,
+      entryIndex,
+    });
+
+    try {
+      const localThought = await writer.append({
+        kind: "thought",
+        content: "local active thought",
+        turn_id: "turn-local-active",
+      });
+      const abortedThought = await writer.append({
+        kind: "thought",
+        content: "aborted thought",
+        turn_id: "turn-aborted-thought",
+      });
+      await writer.append({
+        kind: "internal_event",
+        content: {
+          event: "aborted_turn",
+          turn_id: "turn-aborted-thought",
+          aborted_stream_entry_ids: [abortedThought.id],
+        },
+      });
+      const otherThought = await otherWriter.append({
+        kind: "thought",
+        content: "cross-session active thought",
+        turn_id: "turn-other-active",
+      });
+      await writer.append({ kind: "user_msg", content: "not an own thought" });
+
+      const global = entryIndex.listActiveEntriesByKindRange({
+        kinds: ["thought"],
+        sinceTs: 100,
+        untilTs: 100,
+        limit: 10,
+      });
+      const expectedGlobalIds = [localThought.id, otherThought.id].sort().reverse();
+
+      expect(global.map((record) => record.entry_id)).toEqual(expectedGlobalIds);
+      expect(global.map((record) => record.session_id)).toEqual(
+        expectedGlobalIds.map((id) =>
+          id === localThought.id ? DEFAULT_SESSION_ID : otherSessionId,
+        ),
+      );
+      expect(global.map((record) => record.entry_id)).not.toContain(abortedThought.id);
+
+      expect(
+        entryIndex
+          .listActiveEntriesByKindRange({
+            kinds: ["thought"],
+            sinceTs: 100,
+            untilTs: 100,
+            sessionId: DEFAULT_SESSION_ID,
+            limit: 10,
+          })
+          .map((record) => record.entry_id),
+      ).toEqual([localThought.id]);
+
+      const firstPage = entryIndex.listActiveEntriesByKindRange({
+        kinds: ["thought"],
+        sinceTs: 100,
+        untilTs: 100,
+        limit: 1,
+      });
+      const secondPage = entryIndex.listActiveEntriesByKindRange({
+        kinds: ["thought"],
+        sinceTs: 100,
+        untilTs: 100,
+        cursor: {
+          timestamp: firstPage[0]!.timestamp,
+          entryId: firstPage[0]!.entry_id,
+        },
+        limit: 1,
+      });
+
+      expect([...firstPage, ...secondPage].map((record) => record.entry_id)).toEqual(
+        expectedGlobalIds,
+      );
+      expect(
+        db
+          .prepare("PRAGMA index_info('idx_stream_entry_kind_active_time')")
+          .all()
+          .map((row) => (row as { name: string }).name),
+      ).toEqual(["kind", "active", "timestamp", "entry_id"]);
+    } finally {
+      writer.close();
+      otherWriter.close();
       db.close();
     }
   });

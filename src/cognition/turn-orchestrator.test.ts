@@ -3319,6 +3319,9 @@ describe("TurnOrchestrator evidence ledger", () => {
 
       const finalizerRequest = firstFinalizerRequest(llm.requests);
       const finalizerSystem = systemText(finalizerRequest);
+      const finalizerSystemBlocks = Array.isArray(finalizerRequest?.system)
+        ? finalizerRequest.system
+        : [];
       const traceEvents = readTraceEvents(tracePath);
       const finalizerEvent = traceEvents.find((event) => event.event === "finalizer.completed");
       const ledgerEvent = traceEvents.find((event) => event.event === "evidence_ledger.completed");
@@ -3334,7 +3337,29 @@ describe("TurnOrchestrator evidence ledger", () => {
         "EmitObserve",
         "EmitNoOutput",
         "EmitSelfReport",
+        "tool.ownRecords.list",
       ]);
+      expect(finalizerRequest?.tools?.map((tool) => tool.name)).not.toContain(
+        "tool.journal.append",
+      );
+      expect(finalizerRequest?.tools?.map((tool) => tool.name)).not.toContain(
+        "tool.openQuestions.create",
+      );
+      expect(finalizerRequest?.tools?.map((tool) => tool.name)).not.toContain(
+        "tool.scheduledWakes.create",
+      );
+      expect(finalizerSystem).toContain("<borg_live_turn_read_tools>");
+      expect(finalizerSystem).toContain("tool.ownRecords.list");
+      expect(finalizerSystemBlocks[0]).toMatchObject({
+        cache_control: { type: "ephemeral", ttl: "1h" },
+        text: expect.stringContaining("<borg_live_turn_read_tools>"),
+      });
+      expect(
+        finalizerSystemBlocks
+          .slice(1)
+          .map((block) => block.text)
+          .join("\n"),
+      ).not.toContain("<borg_live_turn_read_tools>");
       expect(finalizerSystem).toContain("<borg_evidence_ledger>");
       expect(finalizerSystem).toContain("id=current_user_message:");
       expect(finalizerSystem).toContain("<borg_host_capabilities>");

@@ -22,6 +22,7 @@ import {
 } from "../../util/ids.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { buildRegenerationPromptSection } from "../commitments/guard-runner.js";
+import { LIVE_TURN_READ_FINALIZER_TOOL_MENU } from "../deliberation/autonomous-finalizer-tools.js";
 import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
 import { formatTurnPlanForPrompt } from "../deliberation/prompt/plan-rendering.js";
 import { buildCompactPlannerSystemPrompt } from "../deliberation/prompt/planner-context.js";
@@ -88,6 +89,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
       {
         trigger_name: "scheduled_reflection",
         wake_count: 3,
+        in_flight: 0,
         outcome_counts: {
           headway: 1,
           silent: 2,
@@ -98,6 +100,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
       {
         trigger_name: "goal_followup_due",
         wake_count: 1,
+        in_flight: 0,
         outcome_counts: {
           headway: 0,
           silent: 0,
@@ -183,6 +186,7 @@ const REGISTRY_ENTRY_FIXTURE_MARKERS: Record<string, string> = {
   current_user_message_reminder: CURRENT_USER_MESSAGE_REMINDER,
   group_chat_sender_scoping_reminder: GROUP_CHAT_SENDER_SCOPING_REMINDER,
   trusted_guidance_preamble: TRUSTED_GUIDANCE_PREAMBLE,
+  live_turn_read_tool_menu: LIVE_TURN_READ_FINALIZER_TOOL_MENU,
   base_trusted_dynamic_guidance_block: TRUSTED_GUIDANCE_PREAMBLE,
   finalizer_emission_protocol: "I do not hide factual or source-sensitive content.",
   finalizer_cacheable_static_prefix: promptBlockDefault("base_identity_preamble"),
@@ -744,6 +748,11 @@ function makeAutonomousRelationalContext(): DeliberationContext {
         name: "EmitContinueThought",
         menuSummary:
           "Append the carryover thought to the private journal and end the autonomous interval.",
+      },
+      {
+        name: "tool.ownRecords.list",
+        menuSummary:
+          "Browse my own thoughts and journal globally by origin-time range (optional explicit session filter).",
       },
       {
         name: "tool.journal.append",

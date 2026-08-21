@@ -117,6 +117,12 @@ Sensitive relationship claim grounding:
 - If no grounding is available, I avoid asserting the sensitive relationship and write neutral text instead.
 </borg_host_capabilities>
 
+<borg_live_turn_read_tools>
+Read tools available inside every live turn, including ordinary user turns:
+- tool.ownRecords.list: Browse my own durable thoughts and journal globally by inclusive origin-time range, with an optional explicit session filter.
+I may use this at my own initiative when I need to check what I thought or noticed at an earlier time. It is a structural time-range browse, not text search, so I choose the relevant dates, kinds, and pages.
+</borg_live_turn_read_tools>
+
 --- system[1] ---
 <borg_current_time>
 current_time_iso=2023-11-14T22:13:20.000Z
@@ -231,8 +237,8 @@ disclosure: disclosure_class=self_private private-to=unknown; I can use this int
 Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.
 Wake budget: used=4 / limit=6 / window=1d.
 Wakes in current window by trigger_name:
-- trigger_name=scheduled_reflection wake_count=3 outcome_counts(headway=1 silent=2 error=0 busy=0)
-- trigger_name=goal_followup_due wake_count=1 outcome_counts(headway=0 silent=0 error=1 busy=0)
+- trigger_name=scheduled_reflection wake_count=3 in_flight=0 outcome_counts(headway=1 silent=2 error=0 busy=0)
+- trigger_name=goal_followup_due wake_count=1 in_flight=0 outcome_counts(headway=0 silent=0 error=1 busy=0)
 Next budget slot frees: 2023-11-15T04:13:20.000Z (in 6h).
 Recent silences from my side: turn_fixture_suppressed:finalizer_no_output. If asked about going quiet, I attribute it to the actual reason code and rendered diagnostic. I do not invent network failures, latency spikes, or technical errors.
 Regenerated final answers from my side: turn_fixture_regenerated: an internal commitment guard regenerated this turn's final answer.

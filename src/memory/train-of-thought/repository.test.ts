@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { openDatabase } from "../../storage/sqlite/index.js";
+import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
+import { streamEntryIndexMigrations } from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
-import { createEntityId } from "../../util/ids.js";
+import { createEntityId, createSessionId, createStreamEntryId } from "../../util/ids.js";
 import { trainOfThoughtMigrations } from "./migrations.js";
 import { TrainOfThoughtRepository } from "./repository.js";
 
@@ -108,6 +109,95 @@ describe("TrainOfThoughtRepository", () => {
           )
           .get(),
       ).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("lists inclusive created-at ranges with stable cursors and explicit session anchors", () => {
+    const clock = new ManualClock(1_000);
+    const db = openDatabase(":memory:", {
+      migrations: composeMigrations(streamEntryIndexMigrations, trainOfThoughtMigrations),
+    });
+    const repository = new TrainOfThoughtRepository({ db, clock });
+    const selfEntityId = createEntityId();
+    const firstSessionId = createSessionId();
+    const secondSessionId = createSessionId();
+    const firstMarkerId = createStreamEntryId();
+    const secondMarkerId = createStreamEntryId();
+
+    try {
+      const first = repository.append({
+        text: "first equal-time journal entry",
+        selfEntityId,
+        sourceTurnId: "turn-first-session",
+      });
+      const second = repository.append({
+        text: "second equal-time journal entry",
+        selfEntityId,
+        markerStreamEntryId: secondMarkerId,
+      });
+      const unanchored = repository.append({
+        text: "nullable journal anchors",
+        selfEntityId,
+        sourceTurnId: null,
+        markerStreamEntryId: null,
+      });
+
+      db.prepare(
+        `INSERT INTO stream_entry_index (
+           entry_id, session_id, byte_offset, timestamp, kind, turn_id, active
+         ) VALUES (?, ?, 0, 1_000, 'thought', ?, 1)`,
+      ).run(firstMarkerId, firstSessionId, first.source_turn_id);
+      db.prepare(
+        `INSERT INTO stream_entry_index (
+           entry_id, session_id, byte_offset, timestamp, kind, turn_id, active
+         ) VALUES (?, ?, 0, 1_000, 'thought', NULL, 1)`,
+      ).run(secondMarkerId, secondSessionId);
+
+      const global = repository.listForRange({
+        sinceMs: 1_000,
+        untilMs: 1_000,
+        limit: 10,
+      });
+
+      expect(global.map((entry) => entry.id)).toEqual([unanchored.id, second.id, first.id]);
+      expect(
+        repository
+          .listForRange({
+            sinceMs: 1_000,
+            untilMs: 1_000,
+            limit: 10,
+            cursor: { createdAt: 1_000, id: unanchored.id },
+          })
+          .map((entry) => entry.id),
+      ).toEqual([second.id, first.id]);
+      expect(
+        repository
+          .listForRange({
+            sinceMs: 1_000,
+            untilMs: 1_000,
+            limit: 10,
+            sessionId: firstSessionId,
+          })
+          .map((entry) => entry.id),
+      ).toEqual([first.id]);
+      expect(
+        repository
+          .listForRange({
+            sinceMs: 1_000,
+            untilMs: 1_000,
+            limit: 10,
+            sessionId: secondSessionId,
+          })
+          .map((entry) => entry.id),
+      ).toEqual([second.id]);
+      expect(
+        db
+          .prepare("PRAGMA index_info('idx_train_of_thought_journal_created_at')")
+          .all()
+          .map((row) => (row as { name: string }).name),
+      ).toEqual(["created_at", "id"]);
     } finally {
       db.close();
     }

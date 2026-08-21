@@ -38,6 +38,7 @@ import type {
   SemanticNodeRepository,
   SemanticWalkStep,
 } from "../memory/semantic/index.js";
+import { readStreamEntryAtOffset, type StreamEntryIndexRepository } from "../stream/index.js";
 import {
   ToolDispatcher,
   createCommitmentsListTool,
@@ -48,6 +49,7 @@ import {
   createJournalAppendTool,
   createOpenQuestionsCreateTool,
   createOpenQuestionsResolveTool,
+  createOwnRecordsListTool,
   createPromptSurfaceChangesTool,
   createScheduledWakesCancelTool,
   createScheduledWakesCreateTool,
@@ -58,6 +60,8 @@ import {
 import type { BorgStreamWriterFactory } from "./types.js";
 
 export type BuildToolDispatcherOptions = {
+  dataDir: string;
+  entryIndex: StreamEntryIndexRepository;
   retrievalPipeline: RetrievalPipeline;
   episodicRepository: EpisodicRepository;
   semanticNodeRepository: SemanticNodeRepository;
@@ -174,6 +178,27 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     .register(
       createEpisodicRecentTool({
         listRecentEpisodes: (limit) => options.episodicRepository.listRecentForCognition({ limit }),
+      }),
+    )
+    .register(
+      createOwnRecordsListTool({
+        listThoughtRecords: (input) =>
+          options.entryIndex.listActiveEntriesByKindRange({
+            kinds: ["thought"],
+            sinceTs: input.sinceMs,
+            untilTs: input.untilMs,
+            limit: input.limit,
+            ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+            ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+          }),
+        readThoughtRecord: (record) =>
+          readStreamEntryAtOffset({
+            dataDir: options.dataDir,
+            sessionId: record.session_id,
+            byteOffset: record.byte_offset,
+          }),
+        listJournalRecords: (input) => options.trainOfThoughtRepository.listForRange(input),
+        clock: options.clock,
       }),
     )
     .register(

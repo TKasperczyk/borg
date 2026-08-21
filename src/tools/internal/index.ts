@@ -6,6 +6,7 @@ export { createIdentityEventsListForCognitionTool } from "./identity-events-list
 export { createJournalAppendTool } from "./journal-append.js";
 export { createOpenQuestionsCreateTool } from "./open-questions-create.js";
 export { createOpenQuestionsResolveTool } from "./open-questions-resolve.js";
+export { createOwnRecordsListTool } from "./own-records-list.js";
 export { createOutboundPostTool, OUTBOUND_POST_TOOL_NAME } from "./outbound-post.js";
 export { createPromptSurfaceChangesTool } from "./prompt-surface-changes.js";
 export { createScheduledWakesCancelTool } from "./scheduled-wakes-cancel.js";

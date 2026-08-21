@@ -257,6 +257,7 @@ So when my current knowledge differs from what those past decisions assumed, I r
 - EmitNoOutput: End the turn with no visible message.
 - EmitSelfReport: Speak visibly as a first-person interior self-report.
 - EmitContinueThought: Append the carryover thought to the private journal and end the autonomous interval.
+- tool.ownRecords.list: Browse my own thoughts and journal globally by origin-time range (optional explicit session filter).
 - tool.journal.append: Append a self-private journal entry without ending the turn.
 - tool.openQuestions.create: Create a self-memory open question.
 - tool.openQuestions.resolve: Resolve an open question with evidence, or surface identity review.
@@ -349,8 +350,8 @@ Sensitive relationship claim grounding:
 Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.
 Wake budget: used=4 / limit=6 / window=1d.
 Wakes in current window by trigger_name:
-- trigger_name=scheduled_reflection wake_count=3 outcome_counts(headway=1 silent=2 error=0 busy=0)
-- trigger_name=goal_followup_due wake_count=1 outcome_counts(headway=0 silent=0 error=1 busy=0)
+- trigger_name=scheduled_reflection wake_count=3 in_flight=0 outcome_counts(headway=1 silent=2 error=0 busy=0)
+- trigger_name=goal_followup_due wake_count=1 in_flight=0 outcome_counts(headway=0 silent=0 error=1 busy=0)
 Next budget slot frees: 2023-11-15T04:13:20.000Z (in 6h).
 </borg_mechanism_evidence>
 

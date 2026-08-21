@@ -691,6 +691,7 @@ export class AutonomyScheduler {
         group = {
           trigger_name: wake.trigger_name,
           wake_count: 0,
+          in_flight: 0,
           outcome_counts: {
             headway: 0,
             silent: 0,
@@ -702,7 +703,9 @@ export class AutonomyScheduler {
       }
 
       group.wake_count += 1;
-      if (wake.outcome !== null) {
+      if (wake.outcome === null) {
+        group.in_flight += 1;
+      } else {
         group.outcome_counts[wake.outcome] += 1;
       }
       oldestWakeAt = oldestWakeAt === null ? wake.ts : Math.min(oldestWakeAt, wake.ts);

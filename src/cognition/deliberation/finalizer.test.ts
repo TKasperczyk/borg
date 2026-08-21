@@ -283,7 +283,7 @@ describe("runFinalizer emission tools", () => {
     expect(result.text).toBe("");
   });
 
-  it("does not expose registered interior tools on user-origin finalizer calls", async () => {
+  it("exposes own-record browsing on user turns while autonomous-only write tools stay hidden", async () => {
     const llm = new FakeLLMClient({
       responses: [
         {
@@ -304,8 +304,10 @@ describe("runFinalizer emission tools", () => {
 
     await runEmissionFinalizer(llm, tempDirs, {
       registeredTools: [
+        fakeTool("tool.ownRecords.list", ["autonomous", "deliberator"]),
         fakeTool("tool.episodic.search", ["autonomous", "deliberator"]),
         fakeTool("tool.openQuestions.create", ["autonomous", "deliberator"]),
+        fakeTool("tool.journal.append", ["autonomous"]),
       ],
     });
 
@@ -314,6 +316,7 @@ describe("runFinalizer emission tools", () => {
       "EmitObserve",
       "EmitNoOutput",
       "EmitSelfReport",
+      "tool.ownRecords.list",
     ]);
   });
 
@@ -340,6 +343,7 @@ describe("runFinalizer emission tools", () => {
       turnOrigin: "autonomous",
       registeredTools: [
         fakeTool("tool.unlisted.autonomous", ["autonomous"]),
+        fakeTool("tool.ownRecords.list", ["autonomous", "deliberator"]),
         fakeTool("tool.openQuestions.create", ["autonomous", "deliberator"]),
         fakeTool("tool.goals.retire", ["autonomous", "deliberator"]),
         fakeTool("tool.journal.append", ["autonomous"]),
@@ -354,6 +358,7 @@ describe("runFinalizer emission tools", () => {
       "EmitNoOutput",
       "EmitSelfReport",
       "EmitContinueThought",
+      "tool.ownRecords.list",
       "tool.journal.append",
       "tool.openQuestions.create",
       "tool.goals.retire",

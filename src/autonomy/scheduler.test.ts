@@ -3947,7 +3947,7 @@ describe("AutonomyScheduler", () => {
     });
   });
 
-  it("describes sources and budget while counting a null-outcome wake only in wake_count", async () => {
+  it("describes sources and budget with null-outcome wakes stamped in flight", async () => {
     const clock = new ManualClock(950_000);
     const harness = await createOfflineTestHarness({
       clock,
@@ -4080,6 +4080,7 @@ describe("AutonomyScheduler", () => {
           {
             trigger_name: "scheduled_wake",
             wake_count: 2,
+            in_flight: 0,
             outcome_counts: {
               headway: 1,
               silent: 1,
@@ -4090,6 +4091,7 @@ describe("AutonomyScheduler", () => {
           {
             trigger_name: "commitment_revoked",
             wake_count: 3,
+            in_flight: 1,
             outcome_counts: {
               headway: 0,
               silent: 0,

@@ -182,9 +182,10 @@ describe("planner context capture", () => {
                 {
                   trigger_name: "scheduled_wake",
                   wake_count: 1,
+                  in_flight: 1,
                   outcome_counts: {
                     headway: 0,
-                    silent: 1,
+                    silent: 0,
                     error: 0,
                     busy: 0,
                   },
@@ -206,6 +207,7 @@ describe("planner context capture", () => {
     expect(plannerSurfaceText(replayPair.compact.rendered.system)).toContain(
       "Harness scheduler state",
     );
+    expect(plannerSurfaceText(replayPair.compact.rendered.system)).toContain("in_flight=1");
     expect(replayPair.legacy.rendered.system).toContain("Harness scheduler state");
     expect(replayPair.compact.fingerprint).toEqual(livePair.compact.fingerprint);
     expect(replayPair.legacy.fingerprint).toEqual(livePair.legacy.fingerprint);
