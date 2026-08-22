@@ -1760,7 +1760,7 @@ export function summarizeAutonomySchedulerState(
   const budget = schedulerState.budget;
   const lines = [
     "Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.",
-    `Wake budget: used=${budget.used_in_current_window} / limit=${budget.max_wakes_per_window} / window=${formatRelativeDuration(budget.window_ms)}.`,
+    `Wake budget: used=${budget.used_in_current_window} / limit=${budget.max_wakes_per_window} / window=${formatRelativeDuration(budget.window_ms)} rolling, covering wakes stamped at or after ${new Date(budget.window_started_at).toISOString()} (the lower edge moves with every read, so counts below only compare against a read naming the same edge).`,
   ];
 
   if (budget.wakes_in_current_window_by_trigger.length === 0) {

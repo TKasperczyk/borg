@@ -175,6 +175,7 @@ describe("planner context capture", () => {
             budget: {
               max_wakes_per_window: 6,
               window_ms: 60 * 60_000,
+              window_started_at: NOW_MS - 60 * 60_000,
               used_in_current_window: 1,
               reserved_contemplative_wakes_per_window: 2,
               contemplative_used_in_current_window: 1,

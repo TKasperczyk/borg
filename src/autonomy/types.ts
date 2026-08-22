@@ -124,6 +124,13 @@ export type AutonomySchedulerWakeGroupDescription = {
 export type AutonomySchedulerBudgetDescription = {
   max_wakes_per_window: number;
   window_ms: number;
+  /**
+   * Lower edge of the rolling window the counts below are taken over, inclusive.
+   * The window is anchored at the describe call's now, so two descriptions taken
+   * minutes apart cover different intervals; without this the counts are not
+   * comparable across reads.
+   */
+  window_started_at: number;
   used_in_current_window: number;
   reserved_contemplative_wakes_per_window: number;
   contemplative_used_in_current_window: number;

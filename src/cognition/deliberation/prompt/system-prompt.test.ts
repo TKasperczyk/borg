@@ -2599,6 +2599,7 @@ describe("buildBaseSystemPrompt", () => {
               budget: {
                 max_wakes_per_window: 6,
                 window_ms: 60 * 60_000,
+                window_started_at: NOW_MS - 60 * 60_000,
                 used_in_current_window: 5,
                 reserved_contemplative_wakes_per_window: 2,
                 contemplative_used_in_current_window: 4,
@@ -2638,7 +2639,9 @@ describe("buildBaseSystemPrompt", () => {
       expect(block).toContain(
         "Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.",
       );
-      expect(block).toContain("Wake budget: used=5 / limit=6 / window=1h.");
+      expect(block).toContain(
+        "Wake budget: used=5 / limit=6 / window=1h rolling, covering wakes stamped at or after 2023-11-14T21:13:20.000Z",
+      );
       expect(block).toContain(
         "trigger_name=scheduled_reflection wake_count=4 in_flight=1 outcome_counts(headway=2 silent=1 error=0 busy=0)",
       );

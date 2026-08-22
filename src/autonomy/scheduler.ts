@@ -723,6 +723,7 @@ export class AutonomyScheduler {
       budget: {
         max_wakes_per_window: this.options.maxWakesPerWindow,
         window_ms: this.options.budgetWindowMs,
+        window_started_at: budgetCutoff,
         used_in_current_window: usedInCurrentWindow,
         reserved_contemplative_wakes_per_window: Math.min(
           this.options.maxWakesPerWindow,

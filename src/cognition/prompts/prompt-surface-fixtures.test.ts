@@ -82,6 +82,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
   budget: {
     max_wakes_per_window: 6,
     window_ms: 24 * 60 * 60_000,
+    window_started_at: NOW_MS - 24 * 60 * 60_000,
     used_in_current_window: 4,
     reserved_contemplative_wakes_per_window: 2,
     contemplative_used_in_current_window: 3,

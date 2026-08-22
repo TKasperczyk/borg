@@ -293,7 +293,7 @@ The following tagged blocks mix substrate-owned guidance with memory-derived sel
   <recent_regeneration turn_id="turn_fixture_regenerated" mechanism="commitment_guard_regeneration" age="unknown" disclosure="disclosure_class=self_private origin_audience=none private-to=none public-to=none" />
   <autonomy_scheduler_state source="harness_mechanism">
     Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.
-    Wake budget: used=4 / limit=6 / window=1d.
+    Wake budget: used=4 / limit=6 / window=1d rolling, covering wakes stamped at or after 2023-11-13T22:13:20.000Z (the lower edge moves with every read, so counts below only compare against a read naming the same edge).
     Wakes in current window by trigger_name:
     - trigger_name=scheduled_reflection wake_count=3 in_flight=0 outcome_counts(headway=1 silent=2 error=0 busy=0)
     - trigger_name=goal_followup_due wake_count=1 in_flight=0 outcome_counts(headway=0 silent=0 error=1 busy=0)
