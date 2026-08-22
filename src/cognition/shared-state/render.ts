@@ -515,9 +515,16 @@ function allActiveSharedStateKeysIndexed(input: {
 // The evidence ledger renders the artifact read at turn start, while the shared-state compile that
 // runs before the finalizer prompt is built can already have written a newer version to the store.
 // The rendered `record_version` and entry set are therefore a snapshot with a name, not a live
-// reading, and an unchanged `record_version` across turns is not evidence that no write landed.
+// reading: *within* a turn, an unchanged `record_version` says nothing about whether this turn's own
+// compile has landed. *Across* turns it says everything. Every write commits in one transaction that
+// bumps `record_version` first under a CAS assert (see `bumpParent`), so no entry can reach the store
+// without advancing it -- while a compile pass that lands no accepted operation returns before it
+// touches the store at all. A rendered `record_version` equal to one rendered on an earlier turn is
+// therefore positive evidence that nothing was written in between. That is the *only* place in the
+// prompt where a wholly rejected compile leaves a mark; if this line does not say so, a run of
+// silently discarded writes is indistinguishable from a run of turns with nothing to write.
 const SHARED_STATE_SNAPSHOT_BASIS_LINE =
-  "snapshot_basis=turn_start (this artifact and its record_version were read before this turn's shared-state compile, which may already have advanced both)";
+  "snapshot_basis=turn_start (this artifact and its record_version were read before this turn's shared-state compile, which may already have advanced both; every write that reaches the store advances record_version in the same transaction, so a record_version equal to one rendered on an earlier turn means no shared-state write landed in between)";
 
 // Omission here is this render's token budget spent over the entries the store already returned as
 // active -- a different mechanism from the store's lifecycle cap, which is the one that deletes.
