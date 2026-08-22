@@ -691,7 +691,7 @@ function renderCompactCreatorDirectives(
   if (briefing === null || briefing === undefined || briefing.directives.length === 0) {
     return {
       lines: [
-        '  <creator_directive_index complete="true" rows_total="0"><omitted_count>0</omitted_count></creator_directive_index>',
+        '  <creator_directive_index complete_for_current_audience="true" rows_total="0"><omitted_count>0</omitted_count></creator_directive_index>',
       ],
       rowCount: 0,
       truncationCount: 0,
@@ -705,8 +705,8 @@ function renderCompactCreatorDirectives(
   });
   return {
     lines: [
-      `  <creator_directive_index complete="true" rows_total="${rows.length}" fact_excerpt_budget_chars="${TERMINAL_CREATOR_DIRECTIVE_FACT_EXCERPT_CHARS}">`,
-      "    <interpretation>Boundary and operational directives are exact. Fact-bearing payloads may be visibly annotated mechanical head+tail excerpts with included and total source-character counts. Every structural disclosure and activation scope field is exact; none is inferred from payload language.</interpretation>",
+      `  <creator_directive_index complete_for_current_audience="true" rows_total="${rows.length}" fact_excerpt_budget_chars="${TERMINAL_CREATOR_DIRECTIVE_FACT_EXCERPT_CHARS}">`,
+      "    <interpretation>This index is complete for the current audience: it lists every active directive this audience's disclosure policy admits. Directives scoped away from this audience are omitted, so absence here is not evidence one does not exist. Boundary and operational directives are exact. Fact-bearing payloads may be visibly annotated mechanical head+tail excerpts with included and total source-character counts. Every structural disclosure and activation scope field is exact; none is inferred from payload language.</interpretation>",
       ...rows.map((row) => `    ${row}`),
       "    <omitted_count>0</omitted_count>",
       "  </creator_directive_index>",
