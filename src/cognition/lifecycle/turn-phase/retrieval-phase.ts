@@ -578,6 +578,16 @@ function traceCreatorDirectiveRendered(input: {
     input.tracer.emit("creator_directive_rendered", {
       turnId: input.turnId,
       ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
+      // The slice above caps the census at CREATOR_DIRECTIVE_RENDER_TRACE_LIMIT, and the cap is not
+      // visible in a per-directive row. Counting render_mode across a turn's events then yields a
+      // total that is silently the cap: measured 2026-08-23 over three days of traces, every turn
+      // reported exactly 50 applicable directives while the prompt's own creator_directive_index
+      // carried rows_total=109 on solitary turns. Without these two fields there is nothing in the
+      // event stream that distinguishes "50 applicable" from "50 was as far as we looked", and the
+      // lane split reads as a measurement when it is a head slice. Only the briefing builder sees
+      // the full list; it is never sliced, so the prompt is complete and the trace is the lossy one.
+      applicable_total: input.applicable.length,
+      traced_total: Math.min(input.applicable.length, CREATOR_DIRECTIVE_RENDER_TRACE_LIMIT),
       directive_id: item.directive.id,
       current_audience_entity_id: input.currentAudienceEntityId,
       participant_entity_ids: [...input.participantEntityIds],

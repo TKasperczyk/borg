@@ -1988,6 +1988,8 @@ describe("creator directive retrieval briefing", () => {
             participant_entity_ids: [audienceId],
             render_mode: "content",
             reason: "public",
+            applicable_total: 3,
+            traced_total: 3,
           }),
         }),
         expect.objectContaining({
@@ -1998,6 +2000,8 @@ describe("creator directive retrieval briefing", () => {
             participant_entity_ids: [audienceId],
             render_mode: "omitted",
             reason: "unauthorized_omit",
+            applicable_total: 3,
+            traced_total: 3,
           }),
         }),
         expect.objectContaining({
@@ -2008,6 +2012,8 @@ describe("creator directive retrieval briefing", () => {
             participant_entity_ids: [audienceId],
             render_mode: "private_operation",
             reason: "operator_only_omitted",
+            applicable_total: 3,
+            traced_total: 3,
           }),
         }),
       ]);
