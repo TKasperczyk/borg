@@ -1,6 +1,9 @@
 import type { LLMClient } from "../../llm/index.js";
-import type { CommitmentRecord } from "../../memory/commitments/index.js";
-import type { WorkingMemory } from "../../memory/working/index.js";
+import {
+  effectiveCommitmentCriticalDomain,
+  type CommitmentRecord,
+} from "../../memory/commitments/index.js";
+import type { RecentRegenerationCommitment, WorkingMemory } from "../../memory/working/index.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { SessionSourceType } from "../../sessions/index.js";
@@ -64,7 +67,40 @@ export type TurnActionCoordinatorResult = {
 export type TurnRegenerationBreadcrumb = {
   kind: "commitment_guard_regeneration";
   turnId: string;
+  commitments: readonly RecentRegenerationCommitment[];
 };
+
+// The regeneration request names the violated commitment ids; the records are
+// already in hand as `applicableCommitments`. Resolve them here, at the only
+// point where both are in the same scope -- the guard's second pass overwrites
+// the check result, and the ids are gone from the turn after that.
+function regenerationCommitmentDescriptors(
+  commitmentIds: readonly string[],
+  commitments: readonly CommitmentRecord[],
+): RecentRegenerationCommitment[] {
+  const byId = new Map<string, CommitmentRecord>(
+    commitments.map((commitment) => [commitment.id, commitment]),
+  );
+  const seen = new Set<string>();
+  const descriptors: RecentRegenerationCommitment[] = [];
+  for (const id of commitmentIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const commitment = byId.get(id);
+    if (commitment === undefined) {
+      descriptors.push({ id });
+      continue;
+    }
+    const criticalDomain = effectiveCommitmentCriticalDomain(commitment);
+    descriptors.push({
+      id,
+      kind: commitment.kind,
+      ...(criticalDomain === null ? {} : { critical_domain: criticalDomain }),
+      directive_family: commitment.directive_family,
+    });
+  }
+  return descriptors;
+}
 
 function withMessageMetadata<T extends PendingTurnEmission>(
   emission: T,
@@ -265,6 +301,7 @@ export class TurnActionCoordinator {
         let currentDeliberationEmission: Extract<PendingTurnEmission, { kind: "message" }> =
           input.deliberationEmission;
         let finalAnswerRegenerated = false;
+        let regeneratedForCommitments: readonly RecentRegenerationCommitment[] = [];
         let commitmentCheck = await this.options.commitmentGuardRunner.run({
           llmClient: input.llmClient,
           turnId: input.turnId,
@@ -290,6 +327,10 @@ export class TurnActionCoordinator {
             });
             commitmentCheck = suppressUnsupportedRegeneration(commitmentCheck);
           } else {
+            regeneratedForCommitments = regenerationCommitmentDescriptors(
+              commitmentCheck.emission.regeneration.commitmentIds,
+              input.applicableCommitments,
+            );
             currentDeliberation = await currentDeliberation.regenerateFinalResponse({
               additionalPromptSections: [
                 {
@@ -384,6 +425,7 @@ export class TurnActionCoordinator {
                 regenerationBreadcrumb: {
                   kind: "commitment_guard_regeneration" as const,
                   turnId: input.turnId,
+                  commitments: regeneratedForCommitments,
                 },
               }
             : {}),

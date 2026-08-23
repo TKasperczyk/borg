@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createWorkingMemory } from "../../memory/working/index.js";
+import { createWorkingMemory, workingMemorySchema } from "../../memory/working/index.js";
 import { DEFAULT_SESSION_ID, createStreamEntryId } from "../../util/ids.js";
 import { NOOP_TRACER } from "../../tracing/tracer.js";
 import {
@@ -194,6 +194,39 @@ describe("discourse state", () => {
     expect(JSON.stringify(workingMemory.discourse_state?.recent_regenerations)).not.toContain(
       "violating",
     );
+  });
+
+  it("records the commitments a regeneration was gated on", () => {
+    const sourceStreamEntryId = createStreamEntryId();
+    const workingMemory = appendRecentRegeneration(createWorkingMemory(DEFAULT_SESSION_ID, 100), {
+      turnId: "turn-1",
+      ts: 1,
+      sourceStreamEntryId,
+      commitments: [
+        {
+          id: "cmt_aaaaaaaaaaaaaaaa",
+          kind: "participant_preference",
+          critical_domain: "explicit_no_disclosure",
+          directive_family: "rollout_privacy",
+        },
+      ],
+    });
+
+    expect(workingMemory.discourse_state?.recent_regenerations?.[0]).toEqual({
+      turn_id: "turn-1",
+      mechanism: "commitment_guard_regeneration",
+      ts: 1,
+      source_stream_entry_id: sourceStreamEntryId,
+      commitments: [
+        {
+          id: "cmt_aaaaaaaaaaaaaaaa",
+          kind: "participant_preference",
+          critical_domain: "explicit_no_disclosure",
+          directive_family: "rollout_privacy",
+        },
+      ],
+    });
+    expect(workingMemorySchema.parse(workingMemory)).toBeDefined();
   });
 
   it("marks a detected closure loop named after S2 planner no-output", () => {

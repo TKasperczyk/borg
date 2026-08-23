@@ -1815,6 +1815,9 @@ function summarizeMechanismEvidence(
           ...(entry.source_stream_entry_id === undefined
             ? {}
             : { sourceStreamEntryId: entry.source_stream_entry_id }),
+          ...(entry.commitments === undefined || entry.commitments.length === 0
+            ? {}
+            : { commitments: entry.commitments }),
         })) ?? [],
     };
   const recentSuppressions = evidence.recentSuppressions.slice(-RECENT_SUPPRESSIONS_LIMIT);
@@ -1848,9 +1851,13 @@ function summarizeMechanismEvidence(
       `Regenerated final answers from my side (newest last; newest ${RECENT_REGENERATIONS_LIMIT} kept, same as above): ${recentRegenerations
         .map(
           (entry) =>
-            `${escapeXmlText(entry.turnId)}: an internal commitment guard regenerated this turn's final answer${renderRelativeAgeSuffix(entry.ts, renderNowMs)}`,
+            `${escapeXmlText(entry.turnId)}: an internal commitment guard regenerated this turn's final answer${renderRegenerationCommitmentsSuffix(entry)}${renderRelativeAgeSuffix(entry.ts, renderNowMs)}`,
         )
-        .join(", ")}.`,
+        .join(", ")}.${
+          recentRegenerations.some((entry) => (entry.commitments ?? []).length > 0)
+            ? " A named commitment there is the row that gated that draft, not a class of them: it is evidence about which of my own constraints is biting, not scheduler or network weather."
+            : ""
+        }`,
     );
   }
 
@@ -1859,6 +1866,25 @@ function summarizeMechanismEvidence(
 
 function renderRelativeAgeSuffix(ts: number, renderNowMs: number | undefined): string {
   return renderNowMs === undefined ? "" : ` (${formatRelativeAge(ts, renderNowMs)})`;
+}
+
+// A bare mechanism name reads as harness weather. The commitment that actually
+// gated the draft is the whole content of the entry, so name it: id for the
+// cross-reference, kind/domain/family for what it is without one.
+function renderRegenerationCommitmentsSuffix(
+  entry: NonNullable<DeliberationContext["turnMechanismEvidence"]>["recentRegenerations"][number],
+): string {
+  const commitments = entry.commitments ?? [];
+  if (commitments.length === 0) return "";
+  const rendered = commitments.map((commitment) => {
+    const descriptors = [commitment.kind, commitment.critical_domain, commitment.directive_family]
+      .filter((value): value is string => value !== undefined)
+      .join("/");
+    return descriptors.length === 0
+      ? escapeXmlText(commitment.id)
+      : `${escapeXmlText(commitment.id)} (${escapeXmlText(descriptors)})`;
+  });
+  return ` over commitment ${rendered.join(" and ")}`;
 }
 
 function renderRecentSuppressionMechanismEvidence(

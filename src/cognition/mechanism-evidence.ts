@@ -7,6 +7,7 @@ import type {
   GenerationSuppressionReason,
 } from "./generation/types.js";
 import type {
+  RecentRegenerationCommitment,
   RecentRegenerationEntry,
   RecentSuppressionEntry,
   WorkingMemory,
@@ -44,6 +45,7 @@ export type HydratedRecentRegeneration = {
   mechanism: RecentRegenerationEntry["mechanism"];
   ts: number;
   sourceStreamEntryId?: StreamEntryId;
+  commitments?: readonly RecentRegenerationCommitment[];
 };
 
 export type AutonomySchedulerMechanismEvidence = {
@@ -132,6 +134,9 @@ function hydratedRecentRegeneration(entry: RecentRegenerationEntry): HydratedRec
     ...(entry.source_stream_entry_id === undefined
       ? {}
       : { sourceStreamEntryId: entry.source_stream_entry_id }),
+    ...(entry.commitments === undefined || entry.commitments.length === 0
+      ? {}
+      : { commitments: entry.commitments }),
   };
 }
 

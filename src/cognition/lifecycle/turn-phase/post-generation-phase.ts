@@ -722,6 +722,7 @@ export async function runPostGenerationPhase(input: {
       turnId: actionCoordinatorResult.regenerationBreadcrumb.turnId,
       ts: input.options.clock.now(),
       sourceStreamEntryId: persistedAgentEntry.id,
+      commitments: actionCoordinatorResult.regenerationBreadcrumb.commitments,
     });
   }
   if (

@@ -204,8 +204,17 @@ describe("TurnActionCoordinator commitment regeneration", () => {
     expect(result.regenerationBreadcrumb).toEqual({
       kind: "commitment_guard_regeneration",
       turnId: "turn-commitment-regeneration",
+      commitments: [
+        {
+          id: commitment.id,
+          kind: "boundary",
+          critical_domain: "audience_scope",
+          directive_family: "vendor_channel_codename",
+        },
+      ],
     });
     expect(JSON.stringify(result.regenerationBreadcrumb)).not.toContain("ORCHID-17");
+    expect(JSON.stringify(result.regenerationBreadcrumb)).not.toContain(commitment.directive);
     expect(regenerateFinalResponse).toHaveBeenCalledTimes(1);
     const regenerationPromptSection =
       regenerateFinalResponse.mock.calls[0]?.[0].additionalPromptSections[0]?.text ?? "";

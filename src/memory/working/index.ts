@@ -31,6 +31,7 @@ export {
   type PendingSocialAttribution,
   type PendingTraitAttribution,
   type RecentRegenerationEntry,
+  type RecentRegenerationCommitment,
   type RecentSuppressionEntry,
   type StopUntilSubstantiveContent,
   type SuppressedEntry,

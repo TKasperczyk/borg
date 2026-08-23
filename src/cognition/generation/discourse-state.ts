@@ -2,6 +2,7 @@ import type {
   ClosurePressureHistoryReason,
   ClosureLoopState,
   DiscourseStopProvenance,
+  RecentRegenerationCommitment,
   RecentRegenerationEntry,
   RecentSuppressionEntry,
   StopUntilSubstantiveContent,
@@ -57,6 +58,7 @@ export type AppendRecentRegenerationInput = {
   turnId: string;
   ts: number;
   sourceStreamEntryId?: StreamEntryId;
+  commitments?: readonly RecentRegenerationCommitment[];
 };
 
 function baseDiscourseState(workingMemory: WorkingMemory): WorkingMemory["discourse_state"] {
@@ -199,6 +201,9 @@ export function appendRecentRegeneration(
     ...(input.sourceStreamEntryId === undefined
       ? {}
       : { source_stream_entry_id: input.sourceStreamEntryId }),
+    ...(input.commitments === undefined || input.commitments.length === 0
+      ? {}
+      : { commitments: input.commitments.map((commitment) => ({ ...commitment })) }),
   };
   const next = capNewest(
     [...(state.recent_regenerations ?? []), entry],

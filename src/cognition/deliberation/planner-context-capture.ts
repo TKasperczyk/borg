@@ -451,6 +451,9 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
       turnId: entry.turnId,
       mechanism: entry.mechanism,
       ts: entry.ts,
+      ...(entry.commitments === undefined || entry.commitments.length === 0
+        ? {}
+        : { commitments: entry.commitments.map((commitment) => ({ ...commitment })) }),
     })),
     ...(value.autonomySchedulerState === undefined
       ? {}

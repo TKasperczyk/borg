@@ -2896,6 +2896,67 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).not.toContain("violating_span");
   });
 
+  it("names the commitment a regeneration was gated on", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        workingMemory: {
+          ...makeContext().workingMemory,
+          discourse_state: {
+            stop_until_substantive_content: null,
+            recent_regenerations: [
+              {
+                turn_id: "turn-regenerated",
+                mechanism: "commitment_guard_regeneration",
+                ts: NOW_MS,
+                commitments: [
+                  {
+                    id: "cmt_aaaaaaaaaaaaaaaa",
+                    kind: "participant_preference",
+                    critical_domain: "explicit_no_disclosure",
+                    directive_family: "rollout_privacy",
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_mechanism_evidence");
+
+    expect(block).toContain(
+      "over commitment cmt_aaaaaaaaaaaaaaaa (participant_preference/explicit_no_disclosure/rollout_privacy)",
+    );
+    expect(block).toContain("which of my own constraints is biting");
+  });
+
+  it("omits the commitment attribution when the entry carries none", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        workingMemory: {
+          ...makeContext().workingMemory,
+          discourse_state: {
+            stop_until_substantive_content: null,
+            recent_regenerations: [
+              {
+                turn_id: "turn-regenerated",
+                mechanism: "commitment_guard_regeneration",
+                ts: NOW_MS,
+              },
+            ],
+          },
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_mechanism_evidence");
+
+    expect(block).toContain("Regenerated final answers from my side");
+    expect(block).not.toContain("over commitment");
+    expect(block).not.toContain("which of my own constraints is biting");
+  });
+
   it("caps mechanism evidence rendering to the newest entries", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({
