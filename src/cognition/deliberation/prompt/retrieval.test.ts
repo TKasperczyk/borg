@@ -458,6 +458,38 @@ describe("plan-requested compact terminal retrieval", () => {
     expect(rendered).not.toContain("HEAD+TAIL EXCERPT");
   });
 
+  it("still completes affordable checks when the handle list alone exceeds the budget", () => {
+    const rendered = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: Array.from({ length: 400 }, (_unused, index) =>
+          verificationEvidence(`evidence:${index}`, "z".repeat(40)),
+        ),
+        episodes: [],
+        semantic: {
+          matched_node_ids: [],
+          matched_nodes: [],
+          supports: [],
+          contradicts: [],
+          categories: [],
+          support_hits: [],
+          causal_hits: [],
+          contradiction_hits: [],
+          category_hits: [],
+        },
+        open_questions: [],
+      } as never,
+      2_000,
+    );
+
+    const membershipTokens = Number(/membership_tokens="(\d+)"/.exec(rendered)?.[1]);
+    const payloadTokens = Number(/payload_tokens_included="(\d+)"/.exec(rendered)?.[1]);
+    expect(membershipTokens).toBeGreaterThan(2_000);
+    expect(payloadTokens).toBeLessThanOrEqual(2_000);
+    expect(rendered).toContain('rows_total="400"');
+    expect((rendered.match(/payload_status="exact"/g) ?? []).length).toBeGreaterThan(0);
+    expect(rendered).toContain("<omitted_count>0</omitted_count>");
+  });
+
   it("renders an unavailable plan-requested check with a handle and zero payload", () => {
     const rendered = renderPlanRequestedVerificationNotCompleted();
 

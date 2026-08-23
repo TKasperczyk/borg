@@ -15,7 +15,10 @@ import {
   type RetrievedSemanticHit,
   type RetrievedSemanticNode,
 } from "../../../retrieval/index.js";
-import { estimatePromptTokens } from "../../../util/token-estimate.js";
+import {
+  estimatePromptTokens,
+  estimatePromptTokensFromLength,
+} from "../../../util/token-estimate.js";
 import type { EntityId } from "../../../util/ids.js";
 import { escapeXmlText } from "../../../util/prompt-tags.js";
 import { renderEvidenceItemDisclosureLabel } from "../../evidence-item-disclosure.js";
@@ -346,11 +349,15 @@ function verificationFallbackCandidates(
   return [...episodes, ...nodes, ...edges, ...openQuestions];
 }
 
+function verificationPayloadJson(candidate: VerificationRetrievalCandidate): string {
+  return JSON.stringify(candidate.payload) ?? "null";
+}
+
 function renderVerificationRetrievalCandidate(
   candidate: VerificationRetrievalCandidate,
   includePayload: boolean,
 ): string {
-  const payloadJson = JSON.stringify(candidate.payload) ?? "null";
+  const payloadJson = verificationPayloadJson(candidate);
   const structural = Object.entries(candidate.structuralFields)
     .map(([key, value]) => `${key}="${verificationXmlAttribute(String(value ?? "none"))}"`)
     .join(" ");
@@ -375,9 +382,22 @@ function renderVerificationRetrievalRows(
     renderVerificationRetrievalCandidate(candidate, included.has(index)),
   );
   const incompleteCount = candidates.length - included.size;
+  const membershipTokens = estimatePromptTokensFromLength(
+    candidates.reduce(
+      (sum, candidate) => sum + renderVerificationRetrievalCandidate(candidate, false).length,
+      0,
+    ),
+  );
+  const payloadTokens = estimatePromptTokensFromLength(
+    candidates.reduce(
+      (sum, candidate, index) =>
+        included.has(index) ? sum + verificationPayloadJson(candidate).length : sum,
+      0,
+    ),
+  );
   return [
-    `<plan_requested_verification_retrieval complete_membership="true" rows_total="${rows.length}" target_tokens="${maxTokens}" check_not_completed_count="${incompleteCount}">`,
-    "  <interpretation>This retrieval was requested by the advisory plan. Every returned source handle is present. A payload_status=exact row carries its complete payload with no excerpt; payload_status=check_not_completed_budget carries the handle and structural fields but zero payload, so the requested check is explicitly incomplete rather than silently truncated.</interpretation>",
+    `<plan_requested_verification_retrieval complete_membership="true" rows_total="${rows.length}" payload_target_tokens="${maxTokens}" payload_tokens_included="${payloadTokens}" membership_tokens="${membershipTokens}" check_not_completed_count="${incompleteCount}">`,
+    "  <interpretation>This retrieval was requested by the advisory plan. Every returned source handle is present. A payload_status=exact row carries its complete payload with no excerpt; payload_status=check_not_completed_budget carries the handle and structural fields but zero payload, so the requested check is explicitly incomplete rather than silently truncated. Payloads are priced against payload_target_tokens alone; membership_tokens is the separate unbounded cost of listing every handle and never consumes the payload budget, so a check_not_completed_budget row means that row's own payload did not fit, not that the handle list crowded it out.</interpretation>",
     ...rows.map((row) => `  ${row}`),
     "  <omitted_count>0</omitted_count>",
     `  <check_not_completed_count>${incompleteCount}</check_not_completed_count>`,
@@ -389,6 +409,15 @@ function renderVerificationRetrievalRows(
  * Compact-terminal rendering for secondary retrieval driven structurally by
  * an S2 plan's non-empty verification_steps. Payloads are all-or-nothing:
  * exact when they fit, otherwise an explicit incomplete-check row.
+ *
+ * Membership is complete and therefore unbounded: every candidate renders its
+ * handle and structural fields whether or not its payload is affordable. The
+ * payload budget is priced against that quota alone rather than against the
+ * whole block, because otherwise a membership list larger than maxTokens --
+ * the normal case once a plan requests a few hundred handles -- makes every
+ * payload unaffordable, and the requested check can never complete for any
+ * row. A row is skipped rather than ending the scan so a small payload later
+ * in the list still fits after a large one is refused.
  */
 export function renderPlanRequestedVerificationRetrieval(
   input: Pick<RetrievedContext, "evidence" | "episodes" | "semantic" | "open_questions">,
@@ -399,15 +428,15 @@ export function renderPlanRequestedVerificationRetrieval(
     ...verificationFallbackCandidates(input),
   ];
   const included = new Set<number>();
+  let payloadTokens = 0;
 
   for (let index = 0; index < candidates.length; index += 1) {
-    included.add(index);
-    if (
-      estimatePromptTokens(renderVerificationRetrievalRows(candidates, included, maxTokens)) >
-      maxTokens
-    ) {
-      included.delete(index);
+    const cost = estimatePromptTokens(verificationPayloadJson(candidates[index]!));
+    if (payloadTokens + cost > maxTokens) {
+      continue;
     }
+    payloadTokens += cost;
+    included.add(index);
   }
 
   return renderVerificationRetrievalRows(candidates, included, maxTokens);
