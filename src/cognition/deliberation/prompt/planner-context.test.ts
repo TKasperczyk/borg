@@ -497,9 +497,9 @@ describe("compact planner context", () => {
     const text = taggedBlock(allSystemText(planner), "borg_planner_authority_context");
     const rows = selfClosingRows(text, "d");
 
-    expect(text).toContain('directives_total="18"');
+    expect(text).toContain('directives_total_for_current_audience="18"');
     expect(text).toContain('directives_rendered="18"');
-    expect(text).toContain('<creator_directive_index rows_total="18"');
+    expect(text).toContain('<creator_directive_index rows_total_for_current_audience="18"');
     expect(rows).toHaveLength(18);
     expect(rows.map((row) => row.match(/i="([^"]+)"/)?.[1])).toEqual(
       Array.from({ length: 18 }, (_, index) => `cd_${index + 1}`),
@@ -603,7 +603,7 @@ describe("compact planner context", () => {
     );
     const text = taggedBlock(allSystemText(planner), "borg_planner_authority_context");
 
-    expect(text).toContain('directives_total="150"');
+    expect(text).toContain('directives_total_for_current_audience="150"');
     expect(text).toContain('directives_rendered="150"');
     expect(selfClosingRows(text, "d")).toHaveLength(150);
     expect(text.match(/<omitted_count>0<\/omitted_count>/g)).toHaveLength(2);
