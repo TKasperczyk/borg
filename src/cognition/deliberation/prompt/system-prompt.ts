@@ -1763,8 +1763,21 @@ export function summarizeAutonomySchedulerState(
     budget.reserved_contemplative_wakes_per_window - budget.contemplative_used_in_current_window,
   );
   const operationalLimit = budget.max_wakes_per_window - reservationStillHeld;
+  // The scheduler is read once, when the retrieval phase ends; current_time_ms at the top of the
+  // prompt is stamped later, when finalizer context is assembled. Everything between the two --
+  // creator-directive render, ledger build, and above all the shared-state compile with its
+  // semantic-revision calls -- runs inside the gap, so it is milliseconds on a turn that compiles
+  // nothing and over a minute on a turn that compiles a lot. Both stamps used to sit on the same
+  // surface with nothing saying they were different reads, which makes every count below look
+  // current as of the header clock. Name the read and the lag; the arithmetic is not the reader's.
+  const observationLagMs = Math.max(0, Math.trunc(renderNowMs - schedulerState.observedAt));
   const lines = [
     "Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.",
+    `Read at ${new Date(schedulerState.observedAt).toISOString()}${
+      observationLagMs === 0
+        ? ""
+        : `, ${observationLagMs}ms before the current_time_ms at the top of this prompt`
+    }: every count and stamp below is as of that read, not as of now. The lag is the ledger build and shared-state compile that run in between and varies per turn, so a wake admitted inside it is not counted here.`,
     `Wake budget: used=${budget.used_in_current_window} / limit=${budget.max_wakes_per_window} / window=${formatRelativeDuration(budget.window_ms)} rolling, covering wakes stamped at or after ${new Date(budget.window_started_at).toISOString()} (the lower edge moves with every read, so counts below only compare against a read naming the same edge).`,
     `limit=${budget.max_wakes_per_window} is the ceiling for contemplative sources only. ${budget.reserved_contemplative_wakes_per_window} of it is reserved for them and ${budget.contemplative_used_in_current_window} contemplative wake(s) are in this window, so ${reservationStillHeld} of the reservation is still held and operational sources are refused once used reaches ${operationalLimit}.`,
   ];

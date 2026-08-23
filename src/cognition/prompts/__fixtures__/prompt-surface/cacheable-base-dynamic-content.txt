@@ -109,6 +109,7 @@ disclosure: disclosure_class=self_private private-to=unknown; I can use this int
 
 <borg_mechanism_evidence>
 Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.
+Read at 2023-11-14T22:13:20.000Z: every count and stamp below is as of that read, not as of now. The lag is the ledger build and shared-state compile that run in between and varies per turn, so a wake admitted inside it is not counted here.
 Wake budget: used=4 / limit=6 / window=1d rolling, covering wakes stamped at or after 2023-11-13T22:13:20.000Z (the lower edge moves with every read, so counts below only compare against a read naming the same edge).
 limit=6 is the ceiling for contemplative sources only. 2 of it is reserved for them and 3 contemplative wake(s) are in this window, so 0 of the reservation is still held and operational sources are refused once used reaches 6.
 Wakes in current window by trigger_name:
