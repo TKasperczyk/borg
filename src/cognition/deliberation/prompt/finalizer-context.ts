@@ -406,6 +406,13 @@ function renderLedgerOnlyCommitmentRecord(entry: EvidenceLedgerEntry): {
 // render, not a report on the store -- reading `none` across all rows says nothing
 // about whether the retirement paths ever fire. complete="true" and rows_total are
 // likewise statements about the active set, not about the commitments table.
+//
+// rows_total here is also a union across TWO scopes, which is why it is not renamed to
+// either qualifier: canonical_rows is the global cognition draw, ledger_only_rows is
+// whatever the current-audience standing ledger carries and the global draw did not.
+// When ledger_only_rows is 0 the union coincides with the global total, but that is a
+// property of this turn's contents, not of the name -- so the two component counts, not
+// rows_total, are the numbers with a single well-defined scope.
 function renderCommitments(context: DeliberationContext): RenderedTerminalSection {
   const commitments = context.applicableCommitments ?? [];
   const ledgerEntries = context.evidenceLedger?.audienceStanding?.commitmentEntries ?? [];
@@ -429,7 +436,7 @@ function renderCommitments(context: DeliberationContext): RenderedTerminalSectio
     "terminal_durable_global",
     [
       `<borg_terminal_commitments complete="true" rows_total="${rows.length}" canonical_rows="${canonicalRendered.length}" ledger_only_rows="${ledgerOnlyRendered.length}" advisory_excerpt_budget_chars="${TERMINAL_ADVISORY_COMMITMENT_EXCERPT_CHARS}">`,
-      "  <interpretation>One row per globally assembled commitment: canonical records first, then any distinct standing-ledger-only records. Critical directives are exact. A long advisory directive is a visibly annotated mechanical head+tail cut carrying both included and total source-character counts, never a clean-looking summary. Entity scope and disclosure are exact provenance and handling constraints, never audience-dependent recall selection. Relative ages are intentionally separated into the turn-local overlay keyed by id.</interpretation>",
+      "  <interpretation>One row per commitment: canonical records first, then any distinct standing-ledger-only records. The two arms are drawn at different scopes -- canonical_rows is the global draw, ledger_only_rows is what the current-audience standing ledger adds -- so rows_total is their union and is not a total at either scope; read canonical_rows for the global count. Critical directives are exact. A long advisory directive is a visibly annotated mechanical head+tail cut carrying both included and total source-character counts, never a clean-looking summary. Entity scope and disclosure are exact provenance and handling constraints, never audience-dependent recall selection. Relative ages are intentionally separated into the turn-local overlay keyed by id.</interpretation>",
       "  <field_legend>Absolute record fields and the semantic field-set union of canonical scope/detail and standing-ledger rows are carried by each durable row plus its ID-keyed turn overlay. directive_exact, directive_excerpt_shape, directive_included_chars, and directive_total_chars state whether the directive is complete and, when cut, exactly how much source text is present.</field_legend>",
       ...rows.map((row) => `  ${row}`),
       "  <omitted_count>0</omitted_count>",
@@ -954,25 +961,34 @@ function renderCompleteStandingMemoryIndexes(
     standing?.recentLivedExperienceEntries ?? [],
     "cross_session_row",
   );
+  // Each group names the scope of its OWN draw, because the groups do not share one.
+  // relational_slots comes from context.relationalSlots (global recall); the other three
+  // come from evidenceLedger.audienceStanding, which is assembled for the current
+  // audience. An unqualified "total" is only checkable from the reading side when the
+  // rows happen to contain something visibly belonging elsewhere -- so the scope is
+  // stated in the attribute name rather than left to be inferred from the contents.
   const groups = [
-    { tag: "relational_slots", rows: relationalSlots.rows },
-    { tag: "relational_standing", rows: relationalStanding.rows },
-    { tag: "social_standing", rows: socialStanding.rows },
-    { tag: "cross_session_entries", rows: crossSession.rows },
+    { tag: "relational_slots", rows: relationalSlots.rows, audienceScoped: false },
+    { tag: "relational_standing", rows: relationalStanding.rows, audienceScoped: true },
+    { tag: "social_standing", rows: socialStanding.rows, audienceScoped: true },
+    { tag: "cross_session_entries", rows: crossSession.rows, audienceScoped: true },
   ];
   const rowCount = groups.reduce((sum, group) => sum + group.rows.length, 0);
   return terminalSection(
     "standing_memory_indexes",
     "terminal_turn_context",
     [
-      `<borg_terminal_standing_memory_indexes complete="true" rows_total="${rowCount}" standing_cadence_due="${standing?.renderRecentLivedExperience === true}">`,
-      "  <interpretation>Complete membership indexes for relational slots, relational standing, social/observed-event memory, and cross-session lived entries. Payload fields are mechanical head+tail excerpts; an excerpt is never a summary. Disclosure labels survive on every row and govern mention, not recall.</interpretation>",
-      ...groups.flatMap((group) => [
-        `  <${group.tag} complete="true" rows_total="${group.rows.length}">`,
-        ...group.rows.map((row) => `    ${row}`),
-        "    <omitted_count>0</omitted_count>",
-        `  </${group.tag}>`,
-      ]),
+      `<borg_terminal_standing_memory_indexes rows_total_across_groups="${rowCount}" standing_cadence_due="${standing?.renderRecentLivedExperience === true}">`,
+      "  <interpretation>Complete membership indexes for relational slots, relational standing, social/observed-event memory, and cross-session lived entries. The groups are drawn at different scopes and each states its own: relational_slots is the global relational draw, while relational_standing, social_standing, and cross_session_entries are assembled for the current audience. rows_total_across_groups is their sum and is therefore not a total at any single scope. Payload fields are mechanical head+tail excerpts; an excerpt is never a summary. Disclosure labels survive on every row and govern mention, not recall.</interpretation>",
+      ...groups.flatMap((group) => {
+        const suffix = group.audienceScoped ? "_for_current_audience" : "";
+        return [
+          `  <${group.tag} complete${suffix}="true" rows_total${suffix}="${group.rows.length}">`,
+          ...group.rows.map((row) => `    ${row}`),
+          "    <omitted_count>0</omitted_count>",
+          `  </${group.tag}>`,
+        ];
+      }),
       "  <omitted_count>0</omitted_count>",
       "</borg_terminal_standing_memory_indexes>",
     ].join("\n"),
