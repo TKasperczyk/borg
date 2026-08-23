@@ -1758,9 +1758,15 @@ export function summarizeAutonomySchedulerState(
   renderNowMs: number,
 ): string {
   const budget = schedulerState.budget;
+  const reservationStillHeld = Math.max(
+    0,
+    budget.reserved_contemplative_wakes_per_window - budget.contemplative_used_in_current_window,
+  );
+  const operationalLimit = budget.max_wakes_per_window - reservationStillHeld;
   const lines = [
     "Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.",
     `Wake budget: used=${budget.used_in_current_window} / limit=${budget.max_wakes_per_window} / window=${formatRelativeDuration(budget.window_ms)} rolling, covering wakes stamped at or after ${new Date(budget.window_started_at).toISOString()} (the lower edge moves with every read, so counts below only compare against a read naming the same edge).`,
+    `limit=${budget.max_wakes_per_window} is the ceiling for contemplative sources only. ${budget.reserved_contemplative_wakes_per_window} of it is reserved for them and ${budget.contemplative_used_in_current_window} contemplative wake(s) are in this window, so ${reservationStillHeld} of the reservation is still held and operational sources are refused once used reaches ${operationalLimit}.`,
   ];
 
   if (budget.wakes_in_current_window_by_trigger.length === 0) {

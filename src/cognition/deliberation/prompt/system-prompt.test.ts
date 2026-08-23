@@ -2649,8 +2649,50 @@ describe("buildBaseSystemPrompt", () => {
         "trigger_name=goal_followup_due wake_count=1 in_flight=0 outcome_counts(headway=0 silent=0 error=1 busy=0)",
       );
       expect(block).toContain("Next budget slot frees: 2023-11-14T22:43:20.000Z (in 30m).");
+      expect(block).toContain(
+        "limit=6 is the ceiling for contemplative sources only. 2 of it is reserved for them and 4 contemplative wake(s) are in this window, so 0 of the reservation is still held and operational sources are refused once used reaches 6.",
+      );
     },
   );
+
+  it("names the lower operational ceiling while the contemplative reservation is unspent", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        turnOrigin: "user",
+        turnMechanismEvidence: {
+          recentSuppressions: [],
+          recentRegenerations: [],
+          autonomySchedulerState: {
+            observedAt: NOW_MS,
+            budget: {
+              max_wakes_per_window: 15,
+              window_ms: 24 * 60 * 60_000,
+              window_started_at: NOW_MS - 24 * 60 * 60_000,
+              used_in_current_window: 12,
+              reserved_contemplative_wakes_per_window: 1,
+              contemplative_used_in_current_window: 0,
+              wakes_in_current_window_by_trigger: [
+                {
+                  trigger_name: "goal_followup_due",
+                  wake_count: 12,
+                  in_flight: 0,
+                  outcome_counts: { headway: 4, silent: 8, error: 0, busy: 0 },
+                },
+              ],
+              next_budget_slot_frees_at: NOW_MS + 30 * 60_000,
+            },
+          },
+        },
+      }),
+      { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+    );
+    const block = extractBlock(prompt, "borg_mechanism_evidence");
+
+    expect(block).toContain("Wake budget: used=12 / limit=15 /");
+    expect(block).toContain(
+      "limit=15 is the ceiling for contemplative sources only. 1 of it is reserved for them and 0 contemplative wake(s) are in this window, so 1 of the reservation is still held and operational sources are refused once used reaches 14.",
+    );
+  });
 
   it("omits mechanism evidence when scheduler and turn-mechanism state are absent", () => {
     const prompt = buildBaseSystemPrompt(
