@@ -488,10 +488,13 @@ function makeContext(overrides: Partial<DeliberationContext> = {}): Deliberation
     retrievalConfidence: {
       overall: 0.74,
       evidenceStrength: 0.7,
-      coverage: 0.6,
+      coverage: 0.4,
       sourceDiversity: 0.5,
       contradictionPresent: true,
       sampleSize: 2,
+      coverageExpected: 5,
+      diversitySources: 1,
+      diversitySampleSize: 2,
     },
     contradictionRouting: {
       contradictions: [

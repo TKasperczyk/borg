@@ -17,6 +17,13 @@ export type RetrievalConfidence = {
   sourceDiversity: number;
   contradictionPresent: boolean;
   sampleSize: number;
+  // The denominators the two ratios were actually divided by. Neither is
+  // `sampleSize`, and neither is a constant, so a 1.00 on either line is only
+  // readable next to the figure it saturated against. Carried on the result so
+  // the render can print the fraction instead of just the quotient.
+  coverageExpected: number;
+  diversitySources: number;
+  diversitySampleSize: number;
 };
 
 export type ComputeRetrievalConfidenceInput = {
@@ -188,6 +195,9 @@ export function computeRetrievalConfidence(
       sourceDiversity: 0,
       contradictionPresent,
       sampleSize: 0,
+      coverageExpected: expectedCount,
+      diversitySources: 0,
+      diversitySampleSize: 0,
     };
   }
 
@@ -205,6 +215,19 @@ export function computeRetrievalConfidence(
   const evidenceStrength = clamp01(episodeEvidenceStrength + semanticEvidence.strength);
 
   // Coverage: did we find enough evidence to answer confidently.
+  //
+  // Read the two halves of this fraction before reading the number. The
+  // numerator is the same expression as the reported `sampleSize` below. The
+  // denominator is not a constant and not the sample: callers pass the
+  // retrieval limit (1/4/5/6 by cognitive mode), and the episode list has
+  // already been capped at exactly that limit upstream, with the semantic count
+  // added on top of the cap. So on any turn that fills its episode budget and
+  // matches a single semantic node, coverage is pinned at 1.00 -- not because
+  // evidence was broad but because the numerator can exceed a denominator it
+  // was never bounded by. Pinned at its ceiling, it stops discriminating and
+  // its modulation term below becomes a constant. Only the zero-evidence early
+  // return can drive it to 0. That is why `coverageExpected` ships with it: a
+  // saturated ratio and a measured one print identically on their own.
   const coverage = clamp01((episodes.length + semanticEvidence.count) / Math.max(1, expectedCount));
 
   // Source diversity: distinct participant sets across the top-N. Episodes
@@ -232,6 +255,8 @@ export function computeRetrievalConfidence(
   // the numerator no matter how many there are, and every further point of
   // diversity comes from distinct `semantic:` source sets. A 1.00 there is not
   // evidence of breadth across conversations; it is the small-denominator case.
+  // Both halves ship on the result as `diversitySources` / `diversitySampleSize`
+  // so the render can show the fraction rather than only its quotient.
   const diversitySampleSize = topEpisodes.length + semanticEvidence.count;
   const sourceDiversity =
     diversitySampleSize === 0 ? 0 : clamp01(participantSignatures.size / diversitySampleSize);
@@ -256,5 +281,8 @@ export function computeRetrievalConfidence(
     sourceDiversity,
     contradictionPresent,
     sampleSize: episodes.length + semanticEvidence.count,
+    coverageExpected: Math.max(1, expectedCount),
+    diversitySources: participantSignatures.size,
+    diversitySampleSize,
   };
 }

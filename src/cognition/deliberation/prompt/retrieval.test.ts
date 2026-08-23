@@ -43,6 +43,9 @@ function makeRetrievalConfidence(
     sourceDiversity: overrides.sourceDiversity ?? 0,
     contradictionPresent: overrides.contradictionPresent ?? false,
     sampleSize: overrides.sampleSize ?? 0,
+    coverageExpected: overrides.coverageExpected ?? 5,
+    diversitySources: overrides.diversitySources ?? 0,
+    diversitySampleSize: overrides.diversitySampleSize ?? 0,
   };
 }
 
@@ -102,6 +105,29 @@ describe("retrieval confidence prompt rendering", () => {
     expect(summary).toContain("overall=0.00");
     expect(summary).toContain("samples=0");
     expect(summary).toContain("No relevant memory was retrieved for this turn.");
+  });
+
+  it("prints both ratios with the denominator each was divided by", () => {
+    // A quotient on its own cannot distinguish a measured ratio from one pinned
+    // at a ceiling it could not miss. Coverage's denominator is the retrieval
+    // limit -- which also capped the episode half of its own numerator -- and
+    // diversity's is the top-N slice, so neither is readable against `samples`.
+    const saturated = summarizeRetrievalConfidence(
+      makeRetrievalConfidence({
+        overall: 0.8,
+        evidenceStrength: 0.8,
+        coverage: 1,
+        sampleSize: 23,
+        coverageExpected: 4,
+        sourceDiversity: 0.94,
+        diversitySources: 17,
+        diversitySampleSize: 18,
+      }),
+    );
+
+    expect(saturated).toContain("coverage=1.00(23/4)");
+    expect(saturated).toContain("diversity=0.94(17/18)");
+    expect(saturated).toContain("samples=23");
   });
 
   it("flags weakly-supported claims when non-empty confidence is low", () => {

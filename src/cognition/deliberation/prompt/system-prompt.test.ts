@@ -2218,6 +2218,9 @@ describe("buildBaseSystemPrompt", () => {
           sourceDiversity: 1,
           contradictionPresent: true,
           sampleSize: 4,
+          coverageExpected: 4,
+          diversitySources: 4,
+          diversitySampleSize: 4,
         },
         contradictionRouting: {
           contradictions: [
@@ -2266,6 +2269,9 @@ describe("buildBaseSystemPrompt", () => {
           sourceDiversity: 1,
           contradictionPresent: true,
           sampleSize: 4,
+          coverageExpected: 4,
+          diversitySources: 4,
+          diversitySampleSize: 4,
         },
         contradictionRouting: {
           contradictions: [

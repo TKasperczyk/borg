@@ -49,8 +49,14 @@ export function summarizeRetrievalConfidence(
   const fragments: string[] = [
     `overall=${confidence.overall.toFixed(2)}`,
     `evidence=${confidence.evidenceStrength.toFixed(2)}`,
-    `coverage=${confidence.coverage.toFixed(2)}`,
-    `diversity=${confidence.sourceDiversity.toFixed(2)}`,
+    // Both ratios print with the fraction they came from. Their denominators
+    // are neither `samples` nor each other: coverage divides by the retrieval
+    // limit for this turn (which also capped the episode half of its own
+    // numerator), diversity by the top-N slice plus semantic hits. A quotient
+    // alone cannot say whether a 1.00 measured breadth or merely hit a ceiling
+    // it could not miss.
+    `coverage=${confidence.coverage.toFixed(2)}(${confidence.sampleSize}/${confidence.coverageExpected})`,
+    `diversity=${confidence.sourceDiversity.toFixed(2)}(${confidence.diversitySources}/${confidence.diversitySampleSize})`,
     `samples=${confidence.sampleSize}`,
   ];
 

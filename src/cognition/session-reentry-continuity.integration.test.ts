@@ -99,6 +99,9 @@ function makeRetrievalConfidence(
     sourceDiversity: overrides.sourceDiversity ?? 1,
     contradictionPresent: overrides.contradictionPresent ?? false,
     sampleSize: overrides.sampleSize ?? 1,
+    coverageExpected: overrides.coverageExpected ?? 1,
+    diversitySources: overrides.diversitySources ?? 1,
+    diversitySampleSize: overrides.diversitySampleSize ?? 1,
   };
 }
 
