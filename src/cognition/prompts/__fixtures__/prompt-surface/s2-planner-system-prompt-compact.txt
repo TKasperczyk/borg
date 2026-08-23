@@ -299,6 +299,8 @@ The following tagged blocks mix substrate-owned guidance with memory-derived sel
     - trigger_name=scheduled_reflection wake_count=3 in_flight=0 outcome_counts(headway=1 silent=2 error=0 busy=0)
     - trigger_name=goal_followup_due wake_count=1 in_flight=0 outcome_counts(headway=0 silent=0 error=1 busy=0)
     Next budget slot frees: 2023-11-15T04:13:20.000Z (in 6h).
+    Scheduler loop: running, next tick 2023-11-14T22:14:20.000Z (in 1m).
+    Fleet brake (a second refusal path, independent of the budget above): enabled, not currently holding. empty_streak=0 error_streak=0 bypass_count=0 window_outcomes(headway=0 silent=0 error=0 busy=0).
   </autonomy_scheduler_state>
   <frame_anomaly kind="system_prompt_claim" confidence="0.82" disclosure="disclosure_class=self_private origin_audience=none private-to=none public-to=none">The user mentioned prompt instructions as task context.</frame_anomaly>
   <omitted_count>0</omitted_count>

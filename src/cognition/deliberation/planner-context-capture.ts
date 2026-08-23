@@ -460,6 +460,12 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
       : {
           autonomySchedulerState: {
             observedAt: value.autonomySchedulerState.observedAt,
+            enabled: value.autonomySchedulerState.enabled,
+            nextTickAt: value.autonomySchedulerState.nextTickAt,
+            fleetBrake: {
+              ...value.autonomySchedulerState.fleetBrake,
+              window_outcomes: { ...value.autonomySchedulerState.fleetBrake.window_outcomes },
+            },
             budget: {
               ...value.autonomySchedulerState.budget,
               wakes_in_current_window_by_trigger:

@@ -243,7 +243,7 @@ describe("autonomy scheduler mechanism-evidence provider", () => {
     try {
       const result = await runMinimalRetrievalPhase(options, "turn-scheduler-provider-absent");
 
-      expect(options).not.toHaveProperty("autonomySchedulerBudgetProvider");
+      expect(options).not.toHaveProperty("autonomySchedulerStateProvider");
       expect(result.turnMechanismEvidence.autonomySchedulerState).toBeUndefined();
     } finally {
       db.close();
@@ -255,7 +255,7 @@ describe("autonomy scheduler mechanism-evidence provider", () => {
     const repository = new CreatorDirectiveRepository({ db, clock: new FixedClock(2_000) });
     const options = minimalRetrievalPhaseOptions(repository);
     const provider = vi.fn(async () => null);
-    options.autonomySchedulerBudgetProvider = provider;
+    options.autonomySchedulerStateProvider = provider;
 
     try {
       const result = await runMinimalRetrievalPhase(options, "turn-scheduler-provider-null");
@@ -277,7 +277,7 @@ describe("autonomy scheduler mechanism-evidence provider", () => {
       includePayloads: true,
       emit,
     };
-    options.autonomySchedulerBudgetProvider = vi.fn(async () => {
+    options.autonomySchedulerStateProvider = vi.fn(async () => {
       throw new Error("scheduler unavailable");
     });
 

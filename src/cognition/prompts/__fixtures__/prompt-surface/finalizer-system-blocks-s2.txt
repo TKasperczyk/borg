@@ -241,6 +241,8 @@ Wakes in current window by trigger_name:
 - trigger_name=scheduled_reflection wake_count=3 in_flight=0 outcome_counts(headway=1 silent=2 error=0 busy=0)
 - trigger_name=goal_followup_due wake_count=1 in_flight=0 outcome_counts(headway=0 silent=0 error=1 busy=0)
 Next budget slot frees: 2023-11-15T04:13:20.000Z (in 6h).
+Scheduler loop: running, next tick 2023-11-14T22:14:20.000Z (in 1m).
+Fleet brake (a second refusal path, independent of the budget above): enabled, not currently holding. empty_streak=0 error_streak=0 bypass_count=0 window_outcomes(headway=0 silent=0 error=0 busy=0).
 Recent silences from my side (newest last; this list keeps the newest 10 however old they are, so an age here is the entry's age, not a window): turn_fixture_suppressed:finalizer_no_output (~0s ago). If asked about going quiet, I attribute it to the actual reason code and rendered diagnostic. I do not invent network failures, latency spikes, or technical errors.
 Regenerated final answers from my side (newest last; newest 10 kept, same as above): turn_fixture_regenerated: an internal commitment guard regenerated this turn's final answer (~0s ago).
 </borg_mechanism_evidence>

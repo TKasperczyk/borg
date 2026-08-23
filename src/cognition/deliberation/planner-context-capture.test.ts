@@ -172,6 +172,18 @@ describe("planner context capture", () => {
           recentRegenerations: [],
           autonomySchedulerState: {
             observedAt: NOW_MS,
+            enabled: true,
+            nextTickAt: NOW_MS + 60_000,
+            fleetBrake: {
+              enabled: true,
+              empty_streak: 0,
+              streak_anchor_ts: null,
+              cooldown_until: null,
+              error_streak: 0,
+              error_paused_until: null,
+              bypass_count: 0,
+              window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+            },
             budget: {
               max_wakes_per_window: 6,
               window_ms: 60 * 60_000,

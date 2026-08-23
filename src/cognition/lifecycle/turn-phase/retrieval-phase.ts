@@ -802,14 +802,17 @@ export async function runRetrievalPhase(input: {
   const selectedSkill = retrievalContext.selectedSkill;
   let autonomySchedulerState: TurnMechanismEvidence["autonomySchedulerState"];
 
-  if (input.options.autonomySchedulerBudgetProvider !== undefined) {
+  if (input.options.autonomySchedulerStateProvider !== undefined) {
     try {
-      const budget = await input.options.autonomySchedulerBudgetProvider();
+      const description = await input.options.autonomySchedulerStateProvider();
 
-      if (budget !== null) {
+      if (description !== null) {
         autonomySchedulerState = {
           observedAt: nowMs,
-          budget,
+          enabled: description.enabled,
+          nextTickAt: description.next_tick_at,
+          budget: description.budget,
+          fleetBrake: description.fleet_brake,
         };
       }
     } catch (error) {

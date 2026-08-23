@@ -12,7 +12,10 @@ import type {
   RecentSuppressionEntry,
   WorkingMemory,
 } from "../memory/working/index.js";
-import type { AutonomySchedulerBudgetDescription } from "../autonomy/index.js";
+import type {
+  AutonomySchedulerBudgetDescription,
+  AutonomySchedulerFleetBrakeDescription,
+} from "../autonomy/index.js";
 import {
   RECENT_REGENERATIONS_LIMIT,
   RECENT_SUPPRESSIONS_LIMIT,
@@ -48,9 +51,20 @@ export type HydratedRecentRegeneration = {
   commitments?: readonly RecentRegenerationCommitment[];
 };
 
+// The scheduler's `describe()` builds six top-level fields and this object used to keep one.
+// `budget` alone answers "is there room for another wake", but three of the discarded fields
+// refuse a wake independently of room: `enabled` (loop off -> nothing fires), `next_tick_at`
+// (null -> no interval handle, so nothing fires), and `fleet_brake` (empty-streak cooldown or
+// error-streak pause -- a second gate the budget line knows nothing about). Rendering only the
+// budget therefore produced a page on which "budget has headroom" and "a wake can happen" looked
+// like the same statement. The discriminators existed upstream and were dropped at the provider
+// call site; they are carried here so the surface can say which gate is holding.
 export type AutonomySchedulerMechanismEvidence = {
   observedAt: number;
+  enabled: boolean;
+  nextTickAt: number | null;
   budget: AutonomySchedulerBudgetDescription;
+  fleetBrake: AutonomySchedulerFleetBrakeDescription;
 };
 
 export type TurnMechanismEvidence = {

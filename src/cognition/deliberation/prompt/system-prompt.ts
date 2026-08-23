@@ -1789,6 +1789,51 @@ export function summarizeAutonomySchedulerState(
         ).toISOString()} (${formatRelativeUntil(budget.next_budget_slot_frees_at, renderNowMs)}).`,
   );
 
+  // Budget headroom is not the same statement as "a wake can happen": the loop itself and the
+  // fleet brake refuse independently of it. Both are rendered unconditionally, in their negative
+  // state too, so that a quiet scheduler is legible as a named gate rather than as a gap.
+  lines.push(
+    schedulerState.enabled
+      ? `Scheduler loop: running${
+          schedulerState.nextTickAt === null
+            ? ", no next tick scheduled (no interval handle, so no wake fires until it restarts)."
+            : `, next tick ${new Date(schedulerState.nextTickAt).toISOString()} (${formatRelativeUntil(
+                schedulerState.nextTickAt,
+                renderNowMs,
+              )}).`
+        }`
+      : "Scheduler loop: disabled -- no wake fires regardless of the budget above.",
+  );
+
+  const brake = schedulerState.fleetBrake;
+  const brakeGates = [
+    brake.cooldown_until === null || brake.cooldown_until <= renderNowMs
+      ? null
+      : `empty-streak cooldown until ${new Date(brake.cooldown_until).toISOString()} (${formatRelativeUntil(
+          brake.cooldown_until,
+          renderNowMs,
+        )})`,
+    brake.error_paused_until === null || brake.error_paused_until <= renderNowMs
+      ? null
+      : `error-streak pause until ${new Date(
+          brake.error_paused_until,
+        ).toISOString()} (${formatRelativeUntil(brake.error_paused_until, renderNowMs)})`,
+  ].filter((gate): gate is string => gate !== null);
+
+  lines.push(
+    `Fleet brake (a second refusal path, independent of the budget above): ${
+      brake.enabled ? "enabled" : "disabled"
+    }, ${
+      brakeGates.length === 0
+        ? "not currently holding"
+        : `holding -- ${brakeGates.join("; ")}, so wakes are refused even with budget headroom`
+    }. empty_streak=${brake.empty_streak} error_streak=${brake.error_streak} bypass_count=${
+      brake.bypass_count
+    } window_outcomes(headway=${brake.window_outcomes.headway} silent=${
+      brake.window_outcomes.silent
+    } error=${brake.window_outcomes.error} busy=${brake.window_outcomes.busy}).`,
+  );
+
   return lines.join("\n");
 }
 
@@ -1854,10 +1899,10 @@ function summarizeMechanismEvidence(
             `${escapeXmlText(entry.turnId)}: an internal commitment guard regenerated this turn's final answer${renderRegenerationCommitmentsSuffix(entry)}${renderRelativeAgeSuffix(entry.ts, renderNowMs)}`,
         )
         .join(", ")}.${
-          recentRegenerations.some((entry) => (entry.commitments ?? []).length > 0)
-            ? " A named commitment there is the row that gated that draft, not a class of them: it is evidence about which of my own constraints is biting, not scheduler or network weather."
-            : ""
-        }`,
+        recentRegenerations.some((entry) => (entry.commitments ?? []).length > 0)
+          ? " A named commitment there is the row that gated that draft, not a class of them: it is evidence about which of my own constraints is biting, not scheduler or network weather."
+          : ""
+      }`,
     );
   }
 

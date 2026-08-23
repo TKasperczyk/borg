@@ -371,9 +371,9 @@ export async function openBorgDependencies(
       chatResponseWatermarkCoordinator,
       outboundDelivery,
       autonomousOutboundPolicy,
-      autonomySchedulerBudgetProvider: async () => {
+      autonomySchedulerStateProvider: async () => {
         const scheduler = autonomySchedulerRef.current;
-        return scheduler === null ? null : (await scheduler.describe()).budget;
+        return scheduler === null ? null : await scheduler.describe();
       },
       outboundSourceTypes: outboundConnectorRegistry.sourceTypes(),
       createStreamWriter: repositories.createStreamWriter,
