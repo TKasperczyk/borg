@@ -1815,16 +1815,22 @@ function summarizeMechanismEvidence(
   const recentRegenerations = evidence.recentRegenerations.slice(-RECENT_REGENERATIONS_LIMIT);
   const lines: string[] = [];
   const schedulerState = evidence.autonomySchedulerState;
+  // Both lists below are count-capped rings, not time windows (RECENT_*_LIMIT, capNewest): an entry
+  // stays until that many newer ones displace it, however long that takes. Without an age the oldest
+  // and newest read alike, so a fossil from a guard that has since been scoped off this session
+  // renders as if it fired this hour. The ts is on every entry; render it.
+  const renderNowMs = promptNowMs ?? context.nowMs;
 
   if (schedulerState !== undefined) {
-    const renderNowMs = promptNowMs ?? context.nowMs ?? schedulerState.observedAt;
-    lines.push(summarizeAutonomySchedulerState(schedulerState, renderNowMs));
+    lines.push(
+      summarizeAutonomySchedulerState(schedulerState, renderNowMs ?? schedulerState.observedAt),
+    );
   }
 
   if (recentSuppressions.length > 0) {
     lines.push(
-      `Recent silences from my side: ${recentSuppressions
-        .map(renderRecentSuppressionMechanismEvidence)
+      `Recent silences from my side (newest last; this list keeps the newest ${RECENT_SUPPRESSIONS_LIMIT} however old they are, so an age here is the entry's age, not a window): ${recentSuppressions
+        .map((entry) => renderRecentSuppressionMechanismEvidence(entry, renderNowMs))
         .join(
           ", ",
         )}. If asked about going quiet, I attribute it to the actual reason code and rendered diagnostic. I do not invent network failures, latency spikes, or technical errors.`,
@@ -1833,10 +1839,10 @@ function summarizeMechanismEvidence(
 
   if (recentRegenerations.length > 0) {
     lines.push(
-      `Regenerated final answers from my side: ${recentRegenerations
+      `Regenerated final answers from my side (newest last; newest ${RECENT_REGENERATIONS_LIMIT} kept, same as above): ${recentRegenerations
         .map(
           (entry) =>
-            `${escapeXmlText(entry.turnId)}: an internal commitment guard regenerated this turn's final answer`,
+            `${escapeXmlText(entry.turnId)}: an internal commitment guard regenerated this turn's final answer${renderRelativeAgeSuffix(entry.ts, renderNowMs)}`,
         )
         .join(", ")}.`,
     );
@@ -1845,8 +1851,13 @@ function summarizeMechanismEvidence(
   return lines.length === 0 ? null : lines.join("\n");
 }
 
+function renderRelativeAgeSuffix(ts: number, renderNowMs: number | undefined): string {
+  return renderNowMs === undefined ? "" : ` (${formatRelativeAge(ts, renderNowMs)})`;
+}
+
 function renderRecentSuppressionMechanismEvidence(
   entry: NonNullable<DeliberationContext["turnMechanismEvidence"]>["recentSuppressions"][number],
+  renderNowMs: number | undefined,
 ): string {
   const diagnostics = entry.diagnostic;
   const renderedDiagnostics = [
@@ -1866,7 +1877,9 @@ function renderRecentSuppressionMechanismEvidence(
       ? null
       : `finalizer_invalid_tool=${escapeXmlText(JSON.stringify(diagnostics.finalizerInvalidTool))}`,
   ].filter((line): line is string => line !== null);
-  const rendered = `${escapeXmlText(entry.turnId)}:${escapeXmlText(String(entry.reason))}`;
+  const rendered = `${escapeXmlText(entry.turnId)}:${escapeXmlText(
+    String(entry.reason),
+  )}${renderRelativeAgeSuffix(entry.ts, renderNowMs)}`;
 
   return renderedDiagnostics.length === 0
     ? rendered

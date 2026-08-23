@@ -148,6 +148,17 @@ function hydratedRecentRegeneration(entry: RecentRegenerationEntry): HydratedRec
 // src/stream/turn-status.ts for the independent second reason the abort's `reason` string is
 // unreadable. Consequence worth stating plainly before anyone reasons from this block: a run of
 // aborted turns renders here as an unbroken record of turns that spoke.
+//
+// Second property, independent of the first: neither list is a time window. Both are count-capped
+// rings (capNewest at RECENT_*_LIMIT in generation/discourse-state.ts), and working memory is
+// per-session (working/<session_id>.json), so an entry survives in its own session until that many
+// newer ones displace it -- days or weeks. Two entries side by side carry no implication of being
+// contemporaries, and neither list can be compared against a time-bounded census of the other.
+// Measured on the live demo store (2026-08-23), one session's suppression ring held 8 entries
+// spanning 11 days, its head a reason code from a guard that had been configured off for that
+// session's source type two hours after it fired: still rendered, no longer possible. That is why
+// system-prompt.ts renders each entry's age -- the ts is here, and dropping it at render was the
+// whole gap.
 export async function hydrateTurnMechanismEvidence(
   input: HydrateTurnMechanismEvidenceInput,
 ): Promise<TurnMechanismEvidence> {

@@ -2745,6 +2745,48 @@ describe("buildBaseSystemPrompt", () => {
     expect(prompt).not.toContain("<borg_discourse_control>");
   });
 
+  it("dates each mechanism-evidence entry so a count-capped ring is not read as a window", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        nowMs: NOW_MS,
+        workingMemory: {
+          ...makeContext().workingMemory,
+          discourse_state: {
+            stop_until_substantive_content: null,
+            recent_suppressions: [
+              {
+                turn_id: "turn-fossil",
+                reason: "internal_identifier_leak",
+                ts: NOW_MS - 12 * 24 * 60 * 60_000,
+              },
+              {
+                turn_id: "turn-fresh",
+                reason: "commitment_violation_after_regenerate",
+                ts: NOW_MS - 30 * 60_000,
+              },
+            ],
+            recent_regenerations: [
+              {
+                turn_id: "turn-regenerated",
+                mechanism: "commitment_guard_regeneration" as const,
+                ts: NOW_MS - 3 * 60 * 60_000,
+              },
+            ],
+          },
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_mechanism_evidence");
+
+    expect(block).toContain("turn-fossil:internal_identifier_leak (12d ago)");
+    expect(block).toContain("turn-fresh:commitment_violation_after_regenerate (30m ago)");
+    expect(block).toContain(
+      "turn-regenerated: an internal commitment guard regenerated this turn's final answer (3h ago)",
+    );
+    expect(block).toContain("keeps the newest 10 however old they are");
+  });
+
   it("renders hydrated suppression diagnostics from mechanism evidence", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({
