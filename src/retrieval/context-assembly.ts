@@ -25,6 +25,7 @@ export type RetrievedContradictionRouting = {
 };
 
 export type RetrievedContext = {
+  retrieval_read_at_ms: number;
   episodes: RetrievedEpisode[];
   semantic: RetrievedSemantic;
   open_questions: OpenQuestion[];
@@ -68,6 +69,7 @@ export function assembleRetrievedContext(input: {
   });
 
   return {
+    retrieval_read_at_ms: input.nowMs,
     episodes: input.episodes,
     semantic: input.semantic,
     open_questions: input.openQuestions,

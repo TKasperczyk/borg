@@ -23,9 +23,15 @@ import {
   PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_REQUIRED_TOKENS_ATTRIBUTE,
   PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE,
   PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER,
+  PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_DISCLOSURE_REMAINDER_MARKER,
   PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ERROR_ATTRIBUTE,
+  PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_NOT_OBSERVED_STATUS,
   PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER,
   PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE,
+  PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_REMAINDER_TOTAL_ATTRIBUTE,
+  PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_STATUS_ATTRIBUTE,
+  PLAN_REQUESTED_VERIFICATION_RETRIEVAL_STATUS_ATTRIBUTE,
+  PLAN_REQUESTED_VERIFICATION_RETRIEVAL_UNAVAILABLE_STATUS,
   PLAN_REQUESTED_VERIFICATION_ROWS_TOTAL_AS_OF_ATTRIBUTE,
   summarizeRetrievalConfidence,
   renderPlanRequestedVerificationNotCompleted,
@@ -474,49 +480,55 @@ describe("plan-requested compact terminal retrieval", () => {
   });
 
   it.each([
+    "public",
     "relationship_private",
     "operator_private",
     "self_private",
     "sensitive",
     "unknown",
-  ] as const)("treats disclosure_class=%s as a protected membership row", (disclosureClass) => {
-    const rendered = renderPlanRequestedVerificationRetrieval(
-      {
-        evidence: [
-          verificationEvidence(`evidence:${disclosureClass}`, "protected", {
-            disclosureLabel: {
-              disclosureClass,
-              originAudienceEntityIds: [],
-              privateToEntityIds: [],
-              publicToEntityIds: [],
-            },
-          }),
-        ],
-        episodes: [],
-        semantic: {
-          matched_node_ids: [],
-          matched_nodes: [],
-          supports: [],
-          contradicts: [],
-          categories: [],
-          support_hits: [],
-          causal_hits: [],
-          contradiction_hits: [],
-          category_hits: [],
-        },
-        open_questions: [],
-      } as never,
-      2_000,
-      0,
-    );
+  ] as const)(
+    "accounts for omitted disclosure_class=%s without treating the label as a gate",
+    (disclosureClass) => {
+      const rendered = renderPlanRequestedVerificationRetrieval(
+        {
+          evidence: [
+            verificationEvidence(`evidence:${disclosureClass}`, "ordinary", {
+              disclosureLabel: {
+                disclosureClass,
+                originAudienceEntityIds: [],
+                privateToEntityIds: [],
+                publicToEntityIds: [],
+              },
+            }),
+          ],
+          episodes: [],
+          semantic: {
+            matched_node_ids: [],
+            matched_nodes: [],
+            supports: [],
+            contradicts: [],
+            categories: [],
+            support_hits: [],
+            causal_hits: [],
+            contradiction_hits: [],
+            category_hits: [],
+          },
+          open_questions: [],
+        } as never,
+        2_000,
+        0,
+      );
 
-    expect(rendered).toContain(
-      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ERROR_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_ERROR}"`,
-    );
-    expect(rendered).toContain(
-      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="1"`,
-    );
-  });
+      expect(rendered).not.toContain(`${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ERROR_ATTRIBUTE}="`);
+      expect(rendered).toContain(
+        `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="0"`,
+      );
+      expect(rendered).toContain(`${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}="1"`);
+      expect(rendered).toContain(
+        `<${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_DISCLOSURE_REMAINDER_MARKER} ${disclosureClass}="1" />`,
+      );
+    },
+  );
 
   it("keeps fallback source handles even when unified evidence is also present", () => {
     const rendered = renderPlanRequestedVerificationRetrieval(
@@ -589,6 +601,126 @@ describe("plan-requested compact terminal retrieval", () => {
     expect(rendered).toContain('complete_membership="true" rows_total="2"');
     expect(rendered).toContain("<omitted_count>0</omitted_count>");
     expect(rendered).not.toContain(`${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}=\"`);
+    expect(rendered).toContain('check_not_completed_count="0"');
+    expect(rendered).toContain("<check_not_completed_count>0</check_not_completed_count>");
+  });
+
+  it("reports zero membership tokens for zero candidates", () => {
+    const rendered = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: [],
+        episodes: [],
+        semantic: {
+          matched_node_ids: [],
+          matched_nodes: [],
+          supports: [],
+          contradicts: [],
+          categories: [],
+          support_hits: [],
+          causal_hits: [],
+          contradiction_hits: [],
+          category_hits: [],
+        },
+        open_questions: [],
+      } as never,
+      2_000,
+      0,
+    );
+
+    expect(rendered).toContain('complete_membership="true" rows_total="0"');
+    expect(rendered).toContain('membership_tokens="0"');
+    expect(rendered).toContain('membership_carve_out_rows_total="0"');
+    expect(rendered).toContain("<omitted_count>0</omitted_count>");
+    expect(rendered).toContain("<check_not_completed_count>0</check_not_completed_count>");
+    expect(rendered).not.toContain(`${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}="`);
+    expect(rendered).not.toContain("<verification_source ");
+  });
+
+  it("flags exactly one omitted row with its exact disclosure-class remainder", () => {
+    const rendered = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: [verificationEvidence("evidence:only", "one row")],
+        episodes: [],
+        semantic: {
+          matched_node_ids: [],
+          matched_nodes: [],
+          supports: [],
+          contradicts: [],
+          categories: [],
+          support_hits: [],
+          causal_hits: [],
+          contradiction_hits: [],
+          category_hits: [],
+        },
+        open_questions: [],
+      } as never,
+      2_000,
+      0,
+    );
+
+    expect(rendered).toContain('complete_membership="false" rows_total="1"');
+    expect(rendered).toContain(`${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}="1"`);
+    expect(rendered).toContain(
+      `<${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER} ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_REMAINDER_TOTAL_ATTRIBUTE}="1">`,
+    );
+    expect(rendered).toContain(
+      `<${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_DISCLOSURE_REMAINDER_MARKER} public="1" />`,
+    );
+    expect(rendered).toContain("<omitted_count>1</omitted_count>");
+    expect(rendered).toContain("<check_not_completed_count>0</check_not_completed_count>");
+  });
+
+  it("breaks a truncated remainder down by every disclosure class actually omitted", () => {
+    const labelledEvidence = (
+      id: string,
+      disclosureClass: "relationship_private" | "self_private" | "unknown",
+    ) =>
+      verificationEvidence(id, "labelled row", {
+        disclosureLabel: {
+          disclosureClass,
+          originAudienceEntityIds: [],
+          privateToEntityIds: [],
+          publicToEntityIds: [],
+        },
+      });
+    const rendered = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: [
+          labelledEvidence("evidence:relationship", "relationship_private"),
+          labelledEvidence("evidence:self", "self_private"),
+          labelledEvidence("evidence:unknown-a", "unknown"),
+          labelledEvidence("evidence:unknown-b", "unknown"),
+        ],
+        episodes: [],
+        semantic: {
+          matched_node_ids: [],
+          matched_nodes: [],
+          supports: [],
+          contradicts: [],
+          categories: [],
+          support_hits: [],
+          causal_hits: [],
+          contradiction_hits: [],
+          category_hits: [],
+        },
+        open_questions: [],
+      } as never,
+      2_000,
+      0,
+    );
+
+    expect(rendered).toContain(`${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}="4"`);
+    expect(rendered).toContain(
+      `<${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_DISCLOSURE_REMAINDER_MARKER} relationship_private="1" self_private="1" unknown="2" />`,
+    );
+    const breakdownAttributes = new RegExp(
+      `<${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_DISCLOSURE_REMAINDER_MARKER} ([^>]+) />`,
+    ).exec(rendered)?.[1];
+    const breakdownTotal = [...(breakdownAttributes ?? "").matchAll(/="(\d+)"/g)].reduce(
+      (sum, match) => sum + Number(match[1]),
+      0,
+    );
+    expect(breakdownTotal).toBe(4);
   });
 
   it("fully enumerates the 300-row commitment and goal scale at the default budget", () => {
@@ -761,23 +893,30 @@ describe("plan-requested compact terminal retrieval", () => {
     expect(rendered).toContain(`membership_tokens="${firstTwoMembershipTokens}"`);
     expect(rendered).toContain(`${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}="2"`);
     expect(rendered).toContain(
-      `<${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}>2</${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}>`,
+      `<${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER} ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_REMAINDER_TOTAL_ATTRIBUTE}="2">`,
+    );
+    expect(rendered).toContain(
+      `<${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_DISCLOSURE_REMAINDER_MARKER} public="2" />`,
     );
     expect(rendered).toContain("<omitted_count>2</omitted_count>");
+    expect(rendered).toContain("<check_not_completed_count>0</check_not_completed_count>");
     expect(rendered).not.toContain('handle="evidence:middle"');
     expect(rendered).not.toContain('handle="evidence:beta"');
     expect(rendered).toContain(
       "complete_membership=true means every one of rows_total handles and its structural fields is enumerated",
     );
     expect(rendered).toContain(
-      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}=N and its same-named marker carry the exact un-enumerated remainder`,
+      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}=N and its same-named marker's ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_REMAINDER_TOTAL_ATTRIBUTE}=N carry the exact un-enumerated remainder`,
+    );
+    expect(rendered).toContain(
+      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_DISCLOSURE_REMAINDER_MARKER} has one attribute per disclosure_class present among omitted rows`,
     );
     expect(rendered).toContain(
       "Payloads are priced against payload_target_tokens alone and never consume the membership budget; membership never consumes the payload budget",
     );
   });
 
-  it("enumerates structural carve-outs first while preserving both partition orders", () => {
+  it("enumerates critical commitments first while preserving both partition orders", () => {
     const ordinaryA = verificationEvidence("evidence:ordinary-a", "ordinary A");
     const criticalA = verificationEvidence("evidence:critical-a", "critical A", {
       source: "commitment",
@@ -808,7 +947,7 @@ describe("plan-requested compact terminal retrieval", () => {
     };
     const protectedPlusFirstOrdinary = renderPlanRequestedVerificationRetrieval(
       {
-        evidence: [criticalA, restrictive, criticalB, ordinaryA],
+        evidence: [criticalA, criticalB, ordinaryA],
         episodes: [],
         semantic,
         open_questions: [],
@@ -835,20 +974,24 @@ describe("plan-requested compact terminal retrieval", () => {
 
     expect(enumeratedHandles).toEqual([
       "evidence:critical-a",
-      "evidence:restrictive",
       "evidence:critical-b",
       "evidence:ordinary-a",
     ]);
     expect(rendered).toContain(
       `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER}"`,
     );
-    expect(rendered).toContain(
-      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="3"`,
-    );
     expect(rendered).toContain('commitment_enforcement_class="critical"');
     expect(rendered).toContain('commitment_critical_domain="privacy"');
-    expect(rendered).toContain(`${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}="1"`);
+    expect(rendered).toContain(
+      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="2"`,
+    );
+    expect(rendered).toContain(`${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}="2"`);
+    expect(rendered).toContain(
+      `<${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_DISCLOSURE_REMAINDER_MARKER} public="1" unknown="1" />`,
+    );
     expect(rendered).not.toContain('handle="evidence:ordinary-b"');
+    expect(rendered).not.toContain('handle="evidence:restrictive"');
+    expect(rendered).toContain("Disclosure labels do not affect membership admission or ordering");
     expect(rendered).toContain("The renderer performs no content-based selection or new ranking");
   });
 
@@ -876,7 +1019,7 @@ describe("plan-requested compact terminal retrieval", () => {
     };
     const carveOutOnly = renderPlanRequestedVerificationRetrieval(
       {
-        evidence: [critical, restrictive],
+        evidence: [critical],
         episodes: [],
         semantic,
         open_questions: [],
@@ -900,7 +1043,7 @@ describe("plan-requested compact terminal retrieval", () => {
 
     expect(onMembershipCarveOutOverflow).toHaveBeenCalledWith({
       rowsTotal: 3,
-      carveOutRowsTotal: 2,
+      carveOutRowsTotal: 1,
       carveOutRequiredTokens,
       membershipTargetTokens: carveOutRequiredTokens - 1,
     });
@@ -908,16 +1051,23 @@ describe("plan-requested compact terminal retrieval", () => {
       `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ERROR_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_ERROR}"`,
     );
     expect(rendered).toContain(
-      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="2"`,
+      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="1"`,
     );
     expect(rendered).toContain(
       `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_REQUIRED_TOKENS_ATTRIBUTE}="${carveOutRequiredTokens}"`,
     );
     expect(rendered).toContain(`${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}="3"`);
+    expect(rendered).toContain(
+      `<${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER} ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_REMAINDER_TOTAL_ATTRIBUTE}="3">`,
+    );
+    expect(rendered).toContain(
+      `<${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_DISCLOSURE_REMAINDER_MARKER} public="2" unknown="1" />`,
+    );
     expect(rendered).not.toContain("<verification_source ");
     expect(rendered).toContain('payload_tokens_included="0"');
     expect(rendered).toContain("<omitted_count>3</omitted_count>");
-    expect(rendered).toContain("<check_not_completed_count>3</check_not_completed_count>");
+    expect(rendered).toContain('check_not_completed_count="0"');
+    expect(rendered).toContain("<check_not_completed_count>0</check_not_completed_count>");
     expect(rendered).toMatch(
       new RegExp(
         `<${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_MARKER}[^>]+/>\\n</plan_requested_verification_retrieval>$`,
@@ -928,11 +1078,21 @@ describe("plan-requested compact terminal retrieval", () => {
   it("renders an unavailable plan-requested check with a handle and zero payload", () => {
     const rendered = renderPlanRequestedVerificationNotCompleted();
 
+    expect(rendered).toContain(
+      `${PLAN_REQUESTED_VERIFICATION_RETRIEVAL_STATUS_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_RETRIEVAL_UNAVAILABLE_STATUS}"`,
+    );
+    expect(rendered).toContain(
+      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_STATUS_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_NOT_OBSERVED_STATUS}"`,
+    );
     expect(rendered).toContain('handle="plan:verification_steps"');
     expect(rendered).toContain('payload_status="check_not_completed_retrieval_unavailable"');
     expect(rendered).toContain('payload_included_chars="0"');
     expect(rendered).toContain('payload_total_chars="0"');
     expect(rendered).toContain('payload_json=""');
+    expect(rendered).not.toContain("complete_membership=");
+    expect(rendered).not.toContain("rows_total=");
+    expect(rendered).not.toContain("<omitted_count>");
+    expect(rendered).not.toContain(`${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}=`);
     expect(rendered).toContain("<check_not_completed_count>1</check_not_completed_count>");
   });
 });

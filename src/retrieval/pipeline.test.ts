@@ -92,6 +92,24 @@ class FailingBatchEmbeddingClient extends ScriptedEmbeddingClient {
   }
 }
 
+class ClockAdvancingEmbeddingClient extends ScriptedEmbeddingClient {
+  constructor(private readonly clock: ManualClock) {
+    super();
+  }
+
+  override async embed(text: string): Promise<Float32Array> {
+    const embedding = await super.embed(text);
+    this.clock.advance(250);
+    return embedding;
+  }
+
+  override async embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
+    const embeddings = await super.embedBatch(texts);
+    this.clock.advance(250);
+    return embeddings;
+  }
+}
+
 function createEpisode(id: string, sourceId: string, embedding: number[]): Episode {
   return {
     id: id as Episode["id"],
@@ -412,23 +430,27 @@ describe("retrieval pipeline", () => {
       rmSync(tempDir, { recursive: true, force: true });
     });
 
+    const retrievalClock = new ManualClock(10_000);
     const pipeline = new RetrievalPipeline({
-      embeddingClient: new ScriptedEmbeddingClient(),
+      embeddingClient: new ClockAdvancingEmbeddingClient(retrievalClock),
       episodicRepository,
       dataDir: tempDir,
-      clock: new FixedClock(10_000),
+      clock: retrievalClock,
       tracer,
     });
     await episodicRepository.createEpisode(
       createEpisode("ep_aaaaaaaaaaaaaaaa", createStreamEntryId(), [1, 0, 0, 0]),
     );
 
-    await pipeline.searchWithContextForDisclosure("planning", {
+    const result = await pipeline.searchWithContextForDisclosure("planning", {
       limit: 1,
       traceTurnId: "turn-retrieval-session",
       sessionId,
       entityTerms: ["planning"],
     });
+
+    expect(retrievalClock.now()).toBeGreaterThan(10_000);
+    expect(result.retrieval_read_at_ms).toBe(10_000);
 
     expect(tracer.emit).toHaveBeenCalledWith(
       "retrieval.started",

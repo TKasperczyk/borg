@@ -295,6 +295,24 @@ describe("config", () => {
     expect(config.deliberation.planRequestedVerificationMembershipTokenBudget).toBe(12_000);
   });
 
+  it.each([
+    ["zero", "0"],
+    ["negative", "-1"],
+    ["NaN", "NaN"],
+  ])("rejects a %s plan-requested verification membership budget", (_label, value) => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    expect(() =>
+      loadConfig({
+        dataDir: tempDir,
+        env: {
+          BORG_DELIBERATION_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET: value,
+        },
+      }),
+    ).toThrow(ConfigError);
+  });
+
   it("allows an immediate rollback to the legacy planner surface", () => {
     const config = configSchema.parse({
       deliberation: {

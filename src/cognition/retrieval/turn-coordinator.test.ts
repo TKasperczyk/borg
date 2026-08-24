@@ -257,6 +257,7 @@ function makeContexts(
 
 function makeRetrievedContext(): RetrievedContext {
   return {
+    retrieval_read_at_ms: 0,
     episodes: [],
     semantic: {
       supports: [],

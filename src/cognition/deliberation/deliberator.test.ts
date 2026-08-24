@@ -17,7 +17,7 @@ import type { OpenQuestion } from "../../memory/self/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { ToolDispatcher } from "../../tools/index.js";
-import { FixedClock } from "../../util/clock.js";
+import { FixedClock, ManualClock, type Clock } from "../../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
   createOpenQuestionId,
@@ -84,6 +84,7 @@ function makeRetrievalConfidence(
 
 function makeRetrievedContext(overrides: Partial<RetrievedContext> = {}): RetrievedContext {
   return {
+    retrieval_read_at_ms: 0,
     episodes: [],
     semantic: {
       supports: [],
@@ -223,7 +224,7 @@ function createDeliberator(
     plannerSurfaceVariant?: "compact" | "legacy";
     finalizerSurfaceVariant?: "compact" | "legacy";
     plannerContextCapture?: PlannerContextCapture;
-    clock?: FixedClock;
+    clock?: Clock;
     planRequestedVerificationMembershipTokenBudget?: number;
   } = {},
 ): Deliberator {
@@ -4077,10 +4078,11 @@ describe("deliberator", () => {
         }),
       ],
     });
+    const retrievalClock = new ManualClock(1_700_000_000_000);
     const deliberator = createDeliberator(llm, tempDirs, {
       finalizerSurfaceVariant: "compact",
       planRequestedVerificationMembershipTokenBudget: 1,
-      clock: new FixedClock(1_700_000_000_000),
+      clock: retrievalClock,
     });
     const operatorError = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
@@ -4088,20 +4090,28 @@ describe("deliberator", () => {
       await deliberator.run(
         simpleDeliberationContext({
           options: { stakes: "high" },
-          reRetrieve: async () =>
-            makeRetrievedContext({
+          reRetrieve: async () => {
+            const retrievalReadAtMs = retrievalClock.now();
+            await Promise.resolve();
+            retrievalClock.advance(5_000);
+            return makeRetrievedContext({
+              retrieval_read_at_ms: retrievalReadAtMs,
               evidence: [
                 {
                   id: "evidence_protected",
-                  source: "episode",
+                  source: "commitment",
                   text: "Protected verification evidence.",
                   recallIntentId: "recall_known_term_0",
                   matchedTerms: [],
                   score: 0.8,
                   scoreBreakdown: { vector: 0.8 },
+                  provenance: { commitmentId: "cmt_protected" as never },
+                  commitment_enforcement_class: "critical",
+                  commitment_critical_domain: "privacy",
                 },
               ],
-            }),
+            });
+          },
         }),
       );
 
@@ -4116,10 +4126,81 @@ describe("deliberator", () => {
       const system = requestSystemText(llm.requests[1]?.system);
       expect(system).toContain('membership_error="carve_out_exceeds_budget"');
       expect(system).toContain('rows_total_as_of="2023-11-14T22:13:20.000Z"');
+      expect(system).not.toContain('rows_total_as_of="2023-11-14T22:13:25.000Z"');
       expect(system).toContain(
-        'membership_order="structural_carve_out_first_then_retrieval_pipeline_order"',
+        'membership_order="critical_commitments_first_then_retrieval_pipeline_order"',
       );
       expect(system).toContain("<membership_carve_out_overflow_error ");
+    } finally {
+      operatorError.mockRestore();
+    }
+  });
+
+  it("does not log a compact membership overflow when the legacy surface is live", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_legacy_membership_overflow",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "needs a protected source check",
+                verification_steps: ["verify the protected source before answering"],
+                tensions: [],
+                voice_note: "",
+                intents: [],
+              },
+            },
+          ],
+        },
+        emitFinalizerTextAnswerResponse("Legacy answer", {
+          inputTokens: 12,
+          outputTokens: 6,
+        }),
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs, {
+      finalizerSurfaceVariant: "legacy",
+      planRequestedVerificationMembershipTokenBudget: 1,
+      clock: new FixedClock(1_700_000_000_000),
+    });
+    const operatorError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      await deliberator.run(
+        simpleDeliberationContext({
+          options: { stakes: "high" },
+          reRetrieve: async () =>
+            makeRetrievedContext({
+              retrieval_read_at_ms: 1_700_000_000_000,
+              evidence: [
+                {
+                  id: "evidence_legacy_protected",
+                  source: "commitment",
+                  text: "Protected verification evidence.",
+                  recallIntentId: "recall_known_term_0",
+                  matchedTerms: [],
+                  score: 0.8,
+                  scoreBreakdown: { vector: 0.8 },
+                  provenance: { commitmentId: "cmt_legacy_protected" as never },
+                  commitment_enforcement_class: "critical",
+                  commitment_critical_domain: "privacy",
+                },
+              ],
+            }),
+        }),
+      );
+
+      expect(operatorError).not.toHaveBeenCalled();
+      const system = requestSystemText(llm.requests[1]?.system);
+      expect(system).not.toContain('membership_error="carve_out_exceeds_budget"');
+      expect(system).not.toContain("<membership_carve_out_overflow_error ");
+      expect(system).toContain("Additional retrieval:");
     } finally {
       operatorError.mockRestore();
     }
@@ -4165,6 +4246,9 @@ describe("deliberator", () => {
 
     const system = requestSystemText(llm.requests[1]?.system);
     expect(system).toContain("<plan_requested_verification_retrieval");
+    expect(system).toContain('retrieval_status="unavailable" membership_status="not_observed"');
+    expect(system).not.toContain('complete_membership="false"');
+    expect(system).not.toContain('rows_total="1"');
     expect(system).toContain('handle="plan:verification_steps"');
     expect(system).toContain('payload_status="check_not_completed_retrieval_unavailable"');
     expect(system).toContain('payload_included_chars="0" payload_total_chars="0"');

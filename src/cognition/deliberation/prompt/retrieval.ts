@@ -6,6 +6,7 @@ import {
   renderMemoryDisclosureLabelForModel,
   unknownMemoryDisclosureLabel,
   type EvidenceItem,
+  type MemoryDisclosureClass,
   type MemoryDisclosureLabel,
   type RetrievalConfidence,
   type RetrievedContradictionRouting,
@@ -34,7 +35,10 @@ export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER =
 export const PLAN_REQUESTED_VERIFICATION_ROWS_TOTAL_AS_OF_ATTRIBUTE = "rows_total_as_of";
 export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE = "membership_order";
 export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER =
-  "structural_carve_out_first_then_retrieval_pipeline_order";
+  "critical_commitments_first_then_retrieval_pipeline_order";
+export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_DISCLOSURE_REMAINDER_MARKER =
+  "membership_not_enumerated_by_disclosure_class";
+export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_REMAINDER_TOTAL_ATTRIBUTE = "total";
 export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ERROR_ATTRIBUTE = "membership_error";
 export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_ERROR =
   "carve_out_exceeds_budget";
@@ -44,6 +48,10 @@ export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE =
   "membership_carve_out_rows_total";
 export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_REQUIRED_TOKENS_ATTRIBUTE =
   "membership_carve_out_required_tokens";
+export const PLAN_REQUESTED_VERIFICATION_RETRIEVAL_STATUS_ATTRIBUTE = "retrieval_status";
+export const PLAN_REQUESTED_VERIFICATION_RETRIEVAL_UNAVAILABLE_STATUS = "unavailable";
+export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_STATUS_ATTRIBUTE = "membership_status";
+export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_NOT_OBSERVED_STATUS = "not_observed";
 
 const VERIFICATION_COMMITMENT_ENFORCEMENT_CLASS_FIELD = "commitment_enforcement_class";
 const VERIFICATION_COMMITMENT_CRITICAL_DOMAIN_FIELD = "commitment_critical_domain";
@@ -446,15 +454,51 @@ function renderVerificationRetrievalCandidate(
 function isVerificationMembershipCarveOut(candidate: VerificationRetrievalCandidate): boolean {
   const commitmentId = candidate.structuralFields.provenance_commitment_id;
   const criticalDomain = candidate.structuralFields[VERIFICATION_COMMITMENT_CRITICAL_DOMAIN_FIELD];
-  const isCriticalCommitment =
+  return (
     typeof commitmentId === "string" &&
     (candidate.structuralFields[VERIFICATION_COMMITMENT_ENFORCEMENT_CLASS_FIELD] === "critical" ||
-      typeof criticalDomain === "string");
-  return isCriticalCommitment || candidate.disclosureLabel.disclosureClass !== "public";
+      typeof criticalDomain === "string")
+  );
+}
+
+function estimateVerificationMembershipTokens(characters: number): number {
+  return characters === 0 ? 0 : estimatePromptTokensFromLength(characters);
+}
+
+function verificationDisclosureRemainders(
+  candidates: readonly IndexedVerificationRetrievalCandidate[],
+): ReadonlyMap<MemoryDisclosureClass, number> {
+  const counts = new Map<MemoryDisclosureClass, number>();
+
+  for (const { candidate } of candidates) {
+    const disclosureClass = candidate.disclosureLabel.disclosureClass;
+    counts.set(disclosureClass, (counts.get(disclosureClass) ?? 0) + 1);
+  }
+
+  return counts;
+}
+
+function renderVerificationMembershipBudgetMarker(
+  candidates: readonly IndexedVerificationRetrievalCandidate[],
+): string[] {
+  if (candidates.length === 0) {
+    return [];
+  }
+
+  const disclosureRemainderAttributes = [...verificationDisclosureRemainders(candidates).entries()]
+    .map(([disclosureClass, count]) => `${disclosureClass}="${count}"`)
+    .join(" ");
+
+  return [
+    `  <${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER} ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_REMAINDER_TOTAL_ATTRIBUTE}="${candidates.length}">`,
+    `    <${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_DISCLOSURE_REMAINDER_MARKER} ${disclosureRemainderAttributes} />`,
+    `  </${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}>`,
+  ];
 }
 
 function renderVerificationRetrievalRows(
   candidates: readonly IndexedVerificationRetrievalCandidate[],
+  omittedCandidates: readonly IndexedVerificationRetrievalCandidate[],
   rowsTotal: number,
   included: ReadonlySet<number>,
   maxTokens: number,
@@ -471,7 +515,7 @@ function renderVerificationRetrievalRows(
     (count, { originalIndex }) => count + (included.has(originalIndex) ? 0 : 1),
     0,
   );
-  const membershipNotEnumeratedCount = rowsTotal - candidates.length;
+  const membershipNotEnumeratedCount = omittedCandidates.length;
   const payloadTokens = estimatePromptTokensFromLength(
     candidates.reduce(
       (sum, { candidate, originalIndex }) =>
@@ -491,15 +535,10 @@ function renderVerificationRetrievalRows(
     membershipNotEnumeratedCount === 0
       ? ""
       : ` ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}="${membershipNotEnumeratedCount}"`;
-  const membershipBudgetMarker =
-    membershipNotEnumeratedCount === 0
-      ? []
-      : [
-          `  <${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}>${membershipNotEnumeratedCount}</${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}>`,
-        ];
+  const membershipBudgetMarker = renderVerificationMembershipBudgetMarker(omittedCandidates);
   return [
     `<plan_requested_verification_retrieval complete_membership="${membershipNotEnumeratedCount === 0}" rows_total="${rowsTotal}" ${PLAN_REQUESTED_VERIFICATION_ROWS_TOTAL_AS_OF_ATTRIBUTE}="${rowsTotalAsOf}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER}" payload_target_tokens="${maxTokens}" payload_tokens_included="${payloadTokens}" membership_target_tokens="${membershipMaxTokens}" membership_tokens="${membershipTokens}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="${carveOutRowsTotal}"${membershipBudgetMarkerAttribute} check_not_completed_count="${incompleteCount}">`,
-    `  <interpretation>This retrieval was requested by the advisory plan. Read at ${rowsTotalAsOf}${relativeReadTime}: rows_total is exact as of that read, not as of now. Membership rows are priced against membership_target_tokens alone. ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE}=${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER} means commitment rows with ${VERIFICATION_COMMITMENT_ENFORCEMENT_CLASS_FIELD}=critical or a structural ${VERIFICATION_COMMITMENT_CRITICAL_DOMAIN_FIELD}, plus rows with ${VERIFICATION_DISCLOSURE_CLASS_FIELD} other than public, are emitted first. Both the carve-out and ordinary partitions preserve the existing retrieval-pipeline candidate order: ranked unified evidence, projected episodes, semantic nodes and edges in projected first-seen order, then projected open questions. The renderer performs no content-based selection or new ranking. complete_membership=true means every one of rows_total handles and its structural fields is enumerated. When complete_membership=false, ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}=N and its same-named marker carry the exact un-enumerated remainder; omitted membership is never silent. If the carve-out alone exceeds membership_target_tokens, ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ERROR_ATTRIBUTE}=${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_ERROR} replaces a partial list with an explicit failed-check state. A payload_status=exact row carries its complete payload with no excerpt; payload_status=check_not_completed_budget carries an enumerated handle and structural fields but zero payload, so that requested check is explicitly incomplete rather than silently truncated. Payloads are priced against payload_target_tokens alone and never consume the membership budget; membership never consumes the payload budget, so a check_not_completed_budget row means that row's own payload did not fit.</interpretation>`,
+    `  <interpretation>This retrieval was requested by the advisory plan. Read at ${rowsTotalAsOf}${relativeReadTime}: rows_total is exact as of that read, not as of now. Membership rows are priced against membership_target_tokens alone. ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE}=${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER} means commitment rows with ${VERIFICATION_COMMITMENT_ENFORCEMENT_CLASS_FIELD}=critical or a structural ${VERIFICATION_COMMITMENT_CRITICAL_DOMAIN_FIELD} are emitted first. The protected critical-commitment partition and then all ordinary rows preserve the existing retrieval-pipeline candidate order: ranked unified evidence, projected episodes, semantic nodes and edges in projected first-seen order, then projected open questions. Disclosure labels do not affect membership admission or ordering. The renderer performs no content-based selection or new ranking. complete_membership=true means every one of rows_total handles and its structural fields is enumerated. When complete_membership=false, ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}=N and its same-named marker's ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_REMAINDER_TOTAL_ATTRIBUTE}=N carry the exact un-enumerated remainder; the child ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_DISCLOSURE_REMAINDER_MARKER} has one attribute per ${VERIFICATION_DISCLOSURE_CLASS_FIELD} present among omitted rows, with exact counts whose sum is N. Omitted membership is never silent. If the critical-commitment carve-out alone exceeds membership_target_tokens, ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ERROR_ATTRIBUTE}=${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_ERROR} replaces a partial list with an explicit failed-check state. A payload_status=exact row carries its complete payload with no excerpt; payload_status=check_not_completed_budget carries an enumerated handle and structural fields but zero payload, so that requested check is explicitly incomplete rather than silently truncated. Payloads are priced against payload_target_tokens alone and never consume the membership budget; membership never consumes the payload budget, so a check_not_completed_budget row means that row's own payload did not fit.</interpretation>`,
     ...rows.map((row) => `  ${row}`),
     ...membershipBudgetMarker,
     `  <omitted_count>${membershipNotEnumeratedCount}</omitted_count>`,
@@ -510,6 +549,7 @@ function renderVerificationRetrievalRows(
 
 function renderVerificationMembershipCarveOutOverflow(
   details: PlanRequestedVerificationMembershipCarveOutOverflow,
+  omittedCandidates: readonly IndexedVerificationRetrievalCandidate[],
   maxTokens: number,
   rowsTotalReadAtMs: number,
   currentTimeMs: number,
@@ -523,11 +563,11 @@ function renderVerificationMembershipCarveOutOverflow(
           readOffsetFromCurrentTimeMs > 0 ? "after" : "before"
         } the current_time_ms at the top of this prompt`;
   return [
-    `<plan_requested_verification_retrieval complete_membership="false" rows_total="${details.rowsTotal}" ${PLAN_REQUESTED_VERIFICATION_ROWS_TOTAL_AS_OF_ATTRIBUTE}="${rowsTotalAsOf}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER}" payload_target_tokens="${maxTokens}" payload_tokens_included="0" membership_target_tokens="${details.membershipTargetTokens}" membership_tokens="0" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="${details.carveOutRowsTotal}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_REQUIRED_TOKENS_ATTRIBUTE}="${details.carveOutRequiredTokens}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ERROR_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_ERROR}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}="${details.rowsTotal}" check_not_completed_count="${details.rowsTotal}">`,
-    `  <interpretation>This retrieval was requested by the advisory plan. Read at ${rowsTotalAsOf}${relativeReadTime}: rows_total is exact as of that read, not as of now. The structurally protected membership rows alone require ${details.carveOutRequiredTokens} tokens against membership_target_tokens=${details.membershipTargetTokens}. Commitments with ${VERIFICATION_COMMITMENT_ENFORCEMENT_CLASS_FIELD}=critical or a structural ${VERIFICATION_COMMITMENT_CRITICAL_DOMAIN_FIELD}, and rows with ${VERIFICATION_DISCLOSURE_CLASS_FIELD} other than public, may not be shortened, so no verification_source rows or payloads are rendered; this verification check failed explicitly instead of presenting a partial carve-out as complete. ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER} carries the exact un-enumerated remainder. Payload pricing remains independent and was not attempted for this structurally failed membership check.</interpretation>`,
-    `  <${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}>${details.rowsTotal}</${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}>`,
+    `<plan_requested_verification_retrieval complete_membership="false" rows_total="${details.rowsTotal}" ${PLAN_REQUESTED_VERIFICATION_ROWS_TOTAL_AS_OF_ATTRIBUTE}="${rowsTotalAsOf}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER}" payload_target_tokens="${maxTokens}" payload_tokens_included="0" membership_target_tokens="${details.membershipTargetTokens}" membership_tokens="0" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="${details.carveOutRowsTotal}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_REQUIRED_TOKENS_ATTRIBUTE}="${details.carveOutRequiredTokens}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ERROR_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_ERROR}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}="${details.rowsTotal}" check_not_completed_count="0">`,
+    `  <interpretation>This retrieval was requested by the advisory plan. Read at ${rowsTotalAsOf}${relativeReadTime}: rows_total is exact as of that read, not as of now. The structurally protected critical-commitment membership rows alone require ${details.carveOutRequiredTokens} tokens against membership_target_tokens=${details.membershipTargetTokens}. Commitments with ${VERIFICATION_COMMITMENT_ENFORCEMENT_CLASS_FIELD}=critical or a structural ${VERIFICATION_COMMITMENT_CRITICAL_DOMAIN_FIELD} may not be shortened, so no verification_source rows or payloads are rendered; this verification check failed explicitly instead of presenting a partial critical-commitment carve-out as complete. Disclosure labels do not affect membership admission or ordering. ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER} and its per-${VERIFICATION_DISCLOSURE_CLASS_FIELD} child carry the exact un-enumerated remainder. check_not_completed_count is zero because it counts rendered rows with incomplete payload status, and no rows were rendered. Payload pricing remains independent and was not attempted for this structurally failed membership check.</interpretation>`,
+    ...renderVerificationMembershipBudgetMarker(omittedCandidates),
     `  <omitted_count>${details.rowsTotal}</omitted_count>`,
-    `  <check_not_completed_count>${details.rowsTotal}</check_not_completed_count>`,
+    "  <check_not_completed_count>0</check_not_completed_count>",
     `  <${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_MARKER} ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="${details.carveOutRowsTotal}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_REQUIRED_TOKENS_ATTRIBUTE}="${details.carveOutRequiredTokens}" membership_target_tokens="${details.membershipTargetTokens}" />`,
     "</plan_requested_verification_retrieval>",
   ].join("\n");
@@ -538,9 +578,10 @@ function renderVerificationMembershipCarveOutOverflow(
  * an S2 plan's non-empty verification_steps. Payloads are all-or-nothing:
  * exact when they fit, otherwise an explicit incomplete-check row.
  *
- * Membership and payloads have independent quotas. Restrictive-disclosure and
- * critical-commitment rows form a stable first partition that must fit whole;
- * ordinary membership then takes an unchanged prefix of its stable partition.
+ * Membership and payloads have independent quotas. Critical-commitment rows
+ * form a stable first partition that must fit whole; ordinary membership then
+ * takes an unchanged prefix of its stable partition. Disclosure classes are
+ * accounting dimensions for omitted rows, not admission gates.
  * Payload admission keeps scanning the original retrieval candidate order so a
  * small payload later in the rendered membership can still fit after a large
  * one is refused.
@@ -571,7 +612,7 @@ export function renderPlanRequestedVerificationRetrieval(
     (sum, { candidate }) => sum + renderVerificationRetrievalCandidate(candidate, false).length,
     0,
   );
-  const carveOutRequiredTokens = estimatePromptTokensFromLength(carveOutCharacters);
+  const carveOutRequiredTokens = estimateVerificationMembershipTokens(carveOutCharacters);
 
   if (carveOutRequiredTokens > membershipMaxTokens) {
     const overflow: PlanRequestedVerificationMembershipCarveOutOverflow = {
@@ -583,6 +624,7 @@ export function renderPlanRequestedVerificationRetrieval(
     options.onMembershipCarveOutOverflow?.(overflow);
     return renderVerificationMembershipCarveOutOverflow(
       overflow,
+      indexedCandidates,
       maxTokens,
       rowsTotalReadAtMs,
       currentTimeMs,
@@ -607,20 +649,24 @@ export function renderPlanRequestedVerificationRetrieval(
     const { candidate } = indexedCandidate;
     const rowLength = renderVerificationRetrievalCandidate(candidate, false).length;
     const nextMembershipCharacters = membershipCharacters + rowLength;
-    if (estimatePromptTokensFromLength(nextMembershipCharacters) > membershipMaxTokens) {
+    if (estimateVerificationMembershipTokens(nextMembershipCharacters) > membershipMaxTokens) {
       break;
     }
     membershipCharacters = nextMembershipCharacters;
     enumeratedCandidates.push(indexedCandidate);
   }
+  const omittedCandidates = ordinaryCandidates.slice(
+    enumeratedCandidates.length - carveOutCandidates.length,
+  );
 
   return renderVerificationRetrievalRows(
     enumeratedCandidates,
+    omittedCandidates,
     candidates.length,
     included,
     maxTokens,
     membershipMaxTokens,
-    estimatePromptTokensFromLength(membershipCharacters),
+    estimateVerificationMembershipTokens(membershipCharacters),
     carveOutCandidates.length,
     rowsTotalReadAtMs,
     currentTimeMs,
@@ -629,10 +675,9 @@ export function renderPlanRequestedVerificationRetrieval(
 
 export function renderPlanRequestedVerificationNotCompleted(): string {
   return [
-    '<plan_requested_verification_retrieval complete_membership="false" rows_total="1" check_not_completed_count="1">',
-    "  <interpretation>The advisory plan requested a verification pass, but secondary retrieval was unavailable. The request handle remains visible with an explicit incomplete status and zero payload characters.</interpretation>",
+    `<plan_requested_verification_retrieval ${PLAN_REQUESTED_VERIFICATION_RETRIEVAL_STATUS_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_RETRIEVAL_UNAVAILABLE_STATUS}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_STATUS_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_NOT_OBSERVED_STATUS}" check_not_completed_count="1">`,
+    "  <interpretation>The advisory plan requested a verification pass, but secondary retrieval was unavailable. No membership read occurred, so complete_membership, rows_total, omitted_count, and membership omission markers are intentionally absent. The request handle remains visible with an explicit incomplete payload status and zero payload characters; check_not_completed_count counts that one rendered incomplete row.</interpretation>",
     '  <verification_source handle="plan:verification_steps" source_class="verification_request" payload_status="check_not_completed_retrieval_unavailable" payload_included_chars="0" payload_total_chars="0" payload_json="" />',
-    "  <omitted_count>0</omitted_count>",
     "  <check_not_completed_count>1</check_not_completed_count>",
     "</plan_requested_verification_retrieval>",
   ].join("\n");
