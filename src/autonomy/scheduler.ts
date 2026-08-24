@@ -717,6 +717,7 @@ export class AutonomyScheduler {
     });
 
     return {
+      observed_at: nowMs,
       enabled: this.options.enabled,
       interval_ms: this.options.intervalMs,
       next_tick_at: this.describeNextTickAt(nowMs),

@@ -184,6 +184,15 @@ export type AutonomySchedulerFleetBrakeDescription = {
 };
 
 export type AutonomySchedulerDescription = {
+  /**
+   * The clock read every other field here is as of. `describe()` takes it once
+   * and derives the budget cutoff, the window counts and `next_tick_at` from
+   * it, so any surface that wants to say "these numbers are as of X" must use
+   * this stamp and not its own. A caller's own `now` is necessarily earlier --
+   * it was taken before it awaited `describe()` -- and quoting that instead
+   * ages every count below it by however long the caller spent in between.
+   */
+  observed_at: number;
   enabled: boolean;
   interval_ms: number;
   next_tick_at: number | null;

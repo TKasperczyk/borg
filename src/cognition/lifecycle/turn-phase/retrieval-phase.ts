@@ -808,7 +808,12 @@ export async function runRetrievalPhase(input: {
 
       if (description !== null) {
         autonomySchedulerState = {
-          observedAt: nowMs,
+          // The scheduler's own read, not this phase's `nowMs`. `nowMs` is
+          // stamped when the phase starts and the provider is awaited well
+          // after that, so using it dated every count in the block by the
+          // whole retrieval span rather than by the ledger/compile gap the
+          // surface says it is naming.
+          observedAt: description.observed_at,
           enabled: description.enabled,
           nextTickAt: description.next_tick_at,
           budget: description.budget,

@@ -2675,6 +2675,66 @@ describe("buildBaseSystemPrompt", () => {
     },
   );
 
+  it.each([
+    { floored: true, nextTickAt: NOW_MS - 29_000 },
+    { floored: false, nextTickAt: NOW_MS - 29_000 + 60_000 },
+  ])(
+    "distinguishes a next-tick stamp floored at the read from a scheduled one (floored=$floored)",
+    ({ floored, nextTickAt }) => {
+      const observedAt = NOW_MS - 29_000;
+      const prompt = buildBaseSystemPrompt(
+        makeContext({
+          turnOrigin: "user",
+          turnMechanismEvidence: {
+            recentSuppressions: [],
+            recentRegenerations: [],
+            autonomySchedulerState: {
+              observedAt,
+              enabled: true,
+              nextTickAt,
+              fleetBrake: {
+                enabled: true,
+                empty_streak: 0,
+                empty_streak_threshold: 5,
+                streak_anchor_ts: null,
+                cooldown_until: null,
+                error_streak: 0,
+                error_streak_threshold: 3,
+                error_paused_until: null,
+                bypass_count: 0,
+                window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+              },
+              budget: {
+                max_wakes_per_window: 6,
+                window_ms: 60 * 60_000,
+                window_started_at: observedAt - 60 * 60_000,
+                used_in_current_window: 1,
+                reserved_contemplative_wakes_per_window: 0,
+                contemplative_used_in_current_window: 0,
+                wakes_in_current_window_by_trigger: [],
+                next_budget_slot_frees_at: null,
+              },
+            },
+          },
+        }),
+        { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+      );
+      const block = extractBlock(prompt, "borg_mechanism_evidence");
+      const clause =
+        "That tick was already due when the scheduler was read, so the stamp is the read clock floored forward rather than a scheduled time";
+
+      // The floored stamp is the one that prints an age in the past, and that age is the
+      // observation lag rather than how late the tick is -- the floor destroyed that.
+      if (floored) {
+        expect(block).toContain("next tick 2023-11-14T22:12:51.000Z (~29s ago).");
+        expect(block).toContain(clause);
+      } else {
+        expect(block).toContain("next tick 2023-11-14T22:13:51.000Z (in ~31s).");
+        expect(block).not.toContain(clause);
+      }
+    },
+  );
+
   it("names the lower operational ceiling while the contemplative reservation is unspent", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({

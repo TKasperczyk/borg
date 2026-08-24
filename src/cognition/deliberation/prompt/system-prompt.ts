@@ -1770,6 +1770,10 @@ export function summarizeAutonomySchedulerState(
   // nothing and over a minute on a turn that compiles a lot. Both stamps used to sit on the same
   // surface with nothing saying they were different reads, which makes every count below look
   // current as of the header clock. Name the read and the lag; the arithmetic is not the reader's.
+  // The stamp is the scheduler's own read (`describe()`'s `observed_at`). It used to be the
+  // retrieval phase's start stamp, which is earlier than the read by the whole retrieval span, so
+  // the lag printed here overstated the age of every count below it -- on live traces by 11s at
+  // the least and 100s at the most. A wrong basis on a line whose only job is to name the basis.
   const observationLagMs = Math.max(0, Math.trunc(renderNowMs - schedulerState.observedAt));
   const lines = [
     "Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.",
@@ -1805,6 +1809,14 @@ export function summarizeAutonomySchedulerState(
   // Budget headroom is not the same statement as "a wake can happen": the loop itself and the
   // fleet brake refuse independently of it. Both are rendered unconditionally, in their negative
   // state too, so that a quiet scheduler is legible as a named gate rather than as a gap.
+  //
+  // next_tick_at is Math.max(tickAnchor + intervalMs, readClock): a tick already due at the read
+  // does not print as past, the field floors at the read. The stamp is then the read clock exactly
+  // and the age hanging on it is render lag, not tick lateness -- two different quantities on one
+  // field, and the floor destroys the second, so a reader cannot tell them apart or recover it.
+  // Detectable rather than inferred, because equality with the read is exactly the floor firing.
+  const tickFlooredAtRead =
+    schedulerState.nextTickAt !== null && schedulerState.nextTickAt === schedulerState.observedAt;
   lines.push(
     schedulerState.enabled
       ? `Scheduler loop: running${
@@ -1813,7 +1825,11 @@ export function summarizeAutonomySchedulerState(
             : `, next tick ${new Date(schedulerState.nextTickAt).toISOString()} (${formatRelativeUntil(
                 schedulerState.nextTickAt,
                 renderNowMs,
-              )}).`
+              )}).${
+                tickFlooredAtRead
+                  ? " That tick was already due when the scheduler was read, so the stamp is the read clock floored forward rather than a scheduled time: the age on it is time since the read, not how late the tick is, and how late it was is not recoverable from this page."
+                  : ""
+              }`
         }`
       : "Scheduler loop: disabled -- no wake fires regardless of the budget above.",
   );
