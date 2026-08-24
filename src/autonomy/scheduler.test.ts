@@ -4307,21 +4307,27 @@ describe("AutonomyScheduler", () => {
     scheduler.start();
     await expect(scheduler.describe()).resolves.toMatchObject({
       next_tick_at: 1_005_000,
+      scheduled_tick_at: 1_005_000,
     });
     await scheduler.tick();
     clock.advance(20_000);
+    // The tick came due at 1_005_000 and the read is at 1_020_000: next_tick_at floors to the read
+    // and loses the 15s the loop is behind by, scheduled_tick_at keeps it.
     await expect(scheduler.describe()).resolves.toMatchObject({
       next_tick_at: 1_020_000,
+      scheduled_tick_at: 1_005_000,
     });
     await scheduler.stop();
     await expect(scheduler.describe()).resolves.toMatchObject({
       next_tick_at: null,
+      scheduled_tick_at: null,
     });
 
     clock.advance(10_000);
     scheduler.start();
     await expect(scheduler.describe()).resolves.toMatchObject({
       next_tick_at: 1_035_000,
+      scheduled_tick_at: 1_035_000,
     });
   });
 

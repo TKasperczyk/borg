@@ -716,11 +716,17 @@ export class AutonomyScheduler {
       return group === undefined ? [] : [group];
     });
 
+    const scheduledTickAt = this.describeScheduledTickAt(nowMs);
+
     return {
       observed_at: nowMs,
       enabled: this.options.enabled,
       interval_ms: this.options.intervalMs,
-      next_tick_at: this.describeNextTickAt(nowMs),
+      // Floored to the read so a "next evaluation" surface never shows a past
+      // instant. The floor is where the overdue amount used to be lost; it is
+      // preserved unfloored on the next line rather than recomputed downstream.
+      next_tick_at: scheduledTickAt === null ? null : Math.max(scheduledTickAt, nowMs),
+      scheduled_tick_at: scheduledTickAt,
       budget: {
         max_wakes_per_window: this.options.maxWakesPerWindow,
         window_ms: this.options.budgetWindowMs,
@@ -764,7 +770,14 @@ export class AutonomyScheduler {
     };
   }
 
-  private describeNextTickAt(nowMs: number): number | null {
+  // When the tick the interval handle is counting toward is due, unfloored. The
+  // handle is what actually fires; this is a derivation from the anchor for
+  // description only, and it can sit in the past of `nowMs` -- an interval that
+  // is behind (event-loop pressure, a long-running tick) has a due time that has
+  // already passed. That difference is the only place "how late is the loop" is
+  // expressible, which is why the floor is applied at the field that needs it
+  // rather than here.
+  private describeScheduledTickAt(nowMs: number): number | null {
     if (this.intervalHandle === null) {
       return null;
     }
@@ -774,7 +787,7 @@ export class AutonomyScheduler {
         ? (this.lastTickTs ?? this.intervalStartedTs ?? nowMs)
         : Math.max(this.lastTickTs, this.intervalStartedTs);
 
-    return Math.max(tickAnchor + this.options.intervalMs, nowMs);
+    return tickAnchor + this.options.intervalMs;
   }
 
   private async tickOnce(): Promise<TickResult> {

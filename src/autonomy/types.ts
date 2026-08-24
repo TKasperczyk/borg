@@ -154,7 +154,8 @@ export type AutonomySchedulerConditionSourceDescription = {
 };
 
 export type AutonomySchedulerSourceDescription =
-  AutonomySchedulerTriggerSourceDescription | AutonomySchedulerConditionSourceDescription;
+  | AutonomySchedulerTriggerSourceDescription
+  | AutonomySchedulerConditionSourceDescription;
 
 export type AutonomySchedulerFleetBrakeDescription = {
   enabled: boolean;
@@ -195,7 +196,23 @@ export type AutonomySchedulerDescription = {
   observed_at: number;
   enabled: boolean;
   interval_ms: number;
+  /**
+   * `max(scheduled_tick_at, observed_at)` -- a tick already due at the read is
+   * reported as the read clock rather than as a past instant, so a consumer
+   * that renders it as "next evaluation" never shows a time that has been and
+   * gone. The floor is lossy: it discards how overdue the tick was, and the
+   * relative age anything hangs on the floored stamp is time since the read,
+   * not tick lateness. `scheduled_tick_at` below is the unfloored value, so
+   * the discarded quantity is recoverable rather than destroyed here.
+   */
   next_tick_at: number | null;
+  /**
+   * `tickAnchor + interval_ms` with no floor: when the loop is behind, this is
+   * in the past of `observed_at` and the difference is exactly how overdue the
+   * tick was at the read. Null under the same condition as `next_tick_at` (no
+   * interval handle), so the pair is never half-present.
+   */
+  scheduled_tick_at: number | null;
   budget: AutonomySchedulerBudgetDescription;
   fleet_brake: AutonomySchedulerFleetBrakeDescription;
   sources: AutonomySchedulerSourceDescription[];

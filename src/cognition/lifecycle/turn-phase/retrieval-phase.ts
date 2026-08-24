@@ -816,6 +816,7 @@ export async function runRetrievalPhase(input: {
           observedAt: description.observed_at,
           enabled: description.enabled,
           nextTickAt: description.next_tick_at,
+          scheduledTickAt: description.scheduled_tick_at,
           budget: description.budget,
           fleetBrake: description.fleet_brake,
         };

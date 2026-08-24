@@ -2608,6 +2608,7 @@ describe("buildBaseSystemPrompt", () => {
               observedAt: NOW_MS,
               enabled: true,
               nextTickAt: NOW_MS + 60_000,
+              scheduledTickAt: NOW_MS + 60_000,
               fleetBrake: {
                 enabled: true,
                 empty_streak: 0,
@@ -2679,12 +2680,41 @@ describe("buildBaseSystemPrompt", () => {
     },
   );
 
+  // observedAt is NOW_MS - 29_000, so the render clock is 29s past the scheduler read. Each case
+  // places the *scheduled* (unfloored) tick somewhere against those two clocks; the assertion is
+  // that the line states the sign against both of them rather than against the render clock alone.
   it.each([
-    { floored: true, nextTickAt: NOW_MS - 29_000 },
-    { floored: false, nextTickAt: NOW_MS - 29_000 + 60_000 },
+    {
+      // Loop behind: the scheduled tick is 12s in the past of the read. next_tick_at floors to the
+      // read, so the overdue quantity only exists on the unfloored field.
+      name: "floored",
+      scheduledTickAt: NOW_MS - 41_000,
+      nextTickAt: NOW_MS - 29_000,
+      expected:
+        "next tick was due 12000ms before that read and had not fired, so the loop is behind by that much; next_tick_at floors forward and reports 2023-11-14T22:12:51.000Z, which is the read clock, not a scheduled time.",
+      absent: "next tick 2023-11-14T22:12:51.000Z (",
+    },
+    {
+      // Not floored, but the header clock has since passed it. This is the case that used to print
+      // as "ago" one line under a sentence promising every stamp was as of the read.
+      name: "passed since the read",
+      scheduledTickAt: NOW_MS - 20_000,
+      nextTickAt: NOW_MS - 20_000,
+      expected:
+        "next tick 2023-11-14T22:13:00.000Z, 9000ms after that read, and 20000ms before the current_time_ms at the top of this prompt -- it was still ahead as of the read and may have fired inside the lag since.",
+      absent: "next tick 2023-11-14T22:13:00.000Z (",
+    },
+    {
+      name: "ahead of both clocks",
+      scheduledTickAt: NOW_MS + 31_000,
+      nextTickAt: NOW_MS + 31_000,
+      expected:
+        "next tick 2023-11-14T22:13:51.000Z, 60000ms after that read, and 31000ms after the current_time_ms at the top of this prompt -- still ahead on both clocks.",
+      absent: "floors forward",
+    },
   ])(
-    "distinguishes a next-tick stamp floored at the read from a scheduled one (floored=$floored)",
-    ({ floored, nextTickAt }) => {
+    "states the next tick against the read and the header clock ($name)",
+    ({ scheduledTickAt, nextTickAt, expected, absent }) => {
       const observedAt = NOW_MS - 29_000;
       const prompt = buildBaseSystemPrompt(
         makeContext({
@@ -2696,6 +2726,7 @@ describe("buildBaseSystemPrompt", () => {
               observedAt,
               enabled: true,
               nextTickAt,
+              scheduledTickAt,
               fleetBrake: {
                 enabled: true,
                 empty_streak: 0,
@@ -2724,18 +2755,12 @@ describe("buildBaseSystemPrompt", () => {
         { ...PROMPT_OPTIONS, nowMs: NOW_MS },
       );
       const block = extractBlock(prompt, "borg_mechanism_evidence");
-      const clause =
-        "That tick was already due when the scheduler was read, so the stamp is the read clock floored forward rather than a scheduled time";
 
-      // The floored stamp is the one that prints an age in the past, and that age is the
-      // observation lag rather than how late the tick is -- the floor destroyed that.
-      if (floored) {
-        expect(block).toContain("next tick 2023-11-14T22:12:51.000Z (~29s ago).");
-        expect(block).toContain(clause);
-      } else {
-        expect(block).toContain("next tick 2023-11-14T22:13:51.000Z (in ~31s).");
-        expect(block).not.toContain(clause);
-      }
+      expect(block).toContain(expected);
+      // No bare relative age hanging off the stamp: that parenthetical was computed against the
+      // header clock while the line above claimed the read, which is how a tick still ahead of the
+      // read printed as already past.
+      expect(block).not.toContain(absent);
     },
   );
 
@@ -2750,6 +2775,7 @@ describe("buildBaseSystemPrompt", () => {
             observedAt: NOW_MS,
             enabled: true,
             nextTickAt: NOW_MS + 60_000,
+            scheduledTickAt: NOW_MS + 60_000,
             fleetBrake: {
               enabled: true,
               empty_streak: 0,
@@ -2994,9 +3020,7 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).not.toContain("violating_span");
   });
 
-  const makeGatingCommitment = (
-    id: ReturnType<typeof createCommitmentId>,
-  ): CommitmentRecord => ({
+  const makeGatingCommitment = (id: ReturnType<typeof createCommitmentId>): CommitmentRecord => ({
     id,
     type: "rule",
     kind: "participant_preference",

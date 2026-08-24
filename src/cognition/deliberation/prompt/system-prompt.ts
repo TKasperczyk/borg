@@ -1810,27 +1810,40 @@ export function summarizeAutonomySchedulerState(
   // fleet brake refuse independently of it. Both are rendered unconditionally, in their negative
   // state too, so that a quiet scheduler is legible as a named gate rather than as a gap.
   //
-  // next_tick_at is Math.max(tickAnchor + intervalMs, readClock): a tick already due at the read
-  // does not print as past, the field floors at the read. The stamp is then the read clock exactly
-  // and the age hanging on it is render lag, not tick lateness -- two different quantities on one
-  // field, and the floor destroys the second, so a reader cannot tell them apart or recover it.
-  // Detectable rather than inferred, because equality with the read is exactly the floor firing.
-  const tickFlooredAtRead =
-    schedulerState.nextTickAt !== null && schedulerState.nextTickAt === schedulerState.observedAt;
+  // The tick is stated against the read, because the read is the basis this block declares two
+  // lines above and the only one every other number here shares. Two separate defects lived on
+  // this line while it was rendered as a bare stamp plus formatRelativeUntil(stamp, headerClock):
+  //
+  // (1) next_tick_at is Math.max(scheduled, readClock). A tick already due at the read floors to
+  //     the read clock, so the stamp is the read and the age hanging on it is render lag, not tick
+  //     lateness -- and the overdue amount, the one quantity a "next tick" field exists to carry
+  //     when the loop is behind, was subtracted upstream and unrecoverable from the page. The
+  //     unfloored value is now carried alongside, so the subtraction is stated instead of hidden.
+  // (2) formatRelativeUntil flips to "ago" the instant its stamp is <= the clock it is given, and
+  //     it was given the header clock while the sentence above promised the read. On a turn whose
+  //     compile ran long, a tick still in the future of the read printed as already past -- the
+  //     block asserting "every stamp below is as of that read" and then contradicting it one line
+  //     down. Measured over the rendered blocks in the live traces for 2026-08-23T22:37Z ->
+  //     2026-08-24T22:17Z: 28 of 61 blocks, every one of them a turn with a header lag above 18s.
+  //     Both clocks are now named on the same line, with the sign against each stated explicitly.
+  const scheduledTickAt = schedulerState.scheduledTickAt;
+  const tickClause =
+    schedulerState.nextTickAt === null || scheduledTickAt === null
+      ? "no next tick scheduled (no interval handle, so no wake fires until it restarts)."
+      : scheduledTickAt < schedulerState.observedAt
+        ? `next tick was due ${schedulerState.observedAt - scheduledTickAt}ms before that read and had not fired, so the loop is behind by that much; next_tick_at floors forward and reports ${new Date(
+            schedulerState.nextTickAt,
+          ).toISOString()}, which is the read clock, not a scheduled time.`
+        : `next tick ${new Date(scheduledTickAt).toISOString()}, ${
+            scheduledTickAt - schedulerState.observedAt
+          }ms after that read${
+            scheduledTickAt <= renderNowMs
+              ? `, and ${renderNowMs - scheduledTickAt}ms before the current_time_ms at the top of this prompt -- it was still ahead as of the read and may have fired inside the lag since.`
+              : `, and ${scheduledTickAt - renderNowMs}ms after the current_time_ms at the top of this prompt -- still ahead on both clocks.`
+          }`;
   lines.push(
     schedulerState.enabled
-      ? `Scheduler loop: running${
-          schedulerState.nextTickAt === null
-            ? ", no next tick scheduled (no interval handle, so no wake fires until it restarts)."
-            : `, next tick ${new Date(schedulerState.nextTickAt).toISOString()} (${formatRelativeUntil(
-                schedulerState.nextTickAt,
-                renderNowMs,
-              )}).${
-                tickFlooredAtRead
-                  ? " That tick was already due when the scheduler was read, so the stamp is the read clock floored forward rather than a scheduled time: the age on it is time since the read, not how late the tick is, and how late it was is not recoverable from this page."
-                  : ""
-              }`
-        }`
+      ? `Scheduler loop: running, ${tickClause}`
       : "Scheduler loop: disabled -- no wake fires regardless of the budget above.",
   );
 

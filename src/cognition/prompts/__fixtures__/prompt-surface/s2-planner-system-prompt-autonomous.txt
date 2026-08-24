@@ -360,7 +360,7 @@ Wakes in current window by trigger_name:
 - trigger_name=scheduled_reflection wake_count=3 in_flight=0 outcome_counts(headway=1 silent=2 error=0 busy=0)
 - trigger_name=goal_followup_due wake_count=1 in_flight=0 outcome_counts(headway=0 silent=0 error=1 busy=0)
 Next budget slot frees: 2023-11-15T04:13:20.000Z (in 6h).
-Scheduler loop: running, next tick 2023-11-14T22:14:20.000Z (in 1m).
+Scheduler loop: running, next tick 2023-11-14T22:14:20.000Z, 60000ms after that read, and 60000ms after the current_time_ms at the top of this prompt -- still ahead on both clocks.
 Fleet brake (a second refusal path, independent of the budget above): enabled, not currently holding.
 empty_streak=0/5 error_streak=0/3 bypass_count=0 -- empty_streak counts consecutive completed operational wakes that came back silent, with no time bound. Errored and busy-skipped wakes neither increment nor reset it, so it is consecutive within the completed-operational subsequence rather than within the wake sequence, and one streak can span any number of intervening wakes and any amount of wall-clock.
 Outcome tally over the budget window above, both source categories: headway=0 silent=0 error=0 busy=0. This is a different population from empty_streak -- time-bounded where the streak is not, contemplative wakes included where the streak ignores them, errors counted where the streak passes over them -- so no arithmetic over these four numbers yields the streak, and non-headway totals here are not the distance to the brake.

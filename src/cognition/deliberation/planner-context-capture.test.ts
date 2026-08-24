@@ -174,6 +174,7 @@ describe("planner context capture", () => {
             observedAt: NOW_MS,
             enabled: true,
             nextTickAt: NOW_MS + 60_000,
+            scheduledTickAt: NOW_MS + 60_000,
             fleetBrake: {
               enabled: true,
               empty_streak: 0,

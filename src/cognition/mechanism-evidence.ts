@@ -59,10 +59,20 @@ export type HydratedRecentRegeneration = {
 // budget therefore produced a page on which "budget has headroom" and "a wake can happen" looked
 // like the same statement. The discriminators existed upstream and were dropped at the provider
 // call site; they are carried here so the surface can say which gate is holding.
+//
+// `scheduledTickAt` is carried alongside `nextTickAt` for the same reason. The scheduler floors
+// `next_tick_at` forward to the read clock so a UI never shows a "next evaluation" that has
+// already been and gone -- but the floor subtracts, and what it subtracts is exactly how overdue
+// the tick was. Rendering only the floored stamp produced a line that reports lateness by
+// refusing to be late: a tick 12s behind and a tick due this instant print the same instant, and
+// the age hung on that stamp is time since the read, not tick lateness. The unfloored value is
+// two lines away in the scheduler; carrying it here is what makes the discarded quantity
+// recoverable at the surface instead of destroyed upstream of it.
 export type AutonomySchedulerMechanismEvidence = {
   observedAt: number;
   enabled: boolean;
   nextTickAt: number | null;
+  scheduledTickAt: number | null;
   budget: AutonomySchedulerBudgetDescription;
   fleetBrake: AutonomySchedulerFleetBrakeDescription;
 };
