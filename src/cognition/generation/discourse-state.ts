@@ -201,7 +201,12 @@ export function appendRecentRegeneration(
     ...(input.sourceStreamEntryId === undefined
       ? {}
       : { source_stream_entry_id: input.sourceStreamEntryId }),
-    ...(input.commitments === undefined || input.commitments.length === 0
+    // Keep an empty list distinct from an absent one. Collapsing them here made
+    // "the guard fired and named no commitment" and "this entry was written by a
+    // build that kept no commitment field" the same stored shape, and every hop
+    // downstream then read one silence where there were two. The discriminator
+    // only exists at this write; dropping it is unrecoverable further on.
+    ...(input.commitments === undefined
       ? {}
       : { commitments: input.commitments.map((commitment) => ({ ...commitment })) }),
   };

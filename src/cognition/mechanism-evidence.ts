@@ -158,9 +158,9 @@ function hydratedRecentRegeneration(entry: RecentRegenerationEntry): HydratedRec
     ...(entry.source_stream_entry_id === undefined
       ? {}
       : { sourceStreamEntryId: entry.source_stream_entry_id }),
-    ...(entry.commitments === undefined || entry.commitments.length === 0
-      ? {}
-      : { commitments: entry.commitments }),
+    // Absent and empty are two different silences on the stored entry (see
+    // appendRecentRegeneration); carry both through so the render can say which.
+    ...(entry.commitments === undefined ? {} : { commitments: entry.commitments }),
   };
 }
 

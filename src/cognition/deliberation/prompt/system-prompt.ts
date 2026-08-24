@@ -1972,9 +1972,7 @@ function summarizeMechanismEvidence(
           ...(entry.source_stream_entry_id === undefined
             ? {}
             : { sourceStreamEntryId: entry.source_stream_entry_id }),
-          ...(entry.commitments === undefined || entry.commitments.length === 0
-            ? {}
-            : { commitments: entry.commitments }),
+          ...(entry.commitments === undefined ? {} : { commitments: entry.commitments }),
         })) ?? [],
     };
   const recentSuppressions = evidence.recentSuppressions.slice(-RECENT_SUPPRESSIONS_LIMIT);
@@ -2010,17 +2008,23 @@ function summarizeMechanismEvidence(
     // which of the two records is stale instead of leaving that to a join the
     // reader has to run against a block that omits for its own reasons.
     const activeCommitmentIds = activeCommitmentIdsForLiveness(context);
+    const namedCommitmentNote = recentRegenerations.some(
+      (entry) => (entry.commitments ?? []).length > 0,
+    )
+      ? " A named commitment there is the row that gated that draft, not a class of them: it is evidence about which of my own constraints is biting, not scheduler or network weather. Its labels are the ones captured when the guard fired; the token after them is tested at render against my active commitment records, so still_active means the row is still in force, no_longer_active means it is not -- revoked, superseded, expired or deleted, which this line does not separate -- and liveness_unchecked means this turn carried no active-commitment records to test against, so the id says nothing either way. Entries leave this list only when newer ones displace them, never by clock, so a no_longer_active entry records a past firing and is not a constraint on me now, and its id failing to appear among my commitments is that ending rather than evidence the row never existed."
+      : "";
+    const bareEntryNote = recentRegenerations.some(
+      (entry) => entry.commitments === undefined || entry.commitments.length === 0,
+    )
+      ? " An entry that names no commitment says which of two silences it is. commitments_unrecorded means the write that made that entry kept no commitment field at all, so the ids existed when the guard fired and nothing carried them here; it is silent about which constraint bit, not evidence that none did. guard_named_no_commitment means the firing itself named none. Neither token licenses the reading that the regeneration had no cause."
+      : "";
     lines.push(
       `Regenerated final answers from my side (newest last; newest ${RECENT_REGENERATIONS_LIMIT} kept, same as above): ${recentRegenerations
         .map(
           (entry) =>
             `${escapeXmlText(entry.turnId)}: an internal commitment guard regenerated this turn's final answer${renderRegenerationCommitmentsSuffix(entry, activeCommitmentIds)}${renderRelativeAgeSuffix(entry.ts, renderNowMs)}`,
         )
-        .join(", ")}.${
-        recentRegenerations.some((entry) => (entry.commitments ?? []).length > 0)
-          ? " A named commitment there is the row that gated that draft, not a class of them: it is evidence about which of my own constraints is biting, not scheduler or network weather. Its labels are the ones captured when the guard fired; the token after them is tested at render against my active commitment records, so still_active means the row is still in force, no_longer_active means it is not -- revoked, superseded, expired or deleted, which this line does not separate -- and liveness_unchecked means this turn carried no active-commitment records to test against, so the id says nothing either way. Entries leave this list only when newer ones displace them, never by clock, so a no_longer_active entry records a past firing and is not a constraint on me now, and its id failing to appear among my commitments is that ending rather than evidence the row never existed."
-          : ""
-      }`,
+        .join(", ")}.${namedCommitmentNote}${bareEntryNote}`,
     );
   }
 
@@ -2057,12 +2061,19 @@ function activeCommitmentIdsForLiveness(
 // lands on an absence, and absence from the commitments block has several causes.
 // So state the verdict here, in the negative as well as the positive, and say when
 // there was nothing to test against; an unmarked id reads exactly like a live one.
+//
+// An entry with no named commitment is two different facts, and printing nothing for
+// both made the absence of a suffix do double duty: an entry whose write kept no
+// commitment field at all (it predates this ring carrying ids) reads identically to a
+// firing that named none. Both are silences about which constraint bit, but only the
+// second is a statement about the firing. Name which one this is.
 function renderRegenerationCommitmentsSuffix(
   entry: NonNullable<DeliberationContext["turnMechanismEvidence"]>["recentRegenerations"][number],
   activeCommitmentIds: ReadonlySet<string> | undefined,
 ): string {
-  const commitments = entry.commitments ?? [];
-  if (commitments.length === 0) return "";
+  const commitments = entry.commitments;
+  if (commitments === undefined) return " (commitments_unrecorded)";
+  if (commitments.length === 0) return " (guard_named_no_commitment)";
   const rendered = commitments.map((commitment) => {
     const descriptors = [commitment.kind, commitment.critical_domain, commitment.directive_family]
       .filter((value): value is string => value !== undefined)

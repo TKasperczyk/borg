@@ -229,6 +229,28 @@ describe("discourse state", () => {
     expect(workingMemorySchema.parse(workingMemory)).toBeDefined();
   });
 
+  it("keeps a regeneration that named no commitment distinct from one that recorded none", () => {
+    const namedNone = appendRecentRegeneration(createWorkingMemory(DEFAULT_SESSION_ID, 100), {
+      turnId: "turn-named-none",
+      ts: 1,
+      commitments: [],
+    });
+    const unrecorded = appendRecentRegeneration(createWorkingMemory(DEFAULT_SESSION_ID, 100), {
+      turnId: "turn-unrecorded",
+      ts: 1,
+    });
+
+    expect(namedNone.discourse_state?.recent_regenerations?.[0]).toEqual({
+      turn_id: "turn-named-none",
+      mechanism: "commitment_guard_regeneration",
+      ts: 1,
+      commitments: [],
+    });
+    expect(unrecorded.discourse_state?.recent_regenerations?.[0]).not.toHaveProperty("commitments");
+    expect(workingMemorySchema.parse(namedNone)).toBeDefined();
+    expect(workingMemorySchema.parse(unrecorded)).toBeDefined();
+  });
+
   it("marks a detected closure loop named after S2 planner no-output", () => {
     const sourceStreamEntryId = createStreamEntryId();
     const suppressionStreamEntryId = createStreamEntryId();

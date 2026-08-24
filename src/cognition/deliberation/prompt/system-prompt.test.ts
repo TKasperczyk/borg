@@ -3062,9 +3062,43 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("turn-fossil:internal_identifier_leak (12d ago)");
     expect(block).toContain("turn-fresh:commitment_violation_after_regenerate (30m ago)");
     expect(block).toContain(
-      "turn-regenerated: an internal commitment guard regenerated this turn's final answer (3h ago)",
+      "turn-regenerated: an internal commitment guard regenerated this turn's final answer (commitments_unrecorded) (3h ago)",
     );
     expect(block).toContain("keeps the newest 10 however old they are");
+  });
+
+  it("distinguishes a regeneration entry that recorded no commitments from one that named none", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        nowMs: NOW_MS,
+        workingMemory: {
+          ...makeContext().workingMemory,
+          discourse_state: {
+            stop_until_substantive_content: null,
+            recent_regenerations: [
+              {
+                turn_id: "turn-unrecorded",
+                mechanism: "commitment_guard_regeneration" as const,
+                ts: NOW_MS - 60 * 60_000,
+              },
+              {
+                turn_id: "turn-named-none",
+                mechanism: "commitment_guard_regeneration" as const,
+                ts: NOW_MS - 30 * 60_000,
+                commitments: [],
+              },
+            ],
+          },
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_mechanism_evidence");
+
+    expect(block).toContain("turn-unrecorded: an internal commitment guard regenerated");
+    expect(block).toContain("(commitments_unrecorded) (1h ago)");
+    expect(block).toContain("(guard_named_no_commitment) (30m ago)");
+    expect(block).toContain("says which of two silences it is");
   });
 
   it("renders hydrated suppression diagnostics from mechanism evidence", () => {
