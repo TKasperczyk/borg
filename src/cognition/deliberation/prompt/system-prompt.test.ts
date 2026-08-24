@@ -2620,6 +2620,7 @@ describe("buildBaseSystemPrompt", () => {
                 error_paused_until: null,
                 bypass_count: 0,
                 window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+                window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
               budget: {
                 max_wakes_per_window: 6,
@@ -2738,6 +2739,7 @@ describe("buildBaseSystemPrompt", () => {
                 error_paused_until: null,
                 bypass_count: 0,
                 window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+                window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
               budget: {
                 max_wakes_per_window: 6,
@@ -2787,6 +2789,7 @@ describe("buildBaseSystemPrompt", () => {
               error_paused_until: null,
               bypass_count: 0,
               window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+              window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
             budget: {
               max_wakes_per_window: 15,
@@ -2815,6 +2818,117 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("Wake budget: used=12 / limit=15 /");
     expect(block).toContain(
       "limit=15 is the ceiling for contemplative sources only. 1 of it is reserved for them and 0 contemplative wake(s) are in this window, so 1 of the reservation is still held and operational sources are refused once used reaches 14.",
+    );
+  });
+
+  it("splits the errored-wake count by recorded failure and names the undetailed remainder", () => {
+    const buildPrompt = (
+      windowErrorReasons: NonNullable<
+        NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
+      >["fleetBrake"]["window_error_reasons"],
+    ) =>
+      extractBlock(
+        buildBaseSystemPrompt(
+          makeContext({
+            turnOrigin: "user",
+            turnMechanismEvidence: {
+              recentSuppressions: [],
+              recentRegenerations: [],
+              autonomySchedulerState: {
+                observedAt: NOW_MS,
+                enabled: true,
+                nextTickAt: NOW_MS + 60_000,
+                scheduledTickAt: NOW_MS + 60_000,
+                fleetBrake: {
+                  enabled: true,
+                  empty_streak: 0,
+                  empty_streak_threshold: 5,
+                  streak_anchor_ts: null,
+                  cooldown_until: null,
+                  error_streak: 0,
+                  error_streak_threshold: 3,
+                  error_paused_until: null,
+                  bypass_count: 0,
+                  window_outcomes: {
+                    headway: 0,
+                    silent: 0,
+                    error: windowErrorReasons.total,
+                    busy: 0,
+                  },
+                  window_error_reasons: windowErrorReasons,
+                },
+                budget: {
+                  max_wakes_per_window: 15,
+                  window_ms: 24 * 60 * 60_000,
+                  window_started_at: NOW_MS - 24 * 60 * 60_000,
+                  used_in_current_window: windowErrorReasons.total,
+                  reserved_contemplative_wakes_per_window: 1,
+                  contemplative_used_in_current_window: 0,
+                  wakes_in_current_window_by_trigger: [],
+                  next_budget_slot_frees_at: NOW_MS + 30 * 60_000,
+                },
+              },
+            },
+          }),
+          { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+        ),
+        "borg_mechanism_evidence",
+      );
+
+    // A repeated provider fault and a spread of distinct ones are the two
+    // readings error=N cannot separate; the split is the only thing on the page
+    // that does.
+    const attributed = buildPrompt({
+      total: 5,
+      without_detail: 0,
+      reasons: [
+        { detail: "LLMError: Failed to complete Anthropic request", count: 4 },
+        { detail: "EmbeddingError: Failed to generate embeddings", count: 1 },
+      ],
+    });
+
+    expect(attributed).toContain("error=5");
+    expect(attributed).toContain("Why those errored wakes failed, same rows as error=5 above:");
+    expect(attributed).toContain("- 4x LLMError: Failed to complete Anthropic request");
+    expect(attributed).toContain("- 1x EmbeddingError: Failed to generate embeddings");
+    expect(attributed).toContain("The reasons above account for all 5.");
+
+    // Undetailed rows are stated, so the reason counts are never read as
+    // covering the bucket when they fall short of it.
+    const partial = buildPrompt({
+      total: 5,
+      without_detail: 3,
+      reasons: [{ detail: "LLMError: Failed to complete Anthropic request", count: 2 }],
+    });
+
+    expect(partial).toContain("The reasons above account for 2 of 5; the rest is 3 with no");
+
+    // Every distinct reason past the render cap is counted into the residue
+    // rather than dropped silently.
+    const capped = buildPrompt({
+      total: 7,
+      without_detail: 0,
+      reasons: [
+        { detail: "reason-a", count: 1 },
+        { detail: "reason-b", count: 1 },
+        { detail: "reason-c", count: 1 },
+        { detail: "reason-d", count: 1 },
+        { detail: "reason-e", count: 1 },
+        { detail: "reason-f", count: 1 },
+        { detail: "reason-g", count: 1 },
+      ],
+    });
+
+    expect(capped).toContain("- 1x reason-e");
+    expect(capped).not.toContain("- 1x reason-f");
+    expect(capped).toContain(
+      "The reasons above account for 5 of 7; the rest is 2 across 2 further distinct reason(s) not shown.",
+    );
+
+    // An empty bucket says so rather than leaving the reader to infer that a
+    // missing split means the failures were unattributable.
+    expect(buildPrompt({ total: 0, without_detail: 0, reasons: [] })).toContain(
+      "Errored wakes in that window: none, so there is no failure to attribute.",
     );
   });
 

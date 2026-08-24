@@ -54,6 +54,7 @@ import { utf16SafePrefixEnd } from "../../../util/utf16-boundary.js";
 import { formatUtcDayBoundary, utcDayKey } from "../../../util/utc-day.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
+import type { AutonomySchedulerFleetBrakeDescription } from "../../../autonomy/index.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
 import { renderParticipantRoster } from "../../perception/index.js";
@@ -1893,8 +1894,59 @@ export function summarizeAutonomySchedulerState(
       brake.window_outcomes.busy
     }. This is a different population from empty_streak -- time-bounded where the streak is not, contemplative wakes included where the streak ignores them, errors counted where the streak passes over them -- so no arithmetic over these four numbers yields the streak, and non-headway totals here are not the distance to the brake.`,
   );
+  // error=N alone cannot separate one provider outage repeated N times from N
+  // distinct faults, and the two carry opposite implications for whether the
+  // wakes are worth retrying. The scheduler formats the failure at the moment it
+  // records the outcome, so the discriminator exists upstream; it simply had no
+  // route to this page. The split below is the same rows as error=N -- total is
+  // restated so it can be checked, and undetailed rows are named rather than
+  // left as an unexplained shortfall in the reason counts.
+  lines.push(...renderWakeErrorReasonLines(brake.window_error_reasons));
 
   return lines.join("\n");
+}
+
+/**
+ * Distinct reasons shown per render. A cap rather than the full set because the
+ * detail is an arbitrary formatted error and the tail is long; the residue is
+ * always stated, never silently dropped.
+ */
+const WAKE_ERROR_REASON_RENDER_LIMIT = 5;
+
+function renderWakeErrorReasonLines(
+  tally: AutonomySchedulerFleetBrakeDescription["window_error_reasons"],
+): string[] {
+  if (tally.total === 0) {
+    return ["Errored wakes in that window: none, so there is no failure to attribute."];
+  }
+
+  if (tally.reasons.length === 0) {
+    return [
+      `Errored wakes in that window: ${tally.total}, none of them carrying a recorded failure (rows written before the scheduler kept one). The count is real; why is unavailable from here, and their absence of a reason is not evidence that they share one.`,
+    ];
+  }
+
+  const shown = tally.reasons.slice(0, WAKE_ERROR_REASON_RENDER_LIMIT);
+  const hiddenReasons = tally.reasons.length - shown.length;
+  const hiddenCount = tally.reasons
+    .slice(WAKE_ERROR_REASON_RENDER_LIMIT)
+    .reduce((sum, reason) => sum + reason.count, 0);
+  const remainder = [
+    tally.without_detail === 0
+      ? null
+      : `${tally.without_detail} with no recorded failure (written before the scheduler kept one)`,
+    hiddenReasons === 0
+      ? null
+      : `${hiddenCount} across ${hiddenReasons} further distinct reason(s) not shown`,
+  ].filter((clause): clause is string => clause !== null);
+
+  return [
+    `Why those errored wakes failed, same rows as error=${tally.total} above:`,
+    ...shown.map((reason) => `- ${reason.count}x ${reason.detail}`),
+    remainder.length === 0
+      ? `The reasons above account for all ${tally.total}.`
+      : `The reasons above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
+  ];
 }
 
 function summarizeMechanismEvidence(

@@ -186,6 +186,7 @@ describe("planner context capture", () => {
               error_paused_until: null,
               bypass_count: 0,
               window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+              window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
             budget: {
               max_wakes_per_window: 6,

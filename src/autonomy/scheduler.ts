@@ -765,6 +765,15 @@ export class AutonomyScheduler {
           error: this.options.wakeRepository.countSince(budgetCutoff, { outcome: "error" }),
           busy: this.options.wakeRepository.countSince(budgetCutoff, { outcome: "busy" }),
         },
+        // Same rows as window_outcomes.error, one level down. The scheduler
+        // formats the failure that ends a wake and writes it to the stream; it
+        // used to drop it before this table, leaving `error=N` as a count whose
+        // discriminator had been computed and discarded a line earlier -- a
+        // provider outage and N distinct faults printed identically.
+        window_error_reasons: this.options.wakeRepository.summarizeOutcomeDetailsSince(
+          budgetCutoff,
+          "error",
+        ),
       },
       sources,
     };
@@ -942,7 +951,7 @@ export class AutonomyScheduler {
             errorCount += 1;
             sourceErrorCount += 1;
             const outcomeSummary = `Autonomous preparation failed: ${preparedEvent.toolError}`;
-            this.options.wakeRepository.recordOutcome(wakeRecord.id, "error");
+            this.options.wakeRepository.recordOutcome(wakeRecord.id, "error", outcomeSummary);
             this.consumeFleetFreshnessBypass(
               dueEvent,
               fleetAdmission.bypassKind,
@@ -982,7 +991,7 @@ export class AutonomyScheduler {
             sourceErrorCount += 1;
             const preparationError = new AutonomySourcePreparationError(dueEvent.sourceName, error);
             const outcomeSummary = `Autonomous source preparation failed: ${formatError(error)}`;
-            this.options.wakeRepository.recordOutcome(wakeRecord.id, "error");
+            this.options.wakeRepository.recordOutcome(wakeRecord.id, "error", outcomeSummary);
             this.consumeFleetFreshnessBypass(
               dueEvent,
               fleetAdmission.bypassKind,
@@ -1042,10 +1051,10 @@ export class AutonomyScheduler {
 
             if (busy) {
               busySkipped += 1;
-              this.options.wakeRepository.recordOutcome(wakeRecord.id, "busy");
+              this.options.wakeRepository.recordOutcome(wakeRecord.id, "busy", outcomeSummary);
             } else {
               errorCount += 1;
-              this.options.wakeRepository.recordOutcome(wakeRecord.id, "error");
+              this.options.wakeRepository.recordOutcome(wakeRecord.id, "error", outcomeSummary);
               if (isGlobalCircuitFailure(error)) {
                 this.updateFleetBrakeAfterGlobalError(
                   dueEvent,

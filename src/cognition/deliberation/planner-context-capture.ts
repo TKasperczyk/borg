@@ -466,6 +466,12 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
             fleetBrake: {
               ...value.autonomySchedulerState.fleetBrake,
               window_outcomes: { ...value.autonomySchedulerState.fleetBrake.window_outcomes },
+              window_error_reasons: {
+                ...value.autonomySchedulerState.fleetBrake.window_error_reasons,
+                reasons: value.autonomySchedulerState.fleetBrake.window_error_reasons.reasons.map(
+                  (reason) => ({ ...reason }),
+                ),
+              },
             },
             budget: {
               ...value.autonomySchedulerState.budget,

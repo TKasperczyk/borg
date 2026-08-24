@@ -32,6 +32,17 @@ export type AutonomyWakeSourceCategory = "contemplative" | "operational";
 export const AUTONOMY_WAKE_OUTCOMES = ["headway", "silent", "error", "busy"] as const;
 export type AutonomyWakeOutcome = (typeof AUTONOMY_WAKE_OUTCOMES)[number];
 
+/**
+ * Distinct-detail tally for one outcome bucket over a window. `total` is the
+ * bucket's own count, so `reasons` summing short of it is not a discrepancy --
+ * `without_detail` is the named difference, and the three always reconcile.
+ */
+export type AutonomyWakeOutcomeDetailTally = {
+  total: number;
+  without_detail: number;
+  reasons: Array<{ detail: string; count: number }>;
+};
+
 export const AUTONOMY_WAKE_SOURCE_METADATA = {
   commitment_expiring: {
     type: "trigger",
@@ -182,6 +193,15 @@ export type AutonomySchedulerFleetBrakeDescription = {
    * feed the streak and cannot be differenced into one.
    */
   window_outcomes: Record<AutonomyWakeOutcome, number>;
+  /**
+   * The `error` entry of `window_outcomes` above, split by the failure the
+   * scheduler recorded -- same rows, same window, same categories, one level of
+   * detail further down. `total` repeats that count so the split can be checked
+   * against it, and `without_detail` names the rows whose failure was not
+   * recorded (every row written before the detail column existed), so the
+   * reasons never have to be read as covering the bucket.
+   */
+  window_error_reasons: AutonomyWakeOutcomeDetailTally;
 };
 
 export type AutonomySchedulerDescription = {

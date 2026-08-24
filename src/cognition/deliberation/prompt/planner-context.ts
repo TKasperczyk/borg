@@ -1886,7 +1886,10 @@ function renderTurnStateAutonomyScheduler(
       ...summary.split("\n").map((line) => `    ${escapeXmlText(line)}`),
       "  </autonomy_scheduler_state>",
     ],
-    rowCount: 2 + schedulerState.budget.wakes_in_current_window_by_trigger.length,
+    rowCount:
+      2 +
+      schedulerState.budget.wakes_in_current_window_by_trigger.length +
+      schedulerState.fleetBrake.window_error_reasons.reasons.length,
     truncationCount: 0,
     omissionCount: 0,
   };
