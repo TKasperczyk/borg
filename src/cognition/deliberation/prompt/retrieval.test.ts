@@ -4,6 +4,7 @@ import {
   createEpisodeFixture,
   createRetrievalScoreFixture,
 } from "../../../offline/test-support.js";
+import { MEMORY_DISCLOSURE_CLASSES } from "../../../memory/common/disclosure-label.js";
 import type { SemanticEdge, SemanticNode } from "../../../memory/semantic/index.js";
 import type {
   EvidenceItem,
@@ -479,14 +480,7 @@ describe("plan-requested compact terminal retrieval", () => {
     expect(rendered).toContain("rows_total is exact as of that read, not as of now");
   });
 
-  it.each([
-    "public",
-    "relationship_private",
-    "operator_private",
-    "self_private",
-    "sensitive",
-    "unknown",
-  ] as const)(
+  it.each(MEMORY_DISCLOSURE_CLASSES)(
     "accounts for omitted disclosure_class=%s without treating the label as a gate",
     (disclosureClass) => {
       const rendered = renderPlanRequestedVerificationRetrieval(
@@ -801,6 +795,7 @@ describe("plan-requested compact terminal retrieval", () => {
     expect(rendered).toContain('handle="evidence:one"');
     expect(rendered).toContain('handle="evidence:two"');
     expect(rendered.match(/payload_status="check_not_completed_budget"/g)).toHaveLength(2);
+    expect(rendered).toContain('check_not_completed_count="2"');
     expect(rendered).toContain('payload_included_chars="0"');
     expect(rendered).toContain("<omitted_count>0</omitted_count>");
     expect(rendered).not.toContain("HEAD+TAIL EXCERPT");
@@ -1093,6 +1088,7 @@ describe("plan-requested compact terminal retrieval", () => {
     expect(rendered).not.toContain("rows_total=");
     expect(rendered).not.toContain("<omitted_count>");
     expect(rendered).not.toContain(`${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}=`);
+    expect(rendered).not.toContain(`<${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}`);
     expect(rendered).toContain("<check_not_completed_count>1</check_not_completed_count>");
   });
 });
