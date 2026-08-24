@@ -1939,15 +1939,21 @@ function summarizeMechanismEvidence(
   }
 
   if (recentRegenerations.length > 0) {
+    // The gloss on each entry is a write-time snapshot, and this ring evicts by
+    // displacement rather than by clock, so an entry outlives the row it names.
+    // Test each id against this turn's active commitment draw so the page says
+    // which of the two records is stale instead of leaving that to a join the
+    // reader has to run against a block that omits for its own reasons.
+    const activeCommitmentIds = activeCommitmentIdsForLiveness(context);
     lines.push(
       `Regenerated final answers from my side (newest last; newest ${RECENT_REGENERATIONS_LIMIT} kept, same as above): ${recentRegenerations
         .map(
           (entry) =>
-            `${escapeXmlText(entry.turnId)}: an internal commitment guard regenerated this turn's final answer${renderRegenerationCommitmentsSuffix(entry)}${renderRelativeAgeSuffix(entry.ts, renderNowMs)}`,
+            `${escapeXmlText(entry.turnId)}: an internal commitment guard regenerated this turn's final answer${renderRegenerationCommitmentsSuffix(entry, activeCommitmentIds)}${renderRelativeAgeSuffix(entry.ts, renderNowMs)}`,
         )
         .join(", ")}.${
         recentRegenerations.some((entry) => (entry.commitments ?? []).length > 0)
-          ? " A named commitment there is the row that gated that draft, not a class of them: it is evidence about which of my own constraints is biting, not scheduler or network weather."
+          ? " A named commitment there is the row that gated that draft, not a class of them: it is evidence about which of my own constraints is biting, not scheduler or network weather. Its labels are the ones captured when the guard fired; the token after them is tested at render against my active commitment records, so still_active means the row is still in force, no_longer_active means it is not -- revoked, superseded, expired or deleted, which this line does not separate -- and liveness_unchecked means this turn carried no active-commitment records to test against, so the id says nothing either way. Entries leave this list only when newer ones displace them, never by clock, so a no_longer_active entry records a past firing and is not a constraint on me now, and its id failing to appear among my commitments is that ending rather than evidence the row never existed."
           : ""
       }`,
     );
@@ -1960,11 +1966,35 @@ function renderRelativeAgeSuffix(ts: number, renderNowMs: number | undefined): s
   return renderNowMs === undefined ? "" : ` (${formatRelativeAge(ts, renderNowMs)})`;
 }
 
+// `applicableCommitments` is the whole active set for this turn -- the cognition
+// draw is `list({activeOnly: true})`, global and uncapped, so an id missing from
+// it is a row that is genuinely no longer active rather than one a budget dropped.
+// That makes membership a sound liveness test, and the only one available here.
+// Undefined when the turn carries no draw at all; the caller must then say so
+// rather than guess, so keep the absence distinguishable from an empty set.
+function activeCommitmentIdsForLiveness(
+  context: DeliberationContext,
+): ReadonlySet<string> | undefined {
+  const commitments = context.applicableCommitments;
+  return commitments === undefined
+    ? undefined
+    : new Set(commitments.map((commitment) => commitment.id));
+}
+
 // A bare mechanism name reads as harness weather. The commitment that actually
 // gated the draft is the whole content of the entry, so name it: id for the
 // cross-reference, kind/domain/family for what it is without one.
+//
+// Those labels are captured when the guard fires and never re-read, and this ring
+// evicts by displacement rather than by clock, so an entry keeps naming a row for
+// however long it takes N newer regenerations to arrive -- past the point where the
+// row is revoked. A joinable id with no liveness on it is worse than none: the join
+// lands on an absence, and absence from the commitments block has several causes.
+// So state the verdict here, in the negative as well as the positive, and say when
+// there was nothing to test against; an unmarked id reads exactly like a live one.
 function renderRegenerationCommitmentsSuffix(
   entry: NonNullable<DeliberationContext["turnMechanismEvidence"]>["recentRegenerations"][number],
+  activeCommitmentIds: ReadonlySet<string> | undefined,
 ): string {
   const commitments = entry.commitments ?? [];
   if (commitments.length === 0) return "";
@@ -1972,9 +2002,14 @@ function renderRegenerationCommitmentsSuffix(
     const descriptors = [commitment.kind, commitment.critical_domain, commitment.directive_family]
       .filter((value): value is string => value !== undefined)
       .join("/");
-    return descriptors.length === 0
-      ? escapeXmlText(commitment.id)
-      : `${escapeXmlText(commitment.id)} (${escapeXmlText(descriptors)})`;
+    const liveness =
+      activeCommitmentIds === undefined
+        ? "liveness_unchecked"
+        : activeCommitmentIds.has(commitment.id)
+          ? "still_active"
+          : "no_longer_active";
+    const annotation = descriptors.length === 0 ? liveness : `${descriptors}, ${liveness}`;
+    return `${escapeXmlText(commitment.id)} (${escapeXmlText(annotation)})`;
   });
   return ` over commitment ${rendered.join(" and ")}`;
 }

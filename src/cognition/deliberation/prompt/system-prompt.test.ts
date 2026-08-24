@@ -2990,39 +2990,108 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).not.toContain("violating_span");
   });
 
-  it("names the commitment a regeneration was gated on", () => {
-    const prompt = buildBaseSystemPrompt(
-      makeContext({
-        workingMemory: {
-          ...makeContext().workingMemory,
-          discourse_state: {
-            stop_until_substantive_content: null,
-            recent_regenerations: [
-              {
-                turn_id: "turn-regenerated",
-                mechanism: "commitment_guard_regeneration",
-                ts: NOW_MS,
-                commitments: [
-                  {
-                    id: "cmt_aaaaaaaaaaaaaaaa",
-                    kind: "participant_preference",
-                    critical_domain: "explicit_no_disclosure",
-                    directive_family: "rollout_privacy",
-                  },
-                ],
-              },
-            ],
-          },
+  const makeGatingCommitment = (
+    id: ReturnType<typeof createCommitmentId>,
+  ): CommitmentRecord => ({
+    id,
+    type: "rule",
+    kind: "participant_preference",
+    enforcement_class: "critical",
+    critical_domain: "explicit_no_disclosure",
+    directive_family: "rollout_privacy",
+    closure_pressure_relevance: "neutral",
+    directive: "Do not repeat the rollout details outside the room they were given in.",
+    priority: 9,
+    made_to_entity: null,
+    restricted_audience: null,
+    about_entity: null,
+    committed_by_entity_id: null,
+    provenance: { kind: "manual" },
+    source_stream_entry_ids: [],
+    created_at: NOW_MS,
+    expires_at: null,
+    expired_at: null,
+    revoked_at: null,
+    revoked_reason: null,
+    revoke_provenance: null,
+    superseded_by: null,
+    canonicalized_by_artifact_entry_id: null,
+    last_reinforced_at: NOW_MS,
+  });
+
+  const makeRegenerationRingContext = (
+    commitmentId: string,
+    applicableCommitments: CommitmentRecord[] | undefined,
+  ) =>
+    makeContext({
+      ...(applicableCommitments === undefined ? {} : { applicableCommitments }),
+      workingMemory: {
+        ...makeContext().workingMemory,
+        discourse_state: {
+          stop_until_substantive_content: null,
+          recent_regenerations: [
+            {
+              turn_id: "turn-regenerated",
+              mechanism: "commitment_guard_regeneration",
+              ts: NOW_MS,
+              commitments: [
+                {
+                  id: commitmentId,
+                  kind: "participant_preference",
+                  critical_domain: "explicit_no_disclosure",
+                  directive_family: "rollout_privacy",
+                },
+              ],
+            },
+          ],
         },
-      }),
+      },
+    });
+
+  it("names the commitment a regeneration was gated on and marks it still active", () => {
+    const commitmentId = createCommitmentId();
+    const prompt = buildBaseSystemPrompt(
+      makeRegenerationRingContext(commitmentId, [makeGatingCommitment(commitmentId)]),
       PROMPT_OPTIONS,
     );
     const block = extractBlock(prompt, "borg_mechanism_evidence");
 
     expect(block).toContain(
-      "over commitment cmt_aaaaaaaaaaaaaaaa (participant_preference/explicit_no_disclosure/rollout_privacy)",
+      `over commitment ${commitmentId} (participant_preference/explicit_no_disclosure/rollout_privacy, still_active)`,
     );
     expect(block).toContain("which of my own constraints is biting");
+  });
+
+  // The ring evicts by displacement, so an entry keeps naming a commitment after the
+  // row is revoked. Without the marker the id reads as live and the reader has to
+  // discover the death by a join that returns an absence with no cause.
+  it("marks a regeneration's commitment no longer active once it leaves the active draw", () => {
+    const commitmentId = createCommitmentId();
+    const prompt = buildBaseSystemPrompt(
+      makeRegenerationRingContext(commitmentId, [makeGatingCommitment(createCommitmentId())]),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_mechanism_evidence");
+
+    expect(block).toContain(
+      `over commitment ${commitmentId} (participant_preference/explicit_no_disclosure/rollout_privacy, no_longer_active)`,
+    );
+    expect(block).toContain("records a past firing and is not a constraint on me now");
+  });
+
+  it("claims neither liveness state when the turn carries no active commitment draw", () => {
+    const commitmentId = createCommitmentId();
+    const prompt = buildBaseSystemPrompt(
+      makeRegenerationRingContext(commitmentId, undefined),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_mechanism_evidence");
+
+    expect(block).toContain(
+      `over commitment ${commitmentId} (participant_preference/explicit_no_disclosure/rollout_privacy, liveness_unchecked)`,
+    );
+    expect(block).not.toContain("rollout_privacy, still_active");
+    expect(block).not.toContain("rollout_privacy, no_longer_active");
   });
 
   it("omits the commitment attribution when the entry carries none", () => {
