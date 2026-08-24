@@ -385,6 +385,7 @@ export type DeliberatorOptions = {
   promptBlocks?: Partial<Record<PromptKey, string>>;
   finalizerDynamicPromptCacheEnabled?: boolean;
   finalizerSurfaceVariant?: "compact" | "compact_conversational" | "legacy";
+  planRequestedVerificationMembershipTokenBudget?: number;
   finalizerContextCapture?: FinalizerContextCapture;
   plannerSurfaceVariant?: "compact" | "legacy";
   plannerContextCapture?: PlannerContextCapture;

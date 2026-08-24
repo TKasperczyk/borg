@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { DEFAULT_HOST_CAPABILITIES_SECTION } from "../cognition/prompts/host-capability-contracts.js";
+import { DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET } from "../cognition/deliberation/constants.js";
 import {
   EVIDENCE_LEDGER_SECTION_DEFINITIONS,
   type EvidenceLedgerSectionId,
@@ -277,6 +278,11 @@ const contradictionRoutingConfigSchema = z
 const deliberationConfigSchema = z
   .object({
     contradictionRouting: contradictionRoutingConfigSchema,
+    planRequestedVerificationMembershipTokenBudget: z
+      .number()
+      .int()
+      .positive()
+      .default(DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET),
     finalizerDynamicPromptCacheEnabled: z.boolean().default(true),
     finalizerSurfaceVariant: z
       .enum(["compact", "compact_conversational", "legacy"])
@@ -1252,6 +1258,14 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["deliberation", "contradictionRouting", "cooldownTurns"],
     readOptionalEnvNumber(env, "BORG_DELIBERATION_CONTRADICTION_ROUTING_COOLDOWN_TURNS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["deliberation", "planRequestedVerificationMembershipTokenBudget"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_DELIBERATION_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET",
+    ),
   );
   setConfigOverride(
     overrides,

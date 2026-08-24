@@ -13,7 +13,9 @@ import type {
 } from "../../../retrieval/index.js";
 import { publicMemoryDisclosureLabel } from "../../../retrieval/index.js";
 import { ManualClock } from "../../../util/clock.js";
+import { DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET } from "../constants.js";
 import {
+  PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER,
   summarizeRetrievalConfidence,
   renderPlanRequestedVerificationNotCompleted,
   renderPlanRequestedVerificationRetrieval,
@@ -452,6 +454,75 @@ describe("plan-requested compact terminal retrieval", () => {
     expect(rendered).toContain("<omitted_count>0</omitted_count>");
   });
 
+  it("keeps under-budget membership rows byte-stable", () => {
+    const input = {
+      evidence: [
+        verificationEvidence("evidence:zeta", "first payload"),
+        verificationEvidence("evidence:alpha", "second payload"),
+      ],
+      episodes: [],
+      semantic: {
+        matched_node_ids: [],
+        matched_nodes: [],
+        supports: [],
+        contradicts: [],
+        categories: [],
+        support_hits: [],
+        causal_hits: [],
+        contradiction_hits: [],
+        category_hits: [],
+      },
+      open_questions: [],
+    } as never;
+    const rendered = renderPlanRequestedVerificationRetrieval(input, 2_000);
+    const renderedWithUnboundedMembership = renderPlanRequestedVerificationRetrieval(
+      input,
+      2_000,
+      Number.MAX_SAFE_INTEGER,
+    );
+    const sourceRows = (value: string) => value.match(/^  <verification_source.*$/gm);
+
+    expect(sourceRows(rendered)).toEqual(sourceRows(renderedWithUnboundedMembership));
+    expect(rendered).toContain('complete_membership="true" rows_total="2"');
+    expect(rendered).toContain("<omitted_count>0</omitted_count>");
+    expect(rendered).not.toContain(`${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}=\"`);
+  });
+
+  it("fully enumerates the 300-row commitment and goal scale at the default budget", () => {
+    const rendered = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: Array.from({ length: 300 }, (_unused, index) =>
+          verificationEvidence(`evidence:${index}`, "z".repeat(40)),
+        ),
+        episodes: [],
+        semantic: {
+          matched_node_ids: [],
+          matched_nodes: [],
+          supports: [],
+          contradicts: [],
+          categories: [],
+          support_hits: [],
+          causal_hits: [],
+          contradiction_hits: [],
+          category_hits: [],
+        },
+        open_questions: [],
+      } as never,
+      2_000,
+    );
+
+    const membershipTokens = Number(/membership_tokens="(\d+)"/.exec(rendered)?.[1]);
+    expect(membershipTokens).toBe(43_923);
+    expect(membershipTokens).toBeLessThan(
+      DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
+    );
+    expect(rendered).toContain('complete_membership="true" rows_total="300"');
+    expect(rendered.match(/<verification_source /g)).toHaveLength(300);
+    expect(rendered).toContain('handle="evidence:0"');
+    expect(rendered).toContain('handle="evidence:299"');
+    expect(rendered).toContain("<omitted_count>0</omitted_count>");
+  });
+
   it("keeps every source handle and reports a structurally incomplete check instead of an excerpt", () => {
     const rendered = renderPlanRequestedVerificationRetrieval(
       {
@@ -505,6 +576,7 @@ describe("plan-requested compact terminal retrieval", () => {
         open_questions: [],
       } as never,
       2_000,
+      100_000,
     );
 
     const membershipTokens = Number(/membership_tokens="(\d+)"/.exec(rendered)?.[1]);
@@ -514,6 +586,76 @@ describe("plan-requested compact terminal retrieval", () => {
     expect(rendered).toContain('rows_total="400"');
     expect((rendered.match(/payload_status="exact"/g) ?? []).length).toBeGreaterThan(0);
     expect(rendered).toContain("<omitted_count>0</omitted_count>");
+  });
+
+  it("enumerates an ordered prefix and flags the exact membership remainder", () => {
+    const firstTwo = [
+      verificationEvidence("evidence:zeta", "first payload"),
+      verificationEvidence("evidence:alpha", "second payload"),
+    ];
+    const semantic = {
+      matched_node_ids: [],
+      matched_nodes: [],
+      supports: [],
+      contradicts: [],
+      categories: [],
+      support_hits: [],
+      causal_hits: [],
+      contradiction_hits: [],
+      category_hits: [],
+    };
+    const firstTwoRendered = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: firstTwo,
+        episodes: [],
+        semantic,
+        open_questions: [],
+      } as never,
+      2_000,
+    );
+    const firstTwoMembershipTokens = Number(
+      /membership_tokens="(\d+)"/.exec(firstTwoRendered)?.[1],
+    );
+    const rendered = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: [
+          ...firstTwo,
+          verificationEvidence("evidence:middle", "third payload"),
+          verificationEvidence("evidence:beta", "fourth payload"),
+        ],
+        episodes: [],
+        semantic,
+        open_questions: [],
+      } as never,
+      2_000,
+      firstTwoMembershipTokens,
+    );
+    const enumeratedHandles = [...rendered.matchAll(/<verification_source handle="([^"]+)"/g)].map(
+      (match) => match[1],
+    );
+    const sourceRows = (value: string) => value.match(/^  <verification_source.*$/gm);
+
+    expect(enumeratedHandles).toEqual(["evidence:zeta", "evidence:alpha"]);
+    expect(sourceRows(rendered)).toEqual(sourceRows(firstTwoRendered));
+    expect(rendered).toContain('complete_membership="false" rows_total="4"');
+    expect(rendered).toContain(`membership_target_tokens="${firstTwoMembershipTokens}"`);
+    expect(rendered).toContain(`membership_tokens="${firstTwoMembershipTokens}"`);
+    expect(rendered).toContain(`${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}="2"`);
+    expect(rendered).toContain(
+      `<${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}>2</${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}>`,
+    );
+    expect(rendered).toContain("<omitted_count>2</omitted_count>");
+    expect(rendered).not.toContain('handle="evidence:middle"');
+    expect(rendered).not.toContain('handle="evidence:beta"');
+    expect(rendered).toContain(
+      "complete_membership=true means every one of rows_total handles and its structural fields is enumerated",
+    );
+    expect(rendered).toContain(
+      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}=N and its same-named marker carry the exact un-enumerated remainder`,
+    );
+    expect(rendered).toContain(
+      "Payloads are priced against payload_target_tokens alone and never consume the membership budget; membership never consumes the payload budget",
+    );
   });
 
   it("renders an unavailable plan-requested check with a handle and zero payload", () => {

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET } from "../cognition/deliberation/constants.js";
 import { OFFLINE_PROCESS_NAMES } from "../contracts/offline-process.js";
 import { writeJsonFileAtomic } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
@@ -165,6 +166,9 @@ describe("config", () => {
       enabled: true,
       cooldownTurns: 5,
     });
+    expect(config.deliberation.planRequestedVerificationMembershipTokenBudget).toBe(
+      DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
+    );
     expect(config.deliberation.finalizerDynamicPromptCacheEnabled).toBe(true);
     expect(config.deliberation.finalizerSurfaceVariant).toBe("legacy");
     expect(config.deliberation.finalizerContextCaptureSampleRate).toBe(0);
@@ -270,6 +274,25 @@ describe("config", () => {
     });
 
     expect(config.deliberation.finalizerDynamicPromptCacheEnabled).toBe(false);
+  });
+
+  it("honors the plan-requested verification membership budget environment override", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      deliberation: {
+        planRequestedVerificationMembershipTokenBudget: 64_000,
+      },
+    });
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {
+        BORG_DELIBERATION_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET: "12000",
+      },
+    });
+
+    expect(config.deliberation.planRequestedVerificationMembershipTokenBudget).toBe(12_000);
   });
 
   it("allows an immediate rollback to the legacy planner surface", () => {

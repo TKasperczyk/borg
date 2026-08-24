@@ -7,6 +7,7 @@ import type { LLMCompleteOptions } from "../../llm/index.js";
 import {
   DEFAULT_DELIBERATION_PLAN_MAX_TOKENS,
   DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS,
+  DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
   DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET,
   DEFAULT_SEMANTIC_CONTEXT_BUDGET,
   THINKING_DELIBERATION_MAX_TOKENS,
@@ -829,6 +830,9 @@ export class Deliberator {
       context.options?.maxThinkingTokens ?? DEFAULT_DELIBERATION_PLAN_MAX_TOKENS;
     const semanticContextBudget = Math.max(DEFAULT_SEMANTIC_CONTEXT_BUDGET, planningMaxTokens * 4);
     const retrievalContextBudget = DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET;
+    const planRequestedVerificationMembershipTokenBudget =
+      this.options.planRequestedVerificationMembershipTokenBudget ??
+      DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET;
     // Adaptive thinking spends output tokens; the per-call budget must hold the
     // thinking AND the emission or the model exhausts max_tokens mid-thought and
     // never emits a tool. Raise the output budget when thinking is on. The context
@@ -1252,6 +1256,7 @@ export class Deliberator {
                   : renderPlanRequestedVerificationRetrieval(
                       secondaryRetrieval,
                       retrievalContextBudget,
+                      planRequestedVerificationMembershipTokenBudget,
                     ),
             },
           ]);

@@ -22,10 +22,15 @@ import {
 import type { EntityId } from "../../../util/ids.js";
 import { escapeXmlText } from "../../../util/prompt-tags.js";
 import { renderEvidenceItemDisclosureLabel } from "../../evidence-item-disclosure.js";
-import { DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET } from "../constants.js";
+import {
+  DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
+  DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET,
+} from "../constants.js";
 import type { ContradictionRoutingTier } from "../types.js";
 
 const LOW_RETRIEVAL_CONFIDENCE_THRESHOLD = 0.45;
+export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER =
+  "membership_not_enumerated_budget";
 
 export type RetrievedEvidenceSummaryInput = {
   evidence?: readonly EvidenceItem[];
@@ -383,29 +388,45 @@ function renderVerificationRetrievalRows(
   candidates: readonly VerificationRetrievalCandidate[],
   included: ReadonlySet<number>,
   maxTokens: number,
+  membershipMaxTokens: number,
+  enumeratedMembershipCount: number,
+  membershipTokens: number,
 ): string {
-  const rows = candidates.map((candidate, index) =>
-    renderVerificationRetrievalCandidate(candidate, included.has(index)),
+  const rows = candidates
+    .slice(0, enumeratedMembershipCount)
+    .map((candidate, index) =>
+      renderVerificationRetrievalCandidate(candidate, included.has(index)),
+    );
+  const incompleteCount = rows.reduce(
+    (count, _row, index) => count + (included.has(index) ? 0 : 1),
+    0,
   );
-  const incompleteCount = candidates.length - included.size;
-  const membershipTokens = estimatePromptTokensFromLength(
-    candidates.reduce(
-      (sum, candidate) => sum + renderVerificationRetrievalCandidate(candidate, false).length,
-      0,
-    ),
-  );
+  const membershipNotEnumeratedCount = candidates.length - enumeratedMembershipCount;
   const payloadTokens = estimatePromptTokensFromLength(
-    candidates.reduce(
-      (sum, candidate, index) =>
-        included.has(index) ? sum + verificationPayloadJson(candidate).length : sum,
-      0,
-    ),
+    candidates
+      .slice(0, enumeratedMembershipCount)
+      .reduce(
+        (sum, candidate, index) =>
+          included.has(index) ? sum + verificationPayloadJson(candidate).length : sum,
+        0,
+      ),
   );
+  const membershipBudgetMarkerAttribute =
+    membershipNotEnumeratedCount === 0
+      ? ""
+      : ` ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}="${membershipNotEnumeratedCount}"`;
+  const membershipBudgetMarker =
+    membershipNotEnumeratedCount === 0
+      ? []
+      : [
+          `  <${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}>${membershipNotEnumeratedCount}</${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}>`,
+        ];
   return [
-    `<plan_requested_verification_retrieval complete_membership="true" rows_total="${rows.length}" payload_target_tokens="${maxTokens}" payload_tokens_included="${payloadTokens}" membership_tokens="${membershipTokens}" check_not_completed_count="${incompleteCount}">`,
-    "  <interpretation>This retrieval was requested by the advisory plan. Every returned source handle is present. A payload_status=exact row carries its complete payload with no excerpt; payload_status=check_not_completed_budget carries the handle and structural fields but zero payload, so the requested check is explicitly incomplete rather than silently truncated. Payloads are priced against payload_target_tokens alone; membership_tokens is the separate unbounded cost of listing every handle and never consumes the payload budget, so a check_not_completed_budget row means that row's own payload did not fit, not that the handle list crowded it out.</interpretation>",
+    `<plan_requested_verification_retrieval complete_membership="${membershipNotEnumeratedCount === 0}" rows_total="${candidates.length}" payload_target_tokens="${maxTokens}" payload_tokens_included="${payloadTokens}" membership_target_tokens="${membershipMaxTokens}" membership_tokens="${membershipTokens}"${membershipBudgetMarkerAttribute} check_not_completed_count="${incompleteCount}">`,
+    `  <interpretation>This retrieval was requested by the advisory plan. Membership rows are priced against membership_target_tokens alone and emitted as an unchanged prefix of the existing retrieval candidate order. complete_membership=true means every one of rows_total handles and its structural fields is enumerated. When complete_membership=false, ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}=N and its same-named marker carry the exact un-enumerated remainder; omitted membership is never silent. A payload_status=exact row carries its complete payload with no excerpt; payload_status=check_not_completed_budget carries an enumerated handle and structural fields but zero payload, so that requested check is explicitly incomplete rather than silently truncated. Payloads are priced against payload_target_tokens alone and never consume the membership budget; membership never consumes the payload budget, so a check_not_completed_budget row means that row's own payload did not fit.</interpretation>`,
     ...rows.map((row) => `  ${row}`),
-    "  <omitted_count>0</omitted_count>",
+    ...membershipBudgetMarker,
+    `  <omitted_count>${membershipNotEnumeratedCount}</omitted_count>`,
     `  <check_not_completed_count>${incompleteCount}</check_not_completed_count>`,
     "</plan_requested_verification_retrieval>",
   ].join("\n");
@@ -416,18 +437,16 @@ function renderVerificationRetrievalRows(
  * an S2 plan's non-empty verification_steps. Payloads are all-or-nothing:
  * exact when they fit, otherwise an explicit incomplete-check row.
  *
- * Membership is complete and therefore unbounded: every candidate renders its
- * handle and structural fields whether or not its payload is affordable. The
- * payload budget is priced against that quota alone rather than against the
- * whole block, because otherwise a membership list larger than maxTokens --
- * the normal case once a plan requests a few hundred handles -- makes every
- * payload unaffordable, and the requested check can never complete for any
- * row. A row is skipped rather than ending the scan so a small payload later
- * in the list still fits after a large one is refused.
+ * Membership and payloads have independent quotas. Membership is an unchanged
+ * prefix of the existing retrieval candidate order and reports the exact
+ * un-enumerated remainder when its quota is exhausted. Payload admission keeps
+ * scanning that same order so a small payload later in the enumerated prefix
+ * can still fit after a large one is refused.
  */
 export function renderPlanRequestedVerificationRetrieval(
   input: Pick<RetrievedContext, "evidence" | "episodes" | "semantic" | "open_questions">,
   maxTokens = DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET,
+  membershipMaxTokens = DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
 ): string {
   const candidates = [
     ...verificationEvidenceCandidates(input.evidence),
@@ -445,7 +464,26 @@ export function renderPlanRequestedVerificationRetrieval(
     included.add(index);
   }
 
-  return renderVerificationRetrievalRows(candidates, included, maxTokens);
+  let membershipCharacters = 0;
+  let enumeratedMembershipCount = 0;
+  for (const candidate of candidates) {
+    const rowLength = renderVerificationRetrievalCandidate(candidate, false).length;
+    const nextMembershipCharacters = membershipCharacters + rowLength;
+    if (estimatePromptTokensFromLength(nextMembershipCharacters) > membershipMaxTokens) {
+      break;
+    }
+    membershipCharacters = nextMembershipCharacters;
+    enumeratedMembershipCount += 1;
+  }
+
+  return renderVerificationRetrievalRows(
+    candidates,
+    included,
+    maxTokens,
+    membershipMaxTokens,
+    enumeratedMembershipCount,
+    estimatePromptTokensFromLength(membershipCharacters),
+  );
 }
 
 export function renderPlanRequestedVerificationNotCompleted(): string {

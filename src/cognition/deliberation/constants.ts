@@ -14,4 +14,9 @@ export const THINKING_DELIBERATION_MAX_TOKENS = 16_000;
 // to the explicit check_not_completed flag, never silent truncation, per the
 // entity's consulted exact-or-flagged policy.
 export const DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET = 32_000;
+// A payload-less verification membership row currently costs about 146 tokens
+// in the conservative evidence-row fixture. 48K therefore keeps 300-row
+// commitment/goal-scale result sets complete with about 9% headroom while
+// bounding the multi-thousand-row live failure mode.
+export const DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET = 48_000;
 export const DEFAULT_SEMANTIC_CONTEXT_BUDGET = 8_000;
