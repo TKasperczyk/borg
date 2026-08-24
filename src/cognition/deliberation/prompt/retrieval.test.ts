@@ -73,6 +73,8 @@ function makeRetrievalConfidence(
     coverageExpected: overrides.coverageExpected ?? 5,
     diversitySources: overrides.diversitySources ?? 0,
     diversitySampleSize: overrides.diversitySampleSize ?? 0,
+    evidenceEpisodeStrength: overrides.evidenceEpisodeStrength ?? 0,
+    evidenceSemanticStrength: overrides.evidenceSemanticStrength ?? 0,
   };
 }
 
@@ -138,7 +140,8 @@ describe("retrieval confidence prompt rendering", () => {
     // A quotient on its own cannot distinguish a measured ratio from one pinned
     // at a ceiling it could not miss. Coverage's denominator is the retrieval
     // limit -- which also capped the episode half of its own numerator -- and
-    // diversity's is the top-N slice, so neither is readable against `samples`.
+    // diversity's is the top-N slice *plus* the semantic hit count, which is
+    // bounded by neither, so neither is readable against `samples`.
     const saturated = summarizeRetrievalConfidence(
       makeRetrievalConfidence({
         overall: 0.8,
@@ -149,12 +152,45 @@ describe("retrieval confidence prompt rendering", () => {
         sourceDiversity: 0.94,
         diversitySources: 17,
         diversitySampleSize: 18,
+        evidenceEpisodeStrength: 0,
+        evidenceSemanticStrength: 0,
       }),
     );
 
     expect(saturated).toContain("coverage=1.00(23/4)");
     expect(saturated).toContain("diversity=0.94(17/18)");
     expect(saturated).toContain("samples=23");
+  });
+
+  it("prints the evidence addends and marks the line when their sum was clamped", () => {
+    // `evidenceStrength` saturates like the two ratios but has no denominator
+    // to give it away: it is a clamped sum of two independently-clamped parts.
+    // A 1.00 that overshot and a 1.00 that landed exactly print identically
+    // unless the addends and the pre-clamp sum ship with it.
+    const clamped = summarizeRetrievalConfidence(
+      makeRetrievalConfidence({
+        overall: 0.9,
+        evidenceStrength: 1,
+        sampleSize: 6,
+        evidenceEpisodeStrength: 0.86,
+        evidenceSemanticStrength: 0.29,
+      }),
+    );
+
+    expect(clamped).toContain("evidence=1.00(ep=0.86+sem=0.29,raw=1.15,clamped)");
+
+    const measured = summarizeRetrievalConfidence(
+      makeRetrievalConfidence({
+        overall: 0.9,
+        evidenceStrength: 0.98,
+        sampleSize: 6,
+        evidenceEpisodeStrength: 0.7,
+        evidenceSemanticStrength: 0.28,
+      }),
+    );
+
+    expect(measured).toContain("evidence=0.98(ep=0.70+sem=0.28)");
+    expect(measured).not.toContain("clamped");
   });
 
   it("flags weakly-supported claims when non-empty confidence is low", () => {

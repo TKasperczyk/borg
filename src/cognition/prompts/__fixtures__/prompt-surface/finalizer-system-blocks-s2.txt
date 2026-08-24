@@ -306,7 +306,7 @@ Retrieved evidence:
 
 <borg_retrieval_confidence>
 Retrieval confidence (internal, for calibrating certainty in my response):
-overall=0.74 evidence=0.70 coverage=0.40(2/5) diversity=0.50(1/2) samples=2 contradictions=present
+overall=0.74 evidence=0.70(ep=0.55+sem=0.15) coverage=0.40(2/5) diversity=0.50(1/2) samples=2 contradictions=present
 </borg_retrieval_confidence>
 
 <borg_pending_corrections>

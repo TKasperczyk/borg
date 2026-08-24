@@ -24,6 +24,12 @@ export type RetrievalConfidence = {
   coverageExpected: number;
   diversitySources: number;
   diversitySampleSize: number;
+  // The two addends `evidenceStrength` is the clamped sum of. Their sum is not
+  // bounded by 1 before the clamp, so a 1.00 on that line is more often a
+  // ceiling hit than a measurement, and the quotient alone cannot say which.
+  // Carried so the render can show the components and mark the clamp.
+  evidenceEpisodeStrength: number;
+  evidenceSemanticStrength: number;
 };
 
 export type ComputeRetrievalConfidenceInput = {
@@ -198,6 +204,8 @@ export function computeRetrievalConfidence(
       coverageExpected: expectedCount,
       diversitySources: 0,
       diversitySampleSize: 0,
+      evidenceEpisodeStrength: 0,
+      evidenceSemanticStrength: 0,
     };
   }
 
@@ -212,6 +220,13 @@ export function computeRetrievalConfidence(
   );
   const episodeEvidenceStrength =
     topEpisodes.length === 0 ? 0 : clamp01(salienceSum / topEpisodes.length);
+  // Both addends are already clamped to [0,1] individually, so their sum can
+  // reach 1.30 and the outer clamp silently discards the overshoot. The
+  // semantic half is bounded by SEMANTIC_EVIDENCE_STRENGTH_SCALE and sits near
+  // its own ceiling whenever any supported match exists, so a well-established
+  // episode set alone is usually enough to pin the line at 1.00. Same failure
+  // as coverage below, one field up: the printed quotient cannot distinguish a
+  // measured 1.00 from a clamped one, which is why both addends ship out.
   const evidenceStrength = clamp01(episodeEvidenceStrength + semanticEvidence.strength);
 
   // Coverage: did we find enough evidence to answer confidently.
@@ -284,5 +299,7 @@ export function computeRetrievalConfidence(
     coverageExpected: Math.max(1, expectedCount),
     diversitySources: participantSignatures.size,
     diversitySampleSize,
+    evidenceEpisodeStrength: episodeEvidenceStrength,
+    evidenceSemanticStrength: semanticEvidence.strength,
   };
 }

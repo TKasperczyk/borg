@@ -287,6 +287,8 @@ function makeRetrievedContext(): RetrievedContext {
       coverageExpected: 5,
       diversitySources: 0,
       diversitySampleSize: 0,
+      evidenceEpisodeStrength: 0,
+      evidenceSemanticStrength: 0,
     },
   };
 }

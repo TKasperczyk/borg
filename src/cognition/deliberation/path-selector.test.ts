@@ -67,6 +67,8 @@ function makeConfidence(overall: number, contradictionPresent = false): Retrieva
     coverageExpected: 5,
     diversitySources: 5,
     diversitySampleSize: 5,
+    evidenceEpisodeStrength: 0,
+    evidenceSemanticStrength: 0,
   };
 }
 

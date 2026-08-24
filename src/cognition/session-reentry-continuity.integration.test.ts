@@ -102,6 +102,8 @@ function makeRetrievalConfidence(
     coverageExpected: overrides.coverageExpected ?? 1,
     diversitySources: overrides.diversitySources ?? 1,
     diversitySampleSize: overrides.diversitySampleSize ?? 1,
+    evidenceEpisodeStrength: overrides.evidenceEpisodeStrength ?? 0,
+    evidenceSemanticStrength: overrides.evidenceSemanticStrength ?? 0,
   };
 }
 

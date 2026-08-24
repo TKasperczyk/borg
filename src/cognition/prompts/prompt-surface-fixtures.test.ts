@@ -497,6 +497,8 @@ function makeContext(overrides: Partial<DeliberationContext> = {}): Deliberation
       coverageExpected: 5,
       diversitySources: 1,
       diversitySampleSize: 2,
+      evidenceEpisodeStrength: 0.55,
+      evidenceSemanticStrength: 0.15,
     },
     contradictionRouting: {
       contradictions: [

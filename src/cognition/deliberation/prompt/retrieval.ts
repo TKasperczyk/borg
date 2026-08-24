@@ -76,9 +76,21 @@ export function summarizeRetrievalConfidence(
     return null;
   }
 
+  // `evidenceStrength` is a clamped sum, not a ratio, so it saturates the same
+  // way the two ratios below do and has no fraction to give it away. Print the
+  // addends, and when their sum exceeded 1 print the sum and say it was
+  // clamped -- otherwise a ceiling hit and a measurement are the same two
+  // characters. Rendered on every turn, including when nothing was clamped,
+  // because an absent marker would be indistinguishable from an unmarked one.
+  const evidenceRaw = confidence.evidenceEpisodeStrength + confidence.evidenceSemanticStrength;
+  const evidenceComponents =
+    `ep=${confidence.evidenceEpisodeStrength.toFixed(2)}` +
+    `+sem=${confidence.evidenceSemanticStrength.toFixed(2)}` +
+    (evidenceRaw > 1 ? `,raw=${evidenceRaw.toFixed(2)},clamped` : "");
+
   const fragments: string[] = [
     `overall=${confidence.overall.toFixed(2)}`,
-    `evidence=${confidence.evidenceStrength.toFixed(2)}`,
+    `evidence=${confidence.evidenceStrength.toFixed(2)}(${evidenceComponents})`,
     // Both ratios print with the fraction they came from. Their denominators
     // are neither `samples` nor each other: coverage divides by the retrieval
     // limit for this turn (which also capped the episode half of its own

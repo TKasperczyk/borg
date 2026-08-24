@@ -298,6 +298,8 @@ function createRetrievalConfidence(): RetrievalConfidence {
     coverageExpected: 1,
     diversitySources: 1,
     diversitySampleSize: 1,
+    evidenceEpisodeStrength: 0,
+    evidenceSemanticStrength: 0,
   };
 }
 
