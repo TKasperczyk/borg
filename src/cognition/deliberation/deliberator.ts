@@ -1224,6 +1224,7 @@ export class Deliberator {
       verificationQuery.length > 0 && context.reRetrieve !== undefined
         ? await context.reRetrieve(verificationQuery, { limit: 3 })
         : null;
+    const secondaryRetrievalReadAtMs = secondaryRetrieval === null ? null : this.clock.now();
 
     const shouldRenderAdditionalRetrieval =
       effectiveContext.turnOrigin !== "autonomous" || verificationQuery.length > 0;
@@ -1257,6 +1258,20 @@ export class Deliberator {
                       secondaryRetrieval,
                       retrievalContextBudget,
                       planRequestedVerificationMembershipTokenBudget,
+                      {
+                        rowsTotalReadAtMs: secondaryRetrievalReadAtMs!,
+                        currentTimeMs: baseSystemPromptOptions.nowMs ?? secondaryRetrievalReadAtMs!,
+                        onMembershipCarveOutOverflow: (overflow) => {
+                          console.error(
+                            "Plan-requested verification membership carve-out exceeds its token budget",
+                            {
+                              session_id: context.sessionId,
+                              turn_id: context.turnId ?? null,
+                              ...overflow,
+                            },
+                          );
+                        },
+                      },
                     ),
             },
           ]);

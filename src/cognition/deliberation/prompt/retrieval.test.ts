@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createEpisodeFixture,
@@ -11,11 +11,22 @@ import type {
   RetrievedEpisode,
   RetrievedSemantic,
 } from "../../../retrieval/index.js";
-import { publicMemoryDisclosureLabel } from "../../../retrieval/index.js";
+import {
+  publicMemoryDisclosureLabel,
+  unknownMemoryDisclosureLabel,
+} from "../../../retrieval/index.js";
 import { ManualClock } from "../../../util/clock.js";
 import { DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET } from "../constants.js";
 import {
+  PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_ERROR,
+  PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_MARKER,
+  PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_REQUIRED_TOKENS_ATTRIBUTE,
+  PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE,
   PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER,
+  PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ERROR_ATTRIBUTE,
+  PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER,
+  PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE,
+  PLAN_REQUESTED_VERIFICATION_ROWS_TOTAL_AS_OF_ATTRIBUTE,
   summarizeRetrievalConfidence,
   renderPlanRequestedVerificationNotCompleted,
   renderPlanRequestedVerificationRetrieval,
@@ -24,15 +35,22 @@ import {
   summarizeSemanticContext,
 } from "./retrieval.js";
 
-function verificationEvidence(id: string, text: string): EvidenceItem {
+function verificationEvidence(
+  id: string,
+  text: string,
+  overrides: Partial<EvidenceItem> = {},
+): EvidenceItem {
   return {
     id,
-    source: "episodic",
+    source: "episode",
     recallIntentId: "intent-verification",
     score: 0.8,
     text,
     matchedTerms: [],
-  } as unknown as EvidenceItem;
+    scoreBreakdown: {},
+    disclosureLabel: publicMemoryDisclosureLabel(),
+    ...overrides,
+  };
 }
 
 function makeRetrievalConfidence(
@@ -385,7 +403,11 @@ describe("plan-requested compact terminal retrieval", () => {
     const payload = `<verified attr="x">${'&<>"'.repeat(40)}</verified>`;
     const rendered = renderPlanRequestedVerificationRetrieval(
       {
-        evidence: [verificationEvidence("evidence:exact", payload)],
+        evidence: [
+          verificationEvidence("evidence:exact", payload, {
+            disclosureLabel: unknownMemoryDisclosureLabel(),
+          }),
+        ],
         episodes: [],
         semantic: {
           matched_node_ids: [],
@@ -413,6 +435,87 @@ describe("plan-requested compact terminal retrieval", () => {
     );
     expect(rendered).toContain("&lt;verified attr=\\&quot;x\\&quot;&gt;");
     expect(rendered).not.toContain("HEAD+TAIL EXCERPT");
+  });
+
+  it("stamps the exact membership total at read time with its prompt-clock offset", () => {
+    const rowsTotalReadAtMs = Date.UTC(2026, 7, 24, 16, 38, 0, 250);
+    const rendered = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: [verificationEvidence("evidence:dated", "dated payload")],
+        episodes: [],
+        semantic: {
+          matched_node_ids: [],
+          matched_nodes: [],
+          supports: [],
+          contradicts: [],
+          categories: [],
+          support_hits: [],
+          causal_hits: [],
+          contradiction_hits: [],
+          category_hits: [],
+        },
+        open_questions: [],
+      } as never,
+      2_000,
+      DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
+      {
+        rowsTotalReadAtMs,
+        currentTimeMs: rowsTotalReadAtMs - 2_500,
+      },
+    );
+
+    expect(rendered).toContain(
+      `${PLAN_REQUESTED_VERIFICATION_ROWS_TOTAL_AS_OF_ATTRIBUTE}="2026-08-24T16:38:00.250Z"`,
+    );
+    expect(rendered).toContain(
+      "Read at 2026-08-24T16:38:00.250Z, 2500ms after the current_time_ms at the top of this prompt",
+    );
+    expect(rendered).toContain("rows_total is exact as of that read, not as of now");
+  });
+
+  it.each([
+    "relationship_private",
+    "operator_private",
+    "self_private",
+    "sensitive",
+    "unknown",
+  ] as const)("treats disclosure_class=%s as a protected membership row", (disclosureClass) => {
+    const rendered = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: [
+          verificationEvidence(`evidence:${disclosureClass}`, "protected", {
+            disclosureLabel: {
+              disclosureClass,
+              originAudienceEntityIds: [],
+              privateToEntityIds: [],
+              publicToEntityIds: [],
+            },
+          }),
+        ],
+        episodes: [],
+        semantic: {
+          matched_node_ids: [],
+          matched_nodes: [],
+          supports: [],
+          contradicts: [],
+          categories: [],
+          support_hits: [],
+          causal_hits: [],
+          contradiction_hits: [],
+          category_hits: [],
+        },
+        open_questions: [],
+      } as never,
+      2_000,
+      0,
+    );
+
+    expect(rendered).toContain(
+      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ERROR_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_ERROR}"`,
+    );
+    expect(rendered).toContain(
+      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="1"`,
+    );
   });
 
   it("keeps fallback source handles even when unified evidence is also present", () => {
@@ -491,9 +594,21 @@ describe("plan-requested compact terminal retrieval", () => {
   it("fully enumerates the 300-row commitment and goal scale at the default budget", () => {
     const rendered = renderPlanRequestedVerificationRetrieval(
       {
-        evidence: Array.from({ length: 300 }, (_unused, index) =>
-          verificationEvidence(`evidence:${index}`, "z".repeat(40)),
-        ),
+        evidence: Array.from({ length: 300 }, (_unused, index) => {
+          const idSuffix = index.toString(36).padStart(16, "0");
+          const commitmentId = `cmt_${idSuffix}`;
+          return verificationEvidence(
+            `evidence_commitment_${commitmentId}_recall_known_term_0`,
+            "z".repeat(40),
+            {
+              source: "commitment",
+              provenance: { commitmentId: commitmentId as never },
+              disclosureLabel: unknownMemoryDisclosureLabel(),
+              commitment_enforcement_class: "advisory",
+              commitment_critical_domain: null,
+            },
+          );
+        }),
         episodes: [],
         semantic: {
           matched_node_ids: [],
@@ -512,14 +627,18 @@ describe("plan-requested compact terminal retrieval", () => {
     );
 
     const membershipTokens = Number(/membership_tokens="(\d+)"/.exec(rendered)?.[1]);
-    expect(membershipTokens).toBe(43_923);
+    expect(membershipTokens).toBe(54_450);
     expect(membershipTokens).toBeLessThan(
       DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
     );
     expect(rendered).toContain('complete_membership="true" rows_total="300"');
     expect(rendered.match(/<verification_source /g)).toHaveLength(300);
-    expect(rendered).toContain('handle="evidence:0"');
-    expect(rendered).toContain('handle="evidence:299"');
+    expect(rendered).toContain(
+      'handle="evidence_commitment_cmt_0000000000000000_recall_known_term_0"',
+    );
+    expect(rendered).toContain(
+      'handle="evidence_commitment_cmt_000000000000008b_recall_known_term_0"',
+    );
     expect(rendered).toContain("<omitted_count>0</omitted_count>");
   });
 
@@ -655,6 +774,154 @@ describe("plan-requested compact terminal retrieval", () => {
     );
     expect(rendered).toContain(
       "Payloads are priced against payload_target_tokens alone and never consume the membership budget; membership never consumes the payload budget",
+    );
+  });
+
+  it("enumerates structural carve-outs first while preserving both partition orders", () => {
+    const ordinaryA = verificationEvidence("evidence:ordinary-a", "ordinary A");
+    const criticalA = verificationEvidence("evidence:critical-a", "critical A", {
+      source: "commitment",
+      provenance: { commitmentId: "cmt_critical_a" as never },
+      commitment_enforcement_class: "critical",
+      commitment_critical_domain: "privacy",
+    });
+    const ordinaryB = verificationEvidence("evidence:ordinary-b", "ordinary B");
+    const restrictive = verificationEvidence("evidence:restrictive", "restrictive", {
+      disclosureLabel: unknownMemoryDisclosureLabel(),
+    });
+    const criticalB = verificationEvidence("evidence:critical-b", "critical B", {
+      source: "commitment",
+      provenance: { commitmentId: "cmt_critical_b" as never },
+      commitment_enforcement_class: "critical",
+      commitment_critical_domain: "audience_scope",
+    });
+    const semantic = {
+      matched_node_ids: [],
+      matched_nodes: [],
+      supports: [],
+      contradicts: [],
+      categories: [],
+      support_hits: [],
+      causal_hits: [],
+      contradiction_hits: [],
+      category_hits: [],
+    };
+    const protectedPlusFirstOrdinary = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: [criticalA, restrictive, criticalB, ordinaryA],
+        episodes: [],
+        semantic,
+        open_questions: [],
+      } as never,
+      2_000,
+      Number.MAX_SAFE_INTEGER,
+    );
+    const protectedPlusFirstOrdinaryTokens = Number(
+      /membership_tokens="(\d+)"/.exec(protectedPlusFirstOrdinary)?.[1],
+    );
+    const rendered = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: [ordinaryA, criticalA, ordinaryB, restrictive, criticalB],
+        episodes: [],
+        semantic,
+        open_questions: [],
+      } as never,
+      2_000,
+      protectedPlusFirstOrdinaryTokens,
+    );
+    const enumeratedHandles = [...rendered.matchAll(/<verification_source handle="([^"]+)"/g)].map(
+      (match) => match[1],
+    );
+
+    expect(enumeratedHandles).toEqual([
+      "evidence:critical-a",
+      "evidence:restrictive",
+      "evidence:critical-b",
+      "evidence:ordinary-a",
+    ]);
+    expect(rendered).toContain(
+      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER}"`,
+    );
+    expect(rendered).toContain(
+      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="3"`,
+    );
+    expect(rendered).toContain('commitment_enforcement_class="critical"');
+    expect(rendered).toContain('commitment_critical_domain="privacy"');
+    expect(rendered).toContain(`${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}="1"`);
+    expect(rendered).not.toContain('handle="evidence:ordinary-b"');
+    expect(rendered).toContain("The renderer performs no content-based selection or new ranking");
+  });
+
+  it("fails the whole check with exact counts when carve-out rows alone exceed budget", () => {
+    const critical = verificationEvidence("evidence:critical", "critical", {
+      source: "commitment",
+      provenance: { commitmentId: "cmt_critical" as never },
+      commitment_enforcement_class: "critical",
+      commitment_critical_domain: "privacy",
+    });
+    const restrictive = verificationEvidence("evidence:restrictive", "restrictive", {
+      disclosureLabel: unknownMemoryDisclosureLabel(),
+    });
+    const ordinary = verificationEvidence("evidence:ordinary", "ordinary");
+    const semantic = {
+      matched_node_ids: [],
+      matched_nodes: [],
+      supports: [],
+      contradicts: [],
+      categories: [],
+      support_hits: [],
+      causal_hits: [],
+      contradiction_hits: [],
+      category_hits: [],
+    };
+    const carveOutOnly = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: [critical, restrictive],
+        episodes: [],
+        semantic,
+        open_questions: [],
+      } as never,
+      2_000,
+      Number.MAX_SAFE_INTEGER,
+    );
+    const carveOutRequiredTokens = Number(/membership_tokens="(\d+)"/.exec(carveOutOnly)?.[1]);
+    const onMembershipCarveOutOverflow = vi.fn();
+    const rendered = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: [ordinary, critical, restrictive],
+        episodes: [],
+        semantic,
+        open_questions: [],
+      } as never,
+      2_000,
+      carveOutRequiredTokens - 1,
+      { onMembershipCarveOutOverflow },
+    );
+
+    expect(onMembershipCarveOutOverflow).toHaveBeenCalledWith({
+      rowsTotal: 3,
+      carveOutRowsTotal: 2,
+      carveOutRequiredTokens,
+      membershipTargetTokens: carveOutRequiredTokens - 1,
+    });
+    expect(rendered).toContain(
+      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ERROR_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_ERROR}"`,
+    );
+    expect(rendered).toContain(
+      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="2"`,
+    );
+    expect(rendered).toContain(
+      `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_REQUIRED_TOKENS_ATTRIBUTE}="${carveOutRequiredTokens}"`,
+    );
+    expect(rendered).toContain(`${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}="3"`);
+    expect(rendered).not.toContain("<verification_source ");
+    expect(rendered).toContain('payload_tokens_included="0"');
+    expect(rendered).toContain("<omitted_count>3</omitted_count>");
+    expect(rendered).toContain("<check_not_completed_count>3</check_not_completed_count>");
+    expect(rendered).toMatch(
+      new RegExp(
+        `<${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_MARKER}[^>]+/>\\n</plan_requested_verification_retrieval>$`,
+      ),
     );
   });
 

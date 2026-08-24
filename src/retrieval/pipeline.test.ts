@@ -62,6 +62,7 @@ import { RetrievalPipeline } from "./pipeline.js";
 import { RecallStateRepository } from "./recall-state.js";
 import { SELF_RECALL_SCOPE } from "./recall-context.js";
 import type { Episode } from "../memory/episodic/types.js";
+import { makeCommitmentRecord } from "../test-support/factories/index.js";
 
 class ScriptedEmbeddingClient implements EmbeddingClient {
   async embed(text: string): Promise<Float32Array> {
@@ -547,6 +548,47 @@ describe("retrieval pipeline", () => {
         reason: "embedding batch offline",
       }),
     );
+  });
+
+  it("carries critical commitment enforcement fields into retrieved evidence", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-critical-commitment-evidence-"));
+    const fixture = await openRetrievalFixture(tempDir);
+    const commitment = makeCommitmentRecord({
+      directive: "Keep Atlas privacy boundaries visible.",
+      enforcement_class: "critical",
+      critical_domain: "privacy",
+    });
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository: fixture.episodicRepository,
+      commitmentRepository: {
+        get: (id) => (id === commitment.id ? commitment : null),
+        list: () => [commitment],
+      },
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+    });
+
+    const result = await pipeline.searchWithContextForDisclosure("Atlas privacy", {
+      limit: 1,
+      entityTerms: ["Atlas"],
+    });
+    const commitmentEvidence = result.evidence.find(
+      (item) => item.provenance?.commitmentId === commitment.id,
+    );
+
+    expect(commitmentEvidence).toMatchObject({
+      source: "commitment",
+      commitment_enforcement_class: "critical",
+      commitment_critical_domain: "privacy",
+    });
   });
 
   it("retrieves image perception evidence and reattaches the source attachment for finalizer images", async () => {

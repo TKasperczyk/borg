@@ -7,10 +7,12 @@ import {
 import type { ImagePerceptionRepository, ImagePerceptionSearchHit } from "../attachments/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
-import type {
-  CommitmentRecord,
-  CommitmentRepository,
-  EntityRepository,
+import {
+  effectiveCommitmentCriticalDomain,
+  effectiveCommitmentEnforcementClass,
+  type CommitmentRecord,
+  type CommitmentRepository,
+  type EntityRepository,
 } from "../memory/commitments/index.js";
 import {
   isEpisodeVisibleToCapability,
@@ -1067,6 +1069,8 @@ export class RetrievalPipeline {
         provenance: 1,
       },
       disclosureLabel: commitmentMemoryDisclosureLabel(commitment),
+      commitment_enforcement_class: effectiveCommitmentEnforcementClass(commitment),
+      commitment_critical_domain: effectiveCommitmentCriticalDomain(commitment),
     };
   }
 
@@ -2811,6 +2815,8 @@ function commitmentToEvidence(
       vector,
     },
     disclosureLabel: commitmentMemoryDisclosureLabel(commitment),
+    commitment_enforcement_class: effectiveCommitmentEnforcementClass(commitment),
+    commitment_critical_domain: effectiveCommitmentCriticalDomain(commitment),
   };
 }
 

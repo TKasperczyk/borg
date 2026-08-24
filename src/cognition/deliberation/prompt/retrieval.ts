@@ -31,6 +31,23 @@ import type { ContradictionRoutingTier } from "../types.js";
 const LOW_RETRIEVAL_CONFIDENCE_THRESHOLD = 0.45;
 export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER =
   "membership_not_enumerated_budget";
+export const PLAN_REQUESTED_VERIFICATION_ROWS_TOTAL_AS_OF_ATTRIBUTE = "rows_total_as_of";
+export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE = "membership_order";
+export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER =
+  "structural_carve_out_first_then_retrieval_pipeline_order";
+export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ERROR_ATTRIBUTE = "membership_error";
+export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_ERROR =
+  "carve_out_exceeds_budget";
+export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_MARKER =
+  "membership_carve_out_overflow_error";
+export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE =
+  "membership_carve_out_rows_total";
+export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_REQUIRED_TOKENS_ATTRIBUTE =
+  "membership_carve_out_required_tokens";
+
+const VERIFICATION_COMMITMENT_ENFORCEMENT_CLASS_FIELD = "commitment_enforcement_class";
+const VERIFICATION_COMMITMENT_CRITICAL_DOMAIN_FIELD = "commitment_critical_domain";
+const VERIFICATION_DISCLOSURE_CLASS_FIELD = "disclosure_class";
 
 export type RetrievedEvidenceSummaryInput = {
   evidence?: readonly EvidenceItem[];
@@ -214,9 +231,29 @@ export function summarizeRetrievedEvidence(
 type VerificationRetrievalCandidate = {
   handle: string;
   sourceClass: "evidence" | "episode" | "semantic_node" | "semantic_edge" | "open_question";
-  disclosure: string;
+  disclosureLabel: MemoryDisclosureLabel;
   structuralFields: Record<string, string | number | boolean | null>;
   payload: unknown;
+};
+
+type IndexedVerificationRetrievalCandidate = {
+  candidate: VerificationRetrievalCandidate;
+  originalIndex: number;
+};
+
+export type PlanRequestedVerificationMembershipCarveOutOverflow = {
+  rowsTotal: number;
+  carveOutRowsTotal: number;
+  carveOutRequiredTokens: number;
+  membershipTargetTokens: number;
+};
+
+export type PlanRequestedVerificationRetrievalRenderOptions = {
+  rowsTotalReadAtMs?: number;
+  currentTimeMs?: number;
+  onMembershipCarveOutOverflow?: (
+    overflow: PlanRequestedVerificationMembershipCarveOutOverflow,
+  ) => void;
 };
 
 function verificationXmlAttribute(value: string): string {
@@ -231,7 +268,7 @@ function verificationDisclosure(label: MemoryDisclosureLabel | undefined): strin
   const exact = label ?? unknownMemoryDisclosureLabel();
   const list = (values: readonly string[]) => (values.length === 0 ? "none" : values.join(","));
   return [
-    `disclosure_class=${exact.disclosureClass}`,
+    `${VERIFICATION_DISCLOSURE_CLASS_FIELD}=${exact.disclosureClass}`,
     `origin_audience=${list(exact.originAudienceEntityIds)}`,
     `private-to=${list(exact.privateToEntityIds)}`,
     `public-to=${list(exact.publicToEntityIds)}`,
@@ -241,56 +278,69 @@ function verificationDisclosure(label: MemoryDisclosureLabel | undefined): strin
 function verificationEvidenceCandidates(
   evidence: readonly EvidenceItem[],
 ): VerificationRetrievalCandidate[] {
-  return evidence.map((item) => ({
-    handle: item.id,
-    sourceClass: "evidence",
-    disclosure: verificationDisclosure(item.disclosureLabel),
-    structuralFields: {
-      source: item.source,
-      recall_intent_id: item.recallIntentId,
-      score: item.score,
-      provenance_episode_id: item.provenance?.episodeId ?? null,
-      provenance_node_id: item.provenance?.nodeId ?? null,
-      provenance_edge_id: item.provenance?.edgeId ?? null,
-      provenance_commitment_id: item.provenance?.commitmentId ?? null,
-      provenance_open_question_id: item.provenance?.openQuestionId ?? null,
-      provenance_stream_ids: item.provenance?.streamIds?.join(",") ?? "none",
-      partial_source_visibility: item.partial_source_visibility === true,
-      source_visibility_fraction: item.source_visibility_fraction ?? null,
-    },
-    payload: {
-      text: item.text,
-      matched_terms: item.matchedTerms,
-      image_label: item.imageLabel ?? null,
-      image_origin_frame: item.imageOriginFrame ?? null,
-      image_unavailable_reason: item.imageUnavailableReason ?? null,
-    },
-  }));
+  return evidence.map((item) => {
+    const disclosureLabel = item.disclosureLabel ?? unknownMemoryDisclosureLabel();
+    return {
+      handle: item.id,
+      sourceClass: "evidence",
+      disclosureLabel,
+      structuralFields: {
+        source: item.source,
+        recall_intent_id: item.recallIntentId,
+        score: item.score,
+        provenance_episode_id: item.provenance?.episodeId ?? null,
+        provenance_node_id: item.provenance?.nodeId ?? null,
+        provenance_edge_id: item.provenance?.edgeId ?? null,
+        provenance_commitment_id: item.provenance?.commitmentId ?? null,
+        provenance_open_question_id: item.provenance?.openQuestionId ?? null,
+        provenance_stream_ids: item.provenance?.streamIds?.join(",") ?? "none",
+        partial_source_visibility: item.partial_source_visibility === true,
+        source_visibility_fraction: item.source_visibility_fraction ?? null,
+        ...(item.provenance?.commitmentId === undefined
+          ? {}
+          : {
+              [VERIFICATION_COMMITMENT_ENFORCEMENT_CLASS_FIELD]:
+                item.commitment_enforcement_class ?? null,
+              [VERIFICATION_COMMITMENT_CRITICAL_DOMAIN_FIELD]:
+                item.commitment_critical_domain ?? null,
+            }),
+      },
+      payload: {
+        text: item.text,
+        matched_terms: item.matchedTerms,
+        image_label: item.imageLabel ?? null,
+        image_origin_frame: item.imageOriginFrame ?? null,
+        image_unavailable_reason: item.imageUnavailableReason ?? null,
+      },
+    };
+  });
 }
 
 function verificationFallbackCandidates(
   input: Pick<RetrievedContext, "episodes" | "semantic" | "open_questions">,
 ): VerificationRetrievalCandidate[] {
-  const episodes: VerificationRetrievalCandidate[] = input.episodes.map((result) => ({
-    handle: result.episode.id,
-    sourceClass: "episode",
-    disclosure: verificationDisclosure(
-      result.disclosureLabel ?? memoryDisclosureLabelFromEpisodeAccess(result.episode),
-    ),
-    structuralFields: {
-      score: result.score,
-      source_stream_ids: result.episode.source_stream_ids.join(","),
-      start_time: result.episode.start_time,
-      end_time: result.episode.end_time,
-    },
-    payload: {
-      title: result.episode.title,
-      narrative: result.episode.narrative,
-      participants: result.episode.participants,
-      tags: result.episode.tags,
-      citations: result.citationChain.map((entry) => ({ id: entry.id, content: entry.content })),
-    },
-  }));
+  const episodes: VerificationRetrievalCandidate[] = input.episodes.map((result) => {
+    const disclosureLabel =
+      result.disclosureLabel ?? memoryDisclosureLabelFromEpisodeAccess(result.episode);
+    return {
+      handle: result.episode.id,
+      sourceClass: "episode",
+      disclosureLabel,
+      structuralFields: {
+        score: result.score,
+        source_stream_ids: result.episode.source_stream_ids.join(","),
+        start_time: result.episode.start_time,
+        end_time: result.episode.end_time,
+      },
+      payload: {
+        title: result.episode.title,
+        narrative: result.episode.narrative,
+        participants: result.episode.participants,
+        tags: result.episode.tags,
+        citations: result.citationChain.map((entry) => ({ id: entry.id, content: entry.content })),
+      },
+    };
+  });
   const hits = [
     ...input.semantic.support_hits,
     ...input.semantic.causal_hits,
@@ -304,59 +354,68 @@ function verificationFallbackCandidates(
     ]),
   );
   const edgesById = new Map(hits.flatMap((hit) => hit.edgePath.map((edge) => [edge.id, edge])));
-  const nodes: VerificationRetrievalCandidate[] = [...nodesById.values()].map((node) => ({
-    handle: node.id,
-    sourceClass: "semantic_node",
-    disclosure: verificationDisclosure(node.disclosureLabel),
-    structuralFields: {
-      kind: node.kind,
-      status: node.status,
-      confidence: node.confidence,
-      source_episode_ids: node.source_episode_ids.join(","),
-      partial_source_visibility: node.partial_source_visibility === true,
-      source_visibility_fraction: node.source_visibility_fraction ?? null,
-    },
-    payload: {
-      label: node.label,
-      description: node.description,
-      domain: node.domain,
-      aliases: node.aliases,
-      observation_metadata: node.observation_metadata,
-      under_review_reason: node.under_review?.reason ?? null,
-    },
-  }));
-  const edges: VerificationRetrievalCandidate[] = [...edgesById.values()].map((edge) => ({
-    handle: edge.id,
-    sourceClass: "semantic_edge",
-    disclosure: verificationDisclosure(edge.disclosureLabel),
-    structuralFields: {
-      from_node_id: edge.from_node_id,
-      to_node_id: edge.to_node_id,
-      relation: edge.relation,
-      confidence: edge.confidence,
-      evidence_episode_ids: edge.evidence_episode_ids.join(","),
-      valid_from: edge.valid_from,
-      valid_to: edge.valid_to,
-    },
-    payload: { invalidated_reason: edge.invalidated_reason },
-  }));
-  const openQuestions: VerificationRetrievalCandidate[] = input.open_questions.map((question) => ({
-    handle: question.id,
-    sourceClass: "open_question",
-    disclosure: verificationDisclosure(openQuestionMemoryDisclosureLabel(question)),
-    structuralFields: {
-      status: question.status,
-      urgency: question.urgency,
-      source: question.source,
-      audience_entity_id: question.audience_entity_id,
-      goal_id: question.goal_id,
-    },
-    payload: {
-      question: question.question,
-      resolution_note: question.resolution_note,
-      abandoned_reason: question.abandoned_reason,
-    },
-  }));
+  const nodes: VerificationRetrievalCandidate[] = [...nodesById.values()].map((node) => {
+    const disclosureLabel = node.disclosureLabel ?? unknownMemoryDisclosureLabel();
+    return {
+      handle: node.id,
+      sourceClass: "semantic_node",
+      disclosureLabel,
+      structuralFields: {
+        kind: node.kind,
+        status: node.status,
+        confidence: node.confidence,
+        source_episode_ids: node.source_episode_ids.join(","),
+        partial_source_visibility: node.partial_source_visibility === true,
+        source_visibility_fraction: node.source_visibility_fraction ?? null,
+      },
+      payload: {
+        label: node.label,
+        description: node.description,
+        domain: node.domain,
+        aliases: node.aliases,
+        observation_metadata: node.observation_metadata,
+        under_review_reason: node.under_review?.reason ?? null,
+      },
+    };
+  });
+  const edges: VerificationRetrievalCandidate[] = [...edgesById.values()].map((edge) => {
+    const disclosureLabel = edge.disclosureLabel ?? unknownMemoryDisclosureLabel();
+    return {
+      handle: edge.id,
+      sourceClass: "semantic_edge",
+      disclosureLabel,
+      structuralFields: {
+        from_node_id: edge.from_node_id,
+        to_node_id: edge.to_node_id,
+        relation: edge.relation,
+        confidence: edge.confidence,
+        evidence_episode_ids: edge.evidence_episode_ids.join(","),
+        valid_from: edge.valid_from,
+        valid_to: edge.valid_to,
+      },
+      payload: { invalidated_reason: edge.invalidated_reason },
+    };
+  });
+  const openQuestions: VerificationRetrievalCandidate[] = input.open_questions.map((question) => {
+    const disclosureLabel = openQuestionMemoryDisclosureLabel(question);
+    return {
+      handle: question.id,
+      sourceClass: "open_question",
+      disclosureLabel,
+      structuralFields: {
+        status: question.status,
+        urgency: question.urgency,
+        source: question.source,
+        audience_entity_id: question.audience_entity_id,
+        goal_id: question.goal_id,
+      },
+      payload: {
+        question: question.question,
+        resolution_note: question.resolution_note,
+        abandoned_reason: question.abandoned_reason,
+      },
+    };
+  });
   return [...episodes, ...nodes, ...edges, ...openQuestions];
 }
 
@@ -375,7 +434,7 @@ function renderVerificationRetrievalCandidate(
   return [
     `<verification_source handle="${verificationXmlAttribute(candidate.handle)}"`,
     `source_class="${candidate.sourceClass}"`,
-    `disclosure="${verificationXmlAttribute(candidate.disclosure)}"`,
+    `disclosure="${verificationXmlAttribute(verificationDisclosure(candidate.disclosureLabel))}"`,
     structural,
     `payload_status="${includePayload ? "exact" : "check_not_completed_budget"}"`,
     `payload_included_chars="${includePayload ? payloadJson.length : 0}"`,
@@ -384,33 +443,50 @@ function renderVerificationRetrievalCandidate(
   ].join(" ");
 }
 
+function isVerificationMembershipCarveOut(candidate: VerificationRetrievalCandidate): boolean {
+  const commitmentId = candidate.structuralFields.provenance_commitment_id;
+  const criticalDomain = candidate.structuralFields[VERIFICATION_COMMITMENT_CRITICAL_DOMAIN_FIELD];
+  const isCriticalCommitment =
+    typeof commitmentId === "string" &&
+    (candidate.structuralFields[VERIFICATION_COMMITMENT_ENFORCEMENT_CLASS_FIELD] === "critical" ||
+      typeof criticalDomain === "string");
+  return isCriticalCommitment || candidate.disclosureLabel.disclosureClass !== "public";
+}
+
 function renderVerificationRetrievalRows(
-  candidates: readonly VerificationRetrievalCandidate[],
+  candidates: readonly IndexedVerificationRetrievalCandidate[],
+  rowsTotal: number,
   included: ReadonlySet<number>,
   maxTokens: number,
   membershipMaxTokens: number,
-  enumeratedMembershipCount: number,
   membershipTokens: number,
+  carveOutRowsTotal: number,
+  rowsTotalReadAtMs: number,
+  currentTimeMs: number,
 ): string {
-  const rows = candidates
-    .slice(0, enumeratedMembershipCount)
-    .map((candidate, index) =>
-      renderVerificationRetrievalCandidate(candidate, included.has(index)),
-    );
-  const incompleteCount = rows.reduce(
-    (count, _row, index) => count + (included.has(index) ? 0 : 1),
+  const rows = candidates.map(({ candidate, originalIndex }) =>
+    renderVerificationRetrievalCandidate(candidate, included.has(originalIndex)),
+  );
+  const incompleteCount = candidates.reduce(
+    (count, { originalIndex }) => count + (included.has(originalIndex) ? 0 : 1),
     0,
   );
-  const membershipNotEnumeratedCount = candidates.length - enumeratedMembershipCount;
+  const membershipNotEnumeratedCount = rowsTotal - candidates.length;
   const payloadTokens = estimatePromptTokensFromLength(
-    candidates
-      .slice(0, enumeratedMembershipCount)
-      .reduce(
-        (sum, candidate, index) =>
-          included.has(index) ? sum + verificationPayloadJson(candidate).length : sum,
-        0,
-      ),
+    candidates.reduce(
+      (sum, { candidate, originalIndex }) =>
+        included.has(originalIndex) ? sum + verificationPayloadJson(candidate).length : sum,
+      0,
+    ),
   );
+  const rowsTotalAsOf = new Date(rowsTotalReadAtMs).toISOString();
+  const readOffsetFromCurrentTimeMs = Math.trunc(rowsTotalReadAtMs - currentTimeMs);
+  const relativeReadTime =
+    readOffsetFromCurrentTimeMs === 0
+      ? ""
+      : `, ${Math.abs(readOffsetFromCurrentTimeMs)}ms ${
+          readOffsetFromCurrentTimeMs > 0 ? "after" : "before"
+        } the current_time_ms at the top of this prompt`;
   const membershipBudgetMarkerAttribute =
     membershipNotEnumeratedCount === 0
       ? ""
@@ -422,12 +498,37 @@ function renderVerificationRetrievalRows(
           `  <${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}>${membershipNotEnumeratedCount}</${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}>`,
         ];
   return [
-    `<plan_requested_verification_retrieval complete_membership="${membershipNotEnumeratedCount === 0}" rows_total="${candidates.length}" payload_target_tokens="${maxTokens}" payload_tokens_included="${payloadTokens}" membership_target_tokens="${membershipMaxTokens}" membership_tokens="${membershipTokens}"${membershipBudgetMarkerAttribute} check_not_completed_count="${incompleteCount}">`,
-    `  <interpretation>This retrieval was requested by the advisory plan. Membership rows are priced against membership_target_tokens alone and emitted as an unchanged prefix of the existing retrieval candidate order. complete_membership=true means every one of rows_total handles and its structural fields is enumerated. When complete_membership=false, ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}=N and its same-named marker carry the exact un-enumerated remainder; omitted membership is never silent. A payload_status=exact row carries its complete payload with no excerpt; payload_status=check_not_completed_budget carries an enumerated handle and structural fields but zero payload, so that requested check is explicitly incomplete rather than silently truncated. Payloads are priced against payload_target_tokens alone and never consume the membership budget; membership never consumes the payload budget, so a check_not_completed_budget row means that row's own payload did not fit.</interpretation>`,
+    `<plan_requested_verification_retrieval complete_membership="${membershipNotEnumeratedCount === 0}" rows_total="${rowsTotal}" ${PLAN_REQUESTED_VERIFICATION_ROWS_TOTAL_AS_OF_ATTRIBUTE}="${rowsTotalAsOf}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER}" payload_target_tokens="${maxTokens}" payload_tokens_included="${payloadTokens}" membership_target_tokens="${membershipMaxTokens}" membership_tokens="${membershipTokens}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="${carveOutRowsTotal}"${membershipBudgetMarkerAttribute} check_not_completed_count="${incompleteCount}">`,
+    `  <interpretation>This retrieval was requested by the advisory plan. Read at ${rowsTotalAsOf}${relativeReadTime}: rows_total is exact as of that read, not as of now. Membership rows are priced against membership_target_tokens alone. ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE}=${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER} means commitment rows with ${VERIFICATION_COMMITMENT_ENFORCEMENT_CLASS_FIELD}=critical or a structural ${VERIFICATION_COMMITMENT_CRITICAL_DOMAIN_FIELD}, plus rows with ${VERIFICATION_DISCLOSURE_CLASS_FIELD} other than public, are emitted first. Both the carve-out and ordinary partitions preserve the existing retrieval-pipeline candidate order: ranked unified evidence, projected episodes, semantic nodes and edges in projected first-seen order, then projected open questions. The renderer performs no content-based selection or new ranking. complete_membership=true means every one of rows_total handles and its structural fields is enumerated. When complete_membership=false, ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}=N and its same-named marker carry the exact un-enumerated remainder; omitted membership is never silent. If the carve-out alone exceeds membership_target_tokens, ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ERROR_ATTRIBUTE}=${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_ERROR} replaces a partial list with an explicit failed-check state. A payload_status=exact row carries its complete payload with no excerpt; payload_status=check_not_completed_budget carries an enumerated handle and structural fields but zero payload, so that requested check is explicitly incomplete rather than silently truncated. Payloads are priced against payload_target_tokens alone and never consume the membership budget; membership never consumes the payload budget, so a check_not_completed_budget row means that row's own payload did not fit.</interpretation>`,
     ...rows.map((row) => `  ${row}`),
     ...membershipBudgetMarker,
     `  <omitted_count>${membershipNotEnumeratedCount}</omitted_count>`,
     `  <check_not_completed_count>${incompleteCount}</check_not_completed_count>`,
+    "</plan_requested_verification_retrieval>",
+  ].join("\n");
+}
+
+function renderVerificationMembershipCarveOutOverflow(
+  details: PlanRequestedVerificationMembershipCarveOutOverflow,
+  maxTokens: number,
+  rowsTotalReadAtMs: number,
+  currentTimeMs: number,
+): string {
+  const rowsTotalAsOf = new Date(rowsTotalReadAtMs).toISOString();
+  const readOffsetFromCurrentTimeMs = Math.trunc(rowsTotalReadAtMs - currentTimeMs);
+  const relativeReadTime =
+    readOffsetFromCurrentTimeMs === 0
+      ? ""
+      : `, ${Math.abs(readOffsetFromCurrentTimeMs)}ms ${
+          readOffsetFromCurrentTimeMs > 0 ? "after" : "before"
+        } the current_time_ms at the top of this prompt`;
+  return [
+    `<plan_requested_verification_retrieval complete_membership="false" rows_total="${details.rowsTotal}" ${PLAN_REQUESTED_VERIFICATION_ROWS_TOTAL_AS_OF_ATTRIBUTE}="${rowsTotalAsOf}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER}" payload_target_tokens="${maxTokens}" payload_tokens_included="0" membership_target_tokens="${details.membershipTargetTokens}" membership_tokens="0" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="${details.carveOutRowsTotal}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_REQUIRED_TOKENS_ATTRIBUTE}="${details.carveOutRequiredTokens}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ERROR_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_ERROR}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}="${details.rowsTotal}" check_not_completed_count="${details.rowsTotal}">`,
+    `  <interpretation>This retrieval was requested by the advisory plan. Read at ${rowsTotalAsOf}${relativeReadTime}: rows_total is exact as of that read, not as of now. The structurally protected membership rows alone require ${details.carveOutRequiredTokens} tokens against membership_target_tokens=${details.membershipTargetTokens}. Commitments with ${VERIFICATION_COMMITMENT_ENFORCEMENT_CLASS_FIELD}=critical or a structural ${VERIFICATION_COMMITMENT_CRITICAL_DOMAIN_FIELD}, and rows with ${VERIFICATION_DISCLOSURE_CLASS_FIELD} other than public, may not be shortened, so no verification_source rows or payloads are rendered; this verification check failed explicitly instead of presenting a partial carve-out as complete. ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER} carries the exact un-enumerated remainder. Payload pricing remains independent and was not attempted for this structurally failed membership check.</interpretation>`,
+    `  <${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}>${details.rowsTotal}</${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}>`,
+    `  <omitted_count>${details.rowsTotal}</omitted_count>`,
+    `  <check_not_completed_count>${details.rowsTotal}</check_not_completed_count>`,
+    `  <${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_MARKER} ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="${details.carveOutRowsTotal}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_REQUIRED_TOKENS_ATTRIBUTE}="${details.carveOutRequiredTokens}" membership_target_tokens="${details.membershipTargetTokens}" />`,
     "</plan_requested_verification_retrieval>",
   ].join("\n");
 }
@@ -437,21 +538,57 @@ function renderVerificationRetrievalRows(
  * an S2 plan's non-empty verification_steps. Payloads are all-or-nothing:
  * exact when they fit, otherwise an explicit incomplete-check row.
  *
- * Membership and payloads have independent quotas. Membership is an unchanged
- * prefix of the existing retrieval candidate order and reports the exact
- * un-enumerated remainder when its quota is exhausted. Payload admission keeps
- * scanning that same order so a small payload later in the enumerated prefix
- * can still fit after a large one is refused.
+ * Membership and payloads have independent quotas. Restrictive-disclosure and
+ * critical-commitment rows form a stable first partition that must fit whole;
+ * ordinary membership then takes an unchanged prefix of its stable partition.
+ * Payload admission keeps scanning the original retrieval candidate order so a
+ * small payload later in the rendered membership can still fit after a large
+ * one is refused.
  */
 export function renderPlanRequestedVerificationRetrieval(
   input: Pick<RetrievedContext, "evidence" | "episodes" | "semantic" | "open_questions">,
   maxTokens = DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET,
   membershipMaxTokens = DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
+  options: PlanRequestedVerificationRetrievalRenderOptions = {},
 ): string {
   const candidates = [
     ...verificationEvidenceCandidates(input.evidence),
     ...verificationFallbackCandidates(input),
   ];
+  const rowsTotalReadAtMs = options.rowsTotalReadAtMs ?? Date.now();
+  const currentTimeMs = options.currentTimeMs ?? rowsTotalReadAtMs;
+  const indexedCandidates = candidates.map((candidate, originalIndex) => ({
+    candidate,
+    originalIndex,
+  }));
+  const carveOutCandidates = indexedCandidates.filter(({ candidate }) =>
+    isVerificationMembershipCarveOut(candidate),
+  );
+  const ordinaryCandidates = indexedCandidates.filter(
+    ({ candidate }) => !isVerificationMembershipCarveOut(candidate),
+  );
+  const carveOutCharacters = carveOutCandidates.reduce(
+    (sum, { candidate }) => sum + renderVerificationRetrievalCandidate(candidate, false).length,
+    0,
+  );
+  const carveOutRequiredTokens = estimatePromptTokensFromLength(carveOutCharacters);
+
+  if (carveOutRequiredTokens > membershipMaxTokens) {
+    const overflow: PlanRequestedVerificationMembershipCarveOutOverflow = {
+      rowsTotal: candidates.length,
+      carveOutRowsTotal: carveOutCandidates.length,
+      carveOutRequiredTokens,
+      membershipTargetTokens: membershipMaxTokens,
+    };
+    options.onMembershipCarveOutOverflow?.(overflow);
+    return renderVerificationMembershipCarveOutOverflow(
+      overflow,
+      maxTokens,
+      rowsTotalReadAtMs,
+      currentTimeMs,
+    );
+  }
+
   const included = new Set<number>();
   let payloadTokens = 0;
 
@@ -464,25 +601,29 @@ export function renderPlanRequestedVerificationRetrieval(
     included.add(index);
   }
 
-  let membershipCharacters = 0;
-  let enumeratedMembershipCount = 0;
-  for (const candidate of candidates) {
+  let membershipCharacters = carveOutCharacters;
+  const enumeratedCandidates = [...carveOutCandidates];
+  for (const indexedCandidate of ordinaryCandidates) {
+    const { candidate } = indexedCandidate;
     const rowLength = renderVerificationRetrievalCandidate(candidate, false).length;
     const nextMembershipCharacters = membershipCharacters + rowLength;
     if (estimatePromptTokensFromLength(nextMembershipCharacters) > membershipMaxTokens) {
       break;
     }
     membershipCharacters = nextMembershipCharacters;
-    enumeratedMembershipCount += 1;
+    enumeratedCandidates.push(indexedCandidate);
   }
 
   return renderVerificationRetrievalRows(
-    candidates,
+    enumeratedCandidates,
+    candidates.length,
     included,
     maxTokens,
     membershipMaxTokens,
-    enumeratedMembershipCount,
     estimatePromptTokensFromLength(membershipCharacters),
+    carveOutCandidates.length,
+    rowsTotalReadAtMs,
+    currentTimeMs,
   );
 }
 
