@@ -158,12 +158,28 @@ export type AutonomySchedulerSourceDescription =
 
 export type AutonomySchedulerFleetBrakeDescription = {
   enabled: boolean;
+  /**
+   * Consecutive completed operational wakes recorded `silent`. Errored and
+   * busy-skipped wakes are transparent to it -- they neither increment nor
+   * reset -- so the streak is consecutive within the *completed operational*
+   * subsequence, not within the wake sequence, and can span any number of
+   * intervening wakes and any amount of wall-clock.
+   */
   empty_streak: number;
+  empty_streak_threshold: number;
   streak_anchor_ts: number | null;
   cooldown_until: number | null;
   error_streak: number;
+  error_streak_threshold: number;
   error_paused_until: number | null;
   bypass_count: number;
+  /**
+   * Outcome tally over the *budget* window, across both source categories.
+   * A different population from `empty_streak` above: it is time-bounded where
+   * the streak is not, counts contemplative wakes where the streak ignores
+   * them, and counts errors where the streak passes over them. It does not
+   * feed the streak and cannot be differenced into one.
+   */
   window_outcomes: Record<AutonomyWakeOutcome, number>;
 };
 

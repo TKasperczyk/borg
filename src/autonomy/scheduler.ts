@@ -741,10 +741,12 @@ export class AutonomyScheduler {
       fleet_brake: {
         enabled: this.fleetBrakeOptions.enabled,
         empty_streak: fleetBrakeMetadata.empty_streak,
+        empty_streak_threshold: this.fleetBrakeOptions.emptyStreakThreshold,
         streak_anchor_ts:
           fleetBrakeMetadata.streak_anchor_ts === 0 ? null : fleetBrakeMetadata.streak_anchor_ts,
         cooldown_until: fleetBrakeCooldownUntilMs(fleetBrakeMetadata, this.fleetBrakeOptions),
         error_streak: fleetBrakeMetadata.error_streak,
+        error_streak_threshold: this.fleetBrakeOptions.errorStreakThreshold,
         error_paused_until: fleetBrakeErrorPausedUntilMs(
           fleetBrakeMetadata,
           this.fleetBrakeOptions,

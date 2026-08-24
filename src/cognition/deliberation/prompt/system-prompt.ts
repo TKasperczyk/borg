@@ -1840,11 +1840,29 @@ export function summarizeAutonomySchedulerState(
       brakeGates.length === 0
         ? "not currently holding"
         : `holding -- ${brakeGates.join("; ")}, so wakes are refused even with budget headroom`
-    }. empty_streak=${brake.empty_streak} error_streak=${brake.error_streak} bypass_count=${
-      brake.bypass_count
-    } window_outcomes(headway=${brake.window_outcomes.headway} silent=${
-      brake.window_outcomes.silent
-    } error=${brake.window_outcomes.error} busy=${brake.window_outcomes.busy}).`,
+    }.`,
+  );
+
+  // The two counter groups below are different populations, and printing them
+  // adjacent without saying so invites differencing one into the other: the
+  // streak is untimed, operational-only, and blind to errors; window_outcomes
+  // is budget-windowed and counts every category and every outcome. Each group
+  // states its own scope so neither can be read as evidence about the other.
+  lines.push(
+    `empty_streak=${brake.empty_streak}/${brake.empty_streak_threshold} error_streak=${
+      brake.error_streak
+    }/${brake.error_streak_threshold} bypass_count=${brake.bypass_count}${
+      brake.streak_anchor_ts === null
+        ? ""
+        : ` current empty streak began ${new Date(brake.streak_anchor_ts).toISOString()}`
+    } -- empty_streak counts consecutive completed operational wakes that came back silent, with no time bound. Errored and busy-skipped wakes neither increment nor reset it, so it is consecutive within the completed-operational subsequence rather than within the wake sequence, and one streak can span any number of intervening wakes and any amount of wall-clock.`,
+  );
+  lines.push(
+    `Outcome tally over the budget window above, both source categories: headway=${
+      brake.window_outcomes.headway
+    } silent=${brake.window_outcomes.silent} error=${brake.window_outcomes.error} busy=${
+      brake.window_outcomes.busy
+    }. This is a different population from empty_streak -- time-bounded where the streak is not, contemplative wakes included where the streak ignores them, errors counted where the streak passes over them -- so no arithmetic over these four numbers yields the streak, and non-headway totals here are not the distance to the brake.`,
   );
 
   return lines.join("\n");

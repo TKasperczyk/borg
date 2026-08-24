@@ -84,9 +84,11 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
   fleetBrake: {
     enabled: true,
     empty_streak: 0,
+    empty_streak_threshold: 5,
     streak_anchor_ts: null,
     cooldown_until: null,
     error_streak: 0,
+    error_streak_threshold: 3,
     error_paused_until: null,
     bypass_count: 0,
     window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
