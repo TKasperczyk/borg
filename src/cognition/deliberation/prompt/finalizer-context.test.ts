@@ -779,8 +779,54 @@ describe("compact terminal finalizer context", () => {
       );
     }
     expect(turn).toContain("HEAD+TAIL EXCERPT");
+    // The observed-event and cross-session draws never filter by audience: they are
+    // global lists that the current participants rank, so draw_scope must not claim
+    // otherwise. With no roster the two relational draws are unfiltered as well.
+    for (const tag of [
+      "relational_slots",
+      "relational_standing",
+      "social_standing",
+      "cross_session_entries",
+    ]) {
+      expect(turn).toContain(`<${tag} complete="true" rows_total="1" draw_scope="global">`);
+    }
     expect(result.traceSummary.sections.standing_memory_indexes?.truncationCount).toBeGreaterThan(
       0,
+    );
+  });
+
+  it("names the relational draw as participant-scoped only when a roster constrains it", () => {
+    const alice = createEntityId();
+    const observed: EvidenceLedgerEntry = {
+      id: "observed-event",
+      source_type: "system_metadata",
+      session_scope: "prior_session",
+      actor: "memory",
+      trust_rank: 70,
+      text: "observed payload",
+    };
+    const turn = build(
+      context({
+        activeParticipants: [{ entityId: alice, displayName: "Alice", role: "audience" }],
+        evidenceLedger: {
+          ...ledger(),
+          audienceStanding: {
+            ...ledger().audienceStanding!,
+            observedEventIntrospectionEntries: [observed],
+          },
+        },
+      }),
+    ).system[3]!.text;
+    expect(turn).toContain(
+      '<relational_slots complete="true" rows_total="0" draw_scope="active_participant_subjects">',
+    );
+    expect(turn).toContain(
+      '<relational_standing complete="true" rows_total="0" draw_scope="active_participant_subjects">',
+    );
+    // A roster constrains the relational lists; it does not constrain these two.
+    expect(turn).toContain('<social_standing complete="true" rows_total="1" draw_scope="global">');
+    expect(turn).toContain(
+      '<cross_session_entries complete="true" rows_total="0" draw_scope="global">',
     );
   });
 

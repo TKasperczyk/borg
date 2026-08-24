@@ -407,12 +407,15 @@ function renderLedgerOnlyCommitmentRecord(entry: EvidenceLedgerEntry): {
 // about whether the retirement paths ever fire. complete="true" and rows_total are
 // likewise statements about the active set, not about the commitments table.
 //
-// rows_total here is also a union across TWO scopes, which is why it is not renamed to
-// either qualifier: canonical_rows is the global cognition draw, ledger_only_rows is
-// whatever the current-audience standing ledger carries and the global draw did not.
-// When ledger_only_rows is 0 the union coincides with the global total, but that is a
-// property of this turn's contents, not of the name -- so the two component counts, not
-// rows_total, are the numbers with a single well-defined scope.
+// rows_total here is NOT a union across two scopes: both arms come from the same array.
+// evidenceLedger.audienceStanding.commitmentEntries is a straight 1:1 map of the very
+// applicableCommitments this render already walks (buildCommitmentEntries in
+// evidence-ledger/audience-standing.ts), so every ledger entry matches a canonical row
+// by id and ledgerOnlyRendered is empty by construction. ledger_only_rows is a
+// divergence check on two inputs that are currently one, not a second population's
+// contribution -- reading 0 there says nothing about what an audience-scoped standing
+// ledger would add, because nothing in this path can add anything. rows_total therefore
+// equals canonical_rows on every turn, and neither is a second scope.
 function renderCommitments(context: DeliberationContext): RenderedTerminalSection {
   const commitments = context.applicableCommitments ?? [];
   const ledgerEntries = context.evidenceLedger?.audienceStanding?.commitmentEntries ?? [];
@@ -436,7 +439,7 @@ function renderCommitments(context: DeliberationContext): RenderedTerminalSectio
     "terminal_durable_global",
     [
       `<borg_terminal_commitments complete="true" rows_total="${rows.length}" canonical_rows="${canonicalRendered.length}" ledger_only_rows="${ledgerOnlyRendered.length}" advisory_excerpt_budget_chars="${TERMINAL_ADVISORY_COMMITMENT_EXCERPT_CHARS}">`,
-      "  <interpretation>One row per commitment: canonical records first, then any distinct standing-ledger-only records. The two arms are drawn at different scopes -- canonical_rows is the global draw, ledger_only_rows is what the current-audience standing ledger adds -- so rows_total is their union and is not a total at either scope; read canonical_rows for the global count. Critical directives are exact. A long advisory directive is a visibly annotated mechanical head+tail cut carrying both included and total source-character counts, never a clean-looking summary. Entity scope and disclosure are exact provenance and handling constraints, never audience-dependent recall selection. Relative ages are intentionally separated into the turn-local overlay keyed by id.</interpretation>",
+      "  <interpretation>One row per commitment: canonical records first, then any standing-ledger record that matched none of them by id. Both arms are built from the same active-commitment draw -- the standing ledger maps that draw one-for-one -- so ledger_only_rows is 0 by construction and rows_total always equals canonical_rows. A non-zero ledger_only_rows would mean the two inputs had diverged; a zero is not evidence that an audience-scoped ledger had nothing to add, because this path cannot receive such a contribution. Critical directives are exact. A long advisory directive is a visibly annotated mechanical head+tail cut carrying both included and total source-character counts, never a clean-looking summary. Entity scope and disclosure are exact provenance and handling constraints, never audience-dependent recall selection. Relative ages are intentionally separated into the turn-local overlay keyed by id.</interpretation>",
       "  <field_legend>Absolute record fields and the semantic field-set union of canonical scope/detail and standing-ledger rows are carried by each durable row plus its ID-keyed turn overlay. directive_exact, directive_excerpt_shape, directive_included_chars, and directive_total_chars state whether the directive is complete and, when cut, exactly how much source text is present.</field_legend>",
       ...rows.map((row) => `  ${row}`),
       "  <omitted_count>0</omitted_count>",
@@ -961,17 +964,30 @@ function renderCompleteStandingMemoryIndexes(
     standing?.recentLivedExperienceEntries ?? [],
     "cross_session_row",
   );
-  // Each group names the scope of its OWN draw, because the groups do not share one.
-  // relational_slots comes from context.relationalSlots (global recall); the other three
-  // come from evidenceLedger.audienceStanding, which is assembled for the current
-  // audience. An unqualified "total" is only checkable from the reading side when the
-  // rows happen to contain something visibly belonging elsewhere -- so the scope is
-  // stated in the attribute name rather than left to be inferred from the contents.
+  // Each group states the predicate of its OWN draw, because the groups do not share
+  // one -- and because a draw's scope is not recoverable from the rows it produced.
+  // Rows carrying foreign origin_audience labels are equally consistent with a global
+  // draw and with a scoped draw that kept foreign provenance: origin_audience records
+  // where a memory came from, which is a different axis from which assembly selected
+  // it. So the predicate is named here rather than left to be inferred from contents.
+  //
+  // relational_slots (context.relationalSlots) and relational_standing
+  // (audienceStanding.relationalEntries) both list per active participant, filtering on
+  // subject_entity_id, and fall back to an unfiltered list when the roster is empty --
+  // hence a computed value rather than a fixed one. social_standing is a global
+  // observed-event draw (listRecentGlobal + listRecurringGlobal); current participants
+  // add a by-speaker lane and a score boost, which widen and rank but never filter.
+  // cross_session_entries is the self's own cross-session activity in a time window;
+  // the current audience enters it only as a label on the return-silence row. Neither
+  // of the last two is audience-scoped, and saying they were was wrong in the direction
+  // that understates what the entity is holding.
+  const relationalDrawScope =
+    (context.activeParticipants ?? []).length === 0 ? "global" : "active_participant_subjects";
   const groups = [
-    { tag: "relational_slots", rows: relationalSlots.rows, audienceScoped: false },
-    { tag: "relational_standing", rows: relationalStanding.rows, audienceScoped: true },
-    { tag: "social_standing", rows: socialStanding.rows, audienceScoped: true },
-    { tag: "cross_session_entries", rows: crossSession.rows, audienceScoped: true },
+    { tag: "relational_slots", rows: relationalSlots.rows, drawScope: relationalDrawScope },
+    { tag: "relational_standing", rows: relationalStanding.rows, drawScope: relationalDrawScope },
+    { tag: "social_standing", rows: socialStanding.rows, drawScope: "global" },
+    { tag: "cross_session_entries", rows: crossSession.rows, drawScope: "global" },
   ];
   const rowCount = groups.reduce((sum, group) => sum + group.rows.length, 0);
   return terminalSection(
@@ -979,11 +995,10 @@ function renderCompleteStandingMemoryIndexes(
     "terminal_turn_context",
     [
       `<borg_terminal_standing_memory_indexes rows_total_across_groups="${rowCount}" standing_cadence_due="${standing?.renderRecentLivedExperience === true}">`,
-      "  <interpretation>Complete membership indexes for relational slots, relational standing, social/observed-event memory, and cross-session lived entries. The groups are drawn at different scopes and each states its own: relational_slots is the global relational draw, while relational_standing, social_standing, and cross_session_entries are assembled for the current audience. rows_total_across_groups is their sum and is therefore not a total at any single scope. Payload fields are mechanical head+tail excerpts; an excerpt is never a summary. Disclosure labels survive on every row and govern mention, not recall.</interpretation>",
+      "  <interpretation>Complete membership indexes for relational slots, relational standing, social/observed-event memory, and cross-session lived entries. The groups are drawn by different predicates, so each carries draw_scope naming its own: active_participant_subjects means the draw filtered on subject_entity_id against the current roster; global means it did not filter by audience, participant, or session at all. Scope is not inferable from the rows -- a row whose origin_audience is elsewhere is consistent with either -- so read draw_scope, not the contents. Where draw_scope is global, the current audience may still rank or annotate; ranking is never a filter. rows_total is per group and rows_total_across_groups is their sum, which is therefore not a total at any single scope. Payload fields are mechanical head+tail excerpts; an excerpt is never a summary. Disclosure labels survive on every row and govern mention, not recall.</interpretation>",
       ...groups.flatMap((group) => {
-        const suffix = group.audienceScoped ? "_for_current_audience" : "";
         return [
-          `  <${group.tag} complete${suffix}="true" rows_total${suffix}="${group.rows.length}">`,
+          `  <${group.tag} complete="true" rows_total="${group.rows.length}" draw_scope="${group.drawScope}">`,
           ...group.rows.map((row) => `    ${row}`),
           "    <omitted_count>0</omitted_count>",
           `  </${group.tag}>`,
