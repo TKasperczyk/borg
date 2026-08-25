@@ -2700,6 +2700,7 @@ describe("buildBaseSystemPrompt", () => {
       expected:
         "next tick was due 12000ms before that read and had not fired, so the loop is behind by that much; next_tick_at floors forward and reports 2023-11-14T22:12:51.000Z, which is the read clock, not a scheduled time.",
       absent: "next tick 2023-11-14T22:12:51.000Z (",
+      closesAgainstLag: false,
     },
     {
       // Not floored, but the header clock has since passed it. This is the case that used to print
@@ -2710,6 +2711,7 @@ describe("buildBaseSystemPrompt", () => {
       expected:
         "next tick 2023-11-14T22:13:00.000Z, 9000ms after that read, and 20000ms before the current_time_ms at the top of this prompt -- it was still ahead as of the read and may have fired inside the lag since.",
       absent: "next tick 2023-11-14T22:13:00.000Z (",
+      closesAgainstLag: true,
     },
     {
       name: "ahead of both clocks",
@@ -2718,10 +2720,11 @@ describe("buildBaseSystemPrompt", () => {
       expected:
         "next tick 2023-11-14T22:13:51.000Z, 60000ms after that read, and 31000ms after the current_time_ms at the top of this prompt -- still ahead on both clocks.",
       absent: "floors forward",
+      closesAgainstLag: true,
     },
   ])(
     "states the next tick against the read and the header clock ($name)",
-    ({ scheduledTickAt, nextTickAt, expected, absent }) => {
+    ({ scheduledTickAt, nextTickAt, expected, absent, closesAgainstLag }) => {
       const observedAt = NOW_MS - 29_000;
       const prompt = buildBaseSystemPrompt(
         makeContext({
@@ -2769,6 +2772,37 @@ describe("buildBaseSystemPrompt", () => {
       // header clock while the line above claimed the read, which is how a tick still ahead of the
       // read printed as already past.
       expect(block).not.toContain(absent);
+
+      // The three offsets this block prints -- the read-to-header lag on the "Read at" line, and
+      // the tick's offset against each of those two clocks -- are three differences of the same
+      // three stamps, so (tick - read) + (header - tick) telescopes to (header - read) exactly.
+      // That makes the lag closeable from the rendered text alone, which is the only consistency
+      // check the block offers a reader who cannot open this file. It is an identity only while all
+      // three keep deriving from the same two clock reads: the basis defect c5bb35e8 fixed -- the
+      // lag measured from the retrieval phase's start stamp rather than the scheduler's own read --
+      // broke it silently, on the one line whose whole job is to name the basis. Pinned as a
+      // relation rather than as literals so a future basis change fails here and not on the page.
+      const lagMs = Number(
+        /, (\d+)ms before the current_time_ms at the top of this prompt: every count/.exec(
+          block,
+        )?.[1],
+      );
+      expect(lagMs).toBe(29_000);
+      const afterRead = /next tick [^,]+, (\d+)ms after that read/.exec(block);
+      const againstHeader =
+        /, and (\d+)ms (before|after) the current_time_ms at the top of this prompt --/.exec(block);
+      if (!closesAgainstLag) {
+        // The floored branch prints the overdue amount in place of the pair, so there is nothing to
+        // close: on that page the reader has no source-free check on this block at all.
+        expect(afterRead).toBeNull();
+        expect(againstHeader).toBeNull();
+        return;
+      }
+      const headerMinusTick =
+        againstHeader?.[2] === "before"
+          ? Number(againstHeader[1])
+          : -Number(againstHeader?.[1] ?? Number.NaN);
+      expect(Number(afterRead?.[1] ?? Number.NaN) + headerMinusTick).toBe(lagMs);
     },
   );
 
