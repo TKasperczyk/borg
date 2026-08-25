@@ -643,14 +643,26 @@ function actionThreadSummaryDetails(
   return `threads=${threads.length} records=${recordCount} states=${stateSummary} disclosure_label=${renderMemoryDisclosureLabelForModel(disclosureLabel)} recent_samples=${samples}`;
 }
 
-export function renderOlderActionThreadsSummary(
-  groups: readonly OlderActionThreadSummaryGroup[],
-): string {
+export function renderOlderActionThreadsSummary(input: {
+  groups: readonly OlderActionThreadSummaryGroup[];
+  consideredRecordCount: number;
+  sourceRecordLimit: number;
+  salienceDroppedThreadCount: number;
+}): string {
+  const { groups } = input;
   const olderThreads = groups.flatMap((group) => group.threads);
   const olderRecordCount = olderThreads.reduce((count, thread) => count + thread.records.length, 0);
+  // The omitted-thread counts describe the render pool only. Two populations never enter it:
+  // threads whose salience class resolved to null, and records below the source draw floor
+  // (never counted, because the draw stops at the limit). Naming both keeps "omitted" from
+  // reading as a complete accounting of everything this section did not show.
+  const drawSaturated = input.consideredRecordCount >= input.sourceRecordLimit;
 
   return [
     `Older action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}.`,
+    `Not counted above: salience_dropped_threads=${input.salienceDroppedThreadCount}, records_below_draw_floor=${
+      drawSaturated ? "unknown_count" : "0"
+    } (records_considered=${input.consideredRecordCount}, source_record_limit=${input.sourceRecordLimit}, draw_saturated=${drawSaturated ? "yes" : "no"}).`,
     ...groups.map(
       (group) =>
         `- audience_scope=${group.audienceScope} salience_class=${group.salienceClass} ${actionThreadSummaryDetails(group.threads, group.disclosureLabel)}`,

@@ -3630,8 +3630,10 @@ describe("EvidenceLedgerBuilder", () => {
 
     // The out-of-window terminal thread is neither rendered nor summarized: a null salience
     // class removes it from the pool before the older-thread summary is built, so "omitted"
-    // means "omitted from the render", not "omitted from consideration".
+    // means "omitted from the render", not "omitted from consideration". The count of what
+    // left that way is stated, so the omitted counts cannot read as the whole remainder.
     expect(summary?.text).not.toContain("completed=");
+    expect(summary?.text).toContain("salience_dropped_threads=1");
     expect(
       actionEntries.some((entry) => String(entry.text).includes("Closed long before this turn")),
     ).toBe(false);
@@ -4025,8 +4027,10 @@ describe("EvidenceLedgerBuilder", () => {
     expect(globalLine).toContain("disclosure_label=disclosure_class=unknown");
     expect(globalLine).not.toContain(alice);
 
+    // Budget covers the head lines (omitted counts + uncounted-population bounds) plus both
+    // group labels, and still cuts inside the second group's samples.
     const compacted = compactEvidenceLedger(ledger, {
-      maxEntryTextTokens: 195,
+      maxEntryTextTokens: 235,
     });
     const compactedSummaryText =
       compacted.ledger.sections
@@ -4055,6 +4059,11 @@ describe("EvidenceLedgerBuilder", () => {
     }
 
     expect(compactedSummaryText).toContain("Alice-private omitted Borg action");
+    // The uncounted-population bounds sit above the group detail, so truncation never leaves
+    // the omitted counts reading as a complete accounting of what the section withheld.
+    expect(compactedSummaryText).toContain(
+      "Not counted above: salience_dropped_threads=0, records_below_draw_floor=0",
+    );
     expect(compactedSummaryText).toContain(
       "disclosure_label=disclosure_class=unknown private-to=unknown; I can use this internally; I do not disclose it to the current audience unless authorized",
     );

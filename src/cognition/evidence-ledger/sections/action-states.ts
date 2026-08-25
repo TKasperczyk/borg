@@ -154,8 +154,13 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
   const olderThreads = orderActionThreadsBySalience(
     threadsWithSalience.filter((thread) => !renderedIds.has(thread.id)),
   );
+  const salienceDroppedThreadCount = threads.length - threadsWithSalience.length;
+  const drawSaturated = actionCandidates.length >= sourceRecordLimit;
 
-  if (olderThreads.length === 0) {
+  // Absent must not be the only way to say "nothing left over": a saturated draw or a
+  // salience-dropped thread is still material this section did not show, so the entry is
+  // emitted whenever any of the three populations is non-empty, including in the negative.
+  if (olderThreads.length === 0 && salienceDroppedThreadCount === 0 && !drawSaturated) {
     return;
   }
 
@@ -202,7 +207,12 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
     session_scope: "global",
     actor: "system",
     trust_rank: ACTION_TRUST_RANK,
-    text: renderOlderActionThreadsSummary(summaryGroups),
+    text: renderOlderActionThreadsSummary({
+      groups: summaryGroups,
+      consideredRecordCount: actionCandidates.length,
+      sourceRecordLimit,
+      salienceDroppedThreadCount,
+    }),
     value: "older_action_threads",
     state: "omitted",
     taint: "none",
