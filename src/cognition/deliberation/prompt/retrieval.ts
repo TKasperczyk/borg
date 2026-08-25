@@ -2,6 +2,7 @@
 import type { SemanticNode } from "../../../memory/semantic/index.js";
 import { openQuestionMemoryDisclosureLabel } from "../../../memory/common/disclosure-serializers.js";
 import {
+  EPISODE_EVIDENCE_STRENGTH_BOUND,
   SEMANTIC_EVIDENCE_STRENGTH_SCALE,
   memoryDisclosureLabelFromEpisodeAccess,
   renderMemoryDisclosureLabelForModel,
@@ -90,12 +91,16 @@ export function summarizeRetrievalConfidence(
   // `ep` is a mean of clamped saliences, so its bound is 1.00 -- the same bound
   // as the field it feeds. `sem` is a fixed scale times a sigmoid that saturates
   // once a few supported matches exist, so its bound is that scale and it sits
-  // on it most turns. Print `sem` against that bound: it is what lets a reader
-  // see the addend is pinned rather than measured, and derive the threshold
-  // (`ep >= 1 - sem`) past which the whole field stops discriminating.
+  // on it most turns. Print BOTH against their bounds: the bound is what lets a
+  // reader see whether an addend is pinned rather than measured, and derive the
+  // threshold (`ep >= 1 - sem`) past which the whole field stops discriminating.
+  // Printing one bound and not the other is the asymmetry this comment was
+  // written to fix, one term over: three bounded terms beside one bare one argue
+  // by silence that the bare one has no ceiling.
   const evidenceRaw = confidence.evidenceEpisodeStrength + confidence.evidenceSemanticStrength;
   const evidenceComponents =
     `ep=${confidence.evidenceEpisodeStrength.toFixed(2)}` +
+    `/${EPISODE_EVIDENCE_STRENGTH_BOUND.toFixed(2)}` +
     `+sem=${confidence.evidenceSemanticStrength.toFixed(2)}` +
     `/${SEMANTIC_EVIDENCE_STRENGTH_SCALE.toFixed(2)}` +
     (evidenceRaw > 1 ? `,raw=${evidenceRaw.toFixed(2)},clamped` : "");

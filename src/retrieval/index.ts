@@ -23,6 +23,7 @@ export {
 } from "./recall-state.js";
 export {
   computeRetrievalConfidence,
+  EPISODE_EVIDENCE_STRENGTH_BOUND,
   SEMANTIC_EVIDENCE_STRENGTH_SCALE,
   type ComputeRetrievalConfidenceInput,
   type RetrievalConfidence,

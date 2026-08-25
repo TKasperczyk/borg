@@ -79,6 +79,14 @@ export const SEMANTIC_EVIDENCE_STRENGTH_SCALE = 0.3;
 // Tunes the confidence modulation floor before coverage and diversity are applied.
 const CONFIDENCE_MODULATION_BASE = 0.7;
 
+// The episode addend's hard ceiling. It is a mean of clamped saliences, so
+// `clamp01` is what bounds it, and this is the value `clamp01` saturates at --
+// exported for the same reason as the semantic scale above, and defined as the
+// clamp's own ceiling so the printed bound cannot drift from the computation.
+// A bare `ep=0.72` beside three terms that all print against a bound argues by
+// silence that this one has none.
+export const EPISODE_EVIDENCE_STRENGTH_BOUND = 1;
+
 // Tunes coverage's contribution to confidence modulation.
 const CONFIDENCE_COVERAGE_MODULATION_WEIGHT = 0.2;
 
