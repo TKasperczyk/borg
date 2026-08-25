@@ -55,6 +55,9 @@ disclosure: disclosure_class=self_private private-to=unknown; I can use this int
 
 <borg_working_state>
 Working memory: entities=rollout, backend debt; mood=0.30/0.40
+Both fields above were extracted this turn from one text: this wake's own trigger context -- my prior thought plus the wake payload, text I produced rather than text that arrived. They are replaced wholesale every turn, never merged with the last one.
+entities= is therefore a list of terms the extractor found in that text. A term is on it because it was in the input -- not because I know it, hold it, or have checked it, and not because it ranks above the others. Something I do know is absent unless that text named it, and a term dropping off next turn carries no information.
+mood= is not a reading of this turn on this origin: the value shown is the one already in working memory, an EMA blend (weight 0.3 on each incoming reading) over earlier undegraded user turns in this session. It measures nothing in the text above.
 <pending_actions>
 These are unresolved operational follow-ups, not facts about the user.
 I do not treat them as authoritative claims about identity, relationships, or biography.

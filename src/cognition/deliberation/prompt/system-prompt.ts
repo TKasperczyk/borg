@@ -1123,7 +1123,7 @@ function buildUntrustedBasePromptSections(
     },
     {
       tag: "borg_working_state",
-      content: summarizeWorkingMemory(context.workingMemory),
+      content: summarizeWorkingMemory(context.workingMemory, context.turnOrigin),
     },
     {
       tag: "borg_recent_completed_actions",
@@ -2200,7 +2200,47 @@ function summarizeRelationalSlotConstraints(
   ].join("\n");
 }
 
-function summarizeWorkingMemory(workingMemory: WorkingMemory): string {
+// Both fields on the working-state line are single-turn readouts of ONE text,
+// and which text that was is decided by turn origin in
+// `cognitionInputForTurnInput` (lifecycle/turn-phase-coordinator.ts): the
+// inbound batch on a user turn, the wake trigger context on an autonomous one,
+// the directed-outbound instruction on a directed_outbound one. That
+// discriminator exists upstream and used to die here -- the rendered line was
+// byte-identical whether a term arrived inside someone else's message or came
+// out of the being's own previous thought, so a term imported seconds ago read
+// exactly like held knowledge. Name the window on the line instead of leaving
+// it to be inferred from the terms.
+function workingStateInputWindow(turnOrigin: DeliberationContext["turnOrigin"]): string {
+  if (turnOrigin === "autonomous") {
+    return "this wake's own trigger context -- my prior thought plus the wake payload, text I produced rather than text that arrived";
+  }
+
+  if (turnOrigin === "directed_outbound") {
+    return "the directed-outbound instruction that opened this turn -- host-authored text, not a message from the audience";
+  }
+
+  return "the inbound message batch that arrived this turn -- the sender's words, not mine";
+}
+
+function workingStateMoodProvenance(turnOrigin: DeliberationContext["turnOrigin"]): string {
+  // The mood slot holds two different quantities depending on origin
+  // (perception/gateway.ts): the raw classifier reading on an undegraded user
+  // turn, and otherwise whatever was already in working memory -- which
+  // reflection last wrote as an EMA blend (turn-reflection-coordinator.ts,
+  // incomingWeight 0.3), and only on undegraded user turns. Rendered as bare
+  // V/A the two are indistinguishable, and a degraded classifier renders as
+  // stillness rather than as a gap.
+  if (turnOrigin === "autonomous" || turnOrigin === "directed_outbound") {
+    return "mood= is not a reading of this turn on this origin: the value shown is the one already in working memory, an EMA blend (weight 0.3 on each incoming reading) over earlier undegraded user turns in this session. It measures nothing in the text above.";
+  }
+
+  return "mood= scores that text from its author's perspective -- on this origin the sender's affect, not mine. If the affective classifier failed this turn, the previous value is carried forward instead and renders identically; the discriminator for that is outside this prompt.";
+}
+
+function summarizeWorkingMemory(
+  workingMemory: WorkingMemory,
+  turnOrigin: DeliberationContext["turnOrigin"] = undefined,
+): string {
   // Phase E: working memory no longer caches raw agent self-talk
   // (recent_thoughts) or transient planner scratchpad. Recent dialogue
   // reaches cognition via the recency lane (Phase A); persistent thoughts
@@ -2212,6 +2252,10 @@ function summarizeWorkingMemory(workingMemory: WorkingMemory): string {
   // The head of that list used to be rendered separately as `focus=`, which
   // named an ordering artifact as if it were a ranked, persistent field and
   // restated `entities[0]` on the same line. Render the list only.
+  // The record cannot carry per-term provenance -- `hot_entities` is
+  // `z.array(z.string())`, bare strings with no field to hang a marker on --
+  // so what gets named here is the window every term came through, which is
+  // the part that actually varies by turn.
   const mood = workingMemory.mood;
   const lines = [
     `Working memory: entities=${workingMemory.hot_entities.join(", ") || "none"}; mood=${
@@ -2219,6 +2263,9 @@ function summarizeWorkingMemory(workingMemory: WorkingMemory): string {
         ? "neutral"
         : `${mood.valence.toFixed(2)}/${mood.arousal.toFixed(2)}`
     }`,
+    `Both fields above were extracted this turn from one text: ${workingStateInputWindow(turnOrigin)}. They are replaced wholesale every turn, never merged with the last one.`,
+    "entities= is therefore a list of terms the extractor found in that text. A term is on it because it was in the input -- not because I know it, hold it, or have checked it, and not because it ranks above the others. Something I do know is absent unless that text named it, and a term dropping off next turn carries no information.",
+    workingStateMoodProvenance(turnOrigin),
   ];
 
   if (workingMemory.pending_actions.length > 0) {
