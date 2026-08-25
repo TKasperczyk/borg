@@ -261,7 +261,25 @@ function jsonRoundTrip<T>(value: T): T {
   return JSON.parse(text) as T;
 }
 
-/** Exact renderer closure minus repositories, callbacks, raw user payloads, and image bytes. */
+// Scoring-side payloads no capture consumer reads: nothing rendered into a
+// prompt surface and nothing in replay/judging touches them, while a single
+// 4096-dim vector serializes to ~124KB and dominated capture size.
+const CAPTURE_EXCLUDED_PAYLOAD_KEYS = new Set(["embedding"]);
+
+function stripCaptureExcludedPayloadKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripCaptureExcludedPayloadKeys);
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (CAPTURE_EXCLUDED_PAYLOAD_KEYS.has(key)) continue;
+      out[key] = stripCaptureExcludedPayloadKeys(entry);
+    }
+    return out;
+  }
+  return value;
+}
+
+/** Exact renderer closure minus repositories, callbacks, raw user payloads, image bytes, and embedding vectors. */
 function projectFinalizerContext(context: DeliberationContext): Record<string, unknown> {
   const {
     entityRepository: _entityRepository,
@@ -272,17 +290,19 @@ function projectFinalizerContext(context: DeliberationContext): Record<string, u
     perception,
     ...serializable
   } = context;
-  return jsonRoundTrip({
-    ...serializable,
-    perception: {
-      mode: perception.mode,
-      affectiveSignal: {
-        valence: perception.affectiveSignal.valence,
-        arousal: perception.affectiveSignal.arousal,
-        dominant_emotion: perception.affectiveSignal.dominant_emotion,
+  return stripCaptureExcludedPayloadKeys(
+    jsonRoundTrip({
+      ...serializable,
+      perception: {
+        mode: perception.mode,
+        affectiveSignal: {
+          valence: perception.affectiveSignal.valence,
+          arousal: perception.affectiveSignal.arousal,
+          dominant_emotion: perception.affectiveSignal.dominant_emotion,
+        },
       },
-    },
-  }) as Record<string, unknown>;
+    }),
+  ) as Record<string, unknown>;
 }
 
 function imageAttachmentIds(request: LLMConverseOptions | null): AttachmentId[] {

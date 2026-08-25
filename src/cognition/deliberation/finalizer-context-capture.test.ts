@@ -55,6 +55,39 @@ function context(): DeliberationContext {
       temporalCue: { kind: "UNUSED_TEMPORAL_PAYLOAD" } as never,
     },
     retrievalResult: [],
+    retrievedSemantic: {
+      matched_node_ids: ["semn_capture_a"],
+      matched_nodes: [
+        {
+          id: "semn_capture_a",
+          label: "CAPTURED_NODE_LABEL",
+          description: "A capture fixture node.",
+          confidence: 0.7,
+          source_episode_ids: [],
+          embedding: { 0: 0.125, 1: -0.5 },
+        },
+      ],
+      supports: [],
+      contradicts: [],
+      categories: [],
+      support_hits: [
+        {
+          root_node_id: "semn_capture_a",
+          edgePath: [],
+          node: {
+            id: "semn_capture_b",
+            label: "HIT_NODE_LABEL",
+            description: "A capture fixture hit node.",
+            confidence: 0.7,
+            source_episode_ids: [],
+            embedding: { 0: 0.25 },
+          },
+        },
+      ],
+      causal_hits: [],
+      contradiction_hits: [],
+      category_hits: [],
+    } as never,
     workingMemory: {
       session_id: DEFAULT_SESSION_ID,
       turn_counter: 1,
@@ -282,6 +315,9 @@ describe("finalizer context capture and replay", () => {
     expect(serialized).not.toContain("UNUSED_PERCEPTION_ENTITY");
     expect(serialized).not.toContain("UNUSED_TEMPORAL_PAYLOAD");
     expect(serialized).not.toContain("unused raw user payload");
+    expect(serialized).not.toContain('"embedding"');
+    expect(serialized).toContain("CAPTURED_NODE_LABEL");
+    expect(serialized).toContain("HIT_NODE_LABEL");
     expect(parsed.evidence_ledger).toEqual(context().evidenceLedger);
   });
 
