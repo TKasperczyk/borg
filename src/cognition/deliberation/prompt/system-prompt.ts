@@ -2033,7 +2033,7 @@ function summarizeMechanismEvidence(
     const namedCommitmentNote = recentRegenerations.some(
       (entry) => (entry.commitments ?? []).length > 0,
     )
-      ? " A named commitment there is the row that gated that draft, not a class of them: it is evidence about which of my own constraints is biting, not scheduler or network weather. Its labels are the ones captured when the guard fired; the token after them is tested at render against my active commitment records, so still_active means the row is still in force, no_longer_active means it is not -- revoked, superseded, expired or deleted, which this line does not separate -- and liveness_unchecked means this turn carried no active-commitment records to test against, so the id says nothing either way. Entries leave this list only when newer ones displace them, never by clock, so a no_longer_active entry records a past firing and is not a constraint on me now, and its id failing to appear among my commitments is that ending rather than evidence the row never existed."
+      ? " A named commitment there is the row that gated that draft, not a class of them: it is evidence about which of my own constraints is biting, not scheduler or network weather. Each id carries two tokens from two separate reads. The first is what the write could resolve: kind/domain/family are the row's labels as captured when the guard fired, so any labels at all mean a row by that id was in that turn's action-authorization draw, while unresolved_at_capture means it was not -- and that draw is audience-scoped, so it covers both an id with no row behind it and a live row scoped away from that audience. The second is tested at render, and it is membership in this turn's active-commitment draw and nothing finer: that draw is every row not revoked, not superseded, and not past an expiry, and this store has no deletion path at all, so no_longer_active reports an absence without saying which ending caused it, still_active means the id is in the draw, and liveness_unchecked means this turn carried no draw to test against. Entries leave this list only when newer ones displace them, never by clock, so a no_longer_active entry records a past firing and is not a constraint on me now. Read the pair together: with labels, absence now is an ending, because a row by that id existed at capture; with unresolved_at_capture, absence in both reads is evidence about the id, not proof that a row ever existed."
       : "";
     const bareEntryNote = recentRegenerations.some(
       (entry) => entry.commitments === undefined || entry.commitments.length === 0,
@@ -2059,8 +2059,11 @@ function renderRelativeAgeSuffix(ts: number, renderNowMs: number | undefined): s
 
 // `applicableCommitments` is the whole active set for this turn -- the cognition
 // draw is `list({activeOnly: true})`, global and uncapped, so an id missing from
-// it is a row that is genuinely no longer active rather than one a budget dropped.
+// it was dropped by an active-set predicate rather than by a budget or an audience.
 // That makes membership a sound liveness test, and the only one available here.
+// It is membership and not more: the set has no row for an id that was never a
+// commitment either, so absence alone does not separate an ending from a name with
+// nothing behind it. The write-time token beside it is what carries that.
 // Undefined when the turn carries no draw at all; the caller must then say so
 // rather than guess, so keep the absence distinguishable from an empty set.
 function activeCommitmentIdsForLiveness(
@@ -2089,6 +2092,16 @@ function activeCommitmentIdsForLiveness(
 // commitment field at all (it predates this ring carrying ids) reads identically to a
 // firing that named none. Both are silences about which constraint bit, but only the
 // second is a statement about the firing. Name which one this is.
+//
+// The same collapse ran one level down, on entries that do name ids. The writer
+// resolves each id the guard emitted against that turn's action-authorization draw
+// and files an unresolved one as a bare id (`regenerationCommitmentDescriptors`);
+// a resolved descriptor always carries at least kind and directive_family, both
+// non-optional on the record, so no labels at all is a write-time signal rather
+// than a thin row. Printing only the liveness token made an id with nothing behind
+// it read exactly like a row that was live and has since ended -- the render
+// asserting an ending where the test only observed an absence. Two reads, two
+// tokens, and the reading of the pair left to me.
 function renderRegenerationCommitmentsSuffix(
   entry: NonNullable<DeliberationContext["turnMechanismEvidence"]>["recentRegenerations"][number],
   activeCommitmentIds: ReadonlySet<string> | undefined,
@@ -2106,8 +2119,8 @@ function renderRegenerationCommitmentsSuffix(
         : activeCommitmentIds.has(commitment.id)
           ? "still_active"
           : "no_longer_active";
-    const annotation = descriptors.length === 0 ? liveness : `${descriptors}, ${liveness}`;
-    return `${escapeXmlText(commitment.id)} (${escapeXmlText(annotation)})`;
+    const capture = descriptors.length === 0 ? "unresolved_at_capture" : descriptors;
+    return `${escapeXmlText(commitment.id)} (${escapeXmlText(`${capture}, ${liveness}`)})`;
   });
   return ` over commitment ${rendered.join(" and ")}`;
 }

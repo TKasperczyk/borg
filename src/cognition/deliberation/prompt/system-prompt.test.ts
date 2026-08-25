@@ -3330,6 +3330,40 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).not.toContain("rollout_privacy, no_longer_active");
   });
 
+  // The writer files an id the guard named but could not resolve as a bare id, so
+  // an id with nothing behind it reaches this ring and fails the membership test
+  // exactly like a row that has since ended. Rendering only the liveness token
+  // asserted an ending where the test observed an absence.
+  it("separates an id that never resolved at capture from one that has since ended", () => {
+    const commitmentId = createCommitmentId();
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        applicableCommitments: [makeGatingCommitment(createCommitmentId())],
+        workingMemory: {
+          ...makeContext().workingMemory,
+          discourse_state: {
+            stop_until_substantive_content: null,
+            recent_regenerations: [
+              {
+                turn_id: "turn-regenerated",
+                mechanism: "commitment_guard_regeneration",
+                ts: NOW_MS,
+                commitments: [{ id: commitmentId }],
+              },
+            ],
+          },
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_mechanism_evidence");
+
+    expect(block).toContain(
+      `over commitment ${commitmentId} (unresolved_at_capture, no_longer_active)`,
+    );
+    expect(block).toContain("not proof that a row ever existed");
+  });
+
   it("omits the commitment attribution when the entry carries none", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({
