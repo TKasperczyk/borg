@@ -2766,6 +2766,66 @@ describe("buildBaseSystemPrompt", () => {
     },
   );
 
+  // Same defect as the tick line's (2), one field over and without the flip to "ago" to make it
+  // visible: the countdowns hang on stamps read at observedAt but are measured against the header
+  // clock, so they read shorter than the wait as of the read. The lag here (100s) is a live-trace
+  // value and puts the slot exactly on the seconds/minutes edge: ~41s against the header, 2m
+  // against the read. The stamp is unchanged; only the basis of the parenthetical is now stated.
+  // The zero-lag case keeps the bare form and is pinned by the wake-budget test above.
+  it("names which clock the forward countdowns are measured from when the read is stale", () => {
+    const observedAt = NOW_MS - 100_000;
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        turnOrigin: "user",
+        turnMechanismEvidence: {
+          recentSuppressions: [],
+          recentRegenerations: [],
+          autonomySchedulerState: {
+            observedAt,
+            enabled: true,
+            nextTickAt: NOW_MS + 60_000,
+            scheduledTickAt: NOW_MS + 60_000,
+            fleetBrake: {
+              enabled: true,
+              empty_streak: 5,
+              empty_streak_threshold: 5,
+              streak_anchor_ts: observedAt - 600_000,
+              cooldown_until: NOW_MS + 30_000,
+              error_streak: 0,
+              error_streak_threshold: 3,
+              error_paused_until: null,
+              bypass_count: 0,
+              window_outcomes: { headway: 0, silent: 5, error: 0, busy: 0 },
+              window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+            },
+            budget: {
+              max_wakes_per_window: 6,
+              window_ms: 60 * 60_000,
+              window_started_at: observedAt - 60 * 60_000,
+              used_in_current_window: 6,
+              reserved_contemplative_wakes_per_window: 0,
+              contemplative_used_in_current_window: 0,
+              wakes_in_current_window_by_trigger: [],
+              next_budget_slot_frees_at: NOW_MS + 41_000,
+            },
+          },
+        },
+      }),
+      { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+    );
+    const block = extractBlock(prompt, "borg_mechanism_evidence");
+
+    expect(block).toContain(
+      "Next budget slot frees: 2023-11-14T22:14:01.000Z (in ~41s as of the current_time_ms at the top of this prompt, 100000ms after that read -- the stamp is as of the read, this countdown is not).",
+    );
+    expect(block).toContain(
+      "empty-streak cooldown until 2023-11-14T22:13:50.000Z (in ~30s as of the current_time_ms at the top of this prompt, 100000ms after that read -- the stamp is as of the read, this countdown is not)",
+    );
+    // The bare parenthetical is the shape that made the basis unrecoverable from the page: it is
+    // one bucket short of the wait as of the read and says nothing about which clock it used.
+    expect(block).not.toContain("Next budget slot frees: 2023-11-14T22:14:01.000Z (in ~41s).");
+  });
+
   it("names the lower operational ceiling while the contemplative reservation is unspent", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({

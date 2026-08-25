@@ -1776,6 +1776,23 @@ export function summarizeAutonomySchedulerState(
   // the lag printed here overstated the age of every count below it -- on live traces by 11s at
   // the least and 100s at the most. A wrong basis on a line whose only job is to name the basis.
   const observationLagMs = Math.max(0, Math.trunc(renderNowMs - schedulerState.observedAt));
+  // Every forward countdown on this block hangs on a stamp taken at the read but is measured
+  // against the header clock, which is observationLagMs later. The stamp is as of the read; the
+  // countdown is as of the header. Because the header is the later of the two, the countdown
+  // always reads shorter than the wait as of the read -- and once the lag crosses a granularity
+  // edge of formatRelativeDuration it prints a smaller bucket outright. Measured over the rendered
+  // blocks in the live traces for 2026-08-23T22:37Z -> 2026-08-24T22:42Z: 10 of 82 blocks printed
+  // a different bucket against the two bases, the widest two by a full 2m, and one crossing the
+  // seconds/minutes edge (~41s against the header, 2m against the read). The stamp is the
+  // authoritative field and is left exactly as it was -- what was missing is any statement of
+  // which of the block's two clocks the parenthetical is counting from.
+  const countdownFromHeader = (stampMs: number): string =>
+    observationLagMs === 0
+      ? formatRelativeUntil(stampMs, renderNowMs)
+      : `${formatRelativeUntil(
+          stampMs,
+          renderNowMs,
+        )} as of the current_time_ms at the top of this prompt, ${observationLagMs}ms after that read -- the stamp is as of the read, this countdown is not`;
   const lines = [
     "Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.",
     `Read at ${new Date(schedulerState.observedAt).toISOString()}${
@@ -1804,7 +1821,7 @@ export function summarizeAutonomySchedulerState(
       ? "Next budget slot frees: none."
       : `Next budget slot frees: ${new Date(
           budget.next_budget_slot_frees_at,
-        ).toISOString()} (${formatRelativeUntil(budget.next_budget_slot_frees_at, renderNowMs)}).`,
+        ).toISOString()} (${countdownFromHeader(budget.next_budget_slot_frees_at)}).`,
   );
 
   // Budget headroom is not the same statement as "a wake can happen": the loop itself and the
@@ -1852,15 +1869,14 @@ export function summarizeAutonomySchedulerState(
   const brakeGates = [
     brake.cooldown_until === null || brake.cooldown_until <= renderNowMs
       ? null
-      : `empty-streak cooldown until ${new Date(brake.cooldown_until).toISOString()} (${formatRelativeUntil(
+      : `empty-streak cooldown until ${new Date(
           brake.cooldown_until,
-          renderNowMs,
-        )})`,
+        ).toISOString()} (${countdownFromHeader(brake.cooldown_until)})`,
     brake.error_paused_until === null || brake.error_paused_until <= renderNowMs
       ? null
       : `error-streak pause until ${new Date(
           brake.error_paused_until,
-        ).toISOString()} (${formatRelativeUntil(brake.error_paused_until, renderNowMs)})`,
+        ).toISOString()} (${countdownFromHeader(brake.error_paused_until)})`,
   ].filter((gate): gate is string => gate !== null);
 
   lines.push(
