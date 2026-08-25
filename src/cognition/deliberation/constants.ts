@@ -21,3 +21,13 @@ export const DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET = 32_000;
 // multi-thousand-row live failure mode.
 export const DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET = 64_000;
 export const DEFAULT_SEMANTIC_CONTEXT_BUDGET = 8_000;
+// The retrieval-confidence floor in the S1/S2 path ladder: below it the natural
+// decision takes S2. The prompt's low-confidence annotation fires on the same
+// boundary and reads this same constant -- two literals at one value are
+// indistinguishable from one boundary right up until they drift, and the
+// confidence line prints this number as the routing floor, which is only true
+// while they are the same number. Confidence is the fourth test in that ladder,
+// not the only one: reflective mode and high stakes take S2 above the floor,
+// idle mode takes S1 below it, and an operational-contradiction override
+// outranks all four.
+export const DELIBERATION_S2_CONFIDENCE_FLOOR = 0.45;

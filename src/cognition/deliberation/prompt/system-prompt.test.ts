@@ -2254,7 +2254,13 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(block).toContain("2 retrieved contradictions present");
     expect(block).toContain("edges: contradiction_1_edge, contradiction_2_edge");
-    expect(block).toContain("Confidence penalty applied. Not routing to S2.");
+    expect(block).toContain(
+      "Disposition: applied as a confidence penalty, already folded into `overall`" +
+        " (tier=confidence_penalty).",
+    );
+    // The block only ever renders on S1, so this clause reports the
+    // contradictions' disposition rather than the path decision, and says so.
+    expect(block).toContain("These contradictions did not force S2.");
     expect(block).not.toContain("edg_");
     expect(block).not.toContain("sem_");
   });

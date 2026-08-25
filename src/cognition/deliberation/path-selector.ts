@@ -5,6 +5,7 @@ import type {
   RetrievedEpisode,
 } from "../../retrieval/index.js";
 import type { SessionId } from "../../util/ids.js";
+import { DELIBERATION_S2_CONFIDENCE_FLOOR } from "./constants.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import type { CognitiveMode } from "../types.js";
 import type { ContradictionRoutingCooldown } from "./contradiction-routing-cooldown.js";
@@ -141,7 +142,7 @@ export function chooseDeliberationPath(
       };
     }
 
-    if (confidence < 0.45) {
+    if (confidence < DELIBERATION_S2_CONFIDENCE_FLOOR) {
       return {
         path: "system_2",
         reason: "Low retrieval confidence triggered deeper reasoning.",

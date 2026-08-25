@@ -17,7 +17,11 @@ import {
   unknownMemoryDisclosureLabel,
 } from "../../../retrieval/index.js";
 import { ManualClock } from "../../../util/clock.js";
-import { DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET } from "../constants.js";
+import {
+  DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
+  DELIBERATION_S2_CONFIDENCE_FLOOR,
+} from "../constants.js";
+import { chooseDeliberationPath } from "../path-selector.js";
 import {
   PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_ERROR,
   PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_MARKER,
@@ -193,6 +197,58 @@ describe("retrieval confidence prompt rendering", () => {
 
     expect(measured).toContain("evidence=0.98(ep=0.70/1.00+sem=0.28/0.30)");
     expect(measured).not.toContain("clamped");
+  });
+
+  it("prints the routing floor beside overall, on every turn, with the ladder it sits in", () => {
+    // `overall` is the only field here anything downstream acts on, and its
+    // boundary lived in a second literal in the path selector. Bare, the number
+    // is a quantity with no scale: a reader cannot tell 0.69 from 0.44 in
+    // consequence. Rendered floor-or-no-floor, because printing the floor only
+    // on turns that cross it would make crossing look like the only way the
+    // path is ever decided -- it is the fourth test of four.
+    const high = summarizeRetrievalConfidence(
+      makeRetrievalConfidence({ overall: 0.69, sampleSize: 21 }),
+    );
+    const low = summarizeRetrievalConfidence(
+      makeRetrievalConfidence({ overall: 0.31, sampleSize: 4 }),
+    );
+
+    expect(high).toContain("overall=0.69(s2_floor=0.45)");
+    expect(low).toContain("overall=0.31(s2_floor=0.45)");
+    for (const rendered of [high, low]) {
+      expect(rendered).toContain("fourth test in the path ladder");
+    }
+  });
+
+  it("pins the rendered routing floor to the constant the path ladder tests", () => {
+    // Two literals at one value are indistinguishable from one boundary until
+    // they drift, and the render asserts this number IS the routing floor.
+    const rendered = summarizeRetrievalConfidence(
+      makeRetrievalConfidence({ overall: 0.69, sampleSize: 21 }),
+    );
+
+    expect(rendered).toContain(`s2_floor=${DELIBERATION_S2_CONFIDENCE_FLOOR.toFixed(2)}`);
+    expect(
+      chooseDeliberationPath(
+        "relational",
+        "medium",
+        [],
+        false,
+        makeRetrievalConfidence({
+          overall: DELIBERATION_S2_CONFIDENCE_FLOOR - 0.01,
+          sampleSize: 4,
+        }),
+      ).path,
+    ).toBe("system_2");
+    expect(
+      chooseDeliberationPath(
+        "relational",
+        "medium",
+        [],
+        false,
+        makeRetrievalConfidence({ overall: DELIBERATION_S2_CONFIDENCE_FLOOR, sampleSize: 4 }),
+      ).path,
+    ).toBe("system_1");
   });
 
   it("prints both evidence addends against their own ceilings so a pinned one is readable", () => {

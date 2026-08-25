@@ -1121,7 +1121,10 @@ describe("deliberator", () => {
     const finalizerSystem = requestSystemText(llm.requests[0]?.system);
     expect(finalizerSystem).toContain("<contradiction_signal>");
     expect(finalizerSystem).toContain("1 retrieved contradiction present");
-    expect(finalizerSystem).toContain("Confidence penalty applied. Not routing to S2.");
+    expect(finalizerSystem).toContain(
+      "Disposition: applied as a confidence penalty, already folded into `overall`" +
+        " (tier=confidence_penalty).",
+    );
     expect(finalizerSystem).not.toContain("edg_aaaaaaaaaaaaaaaa");
     expect(tracer.events).toContainEqual(
       expect.objectContaining({

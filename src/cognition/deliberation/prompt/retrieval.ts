@@ -28,10 +28,15 @@ import { renderEvidenceItemDisclosureLabel } from "../../evidence-item-disclosur
 import {
   DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
   DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET,
+  DELIBERATION_S2_CONFIDENCE_FLOOR,
 } from "../constants.js";
 import type { ContradictionRoutingTier } from "../types.js";
 
-const LOW_RETRIEVAL_CONFIDENCE_THRESHOLD = 0.45;
+// Not a second threshold that happens to coincide with the routing floor: it is
+// the routing floor, read from the constant the path ladder tests against, so
+// the annotation below and the `s2_floor` printed on the line cannot say
+// different things about the same boundary.
+const LOW_RETRIEVAL_CONFIDENCE_THRESHOLD = DELIBERATION_S2_CONFIDENCE_FLOOR;
 export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER =
   "membership_not_enumerated_budget";
 export const PLAN_REQUESTED_VERIFICATION_ROWS_TOTAL_AS_OF_ATTRIBUTE = "rows_total_as_of";
@@ -106,7 +111,12 @@ export function summarizeRetrievalConfidence(
     (evidenceRaw > 1 ? `,raw=${evidenceRaw.toFixed(2)},clamped` : "");
 
   const fragments: string[] = [
-    `overall=${confidence.overall.toFixed(2)}`,
+    // `overall` is the one field here anything downstream acts on: the S1/S2
+    // path ladder tests it against this floor. Printed beside it because a
+    // number whose consequence is invisible cannot be read for its consequence
+    // -- the distance to the boundary is the whole of what it decides, and
+    // without the boundary the reader has a quantity and no scale.
+    `overall=${confidence.overall.toFixed(2)}(s2_floor=${DELIBERATION_S2_CONFIDENCE_FLOOR.toFixed(2)})`,
     `evidence=${confidence.evidenceStrength.toFixed(2)}(${evidenceComponents})`,
     // Both ratios print with the fraction they came from. Their denominators
     // are neither `samples` nor each other: coverage divides by the retrieval
@@ -126,6 +136,12 @@ export function summarizeRetrievalConfidence(
   const lines = [
     "Retrieval confidence (internal, for calibrating certainty in my response):",
     fragments.join(" "),
+    // Rendered every turn, floor or no floor: the ladder's shape is what makes
+    // the floor readable, and stating it only on turns that cross would make
+    // the crossing look like the only way the path is ever decided.
+    "`s2_floor` is where `overall` alone takes this turn to S2. It is the fourth test in the path" +
+      " ladder, not the only one: reflective mode and high stakes take S2 above the floor, idle mode" +
+      " takes S1 below it, and an operational-contradiction override outranks all four.",
   ];
 
   // Policy text lives in EPISTEMIC_POSTURE_SECTION at the system-prompt
@@ -175,12 +191,26 @@ export function summarizeContradictionSignal(
       ? localHandles.join(", ")
       : `${localHandles.join(", ")}, +${omittedCount} more`;
   const noun = contradictions.length === 1 ? "contradiction" : "contradictions";
-  const confidencePenalty =
+  // The penalty clause and the tier are one fact read twice -- the tier is
+  // `confidence_penalty` exactly when the penalty was applied -- so print the
+  // real tier once rather than a reconstruction of it standing next to it,
+  // reading as two agreeing witnesses.
+  const disposition =
     confidence?.contradictionPresent === true
-      ? "Confidence penalty applied."
-      : "Confidence penalty not applied.";
+      ? "applied as a confidence penalty, already folded into `overall`"
+      : "surfaced as an annotation only, with no confidence penalty";
 
-  return `${contradictions.length} retrieved ${noun} present (edges: ${handleSummary}). ${confidencePenalty} Not routing to S2.`;
+  // The gate above returns null unless the turn is already on S1, so a "not
+  // routing to S2" clause here is invariant by construction: it cannot report a
+  // decision, only the branch it renders in. Say what it does report -- that
+  // these contradictions were not what escalated -- and name the invariance
+  // rather than let the grammar of a decision stand in for one.
+  return (
+    `${contradictions.length} retrieved ${noun} present (edges: ${handleSummary}).` +
+    ` Disposition: ${disposition} (tier=${tier}).` +
+    " These contradictions did not force S2. This note renders only on turns already routed to S1," +
+    " so it reports their disposition, not the routing decision."
+  );
 }
 
 function summarizeCitationChain(result: RetrievedEpisode): string | null {
