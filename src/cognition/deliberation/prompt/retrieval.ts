@@ -2,6 +2,7 @@
 import type { SemanticNode } from "../../../memory/semantic/index.js";
 import { openQuestionMemoryDisclosureLabel } from "../../../memory/common/disclosure-serializers.js";
 import {
+  SEMANTIC_EVIDENCE_STRENGTH_SCALE,
   memoryDisclosureLabelFromEpisodeAccess,
   renderMemoryDisclosureLabelForModel,
   unknownMemoryDisclosureLabel,
@@ -84,10 +85,18 @@ export function summarizeRetrievalConfidence(
   // clamped -- otherwise a ceiling hit and a measurement are the same two
   // characters. Rendered on every turn, including when nothing was clamped,
   // because an absent marker would be indistinguishable from an unmarked one.
+  // The addends are not commensurable and printing them bare implies they are.
+  // `ep` is a mean of clamped saliences, so its bound is 1.00 -- the same bound
+  // as the field it feeds. `sem` is a fixed scale times a sigmoid that saturates
+  // once a few supported matches exist, so its bound is that scale and it sits
+  // on it most turns. Print `sem` against that bound: it is what lets a reader
+  // see the addend is pinned rather than measured, and derive the threshold
+  // (`ep >= 1 - sem`) past which the whole field stops discriminating.
   const evidenceRaw = confidence.evidenceEpisodeStrength + confidence.evidenceSemanticStrength;
   const evidenceComponents =
     `ep=${confidence.evidenceEpisodeStrength.toFixed(2)}` +
     `+sem=${confidence.evidenceSemanticStrength.toFixed(2)}` +
+    `/${SEMANTIC_EVIDENCE_STRENGTH_SCALE.toFixed(2)}` +
     (evidenceRaw > 1 ? `,raw=${evidenceRaw.toFixed(2)},clamped` : "");
 
   const fragments: string[] = [

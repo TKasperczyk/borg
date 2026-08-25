@@ -179,7 +179,7 @@ describe("retrieval confidence prompt rendering", () => {
       }),
     );
 
-    expect(clamped).toContain("evidence=1.00(ep=0.86+sem=0.29,raw=1.15,clamped)");
+    expect(clamped).toContain("evidence=1.00(ep=0.86+sem=0.29/0.30,raw=1.15,clamped)");
 
     const measured = summarizeRetrievalConfidence(
       makeRetrievalConfidence({
@@ -191,8 +191,38 @@ describe("retrieval confidence prompt rendering", () => {
       }),
     );
 
-    expect(measured).toContain("evidence=0.98(ep=0.70+sem=0.28)");
+    expect(measured).toContain("evidence=0.98(ep=0.70+sem=0.28/0.30)");
     expect(measured).not.toContain("clamped");
+  });
+
+  it("prints the semantic addend against its own ceiling so a pinned one is readable", () => {
+    // The semantic addend is a fixed scale times a sigmoid that saturates once a
+    // few supported matches exist, so it reaches the scale and stays there. Bare,
+    // that is indistinguishable from a measurement that happened to land there,
+    // and it hides that the field saturates at `ep >= 1 - sem` rather than at 1.
+    const pinned = summarizeRetrievalConfidence(
+      makeRetrievalConfidence({
+        overall: 0.69,
+        evidenceStrength: 1,
+        sampleSize: 26,
+        evidenceEpisodeStrength: 0.74,
+        evidenceSemanticStrength: 0.3,
+      }),
+    );
+
+    expect(pinned).toContain("sem=0.30/0.30");
+
+    const unpinned = summarizeRetrievalConfidence(
+      makeRetrievalConfidence({
+        overall: 0.5,
+        evidenceStrength: 0.55,
+        sampleSize: 3,
+        evidenceEpisodeStrength: 0.36,
+        evidenceSemanticStrength: 0.19,
+      }),
+    );
+
+    expect(unpinned).toContain("sem=0.19/0.30");
   });
 
   it("flags weakly-supported claims when non-empty confidence is low", () => {

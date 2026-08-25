@@ -68,8 +68,13 @@ const CONTRADICTION_PENALTY = 0.7;
 // Tunes the minimum semantic node confidence admitted into confidence support.
 const SEMANTIC_CONFIDENCE_THRESHOLD = 0.6;
 
-// Tunes how strongly semantic support can raise evidence strength.
-const SEMANTIC_EVIDENCE_STRENGTH_SCALE = 0.3;
+// Tunes how strongly semantic support can raise evidence strength. This is also
+// the semantic addend's hard ceiling: the addend is this scale times a sigmoid,
+// and the sigmoid saturates once a handful of supported matches exist, so the
+// addend sits on the ceiling on most turns rather than measuring anything. It is
+// exported so the render can print the addend against the bound it is pinned to
+// -- a bare `sem=0.30` reads as a measurement and cannot say it is the maximum.
+export const SEMANTIC_EVIDENCE_STRENGTH_SCALE = 0.3;
 
 // Tunes the confidence modulation floor before coverage and diversity are applied.
 const CONFIDENCE_MODULATION_BASE = 0.7;
