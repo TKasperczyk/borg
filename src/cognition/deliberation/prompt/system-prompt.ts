@@ -1890,10 +1890,16 @@ export function summarizeAutonomySchedulerState(
   );
 
   // The two counter groups below are different populations, and printing them
-  // adjacent without saying so invites differencing one into the other: the
-  // streak is untimed, operational-only, and blind to errors; window_outcomes
-  // is budget-windowed and counts every category and every outcome. Each group
-  // states its own scope so neither can be read as evidence about the other.
+  // adjacent without saying so invites differencing one into the other:
+  // empty_streak is untimed, operational-only, and blind to errors;
+  // window_outcomes is budget-windowed and counts every category and every
+  // outcome. Each group states its own scope so neither can be read as evidence
+  // about the other. error_streak sits in the first group but is a third
+  // population again -- it is neither operational-only nor a count of every
+  // errored wake, so it carries its own scope rather than inheriting
+  // empty_streak's. Without that, error_streak=0 next to a non-zero error tally
+  // reads as "the errors were separated by successes", which the counter does
+  // not mean and cannot support.
   lines.push(
     `empty_streak=${brake.empty_streak}/${brake.empty_streak_threshold} error_streak=${
       brake.error_streak
@@ -1901,7 +1907,7 @@ export function summarizeAutonomySchedulerState(
       brake.streak_anchor_ts === null
         ? ""
         : ` current empty streak began ${new Date(brake.streak_anchor_ts).toISOString()}`
-    } -- empty_streak counts consecutive completed operational wakes that came back silent, with no time bound. Errored and busy-skipped wakes neither increment nor reset it, so it is consecutive within the completed-operational subsequence rather than within the wake sequence, and one streak can span any number of intervening wakes and any amount of wall-clock.`,
+    } -- empty_streak counts consecutive completed operational wakes that came back silent, with no time bound. Errored and busy-skipped wakes neither increment nor reset it, so it is consecutive within the completed-operational subsequence rather than within the wake sequence, and one streak can span any number of intervening wakes and any amount of wall-clock. error_streak counts something narrower than the error tally below: only a wake that failed inside the turn, with a provider or auth fault, increments it. Wakes that fail before the turn is built, and in-turn failures of any other kind, record error without touching it -- and any successful wake, contemplative included, resets it to zero. So error_streak=0 beside a non-zero error count is the ordinary case, not a sign that the errors were separated by successes.`,
   );
   lines.push(
     `Outcome tally over the budget window above, both source categories: headway=${
