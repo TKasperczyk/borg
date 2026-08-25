@@ -29,6 +29,8 @@ import {
   PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_NOT_OBSERVED_STATUS,
   PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER,
   PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE,
+  PLAN_REQUESTED_VERIFICATION_PAYLOAD_ORDER,
+  PLAN_REQUESTED_VERIFICATION_PAYLOAD_ORDER_ATTRIBUTE,
   PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_REMAINDER_TOTAL_ATTRIBUTE,
   PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_STATUS_ATTRIBUTE,
   PLAN_REQUESTED_VERIFICATION_RETRIEVAL_STATUS_ATTRIBUTE,
@@ -943,8 +945,73 @@ describe("plan-requested compact terminal retrieval", () => {
       `${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_DISCLOSURE_REMAINDER_MARKER} has one attribute per disclosure_class present among omitted rows`,
     );
     expect(rendered).toContain(
-      "Payloads are priced against payload_target_tokens alone and never consume the membership budget; membership never consumes the payload budget",
+      "Payloads are priced against payload_target_tokens alone and never consume the membership budget, and membership never consumes the payload budget",
     );
+    expect(rendered).toContain(
+      `${PLAN_REQUESTED_VERIFICATION_PAYLOAD_ORDER_ATTRIBUTE}=${PLAN_REQUESTED_VERIFICATION_PAYLOAD_ORDER} means payload admission walks these enumerated rows in the order they are rendered here`,
+    );
+    expect(rendered).toContain(
+      "rows that are not enumerated never consume payload budget",
+    );
+  });
+
+  it("prices payloads in rendered order so the carve-out is not starved by rows above or omitted", () => {
+    const ordinarySmall = verificationEvidence("evidence:ordinary-small", "small ordinary");
+    const ordinaryHuge = verificationEvidence("evidence:ordinary-huge", "x".repeat(4_000));
+    const criticalSmall = verificationEvidence("evidence:critical-small", "small critical", {
+      source: "commitment",
+      provenance: { commitmentId: "cmt_critical_small" as never },
+      commitment_enforcement_class: "critical",
+    });
+    const semantic = {
+      matched_node_ids: [],
+      matched_nodes: [],
+      supports: [],
+      contradicts: [],
+      categories: [],
+      support_hits: [],
+      causal_hits: [],
+      contradiction_hits: [],
+      category_hits: [],
+    };
+    const enumeratedOnly = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: [ordinarySmall, criticalSmall],
+        episodes: [],
+        semantic,
+        open_questions: [],
+      } as never,
+      Number.MAX_SAFE_INTEGER,
+      Number.MAX_SAFE_INTEGER,
+    );
+    const membershipTokens = Number(/membership_tokens="(\d+)"/.exec(enumeratedOnly)?.[1]);
+    const rendered = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: [ordinarySmall, ordinaryHuge, criticalSmall],
+        episodes: [],
+        semantic,
+        open_questions: [],
+      } as never,
+      1_060,
+      membershipTokens,
+    );
+    const payloadStatuses = [
+      ...rendered.matchAll(
+        /<verification_source handle="([^"]+)"[^>]*payload_status="([a-z_]+)"/g,
+      ),
+    ].map((match) => [match[1], match[2]]);
+
+    // The huge row is omitted from membership, so it never competes for payload,
+    // and the carve-out is priced ahead of the ordinary row rendered below it.
+    expect(payloadStatuses).toEqual([
+      ["evidence:critical-small", "exact"],
+      ["evidence:ordinary-small", "exact"],
+    ]);
+    expect(rendered).toContain(
+      `${PLAN_REQUESTED_VERIFICATION_PAYLOAD_ORDER_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_PAYLOAD_ORDER}"`,
+    );
+    expect(rendered).toContain("<check_not_completed_count>0</check_not_completed_count>");
+    expect(rendered).toContain('payload_tokens_included="62"');
   });
 
   it("enumerates critical commitments first while preserving both partition orders", () => {
