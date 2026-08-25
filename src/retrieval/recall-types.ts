@@ -116,6 +116,11 @@ export type EvidenceItem = {
   disclosureLabel?: MemoryDisclosureLabel;
   commitment_enforcement_class?: CommitmentEnforcementClass;
   commitment_critical_domain?: CommitmentCriticalDomain | null;
+  // Length of the underlying `commitment.directive`, before `text` composes it
+  // as `${type}: ${directive}`. Carried so the verification block can print the
+  // canonical record's own char count next to the composed payload's, instead of
+  // leaving a reader to infer the type prefix from an offset. Commitment evidence only.
+  commitment_directive_chars?: number;
 };
 
 export type EvidencePool = {

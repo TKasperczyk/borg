@@ -58,6 +58,7 @@ export const PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_NOT_OBSERVED_STATUS = "not_o
 
 const VERIFICATION_COMMITMENT_ENFORCEMENT_CLASS_FIELD = "commitment_enforcement_class";
 const VERIFICATION_COMMITMENT_CRITICAL_DOMAIN_FIELD = "commitment_critical_domain";
+const VERIFICATION_COMMITMENT_DIRECTIVE_CHARS_FIELD = "commitment_directive_chars";
 const VERIFICATION_DISCLOSURE_CLASS_FIELD = "disclosure_class";
 
 export type RetrievedEvidenceSummaryInput = {
@@ -334,6 +335,12 @@ function verificationEvidenceCandidates(
                 item.commitment_enforcement_class ?? null,
               [VERIFICATION_COMMITMENT_CRITICAL_DOMAIN_FIELD]:
                 item.commitment_critical_domain ?? null,
+              // `payload.text` for commitment evidence is `${type}: ${directive}`, so
+              // payload_total_chars never equals the canonical record's directive_total_chars.
+              // Print the canonical count here so the two blocks pair by identity rather
+              // than by inferring the wrapper and the type prefix from a residual.
+              [VERIFICATION_COMMITMENT_DIRECTIVE_CHARS_FIELD]:
+                item.commitment_directive_chars ?? null,
             }),
       },
       payload: {

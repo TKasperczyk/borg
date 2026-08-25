@@ -1071,6 +1071,7 @@ export class RetrievalPipeline {
       disclosureLabel: commitmentMemoryDisclosureLabel(commitment),
       commitment_enforcement_class: effectiveCommitmentEnforcementClass(commitment),
       commitment_critical_domain: effectiveCommitmentCriticalDomain(commitment),
+      commitment_directive_chars: commitment.directive.length,
     };
   }
 
@@ -2817,6 +2818,7 @@ function commitmentToEvidence(
     disclosureLabel: commitmentMemoryDisclosureLabel(commitment),
     commitment_enforcement_class: effectiveCommitmentEnforcementClass(commitment),
     commitment_critical_domain: effectiveCommitmentCriticalDomain(commitment),
+    commitment_directive_chars: commitment.directive.length,
   };
 }
 

@@ -821,7 +821,9 @@ describe("plan-requested compact terminal retrieval", () => {
     );
 
     const membershipTokens = Number(/membership_tokens="(\d+)"/.exec(rendered)?.[1]);
-    expect(membershipTokens).toBe(54_450);
+    // 57_000, up from 54_450: commitment rows now also carry
+    // commitment_directive_chars, ~34 chars per row against the membership budget.
+    expect(membershipTokens).toBe(57_000);
     expect(membershipTokens).toBeLessThan(
       DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
     );
