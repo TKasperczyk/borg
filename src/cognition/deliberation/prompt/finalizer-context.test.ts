@@ -334,7 +334,12 @@ describe("compact terminal finalizer context", () => {
       ),
     );
     const factExcerpt = headTailPlannerExcerpt(fact, 1_200);
+    const directiveIndex =
+      rendered.match(/<creator_directive_index[\s\S]*?<\/creator_directive_index>/)?.[0] ?? "";
 
+    expect(directiveIndex).toContain('rows_total_for_current_audience="4"');
+    expect(directiveIndex).toContain('rows_omitted_after_current_audience_scope="0"');
+    expect(directiveIndex.match(/<creator_directive id_alias=/g)).toHaveLength(4);
     expect(rendered).toContain(`payload="${exactOperation}"`);
     expect(rendered).toContain(`payload="${exactSlottedOperation}"`);
     expect(rendered).toContain('payload_kind="operational_directive" payload_status="exact"');
@@ -354,6 +359,14 @@ describe("compact terminal finalizer context", () => {
     expect(rendered).toContain(`excluded_entity_ids="${excludedId}"`);
     expect(rendered).toContain('mention_policy="never_mention"');
     expect(rendered).toContain('activation_scope="allow_list"');
+  });
+
+  it("keeps the empty directive index count explicitly audience-relative", () => {
+    const rendered = text(build(context({ creatorDirectiveBriefing: null })));
+
+    expect(rendered).toContain(
+      '<creator_directive_index status="none" complete_for_current_audience="true" rows_total_for_current_audience="0" rows_omitted_after_current_audience_scope="0" />',
+    );
   });
 
   it("marks historical directive scope fields unknown instead of exact-empty", () => {
