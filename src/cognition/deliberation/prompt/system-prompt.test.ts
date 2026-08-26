@@ -3341,6 +3341,9 @@ describe("buildBaseSystemPrompt", () => {
       `over commitment ${commitmentId} (participant_preference/explicit_no_disclosure/rollout_privacy, still_active)`,
     );
     expect(block).toContain("which of my own constraints is biting");
+    // The liveness draw carries no audience predicate while the capture draw does,
+    // so the positive token is the weaker of the two and must say so on the line.
+    expect(block).toContain("not that it is in force for the audience I am speaking to");
   });
 
   // The ring evicts by displacement, so an entry keeps naming a commitment after the
@@ -3375,10 +3378,11 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).not.toContain("rollout_privacy, no_longer_active");
   });
 
-  // The writer files an id the guard named but could not resolve as a bare id, so
-  // an id with nothing behind it reaches this ring and fails the membership test
-  // exactly like a row that has since ended. Rendering only the liveness token
-  // asserted an ending where the test observed an absence.
+  // The writer files an id it could not resolve as a bare id, and such an id fails
+  // the membership test exactly like a row that has since ended, so rendering only
+  // the liveness token asserted an ending where the test observed an absence. The
+  // branch is unreachable in production -- the guard and the descriptor map take the
+  // same array -- so this pins the defensive shape, not a state the ring can hold.
   it("separates an id that never resolved at capture from one that has since ended", () => {
     const commitmentId = createCommitmentId();
     const prompt = buildBaseSystemPrompt(
@@ -3406,7 +3410,7 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain(
       `over commitment ${commitmentId} (unresolved_at_capture, no_longer_active)`,
     );
-    expect(block).toContain("not proof that a row ever existed");
+    expect(block).toContain("marks a defect in that writer rather than a state of the row");
   });
 
   it("omits the commitment attribution when the entry carries none", () => {

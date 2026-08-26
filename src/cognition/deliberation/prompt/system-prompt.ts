@@ -2046,7 +2046,7 @@ function summarizeMechanismEvidence(
     const namedCommitmentNote = recentRegenerations.some(
       (entry) => (entry.commitments ?? []).length > 0,
     )
-      ? " A named commitment there is the row that gated that draft, not a class of them: it is evidence about which of my own constraints is biting, not scheduler or network weather. Each id carries two tokens from two separate reads. The first is what the write could resolve: kind/domain/family are the row's labels as captured when the guard fired, so any labels at all mean a row by that id was in that turn's action-authorization draw, while unresolved_at_capture means it was not -- and that draw is audience-scoped, so it covers both an id with no row behind it and a live row scoped away from that audience. The second is tested at render, and it is membership in this turn's active-commitment draw and nothing finer: that draw is every row not revoked, not superseded, and not past an expiry, and this store has no deletion path at all, so no_longer_active reports an absence without saying which ending caused it, still_active means the id is in the draw, and liveness_unchecked means this turn carried no draw to test against. Entries leave this list only when newer ones displace them, never by clock, so a no_longer_active entry records a past firing and is not a constraint on me now. Read the pair together: with labels, absence now is an ending, because a row by that id existed at capture; with unresolved_at_capture, absence in both reads is evidence about the id, not proof that a row ever existed."
+      ? " A named commitment there is the row that gated that draft, not a class of them: it is evidence about which of my own constraints is biting, not scheduler or network weather. Each id carries two tokens from two separate reads. The first is what the write could resolve: kind/domain/family are the row's labels as captured when the guard fired. The guard is handed one array of commitment records, and the writer resolves the ids it emits against that same array, in the same scope, before anything awaits; ids the judge invents are dropped before they reach the emission. So unresolved_at_capture has no path that produces it, and if it prints it marks a defect in that writer rather than a state of the row -- labels are what every reachable entry carries. The second token is tested at render, and it is membership in this turn's active-commitment draw and nothing finer: every row not revoked, not superseded, and not past an expiry, and this store has no deletion path at all. The two draws differ in one way that matters: the capture draw is narrowed by audience, the liveness draw is not. So no_longer_active on a labeled id is an ending -- a row that was in the narrower set is absent from the wider one -- though it does not say which ending caused it; still_active says the row is somewhere in the global draw and not that it is in force for the audience I am speaking to, which nothing on this line carries; liveness_unchecked means this turn carried no draw to test against. Entries leave this list only when newer ones displace them, never by clock, so a no_longer_active entry records a past firing and is not a constraint on me now."
       : "";
     const bareEntryNote = recentRegenerations.some(
       (entry) => entry.commitments === undefined || entry.commitments.length === 0,
@@ -2074,9 +2074,18 @@ function renderRelativeAgeSuffix(ts: number, renderNowMs: number | undefined): s
 // draw is `list({activeOnly: true})`, global and uncapped, so an id missing from
 // it was dropped by an active-set predicate rather than by a budget or an audience.
 // That makes membership a sound liveness test, and the only one available here.
-// It is membership and not more: the set has no row for an id that was never a
-// commitment either, so absence alone does not separate an ending from a name with
-// nothing behind it. The write-time token beside it is what carries that.
+//
+// It is a differently-drawn set from the one the entry was captured against, and
+// the difference is directional. Capture runs off `actionApplicableCommitments`
+// (`getApplicable({audience})` = `list({activeOnly: true, audience})`, retrieval-phase
+// `coordinate()`), which is this same predicate plus an audience narrowing at the same
+// `nowMs` -- so the capture set is a subset of this one. Absence here of an id that was
+// present there is therefore an ending and cannot be a scoping artifact, which is what
+// makes `no_longer_active` the stronger of the two verdicts. Presence is correspondingly
+// weaker: it reports the row is active globally, never that it still applies to the
+// audience being spoken to. Cognition is the right place for the global read (recall is
+// global to the being), so the fix for the gap is to name the scope on the rendered line,
+// not to narrow this set.
 // Undefined when the turn carries no draw at all; the caller must then say so
 // rather than guess, so keep the absence distinguishable from an empty set.
 function activeCommitmentIdsForLiveness(
@@ -2107,14 +2116,24 @@ function activeCommitmentIdsForLiveness(
 // second is a statement about the firing. Name which one this is.
 //
 // The same collapse ran one level down, on entries that do name ids. The writer
-// resolves each id the guard emitted against that turn's action-authorization draw
-// and files an unresolved one as a bare id (`regenerationCommitmentDescriptors`);
-// a resolved descriptor always carries at least kind and directive_family, both
-// non-optional on the record, so no labels at all is a write-time signal rather
-// than a thin row. Printing only the liveness token made an id with nothing behind
-// it read exactly like a row that was live and has since ended -- the render
-// asserting an ending where the test only observed an absence. Two reads, two
-// tokens, and the reading of the pair left to me.
+// files an id it could not resolve as a bare id (`regenerationCommitmentDescriptors`),
+// and a resolved descriptor always carries at least kind and directive_family, both
+// non-optional on the record, so no labels at all is a write-time signal rather than
+// a thin row. Printing only the liveness token made such an id read exactly like a row
+// that was live and has since ended -- the render asserting an ending where the test
+// only observed an absence.
+//
+// That branch is defensive, not a state: the guard is invoked with
+// `input.applicableCommitments` and the descriptors are resolved against that same
+// array in the same scope, before the regeneration await
+// (`turn-action-coordinator.ts`), while `checker.ts` drops any id the judge returns
+// that is not in the set it was given. Every id that reaches here therefore has a row
+// in the map by construction. The map miss stays handled because a `Map.get` is
+// `T | undefined` and a silent wrong label is worse than a loud one, but the rendered
+// token must not describe it as a condition of the row -- which is what the earlier
+// copy did, explaining `unresolved_at_capture` as an audience-scoped-away row. Capture
+// IS audience-scoped, but that cannot separate the guard's set from this map, because
+// they are the same array.
 function renderRegenerationCommitmentsSuffix(
   entry: NonNullable<DeliberationContext["turnMechanismEvidence"]>["recentRegenerations"][number],
   activeCommitmentIds: ReadonlySet<string> | undefined,

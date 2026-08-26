@@ -291,6 +291,8 @@ The following tagged blocks mix substrate-owned guidance with memory-derived sel
   <affective_history age="unknown" valence="0.20" arousal="0.60" disclosure="disclosure_class=self_private origin_audience=none private-to=none public-to=none" />
   <recent_suppression turn_id="turn_fixture_suppressed" age="unknown" disclosure="disclosure_class=self_private origin_audience=none private-to=none public-to=none">finalizer_no_output</recent_suppression>
   <recent_regeneration turn_id="turn_fixture_regenerated" mechanism="commitment_guard_regeneration" age="unknown" disclosure="disclosure_class=self_private origin_audience=none private-to=none public-to=none" />
+  <recent_regeneration turn_id="turn_fixture_regenerated_live" mechanism="commitment_guard_regeneration" age="unknown" disclosure="disclosure_class=self_private origin_audience=none private-to=none public-to=none" />
+  <recent_regeneration turn_id="turn_fixture_regenerated_ended" mechanism="commitment_guard_regeneration" age="unknown" disclosure="disclosure_class=self_private origin_audience=none private-to=none public-to=none" />
   <autonomy_scheduler_state source="harness_mechanism">
     Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.
     Read at 2023-11-14T22:13:20.000Z: every count and stamp below is as of that read, not as of now. The lag is the ledger build and shared-state compile that run in between and varies per turn, so a wake admitted inside it is not counted here.

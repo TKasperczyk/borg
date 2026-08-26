@@ -662,11 +662,43 @@ function makeContext(overrides: Partial<DeliberationContext> = {}): Deliberation
           ts: NOW_MS - 800,
         },
       ],
+      // Three shapes, because the rendered line differs by shape and only the
+      // first was pinned here: an entry whose write kept no commitment field,
+      // and the two labeled forms -- one naming a row still in this turn's
+      // active draw (`makeCommitment`), one naming a row that has left it. The
+      // labeled line is what the ring actually writes now, so pinning only the
+      // bare shape left the form that reaches the page uncovered by any golden.
       recentRegenerations: [
         {
           turnId: "turn_fixture_regenerated",
           mechanism: "commitment_guard_regeneration",
           ts: NOW_MS - 700,
+        },
+        {
+          turnId: "turn_fixture_regenerated_live",
+          mechanism: "commitment_guard_regeneration",
+          ts: NOW_MS - 600,
+          commitments: [
+            {
+              id: "cmt_aaaaaaaaaaaaaaaa",
+              kind: "boundary",
+              critical_domain: "privacy",
+              directive_family: "prompt_surface_privacy",
+            },
+          ],
+        },
+        {
+          turnId: "turn_fixture_regenerated_ended",
+          mechanism: "commitment_guard_regeneration",
+          ts: NOW_MS - 500,
+          commitments: [
+            {
+              id: "cmt_bbbbbbbbbbbbbbbb",
+              kind: "participant_preference",
+              critical_domain: "explicit_no_disclosure",
+              directive_family: "session_history_opacity",
+            },
+          ],
         },
       ],
       autonomySchedulerState: FIXTURE_AUTONOMY_SCHEDULER_STATE,
