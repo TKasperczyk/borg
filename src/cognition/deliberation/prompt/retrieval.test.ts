@@ -76,6 +76,7 @@ function makeRetrievalConfidence(
     sourceDiversity: overrides.sourceDiversity ?? 0,
     contradictionPresent: overrides.contradictionPresent ?? false,
     sampleSize: overrides.sampleSize ?? 0,
+    semanticSampleSize: overrides.semanticSampleSize ?? 0,
     coverageExpected: overrides.coverageExpected ?? 5,
     diversitySources: overrides.diversitySources ?? 0,
     diversitySampleSize: overrides.diversitySampleSize ?? 0,
@@ -158,6 +159,7 @@ describe("retrieval confidence prompt rendering", () => {
         sourceDiversity: 0.94,
         diversitySources: 17,
         diversitySampleSize: 18,
+        semanticSampleSize: 13,
         evidenceEpisodeStrength: 0,
         evidenceSemanticStrength: 0,
       }),
@@ -165,7 +167,35 @@ describe("retrieval confidence prompt rendering", () => {
 
     expect(saturated).toContain("coverage=1.00(23/4)");
     expect(saturated).toContain("diversity=0.94(17/18)");
-    expect(saturated).toContain("samples=23");
+    expect(saturated).toContain("samples=23(episodes=10+semantic=13)");
+  });
+
+  it("splits `samples` so diversity's smaller denominator is attributable, not just visible", () => {
+    // `samples` counts every episode; diversity's denominator counts only the
+    // top-N slice, plus the semantic hits both include. Bare, the two figures
+    // differ by an amount the page cannot explain, and the readings available
+    // to a reader are "different populations" or "off by one" -- neither of
+    // which is what happened. Printing the shared semantic term makes both
+    // halves recoverable: episodes on one side, the slice on the other.
+    const summary = summarizeRetrievalConfidence(
+      makeRetrievalConfidence({
+        overall: 0.69,
+        evidenceStrength: 1,
+        coverage: 1,
+        sampleSize: 27,
+        semanticSampleSize: 21,
+        coverageExpected: 6,
+        sourceDiversity: 0.81,
+        diversitySources: 21,
+        diversitySampleSize: 26,
+      }),
+    );
+
+    expect(summary).toContain("samples=27(episodes=6+semantic=21)");
+    expect(summary).toContain("diversity=0.81(21/26)");
+    // 26 - 21 = 5 episodes in the slice against 6 retrieved: the one-episode
+    // gap to `samples` is the cap binding, and it is now derivable on the page.
+    expect(summary).toContain("`diversity` divides by the top-N episode slice plus the same semantic");
   });
 
   it("prints the evidence addends and marks the line when their sum was clamped", () => {

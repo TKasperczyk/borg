@@ -310,7 +310,8 @@ Retrieved evidence:
 
 <borg_retrieval_confidence>
 Retrieval confidence (internal, for calibrating certainty in my response):
-overall=0.74(s2_floor=0.45) evidence=0.70(ep=0.55/1.00+sem=0.15/0.30) coverage=0.40(2/5) diversity=0.50(1/2) samples=2 contradictions=present
+overall=0.74(s2_floor=0.45) evidence=0.70(ep=0.55/1.00+sem=0.15/0.30) coverage=0.40(2/5) diversity=0.50(1/2) samples=2(episodes=2+semantic=0) contradictions=present
+`samples`, `coverage`'s numerator and `diversity`'s denominator are one retrieval counted three ways, not three populations: `samples` is every episode plus every semantic hit, `coverage` divides that same total by this turn's retrieval limit, and `diversity` divides by the top-N episode slice plus the same semantic hits -- so subtracting `semantic` from diversity's denominator gives the slice, and its gap to `samples` is exactly the episodes past it.
 `s2_floor` is where `overall` alone takes this turn to S2. It is the fourth test in the path ladder, not the only one: reflective mode and high stakes take S2 above the floor, idle mode takes S1 below it, and an operational-contradiction override outranks all four.
 </borg_retrieval_confidence>
 

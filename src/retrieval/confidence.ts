@@ -17,6 +17,13 @@ export type RetrievalConfidence = {
   sourceDiversity: number;
   contradictionPresent: boolean;
   sampleSize: number;
+  // The semantic half of `sampleSize`. Both ratios below add this same count to
+  // their own episode half, but they count episodes differently -- `sampleSize`
+  // takes every episode, `diversitySampleSize` only the top-N slice. Without
+  // this split the two denominators differ by an amount the render cannot
+  // attribute, and a reader sees an unexplained off-by-N between the sample
+  // figure and the diversity fraction printed next to it.
+  semanticSampleSize: number;
   // The denominators the two ratios were actually divided by. Neither is
   // `sampleSize`, and neither is a constant, so a 1.00 on either line is only
   // readable next to the figure it saturated against. Carried on the result so
@@ -214,6 +221,7 @@ export function computeRetrievalConfidence(
       sourceDiversity: 0,
       contradictionPresent,
       sampleSize: 0,
+      semanticSampleSize: 0,
       coverageExpected: expectedCount,
       diversitySources: 0,
       diversitySampleSize: 0,
@@ -284,7 +292,10 @@ export function computeRetrievalConfidence(
   // diversity comes from distinct `semantic:` source sets. A 1.00 there is not
   // evidence of breadth across conversations; it is the small-denominator case.
   // Both halves ship on the result as `diversitySources` / `diversitySampleSize`
-  // so the render can show the fraction rather than only its quotient.
+  // so the render can show the fraction rather than only its quotient, and
+  // `semanticSampleSize` ships alongside so the shared semantic term can be
+  // subtracted out of both denominators -- otherwise the divergence from
+  // `sampleSize` is visible on the page but not attributable to this cap.
   const diversitySampleSize = topEpisodes.length + semanticEvidence.count;
   const sourceDiversity =
     diversitySampleSize === 0 ? 0 : clamp01(participantSignatures.size / diversitySampleSize);
@@ -309,6 +320,7 @@ export function computeRetrievalConfidence(
     sourceDiversity,
     contradictionPresent,
     sampleSize: episodes.length + semanticEvidence.count,
+    semanticSampleSize: semanticEvidence.count,
     coverageExpected: Math.max(1, expectedCount),
     diversitySources: participantSignatures.size,
     diversitySampleSize,

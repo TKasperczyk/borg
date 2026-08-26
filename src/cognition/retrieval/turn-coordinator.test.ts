@@ -284,6 +284,7 @@ function makeRetrievedContext(): RetrievedContext {
       sourceDiversity: 0,
       contradictionPresent: false,
       sampleSize: 0,
+      semanticSampleSize: 0,
       coverageExpected: 5,
       diversitySources: 0,
       diversitySampleSize: 0,

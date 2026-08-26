@@ -295,6 +295,7 @@ function createRetrievalConfidence(): RetrievalConfidence {
     sourceDiversity: 1,
     contradictionPresent: false,
     sampleSize: 1,
+    semanticSampleSize: 0,
     coverageExpected: 1,
     diversitySources: 1,
     diversitySampleSize: 1,

@@ -497,6 +497,7 @@ function makeContext(overrides: Partial<DeliberationContext> = {}): Deliberation
       sourceDiversity: 0.5,
       contradictionPresent: true,
       sampleSize: 2,
+      semanticSampleSize: 0,
       coverageExpected: 5,
       diversitySources: 1,
       diversitySampleSize: 2,

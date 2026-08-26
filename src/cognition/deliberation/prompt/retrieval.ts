@@ -126,7 +126,15 @@ export function summarizeRetrievalConfidence(
     // it could not miss.
     `coverage=${confidence.coverage.toFixed(2)}(${confidence.sampleSize}/${confidence.coverageExpected})`,
     `diversity=${confidence.sourceDiversity.toFixed(2)}(${confidence.diversitySources}/${confidence.diversitySampleSize})`,
-    `samples=${confidence.sampleSize}`,
+    // Split into its two halves. The semantic count is the term both
+    // denominators share, so printing it is what makes the difference between
+    // this figure and diversity's denominator attributable rather than merely
+    // visible: subtract it from each and what is left is every episode on one
+    // side and the top-N slice on the other. Bare, the two numbers differ by an
+    // unexplained amount and the only readings available are "different
+    // populations" or "off by one", neither of which is what happened.
+    `samples=${confidence.sampleSize}(episodes=${confidence.sampleSize - confidence.semanticSampleSize}` +
+      `+semantic=${confidence.semanticSampleSize})`,
   ];
 
   if (confidence.contradictionPresent) {
@@ -136,6 +144,16 @@ export function summarizeRetrievalConfidence(
   const lines = [
     "Retrieval confidence (internal, for calibrating certainty in my response):",
     fragments.join(" "),
+    // The three counts are one retrieval counted three ways, and nothing else
+    // on the line says so. Stated every turn: on turns where the episode list
+    // fits inside the slice the two figures agree, and a rule that only appears
+    // when they disagree would make agreement look like the normal case rather
+    // than the cap not binding.
+    "`samples`, `coverage`'s numerator and `diversity`'s denominator are one retrieval counted three" +
+      " ways, not three populations: `samples` is every episode plus every semantic hit, `coverage`" +
+      " divides that same total by this turn's retrieval limit, and `diversity` divides by the top-N" +
+      " episode slice plus the same semantic hits -- so subtracting `semantic` from diversity's" +
+      " denominator gives the slice, and its gap to `samples` is exactly the episodes past it.",
     // Rendered every turn, floor or no floor: the ladder's shape is what makes
     // the floor readable, and stating it only on turns that cross would make
     // the crossing look like the only way the path is ever decided.
