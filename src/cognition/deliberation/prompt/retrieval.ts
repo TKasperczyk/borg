@@ -390,8 +390,13 @@ function verificationEvidenceCandidates(
                 item.commitment_critical_domain ?? null,
               // `payload.text` for commitment evidence is `${type}: ${directive}`, so
               // payload_total_chars never equals the canonical record's directive_total_chars.
-              // Print the canonical count here so the two blocks pair by identity rather
-              // than by inferring the wrapper and the type prefix from a residual.
+              // Print the canonical count here so the two blocks pair against a content
+              // length instead of against a serialization cost. payload_total_chars is the
+              // latter: it measures JSON.stringify output, so quotes, backslashes and
+              // newlines inside the directive inflate it by an amount no reader can derive
+              // from the page. payload_text_chars carries the pre-serialization length, and
+              // that is the number this field pairs with -- the only residual left between
+              // them is the `${type}: ` prefix.
               [VERIFICATION_COMMITMENT_DIRECTIVE_CHARS_FIELD]:
                 item.commitment_directive_chars ?? null,
             }),
@@ -514,6 +519,23 @@ function verificationPayloadJson(candidate: VerificationRetrievalCandidate): str
   return JSON.stringify(candidate.payload) ?? "null";
 }
 
+// payload_total_chars is the serialized cost of the row, not the size of what the row
+// says: JSON.stringify escapes quotes, backslashes and control characters, so a payload
+// whose text carries any of them reports more characters than it contains. The inflation
+// is invisible on the page -- nothing else printed lets a reader recover it -- which
+// silently breaks any identity built on the total. Print the pre-serialization length of
+// the payload's text field beside it so cost and content are two named numbers instead of
+// one number read as both. `null` means the payload has no text field at all (episode,
+// semantic and open-question payloads), which is not the same as a text field of length 0.
+function verificationPayloadTextChars(candidate: VerificationRetrievalCandidate): number | null {
+  const payload = candidate.payload;
+  if (typeof payload !== "object" || payload === null) {
+    return null;
+  }
+  const text = (payload as { text?: unknown }).text;
+  return typeof text === "string" ? text.length : null;
+}
+
 function renderVerificationRetrievalCandidate(
   candidate: VerificationRetrievalCandidate,
   includePayload: boolean,
@@ -530,6 +552,7 @@ function renderVerificationRetrievalCandidate(
     `payload_status="${includePayload ? "exact" : "check_not_completed_budget"}"`,
     `payload_included_chars="${includePayload ? payloadJson.length : 0}"`,
     `payload_total_chars="${payloadJson.length}"`,
+    `payload_text_chars="${verificationPayloadTextChars(candidate) ?? "none"}"`,
     `payload_json="${includePayload ? verificationXmlAttribute(payloadJson) : ""}" />`,
   ].join(" ");
 }

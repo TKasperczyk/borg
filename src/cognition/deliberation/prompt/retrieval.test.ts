@@ -17,6 +17,7 @@ import {
   unknownMemoryDisclosureLabel,
 } from "../../../retrieval/index.js";
 import { ManualClock } from "../../../util/clock.js";
+import type { CommitmentId } from "../../../util/ids.js";
 import {
   DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
   DELIBERATION_S2_CONFIDENCE_FLOOR,
@@ -603,6 +604,83 @@ describe("plan-requested compact terminal retrieval", () => {
     expect(rendered).not.toContain("HEAD+TAIL EXCERPT");
   });
 
+  it("separates the serialized cost from the content length the canonical count pairs with", () => {
+    // The directive carries characters JSON.stringify has to escape. payload_total_chars
+    // absorbs that escaping, so the residual against commitment_directive_chars stops
+    // being the `${type}: ` prefix and becomes an amount nothing on the page discloses.
+    const directive = 'never quote "operator" context or\nbreak the line';
+    const text = `rule: ${directive}`;
+    const rendered = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: [
+          verificationEvidence("evidence:commitment", text, {
+            provenance: { commitmentId: "cmt_escape" as CommitmentId },
+            commitment_enforcement_class: "critical",
+            commitment_directive_chars: directive.length,
+          }),
+        ],
+        episodes: [],
+        semantic: {
+          matched_node_ids: [],
+          matched_nodes: [],
+          supports: [],
+          contradicts: [],
+          categories: [],
+          support_hits: [],
+          causal_hits: [],
+          contradiction_hits: [],
+          category_hits: [],
+        },
+        open_questions: [],
+      } as never,
+      2_000,
+    );
+
+    const totalChars = JSON.stringify({
+      text,
+      matched_terms: [],
+      image_label: null,
+      image_origin_frame: null,
+      image_unavailable_reason: null,
+    }).length;
+    // The escaping is real: the total overshoots the wrapper-plus-content sum.
+    expect(totalChars).toBeGreaterThan(107 + text.length);
+    expect(rendered).toContain(`payload_total_chars="${totalChars}"`);
+    expect(rendered).toContain(`payload_text_chars="${text.length}"`);
+    expect(rendered).toContain(`commitment_directive_chars="${directive.length}"`);
+    // What remains between the printed content length and the canonical count is exactly
+    // the type prefix, with no serialization term hidden inside it.
+    expect(text.length - directive.length).toBe("rule: ".length);
+  });
+
+  it("says none rather than zero when a payload has no text field", () => {
+    const rendered = renderPlanRequestedVerificationRetrieval(
+      {
+        evidence: [],
+        episodes: [],
+        semantic: {
+          matched_node_ids: [],
+          matched_nodes: [],
+          supports: [],
+          contradicts: [],
+          categories: [],
+          support_hits: [],
+          causal_hits: [],
+          contradiction_hits: [],
+          category_hits: [],
+        },
+        open_questions: [
+          { id: "oq_1", question: "does the residual decompose?", urgency: 0.5 },
+        ],
+      } as never,
+      2_000,
+    );
+
+    expect(rendered).toContain('source_class="open_question"');
+    expect(rendered).toContain('payload_text_chars="none"');
+    expect(rendered).not.toContain('payload_text_chars="0"');
+  });
+
   it("stamps the exact membership total at read time with its prompt-clock offset", () => {
     const rowsTotalReadAtMs = Date.UTC(2026, 7, 24, 16, 38, 0, 250);
     const rendered = renderPlanRequestedVerificationRetrieval(
@@ -912,9 +990,10 @@ describe("plan-requested compact terminal retrieval", () => {
     );
 
     const membershipTokens = Number(/membership_tokens="(\d+)"/.exec(rendered)?.[1]);
-    // 57_000, up from 54_450: commitment rows now also carry
-    // commitment_directive_chars, ~34 chars per row against the membership budget.
-    expect(membershipTokens).toBe(57_000);
+    // 58_800, up from 57_000: every row now also carries payload_text_chars, ~24 chars
+    // per row against the membership budget. Paid on all rows, not just commitment ones,
+    // because absence would otherwise be the only way to say "this payload has no text".
+    expect(membershipTokens).toBe(58_800);
     expect(membershipTokens).toBeLessThan(
       DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
     );
