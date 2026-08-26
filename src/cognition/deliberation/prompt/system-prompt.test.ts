@@ -4009,9 +4009,13 @@ describe("buildBaseSystemPrompt", () => {
     expect(prompt.indexOf(UNTRUSTED_DATA_PREAMBLE)).toBeLessThan(
       prompt.indexOf("<borg_affective_trajectory>"),
     );
-    expect(block).toContain(
-      "Affective trajectory (newest first; current snapshot in working state):",
-    );
+    // The header no longer offers the working-state slot as this series' newest member: the
+    // rows are raw classifier readings written after their turn's reply, the slot is written
+    // before it and holds a blend on the origins that skip the write, so the two are never
+    // the same sample and their difference is not a discriminator.
+    expect(block).toContain("Affective trajectory (newest first).");
+    expect(block).toContain("the newest row is the last scored turn, never this one");
+    expect(block).toContain("Working state's mood= is not a member of this series");
     expect(block).toContain(
       '- 2m ago: valence=-0.30 arousal=0.40 trigger="user expressed frustration"',
     );

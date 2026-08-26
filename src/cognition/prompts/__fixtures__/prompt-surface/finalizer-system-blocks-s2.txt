@@ -285,7 +285,7 @@ disclosure: disclosure_class=self_private private-to=unknown; I can use this int
 Working memory: entities=rollout, backend debt; mood=0.30/0.40
 Both fields above were extracted this turn from one text: the inbound message batch that arrived this turn -- the sender's words, not mine. They are replaced wholesale every turn, never merged with the last one.
 entities= is therefore a list of terms the extractor found in that text. A term is on it because it was in the input -- not because I know it, hold it, or have checked it, and not because it ranks above the others. Something I do know is absent unless that text named it, and a term dropping off next turn carries no information.
-mood= scores that text from its author's perspective -- on this origin the sender's affect, not mine. If the affective classifier failed this turn, the previous value is carried forward instead and renders identically; the discriminator for that is outside this prompt.
+mood= scores that text from its author's perspective -- on this origin the sender's affect, not mine. If the affective classifier failed this turn, the previous value is carried forward instead and renders identically; the discriminator for that is outside this prompt (a `perception.classifier.degraded` event) and reaches this page one turn later, as the presence or absence of a trajectory row for this turn.
 <pending_actions>
 These are unresolved operational follow-ups, not facts about the user.
 I do not treat them as authoritative claims about identity, relationships, or biography.
@@ -294,7 +294,7 @@ I do not treat them as authoritative claims about identity, relationships, or bi
 </borg_working_state>
 
 <borg_affective_trajectory>
-Affective trajectory (newest first; current snapshot in working state):
+Affective trajectory (newest first). Each row is one turn's raw classifier reading of the text that arrived that turn, written after the reply: the newest row is the last scored turn, never this one. Rows exist only for undegraded user turns -- a turn missing here was autonomous or had a dead classifier, never a turn that felt nothing. Working state's mood= is not a member of this series (this turn's own raw reading on an undegraded user turn, a carried-forward blend otherwise), so comparing it against the newest row settles neither.
 - ~0s ago: valence=0.20 arousal=0.60 trigger="Prompt-surface fixture capture is underway."
 </borg_affective_trajectory>
 

@@ -66,7 +66,7 @@ I do not treat them as authoritative claims about identity, relationships, or bi
 </borg_working_state>
 
 <borg_affective_trajectory>
-Affective trajectory (newest first; current snapshot in working state):
+Affective trajectory (newest first). Each row is one turn's raw classifier reading of the text that arrived that turn, written after the reply: the newest row is the last scored turn, never this one. Rows exist only for undegraded user turns -- a turn missing here was autonomous or had a dead classifier, never a turn that felt nothing. Working state's mood= is not a member of this series (this turn's own raw reading on an undegraded user turn, a carried-forward blend otherwise), so comparing it against the newest row settles neither.
 - ~0s ago: valence=0.20 arousal=0.60 trigger="Prompt-surface fixture capture is underway."
 </borg_affective_trajectory>
 

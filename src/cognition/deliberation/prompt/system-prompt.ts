@@ -2266,7 +2266,7 @@ function workingStateMoodProvenance(turnOrigin: DeliberationContext["turnOrigin"
     return "mood= is not a reading of this turn on this origin: the value shown is the one already in working memory, an EMA blend (weight 0.3 on each incoming reading) over earlier undegraded user turns in this session. It measures nothing in the text above.";
   }
 
-  return "mood= scores that text from its author's perspective -- on this origin the sender's affect, not mine. If the affective classifier failed this turn, the previous value is carried forward instead and renders identically; the discriminator for that is outside this prompt.";
+  return "mood= scores that text from its author's perspective -- on this origin the sender's affect, not mine. If the affective classifier failed this turn, the previous value is carried forward instead and renders identically; the discriminator for that is outside this prompt (a `perception.classifier.degraded` event) and reaches this page one turn later, as the presence or absence of a trajectory row for this turn.";
 }
 
 function summarizeWorkingMemory(
@@ -2587,8 +2587,19 @@ function summarizeAffectiveTrajectory(
     return null;
   }
 
+  // "current snapshot in working state" said the working-state `mood=` was this series'
+  // newest member. It is never that, on either branch. The rows are the raw classifier
+  // readings stored by `mood.ts` (`INSERT INTO mood_history` takes `input.valence`, not the
+  // blended `next.valence`), written by reflection after the reply -- so the newest row is
+  // the previous scored turn. The slot is written earlier, by the perception gateway: this
+  // turn's own raw reading on an undegraded user turn, and otherwise the blend reflection
+  // last left in working memory, which no row ever carries. Same-quantity-different-turn on
+  // one branch, different-quantity on the other, and unequal either way -- which is what
+  // made the header's implied comparison look like a discriminator when it decides nothing.
+  // What the series does decide is one-sided and worth naming: a row exists only where the
+  // classifier ran, so an absent turn is an autonomous turn or a dead classifier.
   return [
-    "Affective trajectory (newest first; current snapshot in working state):",
+    "Affective trajectory (newest first). Each row is one turn's raw classifier reading of the text that arrived that turn, written after the reply: the newest row is the last scored turn, never this one. Rows exist only for undegraded user turns -- a turn missing here was autonomous or had a dead classifier, never a turn that felt nothing. Working state's mood= is not a member of this series (this turn's own raw reading on an undegraded user turn, a carried-forward blend otherwise), so comparing it against the newest row settles neither.",
     ...entries.slice(0, 5).map((entry) => {
       const triggerText =
         entry.trigger_reason === null ? "" : compactPromptText(entry.trigger_reason, 120);
