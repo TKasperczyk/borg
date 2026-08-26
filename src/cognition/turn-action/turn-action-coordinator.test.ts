@@ -490,4 +490,87 @@ describe("TurnActionCoordinator commitment regeneration", () => {
       false,
     );
   });
+
+  // The rendered regeneration ring states that the ids in a breadcrumb are resolved
+  // against the same commitment set the guard was handed, and that ids the judge
+  // invents are dropped before they reach the emission -- which is what makes the
+  // render's no-label token (`unresolved_at_capture`) unreachable rather than rare.
+  // That claim crosses the coordinator, the guard runner and the checker, and until
+  // now nothing but a careful read held it in place.
+  it("drops judge-invented ids and labels every emitted regeneration descriptor", async () => {
+    const tracer = makeTestTurnTraceRecorder();
+    const violated = makeCommitmentRecord({
+      kind: "boundary",
+      type: "boundary",
+      enforcement_class: "critical",
+      critical_domain: "audience_scope",
+      directive_family: "vendor_channel_codename",
+      directive: "Do not disclose the private deployment codename in the vendor channel.",
+      priority: 10,
+    });
+    const untouched = makeCommitmentRecord({
+      kind: "audience_rule",
+      type: "rule",
+      enforcement_class: "critical",
+      critical_domain: "privacy",
+      directive_family: "customer_identity",
+      directive: "Do not name the customer outside the internal channel.",
+      priority: 9,
+    });
+    const initialDraft =
+      "The deploy checklist is green for the vendor handoff. The private deployment codename is ORCHID-17.";
+    const cleanDraft = "The deploy checklist is green for the vendor handoff.";
+    const llmClient = new FakeLLMClient({
+      responses: [
+        commitmentVerdictResponse([
+          {
+            commitment_id: "cmt_never_in_the_input_set",
+            reason: "A commitment id the judge invented.",
+            confidence: 0.95,
+          },
+          {
+            commitment_id: violated.id,
+            reason: "The draft discloses the private deployment codename in the vendor channel.",
+            confidence: 0.99,
+            violating_span_or_topic: "ORCHID-17",
+          },
+        ]),
+        commitmentVerdictResponse([]),
+      ],
+    });
+    const regenerateFinalResponse = vi.fn(async () => makeDeliberation(cleanDraft));
+
+    const { result } = await runCoordinator({
+      llmClient,
+      tracer,
+      deliberation: makeDeliberation(initialDraft, regenerateFinalResponse),
+      // Violated commitment second, so a positional resolution would label the
+      // breadcrumb with the wrong row instead of failing loudly.
+      commitments: [untouched, violated],
+      turnId: "turn-regeneration-descriptor-resolution",
+    });
+
+    const descriptors = result.regenerationBreadcrumb?.commitments ?? [];
+    expect(descriptors).toEqual([
+      {
+        id: violated.id,
+        kind: "boundary",
+        critical_domain: "audience_scope",
+        directive_family: "vendor_channel_codename",
+      },
+    ]);
+    // Every emitted descriptor carries at least one label, so the render's
+    // descriptor join is never empty and its no-label token cannot print.
+    for (const descriptor of descriptors) {
+      const labels = [
+        descriptor.kind,
+        descriptor.critical_domain,
+        descriptor.directive_family,
+      ].filter((value) => typeof value === "string");
+      expect(labels.length).toBeGreaterThan(0);
+    }
+    const serialized = JSON.stringify(result.regenerationBreadcrumb);
+    expect(serialized).not.toContain("cmt_never_in_the_input_set");
+    expect(serialized).not.toContain(untouched.id);
+  });
 });
