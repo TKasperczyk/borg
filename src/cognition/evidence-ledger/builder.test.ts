@@ -4064,8 +4064,19 @@ describe("EvidenceLedgerBuilder", () => {
     expect(compactedSummaryText).toContain(
       "Not counted above: salience_dropped_threads=0, records_below_draw_floor=0",
     );
+    // The label's load-bearing part is the class and the private-to binding; the sentence after
+    // them is fixed boilerplate identical on every label. Pinning the boilerplate's last word
+    // pinned a byte margin rather than an invariant, and the margin was spent when the totals
+    // identity moved above the group detail -- so assert what has to survive, not how much of
+    // the tail happened to fit.
     expect(compactedSummaryText).toContain(
-      "disclosure_label=disclosure_class=unknown private-to=unknown; I can use this internally; I do not disclose it to the current audience unless authorized",
+      "disclosure_label=disclosure_class=unknown private-to=unknown; I can use this internally",
+    );
+    // The thread totals sit with the bounds, above the group detail: truncation may take a
+    // sample, never the identity that says the three thread counts close and that the record
+    // count is a different unit.
+    expect(compactedSummaryText).toContain(
+      "threads_built=3 = rendered 1 + omitted 2 + dropped 0; records_considered=4",
     );
     expect(compactedSummaryText).not.toContain("Unknown sample should be dropped");
     expect(compactedSummaryText).toContain("[evidence ledger entry truncated");

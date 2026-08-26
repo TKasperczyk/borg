@@ -645,6 +645,8 @@ function actionThreadSummaryDetails(
 
 export function renderOlderActionThreadsSummary(input: {
   groups: readonly OlderActionThreadSummaryGroup[];
+  renderedThreadCount: number;
+  threadsBuiltCount: number;
   consideredRecordCount: number;
   sourceRecordLimit: number;
   salienceDroppedThreadCount: number;
@@ -656,13 +658,26 @@ export function renderOlderActionThreadsSummary(input: {
   // threads whose salience class resolved to null, and records below the source draw floor
   // (never counted, because the draw stops at the limit). Naming both keeps "omitted" from
   // reading as a complete accounting of everything this section did not show.
+  //
+  // Three of these counts are threads and one -- `records_considered` -- is records,
+  // distinguished only by a field-name prefix, and the total that would let the thread counts
+  // be checked against each other was never printed. Without it the three populations read as
+  // summable against the record total, which they are not: every considered record lands in
+  // exactly one thread (`buildActionThreads` groups the drawn records and nothing else), so
+  // the record total exceeds the thread total by the merge surplus and the sum never closes.
+  // `threads_built` comes from the builder's own thread count rather than from adding the
+  // three, so the printed identity is falsifiable instead of tautological.
+  //
+  // `draw_saturated` went out at the same time: it was the comparison of two numbers printed
+  // beside it, and the same bit a third time in `records_below_draw_floor`. Three copies of
+  // one bit cost the space this identity needed, and the section truncates from the tail.
   const drawSaturated = input.consideredRecordCount >= input.sourceRecordLimit;
 
   return [
     `Older action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}.`,
     `Not counted above: salience_dropped_threads=${input.salienceDroppedThreadCount}, records_below_draw_floor=${
       drawSaturated ? "unknown_count" : "0"
-    } (records_considered=${input.consideredRecordCount}, source_record_limit=${input.sourceRecordLimit}, draw_saturated=${drawSaturated ? "yes" : "no"}).`,
+    } (threads_built=${input.threadsBuiltCount} = rendered ${input.renderedThreadCount} + omitted ${olderThreads.length} + dropped ${input.salienceDroppedThreadCount}; records_considered=${input.consideredRecordCount} records, source_record_limit=${input.sourceRecordLimit}).`,
     ...groups.map(
       (group) =>
         `- audience_scope=${group.audienceScope} salience_class=${group.salienceClass} ${actionThreadSummaryDetails(group.threads, group.disclosureLabel)}`,

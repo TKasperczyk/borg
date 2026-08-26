@@ -209,6 +209,8 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
     trust_rank: ACTION_TRUST_RANK,
     text: renderOlderActionThreadsSummary({
       groups: summaryGroups,
+      renderedThreadCount: renderedThreads.length,
+      threadsBuiltCount: threads.length,
       consideredRecordCount: actionCandidates.length,
       sourceRecordLimit,
       salienceDroppedThreadCount,
