@@ -144,18 +144,16 @@ describe("retrieval confidence prompt rendering", () => {
   });
 
   it("prints both ratios with the denominator each was divided by", () => {
-    // A quotient on its own cannot distinguish a measured ratio from one pinned
-    // at a ceiling it could not miss. Coverage's denominator is the retrieval
-    // limit -- which also capped the episode half of its own numerator -- and
-    // diversity's is the top-N slice *plus* the semantic hit count, which is
-    // bounded by neither, so neither is readable against `samples`.
-    const saturated = summarizeRetrievalConfidence(
+    // Coverage reads only the episodic half of `samples` against its stable
+    // target. Diversity reads a different numerator and the top-N episode slice
+    // plus semantic matches, so both fractions must remain explicit.
+    const summary = summarizeRetrievalConfidence(
       makeRetrievalConfidence({
         overall: 0.8,
         evidenceStrength: 0.8,
-        coverage: 1,
-        sampleSize: 23,
-        coverageExpected: 4,
+        coverage: 0.8,
+        sampleSize: 17,
+        coverageExpected: 5,
         sourceDiversity: 0.94,
         diversitySources: 17,
         diversitySampleSize: 18,
@@ -165,14 +163,15 @@ describe("retrieval confidence prompt rendering", () => {
       }),
     );
 
-    expect(saturated).toContain("coverage=1.00(23/4)");
-    expect(saturated).toContain("diversity=0.94(17/18)");
-    expect(saturated).toContain("samples=23(episodes=10+semantic=13)");
+    expect(summary).toContain("coverage=0.80(4/5)");
+    expect(summary).toContain("diversity=0.94(17/18)");
+    expect(summary).toContain("samples=17(episodes=4+semantic=13)");
+    expect(summary).toContain("semantic matches are excluded because they already contribute");
   });
 
   it("splits `samples` so diversity's smaller denominator is attributable, not just visible", () => {
-    // `samples` counts every episode; diversity's denominator counts only the
-    // top-N slice, plus the semantic hits both include. Bare, the two figures
+    // `samples` counts every episode plus semantic matches; diversity's
+    // denominator counts only the top-N episode slice plus those matches. Bare, the two figures
     // differ by an amount the page cannot explain, and the readings available
     // to a reader are "different populations" or "off by one" -- neither of
     // which is what happened. Printing the shared semantic term makes both
@@ -195,7 +194,9 @@ describe("retrieval confidence prompt rendering", () => {
     expect(summary).toContain("diversity=0.81(21/26)");
     // 26 - 21 = 5 episodes in the slice against 6 retrieved: the one-episode
     // gap to `samples` is the cap binding, and it is now derivable on the page.
-    expect(summary).toContain("`diversity` divides by the top-N episode slice plus the same semantic");
+    expect(summary).toContain(
+      "`diversity` divides distinct source signatures by the top-N episode slice plus the semantic",
+    );
   });
 
   it("prints the evidence addends and marks the line when their sum was clamped", () => {

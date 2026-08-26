@@ -641,7 +641,6 @@ export class RetrievalPipeline {
         semanticProjection.contradiction_hits.length > 0 ||
         semanticProjection.contradicts.length > 0,
       nowMs,
-      expectedCount: limit,
     });
 
     if (recallStateContext !== null && options.recordRetrieval !== false) {
