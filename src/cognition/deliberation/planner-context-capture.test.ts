@@ -185,6 +185,7 @@ describe("planner context capture", () => {
               error_streak_threshold: 3,
               error_paused_until: null,
               bypass_count: 0,
+              freshness_bypass_cap: 3,
               window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
             },

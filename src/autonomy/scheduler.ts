@@ -759,6 +759,7 @@ export class AutonomyScheduler {
           this.fleetBrakeOptions,
         ),
         bypass_count: fleetBrakeMetadata.bypass_count,
+        freshness_bypass_cap: this.fleetBrakeOptions.freshnessBypassCap,
         window_outcomes: {
           headway: this.options.wakeRepository.countSince(budgetCutoff, { outcome: "headway" }),
           silent: this.options.wakeRepository.countSince(budgetCutoff, { outcome: "silent" }),

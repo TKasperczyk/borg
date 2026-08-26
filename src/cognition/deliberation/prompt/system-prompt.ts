@@ -1899,15 +1899,22 @@ export function summarizeAutonomySchedulerState(
   // errored wake, so it carries its own scope rather than inheriting
   // empty_streak's. Without that, error_streak=0 next to a non-zero error tally
   // reads as "the errors were separated by successes", which the counter does
-  // not mean and cannot support.
+  // not mean and cannot support. bypass_count is a fourth population again, and
+  // printing it bare beside two counters that carry both a bound and a scope
+  // lends it their finished look without their guarantee: it is neither a streak
+  // nor a window count, its bound lives in the brake options rather than on the
+  // value, and its reset condition is narrower than either neighbour's. It
+  // states its own scope for the same reason they do.
   lines.push(
     `empty_streak=${brake.empty_streak}/${brake.empty_streak_threshold} error_streak=${
       brake.error_streak
-    }/${brake.error_streak_threshold} bypass_count=${brake.bypass_count}${
+    }/${brake.error_streak_threshold} bypass_count=${brake.bypass_count}/${
+      brake.freshness_bypass_cap
+    }${
       brake.streak_anchor_ts === null
         ? ""
         : ` current empty streak began ${new Date(brake.streak_anchor_ts).toISOString()}`
-    } -- empty_streak counts consecutive completed operational wakes that came back silent, with no time bound. Errored and busy-skipped wakes neither increment nor reset it, so it is consecutive within the completed-operational subsequence rather than within the wake sequence, and one streak can span any number of intervening wakes and any amount of wall-clock. error_streak counts something narrower than the error tally below: only a wake that failed inside the turn, with a provider or auth fault, increments it. Wakes that fail before the turn is built, and in-turn failures of any other kind, record error without touching it -- and any successful wake, contemplative included, resets it to zero. So error_streak=0 beside a non-zero error count is the ordinary case, not a sign that the errors were separated by successes.`,
+    } -- empty_streak counts consecutive completed operational wakes that came back silent, with no time bound. Errored and busy-skipped wakes neither increment nor reset it, so it is consecutive within the completed-operational subsequence rather than within the wake sequence, and one streak can span any number of intervening wakes and any amount of wall-clock. error_streak counts something narrower than the error tally below: only a wake that failed inside the turn, with a provider or auth fault, increments it. Wakes that fail before the turn is built, and in-turn failures of any other kind, record error without touching it -- and any successful wake, contemplative included, resets it to zero. So error_streak=0 beside a non-zero error count is the ordinary case, not a sign that the errors were separated by successes. bypass_count is neither a streak nor a window count: it counts freshness bypasses spent, and a bypass is only ever offered while the empty-streak cooldown is actively holding, so a clear cooldown freezes the counter rather than resetting it, and a deadline bypass does not spend one. It returns to zero only on an operational wake that came back with headway, or a contemplative wake that delivered an outbound post -- neither the cooldown expiring nor the budget window rolling clears it, so a non-zero value can outlive the cooldown that produced it and is not a count over the window below. At ${brake.freshness_bypass_cap} a fresh concern stops earning a bypass and is refused along with everything else the cooldown is holding.`,
   );
   lines.push(
     `Outcome tally over the budget window above, both source categories: headway=${

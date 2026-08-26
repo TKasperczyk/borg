@@ -184,7 +184,24 @@ export type AutonomySchedulerFleetBrakeDescription = {
   error_streak: number;
   error_streak_threshold: number;
   error_paused_until: number | null;
+  /**
+   * Freshness bypasses spent -- neither a streak nor a window count. A bypass is
+   * only ever offered while the empty-streak cooldown is actively holding, so a
+   * clear cooldown freezes this rather than resetting it; a deadline bypass does
+   * not spend one. It returns to zero only on an operational wake that came back
+   * `headway` or a contemplative wake that delivered an outbound post -- not on
+   * cooldown expiry and not on the budget window rolling -- so a non-zero value
+   * can outlive the cooldown that produced it and is not a count over
+   * `window_outcomes`.
+   */
   bypass_count: number;
+  /**
+   * The bound `bypass_count` is spent against: at the cap a fresh concern stops
+   * earning a bypass and is refused with everything else the cooldown is
+   * holding. Carried here because the counter is otherwise a bare number whose
+   * distance to its own refusal is unreadable from the value alone.
+   */
+  freshness_bypass_cap: number;
   /**
    * Outcome tally over the *budget* window, across both source categories.
    * A different population from `empty_streak` above: it is time-bounded where
