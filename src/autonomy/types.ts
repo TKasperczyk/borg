@@ -129,6 +129,18 @@ export type AutonomySchedulerWakeGroupDescription = {
   trigger_name: AutonomyWakeSourceName;
   wake_count: number;
   in_flight: number;
+  /**
+   * Fire stamps of the rows counted by `in_flight`, oldest first.
+   *
+   * `in_flight` alone is identity-free: an outcome write that never lands (the
+   * bookkeeping catch around recordOutcome returns without recording one) leaves
+   * its row NULL forever, and a permanently orphaned row and a healthy transient
+   * both render as the same integer, with the block's arithmetic closing either
+   * way. Carrying the stamps makes the two separable across reads -- a stamp that
+   * repeats is one row not moving; a stamp that changes is a new wake -- which is
+   * a comparison the count cannot support at any number of reads.
+   */
+  in_flight_started_at: number[];
   outcome_counts: Record<AutonomyWakeOutcome, number>;
 };
 

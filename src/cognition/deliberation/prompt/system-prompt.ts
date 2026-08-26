@@ -1752,6 +1752,26 @@ function summarizeDiscourseControl(
   return lines.length === 0 ? null : lines.join("\n");
 }
 
+// A window's in_flight rows are bounded by the budget limit, so the list is
+// short, but it is not bounded to one. Cap the print and name what the cap
+// dropped rather than truncating silently. Oldest first is the ordering the
+// description declares and the one that matters: a row whose outcome write was
+// skipped never moves, so it only sinks further to the head as newer wakes
+// resolve past it, and the head of this list is where a stuck row lives.
+const IN_FLIGHT_STAMP_PRINT_LIMIT = 3;
+
+function formatInFlightStamps(startedAt: readonly number[]): string {
+  if (startedAt.length === 0) {
+    return "";
+  }
+
+  const shown = startedAt.slice(0, IN_FLIGHT_STAMP_PRINT_LIMIT);
+  const omitted = startedAt.length - shown.length;
+  const stamps = shown.map((ts) => new Date(ts).toISOString()).join(", ");
+
+  return `(fired ${stamps}${omitted === 0 ? "" : `, ${omitted} newer not listed`})`;
+}
+
 export function summarizeAutonomySchedulerState(
   schedulerState: NonNullable<
     NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
@@ -1817,8 +1837,13 @@ export function summarizeAutonomySchedulerState(
       "Wakes in current window by trigger_name:",
       ...budget.wakes_in_current_window_by_trigger.map(
         (group) =>
-          `- trigger_name=${group.trigger_name} wake_count=${group.wake_count} in_flight=${group.in_flight} outcome_counts(headway=${group.outcome_counts.headway} silent=${group.outcome_counts.silent} error=${group.outcome_counts.error} busy=${group.outcome_counts.busy})`,
+          `- trigger_name=${group.trigger_name} wake_count=${group.wake_count} in_flight=${group.in_flight}${formatInFlightStamps(group.in_flight_started_at)} outcome_counts(headway=${group.outcome_counts.headway} silent=${group.outcome_counts.silent} error=${group.outcome_counts.error} busy=${group.outcome_counts.busy})`,
       ),
+      // Rendered whenever the section renders, including on every read where
+      // in_flight is 0 everywhere: a rule that appeared only alongside a
+      // non-zero count would make the zero read as "no such state exists"
+      // rather than as "none right now".
+      "in_flight counts rows written when the wake fired whose outcome was never recorded, stamped with when each fired. Nothing times that state out: if the outcome write is skipped the row stays in_flight permanently, and wake_count still equals in_flight plus the outcome_counts, so the arithmetic closing here is not evidence the row is live. The stamps are the only cross-read identity this block carries -- one repeating across two reads is a single row not moving, one that changes is a different wake -- and the counts alone cannot support that comparison at any number of reads.",
     );
   }
 

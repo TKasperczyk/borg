@@ -201,6 +201,7 @@ describe("planner context capture", () => {
                   trigger_name: "scheduled_wake",
                   wake_count: 1,
                   in_flight: 1,
+                  in_flight_started_at: [NOW_MS - 30 * 60_000],
                   outcome_counts: {
                     headway: 0,
                     silent: 0,

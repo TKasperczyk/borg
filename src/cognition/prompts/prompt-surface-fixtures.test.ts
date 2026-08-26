@@ -108,6 +108,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
         trigger_name: "scheduled_reflection",
         wake_count: 3,
         in_flight: 0,
+        in_flight_started_at: [],
         outcome_counts: {
           headway: 1,
           silent: 2,
@@ -119,6 +120,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
         trigger_name: "goal_followup_due",
         wake_count: 1,
         in_flight: 0,
+        in_flight_started_at: [],
         outcome_counts: {
           headway: 0,
           silent: 0,

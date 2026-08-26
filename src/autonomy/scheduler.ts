@@ -692,6 +692,7 @@ export class AutonomyScheduler {
           trigger_name: wake.trigger_name,
           wake_count: 0,
           in_flight: 0,
+          in_flight_started_at: [],
           outcome_counts: {
             headway: 0,
             silent: 0,
@@ -705,6 +706,9 @@ export class AutonomyScheduler {
       group.wake_count += 1;
       if (wake.outcome === null) {
         group.in_flight += 1;
+        // listSince returns ts DESC; the description states oldest first so a
+        // stuck row keeps a stable leading position across reads.
+        group.in_flight_started_at.unshift(wake.ts);
       } else {
         group.outcome_counts[wake.outcome] += 1;
       }

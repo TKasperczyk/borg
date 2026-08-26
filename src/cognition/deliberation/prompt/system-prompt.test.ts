@@ -2643,6 +2643,7 @@ describe("buildBaseSystemPrompt", () => {
                     trigger_name: "scheduled_reflection",
                     wake_count: 4,
                     in_flight: 1,
+                    in_flight_started_at: [NOW_MS - 45 * 60_000],
                     outcome_counts: {
                       headway: 2,
                       silent: 1,
@@ -2654,6 +2655,7 @@ describe("buildBaseSystemPrompt", () => {
                     trigger_name: "goal_followup_due",
                     wake_count: 1,
                     in_flight: 0,
+                    in_flight_started_at: [],
                     outcome_counts: {
                       headway: 0,
                       silent: 0,
@@ -2678,10 +2680,15 @@ describe("buildBaseSystemPrompt", () => {
         "Wake budget: used=5 / limit=6 / window=1h rolling, covering wakes stamped at or after 2023-11-14T21:13:20.000Z",
       );
       expect(block).toContain(
-        "trigger_name=scheduled_reflection wake_count=4 in_flight=1 outcome_counts(headway=2 silent=1 error=0 busy=0)",
+        "trigger_name=scheduled_reflection wake_count=4 in_flight=1(fired 2023-11-14T21:28:20.000Z) outcome_counts(headway=2 silent=1 error=0 busy=0)",
       );
+      // in_flight=0 prints bare: an empty stamp list has nothing to name, and a
+      // count of zero cannot be mistaken for a row whose identity was withheld.
       expect(block).toContain(
         "trigger_name=goal_followup_due wake_count=1 in_flight=0 outcome_counts(headway=0 silent=0 error=1 busy=0)",
+      );
+      expect(block).toContain(
+        "The stamps are the only cross-read identity this block carries -- one repeating across two reads is a single row not moving, one that changes is a different wake -- and the counts alone cannot support that comparison at any number of reads.",
       );
       expect(block).toContain("Next budget slot frees: 2023-11-14T22:43:20.000Z (in 30m).");
       expect(block).toContain(
@@ -2689,6 +2696,84 @@ describe("buildBaseSystemPrompt", () => {
       );
     },
   );
+
+  // in_flight is the one wake state with no terminal write of its own: the
+  // bookkeeping catch around recordOutcome returns without recording anything,
+  // so an orphaned row stays NULL forever and wake_count still equals in_flight
+  // plus the outcome_counts. The count alone is therefore identity-free -- a
+  // permanent orphan and a healthy transient render as the same integer with the
+  // arithmetic closing either way -- and the fire stamps are what makes the two
+  // separable across reads.
+  it("names the in-flight rows by fire stamp, oldest first, and names what the cap dropped", () => {
+    const block = extractBlock(
+      buildBaseSystemPrompt(
+        makeContext({
+          turnOrigin: "user",
+          turnMechanismEvidence: {
+            recentSuppressions: [],
+            recentRegenerations: [],
+            autonomySchedulerState: {
+              observedAt: NOW_MS,
+              enabled: true,
+              nextTickAt: NOW_MS + 60_000,
+              scheduledTickAt: NOW_MS + 60_000,
+              fleetBrake: {
+                enabled: true,
+                empty_streak: 0,
+                empty_streak_threshold: 5,
+                streak_anchor_ts: null,
+                cooldown_until: null,
+                error_streak: 0,
+                error_streak_threshold: 3,
+                error_paused_until: null,
+                bypass_count: 0,
+                freshness_bypass_cap: 3,
+                window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+                window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+              },
+              budget: {
+                max_wakes_per_window: 15,
+                window_ms: 24 * 60 * 60_000,
+                window_started_at: NOW_MS - 24 * 60 * 60_000,
+                used_in_current_window: 5,
+                reserved_contemplative_wakes_per_window: 1,
+                contemplative_used_in_current_window: 0,
+                wakes_in_current_window_by_trigger: [
+                  {
+                    trigger_name: "goal_followup_due",
+                    wake_count: 5,
+                    in_flight: 5,
+                    in_flight_started_at: [
+                      NOW_MS - 4 * 60 * 60_000,
+                      NOW_MS - 3 * 60 * 60_000,
+                      NOW_MS - 2 * 60 * 60_000,
+                      NOW_MS - 60 * 60_000,
+                      NOW_MS - 30 * 60_000,
+                    ],
+                    outcome_counts: { headway: 0, silent: 0, error: 0, busy: 0 },
+                  },
+                ],
+                next_budget_slot_frees_at: null,
+              },
+            },
+          },
+        }),
+        { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+      ),
+      "borg_mechanism_evidence",
+    );
+
+    // The three oldest print because a row whose outcome write was skipped only
+    // sinks further toward the head as newer wakes resolve past it. The residue
+    // is named rather than truncated away, so the printed list is never readable
+    // as the whole population.
+    expect(block).toContain(
+      "trigger_name=goal_followup_due wake_count=5 in_flight=5(fired 2023-11-14T18:13:20.000Z, 2023-11-14T19:13:20.000Z, 2023-11-14T20:13:20.000Z, 2 newer not listed) outcome_counts(headway=0 silent=0 error=0 busy=0)",
+    );
+    expect(block).toContain(
+      "Nothing times that state out: if the outcome write is skipped the row stays in_flight permanently, and wake_count still equals in_flight plus the outcome_counts, so the arithmetic closing here is not evidence the row is live.",
+    );
+  });
 
   // observedAt is NOW_MS - 29_000, so the render clock is 29s past the scheduler read. Each case
   // places the *scheduled* (unfloored) tick somewhere against those two clocks; the assertion is
@@ -2922,6 +3007,7 @@ describe("buildBaseSystemPrompt", () => {
                   trigger_name: "goal_followup_due",
                   wake_count: 12,
                   in_flight: 0,
+                  in_flight_started_at: [],
                   outcome_counts: { headway: 4, silent: 8, error: 0, busy: 0 },
                 },
               ],

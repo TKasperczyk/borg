@@ -479,6 +479,7 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
                 value.autonomySchedulerState.budget.wakes_in_current_window_by_trigger.map(
                   (group) => ({
                     ...group,
+                    in_flight_started_at: [...group.in_flight_started_at],
                     outcome_counts: { ...group.outcome_counts },
                   }),
                 ),

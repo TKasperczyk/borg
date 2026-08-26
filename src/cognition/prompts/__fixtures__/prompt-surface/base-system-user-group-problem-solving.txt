@@ -270,6 +270,7 @@ limit=6 is the ceiling for contemplative sources only. 2 of it is reserved for t
 Wakes in current window by trigger_name:
 - trigger_name=scheduled_reflection wake_count=3 in_flight=0 outcome_counts(headway=1 silent=2 error=0 busy=0)
 - trigger_name=goal_followup_due wake_count=1 in_flight=0 outcome_counts(headway=0 silent=0 error=1 busy=0)
+in_flight counts rows written when the wake fired whose outcome was never recorded, stamped with when each fired. Nothing times that state out: if the outcome write is skipped the row stays in_flight permanently, and wake_count still equals in_flight plus the outcome_counts, so the arithmetic closing here is not evidence the row is live. The stamps are the only cross-read identity this block carries -- one repeating across two reads is a single row not moving, one that changes is a different wake -- and the counts alone cannot support that comparison at any number of reads.
 Next budget slot frees: 2023-11-15T04:13:20.000Z (in 6h).
 Scheduler loop: running, next tick 2023-11-14T22:14:20.000Z, 60000ms after that read, and 60000ms after the current_time_ms at the top of this prompt -- still ahead on both clocks.
 Fleet brake (a second refusal path, independent of the budget above): enabled, not currently holding.
