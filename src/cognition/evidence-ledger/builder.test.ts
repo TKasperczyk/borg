@@ -4064,13 +4064,12 @@ describe("EvidenceLedgerBuilder", () => {
     expect(compactedSummaryText).toContain(
       "Not counted above: salience_dropped_threads=0, records_below_draw_floor=0",
     );
-    // The label's load-bearing part is the class and the private-to binding; the sentence after
-    // them is fixed boilerplate identical on every label. Pinning the boilerplate's last word
-    // pinned a byte margin rather than an invariant, and the margin was spent when the totals
-    // identity moved above the group detail -- so assert what has to survive, not how much of
-    // the tail happened to fit.
+    // The label's load-bearing part is the class and the private-to binding; the sentence that
+    // used to follow them was fixed boilerplate identical on every label, and now sits once above
+    // the group lines instead of once per group. Assert what has to survive per group -- the two
+    // varying fields -- rather than how much of a constant tail happened to fit.
     expect(compactedSummaryText).toContain(
-      "disclosure_label=disclosure_class=unknown private-to=unknown; I can use this internally",
+      "disclosure_label=disclosure_class=unknown private-to=unknown recent_samples=",
     );
     // The thread totals sit with the bounds, above the group detail: truncation may take a
     // sample, never the identity that says the three thread counts close and that the record

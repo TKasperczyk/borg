@@ -9,7 +9,8 @@ import {
 } from "../../memory/actions/index.js";
 import type { EntityRepository } from "../../memory/commitments/index.js";
 import {
-  renderMemoryDisclosureLabelForModel,
+  memoryDisclosureInternalUseNote,
+  renderMemoryDisclosureLabelFieldsForModel,
   type MemoryDisclosureLabel,
 } from "../../retrieval/index.js";
 import { DisjointSet } from "../../util/disjoint-set.js";
@@ -640,7 +641,11 @@ function actionThreadSummaryDetails(
     )
     .join(" | ");
 
-  return `threads=${threads.length} records=${recordCount} states=${stateSummary} disclosure_label=${renderMemoryDisclosureLabelForModel(disclosureLabel)} recent_samples=${samples}`;
+  // Fields only: the internal-use sentence that would follow them is a byte-identical constant on
+  // every non-public label, so it is hoisted to the summary's own line once instead of copied onto
+  // each group. What varies -- and what the reader actually decides disclosure from -- is the class
+  // and the private-to binding, which stay here.
+  return `threads=${threads.length} records=${recordCount} states=${stateSummary} disclosure_label=${renderMemoryDisclosureLabelFieldsForModel(disclosureLabel)} recent_samples=${samples}`;
 }
 
 export function renderOlderActionThreadsSummary(input: {
@@ -668,16 +673,27 @@ export function renderOlderActionThreadsSummary(input: {
   // `threads_built` comes from the builder's own thread count rather than from adding the
   // three, so the printed identity is falsifiable instead of tautological.
   //
-  // `draw_saturated` went out at the same time: it was the comparison of two numbers printed
-  // beside it, and the same bit a third time in `records_below_draw_floor`. Three copies of
-  // one bit cost the space this identity needed, and the section truncates from the tail.
+  // `draw_saturated` went out at the same time: it was the comparison of the two numbers printed
+  // beside it, and that comparison is what `records_below_draw_floor` switches on, so the bit was
+  // on the line twice over. But the two carriers are not equally legible. The comparison is
+  // readable from any single render; the field's is an enumeration -- a count when the draw
+  // exhausted the source, a refusal when it stopped at the limit -- and a reader who has only
+  // ever seen the refusal cannot tell a discriminating token from a constant. So the refusing
+  // token names the condition it refuses under, and the bit survives on one page rather than
+  // across a series of them.
   const drawSaturated = input.consideredRecordCount >= input.sourceRecordLimit;
+  const recordsBelowDrawFloor = drawSaturated ? "unknown_count_draw_saturated" : "0";
+  // The internal-use sentence for the group lines below, hoisted out of them. It stays a separate
+  // line rather than joining the counts: this section truncates from the tail, and a note attached
+  // to the counts line would survive at the cost of the group lines it describes.
+  const disclosureNote = groups.some((group) => group.disclosureLabel.disclosureClass !== "public")
+    ? [`Groups below whose disclosure_class is not public: ${memoryDisclosureInternalUseNote()}.`]
+    : [];
 
   return [
     `Older action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}.`,
-    `Not counted above: salience_dropped_threads=${input.salienceDroppedThreadCount}, records_below_draw_floor=${
-      drawSaturated ? "unknown_count" : "0"
-    } (threads_built=${input.threadsBuiltCount} = rendered ${input.renderedThreadCount} + omitted ${olderThreads.length} + dropped ${input.salienceDroppedThreadCount}; records_considered=${input.consideredRecordCount} records, source_record_limit=${input.sourceRecordLimit}).`,
+    `Not counted above: salience_dropped_threads=${input.salienceDroppedThreadCount}, records_below_draw_floor=${recordsBelowDrawFloor} (threads_built=${input.threadsBuiltCount} = rendered ${input.renderedThreadCount} + omitted ${olderThreads.length} + dropped ${input.salienceDroppedThreadCount}; records_considered=${input.consideredRecordCount} records, source_record_limit=${input.sourceRecordLimit}).`,
+    ...disclosureNote,
     ...groups.map(
       (group) =>
         `- audience_scope=${group.audienceScope} salience_class=${group.salienceClass} ${actionThreadSummaryDetails(group.threads, group.disclosureLabel)}`,

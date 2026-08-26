@@ -6,8 +6,14 @@ import {
 } from "../../test-support/factories/memory.js";
 import { createEntityId } from "../../util/ids.js";
 import {
+  MEMORY_DISCLOSURE_INTERNAL_USE_NOTE,
+  publicMemoryDisclosureLabel,
+  selfPrivateMemoryDisclosureLabel,
+} from "../../retrieval/index.js";
+import {
   actionSalienceClass,
   allocateActionThreadRenderSlots,
+  renderOlderActionThreadsSummary,
   type ActionThread,
   type ActionThreadWithSalience,
 } from "./action-threads.js";
@@ -233,5 +239,75 @@ describe("allocateActionThreadRenderSlots", () => {
       ...Array.from({ length: 5 }, () => "borg_memory_tracking_action"),
       "completed_recent",
     ]);
+  });
+});
+
+describe("renderOlderActionThreadsSummary", () => {
+  const summaryInput = (overrides: { consideredRecordCount: number; sourceRecordLimit: number }) => ({
+    groups: [
+      {
+        audienceScope: "global" as const,
+        salienceClass: "completed_recent" as const,
+        threads: [makeCompletedThread({ audienceEntityId: QUIET_AUDIENCE_A, updatedAt: 10 })],
+        disclosureLabel: selfPrivateMemoryDisclosureLabel([QUIET_AUDIENCE_A]),
+      },
+    ],
+    renderedThreadCount: 1,
+    threadsBuiltCount: 2,
+    salienceDroppedThreadCount: 0,
+    ...overrides,
+  });
+
+  // `records_below_draw_floor` is the only field that carries whether the draw stopped at its
+  // limit or exhausted the source, and until both of its tokens are pinned together a reader who
+  // has only ever seen one of them cannot tell it apart from a constant. Assert the pair.
+  it("says which condition the record floor is unknown under", () => {
+    const saturated = renderOlderActionThreadsSummary(
+      summaryInput({ consideredRecordCount: 256, sourceRecordLimit: 256 }),
+    );
+    const exhausted = renderOlderActionThreadsSummary(
+      summaryInput({ consideredRecordCount: 4, sourceRecordLimit: 256 }),
+    );
+
+    expect(saturated).toContain("records_below_draw_floor=unknown_count_draw_saturated");
+    expect(exhausted).toContain("records_below_draw_floor=0");
+    expect(exhausted).not.toContain("unknown_count");
+  });
+
+  // The internal-use sentence is byte-identical on every non-public label, so it is stated once
+  // for the section instead of once per group: this section truncates from the tail, and the
+  // copies were spending the space the surviving group lines need.
+  it("states the internal-use note once for the section, not per group", () => {
+    const summary = renderOlderActionThreadsSummary(
+      summaryInput({ consideredRecordCount: 4, sourceRecordLimit: 256 }),
+    );
+    const noteCount = summary.split(MEMORY_DISCLOSURE_INTERNAL_USE_NOTE).length - 1;
+    const groupLine = summary.split("\n").find((line) => line.startsWith("- audience_scope="));
+
+    expect(noteCount).toBe(1);
+    expect(summary.indexOf(MEMORY_DISCLOSURE_INTERNAL_USE_NOTE)).toBeLessThan(
+      summary.indexOf("- audience_scope="),
+    );
+    // What varies per group -- the class and the private-to binding -- stays on the group line.
+    expect(groupLine).toContain(
+      `disclosure_label=disclosure_class=self_private origin_audience=${QUIET_AUDIENCE_A} private-to=${QUIET_AUDIENCE_A} recent_samples=`,
+    );
+  });
+
+  it("omits the note when no group is non-public", () => {
+    const summary = renderOlderActionThreadsSummary({
+      ...summaryInput({ consideredRecordCount: 4, sourceRecordLimit: 256 }),
+      groups: [
+        {
+          audienceScope: "global" as const,
+          salienceClass: "completed_recent" as const,
+          threads: [makeCompletedThread({ audienceEntityId: QUIET_AUDIENCE_A, updatedAt: 10 })],
+          disclosureLabel: publicMemoryDisclosureLabel(),
+        },
+      ],
+    });
+
+    expect(summary).not.toContain(MEMORY_DISCLOSURE_INTERNAL_USE_NOTE);
+    expect(summary).toContain("disclosure_label=disclosure_class=public recent_samples=");
   });
 });
