@@ -1850,12 +1850,22 @@ export function summarizeAutonomySchedulerState(
   //     down. Measured over the rendered blocks in the live traces for 2026-08-23T22:37Z ->
   //     2026-08-24T22:17Z: 28 of 61 blocks, every one of them a turn with a header lag above 18s.
   //     Both clocks are now named on the same line, with the sign against each stated explicitly.
+  // (3) the overdue branch printed its amount with no stamp to close it against: next_tick_at is
+  //     floored to the read there, so the only two stamps on the page were the same instant twice
+  //     and the subtraction's other operand never appeared. The scheduled stamp now prints, so
+  //     read - scheduled == overdue closes from stamps like the other branch's pair does. It also
+  //     separates the two ways a loop is behind: the anchor advances when a tick *enters*, and the
+  //     interval drops every fire while one is in flight, so a tick still running holds one stamp
+  //     across reads while an interval merely lagging moves it. The overdue number alone grows the
+  //     same way in both cases; the stamp is what tells them apart, and only across reads.
   const scheduledTickAt = schedulerState.scheduledTickAt;
   const tickClause =
     schedulerState.nextTickAt === null || scheduledTickAt === null
       ? "no next tick scheduled (no interval handle, so no wake fires until it restarts)."
       : scheduledTickAt < schedulerState.observedAt
-        ? `next tick was due ${schedulerState.observedAt - scheduledTickAt}ms before that read and had not fired, so the loop is behind by that much; next_tick_at floors forward and reports ${new Date(
+        ? `next tick was due ${new Date(scheduledTickAt).toISOString()}, ${
+            schedulerState.observedAt - scheduledTickAt
+          }ms before that read, and had not fired, so the loop is behind by that much; next_tick_at floors forward and reports ${new Date(
             schedulerState.nextTickAt,
           ).toISOString()}, which is the read clock, not a scheduled time.`
         : `next tick ${new Date(scheduledTickAt).toISOString()}, ${

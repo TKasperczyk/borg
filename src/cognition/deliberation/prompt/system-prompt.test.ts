@@ -2701,7 +2701,7 @@ describe("buildBaseSystemPrompt", () => {
       scheduledTickAt: NOW_MS - 41_000,
       nextTickAt: NOW_MS - 29_000,
       expected:
-        "next tick was due 12000ms before that read and had not fired, so the loop is behind by that much; next_tick_at floors forward and reports 2023-11-14T22:12:51.000Z, which is the read clock, not a scheduled time.",
+        "next tick was due 2023-11-14T22:12:39.000Z, 12000ms before that read, and had not fired, so the loop is behind by that much; next_tick_at floors forward and reports 2023-11-14T22:12:51.000Z, which is the read clock, not a scheduled time.",
       absent: "next tick 2023-11-14T22:12:51.000Z (",
       closesAgainstLag: false,
     },
@@ -2796,10 +2796,23 @@ describe("buildBaseSystemPrompt", () => {
       const againstHeader =
         /, and (\d+)ms (before|after) the current_time_ms at the top of this prompt --/.exec(block);
       if (!closesAgainstLag) {
-        // The floored branch prints the overdue amount in place of the pair, so there is nothing to
-        // close: on that page the reader has no source-free check on this block at all.
+        // The floored branch prints the overdue amount instead of the tick's two offsets, so the
+        // telescoping identity has no operands here. That is the only thing it lacks: the read
+        // stamp still prints, so the lag on the "Read at" line still closes against
+        // current_time_iso, and the branch's own central claim -- that the floored report is the
+        // read clock and not a scheduled time -- is an equality between two stamps on the page.
+        // The overdue amount was the one quantity with nothing to close against, because the
+        // stamp it counts from was the only one the branch withheld; it prints now, so that
+        // subtraction closes too and a reader who cannot open this file can check all three.
         expect(afterRead).toBeNull();
         expect(againstHeader).toBeNull();
+        const readIso = /Read at (\S+?), \d+ms before the current_time_ms/.exec(block)?.[1];
+        expect(readIso).toBe(new Date(observedAt).toISOString());
+        expect(block).toContain(`reports ${readIso}, which is the read clock, not a scheduled time`);
+        const overdue = /next tick was due (\S+?), (\d+)ms before that read/.exec(block);
+        expect(Date.parse(readIso ?? "") - Date.parse(overdue?.[1] ?? "")).toBe(
+          Number(overdue?.[2] ?? Number.NaN),
+        );
         return;
       }
       const headerMinusTick =
