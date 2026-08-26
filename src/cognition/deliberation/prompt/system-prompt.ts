@@ -1801,7 +1801,13 @@ export function summarizeAutonomySchedulerState(
         : `, ${observationLagMs}ms before the current_time_ms at the top of this prompt`
     }: every count and stamp below is as of that read, not as of now. The lag is the ledger build and shared-state compile that run in between and varies per turn, so a wake admitted inside it is not counted here.`,
     `Wake budget: used=${budget.used_in_current_window} / limit=${budget.max_wakes_per_window} / window=${formatRelativeDuration(budget.window_ms)} rolling, covering wakes stamped at or after ${new Date(budget.window_started_at).toISOString()} (the lower edge moves with every read, so counts below only compare against a read naming the same edge).`,
-    `limit=${budget.max_wakes_per_window} is the ceiling for contemplative sources only. ${budget.reserved_contemplative_wakes_per_window} of it is reserved for them and ${budget.contemplative_used_in_current_window} contemplative wake(s) are in this window, so ${reservationStillHeld} of the reservation is still held and operational sources are refused once used reaches ${operationalLimit}.`,
+    // The closing threshold is derived, but at reservationStillHeld === 0 it
+    // takes the same value as limit, and a derived figure that coincides with
+    // its own input is indistinguishable on the page from a constant. Printing
+    // the subtraction rather than only its result makes the dependence readable
+    // in the state where it is invisible in the result -- which, with the
+    // reservation spent, is the ordinary one.
+    `limit=${budget.max_wakes_per_window} is the ceiling for contemplative sources only. ${budget.reserved_contemplative_wakes_per_window} of it is reserved for them and ${budget.contemplative_used_in_current_window} contemplative wake(s) are in this window, so ${reservationStillHeld} of the reservation is still held and operational sources are refused once used reaches ${operationalLimit} -- that figure is limit minus the ${reservationStillHeld} still held, recomputed at every read rather than a second fixed ceiling. It equals limit exactly while the reservation is spent, so the two agreeing is a state of this window, not an identity.`,
   ];
 
   if (budget.wakes_in_current_window_by_trigger.length === 0) {

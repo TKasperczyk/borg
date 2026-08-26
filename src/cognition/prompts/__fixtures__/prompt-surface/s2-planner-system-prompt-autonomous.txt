@@ -359,7 +359,7 @@ Sensitive relationship claim grounding:
 Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.
 Read at 2023-11-14T22:13:20.000Z: every count and stamp below is as of that read, not as of now. The lag is the ledger build and shared-state compile that run in between and varies per turn, so a wake admitted inside it is not counted here.
 Wake budget: used=4 / limit=6 / window=1d rolling, covering wakes stamped at or after 2023-11-13T22:13:20.000Z (the lower edge moves with every read, so counts below only compare against a read naming the same edge).
-limit=6 is the ceiling for contemplative sources only. 2 of it is reserved for them and 3 contemplative wake(s) are in this window, so 0 of the reservation is still held and operational sources are refused once used reaches 6.
+limit=6 is the ceiling for contemplative sources only. 2 of it is reserved for them and 3 contemplative wake(s) are in this window, so 0 of the reservation is still held and operational sources are refused once used reaches 6 -- that figure is limit minus the 0 still held, recomputed at every read rather than a second fixed ceiling. It equals limit exactly while the reservation is spent, so the two agreeing is a state of this window, not an identity.
 Wakes in current window by trigger_name:
 - trigger_name=scheduled_reflection wake_count=3 in_flight=0 outcome_counts(headway=1 silent=2 error=0 busy=0)
 - trigger_name=goal_followup_due wake_count=1 in_flight=0 outcome_counts(headway=0 silent=0 error=1 busy=0)

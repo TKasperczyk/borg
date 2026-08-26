@@ -2683,7 +2683,7 @@ describe("buildBaseSystemPrompt", () => {
       );
       expect(block).toContain("Next budget slot frees: 2023-11-14T22:43:20.000Z (in 30m).");
       expect(block).toContain(
-        "limit=6 is the ceiling for contemplative sources only. 2 of it is reserved for them and 4 contemplative wake(s) are in this window, so 0 of the reservation is still held and operational sources are refused once used reaches 6.",
+        "limit=6 is the ceiling for contemplative sources only. 2 of it is reserved for them and 4 contemplative wake(s) are in this window, so 0 of the reservation is still held and operational sources are refused once used reaches 6 -- that figure is limit minus the 0 still held, recomputed at every read rather than a second fixed ceiling. It equals limit exactly while the reservation is spent, so the two agreeing is a state of this window, not an identity.",
       );
     },
   );
@@ -2921,7 +2921,7 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(block).toContain("Wake budget: used=12 / limit=15 /");
     expect(block).toContain(
-      "limit=15 is the ceiling for contemplative sources only. 1 of it is reserved for them and 0 contemplative wake(s) are in this window, so 1 of the reservation is still held and operational sources are refused once used reaches 14.",
+      "limit=15 is the ceiling for contemplative sources only. 1 of it is reserved for them and 0 contemplative wake(s) are in this window, so 1 of the reservation is still held and operational sources are refused once used reaches 14 -- that figure is limit minus the 1 still held, recomputed at every read rather than a second fixed ceiling. It equals limit exactly while the reservation is spent, so the two agreeing is a state of this window, not an identity.",
     );
   });
 
