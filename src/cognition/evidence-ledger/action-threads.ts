@@ -654,6 +654,7 @@ export function renderOlderActionThreadsSummary(input: {
   threadsBuiltCount: number;
   consideredRecordCount: number;
   sourceRecordLimit: number;
+  sourceRecordTotal: number | null;
   salienceDroppedThreadCount: number;
 }): string {
   const { groups } = input;
@@ -673,16 +674,26 @@ export function renderOlderActionThreadsSummary(input: {
   // `threads_built` comes from the builder's own thread count rather than from adding the
   // three, so the printed identity is falsifiable instead of tautological.
   //
-  // `draw_saturated` went out at the same time: it was the comparison of the two numbers printed
-  // beside it, and that comparison is what `records_below_draw_floor` switches on, so the bit was
-  // on the line twice over. But the two carriers are not equally legible. The comparison is
-  // readable from any single render; the field's is an enumeration -- a count when the draw
-  // exhausted the source, a refusal when it stopped at the limit -- and a reader who has only
-  // ever seen the refusal cannot tell a discriminating token from a constant. So the refusing
-  // token names the condition it refuses under, and the bit survives on one page rather than
-  // across a series of them.
-  const drawSaturated = input.consideredRecordCount >= input.sourceRecordLimit;
-  const recordsBelowDrawFloor = drawSaturated ? "unknown_count_draw_saturated" : "0";
+  // `records_below_draw_floor` used to be an enumeration -- a count when the draw exhausted the
+  // source, a refusal when it stopped at the limit -- and in production only the refusal has ever
+  // rendered, because the store has never been smaller than the draw. A token whose contrast set
+  // never appears is indistinguishable from a constant to a reader holding one page, and naming
+  // the condition it refuses under only lengthens the constant: the named condition is the
+  // comparison of the two numbers printed beside it, so the token restates its own operands and
+  // can never disagree with them.
+  //
+  // The exit is to stop enumerating and measure. The source total is one COUNT away, so the field
+  // prints how many records the draw never looked at. It is rendered as the stated difference of
+  // the two totals rather than as a bare number, so it cannot be mistaken for an independent
+  // count of the below-floor rows -- it is derived from them, and says so.
+  const recordsBelowDrawFloor =
+    input.sourceRecordTotal === null
+      ? "unknown_count_source_total_unavailable"
+      : `${Math.max(0, input.sourceRecordTotal - input.consideredRecordCount)}`;
+  const sourceRecordTotalField =
+    input.sourceRecordTotal === null
+      ? "source_record_total=unavailable"
+      : `source_record_total=${input.sourceRecordTotal}; records_below_draw_floor is that total minus records_considered, not a separate count`;
   // The internal-use sentence for the group lines below, hoisted out of them. It stays a separate
   // line rather than joining the counts: this section truncates from the tail, and a note attached
   // to the counts line would survive at the cost of the group lines it describes.
@@ -692,7 +703,7 @@ export function renderOlderActionThreadsSummary(input: {
 
   return [
     `Older action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}.`,
-    `Not counted above: salience_dropped_threads=${input.salienceDroppedThreadCount}, records_below_draw_floor=${recordsBelowDrawFloor} (threads_built=${input.threadsBuiltCount} = rendered ${input.renderedThreadCount} + omitted ${olderThreads.length} + dropped ${input.salienceDroppedThreadCount}; records_considered=${input.consideredRecordCount} records, source_record_limit=${input.sourceRecordLimit}).`,
+    `Not counted above: salience_dropped_threads=${input.salienceDroppedThreadCount}, records_below_draw_floor=${recordsBelowDrawFloor} (threads_built=${input.threadsBuiltCount} = rendered ${input.renderedThreadCount} + omitted ${olderThreads.length} + dropped ${input.salienceDroppedThreadCount}; records_considered=${input.consideredRecordCount} records, source_record_limit=${input.sourceRecordLimit}, ${sourceRecordTotalField}).`,
     ...disclosureNote,
     ...groups.map(
       (group) =>

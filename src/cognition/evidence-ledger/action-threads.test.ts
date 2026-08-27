@@ -243,7 +243,11 @@ describe("allocateActionThreadRenderSlots", () => {
 });
 
 describe("renderOlderActionThreadsSummary", () => {
-  const summaryInput = (overrides: { consideredRecordCount: number; sourceRecordLimit: number }) => ({
+  const summaryInput = (overrides: {
+    consideredRecordCount: number;
+    sourceRecordLimit: number;
+    sourceRecordTotal?: number | null;
+  }) => ({
     groups: [
       {
         audienceScope: "global" as const,
@@ -255,23 +259,51 @@ describe("renderOlderActionThreadsSummary", () => {
     renderedThreadCount: 1,
     threadsBuiltCount: 2,
     salienceDroppedThreadCount: 0,
+    sourceRecordTotal: 8,
     ...overrides,
   });
 
-  // `records_below_draw_floor` is the only field that carries whether the draw stopped at its
-  // limit or exhausted the source, and until both of its tokens are pinned together a reader who
-  // has only ever seen one of them cannot tell it apart from a constant. Assert the pair.
-  it("says which condition the record floor is unknown under", () => {
+  // The floor is a measurement, not an enumeration: it must move with the store rather than name
+  // a condition. Two totals over one draw is what separates a live figure from a frozen token --
+  // a reader holding a single page can only tell the difference if the field can differ.
+  it("counts the records below the draw floor instead of naming the condition", () => {
     const saturated = renderOlderActionThreadsSummary(
-      summaryInput({ consideredRecordCount: 256, sourceRecordLimit: 256 }),
+      summaryInput({ consideredRecordCount: 256, sourceRecordLimit: 256, sourceRecordTotal: 2706 }),
+    );
+    const larger = renderOlderActionThreadsSummary(
+      summaryInput({ consideredRecordCount: 256, sourceRecordLimit: 256, sourceRecordTotal: 2707 }),
     );
     const exhausted = renderOlderActionThreadsSummary(
-      summaryInput({ consideredRecordCount: 4, sourceRecordLimit: 256 }),
+      summaryInput({ consideredRecordCount: 4, sourceRecordLimit: 256, sourceRecordTotal: 4 }),
     );
 
-    expect(saturated).toContain("records_below_draw_floor=unknown_count_draw_saturated");
+    expect(saturated).toContain("records_below_draw_floor=2450");
+    expect(larger).toContain("records_below_draw_floor=2451");
     expect(exhausted).toContain("records_below_draw_floor=0");
-    expect(exhausted).not.toContain("unknown_count");
+    expect(saturated).not.toContain("unknown_count");
+  });
+
+  // The floor is the stated difference of two printed totals, never an independent count of the
+  // rows below it. Printing it bare would let a derived figure pose as its own witness.
+  it("states the floor's derivation beside it", () => {
+    const summary = renderOlderActionThreadsSummary(
+      summaryInput({ consideredRecordCount: 256, sourceRecordLimit: 256, sourceRecordTotal: 2706 }),
+    );
+
+    expect(summary).toContain(
+      "records_considered=256 records, source_record_limit=256, source_record_total=2706; " +
+        "records_below_draw_floor is that total minus records_considered, not a separate count",
+    );
+  });
+
+  // A repository that cannot count says so. Falling back to 0 would claim the draw saw everything.
+  it("names an unavailable source total instead of implying an empty floor", () => {
+    const summary = renderOlderActionThreadsSummary(
+      summaryInput({ consideredRecordCount: 256, sourceRecordLimit: 256, sourceRecordTotal: null }),
+    );
+
+    expect(summary).toContain("records_below_draw_floor=unknown_count_source_total_unavailable");
+    expect(summary).toContain("source_record_total=unavailable");
   });
 
   // The internal-use sentence is byte-identical on every non-public label, so it is stated once

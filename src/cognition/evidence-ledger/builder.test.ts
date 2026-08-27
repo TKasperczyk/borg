@@ -3976,6 +3976,9 @@ describe("EvidenceLedgerBuilder", () => {
       relationalSlotRepository: { list: () => [] },
       actionRepository: {
         list: () => [selected, aliceOmitted, aliceOmittedPrior, participantOmitted],
+        // The store holds exactly what the draw saw, so the below-floor count is a real 0 rather
+        // than the unavailable-total token.
+        count: () => 4,
         findSimilarDescriptionPairs: async () => [
           {
             leftId: aliceOmittedPrior.id,
@@ -4030,7 +4033,7 @@ describe("EvidenceLedgerBuilder", () => {
     // Budget covers the head lines (omitted counts + uncounted-population bounds) plus both
     // group labels, and still cuts inside the second group's samples.
     const compacted = compactEvidenceLedger(ledger, {
-      maxEntryTextTokens: 235,
+      maxEntryTextTokens: 265,
     });
     const compactedSummaryText =
       compacted.ledger.sections

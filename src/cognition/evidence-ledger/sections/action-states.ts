@@ -156,6 +156,10 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
   );
   const salienceDroppedThreadCount = threads.length - threadsWithSalience.length;
   const drawSaturated = actionCandidates.length >= sourceRecordLimit;
+  // The draw stops at the limit, so this section only ever sees a prefix of the store. The size of
+  // the rest is one count away, which is what turns the below-floor field from a refusal into a
+  // measurement; a repository that cannot count leaves the field saying so rather than implying 0.
+  const sourceRecordTotal = context.repos.actions.count?.() ?? null;
 
   // Absent must not be the only way to say "nothing left over": a saturated draw or a
   // salience-dropped thread is still material this section did not show, so the entry is
@@ -213,6 +217,7 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
       threadsBuiltCount: threads.length,
       consideredRecordCount: actionCandidates.length,
       sourceRecordLimit,
+      sourceRecordTotal,
       salienceDroppedThreadCount,
     }),
     value: "older_action_threads",
