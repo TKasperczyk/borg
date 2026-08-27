@@ -699,6 +699,8 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
       process: this.name,
     };
 
+    const applyErrors: OfflineProcessError[] = [];
+
     for (const item of plan.items) {
       const reviewedAssistantStreamEntryIds =
         item.kind === "misattribution"
@@ -713,11 +715,22 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
         ...repairRefs,
         overseer_flag: item.overseer_flag,
       };
-      const reviewItem = ctx.reviewQueueRepository.enqueue({
-        kind: item.kind,
-        refs,
-        reason: item.reason,
-      });
+      let reviewItem;
+
+      try {
+        reviewItem = ctx.reviewQueueRepository.enqueue({
+          kind: item.kind,
+          refs,
+          reason: item.reason,
+        });
+      } catch (error) {
+        // The queue now refuses refs its handler could never resolve. A flag that
+        // slips past the plan-time gates (or a kind without one) must not abort
+        // the whole apply or, worse, enqueue a permanently-throwing item -- record
+        // it where maintenance reports surface errors and move on.
+        applyErrors.push(offlineProcessError(this.name, error));
+        continue;
+      }
 
       ctx.auditLog.record({
         run_id: ctx.runId,
@@ -741,7 +754,7 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
       dryRun: false,
       changes,
       tokens_used: plan.tokens_used,
-      errors: plan.errors,
+      errors: [...plan.errors, ...applyErrors],
       budget_exhausted: plan.budget_exhausted,
       candidate_stats: candidateStatsForPlan(plan),
     };

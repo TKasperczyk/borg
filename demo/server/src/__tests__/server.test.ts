@@ -640,7 +640,14 @@ async function seedP2EndpointRecords(borg: Borg, clock: ManualClock) {
   });
   const review = internal.deps.reviewQueueRepository.enqueue({
     kind: "belief_revision",
-    refs: { target_type: "semantic_node", target_id: "semn_demo" },
+    refs: {
+      target_type: "semantic_node",
+      target_id: "semn_aaaaaaaaaaaaaaaa",
+      invalidated_edge_id: "seme_aaaaaaaaaaaaaaaa",
+      dependency_path_edge_ids: [],
+      surviving_support_edge_ids: [],
+      evidence_episode_ids: [],
+    },
     reason: "dependency invalidated",
     sourceProcess: "belief-reviser",
   });
@@ -2777,7 +2784,7 @@ describe("demo server", () => {
     const review = internal.deps.reviewQueueRepository.enqueue({
       kind: "duplicate",
       refs: {
-        node_ids: ["sem_fixtureaaaaaaa1", "sem_fixtureaaaaaaa2"],
+        node_ids: ["semn_aaaaaaaaaaaaaaa1", "semn_aaaaaaaaaaaaaaa2"],
       },
       reason: "non-correction review fixture",
     });
@@ -2810,13 +2817,17 @@ describe("demo server", () => {
     const internal = borg as unknown as BorgTestInternals;
     const correctionReview = internal.deps.reviewQueueRepository.enqueue({
       kind: "correction",
-      refs: { target_type: "value", target_id: "val_fixture", patch: { description: "new" } },
+      refs: {
+        target_type: "value",
+        target_id: "val_aaaaaaaaaaaaaaaa",
+        patch: { description: "new" },
+      },
       reason: "queued correction fixture",
     });
     const duplicateReview = internal.deps.reviewQueueRepository.enqueue({
       kind: "duplicate",
       refs: {
-        node_ids: ["sem_fixtureaaaaaaa1", "sem_fixtureaaaaaaa2"],
+        node_ids: ["semn_aaaaaaaaaaaaaaa1", "semn_aaaaaaaaaaaaaaa2"],
       },
       reason: "duplicate review fixture",
     });
@@ -4087,7 +4098,9 @@ describe("demo server", () => {
       },
     });
 
-    const response = await app.request(`/api/activity?day=${localDayString(defaultResult.timestamp)}`);
+    const response = await app.request(
+      `/api/activity?day=${localDayString(defaultResult.timestamp)}`,
+    );
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
       rows: Array<{ id: string; origin: string; trigger: string | null; excerpt: string | null }>;
@@ -4136,7 +4149,9 @@ describe("demo server", () => {
     }
 
     expect(firstSource).not.toBeNull();
-    const response = await app.request(`/api/activity?day=${localDayString(firstSource!.timestamp)}`);
+    const response = await app.request(
+      `/api/activity?day=${localDayString(firstSource!.timestamp)}`,
+    );
     expect(response.status).toBe(200);
     const body = (await response.json()) as { rows: unknown[]; truncated: boolean };
 

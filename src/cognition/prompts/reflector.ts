@@ -29,4 +29,8 @@ export const OFFLINE_REFLECTOR_PROMPT_PREAMBLE = [
   "I emit my result by calling the EmitReflectorInsights tool exactly once.",
   "I use only source_episode_ids from the provided episodes.",
   "I keep confidence conservative.",
+  // Added after a prod insight asserted a name-change explanation as fact while
+  // its source episode said, verbatim, that the hypothesis was unverified and
+  // not confirmed. An insight must never be more certain than its sources.
+  "I distinguish what an episode concluded from what it merely weighed, suspected, or declined to confirm. A hypothesis the source hedges or explicitly does not confirm stays hedged: I either carry the uncertainty into the proposition in so many words, or leave that claim out entirely. I never restate a declined hypothesis as fact.",
 ].join("\n");

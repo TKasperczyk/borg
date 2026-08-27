@@ -200,8 +200,11 @@ function gatePatchApplicability(
   flag: OverseerFlagPayload,
   targetType: MisattributionTargetType,
 ): SuppressedOverseerFlag | null {
+  // No patch at all is just as unresolvable as a wrong-shaped one: both refs
+  // schemas REQUIRE a non-empty patch, so a patch-less flag would fail the same
+  // resolve-time parse on accept.
   if (flag.patch === undefined) {
-    return null;
+    return suppressFlag(flag, "PATCH-NOT-APPLICABLE", flag.cited_stream_ids ?? []);
   }
 
   const schema =

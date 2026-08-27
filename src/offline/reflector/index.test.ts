@@ -409,6 +409,12 @@ describe("reflector process", () => {
     const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
     const activeGoalsLine = prompt.split("\n").find((line) => line.startsWith("Active goals: "));
 
+    // Hedge preservation lands in the preamble, i.e. the full prompt, not the
+    // goals line (prod 2026-08-27: an insight asserted a declined hypothesis as fact).
+    expect(prompt).toContain("never restate a declined hypothesis as fact");
+    expect(prompt).toContain(
+      "A hypothesis the source hedges or explicitly does not confirm stays hedged",
+    );
     expect(activeGoalsLine).toContain(goal.description);
     expect(activeGoalsLine).toContain('"disclosure_label"');
     expect(activeGoalsLine).toContain('"disclosure_class":"relationship_private"');

@@ -219,6 +219,9 @@ describe("Borg", () => {
         refs: {
           target_type: "episode",
           target_id: "ep_aaaaaaaaaaaaaaaa",
+          // enqueue() now refuses refs the handler could not resolve; the hook
+          // drain under test needs a well-formed item, not a malformed one.
+          patch: { participants: ["Alice"] },
         },
         reason: "La memoria mezcla dos atribuciones.",
       });

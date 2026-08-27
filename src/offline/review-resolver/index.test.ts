@@ -2529,4 +2529,124 @@ describe("review resolver autonomous mode", () => {
     });
     expect(llm.requests).toHaveLength(1);
   });
+
+  // A repair whose apply throws used to leave the item open with nothing counted,
+  // so the resolver re-picked and re-threw it forever (ai-prod: 5 edge-closure
+  // items x every 4-hourly run). Missing targets and malformed refs never reach
+  // apply -- the resolver pre-rejects those without the handler -- so the throw is
+  // forced where the wedge class actually lives: an apply-time invariant failure
+  // on a valid item, simulated at the storage boundary.
+  it("stamps a bounded-retry attempt when the accepted repair throws", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+      configOverrides: {
+        offline: { reviewResolver: { autonomous: true, maxNeedsManualAttempts: 3 } },
+      },
+    });
+    cleanup.push(harness.cleanup);
+    const { item, sourceEntryId } = await enqueueEpisodeMisattribution(harness);
+    vi.spyOn(harness.episodicRepository, "update").mockImplementation(() => {
+      throw new Error("simulated storage failure during repair");
+    });
+    llm.pushResponse(
+      resolverResponse({
+        verdict: "accept_repair",
+        reason: "The cited source supports the repair.",
+        cited_stream_ids: [sourceEntryId],
+      }),
+    );
+
+    const result = await runResolver(harness);
+
+    expect(result.errors).toHaveLength(1);
+    const after = harness.reviewQueueRepository.get(item.id);
+    expect(after?.resolved_at).toBeNull();
+    expect(after?.refs.__borg_review_resolver_diagnostic).toMatchObject({
+      verdict: "apply_failed",
+      attempts: 1,
+    });
+  });
+
+  it("terminally dismisses an item whose apply keeps throwing once attempts are exhausted", async () => {
+    // The prod wedge shape exactly: a semantic_edge repair is SQLITE-scoped, so a
+    // throwing apply rolls back and leaves the refs pristine -- the next pass
+    // re-judges and re-throws identically, forever, unless the attempts cap ends it.
+    // (Cross-store repairs self-limit differently: their leftover applying-state
+    // makes the next pass pre-reject the item as malformed.)
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+      configOverrides: {
+        offline: { reviewResolver: { autonomous: true, maxNeedsManualAttempts: 2 } },
+      },
+    });
+    cleanup.push(harness.cleanup);
+    const source = await insertSource(harness, "The support interval ended at the rollback.", {
+      shared: true,
+    });
+    const first = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Atlas deploy pipeline",
+        description: "Pipeline node for the drift closure fixture.",
+        source_episode_ids: [source.episode.id],
+      }),
+    );
+    const second = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Atlas rollback window",
+        description: "Rollback node for the drift closure fixture.",
+        source_episode_ids: [source.episode.id],
+      }),
+    );
+    const edge = harness.semanticEdgeRepository.addEdge({
+      from_node_id: first.id,
+      to_node_id: second.id,
+      relation: "supports",
+      confidence: 0.7,
+      evidence_episode_ids: [source.episode.id],
+      created_at: 1_000,
+      last_verified_at: 1_000,
+    });
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "temporal_drift",
+      reason: "support interval should close",
+      refs: {
+        target_type: "semantic_edge",
+        target_kind: "semantic_edge",
+        target_id: edge.id,
+        suggested_valid_to: 5_000,
+        reason: "support interval should close",
+        overseer_flag: overseerFlag({
+          kind: "temporal_drift",
+          reason: "support interval should close",
+          sourceEntryId: source.entry.id,
+          sourceEpisodeId: source.episode.id,
+        }),
+      },
+    });
+    vi.spyOn(harness.semanticEdgeRepository, "invalidateEdge").mockImplementation(() => {
+      throw new Error("simulated invariant failure during edge closure");
+    });
+
+    for (const _pass of [1, 2]) {
+      llm.pushResponse(
+        resolverResponse({
+          verdict: "accept_repair",
+          reason: "The cited source supports closing the interval.",
+          cited_stream_ids: [source.entry.id],
+        }),
+      );
+      await runResolver(harness);
+    }
+
+    const after = harness.reviewQueueRepository.get(item.id);
+    expect(after?.resolved_at).not.toBeNull();
+    expect(after?.resolution).toBe("dismiss");
+    expect(after?.refs.__borg_review_resolver_repair).toMatchObject({
+      bypass_handler_reason: "autonomous_apply_failure_exhausted",
+    });
+  });
 });

@@ -944,6 +944,52 @@ describe("overseer process", () => {
     expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
   });
 
+  it("suppresses a misattribution flag that proposes no patch at all", async () => {
+    // Both misattribution refs schemas REQUIRE a non-empty patch, so a patch-less
+    // flag is exactly as unresolvable-on-accept as a wrong-shaped one.
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    const source = await appendSourceEntry(harness, "Maya is my partner.");
+    llm.pushResponse(
+      createOverseerResponse([
+        supportedMisattributionFlag([source.id], {
+          patch: undefined,
+          reason: "Attribution is wrong but no repair proposed.",
+        }),
+      ]),
+    );
+    await harness.episodicRepository.createEpisode(
+      createEpisodeFixture(
+        {
+          title: "Maya source",
+          source_stream_ids: [source.id],
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    const ctx = harness.createContext();
+    const plan = await process.plan(ctx, {});
+    await process.apply(ctx, plan);
+
+    expect(plan.items).toEqual([]);
+    expect(plan.suppressed_flags).toEqual([
+      expect.objectContaining({ reason: "PATCH-NOT-APPLICABLE" }),
+    ]);
+    expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
+  });
+
   it("still enqueues a misattribution flag whose patch targets a real episode field", async () => {
     const nowMs = 10 * 24 * 60 * 60 * 1_000;
     const llm = new FakeLLMClient();
@@ -1304,6 +1350,7 @@ describe("overseer process", () => {
               kind: "temporal_drift",
               reason: "First target issue.",
               confidence: 0.8,
+              corrected_start_time: 1_500,
             },
           ],
           35,
@@ -1315,6 +1362,7 @@ describe("overseer process", () => {
               kind: "temporal_drift",
               reason: "Second target issue.",
               confidence: 0.8,
+              corrected_start_time: 1_500,
             },
           ],
           35,
@@ -1418,6 +1466,7 @@ describe("overseer process", () => {
             kind: "temporal_drift",
             reason: "Recent target issue.",
             confidence: 0.8,
+            corrected_start_time: 1_500,
           },
         ]),
       ],
