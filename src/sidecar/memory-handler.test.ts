@@ -580,11 +580,51 @@ describe("memory sidecar handler", () => {
     expect(body.nodes[0]).not.toHaveProperty("embedding");
   });
 
+  it("reads the review queue, where insights and flags actually live", async () => {
+    // A reflector insight and an overseer flag are PROPOSALS: the semantic graph
+    // shows nothing until a resolution accepts them, so the queue is the only place
+    // their content is visible.
+    const listArgs: unknown[] = [];
+    const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
+      async withTenant(_tenantId, fn) {
+        return fn({
+          review: {
+            list: (opts: unknown) => {
+              listArgs.push(opts);
+              return [
+                { id: 3, kind: "new_insight", refs: { nodeId: "semn_1" }, reason: "pattern" },
+                { id: 11, kind: "misattribution", refs: { patch: {} }, reason: "ownership" },
+              ];
+            },
+          },
+        } as unknown as Borg);
+      },
+    };
+    const base = await start(pool);
+
+    const response = await fetch(`${base}/memory/review?tenant=acme&limit=1`, {
+      headers: { "x-borg-token": TOKEN },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      tenant: "acme",
+      open_only: true,
+      total: 2,
+      items: [{ id: 3, kind: "new_insight", refs: { nodeId: "semn_1" }, reason: "pattern" }],
+      truncated: true,
+    });
+    // openOnly defaults on; openOnly=0 opts into resolved items too.
+    expect(listArgs).toEqual([{ openOnly: true }]);
+  });
+
   it("requires an explicit tenant on the new read paths", async () => {
     const { pool } = recordingPool();
     const base = await start(pool);
 
-    for (const path of ["/memory/self", "/memory/semantic"]) {
+    for (const path of ["/memory/self", "/memory/semantic", "/memory/review"]) {
       const response = await fetch(`${base}${path}`, { headers: { "x-borg-token": TOKEN } });
       expect(response.status).toBe(400);
     }

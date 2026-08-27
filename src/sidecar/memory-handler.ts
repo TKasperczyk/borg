@@ -11,6 +11,7 @@
 //   GET  /memory/episodes?tenant=<id>&limit=<n>&cursor=<c> -> list raw episodic bank
 //   GET  /memory/self?tenant=<id>&limit=<n>      -> growth markers, periods, open questions
 //   GET  /memory/semantic?tenant=<id>&limit=<n>  -> semantic nodes (no embeddings)
+//   GET  /memory/review?tenant=<id>&openOnly=<0|1>&kind=<k>&limit=<n> -> review queue
 //   GET  /memory/episodes/{id}?tenant=<id>                  -> inspect one raw episode
 //   GET  /memory/trace?tenant=<id>&since=<ts>                -> inspect recall trace buffer
 //   POST /memory/maintenance?tenant=<id|*>&mode=<light|heavy>&dryRun=<0|1>
@@ -768,6 +769,11 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       // distinguished from "wrote nine mis-voiced records".
       const isSelfPath = rawPath === "/memory/self";
       const isSemanticPath = rawPath === "/memory/semantic";
+      // The review queue is where the reflector's insights and the overseer's flags
+      // actually live: both are PROPOSALS, so nothing appears in the semantic graph
+      // until a resolution accepts them. Without this the only visible trace of a
+      // heavy run's flags was a change count.
+      const isReviewPath = rawPath === "/memory/review";
       const nonEpisodePath =
         isTracePath ||
         isEpisodeListPath ||
@@ -775,7 +781,8 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         isMaintenanceStatusPath ||
         isMaintenanceAuditPath ||
         isSelfPath ||
-        isSemanticPath;
+        isSemanticPath ||
+        isReviewPath;
       const episodeId = nonEpisodePath ? undefined : parseEpisodeIdFromPath(rawPath);
       if (!nonEpisodePath && episodeId === undefined) {
         send(res, 404, { error: "not found" });
@@ -787,7 +794,8 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         isMaintenanceStatusPath ||
         isMaintenanceAuditPath ||
         isSelfPath ||
-        isSemanticPath;
+        isSemanticPath ||
+        isReviewPath;
       const tenant = strictQuery
         ? requiredSingleQueryValue(res, searchParams, "tenant")
         : asString(searchParams.get("tenant"));
@@ -921,6 +929,28 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           }));
 
           send(res, 200, { ok: true, tenant, ...self });
+          return;
+        }
+
+        if (isReviewPath) {
+          const openOnly = searchParams.get("openOnly") !== "0";
+          const kindRaw = searchParams.get("kind");
+          const items = await pool.withTenant(tenant, (borg) =>
+            borg.review.list({
+              openOnly,
+              ...(kindRaw === null || kindRaw.trim() === "" ? {} : { kind: kindRaw as never }),
+            }),
+          );
+          const limit = episodeListLimitFromQuery(searchParams);
+
+          send(res, 200, {
+            ok: true,
+            tenant,
+            open_only: openOnly,
+            total: items.length,
+            items: items.slice(0, limit),
+            truncated: items.length > limit,
+          });
           return;
         }
 
