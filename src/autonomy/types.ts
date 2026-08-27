@@ -243,7 +243,28 @@ export type AutonomySchedulerDescription = {
    * ages every count below it by however long the caller spent in between.
    */
   observed_at: number;
+  /**
+   * The configuration flag the scheduler was constructed with, and nothing
+   * else: it says the loop was asked to run, never that it is alive. Every
+   * liveness question -- is a tick moving, is the interval still firing --
+   * belongs to `tick_in_flight` and `scheduled_tick_at` below.
+   */
   enabled: boolean;
+  /**
+   * Whether a tick was already running at the read. Load-bearing because the
+   * two ways the loop falls behind are indistinguishable from the stamps
+   * alone: the tick anchor is written on tick *entry*, and the interval
+   * callback early-returns on every fire while a tick is in flight, so a long
+   * tick holds `scheduled_tick_at` still while the overdue amount grows --
+   * exactly the page an interval merely running behind produces. Reading them
+   * apart used to need two reads far enough apart to see whether the stamp
+   * moved. This is the same discriminator on a single read.
+   *
+   * True by construction on an autonomous turn: that turn is running inside
+   * the tick that is being reported, so it only carries information off a
+   * live turn, and any surface rendering it has to say so.
+   */
+  tick_in_flight: boolean;
   interval_ms: number;
   /**
    * `max(scheduled_tick_at, observed_at)` -- a tick already due at the read is

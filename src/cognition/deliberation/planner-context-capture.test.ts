@@ -173,6 +173,7 @@ describe("planner context capture", () => {
           autonomySchedulerState: {
             observedAt: NOW_MS,
             enabled: true,
+            tickInFlight: false,
             nextTickAt: NOW_MS + 60_000,
             scheduledTickAt: NOW_MS + 60_000,
             fleetBrake: {

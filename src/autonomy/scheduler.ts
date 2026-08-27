@@ -725,6 +725,7 @@ export class AutonomyScheduler {
     return {
       observed_at: nowMs,
       enabled: this.options.enabled,
+      tick_in_flight: this.activeTick !== null,
       interval_ms: this.options.intervalMs,
       // Floored to the read so a "next evaluation" surface never shows a past
       // instant. The floor is where the overdue amount used to be lost; it is

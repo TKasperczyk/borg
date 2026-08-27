@@ -1777,6 +1777,7 @@ export function summarizeAutonomySchedulerState(
     NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
   >,
   renderNowMs: number,
+  turnOrigin: DeliberationContext["turnOrigin"] = undefined,
 ): string {
   const budget = schedulerState.budget;
   const reservationStillHeld = Math.max(
@@ -1882,7 +1883,19 @@ export function summarizeAutonomySchedulerState(
   //     separates the two ways a loop is behind: the anchor advances when a tick *enters*, and the
   //     interval drops every fire while one is in flight, so a tick still running holds one stamp
   //     across reads while an interval merely lagging moves it. The overdue number alone grows the
-  //     same way in both cases; the stamp is what tells them apart, and only across reads.
+  //     same way in both cases; the stamp is what tells them apart.
+  //
+  //     "and only across reads" used to close that sentence, and it was a wrong generalization of
+  //     the same shape it had just corrected. Comparing stamps needs two reads, not one reader:
+  //     every read is archived with its rendered prompt, so anyone holding the archive can run the
+  //     comparison over as many reads as they like. What no *page* could carry was the answer --
+  //     which is now `tick_in_flight` below, the flag the scheduler always had and never exported.
+  // (4) `Scheduler loop: running` asserted liveness off `enabled`, which is the configuration flag
+  //     and only ever that. During a 98-minute stuck tick -- every interval fire dropped, no wake
+  //     possible -- the line still read "running": true of the config, false of the loop, and
+  //     pointed at the noun a reader is actually asking about. The word now names what it reports
+  //     and the liveness fact is rendered separately, including its own blind spot: an autonomous
+  //     turn is built *inside* a tick, so the flag is true by construction there and says nothing.
   const scheduledTickAt = schedulerState.scheduledTickAt;
   const tickClause =
     schedulerState.nextTickAt === null || scheduledTickAt === null
@@ -1900,9 +1913,18 @@ export function summarizeAutonomySchedulerState(
               ? `, and ${renderNowMs - scheduledTickAt}ms before the current_time_ms at the top of this prompt -- it was still ahead as of the read and may have fired inside the lag since.`
               : `, and ${scheduledTickAt - renderNowMs}ms after the current_time_ms at the top of this prompt -- still ahead on both clocks.`
           }`;
+  // The liveness clause and the tick clause answer different questions and are stated separately:
+  // how far behind the loop is, and which of the two causes is producing that. The blind spot is
+  // printed with the flag rather than left for the reader to discover, because a field that is
+  // true in the only state its reader can observe is worse than absent.
+  const inFlightClause = !schedulerState.tickInFlight
+    ? "No tick was in flight at that read, so an overdue amount below is the interval running behind, not a tick holding the stamp."
+    : turnOrigin === "autonomous"
+      ? "A tick was in flight at that read -- but this prompt is being built inside that tick, so the flag is true by construction on an autonomous turn and discriminates nothing here."
+      : "A tick was in flight at that read, and the interval drops every fire while one is: no wake can start, and the tick stamp below is held rather than moving, so an overdue amount there is a stuck tick and not a lagging interval.";
   lines.push(
     schedulerState.enabled
-      ? `Scheduler loop: running, ${tickClause}`
+      ? `Scheduler loop: enabled in configuration -- that word is the config flag the scheduler was built with, not an observation that the loop is alive. ${inFlightClause} Tick: ${tickClause}`
       : "Scheduler loop: disabled -- no wake fires regardless of the budget above.",
   );
 
@@ -2057,7 +2079,11 @@ function summarizeMechanismEvidence(
 
   if (schedulerState !== undefined) {
     lines.push(
-      summarizeAutonomySchedulerState(schedulerState, renderNowMs ?? schedulerState.observedAt),
+      summarizeAutonomySchedulerState(
+        schedulerState,
+        renderNowMs ?? schedulerState.observedAt,
+        context.turnOrigin,
+      ),
     );
   }
 

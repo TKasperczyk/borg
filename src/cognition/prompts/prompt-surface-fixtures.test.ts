@@ -80,6 +80,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
 > = {
   observedAt: NOW_MS,
   enabled: true,
+  tickInFlight: false,
   nextTickAt: NOW_MS + 60_000,
   scheduledTickAt: NOW_MS + 60_000,
   fleetBrake: {

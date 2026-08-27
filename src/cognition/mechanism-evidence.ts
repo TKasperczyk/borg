@@ -68,9 +68,18 @@ export type HydratedRecentRegeneration = {
 // the age hung on that stamp is time since the read, not tick lateness. The unfloored value is
 // two lines away in the scheduler; carrying it here is what makes the discarded quantity
 // recoverable at the surface instead of destroyed upstream of it.
+//
+// `tickInFlight` is the third of these, and the one the stamps could not supply. `enabled` is the
+// config flag; `scheduledTickAt` says how far behind the loop is; neither says *why*, and the two
+// causes take opposite repairs. A tick stamps the anchor on entry and the interval drops every
+// fire while it runs, so a stuck tick holds one stamp while the overdue amount climbs -- the same
+// page a lagging interval draws. Telling them apart used to require two reads far enough apart to
+// watch whether the stamp moved, which is a discriminator no single prompt can carry. The flag is
+// already in the scheduler at describe() time; carrying it here makes one read enough.
 export type AutonomySchedulerMechanismEvidence = {
   observedAt: number;
   enabled: boolean;
+  tickInFlight: boolean;
   nextTickAt: number | null;
   scheduledTickAt: number | null;
   budget: AutonomySchedulerBudgetDescription;

@@ -815,6 +815,7 @@ export async function runRetrievalPhase(input: {
           // surface says it is naming.
           observedAt: description.observed_at,
           enabled: description.enabled,
+          tickInFlight: description.tick_in_flight,
           nextTickAt: description.next_tick_at,
           scheduledTickAt: description.scheduled_tick_at,
           budget: description.budget,

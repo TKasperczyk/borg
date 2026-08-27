@@ -2615,6 +2615,7 @@ describe("buildBaseSystemPrompt", () => {
             autonomySchedulerState: {
               observedAt: NOW_MS,
               enabled: true,
+              tickInFlight: false,
               nextTickAt: NOW_MS + 60_000,
               scheduledTickAt: NOW_MS + 60_000,
               fleetBrake: {
@@ -2697,6 +2698,84 @@ describe("buildBaseSystemPrompt", () => {
     },
   );
 
+  // `enabled` is the constructor flag and never a liveness fact, but the line
+  // used to spend it as one ("Scheduler loop: running"). The two ways the loop
+  // falls behind -- a tick still running, or the interval merely lagging --
+  // print identical stamps and an identical overdue amount, so the page carried
+  // the symptom and none of the cause. tickInFlight is the cause, and on an
+  // autonomous turn it is true because the tick is building the turn, which the
+  // render has to say or it becomes a field that is true whenever it is read.
+  it.each([
+    {
+      name: "config flag is not liveness",
+      tickInFlight: false,
+      turnOrigin: "user" as const,
+      expected: "not an observation that the loop is alive",
+    },
+    {
+      name: "stuck tick names itself on one read",
+      tickInFlight: true,
+      turnOrigin: "user" as const,
+      expected: "a stuck tick and not a lagging interval",
+    },
+    {
+      name: "autonomous turn names its own blind spot",
+      tickInFlight: true,
+      turnOrigin: "autonomous" as const,
+      expected: "true by construction on an autonomous turn and discriminates nothing here",
+    },
+  ])("$name", ({ tickInFlight, turnOrigin, expected }) => {
+    const block = extractBlock(
+      buildBaseSystemPrompt(
+        makeContext({
+          turnOrigin,
+          turnMechanismEvidence: {
+            recentSuppressions: [],
+            recentRegenerations: [],
+            autonomySchedulerState: {
+              observedAt: NOW_MS,
+              enabled: true,
+              tickInFlight,
+              nextTickAt: NOW_MS + 60_000,
+              scheduledTickAt: NOW_MS + 60_000,
+              fleetBrake: {
+                enabled: true,
+                empty_streak: 0,
+                empty_streak_threshold: 5,
+                streak_anchor_ts: null,
+                cooldown_until: null,
+                error_streak: 0,
+                error_streak_threshold: 3,
+                error_paused_until: null,
+                bypass_count: 0,
+                freshness_bypass_cap: 3,
+                window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+                window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+              },
+              budget: {
+                max_wakes_per_window: 6,
+                window_ms: 60 * 60_000,
+                window_started_at: NOW_MS - 60 * 60_000,
+                used_in_current_window: 1,
+                reserved_contemplative_wakes_per_window: 0,
+                contemplative_used_in_current_window: 0,
+                wakes_in_current_window_by_trigger: [],
+                next_budget_slot_frees_at: NOW_MS + 30 * 60_000,
+              },
+            },
+          },
+        }),
+        { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+      ),
+      "borg_mechanism_evidence",
+    );
+    const line = block.split("\n").find((entry) => entry.startsWith("Scheduler loop:")) ?? "";
+
+    expect(line).toContain("Scheduler loop: enabled in configuration");
+    expect(line).not.toContain("Scheduler loop: running");
+    expect(line).toContain(expected);
+  });
+
   // in_flight is the one wake state with no terminal write of its own: the
   // bookkeeping catch around recordOutcome returns without recording anything,
   // so an orphaned row stays NULL forever and wake_count still equals in_flight
@@ -2715,6 +2794,7 @@ describe("buildBaseSystemPrompt", () => {
             autonomySchedulerState: {
               observedAt: NOW_MS,
               enabled: true,
+              tickInFlight: false,
               nextTickAt: NOW_MS + 60_000,
               scheduledTickAt: NOW_MS + 60_000,
               fleetBrake: {
@@ -2823,6 +2903,7 @@ describe("buildBaseSystemPrompt", () => {
             autonomySchedulerState: {
               observedAt,
               enabled: true,
+              tickInFlight: false,
               nextTickAt,
               scheduledTickAt,
               fleetBrake: {
@@ -2925,6 +3006,7 @@ describe("buildBaseSystemPrompt", () => {
           autonomySchedulerState: {
             observedAt,
             enabled: true,
+            tickInFlight: false,
             nextTickAt: NOW_MS + 60_000,
             scheduledTickAt: NOW_MS + 60_000,
             fleetBrake: {
@@ -2979,6 +3061,7 @@ describe("buildBaseSystemPrompt", () => {
           autonomySchedulerState: {
             observedAt: NOW_MS,
             enabled: true,
+            tickInFlight: false,
             nextTickAt: NOW_MS + 60_000,
             scheduledTickAt: NOW_MS + 60_000,
             fleetBrake: {
@@ -3042,6 +3125,7 @@ describe("buildBaseSystemPrompt", () => {
               autonomySchedulerState: {
                 observedAt: NOW_MS,
                 enabled: true,
+                tickInFlight: false,
                 nextTickAt: NOW_MS + 60_000,
                 scheduledTickAt: NOW_MS + 60_000,
                 fleetBrake: {
