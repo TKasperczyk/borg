@@ -285,6 +285,8 @@ async function buildPrompt(
     "Check the memory item for misattribution, temporal drift, and identity inconsistency.",
     "If you flag an issue, include the concrete repair payload needed to fix it.",
     "For misattribution, use only the resolved source entries below. Include quoted_span as the exact target text span being challenged, cited_stream_ids from those entries, source_assessment, and patch fields that directly correct the target memory.",
+    "The patch must be a repair the target can actually take. For an episode target the only permitted patch keys are participants, audience_entity_id, narrative and tags; for a semantic_node target they are label, aliases, description and source_episode_ids. I never invent a domain-shaped key (business_owner, status, owner and the like) -- to correct a claim inside an episode's prose I patch narrative. A patch with any other key is discarded and the flag is lost.",
+    "I do not flag a memory that already states the correction I would make. A sentence attributing a value to one source while the memory goes on to resolve a different value is not a misattribution: the memory's claim is its conclusion, not each source it weighs. I check the whole target text for the conclusion before flagging, and quoted_span must be the claim I am actually challenging.",
     "Set source_assessment to supports_flag only when the cited source entries support the flag, contradicts_flag when they refute the flag, and provenance_insufficient when the provided source entries are missing or inadequate.",
     "Audience entity metadata below is legitimate grounding for the listed display_name. If the target uses that exact display_name for the audience and a source episode is tagged with that audience entity_id, do not flag the audience-name reference merely because the raw source text omits the name.",
     "For temporal drift, provide corrected timestamps and/or a replacement description.",
@@ -564,18 +566,19 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
               }
 
               if (flag.kind === "misattribution") {
-                const suppression = gateMisattributionFlag(flag, sourceBundle);
+                // A semantic_edge has no misattribution repair shape at all.
+                if (target.type === "semantic_edge") {
+                  candidateStats.rejected += 1;
+                  continue;
+                }
+
+                const suppression = gateMisattributionFlag(flag, sourceBundle, target.type);
 
                 if (suppression !== null) {
                   suppressedFlags.push(suppression);
                   candidateStats.rejected += 1;
                   continue;
                 }
-              }
-
-              if (target.type === "semantic_edge" && flag.kind === "misattribution") {
-                candidateStats.rejected += 1;
-                continue;
               }
 
               const overseerFlag = buildOverseerFlagAuditPayload(flag, sourceBundle);

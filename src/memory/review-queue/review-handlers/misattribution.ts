@@ -17,7 +17,14 @@ const MISATTRIBUTION_REVIEW_RESOLUTIONS = new Set<ReviewResolution>([
   "dismiss",
 ]);
 
-const misattributionEpisodePatchSchema = episodePatchSchema
+// Exported so the overseer can gate a proposed patch against the SAME shape the
+// resolver will validate it with. These refs are parsed at RESOLVE time, not at
+// enqueue time, so an inapplicable patch is accepted into the queue and then
+// throws on every resolver pass forever (a throwing apply leaves the item queued
+// and only the needs_manual path counts attempts). Prod 2026-08-27: the overseer
+// emitted patch {business_owner: ...} on an episode target, which fails here with
+// unrecognized_keys. One definition, two consumers, so they cannot drift.
+export const misattributionEpisodePatchSchema = episodePatchSchema
   .pick({
     participants: true,
     audience_entity_id: true,
@@ -29,7 +36,7 @@ const misattributionEpisodePatchSchema = episodePatchSchema
     message: "Misattribution episode patch must not be empty",
   });
 
-const semanticNodeMisattributionPatchSchema = z
+export const semanticNodeMisattributionPatchSchema = z
   .object({
     label: z.string().min(1).optional(),
     aliases: z.array(z.string().min(1)).optional(),
