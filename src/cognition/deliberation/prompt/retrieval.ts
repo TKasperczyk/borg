@@ -76,6 +76,7 @@ export type RetrievedEvidenceSummaryInput = {
     question: string;
     urgency: number;
     audience_entity_id?: EntityId | null;
+    disclosure_label?: MemoryDisclosureLabel | null;
   }[];
 };
 
@@ -855,6 +856,7 @@ function summarizeOpenQuestionEvidence(
     question: string;
     urgency: number;
     audience_entity_id?: EntityId | null;
+    disclosure_label?: MemoryDisclosureLabel | null;
   }[],
 ): string | null {
   if (openQuestions.length === 0) {
@@ -867,7 +869,19 @@ function summarizeOpenQuestionEvidence(
       .slice(0, 4)
       .map(
         (question) =>
-          `- ${question.question} [open_question=${question.id} urgency=${question.urgency.toFixed(2)} ${renderMemoryDisclosureLabelForModel(openQuestionMemoryDisclosureLabel({ audience_entity_id: question.audience_entity_id ?? null }))}]`,
+          // Pass the stored label through, not just the audience column. A row
+          // whose label was written at creation commonly carries an origin
+          // audience and a private-to binding while `audience_entity_id` is
+          // null; deriving from that column alone discards both and renders the
+          // row as self-private with no origin. Origin audience is what the
+          // entity reads to tell recall from common ground, so dropping it here
+          // silently understates who the question was already shared with.
+          `- ${question.question} [open_question=${question.id} urgency=${question.urgency.toFixed(2)} ${renderMemoryDisclosureLabelForModel(
+            openQuestionMemoryDisclosureLabel({
+              audience_entity_id: question.audience_entity_id ?? null,
+              disclosure_label: question.disclosure_label ?? null,
+            }),
+          )}]`,
       ),
   ].join("\n");
 }

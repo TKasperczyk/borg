@@ -503,6 +503,39 @@ describe("retrieval confidence prompt rendering", () => {
     );
   });
 
+  it("renders the stored open-question label when the audience column is null", () => {
+    const summary = summarizeRetrievedEvidence(
+      "Retrieved context",
+      {
+        episodes: [],
+        semantic: null,
+        openQuestions: [
+          {
+            id: "oq_aaaaaaaaaaaaaaaa",
+            question: "Should I ask Alice about the private launch timing?",
+            urgency: 0.72,
+            audience_entity_id: null,
+            disclosure_label: {
+              disclosureClass: "relationship_private",
+              originAudienceEntityIds: ["entity_alice" as never],
+              privateToEntityIds: ["entity_alice" as never],
+              publicToEntityIds: [],
+            },
+          },
+        ],
+      },
+      1_000,
+    );
+
+    // Deriving from `audience_entity_id` alone would render this row
+    // self-private with no origin audience, contradicting the stored label the
+    // resolve path returns for the same question.
+    expect(summary).toContain("disclosure_class=relationship_private");
+    expect(summary).toContain("origin_audience=entity_alice");
+    expect(summary).toContain("private-to=entity_alice");
+    expect(summary).not.toContain("disclosure_class=self_private");
+  });
+
   it("renders partial-source metadata on semantic evidence items", () => {
     const evidence: EvidenceItem = {
       id: "evidence_semantic_node_semn_aaaaaaaaaaaaaaaa_intent",
