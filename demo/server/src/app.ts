@@ -758,8 +758,11 @@ export function ensureDemoSession(
     source_external_id: sourceExternalId,
     source_url: existing?.source_url ?? null,
     label: input.label ?? existing?.label ?? demoSessionLabel(input.sessionId),
-    audience_label: input.audienceLabel ?? DEMO_DEFAULT_AUDIENCE_LABEL,
-    audience_entity_id: input.audienceEntityId ?? null,
+    // sessions.ensure() overwrites both audience columns unconditionally, so a caller
+    // that does not name an audience must adopt the stored one rather than re-stamp the
+    // demo default over it -- the same adoption the source/label fields above rely on.
+    audience_label: input.audienceLabel ?? existing?.audience_label ?? DEMO_DEFAULT_AUDIENCE_LABEL,
+    audience_entity_id: input.audienceEntityId ?? existing?.audience_entity_id ?? null,
     conversation_kind: existing?.conversation_kind ?? DEMO_CONVERSATION_KIND,
     ...(input.audienceRole === undefined ? {} : { audience_role: input.audienceRole }),
   });
@@ -791,10 +794,12 @@ export function ensureDemoDefaultSession(
 ) {
   ensureDemoCreator(borg, options.demoCreatorEntityName ?? DEMO_DEFAULT_CREATOR_ENTITY_NAME);
 
-  return ensureDemoSession(borg, {
-    sessionId: DEFAULT_SESSION_ID,
-    audienceLabel: DEMO_DEFAULT_AUDIENCE_LABEL,
-  });
+  // Seed the demo persona only when this session does not exist yet. A deployment whose
+  // default session is the entity's own autonomous space (wakes, reflection, offline work
+  // -- no other participant in the room) sets its audience once; re-passing the demo
+  // default here would re-stamp that on every boot, and every record written in the
+  // session inherits its audience as origin provenance.
+  return ensureDemoSession(borg, { sessionId: DEFAULT_SESSION_ID });
 }
 
 export function ensureDemoOperatorSession(borg: Borg) {

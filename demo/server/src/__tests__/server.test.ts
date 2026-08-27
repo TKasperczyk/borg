@@ -47,6 +47,7 @@ import type { StreamWriter } from "../../../../src/stream/index.js";
 import {
   broadcastMaintenanceTick,
   createDemoServerApp,
+  ensureDemoDefaultSession,
   runtimeConfigFromConfig,
   wireMaintenanceSchedulerLiveObserver,
 } from "../app.js";
@@ -988,6 +989,33 @@ describe("demo server", () => {
     live.tracer.emit("frame_anomaly.disposition", unscopedTraceData);
 
     expect(frames).toEqual([]);
+  });
+
+  it("keeps a stored default-session audience across boots instead of re-stamping the demo default", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-default-audience-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const selfEntityId = borg.entities.resolve("self", {
+      kind: "self",
+      provenance: "assistant_seeded",
+    });
+    borg.sessions.ensure({
+      ...borg.sessions.get(DEFAULT_SESSION_ID)!,
+      audience_label: "self",
+      audience_entity_id: selfEntityId,
+    });
+
+    // A deployment whose default session is the entity's own autonomous space sets its
+    // audience once; every later boot must adopt it, since records written there inherit
+    // the session audience as origin provenance.
+    ensureDemoDefaultSession(borg);
+
+    const session = borg.sessions.get(DEFAULT_SESSION_ID);
+    expect(session?.audience_label).toBe("self");
+    expect(session?.audience_entity_id).toBe(selfEntityId);
   });
 
   it("serves the in-flight turn snapshot while a turn is running", async () => {
