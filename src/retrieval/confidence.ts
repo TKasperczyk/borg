@@ -17,17 +17,14 @@ export type RetrievalConfidence = {
   sourceDiversity: number;
   contradictionPresent: boolean;
   sampleSize: number;
-  // The semantic half of `sampleSize`. Both ratios below add this same count to
-  // their own episode half, but they count episodes differently -- `sampleSize`
-  // takes every episode, `diversitySampleSize` only the top-N slice. Without
-  // this split the two denominators differ by an amount the render cannot
-  // attribute, and a reader sees an unexplained off-by-N between the sample
-  // figure and the diversity fraction printed next to it.
+  // The semantic half of `sampleSize`. Coverage deliberately excludes this
+  // population; diversity includes it beside only the top-N episode slice.
+  // Carrying the split keeps all three rendered populations attributable.
   semanticSampleSize: number;
   // The denominators the two ratios were actually divided by. Neither is
-  // `sampleSize`, and neither is a constant, so a 1.00 on either line is only
-  // readable next to the figure it saturated against. Carried on the result so
-  // the render can print the fraction instead of just the quotient.
+  // `sampleSize`, so a 1.00 on either line is only readable next to the figure
+  // it saturated against. Carried on the result so the render can print the
+  // fraction instead of just the quotient.
   coverageExpected: number;
   diversitySources: number;
   diversitySampleSize: number;
@@ -59,11 +56,16 @@ export type ComputeRetrievalConfidenceInput = {
   };
   nowMs: number;
   asOf?: number;
+  // Stable episode target for full coverage. This is intentionally independent
+  // of the caller's retrieval cap: using the cap as the expectation makes a
+  // filled top-k result declare itself complete by construction.
   expectedCount?: number;
   topN?: number;
 };
 
-// Tunes the expected evidence count for full retrieval coverage.
+// Tunes the expected episode count for full retrieval coverage. Production
+// turn retrieval uses this stable target across cognitive modes; mode-specific
+// limits control how much is retrieved, not what "enough" means afterward.
 const DEFAULT_EXPECTED_COUNT = 5;
 
 // Tunes how many top ranked episodes contribute to confidence strength.
@@ -203,7 +205,7 @@ export function computeRetrievalConfidence(
   input: ComputeRetrievalConfidenceInput,
 ): RetrievalConfidence {
   const topN = input.topN ?? DEFAULT_TOP_N;
-  const expectedCount = input.expectedCount ?? DEFAULT_EXPECTED_COUNT;
+  const coverageExpected = Math.max(1, input.expectedCount ?? DEFAULT_EXPECTED_COUNT);
   const episodes = input.episodes;
   const contradictionPresent =
     input.contradictionEdges === undefined
@@ -222,7 +224,7 @@ export function computeRetrievalConfidence(
       contradictionPresent,
       sampleSize: 0,
       semanticSampleSize: 0,
-      coverageExpected: expectedCount,
+      coverageExpected,
       diversitySources: 0,
       diversitySampleSize: 0,
       evidenceEpisodeStrength: 0,
@@ -250,21 +252,20 @@ export function computeRetrievalConfidence(
   // measured 1.00 from a clamped one, which is why both addends ship out.
   const evidenceStrength = clamp01(episodeEvidenceStrength + semanticEvidence.strength);
 
-  // Coverage: did we find enough evidence to answer confidently.
+  // Coverage: did we find enough episodic evidence to answer confidently.
   //
-  // Read the two halves of this fraction before reading the number. The
-  // numerator is the same expression as the reported `sampleSize` below. The
-  // denominator is not a constant and not the sample: callers pass the
-  // retrieval limit (1/4/5/6 by cognitive mode), and the episode list has
-  // already been capped at exactly that limit upstream, with the semantic count
-  // added on top of the cap. So on any turn that fills its episode budget and
-  // matches a single semantic node, coverage is pinned at 1.00 -- not because
-  // evidence was broad but because the numerator can exceed a denominator it
-  // was never bounded by. Pinned at its ceiling, it stops discriminating and
-  // its modulation term below becomes a constant. Only the zero-evidence early
-  // return can drive it to 0. That is why `coverageExpected` ships with it: a
-  // saturated ratio and a measured one print identically on their own.
-  const coverage = clamp01((episodes.length + semanticEvidence.count) / Math.max(1, expectedCount));
+  // The numerator is the realized projected-episode count, while the
+  // denominator is a stable evidence target. The target must not be the
+  // mode-specific projection cap: dividing a filled top-k result by k makes
+  // fullness true by construction and turns the 0.2 modulation term into a
+  // routing constant. A deliberately thin mode therefore remains visibly
+  // thin, while five or more projected episodes can still reach full coverage.
+  //
+  // Semantic support is excluded here because it already contributes its own
+  // bounded addend to `evidenceStrength` (and source signatures to diversity).
+  // Adding its count here would let the same semantic matches erase an episodic
+  // shortfall a second time.
+  const coverage = clamp01(episodes.length / coverageExpected);
 
   // Source diversity: distinct participant sets across the top-N. Episodes
   // that involve the same participants are more likely to be one conversation
@@ -293,9 +294,10 @@ export function computeRetrievalConfidence(
   // evidence of breadth across conversations; it is the small-denominator case.
   // Both halves ship on the result as `diversitySources` / `diversitySampleSize`
   // so the render can show the fraction rather than only its quotient, and
-  // `semanticSampleSize` ships alongside so the shared semantic term can be
-  // subtracted out of both denominators -- otherwise the divergence from
-  // `sampleSize` is visible on the page but not attributable to this cap.
+  // `semanticSampleSize` ships alongside so the semantic term can be
+  // subtracted from both this denominator and `sampleSize` -- otherwise the
+  // divergence between their episode populations is visible but not
+  // attributable to this cap.
   const diversitySampleSize = topEpisodes.length + semanticEvidence.count;
   const sourceDiversity =
     diversitySampleSize === 0 ? 0 : clamp01(participantSignatures.size / diversitySampleSize);
@@ -321,7 +323,7 @@ export function computeRetrievalConfidence(
     contradictionPresent,
     sampleSize: episodes.length + semanticEvidence.count,
     semanticSampleSize: semanticEvidence.count,
-    coverageExpected: Math.max(1, expectedCount),
+    coverageExpected,
     diversitySources: participantSignatures.size,
     diversitySampleSize,
     evidenceEpisodeStrength: episodeEvidenceStrength,

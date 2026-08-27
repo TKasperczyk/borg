@@ -851,8 +851,8 @@ describe("retrieval pipeline", () => {
       { record: currentRecord, similarity: 0.99 },
       { record: olderRecord, similarity: 0.8 },
     ];
-    const recallForCognition = vi.fn(
-      async (input: { vector: Float32Array; limit: number }) => hits.slice(0, input.limit),
+    const recallForCognition = vi.fn(async (input: { vector: Float32Array; limit: number }) =>
+      hits.slice(0, input.limit),
     );
     const imagePerceptionRepository = {
       recallForCognition,
@@ -1956,6 +1956,10 @@ describe("retrieval pipeline", () => {
       expect.arrayContaining([expect.objectContaining({ id: atlas.id })]),
     );
     expect(result.semantic.support_hits).toHaveLength(1);
+    // The mode-specific limit controls projection only. Coverage keeps its
+    // stable episode target, and semantic support stays in its own addend.
+    expect(result.confidence.coverageExpected).toBe(5);
+    expect(result.confidence.coverage).toBe(0);
     expect(result.confidence.overall).toBeGreaterThan(0);
   });
 

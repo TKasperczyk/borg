@@ -44,7 +44,6 @@ export function assembleRetrievedContext(input: {
   recallIntents: RecallIntent[];
   contradictionPresent: boolean;
   nowMs: number;
-  expectedCount?: number;
 }): RetrievedContext {
   // Two booleans leave here under one name. `contradiction_present` below is the
   // caller's raw flag; `confidence.contradictionPresent` is that flag *and* a
@@ -65,7 +64,6 @@ export function assembleRetrievedContext(input: {
     },
     nowMs: input.nowMs,
     asOf: input.semantic.as_of ?? undefined,
-    expectedCount: input.expectedCount,
   });
 
   return {

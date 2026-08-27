@@ -500,6 +500,7 @@ describe("compact planner context", () => {
     expect(text).toContain('directives_total_for_current_audience="18"');
     expect(text).toContain('directives_rendered="18"');
     expect(text).toContain('<creator_directive_index rows_total_for_current_audience="18"');
+    expect(text).toContain('rows_omitted_after_current_audience_scope="0"');
     expect(rows).toHaveLength(18);
     expect(rows.map((row) => row.match(/i="([^"]+)"/)?.[1])).toEqual(
       Array.from({ length: 18 }, (_, index) => `cd_${index + 1}`),
@@ -517,7 +518,7 @@ describe("compact planner context", () => {
     expect(text).toContain('pk="op"');
     expect(text).toContain('sc="b" k="db" dh="b" sps="not_captured"');
     expect(text).toContain('pk="bp"');
-    expect(text.match(/<omitted_count>0<\/omitted_count>/g)).toHaveLength(2);
+    expect(text.match(/<omitted_count>0<\/omitted_count>/g)).toHaveLength(1);
     expect(planner.traceSummary.sections.authority_and_directives).toMatchObject({
       rowCount: 18,
       truncationCount: 16,
@@ -526,6 +527,18 @@ describe("compact planner context", () => {
     expect(
       planner.traceSummary.sections.authority_and_directives?.estimatedTokens,
     ).toBeLessThanOrEqual(4_000);
+  });
+
+  it("keeps the empty directive index count explicitly audience-relative", () => {
+    const rendered = taggedBlock(
+      allSystemText(build(context({ creatorDirectiveBriefing: null }))),
+      "borg_planner_authority_context",
+    );
+
+    expect(rendered).toContain(
+      '<creator_directive_index status="none" complete_for_current_audience="true" rows_total_for_current_audience="0" rows_omitted_after_current_audience_scope="0" />',
+    );
+    expect(selfClosingRows(rendered, "d")).toHaveLength(0);
   });
 
   it("keys exact authority payloads on structural kind and renders every captured scope field", () => {
@@ -606,7 +619,7 @@ describe("compact planner context", () => {
     expect(text).toContain('directives_total_for_current_audience="150"');
     expect(text).toContain('directives_rendered="150"');
     expect(selfClosingRows(text, "d")).toHaveLength(150);
-    expect(text.match(/<omitted_count>0<\/omitted_count>/g)).toHaveLength(2);
+    expect(text.match(/<omitted_count>0<\/omitted_count>/g)).toHaveLength(1);
     expect(planner.traceSummary.sections.authority_and_directives).toMatchObject({
       rowCount: 150,
       truncationCount: 0,
