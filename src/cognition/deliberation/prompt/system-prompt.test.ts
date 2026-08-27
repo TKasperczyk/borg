@@ -3545,7 +3545,12 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain(
       `over commitment ${commitmentId} (participant_preference/explicit_no_disclosure/rollout_privacy, no_longer_active)`,
     );
-    expect(block).toContain("records a past firing and is not a constraint on me now");
+    expect(block).toContain("records a past firing");
+    // Supersession is one of the endings the token covers, and it replaces a row
+    // without ending what the row required. The note must not let a dead id read
+    // as a dead constraint.
+    expect(block).toContain("What ended is the row, not necessarily the constraint");
+    expect(block).toContain("the directive continues under a successor this line does not name");
   });
 
   it("claims neither liveness state when the turn carries no active commitment draw", () => {
