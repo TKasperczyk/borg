@@ -2088,8 +2088,12 @@ function summarizeMechanismEvidence(
   }
 
   if (recentSuppressions.length > 0) {
+    // Both rings live in this session's working memory (working/<session_id>.json), so
+    // each is scoped to one conversation. Unstated, that scope is invisible: the list
+    // reads as a record of my silences, and a day with a suppression in another
+    // conversation renders here as a day I spoke. Say the scope on the line.
     lines.push(
-      `Recent silences from my side (newest last; this list keeps the newest ${RECENT_SUPPRESSIONS_LIMIT} however old they are, so an age here is the entry's age, not a window): ${recentSuppressions
+      `Recent silences from my side (newest last; this conversation only -- this list is this session's working memory, so a turn of mine suppressed in another conversation is absent here by scope and its absence says nothing about whether I went quiet there; it keeps the newest ${RECENT_SUPPRESSIONS_LIMIT} however old they are, so an age here is the entry's age, not a window): ${recentSuppressions
         .map((entry) => renderRecentSuppressionMechanismEvidence(entry, renderNowMs))
         .join(
           ", ",
@@ -2114,13 +2118,27 @@ function summarizeMechanismEvidence(
     )
       ? " An entry that names no commitment says which of two silences it is. commitments_unrecorded means the write that made that entry kept no commitment field at all, so the ids existed when the guard fired and nothing carried them here; it is silent about which constraint bit, not evidence that none did. guard_named_no_commitment means the firing itself named none. Neither token licenses the reading that the regeneration had no cause."
       : "";
+    // This ring is not a record of regenerations; it is a record of regenerations that
+    // then survived to be emitted. The breadcrumb is minted only under
+    // `finalAnswerRegenerated && guardedEmission.kind === "message"`
+    // (turn-action/turn-action-coordinator.ts), and the append is reached only on the
+    // message branch of the post-generation phase -- the suppressed branch returns
+    // before it. So the two lists are disjoint by construction, never by coincidence,
+    // and the disjointness is at its most misleading exactly where the two would
+    // otherwise meet: a draft the commitment guard regenerated and a guard then
+    // suppressed is in the silences list and nowhere here. Two suppression reason codes
+    // still carry the fact themselves; under any other one it survives in neither list.
+    // Verified on the live store (2026-08-27): zero shared turn ids across all nine
+    // sessions' rings, and one session holding seven `commitment_violation_after_regenerate`
+    // silences alongside a full regeneration ring naming none of them.
+    const emittedOnlyNote = ` This list covers regenerations whose redrafted answer was then emitted; a regeneration the guards suppressed afterwards leaves no entry here at all, so absence from this list is not evidence that a turn was not regenerated. Those turns appear in the silences list above instead, and two reason codes there name the redraft themselves -- commitment_violation_after_regenerate for this same guard's second pass, invalid_tool_after_regenerate for the finalizer's own retry, which is a different mechanism. Under any other reason code the redraft is recorded in neither list.`;
     lines.push(
-      `Regenerated final answers from my side (newest last; newest ${RECENT_REGENERATIONS_LIMIT} kept, same as above): ${recentRegenerations
+      `Regenerated final answers from my side (newest last; this conversation only, same session working memory as above; newest ${RECENT_REGENERATIONS_LIMIT} kept): ${recentRegenerations
         .map(
           (entry) =>
             `${escapeXmlText(entry.turnId)}: an internal commitment guard regenerated this turn's final answer${renderRegenerationCommitmentsSuffix(entry, activeCommitmentIds)}${renderRelativeAgeSuffix(entry.ts, renderNowMs)}`,
         )
-        .join(", ")}.${namedCommitmentNote}${bareEntryNote}`,
+        .join(", ")}.${emittedOnlyNote}${namedCommitmentNote}${bareEntryNote}`,
     );
   }
 

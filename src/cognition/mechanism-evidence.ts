@@ -159,6 +159,20 @@ function suppressionDiagnosticFromEntry(
   };
 }
 
+// The regeneration ring has the same shape of scope trap as the suppression ring below, one
+// step further in: it holds regenerations whose redrafted answer was then emitted, not
+// regenerations. The breadcrumb is minted only under `finalAnswerRegenerated &&
+// guardedEmission.kind === "message"` (turn-action/turn-action-coordinator.ts) and appended
+// only on the message branch of post-generation-phase.ts, whose suppressed branch returns
+// first. So a draft the commitment guard redrafted and a guard then suppressed lands in the
+// suppression ring and nowhere here -- the two lists cannot share a turn id, ever. Measured on
+// the live store (2026-08-27): zero overlap across all nine sessions, one of them carrying
+// seven `commitment_violation_after_regenerate` silences beside a full regeneration ring that
+// names none of the seven. Two reason codes (`commitment_violation_after_regenerate`,
+// `invalid_tool_after_regenerate` -- the latter the finalizer's own retry, not this guard)
+// still carry the redraft in their own name; under any other one it is unrecorded in both.
+// system-prompt.ts states that scope on the rendered line, which is the fix for a gap of this
+// shape here: name it, do not widen the ring.
 function hydratedRecentRegeneration(entry: RecentRegenerationEntry): HydratedRecentRegeneration {
   return {
     turnId: entry.turn_id,
