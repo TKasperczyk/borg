@@ -161,6 +161,31 @@ describe("computeRetrievalConfidence", () => {
     expect(confidence.coverage).toBeCloseTo(4 / 5, 5);
   });
 
+  it.each([
+    { limit: 1, coverage: 1 / 5 },
+    { limit: 4, coverage: 4 / 5 },
+    { limit: 5, coverage: 1 },
+    { limit: 6, coverage: 1 },
+  ] as const)(
+    "pins coverage $coverage for a filled per-mode episode budget of $limit",
+    ({ limit, coverage }) => {
+      const episodes = Array.from({ length: limit }, (_unused, index) =>
+        makeEpisode({
+          id: `epi_${String(index).repeat(16)}`.slice(0, 20),
+          decayedSalience: 0.8,
+          participants: [`p${index}`],
+        }),
+      );
+      const confidence = computeRetrievalConfidence({
+        episodes,
+        contradictionPresent: false,
+        nowMs: NOW_MS,
+      });
+
+      expect(confidence.coverage).toBeCloseTo(coverage, 5);
+    },
+  );
+
   it("ships the semantic count shared by samples and diversity so each episode half is recoverable", () => {
     // `sampleSize` and `diversitySampleSize` add the same semantic count to two
     // different episode counts -- every episode, and the top-N slice. Their
