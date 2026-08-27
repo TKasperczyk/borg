@@ -81,8 +81,20 @@ export function closeSemanticEdgeFromReview(input: {
     });
   }
 
+  // A suggested close can predate the edge's own valid_from: refs.suggested_valid_to
+  // is frozen on the review item when it is enqueued and is never re-derived on
+  // retry, while invalidateEdge rejects at < valid_from outright. That combination
+  // is unrecoverable rather than merely wrong -- a throwing apply leaves the item
+  // in the queue with no attempt counted (only the needs_manual path counts
+  // attempts), so the resolver re-picked the same items and threw on every pass
+  // forever, spending its LLM budget each time. Observed in ai-prod: 5x
+  // SEMANTIC_EDGE_INVALIDATE_BEFORE_VALID_FROM on every 4-hourly light run.
+  // Clamping keeps the accepted repair achievable, and closing an edge at its own
+  // start is the correct encoding of "this edge never should have held". The
+  // clamp is visible in the identity-event audit (prior/new valid_to).
+  const suggestedAt = input.repair.validTo ?? input.ctx.clock.now();
   const invalidated = semanticEdgeRepository.invalidateEdge(input.repair.edgeId, {
-    at: input.repair.validTo ?? input.ctx.clock.now(),
+    at: Math.max(suggestedAt, current.valid_from),
     by_edge_id: input.repair.byEdgeId,
     by_process: "review",
     by_review_id: input.item.id,
