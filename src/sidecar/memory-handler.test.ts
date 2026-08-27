@@ -23,6 +23,9 @@ import {
 } from "../util/ids.js";
 
 const TOKEN = "secret-token";
+// Default discovery for stub pools: the tenant these tests exercise. Only the
+// fan-out tests override it.
+const STUB_TENANTS = ["acme"];
 
 const servers: Server[] = [];
 
@@ -278,6 +281,7 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     commitmentAdds: [],
   };
   const pool: MemoryPool = {
+    listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
     async withTenant(tenantId, fn, opts) {
       rec.tenants.push(tenantId);
       rec.exclusives.push(opts?.exclusive);
@@ -484,6 +488,167 @@ describe("memory sidecar handler", () => {
     ]);
   });
 
+  it("fans maintenance out across every discovered tenant when tenant is omitted", async () => {
+    const { pool, rec } = recordingPool();
+    pool.listTenantIds = () => Promise.resolve(["team-agent-ai", "team-agent-esb"]);
+    const scheduled: Array<[string, string]> = [];
+    const reserved: string[] = [];
+    const maintenanceCoordinator = {
+      tryReserve: (input: { tenant: string }) => {
+        reserved.push(input.tenant);
+        return {
+          status: "accepted",
+          runId: `run_${input.tenant}`,
+          completion: new Promise(() => {}),
+        };
+      },
+      startReserved: (tenant: string, runId: string) => {
+        scheduled.push([tenant, runId]);
+        return true;
+      },
+      hasReservation: () => true,
+      cancelReservation: () => true,
+      getStatus: () => ({ current: null, last: null }),
+    } as unknown as NonNullable<MemoryHandlerOptions["maintenanceCoordinator"]>;
+    const base = await start(pool, TOKEN, { maintenanceCoordinator });
+
+    const response = await post(base, "/memory/maintenance?mode=light&dryRun=0", {}, TOKEN);
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({
+      runs: [
+        { tenant: "team-agent-ai", run_id: "run_team-agent-ai" },
+        { tenant: "team-agent-esb", run_id: "run_team-agent-esb" },
+      ],
+      skipped: [],
+    });
+    expect(reserved).toEqual(["team-agent-ai", "team-agent-esb"]);
+    // Every reserved run is scheduled, and only after the response is handed off.
+    expect(scheduled).toEqual([
+      ["team-agent-ai", "run_team-agent-ai"],
+      ["team-agent-esb", "run_team-agent-esb"],
+    ]);
+    // Readiness is established per tenant before acceptance.
+    expect(rec.tenants).toEqual(["team-agent-ai", "team-agent-esb"]);
+  });
+
+  it("treats tenant=* as fan-out and keeps going past a tenant that is already running", async () => {
+    const { pool } = recordingPool();
+    pool.listTenantIds = () => Promise.resolve(["a-tenant", "busy-tenant", "z-tenant"]);
+    const scheduled: string[] = [];
+    const maintenanceCoordinator = {
+      tryReserve: (input: { tenant: string }) =>
+        input.tenant === "busy-tenant"
+          ? { status: "conflict", runId: "run_busy" }
+          : { status: "accepted", runId: `run_${input.tenant}`, completion: new Promise(() => {}) },
+      startReserved: (tenant: string) => {
+        scheduled.push(tenant);
+        return true;
+      },
+      hasReservation: () => true,
+      cancelReservation: () => true,
+      getStatus: () => ({ current: null, last: null }),
+    } as unknown as NonNullable<MemoryHandlerOptions["maintenanceCoordinator"]>;
+    const base = await start(pool, TOKEN, { maintenanceCoordinator });
+
+    const response = await post(
+      base,
+      "/memory/maintenance?tenant=*&mode=heavy&dryRun=1",
+      {},
+      TOKEN,
+    );
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({
+      runs: [
+        { tenant: "a-tenant", run_id: "run_a-tenant" },
+        { tenant: "z-tenant", run_id: "run_z-tenant" },
+      ],
+      skipped: [{ tenant: "busy-tenant", reason: "already running", runId: "run_busy" }],
+    });
+    expect(scheduled).toEqual(["a-tenant", "z-tenant"]);
+  });
+
+  it("fails the fan-out request when no tenant run could be started", async () => {
+    const { pool } = recordingPool();
+    pool.listTenantIds = () => Promise.resolve(["one", "two"]);
+    const maintenanceCoordinator = {
+      tryReserve: () => ({ status: "conflict", runId: "run_existing" }),
+      startReserved: () => true,
+      hasReservation: () => true,
+      cancelReservation: () => true,
+      getStatus: () => ({ current: null, last: null }),
+    } as unknown as NonNullable<MemoryHandlerOptions["maintenanceCoordinator"]>;
+    const base = await start(pool, TOKEN, { maintenanceCoordinator });
+
+    const response = await post(base, "/memory/maintenance?mode=light&dryRun=0", {}, TOKEN);
+
+    // Non-2xx so a `curl --fail` cron reports a failed job instead of a silent no-op.
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "maintenance already running",
+      skipped: [
+        { tenant: "one", reason: "already running", runId: "run_existing" },
+        { tenant: "two", reason: "already running", runId: "run_existing" },
+      ],
+    });
+  });
+
+  it("reports an empty volume instead of a clean no-op run", async () => {
+    const { pool } = recordingPool();
+    pool.listTenantIds = () => Promise.resolve([]);
+    const maintenanceCoordinator = {
+      tryReserve: () => {
+        throw new Error("must not reserve without a tenant");
+      },
+      startReserved: () => true,
+      hasReservation: () => true,
+      cancelReservation: () => true,
+      getStatus: () => ({ current: null, last: null }),
+    } as unknown as NonNullable<MemoryHandlerOptions["maintenanceCoordinator"]>;
+    const base = await start(pool, TOKEN, { maintenanceCoordinator });
+
+    const response = await post(base, "/memory/maintenance?mode=light&dryRun=0", {}, TOKEN);
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "no tenants discovered" });
+  });
+
+  it("never runs discovery for an explicitly named tenant", async () => {
+    const { pool } = recordingPool();
+    let discoveries = 0;
+    pool.listTenantIds = () => {
+      discoveries += 1;
+      return Promise.resolve(["acme", "other"]);
+    };
+    const runId = createMaintenanceRunId();
+    const scheduled: Array<[string, string]> = [];
+    const maintenanceCoordinator = {
+      tryReserve: () => ({ status: "accepted", runId, completion: new Promise(() => {}) }),
+      startReserved: (tenant: string, startedRunId: string) => {
+        scheduled.push([tenant, startedRunId]);
+        return true;
+      },
+      hasReservation: () => true,
+      cancelReservation: () => true,
+      getStatus: () => ({ current: null, last: null }),
+    } as unknown as NonNullable<MemoryHandlerOptions["maintenanceCoordinator"]>;
+    const base = await start(pool, TOKEN, { maintenanceCoordinator });
+
+    const response = await post(
+      base,
+      "/memory/maintenance?tenant=acme&mode=light&dryRun=0",
+      {},
+      TOKEN,
+    );
+
+    // Single-tenant contract is unchanged: bare {run_id}, no runs/skipped envelope.
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ run_id: runId });
+    expect(discoveries).toBe(0);
+    expect(scheduled).toEqual([["acme", runId]]);
+  });
+
   it("holds a synchronous reservation during readiness and rejects a racing POST", async () => {
     const runId = createMaintenanceRunId();
     let active = false;
@@ -497,6 +662,7 @@ describe("memory sidecar handler", () => {
       releaseReadiness = resolve;
     });
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(_tenant, fn) {
         readinessStarted();
         await readinessGate;
@@ -547,6 +713,7 @@ describe("memory sidecar handler", () => {
     const runId = createMaintenanceRunId();
     const cancellations: unknown[] = [];
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant() {
         throw new Error("tenant config is invalid");
       },
@@ -676,6 +843,7 @@ describe("memory sidecar handler", () => {
       },
     } as unknown as Borg;
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(tenant, fn, options) {
         calls.push({ tenant, exclusive: options?.exclusive });
         return fn(borg);
@@ -723,6 +891,7 @@ describe("memory sidecar handler", () => {
       },
     } as unknown as Borg;
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(tenant, fn, options) {
         calls.push({ tenant, exclusive: options?.exclusive });
         return fn(borg);
@@ -798,6 +967,7 @@ describe("memory sidecar handler", () => {
 
   it("labels a partial recall as degraded so the caller can tell it from an empty memory", async () => {
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(_tenantId, fn) {
         return fn({
           episodic: {
@@ -861,6 +1031,7 @@ describe("memory sidecar handler", () => {
 
   it("answers within its deadline when the recall itself stalls", async () => {
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(_tenantId, fn) {
         return fn({
           episodic: {
@@ -891,6 +1062,7 @@ describe("memory sidecar handler", () => {
 
   it("answers an embedding stall as a degradation instead of a 500", async () => {
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(_tenantId, fn) {
         return fn({
           episodic: {
@@ -1062,6 +1234,7 @@ describe("memory sidecar handler", () => {
   it("maps malformed list cursors to 400 client errors", async () => {
     const calls: string[] = [];
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(tenantId, fn) {
         calls.push(tenantId);
         const invalidCursor = Object.assign(new Error("Invalid episode cursor"), {
@@ -1087,6 +1260,7 @@ describe("memory sidecar handler", () => {
   it("rejects missing or invalid query tenant for episode GET routes before touching the pool", async () => {
     const calls: string[] = [];
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(tenantId, fn) {
         calls.push(tenantId);
         return fn({} as Borg);
@@ -1139,6 +1313,7 @@ describe("memory sidecar handler", () => {
 
     const invalidCalls: string[] = [];
     const invalidPool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(tenantId, fn) {
         invalidCalls.push(tenantId);
         return fn({} as Borg);
@@ -1610,6 +1785,7 @@ describe("memory sidecar handler", () => {
     } as unknown as Borg;
     let exclusiveTail: Promise<unknown> = Promise.resolve();
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       withTenant<T>(
         _tenantId: string,
         fn: (borg: Borg) => T | Promise<T>,
@@ -1730,6 +1906,7 @@ describe("memory sidecar handler", () => {
   it("rejects a malformed tenant id with 400 before touching the pool", async () => {
     const calls: string[] = [];
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(tenantId, fn) {
         calls.push(tenantId);
         return fn({} as Borg);
@@ -1747,6 +1924,7 @@ describe("memory sidecar handler", () => {
 
   it("does not leak internals on an unexpected error (generic 500)", async () => {
     const boomPool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant() {
         throw new Error("sqlite path /secret/db.sqlite is locked");
       },

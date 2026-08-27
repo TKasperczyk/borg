@@ -11,7 +11,9 @@
 //   GET  /memory/episodes?tenant=<id>&limit=<n>&cursor=<c> -> list raw episodic bank
 //   GET  /memory/episodes/{id}?tenant=<id>                  -> inspect one raw episode
 //   GET  /memory/trace?tenant=<id>&since=<ts>                -> inspect recall trace buffer
-//   POST /memory/maintenance?tenant=<id>&mode=<light|heavy>&dryRun=<0|1>
+//   POST /memory/maintenance?tenant=<id|*>&mode=<light|heavy>&dryRun=<0|1>
+//        tenant is optional; absent or "*" fans out across every tenant with a
+//        bank on disk and answers {runs:[{tenant,run_id}],skipped:[...]}.
 //   GET  /memory/maintenance/status?tenant=<id>
 //   GET  /memory/maintenance/audit?tenant=<id>&run_id=<id>
 //   POST /memory/maintenance/revert?tenant=<id>&audit_id=<id>
@@ -48,6 +50,7 @@ import {
   parseMaintenanceRunId,
   parseSessionId,
   type EpisodeId,
+  type MaintenanceRunId,
   type SessionId,
 } from "../util/ids.js";
 import type { MemoryMaintenanceCoordinator } from "./memory-maintenance.js";
@@ -58,14 +61,15 @@ import type { MemoryTraceRegistry } from "./memory-trace.js";
 // risking a message leak from) the pool's ConfigError deeper in.
 const TENANT_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
-// The handler only needs withTenant from the pool; typing it structurally keeps
-// the handler unit-testable with a stub.
+// The handler needs withTenant plus tenant discovery (maintenance fan-out);
+// typing it structurally keeps the handler unit-testable with a stub.
 export type MemoryPool = {
   withTenant<T>(
     tenantId: string,
     fn: (borg: Borg) => T | Promise<T>,
     opts?: { exclusive?: boolean },
   ): Promise<T>;
+  listTenantIds(): Promise<string[]>;
 };
 
 export type MemoryHandlerOptions = {
@@ -544,8 +548,12 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
     }
 
     if (method === "POST" && rawPath === "/memory/maintenance") {
-      const tenant = requiredSingleQueryValue(res, searchParams, "tenant");
-      if (tenant === null) {
+      // tenant is OPTIONAL. Absent (or "*") means "every tenant that has a bank
+      // on disk", so onboarding a tenant cannot silently skip maintenance the
+      // way a hard-coded caller does. "*" mirrors the same convention on
+      // team-agent's role-run endpoint.
+      const tenantRaw = optionalSingleQueryValue(res, searchParams, "tenant");
+      if (tenantRaw === null) {
         return;
       }
       const mode = requiredSingleQueryValue(res, searchParams, "mode");
@@ -556,7 +564,8 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       if (dryRun === null) {
         return;
       }
-      if (!validateTenantForResponse(res, tenant)) {
+      const fanOut = tenantRaw === undefined || tenantRaw === "*";
+      if (!fanOut && !validateTenantForResponse(res, tenantRaw)) {
         return;
       }
       if (mode !== "light" && mode !== "heavy") {
@@ -571,49 +580,112 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         send(res, 503, { error: "maintenance unavailable" });
         return;
       }
+      const coordinator = maintenanceCoordinator;
 
-      const started = maintenanceCoordinator.tryReserve({
-        tenant,
-        mode,
-        dryRun: dryRun === "1",
-      });
-      switch (started.status) {
-        case "accepted": {
-          try {
-            // Admission is already reserved, so racing POSTs see 409 while the
-            // tenant is opened and its pool initializer establishes readiness.
-            await pool.withTenant(tenant, () => undefined);
-          } catch {
-            maintenanceCoordinator.cancelReservation(tenant, started.runId);
+      let tenants: string[];
+      if (fanOut) {
+        try {
+          tenants = await pool.listTenantIds();
+        } catch {
+          send(res, 503, { error: "tenant discovery unavailable" });
+          return;
+        }
+        if (tenants.length === 0) {
+          // No bank on the volume yet. Reported rather than treated as success
+          // so a misconfigured root does not read as a clean no-op run.
+          send(res, 503, { error: "no tenants discovered" });
+          return;
+        }
+      } else {
+        tenants = [tenantRaw];
+      }
+
+      type Reserved = { readonly tenant: string; readonly runId: MaintenanceRunId };
+      type Skipped = {
+        readonly tenant: string;
+        readonly reason: string;
+        readonly runId?: MaintenanceRunId;
+      };
+      const reserved: Reserved[] = [];
+      const skipped: Skipped[] = [];
+
+      for (const tenant of tenants) {
+        const started = coordinator.tryReserve({ tenant, mode, dryRun: dryRun === "1" });
+        if (started.status !== "accepted") {
+          skipped.push(
+            started.status === "conflict"
+              ? { tenant, reason: "already running", runId: started.runId }
+              : { tenant, reason: started.status === "disabled" ? "disabled" : "shutting down" },
+          );
+          continue;
+        }
+        try {
+          // Admission is already reserved, so racing POSTs see 409 while the
+          // tenant is opened and its pool initializer establishes readiness.
+          await pool.withTenant(tenant, () => undefined);
+        } catch {
+          coordinator.cancelReservation(tenant, started.runId);
+          skipped.push({ tenant, reason: "tenant unavailable" });
+          continue;
+        }
+        if (!coordinator.hasReservation(tenant, started.runId)) {
+          skipped.push({ tenant, reason: "shutting down" });
+          continue;
+        }
+        reserved.push({ tenant, runId: started.runId });
+      }
+
+      // A single named tenant keeps its original response contract exactly --
+      // 202 {run_id} on success, and the specific 409/503 the caller had before
+      // -- so existing callers see no change.
+      if (!fanOut) {
+        const only = reserved[0];
+        if (only === undefined) {
+          const reason = skipped[0]?.reason;
+          if (reason === "already running") {
+            send(res, 409, { error: "maintenance already running", run_id: skipped[0]?.runId });
+          } else if (reason === "disabled") {
+            send(res, 503, { error: "maintenance disabled" });
+          } else if (reason === "tenant unavailable") {
             send(res, 503, { error: "maintenance tenant unavailable" });
-            return;
-          }
-          if (!maintenanceCoordinator.hasReservation(tenant, started.runId)) {
+          } else {
             send(res, 503, { error: "maintenance shutting down" });
-            return;
-          }
-          try {
-            send(res, 202, { run_id: started.runId });
-          } finally {
-            // Scheduling happens only after the acceptance response is handed
-            // to the server, and remains detached from the client connection.
-            maintenanceCoordinator.startReserved(tenant, started.runId);
           }
           return;
         }
-        case "conflict":
-          send(res, 409, {
-            error: "maintenance already running",
-            run_id: started.runId,
-          });
-          return;
-        case "disabled":
-          send(res, 503, { error: "maintenance disabled" });
-          return;
-        case "shutting_down":
-          send(res, 503, { error: "maintenance shutting down" });
-          return;
+        try {
+          send(res, 202, { run_id: only.runId });
+        } finally {
+          // Scheduling happens only after the acceptance response is handed
+          // to the server, and remains detached from the client connection.
+          coordinator.startReserved(only.tenant, only.runId);
+        }
+        return;
       }
+
+      // Fan-out. Runs proceed CONCURRENTLY across tenants (each holds only its
+      // own exclusive per-tenant reservation); nothing is serialized here.
+      if (reserved.length === 0) {
+        // Nothing started: answer non-2xx so a `curl --fail` cron surfaces it as
+        // a failed job instead of a silent no-op.
+        const allConflicts = skipped.every((entry) => entry.reason === "already running");
+        send(res, allConflicts ? 409 : 503, {
+          error: allConflicts ? "maintenance already running" : "no maintenance run started",
+          skipped,
+        });
+        return;
+      }
+      try {
+        send(res, 202, {
+          runs: reserved.map((entry) => ({ tenant: entry.tenant, run_id: entry.runId })),
+          skipped,
+        });
+      } finally {
+        for (const entry of reserved) {
+          coordinator.startReserved(entry.tenant, entry.runId);
+        }
+      }
+      return;
     }
 
     if (method === "POST" && rawPath === "/memory/maintenance/revert") {

@@ -19,11 +19,13 @@
 // is intentionally no get() that hands back a bare being -- that would let a
 // caller hold a reference the pool later closes (use-after-close).
 
+import { readdir } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 
 import { Borg } from "../borg.js";
 import { compositeTracer, type TurnTracer } from "../tracing/tracer.js";
 import { ConfigError } from "../util/errors.js";
+import { BANK_DB_FILENAME } from "./storage-setup.js";
 import type { BorgOpenOptions } from "./types.js";
 
 // Conservative tenant-id slug: lowercase alnum start, then alnum / _ / - up to
@@ -255,6 +257,40 @@ export class BorgPool {
   /** Tenant ids with a currently-open (or opening/closing) being. */
   openTenantIds(): string[] {
     return [...this.entries.keys()];
+  }
+
+  /**
+   * Tenant ids that already have a bank on disk under the pool root, whether or
+   * not a being is currently open for them.
+   *
+   * This is DISCOVERY, not a registry: the pool has no notion of "registered"
+   * tenants (withTenant creates a bank on first use), so the filesystem is the
+   * only authority on which tenants exist. A directory counts only when its
+   * name passes the tenant-id guard AND it contains a bank file -- that skips
+   * archived/quarantined banks whose names carry a suffix the slug rejects
+   * (e.g. "<tenant>.corrupt-20260714") and any unrelated directory that shares
+   * the volume (lost+found). Sorted for deterministic fan-out order.
+   */
+  async listTenantIds(): Promise<string[]> {
+    const entries = await readdir(this.root, { withFileTypes: true });
+    const candidates = entries
+      .filter((entry) => entry.isDirectory() && this.isValidTenantId(entry.name))
+      .map((entry) => entry.name);
+    const banked = await Promise.all(
+      candidates.map(async (tenantId) => {
+        // A bank is identified by its sqlite file; readdir of the tenant dir
+        // (rather than stat of the file) keeps this to one syscall class and
+        // treats an unreadable directory as "not a bank" instead of throwing.
+        try {
+          const files = await readdir(join(this.root, tenantId));
+          return files.includes(BANK_DB_FILENAME) ? tenantId : null;
+        } catch {
+          return null;
+        }
+      }),
+    );
+
+    return banked.filter((tenantId): tenantId is string => tenantId !== null).sort();
   }
 
   private acquire(tenantId: string): { entry: PoolEntry; created: boolean } {
