@@ -9,6 +9,8 @@
 //   POST /memory/commitments { tenant, ...commitment }             -> operator-set commitment
 //   DELETE /memory/commitments?tenant=<id>&id=<commitment_id>      -> retire commitment
 //   GET  /memory/episodes?tenant=<id>&limit=<n>&cursor=<c> -> list raw episodic bank
+//   GET  /memory/self?tenant=<id>&limit=<n>      -> growth markers, periods, open questions
+//   GET  /memory/semantic?tenant=<id>&limit=<n>  -> semantic nodes (no embeddings)
 //   GET  /memory/episodes/{id}?tenant=<id>                  -> inspect one raw episode
 //   GET  /memory/trace?tenant=<id>&since=<ts>                -> inspect recall trace buffer
 //   POST /memory/maintenance?tenant=<id|*>&mode=<light|heavy>&dryRun=<0|1>
@@ -356,6 +358,32 @@ function parseEpisodeIdFromPath(pathname: string): EpisodeId | null | undefined 
   } catch {
     return null;
   }
+}
+
+// Nodes carry a float32 embedding; the read surface exists to show WHAT was
+// written, so the vector is dropped rather than serialized.
+function projectSemanticNodeForList(node: {
+  id: string;
+  kind: string;
+  label: string;
+  description: string;
+  confidence: number;
+  status: string;
+  archived: boolean;
+  source_episode_ids: readonly string[];
+  created_at: number;
+}): Record<string, unknown> {
+  return {
+    id: node.id,
+    kind: node.kind,
+    label: node.label,
+    description: node.description,
+    confidence: node.confidence,
+    status: node.status,
+    archived: node.archived,
+    source_episode_ids: [...node.source_episode_ids],
+    created_at: node.created_at,
+  };
 }
 
 function projectEpisodeForList(episode: Episode): {
@@ -733,27 +761,33 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       const isCommitmentListPath = rawPath === "/memory/commitments";
       const isMaintenanceStatusPath = rawPath === "/memory/maintenance/status";
       const isMaintenanceAuditPath = rawPath === "/memory/maintenance/audit";
-      const episodeId =
+      // Read surface for what the offline processes WRITE. Without these, a
+      // maintenance run can only be inspected as counts plus the audit log's
+      // record ids -- self-narrator growth markers, associator open questions and
+      // reflector insight nodes had no read path at all, so "0 errors" could not be
+      // distinguished from "wrote nine mis-voiced records".
+      const isSelfPath = rawPath === "/memory/self";
+      const isSemanticPath = rawPath === "/memory/semantic";
+      const nonEpisodePath =
         isTracePath ||
         isEpisodeListPath ||
         isCommitmentListPath ||
         isMaintenanceStatusPath ||
-        isMaintenanceAuditPath
-          ? undefined
-          : parseEpisodeIdFromPath(rawPath);
-      if (
-        !isTracePath &&
-        !isEpisodeListPath &&
-        !isCommitmentListPath &&
-        !isMaintenanceStatusPath &&
-        !isMaintenanceAuditPath &&
-        episodeId === undefined
-      ) {
+        isMaintenanceAuditPath ||
+        isSelfPath ||
+        isSemanticPath;
+      const episodeId = nonEpisodePath ? undefined : parseEpisodeIdFromPath(rawPath);
+      if (!nonEpisodePath && episodeId === undefined) {
         send(res, 404, { error: "not found" });
         return;
       }
 
-      const strictQuery = isCommitmentListPath || isMaintenanceStatusPath || isMaintenanceAuditPath;
+      const strictQuery =
+        isCommitmentListPath ||
+        isMaintenanceStatusPath ||
+        isMaintenanceAuditPath ||
+        isSelfPath ||
+        isSemanticPath;
       const tenant = strictQuery
         ? requiredSingleQueryValue(res, searchParams, "tenant")
         : asString(searchParams.get("tenant"));
@@ -874,6 +908,32 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                 }),
             commitments: bounded.map((commitment) => projectCommitment(commitment)),
             truncated: ordered.length > bounded.length,
+          });
+          return;
+        }
+
+        if (isSelfPath) {
+          const limit = episodeListLimitFromQuery(searchParams);
+          const self = await pool.withTenant(tenant, (borg) => ({
+            growth_markers: borg.self.growthMarkers.list({ limit }),
+            periods: borg.self.autobiographical.listPeriods(),
+            open_questions: borg.self.openQuestions.list({ limit }),
+          }));
+
+          send(res, 200, { ok: true, tenant, ...self });
+          return;
+        }
+
+        if (isSemanticPath) {
+          const limit = episodeListLimitFromQuery(searchParams);
+          const nodes = await pool.withTenant(tenant, (borg) =>
+            borg.semantic.nodes.list({ limit }),
+          );
+
+          send(res, 200, {
+            ok: true,
+            tenant,
+            nodes: nodes.map((node) => projectSemanticNodeForList(node)),
           });
           return;
         }

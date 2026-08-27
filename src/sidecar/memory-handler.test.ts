@@ -488,6 +488,108 @@ describe("memory sidecar handler", () => {
     ]);
   });
 
+  it("reads back what the offline processes wrote to the self store", async () => {
+    // The gap this closes: after a heavy maintenance run the only evidence was a
+    // change count plus record ids in the audit log, so mis-voiced self-narrator
+    // output was indistinguishable from clean output.
+    const listOptions: unknown[] = [];
+    const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
+      async withTenant(_tenantId, fn) {
+        return fn({
+          self: {
+            growthMarkers: {
+              list: (opts: unknown) => {
+                listOptions.push(opts);
+                return [{ id: "grw_1", summary: "Nauczyłem się czytać logi ORA-" }];
+              },
+            },
+            autobiographical: {
+              listPeriods: () => [{ id: "abp_1", label: "2026-Q3" }],
+            },
+            openQuestions: {
+              list: () => [{ id: "oq_1", question: "Kto jest właścicielem HK?" }],
+            },
+          },
+        } as unknown as Borg);
+      },
+    };
+    const base = await start(pool);
+
+    const response = await fetch(`${base}/memory/self?tenant=acme&limit=25`, {
+      headers: { "x-borg-token": TOKEN },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      tenant: "acme",
+      growth_markers: [{ id: "grw_1", summary: "Nauczyłem się czytać logi ORA-" }],
+      periods: [{ id: "abp_1", label: "2026-Q3" }],
+      open_questions: [{ id: "oq_1", question: "Kto jest właścicielem HK?" }],
+    });
+    expect(listOptions).toEqual([{ limit: 25 }]);
+  });
+
+  it("reads back semantic nodes without their embeddings", async () => {
+    const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
+      async withTenant(_tenantId, fn) {
+        return fn({
+          semantic: {
+            nodes: {
+              list: async () => [
+                {
+                  id: "semn_1",
+                  kind: "concept",
+                  label: "Notyfikator",
+                  description: "System notyfikacji BSS.",
+                  confidence: 0.8,
+                  status: "active",
+                  archived: false,
+                  source_episode_ids: ["ep_1"],
+                  created_at: 1_000,
+                  embedding: new Float32Array([1, 2, 3, 4]),
+                },
+              ],
+            },
+          },
+        } as unknown as Borg);
+      },
+    };
+    const base = await start(pool);
+
+    const response = await fetch(`${base}/memory/semantic?tenant=acme`, {
+      headers: { "x-borg-token": TOKEN },
+    });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { nodes: Array<Record<string, unknown>> };
+    expect(body.nodes).toHaveLength(1);
+    expect(body.nodes[0]).toEqual({
+      id: "semn_1",
+      kind: "concept",
+      label: "Notyfikator",
+      description: "System notyfikacji BSS.",
+      confidence: 0.8,
+      status: "active",
+      archived: false,
+      source_episode_ids: ["ep_1"],
+      created_at: 1_000,
+    });
+    expect(body.nodes[0]).not.toHaveProperty("embedding");
+  });
+
+  it("requires an explicit tenant on the new read paths", async () => {
+    const { pool } = recordingPool();
+    const base = await start(pool);
+
+    for (const path of ["/memory/self", "/memory/semantic"]) {
+      const response = await fetch(`${base}${path}`, { headers: { "x-borg-token": TOKEN } });
+      expect(response.status).toBe(400);
+    }
+  });
+
   it("fans maintenance out across every discovered tenant when tenant is omitted", async () => {
     const { pool, rec } = recordingPool();
     pool.listTenantIds = () => Promise.resolve(["team-agent-ai", "team-agent-esb"]);
