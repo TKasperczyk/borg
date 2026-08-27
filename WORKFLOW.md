@@ -107,6 +107,14 @@ GPT Pro Extended is a strong reviewer but not infallible. Filter every recommend
 
 When you decline a recommendation, say why and offer the counter.
 
+## Test execution is manual by design
+
+There is deliberately no CI vitest job and no git hook running the suite (Tom's
+explicit decision, 2026-08-26). Sessions run `pnpm typecheck` + `pnpm test` +
+`pnpm heuristics:guard` themselves before merging or deploying. Do not escalate
+the absence of an automatic test runner as a finding; it is a settled policy,
+not an oversight.
+
 ---
 
 ## ChatGPT submission mechanics
