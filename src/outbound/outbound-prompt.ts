@@ -92,7 +92,7 @@ export function renderAutonomousOutboundActionAvailabilitySection(
   const promptSection = [
     '<borg_directed_outbound_instruction mode="action_available">',
     "A structurally authorized proactive outbound action is available on this autonomous turn for the targets listed in <reachable_threads>.",
-    "Each listed route has a wired connector and a live target session, and the current structural outbound caps leave this action available.",
+    "Each listed route has a wired connector, a target session whose stored status is active, and structural caps that still leave this action available. None of those checks reads a delivery outcome: a listed route can still fail at transport, and a route missing from this list can be missing because its session status is no longer active rather than because an authorization changed.",
     `If I choose to reach one, I call ${OUTBOUND_POST_TOOL_NAME} with target_session_id set to that target's session_id and an instruction describing what the target-scoped turn should convey. The tool opens a separate target-scoped composition turn; it does not send my current draft directly.`,
     TARGET_COMPOSITION_CONTEXT,
     TARGET_DISCLOSURE_CONTRACT,
