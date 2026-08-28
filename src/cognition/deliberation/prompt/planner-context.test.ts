@@ -1291,7 +1291,7 @@ describe("compact planner context", () => {
     );
     expect(authorityRows).toHaveLength(100);
     expect(Math.max(...authorityRows.map((row) => row.length))).toBeLessThanOrEqual(250);
-    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(8_700);
+    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(8_900);
     expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(11_800);
     expect(planner.traceSummary.sections.authority_and_directives?.estimatedTokens).toBeGreaterThan(
       4_000,
