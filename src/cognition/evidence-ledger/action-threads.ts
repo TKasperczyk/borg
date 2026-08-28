@@ -320,6 +320,25 @@ export async function buildActionThreads(input: {
     );
 }
 
+// The state name is the only thing this section says about a thread's disposition, and two of the
+// eight names point the wrong way. `not_done` reads as a pending item and is `terminal: true` -- the
+// final outcome vocabulary, a thread the harness will not revisit. `expired` reads as a settled
+// ending and is `terminal: false` -- a lifecycle retirement that recorded no outcome at all. A
+// reader holding one page cannot recover either fact from the name, so a count of `not_done` reads
+// as a to-do list when it is the opposite. Rendered in words rather than as a token: a bare flag
+// would be one more enumeration member whose contrast set never appears on the same page. Derived
+// from the metadata table for every state, so a new state inherits the phrasing instead of falling
+// through to the misreading.
+function renderActionStateDisposition(state: ActionState): string {
+  const metadata = ACTION_STATE_METADATA[state];
+
+  if (metadata.active) {
+    return "open";
+  }
+
+  return metadata.terminal ? "closed by outcome" : "closed without an outcome";
+}
+
 export function renderActionThreadText(
   thread: ActionThread,
   entityRepository: Pick<EntityRepository, "get"> | undefined,
@@ -329,7 +348,9 @@ export function renderActionThreadText(
   const lines = [
     `actor: ${actor}`,
     `originating_intent: ${thread.origin.description}`,
-    `transitions: ${thread.records.length}, current: ${thread.current.state} at ${currentAt}`,
+    `transitions: ${thread.records.length}, current: ${thread.current.state} (${renderActionStateDisposition(
+      thread.current.state,
+    )}) at ${currentAt}`,
   ];
 
   if (thread.current.id !== thread.origin.id) {
