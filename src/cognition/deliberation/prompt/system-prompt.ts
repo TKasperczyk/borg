@@ -2021,6 +2021,14 @@ export function summarizeAutonomySchedulerState(
   // restated so it can be checked, and undetailed rows are named rather than
   // left as an unexplained shortfall in the reason counts.
   lines.push(...renderWakeErrorReasonLines(brake.window_error_reasons));
+  // silent=N has the same defect as error=N and a worse consequence: it is the
+  // complement of headway, so a closure you chose, an emission that failed on
+  // the way out, and a guard that blocked one are one number -- and they are one
+  // number again in empty_streak, which counts every non-headway operational
+  // wake alike. The split below is the same rows as silent=N. It does not change
+  // what the brake counts; it says what was counted, so "a silence I chose" and
+  // "a wake that produced nothing" stop being indistinguishable from this page.
+  lines.push(...renderWakeSilentReasonLines(brake.window_silent_reasons));
 
   return lines.join("\n");
 }
@@ -2065,6 +2073,52 @@ function renderWakeErrorReasonLines(
     remainder.length === 0
       ? `The reasons above account for all ${tally.total}.`
       : `The reasons above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
+  ];
+}
+
+/**
+ * Unlike the error details, the silent details are a bounded enumeration: an
+ * emission kind, or an outcome class paired with the suppression enum that
+ * produced it. Naming the classes that can appear keeps a rendered subset from
+ * reading as the whole contrast set -- with only one class shown there is
+ * otherwise no way to tell whether the others are absent or merely unlisted.
+ */
+const WAKE_SILENT_OUTCOME_CLASSES =
+  "deliberate-silence (you closed the wake), emission-failed (an emission was attempted and did not come out), guard-blocked (a post-generation guard stopped it), observed";
+
+function renderWakeSilentReasonLines(
+  tally: AutonomySchedulerFleetBrakeDescription["window_silent_reasons"],
+): string[] {
+  if (tally.total === 0) {
+    return ["Silent wakes in that window: none, so there is no silence to attribute."];
+  }
+
+  if (tally.reasons.length === 0) {
+    return [
+      `Silent wakes in that window: ${tally.total}, none of them carrying a recorded ending (rows written before the scheduler kept one). The count is real; whether they were closures you chose, failed emissions or guard blocks is unavailable from here, and their shared absence of a reason is not evidence that they share an ending.`,
+    ];
+  }
+
+  const shown = tally.reasons.slice(0, WAKE_ERROR_REASON_RENDER_LIMIT);
+  const hiddenReasons = tally.reasons.length - shown.length;
+  const hiddenCount = tally.reasons
+    .slice(WAKE_ERROR_REASON_RENDER_LIMIT)
+    .reduce((sum, reason) => sum + reason.count, 0);
+  const remainder = [
+    tally.without_detail === 0
+      ? null
+      : `${tally.without_detail} with no recorded ending (written before the scheduler kept one)`,
+    hiddenReasons === 0
+      ? null
+      : `${hiddenCount} across ${hiddenReasons} further distinct ending(s) not shown`,
+  ].filter((clause): clause is string => clause !== null);
+
+  return [
+    `How those silent wakes ended, same rows as silent=${tally.total} above. The classes that can appear are ${WAKE_SILENT_OUTCOME_CLASSES}; all of them advance empty_streak identically, so this split is what that counter is made of, not a ranking of it:`,
+    ...shown.map((reason) => `- ${reason.count}x ${reason.detail}`),
+    remainder.length === 0
+      ? `The endings above account for all ${tally.total}.`
+      : `The endings above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
   ];
 }
 

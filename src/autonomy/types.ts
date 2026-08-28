@@ -231,6 +231,22 @@ export type AutonomySchedulerFleetBrakeDescription = {
    * reasons never have to be read as covering the bucket.
    */
   window_error_reasons: AutonomyWakeOutcomeDetailTally;
+  /**
+   * The `silent` entry of `window_outcomes` above, split by what actually ended
+   * the wake -- same rows, same window, same categories, one level of detail
+   * further down, and read the same way as `window_error_reasons`.
+   *
+   * `silent` is a union, not a behaviour: a wake the entity deliberately closed
+   * with no output, a wake whose emission failed on the way out, and a wake a
+   * post-generation guard blocked all land in it, and all three increment
+   * `empty_streak` identically. The scheduler already classifies the ending
+   * (`classifySuppressionReason`) to write the wake's own narrative, so the
+   * discriminator exists at the moment the outcome is recorded; it simply had no
+   * route to the counter's own surface. Without it `silent=N` cannot separate a
+   * choice from a failure, and the brake those rows are driving reads as though
+   * it were counting one thing.
+   */
+  window_silent_reasons: AutonomyWakeOutcomeDetailTally;
 };
 
 export type AutonomySchedulerDescription = {

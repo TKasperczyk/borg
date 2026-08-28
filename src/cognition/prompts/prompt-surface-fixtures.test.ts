@@ -98,6 +98,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
     freshness_bypass_cap: 3,
     window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
     window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+    window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
   },
   budget: {
     max_wakes_per_window: 6,

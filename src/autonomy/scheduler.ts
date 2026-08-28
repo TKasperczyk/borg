@@ -382,6 +382,36 @@ export function turnEmittedHeadway(turnResult: TurnResult): boolean {
   );
 }
 
+/**
+ * What ended a wake the scheduler is about to record as `silent`. The complement
+ * of `turnEmittedHeadway` is a union rather than a behaviour -- a closure the
+ * entity chose, an emission that failed on its way out, and a guard that blocked
+ * one all land in it -- and the fleet brake advances `empty_streak` on all three
+ * identically. The class is already computed for the wake's own narrative, so
+ * writing it here is a route to the counter's surface, not a new judgment.
+ *
+ * Structure only: emission kind and the suppression enum, never words from what
+ * was (or wasn't) said, so it is multilingual-safe and groups exactly.
+ *
+ * Reads the emission defensively even though the type declares it present: this
+ * runs inside the block that persists the wake's outcome, so a throw here would
+ * turn a wake that completed fine into a bookkeeping error. An absent emission
+ * is a missing label, not a failed wake, and says so.
+ */
+export function silentWakeOutcomeDetail(turnResult: TurnResult): string {
+  const emission = turnResult.emission as TurnResult["emission"] | undefined;
+
+  if (emission === undefined || emission === null) {
+    return "no emission recorded";
+  }
+
+  if (emission.kind !== "suppressed") {
+    return emission.kind;
+  }
+
+  return `${classifySuppressionReason(emission.reason)}: ${emission.reason}`;
+}
+
 function goalProgressAdvanced(input: { before: number | null; after: number | null }): boolean {
   return input.after !== null && (input.before === null || input.after > input.before);
 }
@@ -800,6 +830,15 @@ export class AutonomyScheduler {
           budgetCutoff,
           "error",
         ),
+        // Same rows as window_outcomes.silent, one level down, and the same
+        // defect as the line above wearing different clothes: `silent` is the
+        // complement of headway, so a closure the entity chose, an emission that
+        // failed, and a guard that blocked one are one number here -- and one
+        // number in the empty_streak those rows drive.
+        window_silent_reasons: this.options.wakeRepository.summarizeOutcomeDetailsSince(
+          budgetCutoff,
+          "silent",
+        ),
       },
       sources,
     };
@@ -1149,6 +1188,7 @@ export class AutonomyScheduler {
             this.options.wakeRepository.recordOutcome(
               wakeRecord.id,
               wakeHeadway ? "headway" : "silent",
+              wakeHeadway ? null : silentWakeOutcomeDetail(turnResult),
             );
           } catch (error) {
             firedEvents += 1;

@@ -26,6 +26,7 @@ import {
 import {
   AutonomyScheduler,
   goalConcernPayload,
+  silentWakeOutcomeDetail,
   turnEmittedHeadway,
   type AutonomySchedulerOptions,
 } from "./scheduler.js";
@@ -148,6 +149,7 @@ const TEST_FLEET_BRAKE: FleetBrakeOptions = {
 function createStructuralTurnResult(input: {
   emissionKind: "message" | "continue_thought" | "suppressed";
   deliveredOutbound?: boolean;
+  suppressionReason?: Extract<TurnResult["emission"], { kind: "suppressed" }>["reason"];
 }): TurnResult {
   const emission: TurnResult["emission"] =
     input.emissionKind === "message"
@@ -158,7 +160,7 @@ function createStructuralTurnResult(input: {
         }
       : input.emissionKind === "continue_thought"
         ? { kind: "continue_thought" }
-        : { kind: "suppressed", reason: "finalizer_no_output" };
+        : { kind: "suppressed", reason: input.suppressionReason ?? "finalizer_no_output" };
 
   return {
     turn_id: "turn_autonomy_test",
@@ -460,6 +462,40 @@ describe("AutonomyScheduler", () => {
     expect(turnEmittedHeadway(createStructuralTurnResult({ emissionKind: "suppressed" }))).toBe(
       false,
     );
+  });
+
+  it("labels the complement of headway with the class that produced it", () => {
+    // The predicate above answers "did anything come out"; every no lands in
+    // `silent` and advances the same streak. These are the endings that no
+    // conflates, kept apart by the class the scheduler already computes.
+    expect(
+      silentWakeOutcomeDetail(createStructuralTurnResult({ emissionKind: "suppressed" })),
+    ).toBe("deliberate-silence: finalizer_no_output");
+    expect(
+      silentWakeOutcomeDetail(
+        createStructuralTurnResult({
+          emissionKind: "suppressed",
+          suppressionReason: "commitment_violation_after_regenerate",
+        }),
+      ),
+    ).toBe("guard-blocked: commitment_violation_after_regenerate");
+    expect(
+      silentWakeOutcomeDetail(
+        createStructuralTurnResult({
+          emissionKind: "suppressed",
+          suppressionReason: "empty_finalizer",
+        }),
+      ),
+    ).toBe("emission-failed: empty_finalizer");
+    // Never throws on a shape it did not expect: this runs inside the block that
+    // persists the wake's outcome, so a throw would recast a completed wake as a
+    // bookkeeping failure.
+    expect(
+      silentWakeOutcomeDetail({
+        ...createStructuralTurnResult({ emissionKind: "suppressed" }),
+        emission: undefined as never,
+      }),
+    ).toBe("no emission recorded");
   });
 
   it("batches due goals into one budgeted wake while firing every per-goal event", async () => {
@@ -3159,6 +3195,13 @@ describe("AutonomyScheduler", () => {
     expect(first.firedEvents).toBe(5);
     expect(first.fleetCooldownSkipped).toBe(2);
     expect(wakeRepository.countSince(0, { outcome: "silent" })).toBe(5);
+    // The rows driving the streak carry what ended them, so the count above can
+    // be read as a composition rather than as one behaviour repeated five times.
+    expect(wakeRepository.summarizeOutcomeDetailsSince(0, "silent")).toEqual({
+      total: 5,
+      without_detail: 0,
+      reasons: [{ detail: "deliberate-silence: finalizer_no_output", count: 5 }],
+    });
     expect(
       readFleetBrakeMetadata(watermarkRepository.get(FLEET_BRAKE_PROCESS_NAME, DEFAULT_SESSION_ID)),
     ).toMatchObject({

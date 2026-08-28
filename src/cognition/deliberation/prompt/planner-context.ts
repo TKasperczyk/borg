@@ -1891,7 +1891,8 @@ function renderTurnStateAutonomyScheduler(
     rowCount:
       2 +
       schedulerState.budget.wakes_in_current_window_by_trigger.length +
-      schedulerState.fleetBrake.window_error_reasons.reasons.length,
+      schedulerState.fleetBrake.window_error_reasons.reasons.length +
+      schedulerState.fleetBrake.window_silent_reasons.reasons.length,
     truncationCount: 0,
     omissionCount: 0,
   };

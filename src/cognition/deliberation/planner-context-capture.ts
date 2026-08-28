@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
 
+import type { AutonomyWakeOutcomeDetailTally } from "../../autonomy/types.js";
 import type { LLMCompleteOptions, LLMMessage, LLMSystemBlock } from "../../llm/index.js";
 import type {
   MemoryDisclosureLabel,
@@ -437,6 +438,15 @@ function projectSelectedSkill(value: DeliberationContext["selectedSkill"]) {
   });
 }
 
+// One clone for every outcome-detail tally on the brake. Written once rather
+// than per field so a tally added later is deep-copied by construction instead
+// of depending on someone noticing a hand-enumerated sibling.
+function cloneWakeOutcomeDetailTally(
+  tally: AutonomyWakeOutcomeDetailTally,
+): AutonomyWakeOutcomeDetailTally {
+  return { ...tally, reasons: tally.reasons.map((reason) => ({ ...reason })) };
+}
+
 function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismEvidence"]) {
   if (value === undefined) {
     return undefined;
@@ -469,12 +479,12 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
             fleetBrake: {
               ...value.autonomySchedulerState.fleetBrake,
               window_outcomes: { ...value.autonomySchedulerState.fleetBrake.window_outcomes },
-              window_error_reasons: {
-                ...value.autonomySchedulerState.fleetBrake.window_error_reasons,
-                reasons: value.autonomySchedulerState.fleetBrake.window_error_reasons.reasons.map(
-                  (reason) => ({ ...reason }),
-                ),
-              },
+              window_error_reasons: cloneWakeOutcomeDetailTally(
+                value.autonomySchedulerState.fleetBrake.window_error_reasons,
+              ),
+              window_silent_reasons: cloneWakeOutcomeDetailTally(
+                value.autonomySchedulerState.fleetBrake.window_silent_reasons,
+              ),
             },
             budget: {
               ...value.autonomySchedulerState.budget,

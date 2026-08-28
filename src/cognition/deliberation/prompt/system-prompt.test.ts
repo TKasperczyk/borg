@@ -2633,6 +2633,7 @@ describe("buildBaseSystemPrompt", () => {
                 freshness_bypass_cap: 3,
                 window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+                window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
               budget: {
                 max_wakes_per_window: 6,
@@ -2778,6 +2779,7 @@ describe("buildBaseSystemPrompt", () => {
                 freshness_bypass_cap: 3,
                 window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+                window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
               budget: {
                 max_wakes_per_window: 6,
@@ -2851,6 +2853,7 @@ describe("buildBaseSystemPrompt", () => {
                 freshness_bypass_cap: 3,
                 window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+                window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
               budget: {
                 max_wakes_per_window: 15,
@@ -2962,6 +2965,7 @@ describe("buildBaseSystemPrompt", () => {
                 freshness_bypass_cap: 3,
                 window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+                window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
               budget: {
                 max_wakes_per_window: 6,
@@ -3017,7 +3021,9 @@ describe("buildBaseSystemPrompt", () => {
         expect(againstHeader).toBeNull();
         const readIso = /Read at (\S+?), \d+ms before the current_time_ms/.exec(block)?.[1];
         expect(readIso).toBe(new Date(observedAt).toISOString());
-        expect(block).toContain(`reports ${readIso}, which is the read clock, not a scheduled time`);
+        expect(block).toContain(
+          `reports ${readIso}, which is the read clock, not a scheduled time`,
+        );
         const overdue = /next tick was due (\S+?), (\d+)ms before that read/.exec(block);
         expect(Date.parse(readIso ?? "") - Date.parse(overdue?.[1] ?? "")).toBe(
           Number(overdue?.[2] ?? Number.NaN),
@@ -3067,6 +3073,7 @@ describe("buildBaseSystemPrompt", () => {
               freshness_bypass_cap: 3,
               window_outcomes: { headway: 0, silent: 5, error: 0, busy: 0 },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+              window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
             budget: {
               max_wakes_per_window: 6,
@@ -3124,6 +3131,7 @@ describe("buildBaseSystemPrompt", () => {
               freshness_bypass_cap: 3,
               window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+              window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
             budget: {
               max_wakes_per_window: 15,
@@ -3195,6 +3203,7 @@ describe("buildBaseSystemPrompt", () => {
                     busy: 0,
                   },
                   window_error_reasons: windowErrorReasons,
+                  window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
                 },
                 budget: {
                   max_wakes_per_window: 15,
@@ -3268,6 +3277,102 @@ describe("buildBaseSystemPrompt", () => {
     // missing split means the failures were unattributable.
     expect(buildPrompt({ total: 0, without_detail: 0, reasons: [] })).toContain(
       "Errored wakes in that window: none, so there is no failure to attribute.",
+    );
+  });
+
+  it("splits the silent-wake count by recorded ending and names the classes that can appear", () => {
+    const buildPrompt = (
+      windowSilentReasons: NonNullable<
+        NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
+      >["fleetBrake"]["window_silent_reasons"],
+    ) =>
+      extractBlock(
+        buildBaseSystemPrompt(
+          makeContext({
+            turnOrigin: "user",
+            turnMechanismEvidence: {
+              recentSuppressions: [],
+              recentRegenerations: [],
+              autonomySchedulerState: {
+                observedAt: NOW_MS,
+                enabled: true,
+                tickInFlight: false,
+                intervalMs: 60_000,
+                droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
+                nextTickAt: NOW_MS + 60_000,
+                scheduledTickAt: NOW_MS + 60_000,
+                fleetBrake: {
+                  enabled: true,
+                  empty_streak: 0,
+                  empty_streak_threshold: 5,
+                  streak_anchor_ts: null,
+                  cooldown_until: null,
+                  error_streak: 0,
+                  error_streak_threshold: 3,
+                  error_paused_until: null,
+                  bypass_count: 0,
+                  freshness_bypass_cap: 3,
+                  window_outcomes: {
+                    headway: 0,
+                    silent: windowSilentReasons.total,
+                    error: 0,
+                    busy: 0,
+                  },
+                  window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+                  window_silent_reasons: windowSilentReasons,
+                },
+                budget: {
+                  max_wakes_per_window: 15,
+                  window_ms: 24 * 60 * 60_000,
+                  window_started_at: NOW_MS - 24 * 60 * 60_000,
+                  used_in_current_window: windowSilentReasons.total,
+                  reserved_contemplative_wakes_per_window: 1,
+                  contemplative_used_in_current_window: 0,
+                  wakes_in_current_window_by_trigger: [],
+                  next_budget_slot_frees_at: NOW_MS + 30 * 60_000,
+                },
+              },
+            },
+          }),
+          { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+        ),
+        "borg_mechanism_evidence",
+      );
+
+    // A wake closed on purpose and a wake a guard stopped are the two readings
+    // silent=N cannot separate, and both advance empty_streak; the split is the
+    // only thing on the page that tells them apart.
+    const attributed = buildPrompt({
+      total: 4,
+      without_detail: 0,
+      reasons: [
+        { detail: "deliberate-silence: s2_planner_no_output", count: 3 },
+        { detail: "guard-blocked: commitment_violation_after_regenerate", count: 1 },
+      ],
+    });
+
+    expect(attributed).toContain("silent=4");
+    expect(attributed).toContain("How those silent wakes ended, same rows as silent=4 above.");
+    expect(attributed).toContain("- 3x deliberate-silence: s2_planner_no_output");
+    expect(attributed).toContain("- 1x guard-blocked: commitment_violation_after_regenerate");
+    expect(attributed).toContain("The endings above account for all 4.");
+    // The contrast set is named, so one rendered class is never read as the only
+    // class that exists.
+    expect(attributed).toContain("emission-failed");
+    expect(attributed).toContain("all of them advance empty_streak identically");
+
+    // Rows written before the ending was recorded are stated rather than left as
+    // an unexplained shortfall against silent=N.
+    const partial = buildPrompt({
+      total: 5,
+      without_detail: 3,
+      reasons: [{ detail: "deliberate-silence: finalizer_no_output", count: 2 }],
+    });
+
+    expect(partial).toContain("The endings above account for 2 of 5; the rest is 3 with no");
+
+    expect(buildPrompt({ total: 0, without_detail: 0, reasons: [] })).toContain(
+      "Silent wakes in that window: none, so there is no silence to attribute.",
     );
   });
 
