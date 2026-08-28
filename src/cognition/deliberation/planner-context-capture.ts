@@ -462,6 +462,8 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
             observedAt: value.autonomySchedulerState.observedAt,
             enabled: value.autonomySchedulerState.enabled,
             tickInFlight: value.autonomySchedulerState.tickInFlight,
+            intervalMs: value.autonomySchedulerState.intervalMs,
+            droppedIntervalFires: { ...value.autonomySchedulerState.droppedIntervalFires },
             nextTickAt: value.autonomySchedulerState.nextTickAt,
             scheduledTickAt: value.autonomySchedulerState.scheduledTickAt,
             fleetBrake: {

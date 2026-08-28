@@ -400,6 +400,13 @@ export class AutonomyScheduler {
   private observer: AutonomySchedulerObserver | null = null;
   private intervalStartedTs: number | null = null;
   private lastTickTs: number | null = null;
+  // Fires the interval callback refused because a tick was already running.
+  // Counted here because the early return below is the one path in the
+  // scheduler that produces no row anywhere: a refused fire is a wake that
+  // could not start, and it is indistinguishable downstream from a minute in
+  // which nothing was due.
+  private droppedIntervalFires = 0;
+  private droppedIntervalFiresForActiveTick = 0;
 
   constructor(private readonly options: AutonomySchedulerOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -614,8 +621,12 @@ export class AutonomyScheduler {
 
     this.intervalStartedTs = this.clock.now();
     this.lastTickTs = null;
+    this.droppedIntervalFires = 0;
+    this.droppedIntervalFiresForActiveTick = 0;
     this.intervalHandle = this.setIntervalFn(() => {
       if (this.activeTick !== null) {
+        this.droppedIntervalFires += 1;
+        this.droppedIntervalFiresForActiveTick += 1;
         return;
       }
 
@@ -630,6 +641,8 @@ export class AutonomyScheduler {
     }
     this.intervalStartedTs = null;
     this.lastTickTs = null;
+    this.droppedIntervalFires = 0;
+    this.droppedIntervalFiresForActiveTick = 0;
 
     if (options.graceful === false) {
       return;
@@ -727,6 +740,13 @@ export class AutonomyScheduler {
       enabled: this.options.enabled,
       tick_in_flight: this.activeTick !== null,
       interval_ms: this.options.intervalMs,
+      dropped_interval_fires: {
+        since_interval_armed: this.droppedIntervalFires,
+        // Null rather than a stale tally: with no tick running the per-tick
+        // counter still holds whatever the last one accumulated, and a number
+        // that names a tick which has already finished reads as a live cost.
+        current_tick: this.activeTick === null ? null : this.droppedIntervalFiresForActiveTick,
+      },
       // Floored to the read so a "next evaluation" surface never shows a past
       // instant. The floor is where the overdue amount used to be lost; it is
       // preserved unfloored on the next line rather than recomputed downstream.
@@ -1557,6 +1577,10 @@ export class AutonomyScheduler {
     }
 
     const notifyObserver = options.notifyObserver ?? false;
+    // Scoped to the tick that is about to start, so the count on the page is
+    // this freeze's cost rather than every freeze since the interval armed --
+    // the running total is reported separately.
+    this.droppedIntervalFiresForActiveTick = 0;
     const promise = (async () => {
       try {
         const result = await this.tickOnce();

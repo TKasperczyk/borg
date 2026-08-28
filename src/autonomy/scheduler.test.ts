@@ -4471,6 +4471,141 @@ describe("AutonomyScheduler", () => {
     expect(clearIntervalFn).toHaveBeenCalledTimes(1);
   });
 
+  // The early return that refuses a fire while a tick runs is the one path in
+  // the scheduler that writes nothing at all: no wake row, no outcome, no error.
+  // So a stretch in which every fire was refused and a stretch in which nothing
+  // was due are the same (empty) evidence in the budget and outcome tallies --
+  // which is what this asserts alongside the counter, because the counter is
+  // only worth having if the surfaces beside it genuinely cannot supply it.
+  it("counts interval fires refused while a tick runs, which leave no other trace", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+    const dispatcher = new ToolDispatcher({
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      clock,
+    });
+    dispatcher.register(
+      createIdentityEventsListForCognitionTool({
+        listEvents: (options) => harness.identityService.listEvents(options),
+      }),
+    );
+
+    const trigger = createScheduledReflectionTrigger({
+      watermarkRepository,
+      intervalMs: 10_000,
+      clock,
+    });
+
+    let intervalCallback: (() => void) | undefined;
+    const setIntervalFn = vi.fn((callback: () => void) => {
+      intervalCallback = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    });
+    let resolveTurn: ((value: unknown) => void) | undefined;
+    const turnCompletion = new Promise((resolve) => {
+      resolveTurn = resolve;
+    });
+    const turnRunner = {
+      run: vi.fn().mockReturnValue(turnCompletion),
+    };
+
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      watermarkRepository,
+      turnOrchestrator: turnRunner,
+      toolDispatcher: dispatcher,
+      sources: [trigger],
+      setIntervalFn: setIntervalFn as unknown as typeof setInterval,
+      clearIntervalFn: vi.fn(),
+    });
+
+    scheduler.start();
+    await expect(scheduler.describe()).resolves.toMatchObject({
+      interval_ms: 1_000,
+      dropped_interval_fires: { since_interval_armed: 0, current_tick: null },
+    });
+
+    intervalCallback?.();
+    await vi.waitFor(() => {
+      expect(turnRunner.run).toHaveBeenCalledTimes(1);
+    });
+
+    for (let fire = 0; fire < 3; fire += 1) {
+      clock.advance(1_000);
+      intervalCallback?.();
+    }
+
+    const duringFreeze = await scheduler.describe();
+    expect(duringFreeze.tick_in_flight).toBe(true);
+    expect(duringFreeze.dropped_interval_fires).toEqual({
+      since_interval_armed: 3,
+      current_tick: 3,
+    });
+    // Four fires, one wake: the other three are absent from every count on the
+    // page rather than represented in any of them.
+    expect(turnRunner.run).toHaveBeenCalledTimes(1);
+    expect(duringFreeze.budget.used_in_current_window).toBe(1);
+    expect(duringFreeze.fleet_brake.window_outcomes).toEqual({
+      headway: 0,
+      silent: 0,
+      error: 0,
+      busy: 0,
+    });
+
+    resolveTurn?.({
+      mode: "idle",
+      path: "system_1",
+      response: "Finished reflective work.",
+      thoughts: [],
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        stop_reason: "end_turn",
+      },
+      retrievedEpisodeIds: [],
+      referencedEpisodeIds: [],
+      intents: [],
+      toolCalls: [],
+      agentMessageId: "strm_dropped_fires",
+    });
+    await vi.waitFor(async () => {
+      expect((await scheduler.describe()).tick_in_flight).toBe(false);
+    });
+
+    // The running total survives the tick that earned it; the per-tick count
+    // goes null rather than holding a figure that would read as a live cost.
+    await expect(scheduler.describe()).resolves.toMatchObject({
+      dropped_interval_fires: { since_interval_armed: 3, current_tick: null },
+    });
+
+    await scheduler.stop();
+    await expect(scheduler.describe()).resolves.toMatchObject({
+      dropped_interval_fires: { since_interval_armed: 0, current_tick: null },
+    });
+  });
+
   it("waits for a direct tick to finish during graceful stop", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({

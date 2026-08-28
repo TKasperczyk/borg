@@ -265,7 +265,33 @@ export type AutonomySchedulerDescription = {
    * live turn, and any surface rendering it has to say so.
    */
   tick_in_flight: boolean;
+  /**
+   * The interval the handle was armed with. Load-bearing to any consumer
+   * comparing `scheduled_tick_at` across reads: that stamp is the last tick
+   * entry plus this, so while one handle stays armed consecutive values differ
+   * by a multiple of it (plus timer drift), and a delta that is not a multiple
+   * means the handle was re-armed. Without this term a series of stamps is
+   * just a series of stamps -- the phase is only readable against the period.
+   */
   interval_ms: number;
+  /**
+   * Interval fires refused because a tick was already running. The callback
+   * early-returns on those, and the early return is the only event in the
+   * scheduler that writes nothing at all: no wake row, no outcome, no error.
+   * So a stretch in which every fire was refused and a stretch in which
+   * nothing was due leave the same trace in `budget` and `window_outcomes`,
+   * which is none. This is that difference, counted where it is refused.
+   *
+   * `current_tick` is null exactly when no tick is in flight; when one is, it
+   * is that tick's own tally and resets on the next tick entry. It carries
+   * information on an autonomous turn even though `tick_in_flight` cannot --
+   * that turn is inside the tick, so the flag is true by construction, but how
+   * many fires the tick has already refused is a fact about the freeze.
+   */
+  dropped_interval_fires: {
+    since_interval_armed: number;
+    current_tick: number | null;
+  };
   /**
    * `max(scheduled_tick_at, observed_at)` -- a tick already due at the read is
    * reported as the read clock rather than as a past instant, so a consumer

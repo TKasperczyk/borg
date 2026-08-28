@@ -14,6 +14,7 @@ import type {
 } from "../memory/working/index.js";
 import type {
   AutonomySchedulerBudgetDescription,
+  AutonomySchedulerDescription,
   AutonomySchedulerFleetBrakeDescription,
 } from "../autonomy/index.js";
 import {
@@ -76,10 +77,24 @@ export type HydratedRecentRegeneration = {
 // page a lagging interval draws. Telling them apart used to require two reads far enough apart to
 // watch whether the stamp moved, which is a discriminator no single prompt can carry. The flag is
 // already in the scheduler at describe() time; carrying it here makes one read enough.
+//
+// `intervalMs` and `droppedIntervalFires` are the fourth and fifth, and both were dropped at the
+// same call site as the three above. The interval length is what turns a series of
+// `scheduledTickAt` stamps into a grid: the stamp is the last tick entry plus the interval, so
+// consecutive reads differ by a multiple of it while one handle stays armed, and a delta that is
+// not a multiple means it was re-armed. Without the period a reader holding two stamps can see
+// that they differ and nothing more. The refused-fire counts answer the question `tickInFlight`
+// raises and cannot close -- a tick holding the anchor is refusing an interval fire every period,
+// and the early return that refuses it is the only event in the scheduler that writes nothing
+// anywhere. A frozen hour and a quiet hour therefore leave the same trace in the budget and
+// outcome counts, which is none; these are that difference, and unlike `tickInFlight` the
+// per-tick count still carries information on an autonomous turn.
 export type AutonomySchedulerMechanismEvidence = {
   observedAt: number;
   enabled: boolean;
   tickInFlight: boolean;
+  intervalMs: number;
+  droppedIntervalFires: AutonomySchedulerDescription["dropped_interval_fires"];
   nextTickAt: number | null;
   scheduledTickAt: number | null;
   budget: AutonomySchedulerBudgetDescription;

@@ -2616,6 +2616,8 @@ describe("buildBaseSystemPrompt", () => {
               observedAt: NOW_MS,
               enabled: true,
               tickInFlight: false,
+              intervalMs: 60_000,
+              droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
               nextTickAt: NOW_MS + 60_000,
               scheduledTickAt: NOW_MS + 60_000,
               fleetBrake: {
@@ -2705,26 +2707,49 @@ describe("buildBaseSystemPrompt", () => {
   // the symptom and none of the cause. tickInFlight is the cause, and on an
   // autonomous turn it is true because the tick is building the turn, which the
   // render has to say or it becomes a field that is true whenever it is read.
+  //
+  // The refused-fire counts are the cost of that same in-flight state, and they
+  // are the only quantity here with no writer downstream: the interval callback
+  // early-returns without touching the wake repository, so a window in which
+  // every fire was refused and a window in which nothing was due leave the same
+  // (absent) trace in the budget and outcome tallies. The per-tick count also
+  // survives the blind spot above -- the flag is true by construction inside a
+  // tick, but how many fires that tick has already refused is not.
   it.each([
     {
       name: "config flag is not liveness",
       tickInFlight: false,
+      droppedIntervalFires: { since_interval_armed: 4, current_tick: null },
       turnOrigin: "user" as const,
-      expected: "not an observation that the loop is alive",
+      expected: [
+        "not an observation that the loop is alive",
+        "Interval fires refused because a tick was already running: 4 since the loop was last armed. A refused fire writes nothing anywhere, so the periods it covers are missing from the counts above rather than counted as quiet.",
+      ],
+      absent: "of them by the tick that was in flight",
     },
     {
       name: "stuck tick names itself on one read",
       tickInFlight: true,
+      droppedIntervalFires: { since_interval_armed: 121, current_tick: 117 },
       turnOrigin: "user" as const,
-      expected: "a stuck tick and not a lagging interval",
+      expected: [
+        "a stuck tick and not a lagging interval",
+        "Interval fires refused because a tick was already running: 121 since the loop was last armed, 117 of them by the tick that was in flight at that read.",
+      ],
+      absent: null,
     },
     {
       name: "autonomous turn names its own blind spot",
       tickInFlight: true,
+      droppedIntervalFires: { since_interval_armed: 42, current_tick: 9 },
       turnOrigin: "autonomous" as const,
-      expected: "true by construction on an autonomous turn and discriminates nothing here",
+      expected: [
+        "true by construction on an autonomous turn and discriminates nothing here; the refusal count that follows does, being a fact about how long that tick has held rather than about which turn is reading it.",
+        "Interval fires refused because a tick was already running: 42 since the loop was last armed, 9 of them by the tick that was in flight at that read.",
+      ],
+      absent: null,
     },
-  ])("$name", ({ tickInFlight, turnOrigin, expected }) => {
+  ])("$name", ({ tickInFlight, droppedIntervalFires, turnOrigin, expected, absent }) => {
     const block = extractBlock(
       buildBaseSystemPrompt(
         makeContext({
@@ -2736,6 +2761,8 @@ describe("buildBaseSystemPrompt", () => {
               observedAt: NOW_MS,
               enabled: true,
               tickInFlight,
+              intervalMs: 60_000,
+              droppedIntervalFires,
               nextTickAt: NOW_MS + 60_000,
               scheduledTickAt: NOW_MS + 60_000,
               fleetBrake: {
@@ -2773,7 +2800,19 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(line).toContain("Scheduler loop: enabled in configuration");
     expect(line).not.toContain("Scheduler loop: running");
-    expect(line).toContain(expected);
+    for (const fragment of expected) {
+      expect(line).toContain(fragment);
+    }
+    if (absent !== null) {
+      expect(line).not.toContain(absent);
+    }
+    // The period travels with the stamps on every branch. Two scheduled stamps
+    // are only comparable against it: the anchor advances on tick entry, so the
+    // stamp moves in whole multiples while one handle stays armed, and the
+    // reader cannot tell a re-arm from a long tick without knowing the multiple.
+    expect(line).toContain(
+      "The scheduled stamp is the last tick entry plus the interval, which is 60000ms: while one handle stays armed it moves in whole multiples of that (plus timer drift), so a delta between two reads that is not a multiple means the handle was re-armed -- which needs the loop stopped and started again, since starting it while a handle exists does nothing.",
+    );
   });
 
   // in_flight is the one wake state with no terminal write of its own: the
@@ -2795,6 +2834,8 @@ describe("buildBaseSystemPrompt", () => {
               observedAt: NOW_MS,
               enabled: true,
               tickInFlight: false,
+              intervalMs: 60_000,
+              droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
               nextTickAt: NOW_MS + 60_000,
               scheduledTickAt: NOW_MS + 60_000,
               fleetBrake: {
@@ -2904,6 +2945,8 @@ describe("buildBaseSystemPrompt", () => {
               observedAt,
               enabled: true,
               tickInFlight: false,
+              intervalMs: 60_000,
+              droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
               nextTickAt,
               scheduledTickAt,
               fleetBrake: {
@@ -3007,6 +3050,8 @@ describe("buildBaseSystemPrompt", () => {
             observedAt,
             enabled: true,
             tickInFlight: false,
+            intervalMs: 60_000,
+            droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
             nextTickAt: NOW_MS + 60_000,
             scheduledTickAt: NOW_MS + 60_000,
             fleetBrake: {
@@ -3062,6 +3107,8 @@ describe("buildBaseSystemPrompt", () => {
             observedAt: NOW_MS,
             enabled: true,
             tickInFlight: false,
+            intervalMs: 60_000,
+            droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
             nextTickAt: NOW_MS + 60_000,
             scheduledTickAt: NOW_MS + 60_000,
             fleetBrake: {
@@ -3126,6 +3173,8 @@ describe("buildBaseSystemPrompt", () => {
                 observedAt: NOW_MS,
                 enabled: true,
                 tickInFlight: false,
+                intervalMs: 60_000,
+                droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
                 nextTickAt: NOW_MS + 60_000,
                 scheduledTickAt: NOW_MS + 60_000,
                 fleetBrake: {

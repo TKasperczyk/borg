@@ -1913,6 +1913,33 @@ export function summarizeAutonomySchedulerState(
               ? `, and ${renderNowMs - scheduledTickAt}ms before the current_time_ms at the top of this prompt -- it was still ahead as of the read and may have fired inside the lag since.`
               : `, and ${scheduledTickAt - renderNowMs}ms after the current_time_ms at the top of this prompt -- still ahead on both clocks.`
           }`;
+  // (5) The stamps above were rendered without the period they are spaced on. A reader holding two
+  //     of them across reads could see that they differed and nothing more: the anchor is written
+  //     on tick entry and the interval keeps its phase across a stuck tick, so consecutive stamps
+  //     are on a grid, and whether a delta sits on that grid is exactly the question "did the loop
+  //     get re-armed" -- which is the one thing `tick_in_flight` cannot answer, because a tick that
+  //     runs nine minutes and returns and a tick that is killed at ninety-eight render identically
+  //     at every read before the end. `interval_ms` was on `describe()` the whole time and stopped
+  //     at the same boundary the three fields above stopped at.
+  const gridClause =
+    scheduledTickAt === null
+      ? ""
+      : ` The scheduled stamp is the last tick entry plus the interval, which is ${schedulerState.intervalMs}ms: while one handle stays armed it moves in whole multiples of that (plus timer drift), so a delta between two reads that is not a multiple means the handle was re-armed -- which needs the loop stopped and started again, since starting it while a handle exists does nothing.`;
+  // (6) A fire that arrives while a tick is running is dropped at the interval callback's early
+  //     return, and that early return is the only path in the scheduler that writes nothing at
+  //     all -- no wake row, no outcome, no error. So the budget and outcome counts above cannot
+  //     distinguish an hour in which every fire was refused from an hour in which nothing was due:
+  //     both leave no trace, and the surface reported the second reading for both. The count is
+  //     also the one liveness quantity that survives the blind spot below, since it is a fact
+  //     about the tick rather than about which turn is reading it.
+  const droppedFires = schedulerState.droppedIntervalFires;
+  const droppedClause = ` Interval fires refused because a tick was already running: ${
+    droppedFires.since_interval_armed
+  } since the loop was last armed${
+    droppedFires.current_tick === null
+      ? ""
+      : `, ${droppedFires.current_tick} of them by the tick that was in flight at that read`
+  }. A refused fire writes nothing anywhere, so the periods it covers are missing from the counts above rather than counted as quiet.`;
   // The liveness clause and the tick clause answer different questions and are stated separately:
   // how far behind the loop is, and which of the two causes is producing that. The blind spot is
   // printed with the flag rather than left for the reader to discover, because a field that is
@@ -1920,11 +1947,11 @@ export function summarizeAutonomySchedulerState(
   const inFlightClause = !schedulerState.tickInFlight
     ? "No tick was in flight at that read, so an overdue amount below is the interval running behind, not a tick holding the stamp."
     : turnOrigin === "autonomous"
-      ? "A tick was in flight at that read -- but this prompt is being built inside that tick, so the flag is true by construction on an autonomous turn and discriminates nothing here."
+      ? "A tick was in flight at that read -- but this prompt is being built inside that tick, so the flag is true by construction on an autonomous turn and discriminates nothing here; the refusal count that follows does, being a fact about how long that tick has held rather than about which turn is reading it."
       : "A tick was in flight at that read, and the interval drops every fire while one is: no wake can start, and the tick stamp below is held rather than moving, so an overdue amount there is a stuck tick and not a lagging interval.";
   lines.push(
     schedulerState.enabled
-      ? `Scheduler loop: enabled in configuration -- that word is the config flag the scheduler was built with, not an observation that the loop is alive. ${inFlightClause} Tick: ${tickClause}`
+      ? `Scheduler loop: enabled in configuration -- that word is the config flag the scheduler was built with, not an observation that the loop is alive. ${inFlightClause}${droppedClause} Tick: ${tickClause}${gridClause}`
       : "Scheduler loop: disabled -- no wake fires regardless of the budget above.",
   );
 
