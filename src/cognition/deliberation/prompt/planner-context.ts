@@ -21,7 +21,7 @@ import {
 } from "../../../retrieval/index.js";
 import type { LLMSystemBlock } from "../../../llm/index.js";
 import { escapeXmlText } from "../../../util/prompt-tags.js";
-import { formatRelativeAge } from "../../../util/relative-time.js";
+import { formatRelativeAge, formatRelativeUntil } from "../../../util/relative-time.js";
 import { estimatePromptTokens } from "../../../util/token-estimate.js";
 import { utf16SafePrefixEnd, utf16SafeSuffixStart } from "../../../util/utf16-boundary.js";
 import { renderAutonomousOutboundActionAvailabilitySection } from "../../../outbound/outbound-prompt.js";
@@ -181,6 +181,19 @@ function relativeAge(timestamp: number | null | undefined, nowMs: number | undef
   return timestamp === null || timestamp === undefined || nowMs === undefined
     ? "unknown"
     : formatRelativeAge(timestamp, nowMs);
+}
+
+/**
+ * Forward-looking stamps (goal target_at, next-step due_at, commitment expires_at) must
+ * not go through the age formatter: it clamps elapsed at 0, so anything still in the
+ * future renders "~0s ago" -- identical to a stamp that just passed, and reading as
+ * maximally urgent when the truth is the opposite. The sign of (stamp - now) is exactly
+ * what deadline pressure keys on, so it has to survive to the page.
+ */
+function relativeUntil(timestamp: number | null | undefined, nowMs: number | undefined): string {
+  return timestamp === null || timestamp === undefined || nowMs === undefined
+    ? "unknown"
+    : formatRelativeUntil(timestamp, nowMs);
 }
 
 /**
@@ -424,7 +437,7 @@ function renderGoalIndexRows(
     truncationCount += description.truncated ? 1 : 0;
     const score = scoreById.get(goal.id);
 
-    return `<goal i="${escapeXmlAttribute(goal.id)}" s="${escapeXmlAttribute(goal.status)}" ca="${escapeXmlAttribute(relativeAge(goal.created_at, nowMs))}" pa="${escapeXmlAttribute(relativeAge(goal.last_progress_ts, nowMs))}" ta="${escapeXmlAttribute(relativeAge(goal.target_at, nowMs))}" p="${goal.priority}" x="${score === undefined ? "unscored" : score.toFixed(4)}" ${goalDisclosureAttributes(goal)} d="${escapeXmlSingleLineAttribute(description.text)}" />`;
+    return `<goal i="${escapeXmlAttribute(goal.id)}" s="${escapeXmlAttribute(goal.status)}" ca="${escapeXmlAttribute(relativeAge(goal.created_at, nowMs))}" pa="${escapeXmlAttribute(relativeAge(goal.last_progress_ts, nowMs))}" ta="${escapeXmlAttribute(relativeUntil(goal.target_at, nowMs))}" p="${goal.priority}" x="${score === undefined ? "unscored" : score.toFixed(4)}" ${goalDisclosureAttributes(goal)} d="${escapeXmlSingleLineAttribute(description.text)}" />`;
   });
 
   return { rows, truncationCount };
@@ -452,7 +465,7 @@ function renderExpandedGoalRow(
     PLANNER_GOAL_EXPANDED_FIELD_CHARS,
   );
   return {
-    row: `<goal_detail i="${escapeXmlAttribute(goal.id)}" s="${escapeXmlAttribute(goal.status)}" sel="${context.executiveFocus?.selected_goal?.id === goal.id}" cat="${new Date(goal.created_at).toISOString()}" ca="${escapeXmlAttribute(relativeAge(goal.created_at, nowMs))}" pa="${escapeXmlAttribute(relativeAge(goal.last_progress_ts, nowMs))}" ta="${escapeXmlAttribute(relativeAge(goal.target_at, nowMs))}" p="${goal.priority}" x="${(scoreById.get(goal.id) ?? 0).toFixed(4)}" ${goalDisclosureAttributes(goal)} d="${escapeXmlSingleLineAttribute(description.text)}" tc="${escapeXmlSingleLineAttribute(terminal.text)}" pn="${escapeXmlSingleLineAttribute(progress.text)}"${candidate === undefined ? "" : ` sp="${candidate.components.priority.toFixed(4)}" sd="${candidate.components.deadline_pressure.toFixed(4)}" sc="${candidate.components.context_fit.toFixed(4)}" sdebt="${candidate.components.progress_debt.toFixed(4)}"`} er="${escapeXmlSingleLineAttribute(executiveReason.text)}" owner="${escapeXmlAttribute(goal.owner_entity_id ?? "none")}" audience="${escapeXmlAttribute(goal.audience_entity_id ?? "none")}" />`,
+    row: `<goal_detail i="${escapeXmlAttribute(goal.id)}" s="${escapeXmlAttribute(goal.status)}" sel="${context.executiveFocus?.selected_goal?.id === goal.id}" cat="${new Date(goal.created_at).toISOString()}" ca="${escapeXmlAttribute(relativeAge(goal.created_at, nowMs))}" pa="${escapeXmlAttribute(relativeAge(goal.last_progress_ts, nowMs))}" ta="${escapeXmlAttribute(relativeUntil(goal.target_at, nowMs))}" p="${goal.priority}" x="${(scoreById.get(goal.id) ?? 0).toFixed(4)}" ${goalDisclosureAttributes(goal)} d="${escapeXmlSingleLineAttribute(description.text)}" tc="${escapeXmlSingleLineAttribute(terminal.text)}" pn="${escapeXmlSingleLineAttribute(progress.text)}"${candidate === undefined ? "" : ` sp="${candidate.components.priority.toFixed(4)}" sd="${candidate.components.deadline_pressure.toFixed(4)}" sc="${candidate.components.context_fit.toFixed(4)}" sdebt="${candidate.components.progress_debt.toFixed(4)}"`} er="${escapeXmlSingleLineAttribute(executiveReason.text)}" owner="${escapeXmlAttribute(goal.owner_entity_id ?? "none")}" audience="${escapeXmlAttribute(goal.audience_entity_id ?? "none")}" />`,
     truncationCount: [description, terminal, progress, executiveReason].filter(
       (entry) => entry.truncated,
     ).length,
@@ -503,7 +516,7 @@ function renderExecutiveNextStep(
 
   const excerpt = headTailPlannerExcerpt(nextStep.description, PLANNER_GOAL_EXPANDED_FIELD_CHARS);
   return {
-    row: `<next_step i="${escapeXmlAttribute(nextStep.id)}" g="${escapeXmlAttribute(nextStep.goal_id)}" k="${escapeXmlAttribute(nextStep.kind)}" s="${escapeXmlAttribute(nextStep.status)}" due="${escapeXmlAttribute(relativeAge(nextStep.due_at, nowMs))}" attempt="${escapeXmlAttribute(relativeAge(nextStep.last_attempt_ts, nowMs))}" ${compactDisclosureAttributes(disclosureFromMetadata(nextStep.disclosure_label, selfPrivateMemoryDisclosureLabel()))} d="${escapeXmlSingleLineAttribute(excerpt.text)}" />`,
+    row: `<next_step i="${escapeXmlAttribute(nextStep.id)}" g="${escapeXmlAttribute(nextStep.goal_id)}" k="${escapeXmlAttribute(nextStep.kind)}" s="${escapeXmlAttribute(nextStep.status)}" due="${escapeXmlAttribute(relativeUntil(nextStep.due_at, nowMs))}" attempt="${escapeXmlAttribute(relativeAge(nextStep.last_attempt_ts, nowMs))}" ${compactDisclosureAttributes(disclosureFromMetadata(nextStep.disclosure_label, selfPrivateMemoryDisclosureLabel()))} d="${escapeXmlSingleLineAttribute(excerpt.text)}" />`,
     truncationCount: excerpt.truncated ? 1 : 0,
   };
 }
@@ -531,7 +544,7 @@ export function renderGoalDigest(context: DeliberationContext): RenderedPlannerS
       `<borg_planner_goal_digest rows_total="${goals.length}" target_tokens="${PLANNER_GOAL_TARGET_TOKENS}" focus_threshold="${context.executiveFocus === undefined || context.executiveFocus === null ? "none" : context.executiveFocus.threshold.toFixed(4)}">`,
       "  <interpretation>The one-line index is complete for the globally assembled self snapshot. Status and ages are comparable across rows. Expanded rows are the highest global executive-score candidates, not an audience visibility filter.</interpretation>",
       "  <score_basis>x = 0.35*sp + 0.30*sd + 0.20*sc + 0.15*sdebt, clamped to [0,1]. sel=true means top x at or above focus_threshold, or that an autonomy trigger named the goal outright, in which case x did not decide it. sp is priority over the highest active priority. sd is 0 without a target, ramps as ta nears, and pins at 1.00 once ta is past. sdebt is the age at pa (or ca where no progress note exists) over the staleness window: it rises with the clock and falls only when a progress note is written. sc is a cosine between the goal's stored vector and one embedding of this turn's context text - cognition input, perception entities, plus the autonomy payload on a triggered turn - recomputed from scratch each turn with nothing carried forward, so it tracks the wording in front of you and not accumulated attention. These are turn-selection scores; a figure inside an autonomy trigger payload was scored against that payload alone and is a different quantity.</score_basis>",
-      "  <field_legend>goal: i=id, s=status, ca=created_age, pa=last_progress_age, ta=target_age, p=priority, x=global_executive_score, dc=disclosure_class, oa=origin_audience, pt=private_to, pub=public_to, d=description. goal_detail adds sel=selected, cat=created_at, tc=terminal_condition, pn=progress_notes, sp/sd/sc/sdebt=score priority/deadline_pressure/context_fit/progress_debt, er=executive_reason, owner=owner_entity_id, audience=audience_entity_id. next_step: i=id, g=goal_id, k=kind, s=status, due=due_age, attempt=last_attempt_age, dc/oa/pt/pub=disclosure label, d=description.</field_legend>",
+      "  <field_legend>goal: i=id, s=status, ca=created_age, pa=last_progress_age, ta=target_rel, p=priority, x=global_executive_score, dc=disclosure_class, oa=origin_audience, pt=private_to, pub=public_to, d=description. goal_detail adds sel=selected, cat=created_at, tc=terminal_condition, pn=progress_notes, sp/sd/sc/sdebt=score priority/deadline_pressure/context_fit/progress_debt, er=executive_reason, owner=owner_entity_id, audience=audience_entity_id. next_step: i=id, g=goal_id, k=kind, s=status, due=due_rel, attempt=last_attempt_age, dc/oa/pt/pub=disclosure label, d=description.</field_legend>",
       "  <complete_goal_index>",
       ...goalIndex.rows.map((row) => `    ${row}`),
       "    <omitted_count>0</omitted_count>",
@@ -620,7 +633,7 @@ function renderCommitmentRowsAtBudget(
       ? `ex="true" r="${directive.renderedChars}" n="${directive.totalChars}"`
       : `ex="${directive.truncated ? "false" : "true"}" shape="${directive.truncated ? "head+tail" : "full"}" r="${directive.renderedChars}" n="${directive.totalChars}" e="${directive.elidedChars}"`;
 
-    return `<c i="${escapeXmlAttribute(commitment.id)}" s="${commitmentStatus(commitment)}" ec="${enforcementClass}" cd="${escapeXmlAttribute(effectiveCommitmentCriticalDomain(commitment) ?? "none")}" k="${escapeXmlAttribute(commitment.kind)}" t="${escapeXmlAttribute(commitment.type)}" cp="${escapeXmlAttribute(commitment.closure_pressure_relevance)}" p="${commitment.priority}" cat="${new Date(commitment.created_at).toISOString()}" ca="${escapeXmlAttribute(relativeAge(commitment.created_at, nowMs))}" ra="${escapeXmlAttribute(relativeAge(commitment.last_reinforced_at, nowMs))}" xa="${escapeXmlAttribute(relativeAge(commitment.expires_at, nowMs))}" ${disclosureAttributes}${entityAttributes.length === 0 ? "" : ` ${entityAttributes}`} ${directiveAttributes} f="${escapeXmlSingleLineAttribute(directiveFamily.text)}" d="${escapeXmlSingleLineAttribute(directive.text)}" />`;
+    return `<c i="${escapeXmlAttribute(commitment.id)}" s="${commitmentStatus(commitment)}" ec="${enforcementClass}" cd="${escapeXmlAttribute(effectiveCommitmentCriticalDomain(commitment) ?? "none")}" k="${escapeXmlAttribute(commitment.kind)}" t="${escapeXmlAttribute(commitment.type)}" cp="${escapeXmlAttribute(commitment.closure_pressure_relevance)}" p="${commitment.priority}" cat="${new Date(commitment.created_at).toISOString()}" ca="${escapeXmlAttribute(relativeAge(commitment.created_at, nowMs))}" ra="${escapeXmlAttribute(relativeAge(commitment.last_reinforced_at, nowMs))}" xa="${escapeXmlAttribute(relativeUntil(commitment.expires_at, nowMs))}" ${disclosureAttributes}${entityAttributes.length === 0 ? "" : ` ${entityAttributes}`} ${directiveAttributes} f="${escapeXmlSingleLineAttribute(directiveFamily.text)}" d="${escapeXmlSingleLineAttribute(directive.text)}" />`;
   });
 
   return { rows, truncationCount };
@@ -635,7 +648,7 @@ function renderCommitmentDigestText(input: {
   return [
     `<borg_planner_commitment_digest rows_total="${input.commitmentCount}" target_tokens="${PLANNER_COMMITMENT_TARGET_TOKENS}" advisory_excerpt_budget_chars="${input.advisoryExcerptBudget}" critical_overflow="${input.criticalOverflow}">`,
     "  <interpretation>This is the complete globally assembled commitment index. Critical directives are exact and never truncated; advisory directives are visibly mechanical excerpts when long, never summaries. Scope fields are disclosure/provenance, not recall gates.</interpretation>",
-    "  <field_legend>c row: i=id, s=status, ec=enforcement_class, cd=critical_domain, k=kind, t=type, cp=closure_pressure_relevance, p=priority, cat=created_at, ca=created_age, ra=reinforced_age, xa=expires_age, dc=disclosure_class, oa=origin_audience, pt=private_to, pub=public_to, to=made_to, aud=restricted_audience, about=about_entity, by=committed_by_entity_id, ex=directive_exact, shape=directive_excerpt_shape, r=directive_rendered_chars, n=directive_total_chars, e=directive_elided_chars, f=directive_family, d=directive. ex reports elision only, not byte-fidelity of the printed attribute: d and f are XML-attribute-encoded, so quotes, ampersands, angle brackets, newlines and tabs print as entities while r/n/e count the stored string before encoding; that encoder emits no backslash, so a backslash inside d is stored content rather than an artifact of this render; and on a critical row ex is true by construction rather than by measurement.</field_legend>",
+    "  <field_legend>c row: i=id, s=status, ec=enforcement_class, cd=critical_domain, k=kind, t=type, cp=closure_pressure_relevance, p=priority, cat=created_at, ca=created_age, ra=reinforced_age, xa=expires_rel, dc=disclosure_class, oa=origin_audience, pt=private_to, pub=public_to, to=made_to, aud=restricted_audience, about=about_entity, by=committed_by_entity_id, ex=directive_exact, shape=directive_excerpt_shape, r=directive_rendered_chars, n=directive_total_chars, e=directive_elided_chars, f=directive_family, d=directive. ex reports elision only, not byte-fidelity of the printed attribute: d and f are XML-attribute-encoded, so quotes, ampersands, angle brackets, newlines and tabs print as entities while r/n/e count the stored string before encoding; that encoder emits no backslash, so a backslash inside d is stored content rather than an artifact of this render; and on a critical row ex is true by construction rather than by measurement.</field_legend>",
     ...input.rows.map((row) => `  ${row}`),
     "  <omitted_count>0</omitted_count>",
     "</borg_planner_commitment_digest>",

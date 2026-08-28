@@ -458,6 +458,33 @@ describe("compact planner context", () => {
     expect(rendered).toContain("ec=enforcement_class");
   });
 
+  it("keeps the sign of forward-looking stamps that deadline pressure keys on", () => {
+    const future = goal("Ship the thing", { target_at: NOW_MS + 3 * 24 * 60 * 60_000 });
+    const past = goal("Shipped the thing", { target_at: NOW_MS - 3 * 24 * 60 * 60_000 });
+    const untargeted = goal("Never due", { target_at: null });
+    const rendered = allSystemText(
+      build(
+        context({
+          selfSnapshot: { values: [], goals: [future, past, untargeted], traits: [] },
+          applicableCommitments: [
+            commitment("Expires later", { expires_at: NOW_MS + 6 * 60 * 60_000 }),
+          ],
+        }),
+      ),
+    );
+    const rowFor = (id: string): string =>
+      selfClosingRows(rendered, "goal").find((row) => row.includes(`i="${id}"`))!;
+
+    // A future target must not render as an age: the clamp at zero would print "~0s ago",
+    // which is indistinguishable from a target that just passed and reads as the most
+    // urgent value on the page while meaning the opposite.
+    expect(rowFor(future.id)).toContain('ta="in 3d"');
+    expect(rowFor(past.id)).toContain('ta="3d ago"');
+    expect(rowFor(untargeted.id)).toContain('ta="unknown"');
+    expect(rendered).not.toContain('ta="~0s ago"');
+    expect(selfClosingRows(rendered, "c")[0]!).toContain('xa="in 6h"');
+  });
+
   it("renders every authority directive in one line while keeping structural payloads exact", () => {
     const payload = `DIRECTIVE_HEAD_${"&".repeat(2_000)}_DIRECTIVE_TAIL`;
     const directives: NonNullable<DeliberationContext["creatorDirectiveBriefing"]>["directives"] = [

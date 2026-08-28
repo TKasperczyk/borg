@@ -18,7 +18,7 @@ import {
   type MemoryDisclosureLabel,
 } from "../../../retrieval/index.js";
 import { escapeXmlText } from "../../../util/prompt-tags.js";
-import { formatRelativeAge } from "../../../util/relative-time.js";
+import { formatRelativeAge, formatRelativeUntil } from "../../../util/relative-time.js";
 import { estimatePromptTokens } from "../../../util/token-estimate.js";
 import { renderAutonomousOutboundActionAvailabilitySection } from "../../../outbound/outbound-prompt.js";
 import {
@@ -182,6 +182,22 @@ function age(timestamp: number | null | undefined, nowMs: number | undefined): s
     !Number.isFinite(nowMs)
     ? "unknown"
     : formatRelativeAge(timestamp, nowMs);
+}
+
+/**
+ * `expires` is forward-looking: the age formatter clamps elapsed at 0, so a commitment
+ * that has not expired yet renders "~0s ago" -- identical to one that expired a moment
+ * ago. The sibling `expired` attribute reads the separate expired_at column, so it is a
+ * genuine age and stays on `age()`.
+ */
+function until(timestamp: number | null | undefined, nowMs: number | undefined): string {
+  return timestamp === null ||
+    timestamp === undefined ||
+    nowMs === undefined ||
+    !Number.isFinite(timestamp) ||
+    !Number.isFinite(nowMs)
+    ? "unknown"
+    : formatRelativeUntil(timestamp, nowMs);
 }
 
 function terminalSection(
@@ -772,7 +788,7 @@ function renderRelativeAgeOverlay(context: DeliberationContext): RenderedTermina
   for (const commitment of context.applicableCommitments ?? []) {
     const ledgerEntry = commitmentLedgerById.get(`commitment:${commitment.id}`);
     rows.push(
-      `<commitment_age id="${escapeXmlAttribute(commitment.id)}" created="${age(commitment.created_at, nowMs)}" updated="${age(commitment.updated_at, nowMs)}" reinforced="${age(commitment.last_reinforced_at, nowMs)}" expires="${age(commitment.expires_at, nowMs)}" expired="${age(commitment.expired_at, nowMs)}" revoked="${age(commitment.revoked_at, nowMs)}" ledger_scope="${escapeXmlAttribute(ledgerEntry?.session_scope ?? "global")}" via_retrieval="${ledgerEntry?.via_retrieval === true}" ledger_state_metadata="${escapeXmlSingleLineAttribute(metadataAttribute(ledgerEntry?.state_metadata))}" made_to_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.made_to_entity))}" restricted_audience_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.restricted_audience))}" about_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.about_entity))}" committed_by_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.committed_by_entity_id ?? null))}" />`,
+      `<commitment_age id="${escapeXmlAttribute(commitment.id)}" created="${age(commitment.created_at, nowMs)}" updated="${age(commitment.updated_at, nowMs)}" reinforced="${age(commitment.last_reinforced_at, nowMs)}" expires="${until(commitment.expires_at, nowMs)}" expired="${age(commitment.expired_at, nowMs)}" revoked="${age(commitment.revoked_at, nowMs)}" ledger_scope="${escapeXmlAttribute(ledgerEntry?.session_scope ?? "global")}" via_retrieval="${ledgerEntry?.via_retrieval === true}" ledger_state_metadata="${escapeXmlSingleLineAttribute(metadataAttribute(ledgerEntry?.state_metadata))}" made_to_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.made_to_entity))}" restricted_audience_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.restricted_audience))}" about_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.about_entity))}" committed_by_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.committed_by_entity_id ?? null))}" />`,
     );
   }
   const canonicalLedgerIds = new Set(
