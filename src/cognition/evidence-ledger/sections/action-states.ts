@@ -214,6 +214,8 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
     text: renderOlderActionThreadsSummary({
       groups: summaryGroups,
       renderedThreadCount: renderedThreads.length,
+      renderLimit,
+      staleParticipantThreadsWithheldCount: cappedStaleIds.size,
       threadsBuiltCount: threads.length,
       consideredRecordCount: actionCandidates.length,
       sourceRecordLimit,

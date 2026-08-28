@@ -672,6 +672,8 @@ function actionThreadSummaryDetails(
 export function renderOlderActionThreadsSummary(input: {
   groups: readonly OlderActionThreadSummaryGroup[];
   renderedThreadCount: number;
+  renderLimit: number;
+  staleParticipantThreadsWithheldCount: number;
   threadsBuiltCount: number;
   consideredRecordCount: number;
   sourceRecordLimit: number;
@@ -707,6 +709,19 @@ export function renderOlderActionThreadsSummary(input: {
   // prints how many records the draw never looked at. It is rendered as the stated difference of
   // the two totals rather than as a bare number, so it cannot be mistaken for an independent
   // count of the below-floor rows -- it is derived from them, and says so.
+  //
+  // `rendered` was the one term with no scale printed beside it, which let it read as the render
+  // limit itself: a reader holding one page saw `rendered 12` with nothing to distinguish a full
+  // slot draw from a pool that happened to be twelve deep, and `rendered 8` with nothing to say
+  // why it fell. It is not the limit. Two caps apply in sequence and only the later one was
+  // named: stale participant threads past STALE_PARTICIPANT_ACTION_RENDER_LIMIT are withheld from
+  // the pool BEFORE the slot draw, so whenever that cap bites `rendered` collapses to the pool
+  // size and the limit never binds at all. Printing the limit and the withheld count makes the
+  // fall decomposable. The withheld threads stay inside `omitted` -- they are unrendered, not a
+  // fourth population -- so the printed identity still closes while `rendered` becomes checkable
+  // against its own operands instead of assumed to be the limit. It is stated as a share of the
+  // omitted count rather than spelled out as an arithmetic rule: this section truncates from the
+  // tail, and every character on the head lines is taken from the group detail below them.
   const recordsBelowDrawFloor =
     input.sourceRecordTotal === null
       ? "unknown_count_source_total_unavailable"
@@ -724,7 +739,7 @@ export function renderOlderActionThreadsSummary(input: {
 
   return [
     `Older action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}.`,
-    `Not counted above: salience_dropped_threads=${input.salienceDroppedThreadCount}, records_below_draw_floor=${recordsBelowDrawFloor} (threads_built=${input.threadsBuiltCount} = rendered ${input.renderedThreadCount} + omitted ${olderThreads.length} + dropped ${input.salienceDroppedThreadCount}; records_considered=${input.consideredRecordCount} records, source_record_limit=${input.sourceRecordLimit}, ${sourceRecordTotalField}).`,
+    `Not counted above: salience_dropped_threads=${input.salienceDroppedThreadCount}, records_below_draw_floor=${recordsBelowDrawFloor} (threads_built=${input.threadsBuiltCount} = rendered ${input.renderedThreadCount} + omitted ${olderThreads.length} + dropped ${input.salienceDroppedThreadCount}; render_slots=${input.renderLimit}, stale_participant_threads_withheld=${input.staleParticipantThreadsWithheldCount} of that omitted count, held out before the slot draw, so rendered can sit below render_slots without render_slots binding; records_considered=${input.consideredRecordCount} records, source_record_limit=${input.sourceRecordLimit}, ${sourceRecordTotalField}).`,
     ...disclosureNote,
     ...groups.map(
       (group) =>

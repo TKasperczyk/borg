@@ -257,6 +257,8 @@ describe("renderOlderActionThreadsSummary", () => {
       },
     ],
     renderedThreadCount: 1,
+    renderLimit: 12,
+    staleParticipantThreadsWithheldCount: 0,
     threadsBuiltCount: 2,
     salienceDroppedThreadCount: 0,
     sourceRecordTotal: 8,
@@ -293,6 +295,30 @@ describe("renderOlderActionThreadsSummary", () => {
     expect(summary).toContain(
       "records_considered=256 records, source_record_limit=256, source_record_total=2706; " +
         "records_below_draw_floor is that total minus records_considered, not a separate count",
+    );
+  });
+
+  // `rendered` is the allocator's output over a pool, not the render limit. A stale-participant
+  // cap withholds threads before the slot draw, so the count can fall below the limit without the
+  // limit ever binding -- and with neither operand printed, the two cases looked identical.
+  it("prints the slot limit and the pool withheld before it, so a short rendered count decomposes", () => {
+    const summary = renderOlderActionThreadsSummary({
+      ...summaryInput({ consideredRecordCount: 256, sourceRecordLimit: 256 }),
+      renderedThreadCount: 8,
+      renderLimit: 12,
+      staleParticipantThreadsWithheldCount: 1,
+      threadsBuiltCount: 214,
+      salienceDroppedThreadCount: 205,
+    });
+
+    // The withheld thread is the omitted one: it stays inside the identity rather than opening a
+    // fourth term, and rendered = 214 - 205 - 1 = 8 reads off the printed operands, below the
+    // twelve slots without twelve ever having been the binding constraint.
+    expect(summary).toContain("threads_built=214 = rendered 8 + omitted 1 + dropped 205");
+    expect(summary).toContain(
+      "render_slots=12, stale_participant_threads_withheld=1 of that omitted count, " +
+        "held out before the slot draw, so rendered can sit below render_slots without " +
+        "render_slots binding",
     );
   });
 

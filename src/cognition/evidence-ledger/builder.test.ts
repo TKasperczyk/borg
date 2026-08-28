@@ -4031,9 +4031,12 @@ describe("EvidenceLedgerBuilder", () => {
     expect(globalLine).not.toContain(alice);
 
     // Budget covers the head lines (omitted counts + uncounted-population bounds) plus both
-    // group labels, and still cuts inside the second group's samples.
+    // group labels, and still cuts inside the second group's samples. The number tracks the head
+    // lines: they are charged first, so widening them buys the same shape at a higher price. The
+    // shape holds across roughly 305-316 here; the value sits mid-band rather than at an edge, so
+    // a head line that moves by a few characters does not silently change what is being tested.
     const compacted = compactEvidenceLedger(ledger, {
-      maxEntryTextTokens: 265,
+      maxEntryTextTokens: 310,
     });
     const compactedSummaryText =
       compacted.ledger.sections
@@ -4076,10 +4079,13 @@ describe("EvidenceLedgerBuilder", () => {
     );
     // The thread totals sit with the bounds, above the group detail: truncation may take a
     // sample, never the identity that says the three thread counts close and that the record
-    // count is a different unit.
+    // count is a different unit -- nor the slot count that says what `rendered` was measured
+    // against, which is the one term a reader cannot reconstruct from the others.
     expect(compactedSummaryText).toContain(
-      "threads_built=3 = rendered 1 + omitted 2 + dropped 0; records_considered=4",
+      "threads_built=3 = rendered 1 + omitted 2 + dropped 0; render_slots=1, " +
+        "stale_participant_threads_withheld=0 of that omitted count",
     );
+    expect(compactedSummaryText).toContain("records_considered=4");
     expect(compactedSummaryText).not.toContain("Unknown sample should be dropped");
     expect(compactedSummaryText).toContain("[evidence ledger entry truncated");
   });
