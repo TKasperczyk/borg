@@ -158,6 +158,17 @@ async function persistMessageEmission(input: {
     ...(input.turnInput.audience === undefined ? {} : { audience: input.turnInput.audience }),
   };
 
+  // This branch is the only call to `OutboundDelivery.deliver` in the system, and its condition is
+  // `origin === "directed_outbound"`. So transport is a property of how the turn was started, not
+  // of the session or its connector: a self-initiated post goes through the connector and can throw
+  // a `transport_failed` sibling, while an ordinary reply -- same session, same source_type, same
+  // wired connector -- falls to the bare append below and never touches the connector at all. Its
+  // content leaves as the response to whoever called the turn.
+  //
+  // The consequence for anything reading the stream afterwards: an `agent_msg` with no
+  // `outbound_delivery.*` sibling means "delivered" only on the directed-outbound path. On every
+  // other origin the same absence means the question was never asked, so stream presence cannot be
+  // read as evidence that a connector accepted anything.
   if (
     isDirectedOutboundTurnOrigin(input.turnInput.origin) &&
     input.options.outboundDelivery !== undefined
