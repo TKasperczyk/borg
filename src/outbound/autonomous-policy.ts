@@ -312,6 +312,17 @@ export class AutonomousOutboundPolicy {
     );
   }
 
+  // The only place the authorization surface touches the connector layer, and it touches it as a
+  // membership test over `MessageConnectorRegistry.sourceTypes()` snapshotted at `Borg.open()`.
+  // That makes this term a per-source-type constant for the life of the process: it says a module
+  // was registered under this key at startup, not that the far side is reachable, that credentials
+  // are valid, or that this particular target accepts a post. Every session of a source type gets
+  // the same verdict, so this can never separate two targets that share one. Nothing flows back the
+  // other way either -- `OutboundDelivery.deliver` records a thrown failure as an
+  // `outbound_delivery.transport_failed` stream event and returns; it writes nothing to the
+  // registry, the session row, or this policy. A route that 403s on every attempt keeps its place
+  // in `authorizedTargets` indefinitely. Read a listed route as "structurally permitted", never as
+  // "deliverable".
   private transportAuthorizes(target: SessionRecord): boolean {
     return (this.options.transportSourceTypes ?? []).includes(target.source_type);
   }
