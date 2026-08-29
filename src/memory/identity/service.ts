@@ -1027,10 +1027,16 @@ export class IdentityService {
       };
     }
 
+    // upsertPeriod takes a whole record, so a forward update has to spread `current`.
+    // Carrying `last_updated` through that spread pins it to the creation stamp forever:
+    // upsertPeriod honours an explicit `last_updated` (the reverser needs that to restore
+    // an exact prior row), so it never re-stamps. Drop it here and let the clock speak;
+    // planner-context renders the period's `age` off this field.
+    const { last_updated: _staleStamp, ...carried } = current;
     const record = this.options.identityEventRepository.runInTransaction(() => {
       const updated = this.options.autobiographicalRepository.upsertPeriod(
         {
-          ...current,
+          ...carried,
           ...parsedPatch,
           provenance,
         },
