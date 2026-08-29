@@ -10,10 +10,11 @@ import {
   AUTOBIOGRAPHICAL_RECALL_TRUST_RANK,
   setSectionFraming,
 } from "../section-buckets.js";
-import type { EvidenceLedgerSourceType } from "../types.js";
+import { SELF_DECISION_LABEL_SCOPE_FRAMING, type EvidenceLedgerSourceType } from "../types.js";
 
 const AUTOBIOGRAPHICAL_RECALL_FRAMING =
-  "Autobiographical recall entries are past evidence for me to re-examine during this turn. I treat recalled self_decision rows as historical decisions and rationales, not standing verdicts; I revise them when current evidence warrants.";
+  "Autobiographical recall entries are past evidence for me to re-examine during this turn. I treat recalled self_decision rows as historical decisions and rationales, not standing verdicts; I revise them when current evidence warrants. " +
+  `${SELF_DECISION_LABEL_SCOPE_FRAMING} This section does carry reaches, separately, as outbound_attempt rows, so a label and an attempt from one turn appear here as two different rows.`;
 
 function sourceTypeForAutobiographicalItem(
   item: AutobiographicalRecallEvidenceItem,

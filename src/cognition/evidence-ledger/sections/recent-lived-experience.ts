@@ -2,9 +2,11 @@ import { isRecentLivedExperienceSpineKind } from "../../../memory/activity/index
 import type { BuilderSectionContext } from "../builder-context.js";
 import { buildRecentLivedExperienceLedgerEntry } from "../recent-lived-experience.js";
 import { addEntry, setSectionFraming } from "../section-buckets.js";
+import { SELF_DECISION_LABEL_SCOPE_FRAMING } from "../types.js";
 
 const RECENT_LIVED_EXPERIENCE_FRAMING =
-  "Recent lived experience is a session-agnostic chronological surface. It shows density, labels, and self-private disclosure metadata for intervening activity, never verbatim other-audience message text.";
+  "Recent lived experience is a session-agnostic chronological surface. It shows density, labels, and self-private disclosure metadata for intervening activity, never verbatim other-audience message text. " +
+  `${SELF_DECISION_LABEL_SCOPE_FRAMING} This section carries no action records, so a label here is the whole of what it says and not the whole of what the turn did.`;
 
 export function addRecentLivedExperienceSection(context: BuilderSectionContext): void {
   const rows = context.input.recentLivedExperience ?? [];
