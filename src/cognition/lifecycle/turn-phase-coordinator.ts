@@ -93,16 +93,56 @@ const ZEROED_SIGNALS: GenerationGateStructuralSignals = {
   hardCapActiveTurns: 0,
 };
 
-function priorSelfThoughtText(context: AutonomyTriggerContext | null | undefined): string | null {
+type PriorSelfThought = {
+  text: string;
+  updatedAt: number | null;
+  disclosure: string | null;
+};
+
+// The scheduler carries text, updated_at and a disclosure label on this payload field; a
+// reader that destructures only `text` drops the other two silently, and nothing fails --
+// the anchor just renders thinner. Read the whole record here so a field the producer adds
+// is a visible omission rather than an invisible one.
+function priorSelfThought(
+  context: AutonomyTriggerContext | null | undefined,
+): PriorSelfThought | null {
   const value = context?.payload.prior_self_thought;
 
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
 
-  const text = (value as { text?: unknown }).text;
+  const record = value as { text?: unknown; updated_at?: unknown; disclosure?: unknown };
 
-  return typeof text === "string" && text.trim().length > 0 ? text : null;
+  if (typeof record.text !== "string" || record.text.trim().length === 0) {
+    return null;
+  }
+
+  return {
+    text: record.text,
+    updatedAt: typeof record.updated_at === "number" ? record.updated_at : null,
+    disclosure: typeof record.disclosure === "string" ? record.disclosure : null,
+  };
+}
+
+// The anchor is a stored record, not the thought currently being had, and it is selected by
+// recency alone: `TrainOfThoughtRepository.get()` returns the single latest journal entry
+// from whichever wake wrote last, with no filter on the subject this wake fired for. Hoisted
+// bare it reads as present thought of unknown age -- so name the age, the depth, the
+// selection, and the disclosure class the producer attached, and say that this one row is
+// the whole of the journal read: on live turns the journal is written and never read back.
+function priorSelfThoughtProvenance(thought: PriorSelfThought): string {
+  const written =
+    thought.updatedAt === null ? "unknown time" : new Date(thought.updatedAt).toISOString();
+
+  return [
+    `Journal anchor (written ${written}`,
+    thought.disclosure === null ? "" : `, disclosure: ${thought.disclosure}`,
+    "). This is my latest journal entry by recency alone -- the last one written from any wake, ",
+    "not one selected for this wake's subject -- and it is one row deep and the only journal read ",
+    "in this turn; on non-autonomous turns the journal is written and never read back. Anything ",
+    "else I have already done or already sent is not in it and is not implied absent by it.",
+  ].join("");
 }
 
 export function cognitionInputForTurnInput(
@@ -114,7 +154,7 @@ export function cognitionInputForTurnInput(
     return turnInput.userMessage;
   }
 
-  const priorThought = priorSelfThoughtText(trigger);
+  const priorThought = priorSelfThought(trigger);
 
   if (priorThought === null) {
     return formatAutonomyTriggerContext(trigger);
@@ -126,7 +166,9 @@ export function cognitionInputForTurnInput(
   const { prior_self_thought: _hoisted, ...remainingPayload } = trigger.payload;
 
   return [
-    priorThought,
+    priorSelfThoughtProvenance(priorThought),
+    "",
+    priorThought.text,
     "",
     formatAutonomyTriggerContext({
       ...trigger,
