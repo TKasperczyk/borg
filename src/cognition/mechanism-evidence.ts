@@ -101,6 +101,65 @@ export type AutonomySchedulerMechanismEvidence = {
   fleetBrake: AutonomySchedulerFleetBrakeDescription;
 };
 
+/**
+ * Per-field disposition at the one boundary where `describe()`'s output crosses
+ * into turn evidence (`retrieval-phase.ts`, hand-written and renamed).
+ *
+ * Five of the nine carried fields were lost at exactly that line and recovered
+ * only when a reader noticed the page was thin. That failure has no symptom: the
+ * target type is unchanged, so nothing is missing from any literal, no assertion
+ * fires, no test goes red -- the surface simply renders less than it could, and
+ * only someone holding both the type and the page can tell. It is not a name
+ * asserting semantics the mechanism lacks; it is an absence, which is why reading
+ * the render never finds it.
+ *
+ * The `Record` key is what makes this load-bearing: a new field on
+ * `AutonomySchedulerDescription` fails typecheck here until someone says which
+ * it is. Carrying it is then a normal edit; dropping it is a decision with a
+ * written reason. Either way the loss stops being silent.
+ *
+ * The dropped reasons are rendered on the block itself, so the page states its
+ * own gap against the read rather than leaving the count of missing fields
+ * unknowable to anyone who cannot also read this file.
+ */
+export type AutonomySchedulerFieldDisposition = "carried" | { readonly dropped: string };
+
+export const AUTONOMY_SCHEDULER_DESCRIPTION_FIELD_DISPOSITION: Record<
+  keyof AutonomySchedulerDescription,
+  AutonomySchedulerFieldDisposition
+> = {
+  observed_at: "carried",
+  enabled: "carried",
+  tick_in_flight: "carried",
+  interval_ms: "carried",
+  dropped_interval_fires: "carried",
+  next_tick_at: "carried",
+  scheduled_tick_at: "carried",
+  budget: "carried",
+  fleet_brake: "carried",
+  // Prospective per-source arming state: which wake sources are registered,
+  // which are enabled, and when each trigger is next due. The block renders the
+  // retrospective view of the same sources (wakes-by-trigger over the budget
+  // window) and nothing forward-looking, so this is a real absence rather than a
+  // duplicate. Not carried because rendering it is a section-budget decision
+  // rather than a rename, and one nobody has taken.
+  sources: {
+    dropped:
+      "its per-source list -- which wake sources are registered, which are enabled, and when each trigger is next due",
+  },
+};
+
+/**
+ * The dropped entries above, in declaration order, for surfaces that state their
+ * own gap. Derived rather than restated so a later drop cannot make the rendered
+ * sentence quietly false.
+ */
+export const AUTONOMY_SCHEDULER_DESCRIPTION_DROPPED_FIELDS: readonly string[] = Object.values(
+  AUTONOMY_SCHEDULER_DESCRIPTION_FIELD_DISPOSITION,
+)
+  .filter((disposition): disposition is { readonly dropped: string } => disposition !== "carried")
+  .map((disposition) => disposition.dropped);
+
 export type TurnMechanismEvidence = {
   recentSuppressions: readonly HydratedRecentSuppression[];
   recentRegenerations: readonly HydratedRecentRegeneration[];

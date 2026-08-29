@@ -55,6 +55,7 @@ import { formatUtcDayBoundary, utcDayKey } from "../../../util/utc-day.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
 import type { AutonomySchedulerFleetBrakeDescription } from "../../../autonomy/index.js";
+import { AUTONOMY_SCHEDULER_DESCRIPTION_DROPPED_FIELDS } from "../../mechanism-evidence.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
 import { renderParticipantRoster } from "../../perception/index.js";
@@ -1814,8 +1815,22 @@ export function summarizeAutonomySchedulerState(
           stampMs,
           renderNowMs,
         )} as of the current_time_ms at the top of this prompt, ${observationLagMs}ms after that read -- the stamp is as of the read, this countdown is not`;
+  // The block's own gap against the read it declares. Every field `describe()`
+  // produces either renders somewhere below or is named here, derived from the
+  // disposition map that forces the decision at the boundary rather than
+  // restated (a restatement could go quietly false the next time something is
+  // dropped). Without it the number of fields that stop at that boundary is
+  // unreadable from the page at any number of reads -- an omission there throws
+  // nothing and contradicts nothing, so a thinner block and a complete one are
+  // the same page, and five fields have already been lost that way.
+  const boundaryScopeClause =
+    AUTONOMY_SCHEDULER_DESCRIPTION_DROPPED_FIELDS.length === 0
+      ? " Every field the scheduler's read produces is rendered somewhere below, so this block and that read differ by nothing."
+      : ` Every field the scheduler's read produces is rendered somewhere below except ${AUTONOMY_SCHEDULER_DESCRIPTION_DROPPED_FIELDS.join(
+          "; and ",
+        )}. That is the whole difference between this block and the read it names -- what is absent here is that, not an unknown remainder.`;
   const lines = [
-    "Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.",
+    `Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.${boundaryScopeClause}`,
     `Read at ${new Date(schedulerState.observedAt).toISOString()}${
       observationLagMs === 0
         ? ""
