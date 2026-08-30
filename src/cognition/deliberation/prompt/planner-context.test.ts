@@ -401,7 +401,10 @@ describe("compact planner context", () => {
 
   it("renders goal and commitment fields as lightweight single-line rows", () => {
     const alice = createEntityId();
-    const indexedGoal = goal("Keep the plan legible", { owner_entity_id: alice });
+    const indexedGoal = goal("Keep the plan legible", {
+      owner_entity_id: alice,
+      record_version: 7,
+    });
     const executiveFocus = {
       selected_goal: indexedGoal,
       selected_score: null,
@@ -447,6 +450,12 @@ describe("compact planner context", () => {
     expect(detailRow).toContain('tc="Complete Keep the plan legible"');
     expect(detailRow).toContain('sp="5.0000"');
     expect(detailRow).not.toContain("\n");
+    // The write counter is the only witness a goal row has: the table stores no
+    // last-written stamp, so ca/pa cannot report that a stored field was edited.
+    expect(detailRow).toContain('rv="7"');
+    // Detail-only on purpose. The index carries one row per goal against a tight
+    // section budget, so widening rv into it is a budget decision, not a rename.
+    expect(goalRow).not.toContain("rv=");
     expect(
       commitmentRow.length - "Keep the first line.&#10;Keep the second line.".length,
     ).toBeLessThanOrEqual(400);
@@ -1318,7 +1327,7 @@ describe("compact planner context", () => {
     );
     expect(authorityRows).toHaveLength(100);
     expect(Math.max(...authorityRows.map((row) => row.length))).toBeLessThanOrEqual(250);
-    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(8_950);
+    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_050);
     expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(11_900);
     expect(planner.traceSummary.sections.authority_and_directives?.estimatedTokens).toBeGreaterThan(
       4_000,
