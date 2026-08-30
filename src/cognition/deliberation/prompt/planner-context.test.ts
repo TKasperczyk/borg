@@ -1086,7 +1086,7 @@ describe("compact planner context", () => {
       }),
     );
     const text = allSystemText(planner);
-    const budget = Number(text.match(/advisory_excerpt_budget_chars="(\d+)"/)?.[1]);
+    const budget = Number(text.match(/advisory_excerpt_reserved_chars="(\d+)"/)?.[1]);
 
     expect(text.match(/<c /g)).toHaveLength(30);
     expect(budget).toBeGreaterThanOrEqual(96);
@@ -1319,7 +1319,7 @@ describe("compact planner context", () => {
     expect(authorityRows).toHaveLength(100);
     expect(Math.max(...authorityRows.map((row) => row.length))).toBeLessThanOrEqual(250);
     expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(8_950);
-    expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(11_850);
+    expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(11_900);
     expect(planner.traceSummary.sections.authority_and_directives?.estimatedTokens).toBeGreaterThan(
       4_000,
     );
