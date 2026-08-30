@@ -316,6 +316,27 @@ export type AutonomySchedulerDescription = {
     current_tick: number | null;
   };
   /**
+   * When the current interval handle was armed, or null when none is. Null under
+   * the same condition as `next_tick_at`/`scheduled_tick_at`, so the three are
+   * never half-present.
+   *
+   * `since_interval_armed` above names an epoch it does not identify: the count
+   * resets to zero on every arm, so a low value is a long-quiet loop and a
+   * freshly restarted one alike, and a value that repeats across two reads is
+   * "unmoved" and "reset then re-earned" alike. That ambiguity is not removable
+   * from the count at any number of reads -- it is the same identity-free-count
+   * shape as `in_flight`, and the same remedy applies. This stamp is the epoch:
+   * one that repeats across reads is one handle still armed, one that changes is
+   * a re-arm, which needs the loop stopped and started.
+   *
+   * The scheduler has held this value since the first version of `start()` (it
+   * is one of the two terms in the tick anchor); it simply never left the class.
+   * Re-arm was inferable only off `scheduled_tick_at` grid arithmetic, which
+   * needs two reads, an unbroken series, and a delta large enough for the
+   * off-grid residue to exceed timer drift.
+   */
+  interval_armed_at: number | null;
+  /**
    * `max(scheduled_tick_at, observed_at)` -- a tick already due at the read is
    * reported as the read clock rather than as a past instant, so a consumer
    * that renders it as "next evaluation" never shows a time that has been and

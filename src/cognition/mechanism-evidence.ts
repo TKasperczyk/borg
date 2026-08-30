@@ -95,6 +95,7 @@ export type AutonomySchedulerMechanismEvidence = {
   tickInFlight: boolean;
   intervalMs: number;
   droppedIntervalFires: AutonomySchedulerDescription["dropped_interval_fires"];
+  intervalArmedAt: number | null;
   nextTickAt: number | null;
   scheduledTickAt: number | null;
   budget: AutonomySchedulerBudgetDescription;
@@ -133,6 +134,7 @@ export const AUTONOMY_SCHEDULER_DESCRIPTION_FIELD_DISPOSITION: Record<
   tick_in_flight: "carried",
   interval_ms: "carried",
   dropped_interval_fires: "carried",
+  interval_armed_at: "carried",
   next_tick_at: "carried",
   scheduled_tick_at: "carried",
   budget: "carried",

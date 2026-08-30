@@ -818,6 +818,7 @@ export async function runRetrievalPhase(input: {
           tickInFlight: description.tick_in_flight,
           intervalMs: description.interval_ms,
           droppedIntervalFires: description.dropped_interval_fires,
+          intervalArmedAt: description.interval_armed_at,
           nextTickAt: description.next_tick_at,
           scheduledTickAt: description.scheduled_tick_at,
           budget: description.budget,

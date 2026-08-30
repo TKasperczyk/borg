@@ -2618,6 +2618,7 @@ describe("buildBaseSystemPrompt", () => {
               tickInFlight: false,
               intervalMs: 60_000,
               droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
+              intervalArmedAt: NOW_MS - 3_600_000,
               nextTickAt: NOW_MS + 60_000,
               scheduledTickAt: NOW_MS + 60_000,
               fleetBrake: {
@@ -2767,6 +2768,7 @@ describe("buildBaseSystemPrompt", () => {
               tickInFlight,
               intervalMs: 60_000,
               droppedIntervalFires,
+              intervalArmedAt: NOW_MS - 3_600_000,
               nextTickAt: NOW_MS + 60_000,
               scheduledTickAt: NOW_MS + 60_000,
               fleetBrake: {
@@ -2818,6 +2820,73 @@ describe("buildBaseSystemPrompt", () => {
     expect(line).toContain(
       "The scheduled stamp is the last tick entry plus the interval, which is 60000ms: while one handle stays armed it moves in whole multiples of that (plus timer drift), so a delta between two reads that is not a multiple means the handle was re-armed -- which needs the loop stopped and started again, since starting it while a handle exists does nothing.",
     );
+    // The arming stamp is the direct form of the same question the grid clause
+    // above answers by arithmetic. The grid needs two reads, an unbroken series,
+    // and an off-grid residue larger than timer drift; the refusal count that
+    // precedes it cannot answer it at all, because a reset to zero and a counter
+    // that did not move are the same reading. The stamp is the epoch itself.
+    expect(line).toContain(
+      "The loop was last armed 2023-11-14T21:13:20.000Z: that stamp is the epoch this count resets against, so one repeating across two reads is a single armed handle and one that changes is a re-arm -- a comparison the count alone cannot support, since a reset is indistinguishable from not having moved.",
+    );
+  });
+
+  // Null under the same condition as the tick stamps: with no handle there is no
+  // epoch to name, and an armed stamp beside "no next tick scheduled" would be a
+  // fossil of the previous arming read as current state.
+  it("omits the arming stamp when no interval handle is armed", () => {
+    const block = extractBlock(
+      buildBaseSystemPrompt(
+        makeContext({
+          turnOrigin: "user",
+          turnMechanismEvidence: {
+            recentSuppressions: [],
+            recentRegenerations: [],
+            autonomySchedulerState: {
+              observedAt: NOW_MS,
+              enabled: true,
+              tickInFlight: false,
+              intervalMs: 60_000,
+              droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
+              intervalArmedAt: null,
+              nextTickAt: null,
+              scheduledTickAt: null,
+              fleetBrake: {
+                enabled: true,
+                empty_streak: 0,
+                empty_streak_threshold: 5,
+                streak_anchor_ts: null,
+                cooldown_until: null,
+                error_streak: 0,
+                error_streak_threshold: 3,
+                error_paused_until: null,
+                bypass_count: 0,
+                freshness_bypass_cap: 3,
+                window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+                window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+                window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+              },
+              budget: {
+                max_wakes_per_window: 15,
+                window_ms: 24 * 60 * 60_000,
+                window_started_at: NOW_MS - 24 * 60 * 60_000,
+                used_in_current_window: 0,
+                reserved_contemplative_wakes_per_window: 1,
+                contemplative_used_in_current_window: 0,
+                wakes_in_current_window_by_trigger: [],
+                next_budget_slot_frees_at: null,
+              },
+            },
+          },
+        }),
+        { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+      ),
+      "borg_mechanism_evidence",
+    );
+    const line = block.split("\n").find((entry) => entry.startsWith("Scheduler loop:")) ?? "";
+
+    expect(line).toContain("no next tick scheduled");
+    expect(line).toContain("Interval fires refused because a tick was already running:");
+    expect(line).not.toContain("The loop was last armed");
   });
 
   // in_flight is the one wake state with no terminal write of its own: the
@@ -2843,6 +2912,7 @@ describe("buildBaseSystemPrompt", () => {
               tickInFlight: false,
               intervalMs: 60_000,
               droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
+              intervalArmedAt: NOW_MS - 3_600_000,
               nextTickAt: NOW_MS + 60_000,
               scheduledTickAt: NOW_MS + 60_000,
               fleetBrake: {
@@ -2968,6 +3038,7 @@ describe("buildBaseSystemPrompt", () => {
               tickInFlight: false,
               intervalMs: 60_000,
               droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
+              intervalArmedAt: NOW_MS - 3_600_000,
               nextTickAt,
               scheduledTickAt,
               fleetBrake: {
@@ -3076,6 +3147,7 @@ describe("buildBaseSystemPrompt", () => {
             tickInFlight: false,
             intervalMs: 60_000,
             droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
+            intervalArmedAt: NOW_MS - 3_600_000,
             nextTickAt: NOW_MS + 60_000,
             scheduledTickAt: NOW_MS + 60_000,
             fleetBrake: {
@@ -3134,6 +3206,7 @@ describe("buildBaseSystemPrompt", () => {
             tickInFlight: false,
             intervalMs: 60_000,
             droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
+            intervalArmedAt: NOW_MS - 3_600_000,
             nextTickAt: NOW_MS + 60_000,
             scheduledTickAt: NOW_MS + 60_000,
             fleetBrake: {
@@ -3201,6 +3274,7 @@ describe("buildBaseSystemPrompt", () => {
                 tickInFlight: false,
                 intervalMs: 60_000,
                 droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
+                intervalArmedAt: NOW_MS - 3_600_000,
                 nextTickAt: NOW_MS + 60_000,
                 scheduledTickAt: NOW_MS + 60_000,
                 fleetBrake: {
@@ -3317,6 +3391,7 @@ describe("buildBaseSystemPrompt", () => {
                 tickInFlight: false,
                 intervalMs: 60_000,
                 droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
+                intervalArmedAt: NOW_MS - 3_600_000,
                 nextTickAt: NOW_MS + 60_000,
                 scheduledTickAt: NOW_MS + 60_000,
                 fleetBrake: {

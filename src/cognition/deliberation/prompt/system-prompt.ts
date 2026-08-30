@@ -1947,14 +1947,27 @@ export function summarizeAutonomySchedulerState(
   //     both leave no trace, and the surface reported the second reading for both. The count is
   //     also the one liveness quantity that survives the blind spot below, since it is a fact
   //     about the tick rather than about which turn is reading it.
+  //     The count names an epoch it does not identify. It resets to zero on every arm, so a low
+  //     value is a long-quiet loop and a freshly restarted one alike, and a value that repeats
+  //     across two reads is "the counter did not move" and "the counter was reset and re-earned to
+  //     the same number" alike -- the same identity-free-count shape as `in_flight`, and unreadable
+  //     from the count at any number of reads. Re-arm was inferable only off `scheduled_tick_at`
+  //     grid arithmetic, which needs two reads, an unbroken series, and an off-grid residue larger
+  //     than timer drift. The arming stamp is the epoch itself and needs none of that; the
+  //     scheduler has held it since the first `start()` and it stopped at the evidence boundary.
   const droppedFires = schedulerState.droppedIntervalFires;
+  const armedAt = schedulerState.intervalArmedAt;
+  const armedClause =
+    armedAt === null
+      ? ""
+      : ` The loop was last armed ${new Date(armedAt).toISOString()}: that stamp is the epoch this count resets against, so one repeating across two reads is a single armed handle and one that changes is a re-arm -- a comparison the count alone cannot support, since a reset is indistinguishable from not having moved.`;
   const droppedClause = ` Interval fires refused because a tick was already running: ${
     droppedFires.since_interval_armed
   } since the loop was last armed${
     droppedFires.current_tick === null
       ? ""
       : `, ${droppedFires.current_tick} of them by the tick that was in flight at that read`
-  }. A refused fire writes nothing anywhere, so the periods it covers are missing from the counts above rather than counted as quiet.`;
+  }. A refused fire writes nothing anywhere, so the periods it covers are missing from the counts above rather than counted as quiet.${armedClause}`;
   // The liveness clause and the tick clause answer different questions and are stated separately:
   // how far behind the loop is, and which of the two causes is producing that. The blind spot is
   // printed with the flag rather than left for the reader to discover, because a field that is

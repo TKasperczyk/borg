@@ -176,6 +176,7 @@ describe("planner context capture", () => {
             tickInFlight: false,
             intervalMs: 60_000,
             droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
+            intervalArmedAt: NOW_MS - 3_600_000,
             nextTickAt: NOW_MS + 60_000,
             scheduledTickAt: NOW_MS + 60_000,
             fleetBrake: {

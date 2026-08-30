@@ -777,6 +777,10 @@ export class AutonomyScheduler {
         // that names a tick which has already finished reads as a live cost.
         current_tick: this.activeTick === null ? null : this.droppedIntervalFiresForActiveTick,
       },
+      // The epoch the counter above resets against. Held since the first
+      // start(); exported so a reader can tell an unmoved counter from one that
+      // was reset and re-earned, which the count cannot express.
+      interval_armed_at: this.intervalStartedTs,
       // Floored to the read so a "next evaluation" surface never shows a past
       // instant. The floor is where the overdue amount used to be lost; it is
       // preserved unfloored on the next line rather than recomputed downstream.
