@@ -3478,6 +3478,14 @@ describe("EvidenceLedgerBuilder", () => {
       "originating_intent: consider writing the harness presentation",
     );
     expect(actionEntries[0]?.text).toContain("transitions: 3, current: completed");
+    // The originating description is the oldest write in the thread; without its own stamp a reader
+    // cannot tell whether it disagrees with `current_intent` because the world changed or because
+    // one of them is wrong.
+    expect(actionEntries[0]?.text).toContain(
+      `at ${new Date(NOW_MS + 20).toISOString()}; originating_intent recorded ${new Date(
+        NOW_MS,
+      ).toISOString()}`,
+    );
     expect(actionEntries[0]?.text).toContain(
       "current_intent: finished writing the harness presentation",
     );

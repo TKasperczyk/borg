@@ -339,21 +339,33 @@ function renderActionStateDisposition(state: ActionState): string {
   return metadata.terminal ? "closed by outcome" : "closed without an outcome";
 }
 
+// A thread merges records written across a span -- `selectThreadOrigin` takes the earliest
+// `created_at`, `selectThreadCurrent` the latest `updated_at` -- so the two intents below are
+// separate writes and can be days or weeks apart. Only `current` carried a stamp, which left the
+// originating text undated on the page: a description that accurately reported the world at its own
+// write time, set beside a later one that accurately reports the world now, reads as one row
+// disagreeing with itself. Nothing on the page distinguished that from a bad write. The origin stamp
+// is rendered only when the origin is not also the current record, matching the `current_intent`
+// line: on a single-record thread there is no second write for the reader to date it against.
 export function renderActionThreadText(
   thread: ActionThread,
   entityRepository: Pick<EntityRepository, "get"> | undefined,
 ): string {
   const currentAt = new Date(actionTimestampForState(thread.current)).toISOString();
   const actor = actionActorDisplay(thread.current.actor, entityRepository);
+  const originIsCurrent = thread.current.id === thread.origin.id;
+  const originAt = originIsCurrent
+    ? ""
+    : `; originating_intent recorded ${new Date(thread.origin.created_at).toISOString()}`;
   const lines = [
     `actor: ${actor}`,
     `originating_intent: ${thread.origin.description}`,
     `transitions: ${thread.records.length}, current: ${thread.current.state} (${renderActionStateDisposition(
       thread.current.state,
-    )}) at ${currentAt}`,
+    )}) at ${currentAt}${originAt}`,
   ];
 
-  if (thread.current.id !== thread.origin.id) {
+  if (!originIsCurrent) {
     lines.push(`current_intent: ${thread.current.description}`);
   }
 
