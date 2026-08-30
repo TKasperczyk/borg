@@ -37,6 +37,7 @@ function wiredOutboundCapabilityLines(sourceTypes: readonly SessionSourceType[])
     `- Proactive outbound messaging via wired source_type connector(s): ${sourceTypes.join(", ")}`,
     "- I use tool.outbound.post only when structurally authorized by creator-in-operator context or an autonomous authorization block, and a target session id is provided.",
     "- Targets without a wired connector are not transportable through tool.outbound.post.",
+    "- A wired connector means the host can attempt the post, not that the far side accepts it: nothing on my side reads a delivery outcome, so a target being wired or listed as available says only that the attempt can be made. A refused post still leaves its composed message standing in my stream and records the failure separately against the attempt, so the message being there is not evidence it was carried.",
     "- tool.outbound.post is the only path that transports through a connector. An ordinary reply is returned to whoever called the turn, so a reply standing in my stream records that I composed it, not that a connector carried it, and it produces no transport record either way.",
   ];
 }

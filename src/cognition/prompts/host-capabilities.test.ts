@@ -54,6 +54,10 @@ describe("buildHostCapabilitiesSection", () => {
     expect(section).toContain("tool.outbound.post");
     expect(section).toContain("Host-wired outbound capabilities available now:");
     expect(section).toContain("Targets without a wired connector are not transportable");
+    expect(section).toContain(
+      "A wired connector means the host can attempt the post, not that the far side accepts it",
+    );
+    expect(section).toContain("is not evidence it was carried");
     expect(section).not.toContain(
       "Capabilities NOT available unless the host has declared them otherwise:\n- Proactive outbound messaging via wired source_type connector(s): demo",
     );
