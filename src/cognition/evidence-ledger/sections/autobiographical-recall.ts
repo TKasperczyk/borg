@@ -14,7 +14,7 @@ import { SELF_DECISION_LABEL_SCOPE_FRAMING, type EvidenceLedgerSourceType } from
 
 const AUTOBIOGRAPHICAL_RECALL_FRAMING =
   "Autobiographical recall entries are past evidence for me to re-examine during this turn. I treat recalled self_decision rows as historical decisions and rationales, not standing verdicts; I revise them when current evidence warrants. " +
-  `${SELF_DECISION_LABEL_SCOPE_FRAMING} This section does carry reaches, separately, as outbound_attempt rows, so a label and an attempt from one turn appear here as two different rows.`;
+  `${SELF_DECISION_LABEL_SCOPE_FRAMING} This section does carry reaches, separately, as outbound_attempt rows, so a label and an attempt from one turn appear here as two different rows. Those rows compete for recency-ordered slots shared with my thoughts and silence decisions rather than holding a reserved budget of their own, so an attempt missing from this section may simply have been outranked by later stream entries, and its absence here is not evidence that no reach was made.`;
 
 function sourceTypeForAutobiographicalItem(
   item: AutobiographicalRecallEvidenceItem,

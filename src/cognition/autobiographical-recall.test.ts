@@ -393,6 +393,9 @@ describe("AutobiographicalRecallService", () => {
         self_decision: 1,
       },
     });
+    expect(section?.framing?.text).toContain(
+      "compete for recency-ordered slots shared with my thoughts and silence decisions",
+    );
     expect(section?.entries).toHaveLength(2);
     expect(section?.entries).toEqual(
       expect.arrayContaining([
@@ -757,6 +760,73 @@ describe("AutobiographicalRecallService", () => {
     const legacyItem = outbound?.find((item) => item.metadata.call_id === legacy.callId);
     expect(legacyItem?.metadata).not.toHaveProperty("delivery_outcome_state");
     expect(legacyItem?.metadata).not.toHaveProperty("delivery_status");
+  });
+
+  // The source cap is pooled across every stream kind and sliced by recency, so an outbound attempt
+  // holds no reserved slot: later thoughts displace it long before the window closes. The section
+  // framing says so, because absence here otherwise reads as "no reach was made".
+  it("drops an outbound attempt when later thoughts fill the shared stream source cap", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-autobiographical-shared-cap-"));
+    tempDirs.push(tempDir);
+    const sessionId = createSessionId();
+    const clock = new ManualClock(2_000);
+    const writer = new StreamWriter({ dataDir: tempDir, sessionId, clock });
+    const callId = createStreamEntryId();
+
+    await writer.append({
+      kind: "tool_call",
+      content: {
+        call_id: callId,
+        tool_name: OUTBOUND_POST_TOOL_NAME,
+        input: { channel: "release-room" },
+        origin: "autonomy",
+        turn_origin: "autonomous",
+      },
+    });
+    clock.set(clock.now() + 100);
+    await writer.append({
+      kind: "tool_result",
+      content: {
+        call_id: callId,
+        ok: true,
+        output: {
+          outbound: {
+            status: "completed",
+            emitted: true,
+            delivery_outcome: { state: "delivered" },
+          },
+        },
+        duration_ms: 100,
+      },
+    });
+
+    for (const text of ["a later thought", "a later thought still"]) {
+      clock.set(clock.now() + 100);
+      await writer.append({ kind: "thought", content: { text } });
+    }
+    writer.close();
+
+    const service = new AutobiographicalRecallService({
+      clock: new FixedClock(NOW_MS),
+      sessionsRepository: {
+        list: () => [sessionRecord(sessionId, clock.now())],
+      },
+      createStreamReader: (readerSessionId) =>
+        new StreamReader({ dataDir: tempDir, sessionId: readerSessionId }),
+      sourceCap: 2,
+      totalCap: 10,
+    });
+
+    const result = await service.recall({
+      sessionId,
+      temporalCue: { sinceTs: 1_000, untilTs: 4_000, label: "shared cap window" },
+      isSelfAudience: false,
+      sessionAudienceRole: "operator",
+      perceptionMode: "reflective",
+    });
+
+    expect(result?.evidence.filter((item) => item.kind === "stream_reflection")).toHaveLength(2);
+    expect(result?.evidence.filter((item) => item.kind === "outbound_attempt")).toHaveLength(0);
   });
 
   it("marks stream candidate counts as lower bounds when the session fetch saturates", async () => {
