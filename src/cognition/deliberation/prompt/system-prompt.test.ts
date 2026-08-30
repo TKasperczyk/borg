@@ -2691,8 +2691,11 @@ describe("buildBaseSystemPrompt", () => {
       expect(block).toContain(
         "trigger_name=goal_followup_due wake_count=1 in_flight=0 outcome_counts(headway=0 silent=0 error=1 busy=0)",
       );
+      // A stamp leaving the list is the ambiguous case rather than a close: the
+      // window's lower edge drops unresolved rows and resolved ones alike, so
+      // the disappearance is named as undetermined instead of read as an outcome.
       expect(block).toContain(
-        "The stamps are the only cross-read identity this block carries -- one repeating across two reads is a single row not moving, one that changes is a different wake -- and the counts alone cannot support that comparison at any number of reads.",
+        "The stamps are the only cross-read identity this block carries -- one repeating across two reads is a single row not moving, one that changes is a different wake, one that disappears is either -- and the counts alone cannot support that comparison at any number of reads.",
       );
       expect(block).toContain("Next budget slot frees: 2023-11-14T22:43:20.000Z (in 30m).");
       expect(block).toContain(
@@ -2819,11 +2822,13 @@ describe("buildBaseSystemPrompt", () => {
 
   // in_flight is the one wake state with no terminal write of its own: the
   // bookkeeping catch around recordOutcome returns without recording anything,
-  // so an orphaned row stays NULL forever and wake_count still equals in_flight
-  // plus the outcome_counts. The count alone is therefore identity-free -- a
-  // permanent orphan and a healthy transient render as the same integer with the
-  // arithmetic closing either way -- and the fire stamps are what makes the two
-  // separable across reads.
+  // so an orphaned row keeps a NULL outcome for its whole life and wake_count
+  // still equals in_flight plus the outcome_counts. The count alone is therefore
+  // identity-free -- an orphan and a healthy transient render as the same integer
+  // with the arithmetic closing either way -- and the fire stamps are what makes
+  // the two separable across reads. Note the row's life is bounded even though
+  // its outcome is not: the count is window-scoped, and the record itself is
+  // pruned a further WAKE_PRUNE_SAFETY_BUFFER_MS past the window.
   it("names the in-flight rows by fire stamp, oldest first, and names what the cap dropped", () => {
     const block = extractBlock(
       buildBaseSystemPrompt(
@@ -2895,8 +2900,21 @@ describe("buildBaseSystemPrompt", () => {
       "trigger_name=goal_followup_due wake_count=5 in_flight=5(fired 2023-11-14T18:13:20.000Z, 2023-11-14T19:13:20.000Z, 2023-11-14T20:13:20.000Z, 2 newer not listed) outcome_counts(headway=0 silent=0 error=0 busy=0)",
     );
     expect(block).toContain(
-      "Nothing times that state out: if the outcome write is skipped the row stays in_flight permanently, and wake_count still equals in_flight plus the outcome_counts, so the arithmetic closing here is not evidence the row is live.",
+      "Nothing resolves that state: no timeout writes a late outcome, so a row whose outcome write was skipped stays unrecorded for as long as it exists.",
     );
+    // The count is taken over the rolling budget window, so an unresolved row
+    // leaves in_flight by ageing out rather than by closing, and the block stops
+    // reporting it at that point. Without this, the block's own rule made a
+    // return to 0 read as "the stuck row resolved" -- the one thing that cannot
+    // have happened to it. Three rows in the live store have carried a NULL
+    // outcome past the window on exactly that reading.
+    expect(block).toContain(
+      "an unresolved row leaves it by ageing past that window's lower edge, and no field on this block reports the row once it is out. in_flight falling back to 0 is therefore consistent with a row from an earlier read still being unresolved, and is not evidence that it closed.",
+    );
+    // Pinned as a negative: the retracted wording said the row stays in_flight
+    // permanently, which is false against a window-scoped count and is what made
+    // the zero read as a resolution.
+    expect(block).not.toContain("stays in_flight permanently");
   });
 
   // observedAt is NOW_MS - 29_000, so the render clock is 29s past the scheduler read. Each case
