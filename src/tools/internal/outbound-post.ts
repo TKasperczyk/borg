@@ -274,6 +274,40 @@ function actionStateForOutcome(outcome: OutboundPostDeliveryOutcome): ActionStat
   return outcome.state === "delivered" ? "completed" : "not_done";
 }
 
+// Whether the target-scoped turn was ever entered. Two outcomes refuse before dispatch: a held
+// session lock, and the pre-flight no-connector return below, which never calls postOutbound. The
+// tool's `not_transportable` widens the turn runner's variant with that second reason, so there the
+// reason literal rather than the state separates "composed and stranded" from "never dispatched".
+function outboundAttemptStartedTargetTurn(outcome: OutboundPostDeliveryOutcome): boolean {
+  switch (outcome.state) {
+    case "delivered":
+    case "suppressed":
+    case "not_emitted":
+    case "transport_failed":
+      return true;
+    case "not_transportable":
+      return outcome.reason === "composed_not_transported";
+    case "target_busy":
+      return false;
+  }
+}
+
+// An ActionRecord carries exactly one free-text field, and on the two outcomes above where the
+// target turn never started it is the entire record of the reach: no agent message, no suppression
+// marker, no delivery event exists to read it against. `Outbound post to X: <reason>.` names a post
+// in every case, so on those two it asserted a composition that was never written -- and the missing
+// downstream artifacts then read as erasure rather than as the expected shape of a refused dispatch.
+function outboundActionDescription(
+  targetLabel: string,
+  outcome: OutboundPostDeliveryOutcome,
+): string {
+  const reason = structuralOutcomeReason(outcome);
+
+  return outboundAttemptStartedTargetTurn(outcome)
+    ? `Outbound post to ${targetLabel}: ${reason}.`
+    : `Outbound post to ${targetLabel} not started: ${reason} -- the target turn never ran, so nothing was composed and no entry was written to that session.`;
+}
+
 function outcomeStreamEntryIds(outcome: OutboundPostDeliveryOutcome): StreamEntryId[] {
   switch (outcome.state) {
     case "delivered":
@@ -338,9 +372,7 @@ function persistOutboundActionRecord(input: {
 
   const nowMs = input.clock.now();
   const state = actionStateForOutcome(input.outcome);
-  const description = `Outbound post to ${targetLabel(input.targetSession)}: ${structuralOutcomeReason(
-    input.outcome,
-  )}.`;
+  const description = outboundActionDescription(targetLabel(input.targetSession), input.outcome);
   const record: ActionRecord = {
     id: createActionId(),
     description,
