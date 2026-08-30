@@ -636,6 +636,11 @@ export async function runPostGenerationPhase(input: {
   });
   const activityRepository = input.options.activityRepository;
 
+  // This is the only read of a delivery outcome anywhere downstream of `deliver`, and it reads it
+  // to withhold: a directed-outbound post that failed or found no connector records no activity
+  // event, while every other origin (`outboundDelivery === undefined`) always records one. Success
+  // itself appends no stream event, so the activity row -- not the stream -- is where the
+  // difference between a carried post and a refused one survives, and it survives as an absence.
   const shouldRecordActivity =
     persistedEmission.outboundDelivery === undefined ||
     persistedEmission.outboundDelivery.status === "transported";

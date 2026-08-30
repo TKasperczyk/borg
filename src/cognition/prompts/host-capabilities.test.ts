@@ -58,6 +58,15 @@ describe("buildHostCapabilitiesSection", () => {
       "A wired connector means the host can attempt the post, not that the far side accepts it",
     );
     expect(section).toContain("is not evidence it was carried");
+    expect(section).toContain(
+      "A post the connector accepted appends no event of its own",
+    );
+    expect(section).toContain(
+      "their absence is not evidence that nothing was delivered",
+    );
+    expect(section).toContain(
+      "the cross-session activity record for a post is written only when the connector accepted it",
+    );
     expect(section).not.toContain(
       "Capabilities NOT available unless the host has declared them otherwise:\n- Proactive outbound messaging via wired source_type connector(s): demo",
     );
