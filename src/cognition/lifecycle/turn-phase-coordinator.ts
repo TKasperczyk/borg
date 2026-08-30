@@ -129,8 +129,12 @@ function priorSelfThought(
 // recency alone: `TrainOfThoughtRepository.get()` returns the single latest journal entry
 // from whichever wake wrote last, with no filter on the subject this wake fired for. Hoisted
 // bare it reads as present thought of unknown age -- so name the age, the depth, the
-// selection, and the disclosure class the producer attached, and say that this one row is
-// the whole of the journal read: on live turns the journal is written and never read back.
+// selection, and the disclosure class the producer attached. Scope the depth claim to the
+// automatic read: this one row is the whole of what the harness fetches, but
+// `tool.ownRecords.list` is registered for both the autonomous and deliberator origins, so a
+// wider journal read is available in the same turn. Saying "the only journal read in this
+// turn" unscoped reads as a capability bound and points away from the one tool that answers
+// "have I already done this".
 function priorSelfThoughtProvenance(thought: PriorSelfThought): string {
   const written =
     thought.updatedAt === null ? "unknown time" : new Date(thought.updatedAt).toISOString();
@@ -140,8 +144,10 @@ function priorSelfThoughtProvenance(thought: PriorSelfThought): string {
     thought.disclosure === null ? "" : `, disclosure: ${thought.disclosure}`,
     "). This is my latest journal entry by recency alone -- the last one written from any wake, ",
     "not one selected for this wake's subject -- and it is one row deep and the only journal read ",
-    "in this turn; on non-autonomous turns the journal is written and never read back. Anything ",
-    "else I have already done or already sent is not in it and is not implied absent by it.",
+    "the harness performs for me, here or on any other turn. Anything else I have already done or ",
+    "already sent is not in it and is not implied absent by it. A wider read exists and is mine to ",
+    "make rather than the wake's: tool.ownRecords.list browses my thoughts and journal over a time ",
+    "range I choose, on this turn and on every live turn.",
   ].join("");
 }
 

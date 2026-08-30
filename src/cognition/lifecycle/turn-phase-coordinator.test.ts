@@ -101,6 +101,33 @@ describe("cognitionInputForTurnInput", () => {
     expect(input).not.toContain("prior_self_thought");
   });
 
+  it("scopes the one-row depth to the automatic read and names the on-demand journal read", () => {
+    const input = cognitionInputForTurnInput({
+      userMessage: "",
+      autonomyTrigger: {
+        source_name: "executive_focus_due",
+        source_type: "trigger",
+        event_id: "goal:g1:1000",
+        sort_ts: 1_000,
+        payload: {
+          prior_self_thought: {
+            text: "Continue from the private question about continuity.",
+            updated_at: 1_700_000_000_000,
+          },
+        },
+      },
+    });
+
+    // The depth claim is about what the harness fetches, not about what can be read:
+    // tool.ownRecords.list is registered for the autonomous origin, so an unscoped
+    // "the only journal read in this turn" would read as a capability bound and point
+    // away from the one tool that answers "have I already done this".
+    expect(input).toContain("the only journal read the harness performs for me");
+    expect(input).toContain("tool.ownRecords.list");
+    expect(input).not.toContain("the only journal read in this turn");
+    expect(input).not.toContain("written and never read back");
+  });
+
   it("names the anchor's age as unknown when the producer omitted the stamp", () => {
     const input = cognitionInputForTurnInput({
       userMessage: "",
