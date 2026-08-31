@@ -211,6 +211,7 @@ describe("runPostGenerationPhase", () => {
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
       sessionSourceType: null,
+    sessionAudienceRole: "participant" as const,
       turnId,
       turnInput: {
         userMessage: "",
@@ -571,6 +572,7 @@ describe("runPostGenerationPhase", () => {
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
       sessionSourceType: null,
+    sessionAudienceRole: "participant" as const,
       turnId,
       turnInput: {
         userMessage: String(currentUserEntry.content),
@@ -826,6 +828,7 @@ describe("runPostGenerationPhase", () => {
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
       sessionSourceType: null,
+    sessionAudienceRole: "participant" as const,
       turnId,
       turnInput: {
         userMessage: "Directed outbound instruction",
@@ -958,6 +961,7 @@ describe("runPostGenerationPhase", () => {
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
       sessionSourceType: null,
+    sessionAudienceRole: "participant" as const,
       turnId,
       turnInput: { userMessage: "Caught-up batch" },
       streamWriter: { append: vi.fn(async () => agentEntry) } as never,
@@ -1137,6 +1141,7 @@ describe("runPostGenerationPhase", () => {
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
       sessionSourceType: null,
+    sessionAudienceRole: "participant" as const,
       turnId: "turn_post_generation_archive",
       turnInput: {
         userMessage: "Observation turn",
@@ -1317,6 +1322,7 @@ describe("runPostGenerationPhase", () => {
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
       sessionSourceType: null,
+    sessionAudienceRole: "participant" as const,
       turnId: "turn_post_generation_suppressed_archive",
       turnInput: {
         userMessage: "No output needed",
@@ -1504,6 +1510,7 @@ describe("runPostGenerationPhase outbound activity gate", () => {
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
       sessionSourceType: null,
+    sessionAudienceRole: "participant" as const,
       turnId,
       turnInput: { userMessage: "Directed outbound instruction", origin: "directed_outbound" },
       streamWriter: { append: vi.fn(async () => agentEntry) } as never,

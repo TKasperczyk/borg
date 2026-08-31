@@ -12,7 +12,7 @@ import type {
   RecentSuppressionEntry,
 } from "../../memory/working/index.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
-import type { SessionSourceType } from "../../sessions/index.js";
+import type { SessionAudienceRole, SessionSourceType } from "../../sessions/index.js";
 import {
   activeSessionTranscriptEntries,
   type StreamEntry,
@@ -61,6 +61,7 @@ export type RunTurnPostGenerationGuardInput = {
   response: string;
   sessionId: SessionId;
   sessionSourceType?: SessionSourceType | null;
+  sessionAudienceRole?: SessionAudienceRole | null;
   persistedUserEntry?: StreamEntry;
   persistedUserEntries?: readonly StreamEntry[];
   retrievedEpisodes: readonly RetrievedEpisode[];
@@ -320,6 +321,28 @@ export class TurnPostGenerationGuardRunner {
     });
 
     if (closureResult.emission.kind === "suppressed") {
+      return closureResult.emission;
+    }
+
+    // An operator-audience session is the channel where internal identifiers ARE the
+    // working vocabulary: the operator names rows to the entity and expects them named
+    // back. The guard's exemption otherwise covers only identifiers the audience wrote
+    // in the CURRENT turn, so an identifier the operator taught it a turn earlier came
+    // back as a leak and cost the entity a whole reply. Audience role, not source type:
+    // one demo source type serves both operator and participant sessions.
+    if (input.sessionAudienceRole === "operator") {
+      if (this.options.tracer.enabled) {
+        this.options.tracer.emit("internal_identifier_guard.completed", {
+          turnId: input.turnId,
+          session_id: input.sessionId,
+          ...(input.sessionSourceType === undefined || input.sessionSourceType === null
+            ? {}
+            : { session_source_type: input.sessionSourceType }),
+          verdict: "skipped",
+          reason: "operator_audience_session",
+        });
+      }
+
       return closureResult.emission;
     }
 
