@@ -23,6 +23,7 @@ import type {
 } from "../attachments/index.js";
 import type { BorgDependencies } from "../borg/types.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
+import { LIVE_TURN_READ_FINALIZER_TOOL_NAMES } from "./deliberation/autonomous-finalizer-tools.js";
 import { Deliberator, type SelfSnapshot } from "./deliberation/deliberator.js";
 import { ActionStateExtractor } from "./actions/action-state-extractor.js";
 import { CREATOR_DIRECTIVE_TOOL_NAME } from "./creator-directives/extractor.js";
@@ -3337,7 +3338,7 @@ describe("TurnOrchestrator evidence ledger", () => {
         "EmitObserve",
         "EmitNoOutput",
         "EmitSelfReport",
-        "tool.ownRecords.list",
+        ...LIVE_TURN_READ_FINALIZER_TOOL_NAMES,
       ]);
       expect(finalizerRequest?.tools?.map((tool) => tool.name)).not.toContain(
         "tool.journal.append",
