@@ -1075,6 +1075,68 @@ describe("compact planner context", () => {
     expect(text).toContain("an autonomous turn appends no progress entry at all");
   });
 
+  it("reports the next-step draw as uncounted and keeps the index omission zero true by construction", () => {
+    const goals = Array.from({ length: 7 }, (_, index) => goal(`Goal ${index}`));
+    const target = goals[0]!;
+    const planner = build(
+      context({
+        selfSnapshot: { values: [], goals, traits: [] },
+        executiveFocus: {
+          selected_goal: target,
+          selected_score: null,
+          next_step: {
+            id: "exstep_aaaaaaaaaaaaaaaa" as never,
+            goal_id: target.id,
+            description: "Top open step of the selected goal",
+            status: "doing",
+            kind: "think",
+            due_at: null,
+            last_attempt_ts: null,
+            created_at: NOW_MS,
+            updated_at: NOW_MS,
+            provenance: { kind: "manual" },
+          },
+          candidates: [
+            {
+              goal_id: target.id,
+              goal: target,
+              score: 1,
+              components: {
+                priority: 1,
+                deadline_pressure: 1,
+                context_fit: 1,
+                progress_debt: 1,
+              },
+              reason: "focus",
+            },
+          ],
+          threshold: 0,
+          score_basis: {
+            score_context: "turn_selection" as const,
+            deadline_lookahead_ms: 1,
+            progress_debt_stale_ms: 1,
+          },
+        },
+      }),
+    );
+    const text = allSystemText(planner);
+
+    // The step lane is one row drawn from the selected goal alone, so no number here
+    // can stand for what it left behind: it must not print a count at all.
+    expect(text).toContain(
+      '<executive_next_step_omitted_count scope="selected_goal_top_open">uncounted</executive_next_step_omitted_count>',
+    );
+    expect(text).not.toMatch(/<executive_next_step_omitted_count[^>]*>\d/);
+    expect(text).toContain("no other goal's steps are queried at all");
+    expect(text).toContain("reports uncounted rather than a zero that would read as a total");
+
+    // The neighbouring zero is a different quantity and is honest: the one-line index
+    // renders one row per snapshot goal and has no cap to drop one against.
+    expect(text.match(/<goal /g)).toHaveLength(goals.length);
+    expect(text).toContain("<omitted_count>0</omitted_count>");
+    expect(text).toContain("that index renders one row per goal in the snapshot and cannot drop one");
+  });
+
   it("reports source-ledger rows excluded by the compact ledger and carries omission guidance", () => {
     const currentEntries = [
       livedEntry({
@@ -1422,7 +1484,7 @@ describe("compact planner context", () => {
     expect(Math.max(...authorityRows.map((row) => row.length))).toBeLessThanOrEqual(250);
     // The complete index still omits nothing at this high-water mark, so the legend's fixed cost
     // is paid by the overall envelope rather than by dropped goal rows.
-    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_100);
+    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_260);
     expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(11_900);
     expect(planner.traceSummary.sections.authority_and_directives?.estimatedTokens).toBeGreaterThan(
       4_000,
