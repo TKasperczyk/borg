@@ -1640,6 +1640,7 @@ export class TurnPhaseCoordinator {
       llmClient,
       sessionId,
       sessionSourceType: sessionRecord?.source_type ?? null,
+      sessionAudienceRole,
       turnId,
       turnInput,
       streamWriter,

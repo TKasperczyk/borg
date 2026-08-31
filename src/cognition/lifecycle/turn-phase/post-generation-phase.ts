@@ -28,7 +28,7 @@ import type { ActivityEventStatus } from "../../../memory/activity/index.js";
 import { CognitionError } from "../../../util/errors.js";
 import type { SharedStateEntry } from "../../../memory/shared-state/index.js";
 import type { OutboundDeliveryReceipt, OutboundDeliveryResult } from "../../../outbound/types.js";
-import type { SessionSourceType } from "../../../sessions/index.js";
+import type { SessionAudienceRole, SessionSourceType } from "../../../sessions/index.js";
 import {
   ACTION_ARCHIVE_ACTIVE_STATES,
   ACTION_ARCHIVE_SCAN_LIMIT,
@@ -497,6 +497,7 @@ export async function runPostGenerationPhase(input: {
   llmClient: LLMClient;
   sessionId: SessionId;
   sessionSourceType: SessionSourceType | null;
+  sessionAudienceRole: SessionAudienceRole;
   turnId: string;
   turnInput: TurnPhaseInput;
   streamWriter: StreamWriter;
@@ -550,6 +551,7 @@ export async function runPostGenerationPhase(input: {
     turnId: input.turnId,
     sessionId: input.sessionId,
     sessionSourceType: input.sessionSourceType,
+    sessionAudienceRole: input.sessionAudienceRole,
     deliberation: input.deliberation,
     workingMemory,
     userMessage: input.turnInput.userMessage,

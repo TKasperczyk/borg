@@ -137,6 +137,7 @@ async function runCoordinator(input: {
     turnId: input.turnId ?? "turn-commitment-regeneration",
     sessionId: DEFAULT_SESSION_ID,
     sessionSourceType: null,
+      sessionAudienceRole: "participant" as const,
     deliberation: input.deliberation,
     workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 20_000),
     userMessage: "Prepare the vendor-channel deployment status.",

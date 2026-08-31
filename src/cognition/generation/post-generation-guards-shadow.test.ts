@@ -113,6 +113,7 @@ async function runInternalIdentifierGuardFixture(input: {
   knownInternalIdentifiers: readonly string[];
   audienceContent?: string;
   sessionSourceType?: Parameters<TurnPostGenerationGuardRunner["run"]>[0]["sessionSourceType"];
+  sessionAudienceRole?: Parameters<TurnPostGenerationGuardRunner["run"]>[0]["sessionAudienceRole"];
   substratePrivilegedSourceTypes?: readonly string[];
   closureAudit?: ClosureResponseAudit;
   closureLoop?: Parameters<TurnPostGenerationGuardRunner["run"]>[0]["closureLoop"];
@@ -167,6 +168,7 @@ async function runInternalIdentifierGuardFixture(input: {
     response: input.response,
     sessionId: DEFAULT_SESSION_ID,
     sessionSourceType: input.sessionSourceType,
+    sessionAudienceRole: input.sessionAudienceRole,
     ...(persistedUserEntry === undefined ? {} : { persistedUserEntry }),
     retrievedEpisodes: [],
     activeCommitments: [],
@@ -567,6 +569,46 @@ describe("post-generation guard shadow chain", () => {
     expect(createStreamReader).not.toHaveBeenCalled();
     expect(listActions).not.toHaveBeenCalled();
     expect(listRelationalSlots).not.toHaveBeenCalled();
+  });
+
+  it("skips internal-identifier enforcement for an operator-audience session", async () => {
+    const recalledIdentifier = createSessionId();
+    const { emission, emit, createStreamReader } = await runInternalIdentifierGuardFixture({
+      // No audienceContent: the operator named this row in an EARLIER turn, which is the
+      // case the current-turn echo exemption cannot cover and that cost a whole reply.
+      response: `You asked about ${recalledIdentifier}; it is the row I checked.`,
+      knownInternalIdentifiers: [recalledIdentifier],
+      sessionSourceType: "demo",
+      sessionAudienceRole: "operator",
+    });
+
+    expect(emission).toEqual({
+      kind: "message",
+      content: `You asked about ${recalledIdentifier}; it is the row I checked.`,
+    });
+    expect(emit).toHaveBeenCalledWith("internal_identifier_guard.completed", {
+      turnId: "turn-internal-identifier-fixture",
+      session_id: DEFAULT_SESSION_ID,
+      session_source_type: "demo",
+      verdict: "skipped",
+      reason: "operator_audience_session",
+    });
+    expect(createStreamReader).not.toHaveBeenCalled();
+  });
+
+  it("keeps internal-identifier enforcement active for a participant-audience session", async () => {
+    const recalledIdentifier = createSessionId();
+    const { emission } = await runInternalIdentifierGuardFixture({
+      response: `The handle is ${recalledIdentifier}.`,
+      knownInternalIdentifiers: [recalledIdentifier],
+      sessionSourceType: "demo",
+      sessionAudienceRole: "participant",
+    });
+
+    expect(emission).toEqual({
+      kind: "suppressed",
+      reason: "internal_identifier_leak",
+    });
   });
 
   it.each([
