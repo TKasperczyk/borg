@@ -1025,6 +1025,43 @@ describe("compact planner context", () => {
     expect(planner.traceSummary.totalEstimatedTokens).toBeGreaterThan(0);
   });
 
+  it("reports the statuses the complete index actually carries instead of claiming completeness over every goal", () => {
+    const mixed = build(
+      context({
+        selfSnapshot: {
+          values: [],
+          goals: [
+            goal("Still running"),
+            goal("Retired", { status: "done" }),
+            goal("Also running"),
+          ],
+          traits: [],
+        },
+      }),
+    );
+    const mixedText = allSystemText(mixed);
+
+    // Derived from the drawn rows, never a literal: the attribute has to widen when the draw does.
+    expect(mixedText).toContain('<complete_goal_index statuses_present="active,done">');
+    expect(mixedText).toContain(
+      "A goal whose status is not listed there is absent from this page rather than omitted from it",
+    );
+
+    const singleStatus = build(
+      context({
+        selfSnapshot: { values: [], goals: [goal("Still running")], traits: [] },
+      }),
+    );
+
+    expect(allSystemText(singleStatus)).toContain(
+      '<complete_goal_index statuses_present="active">',
+    );
+
+    const empty = build(context({ selfSnapshot: { values: [], goals: [], traits: [] } }));
+
+    expect(allSystemText(empty)).toContain('<complete_goal_index statuses_present="none">');
+  });
+
   it("renders the progress log oldest first and names pn as an append-only log in the legend", () => {
     const target = goal("Append-ordered progress log", {
       progress_notes: [
@@ -1484,7 +1521,7 @@ describe("compact planner context", () => {
     expect(Math.max(...authorityRows.map((row) => row.length))).toBeLessThanOrEqual(250);
     // The complete index still omits nothing at this high-water mark, so the legend's fixed cost
     // is paid by the overall envelope rather than by dropped goal rows.
-    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_260);
+    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_440);
     expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(11_900);
     expect(planner.traceSummary.sections.authority_and_directives?.estimatedTokens).toBeGreaterThan(
       4_000,
