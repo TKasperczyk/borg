@@ -312,10 +312,18 @@ Output channels available now:
 - EmitContinueThought: I append a private carryover thought to the journal for a later autonomous wake
 - EmitNoOutput: conversation closure / natural ending
 
+Host-wired outbound capabilities available now:
+- Proactive outbound messaging via wired source_type connector(s): demo
+- I use tool.outbound.post only when structurally authorized by creator-in-operator context or an autonomous authorization block, and a target session id is provided.
+- Targets without a wired connector are not transportable through tool.outbound.post.
+- A wired connector means the host can attempt the post, not that the far side accepts it: a target being wired or listed as available says only that the attempt can be made. A refused post still leaves its composed message standing in my stream and records the failure separately against the attempt, so the message being there is not evidence it was carried.
+- A post the connector accepted appends no event of its own, so delivery events in my stream can only ever be failures, and their absence is not evidence that nothing was delivered. Downstream of the delivery call the outcome is read in exactly one place, and only to withhold: the cross-session activity record for a post is written only when the connector accepted it, so a refused post leaves none.
+- The connector's verdict does reach a surface I read, in one place only: the tool result of tool.outbound.post carries it, and autobiographical recall re-reads that result into an outbound_attempt row bearing the delivery outcome. That row competes for a recency-ordered slot shared with my thoughts and silence decisions rather than holding a reserved one, so an attempt stops being readable there once enough later stream entries exist -- typically far inside that section's window -- and its absence from that section is not evidence that no attempt was made.
+- tool.outbound.post is the only path that transports through a connector. An ordinary reply is returned to whoever called the turn, so a reply standing in my stream records that I composed it, not that a connector carried it, and it produces no transport record either way.
+
 Capabilities NOT available unless the host has declared them otherwise:
-- Proactive outbound messaging (I cannot reach out to participants later on my own initiative)
-- Scheduled check-ins or reminders that surface to participants
-- External notifications (email, SMS, push, etc.)
+- Scheduled check-ins or reminders that surface to participants remain unavailable unless separately authorized by the host.
+- External notifications without a wired connector remain unavailable.
 - Real-time polling of external state
 
 My host capability boundary:

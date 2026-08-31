@@ -37,6 +37,10 @@ import type { DeliberationContext } from "../deliberation/types.js";
 import { buildCompactPlannerLedgerPrompt, renderEvidenceLedger } from "../evidence-ledger/index.js";
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/types.js";
 import { buildSessionReentryContinuityPrompt } from "../session-reentry-continuity.js";
+import {
+  DEFAULT_HOST_CAPABILITIES_SECTION,
+  withDerivedOutboundCapabilities,
+} from "./host-capabilities.js";
 import { formatDirectedOutboundInstruction } from "../../outbound/outbound-turn.js";
 import {
   CURRENT_USER_MESSAGE_REMINDER,
@@ -1121,7 +1125,26 @@ describe("prompt surface fixtures", () => {
       buildBaseSystemPrompt(makeAutonomousRelationalContext(), {
         ...PROMPT_OPTIONS,
         participationPolicy: "active",
+        // open.ts derives this from the connector registry, so a host with a wired
+        // connector never renders the unwired capability text. Every other fixture
+        // pins the unwired branch; this one pins the branch a deployed being reads,
+        // and it is the branch this context's own outbound target already assumes.
+        hostCapabilities: withDerivedOutboundCapabilities({
+          hostCapabilities: DEFAULT_HOST_CAPABILITIES_SECTION,
+          outboundSourceTypes: ["demo"],
+        }),
       }),
+    );
+    // Named so the branch is not pinned only by accident of the bytes: without a
+    // wired connector this fixture would render the "I cannot reach out" text and
+    // nothing anywhere would byte-check the lines a deployed being actually reads.
+    const wired = readFileSync(
+      join(FIXTURE_DIR, "base-system-autonomous-dm-relational.txt"),
+      "utf8",
+    );
+    expect(wired).toContain("Host-wired outbound capabilities available now:");
+    expect(wired).not.toContain(
+      "Proactive outbound messaging (I cannot reach out to participants later on my own initiative)",
     );
   });
 
