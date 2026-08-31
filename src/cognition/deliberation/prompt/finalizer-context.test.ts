@@ -256,6 +256,61 @@ describe("compact terminal finalizer context", () => {
     expect(rendered).toContain("omitted_count>0</omitted_count>");
   });
 
+  it("spends the advisory excerpt budget on the marker as well as the directive text", () => {
+    // The budget covers the whole excerpt, marker included, so the per-row ceiling on
+    // directive_included_chars sits below it and shifts with the digit widths of the three
+    // numbers the marker carries. Asserted as an identity against whatever the marker
+    // currently costs rather than against a copied constant.
+    const includedByLength = [4_028, 40_028, 400_028].map((totalChars) => {
+      const filler = totalChars - "ADVISORY-HEAD-".length - "-ADVISORY-TAIL".length;
+      const rendered = text(
+        build(
+          context({
+            applicableCommitments: [
+              commitment(`ADVISORY-HEAD-${"x".repeat(filler)}-ADVISORY-TAIL`, {
+                enforcement_class: "advisory",
+                critical_domain: null,
+              }),
+            ],
+          }),
+        ),
+      );
+      const budget = Number(/advisory_excerpt_budget_chars="(\d+)"/.exec(rendered)?.[1]);
+      const included = Number(/directive_included_chars="(\d+)"/.exec(rendered)?.[1]);
+      const marker = / \[ELIDED \d+ CHARS; HEAD\+TAIL EXCERPT; rendered=\d+\/total=\d+\] /.exec(
+        rendered,
+      )?.[0];
+      expect(marker).toBeDefined();
+      expect(rendered).toContain(`directive_total_chars="${totalChars}"`);
+      expect(included + marker!.length).toBe(budget);
+      expect(included).toBeLessThan(budget);
+      return included;
+    });
+    expect(new Set(includedByLength).size).toBeGreaterThan(1);
+
+    // A cut that would land mid-character is pulled back, so the identity is an upper
+    // bound rather than an equality -- which is why the legend says "at most".
+    const astral = text(
+      build(
+        context({
+          applicableCommitments: [
+            commitment("\u{1f642}".repeat(1_000), {
+              enforcement_class: "advisory",
+              critical_domain: null,
+            }),
+          ],
+        }),
+      ),
+    );
+    const astralBudget = Number(/advisory_excerpt_budget_chars="(\d+)"/.exec(astral)?.[1]);
+    const astralIncluded = Number(/directive_included_chars="(\d+)"/.exec(astral)?.[1]);
+    const astralMarker = / \[ELIDED \d+ CHARS; HEAD\+TAIL EXCERPT; rendered=\d+\/total=\d+\] /.exec(
+      astral,
+    )?.[0];
+    expect(astralMarker).toBeDefined();
+    expect(astralIncluded + astralMarker!.length).toBeLessThan(astralBudget);
+  });
+
   it("uses structural directive kinds for exact versus visibly excerpted payloads", () => {
     const creatorId = createEntityId();
     const allowedId = createEntityId();
