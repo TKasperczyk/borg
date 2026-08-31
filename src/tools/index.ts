@@ -18,6 +18,7 @@ export {
   createJournalAppendTool,
   createOpenQuestionsCreateTool,
   createOpenQuestionsResolveTool,
+  createOpenQuestionsRuminationsTool,
   createOwnRecordsListTool,
   createOutboundPostTool,
   OUTBOUND_POST_TOOL_NAME,

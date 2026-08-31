@@ -60,6 +60,10 @@ describe("buildToolDispatcher", () => {
       commitmentRepository: {} as never,
       entityRepository: {} as never,
       goalsRepository: { retire: vi.fn() } as never,
+      openQuestionsRepository: {
+        listRuminationsInRange: vi.fn(() => []),
+        get: vi.fn(() => null),
+      } as never,
       identityService: {} as never,
       skillRepository: {} as never,
       trainOfThoughtRepository: {} as never,

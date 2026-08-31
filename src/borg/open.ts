@@ -180,6 +180,7 @@ export async function openBorgDependencies(
       commitmentRepository: repositories.commitmentRepository,
       entityRepository: repositories.entityRepository,
       goalsRepository: repositories.goalsRepository,
+      openQuestionsRepository: repositories.openQuestionsRepository,
       identityService: repositories.identityService,
       skillRepository: repositories.skillRepository,
       trainOfThoughtRepository: repositories.trainOfThoughtRepository,

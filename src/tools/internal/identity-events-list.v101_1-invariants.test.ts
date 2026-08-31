@@ -38,6 +38,7 @@ function createHarnessToolDispatcher(
     commitmentRepository: harness.commitmentRepository,
     entityRepository: harness.entityRepository,
     goalsRepository: harness.goalsRepository,
+    openQuestionsRepository: harness.openQuestionsRepository,
     identityService: harness.identityService,
     skillRepository: harness.skillRepository,
     trainOfThoughtRepository: new TrainOfThoughtRepository({ db: harness.db, clock }),

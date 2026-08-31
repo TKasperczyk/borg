@@ -37,6 +37,7 @@ export {
   type OpenQuestionRumination,
   type OpenQuestionRuminationInput,
   type OpenQuestionRuminationListOptions,
+  type OpenQuestionRuminationRangeOptions,
   type OpenQuestionResolveOptions,
   type OpenQuestionsRepositoryOptions,
 } from "./open-questions.js";

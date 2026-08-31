@@ -150,6 +150,13 @@ export type OpenQuestionRuminationListOptions = {
   limit?: number;
 };
 
+export type OpenQuestionRuminationRangeOptions = {
+  sinceMs: number;
+  untilMs: number;
+  openQuestionId?: OpenQuestionId;
+  limit?: number;
+};
+
 type OpenQuestionVectorRow = {
   id: string;
   question: string;
@@ -1192,6 +1199,33 @@ export class OpenQuestionsRepository {
         `,
       )
       .all(parsedId, limit) as Record<string, unknown>[];
+
+    return rows.map((row) => mapOpenQuestionRuminationRow(row));
+  }
+
+  // Time-range browse over ruminations regardless of the question's current status: a note written
+  // against a question that has since resolved or been abandoned stays readable, because the record
+  // of how a question was reached is what survives the question closing.
+  listRuminationsInRange(options: OpenQuestionRuminationRangeOptions): OpenQuestionRumination[] {
+    const sinceMs = z.number().int().finite().parse(options.sinceMs);
+    const untilMs = z.number().int().finite().parse(options.untilMs);
+    const limit = Math.max(1, Math.min(50, Math.floor(options.limit ?? 20)));
+    const openQuestionId =
+      options.openQuestionId === undefined
+        ? null
+        : openQuestionIdSchema.parse(options.openQuestionId);
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM open_question_ruminations
+          WHERE created_at >= ? AND created_at <= ?
+            AND (? IS NULL OR open_question_id = ?)
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?
+        `,
+      )
+      .all(sinceMs, untilMs, openQuestionId, openQuestionId, limit) as Record<string, unknown>[];
 
     return rows.map((row) => mapOpenQuestionRuminationRow(row));
   }

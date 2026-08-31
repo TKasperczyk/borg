@@ -20,7 +20,7 @@ import {
   type IdentityService,
 } from "../memory/identity/index.js";
 import type { SkillRepository } from "../memory/procedural/index.js";
-import type { GoalsRepository } from "../memory/self/index.js";
+import type { GoalsRepository, OpenQuestionsRepository } from "../memory/self/index.js";
 import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
 import {
   SELF_RECALL_SCOPE,
@@ -49,6 +49,7 @@ import {
   createJournalAppendTool,
   createOpenQuestionsCreateTool,
   createOpenQuestionsResolveTool,
+  createOpenQuestionsRuminationsTool,
   createOwnRecordsListTool,
   createPromptSurfaceChangesTool,
   createScheduledWakesCancelTool,
@@ -69,6 +70,7 @@ export type BuildToolDispatcherOptions = {
   commitmentRepository: CommitmentRepository;
   entityRepository: EntityRepository;
   goalsRepository: GoalsRepository;
+  openQuestionsRepository: OpenQuestionsRepository;
   identityService: IdentityService;
   skillRepository: SkillRepository;
   trainOfThoughtRepository: TrainOfThoughtRepository;
@@ -247,6 +249,13 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
               : [await resolveMemoryDisclosureLabelForEpisodeIds(options.episodicRepository, episodeIds)]),
             ...streamEntryIds.map(() => unknownMemoryDisclosureLabel()),
           ]),
+      }),
+    )
+    .register(
+      createOpenQuestionsRuminationsTool({
+        listRuminations: (listOptions) =>
+          options.openQuestionsRepository.listRuminationsInRange(listOptions),
+        getOpenQuestion: (id) => options.openQuestionsRepository.get(id),
       }),
     )
     .register(
