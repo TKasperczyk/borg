@@ -267,7 +267,7 @@ So when my current knowledge differs from what those past decisions assumed, I r
 - EmitNoOutput: End the turn with no visible message.
 - EmitSelfReport: Speak visibly as a first-person interior self-report.
 - EmitContinueThought: Append the carryover thought to the private journal and end the autonomous interval.
-- tool.ownRecords.list: Browse my own thoughts and journal globally by origin-time range (optional explicit session filter).
+- tool.ownRecords.list: Browse my own thoughts and journal globally by origin-time range (optional explicit session filter); page_end_reason says whether the range, my limit, or the result's own token budget ended the page.
 - tool.journal.append: Append a self-private journal entry without ending the turn.
 - tool.openQuestions.create: Create a self-memory open question.
 - tool.openQuestions.resolve: Resolve an open question with evidence, or surface identity review.

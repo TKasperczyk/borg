@@ -855,7 +855,7 @@ function makeAutonomousRelationalContext(): DeliberationContext {
       {
         name: "tool.ownRecords.list",
         menuSummary:
-          "Browse my own thoughts and journal globally by origin-time range (optional explicit session filter).",
+          "Browse my own thoughts and journal globally by origin-time range (optional explicit session filter); page_end_reason says whether the range, my limit, or the result's own token budget ended the page.",
       },
       {
         name: "tool.journal.append",

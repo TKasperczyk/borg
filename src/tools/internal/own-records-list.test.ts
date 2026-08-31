@@ -5,7 +5,11 @@ import type { StreamEntry, StreamEntryIndexRecord } from "../../stream/index.js"
 import { ManualClock } from "../../util/clock.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
-import { createOwnRecordsListTool, type OwnRecordsListRange } from "./own-records-list.js";
+import {
+  createOwnRecordsListTool,
+  type OwnRecordKind,
+  type OwnRecordsListRange,
+} from "./own-records-list.js";
 
 const CURRENT_SESSION_ID = "sess_aaaaaaaaaaaaaaaa" as SessionId;
 const OTHER_SESSION_ID = "sess_bbbbbbbbbbbbbbbb" as SessionId;
@@ -262,6 +266,47 @@ describe("tool.ownRecords.list", () => {
     expect(new Set(handles).size).toBe(handles.length);
   });
 
+  it("distinguishes a page the limit ended from one the token budget ended, which has_more cannot", async () => {
+    const newest = journalRecord({ id: 3, createdAt: 3_000, text: "newest" });
+    const oldest = journalRecord({ id: 1, createdAt: 1_000, text: "oldest" });
+    const listAll = (middle: TrainOfThoughtJournalEntry) =>
+      createOwnRecordsListTool({
+        listThoughtRecords: () => [],
+        readThoughtRecord: () => null,
+        listJournalRecords: journalRangeLister([newest, middle, oldest]),
+        clock: new ManualClock(4_000),
+      });
+    const range = {
+      since: iso(1_000),
+      until: iso(3_000),
+      kinds: ["journal"] as OwnRecordKind[],
+    };
+    const limitEnded = await listAll(
+      journalRecord({ id: 2, createdAt: 2_000, text: "middle" }),
+    ).invoke({ ...range, limit: 2 }, invocationContext());
+    const budgetEnded = await listAll(
+      journalRecord({ id: 2, createdAt: 2_000, text: "序".repeat(150_000) }),
+    ).invoke({ ...range, limit: 2 }, invocationContext());
+    const exhausted = await listAll(
+      journalRecord({ id: 2, createdAt: 2_000, text: "middle" }),
+    ).invoke({ ...range, limit: 3 }, invocationContext());
+
+    // Identical has_more, identical requested limit, different cause: the short
+    // page is short because its records are long, not because the range is.
+    expect(limitEnded.has_more).toBe(true);
+    expect(budgetEnded.has_more).toBe(true);
+    expect(limitEnded.records).toHaveLength(2);
+    expect(budgetEnded.records).toHaveLength(1);
+    expect(limitEnded.page_end_reason).toBe("limit_reached");
+    expect(budgetEnded.page_end_reason).toBe("context_budget");
+    expect(exhausted.has_more).toBe(false);
+    expect(exhausted.page_end_reason).toBe("range_exhausted");
+
+    for (const page of [limitEnded, budgetEnded, exhausted]) {
+      expect(page.page_end_reason === "range_exhausted").toBe(!page.has_more);
+    }
+  });
+
   it("returns exact multilingual content, origin times, nullable anchors, and row-local labels", async () => {
     const multilingual = "我在火车上注意到了它。 لاحظتُ ذلك أيضًا. Zażółć gęślą jaźń. 🧠";
     const exactThought = thoughtRecord({
@@ -397,7 +442,9 @@ describe("tool.ownRecords.list", () => {
         },
       ],
       has_more: true,
+      page_end_reason: "context_budget",
     });
+    expect(firstPage.records.length).toBeLessThan(2);
     expect(firstPage.next_cursor).not.toBeNull();
 
     const secondPage = await tool.invoke(
@@ -423,6 +470,7 @@ describe("tool.ownRecords.list", () => {
         },
       ],
       has_more: false,
+      page_end_reason: "range_exhausted",
       next_cursor: null,
     });
     expect(JSON.stringify(secondPage)).not.toContain(oversizedText.slice(0, 1_000));

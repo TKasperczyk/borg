@@ -27,6 +27,11 @@ const OWN_RECORD_PAYLOAD_STATUSES = [
   "check_not_completed_retrieval_unavailable",
 ] as const;
 const OWN_RECORD_ORIGIN_TIME_BASES = ["stream_timestamp", "journal_created_at"] as const;
+const OWN_RECORDS_PAGE_END_REASONS = [
+  "range_exhausted",
+  "limit_reached",
+  "context_budget",
+] as const;
 const DEFAULT_OWN_RECORDS_LIMIT = 20;
 const MAX_OWN_RECORDS_LIMIT = 50;
 
@@ -99,6 +104,7 @@ const ownRecordsListOutputSchema = z
   .object({
     records: z.array(ownRecordForCognitionSchema),
     has_more: z.boolean(),
+    page_end_reason: z.enum(OWN_RECORDS_PAGE_END_REASONS),
     next_cursor: z.string().min(1).nullable(),
   })
   .strict();
@@ -148,6 +154,22 @@ type OwnRecordCandidate =
 
 type OwnRecordForCognition = z.infer<typeof ownRecordForCognitionSchema>;
 type OwnRecordsListOutput = z.infer<typeof ownRecordsListOutputSchema>;
+type OwnRecordsPageEndReason = OwnRecordsListOutput["page_end_reason"];
+
+// has_more says only that the range holds more; it never says how much, and it
+// fires identically whether the requested limit or the result's own token
+// budget ended the page. The reason names which, so a page shorter than the
+// requested limit is not read as evidence the range is shallow.
+function pageEndReason(input: {
+  hasMore: boolean;
+  endedOnBudget: boolean;
+}): OwnRecordsPageEndReason {
+  if (!input.hasMore) {
+    return "range_exhausted";
+  }
+
+  return input.endedOnBudget ? "context_budget" : "limit_reached";
+}
 
 const SOURCE_ORDER = {
   thought: 0,
@@ -262,9 +284,9 @@ export function createOwnRecordsListTool(
   return {
     name: "tool.ownRecords.list",
     description:
-      "Browse my own durable thought stream and train-of-thought journal by inclusive origin-time range. This is global unless I explicitly pass session_id. It has no text query: I choose dates, kinds, and pages, then inspect exact content.",
+      "Browse my own durable thought stream and train-of-thought journal by inclusive origin-time range. This is global unless I explicitly pass session_id. It has no text query: I choose dates, kinds, and pages, then inspect exact content. A page can also end below the limit I asked for, because the result carries its own token budget: page_end_reason says whether the range ran out, my limit filled, or that budget cut the page, and has_more never says how many records are left. So the size of a page is a fact about how long its records are, not about how many the range holds.",
     menuSummary:
-      "Browse my own thoughts and journal globally by origin-time range (optional explicit session filter).",
+      "Browse my own thoughts and journal globally by origin-time range (optional explicit session filter); page_end_reason says whether the range, my limit, or the result's own token budget ended the page.",
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "read",
     inputSchema: ownRecordsListInputSchema,
@@ -393,9 +415,14 @@ export function createOwnRecordsListTool(
         }
 
         const hasMoreAfterCandidate = index + 1 < pageCandidates.length || moreInStore;
+        const budgetCutReason = pageEndReason({
+          hasMore: hasMoreAfterCandidate,
+          endedOnBudget: true,
+        });
         const exactOutput = {
           records: [...records, row],
           has_more: hasMoreAfterCandidate,
+          page_end_reason: budgetCutReason,
           next_cursor: hasMoreAfterCandidate ? encodeOwnRecordCursor(candidate) : null,
         } satisfies OwnRecordsListOutput;
 
@@ -409,6 +436,7 @@ export function createOwnRecordsListTool(
           return {
             records,
             has_more: true,
+            page_end_reason: pageEndReason({ hasMore: true, endedOnBudget: true }),
             next_cursor: encodeOwnRecordCursor(lastConsumed!),
           };
         }
@@ -417,6 +445,7 @@ export function createOwnRecordsListTool(
         const payloadlessOutput = {
           records: [payloadlessRow],
           has_more: hasMoreAfterCandidate,
+          page_end_reason: budgetCutReason,
           next_cursor: hasMoreAfterCandidate ? encodeOwnRecordCursor(candidate) : null,
         } satisfies OwnRecordsListOutput;
 
@@ -427,6 +456,7 @@ export function createOwnRecordsListTool(
         return {
           records: [withoutOversizedAnchors(row)],
           has_more: hasMoreAfterCandidate,
+          page_end_reason: budgetCutReason,
           next_cursor: hasMoreAfterCandidate ? encodeOwnRecordCursor(candidate) : null,
         };
       }
@@ -437,6 +467,7 @@ export function createOwnRecordsListTool(
       return {
         records,
         has_more: hasMore,
+        page_end_reason: pageEndReason({ hasMore, endedOnBudget: !consumedAllCandidates }),
         next_cursor: hasMore && lastConsumed !== null ? encodeOwnRecordCursor(lastConsumed) : null,
       };
     },
