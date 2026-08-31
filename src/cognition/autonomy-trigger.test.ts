@@ -36,6 +36,41 @@ describe("formatAutonomyTriggerContext epoch annotation", () => {
     expect(rendered).toContain('"sort_ts_iso": "2026-08-12T17:40:00.000Z"');
   });
 
+  it("names the identity-event log's domain whenever the payload carries that reader", () => {
+    const rendered = formatAutonomyTriggerContext({
+      ...BASE,
+      source_name: "scheduled_reflection",
+      payload: {
+        interval_ms: 14_400_000,
+        recent_identity_events: [
+          { id: 1, record_type: "trait", record_id: "trt_aaaaaaaaaaaaaaaa", action: "decay" },
+        ],
+      },
+    });
+
+    expect(rendered).toContain("not every write a record received");
+    expect(rendered).toContain("record_version that write produced");
+    expect(rendered).toContain("not evidence that the record did not change");
+    expect(rendered.indexOf("recent_identity_events: this is the log")).toBeGreaterThan(
+      rendered.indexOf('"record_id": "trt_aaaaaaaaaaaaaaaa"'),
+    );
+  });
+
+  it("still names the domain when the reader returned nothing, and stays silent when it did not run", () => {
+    const empty = formatAutonomyTriggerContext({
+      ...BASE,
+      source_name: "scheduled_reflection",
+      payload: { interval_ms: 14_400_000, recent_identity_events: [] },
+    });
+    const absent = formatAutonomyTriggerContext({
+      ...BASE,
+      payload: { interval_ms: 14_400_000 },
+    });
+
+    expect(empty).toContain("not every write a record received");
+    expect(absent).not.toContain("not every write a record received");
+  });
+
   it("leaves an existing sibling and an unrepresentable instant alone", () => {
     const rendered = formatAutonomyTriggerContext({
       ...BASE,

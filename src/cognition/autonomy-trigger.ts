@@ -61,6 +61,21 @@ function annotateEpochFields(value: unknown): unknown {
   return annotated;
 }
 
+// The identity-event log records writes that went through the audited identity
+// service; several repository writers bump a record's record_version without
+// appending an event (the ruminator's own tick and urgency bookkeeping is the
+// routine one). So the newest event for a record reports its values with the
+// same confidence whether or not the record was written afterwards -- it
+// degrades to stale, not to absent, and nothing on the event marks which. Key on
+// the payload key, never on what the events say, and render for an empty array
+// too: absence is exactly where the reading is most tempting.
+const RECENT_IDENTITY_EVENTS_DOMAIN_NOTE =
+  "note on recent_identity_events: this is the log of writes that went through my audited identity path, not every write a record received. Several writers change a record and bump its record_version without appending an event here, so the newest event for a record is not a witness to that record's current state: it reports its own values with the same confidence whether or not something wrote the record afterwards, degrading to stale rather than to absent, and no field on the event says which it is. Each event carries the record_version that write produced, so that number against the record's current version elsewhere is the only check available from here. The list is also the most recent events globally rather than per record, so a record's absence from it is not evidence that the record did not change.";
+
+function carriesRecentIdentityEvents(payload: Record<string, unknown>): boolean {
+  return Array.isArray(payload.recent_identity_events);
+}
+
 export function formatAutonomyTriggerContext(context: AutonomyTriggerContext): string {
   const secondaryDueGoals = context.payload.secondary_due_goals;
   const hasGoalBatch = Array.isArray(secondaryDueGoals) && secondaryDueGoals.length > 0;
@@ -80,6 +95,7 @@ export function formatAutonomyTriggerContext(context: AutonomyTriggerContext): s
     `sort_ts: ${sortTs}`,
     hasGoalBatch ? "primary_focus_payload:" : "payload:",
     payload,
+    carriesRecentIdentityEvents(context.payload) ? RECENT_IDENTITY_EVENTS_DOMAIN_NOTE : null,
     hasGoalBatch ? "secondary_due_goals:" : null,
     hasGoalBatch ? (JSON.stringify(annotateEpochFields(secondaryDueGoals), null, 2) ?? "[]") : null,
   ]
