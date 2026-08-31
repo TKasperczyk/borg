@@ -109,7 +109,7 @@ export function createOpenQuestionsRuminationsTool(
   return {
     name: "tool.openQuestions.ruminations",
     description:
-      "Browse the rumination notes my offline mind-maintenance wrote against my open questions, by inclusive created-at range and optionally one question id. Notes survive the question closing, so this reaches questions I later resolved and questions the loop abandoned for me. It has no text query: I choose the dates and the question.",
+      "Browse the rumination notes my offline mind-maintenance wrote against my open questions, by inclusive created-at range and optionally one question id. Notes survive the question closing, so this reaches questions I later resolved and questions the loop abandoned for me. A question is abandoned that way when its still-open passes reach the no-traction threshold and no episode created after it cites it and no action against it is active: a deterministic dismissal taken without a model call, so for those rows these notes are the only record of the reasoning. It has no text query: I choose the dates and the question.",
     menuSummary:
       "Browse my offline rumination notes on open questions by created-at range, including questions that have since resolved or been abandoned.",
     allowedOrigins: ["autonomous", "deliberator"],

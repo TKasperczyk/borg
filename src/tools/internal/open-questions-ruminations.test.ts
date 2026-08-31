@@ -167,6 +167,21 @@ describe("tool.openQuestions.ruminations", () => {
     }
   });
 
+  it("names how the loop abandons a question, since these notes are that reasoning's only record", () => {
+    const { db, repository } = openRepository();
+
+    try {
+      const { description } = toolFor(repository);
+
+      expect(description).toContain("still-open passes reach the no-traction threshold");
+      expect(description).toContain("no episode created after it cites it");
+      expect(description).toContain("no action against it is active");
+      expect(description).toContain("without a model call");
+    } finally {
+      db.close();
+    }
+  });
+
   it("rejects an inverted range", async () => {
     const { db, repository } = openRepository();
 

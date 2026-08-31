@@ -93,7 +93,7 @@ export function createOpenQuestionsResolveTool(
   return {
     name: "tool.openQuestions.resolve",
     description:
-      "Resolve an open question from prompt-visible evidence during autonomous reflection. If identity governance requires review, I report that status honestly instead of treating it as a tool failure.",
+      "Resolve an open question from prompt-visible evidence during autonomous reflection. If identity governance requires review, I report that status honestly instead of treating it as a tool failure. The openQuestion I get back is the record as this write left it, not as it stood before: on an applied resolution its unresolved_rumination_ticks reads 0 because this write set it there, so that zero reports my own write and says nothing about how much the question was turned over first. The rumination notes are that record and they outlive the resolution.",
     menuSummary: "Resolve an open question with evidence, or surface identity review.",
     allowedOrigins: ["autonomous"],
     writeScope: "write",

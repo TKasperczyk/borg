@@ -1087,6 +1087,71 @@ describe("RuminatorProcess", () => {
     }
   });
 
+  it("shows the rumination counter and the threshold it feeds at the decision site", async () => {
+    const questionText = "What still explains the Atlas dismissal threshold?";
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock: new FixedClock(3_000_000),
+      embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
+      configOverrides: {
+        offline: {
+          ruminator: {
+            staleNoTractionTicks: 7,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture(
+          {
+            title: "Atlas threshold evidence",
+            narrative: "Atlas evidence arrived after the question was last touched.",
+            tags: ["atlas"],
+            significance: 0.95,
+            created_at: 2_000_000,
+            updated_at: 2_000_000,
+          },
+          [1, 0, 0, 0],
+        ),
+      );
+      const question = harness.openQuestionsRepository.add({
+        question: questionText,
+        urgency: 0.7,
+        source: "reflection",
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+        provenance: { kind: "manual" },
+      });
+      harness.openQuestionsRepository.markRuminated(question.id, 3);
+      llm.pushResponse(
+        createStillOpenRuminatorResponse({
+          reasoning: "The evidence narrows the tension but does not settle it.",
+          tensions: ["The threshold is close but the evidence is not in."],
+        }),
+      );
+
+      await process.plan(harness.createContext(), {});
+      const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+      // The count carried is the pre-pass value, not the one this pass would write, and the
+      // threshold is interpolated from config rather than restated -- so a threshold change moves
+      // the prompt with it instead of leaving a second copy of the number behind to drift.
+      expect(prompt).toContain('"unresolved_rumination_ticks":3');
+      expect(prompt).toContain("have reached 7");
+      expect(prompt).not.toContain("have reached 4");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("dismisses stale no-traction questions but keeps ones with active actions", async () => {
     const tracer = new CaptureTracer();
     const harness = await createOfflineTestHarness({

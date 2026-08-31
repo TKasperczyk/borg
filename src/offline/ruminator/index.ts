@@ -306,11 +306,13 @@ function buildResolutionPrompt(
   evidence: string,
   recentRuminations: readonly OpenQuestionRumination[],
   connectedCandidates: readonly OpenQuestion[],
+  staleNoTractionTicks: number,
 ): string {
   const questionRow = {
     id: question.id,
     question: question.question,
     source: question.source,
+    unresolved_rumination_ticks: question.unresolved_rumination_ticks,
     ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
   };
 
@@ -319,6 +321,7 @@ function buildResolutionPrompt(
     `I emit my result by calling the ${RUMINATOR_TOOL_NAME} tool exactly once.`,
     "I choose outcome=resolved only when the evidence genuinely settles the question.",
     "I choose outcome=still_open when the question should remain open, and then I state the reasoning, live tensions, connected open questions, and what evidence would settle it.",
+    `unresolved_rumination_ticks counts the passes that have already ended still_open on this question; a still_open result now makes it one higher. It is not a record of my thinking -- that is the rumination notes below, and they survive the question closing. It feeds exactly one decision: a pass dismisses a question whose ticks have reached ${staleNoTractionTicks} when no episode created after it cites it and no action against it is active. That dismissal is deterministic and taken without asking me, and reaching the count on its own does not cause it. I never choose resolved to keep a question from being dismissed.`,
     "For connected_open_question_ids, I cite only ids from Connected open-question candidates. I use [] when none of those prompt-visible questions genuinely connects.",
     "I only include a growth_marker on a resolved outcome when the evidence clearly shows new understanding.",
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to resolution_note, reasoning, tensions, and any growth_marker text fields.`,
@@ -794,6 +797,7 @@ async function planResolution(
                 evidenceBlock,
                 recentRuminations,
                 connectedCandidates,
+                ctx.config.offline.ruminator.staleNoTractionTicks,
               ),
             },
           ],
