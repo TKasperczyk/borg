@@ -982,6 +982,56 @@ describe("compact planner context", () => {
     expect(planner.traceSummary.totalEstimatedTokens).toBeGreaterThan(0);
   });
 
+  it("renders the progress log oldest first and names pn as an append-only log in the legend", () => {
+    const target = goal("Append-ordered progress log", {
+      progress_notes: [
+        `[${NOW_MS - 5 * 24 * 60 * 60_000}] OLDEST_PROGRESS_ENTRY`,
+        `[${NOW_MS - 24 * 60 * 60_000}] ${"m".repeat(2_000)}`,
+        `[${NOW_MS - 60_000}] NEWEST_PROGRESS_ENTRY`,
+      ].join("\n"),
+      last_progress_ts: NOW_MS - 60_000,
+    });
+    const planner = build(
+      context({
+        selfSnapshot: { values: [], goals: [target], traits: [] },
+        executiveFocus: {
+          selected_goal: target,
+          selected_score: null,
+          candidates: [
+            {
+              goal_id: target.id,
+              goal: target,
+              score: 1,
+              components: {
+                priority: 1,
+                deadline_pressure: 1,
+                context_fit: 1,
+                progress_debt: 1,
+              },
+              reason: "focus",
+            },
+          ],
+          threshold: 0,
+          score_basis: {
+            score_context: "turn_selection" as const,
+            deadline_lookahead_ms: 1,
+            progress_debt_stale_ms: 1,
+          },
+        },
+      }),
+    );
+    const text = allSystemText(planner);
+
+    // pn keeps the oldest append at its head and the newest at its tail; the elision is the middle.
+    expect(text).toContain("OLDEST_PROGRESS_ENTRY");
+    expect(text).toContain("NEWEST_PROGRESS_ENTRY");
+    expect(text).toContain("HEAD+TAIL EXCERPT");
+    expect(text).toContain("pn is an append-ordered log, not a current note");
+    expect(text).toContain("so pa dates its tail and never its head");
+    expect(text).toContain("nothing here rewrites or deletes an entry once written");
+    expect(text).toContain("an autonomous turn appends no progress entry at all");
+  });
+
   it("reports source-ledger rows excluded by the compact ledger and carries omission guidance", () => {
     const currentEntries = [
       livedEntry({
@@ -1327,7 +1377,9 @@ describe("compact planner context", () => {
     );
     expect(authorityRows).toHaveLength(100);
     expect(Math.max(...authorityRows.map((row) => row.length))).toBeLessThanOrEqual(250);
-    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_050);
+    // The complete index still omits nothing at this high-water mark, so the legend's fixed cost
+    // is paid by the overall envelope rather than by dropped goal rows.
+    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_100);
     expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(11_900);
     expect(planner.traceSummary.sections.authority_and_directives?.estimatedTokens).toBeGreaterThan(
       4_000,
