@@ -1026,12 +1026,12 @@ export function renderLivedExperienceDigest(context: DeliberationContext): Rende
       (left, right) =>
         entryOccurredAt(right) - entryOccurredAt(left) || left.id.localeCompare(right.id),
     );
+  const activityCap = autonomous
+    ? PLANNER_AUTONOMOUS_LIVED_ACTIVITY_LIMIT
+    : PLANNER_LIVED_ACTIVITY_LIMIT;
   const allDecisionGroups = livedDecisionGroups(decisionEntries);
   const renderedDecisionGroups = allDecisionGroups.slice(0, PLANNER_LIVED_DECISION_LIMIT);
-  const renderedActivityEntries = activityEntries.slice(
-    0,
-    autonomous ? PLANNER_AUTONOMOUS_LIVED_ACTIVITY_LIMIT : PLANNER_LIVED_ACTIVITY_LIMIT,
-  );
+  const renderedActivityEntries = activityEntries.slice(0, activityCap);
   const allOpenLoops = autonomousOpenLoops(context);
   const renderedOpenLoops = allOpenLoops.slice(0, PLANNER_AUTONOMOUS_OPEN_LOOP_LIMIT);
   let truncationCount = 0;
@@ -1078,26 +1078,26 @@ export function renderLivedExperienceDigest(context: DeliberationContext): Rende
     truncationCount += text.truncated ? 1 : 0;
     return `<open_loop_row id="${escapeXmlAttribute(loop.id)}" kind="${loop.kind}" status="${escapeXmlAttribute(loop.status)}" outcome="${escapeXmlAttribute(loop.outcome)}" occurred_at="${loop.occurredAt === 0 ? "unknown" : new Date(loop.occurredAt).toISOString()}" stream_index="${loop.sourceStreamIndex ?? "none"}" disclosure="${escapeXmlAttribute(renderedDisclosure(loop.disclosure))}" text_exact="${!text.truncated}" text_included_chars="${text.renderedChars}" text_total_chars="${text.totalChars}">${escapeXmlText(text.text)}</open_loop_row>`;
   });
-  const omissionCount =
-    Math.max(0, allDecisionGroups.length - decisionRows.length) +
-    Math.max(0, activityEntries.length - activityRows.length) +
-    Math.max(0, allOpenLoops.length - openLoopRows.length);
+  const decisionOmitted = Math.max(0, allDecisionGroups.length - decisionRows.length);
+  const activityOmitted = Math.max(0, activityEntries.length - activityRows.length);
+  const openLoopOmitted = Math.max(0, allOpenLoops.length - openLoopRows.length);
+  const omissionCount = decisionOmitted + activityOmitted + openLoopOmitted;
 
   return section(
     "lived_experience",
     [
       `<borg_planner_lived_experience_digest decision_groups_total="${allDecisionGroups.length}" activity_rows_total="${activityEntries.length}" open_loop_rows_total="${allOpenLoops.length}" autonomous_open_loop_priority="${autonomous}" standing_cadence_due="${standing?.renderRecentLivedExperience === true}" target_tokens="${targetTokens}">`,
       "  <interpretation>What I decided is distinct from what merely fired or occurred. Repeated derivations sharing one structural outcome reference render once with derivation_count; text is never compared to decide sameness. derivation_order and each distinct activity row's timestamp/stream index preserve source chronology, including which structurally separate row came later. Density/firing rows describe volume, not N separate acts of will. Outbound attempts remain one row per structural stream handle with an explicit outcome; unknown and failed attempts are not treated as unmade attempts.</interpretation>",
+      "  <lane_budget>Each lane is cut to its own cap before anything else: cap is that lane's row limit for this turn's origin, and omitted is how many of that lane's total did not render. The caps are neither equal to each other nor stable across origins -- an autonomous turn caps completed activity lower than a conversational one while giving open loops the widest lane -- so a short activity lane on a wake is a slot allocation and not evidence that little was done. target_tokens is a declared envelope rather than a trim: no lane is cut to fit it and nothing here is re-fitted against it, so the caps are the only thing that binds.</lane_budget>",
       ...(autonomous
         ? [
             "  <autonomous_selection_policy>Structurally open questions, pending/unknown/failed outbound attempts, pending/unknown actions, and pending working intents are selected before completed-activity volume. No payload language is inspected to decide openness.</autonomous_selection_policy>",
-            "  <open_loops>",
+            `  <open_loops cap="${PLANNER_AUTONOMOUS_OPEN_LOOP_LIMIT}" omitted="${openLoopOmitted}">`,
             ...openLoopRows.map((row) => `    ${row}`),
-            `    <omitted_count>${Math.max(0, allOpenLoops.length - openLoopRows.length)}</omitted_count>`,
             "  </open_loops>",
           ]
         : []),
-      "  <decisions>",
+      `  <decisions cap="${PLANNER_LIVED_DECISION_LIMIT}" omitted="${decisionOmitted}">`,
       ...decisionRows.map((row) =>
         row
           .split("\n")
@@ -1105,7 +1105,7 @@ export function renderLivedExperienceDigest(context: DeliberationContext): Rende
           .join("\n"),
       ),
       "  </decisions>",
-      "  <firings_and_activity>",
+      `  <firings_and_activity cap="${activityCap}" omitted="${activityOmitted}">`,
       ...activityRows.map((row) => `    ${row}`),
       "  </firings_and_activity>",
       `  <omitted_count>${omissionCount}</omitted_count>`,

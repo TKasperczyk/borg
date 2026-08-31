@@ -851,7 +851,50 @@ describe("compact planner context", () => {
     expect(lived).not.toContain('id="attempt-succeeded"');
     expect(lived).not.toContain('id="attempt-not-made"');
     expect(lived.match(/<activity_row /g)).toHaveLength(4);
-    expect(lived.indexOf("<open_loops>")).toBeLessThan(lived.indexOf("<firings_and_activity>"));
+    expect(lived.indexOf("<open_loops ")).toBeLessThan(lived.indexOf("<firings_and_activity "));
+  });
+
+  it("names each lane's cap and its own omission, and caps completed activity lower on a wake", () => {
+    const completed = Array.from({ length: 12 }, (_, index) =>
+      livedEntry({
+        id: `completed-${index}`,
+        kind: "cross_session_activity",
+        occurredAt: NOW_MS - 10_000 - index,
+        text: `completed ${index}`,
+      }),
+    );
+    const lane = (planner: ReturnType<typeof build>, tag: string) => {
+      const opening = taggedBlock(allSystemText(planner), "borg_planner_lived_experience_digest")
+        .split("\n")
+        .find((line) => line.trimStart().startsWith(`<${tag} `));
+      return {
+        cap: Number(opening?.match(/ cap="(\d+)"/)?.[1]),
+        omitted: Number(opening?.match(/ omitted="(\d+)"/)?.[1]),
+      };
+    };
+
+    const conversational = build(context({ evidenceLedger: evidenceLedger(completed) }));
+    const wake = build(
+      context({ turnOrigin: "autonomous", evidenceLedger: evidenceLedger(completed) }),
+    );
+
+    // The cap is the whole cause of the short lane: rendered saturates it, and
+    // omitted is that lane's own residue rather than the digest-wide total.
+    const conversationalActivity = lane(conversational, "firings_and_activity");
+    const wakeActivity = lane(wake, "firings_and_activity");
+    expect(wakeActivity.cap).toBeLessThan(conversationalActivity.cap);
+    expect(allSystemText(conversational).match(/<activity_row /g)).toHaveLength(
+      conversationalActivity.cap,
+    );
+    expect(allSystemText(wake).match(/<activity_row /g)).toHaveLength(wakeActivity.cap);
+    expect(conversationalActivity.omitted).toBe(completed.length - conversationalActivity.cap);
+    expect(wakeActivity.omitted).toBe(completed.length - wakeActivity.cap);
+
+    // The lane a wake widens is the not-done one, and decisions are origin-stable.
+    expect(lane(wake, "open_loops").cap).toBeGreaterThan(wakeActivity.cap);
+    expect(lane(conversational, "open_loops").cap).toBeNaN();
+    expect(lane(wake, "decisions").cap).toBe(lane(conversational, "decisions").cap);
+    expect(lane(conversational, "decisions").omitted).toBe(0);
   });
 
   it("combines disclosure fail-closed when the same open loop has two structural sources", () => {
