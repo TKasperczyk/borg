@@ -8,6 +8,7 @@ import type {
   ImagePerceptionService,
 } from "../attachments/index.js";
 import type { Config } from "../config/index.js";
+import type { AutonomySchedulerDescription } from "../autonomy/index.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
@@ -62,6 +63,8 @@ import { CommitmentGuardRunner } from "./commitments/guard-runner.js";
 import { CorrectivePreferenceTurnService } from "./commitments/corrective-preference-service.js";
 import { CreatorDirectiveTurnService } from "./creator-directives/service.js";
 import type { SelfSnapshot } from "./deliberation/deliberator.js";
+import { PlannerContextCapture } from "./deliberation/planner-context-capture.js";
+import { FinalizerContextCapture } from "./deliberation/finalizer-context-capture.js";
 import { TurnDiscourseStateService } from "./generation/turn-discourse-state.js";
 import { TurnPostGenerationGuardRunner } from "./generation/turn-post-generation-guard.js";
 import type { TurnEmission } from "./generation/types.js";
@@ -179,6 +182,7 @@ export type TurnOrchestratorOptions = {
   chatResponseWatermarkCoordinator?: ChatResponseWatermarkCoordinator;
   outboundDelivery?: Pick<OutboundDelivery, "deliver">;
   autonomousOutboundPolicy?: Pick<AutonomousOutboundPolicy, "promptContext">;
+  autonomySchedulerStateProvider?: () => Promise<AutonomySchedulerDescription | null>;
   outboundSourceTypes?: readonly SessionSourceType[];
   affectiveSignalDetector?: typeof detectAffectiveSignal;
   sessionLock?: SessionLock;
@@ -307,12 +311,34 @@ export class TurnOrchestrator {
     const postGenerationGuardRunner = new TurnPostGenerationGuardRunner({
       auditModel: options.config.anthropic.models.background,
       closurePressureMode: options.config.generation.postGenerationGuards.closurePressure.mode,
+      substratePrivilegedSourceTypes:
+        options.config.internalIdentifierGuard.substratePrivilegedSourceTypes,
       createStreamReader,
       actionRepository: options.actionRepository,
       relationalSlotRepository: options.relationalSlotRepository,
       clock: this.clock,
       tracer: this.tracer,
     });
+    const plannerContextCapture =
+      options.config.deliberation.plannerContextCaptureSampleRate === 0
+        ? undefined
+        : new PlannerContextCapture({
+            dataDir: options.config.dataDir,
+            sampleRate: options.config.deliberation.plannerContextCaptureSampleRate,
+            clock: this.clock,
+            tracer: this.tracer,
+          });
+    const finalizerContextCapture =
+      options.config.deliberation.finalizerContextCaptureSampleRate === 0
+        ? undefined
+        : new FinalizerContextCapture({
+            dataDir: options.config.dataDir,
+            sampleRate: options.config.deliberation.finalizerContextCaptureSampleRate,
+            clock: this.clock,
+            tracer: this.tracer,
+            attachmentResolver: (attachmentId) =>
+              options.attachmentService.fetchImageForLlm(attachmentId),
+          });
     const turnActionCoordinator = new TurnActionCoordinator({
       commitmentGuardRunner,
       postGenerationGuardRunner,
@@ -363,6 +389,7 @@ export class TurnOrchestrator {
       chatResponseWatermarkCoordinator: options.chatResponseWatermarkCoordinator,
       outboundDelivery: options.outboundDelivery,
       autonomousOutboundPolicy: options.autonomousOutboundPolicy,
+      autonomySchedulerStateProvider: options.autonomySchedulerStateProvider,
       outboundSourceTypes: options.outboundSourceTypes,
       llmFactory: () => options.llmFactory(),
       perceptionGateway,
@@ -380,6 +407,8 @@ export class TurnOrchestrator {
       turnReflectionCoordinator,
       clock: this.clock,
       tracer: this.tracer,
+      ...(plannerContextCapture === undefined ? {} : { plannerContextCapture }),
+      ...(finalizerContextCapture === undefined ? {} : { finalizerContextCapture }),
       promptOverrideRepository: options.promptOverrideRepository,
       ...(options.sessionsRepository === undefined
         ? {}

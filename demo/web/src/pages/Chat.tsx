@@ -92,6 +92,10 @@ type LedgerQueryData = {
   ledger: EvidenceLedger | null;
 };
 
+// Bound on client-retained thread entries; keeps memory flat on long sessions while
+// far exceeding the fetch window, so scrolled-up reading positions stay stable.
+const RETAINED_ENTRY_LIMIT = 400;
+
 function mergeEntries(entries: readonly StreamEntry[]): StreamEntry[] {
   const byId = new Map<string, StreamEntry>();
   for (const entry of entries) {
@@ -533,15 +537,41 @@ export function ChatPage({ onActiveSessionChange }: ChatPageProps) {
   const currentSession =
     sessions.data?.sessions.find((session) => session.session_id === activeSessionId) ?? null;
   const streamMatchSession = stream.data?.sessionId === activeSessionId;
-  const streamReady = streamMatchSession && !stream.loading;
-  const allEntries = useMemo(
-    () =>
-      mergeEntries([
-        ...(streamMatchSession ? (stream.data?.response.entries ?? []) : []),
-        ...liveEntries,
-      ]),
-    [liveEntries, stream.data?.response.entries, streamMatchSession],
-  );
+  // Ready = matching data exists. Background refetches (every live-frame invalidation)
+  // must not unmount the thread: the collapse fires a scroll event on shrunken content,
+  // updatePinned reads "at bottom", and the remounted list then yanks the reader down.
+  const streamReady = streamMatchSession;
+  // Retain entries already shown this session. The stream fetch is a newest-N window,
+  // so on busy days a refetch evicts older entries and the content above the reader's
+  // viewport shrinks -- same yank, subtler cause. Later duplicates win in mergeEntries,
+  // so refreshed copies (e.g. updated display_content) still replace retained ones.
+  const retainedEntriesRef = useRef<{ sessionId: string | null; entries: StreamEntry[] }>({
+    sessionId: null,
+    entries: [],
+  });
+  const allEntries = useMemo(() => {
+    const retained =
+      retainedEntriesRef.current.sessionId === activeSessionId
+        ? retainedEntriesRef.current.entries
+        : [];
+    // Session switch in flight: liveEntries still holds the previous session's
+    // streamed entries until the reset effect runs (effects fire after render),
+    // and stream.data is the previous session's window. Render only what this
+    // session has already shown and write nothing back, or the old thread's
+    // messages get cached under the new session's key.
+    if (!streamMatchSession) {
+      return retained;
+    }
+    const merged = mergeEntries([
+      ...retained,
+      ...(stream.data?.response.entries ?? []),
+      ...liveEntries,
+    ]);
+    const bounded =
+      merged.length > RETAINED_ENTRY_LIMIT ? merged.slice(merged.length - RETAINED_ENTRY_LIMIT) : merged;
+    retainedEntriesRef.current = { sessionId: activeSessionId, entries: bounded };
+    return bounded;
+  }, [activeSessionId, liveEntries, stream.data?.response.entries, streamMatchSession]);
   const threadItems = useMemo(
     () => threadItemsFromEntries(allEntries, turnRows, draft.withheldByTurn),
     [allEntries, draft.withheldByTurn, turnRows],

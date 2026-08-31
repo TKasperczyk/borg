@@ -7,6 +7,8 @@ import {
 } from "../../memory/shared-state/index.js";
 import {
   combineMemoryDisclosureLabels,
+  memoryDisclosureInternalUseNote,
+  renderMemoryDisclosureLabelFieldsForModel,
   renderMemoryDisclosureLabelForModel,
   type MemoryDisclosureLabel,
 } from "../../retrieval/index.js";
@@ -36,7 +38,38 @@ import {
 // Tunes the default maximum number of shared-state entries rendered.
 const DEFAULT_SHARED_STATE_MAX_ENTRIES = 40;
 
-// Tunes the default token budget for rendered shared-state content.
+// Tunes the default token budget for rendered shared-state content. This budget covers the whole
+// section, so the compact index of every active key competes with the expanded bodies for it, and
+// the index cost grows with the active set while the entry cap does not. In a saturated audience
+// that inverts: measured on a live 40-entry artifact the index alone took 3,514 of these 5,000
+// tokens (~88/line over 40 lines), leaving 3-4 bodies rendered out of the 16-40 the selection pass
+// had already chosen. The drop loops below, not the selection caps, are what bind there -- so a
+// short expanded body count is evidence about this budget, not about `lockedMaxEntries`.
+//
+// Re-measured 2026-08-17 across all seven live audiences after the index disclosure hoist below:
+// index cost fell by 19-962 tokens (largest registers most), expanded bodies rose from 2-4 to 4-5,
+// and the maxTokens at which the single-entry floor first trips fell from 4,126-4,248 to 3,245-3,622
+// on the three registers that reach it at all. The index is still the dominant term at 40 rows.
+//
+// The rendered body *count* is a residual of this budget, never a property of the register: the drop
+// loop below terminates on total token size, so how many bodies survive depends on the byte lengths
+// of the ones the turn's salience happened to spare. Measured over 12 consecutive renders of one
+// live 40-row audience (2026-08-17, record_version 98-106, all 40 rows active throughout and the
+// index within 13,863-14,217 chars): 3, 4 and 5 bodies all appeared while the bodies' own byte spend
+// stayed flat -- 5 bodies in 5,089 chars at rv 102 against 3 bodies in 5,104 chars at rv 106. Two
+// readings that differ by two bodies are therefore not evidence that the register changed, and a
+// per-body token cost read off one render does not carry to the next.
+//
+// That sweep is entirely pre-hoist and does not carry across the deploy that landed the hoist below.
+// Re-measured on the same register from the rendered prompt bytes (2026-08-17/18, rv 100-114, 40
+// index rows throughout): the index fell from 13,921-14,218 chars to 10,453-10,559 at the first
+// post-deploy render, and the bodies took nearly all of it back -- body spend 3,745-4,701 chars
+// before against 6,994-7,963 after, with the whole section still landing at 18,810-19,995 chars on
+// either side. The budget was re-allocated, not reduced. The count followed: 3-5 bodies pre-hoist
+// (three of nine renders at 3), 5-6 after, never below 5 in eight renders. So a body count read
+// before the hoist is not comparable to one read after it, and the one six-body render is the freed
+// index budget plus a turn whose spared bodies ran short (1,327 chars each at rv 109 against
+// 1,399-1,488 on the neighbouring five-body renders), not a register that grew.
 const DEFAULT_SHARED_STATE_MAX_TOKENS = 5_000;
 
 // Tunes reserved render slots by shared-state entry kind.
@@ -186,7 +219,35 @@ function formatSharedStateKindCounts(
   return parts.length === 0 ? "0 entries" : parts.join(", ");
 }
 
-function renderSharedStateEntry(entry: SharedStateEntry): string {
+// A supersede keeps the retracted body in the artifact and points it at its replacement, but
+// the active set is exactly the rows whose superseded_by_id is null -- so the predecessor drops
+// off this surface as completely as a prune deletes one. Without the backward pointer the
+// successor is indistinguishable from an entry that replaced nothing, and a retraction that
+// happened reads here as if it never did. The pointer is already on the record; only the render
+// was dropping it.
+function supersededPredecessorIdsBySuccessor(
+  artifact: SharedStateArtifact,
+): Map<string, string[]> {
+  const bySuccessor = new Map<string, string[]>();
+
+  for (const entry of artifact.entries) {
+    if (entry.superseded_by_id === null) {
+      continue;
+    }
+
+    bySuccessor.set(entry.superseded_by_id, [
+      ...(bySuccessor.get(entry.superseded_by_id) ?? []),
+      entry.id,
+    ]);
+  }
+
+  return bySuccessor;
+}
+
+function renderSharedStateEntry(
+  entry: SharedStateEntry,
+  supersededPredecessorIds: ReadonlyMap<string, string[]>,
+): string {
   const owner = entry.owner_entity_id === null ? "owner=null" : `owner=${entry.owner_entity_id}`;
   const stateKey = `state_key=${sharedStateKeyBucket(entry.state_key)}`;
   const citations = `[citation: ${entry.provenance_stream_entry_ids.join(", ")}]`;
@@ -196,8 +257,19 @@ function renderSharedStateEntry(entry: SharedStateEntry): string {
       ? ""
       : ` ${renderMemoryDisclosureLabelForModel(disclosureLabel)}`;
 
+  // A body rewritten by a later update carries one stamp for the whole text, so
+  // last_updated_at dates the newest sentence and nothing else. Surface created_at
+  // only when the two differ: on those entries the stamp does not date the body.
+  const created =
+    entry.created_at === entry.last_updated_at ? "" : ` created_at=${entry.created_at}`;
+
+  // Name what this entry retracted. Absent means it replaced nothing, so the field's absence
+  // carries as much as its presence -- the same predicate created_at uses one field over.
+  const predecessors = supersededPredecessorIds.get(entry.id) ?? [];
+  const supersedes = predecessors.length === 0 ? "" : ` supersedes=${predecessors.join(",")}`;
+
   return [
-    `- kind=${entry.kind} id=${entry.id} ${stateKey} ${owner} last_updated_at=${entry.last_updated_at}${disclosure} ${citations}`,
+    `- kind=${entry.kind} id=${entry.id} ${stateKey} ${owner}${created}${supersedes} last_updated_at=${entry.last_updated_at}${disclosure} ${citations}`,
     `  text: ${entry.text}`,
   ].join("\n");
 }
@@ -239,8 +311,10 @@ function latestSharedStateEntry(entries: readonly SharedStateEntry[]): SharedSta
 type SharedStateCompactIndexRow = {
   stateKey: string;
   kinds: SharedStateEntryKind[];
+  createdAt: number;
   lastUpdatedAt: number;
   activeCount: number;
+  supersededCount: number;
   excerpt: string;
   disclosureLabel: MemoryDisclosureLabel;
   expanded: boolean;
@@ -248,6 +322,7 @@ type SharedStateCompactIndexRow = {
 
 function buildSharedStateCompactIndexRows(input: {
   activeEntries: readonly SharedStateEntry[];
+  supersededPredecessorIds: ReadonlyMap<string, string[]>;
   expandedBuckets: ReadonlySet<string>;
 }): SharedStateCompactIndexRow[] {
   return entriesGroupedByStateKey(input.activeEntries).map((group) => {
@@ -259,8 +334,23 @@ function buildSharedStateCompactIndexRows(input: {
     return {
       stateKey: group.stateKey,
       kinds,
+      // The excerpt is the latest entry's body, so its created_at is what dates the
+      // text on this line -- the same span the expanded entry line reports.
+      createdAt: latestEntry.created_at,
       lastUpdatedAt: Math.max(...group.entries.map((entry) => entry.last_updated_at)),
       activeCount: group.entries.length,
+      // Reduced over the *active* rows only, so this is one hop deep: in a chain A -> B -> C the
+      // line prints 1, because B points at C and A points at a row that is no longer active. It
+      // is therefore a fact about the artifact's current population -- retracted rows still held
+      // against a still-live successor -- and not a running total of how often this key was
+      // corrected, which is what the name invites. The two readings coincide at depth 1 (a
+      // predecessor cannot be pruned alone: the cap walk only considers active rows and cascades
+      // to their predecessors), and they part at depth 2. The mark also dies with the survivor
+      // rather than with the retraction -- see the cascade note in lifecycle-cap.ts.
+      supersededCount: group.entries.reduce(
+        (sum, entry) => sum + (input.supersededPredecessorIds.get(entry.id)?.length ?? 0),
+        0,
+      ),
       excerpt: sharedStateCompactExcerpt(latestEntry.text),
       disclosureLabel: combineMemoryDisclosureLabels(
         group.entries.map((entry) => sharedStateEntryDisclosureLabel(entry)),
@@ -270,28 +360,139 @@ function buildSharedStateCompactIndexRows(input: {
   });
 }
 
+const SHARED_STATE_COMPACT_INDEX_FIELD_SEPARATOR = " | ";
+
+function sharedStateIndexDisclosureDefaultLine(fields: string): string {
+  return `  (disclosure label of every index row below that does not print its own: ${fields})`;
+}
+
+// What an index row prints for its own label, given whatever was hoisted above the index. With
+// nothing hoisted this is the long-standing shape: fields on every non-public row, nothing on a
+// public one. With a default hoisted, a row prints its fields exactly when they differ from that
+// default -- including a public row, which has to say so rather than inherit a private default by
+// silence.
+function sharedStateIndexDisclosureFields(
+  row: SharedStateCompactIndexRow,
+  hoistedFields: string | null,
+): string | null {
+  const fields = renderMemoryDisclosureLabelFieldsForModel(row.disclosureLabel);
+
+  if (hoistedFields === null) {
+    return row.disclosureLabel.disclosureClass === "public" ? null : fields;
+  }
+
+  return fields === hoistedFields ? null : fields;
+}
+
+// The disclosure fields are the largest term on an index line and, in a register whose rows all came
+// from the same audience, the same bytes over and over: measured on a live 40-row DM register
+// (2026-08-17, record_version 105) 34 of 40 lines carried one 106-char string and the other 6 a
+// 148-char variant, 4612 chars of the index's 15719 -- more than the state keys and more than the
+// whole remaining headroom before the single-entry floor trips. So hoist the most-repeated field
+// string to one line above the index and let the rows that differ print their own; a row saying
+// nothing is a row that carries the hoisted label, which the line above states in those words.
+// Nothing is dropped from any row -- this is the same compaction already applied to the constant
+// internal-use note, one field group over.
+//
+// The gate is the arithmetic, not a tuned threshold: hoisting only happens where repeating the
+// string costs more than stating it once plus what the exception rows then have to spend. Public
+// rows print no fields today, so they are never the hoist candidate, and where a non-public default
+// wins they must start printing their own class -- that added cost is charged to the gate below.
+function hoistedSharedStateIndexDisclosureFields(
+  rows: readonly SharedStateCompactIndexRow[],
+): string | null {
+  const countsByFields = new Map<string, number>();
+
+  for (const row of rows) {
+    if (row.disclosureLabel.disclosureClass === "public") {
+      continue;
+    }
+
+    const fields = renderMemoryDisclosureLabelFieldsForModel(row.disclosureLabel);
+
+    countsByFields.set(fields, (countsByFields.get(fields) ?? 0) + 1);
+  }
+
+  let candidate: { fields: string; count: number } | null = null;
+
+  for (const [fields, count] of countsByFields) {
+    const better =
+      candidate === null ||
+      count > candidate.count ||
+      (count === candidate.count && fields.length > candidate.fields.length);
+
+    if (better) {
+      candidate = { fields, count };
+    }
+  }
+
+  if (candidate === null) {
+    return null;
+  }
+
+  const savedChars =
+    candidate.count * (candidate.fields.length + SHARED_STATE_COMPACT_INDEX_FIELD_SEPARATOR.length);
+  const addedChars = rows
+    .filter((row) => row.disclosureLabel.disclosureClass === "public")
+    .reduce(
+      (sum, row) =>
+        sum +
+        renderMemoryDisclosureLabelFieldsForModel(row.disclosureLabel).length +
+        SHARED_STATE_COMPACT_INDEX_FIELD_SEPARATOR.length,
+      0,
+    );
+
+  return savedChars > sharedStateIndexDisclosureDefaultLine(candidate.fields).length + addedChars
+    ? candidate.fields
+    : null;
+}
+
 function renderSharedStateCompactIndexRows(rows: readonly SharedStateCompactIndexRow[]): string {
+  const hoistedDisclosureFields = hoistedSharedStateIndexDisclosureFields(rows);
   const lines = rows.map((row) =>
     [
       `- ${row.stateKey}`,
       `kinds=${row.kinds.join(",")}`,
+      // Same predicate as the expanded entry line: print the creation stamp only where it
+      // differs, so its absence means "body never rewritten" on an index line too. Without
+      // this the omitted rows -- the ones only ever seen through the index -- carry no
+      // signal either way, and absence there would read as unknown rather than unrewritten.
+      row.createdAt === row.lastUpdatedAt ? null : `created_at=${row.createdAt}`,
       `last_updated_at=${row.lastUpdatedAt}`,
       `active_count=${row.activeCount}`,
-      row.disclosureLabel.disclosureClass === "public"
-        ? null
-        : renderMemoryDisclosureLabelForModel(row.disclosureLabel),
+      // Only where something was retracted under this key, so an omitted row -- the only
+      // thing ever said about most entries -- can still tell a replacement from a first draft.
+      row.supersededCount === 0 ? null : `superseded_count=${row.supersededCount}`,
+      sharedStateIndexDisclosureFields(row, hoistedDisclosureFields),
       `excerpt=${JSON.stringify(row.excerpt)}`,
       row.expanded ? "expanded" : "omitted",
     ]
       .filter((part): part is string => part !== null)
-      .join(" | "),
+      .join(SHARED_STATE_COMPACT_INDEX_FIELD_SEPARATOR),
   );
 
-  return ["SharedStateArtifact compact active-key index:", ...lines].join("\n");
+  // The constant internal-use sentence is hoisted here rather than repeated per line. It stays a
+  // separate line from the hoisted fields above: this one says what non-public means for the rows
+  // that are non-public, which is true whether or not their fields happen to be repeated bytes.
+  const disclosureNote = rows.some((row) => row.disclosureLabel.disclosureClass !== "public")
+    ? [`  (rows below whose disclosure_class is not public: ${memoryDisclosureInternalUseNote()})`]
+    : [];
+  const disclosureDefault =
+    hoistedDisclosureFields === null
+      ? []
+      : [sharedStateIndexDisclosureDefaultLine(hoistedDisclosureFields)];
+
+  return [
+    "SharedStateArtifact compact active-key index:",
+    ...disclosureNote,
+    ...disclosureDefault,
+    ...lines,
+  ].join("\n");
 }
 
 function renderSharedStateCompactIndex(input: {
   activeEntries: readonly SharedStateEntry[];
+  supersededPredecessorIds: ReadonlyMap<string, string[]>;
   expandedBuckets: ReadonlySet<string>;
 }): string {
   return renderSharedStateCompactIndexRows(buildSharedStateCompactIndexRows(input));
@@ -311,6 +512,29 @@ function allActiveSharedStateKeysIndexed(input: {
   );
 }
 
+// The evidence ledger renders the artifact read at turn start, while the shared-state compile that
+// runs before the finalizer prompt is built can already have written a newer version to the store.
+// The rendered `record_version` and entry set are therefore a snapshot with a name, not a live
+// reading: *within* a turn, an unchanged `record_version` says nothing about whether this turn's own
+// compile has landed. *Across* turns it says everything. Every write commits in one transaction that
+// bumps `record_version` first under a CAS assert (see `bumpParent`), so no entry can reach the store
+// without advancing it -- while a compile pass that lands no accepted operation returns before it
+// touches the store at all. A rendered `record_version` equal to one rendered on an earlier turn is
+// therefore positive evidence that nothing was written in between. That is the *only* place in the
+// prompt where a wholly rejected compile leaves a mark; if this line does not say so, a run of
+// silently discarded writes is indistinguishable from a run of turns with nothing to write.
+const SHARED_STATE_SNAPSHOT_BASIS_LINE =
+  "snapshot_basis=turn_start (this artifact and its record_version were read before this turn's shared-state compile, which may already have advanced both; every write that reaches the store advances record_version in the same transaction, so a record_version equal to one rendered on an earlier turn means no shared-state write landed in between)";
+
+// Omission here is this render's token budget spent over the entries the store already returned as
+// active -- a different mechanism from the store's lifecycle cap, which is the one that deletes.
+// Without saying so, `omitted` on an index row next to a store known to evict at a cap reads as
+// "there is no room for this", and the entry's own body looks unreachable until something else
+// leaves. Nothing has to leave: the omitted rows are still active and unchanged, and what promotes
+// one into the rendered body is render salience (a current-turn update ranks first), not a free slot.
+const SHARED_STATE_OMISSION_BASIS_LINE =
+  "omission_basis=render_budget (omitted entries are still active and unchanged in the store; omission is this render's token budget over the active set, not the store's lifecycle cap, so expanding an omitted key costs render salience, not a stored slot)";
+
 function renderSharedStateArtifactContent(input: {
   artifact: SharedStateArtifact;
   activeEntries: readonly SharedStateEntry[];
@@ -319,6 +543,7 @@ function renderSharedStateArtifactContent(input: {
   renderedByKind: SharedStateKindCounts;
 }): string {
   const omittedCount = Object.values(input.omittedByKind).reduce((sum, count) => sum + count, 0);
+  const supersededPredecessorIds = supersededPredecessorIdsBySuccessor(input.artifact);
   const expandedBuckets = new Set(
     input.entries.map((entry) => sharedStateKeyBucket(entry.state_key)),
   );
@@ -328,6 +553,7 @@ function renderSharedStateArtifactContent(input: {
       : [
           `SharedStateArtifact omitted: ${formatSharedStateKindCounts(input.omittedByKind)}.`,
           `Retained: ${formatSharedStateKindCounts(input.renderedByKind)}.`,
+          SHARED_STATE_OMISSION_BASIS_LINE,
         ].join(" ");
 
   return [
@@ -335,13 +561,17 @@ function renderSharedStateArtifactContent(input: {
     "SharedStateArtifact: durable shared state for this audience. It is a compact structural anchor, not a policy source.",
     `audience_entity_id=${input.artifact.audience_entity_id}`,
     `record_version=${input.artifact.record_version}`,
+    SHARED_STATE_SNAPSHOT_BASIS_LINE,
     renderSharedStateCompactIndex({
       activeEntries: input.activeEntries,
+      supersededPredecessorIds,
       expandedBuckets,
     }),
     ...entriesGroupedByStateKey(input.entries).flatMap((group) => [
       `state_key_bucket=${group.stateKey}`,
-      ...group.entries.map(renderSharedStateEntry),
+      ...group.entries.map((groupEntry) =>
+        renderSharedStateEntry(groupEntry, supersededPredecessorIds),
+      ),
     ]),
     omission,
   ]
@@ -349,6 +579,16 @@ function renderSharedStateArtifactContent(input: {
     .join("\n");
 }
 
+// The zero-body render that carries a reason. Reached from exactly one place -- the single-entry cap
+// below, after the drop loops have already narrowed to one entry that still does not fit -- so it is
+// never "the budget bought no bodies at all". That outcome is the drop loop stopping at three or four
+// bodies, which is a different code path with a different surface. What gates this one is
+// SHARED_STATE_SINGLE_ENTRY_FLOOR_TOKENS measured against the compact index, not against the body
+// pool: the index's token cost keeps growing with key length and per-row optional fields long after
+// its line count has hit the active-entry cap, so a full index is not a bounded index. The other
+// zero-body outcome renders through renderSharedStateArtifactContent with an empty entry list (see
+// `remainingTokens <= 0` below); the two are told apart by the footer, which prints `Retained:` with
+// zero counts there and `Reason:` here.
 function renderSharedStateArtifactOmissionOnly(input: {
   artifact: SharedStateArtifact;
   activeEntries: readonly SharedStateEntry[];
@@ -360,13 +600,15 @@ function renderSharedStateArtifactOmissionOnly(input: {
     "SharedStateArtifact: durable shared state for this audience. It is a compact structural anchor, not a policy source.",
     `audience_entity_id=${input.artifact.audience_entity_id}`,
     `record_version=${input.artifact.record_version}`,
+    SHARED_STATE_SNAPSHOT_BASIS_LINE,
     renderSharedStateCompactIndex({
       activeEntries: input.activeEntries,
+      supersededPredecessorIds: supersededPredecessorIdsBySuccessor(input.artifact),
       expandedBuckets: new Set(),
     }),
     `SharedStateArtifact omitted: ${formatSharedStateKindCounts(
       input.omittedByKind,
-    )}. Reason: ${input.reason}.`,
+    )}. Reason: ${input.reason}. ${SHARED_STATE_OMISSION_BASIS_LINE}`,
   ].join("\n");
 }
 
@@ -471,6 +713,10 @@ function renderTruncatedEntriesWithinSharedStateArtifactCap(input: {
   });
   const remainingTokens = input.maxTokens - estimatePromptTokens(emptyEntryContent);
 
+  // The second zero-body outcome, and not the omission-only one above: this keeps the full content
+  // shape with no entries, so it still prints `Retained:` (all zeros) and never a reason string.
+  // Reaching it takes an index that exceeds the whole budget on its own -- one step past the floor
+  // that trips the omission-only render.
   if (remainingTokens <= 0) {
     return {
       content: renderSharedStateArtifactContent({
@@ -752,6 +998,21 @@ function cappedSharedStateArtifactRender(input: {
     renderedByKind: counts.renderedByKind,
   });
 
+  // The stopping condition here and in both loops below is the token total and nothing else --
+  // there is no target, band or floor for how many bodies survive. The retained count is a
+  // residual: the budget left after the compact index, divided by the actual lengths of the
+  // bodies that happen to rank highest. So it moves without anything about the render changing,
+  // and reading a change in it as a change in policy is a misreading. Measured over one audience's
+  // record_versions 66-127, retained bodies against mean body length in characters: 2 bodies at
+  // 1,994-2,113; 3 at 1,310-1,862; 4 at 1,090-1,426; 5 at 1,029-1,711; 6 at 946-1,412; 7 at 1,186 --
+  // monotone, with the body pool itself near-constant (the section lands at 18.4k-20.0k chars in
+  // every one of those versions).
+  //
+  // The corollary matters more than the mechanism: rewriting one entry longer costs a slot that
+  // some other entry was occupying. Two keys in that series grew by ~900 chars each across eleven
+  // versions and the render went from seven bodies to five with the pool unchanged. An update is
+  // therefore not free at render time even though it is free at the store's cap, and the entry it
+  // evicts is not the one that grew.
   while (estimatePromptTokens(content) > options.maxTokens && entries.length > 1) {
     const dropIndex = tokenDropIndex({
       entries,
@@ -830,6 +1091,7 @@ function cappedSharedStateArtifactRender(input: {
   const expandedBuckets = new Set(entries.map((entry) => sharedStateKeyBucket(entry.state_key)));
   const compactIndexRows = buildSharedStateCompactIndexRows({
     activeEntries,
+    supersededPredecessorIds: supersededPredecessorIdsBySuccessor(input.artifact),
     expandedBuckets,
   });
   const indexedStateKeyBuckets = new Set(compactIndexRows.map((row) => row.stateKey));

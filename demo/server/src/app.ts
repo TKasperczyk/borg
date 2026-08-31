@@ -743,15 +743,27 @@ export function ensureDemoSession(
     sourceExternalId?: string | null;
   },
 ) {
+  // sessions.ensure() upserts source_type unconditionally, so typing every demo-route
+  // write as DEMO_SOURCE_TYPE would re-label a session a connector owns. Session
+  // source_type is a trust key -- peer-channel frame tolerance and the internal-identifier
+  // guard's substrate-privileged exemption both read it -- so a demo HTTP call into a
+  // connector-owned session must not silently downgrade it. Adopt the stored type,
+  // and its transport identity with it, whenever the session already exists.
+  const existing = borg.sessions.get(input.sessionId);
+  const sourceExternalId = input.sourceExternalId ?? existing?.source_external_id ?? null;
+
   return borg.sessions.ensure({
     session_id: input.sessionId,
-    source_type: DEMO_SOURCE_TYPE,
-    source_external_id: input.sourceExternalId ?? null,
-    source_url: null,
-    label: input.label ?? demoSessionLabel(input.sessionId),
-    audience_label: input.audienceLabel ?? DEMO_DEFAULT_AUDIENCE_LABEL,
-    audience_entity_id: input.audienceEntityId ?? null,
-    conversation_kind: DEMO_CONVERSATION_KIND,
+    source_type: existing?.source_type ?? DEMO_SOURCE_TYPE,
+    source_external_id: sourceExternalId,
+    source_url: existing?.source_url ?? null,
+    label: input.label ?? existing?.label ?? demoSessionLabel(input.sessionId),
+    // sessions.ensure() overwrites both audience columns unconditionally, so a caller
+    // that does not name an audience must adopt the stored one rather than re-stamp the
+    // demo default over it -- the same adoption the source/label fields above rely on.
+    audience_label: input.audienceLabel ?? existing?.audience_label ?? DEMO_DEFAULT_AUDIENCE_LABEL,
+    audience_entity_id: input.audienceEntityId ?? existing?.audience_entity_id ?? null,
+    conversation_kind: existing?.conversation_kind ?? DEMO_CONVERSATION_KIND,
     ...(input.audienceRole === undefined ? {} : { audience_role: input.audienceRole }),
   });
 }
@@ -782,10 +794,12 @@ export function ensureDemoDefaultSession(
 ) {
   ensureDemoCreator(borg, options.demoCreatorEntityName ?? DEMO_DEFAULT_CREATOR_ENTITY_NAME);
 
-  return ensureDemoSession(borg, {
-    sessionId: DEFAULT_SESSION_ID,
-    audienceLabel: DEMO_DEFAULT_AUDIENCE_LABEL,
-  });
+  // Seed the demo persona only when this session does not exist yet. A deployment whose
+  // default session is the entity's own autonomous space (wakes, reflection, offline work
+  // -- no other participant in the room) sets its audience once; re-passing the demo
+  // default here would re-stamp that on every boot, and every record written in the
+  // session inherits its audience as origin provenance.
+  return ensureDemoSession(borg, { sessionId: DEFAULT_SESSION_ID });
 }
 
 export function ensureDemoOperatorSession(borg: Borg) {
@@ -4290,7 +4304,10 @@ export function createDemoServerApp(args: DemoServerAppInput) {
       });
       const sourceExternalId = existingSession?.source_external_id ?? sessionId;
       const sourceMessageKey = {
-        source_type: DEMO_SOURCE_TYPE,
+        // enqueueMessage requires the message key to match the session's transport, and
+        // ensureDemoSession preserves a connector-owned session's type, so posting into
+        // such a session must adopt that transport rather than assert the demo one.
+        source_type: existingSession?.source_type ?? DEMO_SOURCE_TYPE,
         source_external_id: sourceExternalId,
         external_message_id: body.external_message_id,
       };

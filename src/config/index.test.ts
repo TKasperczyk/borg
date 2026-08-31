@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET } from "../cognition/deliberation/constants.js";
 import { OFFLINE_PROCESS_NAMES } from "../contracts/offline-process.js";
 import { writeJsonFileAtomic } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
@@ -33,9 +34,9 @@ describe("config", () => {
     expect(config.anthropic.auth).toBe("auto");
     expect(config.anthropic.apiKey).toBeUndefined();
     expect(config.anthropic.models).toEqual({
-      cognition: "claude-opus-4-6",
-      background: "claude-opus-4-6",
-      extraction: "claude-opus-4-6",
+      cognition: "claude-opus-5",
+      background: "claude-opus-5",
+      extraction: "claude-opus-5",
       recallExpansion: "claude-haiku-4-5-20251001",
       creatorDirective: "claude-sonnet-4-6",
       imagePerception: "claude-haiku-4-5-20251001",
@@ -53,6 +54,7 @@ describe("config", () => {
     expect(config.host_capabilities).toContain("Proactive outbound messaging");
     expect(config.perception.llmEnabled).toBe(true);
     expect(config.frameAnomaly.peerChannelSourceTypes).toEqual(["kira"]);
+    expect(config.internalIdentifierGuard.substratePrivilegedSourceTypes).toEqual([]);
     expect(config.affective.llmEnabled).toBe(true);
     expect(config.episodic.salienceGateEnabled).toBe(true);
     expect(config.offline.curator.episodeDecayIntervalMs).toBe(24 * 60 * 60 * 1_000);
@@ -87,6 +89,7 @@ describe("config", () => {
       maxSelfDecisionEventsPerDay: 96,
       maxActivityEventsPerDay: 256,
       maxEpisodesPerDay: 12,
+      maxActionRecordsPerDay: 64,
     });
     expect(config.offline.overseer.budget).toBeNull();
     expect(config.maintenance.lightProcesses).toEqual([
@@ -121,6 +124,7 @@ describe("config", () => {
     ).toBe(OFFLINE_PROCESS_NAMES.length);
     expect(config.executive.goalFocusThreshold).toBe(0.45);
     expect(config.autonomy.maxWakesPerWindow).toBe(6);
+    expect(config.autonomy.goalWakeBatchMax).toBe(5);
     expect(config.autonomy.budgetWindowMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.autonomy.reservedContemplativeWakesPerWindow).toBe(1);
     expect(config.autonomy.proactiveOutbound).toEqual({
@@ -162,6 +166,14 @@ describe("config", () => {
       enabled: true,
       cooldownTurns: 5,
     });
+    expect(config.deliberation.planRequestedVerificationMembershipTokenBudget).toBe(
+      DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
+    );
+    expect(config.deliberation.finalizerDynamicPromptCacheEnabled).toBe(true);
+    expect(config.deliberation.finalizerSurfaceVariant).toBe("legacy");
+    expect(config.deliberation.finalizerContextCaptureSampleRate).toBe(0);
+    expect(config.deliberation.plannerSurfaceVariant).toBe("compact");
+    expect(config.deliberation.plannerContextCaptureSampleRate).toBe(0);
     expect(config.commitments).toEqual({
       enforce: {
         regenerateBeforeSuppress: true,
@@ -174,6 +186,8 @@ describe("config", () => {
       actionThreadRenderLimit: 12,
       actionThreadSimilarityThreshold: 0.85,
       actionThreadSourceRecordLimit: 256,
+      actionThreadSalienceClassReservedSlots: 1,
+      actionThreadAudienceReservedSlots: 1,
       finalizerTargetTokens: 60_000,
       finalizerHardCapTokens: 100_000,
       finalizerMaxEntryTextTokens: 1_200,
@@ -252,6 +266,188 @@ describe("config", () => {
     expect(configSchema.parse({})).toEqual(DEFAULT_CONFIG);
   });
 
+  it("allows the finalizer dynamic prompt cache breakpoint to be disabled", () => {
+    const config = configSchema.parse({
+      deliberation: {
+        finalizerDynamicPromptCacheEnabled: false,
+      },
+    });
+
+    expect(config.deliberation.finalizerDynamicPromptCacheEnabled).toBe(false);
+  });
+
+  it("honors the plan-requested verification membership budget environment override", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      deliberation: {
+        planRequestedVerificationMembershipTokenBudget: 64_000,
+      },
+    });
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {
+        BORG_DELIBERATION_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET: "12000",
+      },
+    });
+
+    expect(config.deliberation.planRequestedVerificationMembershipTokenBudget).toBe(12_000);
+  });
+
+  it.each([
+    ["zero", "0"],
+    ["negative", "-1"],
+    ["NaN", "NaN"],
+  ])("rejects a %s plan-requested verification membership budget", (_label, value) => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    expect(() =>
+      loadConfig({
+        dataDir: tempDir,
+        env: {
+          BORG_DELIBERATION_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET: value,
+        },
+      }),
+    ).toThrow(ConfigError);
+  });
+
+  it("allows an immediate rollback to the legacy planner surface", () => {
+    const config = configSchema.parse({
+      deliberation: {
+        plannerSurfaceVariant: "legacy",
+      },
+    });
+
+    expect(config.deliberation.plannerSurfaceVariant).toBe("legacy");
+  });
+
+  it("defaults the finalizer diet to the byte-identical legacy surface", () => {
+    expect(configSchema.parse({}).deliberation.finalizerSurfaceVariant).toBe("legacy");
+    expect(configSchema.parse({}).deliberation.finalizerContextCaptureSampleRate).toBe(0);
+  });
+
+  it("accepts the conversationally scoped finalizer surface policy", () => {
+    const config = configSchema.parse({
+      deliberation: { finalizerSurfaceVariant: "compact_conversational" },
+    });
+
+    expect(config.deliberation.finalizerSurfaceVariant).toBe("compact_conversational");
+  });
+
+  it("lets finalizer surface and capture environment overrides take precedence", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      deliberation: {
+        finalizerSurfaceVariant: "legacy",
+        finalizerContextCaptureSampleRate: 0.1,
+      },
+    });
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {
+        BORG_DELIBERATION_FINALIZER_SURFACE_VARIANT: "compact",
+        BORG_DELIBERATION_FINALIZER_CONTEXT_CAPTURE_SAMPLE_RATE: "0.75",
+      },
+    });
+
+    expect(config.deliberation.finalizerSurfaceVariant).toBe("compact");
+    expect(config.deliberation.finalizerContextCaptureSampleRate).toBe(0.75);
+  });
+
+  it("accepts the conversationally scoped finalizer policy from the existing environment flag", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      deliberation: { finalizerSurfaceVariant: "compact" },
+    });
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: { BORG_DELIBERATION_FINALIZER_SURFACE_VARIANT: "compact_conversational" },
+    });
+
+    expect(config.deliberation.finalizerSurfaceVariant).toBe("compact_conversational");
+  });
+
+  it("rejects invalid finalizer surface and capture environment overrides", () => {
+    const firstDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const secondDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(firstDir, secondDir);
+    expect(() =>
+      loadConfig({
+        dataDir: firstDir,
+        env: { BORG_DELIBERATION_FINALIZER_SURFACE_VARIANT: "experimental" },
+      }),
+    ).toThrow(ConfigError);
+    expect(() =>
+      loadConfig({
+        dataDir: secondDir,
+        env: { BORG_DELIBERATION_FINALIZER_CONTEXT_CAPTURE_SAMPLE_RATE: "1.1" },
+      }),
+    ).toThrow(ConfigError);
+  });
+
+  it("lets the planner surface environment override take precedence over the config file", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      deliberation: { plannerSurfaceVariant: "compact" },
+    });
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: { BORG_DELIBERATION_PLANNER_SURFACE_VARIANT: "legacy" },
+    });
+
+    expect(config.deliberation.plannerSurfaceVariant).toBe("legacy");
+  });
+
+  it("rejects an invalid planner surface environment override", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    expect(() =>
+      loadConfig({
+        dataDir: tempDir,
+        env: { BORG_DELIBERATION_PLANNER_SURFACE_VARIANT: "experimental" },
+      }),
+    ).toThrow(ConfigError);
+  });
+
+  it("lets the planner context capture sample-rate environment override take precedence", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      deliberation: { plannerContextCaptureSampleRate: 0.1 },
+    });
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: { BORG_DELIBERATION_PLANNER_CONTEXT_CAPTURE_SAMPLE_RATE: "0.75" },
+    });
+
+    expect(config.deliberation.plannerContextCaptureSampleRate).toBe(0.75);
+  });
+
+  it.each(["-0.01", "1.01", "not-a-number"])(
+    "rejects invalid planner context capture sample rate %s",
+    (sampleRate) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+      tempDirs.push(tempDir);
+
+      expect(() =>
+        loadConfig({
+          dataDir: tempDir,
+          env: { BORG_DELIBERATION_PLANNER_CONTEXT_CAPTURE_SAMPLE_RATE: sampleRate },
+        }),
+      ).toThrow(ConfigError);
+    },
+  );
+
   it("loads frame-anomaly peer channel source types from config", () => {
     const config = configSchema.parse({
       frameAnomaly: {
@@ -260,6 +456,19 @@ describe("config", () => {
     });
 
     expect(config.frameAnomaly.peerChannelSourceTypes).toEqual(["kira", "peerlink"]);
+  });
+
+  it("loads substrate-privileged source types for the internal-identifier guard", () => {
+    const config = configSchema.parse({
+      internalIdentifierGuard: {
+        substratePrivilegedSourceTypes: ["claude_code", "peerlink"],
+      },
+    });
+
+    expect(config.internalIdentifierGuard.substratePrivilegedSourceTypes).toEqual([
+      "claude_code",
+      "peerlink",
+    ]);
   });
 
   it("accepts deprecated llm fallback aliases as llmEnabled config", () => {
@@ -429,12 +638,14 @@ describe("config", () => {
       dataDir: tempDir,
       env: {
         BORG_AUTONOMY_MAX_WAKES_PER_WINDOW: "9",
+        BORG_AUTONOMY_GOAL_WAKE_BATCH_MAX: "4",
         BORG_AUTONOMY_BUDGET_WINDOW_MS: "7200000",
         BORG_AUTONOMY_RESERVED_CONTEMPLATIVE_WAKES_PER_WINDOW: "2",
       },
     });
 
     expect(config.autonomy.maxWakesPerWindow).toBe(9);
+    expect(config.autonomy.goalWakeBatchMax).toBe(4);
     expect(config.autonomy.budgetWindowMs).toBe(7_200_000);
     expect(config.autonomy.reservedContemplativeWakesPerWindow).toBe(2);
   });
@@ -654,6 +865,8 @@ describe("config", () => {
         BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_RENDER_LIMIT: "8",
         BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SIMILARITY_THRESHOLD: "0.9",
         BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SOURCE_RECORD_LIMIT: "128",
+        BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS: "2",
+        BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS: "3",
         BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_TARGET_TOKENS: "60000",
         BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_HARD_CAP_TOKENS: "100000",
         BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_MAX_ENTRY_TEXT_TOKENS: "900",
@@ -720,6 +933,8 @@ describe("config", () => {
     expect(config.generation.evidenceLedger.actionThreadRenderLimit).toBe(8);
     expect(config.generation.evidenceLedger.actionThreadSimilarityThreshold).toBe(0.9);
     expect(config.generation.evidenceLedger.actionThreadSourceRecordLimit).toBe(128);
+    expect(config.generation.evidenceLedger.actionThreadSalienceClassReservedSlots).toBe(2);
+    expect(config.generation.evidenceLedger.actionThreadAudienceReservedSlots).toBe(3);
     expect(config.generation.evidenceLedger.finalizerTargetTokens).toBe(60_000);
     expect(config.generation.evidenceLedger.finalizerHardCapTokens).toBe(100_000);
     expect(config.generation.evidenceLedger.finalizerMaxEntryTextTokens).toBe(900);
@@ -817,9 +1032,9 @@ describe("config", () => {
 
   it("defaults recall expansion to the dedicated Haiku slot", () => {
     expect(DEFAULT_CONFIG.anthropic.models).toEqual({
-      cognition: "claude-opus-4-6",
-      background: "claude-opus-4-6",
-      extraction: "claude-opus-4-6",
+      cognition: "claude-opus-5",
+      background: "claude-opus-5",
+      extraction: "claude-opus-5",
       recallExpansion: "claude-haiku-4-5-20251001",
       creatorDirective: "claude-sonnet-4-6",
       imagePerception: "claude-haiku-4-5-20251001",
@@ -993,6 +1208,11 @@ describe("config", () => {
   it("redacts secrets for display", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      internalIdentifierGuard: {
+        substratePrivilegedSourceTypes: ["claude_code"],
+      },
+    });
 
     const config = loadConfig({
       dataDir: tempDir,
@@ -1004,6 +1224,9 @@ describe("config", () => {
     expect(redactConfig(config)).toMatchObject({
       frameAnomaly: {
         peerChannelSourceTypes: ["kira"],
+      },
+      internalIdentifierGuard: {
+        substratePrivilegedSourceTypes: ["claude_code"],
       },
       embedding: {
         apiKey: "[REDACTED]",

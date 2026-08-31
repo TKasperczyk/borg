@@ -27,13 +27,13 @@ import type {
   TracePhase,
 } from "./types.js";
 
-export const ASSESSOR_MODEL = "claude-opus-4-6";
+export const ASSESSOR_MODEL = "claude-opus-5";
 
 const OAUTH_BETAS = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14";
 const OAUTH_USER_AGENT = "claude-cli/2.1.2 (external, cli)";
 const DEFAULT_MAX_ASSESSOR_LLM_CALLS = 30;
 
-// Opus 4.6 via OAuth rejects temperature:0 with a 400; omit temperature
+// Opus via OAuth rejects temperature:0 with a 400; omit temperature
 // for Opus models entirely. Verdicts are structured (submit_verdict tool
 // with a status enum) so determinism does not depend on temperature.
 function isOpusModel(model: string): boolean {

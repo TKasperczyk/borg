@@ -2,22 +2,32 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { Borg } from "../../borg.js";
+import { executiveMigrations, ExecutiveStepsRepository } from "../../executive/index.js";
+import { GoalsRepository, selfMigrations } from "../../memory/self/index.js";
 import { createTestConfig, TestEmbeddingClient } from "../../offline/test-support.js";
+import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
 import {
   ToolDispatcher,
+  createGoalsRetireTool,
   createOpenQuestionsCreateTool,
   type ToolDefinition,
 } from "../../tools/index.js";
 import { ManualClock } from "../../util/clock.js";
+import { LLMError } from "../../util/errors.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { type LLMContentBlockMessage, type LLMConverseOptions } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
-import { executeToolLoop } from "./tool-loop.js";
+import { FinalizerToolTranscriptCollector } from "../deliberation/finalizer-tool-transcript.js";
+import {
+  AUTONOMOUS_TOOL_LOOP_TOOL_ROUND_BUDGET_MS,
+  AUTONOMOUS_TOOL_LOOP_WALL_CLOCK_BUDGET_MS,
+  executeToolLoop,
+} from "./tool-loop.js";
 
 function createDispatcher(tempDir: string, clock = new ManualClock(1_000)): ToolDispatcher {
   return new ToolDispatcher({
@@ -924,6 +934,542 @@ describe("executeToolLoop", () => {
       error: "max_tool_calls_per_iteration",
       duration_ms: 0,
     });
+  });
+
+  it("allows five real goal retirements plus follow-up work across six autonomous tool rounds", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_000);
+    const db = openDatabase(":memory:", {
+      migrations: composeMigrations(selfMigrations, executiveMigrations),
+    });
+    const executiveStepsRepository = new ExecutiveStepsRepository({ db, clock });
+    const goalsRepository = new GoalsRepository({ db, clock, executiveStepsRepository });
+    const goals = Array.from({ length: 5 }, (_, index) =>
+      goalsRepository.add({
+        description: `Autonomous batch goal ${index + 1}`,
+        priority: 10 - index,
+        provenance: { kind: "manual" },
+      }),
+    );
+    const dispatcher = createDispatcher(tempDir, clock);
+    dispatcher.register(createGoalsRetireTool({ goalsRepository }));
+    dispatcher.register({
+      name: "tool.test.autonomous-followup",
+      description: "Apply journal or step work after the goal retirements.",
+      allowedOrigins: ["autonomous"],
+      writeScope: "write",
+      inputSchema: z.object({ ordinal: z.number().int().positive() }).strict(),
+      outputSchema: z.object({ applied: z.number().int().positive() }).strict(),
+      async invoke(input: { ordinal: number }) {
+        return { applied: input.ordinal };
+      },
+    });
+    const retirementCall = (goal: (typeof goals)[number], ordinal: number) => ({
+      type: "tool_use" as const,
+      id: `toolu_autonomous_${ordinal}`,
+      name: "tool.goals.retire",
+      input: {
+        goal_id: goal.id,
+        reason: "The batched wake verified that this goal is complete.",
+      },
+    });
+    const followupCall = (ordinal: number) => ({
+      type: "tool_use" as const,
+      id: `toolu_autonomous_${ordinal}`,
+      name: "tool.test.autonomous-followup",
+      input: { ordinal },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        goals.map(retirementCall),
+        [followupCall(6)],
+        [followupCall(7)],
+        [followupCall(8)],
+        [followupCall(9)],
+        [followupCall(10)],
+        "finished ten goal-scoped actions",
+      ],
+    });
+
+    try {
+      const result = await executeToolLoop({
+        llmClient: llm,
+        dispatcher,
+        sessionId: DEFAULT_SESSION_ID,
+        model: "fake",
+        systemPrompt: "Act on every presented goal before finishing.",
+        initialMessages: baseMessages(),
+        tools: dispatcher.listTools("autonomous"),
+        origin: "autonomous",
+        budget: "test",
+      });
+
+      expect(result).toMatchObject({
+        text: "finished ten goal-scoped actions",
+        iterations: 6,
+        stopReason: "text",
+      });
+      expect(result.toolCallsMade).toHaveLength(10);
+      expect(result.toolCallsMade.every((call) => call.ok)).toBe(true);
+      expect(result.toolCallsMade.slice(0, 5).map((call) => call.name)).toEqual(
+        Array(5).fill("tool.goals.retire"),
+      );
+      expect(goals.map((goal) => goalsRepository.get(goal.id)?.status)).toEqual(
+        Array(5).fill("abandoned"),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("runs the eighth autonomous tool round and forces the ninth request to finalize", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(2_000);
+    const dispatcher = createDispatcher(tempDir, clock);
+    const tool: ToolDefinition = {
+      name: "tool.test.eight-round-boundary",
+      description: "Record one autonomous boundary action.",
+      allowedOrigins: ["autonomous"],
+      writeScope: "write",
+      inputSchema: z.object({ round: z.number().int().positive() }).strict(),
+      outputSchema: z.object({ round: z.number().int().positive() }).strict(),
+      async invoke(input: { round: number }) {
+        return input;
+      },
+    };
+    dispatcher.register(tool);
+    const llm = new FakeLLMClient({
+      responses: [
+        ...Array.from({ length: 8 }, (_, index) => [
+          {
+            type: "tool_use" as const,
+            id: `toolu_round_${index + 1}`,
+            name: tool.name,
+            input: { round: index + 1 },
+          },
+        ]),
+        "finalized after eight rounds",
+      ],
+    });
+
+    const result = await executeToolLoop({
+      llmClient: llm,
+      dispatcher,
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      initialMessages: baseMessages(),
+      tools: [tool],
+      origin: "autonomous",
+      budget: "test",
+      clock,
+    });
+
+    expect(result).toMatchObject({
+      text: "finalized after eight rounds",
+      iterations: 8,
+      stopReason: "max_iterations",
+    });
+    expect(result.toolCallsMade).toHaveLength(8);
+    expect(llm.converseRequests).toHaveLength(9);
+    expect(llm.converseRequests.slice(0, 8).every((request) => request.tools !== undefined)).toBe(
+      true,
+    );
+    expect(llm.converseRequests[8]?.tools).toBeUndefined();
+  });
+
+  it("dispatches five autonomous calls in one round and skips the sixth", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(3_000);
+    const dispatcher = createDispatcher(tempDir, clock);
+    const invoked: number[] = [];
+    const tool: ToolDefinition = {
+      name: "tool.test.five-call-boundary",
+      description: "Record one autonomous per-round action.",
+      allowedOrigins: ["autonomous"],
+      writeScope: "write",
+      inputSchema: z.object({ ordinal: z.number().int().positive() }).strict(),
+      outputSchema: z.object({ ordinal: z.number().int().positive() }).strict(),
+      async invoke(input: { ordinal: number }) {
+        invoked.push(input.ordinal);
+        return input;
+      },
+    };
+    dispatcher.register(tool);
+    const llm = new FakeLLMClient({
+      responses: [
+        Array.from({ length: 6 }, (_, index) => ({
+          type: "tool_use" as const,
+          id: `toolu_call_${index + 1}`,
+          name: tool.name,
+          input: { ordinal: index + 1 },
+        })),
+        "continued after the capped round",
+      ],
+    });
+
+    const result = await executeToolLoop({
+      llmClient: llm,
+      dispatcher,
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      initialMessages: baseMessages(),
+      tools: [tool],
+      origin: "autonomous",
+      budget: "test",
+      clock,
+    });
+
+    expect(invoked).toEqual([1, 2, 3, 4, 5]);
+    expect(result.toolCallsMade).toHaveLength(6);
+    expect(result.toolCallsMade.slice(0, 5).every((call) => call.ok)).toBe(true);
+    expect(result.toolCallsMade[5]).toMatchObject({
+      callId: "toolu_call_6",
+      ok: false,
+    });
+  });
+
+  it("honors explicit autonomous iteration and per-round call overrides", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(4_000);
+    const dispatcher = createDispatcher(tempDir, clock);
+    const invoked: number[] = [];
+    const tool: ToolDefinition = {
+      name: "tool.test.autonomous-override",
+      description: "Record one overridden autonomous action.",
+      allowedOrigins: ["autonomous"],
+      writeScope: "write",
+      inputSchema: z.object({ ordinal: z.number().int().positive() }).strict(),
+      outputSchema: z.object({ ordinal: z.number().int().positive() }).strict(),
+      async invoke(input: { ordinal: number }) {
+        invoked.push(input.ordinal);
+        return input;
+      },
+    };
+    dispatcher.register(tool);
+    const llm = new FakeLLMClient({
+      responses: [
+        [
+          { type: "tool_use", id: "toolu_override_1", name: tool.name, input: { ordinal: 1 } },
+          { type: "tool_use", id: "toolu_override_2", name: tool.name, input: { ordinal: 2 } },
+        ],
+        "finalized under explicit overrides",
+      ],
+    });
+
+    const result = await executeToolLoop({
+      llmClient: llm,
+      dispatcher,
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      initialMessages: baseMessages(),
+      tools: [tool],
+      origin: "autonomous",
+      budget: "test",
+      maxIterations: 1,
+      maxToolCallsPerIteration: 1,
+      clock,
+    });
+
+    expect(invoked).toEqual([1]);
+    expect(result).toMatchObject({ iterations: 1, stopReason: "max_iterations" });
+    expect(result.toolCallsMade).toHaveLength(2);
+    expect(result.toolCallsMade[1]?.ok).toBe(false);
+    expect(llm.converseRequests[1]?.tools).toBeUndefined();
+  });
+
+  it("cuts off tool rounds at the autonomous wall-clock boundary and still finalizes", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(5_000);
+    const dispatcher = createDispatcher(tempDir, clock);
+    const tool: ToolDefinition = {
+      name: "tool.test.autonomous-wall-clock",
+      description: "Record one near-deadline autonomous action.",
+      allowedOrigins: ["autonomous"],
+      writeScope: "write",
+      inputSchema: z.object({ round: z.number().int().positive() }).strict(),
+      outputSchema: z.object({ round: z.number().int().positive() }).strict(),
+      async invoke(input: { round: number }) {
+        return input;
+      },
+    };
+    dispatcher.register(tool);
+    const toolCall = (round: number) => [
+      {
+        type: "tool_use" as const,
+        id: `toolu_deadline_${round}`,
+        name: tool.name,
+        input: { round },
+      },
+    ];
+    const llm = new FakeLLMClient({
+      responses: [
+        () => {
+          clock.advance(AUTONOMOUS_TOOL_LOOP_TOOL_ROUND_BUDGET_MS - 1);
+          return toolCall(1);
+        },
+        () => {
+          clock.advance(1);
+          return toolCall(2);
+        },
+        "finalized after the wall-clock cutoff",
+      ],
+    });
+
+    const result = await executeToolLoop({
+      llmClient: llm,
+      dispatcher,
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      initialMessages: baseMessages(),
+      tools: [tool],
+      origin: "autonomous",
+      budget: "test",
+      clock,
+    });
+
+    expect(AUTONOMOUS_TOOL_LOOP_WALL_CLOCK_BUDGET_MS).toBe(24 * 60_000);
+    expect(result).toMatchObject({
+      text: "finalized after the wall-clock cutoff",
+      iterations: 2,
+      stopReason: "max_iterations",
+    });
+    expect(result.toolCallsMade).toHaveLength(2);
+    expect(llm.converseRequests.map((request) => request.timeoutMs)).toEqual([
+      12 * 60_000,
+      1,
+      12 * 60_000,
+    ]);
+    expect(llm.converseRequests[0]?.tools).toBeDefined();
+    expect(llm.converseRequests[1]?.tools).toBeDefined();
+    expect(llm.converseRequests[2]?.tools).toBeUndefined();
+  });
+
+  it("returns completed work instead of throwing when the final wall-clock allowance expires", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(6_000);
+    const dispatcher = createDispatcher(tempDir, clock);
+    const tool: ToolDefinition = {
+      name: "tool.test.autonomous-hard-deadline",
+      description: "Record work completed before the hard deadline.",
+      allowedOrigins: ["autonomous"],
+      writeScope: "write",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({ applied: z.literal(true) }).strict(),
+      async invoke() {
+        return { applied: true } as const;
+      },
+    };
+    dispatcher.register(tool);
+    const llm = new FakeLLMClient({
+      responses: [
+        () => {
+          clock.advance(AUTONOMOUS_TOOL_LOOP_TOOL_ROUND_BUDGET_MS);
+          return [{ type: "tool_use" as const, id: "toolu_before_deadline", name: tool.name, input: {} }];
+        },
+        () => {
+          clock.advance(
+            AUTONOMOUS_TOOL_LOOP_WALL_CLOCK_BUDGET_MS - AUTONOMOUS_TOOL_LOOP_TOOL_ROUND_BUDGET_MS,
+          );
+          throw new LLMError("Final wall-clock allowance expired", {
+            code: "LLM_CALL_TIMED_OUT",
+          });
+        },
+      ],
+    });
+
+    const result = await executeToolLoop({
+      llmClient: llm,
+      dispatcher,
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      initialMessages: baseMessages(),
+      tools: [tool],
+      origin: "autonomous",
+      budget: "test",
+      clock,
+    });
+
+    expect(result).toMatchObject({
+      iterations: 1,
+      stopReason: "max_iterations",
+    });
+    expect(result.toolCallsMade).toHaveLength(1);
+    expect(result.toolCallsMade[0]?.ok).toBe(true);
+    expect(llm.converseRequests[1]?.tools).toBeUndefined();
+  });
+
+  it("observes every nonterminal result across iterations without treating the terminal call as replayable", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const dispatcher = createDispatcher(tempDir);
+    const strictTool: ToolDefinition = {
+      name: "tool.test.observed",
+      description: "Observed test tool.",
+      allowedOrigins: ["deliberator"],
+      writeScope: "read",
+      inputSchema: z.object({ value: z.string().min(1) }).strict(),
+      outputSchema: z.object({ echoed: z.string() }).strict(),
+      async invoke(input: { value: string }) {
+        return { echoed: input.value };
+      },
+    };
+    const terminalTool: ToolDefinition = {
+      name: "EmitAnswer",
+      description: "Terminal test tool.",
+      allowedOrigins: ["deliberator"],
+      writeScope: "read",
+      inputSchema: z.object({ text: z.string() }).strict(),
+      outputSchema: z.object({}).strict(),
+      async invoke() {
+        throw new Error("terminal tools are not dispatched");
+      },
+    };
+    dispatcher.register(strictTool);
+    const collector = new FinalizerToolTranscriptCollector();
+    const llm = new FakeLLMClient({
+      responses: [
+        [
+          {
+            type: "tool_use",
+            id: "toolu_success",
+            name: strictTool.name,
+            input: { value: "🌌" },
+          },
+          {
+            type: "tool_use",
+            id: "toolu_validation",
+            name: strictTool.name,
+            input: { value: "" },
+          },
+          {
+            type: "tool_use",
+            id: "toolu_cap",
+            name: strictTool.name,
+            input: { value: "capped" },
+          },
+        ],
+        [
+          {
+            type: "tool_use",
+            id: "toolu_unavailable",
+            name: "tool.test.not_advertised",
+            input: { value: "unavailable" },
+          },
+        ],
+        [
+          {
+            type: "tool_use",
+            id: "toolu_terminal",
+            name: terminalTool.name,
+            input: { text: "done" },
+          },
+        ],
+      ],
+    });
+
+    const result = await executeToolLoop({
+      llmClient: llm,
+      dispatcher,
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      initialMessages: baseMessages(),
+      tools: [strictTool, terminalTool],
+      terminalToolNames: [terminalTool.name],
+      origin: "deliberator",
+      budget: "test",
+      maxToolCallsPerIteration: 2,
+      toolResultObserver: collector,
+    });
+    const transcript = collector.finish({
+      requestBinding: null,
+      expectedEventCount: result.toolCallsMade.length,
+      sourceCompleted: true,
+    }).transcript;
+
+    expect(result.stopReason).toBe("terminal_tool");
+    expect(result.terminalToolCalls.map((call) => call.id)).toEqual(["toolu_terminal"]);
+    expect(transcript.complete).toBe(true);
+    expect(transcript.events.map((event) => event.disposition)).toEqual([
+      "dispatched",
+      "dispatched",
+      "skipped_iteration_cap",
+      "skipped_unavailable",
+    ]);
+    expect(
+      transcript.events.map((event) => [event.ordinal, event.iteration, event.batch_position]),
+    ).toEqual([
+      [1, 1, 1],
+      [2, 1, 2],
+      [3, 1, 3],
+      [4, 2, 1],
+    ]);
+    expect(transcript.events[0]).toMatchObject({
+      call_id: "toolu_success",
+      raw_arguments: { value: "🌌" },
+      result: { ok: true, output: { echoed: "🌌" } },
+    });
+    expect(transcript.events[1]?.result).toMatchObject({ ok: false, error: expect.any(String) });
+    expect(transcript.events[2]?.result).toEqual({
+      ok: false,
+      error: "Skipped because this turn allows at most 2 tool calls per iteration.",
+    });
+    expect(transcript.events[3]?.result).toEqual({
+      ok: false,
+      error: "tool tool.test.not_advertised not available in this context",
+    });
+  });
+
+  it("swallows observer failures and marks the observer incomplete", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const dispatcher = createDispatcher(tempDir);
+    const tool: ToolDefinition = {
+      name: "tool.test.observer_failure",
+      description: "Observer failure test tool.",
+      allowedOrigins: ["deliberator"],
+      writeScope: "read",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({ ok: z.literal(true) }).strict(),
+      async invoke() {
+        return { ok: true } as const;
+      },
+    };
+    dispatcher.register(tool);
+    const observer = {
+      observe() {
+        throw new Error("capture observer failed");
+      },
+      markIncomplete: vi.fn(() => {
+        throw new Error("capture failure marker also failed");
+      }),
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        [{ type: "tool_use", id: "toolu_observer", name: tool.name, input: {} }],
+        "live loop continued",
+      ],
+    });
+
+    await expect(
+      executeToolLoop({
+        llmClient: llm,
+        dispatcher,
+        sessionId: DEFAULT_SESSION_ID,
+        model: "fake",
+        initialMessages: baseMessages(),
+        tools: [tool],
+        origin: "deliberator",
+        budget: "test",
+        toolResultObserver: observer,
+      }),
+    ).resolves.toMatchObject({ text: "live loop continued" });
+    expect(observer.markIncomplete).toHaveBeenCalledOnce();
   });
 
   it("allows deliberator-origin write tools and records deliberator open questions", async () => {

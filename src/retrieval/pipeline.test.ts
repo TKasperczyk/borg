@@ -62,6 +62,7 @@ import { RetrievalPipeline } from "./pipeline.js";
 import { RecallStateRepository } from "./recall-state.js";
 import { SELF_RECALL_SCOPE } from "./recall-context.js";
 import type { Episode } from "../memory/episodic/types.js";
+import { makeCommitmentRecord } from "../test-support/factories/index.js";
 
 class ScriptedEmbeddingClient implements EmbeddingClient {
   async embed(text: string): Promise<Float32Array> {
@@ -88,6 +89,24 @@ class ScriptedEmbeddingClient implements EmbeddingClient {
 class FailingBatchEmbeddingClient extends ScriptedEmbeddingClient {
   override async embedBatch(): Promise<Float32Array[]> {
     throw new Error("embedding batch offline");
+  }
+}
+
+class ClockAdvancingEmbeddingClient extends ScriptedEmbeddingClient {
+  constructor(private readonly clock: ManualClock) {
+    super();
+  }
+
+  override async embed(text: string): Promise<Float32Array> {
+    const embedding = await super.embed(text);
+    this.clock.advance(250);
+    return embedding;
+  }
+
+  override async embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
+    const embeddings = await super.embedBatch(texts);
+    this.clock.advance(250);
+    return embeddings;
   }
 }
 
@@ -411,23 +430,27 @@ describe("retrieval pipeline", () => {
       rmSync(tempDir, { recursive: true, force: true });
     });
 
+    const retrievalClock = new ManualClock(10_000);
     const pipeline = new RetrievalPipeline({
-      embeddingClient: new ScriptedEmbeddingClient(),
+      embeddingClient: new ClockAdvancingEmbeddingClient(retrievalClock),
       episodicRepository,
       dataDir: tempDir,
-      clock: new FixedClock(10_000),
+      clock: retrievalClock,
       tracer,
     });
     await episodicRepository.createEpisode(
       createEpisode("ep_aaaaaaaaaaaaaaaa", createStreamEntryId(), [1, 0, 0, 0]),
     );
 
-    await pipeline.searchWithContextForDisclosure("planning", {
+    const result = await pipeline.searchWithContextForDisclosure("planning", {
       limit: 1,
       traceTurnId: "turn-retrieval-session",
       sessionId,
       entityTerms: ["planning"],
     });
+
+    expect(retrievalClock.now()).toBeGreaterThan(10_000);
+    expect(result.retrieval_read_at_ms).toBe(10_000);
 
     expect(tracer.emit).toHaveBeenCalledWith(
       "retrieval.started",
@@ -547,6 +570,47 @@ describe("retrieval pipeline", () => {
         reason: "embedding batch offline",
       }),
     );
+  });
+
+  it("carries critical commitment enforcement fields into retrieved evidence", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-critical-commitment-evidence-"));
+    const fixture = await openRetrievalFixture(tempDir);
+    const commitment = makeCommitmentRecord({
+      directive: "Keep Atlas privacy boundaries visible.",
+      enforcement_class: "critical",
+      critical_domain: "privacy",
+    });
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository: fixture.episodicRepository,
+      commitmentRepository: {
+        get: (id) => (id === commitment.id ? commitment : null),
+        list: () => [commitment],
+      },
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+    });
+
+    const result = await pipeline.searchWithContextForDisclosure("Atlas privacy", {
+      limit: 1,
+      entityTerms: ["Atlas"],
+    });
+    const commitmentEvidence = result.evidence.find(
+      (item) => item.provenance?.commitmentId === commitment.id,
+    );
+
+    expect(commitmentEvidence).toMatchObject({
+      source: "commitment",
+      commitment_enforcement_class: "critical",
+      commitment_critical_domain: "privacy",
+    });
   });
 
   it("retrieves image perception evidence and reattaches the source attachment for finalizer images", async () => {
@@ -787,8 +851,8 @@ describe("retrieval pipeline", () => {
       { record: currentRecord, similarity: 0.99 },
       { record: olderRecord, similarity: 0.8 },
     ];
-    const recallForCognition = vi.fn(
-      async (input: { vector: Float32Array; limit: number }) => hits.slice(0, input.limit),
+    const recallForCognition = vi.fn(async (input: { vector: Float32Array; limit: number }) =>
+      hits.slice(0, input.limit),
     );
     const imagePerceptionRepository = {
       recallForCognition,
@@ -1892,6 +1956,10 @@ describe("retrieval pipeline", () => {
       expect.arrayContaining([expect.objectContaining({ id: atlas.id })]),
     );
     expect(result.semantic.support_hits).toHaveLength(1);
+    // The mode-specific limit controls projection only. Coverage keeps its
+    // stable episode target, and semantic support stays in its own addend.
+    expect(result.confidence.coverageExpected).toBe(5);
+    expect(result.confidence.coverage).toBe(0);
     expect(result.confidence.overall).toBeGreaterThan(0);
   });
 

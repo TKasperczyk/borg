@@ -2,6 +2,7 @@ import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 
 import { type Migration, type SqliteDatabase } from "../storage/sqlite/index.js";
 import { tableExists, tableHasColumn } from "../storage/sqlite/migrations-utils.js";
+import { StorageError } from "../util/errors.js";
 import { streamEntryIdHelpers, type EntityId, type StreamEntryId } from "../util/ids.js";
 import { serializeJsonValue } from "../util/json-value.js";
 
@@ -110,6 +111,16 @@ export const streamEntryIndexMigrations: Migration[] = [
         );
         CREATE INDEX idx_corrective_preference_receipts_session_status
         ON corrective_preference_ingestion_receipts(session_id, status);
+      `);
+    },
+  },
+  {
+    id: 3,
+    name: "stream_entry_index_kind_active_time",
+    up: (db) => {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_stream_entry_kind_active_time
+        ON stream_entry_index(kind, active, timestamp DESC, entry_id DESC);
       `);
     },
   },
@@ -238,6 +249,18 @@ export type LookupExactStreamBacklogResponseStampInput = {
   throughCursorInclusive: StreamCursor;
   sourceEntryIds: readonly StreamEntryId[];
   count: number;
+};
+
+export type ListActiveStreamEntriesByKindRangeInput = {
+  kinds: readonly StreamEntryKind[];
+  sinceTs: number;
+  untilTs: number;
+  limit: number;
+  sessionId?: SessionId;
+  cursor?: {
+    timestamp: number;
+    entryId: string;
+  };
 };
 
 type StreamEntryIndexStampColumns = Pick<
@@ -911,6 +934,60 @@ export class StreamEntryIndexRepository {
     return new Map(
       [...this.lookupMany(entryIds)].map(([entryId, record]) => [entryId, factsFromRecord(record)]),
     );
+  }
+
+  listActiveEntriesByKindRange(
+    input: ListActiveStreamEntriesByKindRangeInput,
+  ): StreamEntryIndexRecord[] {
+    if (!Number.isInteger(input.limit) || input.limit <= 0) {
+      throw new StorageError("Stream entry range limit must be a positive integer", {
+        code: "STREAM_ENTRY_RANGE_LIMIT_INVALID",
+      });
+    }
+
+    const kinds = [...new Set(input.kinds)];
+
+    if (kinds.length === 0 || input.sinceTs > input.untilTs) {
+      return [];
+    }
+
+    const filters = [
+      "active = 1",
+      `kind IN (${kinds.map(() => "?").join(", ")})`,
+      "timestamp >= ?",
+      "timestamp <= ?",
+    ];
+    const values: unknown[] = [...kinds, input.sinceTs, input.untilTs];
+
+    if (input.sessionId !== undefined) {
+      filters.push("session_id = ?");
+      values.push(input.sessionId);
+    }
+
+    if (input.cursor !== undefined) {
+      filters.push("(timestamp < ? OR (timestamp = ? AND entry_id < ?))");
+      values.push(input.cursor.timestamp, input.cursor.timestamp, input.cursor.entryId);
+    }
+
+    values.push(input.limit);
+
+    const rows = this.db
+      .prepare(
+        `SELECT entry_id, session_id, byte_offset, timestamp
+              , entry_index, kind, sender_entity_id, turn_id, turn_status, active, receipt_pending
+              , source_message_key_source_type, source_message_key_source_external_id
+              , source_message_key_external_message_id, response_to_kind
+              , response_to_from_cursor_ts, response_to_from_cursor_entry_id
+              , response_to_through_cursor_ts, response_to_through_cursor_entry_id
+              , response_to_source_entry_ids, response_to_count
+         FROM stream_entry_index
+         WHERE ${filters.join(" AND ")}
+         ORDER BY timestamp DESC, entry_id DESC
+         LIMIT ?`,
+      )
+      .all(...values) as StreamEntryIndexRow[];
+
+    return rows.map(recordFromRow);
   }
 
   lookupSessionEntriesByKind(input: {

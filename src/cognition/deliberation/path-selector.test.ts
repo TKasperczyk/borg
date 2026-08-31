@@ -64,6 +64,12 @@ function makeConfidence(overall: number, contradictionPresent = false): Retrieva
     sourceDiversity: 1,
     contradictionPresent,
     sampleSize: 5,
+    semanticSampleSize: 0,
+    coverageExpected: 5,
+    diversitySources: 5,
+    diversitySampleSize: 5,
+    evidenceEpisodeStrength: 0,
+    evidenceSemanticStrength: 0,
   };
 }
 

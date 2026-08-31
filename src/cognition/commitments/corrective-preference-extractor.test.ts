@@ -10,6 +10,7 @@ import {
   createStreamEntryId,
 } from "../../util/ids.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
+import { CORRECTIVE_PREFERENCE_SYSTEM_PROMPT } from "../prompts/corrective-preference.js";
 import type { RelationshipClaim } from "../../memory/common/relationship-claims.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import {
@@ -135,6 +136,8 @@ describe("CorrectivePreferenceExtractor", () => {
       type: "tool",
       name: "EmitCorrectivePreference",
     });
+    expect(llm.requests[0]?.system).toBe(CORRECTIVE_PREFERENCE_SYSTEM_PROMPT);
+    expect(llm.requests[0]?.tools?.some((tool) => tool.cache_control !== undefined)).toBe(false);
   });
 
   it("emits a high-confidence retire-only commitment result", async () => {

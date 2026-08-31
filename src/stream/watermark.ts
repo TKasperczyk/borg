@@ -88,6 +88,10 @@ export class StreamWatermarkRepository {
     this.clock = options.clock ?? new SystemClock();
   }
 
+  runInTransaction<T>(callback: () => T): T {
+    return this.db.transaction(callback)();
+  }
+
   get(processName: string, sessionId: SessionId): StreamWatermark | null {
     const row = this.db
       .prepare(

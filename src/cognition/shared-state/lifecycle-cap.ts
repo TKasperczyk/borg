@@ -37,8 +37,43 @@ const SHARED_STATE_LIFECYCLE_PRUNE_ORDER = [
 
 type LifecycleEntry = Pick<
   SharedStateEntry,
-  "id" | "kind" | "created_at" | "last_updated_at" | "superseded_by_id" | "rank"
+  "id" | "state_key" | "kind" | "created_at" | "last_updated_at" | "superseded_by_id" | "rank"
 >;
+
+/**
+ * An entry the cap deleted to hold the artifact at `maxActiveEntries`. The
+ * entity never asked for these: they are emitted as ordinary `prune`
+ * operations, so without this record the trace cannot tell a deletion the
+ * compiler requested from one the store forced. Carries the state key because
+ * the id is gone from the artifact by the time anyone reads the trace.
+ *
+ * `selection_pass` names which of the loop's three scans drew it, because the
+ * first scan only considers kinds above their own soft cap. Without it an
+ * eviction record read against the rendered index looks like the comparator
+ * skipped the oldest row: on a live 40-entry artifact the globally-oldest
+ * entry was a `tentative` row three days staler than anything else, sitting
+ * at its cap of 2 and therefore never a candidate, while the draw ran inside
+ * `locked` (38 against a cap of 24) and took a much newer entry. Staleness
+ * orders candidates; it does not choose the pool they come from.
+ */
+export type SharedStateLifecycleCapEviction = {
+  id: SharedStateEntryId;
+  state_key: string | null;
+  kind: SharedStateEntryKind;
+  last_updated_at: number;
+  rank: number;
+  selection_pass: SharedStateLifecycleCapSelectionPass;
+};
+
+/**
+ * Which scan of the eviction loop drew an entry: the kind was over its own
+ * soft cap, or nothing was and the prune order alone decided, or the pool had
+ * to be widened to entries the newest-state-change reservation was holding.
+ */
+export type SharedStateLifecycleCapSelectionPass =
+  | "over_soft_cap"
+  | "any_kind"
+  | "any_kind_reserved_allowed";
 
 function normalizeLifecycleKindSoftCaps(
   options: SharedStateLifecycleOptions | undefined,
@@ -99,6 +134,7 @@ export function materializeSharedStateOperationIds(
 function lifecycleEntryFromSharedStateEntry(entry: SharedStateEntry): LifecycleEntry {
   return {
     id: entry.id,
+    state_key: entry.state_key,
     kind: entry.kind,
     created_at: entry.created_at,
     last_updated_at: entry.last_updated_at,
@@ -125,6 +161,7 @@ function materializePostPatchLifecycleEntries(input: {
         const id = operation.id ?? createSharedStateEntryId();
         entries.set(id, {
           id,
+          state_key: operation.state_key,
           kind: operation.kind,
           created_at: operation.created_at ?? input.nowMs,
           last_updated_at: operation.last_updated_at ?? operation.created_at ?? input.nowMs,
@@ -142,6 +179,7 @@ function materializePostPatchLifecycleEntries(input: {
 
         entries.set(operation.id, {
           ...current,
+          state_key: operation.state_key,
           kind: operation.kind ?? current.kind,
           last_updated_at: operation.last_updated_at ?? input.nowMs,
           rank: operation.rank ?? current.rank,
@@ -175,6 +213,7 @@ function materializePostPatchLifecycleEntries(input: {
 
         entries.set(replacementId, {
           id: replacementId,
+          state_key: operation.replacement.state_key,
           kind: operation.replacement.kind,
           created_at: operation.replacement.created_at ?? input.nowMs,
           last_updated_at:
@@ -216,6 +255,41 @@ function lifecycleKindCounts(
   return counts;
 }
 
+/**
+ * Orders entries prune-first. Staleness dominates: the oldest `last_updated_at`
+ * goes first. Ties on that stamp are the normal case rather than the edge case,
+ * because every entry a single compile pass writes carries that pass's stamp --
+ * so `rank` decides most real evictions, and it is read ascending here just as
+ * the repository reads it ascending when listing. That order is not visible on
+ * the rendered index: `renderSharedStateArtifact` groups by state key and sorts
+ * the groups with `localeCompare`, and `rank` is not a field on an index line at
+ * all -- so index position reports alphabet, never prune position. Do not read
+ * one off the other.
+ *
+ * The direction is settled by the only writer. Nothing in production supplies a
+ * salience `rank`: `patch-validation.ts` computes it as `baseRank +
+ * operations.length` -- the previous artifact's entry count plus the operation's
+ * position in the accepted list -- and `update` preserves whatever the row
+ * already had. It is a within-patch emission index, which is why ascending is
+ * correct (a later `add` supersedes an earlier duplicate, which is what
+ * compiler.test.ts's canonicalization case depends on) and why the descending
+ * "keep what renders first" reading has no writer behind it. Two consequences
+ * worth keeping: on an artifact pinned at cap `baseRank` is constant, so `rank`
+ * carries no age information across passes; and updates keep their old value
+ * while same-pass adds take fresh ones, so `rank` is not unique and ties fall
+ * through to `created_at`.
+ *
+ * The order is band-local, not global. `nextLifecyclePruneCandidate` filters to
+ * one `kind` before sorting, so this function never compares two kinds and a
+ * row's place in a whole-artifact stamp ordering predicts nothing until the
+ * scan's pool is known: `SHARED_STATE_LIFECYCLE_PRUNE_ORDER` reaches
+ * `dormant_live` before `locked`, so a `dormant_live` row stamped minutes ago
+ * dies ahead of a `locked` row stamped two days earlier. Observed twice in one
+ * hour on a live artifact -- two `dormant_live` evictions stamped the same
+ * morning taken in the same draw as `locked` rows stamped two days before them.
+ * A global stamp ordering only becomes the eviction queue once exactly one kind
+ * is over its soft cap.
+ */
 function compareLifecyclePrunePriority(left: LifecycleEntry, right: LifecycleEntry): number {
   return (
     left.last_updated_at - right.last_updated_at ||
@@ -303,6 +377,15 @@ function lifecycleEntriesById(
   return byId;
 }
 
+// Superseded predecessors point forward at their replacement under an ON DELETE RESTRICT foreign
+// key, so a successor cannot be deleted while a predecessor still references it. The prune walk
+// below satisfies that by cascading: evicting a successor takes every predecessor with it, in the
+// same operation. The consequence is that a completed supersede has no residue in the store once
+// its successor reaches a cap -- both halves go together, and no tombstone is left behind. So
+// `superseded_by_id` answers "was this retracted" only while the successor is still active; after
+// that the store cannot distinguish a key that was retracted from one that never existed, and
+// `operation_counts_by_state_key` on `shared_state.compile.completed` is the only surface where
+// the retraction stays readable. A correction erases its own evidence before it erases the claim.
 function lifecycleReferrersByReplacement(
   entries: readonly LifecycleEntry[],
 ): Map<SharedStateEntryId, LifecycleEntry[]> {
@@ -426,6 +509,7 @@ export function applySharedStateArtifactLifecycleCap(input: {
   postPlanActiveEntryCount: number;
   overCapDelta: number;
   newestReservedEntryCount: number;
+  capEvictions: SharedStateLifecycleCapEviction[];
 } {
   const operations = materializeSharedStateOperationIds(input.operations);
   const entries = materializePostPatchLifecycleEntries({
@@ -441,11 +525,16 @@ export function applySharedStateArtifactLifecycleCap(input: {
   );
   const prunedIds = new Set<SharedStateEntryId>();
   const pruneOperations: SharedStateOperation[] = [];
+  const capEvictions: SharedStateLifecycleCapEviction[] = [];
   let activeEntries = activeLifecycleEntries(entries);
   let activeCounts = lifecycleKindCounts(activeEntries);
   let reservedCounts = lifecycleKindCountsForIds(activeEntries, reservedIds);
 
-  const selectFromKind = (kind: SharedStateEntryKind, allowReserved = false): boolean => {
+  const selectFromKind = (
+    kind: SharedStateEntryKind,
+    selectionPass: SharedStateLifecycleCapSelectionPass,
+    allowReserved = false,
+  ): boolean => {
     const candidate = nextLifecyclePruneCandidate({
       entries,
       kind,
@@ -463,6 +552,14 @@ export function applySharedStateArtifactLifecycleCap(input: {
       type: "prune",
       id: candidate.id,
     });
+    capEvictions.push({
+      id: candidate.id,
+      state_key: candidate.state_key,
+      kind: candidate.kind,
+      last_updated_at: candidate.last_updated_at,
+      rank: candidate.rank,
+      selection_pass: selectionPass,
+    });
     activeCounts[candidate.kind] -= 1;
     if (reservedIds.has(candidate.id)) {
       reservedCounts[candidate.kind] -= 1;
@@ -479,7 +576,7 @@ export function applySharedStateArtifactLifecycleCap(input: {
         continue;
       }
 
-      pruned = selectFromKind(kind);
+      pruned = selectFromKind(kind, "over_soft_cap");
 
       if (pruned) {
         break;
@@ -491,7 +588,7 @@ export function applySharedStateArtifactLifecycleCap(input: {
     }
 
     for (const kind of SHARED_STATE_LIFECYCLE_PRUNE_ORDER) {
-      pruned = selectFromKind(kind);
+      pruned = selectFromKind(kind, "any_kind");
 
       if (pruned) {
         break;
@@ -503,7 +600,7 @@ export function applySharedStateArtifactLifecycleCap(input: {
     }
 
     for (const kind of SHARED_STATE_LIFECYCLE_PRUNE_ORDER) {
-      pruned = selectFromKind(kind, true);
+      pruned = selectFromKind(kind, "any_kind_reserved_allowed", true);
 
       if (pruned) {
         break;
@@ -523,5 +620,6 @@ export function applySharedStateArtifactLifecycleCap(input: {
     postPlanActiveEntryCount,
     overCapDelta: Math.max(0, postPlanActiveEntryCount - maxActiveEntries),
     newestReservedEntryCount: [...reservedIds].filter((id) => !prunedIds.has(id)).length,
+    capEvictions,
   };
 }

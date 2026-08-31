@@ -94,6 +94,14 @@ export type ExecutiveGoalScoreComponents = {
   progress_debt: number;
 };
 
+export type ExecutiveGoalScoreContext = "turn_selection" | "wake_time_trigger_selection";
+
+export type ExecutiveGoalScoreBasis = {
+  score_context: ExecutiveGoalScoreContext;
+  deadline_lookahead_ms: number;
+  progress_debt_stale_ms: number;
+};
+
 export type ExecutiveGoalScore = {
   goal_id: GoalRecord["id"];
   goal: ExecutiveFocusGoal;
@@ -108,4 +116,5 @@ export type ExecutiveFocus = {
   next_step?: ExecutiveFocusStep | null;
   candidates: ExecutiveGoalScore[];
   threshold: number;
+  score_basis: ExecutiveGoalScoreBasis;
 };

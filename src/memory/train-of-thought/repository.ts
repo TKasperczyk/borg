@@ -1,7 +1,7 @@
 import type { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
-import type { EntityId } from "../../util/ids.js";
+import type { EntityId, SessionId } from "../../util/ids.js";
 import {
   trainOfThoughtJournalEntrySchema,
   trainOfThoughtSchema,
@@ -19,6 +19,19 @@ export type TrainOfThoughtAppendInput = {
 
 export type TrainOfThoughtListOptions = {
   limit?: number;
+};
+
+export type TrainOfThoughtRangeCursor = {
+  createdAt: number;
+  id: number;
+};
+
+export type TrainOfThoughtRangeListOptions = {
+  sinceMs: number;
+  untilMs: number;
+  limit: number;
+  sessionId?: SessionId;
+  cursor?: TrainOfThoughtRangeCursor;
 };
 
 export type TrainOfThoughtRepositoryOptions = {
@@ -134,6 +147,67 @@ export class TrainOfThoughtRepository {
         `,
       )
       .all(limit) as Record<string, unknown>[];
+
+    return rows.map(mapTrainOfThoughtJournalEntryRow);
+  }
+
+  listForRange(options: TrainOfThoughtRangeListOptions): TrainOfThoughtJournalEntry[] {
+    if (!Number.isInteger(options.limit) || options.limit <= 0) {
+      throw new StorageError("Train of thought journal range limit must be a positive integer", {
+        code: "TRAIN_OF_THOUGHT_LIST_LIMIT_INVALID",
+      });
+    }
+
+    if (options.sinceMs > options.untilMs) {
+      return [];
+    }
+
+    const filters = ["journal.created_at >= ?", "journal.created_at <= ?"];
+    const values: unknown[] = [options.sinceMs, options.untilMs];
+
+    if (options.sessionId !== undefined) {
+      filters.push(`EXISTS (
+        SELECT 1
+        FROM stream_entry_index AS indexed
+        WHERE indexed.session_id = ?
+          AND indexed.active = 1
+          AND (
+            (journal.source_turn_id IS NOT NULL AND indexed.turn_id = journal.source_turn_id)
+            OR (
+              journal.marker_stream_entry_id IS NOT NULL
+              AND indexed.entry_id = journal.marker_stream_entry_id
+            )
+          )
+      )`);
+      values.push(options.sessionId);
+    }
+
+    if (options.cursor !== undefined) {
+      filters.push("(journal.created_at < ? OR (journal.created_at = ? AND journal.id < ?))");
+      values.push(options.cursor.createdAt, options.cursor.createdAt, options.cursor.id);
+    }
+
+    values.push(options.limit);
+
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            journal.id,
+            journal.self_entity_id,
+            journal.text,
+            journal.disclosure_class,
+            journal.created_at,
+            journal.updated_at,
+            journal.source_turn_id,
+            journal.marker_stream_entry_id
+          FROM train_of_thought_journal_entries AS journal
+          WHERE ${filters.join(" AND ")}
+          ORDER BY journal.created_at DESC, journal.id DESC
+          LIMIT ?
+        `,
+      )
+      .all(...values) as Record<string, unknown>[];
 
     return rows.map(mapTrainOfThoughtJournalEntryRow);
   }

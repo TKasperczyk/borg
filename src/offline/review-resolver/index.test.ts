@@ -732,8 +732,8 @@ describe("review resolver process", () => {
                   reason: "The replay pair reached the vector LLM judge.",
                 })
               : semanticPairResolverResponse({
-                  decision: "keep_both",
-                  rationale: "The replay pair reached the semantic-pair LLM judge.",
+                  verdict: "keep_both",
+                  reason: "The replay pair reached the semantic-pair LLM judge.",
                   confidence: "high",
                 }),
           );
@@ -1050,9 +1050,9 @@ describe("review resolver process", () => {
     });
     llm.pushResponse(
       semanticPairResolverResponse({
-        decision: "supersede",
+        verdict: "supersede",
         winner_node_id: winner.id,
-        rationale: "The Atlas node is better grounded and more current.",
+        reason: "The Atlas node is better grounded and more current.",
         confidence: "high",
       }),
     );
@@ -1123,9 +1123,9 @@ describe("review resolver process", () => {
     const resolveSpy = vi.spyOn(harness.reviewQueueRepository, "resolve");
     llm.pushResponse(
       semanticPairResolverResponse({
-        decision: "supersede",
+        verdict: "supersede",
         winner_node_id: invalidWinnerId,
-        rationale: "The judge named a node outside the reviewed pair.",
+        reason: "The judge named a node outside the reviewed pair.",
         confidence: "medium",
       }),
     );
@@ -1184,8 +1184,8 @@ describe("review resolver process", () => {
     });
     llm.pushResponse(
       semanticPairResolverResponse({
-        decision: "keep_both",
-        rationale: "The nodes describe different contexts.",
+        verdict: "keep_both",
+        reason: "The nodes describe different contexts.",
         confidence: "high",
       }),
     );
@@ -1235,8 +1235,8 @@ describe("review resolver process", () => {
     });
     llm.pushResponse(
       semanticPairResolverResponse({
-        decision: "dismiss",
-        rationale: "The review flag is spurious.",
+        verdict: "dismiss",
+        reason: "The review flag is spurious.",
         confidence: "high",
       }),
     );
@@ -1284,9 +1284,9 @@ describe("review resolver process", () => {
     });
     llm.pushResponse(
       newInsightResolverResponse({
-        decision: "accept",
+        verdict: "accept",
         confidence: "high",
-        rationale: "The supplied episode directly grounds a useful self-memory.",
+        reason: "The supplied episode directly grounds a useful self-memory.",
       }),
     );
 
@@ -1367,9 +1367,9 @@ describe("review resolver process", () => {
     });
     llm.pushResponse(
       newInsightResolverResponse({
-        decision: "dismiss",
+        verdict: "dismiss",
         confidence: "high",
-        rationale: "The supplied evidence does not ground the proposed self-memory.",
+        reason: "The supplied evidence does not ground the proposed self-memory.",
       }),
     );
 
@@ -1408,9 +1408,9 @@ describe("review resolver process", () => {
     });
     llm.pushResponse(
       newInsightResolverResponse({
-        decision: "dismiss",
+        verdict: "dismiss",
         confidence: "high",
-        rationale: "The supplied evidence does not ground the proposed self-memory.",
+        reason: "The supplied evidence does not ground the proposed self-memory.",
       }),
     );
 
@@ -1508,9 +1508,9 @@ describe("review resolver process", () => {
     });
     llm.pushResponse(
       newInsightResolverResponse({
-        decision: "dismiss",
+        verdict: "dismiss",
         confidence: "high",
-        rationale: "The supplied evidence does not ground the proposed update.",
+        reason: "The supplied evidence does not ground the proposed update.",
       }),
     );
 
@@ -1558,9 +1558,9 @@ describe("review resolver process", () => {
     });
     llm.pushResponse(
       newInsightResolverResponse({
-        decision: "needs_manual",
+        verdict: "needs_manual",
         confidence: "medium",
-        rationale: "The evidence is too ambiguous to decide automatically.",
+        reason: "The evidence is too ambiguous to decide automatically.",
       }),
     );
 
@@ -1605,9 +1605,9 @@ describe("review resolver process", () => {
       );
       llm.pushResponse(
         newInsightResolverResponse({
-          decision: "dismiss",
+          verdict: "dismiss",
           confidence: "high",
-          rationale: "The proposal should not be preserved.",
+          reason: "The proposal should not be preserved.",
         }),
       );
     }
@@ -1652,9 +1652,9 @@ describe("review resolver process", () => {
     });
     llm.pushResponse(
       newInsightResolverResponse({
-        decision: "accept",
+        verdict: "accept",
         confidence: "high",
-        rationale: "The supplied episode grounds the proposed self-memory.",
+        reason: "The supplied episode grounds the proposed self-memory.",
       }),
     );
 

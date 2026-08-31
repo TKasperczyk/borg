@@ -80,6 +80,25 @@ export type SharedStatePromptSummary = {
   recent_superseded: SharedStatePromptSummarySupersededEntry[];
 };
 
+// The registry names every active key; it carries no text, and that asymmetry decides how well
+// informed each operation can be -- not which are permitted. Validation resolves `update` and
+// `supersede` targets from the full previous artifact (see patch-validation.ts), never from this
+// summary, so every active id is a legal target of every operation. What the summary decides is
+// whether the model can see the text it is replacing: bodies come from the per-kind recency slice
+// in DEFAULT_SHARED_STATE_PROMPT_SUMMARY_MAX_ENTRIES, and rows below that slice can still be
+// rewritten, but only blind.
+//
+// The aging ladder walks a row across that line: 8 body slots at `live`, 2 at `low_salience_live`,
+// 0 at `dormant_live`. Demotion therefore does not remove a row from the writable set; it removes
+// the old wording from view, so a correction aimed at an aged row is a wholesale replacement
+// composed without the claim it is correcting in front of you. Nothing marks the crossing, and
+// `kinds` only implies it for a reader who already knows the body-slot table, which the prompt
+// does not carry.
+//
+// So name the informed set directly -- which of this key's ids the summary actually gave a body
+// to. A row absent from it is still correctable; its current text simply is not on this surface.
+// This is a structural fact about what this prompt carries, not a permission and not a judgment
+// about the entries.
 export type ExistingStateKeyRegistryEntry = {
   state_key: string;
   bucket: string;
@@ -88,6 +107,10 @@ export type ExistingStateKeyRegistryEntry = {
   kinds: SharedStateEntryKind[];
   most_recent_update_at: number;
   most_recent_stream_entry_id: SharedStateEntry["last_updated_stream_entry_ids"][number] | null;
+  // Null when no summary was supplied to compare against: absent evidence, not "nothing here is
+  // visible". Empty means the summary was built and gave this key no body at all -- the key's
+  // entries remain writable, they are just being written without their current text in view.
+  text_visible_entry_ids: SharedStateEntry["id"][] | null;
 };
 
 function sharedStatePromptSummaryOptions(options: SharedStatePromptSummaryOptions = {}): {
@@ -164,7 +187,16 @@ function stateKeyRegistryKinds(entries: readonly SharedStateEntry[]): SharedStat
 
 export function buildExistingStateKeyRegistry(
   artifact: SharedStateArtifact | null | undefined,
+  summary?: SharedStatePromptSummary | null,
 ): ExistingStateKeyRegistryEntry[] {
+  const bodyCarriedEntryIds =
+    summary === undefined || summary === null
+      ? null
+      : new Set(
+          Object.values(summary.active_entries_by_state_key ?? {}).flatMap((entries) =>
+            (entries ?? []).map((entry) => entry.id),
+          ),
+        );
   const groups = new Map<string, SharedStateEntry[]>();
 
   for (const entry of activeSharedStateArtifactEntries(artifact)) {
@@ -189,6 +221,12 @@ export function buildExistingStateKeyRegistry(
         kinds: stateKeyRegistryKinds(entries),
         most_recent_update_at: mostRecent.last_updated_at,
         most_recent_stream_entry_id: lastUpdatedStreamEntryId(mostRecent),
+        text_visible_entry_ids:
+          bodyCarriedEntryIds === null
+            ? null
+            : entriesByRecency
+                .map((entry) => entry.id)
+                .filter((entryId) => bodyCarriedEntryIds.has(entryId)),
       };
     });
 }

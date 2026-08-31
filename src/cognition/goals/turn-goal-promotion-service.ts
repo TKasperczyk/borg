@@ -13,6 +13,7 @@ import type {
   StreamEntryId,
 } from "../../util/ids.js";
 import type { ExtractCorrectivePreferenceInput } from "../commitments/corrective-preference-extractor.js";
+import { listActiveGoalsForCognition } from "../self/active-goals.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import type { TemporalCue } from "../types.js";
 import {
@@ -93,6 +94,7 @@ export class TurnGoalPromotionService {
       audienceEntityId: input.audienceEntityId,
       speakerEntityId: input.ownerEntityId ?? null,
       speakerDisplayName: input.speakerDisplayName ?? null,
+      nowMs: this.options.clock.now(),
       temporalCue: input.temporalCue,
       activeGoals: input.activeGoals.map((goal) => ({
         id: goal.id,
@@ -100,6 +102,7 @@ export class TurnGoalPromotionService {
         terminal_condition: goal.terminal_condition ?? null,
         priority: goal.priority,
         target_at: goal.target_at,
+        audience_entity_id: goal.audience_entity_id,
         owner_entity_id: goal.owner_entity_id ?? null,
       })),
     });
@@ -147,9 +150,7 @@ export class TurnGoalPromotionService {
       goalIds: [],
       executiveStepIds: [],
     };
-    const activeSameAxisGoals = this.listActiveSameAxisGoals({
-      audienceEntityId: input.audienceEntityId,
-      ownerEntityId: input.ownerEntityId,
+    const activeGoals = this.listActiveGoals({
       turnId: input.turnId,
       sessionId: input.sessionId,
     });
@@ -171,14 +172,14 @@ export class TurnGoalPromotionService {
 
       try {
         const embeddings =
-          activeSameAxisGoals.length === 0
+          activeGoals.length === 0
             ? []
             : await this.options.embeddingClient.embedBatch(
-                activeSameAxisGoals.map((goal) => goal.description),
+                activeGoals.map((goal) => goal.description),
               );
 
         embeddingDedupState = {
-          activeVectors: activeSameAxisGoals.flatMap((goal, index) => {
+          activeVectors: activeGoals.flatMap((goal, index) => {
             const vector = embeddings[index];
             return vector === undefined ? [] : [{ goalId: goal.id, vector }];
           }),
@@ -203,7 +204,7 @@ export class TurnGoalPromotionService {
 
       if (
         candidate.duplicate_of_goal_id !== null &&
-        activeSameAxisGoals.some((goal) => goal.id === candidate.duplicate_of_goal_id)
+        activeGoals.some((goal) => goal.id === candidate.duplicate_of_goal_id)
       ) {
         this.emitSkippedAsDuplicate({
           turnId: input.turnId,
@@ -316,23 +317,10 @@ export class TurnGoalPromotionService {
     return persisted;
   }
 
-  private listActiveSameAxisGoals(input: {
-    audienceEntityId: EntityId | null;
-    ownerEntityId: EntityId | null;
-    turnId: string;
-    sessionId?: SessionId;
-  }): GoalRecord[] {
+  private listActiveGoals(input: { turnId: string; sessionId?: SessionId }): GoalRecord[] {
     try {
-      return flattenGoals(
-        this.options.goalsRepository.list({
-          status: "active",
-          ownerEntityId: input.ownerEntityId,
-        }),
-      ).filter(
-        (goal) =>
-          goal.status === "active" &&
-          goal.audience_entity_id === input.audienceEntityId &&
-          (goal.owner_entity_id ?? null) === input.ownerEntityId,
+      return listActiveGoalsForCognition(this.options.goalsRepository).filter(
+        (goal) => goal.status === "active",
       );
     } catch (error) {
       this.emitDedupDegraded({
@@ -529,29 +517,7 @@ export class TurnGoalPromotionService {
   }
 }
 
-type GoalTreeNodeLike = GoalRecord & {
-  children?: readonly GoalTreeNodeLike[];
-};
-
 type EmbeddedGoalVector = {
   goalId: GoalId;
   vector: Float32Array;
 };
-
-function flattenGoals(goals: readonly GoalTreeNodeLike[]): GoalRecord[] {
-  const flattened: GoalRecord[] = [];
-  const stack = [...goals];
-
-  while (stack.length > 0) {
-    const next = stack.shift();
-
-    if (next === undefined) {
-      continue;
-    }
-
-    flattened.push(next);
-    stack.push(...(next.children ?? []));
-  }
-
-  return flattened;
-}

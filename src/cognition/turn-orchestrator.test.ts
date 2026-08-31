@@ -560,10 +560,7 @@ function createClosureLoopSignoffResponseFromRequest() {
   );
 }
 
-function createClosureLoopCurrentTurnResponse(input: {
-  substantive: boolean;
-  reason?: string;
-}) {
+function createClosureLoopCurrentTurnResponse(input: { substantive: boolean; reason?: string }) {
   return Object.assign(
     (options: LLMCompleteOptions): LLMCompleteResult => {
       const payload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
@@ -590,8 +587,9 @@ function createClosureLoopCurrentTurnResponse(input: {
             role: message.role,
           };
         })
-        .filter((message): message is { message_ref: string; role: "user" | "assistant" } =>
-          message !== null,
+        .filter(
+          (message): message is { message_ref: string; role: "user" | "assistant" } =>
+            message !== null,
         );
       const currentUserIndex = supplied.findLastIndex((message) => message.role === "user");
       const messages: ClosureLoopClassifiedMessage[] = supplied.map((message, index) => {
@@ -796,15 +794,15 @@ function createGoalPromotionResponse(
   promotions: Array<{
     description: string;
     priority?: number;
-    terminal_condition?: string | null;
-    target_at?: number | null;
+    terminal_condition: string | null;
+    target_at?: string | null;
     reason?: string;
     confidence?: number;
     duplicate_of_goal_id?: string | null;
     initial_step?: {
       description: string;
       kind: "think" | "ask_user" | "research" | "act" | "wait";
-      due_at?: number | null;
+      due_at?: string | null;
       rationale: string;
     } | null;
   }>,
@@ -825,7 +823,7 @@ function createGoalPromotionResponse(
             classification: "durable_borg_goal",
             description: promotion.description,
             priority: promotion.priority ?? 8,
-            terminal_condition: promotion.terminal_condition ?? null,
+            terminal_condition: promotion.terminal_condition,
             target_at: promotion.target_at ?? null,
             reason: promotion.reason ?? "The user asked Borg to carry this as an ongoing goal.",
             confidence: promotion.confidence ?? 0.9,
@@ -3321,6 +3319,9 @@ describe("TurnOrchestrator evidence ledger", () => {
 
       const finalizerRequest = firstFinalizerRequest(llm.requests);
       const finalizerSystem = systemText(finalizerRequest);
+      const finalizerSystemBlocks = Array.isArray(finalizerRequest?.system)
+        ? finalizerRequest.system
+        : [];
       const traceEvents = readTraceEvents(tracePath);
       const finalizerEvent = traceEvents.find((event) => event.event === "finalizer.completed");
       const ledgerEvent = traceEvents.find((event) => event.event === "evidence_ledger.completed");
@@ -3336,7 +3337,29 @@ describe("TurnOrchestrator evidence ledger", () => {
         "EmitObserve",
         "EmitNoOutput",
         "EmitSelfReport",
+        "tool.ownRecords.list",
       ]);
+      expect(finalizerRequest?.tools?.map((tool) => tool.name)).not.toContain(
+        "tool.journal.append",
+      );
+      expect(finalizerRequest?.tools?.map((tool) => tool.name)).not.toContain(
+        "tool.openQuestions.create",
+      );
+      expect(finalizerRequest?.tools?.map((tool) => tool.name)).not.toContain(
+        "tool.scheduledWakes.create",
+      );
+      expect(finalizerSystem).toContain("<borg_live_turn_read_tools>");
+      expect(finalizerSystem).toContain("tool.ownRecords.list");
+      expect(finalizerSystemBlocks[0]).toMatchObject({
+        cache_control: { type: "ephemeral", ttl: "1h" },
+        text: expect.stringContaining("<borg_live_turn_read_tools>"),
+      });
+      expect(
+        finalizerSystemBlocks
+          .slice(1)
+          .map((block) => block.text)
+          .join("\n"),
+      ).not.toContain("<borg_live_turn_read_tools>");
       expect(finalizerSystem).toContain("<borg_evidence_ledger>");
       expect(finalizerSystem).toContain("id=current_user_message:");
       expect(finalizerSystem).toContain("<borg_host_capabilities>");
@@ -3967,6 +3990,138 @@ describe("TurnOrchestrator participant social profiles", () => {
           stakes: "low",
         }),
       ).resolves.toMatchObject({ response: "Abstract turn ok." });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("keeps an operator direct turn without an explicit sender unattributed", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-operator-direct-unknown-sender-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_182_500);
+    const sessionId = createSessionId();
+    let extractorPayload: Record<string, unknown> | null = null;
+    const actionStateForUnknownSender = Object.assign(
+      (options: LLMCompleteOptions) => {
+        extractorPayload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as Record<
+          string,
+          unknown
+        >;
+
+        return createActionStateResponse([]);
+      },
+      { budget: "action-state-extractor" },
+    );
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({ classification: "none" }),
+        actionStateForUnknownSender,
+        createGoalPromotionResponse([]),
+        createEmitAnswerResponse("Unknown sender preserved."),
+        createClosureResponseAuditResponse(),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const aliceId = borg.entities.resolve("Alice", { kind: "person" });
+      borg.sessions.ensure({
+        session_id: sessionId,
+        source_type: "demo",
+        source_external_id: "operator-peer-dm",
+        label: "Operator Peer DM",
+        audience_label: "Alice",
+        audience_entity_id: aliceId,
+        conversation_kind: "dm",
+        audience_role: "operator",
+      });
+      const priorUserEntry = await borg.stream.append(
+        {
+          kind: "user_msg",
+          content: "Prior attributed context.",
+          audience: "Alice",
+          sender_entity_id: aliceId,
+        },
+        { session: sessionId },
+      );
+      clock.advance(10);
+
+      await borg.turn({
+        userMessage: "I reviewed the direct-turn patch.",
+        audience: "Alice",
+        sessionId,
+        stakes: "low",
+      });
+
+      const persistedUserEntry = borg.stream
+        .tail(20, { session: sessionId })
+        .find(
+          (entry) =>
+            entry.kind === "user_msg" && entry.content === "I reviewed the direct-turn patch.",
+        );
+
+      expect(extractorPayload).toEqual(
+        expect.objectContaining({
+          speaker_entity_id: null,
+          speaker_display_name: null,
+          sender_attribution: [
+            {
+              stream_entry_id: persistedUserEntry?.id,
+              sender_entity_id: null,
+              sender_display_name: null,
+            },
+          ],
+          recent_history_context: [
+            {
+              context_stream_entry_id: priorUserEntry.id,
+              role: "user",
+              kind: "user_msg",
+              sender_entity_id: aliceId,
+              sender_display_name: "Alice",
+              content: "Prior attributed context.",
+            },
+          ],
+        }),
+      );
+      expect(persistedUserEntry).toMatchObject({
+        sender_entity_id: null,
+      });
+      expect(persistedUserEntry?.sender_entity_id).not.toBe(aliceId);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("never stamps an abstract audience as the direct-turn sender", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-abstract-audience-unknown-sender-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_182_750);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("Abstract audience preserved."),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const projectId = borg.entities.resolve("Project Atlas", { kind: "abstract" });
+
+      await borg.turn({
+        userMessage: "Project-scoped note without a sender.",
+        audience: "Project Atlas",
+        stakes: "low",
+      });
+
+      const persistedUserEntry = borg.stream
+        .tail(20)
+        .find(
+          (entry) =>
+            entry.kind === "user_msg" && entry.content === "Project-scoped note without a sender.",
+        );
+
+      expect(persistedUserEntry).toMatchObject({
+        sender_entity_id: null,
+      });
+      expect(persistedUserEntry?.sender_entity_id).not.toBe(projectId);
     } finally {
       await borg.close();
     }
@@ -6372,22 +6527,24 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_800_000_176_500);
-    const targetAt = 1_800_100_000_000;
-    const stepDueAt = 1_800_050_000_000;
+    const targetAtIso = "2027-01-16T11:46:40Z";
+    const stepDueAtIso = "2027-01-15T21:53:20Z";
+    const targetAt = Date.parse(targetAtIso);
+    const stepDueAt = Date.parse(stepDueAtIso);
     const llm = new FakeLLMClient({
       responses: [
         createGoalPromotionResponse([
           {
             description: "Help the user keep the Monday postmortem straight",
             priority: 9,
-            terminal_condition: null,
-            target_at: targetAt,
+            terminal_condition: "The Monday postmortem is ready for review",
+            target_at: targetAtIso,
             reason: "The user asked Borg to help keep the postmortem organized.",
             confidence: 0.91,
             initial_step: {
               description: "Ask what must be included in the postmortem",
               kind: "ask_user",
-              due_at: stepDueAt,
+              due_at: stepDueAtIso,
               rationale: "Borg needs the postmortem constraints to help track it.",
             },
           },
@@ -7250,27 +7407,27 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           [
             {
               description: "Help the user track the launch checklist",
-              terminal_condition: null,
+              terminal_condition: "The launch checklist is complete",
               confidence: 0.95,
             },
             {
               description: "Help the user prepare the investor update",
-              terminal_condition: null,
+              terminal_condition: "The investor update is ready for review",
               confidence: 0.94,
             },
             {
               description: "Help the user schedule the design review",
-              terminal_condition: null,
+              terminal_condition: "The design review is scheduled",
               confidence: 0.93,
             },
             {
               description: "Help the user collect beta feedback",
-              terminal_condition: null,
+              terminal_condition: "The beta feedback summary is complete",
               confidence: 0.92,
             },
             {
               description: "Help the user plan the onboarding pass",
-              terminal_condition: null,
+              terminal_condition: "The onboarding plan is agreed",
               confidence: 0.91,
             },
           ],
@@ -7362,7 +7519,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         createGoalPromotionResponse([
           {
             description: "Help the user track their API review checklist",
-            terminal_condition: null,
+            terminal_condition: "The API review checklist reaches sign-off",
             duplicate_of_goal_id: existingGoalId,
             confidence: 0.95,
           },
@@ -7399,6 +7556,65 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       });
 
       expect(goals.map((goal) => goal.id)).toEqual([existingGoal.id]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("does not create a duplicate goal when the extractor points across audiences", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_176_750);
+    const existingGoalId = createGoalId();
+    const llm = new FakeLLMClient({
+      responses: [
+        createGoalPromotionResponse([
+          {
+            description: "Help carry the API review checklist to sign-off",
+            terminal_condition: "The API review checklist reaches sign-off",
+            duplicate_of_goal_id: existingGoalId,
+            confidence: 0.95,
+          },
+        ]),
+        createEmitAnswerResponse("I will keep the existing checklist in view."),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "entityRepository">;
+    };
+
+    try {
+      const aliceEntityId = internal.deps.entityRepository.resolve("Alice");
+      const existingGoal = borg.self.goals.add({
+        id: existingGoalId,
+        description: "Help carry the API review checklist to sign-off",
+        priority: 8,
+        audienceEntityId: aliceEntityId,
+        provenance: {
+          kind: "manual",
+        },
+      });
+
+      await borg.turn({
+        userMessage: "Keep carrying the API review checklist to sign-off.",
+        audience: "Sam",
+      });
+
+      const goals = borg.self.goals.list({ status: "active" });
+      const promotionRequest = llm.requests.find(
+        (request) => request.budget === "goal-promotion-extractor",
+      );
+      const payload = JSON.parse(String(promotionRequest?.messages[0]?.content ?? "{}")) as {
+        active_goals?: Array<{ id?: string; audience_entity_id?: string | null }>;
+      };
+      const renderedExistingGoal = payload.active_goals?.find(
+        (goal) => goal.id === existingGoal.id,
+      );
+
+      expect(goals.map((goal) => goal.id)).toEqual([existingGoal.id]);
+      expect(renderedExistingGoal?.audience_entity_id).toBe(aliceEntityId);
     } finally {
       await borg.close();
     }

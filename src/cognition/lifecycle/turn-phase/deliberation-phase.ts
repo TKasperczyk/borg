@@ -42,6 +42,28 @@ function resolvePromptBlockOverrides(
   return Object.keys(blocks).length === 0 ? undefined : blocks;
 }
 
+function resolveCommitmentEntityLabels(
+  commitments: TurnRetrievalPhaseResult["applicableCommitments"],
+  entityRepository: TurnPhaseCoordinatorOptions["entityRepository"],
+): Readonly<Record<string, string>> {
+  const ids = new Set(
+    commitments.flatMap((commitment) =>
+      [
+        commitment.made_to_entity,
+        commitment.restricted_audience,
+        commitment.about_entity,
+        commitment.committed_by_entity_id ?? null,
+      ].filter((entityId): entityId is EntityId => entityId !== null),
+    ),
+  );
+  return Object.fromEntries(
+    [...ids].flatMap((entityId) => {
+      const label = entityRepository.get(entityId)?.canonical_name;
+      return label === undefined ? [] : [[entityId, label]];
+    }),
+  );
+}
+
 export async function runDeliberationPhase(input: {
   options: TurnPhaseCoordinatorOptions;
   llmClient: LLMClient;
@@ -80,6 +102,14 @@ export async function runDeliberationPhase(input: {
     tracer: input.options.tracer,
     hostCapabilities: input.options.config.host_capabilities,
     promptBlocks,
+    finalizerDynamicPromptCacheEnabled:
+      input.options.config.deliberation.finalizerDynamicPromptCacheEnabled,
+    finalizerSurfaceVariant: input.options.config.deliberation.finalizerSurfaceVariant,
+    planRequestedVerificationMembershipTokenBudget:
+      input.options.config.deliberation.planRequestedVerificationMembershipTokenBudget,
+    finalizerContextCapture: input.options.finalizerContextCapture,
+    plannerSurfaceVariant: input.options.config.deliberation.plannerSurfaceVariant,
+    plannerContextCapture: input.options.plannerContextCapture,
     sharedStateRenderOptions: sharedStateRenderOptions(input.options.config),
     maxImagesPerLlmCall: input.options.config.attachments.maxImagesPerLedger,
   });
@@ -111,6 +141,10 @@ export async function runDeliberationPhase(input: {
       contradictionRouting: input.retrievalPhase.retrieval.contradictionRouting,
       retrievalConfidence: input.retrievalPhase.retrieval.confidence,
       applicableCommitments: input.retrievalPhase.applicableCommitments,
+      commitmentEntityLabels: resolveCommitmentEntityLabels(
+        input.retrievalPhase.applicableCommitments,
+        input.options.entityRepository,
+      ),
       openQuestionsContext: input.retrievalPhase.retrieval.open_questions,
       pendingCorrectionsContext: input.retrievalPhase.pendingCorrections,
       relationalSlots: input.retrievalPhase.relationalSlots,

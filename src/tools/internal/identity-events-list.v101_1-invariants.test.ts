@@ -6,7 +6,7 @@ import { PromptSurfaceHistoryRepository } from "../../cognition/prompts/prompt-s
 import { SemanticGraph } from "../../memory/semantic/index.js";
 import { TrainOfThoughtRepository } from "../../memory/train-of-thought/index.js";
 import { createEpisodeFixture, createOfflineTestHarness } from "../../offline/test-support.js";
-import { StreamWriter } from "../../stream/index.js";
+import { StreamEntryIndexRepository, StreamWriter } from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 
@@ -23,14 +23,21 @@ function createHarnessToolDispatcher(
     clock,
   });
   promptSurfaceHistoryRepository.observeCurrent();
+  const entryIndex = new StreamEntryIndexRepository({
+    db: harness.db,
+    dataDir: harness.tempDir,
+  });
 
   return buildToolDispatcher({
+    dataDir: harness.tempDir,
+    entryIndex,
     retrievalPipeline: harness.retrievalPipeline,
     episodicRepository: harness.episodicRepository,
     semanticNodeRepository: harness.semanticNodeRepository,
     semanticGraph,
     commitmentRepository: harness.commitmentRepository,
     entityRepository: harness.entityRepository,
+    goalsRepository: harness.goalsRepository,
     identityService: harness.identityService,
     skillRepository: harness.skillRepository,
     trainOfThoughtRepository: new TrainOfThoughtRepository({ db: harness.db, clock }),
@@ -41,6 +48,7 @@ function createHarnessToolDispatcher(
         dataDir: harness.tempDir,
         sessionId,
         clock,
+        entryIndex,
       }),
     clock,
   });

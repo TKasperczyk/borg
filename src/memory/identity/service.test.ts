@@ -1024,6 +1024,53 @@ describe("identity service", () => {
     }
   });
 
+  it("re-stamps last_updated when a period narrative is rewritten", () => {
+    const clock = new ManualClock(5_000);
+    const harness = createHarness(clock);
+    const periodEpisodeId = createEpisodeId();
+
+    try {
+      const period = harness.identity.addPeriod({
+        label: "2027-Q3",
+        start_ts: 5_000,
+        narrative: "The period as first written.",
+        key_episode_ids: [periodEpisodeId],
+        themes: ["identity"],
+        provenance: {
+          kind: "episodes",
+          episode_ids: [periodEpisodeId],
+        },
+      });
+
+      expect(period.last_updated).toBe(5_000);
+
+      clock.advance(90_000);
+      const updated = harness.identity.updatePeriod(
+        period.id,
+        {
+          narrative: "The period as rewritten a day later.",
+        },
+        {
+          kind: "episodes",
+          episode_ids: [periodEpisodeId],
+        },
+      );
+
+      // The whole-record spread behind updatePeriod used to carry the creation stamp
+      // forward, so a rewritten narrative kept reading as untouched since the period
+      // opened -- and planner-context renders the period's age off this field.
+      expect(updated.status).toBe("applied");
+      expect(harness.autobiographicalRepository.getPeriod(period.id)).toMatchObject({
+        narrative: "The period as rewritten a day later.",
+        created_at: 5_000,
+        last_updated: 95_000,
+        record_version: 2,
+      });
+    } finally {
+      harness.db.close();
+    }
+  });
+
   it("guards period and open question state changes", () => {
     const harness = createHarness(new FixedClock(3_700));
     const periodEpisodeId = createEpisodeId();

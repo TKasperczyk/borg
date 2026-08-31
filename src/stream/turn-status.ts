@@ -29,6 +29,20 @@ function citedStreamEntryIds(content: Record<string, unknown>): string[] {
   return value.filter((item): item is string => typeof item === "string" && item.length > 0);
 }
 
+// The aborted-turn marker is the only record of *why* a turn died -- its content carries a
+// `reason` string (in practice the provider error, e.g. "LLMError: Failed to complete Anthropic
+// request") that exists nowhere else. It is also, by the predicate below, unconditionally
+// inactive: `streamEntryIsActive` rejects the marker itself, every entry sharing its turn_id, and
+// every entry it names. Measured on the live demo store (2026-08-18): 2137 aborted-turn markers
+// across seven sessions, 2137 of them inactive -- the set has never had a member the entity could
+// read. So a turn killed by a provider error is silent in a strictly stronger sense than a turn
+// killed by a post-generation guard: the guard path writes an `agent_suppressed` entry that stays
+// active and renders as "[system: prior turn suppressed -- reason: ...]" (recency/compiler.ts),
+// while the abort path writes its reason to the one row that is defined as unreadable. Filtering
+// the marker is correct -- it is what keeps half-generated aborted content out of cognition -- but
+// it means the reason is discarded with it, and the entity experiences the outage as a turn that
+// simply never happened. Surfacing the reason without un-filtering the turn would need a separate
+// pass in the recency compiler, not a change here.
 export function isAbortedTurnMarker(entry: StreamEntry): boolean {
   return (
     entry.kind === "internal_event" &&
@@ -70,6 +84,11 @@ export function collectInactiveStreamEntryRefs(
       continue;
     }
 
+    // Unlike the aborted-turn branch above, quarantine does not add the turn id: it strikes
+    // the marker and the entries it cites, nothing else. The rest of that turn stays active --
+    // the perception of the struck message, the thought, and the reply -- so the record keeps
+    // an answer whose prompt is gone. The classifier rationale survives too, because
+    // perception-phase writes it twice and only this copy is a marker.
     if (isQuarantinedUserEntryMarker(entry)) {
       const sourceStreamEntryId = entry.content.source_stream_entry_id;
 

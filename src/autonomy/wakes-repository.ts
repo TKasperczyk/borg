@@ -19,6 +19,7 @@ import {
   AUTONOMY_WAKE_SOURCE_NAMES,
   type AutonomyConditionName,
   type AutonomyWakeOutcome,
+  type AutonomyWakeOutcomeDetailTally,
   type AutonomyWakeSourceCategory,
   type AutonomyWakeSourceName,
   type AutonomyWakeSourceType,
@@ -65,7 +66,33 @@ const autonomyWakeRowSchema = z.object({
   wake_source_type: autonomyWakeSourceTypeSchema,
   source_category: autonomyWakeSourceCategorySchema,
   outcome: autonomyWakeOutcomeSchema.nullable(),
+  outcome_detail: z.string().nullable(),
 });
+
+/**
+ * Upper bound on a stored `outcome_detail`. The detail is a formatted error from
+ * an arbitrary layer below the scheduler, so its length is not ours to predict;
+ * the cap keeps one pathological failure string from dominating a page that
+ * renders these. Truncation is marked so a clipped detail is never read as the
+ * whole message.
+ */
+export const AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH = 300;
+
+function clampOutcomeDetail(detail: string | null | undefined): string | null {
+  if (detail === null || detail === undefined) {
+    return null;
+  }
+
+  const collapsed = detail.replace(/\s+/gu, " ").trim();
+
+  if (collapsed.length === 0) {
+    return null;
+  }
+
+  return collapsed.length <= AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH
+    ? collapsed
+    : `${collapsed.slice(0, AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH)}...`;
+}
 
 export type AutonomyWakeRecord = {
   id: AutonomyWakeId;
@@ -76,6 +103,14 @@ export type AutonomyWakeRecord = {
   wake_source_type: AutonomyWakeSourceType;
   source_category: AutonomyWakeSourceCategory;
   outcome: AutonomyWakeOutcome | null;
+  /**
+   * Why this wake ended the way it did, when the outcome had a reason to carry.
+   * Null means one of two different things and does not distinguish them: the
+   * outcome had no detail (every `headway`/`silent`), or the row predates the
+   * column. Callers that count details must state the undetailed remainder
+   * rather than treat it as zero.
+   */
+  outcome_detail: string | null;
 };
 
 export type AutonomyWakeRecordInput = {
@@ -102,6 +137,7 @@ function mapWakeRow(row: Record<string, unknown>): AutonomyWakeRecord {
     wake_source_type: row.wake_source_type,
     source_category: row.source_category ?? "operational",
     outcome: row.outcome ?? null,
+    outcome_detail: row.outcome_detail === undefined ? null : (row.outcome_detail ?? null),
   });
 
   if (!parsed.success) {
@@ -136,6 +172,7 @@ export class AutonomyWakesRepository {
       wake_source_type: parsed.wake_source_type,
       source_category: parsed.source_category,
       outcome: null,
+      outcome_detail: null,
     };
 
     this.db
@@ -194,7 +231,7 @@ export class AutonomyWakesRepository {
       .prepare(
         `
           SELECT id, ts, trigger_name, condition_name, session_id, wake_source_type, source_category,
-                 outcome
+                 outcome, outcome_detail
           FROM autonomy_wakes
           WHERE ts >= ?
           ORDER BY ts DESC, id DESC
@@ -206,8 +243,52 @@ export class AutonomyWakesRepository {
     return rows.map((row) => mapWakeRow(row));
   }
 
-  recordOutcome(id: AutonomyWakeId, outcome: AutonomyWakeOutcome): void {
-    this.db.prepare("UPDATE autonomy_wakes SET outcome = ? WHERE id = ?").run(outcome, id);
+  recordOutcome(id: AutonomyWakeId, outcome: AutonomyWakeOutcome, detail?: string | null): void {
+    this.db
+      .prepare("UPDATE autonomy_wakes SET outcome = ?, outcome_detail = ? WHERE id = ?")
+      .run(outcome, clampOutcomeDetail(detail), id);
+  }
+
+  /**
+   * Distinct details recorded for one outcome over `ts >= cutoff`, most frequent
+   * first, alongside the same-window bucket total and the number of rows in it
+   * that carry no detail. The three are returned together deliberately: a reason
+   * list alone reads as the whole bucket, and the difference between it and the
+   * bucket count is the one thing a reader cannot recover from the list.
+   */
+  summarizeOutcomeDetailsSince(
+    ts: number,
+    outcome: AutonomyWakeOutcome,
+  ): AutonomyWakeOutcomeDetailTally {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT outcome_detail AS detail, COUNT(*) AS count
+          FROM autonomy_wakes
+          WHERE ts >= ? AND outcome = ?
+          GROUP BY outcome_detail
+          ORDER BY count DESC, detail ASC
+        `,
+      )
+      .all(ts, outcome) as Array<{ detail: unknown; count: unknown }>;
+
+    let total = 0;
+    let withoutDetail = 0;
+    const reasons: Array<{ detail: string; count: number }> = [];
+
+    for (const row of rows) {
+      const count = Number(row.count ?? 0);
+      total += count;
+
+      if (typeof row.detail !== "string" || row.detail.length === 0) {
+        withoutDetail += count;
+        continue;
+      }
+
+      reasons.push({ detail: row.detail, count });
+    }
+
+    return { total, without_detail: withoutDetail, reasons };
   }
 
   prune(olderThan: number): number {

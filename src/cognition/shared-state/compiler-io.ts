@@ -11,6 +11,7 @@ import type {
   SharedStateUnsettledReconciliationSummary,
 } from "./reconciliation.js";
 import { type SharedStateArtifactPromptBudget } from "./compiler-prompt.js";
+import { type SharedStateCompilePass } from "../prompts/shared-state.js";
 import {
   SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,
   SHARED_STATE_TOOL_NAME,
@@ -20,6 +21,7 @@ import {
   type CanonicalizationDuplicateDrop,
   type EmptyUpdateDrop,
   type EmitSharedStatePatch,
+  type ModelPruneRequest,
   type NonLockedCanonicalizesDrop,
   type PatchRejection,
   type SharedStateLedgerMode,
@@ -30,6 +32,7 @@ import type {
   LifecycleAgingUnknownAgeSampleEntry,
   SharedStateLifecycleTransition,
 } from "./lifecycle-aging.js";
+import type { SharedStateLifecycleCapEviction } from "./lifecycle-cap.js";
 
 type PublicSharedStateOperation = Exclude<SharedStateOperation, { type: "transition_kind" }>;
 
@@ -63,6 +66,9 @@ export function traceCompileCompleted(options: {
   newStateKeys?: readonly string[];
   ledgerMode: SharedStateLedgerMode;
   promptBudget: SharedStateArtifactPromptBudget;
+  compilePass?: SharedStateCompilePass;
+  citationEligibleSourceStreamEntryIds?: readonly StreamEntryId[];
+  offLimitsSourceStreamEntryIds?: readonly StreamEntryId[];
   nonLockedCanonicalizesDrops?: readonly NonLockedCanonicalizesDrop[];
   emptyUpdateAttemptedCount?: number;
   emptyUpdateDroppedCount?: number;
@@ -73,6 +79,8 @@ export function traceCompileCompleted(options: {
   lifecycleAgingBlockerCountsLowSalienceToDormant?: LifecycleAgingBlockerCounts;
   lifecycleAgingBlockedSample?: readonly LifecycleAgingBlockedSampleEntry[];
   lifecycleAgingUnknownAgeSample?: readonly LifecycleAgingUnknownAgeSampleEntry[];
+  lifecycleCapEvictions?: readonly SharedStateLifecycleCapEviction[];
+  modelPruneRequests?: readonly ModelPruneRequest[];
 }): void {
   const renderOptions =
     options.currentTurnCounter === undefined || options.currentUserStreamEntryId === undefined
@@ -96,6 +104,35 @@ export function traceCompileCompleted(options: {
   ).length;
   const similarKeyClusterCount = similarStateKeyClusterCount(Object.keys(activeEntryCountsByKey));
 
+  // `disallowed_source_stream_entry_id` is one code for two structurally different refusals:
+  // the citation was the message this turn is answering (deliberately barred by the N+1
+  // durability boundary, and permanent for this turn), or it was simply not in the eligible
+  // set the ledger render happened to expose (an id that has aged out, and citable again the
+  // moment the ledger shows it). The validator only ever asks "is this in the allowlist", so
+  // the reason cannot tell them apart, and a reader who assumes the first explanation reads a
+  // window that moved as a boundary that held. Both sets are on this event; name which one the
+  // cited id landed in rather than leaving every reader to diff them.
+  const offLimitsIds = options.offLimitsSourceStreamEntryIds;
+  const eligibleIds = options.citationEligibleSourceStreamEntryIds;
+  const disallowedCitationBarrier = (rejection: PatchRejection): string | null => {
+    if (rejection.reason !== "disallowed_source_stream_entry_id") {
+      return null;
+    }
+    const citedId = rejection.sourceStreamEntryId;
+    if (citedId === undefined) {
+      return null;
+    }
+    if (
+      citedId === options.currentUserStreamEntryId ||
+      offLimitsIds?.some((id) => id === citedId) === true
+    ) {
+      return "off_limits";
+    }
+    // Only the eligible set can distinguish "fell out of the window" from "we were never told
+    // what the window was" -- without it, silence is the honest answer.
+    return eligibleIds === undefined ? null : "not_eligible";
+  };
+
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
     options.tracer.emit("shared_state.compile.completed", {
       turnId: options.turnId,
@@ -104,6 +141,45 @@ export function traceCompileCompleted(options: {
       operationCount: options.operationCount,
       rejectedCount: options.rejected.length,
       rejectionReasons: options.rejected.map((rejection) => rejection.reason),
+      // The reason list alone cannot say *which* entry was dropped, so a patch
+      // whose adds die here leaves no record of the keys that failed to land --
+      // only the per-reason events (missing_new_key_reason, near_duplicate_state_key)
+      // name their operand. Name every rejection's operand, not just those two.
+      // `entry_kind` is the kind the refused operation asked for, and it is named
+      // separately from `operation_type` because `operation_counts_by_kind` below is
+      // keyed by type -- "kind" is overloaded on this event. Nothing else records it:
+      // the store keeps kinds but only for entries that landed, so a refused `add`
+      // proposing `invalidated` and one proposing `locked` are otherwise identical,
+      // and a zero count for a kind cannot be read as "never proposed".
+      rejections: toTraceJsonValue(
+        options.rejected.map((rejection) => ({
+          operation_index: rejection.operationIndex,
+          operation_type: rejection.operationType,
+          entry_kind: rejection.entryKind ?? null,
+          reason: rejection.reason,
+          state_key: rejection.stateKey ?? null,
+          target_entry_id: rejection.targetEntryId ?? null,
+          source_stream_entry_id: rejection.sourceStreamEntryId ?? null,
+          disallowed_citation_barrier: disallowedCitationBarrier(rejection),
+        })),
+      ),
+      // A rejection names the id the compiler reached for but never the ids it
+      // was permitted to reach for, so `disallowed_source_stream_entry_id` reads
+      // the same whether the eligible set held a usable id or was empty -- the
+      // difference between the compiler ignoring the allowlist and the allowlist
+      // being impossible to satisfy. The prompt is not captured anywhere, so name
+      // both sets it offered here, alongside which of the turn's two passes this is.
+      compile_pass: options.compilePass ?? null,
+      citation_eligible_source_stream_entry_id_count:
+        options.citationEligibleSourceStreamEntryIds?.length ?? null,
+      citation_eligible_source_stream_entry_ids: toTraceJsonValue(
+        options.citationEligibleSourceStreamEntryIds ?? null,
+      ),
+      off_limits_source_stream_entry_id_count:
+        options.offLimitsSourceStreamEntryIds?.length ?? null,
+      off_limits_source_stream_entry_ids: toTraceJsonValue(
+        options.offLimitsSourceStreamEntryIds ?? null,
+      ),
       source_trust_rejections: toTraceJsonValue(
         options.rejected
           .filter((rejection) => rejection.sourceTrustReason !== undefined)
@@ -144,6 +220,29 @@ export function traceCompileCompleted(options: {
         artifactSummary.omittedByKind.live > 0 && artifactSummary.renderedByKind.locked > 0,
       artifact_pruned_entry_count_this_turn: options.prunedEntryCountThisTurn,
       artifact_superseded_count_this_turn: options.supersededEntryCountThisTurn,
+      lifecycle_cap_evicted_entry_count: (options.lifecycleCapEvictions ?? []).length,
+      lifecycle_cap_evicted_state_keys: toTraceJsonValue(
+        (options.lifecycleCapEvictions ?? []).map((eviction) => eviction.state_key),
+      ),
+      lifecycle_cap_evictions: toTraceJsonValue(options.lifecycleCapEvictions ?? []),
+      // The other half of the same question. artifact_pruned_entry_count_this_turn
+      // counts prunes without saying which were the model's; lifecycle_cap_evictions
+      // names the forced ones. This names the asked-for ones and carries the reason the
+      // operation schema accepts but the store drops -- so a deletion that was a
+      // decision can be told apart from one that was a slot running out.
+      model_prune_requested_count: (options.modelPruneRequests ?? []).length,
+      model_prune_requested_without_reason_count: (options.modelPruneRequests ?? []).filter(
+        (request) => request.reason === null,
+      ).length,
+      model_prune_requests: toTraceJsonValue(options.modelPruneRequests ?? []),
+      // Not an operation ledger of what the model asked for. `compiler.ts` counts these
+      // over the operations the *lifecycle* pass emitted, so every cap eviction has
+      // already been materialized as a `prune` by the time the tally runs -- on an
+      // artifact pinned at cap that makes `prune` here equal to
+      // `lifecycle_cap_evicted_entry_count`, and equal to `add`, whatever
+      // `model_prune_requested_count` says. Read that field, not this one, to learn
+      // whether a deletion was a decision. `add` and `prune` moving together is the
+      // cap's arithmetic, not a habit of the model's.
       operation_counts_by_kind: toTraceJsonValue(
         options.operationCountsByKind ?? {
           add: 0,
@@ -152,6 +251,13 @@ export function traceCompileCompleted(options: {
           prune: 0,
         },
       ),
+      // Same provenance one level down, and the conflation bites harder here because this map
+      // is the only one that names the row. A key carrying `prune: 1` may never have been
+      // proposed for deletion by anyone: `lifecycle-cap.ts` sends readers here to recover a
+      // retraction whose supersede chain the cap already cascaded away, but a forced eviction
+      // arrives under the same count. `model_prune_requests` carries the state key of every
+      // asked-for deletion, so a key counted `prune` here and absent there was taken, not
+      // retracted -- and the two are indistinguishable from this field alone.
       operation_counts_by_state_key: toTraceJsonValue(options.operationCountsByStateKey ?? {}),
       new_state_key_count: options.newStateKeys?.length ?? 0,
       new_state_keys: toTraceJsonValue(options.newStateKeys ?? []),
@@ -412,6 +518,7 @@ export function traceCompileOverBudget(options: {
   options.tracer.emit("shared_state.compile.degraded", {
     turnId: options.turnId,
     audienceEntityId: options.audienceEntityId,
+    reason: "prompt_over_budget",
     ledger_mode: options.ledgerMode,
     input_token_estimate: options.promptBudget.inputTokenEstimate,
     input_token_budget: SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,

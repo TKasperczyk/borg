@@ -7,10 +7,12 @@ import {
 import type { ImagePerceptionRepository, ImagePerceptionSearchHit } from "../attachments/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
-import type {
-  CommitmentRecord,
-  CommitmentRepository,
-  EntityRepository,
+import {
+  effectiveCommitmentCriticalDomain,
+  effectiveCommitmentEnforcementClass,
+  type CommitmentRecord,
+  type CommitmentRepository,
+  type EntityRepository,
 } from "../memory/commitments/index.js";
 import {
   isEpisodeVisibleToCapability,
@@ -634,6 +636,13 @@ export class RetrievalPipeline {
       ),
     );
 
+    // Counted set = the MMR projection, not the evidence pool. Every episode
+    // candidate is already in `evidencePool.items` as a source_type=episode
+    // item, and that pool -- not this list -- is what
+    // summarizeRetrievedEvidence() renders into the prompt. So an episode can
+    // be shown to the model on many turns while incrementing retrieval_count on
+    // none of them; heat, decay, the curator and the associator all read the
+    // narrower number.
     if (options.recordRetrieval !== false) {
       for (const result of episodeProjection.episodes) {
         this.options.episodicRepository.recordRetrieval(result.episode.id, nowMs, result.score);
@@ -650,7 +659,6 @@ export class RetrievalPipeline {
         semanticProjection.contradiction_hits.length > 0 ||
         semanticProjection.contradicts.length > 0,
       nowMs,
-      expectedCount: limit,
     });
 
     if (recallStateContext !== null && options.recordRetrieval !== false) {
@@ -1078,6 +1086,9 @@ export class RetrievalPipeline {
         provenance: 1,
       },
       disclosureLabel: commitmentMemoryDisclosureLabel(commitment),
+      commitment_enforcement_class: effectiveCommitmentEnforcementClass(commitment),
+      commitment_critical_domain: effectiveCommitmentCriticalDomain(commitment),
+      commitment_directive_chars: commitment.directive.length,
     };
   }
 
@@ -2762,6 +2773,15 @@ function imagePerceptionToEvidence(
   nowMs: number,
 ): EvidenceItem {
   const record = item.hit.record;
+  // originAge is the only part of this evidence item that varies between turns:
+  // caption, scene, kind, terms and provenance all derive from the immutable
+  // perception row, so a re-attached image is otherwise byte-identical every
+  // time it is recalled. The age is recomputed here against the turn's nowMs
+  // (the rehydration path routes through this function for exactly that
+  // reason), so it rolls over at the upload's time of day rather than at
+  // midnight, and it can differ between two turns inside one calendar day.
+  // Do not memoize the returned item per record: that would silently freeze
+  // the one field on a remembered image that still carries information.
   const originAge = formatRelativeAge(record.created_at, nowMs);
   const originFrame = `[remembered image -- not sent in this message; first shared ${originAge}]`;
   const imageLabel = `Image: remembered user-uploaded ${record.image_kind}`;
@@ -2896,6 +2916,9 @@ function commitmentToEvidence(
       vector,
     },
     disclosureLabel: commitmentMemoryDisclosureLabel(commitment),
+    commitment_enforcement_class: effectiveCommitmentEnforcementClass(commitment),
+    commitment_critical_domain: effectiveCommitmentCriticalDomain(commitment),
+    commitment_directive_chars: commitment.directive.length,
   };
 }
 

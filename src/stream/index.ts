@@ -42,6 +42,7 @@ export {
   type CorrectivePreferenceIngestionReceipt,
   type CorrectivePreferenceIngestionReceiptStatus,
   type IndexedEntryFacts,
+  type ListActiveStreamEntriesByKindRangeInput,
   type LookupExactStreamBacklogResponseStampInput,
   type LookupSessionStreamBacklogResponseStampsInput,
   type StreamEntryIndexRecord,

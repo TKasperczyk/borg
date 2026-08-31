@@ -31,6 +31,140 @@ describe("embeddings", () => {
     expect(Array.from(embeddings[1] ?? [])).toEqual([4, 5, 6]);
   });
 
+  it("splits an oversized batch into sequential requests, preserving order", async () => {
+    // A local inference server returns `400 "Model has unloaded or crashed."`
+    // on a large batch, taking the model down for every consumer on the host,
+    // so an unbounded caller array must never reach it in one request.
+    const seen: string[][] = [];
+    // A single-text chunk is sent as a bare string, not a one-element array.
+    const create = vi.fn(async (params: { input: string | string[] }) => {
+      const inputs = Array.isArray(params.input) ? params.input : [params.input];
+      seen.push([...inputs]);
+      return {
+        data: inputs.map((text, index) => ({ index, embedding: [Number(text)] })),
+      };
+    });
+
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 1,
+      maxBatchSize: 2,
+      client: { embeddings: { create } } as never,
+    });
+
+    const embeddings = await client.embedBatch(["1", "2", "3", "4", "5"]);
+
+    expect(seen).toEqual([["1", "2"], ["3", "4"], ["5"]]);
+    expect(embeddings.map((e) => Array.from(e)[0])).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("sends a batch at or under the cap as a single request", async () => {
+    const create = vi.fn(async (params: { input: string | string[] }) => {
+      const inputs = Array.isArray(params.input) ? params.input : [params.input];
+      return { data: inputs.map((_, index) => ({ index, embedding: [index] })) };
+    });
+
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 1,
+      maxBatchSize: 4,
+      client: { embeddings: { create } } as never,
+    });
+
+    await client.embedBatch(["a", "b", "c", "d"]);
+
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries when the server reports an evicted model, in any observed error shape", async () => {
+    // 404/model_not_found = never loaded. 400 "Model has unloaded or crashed."
+    // = evicted after sitting idle. 400 "Failed to load model ... Model does
+    // not exist." = a request racing into the eviction-to-JIT-reload window
+    // while another consumer's load evicted ours. Each shape was a hard turn
+    // failure until recognised here.
+    for (const failure of [
+      Object.assign(new Error("nope"), { status: 404, code: "model_not_found" }),
+      Object.assign(new Error("Model has unloaded or crashed."), { status: 400 }),
+      Object.assign(new Error("boom"), {
+        status: 400,
+        error: { message: "Model has unloaded or crashed." },
+      }),
+      Object.assign(
+        new Error('400 "Failed to load model \\"embed-model\\". Error: Model does not exist."'),
+        { status: 400 },
+      ),
+    ]) {
+      const create = vi
+        .fn()
+        .mockRejectedValueOnce(failure)
+        .mockResolvedValue({ data: [{ index: 0, embedding: [1] }] });
+
+      const client = new OpenAICompatibleEmbeddingClient({
+        model: "embed-model",
+        dims: 1,
+        modelReloadRetryDelaysMs: [0],
+        client: { embeddings: { create } } as never,
+      });
+
+      await expect(client.embed("text")).resolves.toBeInstanceOf(Float32Array);
+      expect(create).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it("does not retry an ordinary 400 that merely mentions a model", async () => {
+    const create = vi
+      .fn()
+      .mockRejectedValue(
+        Object.assign(new Error("Unknown parameter for model embed-model"), { status: 400 }),
+      );
+
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 1,
+      modelReloadRetryDelaysMs: [0],
+      client: { embeddings: { create } } as never,
+    });
+
+    await expect(client.embed("text")).rejects.toThrow(EmbeddingError);
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces the underlying cause in the error message", async () => {
+    // Every embedding failure previously read as an identical, information-free
+    // "Failed to generate embeddings", which is what made a live incident take
+    // three attempts to diagnose. The distinguishing fields must reach the log.
+    const create = vi.fn().mockRejectedValue(
+      Object.assign(new Error("Model has unloaded or crashed."), {
+        name: "APIError",
+        status: 400,
+        code: "model_unloaded",
+      }),
+    );
+
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 1,
+      modelReloadRetryDelaysMs: [0],
+      client: { embeddings: { create } } as never,
+    });
+
+    await expect(client.embed("text")).rejects.toThrow(/status=400/);
+    await expect(client.embed("text")).rejects.toThrow(/code=model_unloaded/);
+    await expect(client.embed("text")).rejects.toThrow(/unloaded or crashed/);
+  });
+
+  it("rejects a non-positive max batch size", () => {
+    expect(
+      () =>
+        new OpenAICompatibleEmbeddingClient({
+          model: "embed-model",
+          dims: 3,
+          maxBatchSize: 0,
+          client: { embeddings: { create: vi.fn() } } as never,
+        }),
+    ).toThrow(ConfigError);
+  });
+
   it("validates configuration and dimensions", async () => {
     expect(
       () =>

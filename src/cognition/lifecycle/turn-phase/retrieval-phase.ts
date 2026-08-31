@@ -273,6 +273,18 @@ function contentPayloadForCreatorDirective(directive: CreatorDirective): {
   canonicalFact: string | null;
   operationalDirective: string | null;
 } | null {
+  if (isPrivateOperationCreatorDirectiveKind(directive.kind)) {
+    return {
+      // Preserve the pre-compact auxiliary semantic value for the byte-pinned
+      // legacy renderer, which dispatches semantic slots first. Compact
+      // renderers dispatch the structural kind first and use the exact
+      // operational directive below.
+      semanticValue: directive.semantic_slot === null ? null : directive.canonical_fact,
+      canonicalFact: null,
+      operationalDirective: directive.operational_directive,
+    };
+  }
+
   if (directive.semantic_slot !== null) {
     return directive.canonical_fact === null
       ? null
@@ -283,9 +295,7 @@ function contentPayloadForCreatorDirective(directive: CreatorDirective): {
         };
   }
 
-  const kind: CreatorDirectiveKind = directive.kind;
-
-  switch (kind) {
+  switch (directive.kind) {
     case "self_identity":
     case "subject_fact":
     case "disclosure_boundary":
@@ -296,13 +306,6 @@ function contentPayloadForCreatorDirective(directive: CreatorDirective): {
             canonicalFact: directive.canonical_fact,
             operationalDirective: null,
           };
-    case "response_policy":
-    case "routing_instruction":
-      return {
-        semanticValue: null,
-        canonicalFact: null,
-        operationalDirective: directive.operational_directive,
-      };
   }
 }
 
@@ -412,6 +415,20 @@ export function buildCreatorDirectiveBriefing(input: {
   applicable: readonly CreatorDirectiveApplicable[];
   entityRepository: Pick<EntityRepository, "get">;
 }): CreatorDirectiveBriefing | null {
+  const briefingScope = (item: CreatorDirectiveApplicable) => ({
+    directiveId: item.directive.id,
+    createdByEntityId: item.directive.created_by_entity_id,
+    sourceSessionId: item.directive.source_session_id,
+    contentScope: item.directive.disclosure_policy.content_scope,
+    allowedEntityIds: [...item.directive.disclosure_policy.allowed_entity_ids],
+    excludedEntityIds: [...item.directive.disclosure_policy.excluded_entity_ids],
+    subjectMayKnow: item.directive.disclosure_policy.subject_may_know,
+    mentionPolicy: item.directive.disclosure_policy.mention_policy,
+    deniedAudienceBehavior: item.directive.disclosure_policy.denied_audience_behavior,
+    activationScope: item.directive.activation_policy.scope,
+    activationAllowedEntityIds: [...item.directive.activation_policy.allowed_entity_ids],
+    activationExcludedEntityIds: [...item.directive.activation_policy.excluded_entity_ids],
+  });
   const contentDirectives = input.applicable
     .flatMap((item) => {
       if (item.render_mode !== "content") {
@@ -439,6 +456,7 @@ export function buildCreatorDirectiveBriefing(input: {
           canonicalFact: payload.canonicalFact,
           operationalDirective: payload.operationalDirective,
           mentionPolicy: item.directive.disclosure_policy.mention_policy,
+          scope: briefingScope(item),
           priority: item.directive.priority,
           createdAt: item.directive.created_at,
         },
@@ -466,6 +484,7 @@ export function buildCreatorDirectiveBriefing(input: {
             semanticValue: payload.semanticValue,
             canonicalFact: payload.canonicalFact,
             mentionPolicy: item.directive.disclosure_policy.mention_policy,
+            scope: briefingScope(item),
             priority: item.directive.priority,
             createdAt: item.directive.created_at,
           },
@@ -479,6 +498,7 @@ export function buildCreatorDirectiveBriefing(input: {
         privateKind: "operation" as const,
         kind: item.directive.kind,
         operationalDirective: item.directive.operational_directive,
+        scope: briefingScope(item),
         priority: item.directive.priority,
         createdAt: item.directive.created_at,
       }))
@@ -493,6 +513,7 @@ export function buildCreatorDirectiveBriefing(input: {
     )
     .map((item) => ({
       renderMode: "boundary" as const,
+      scope: briefingScope(item),
       priority: item.directive.priority,
       createdAt: item.directive.created_at,
     }))
@@ -557,6 +578,16 @@ function traceCreatorDirectiveRendered(input: {
     input.tracer.emit("creator_directive_rendered", {
       turnId: input.turnId,
       ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
+      // The slice above caps the census at CREATOR_DIRECTIVE_RENDER_TRACE_LIMIT, and the cap is not
+      // visible in a per-directive row. Counting render_mode across a turn's events then yields a
+      // total that is silently the cap: measured 2026-08-23 over three days of traces, every turn
+      // reported exactly 50 applicable directives while the prompt's own creator_directive_index
+      // carried rows_total=109 on solitary turns. Without these two fields there is nothing in the
+      // event stream that distinguishes "50 applicable" from "50 was as far as we looked", and the
+      // lane split reads as a measurement when it is a head slice. Only the briefing builder sees
+      // the full list; it is never sliced, so the prompt is complete and the trace is the lossy one.
+      applicable_total: input.applicable.length,
+      traced_total: Math.min(input.applicable.length, CREATOR_DIRECTIVE_RENDER_TRACE_LIMIT),
       directive_id: item.directive.id,
       current_audience_entity_id: input.currentAudienceEntityId,
       participant_entity_ids: [...input.participantEntityIds],
@@ -769,10 +800,50 @@ export async function runRetrievalPhase(input: {
   const retrievedSemantic = retrievalContext.retrievedSemantic;
   const proceduralContext = retrievalContext.proceduralContext;
   const selectedSkill = retrievalContext.selectedSkill;
+  let autonomySchedulerState: TurnMechanismEvidence["autonomySchedulerState"];
+
+  if (input.options.autonomySchedulerStateProvider !== undefined) {
+    try {
+      const description = await input.options.autonomySchedulerStateProvider();
+
+      if (description !== null) {
+        autonomySchedulerState = {
+          // The scheduler's own read, not this phase's `nowMs`. `nowMs` is
+          // stamped when the phase starts and the provider is awaited well
+          // after that, so using it dated every count in the block by the
+          // whole retrieval span rather than by the ledger/compile gap the
+          // surface says it is naming.
+          observedAt: description.observed_at,
+          enabled: description.enabled,
+          tickInFlight: description.tick_in_flight,
+          intervalMs: description.interval_ms,
+          droppedIntervalFires: description.dropped_interval_fires,
+          intervalArmedAt: description.interval_armed_at,
+          nextTickAt: description.next_tick_at,
+          scheduledTickAt: description.scheduled_tick_at,
+          budget: description.budget,
+          fleetBrake: description.fleet_brake,
+        };
+      }
+    } catch (error) {
+      if (input.options.tracer.enabled) {
+        input.options.tracer.emit("retrieval.degraded", {
+          turnId: input.turnId,
+          turn_id: input.turnId,
+          component: "autonomy_scheduler_mechanism_evidence",
+          reason: "scheduler_budget_unavailable",
+          ...(input.options.tracer.includePayloads
+            ? { error: error instanceof Error ? error.message : String(error) }
+            : {}),
+        });
+      }
+    }
+  }
   const turnMechanismEvidence = await hydrateTurnMechanismEvidence({
     dataDir: input.options.config.dataDir,
     sessionId: input.sessionId,
     workingMemory: input.workingMemory,
+    ...(autonomySchedulerState === undefined ? {} : { autonomySchedulerState }),
     entryIndex: input.options.entryIndex,
     createStreamReader: input.options.createStreamReader,
   });
@@ -1245,6 +1316,8 @@ export async function buildCompactedEvidenceLedgerWithoutSharedState(input: {
     actionThreadRenderLimit: config.actionThreadRenderLimit,
     actionThreadSimilarityThreshold: config.actionThreadSimilarityThreshold,
     actionThreadSourceRecordLimit: config.actionThreadSourceRecordLimit,
+    actionThreadSalienceClassReservedSlots: config.actionThreadSalienceClassReservedSlots,
+    actionThreadAudienceReservedSlots: config.actionThreadAudienceReservedSlots,
     entityRepository: input.options.entityRepository,
     attachmentRepository: input.options.attachmentRepository,
     maxImagesPerLedger: input.options.config.attachments.maxImagesPerLedger,
@@ -2172,6 +2245,11 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     promptVisibleLedger: ledgerPromptContext.promptVisibleLedger,
     previousArtifact,
     relationalSlotsContext,
+    // N+1 durability boundary (8599f733): the message being answered is context for this
+    // turn, never source material for a durable entry written during it. The compiler runs
+    // in retrieval, before deliberation, so without this a fresh artifact citing the current
+    // message could be read back as prior shared state inside the same turn. The message
+    // stays citable from the next compile on, for as long as the ledger still shows it.
     allowedSourceStreamEntryIds: uniqueStreamEntryIds([
       ...ledgerPromptContext.visibleStreamEntryIds,
       ...trustedPostResponseStreamEntryIds,

@@ -17,6 +17,7 @@ import {
   createCommitmentId,
   createEntityId,
   createEpisodeId,
+  createGoalId,
   createRelationalSlotId,
   createSessionId,
   createStreamEntryId,
@@ -105,6 +106,76 @@ function emptyStreamReader(): StreamReader {
       return;
     },
   } as unknown as StreamReader;
+}
+
+async function runInternalIdentifierGuardFixture(input: {
+  response: string;
+  knownInternalIdentifiers: readonly string[];
+  audienceContent?: string;
+  sessionSourceType?: Parameters<TurnPostGenerationGuardRunner["run"]>[0]["sessionSourceType"];
+  substratePrivilegedSourceTypes?: readonly string[];
+  closureAudit?: ClosureResponseAudit;
+  closureLoop?: Parameters<TurnPostGenerationGuardRunner["run"]>[0]["closureLoop"];
+}) {
+  const llm = new FakeLLMClient({
+    responses: [
+      closureAuditResponse(
+        input.closureAudit ?? {
+          spans: [],
+          response_shape: "no_closure",
+          reason: "No closure.",
+        },
+      ),
+    ],
+  });
+  const emit = vi.fn();
+  const createStreamReader = vi.fn(() => emptyStreamReader());
+  const runner = new TurnPostGenerationGuardRunner({
+    auditModel: "audit",
+    closurePressureMode: "enforce",
+    substratePrivilegedSourceTypes: input.substratePrivilegedSourceTypes ?? ["claude_code"],
+    createStreamReader,
+    actionRepository: {
+      list: vi.fn(() => []),
+    },
+    relationalSlotRepository: {
+      list: vi.fn(() => []),
+    },
+    clock: new FixedClock(2_000),
+    tracer: {
+      enabled: true,
+      includePayloads: false,
+      emit,
+    },
+  });
+  const persistedUserEntry =
+    input.audienceContent === undefined
+      ? undefined
+      : ({
+          id: createStreamEntryId(),
+          timestamp: 2_000,
+          kind: "user_msg",
+          content: input.audienceContent,
+          session_id: DEFAULT_SESSION_ID,
+          compressed: false,
+          sender_entity_id: null,
+          reply_target_entity_id: null,
+        } satisfies StreamEntry);
+  const emission = await runner.run({
+    llmClient: llm,
+    turnId: "turn-internal-identifier-fixture",
+    response: input.response,
+    sessionId: DEFAULT_SESSION_ID,
+    sessionSourceType: input.sessionSourceType,
+    ...(persistedUserEntry === undefined ? {} : { persistedUserEntry }),
+    retrievedEpisodes: [],
+    activeCommitments: [],
+    closureLoop: input.closureLoop ?? null,
+    audienceEntityId: null,
+    knownInternalIdentifiers: input.knownInternalIdentifiers,
+  });
+
+  return { emission, emit, createStreamReader, llm };
 }
 
 describe("post-generation guard shadow chain", () => {
@@ -224,7 +295,7 @@ describe("post-generation guard shadow chain", () => {
     );
   });
 
-  it("suppresses exact internal identifiers after closure guard passes", async () => {
+  it("suppresses substrate-only identifiers on non-exempt source types", async () => {
     const userEntryId = createStreamEntryId();
     const userEntry: StreamEntry = {
       id: userEntryId,
@@ -254,6 +325,7 @@ describe("post-generation guard shadow chain", () => {
     const postGenerationRunner = new TurnPostGenerationGuardRunner({
       auditModel: "audit",
       closurePressureMode: "enforce",
+      substratePrivilegedSourceTypes: ["claude_code"],
       createStreamReader: () => emptyStreamReader(),
       actionRepository: {
         list: vi.fn(() => []),
@@ -270,6 +342,7 @@ describe("post-generation guard shadow chain", () => {
       turnId: "turn-internal-id-leak",
       response: `The source handle was ${userEntryId}.`,
       sessionId: DEFAULT_SESSION_ID,
+      sessionSourceType: "demo",
       persistedUserEntry: userEntry,
       retrievedEpisodes: [],
       activeCommitments: [],
@@ -286,9 +359,279 @@ describe("post-generation guard shadow chain", () => {
     expect(emit).toHaveBeenCalledWith("internal_identifier_guard.completed", {
       turnId: "turn-internal-id-leak",
       session_id: DEFAULT_SESSION_ID,
+      session_source_type: "demo",
       verdict: "suppressed",
       leaked_identifiers: [userEntryId],
     });
+  });
+
+  it("allows exact identifiers echoed from current-turn audience-authored content", async () => {
+    const audienceSuppliedId = createActionId();
+    const response = `I can inspect ${audienceSuppliedId}.`;
+    const userEntry: StreamEntry = {
+      id: createStreamEntryId(),
+      timestamp: 2_000,
+      kind: "user_msg",
+      content: `Please inspect ${audienceSuppliedId}.`,
+      session_id: DEFAULT_SESSION_ID,
+      compressed: false,
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        closureAuditResponse({
+          spans: [],
+          response_shape: "no_closure",
+          reason: "No closure.",
+        }),
+      ],
+    });
+    const emit = vi.fn();
+    const postGenerationRunner = new TurnPostGenerationGuardRunner({
+      auditModel: "audit",
+      closurePressureMode: "enforce",
+      substratePrivilegedSourceTypes: ["claude_code"],
+      createStreamReader: () => emptyStreamReader(),
+      actionRepository: {
+        list: vi.fn(() => []),
+      },
+      relationalSlotRepository: {
+        list: vi.fn(() => []),
+      },
+      clock: new FixedClock(2_000),
+      tracer: {
+        enabled: true,
+        includePayloads: false,
+        emit,
+      },
+    });
+
+    const finalEmission = await postGenerationRunner.run({
+      llmClient: llm,
+      turnId: "turn-current-audience-id-echo",
+      response,
+      sessionId: DEFAULT_SESSION_ID,
+      sessionSourceType: "demo",
+      persistedUserEntry: userEntry,
+      retrievedEpisodes: [],
+      activeCommitments: [],
+      closureLoop: null,
+      audienceEntityId: null,
+      knownInternalIdentifiers: [audienceSuppliedId],
+    });
+
+    expect(finalEmission).toEqual({
+      kind: "message",
+      content: response,
+    });
+    expect(emit).toHaveBeenCalledWith("internal_identifier_guard.completed", {
+      turnId: "turn-current-audience-id-echo",
+      session_id: DEFAULT_SESSION_ID,
+      session_source_type: "demo",
+      verdict: "passed",
+      exemption_reason: "current_turn_audience_echo",
+      exempted_identifiers: [audienceSuppliedId],
+    });
+  });
+
+  it("does not exempt a known identifier that is only a prefix of an inbound token", async () => {
+    const knownIdentifier = "act_abcdefghijklmnop";
+    const { emission, emit } = await runInternalIdentifierGuardFixture({
+      response: `The action handle is ${knownIdentifier}.`,
+      knownInternalIdentifiers: [knownIdentifier],
+      audienceContent: `Please inspect ${knownIdentifier}x.`,
+      sessionSourceType: "demo",
+    });
+
+    expect(emission).toEqual({
+      kind: "suppressed",
+      reason: "internal_identifier_leak",
+    });
+    expect(emit).toHaveBeenCalledWith(
+      "internal_identifier_guard.completed",
+      expect.objectContaining({
+        verdict: "suppressed",
+        leaked_identifiers: [knownIdentifier],
+      }),
+    );
+  });
+
+  it("does not exempt a known identifier embedded in a longer alphanumeric run", async () => {
+    const knownIdentifier = "goal_abcdefghijklmnop";
+    const { emission, emit } = await runInternalIdentifierGuardFixture({
+      response: `The goal handle is ${knownIdentifier}.`,
+      knownInternalIdentifiers: [knownIdentifier],
+      audienceContent: `Please inspect prefix${knownIdentifier}suffix.`,
+      sessionSourceType: "demo",
+    });
+
+    expect(emission).toEqual({
+      kind: "suppressed",
+      reason: "internal_identifier_leak",
+    });
+    expect(emit).toHaveBeenCalledWith(
+      "internal_identifier_guard.completed",
+      expect.objectContaining({
+        verdict: "suppressed",
+        leaked_identifiers: [knownIdentifier],
+      }),
+    );
+  });
+
+  it("exempts only exact audience echoes when the response also contains a substrate-only id", async () => {
+    const echoedIdentifier = createActionId();
+    const substrateOnlyIdentifier = createGoalId();
+    const { emission, emit } = await runInternalIdentifierGuardFixture({
+      response: `The handles are ${echoedIdentifier} and ${substrateOnlyIdentifier}.`,
+      knownInternalIdentifiers: [echoedIdentifier, substrateOnlyIdentifier],
+      audienceContent: `Please inspect ${echoedIdentifier}.`,
+      sessionSourceType: "demo",
+    });
+
+    expect(emission).toEqual({
+      kind: "suppressed",
+      reason: "internal_identifier_leak",
+    });
+    expect(emit).toHaveBeenCalledWith("internal_identifier_guard.completed", {
+      turnId: "turn-internal-identifier-fixture",
+      session_id: DEFAULT_SESSION_ID,
+      session_source_type: "demo",
+      verdict: "suppressed",
+      leaked_identifiers: [substrateOnlyIdentifier],
+      exemption_reason: "current_turn_audience_echo",
+      exempted_identifiers: [echoedIdentifier],
+    });
+  });
+
+  it("skips internal-identifier enforcement on configured substrate-privileged sources", async () => {
+    const substrateIdentifier = createSessionId();
+    const response = `The substrate handle is ${substrateIdentifier}.`;
+    const createStreamReader = vi.fn(() => emptyStreamReader());
+    const listActions = vi.fn(() => []);
+    const listRelationalSlots = vi.fn(() => []);
+    const llm = new FakeLLMClient({
+      responses: [
+        closureAuditResponse({
+          spans: [],
+          response_shape: "no_closure",
+          reason: "No closure.",
+        }),
+      ],
+    });
+    const emit = vi.fn();
+    const postGenerationRunner = new TurnPostGenerationGuardRunner({
+      auditModel: "audit",
+      closurePressureMode: "enforce",
+      substratePrivilegedSourceTypes: ["claude_code"],
+      createStreamReader,
+      actionRepository: {
+        list: listActions,
+      },
+      relationalSlotRepository: {
+        list: listRelationalSlots,
+      },
+      clock: new FixedClock(2_000),
+      tracer: {
+        enabled: true,
+        includePayloads: false,
+        emit,
+      },
+    });
+
+    const finalEmission = await postGenerationRunner.run({
+      llmClient: llm,
+      turnId: "turn-substrate-privileged-id",
+      response,
+      sessionId: DEFAULT_SESSION_ID,
+      sessionSourceType: "claude_code",
+      retrievedEpisodes: [],
+      activeCommitments: [],
+      closureLoop: null,
+      audienceEntityId: null,
+      knownInternalIdentifiers: [substrateIdentifier],
+    });
+
+    expect(finalEmission).toEqual({
+      kind: "message",
+      content: response,
+    });
+    expect(emit).toHaveBeenCalledWith("internal_identifier_guard.completed", {
+      turnId: "turn-substrate-privileged-id",
+      session_id: DEFAULT_SESSION_ID,
+      session_source_type: "claude_code",
+      verdict: "skipped",
+      reason: "substrate_privileged_source_type",
+    });
+    expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
+    expect(createStreamReader).not.toHaveBeenCalled();
+    expect(listActions).not.toHaveBeenCalled();
+    expect(listRelationalSlots).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: "null", sessionSourceType: null },
+    { label: "undefined", sessionSourceType: undefined },
+  ])(
+    "keeps internal-identifier enforcement active for a $label source type with a populated allowlist",
+    async ({ sessionSourceType }) => {
+      const substrateIdentifier = createSessionId();
+      const { emission, createStreamReader } = await runInternalIdentifierGuardFixture({
+        response: `The substrate handle is ${substrateIdentifier}.`,
+        knownInternalIdentifiers: [substrateIdentifier],
+        sessionSourceType,
+        substratePrivilegedSourceTypes: ["claude_code"],
+      });
+
+      expect(emission).toEqual({
+        kind: "suppressed",
+        reason: "internal_identifier_leak",
+      });
+      expect(createStreamReader).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("still enforces closure-pressure suppression on a substrate-privileged source", async () => {
+    const substrateIdentifier = createSessionId();
+    const { emission, emit, createStreamReader } = await runInternalIdentifierGuardFixture({
+      response: `Held. Book. ${substrateIdentifier}`,
+      knownInternalIdentifiers: [substrateIdentifier],
+      sessionSourceType: "claude_code",
+      substratePrivilegedSourceTypes: ["claude_code"],
+      closureAudit: {
+        spans: [
+          {
+            text: "Held. Book.",
+            kind: "quotable_closing_tail",
+            rationale: "The response applies closure pressure.",
+          },
+        ],
+        response_shape: "closure_only",
+        reason: "Only closure pressure remains.",
+      },
+      closureLoop: {
+        status: "named",
+        source_stream_entry_ids: [createStreamEntryId()],
+        reason: "The closure loop is active.",
+        since_turn: 3,
+        named_at_turn: 4,
+      },
+    });
+
+    expect(emission).toEqual({
+      kind: "suppressed",
+      reason: "closure_pressure_only",
+      closure_pressure_history_reason: "span_removed",
+    });
+    expect(emit).toHaveBeenCalledWith(
+      "closure_response_guard.completed",
+      expect.objectContaining({
+        verdict: "suppressed",
+        reason: "closure_pressure_only",
+      }),
+    );
+    expect(emit).not.toHaveBeenCalledWith("internal_identifier_guard.completed", expect.anything());
+    expect(createStreamReader).not.toHaveBeenCalled();
   });
 
   it("suppresses known cross-session identifiers rendered in operator snapshots", async () => {

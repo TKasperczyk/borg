@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { DEFAULT_HOST_CAPABILITIES_SECTION } from "../cognition/prompts/host-capability-contracts.js";
+import { DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET } from "../cognition/deliberation/constants.js";
 import {
   EVIDENCE_LEDGER_SECTION_DEFINITIONS,
   type EvidenceLedgerSectionId,
@@ -54,6 +55,14 @@ const perceptionConfigSchema = z
 const frameAnomalyConfigSchema = z
   .object({
     peerChannelSourceTypes: z.array(sessionSourceTypeSchema).default(["kira"]),
+  })
+  .strict()
+  .prefault({});
+const internalIdentifierGuardConfigSchema = z
+  .object({
+    // Empty unless the operator authorizes a source whose audience can inspect
+    // and meaningfully use Borg substrate identifiers.
+    substratePrivilegedSourceTypes: z.array(sessionSourceTypeSchema).default([]),
   })
   .strict()
   .prefault({});
@@ -192,6 +201,8 @@ const evidenceLedgerConfigSchema = z
     actionThreadRenderLimit: z.number().int().positive().default(12),
     actionThreadSimilarityThreshold: z.number().min(0).max(1).default(0.85),
     actionThreadSourceRecordLimit: z.number().int().positive().default(256),
+    actionThreadSalienceClassReservedSlots: z.number().int().nonnegative().default(1),
+    actionThreadAudienceReservedSlots: z.number().int().nonnegative().default(1),
     finalizerTargetTokens: z.number().int().positive().default(60_000),
     finalizerHardCapTokens: z.number().int().positive().default(100_000),
     finalizerMaxEntryTextTokens: z.number().int().positive().default(1_200),
@@ -267,6 +278,18 @@ const contradictionRoutingConfigSchema = z
 const deliberationConfigSchema = z
   .object({
     contradictionRouting: contradictionRoutingConfigSchema,
+    planRequestedVerificationMembershipTokenBudget: z
+      .number()
+      .int()
+      .positive()
+      .default(DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET),
+    finalizerDynamicPromptCacheEnabled: z.boolean().default(true),
+    finalizerSurfaceVariant: z
+      .enum(["compact", "compact_conversational", "legacy"])
+      .default("legacy"),
+    finalizerContextCaptureSampleRate: z.number().min(0).max(1).default(0),
+    plannerSurfaceVariant: z.enum(["compact", "legacy"]).default("compact"),
+    plannerContextCaptureSampleRate: z.number().min(0).max(1).default(0),
   })
   .strict()
   .prefault({});
@@ -288,7 +311,7 @@ const maintenanceProcessSchema = z.enum(OFFLINE_PROCESS_NAMES);
 export type PostGenerationGuardMode = z.infer<typeof postGenerationGuardModeSchema>;
 const anthropicModelsConfigSchema = z
   .object({
-    // The main cognition/extraction/background slots default to Opus 4.6.
+    // The main cognition/extraction/background slots default to Opus 5.
     // Recall expansion is a small structured fanout task and has its own
     // Haiku slot so it can stay fast without reusing background.
     // Creator-directive extraction is a nuanced semantic classification
@@ -296,9 +319,9 @@ const anthropicModelsConfigSchema = z
     // under-emits; it gets its own Sonnet slot -- stronger than the recall
     // Haiku, cheaper than the Opus cognition slot -- and only fires on
     // creator-in-operator turns, so the cost is bounded.
-    cognition: z.string().min(1).default("claude-opus-4-6"),
-    background: z.string().min(1).default("claude-opus-4-6"),
-    extraction: z.string().min(1).default("claude-opus-4-6"),
+    cognition: z.string().min(1).default("claude-opus-5"),
+    background: z.string().min(1).default("claude-opus-5"),
+    extraction: z.string().min(1).default("claude-opus-5"),
     recallExpansion: z.string().min(1).default("claude-haiku-4-5-20251001"),
     creatorDirective: z.string().min(1).default("claude-sonnet-4-6"),
     imagePerception: z.string().min(1).default("claude-haiku-4-5-20251001"),
@@ -327,6 +350,7 @@ const configBaseSchema = z.object({
   host_capabilities: z.string().min(1).default(DEFAULT_HOST_CAPABILITIES_SECTION),
   perception: perceptionConfigSchema,
   frameAnomaly: frameAnomalyConfigSchema,
+  internalIdentifierGuard: internalIdentifierGuardConfigSchema,
   affective: affectiveConfigSchema,
   embedding: z
     .object({
@@ -334,6 +358,12 @@ const configBaseSchema = z.object({
       apiKey: z.string().min(1).default("lm-studio"),
       model: z.string().min(1).default("text-embedding-qwen3-embedding-8b"),
       dims: z.number().int().positive().default(4096),
+      // Largest array sent to the embeddings endpoint in one request. Local
+      // inference servers fail hard rather than degrade on big batches -- an 8B
+      // model under LM Studio returned `400 "Model has unloaded or crashed."`
+      // at 128 inputs, which takes the model down for every consumer on the
+      // host. Raise only if your provider is known to handle it.
+      maxBatchSize: z.number().int().positive().default(32),
     })
     .prefault({}),
   anthropic: anthropicConfigSchema,
@@ -350,6 +380,34 @@ const configBaseSchema = z.object({
       // (2000) plus a double-stalled query embedding (2x1000) plus local
       // retrieval work still fits the memory client's hard 5s recall budget.
       recallExpansionTimeoutMs: z.number().int().min(0).default(2000),
+      // Live-turn attention weights. Deployment-tunable on purpose: `semantic`
+      // is fused against a RAW cosine similarity, whose spread is a property of
+      // the corpus rather than of the code. A corpus whose episodes are
+      // thematically diverse separates widely, so a high `semantic` buys real
+      // ranking signal; a thematically narrow corpus separates by a few
+      // hundredths, where the same weight mostly displaces salience without
+      // replacing it. One global constant therefore cannot serve every bank --
+      // measure a deployment with `pnpm retrieval:signal-report` before
+      // changing these. (`heat` is normalized before fusion; `semantic` is not,
+      // which is the asymmetry that makes this corpus-dependent.)
+      attentionWeights: z
+        .object({
+          semantic: z.number().min(0).default(0.65),
+          // Applied only when the turn carries goal descriptions.
+          goal_relevance: z.number().min(0).default(0.1),
+          value_alignment: z.number().min(0).default(0),
+          mood: z.number().min(0).default(0),
+          // Applied only when the query carries a temporal signal.
+          time: z.number().min(0).default(0.2),
+          // Applied only when audience terms are resolved.
+          social: z.number().min(0).default(0.15),
+          // Applied only when the query carries an entity signal.
+          entity: z.number().min(0).default(0.2),
+          heat: z.number().min(0).default(0.15),
+          suppression_penalty: z.number().min(0).default(0.5),
+        })
+        .strict()
+        .prefault({}),
       lexicalFusion: z
         .object({
           enabled: z.boolean().default(false),
@@ -437,7 +495,15 @@ const configBaseSchema = z.object({
           goalSimilarityThreshold: z.number().min(0).max(1).default(0.82),
           ceilingConfidence: z.number().positive().max(0.5).default(0.5),
           maxInsightsPerRun: z.number().int().positive().default(2),
-          budget: z.number().int().positive().default(200_000),
+          // Sized against observed usage, not guessed. The budget sink runs
+          // AFTER each call, so an abort total is a LOWER bound on what a
+          // completing run costs -- reflector aborted at 248k-271k against the
+          // old 200k cap on eight of nine consecutive nightly runs, discarding
+          // the whole phase after paying for it. Per-call prompts are now
+          // 170k-330k tokens, so two calls alone exceeded the old cap. These
+          // caps stay runaway guards (a looping process still trips them),
+          // they are no longer work limiters. Revisit if prompt size grows.
+          budget: z.number().int().positive().default(800_000),
         })
         .prefault({}),
       associator: z
@@ -530,12 +596,17 @@ const configBaseSchema = z.object({
           duplicateSimilarityThreshold: z.number().min(0).max(1).default(0.9),
           stalenessDays: z.number().positive().default(30),
           staleNoTractionTicks: z.number().int().positive().default(4),
-          budget: z.number().int().positive().default(40_000),
+          // Aborted at 40k-48k against the old 40k cap on five of nine runs.
+          // See the reflector budget comment for the sizing rationale.
+          budget: z.number().int().positive().default(150_000),
         })
         .prefault({}),
       selfNarrator: z
         .object({
-          budget: z.number().int().positive().default(80_000),
+          // Worst offender: aborted at 154k-163k against the old 80k cap
+          // (~204% of budget) on eight of nine runs. See the reflector budget
+          // comment for the sizing rationale.
+          budget: z.number().int().positive().default(500_000),
           maxObservationsPerRun: z.number().int().positive().default(4),
           minSupportEpisodes: z.number().int().positive().default(2),
           cadenceHintDays: z.number().positive().default(7),
@@ -549,6 +620,7 @@ const configBaseSchema = z.object({
           maxSelfDecisionEventsPerDay: z.number().int().positive().default(96),
           maxActivityEventsPerDay: z.number().int().positive().default(256),
           maxEpisodesPerDay: z.number().int().positive().default(12),
+          maxActionRecordsPerDay: z.number().int().positive().default(64),
         })
         .prefault({}),
       beliefReviser: z
@@ -630,6 +702,7 @@ const configBaseSchema = z.object({
       enabled: z.boolean().default(true),
       intervalMs: z.number().int().positive().default(60_000),
       maxWakesPerWindow: z.number().int().positive().default(6),
+      goalWakeBatchMax: z.number().int().positive().default(5),
       budgetWindowMs: z.number().int().positive().default(86_400_000),
       reservedContemplativeWakesPerWindow: z.number().int().nonnegative().default(1),
       proactiveOutbound: z
@@ -1198,6 +1271,34 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
+    ["deliberation", "planRequestedVerificationMembershipTokenBudget"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_DELIBERATION_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET",
+    ),
+  );
+  setConfigOverride(
+    overrides,
+    ["deliberation", "finalizerSurfaceVariant"],
+    readOptionalEnvString(env, "BORG_DELIBERATION_FINALIZER_SURFACE_VARIANT"),
+  );
+  setConfigOverride(
+    overrides,
+    ["deliberation", "finalizerContextCaptureSampleRate"],
+    readOptionalEnvUnitInterval(env, "BORG_DELIBERATION_FINALIZER_CONTEXT_CAPTURE_SAMPLE_RATE"),
+  );
+  setConfigOverride(
+    overrides,
+    ["deliberation", "plannerSurfaceVariant"],
+    readOptionalEnvString(env, "BORG_DELIBERATION_PLANNER_SURFACE_VARIANT"),
+  );
+  setConfigOverride(
+    overrides,
+    ["deliberation", "plannerContextCaptureSampleRate"],
+    readOptionalEnvUnitInterval(env, "BORG_DELIBERATION_PLANNER_CONTEXT_CAPTURE_SAMPLE_RATE"),
+  );
+  setConfigOverride(
+    overrides,
     ["cognition", "actionLifecycle", "archiveStaleAfterInactiveTurns"],
     readOptionalEnvNumber(
       env,
@@ -1264,6 +1365,22 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["generation", "evidenceLedger", "actionThreadSourceRecordLimit"],
     readOptionalEnvNumber(env, "BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SOURCE_RECORD_LIMIT"),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "actionThreadSalienceClassReservedSlots"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS",
+    ),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "actionThreadAudienceReservedSlots"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS",
+    ),
   );
   setConfigOverride(
     overrides,
@@ -1763,6 +1880,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
+    ["autonomy", "goalWakeBatchMax"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_GOAL_WAKE_BATCH_MAX"),
+  );
+  setConfigOverride(
+    overrides,
     ["autonomy", "budgetWindowMs"],
     readOptionalEnvNumber(env, "BORG_AUTONOMY_BUDGET_WINDOW_MS"),
   );
@@ -2044,6 +2166,11 @@ export function redactConfig(config: Config): Config {
     frameAnomaly: {
       peerChannelSourceTypes: [...config.frameAnomaly.peerChannelSourceTypes],
     },
+    internalIdentifierGuard: {
+      substratePrivilegedSourceTypes: [
+        ...config.internalIdentifierGuard.substratePrivilegedSourceTypes,
+      ],
+    },
     affective: {
       ...config.affective,
     },
@@ -2061,6 +2188,9 @@ export function redactConfig(config: Config): Config {
     retrieval: {
       semanticOverfetchMultiplier: config.retrieval.semanticOverfetchMultiplier,
       recallExpansionTimeoutMs: config.retrieval.recallExpansionTimeoutMs,
+      attentionWeights: {
+        ...config.retrieval.attentionWeights,
+      },
       lexicalFusion: {
         ...config.retrieval.lexicalFusion,
       },

@@ -30,6 +30,14 @@ export function renderEvidenceLedger(
       ? "current_session_transcript=included compacted=true"
       : "current_session_transcript=included"
     : `current_session_transcript=omitted reason=${ledger.transcriptOmittedReason ?? "unknown"}`;
+  // The header's status parts disagree on how they render the empty case.
+  // transcriptStatus and estimated_tokens always emit a line -- transcript emits
+  // an explicit `omitted reason=` when it is absent. renderImageAttachmentLabels
+  // returns null and is dropped by the filter below, so "no images this turn" is
+  // signalled only by the block's absence, never by a zero-valued field. Reading
+  // image state off this header therefore means noticing a missing block rather
+  // than reading a value, and the only misread the header admits is a false
+  // negative: a present block reported as absent.
   const content = [
     "EvidenceLedger: prioritized evidence substrate for the final response.",
     HIERARCHY_GUIDANCE,

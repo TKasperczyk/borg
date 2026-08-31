@@ -25,9 +25,13 @@ import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
 import type { GoalsRepository, OpenQuestionsRepository } from "../memory/self/index.js";
+import type { AutonomousOutboundPolicy } from "../outbound/autonomous-policy.js";
+import { autonomousOutboundActionAvailabilityKey } from "../outbound/outbound-prompt.js";
 import type { StreamWatermarkRepository } from "../stream/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
+import { OUTBOUND_POST_TOOL_NAME } from "../tools/internal/outbound-post-name.js";
 import type { Clock } from "../util/clock.js";
+import { DEFAULT_SESSION_ID } from "../util/ids.js";
 import type { BorgStreamWriterFactory } from "./types.js";
 
 export type BuildAutonomySchedulerOptions = {
@@ -46,12 +50,33 @@ export type BuildAutonomySchedulerOptions = {
   trainOfThoughtRepository: TrainOfThoughtRepository;
   turnOrchestrator: TurnOrchestrator;
   toolDispatcher: ToolDispatcher;
+  autonomousOutboundPolicy: Pick<AutonomousOutboundPolicy, "promptContext" | "actionRouteTopology">;
   createStreamWriter: BorgStreamWriterFactory;
   clock: Clock;
   tracer?: TurnTracer;
 };
 
 export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): AutonomyScheduler {
+  const goalStaleBackoffActionAvailabilityKey = () => {
+    const outboundTool = options.toolDispatcher.getDefinition(OUTBOUND_POST_TOOL_NAME);
+    const outboundToolAvailable = outboundTool?.allowedOrigins.includes("autonomous") === true;
+
+    if (!outboundToolAvailable) {
+      return null;
+    }
+
+    const context = options.autonomousOutboundPolicy.promptContext(DEFAULT_SESSION_ID);
+
+    if (context === null) {
+      return null;
+    }
+
+    return autonomousOutboundActionAvailabilityKey({
+      context,
+      routeTopology: options.autonomousOutboundPolicy.actionRouteTopology(DEFAULT_SESSION_ID),
+      outboundToolAvailable,
+    });
+  };
   const autonomySources = [
     ...(options.config.autonomy.triggers.commitmentExpiring.enabled
       ? [
@@ -80,6 +105,14 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
             },
             respectStaleBackoff:
               options.config.autonomy.triggers.goalFollowupDue.respectStaleBackoff,
+            executiveScoring: {
+              embeddingClient: options.embeddingClient,
+              threshold: options.config.executive.goalFocusThreshold,
+              deadlineLookaheadMs: options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
+              staleMs: options.config.autonomy.executiveFocus.stalenessSec * 1_000,
+              tracer: options.tracer,
+            },
+            goalStaleBackoffActionAvailabilityKey,
             clock: options.clock,
           }),
         ]
@@ -109,6 +142,7 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
             },
             clock: options.clock,
             tracer: options.tracer,
+            goalStaleBackoffActionAvailabilityKey,
           }),
         ]
       : []),
@@ -178,6 +212,7 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
     enabled: options.config.autonomy.enabled,
     intervalMs: options.config.autonomy.intervalMs,
     maxWakesPerWindow: options.config.autonomy.maxWakesPerWindow,
+    goalWakeBatchMax: options.config.autonomy.goalWakeBatchMax,
     budgetWindowMs: options.config.autonomy.budgetWindowMs,
     reservedContemplativeWakesPerWindow:
       options.config.autonomy.reservedContemplativeWakesPerWindow,

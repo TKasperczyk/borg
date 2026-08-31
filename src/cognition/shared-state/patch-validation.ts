@@ -31,6 +31,7 @@ import type {
   DroppedCanonicalizeId,
   EmptyUpdateDrop,
   EmitSharedStatePatch,
+  ModelPruneRequest,
   NonLockedCanonicalizesDrop,
   ParsedCanonicalizes,
   ParsedPatchOperation,
@@ -417,6 +418,26 @@ function mostRecentPreviousEntry(
   );
 }
 
+// DELIBERATE: read off the operation, not off the details bag, so every rejection site carries it
+// without opting in. A refused operation is the only place a proposed kind ever exists -- the store
+// records kinds but holds only what landed, and `operation_counts_by_kind` on the compile trace is
+// keyed by operation *type*. Without this, an `add` proposing `invalidated` and an `add` proposing
+// `locked` are byte-identical once refused, so "this kind was never proposed" cannot be told apart
+// from "it was proposed and refused" -- and the first is a fact about the entity's judgement while
+// the second is a fact about the gate. `prune` names an id and proposes no kind; `supersede`
+// proposes one on its replacement.
+function proposedEntryKind(operation: ParsedPatchOperation): SharedStateEntryKind | undefined {
+  if (operation.type === "add" || operation.type === "update") {
+    return operation.kind;
+  }
+
+  if (operation.type === "supersede") {
+    return operation.replacement.kind;
+  }
+
+  return undefined;
+}
+
 function rejection(
   operation: ParsedPatchOperation,
   operationIndex: number,
@@ -439,10 +460,13 @@ function rejection(
     | "rejectedRelationshipClaimEvidenceStreamEntryIds"
   > = {},
 ): PatchRejection {
+  const entryKind = proposedEntryKind(operation);
+
   return {
     reason,
     operationType: operation.type,
     operationIndex,
+    ...(entryKind === undefined ? {} : { entryKind }),
     ...details,
   };
 }
@@ -467,6 +491,7 @@ export function normalizePatch(input: {
   nonLockedCanonicalizesDrops: NonLockedCanonicalizesDrop[];
   emptyUpdateDrops: EmptyUpdateDrop[];
   emptyUpdateAttemptedCount: number;
+  modelPruneRequests: ModelPruneRequest[];
 } {
   const allowedOwnerEntityIds = new Set<EntityId>([
     input.audienceEntityId,
@@ -487,6 +512,7 @@ export function normalizePatch(input: {
   const droppedCanonicalizeIds: DroppedCanonicalizeId[] = [];
   const nonLockedCanonicalizesDrops: NonLockedCanonicalizesDrop[] = [];
   const emptyUpdateDrops: EmptyUpdateDrop[] = [];
+  const modelPruneRequests: ModelPruneRequest[] = [];
   let emptyUpdateAttemptedCount = 0;
   const baseRank = input.previousArtifact?.entries.length ?? 0;
   const maxLiveEntriesPerKey = normalizeMaxLiveEntriesPerKey(input.maxLiveEntriesPerKey);
@@ -649,6 +675,7 @@ export function normalizePatch(input: {
         if (citations.reason !== null) {
           rejected.push(
             rejection(operation, operationIndex, citations.reason, {
+              stateKey: operation.state_key,
               sourceStreamEntryId: citations.rejectedStreamEntryId,
               sourceTrustReason: citations.sourceTrustReason,
             }),
@@ -758,6 +785,7 @@ export function normalizePatch(input: {
         if (citations.reason !== null) {
           rejected.push(
             rejection(operation, operationIndex, citations.reason, {
+              stateKey: operation.state_key,
               sourceStreamEntryId: citations.rejectedStreamEntryId,
               sourceTrustReason: citations.sourceTrustReason,
             }),
@@ -833,6 +861,8 @@ export function normalizePatch(input: {
         if (replacementCitations.reason !== null) {
           rejected.push(
             rejection(operation, operationIndex, replacementCitations.reason, {
+              stateKey: operation.replacement.state_key,
+              targetEntryId: id,
               sourceStreamEntryId: replacementCitations.rejectedStreamEntryId,
               sourceTrustReason: replacementCitations.sourceTrustReason,
             }),
@@ -851,6 +881,8 @@ export function normalizePatch(input: {
         if (updateCitations.reason !== null) {
           rejected.push(
             rejection(operation, operationIndex, updateCitations.reason, {
+              stateKey: operation.replacement.state_key,
+              targetEntryId: id,
               sourceStreamEntryId: updateCitations.rejectedStreamEntryId,
               sourceTrustReason: updateCitations.sourceTrustReason,
             }),
@@ -917,6 +949,16 @@ export function normalizePatch(input: {
           return;
         }
 
+        // The store operation carries no reason field, so this is the last point at
+        // which the model's stated why still exists. Record it before it is dropped.
+        modelPruneRequests.push({
+          operationIndex,
+          operationId: id,
+          stateKey: entry.state_key,
+          kind: entry.kind,
+          lastUpdatedAt: entry.last_updated_at,
+          reason: operation.reason ?? null,
+        });
         operations.push({
           type: "prune",
           id,
@@ -933,6 +975,7 @@ export function normalizePatch(input: {
     nonLockedCanonicalizesDrops,
     emptyUpdateDrops,
     emptyUpdateAttemptedCount,
+    modelPruneRequests,
   };
 }
 

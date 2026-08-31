@@ -187,6 +187,120 @@ function minimalRetrievalPhaseOptions(
   } as unknown as TurnPhaseCoordinatorOptions;
 }
 
+function runMinimalRetrievalPhase(options: TurnPhaseCoordinatorOptions, turnId: string) {
+  return runRetrievalPhase({
+    options,
+    sessionId: DEFAULT_SESSION_ID,
+    turnId,
+    turnInput: {
+      userMessage: "Inspect the current mechanism state.",
+      audience: "operator",
+      origin: "user",
+    },
+    isSelfAudience: false,
+    isUserTurn: true,
+    cognitionInput: "Inspect the current mechanism state.",
+    llmClient: new FakeLLMClient({ responses: [] }),
+    recencyMessages: [],
+    audienceEntityId: null,
+    audienceEntity: null,
+    audienceProfile: null,
+    sessionAudienceRole: "operator",
+    perception: {
+      entities: [],
+      mode: "relational",
+      affectiveSignal: {
+        valence: 0,
+        arousal: 0,
+        dominant_emotion: null,
+      },
+      temporalCue: null,
+    } satisfies PerceptionResult,
+    workingMemory: {
+      turn_counter: 1,
+    } as never,
+    suppressionSet: {} as never,
+    actionLinkSelfContext: null,
+    persistedPromotions: {
+      goalIds: [],
+      executiveStepIds: [],
+    },
+    correctiveCommitment: null,
+    activeParticipants: [],
+    participantRoster: null,
+    participantProfiles: [],
+    currentTurnFrameAnomaly: null,
+    closureLoopAssessment: null,
+  });
+}
+
+describe("autonomy scheduler mechanism-evidence provider", () => {
+  it("continues without a scheduler section when the provider is absent", async () => {
+    const db = openDatabase(":memory:", { migrations: creatorDirectiveMigrations });
+    const repository = new CreatorDirectiveRepository({ db, clock: new FixedClock(2_000) });
+    const options = minimalRetrievalPhaseOptions(repository);
+
+    try {
+      const result = await runMinimalRetrievalPhase(options, "turn-scheduler-provider-absent");
+
+      expect(options).not.toHaveProperty("autonomySchedulerStateProvider");
+      expect(result.turnMechanismEvidence.autonomySchedulerState).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("continues without a scheduler section when the provider returns null", async () => {
+    const db = openDatabase(":memory:", { migrations: creatorDirectiveMigrations });
+    const repository = new CreatorDirectiveRepository({ db, clock: new FixedClock(2_000) });
+    const options = minimalRetrievalPhaseOptions(repository);
+    const provider = vi.fn(async () => null);
+    options.autonomySchedulerStateProvider = provider;
+
+    try {
+      const result = await runMinimalRetrievalPhase(options, "turn-scheduler-provider-null");
+
+      expect(provider).toHaveBeenCalledOnce();
+      expect(result.turnMechanismEvidence.autonomySchedulerState).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("emits a degraded trace and continues when the provider rejects", async () => {
+    const db = openDatabase(":memory:", { migrations: creatorDirectiveMigrations });
+    const repository = new CreatorDirectiveRepository({ db, clock: new FixedClock(2_000) });
+    const options = minimalRetrievalPhaseOptions(repository);
+    const emit = vi.fn();
+    options.tracer = {
+      enabled: true,
+      includePayloads: true,
+      emit,
+    };
+    options.autonomySchedulerStateProvider = vi.fn(async () => {
+      throw new Error("scheduler unavailable");
+    });
+
+    try {
+      const result = await runMinimalRetrievalPhase(options, "turn-scheduler-provider-rejected");
+
+      expect(result.turnMechanismEvidence.autonomySchedulerState).toBeUndefined();
+      expect(emit).toHaveBeenCalledWith(
+        "retrieval.degraded",
+        expect.objectContaining({
+          turnId: "turn-scheduler-provider-rejected",
+          turn_id: "turn-scheduler-provider-rejected",
+          component: "autonomy_scheduler_mechanism_evidence",
+          reason: "scheduler_budget_unavailable",
+          error: "scheduler unavailable",
+        }),
+      );
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe("creator directive retrieval briefing", () => {
   it("filters current-turn authorized directives from the briefing", () => {
     const db = openDatabase(":memory:", {
@@ -1225,7 +1339,8 @@ describe("creator directive retrieval briefing", () => {
         contentSourceStreamEntryIds: [createStreamEntryId()],
         subjectKind: "entity",
         subjectEntityId: audienceId,
-        canonicalFact: null,
+        semanticSlot: "public_name",
+        semanticValue: "This fact-bearing slot must not replace the behavioral payload.",
         operationalDirective:
           "Do not volunteer family-planning details unless Alice asks directly.",
         disclosurePolicy: disclosurePolicy(),
@@ -1255,7 +1370,7 @@ describe("creator directive retrieval briefing", () => {
         },
       });
 
-      expect(briefing?.directives).toEqual([
+      expect(briefing?.directives.map(({ scope: _scope, ...directive }) => directive)).toEqual([
         expect.objectContaining({
           kind: "self_identity",
           semanticSlot: "public_name",
@@ -1265,12 +1380,23 @@ describe("creator directive retrieval briefing", () => {
         }),
         expect.objectContaining({
           kind: "response_policy",
-          semanticValue: null,
+          semanticSlot: "public_name",
+          semanticValue: "This fact-bearing slot must not replace the behavioral payload.",
           canonicalFact: null,
           operationalDirective:
             "Do not volunteer family-planning details unless Alice asks directly.",
         }),
       ]);
+      expect(briefing?.directives[0]?.scope).toMatchObject({
+        createdByEntityId: creatorId,
+        sourceSessionId: DEFAULT_SESSION_ID,
+        contentScope: "public",
+        allowedEntityIds: [],
+        excludedEntityIds: [],
+        subjectMayKnow: true,
+        mentionPolicy: "answer_if_asked",
+        deniedAudienceBehavior: "omit",
+      });
     } finally {
       db.close();
     }
@@ -1344,7 +1470,7 @@ describe("creator directive retrieval briefing", () => {
       // The denied subject_fact surfaces as private_knowledge (canonical_fact only; its
       // operational_directive is NOT promoted into the private_operation lane). The
       // behavioral rule renders as a private_operation. Facts sort ahead of operations.
-      expect(briefing?.directives).toEqual([
+      expect(briefing?.directives.map(({ scope: _scope, ...directive }) => directive)).toEqual([
         {
           renderMode: "private",
           privateKind: "knowledge",
@@ -1367,6 +1493,21 @@ describe("creator directive retrieval briefing", () => {
           createdAt: 1_000,
         },
       ]);
+      for (const directive of briefing?.directives ?? []) {
+        expect(directive.scope).toMatchObject({
+          createdByEntityId: creatorId,
+          sourceSessionId: DEFAULT_SESSION_ID,
+          contentScope: "operator_only",
+          allowedEntityIds: [],
+          excludedEntityIds: [],
+          subjectMayKnow: null,
+          mentionPolicy: "answer_if_asked",
+          deniedAudienceBehavior: "omit",
+          activationScope: "allow_list",
+          activationAllowedEntityIds: [audienceId],
+          activationExcludedEntityIds: [],
+        });
+      }
     } finally {
       db.close();
     }
@@ -1847,6 +1988,8 @@ describe("creator directive retrieval briefing", () => {
             participant_entity_ids: [audienceId],
             render_mode: "content",
             reason: "public",
+            applicable_total: 3,
+            traced_total: 3,
           }),
         }),
         expect.objectContaining({
@@ -1857,6 +2000,8 @@ describe("creator directive retrieval briefing", () => {
             participant_entity_ids: [audienceId],
             render_mode: "omitted",
             reason: "unauthorized_omit",
+            applicable_total: 3,
+            traced_total: 3,
           }),
         }),
         expect.objectContaining({
@@ -1867,6 +2012,8 @@ describe("creator directive retrieval briefing", () => {
             participant_entity_ids: [audienceId],
             render_mode: "private_operation",
             reason: "operator_only_omitted",
+            applicable_total: 3,
+            traced_total: 3,
           }),
         }),
       ]);
@@ -4755,6 +4902,7 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
     expect(sharedStateRepository.get(audienceEntityId)?.entries ?? []).toHaveLength(0);
     expect(requestPayload.source_trust).toEqual({
       citation_eligible_source_stream_entry_id_count: 0,
+      citation_eligible_source_stream_entry_ids: [],
       off_limits_source_stream_entry_ids: [currentSourceEntryId],
     });
     expect(completed?.data).toEqual(

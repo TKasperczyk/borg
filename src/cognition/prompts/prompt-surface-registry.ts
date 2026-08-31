@@ -14,6 +14,7 @@ export const PROMPT_SURFACES = {
   compactPlannerFraming: "compact_planner_framing",
   commitmentRegenerationInstruction: "commitment_regeneration_instruction",
   directedOutboundFraming: "directed_outbound_framing",
+  autonomousOutboundActionFraming: "autonomous_outbound_action_framing",
 } as const;
 
 export type PromptSurface = (typeof PROMPT_SURFACES)[keyof typeof PROMPT_SURFACES];
@@ -252,6 +253,18 @@ export const PROMPT_SURFACE_BLOCKS = [
     ],
   }),
   block({
+    id: "live_turn_read_tool_menu",
+    owner: "cognition.deliberation",
+    purpose: "Deployment-stable menu of read tools available inside every live turn.",
+    renderCondition: "always in the cacheable finalizer static prefix",
+    source: {
+      file: "src/cognition/deliberation/autonomous-finalizer-tools.ts",
+      exportName: "LIVE_TURN_READ_FINALIZER_TOOL_MENU",
+    },
+    tag: "borg_live_turn_read_tools",
+    surfaces: [{ surface: PROMPT_SURFACES.cacheableStaticPrefix, order: 100 }],
+  }),
+  block({
     id: "base_trusted_dynamic_guidance_block",
     owner: "cognition.deliberation",
     purpose: "Trusted dynamic guidance block in the cacheable finalizer dynamic content.",
@@ -397,8 +410,9 @@ export const PROMPT_SURFACE_BLOCKS = [
   block({
     id: "borg_mechanism_evidence",
     owner: "cognition.generation",
-    purpose: "Model-visible evidence about recent turn machinery outcomes.",
-    renderCondition: "recent suppression or regeneration evidence exists",
+    purpose:
+      "Model-visible evidence about harness scheduler state and recent turn machinery outcomes.",
+    renderCondition: "scheduler state or recent suppression/regeneration evidence exists",
     source: {
       file: "src/cognition/deliberation/prompt/system-prompt.ts",
       exportName: "summarizeMechanismEvidence",
@@ -685,14 +699,18 @@ export const PROMPT_SURFACE_BLOCKS = [
   block({
     id: "borg_directed_outbound_instruction",
     owner: "outbound",
-    purpose: "Directed outbound user-message framing.",
-    renderCondition: "directed outbound turn",
+    purpose: "Directed outbound composition and autonomous action-availability framing.",
+    renderCondition:
+      "directed outbound turn, or autonomous turn with a structurally available outbound tool and target",
     source: {
-      file: "src/outbound/outbound-turn.ts",
-      exportName: "formatDirectedOutboundInstruction",
+      file: "src/outbound/outbound-prompt.ts",
+      exportName: "renderDirectedOutboundInstructionSurface",
     },
     tag: "borg_directed_outbound_instruction",
-    surfaces: [{ surface: PROMPT_SURFACES.directedOutboundFraming, order: 10 }],
+    surfaces: [
+      { surface: PROMPT_SURFACES.directedOutboundFraming, order: 10 },
+      { surface: PROMPT_SURFACES.autonomousOutboundActionFraming, order: 10 },
+    ],
   }),
 ] as const satisfies readonly PromptSurfaceBlock[];
 

@@ -3,7 +3,12 @@ import { describe, expect, it } from "vitest";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { SessionsRepository } from "../../sessions/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { createSessionId, createStreamEntryId, type StreamEntryId } from "../../util/ids.js";
+import {
+  createActionId,
+  createSessionId,
+  createStreamEntryId,
+  type StreamEntryId,
+} from "../../util/ids.js";
 import { selfPrivateMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import {
   createEpisodeFixture,
@@ -52,12 +57,13 @@ describe("LivedExperienceDaySummarizerProcess", () => {
     const skippedDayStart = Date.UTC(2026, 5, 16);
     const openDayStart = Date.UTC(2026, 5, 17);
     const targetDecisionSourceId = createStreamEntryId();
+    const attemptProvenanceId = createStreamEntryId();
     const llm = new FakeLLMClient({
       responses: [
         createSummaryToolResponse({
           utc_day: "2026-06-15",
           gist: "I held the same restraint across about 2 wakes; the distinct event was a recurring session pattern becoming visible.",
-          cited_source_stream_entry_ids: [targetDecisionSourceId],
+          cited_source_stream_entry_ids: [targetDecisionSourceId, attemptProvenanceId],
         }),
       ],
     });
@@ -152,6 +158,35 @@ describe("LivedExperienceDaySummarizerProcess", () => {
         participantEntityIds: [audience.id],
         sourceStreamEntryIds: [createStreamEntryId()],
       });
+      // A non-delivered attempt: produces no activity row and no episode, so
+      // the action record is its only path into the day narrative.
+      harness.actionRepository.add({
+        id: createActionId(),
+        description: "Outbound post to Arena thread: suppressed by policy before delivery",
+        actor: "borg",
+        audience_entity_id: audience.id,
+        goal_id: null,
+        open_question_id: null,
+        state: "not_done",
+        confidence: 1,
+        provenance_episode_ids: [],
+        provenance_stream_entry_ids: [attemptProvenanceId],
+        created_at: targetDayStart + 150_000,
+        updated_at: targetDayStart + 150_000,
+        considering_at: null,
+        committed_at: null,
+        scheduled_at: null,
+        completed_at: null,
+        not_done_at: targetDayStart + 150_000,
+        expired_at: null,
+        archived_at: null,
+        unknown_at: null,
+        canonicalized_by_artifact_entry_id: null,
+        session_scope: null,
+        session_anchor_id: null,
+        last_referenced_at_ms: null,
+        last_referenced_turn_counter: null,
+      });
       const uncitedEpisode = createEpisodeFixture({
         title: "Closed-day private consolidation evidence",
         narrative: "A prior summary of the same closed day carried unknown disclosure access.",
@@ -202,6 +237,19 @@ describe("LivedExperienceDaySummarizerProcess", () => {
       expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
         "I do not decide whether any wake",
       );
+      // Repetition-vs-will: a live day summary once narrated sixteen
+      // re-derivations of one settled closure as sixteen separate chosen
+      // silences. The prompt must keep instructing collapse.
+      expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
+        "repetition, not new agency",
+      );
+      // The success-only-autobiography gap: a non-delivered attempt reaches
+      // the writer only through its action record, so the row must render
+      // with its outcome state and stay citable.
+      expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
+        "suppressed by policy before delivery",
+      );
+      expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain('"state":"not_done"');
       expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
         "I held restraint while a repeated pattern recurred.",
       );
@@ -221,7 +269,7 @@ describe("LivedExperienceDaySummarizerProcess", () => {
           utc_day: "2026-06-15",
           gist: "I held the same restraint across about 2 wakes; the distinct event was a recurring session pattern becoming visible.",
           source_episode_ids: [uncitedEpisode.id],
-          source_stream_entry_ids: [targetDecisionSourceId],
+          source_stream_entry_ids: [targetDecisionSourceId, attemptProvenanceId],
           disclosure_label: expect.objectContaining({
             disclosureClass: "unknown",
           }),

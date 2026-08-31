@@ -88,7 +88,9 @@ const actionStateCandidateSchema = z
       "Classify the candidate before persistence. Only concrete_action can become an ActionRecord.",
     ),
     description: z.string().trim().min(1),
-    actor: actionActorSchema,
+    actor: actionActorSchema.describe(
+      "Who performs the action. For anything the author of current_user_message did, is doing, or will do, use their speaker_entity_id -- including when that author is another agent or automated system reporting on its own work, and including when the work resembles work Borg does. Use borg only for actions this message asks Borg to perform or reports Borg as having performed. Use user only when no speaker entity is resolvable.",
+    ),
     state: extractedActionStateSchema,
     audience_entity_id: actionEntityIdSchema.nullable().optional(),
     session_scope: actionSessionScopeSchema.nullable().optional(),
@@ -209,6 +211,7 @@ export type ExtractActionStatesInput = {
   sessionId?: SessionId | null;
   speakerEntityId?: EntityId | null;
   speakerDisplayName?: string | null;
+  senderDisplayNameById?: (entityId: EntityId) => string | null | undefined;
   senderAttribution?: readonly {
     entryId: StreamEntryId;
     senderEntityId: EntityId | null;
@@ -263,8 +266,15 @@ function buildActionStateMessages(input: ExtractActionStatesInput): LLMMessage[]
         current_user_stream_entry_ids: [
           ...(input.currentUserStreamEntryIds ?? [input.currentUserStreamEntryId]),
         ],
-        recent_history: input.recentHistory.slice(-8).map((message) => ({
+        recent_history_context: input.recentHistory.slice(-8).map((message) => ({
+          context_stream_entry_id: message.stream_entry_id,
           role: message.role,
+          kind: message.kind ?? null,
+          sender_entity_id: message.sender_entity_id,
+          sender_display_name:
+            message.sender_entity_id === null
+              ? null
+              : (input.senderDisplayNameById?.(message.sender_entity_id) ?? null),
           content: message.content,
         })),
         audience_entity_id: input.audienceEntityId,
@@ -446,6 +456,18 @@ function hasCurrentUserEvidence(
   return candidate.evidence_stream_entry_ids.some((entryId) => currentIds.has(entryId));
 }
 
+function hasOnlyAllowedEvidence(
+  candidate: ParsedActionStateCandidate,
+  allowedEvidenceStreamEntryIds: ReadonlySet<string>,
+): boolean {
+  return (
+    candidate.evidence_stream_entry_ids.length > 0 &&
+    candidate.evidence_stream_entry_ids.every((entryId) =>
+      allowedEvidenceStreamEntryIds.has(entryId),
+    )
+  );
+}
+
 function allowedEvidenceStreamEntryIds(input: ExtractActionStatesInput): Set<string> {
   return new Set([
     ...(input.currentUserStreamEntryIds ?? [input.currentUserStreamEntryId]),
@@ -458,15 +480,19 @@ function hasAllowedEvidence(
   input: ExtractActionStatesInput,
 ): boolean {
   if (input.postTurnSelfPerformance === undefined) {
-    return hasCurrentUserEvidence(
-      candidate,
-      input.currentUserStreamEntryIds ?? [input.currentUserStreamEntryId],
+    const currentUserStreamEntryIds = input.currentUserStreamEntryIds ?? [
+      input.currentUserStreamEntryId,
+    ];
+
+    return (
+      hasCurrentUserEvidence(candidate, currentUserStreamEntryIds) &&
+      hasOnlyAllowedEvidence(candidate, new Set(currentUserStreamEntryIds))
     );
   }
 
   const allowed = allowedEvidenceStreamEntryIds(input);
 
-  return candidate.evidence_stream_entry_ids.some((entryId) => allowed.has(entryId));
+  return hasOnlyAllowedEvidence(candidate, allowed);
 }
 
 function allowedCandidateEvidenceStreamEntryIds(
@@ -871,14 +897,13 @@ export class ActionStateExtractor {
         );
       }
 
-      const degradedError =
-        isStructuredToolCallError(error, "missing_tool_call")
-          ? new MissingActionStateToolCallError(
-              `Action state extractor did not emit ${ACTION_STATE_TOOL_NAME}`,
-            )
-          : isStructuredToolCallError(error, "invalid_payload")
-            ? (error.cause ?? error)
-            : error;
+      const degradedError = isStructuredToolCallError(error, "missing_tool_call")
+        ? new MissingActionStateToolCallError(
+            `Action state extractor did not emit ${ACTION_STATE_TOOL_NAME}`,
+          )
+        : isStructuredToolCallError(error, "invalid_payload")
+          ? (error.cause ?? error)
+          : error;
       const result = await this.degraded(reason, degradedError);
 
       traceExtractorCompleted({

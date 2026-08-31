@@ -9,6 +9,7 @@ import type { TurnResult } from "../cognition/index.js";
 import type { BorgDependencies } from "../borg/types.js";
 import { FakeLLMClient, createFakeEmitAnswerResponse } from "../llm/test-support/fake-client.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
+import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMCompleteOptions } from "../llm/index.js";
 import { createTestConfig, TestEmbeddingClient } from "../offline/test-support.js";
 import { StreamWatermarkRepository } from "../stream/index.js";
@@ -108,7 +109,13 @@ function simulationWatermarks(borg: Borg): StreamWatermarkRepository {
   ).options.watermarkRepository;
 }
 
-async function openSimulationBorg(input: { tempDir: string; clock: ManualClock }): Promise<Borg> {
+async function openSimulationBorg(input: {
+  tempDir: string;
+  clock: ManualClock;
+  maxWakesPerWindow?: number;
+  reservedContemplativeWakesPerWindow?: number;
+  fleetBrakeEnabled?: boolean;
+}): Promise<Borg> {
   return Borg.open({
     config: createTestConfig({
       dataDir: input.tempDir,
@@ -116,8 +123,10 @@ async function openSimulationBorg(input: { tempDir: string; clock: ManualClock }
       autonomy: {
         enabled: true,
         intervalMs: 60_000,
-        maxWakesPerWindow: 1_000,
+        maxWakesPerWindow: input.maxWakesPerWindow ?? 1_000,
         budgetWindowMs: 2 * DAY_MS,
+        reservedContemplativeWakesPerWindow: input.reservedContemplativeWakesPerWindow ?? 1,
+        fleetBrake: { enabled: input.fleetBrakeEnabled ?? true },
         executiveFocus: { enabled: false },
         triggers: {
           commitmentExpiring: { enabled: false },
@@ -262,22 +271,28 @@ describe("autonomy integration", () => {
     );
 
     try {
-      let operationalFires = 0;
+      let operationalWakes = 0;
+      let presentedGoals = 0;
       let tick = await borg.autonomy.scheduler.tick();
-      operationalFires += tick.events.filter(
+      operationalWakes += tick.firedEvents;
+      presentedGoals += tick.events.filter(
         (event) => event.sourceName === "goal_followup_due" && event.status === "fired",
       ).length;
-      expect(operationalFires).toBe(5);
+      expect(operationalWakes).toBe(5);
+      expect(presentedGoals).toBe(25);
 
-      while (operationalFires < 8) {
+      while (presentedGoals < goals.length) {
         const cooldownUntil = (await borg.autonomy.scheduler.describe()).fleet_brake.cooldown_until;
         expect(cooldownUntil).not.toBeNull();
         clock.advance(cooldownUntil! - clock.now());
         tick = await borg.autonomy.scheduler.tick();
-        operationalFires += tick.events.filter(
+        operationalWakes += tick.firedEvents;
+        presentedGoals += tick.events.filter(
           (event) => event.sourceName === "goal_followup_due" && event.status === "fired",
         ).length;
       }
+      expect(operationalWakes).toBe(6);
+      expect(presentedGoals).toBe(goals.length);
 
       for (const goal of goals) {
         watermarks.set(getExecutiveFocusGoalStaleBackoffProcessName(goal.id), DEFAULT_SESSION_ID, {
@@ -310,7 +325,48 @@ describe("autonomy integration", () => {
       clock.advance(horizon - clock.now());
       const horizonTick = await borg.autonomy.scheduler.tick();
       expect(horizonTick.events).toEqual([]);
-      expect(operationalFires).toBeLessThanOrEqual(11);
+      expect(operationalWakes).toBeLessThanOrEqual(6);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("persists six batched wakes against a six-slot budget and skips the seventh batch", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-autonomy-batch-budget-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(15 * DAY_MS);
+    const startedAt = clock.now();
+    const borg = await openSimulationBorg({
+      tempDir,
+      clock,
+      maxWakesPerWindow: 6,
+      reservedContemplativeWakesPerWindow: 0,
+      fleetBrakeEnabled: false,
+    });
+    const dependencies = simulationDependencies(borg);
+    const run = vi
+      .spyOn(dependencies.turnOrchestrator, "run")
+      .mockResolvedValue(structuralAutonomyResult());
+
+    for (let index = 0; index < 31; index += 1) {
+      borg.self.goals.add({
+        description: `Budgeted batch goal ${index}`,
+        priority: 5,
+        provenance: { kind: "manual" },
+        createdAt: clock.now() - 10_000 - index,
+      });
+    }
+
+    try {
+      const result = await borg.autonomy.scheduler.tick();
+      const description = await borg.autonomy.scheduler.describe();
+
+      expect(result).toMatchObject({ firedEvents: 6, budgetSkipped: 1 });
+      expect(result.events.filter((event) => event.status === "fired")).toHaveLength(30);
+      expect(result.events.filter((event) => event.status === "budget_skipped")).toHaveLength(1);
+      expect(run).toHaveBeenCalledTimes(6);
+      expect(dependencies.autonomyWakesRepository.countSince(startedAt)).toBe(6);
+      expect(description.budget.used_in_current_window).toBe(6);
     } finally {
       await borg.close();
     }
@@ -359,7 +415,7 @@ describe("autonomy integration", () => {
       const result = await borg.autonomy.scheduler.tick();
 
       expect(result.firedEvents).toBe(3);
-      expect(result.fleetCooldownSkipped).toBe(27);
+      expect(result.fleetCooldownSkipped).toBe(15);
       expect(run).toHaveBeenCalledTimes(3);
       expect(dependencies.autonomyWakesRepository.countSince(anchor)).toBe(3);
       expect((await borg.autonomy.scheduler.describe()).fleet_brake).toMatchObject({
@@ -397,7 +453,7 @@ describe("autonomy integration", () => {
       const firstTick = await borg.autonomy.scheduler.tick();
       totalErrors += firstTick.errorCount;
       expect(firstTick.errorCount).toBe(3);
-      expect(firstTick.errorCircuitSkipped).toBe(27);
+      expect(firstTick.errorCircuitSkipped).toBe(15);
 
       while (true) {
         const pausedUntil = (await borg.autonomy.scheduler.describe()).fleet_brake
@@ -1006,6 +1062,126 @@ describe("autonomy integration", () => {
       );
       const reflectionRequest = llm.requests.find((request) => request.budget === "reflection");
       expect(reflectionRequest?.messages[0]?.content).toContain('"origin":"autonomous"');
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("names independent goal-stale wake and turn selections with both score bases", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_000_000);
+    const zeroEmbeddingClient: EmbeddingClient = {
+      embed: async () => new Float32Array(4),
+      embedBatch: async (texts) => texts.map(() => new Float32Array(4)),
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        createFakeEmitAnswerResponse("I can distinguish the wake selection from current focus."),
+        {
+          text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_reflection_divergence",
+              name: "EmitTurnReflection",
+              input: {
+                advanced_goals: [],
+                procedural_outcomes: [],
+                trait_demonstrations: [],
+                intent_updates: [],
+                step_outcomes: [],
+                proposed_steps: [],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const borg = await Borg.open({
+      config: createTestConfig({
+        dataDir: tempDir,
+        perception: { llmEnabled: false },
+        executive: { goalFocusThreshold: 0.3 },
+        autonomy: {
+          enabled: true,
+          executiveFocus: {
+            enabled: true,
+            stalenessSec: 86_400,
+            dueLeadSec: 0,
+          },
+          triggers: {
+            commitmentExpiring: { enabled: false },
+            openQuestionDormant: { enabled: false },
+            scheduledReflection: { enabled: false },
+            goalFollowupDue: {
+              enabled: false,
+              lookaheadMs: 604_800_000,
+              staleMs: 1_209_600_000,
+            },
+          },
+          conditions: {
+            commitmentRevoked: { enabled: false },
+            moodValenceDrop: { enabled: false },
+            openQuestionUrgencyBump: { enabled: false },
+          },
+        },
+      }),
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: zeroEmbeddingClient,
+      llmClient: llm,
+      liveExtraction: false,
+    });
+
+    try {
+      const wakeSelectedGoal = borg.self.goals.add({
+        description: "Wake-selected stale goal",
+        priority: 10,
+        createdAt: clock.now() - 2 * DAY_MS,
+        provenance: { kind: "manual" },
+      });
+      const turnSelectedGoal = borg.self.goals.add({
+        description: "Turn-selected deadline goal",
+        priority: 9,
+        targetAt: clock.now() + Math.floor(0.8 * 604_800_000),
+        provenance: { kind: "manual" },
+      });
+
+      const result = await borg.autonomy.scheduler.tick();
+
+      expect(result.events[0]).toMatchObject({
+        sourceName: "executive_focus_due",
+        status: "fired",
+        payload: {
+          reason: "goal_stale",
+          selected_goal_id: wakeSelectedGoal.id,
+        },
+      });
+
+      const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
+      const executiveStart = finalizerSystem.indexOf("<borg_executive_focus>");
+      const executiveEnd = finalizerSystem.indexOf("</borg_executive_focus>");
+      const autonomyStart = finalizerSystem.indexOf("<borg_autonomy_trigger>");
+      const autonomyEnd = finalizerSystem.indexOf("</borg_autonomy_trigger>");
+      const executiveBlock = finalizerSystem.slice(executiveStart, executiveEnd);
+      const autonomyBlock = finalizerSystem.slice(autonomyStart, autonomyEnd);
+
+      expect(executiveBlock).toContain(`goal_id=${turnSelectedGoal.id}`);
+      expect(executiveBlock).toContain("Current driving goal: Turn-selected deadline goal");
+      expect(executiveBlock).not.toContain("Wake-selected stale goal");
+      expect(executiveBlock).toContain(
+        "Score basis: score_context=turn_selection deadline_lookahead_ms=604800000 progress_debt_stale_ms=1209600000",
+      );
+      expect(autonomyBlock).toContain("Wake-time trigger selection:");
+      expect(autonomyBlock).toContain(`\"goal_id\": \"${wakeSelectedGoal.id}\"`);
+      expect(autonomyBlock).toContain("Wake-selected stale goal");
+      expect(autonomyBlock).not.toContain("Turn-selected deadline goal");
+      expect(autonomyBlock).toContain(
+        "Score basis: score_context=wake_time_trigger_selection deadline_lookahead_ms=604800000 progress_debt_stale_ms=86400000",
+      );
     } finally {
       await borg.close();
     }

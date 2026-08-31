@@ -27,6 +27,7 @@ function entry(input: {
   kind: SharedStateEntryKind;
   rank: number;
   updatedAt: number;
+  createdAt?: number;
   stateKey?: string | null;
   text?: string;
   provenanceStreamEntryIds?: StreamEntryId[];
@@ -52,7 +53,7 @@ function entry(input: {
     owner_entity_id: null,
     provenance_stream_entry_ids: provenanceStreamEntryIds,
     last_updated_stream_entry_ids: lastUpdatedStreamEntryIds,
-    created_at: input.updatedAt,
+    created_at: input.createdAt ?? input.updatedAt,
     last_updated_at: input.updatedAt,
     last_updated_turn_global: input.lastUpdatedTurnGlobal ?? null,
     superseded_by_id: null,
@@ -446,6 +447,100 @@ describe("summarizeSharedStateArtifactRender", () => {
 });
 
 describe("renderSharedStateArtifact", () => {
+  it("names the instant record_version was read, so a flat version is not read as a still store", () => {
+    const audience = createEntityId();
+    const entries = [
+      entry({
+        audience,
+        kind: "live",
+        rank: 0,
+        updatedAt: 20,
+        stateKey: "project.alpha",
+        text: "alpha detail",
+      }),
+    ];
+
+    const rendered =
+      renderSharedStateArtifact(artifact(entries), {
+        maxEntries: 4,
+        maxTokens: 50_000,
+      }) ?? "";
+
+    expect(rendered).toContain("record_version=1\nsnapshot_basis=turn_start");
+    expect(rendered).toContain("read before this turn's shared-state compile");
+  });
+
+  it("names the snapshot basis on the omission-only render too", () => {
+    const audience = createEntityId();
+    const entries = [
+      entry({
+        audience,
+        kind: "live",
+        rank: 0,
+        updatedAt: 20,
+        stateKey: "project.alpha",
+        text: "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho",
+      }),
+    ];
+
+    const rendered =
+      renderSharedStateArtifact(artifact(entries), {
+        maxEntries: 4,
+        maxTokens: 40,
+      }) ?? "";
+
+    expect(rendered).toContain("SharedStateArtifact omitted:");
+    expect(rendered).toContain("record_version=1\nsnapshot_basis=turn_start");
+  });
+
+  it("names omission as a render budget rather than a store cap", () => {
+    const audience = createEntityId();
+    const entries = Array.from({ length: 6 }, (_, index) =>
+      entry({
+        audience,
+        kind: "live",
+        rank: index,
+        updatedAt: 20 + index,
+        stateKey: `project.key${index}`,
+        text: `body ${index}`,
+      }),
+    );
+
+    const rendered =
+      renderSharedStateArtifact(artifact(entries), {
+        maxEntries: 2,
+        maxTokens: 50_000,
+      }) ?? "";
+
+    expect(rendered).toContain("SharedStateArtifact omitted:");
+    expect(rendered).toContain("omission_basis=render_budget");
+    expect(rendered).toContain("still active and unchanged in the store");
+    expect(rendered).toContain("not the store's lifecycle cap");
+  });
+
+  it("names the omission basis on the omission-only render too", () => {
+    const audience = createEntityId();
+    const entries = [
+      entry({
+        audience,
+        kind: "live",
+        rank: 0,
+        updatedAt: 20,
+        stateKey: "project.alpha",
+        text: "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho",
+      }),
+    ];
+
+    const rendered =
+      renderSharedStateArtifact(artifact(entries), {
+        maxEntries: 4,
+        maxTokens: 40,
+      }) ?? "";
+
+    expect(rendered).toContain("SharedStateArtifact omitted:");
+    expect(rendered).toContain("omission_basis=render_budget");
+  });
+
   it("renders a compact all-key index before detailed entries", () => {
     const audience = createEntityId();
     const entries = [
@@ -501,6 +596,144 @@ describe("renderSharedStateArtifact", () => {
     });
     expect(summary.compactIndexLineCount).toBe(2);
     expect(summary.allActiveKeysIndexed).toBe(true);
+  });
+
+  // The index is the only surface most entries ever get, so it invites being read as
+  // an ordering over them -- in particular as the lifecycle-cap prune queue, whose
+  // tiebreak within a shared `last_updated_at` is `rank ASC`. It is not that. Keys
+  // here sort alphabetically in exactly the reverse of their rank, so an index that
+  // leaked rank would fail; `rank` is not even a field on an index line.
+  it("orders the compact index by state key, not by rank or prune position", () => {
+    const audience = createEntityId();
+    const entries = [
+      entry({ audience, kind: "locked", rank: 40, updatedAt: 500, stateKey: "audit.zeta" }),
+      entry({ audience, kind: "locked", rank: 41, updatedAt: 500, stateKey: "audit.mid" }),
+      entry({ audience, kind: "locked", rank: 42, updatedAt: 500, stateKey: "audit.alpha" }),
+    ];
+
+    const rendered =
+      renderSharedStateArtifact(artifact(entries), {
+        maxEntries: 1,
+        maxTokens: 50_000,
+        newestStateChangeReservedSlots: 1,
+      }) ?? "";
+
+    const indexedKeys = rendered
+      .split("\n")
+      .map((line) => /^- (?<key>[^ |]+) \| kinds=/u.exec(line)?.groups?.key)
+      .filter((key): key is string => key !== undefined);
+
+    expect(indexedKeys).toEqual(["audit.alpha", "audit.mid", "audit.zeta"]);
+    expect(rendered).not.toContain("rank=");
+  });
+
+  // The disclosure fields are the largest term on an index line, and in a register whose rows all
+  // came from one audience they are the same bytes on every line. They are hoisted to one line
+  // above the index, and a row printing nothing is a row carrying the hoisted label -- so the
+  // contract under test is that every row's label is still readable, not that it is still repeated.
+  it("hoists the repeated index disclosure label and drops it from the rows that share it", () => {
+    const audience = createEntityId();
+    const entries = Array.from({ length: 6 }, (_, index) =>
+      entry({
+        audience,
+        kind: "locked",
+        rank: index,
+        updatedAt: 500 + index,
+        stateKey: `audit.key${index}`,
+      }),
+    );
+
+    const rendered =
+      renderSharedStateArtifact(artifact(entries), {
+        maxEntries: 1,
+        maxTokens: 50_000,
+        newestStateChangeReservedSlots: 1,
+      }) ?? "";
+    const indexLines = rendered
+      .split("\n")
+      .filter((line) => /^- audit\.key\d+ \| kinds=/u.test(line));
+
+    expect(rendered).toContain(
+      `  (disclosure label of every index row below that does not print its own: disclosure_class=relationship_private origin_audience=${audience} private-to=${audience})`,
+    );
+    expect(indexLines).toHaveLength(6);
+    expect(indexLines.filter((line) => line.includes("disclosure_class="))).toEqual([]);
+    // The expanded body keeps its own full label; only the index rows defer to the hoisted line.
+    expect(rendered).toContain(`private-to=${audience}`);
+  });
+
+  // A register is not guaranteed to be label-uniform: an entry with an owner carries a wider
+  // origin_audience than one without. The most repeated label is hoisted and the rows that differ
+  // print their own, so a reader can always tell which rows the hoisted line does not cover.
+  it("keeps per-row index disclosure fields on the rows whose label differs from the hoisted one", () => {
+    const audience = createEntityId();
+    const owner = createEntityId();
+    const entries = [
+      ...Array.from({ length: 6 }, (_, index) =>
+        entry({
+          audience,
+          kind: "locked",
+          rank: index,
+          updatedAt: 500 + index,
+          stateKey: `audit.shared${index}`,
+        }),
+      ),
+      ...Array.from({ length: 2 }, (_, index) => ({
+        ...entry({
+          audience,
+          kind: "locked",
+          rank: 10 + index,
+          updatedAt: 600 + index,
+          stateKey: `audit.owned${index}`,
+        }),
+        owner_entity_id: owner,
+      })),
+    ];
+
+    const rendered =
+      renderSharedStateArtifact(artifact(entries), {
+        maxEntries: 1,
+        maxTokens: 50_000,
+        newestStateChangeReservedSlots: 1,
+      }) ?? "";
+    const indexLines = rendered.split("\n").filter((line) => /^- audit\.\w+ \| kinds=/u.test(line));
+    const linesWithFields = indexLines.filter((line) => line.includes("disclosure_class="));
+
+    expect(rendered).toContain(
+      `  (disclosure label of every index row below that does not print its own: disclosure_class=relationship_private origin_audience=${audience} private-to=${audience})`,
+    );
+    expect(indexLines).toHaveLength(8);
+    expect(linesWithFields).toHaveLength(2);
+    for (const line of linesWithFields) {
+      expect(line).toMatch(/^- audit\.owned\d+ \|/u);
+      expect(line).toContain("disclosure_class=relationship_private");
+      expect(line).toContain(owner);
+      expect(line).toContain(audience);
+    }
+  });
+
+  // Hoisting is gated on the arithmetic rather than on a tuned row count: stating the label once
+  // costs a line, so a label carried by too few rows to pay for that line stays where it is.
+  it("leaves a single-row index disclosure label in place rather than hoisting it", () => {
+    const audience = createEntityId();
+    const entries = [
+      entry({ audience, kind: "locked", rank: 0, updatedAt: 500, stateKey: "audit.only" }),
+    ];
+
+    const rendered =
+      renderSharedStateArtifact(artifact(entries), {
+        maxEntries: 1,
+        maxTokens: 50_000,
+        newestStateChangeReservedSlots: 1,
+      }) ?? "";
+    const indexLine = rendered
+      .split("\n")
+      .find((line) => line.startsWith("- audit.only | kinds="));
+
+    expect(rendered).not.toContain("disclosure label of every index row below");
+    expect(indexLine).toContain(
+      `disclosure_class=relationship_private origin_audience=${audience} private-to=${audience}`,
+    );
   });
 
   it("keeps demoted live entries in the compact index without default detail expansion", () => {
@@ -695,5 +928,171 @@ describe("renderSharedStateArtifact", () => {
     expect(rendered).toContain("text: newest reserved detail");
     expect(rendered).not.toContain("state_key_bucket=critical.locked");
     expect(rendered).not.toContain("text: critical commitment detail");
+  });
+
+  it("renders created_at only on entries whose body was rewritten after it was first written", () => {
+    const audience = createEntityId();
+    const rewritten = entry({
+      audience,
+      kind: "locked",
+      rank: 0,
+      createdAt: 1_000,
+      updatedAt: 9_000,
+      stateKey: "audit.rewritten",
+      text: "body carried forward by a later update",
+    });
+    const original = entry({
+      audience,
+      kind: "locked",
+      rank: 1,
+      updatedAt: 9_000,
+      stateKey: "audit.original",
+      text: "body still as first written",
+    });
+
+    const rendered =
+      renderSharedStateArtifact(artifact([rewritten, original]), {
+        maxEntries: 10,
+        maxTokens: 50_000,
+        lockedMaxEntries: 10,
+      }) ?? "";
+
+    const lineFor = (id: string): string =>
+      rendered.split("\n").find((line) => line.includes(`id=${id}`)) ?? "";
+
+    // The rewritten entry's stamp dates its newest sentence, not the whole body:
+    // both stamps render so the span is visible.
+    expect(lineFor(rewritten.id)).toContain("created_at=1000 last_updated_at=9000");
+    // The untouched entry's stamp is the write instant of every sentence in it;
+    // a redundant created_at would only cost prompt budget.
+    expect(lineFor(original.id)).toContain("last_updated_at=9000");
+    expect(lineFor(original.id)).not.toContain("created_at=");
+  });
+
+  it("carries created_at onto the compact index line so its absence reads the same there", () => {
+    const audience = createEntityId();
+    const rewritten = entry({
+      audience,
+      kind: "locked",
+      rank: 0,
+      createdAt: 1_000,
+      updatedAt: 9_000,
+      stateKey: "audit.rewritten",
+      text: "body carried forward by a later update",
+    });
+    const original = entry({
+      audience,
+      kind: "locked",
+      rank: 1,
+      updatedAt: 9_000,
+      stateKey: "audit.original",
+      text: "body still as first written",
+    });
+
+    // Nothing expanded: the index line is the only thing said about either entry, which is
+    // the position every omitted row is in.
+    const rendered =
+      renderSharedStateArtifact(artifact([rewritten, original]), {
+        maxEntries: 0,
+        maxTokens: 50_000,
+      }) ?? "";
+
+    const indexLineFor = (stateKey: string): string =>
+      rendered.split("\n").find((line) => line.startsWith(`- ${stateKey} |`)) ?? "";
+
+    expect(indexLineFor("audit.rewritten")).toContain("created_at=1000 | last_updated_at=9000");
+    expect(indexLineFor("audit.original")).toContain("last_updated_at=9000");
+    expect(indexLineFor("audit.original")).not.toContain("created_at=");
+  });
+
+  it("names what a successor retracted, so a supersede does not read like a prune", () => {
+    const audience = createEntityId();
+    const successor = entry({
+      audience,
+      kind: "locked",
+      rank: 0,
+      updatedAt: 9_000,
+      stateKey: "audit.replaced",
+      text: "corrected body",
+    });
+    const retracted: SharedStateEntry = {
+      ...entry({
+        audience,
+        kind: "locked",
+        rank: 1,
+        updatedAt: 9_000,
+        stateKey: "audit.replaced",
+        text: "the wording that was withdrawn",
+      }),
+      superseded_by_id: successor.id,
+    };
+    const untouched = entry({
+      audience,
+      kind: "locked",
+      rank: 2,
+      updatedAt: 9_000,
+      stateKey: "audit.untouched",
+      text: "body that replaced nothing",
+    });
+
+    const rendered =
+      renderSharedStateArtifact(artifact([successor, retracted, untouched]), {
+        maxEntries: 10,
+        maxTokens: 50_000,
+        lockedMaxEntries: 10,
+      }) ?? "";
+
+    const lineFor = (id: string): string =>
+      rendered.split("\n").find((line) => line.includes(`id=${id}`)) ?? "";
+
+    // The retracted body stays off this surface -- that is what retraction means -- but the
+    // fact that it was retracted does not.
+    expect(rendered).not.toContain("text: the wording that was withdrawn");
+    expect(lineFor(successor.id)).toContain(`supersedes=${retracted.id}`);
+    expect(lineFor(untouched.id)).not.toContain("supersedes=");
+  });
+
+  it("carries the retraction onto the compact index line, where omitted rows live", () => {
+    const audience = createEntityId();
+    const successor = entry({
+      audience,
+      kind: "locked",
+      rank: 0,
+      updatedAt: 9_000,
+      stateKey: "audit.replaced",
+      text: "corrected body",
+    });
+    const retracted: SharedStateEntry = {
+      ...entry({
+        audience,
+        kind: "locked",
+        rank: 1,
+        updatedAt: 9_000,
+        stateKey: "audit.replaced",
+        text: "the wording that was withdrawn",
+      }),
+      superseded_by_id: successor.id,
+    };
+    const untouched = entry({
+      audience,
+      kind: "locked",
+      rank: 2,
+      updatedAt: 9_000,
+      stateKey: "audit.untouched",
+      text: "body that replaced nothing",
+    });
+
+    // Nothing expanded: the index line is the only thing said about either key.
+    const rendered =
+      renderSharedStateArtifact(artifact([successor, retracted, untouched]), {
+        maxEntries: 0,
+        maxTokens: 50_000,
+      }) ?? "";
+
+    const indexLineFor = (stateKey: string): string =>
+      rendered.split("\n").find((line) => line.startsWith(`- ${stateKey} |`)) ?? "";
+
+    expect(indexLineFor("audit.replaced")).toContain("superseded_count=1");
+    expect(indexLineFor("audit.untouched")).not.toContain("superseded_count=");
   });
 });

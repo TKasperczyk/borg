@@ -36,6 +36,10 @@ export type ToolDefinition<Input = unknown, Output = unknown> = {
   writeScope: "read" | "write";
   inputSchema: z.ZodType<Input>;
   outputSchema: z.ZodType<Output>;
+  // Per-tool ceiling for tools whose backing store legitimately needs longer
+  // than the dispatcher default (vector search over a fragmented index).
+  // Structural capacity, not a judgment knob; call-level timeoutMs still wins.
+  timeoutMs?: number;
   invoke(input: Input, context: ToolInvocationContext): Promise<Output>;
 };
 
@@ -216,7 +220,7 @@ export class ToolDispatcher {
     const tool = this.tools.get(call.toolName);
     const sessionId = call.sessionId ?? DEFAULT_SESSION_ID;
     const callId = call.callId ?? createStreamEntryId();
-    const timeoutMs = call.timeoutMs ?? this.defaultTimeoutMs;
+    const timeoutMs = call.timeoutMs ?? tool?.timeoutMs ?? this.defaultTimeoutMs;
     const startedAt = this.clock.now();
     const writer = this.options.createStreamWriter(sessionId);
 

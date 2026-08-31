@@ -17,7 +17,9 @@ export {
 export type {
   ExecutiveFocus,
   ExecutiveGoalScore,
+  ExecutiveGoalScoreBasis,
   ExecutiveGoalScoreComponents,
+  ExecutiveGoalScoreContext,
   ExecutiveStep,
   ExecutiveStepKind,
   ExecutiveStepPatch,

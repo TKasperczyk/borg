@@ -7,6 +7,7 @@ import type { LLMCompleteOptions } from "../../llm/index.js";
 import {
   DEFAULT_DELIBERATION_PLAN_MAX_TOKENS,
   DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS,
+  DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
   DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET,
   DEFAULT_SEMANTIC_CONTEXT_BUDGET,
   THINKING_DELIBERATION_MAX_TOKENS,
@@ -29,6 +30,7 @@ import {
   EMIT_SELF_REPORT_FINALIZER_TOOL_NAME,
   resolveAvailableEmissionNames,
   resolveAvailableEmissionTools,
+  resolveFinalizerSurfaceVariant,
   runFinalizer,
   type EmissionDecision,
   type EmissionToolName,
@@ -37,14 +39,30 @@ import {
 } from "./finalizer.js";
 import { chooseDeliberationPath } from "./path-selector.js";
 import { formatTurnPlanForPrompt } from "./prompt/plan-rendering.js";
-import { summarizeRetrievedEvidence } from "./prompt/retrieval.js";
+import { buildCompactPlannerSystemPrompt } from "./prompt/planner-context.js";
+import {
+  renderPlanRequestedVerificationNotCompleted,
+  renderPlanRequestedVerificationRetrieval,
+  summarizeRetrievedEvidence,
+} from "./prompt/retrieval.js";
+import { COMPACT_FINALIZER_VERIFICATION_RETRIEVAL_BLOCK_ID } from "./prompt/finalizer-context.js";
 import { renderTaggedPromptBlock } from "./prompt/sections.js";
 import {
   buildBaseSystemPrompt,
   buildCacheableBaseSystemPromptParts,
   type BuildBaseSystemPromptOptions,
 } from "./prompt/system-prompt.js";
-import { runS2Planner } from "./s2-planner.js";
+import {
+  runS2Planner,
+  type S2PlannerOutcome,
+  type S2PlannerRequestSnapshot,
+  type S2PlannerResult,
+} from "./s2-planner.js";
+import {
+  anchorPlannerRequest,
+  createPlannerCaptureRenderInput,
+  type PlannerRequestAnchor,
+} from "./planner-context-capture.js";
 import { formatTurnPlanForThought, persistDeliberationThoughts } from "./thoughts.js";
 import { NOOP_TRACER, toTraceJsonValue, type TurnTracer } from "../../tracing/tracer.js";
 import {
@@ -147,6 +165,7 @@ type FinalizerCallOptionsContext = {
   effectiveContext: DeliberationContext;
   baseSystemPrompt: string;
   cacheableSystemPrompt: RunFinalizerOptions["cacheableSystemPrompt"];
+  baseSystemPromptOptions: BuildBaseSystemPromptOptions;
   initialMessages: RunFinalizerOptions["initialMessages"];
   maxTokens: number;
   reasoningCallOptions: Partial<Pick<RunFinalizerOptions, "thinking" | "effort">>;
@@ -241,6 +260,11 @@ function buildFinalizerCallOptions(
           buildEmissionContractRegenerateAnchor(availableEmissionNames, invalidToolCorrective),
         )
       : [...context.initialMessages];
+  const configuredSurfaceVariant = options.finalizerSurfaceVariant ?? "legacy";
+  const resolvedSurfaceVariant = resolveFinalizerSurfaceVariant(
+    configuredSurfaceVariant,
+    context.effectiveContext.turnOrigin,
+  );
 
   return {
     llmClient: options.llmClient,
@@ -250,6 +274,20 @@ function buildFinalizerCallOptions(
     model: options.cognitionModel,
     baseSystemPrompt: context.baseSystemPrompt,
     cacheableSystemPrompt: context.cacheableSystemPrompt,
+    finalizerDynamicPromptCacheEnabled: options.finalizerDynamicPromptCacheEnabled ?? true,
+    finalizerSurfaceVariant: configuredSurfaceVariant,
+    finalizerContextCapture: options.finalizerContextCapture,
+    ...(resolvedSurfaceVariant === "legacy" && options.finalizerContextCapture === undefined
+      ? {}
+      : {
+          compactSurface: {
+            context: {
+              ...context.effectiveContext,
+              nowMs: context.baseSystemPromptOptions.nowMs,
+            },
+            baseSystemPromptOptions: context.baseSystemPromptOptions,
+          },
+        }),
     initialMessages,
     userEntryId: context.context.userEntryId,
     maxTokens: context.maxTokens,
@@ -792,6 +830,9 @@ export class Deliberator {
       context.options?.maxThinkingTokens ?? DEFAULT_DELIBERATION_PLAN_MAX_TOKENS;
     const semanticContextBudget = Math.max(DEFAULT_SEMANTIC_CONTEXT_BUDGET, planningMaxTokens * 4);
     const retrievalContextBudget = DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET;
+    const planRequestedVerificationMembershipTokenBudget =
+      this.options.planRequestedVerificationMembershipTokenBudget ??
+      DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET;
     // Adaptive thinking spends output tokens; the per-call budget must hold the
     // thinking AND the emission or the model exhausts max_tokens mid-thought and
     // never emits a tool. Raise the output budget when thinking is on. The context
@@ -948,9 +989,13 @@ export class Deliberator {
     };
     const baseFinalizerCallContext = {
       context,
-      effectiveContext,
+      effectiveContext: {
+        ...effectiveContext,
+        evidenceLedger: finalizerEvidenceLedger ?? null,
+      },
       baseSystemPrompt,
       cacheableSystemPrompt: cacheableBaseSystemPrompt,
+      baseSystemPromptOptions,
       initialMessages: dialogueBlockMessages,
       reasoningCallOptions,
       allowedEmissions,
@@ -990,12 +1035,10 @@ export class Deliberator {
       });
     }
 
-    // S2 staged: both calls share the full baseSystemPrompt (identity, voice,
-    // tagged memory context, trusted guidance) so voice consistency is
-    // guaranteed across the plan and the final response. The planner call
-    // emits a structured plan via tool-use; the finalizer consumes that
-    // plan as explicit structured context rather than "scratchpad text"
-    // jammed into its system prompt.
+    // S2 staged: the planner emits advisory structured context for the fully
+    // grounded finalizer. The compact variant gives that internal pass a
+    // planning-specific presentation of the already assembled context; the
+    // legacy rollback variant retains the prior full-base surface exactly.
     const compactPlannerLedger =
       context.evidenceLedger === undefined || context.evidenceLedger === null
         ? null
@@ -1042,20 +1085,107 @@ export class Deliberator {
       });
     }
 
-    const planner = await runS2Planner({
-      llmClient: this.options.llmClient,
-      model: this.options.cognitionModel,
-      baseSystemPrompt,
-      dialogueMessages,
-      selfSnapshot: context.selfSnapshot,
-      additionalPromptSections: plannerAdditionalPromptSections,
-      maxTokens: plannerCallMaxTokens,
-      ...reasoningCallOptions,
-      tracer: this.tracer,
-      turnId: context.turnId,
-      sessionId: context.sessionId,
-      turnOrigin: effectiveContext.turnOrigin,
-    });
+    const captureSelected = this.options.plannerContextCapture?.shouldCapture() === true;
+    const captureTimestamp = captureSelected
+      ? this.options.plannerContextCapture?.capturedAt()
+      : undefined;
+    const plannerSurfaceVariant = this.options.plannerSurfaceVariant ?? "compact";
+    // In legacy mode with capture disabled, avoid copying the full assembled
+    // context solely for an unused compact-surface render closure.
+    const plannerRenderContext =
+      plannerSurfaceVariant === "compact" || captureSelected
+        ? {
+            ...effectiveContext,
+            nowMs: baseSystemPromptOptions.nowMs,
+          }
+        : null;
+    const plannerSurface =
+      plannerSurfaceVariant === "compact"
+        ? {
+            variant: "compact" as const,
+            ...buildCompactPlannerSystemPrompt({
+              context: plannerRenderContext!,
+              staticPrefix: cacheableBaseSystemPrompt.staticPrefix,
+              compactPlannerLedger,
+              additionalPromptSections: plannerAdditionalPromptSections,
+            }),
+          }
+        : ({ variant: "legacy" } as const);
+    const captureRenderInput = captureSelected
+      ? createPlannerCaptureRenderInput({
+          context: plannerRenderContext!,
+          legacyBaseSystemPrompt: baseSystemPrompt,
+          compactStaticPrefix: cacheableBaseSystemPrompt.staticPrefix,
+          compactPlannerLedger,
+          additionalPromptSections: plannerAdditionalPromptSections,
+          dialogueMessages,
+          model: this.options.cognitionModel,
+          maxTokens: plannerCallMaxTokens,
+          ...(thinking === undefined ? {} : { thinking }),
+          ...(effort === undefined ? {} : { effort }),
+        })
+      : null;
+    let livePlannerRequest: PlannerRequestAnchor | undefined;
+    let livePlannerOutcome: S2PlannerOutcome | undefined;
+    const capturePlannerOutcome = async (liveOutput?: S2PlannerResult): Promise<void> => {
+      if (
+        captureRenderInput === null ||
+        captureTimestamp === undefined ||
+        livePlannerOutcome === undefined ||
+        this.options.plannerContextCapture === undefined
+      ) {
+        return;
+      }
+      await this.options.plannerContextCapture.capture({
+        capturedAt: captureTimestamp,
+        liveSurfaceVariant: plannerSurface.variant,
+        renderInput: captureRenderInput,
+        liveOutcome: livePlannerOutcome,
+        ...(liveOutput === undefined ? {} : { liveOutput }),
+        ...(livePlannerRequest === undefined ? {} : { liveRequest: livePlannerRequest }),
+      });
+    };
+    let planner: S2PlannerResult;
+    try {
+      planner = await runS2Planner({
+        llmClient: this.options.llmClient,
+        model: this.options.cognitionModel,
+        baseSystemPrompt,
+        dialogueMessages,
+        selfSnapshot: context.selfSnapshot,
+        additionalPromptSections: plannerAdditionalPromptSections,
+        maxTokens: plannerCallMaxTokens,
+        ...reasoningCallOptions,
+        tracer: this.tracer,
+        turnId: context.turnId,
+        sessionId: context.sessionId,
+        turnOrigin: effectiveContext.turnOrigin,
+        plannerSurface,
+        ...(captureSelected
+          ? {
+              onRequestPrepared: (request: S2PlannerRequestSnapshot) => {
+                livePlannerRequest ??= anchorPlannerRequest(request);
+              },
+              onOutcome: (outcome: S2PlannerOutcome) => {
+                livePlannerOutcome = outcome;
+              },
+            }
+          : {}),
+      });
+    } catch (error) {
+      livePlannerOutcome ??= {
+        status: "threw",
+        attempts: livePlannerRequest?.attempt ?? 0,
+        structuralReason: "non_retryable_planner_error",
+        error:
+          error instanceof Error
+            ? { name: error.name, message: error.message }
+            : { name: "UnknownThrownValue", message: String(error) },
+      };
+      await capturePlannerOutcome();
+      throw error;
+    }
+    await capturePlannerOutcome(planner);
     const plan = planner.plan;
     const thoughts = plan === null ? [] : [formatTurnPlanForThought(plan)];
     const persistedThoughtEntries = await persistDeliberationThoughts(streamWriter, thoughts, {
@@ -1094,6 +1224,11 @@ export class Deliberator {
       verificationQuery.length > 0 && context.reRetrieve !== undefined
         ? await context.reRetrieve(verificationQuery, { limit: 3 })
         : null;
+    const secondaryRetrievalReadAtMs = secondaryRetrieval?.retrieval_read_at_ms ?? null;
+    const liveFinalizerSurfaceVariant = resolveFinalizerSurfaceVariant(
+      this.options.finalizerSurfaceVariant,
+      effectiveContext.turnOrigin,
+    );
 
     const shouldRenderAdditionalRetrieval =
       effectiveContext.turnOrigin !== "autonomous" || verificationQuery.length > 0;
@@ -1114,10 +1249,48 @@ export class Deliberator {
           },
         ])
       : null;
+    const compactVerificationRetrievalBlock =
+      verificationQuery.length === 0
+        ? null
+        : renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
+            {
+              tag: "borg_additional_retrieval",
+              content:
+                secondaryRetrieval === null
+                  ? renderPlanRequestedVerificationNotCompleted()
+                  : renderPlanRequestedVerificationRetrieval(
+                      secondaryRetrieval,
+                      retrievalContextBudget,
+                      planRequestedVerificationMembershipTokenBudget,
+                      {
+                        rowsTotalReadAtMs: secondaryRetrievalReadAtMs!,
+                        currentTimeMs: baseSystemPromptOptions.nowMs ?? secondaryRetrievalReadAtMs!,
+                        ...(liveFinalizerSurfaceVariant === "compact"
+                          ? {
+                              onMembershipCarveOutOverflow: (overflow) => {
+                                console.error(
+                                  "Plan-requested verification membership carve-out exceeds its token budget",
+                                  {
+                                    session_id: context.sessionId,
+                                    turn_id: context.turnId ?? null,
+                                    ...overflow,
+                                  },
+                                );
+                              },
+                            }
+                          : {}),
+                      },
+                    ),
+            },
+          ]);
     const planSection = plan === null ? null : formatTurnPlanForPrompt(plan);
     const additionalPromptSections = compactPromptSurfaceAdditionalSections([
       promptSurfaceAdditionalSection("borg_s2_plan", planSection),
       promptSurfaceAdditionalSection("borg_additional_retrieval", additionalRetrievalBlock),
+      promptSurfaceAdditionalSection(
+        COMPACT_FINALIZER_VERIFICATION_RETRIEVAL_BLOCK_ID,
+        compactVerificationRetrievalBlock,
+      ),
       ...finalizerGroundingPromptSections,
     ]);
     const finalizerStructuralFlags = structuralNoOutputFlags(effectiveContext, {

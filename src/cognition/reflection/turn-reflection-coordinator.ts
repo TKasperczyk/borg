@@ -98,6 +98,19 @@ export class TurnReflectionCoordinator {
 
     let moodSnapshot = input.workingMood;
 
+    // Only user turns write mood, and only undegraded ones: a gap in
+    // `mood_history` is therefore either an autonomous turn or a dead
+    // classifier, never a turn that felt nothing.
+    //
+    // `reason` is the trigger text rendered by `borg_affective_trajectory`, and
+    // a head slice of `userMessage` is a poor source for it on transports that
+    // wrap the message: 120 characters of `<inbound_batch ...><inbound_message
+    // index="1" stream_entry_id="..." times` is the whole budget on the demo
+    // connector, so every rendered trigger on that surface names a stream id
+    // and stops before the message begins. The field meant to say why the mood
+    // moved says only which envelope carried it. Widening the slice is not the
+    // fix -- the envelope grows too; the trigger wants the message body the
+    // classifier actually scored.
     if (input.isUserTurn && input.perception.affectiveSignalDegraded !== true) {
       try {
         const nextMood = this.options.moodRepository.update(input.sessionId, {

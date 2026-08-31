@@ -99,8 +99,133 @@ describe("computeRetrievalConfidence", () => {
     });
 
     expect(confidence.sampleSize).toBe(1);
+    expect(confidence.coverage).toBe(0);
     expect(confidence.evidenceStrength).toBeGreaterThan(0);
     expect(confidence.overall).toBeGreaterThan(0);
+  });
+
+  it("does not count semantic support a second time as episodic coverage", () => {
+    const rootNodeId = "semn_aaaaaaaaaaaaaaaa" as never;
+    const episode = makeEpisode({
+      id: "epi_aaaaaaaaaaaaaaaa",
+      decayedSalience: 0.8,
+      participants: ["alice"],
+    });
+    const baseInput = {
+      episodes: [episode],
+      contradictionPresent: false,
+      nowMs: NOW_MS,
+      expectedCount: 5,
+    };
+    const episodicOnly = computeRetrievalConfidence(baseInput);
+    const withSemanticSupport = computeRetrievalConfidence({
+      ...baseInput,
+      semanticEvidence: {
+        matched_nodes: [
+          {
+            id: rootNodeId,
+            confidence: 0.9,
+            source_episode_ids: ["ep_bbbbbbbbbbbbbbbb" as never],
+          },
+        ],
+        support_hits: [
+          {
+            root_node_id: rootNodeId,
+            edgePath: [{ evidence_episode_ids: ["ep_cccccccccccccccc" as never] }],
+          },
+        ],
+      },
+    });
+
+    expect(episodicOnly.coverage).toBeCloseTo(1 / 5, 5);
+    expect(withSemanticSupport.coverage).toBe(episodicOnly.coverage);
+    expect(withSemanticSupport.sampleSize).toBe(2);
+    expect(withSemanticSupport.evidenceSemanticStrength).toBeGreaterThan(0);
+  });
+
+  it("measures mode-thin episode retrieval against a stable five-episode target", () => {
+    const episodes = Array.from({ length: 4 }, (_unused, index) =>
+      makeEpisode({
+        id: `epi_${String(index).repeat(16)}`.slice(0, 20),
+        decayedSalience: 0.8,
+        participants: [`p${index}`],
+      }),
+    );
+    const confidence = computeRetrievalConfidence({
+      episodes,
+      contradictionPresent: false,
+      nowMs: NOW_MS,
+    });
+
+    expect(confidence.coverageExpected).toBe(5);
+    expect(confidence.coverage).toBeCloseTo(4 / 5, 5);
+  });
+
+  it.each([
+    { limit: 1, coverage: 1 / 5 },
+    { limit: 4, coverage: 4 / 5 },
+    { limit: 5, coverage: 1 },
+    { limit: 6, coverage: 1 },
+  ] as const)(
+    "pins coverage $coverage for a filled per-mode episode budget of $limit",
+    ({ limit, coverage }) => {
+      const episodes = Array.from({ length: limit }, (_unused, index) =>
+        makeEpisode({
+          id: `epi_${String(index).repeat(16)}`.slice(0, 20),
+          decayedSalience: 0.8,
+          participants: [`p${index}`],
+        }),
+      );
+      const confidence = computeRetrievalConfidence({
+        episodes,
+        contradictionPresent: false,
+        nowMs: NOW_MS,
+      });
+
+      expect(confidence.coverage).toBeCloseTo(coverage, 5);
+    },
+  );
+
+  it("ships the semantic count shared by samples and diversity so each episode half is recoverable", () => {
+    // `sampleSize` and `diversitySampleSize` add the same semantic count to two
+    // different episode counts -- every episode, and the top-N slice. Their
+    // difference is therefore purely the episodes past the slice, but only if a
+    // reader can subtract the shared term out of both. Without it the gap is
+    // visible and unattributable.
+    const rootNodeId = "semn_aaaaaaaaaaaaaaaa" as never;
+    const confidence = computeRetrievalConfidence({
+      episodes: Array.from({ length: 7 }, (_unused, index) =>
+        makeEpisode({
+          id: `ep_${String(index).repeat(16)}`.slice(0, 19),
+          decayedSalience: 0.8,
+          participants: [`p${index}`, "team"],
+        }),
+      ),
+      contradictionPresent: false,
+      semanticEvidence: {
+        matched_nodes: [
+          {
+            id: rootNodeId,
+            confidence: 0.9,
+            source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+          },
+        ],
+        support_hits: [
+          {
+            root_node_id: rootNodeId,
+            edgePath: [{ evidence_episode_ids: ["ep_bbbbbbbbbbbbbbbb" as never] }],
+          },
+        ],
+      },
+      nowMs: NOW_MS,
+      expectedCount: 6,
+    });
+
+    expect(confidence.semanticSampleSize).toBe(1);
+    // Every episode on one side, the top-N slice on the other, one shared term.
+    expect(confidence.sampleSize - confidence.semanticSampleSize).toBe(7);
+    expect(confidence.diversitySampleSize - confidence.semanticSampleSize).toBe(5);
+    expect(confidence.sampleSize - confidence.diversitySampleSize).toBe(2);
   });
 
   it("downweights partial semantic node evidence strength without changing coverage or diversity", () => {

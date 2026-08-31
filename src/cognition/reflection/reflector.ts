@@ -133,6 +133,7 @@ export type ReflectionResult = {
 const SURFACED_TTL_TURNS = 4;
 const REFLECTION_TOOL_NAME = "EmitTurnReflection";
 const DEFAULT_REFLECTION_MAX_TOKENS = 768;
+const REFLECTION_GOAL_PROGRESS_NOTES_CHAR_BUDGET = 1_200;
 // Candidate labels can grow quickly; established traits are the stable vocabulary,
 // while the strongest 40 candidates give the reflector reuse handles without unbounded prompt growth.
 const CURRENT_TRAIT_VOCABULARY_CANDIDATE_LIMIT = 40;
@@ -486,6 +487,42 @@ function focusedReflectionOpenQuestionId(
   return candidates.length === 1 && candidate !== undefined ? candidate.id : null;
 }
 
+function renderGoalProgressNotesForReflection(progressNotes: string | null): string | null {
+  if (
+    progressNotes === null ||
+    progressNotes.length <= REFLECTION_GOAL_PROGRESS_NOTES_CHAR_BUDGET
+  ) {
+    return progressNotes;
+  }
+
+  const totalChars = progressNotes.length;
+  const renderMarker = (retainedTailChars: number) =>
+    `[older progress_notes elided; total_chars=${totalChars}; retained_tail_chars=${retainedTailChars}]\n`;
+  // Using the budget itself gives the widest possible retained-count field.
+  // The final marker is therefore never longer than the space reserved here.
+  const maximumMarker = renderMarker(REFLECTION_GOAL_PROGRESS_NOTES_CHAR_BUDGET);
+  const tailBudget = Math.max(0, REFLECTION_GOAL_PROGRESS_NOTES_CHAR_BUDGET - maximumMarker.length);
+  let tailStart = totalChars - tailBudget;
+
+  // Do not begin the retained suffix on the low half of a valid surrogate pair.
+  if (tailStart > 0 && tailStart < totalChars) {
+    const firstCodeUnit = progressNotes.charCodeAt(tailStart);
+    const previousCodeUnit = progressNotes.charCodeAt(tailStart - 1);
+
+    if (
+      firstCodeUnit >= 0xdc00 &&
+      firstCodeUnit <= 0xdfff &&
+      previousCodeUnit >= 0xd800 &&
+      previousCodeUnit <= 0xdbff
+    ) {
+      tailStart += 1;
+    }
+  }
+
+  const retainedTail = progressNotes.slice(tailStart);
+  return `${renderMarker(retainedTail.length)}${retainedTail}`;
+}
+
 function summarizeExecutiveFocusForReflection(focus: ExecutiveFocus | null | undefined) {
   if (focus?.selected_goal === null || focus?.selected_goal === undefined) {
     return null;
@@ -499,7 +536,7 @@ function summarizeExecutiveFocusForReflection(focus: ExecutiveFocus | null | und
       goal_id: focus.selected_goal.id,
       description: focus.selected_goal.description,
       terminal_condition: focus.selected_goal.terminal_condition ?? null,
-      progress_notes: focus.selected_goal.progress_notes,
+      progress_notes: renderGoalProgressNotesForReflection(focus.selected_goal.progress_notes),
       ...memoryDisclosurePayloadFields(selectedGoalDisclosureLabel),
     },
     next_step:
@@ -672,11 +709,7 @@ export class Reflector {
       }
     }
 
-    this.applyRetiredGoals(
-      context,
-      reflectionOutput.retired_goals,
-      effects,
-    );
+    this.applyRetiredGoals(context, reflectionOutput.retired_goals, effects);
 
     const retrievedEpisodeIdSet = new Set(
       context.retrievedEpisodes.map((result) => result.episode.id),
@@ -1584,8 +1617,7 @@ export class Reflector {
         continue;
       }
 
-      const nextStatus: GoalStatus =
-        retirement.disposition === "satisfied" ? "done" : "abandoned";
+      const nextStatus: GoalStatus = retirement.disposition === "satisfied" ? "done" : "abandoned";
       const retirementProvenance = {
         kind: "online_reflector" as const,
         evidence_episode_ids: evidenceEpisodeIds,
@@ -1894,8 +1926,9 @@ export class Reflector {
                   active_goals: context.selfSnapshot.goals.map((goal) => ({
                     goal_id: goal.id,
                     description: goal.description,
+                    status: goal.status,
                     terminal_condition: goal.terminal_condition ?? null,
-                    progress_notes: goal.progress_notes,
+                    progress_notes: renderGoalProgressNotesForReflection(goal.progress_notes),
                     audience_entity_id: goal.audience_entity_id,
                     owner_entity_id: goal.owner_entity_id ?? null,
                     ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),

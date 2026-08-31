@@ -13,7 +13,7 @@ import { isNodeError } from "./guards.js";
 
 const DIRECTORY_FSYNC_UNSUPPORTED = new Set(["EBADF", "EINVAL", "ENOTSUP"]);
 
-function syncDirectory(path: string): void {
+export function syncDirectory(path: string): void {
   let directoryFd: number | undefined;
 
   try {
@@ -41,7 +41,11 @@ function createTempFilePath(targetPath: string): string {
   );
 }
 
-export function writeFileAtomic(filePath: string, data: string | Buffer | Uint8Array): void {
+export function writeFileAtomic(
+  filePath: string,
+  data: string | Buffer | Uint8Array,
+  options: { mode?: number } = {},
+): void {
   const targetDirectory = dirname(filePath);
   const tempPath = createTempFilePath(filePath);
   const bytes =
@@ -52,7 +56,7 @@ export function writeFileAtomic(filePath: string, data: string | Buffer | Uint8A
   let tempFd: number | undefined;
 
   try {
-    tempFd = openSync(tempPath, "wx");
+    tempFd = openSync(tempPath, "wx", options.mode);
     writeFileSync(tempFd, bytes);
     fsyncSync(tempFd);
     closeSync(tempFd);
@@ -93,9 +97,11 @@ export function readJsonFile<T>(filePath: string): T | undefined {
 export function writeJsonFileAtomic(
   filePath: string,
   value: unknown,
-  options: { space?: number } = {},
+  options: { space?: number; mode?: number } = {},
 ): void {
   const space = options.space ?? 2;
   const serialized = `${JSON.stringify(value, null, space)}\n`;
-  writeFileAtomic(filePath, serialized);
+  writeFileAtomic(filePath, serialized, {
+    ...(options.mode === undefined ? {} : { mode: options.mode }),
+  });
 }

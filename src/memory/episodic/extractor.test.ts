@@ -2408,6 +2408,107 @@ describe("episodic extractor", () => {
     expect(llm.requests).toHaveLength(0);
   });
 
+  it("skips an interior-only turn but extracts an agent-only turn", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const clock = new ManualClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: composeMigrations(
+        episodicMigrations,
+        selfMigrations,
+        retrievalMigrations,
+        commitmentMigrations,
+      ),
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+    const entityRepository = new EntityRepository({
+      db,
+      clock,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock,
+    });
+
+    cleanup.push(async () => {
+      writer.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    await writer.append({
+      kind: "thought",
+      content: "Nothing here needs saying yet.",
+    });
+    clock.advance(1);
+    await writer.append({
+      kind: "agent_suppressed",
+      content: {
+        reason: "autonomous_no_output",
+      },
+    });
+
+    const llm = new FakeLLMClient({
+      responses: [],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: tempDir,
+      episodicRepository: repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository,
+      clock,
+    });
+
+    await expect(extractor.extractFromStream()).resolves.toEqual({
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+    });
+    expect(llm.requests).toHaveLength(0);
+
+    clock.advance(1);
+    const agent = await writer.append({
+      kind: "agent_msg",
+      content: "I have been thinking about the deadline.",
+    });
+    llm.pushResponse(
+      createEpisodeToolResponse([
+        {
+          title: "Unprompted note",
+          narrative: "I said something without being asked.",
+          source_stream_ids: [agent.id],
+          participants: ["Borg"],
+          tags: ["outbound"],
+          confidence: 0.8,
+          significance: 0.7,
+        },
+      ]),
+    );
+
+    await expect(extractor.extractFromStream()).resolves.toEqual({
+      inserted: 1,
+      updated: 0,
+      skipped: 0,
+    });
+    expect(llm.requests).toHaveLength(1);
+    expect((await repo.listAll()).map((episode) => episode.source_stream_ids)).toEqual([
+      [agent.id],
+    ]);
+  });
+
   it("rejects hallucinated source stream ids", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({

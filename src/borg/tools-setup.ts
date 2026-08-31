@@ -20,6 +20,7 @@ import {
   type IdentityService,
 } from "../memory/identity/index.js";
 import type { SkillRepository } from "../memory/procedural/index.js";
+import type { GoalsRepository } from "../memory/self/index.js";
 import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
 import {
   SELF_RECALL_SCOPE,
@@ -37,15 +38,18 @@ import type {
   SemanticNodeRepository,
   SemanticWalkStep,
 } from "../memory/semantic/index.js";
+import { readStreamEntryAtOffset, type StreamEntryIndexRepository } from "../stream/index.js";
 import {
   ToolDispatcher,
   createCommitmentsListTool,
   createEpisodicRecentTool,
   createEpisodicSearchTool,
+  createGoalsRetireTool,
   createIdentityEventsListForCognitionTool,
   createJournalAppendTool,
   createOpenQuestionsCreateTool,
   createOpenQuestionsResolveTool,
+  createOwnRecordsListTool,
   createPromptSurfaceChangesTool,
   createScheduledWakesCancelTool,
   createScheduledWakesCreateTool,
@@ -56,12 +60,15 @@ import {
 import type { BorgStreamWriterFactory } from "./types.js";
 
 export type BuildToolDispatcherOptions = {
+  dataDir: string;
+  entryIndex: StreamEntryIndexRepository;
   retrievalPipeline: RetrievalPipeline;
   episodicRepository: EpisodicRepository;
   semanticNodeRepository: SemanticNodeRepository;
   semanticGraph: SemanticGraph;
   commitmentRepository: CommitmentRepository;
   entityRepository: EntityRepository;
+  goalsRepository: GoalsRepository;
   identityService: IdentityService;
   skillRepository: SkillRepository;
   trainOfThoughtRepository: TrainOfThoughtRepository;
@@ -174,6 +181,27 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
       }),
     )
     .register(
+      createOwnRecordsListTool({
+        listThoughtRecords: (input) =>
+          options.entryIndex.listActiveEntriesByKindRange({
+            kinds: ["thought"],
+            sinceTs: input.sinceMs,
+            untilTs: input.untilMs,
+            limit: input.limit,
+            ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+            ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+          }),
+        readThoughtRecord: (record) =>
+          readStreamEntryAtOffset({
+            dataDir: options.dataDir,
+            sessionId: record.session_id,
+            byteOffset: record.byte_offset,
+          }),
+        listJournalRecords: (input) => options.trainOfThoughtRepository.listForRange(input),
+        clock: options.clock,
+      }),
+    )
+    .register(
       createSemanticWalkTool({
         walkGraph: async (fromId, walkOptions) => {
           const root = await options.semanticNodeRepository.get(fromId);
@@ -219,6 +247,11 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
               : [await resolveMemoryDisclosureLabelForEpisodeIds(options.episodicRepository, episodeIds)]),
             ...streamEntryIds.map(() => unknownMemoryDisclosureLabel()),
           ]),
+      }),
+    )
+    .register(
+      createGoalsRetireTool({
+        goalsRepository: options.goalsRepository,
       }),
     )
     .register(

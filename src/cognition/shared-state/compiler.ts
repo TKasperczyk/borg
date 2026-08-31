@@ -76,6 +76,11 @@ import { buildSharedStateReconciliationWorkSet } from "./canonicalization-candid
 import { buildExistingStateKeyRegistry, buildSharedStateArtifactPromptSummary } from "./summary.js";
 import { SHARED_STATE_RECENT_TURN_THRESHOLD } from "./render.js";
 
+const SHARED_STATE_COMPILER_STATIC_PREFIX_CACHE_CONTROL = {
+  type: "ephemeral",
+  ttl: "5m",
+} as const;
+
 function semanticBeliefRevisionDependencies(
   input: CompileSharedStateArtifactInput,
 ): SharedStateSemanticBeliefRevisionDependencies | undefined {
@@ -161,6 +166,33 @@ function entryStateKeyById(
   artifact: SharedStateArtifact | null,
 ): Map<SharedStateEntry["id"], string | null> {
   return new Map((artifact?.entries ?? []).map((entry) => [entry.id, entry.state_key]));
+}
+
+/**
+ * State keys an id can resolve to for trace attribution, including entries this patch
+ * introduces. A cap eviction can select an entry the same patch added -- the reserved-slot
+ * passes fall back to `allowReserved` -- and that id is in no previous artifact, so resolving
+ * against the artifact alone drops the operation from the per-key counts while it still counts
+ * in the totals. Eviction identity is only recoverable from the trace by state key, so a prune
+ * that raises the count without naming a key is a silent hole in that record.
+ */
+function operationStateKeysById(
+  operations: readonly SharedStateOperation[],
+  previousArtifact: SharedStateArtifact | null,
+): Map<SharedStateEntry["id"], string | null> {
+  const stateKeysById = entryStateKeyById(previousArtifact);
+
+  for (const operation of operations) {
+    if (operation.type === "add" && operation.id !== undefined) {
+      stateKeysById.set(operation.id, operation.state_key ?? null);
+    }
+
+    if (operation.type === "supersede" && operation.replacement.id !== undefined) {
+      stateKeysById.set(operation.replacement.id, operation.replacement.state_key ?? null);
+    }
+  }
+
+  return stateKeysById;
 }
 
 function operationStateKey(
@@ -348,15 +380,27 @@ function traceSharedStateLifecycleTransitions(input: {
   }
 }
 
+/**
+ * Counts the operations the pass actually applied, per state key -- which is the
+ * only place a vanished key's history is readable, since a deletion leaves no
+ * tombstone. Read it for *what happened to a row*, never for *who asked*: by the
+ * time operations reach here the list carries three kinds of `prune` that look
+ * identical, the entity's own request, a cap eviction (emitted as an ordinary
+ * prune by `applySharedStateArtifactLifecycleCap`), and a dependent prune
+ * appended by `expandPruneDependencies`. Only `model_prune_requests` and
+ * `lifecycle_cap_evicted_state_keys` on the same trace event separate them, and
+ * both postdate this counter -- so on any event that lacks them a `prune: 1`
+ * here dates a death exactly and attributes it not at all.
+ */
 function operationCountsByStateKey(
   operations: readonly PublicSharedStateOperation[],
   previousArtifact: SharedStateArtifact | null,
 ): Record<string, Record<SharedStateOperationKind, number>> {
-  const previousStateKeysById = entryStateKeyById(previousArtifact);
+  const stateKeysById = operationStateKeysById(operations, previousArtifact);
   const counts: Record<string, Record<SharedStateOperationKind, number>> = {};
 
   for (const operation of operations) {
-    const stateKey = operationStateKey(operation, previousStateKeysById);
+    const stateKey = operationStateKey(operation, stateKeysById);
 
     if (stateKey === null) {
       continue;
@@ -411,6 +455,19 @@ function introducedStateKeys(
   return introduced.sort((left, right) => left.localeCompare(right));
 }
 
+// DELIBERATE: `disallowed_source_stream_entry_id` is absent from this list, and its absence is not an
+// oversight to be tidied up later. Every other repairable reason has a repair the model can make
+// without changing what it claims: name the missing reason, pick update over add, drop the near
+// duplicate. The citation reason does not. The one id the N+1 boundary withholds is the message being
+// answered (see retrieval-phase.ts), so an entry that cited it is an entry sourced from that message,
+// and the only truthful repairs are "wait for the next compile, when it becomes citable" or "do not
+// write it". A repair prompt saying "that id is off limits, cite an eligible one instead" invites the
+// third option -- reattaching the same text to whichever allowed id is nearest -- which buys an
+// applied patch at the cost of manufactured provenance. Losing the operations is the cheaper failure.
+// Measured 2026-08-16 on turn 85489fdf: both passes cited the off-limits id on every operation (5 then
+// 6) with 21 and 6 eligible ids named in the prompt, so the information was present and the choice was
+// the model's. If this is ever revisited, the question to answer first is how the repair avoids
+// soliciting a citation the model does not believe.
 function repairablePatchRejections(rejections: readonly PatchRejection[]): PatchRejection[] {
   return rejections.filter(
     (rejection) =>
@@ -480,6 +537,14 @@ function patchRejectionRepairMessage(rejections: readonly PatchRejection[]): str
     .join(" | ");
 
   return `Your previous patch violated structural shared-state key compaction: ${details}. Emit a corrected patch.`;
+}
+
+function allOperationsRejectedMessage(rejections: readonly PatchRejection[]): string {
+  const details = rejections
+    .map((rejection) => `operation ${rejection.operationIndex} ${rejection.reason}`)
+    .join(" | ");
+
+  return `All ${rejections.length} proposed operations were rejected: ${details}`;
 }
 
 function traceRepairablePatchRejection(
@@ -617,6 +682,15 @@ export async function compileSharedStateArtifact(
   const speakerEntityId = input.speakerEntityId ?? null;
   const compilePass = input.compilePass ?? "pre_answer";
   const systemPrompt = buildSharedStateSystemPrompt(compilePass);
+  const systemBlocks = [
+    {
+      type: "text" as const,
+      text: systemPrompt,
+      // Anthropic keys tools before system, so this breakpoint covers the
+      // compiler's stable tool definitions and compile-pass system prompt.
+      cache_control: SHARED_STATE_COMPILER_STATIC_PREFIX_CACHE_CONTROL,
+    },
+  ];
   const compileAnchorStreamEntryId =
     input.compileAnchorStreamEntryId ?? input.currentUserStreamEntryId;
   const currentUserSourceStreamEntryIds = input.currentUserSourceStreamEntryIds ?? [
@@ -626,9 +700,16 @@ export async function compileSharedStateArtifact(
     previousArtifact,
     input.previousArtifactSummaryOptions,
   );
-  const existingStateKeyRegistry = buildExistingStateKeyRegistry(previousArtifact);
+  const existingStateKeyRegistry = buildExistingStateKeyRegistry(
+    previousArtifact,
+    previousArtifactSummary,
+  );
   const canonicalizationCandidates = input.canonicalizationCandidates ?? {};
   const relationalSlotSourceStreamEntryIds = relationalSlotEvidenceStreamEntryIds(input);
+  // The re-subtraction is not a duplicate of the caller's filter: trusted relational-slot
+  // evidence is unioned in above, and a slot whose evidence happens to include the current
+  // message would otherwise re-admit it to the allowlist. Filtering after the union closes
+  // that one bypass of the N+1 durability boundary (8599f733).
   const allowedSourceStreamEntryIdsForPrompt =
     input.allowedSourceStreamEntryIds === undefined
       ? undefined
@@ -695,6 +776,9 @@ export async function compileSharedStateArtifact(
     currentUserStreamEntryId: input.currentUserStreamEntryId,
     ledgerMode,
     promptBudget,
+    compilePass,
+    citationEligibleSourceStreamEntryIds: allowedSourceStreamEntryIdsForPrompt,
+    offLimitsSourceStreamEntryIds: offLimitsSourceStreamEntryIdsForPrompt,
     emptyUpdateAttemptedCount: 0,
     emptyUpdateDroppedCount: 0,
     emptyUpdateRepairedCount: 0,
@@ -740,7 +824,7 @@ export async function compileSharedStateArtifact(
       llmClient,
       request: {
         model,
-        system: systemPrompt,
+        system: systemBlocks,
         messages: toolMessages,
         tools,
         tool_choice: { type: "tool", name: SHARED_STATE_TOOL_NAME },
@@ -913,6 +997,18 @@ export async function compileSharedStateArtifact(
     } catch (error) {
       const cause = structuredToolErrorCause(error);
 
+      // A transport/provider failure on the repair call discards the WHOLE
+      // patch, not just the rejected operations: `previousArtifact` is kept
+      // and `operationCount` is 0, so operations that passed validation on the
+      // first pass die with the ones that did not. The emitted
+      // `shared_state.compile.completed` then carries all-zero
+      // `operation_counts_by_kind`, which is byte-identical to the trace a
+      // model that emitted nothing would leave. The only discriminator is the
+      // adjacent `repair_attempted` / `repair_failed` pair plus the
+      // `degraded` reason -- none of which reaches any surface the entity
+      // reads, so from inside, a lost patch and an unwritten one look the
+      // same. Do not read an all-zero compile as evidence about what the
+      // model proposed.
       traceCompileRepairFailed({
         tracer: input.tracer,
         turnId: input.turnId,
@@ -997,7 +1093,11 @@ export async function compileSharedStateArtifact(
       nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
     });
 
-    return degraded(input, "invalid_patch");
+    return degraded(
+      input,
+      "all_operations_rejected",
+      new Error(allOperationsRejectedMessage(normalized.rejected)),
+    );
   }
 
   const clock = input.clock ?? new SystemClock();
@@ -1062,6 +1162,11 @@ export async function compileSharedStateArtifact(
   const compileCompletedTraceWithLifecycle = {
     ...compileCompletedTraceBase,
     maxActiveEntries: lifecycle.maxActiveEntries,
+    lifecycleCapEvictions: lifecycle.capEvictions,
+    // Paired with the cap's evictions on purpose: both remove an entry with no
+    // tombstone, and only these two fields together say which deletions this turn were
+    // asked for and which were forced.
+    modelPruneRequests: normalized.modelPruneRequests,
     lifecycleAgingBlockerCountsLiveToLowSalience: aging.blockerCountsLiveToLowSalience,
     lifecycleAgingBlockerCountsLowSalienceToDormant: aging.blockerCountsLowSalienceToDormant,
     lifecycleAgingBlockedSample: aging.blockedSample,

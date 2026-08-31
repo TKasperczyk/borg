@@ -8,6 +8,10 @@ export default defineConfig([
     },
     format: ["esm"],
     target: "node22",
+    // tsup 8 strips node: prefixes from output imports by default, which
+    // resolves for legacy builtins but breaks node:-only modules: bare
+    // "sqlite" is not a package. Keep the prefixes verbatim.
+    removeNodeProtocol: false,
     dts: true,
     clean: true,
     sourcemap: true,
@@ -18,6 +22,10 @@ export default defineConfig([
     entry: { "cli/index": "src/cli/index.ts" },
     format: ["esm"],
     target: "node22",
+    // tsup 8 strips node: prefixes from output imports by default, which
+    // resolves for legacy builtins but breaks node:-only modules: bare
+    // "sqlite" is not a package. Keep the prefixes verbatim.
+    removeNodeProtocol: false,
     dts: false,
     clean: false,
     sourcemap: true,

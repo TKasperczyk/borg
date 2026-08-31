@@ -150,6 +150,8 @@ export class EvidenceLedgerBuilder {
         actionThreadRenderLimit: this.options.actionThreadRenderLimit,
         actionThreadSimilarityThreshold: this.options.actionThreadSimilarityThreshold,
         actionThreadSourceRecordLimit: this.options.actionThreadSourceRecordLimit,
+        actionThreadSalienceClassReservedSlots: this.options.actionThreadSalienceClassReservedSlots,
+        actionThreadAudienceReservedSlots: this.options.actionThreadAudienceReservedSlots,
       },
       transcript,
       streamEntries,

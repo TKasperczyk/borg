@@ -1,13 +1,18 @@
 import {
   ACTION_STATE_METADATA,
   ACTION_STATES,
+  lastReferencedActionLifecycleTurn,
   type ActionDescriptionSimilarityPair,
   type ActionRecord,
   type ActionState,
   type ActionStateTimestampField,
 } from "../../memory/actions/index.js";
 import type { EntityRepository } from "../../memory/commitments/index.js";
-import type { MemoryDisclosureLabel } from "../../retrieval/index.js";
+import {
+  memoryDisclosureInternalUseNote,
+  renderMemoryDisclosureLabelFieldsForModel,
+  type MemoryDisclosureLabel,
+} from "../../retrieval/index.js";
 import { DisjointSet } from "../../util/disjoint-set.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import { actionMemoryDisclosureLabel } from "../../memory/common/disclosure-serializers.js";
@@ -20,6 +25,8 @@ import type { EvidenceLedgerActionSalienceClass, EvidenceLedgerSessionScope } fr
 export const DEFAULT_ACTION_THREAD_RENDER_LIMIT = 12;
 export const DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD = 0.85;
 export const DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT = 256;
+export const DEFAULT_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS = 1;
+export const DEFAULT_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS = 1;
 export const PARTICIPANT_RECENT_ACTION_TURN_WINDOW = 3;
 export const PARTICIPANT_DORMANT_ACTION_TURN_WINDOW = 15;
 export const STALE_PARTICIPANT_ACTION_RENDER_LIMIT = 5;
@@ -313,19 +320,52 @@ export async function buildActionThreads(input: {
     );
 }
 
+// The state name is the only thing this section says about a thread's disposition, and two of the
+// eight names point the wrong way. `not_done` reads as a pending item and is `terminal: true` -- the
+// final outcome vocabulary, a thread the harness will not revisit. `expired` reads as a settled
+// ending and is `terminal: false` -- a lifecycle retirement that recorded no outcome at all. A
+// reader holding one page cannot recover either fact from the name, so a count of `not_done` reads
+// as a to-do list when it is the opposite. Rendered in words rather than as a token: a bare flag
+// would be one more enumeration member whose contrast set never appears on the same page. Derived
+// from the metadata table for every state, so a new state inherits the phrasing instead of falling
+// through to the misreading.
+function renderActionStateDisposition(state: ActionState): string {
+  const metadata = ACTION_STATE_METADATA[state];
+
+  if (metadata.active) {
+    return "open";
+  }
+
+  return metadata.terminal ? "closed by outcome" : "closed without an outcome";
+}
+
+// A thread merges records written across a span -- `selectThreadOrigin` takes the earliest
+// `created_at`, `selectThreadCurrent` the latest `updated_at` -- so the two intents below are
+// separate writes and can be days or weeks apart. Only `current` carried a stamp, which left the
+// originating text undated on the page: a description that accurately reported the world at its own
+// write time, set beside a later one that accurately reports the world now, reads as one row
+// disagreeing with itself. Nothing on the page distinguished that from a bad write. The origin stamp
+// is rendered only when the origin is not also the current record, matching the `current_intent`
+// line: on a single-record thread there is no second write for the reader to date it against.
 export function renderActionThreadText(
   thread: ActionThread,
   entityRepository: Pick<EntityRepository, "get"> | undefined,
 ): string {
   const currentAt = new Date(actionTimestampForState(thread.current)).toISOString();
   const actor = actionActorDisplay(thread.current.actor, entityRepository);
+  const originIsCurrent = thread.current.id === thread.origin.id;
+  const originAt = originIsCurrent
+    ? ""
+    : `; originating_intent recorded ${new Date(thread.origin.created_at).toISOString()}`;
   const lines = [
     `actor: ${actor}`,
     `originating_intent: ${thread.origin.description}`,
-    `transitions: ${thread.records.length}, current: ${thread.current.state} at ${currentAt}`,
+    `transitions: ${thread.records.length}, current: ${thread.current.state} (${renderActionStateDisposition(
+      thread.current.state,
+    )}) at ${currentAt}${originAt}`,
   ];
 
-  if (thread.current.id !== thread.origin.id) {
+  if (!originIsCurrent) {
     lines.push(`current_intent: ${thread.current.description}`);
   }
 
@@ -381,24 +421,23 @@ function isGroupOwnedAction(action: Pick<ActionRecord, "actor" | "audience_entit
 
 function referencedWithinTurns(input: {
   action: ActionRecord;
-  currentTurnCounter: number | undefined;
+  currentTurnGlobal: number | undefined;
   windowTurns: number;
 }): boolean {
-  if (
-    input.currentTurnCounter === undefined ||
-    input.action.last_referenced_turn_counter === null
-  ) {
+  const lastReferencedTurnGlobal = lastReferencedActionLifecycleTurn(input.action);
+
+  if (input.currentTurnGlobal === undefined || lastReferencedTurnGlobal === null) {
     return false;
   }
 
-  return input.currentTurnCounter - input.action.last_referenced_turn_counter <= input.windowTurns;
+  return input.currentTurnGlobal - lastReferencedTurnGlobal <= input.windowTurns;
 }
 
 export function actionSalienceClass(input: {
   thread: ActionThread;
   currentUserStreamEntryId?: StreamEntryId;
   currentUserStreamEntryIds?: readonly StreamEntryId[];
-  currentTurnCounter?: number;
+  currentTurnGlobal?: number;
 }): EvidenceLedgerActionSalienceClass | null {
   const action = input.thread.current;
 
@@ -415,7 +454,7 @@ export function actionSalienceClass(input: {
 
     return referencedWithinTurns({
       action,
-      currentTurnCounter: input.currentTurnCounter,
+      currentTurnGlobal: input.currentTurnGlobal,
       windowTurns: PARTICIPANT_RECENT_ACTION_TURN_WINDOW,
     })
       ? "completed_recent"
@@ -438,7 +477,7 @@ export function actionSalienceClass(input: {
 
   return referencedWithinTurns({
     action,
-    currentTurnCounter: input.currentTurnCounter,
+    currentTurnGlobal: input.currentTurnGlobal,
     windowTurns: PARTICIPANT_RECENT_ACTION_TURN_WINDOW,
   })
     ? "participant_pending_recent"
@@ -467,6 +506,82 @@ export function orderActionThreadsBySalience(
       right.current.updated_at - left.current.updated_at ||
       left.current.id.localeCompare(right.current.id),
   );
+}
+
+export type ActionThreadAudienceBucket = EntityId | "global";
+
+export function actionThreadAudienceBucket(
+  thread: Pick<ActionThread, "current">,
+): ActionThreadAudienceBucket {
+  return thread.current.audience_entity_id ?? "global";
+}
+
+export function allocateActionThreadRenderSlots(input: {
+  threads: readonly ActionThreadWithSalience[];
+  limit: number;
+  salienceClassReservedSlots: number;
+  audienceReservedSlots: number;
+  audienceOrder?: readonly ActionThreadAudienceBucket[];
+}): ActionThreadWithSalience[] {
+  const ordered = orderActionThreadsBySalience(input.threads);
+  const selectedIds = new Set<string>();
+  const selected: ActionThreadWithSalience[] = [];
+
+  function reserve(
+    groups: readonly (readonly ActionThreadWithSalience[])[],
+    reservedSlots: number,
+  ): void {
+    for (const group of groups) {
+      if (selected.length >= input.limit) {
+        return;
+      }
+
+      let remaining = reservedSlots;
+
+      for (const thread of group) {
+        if (remaining === 0 || selected.length >= input.limit) {
+          break;
+        }
+
+        if (selectedIds.has(thread.id)) {
+          continue;
+        }
+
+        selectedIds.add(thread.id);
+        selected.push(thread);
+        remaining -= 1;
+      }
+    }
+  }
+
+  const salienceGroups = ACTION_SALIENCE_ORDER.map((salienceClass) =>
+    ordered.filter((thread) => thread.salienceClass === salienceClass),
+  ).filter((group) => group.length > 0);
+  reserve(salienceGroups, input.salienceClassReservedSlots);
+
+  const audienceOrder = [
+    ...new Set([
+      ...(input.audienceOrder ?? []),
+      ...ordered.map((thread) => actionThreadAudienceBucket(thread)),
+    ]),
+  ].filter((audience) => ordered.some((thread) => actionThreadAudienceBucket(thread) === audience));
+  const audienceGroups = audienceOrder.map((audience) =>
+    ordered.filter((thread) => actionThreadAudienceBucket(thread) === audience),
+  );
+  reserve(audienceGroups, input.audienceReservedSlots);
+
+  for (const thread of ordered) {
+    if (selected.length >= input.limit) {
+      break;
+    }
+
+    if (!selectedIds.has(thread.id)) {
+      selectedIds.add(thread.id);
+      selected.push(thread);
+    }
+  }
+
+  return orderActionThreadsBySalience(selected);
 }
 
 export function isPromptSalientActionSalienceClass(
@@ -525,11 +640,21 @@ function truncateOlderActionThreadSample(text: string): string {
   return `${text.slice(0, OLDER_ACTION_THREAD_SAMPLE_MAX_CHARS - 3)}...`;
 }
 
-export function renderOlderActionThreadsSummary(olderThreads: readonly ActionThread[]): string {
-  const olderRecordCount = olderThreads.reduce((count, thread) => count + thread.records.length, 0);
+export type OlderActionThreadSummaryGroup = {
+  audienceScope: ActionThreadAudienceBucket;
+  salienceClass: EvidenceLedgerActionSalienceClass;
+  threads: readonly ActionThread[];
+  disclosureLabel: MemoryDisclosureLabel;
+};
+
+function actionThreadSummaryDetails(
+  threads: readonly ActionThread[],
+  disclosureLabel: MemoryDisclosureLabel,
+): string {
+  const recordCount = threads.reduce((count, thread) => count + thread.records.length, 0);
   const stateCounts = new Map<ActionState, number>(ACTION_STATES.map((state) => [state, 0]));
 
-  for (const thread of olderThreads) {
+  for (const thread of threads) {
     stateCounts.set(thread.current.state, (stateCounts.get(thread.current.state) ?? 0) + 1);
   }
 
@@ -539,7 +664,7 @@ export function renderOlderActionThreadsSummary(olderThreads: readonly ActionThr
   })
     .filter((entry): entry is string => entry !== null)
     .join(" ");
-  const samples = olderThreads
+  const samples = threads
     .slice(0, OLDER_ACTION_THREAD_SAMPLE_LIMIT)
     .map(
       (thread) =>
@@ -549,5 +674,88 @@ export function renderOlderActionThreadsSummary(olderThreads: readonly ActionThr
     )
     .join(" | ");
 
-  return `Older action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}, states=${stateSummary}, recent_samples=${samples}.`;
+  // Fields only: the internal-use sentence that would follow them is a byte-identical constant on
+  // every non-public label, so it is hoisted to the summary's own line once instead of copied onto
+  // each group. What varies -- and what the reader actually decides disclosure from -- is the class
+  // and the private-to binding, which stay here.
+  return `threads=${threads.length} records=${recordCount} states=${stateSummary} disclosure_label=${renderMemoryDisclosureLabelFieldsForModel(disclosureLabel)} recent_samples=${samples}`;
+}
+
+export function renderOlderActionThreadsSummary(input: {
+  groups: readonly OlderActionThreadSummaryGroup[];
+  renderedThreadCount: number;
+  renderLimit: number;
+  staleParticipantThreadsWithheldCount: number;
+  threadsBuiltCount: number;
+  consideredRecordCount: number;
+  sourceRecordLimit: number;
+  sourceRecordTotal: number | null;
+  salienceDroppedThreadCount: number;
+}): string {
+  const { groups } = input;
+  const olderThreads = groups.flatMap((group) => group.threads);
+  const olderRecordCount = olderThreads.reduce((count, thread) => count + thread.records.length, 0);
+  // The omitted-thread counts describe the render pool only. Two populations never enter it:
+  // threads whose salience class resolved to null, and records below the source draw floor
+  // (never counted, because the draw stops at the limit). Naming both keeps "omitted" from
+  // reading as a complete accounting of everything this section did not show.
+  //
+  // Three of these counts are threads and one -- `records_considered` -- is records,
+  // distinguished only by a field-name prefix, and the total that would let the thread counts
+  // be checked against each other was never printed. Without it the three populations read as
+  // summable against the record total, which they are not: every considered record lands in
+  // exactly one thread (`buildActionThreads` groups the drawn records and nothing else), so
+  // the record total exceeds the thread total by the merge surplus and the sum never closes.
+  // `threads_built` comes from the builder's own thread count rather than from adding the
+  // three, so the printed identity is falsifiable instead of tautological.
+  //
+  // `records_below_draw_floor` used to be an enumeration -- a count when the draw exhausted the
+  // source, a refusal when it stopped at the limit -- and in production only the refusal has ever
+  // rendered, because the store has never been smaller than the draw. A token whose contrast set
+  // never appears is indistinguishable from a constant to a reader holding one page, and naming
+  // the condition it refuses under only lengthens the constant: the named condition is the
+  // comparison of the two numbers printed beside it, so the token restates its own operands and
+  // can never disagree with them.
+  //
+  // The exit is to stop enumerating and measure. The source total is one COUNT away, so the field
+  // prints how many records the draw never looked at. It is rendered as the stated difference of
+  // the two totals rather than as a bare number, so it cannot be mistaken for an independent
+  // count of the below-floor rows -- it is derived from them, and says so.
+  //
+  // `rendered` was the one term with no scale printed beside it, which let it read as the render
+  // limit itself: a reader holding one page saw `rendered 12` with nothing to distinguish a full
+  // slot draw from a pool that happened to be twelve deep, and `rendered 8` with nothing to say
+  // why it fell. It is not the limit. Two caps apply in sequence and only the later one was
+  // named: stale participant threads past STALE_PARTICIPANT_ACTION_RENDER_LIMIT are withheld from
+  // the pool BEFORE the slot draw, so whenever that cap bites `rendered` collapses to the pool
+  // size and the limit never binds at all. Printing the limit and the withheld count makes the
+  // fall decomposable. The withheld threads stay inside `omitted` -- they are unrendered, not a
+  // fourth population -- so the printed identity still closes while `rendered` becomes checkable
+  // against its own operands instead of assumed to be the limit. It is stated as a share of the
+  // omitted count rather than spelled out as an arithmetic rule: this section truncates from the
+  // tail, and every character on the head lines is taken from the group detail below them.
+  const recordsBelowDrawFloor =
+    input.sourceRecordTotal === null
+      ? "unknown_count_source_total_unavailable"
+      : `${Math.max(0, input.sourceRecordTotal - input.consideredRecordCount)}`;
+  const sourceRecordTotalField =
+    input.sourceRecordTotal === null
+      ? "source_record_total=unavailable"
+      : `source_record_total=${input.sourceRecordTotal}; records_below_draw_floor is that total minus records_considered, not a separate count`;
+  // The internal-use sentence for the group lines below, hoisted out of them. It stays a separate
+  // line rather than joining the counts: this section truncates from the tail, and a note attached
+  // to the counts line would survive at the cost of the group lines it describes.
+  const disclosureNote = groups.some((group) => group.disclosureLabel.disclosureClass !== "public")
+    ? [`Groups below whose disclosure_class is not public: ${memoryDisclosureInternalUseNote()}.`]
+    : [];
+
+  return [
+    `Older action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}.`,
+    `Not counted above: salience_dropped_threads=${input.salienceDroppedThreadCount}, records_below_draw_floor=${recordsBelowDrawFloor} (threads_built=${input.threadsBuiltCount} = rendered ${input.renderedThreadCount} + omitted ${olderThreads.length} + dropped ${input.salienceDroppedThreadCount}; render_slots=${input.renderLimit}, stale_participant_threads_withheld=${input.staleParticipantThreadsWithheldCount} of that omitted count, held out before the slot draw, so rendered can sit below render_slots without render_slots binding; records_considered=${input.consideredRecordCount} records, source_record_limit=${input.sourceRecordLimit}, ${sourceRecordTotalField}).`,
+    ...disclosureNote,
+    ...groups.map(
+      (group) =>
+        `- audience_scope=${group.audienceScope} salience_class=${group.salienceClass} ${actionThreadSummaryDetails(group.threads, group.disclosureLabel)}`,
+    ),
+  ].join("\n");
 }

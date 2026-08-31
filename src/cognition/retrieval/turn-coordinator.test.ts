@@ -257,6 +257,7 @@ function makeContexts(
 
 function makeRetrievedContext(): RetrievedContext {
   return {
+    retrieval_read_at_ms: 0,
     episodes: [],
     semantic: {
       supports: [],
@@ -283,6 +284,12 @@ function makeRetrievedContext(): RetrievedContext {
       sourceDiversity: 0,
       contradictionPresent: false,
       sampleSize: 0,
+      semanticSampleSize: 0,
+      coverageExpected: 5,
+      diversitySources: 0,
+      diversitySampleSize: 0,
+      evidenceEpisodeStrength: 0,
+      evidenceSemanticStrength: 0,
     },
   };
 }
@@ -1092,6 +1099,11 @@ describe("TurnRetrievalCoordinator", () => {
       },
       candidates: [],
       threshold: 0.45,
+      score_basis: {
+        score_context: "turn_selection",
+        deadline_lookahead_ms: 604_800_000,
+        progress_debt_stale_ms: 1_209_600_000,
+      },
     };
 
     await coordinator.coordinate({

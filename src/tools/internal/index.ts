@@ -1,10 +1,12 @@
 export { createCommitmentsListTool } from "./commitments-list.js";
 export { createEpisodicRecentTool } from "./episodic-recent.js";
 export { createEpisodicSearchTool } from "./episodic-search.js";
+export { createGoalsRetireTool } from "./goals-retire.js";
 export { createIdentityEventsListForCognitionTool } from "./identity-events-list.js";
 export { createJournalAppendTool } from "./journal-append.js";
 export { createOpenQuestionsCreateTool } from "./open-questions-create.js";
 export { createOpenQuestionsResolveTool } from "./open-questions-resolve.js";
+export { createOwnRecordsListTool } from "./own-records-list.js";
 export { createOutboundPostTool, OUTBOUND_POST_TOOL_NAME } from "./outbound-post.js";
 export { createPromptSurfaceChangesTool } from "./prompt-surface-changes.js";
 export { createScheduledWakesCancelTool } from "./scheduled-wakes-cancel.js";

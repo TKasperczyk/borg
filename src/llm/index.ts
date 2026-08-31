@@ -14,7 +14,11 @@ import type {
 } from "@anthropic-ai/sdk/resources/messages/messages.js";
 import { z } from "zod";
 
-import { getFreshCredentials, type GetFreshCredentialsOptions } from "../auth/claude-oauth.js";
+import {
+  getFreshCredentials,
+  readCredentialsFileStamp,
+  type GetFreshCredentialsOptions,
+} from "../auth/claude-oauth.js";
 import type { Clock } from "../util/clock.js";
 import { AuthError, ConfigError, findInErrorCauseChain, LLMError } from "../util/errors.js";
 import type { AttachmentId } from "../util/ids.js";
@@ -359,11 +363,17 @@ function extractPartialStringField(json: string, fieldName: string): string | nu
   return out;
 }
 
-export type LLMCompleteOptions = LLMCallOptions & {
+type LLMCompleteRequestOptions = LLMCallOptions & {
   messages: readonly LLMMessage[];
 };
 
-export type LLMCompleteStreamOptions = LLMCompleteOptions & {
+export type LLMCompleteOptions = LLMCompleteRequestOptions & {
+  // Overrides the unary outer deadline for this call. The same value aligns
+  // buffered OAuth header delivery and the SDK request timeout.
+  timeoutMs?: number;
+};
+
+export type LLMCompleteStreamOptions = LLMCompleteRequestOptions & {
   onTextDelta?: LLMStreamTextHandler;
 };
 
@@ -380,6 +390,10 @@ export type LLMCompleteResult = {
 
 export type LLMConverseOptions = LLMCallOptions & {
   messages: readonly LLMContentBlockMessage[];
+  // Overrides the outer deadline for this call; forwarded verbatim by the
+  // converse->complete compatibility mapping (same semantics as
+  // LLMCompleteOptions.timeoutMs).
+  timeoutMs?: number;
 };
 
 export type LLMConverseStreamOptions = LLMConverseOptions & {
@@ -959,7 +973,7 @@ function errorConstructorName(error: unknown): string | undefined {
   return (error as { constructor?: { name?: string } }).constructor?.name;
 }
 
-function isRetryableLlmTransportError(error: unknown): error is LLMError {
+export function isRetryableLlmTransportError(error: unknown): error is LLMError {
   return error instanceof LLMError && RETRYABLE_LLM_TRANSPORT_ERROR_CODES.has(error.code);
 }
 
@@ -1683,8 +1697,12 @@ function normalizeSystemBlocks(
   }));
 }
 
+// Version-generic on purpose: every Opus generation from 4.6 onward removes or
+// deprecates the same two request fields (temperature, manual budget_tokens
+// thinking), so pinning this to a version digit silently re-enables a 400 on the
+// next model bump. Match the family, not the release.
 function isOpusModel(model: string): boolean {
-  return /^claude-opus-4(?:[-._].+)?$/i.test(model.trim());
+  return /^claude-opus-\d(?:[-._].+)?$/i.test(model.trim());
 }
 
 function resolveMaxTokens(options: Pick<LLMCallOptions, "max_tokens" | "model">): number {
@@ -1811,6 +1829,7 @@ function buildAnthropicClient(
   auth: ResolvedAnthropicAuth,
   env: NodeJS.ProcessEnv = process.env,
   oauthFetchOptions: OAuthFetchOptions = {},
+  clientTimeoutMs = LLM_STREAMING_CALL_TIMEOUT_MS,
 ): AnthropicClientLike {
   const baseURL = env.ANTHROPIC_BASE_URL?.trim() || undefined;
 
@@ -1818,6 +1837,7 @@ function buildAnthropicClient(
     return new Anthropic({
       apiKey: auth.apiKey,
       maxRetries: 0,
+      timeout: clientTimeoutMs,
       ...(baseURL ? { baseURL } : {}),
     });
   }
@@ -1830,6 +1850,7 @@ function buildAnthropicClient(
     },
     fetch: createOAuthFetch(oauthFetchOptions),
     maxRetries: 0,
+    timeout: clientTimeoutMs,
     ...(baseURL ? { baseURL } : {}),
   });
 }
@@ -1838,6 +1859,7 @@ export class AnthropicLLMClient implements LLMClient {
   private client?: AnthropicClientLike;
   private auth?: ResolvedAnthropicAuth;
   private initialization?: Promise<void>;
+  private credentialsStamp?: string | null;
   private readonly usageSink?: TokenUsageSink;
   private readonly options: AnthropicLLMClientOptions;
 
@@ -1869,32 +1891,76 @@ export class AnthropicLLMClient implements LLMClient {
     return this.options.transportStallMaxRetries ?? ANTHROPIC_STALL_MAX_RETRIES;
   }
 
-  // Streaming stalls live in the SSE delivery path; the same request bodies
-  // complete via non-streaming create (verified against the Jun 8-12 stall
-  // incidents), so stall retries of streaming calls go unary. A buffered
-  // non-streaming response sends headers only when generation finishes, so the
-  // retry client relaxes the fetch-layer headers guard to the streaming call
-  // budget; the outer per-call deadline signal still bounds the whole call.
-  private stallRetryUnaryClient(): AnthropicClientLike | undefined {
-    if (this.auth === undefined || this.options.client !== undefined) {
+  // A buffered OAuth response can withhold headers until generation finishes.
+  // Give unary delivery at least the enclosing call budget so the outer signal,
+  // rather than the generic fetch-headers watchdog, remains authoritative for
+  // complete, converse, and unary retries after streaming stalls. Header-phase
+  // stall retries are intentionally unreachable on buffered unary paths: a dead
+  // connection consumes the outer deadline and surfaces a typed timeout for the
+  // caller to degrade or otherwise handle.
+  private bufferedUnaryClient(callTimeoutMs: number): AnthropicClientLike | undefined {
+    if (this.auth?.kind !== "oauth" || this.options.client !== undefined) {
       return this.client;
     }
 
-    return buildAnthropicClient(this.auth, this.options.env, {
-      ...this.oauthFetchOptions(),
-      fetchHeadersTimeoutMs: this.streamingCallTimeoutMs(),
-    });
+    return buildAnthropicClient(
+      this.auth,
+      this.options.env,
+      {
+        ...this.oauthFetchOptions(),
+        fetchHeadersTimeoutMs: Math.max(
+          this.options.oauthFetchHeadersTimeoutMs ?? OAUTH_FETCH_HEADERS_TIMEOUT_MS,
+          callTimeoutMs,
+        ),
+      },
+      this.streamingCallTimeoutMs(),
+    );
+  }
+
+  // A credentials-file swap (operator logs into a different account, typically
+  // after exhausting a subscription) leaves this process holding the previous
+  // account's access token for its entire lifetime: the swapped-out account
+  // answers 429, not 401, so the auth-failure refresh path never fires and only
+  // a restart recovers. Comparing a cheap mtime+size stamp lets the next call
+  // pick up new credentials on its own. Stat only -- no parse, no lock, no
+  // network -- and scoped to file-sourced auth, since env/api-key auth has no
+  // file to watch.
+  private credentialsFileSwapped(): boolean {
+    if (this.auth?.kind !== "oauth" || this.auth.source !== "credentials-file") {
+      return false;
+    }
+
+    const stamp = readCredentialsFileStamp(this.options);
+
+    return stamp !== null && stamp !== this.credentialsStamp;
   }
 
   private async ensureInitialized(): Promise<void> {
     if (this.client !== undefined) {
-      return;
+      if (!this.credentialsFileSwapped()) {
+        return;
+      }
+
+      // Drop BOTH the client and the memoized initialization: the resolved
+      // promise would otherwise short-circuit straight back to the stale token.
+      this.client = undefined;
+      this.initialization = undefined;
     }
 
     if (this.initialization === undefined) {
       const initialization = (async () => {
+        // Read the stamp BEFORE resolving: a write landing during resolution
+        // then belongs to the next check rather than being masked by a stamp
+        // captured after it.
+        const stamp = readCredentialsFileStamp(this.options);
         this.auth = await resolveAnthropicAuth(this.options);
-        this.client = buildAnthropicClient(this.auth, this.options.env, this.oauthFetchOptions());
+        this.credentialsStamp = stamp;
+        this.client = buildAnthropicClient(
+          this.auth,
+          this.options.env,
+          this.oauthFetchOptions(),
+          this.streamingCallTimeoutMs(),
+        );
       })();
       this.initialization = initialization;
     }
@@ -1983,7 +2049,16 @@ export class AnthropicLLMClient implements LLMClient {
       authToken: credentials.accessToken,
       source: "credentials-file",
     };
-    this.client = buildAnthropicClient(this.auth, this.options.env, this.oauthFetchOptions());
+    // This refresh rewrote the credentials file, so re-stamp from the state we
+    // just produced; otherwise the swap check reads our own write as somebody
+    // else's and re-resolves on the very next call.
+    this.credentialsStamp = readCredentialsFileStamp(this.options);
+    this.client = buildAnthropicClient(
+      this.auth,
+      this.options.env,
+      this.oauthFetchOptions(),
+      this.streamingCallTimeoutMs(),
+    );
     this.initialization = Promise.resolve();
   }
 
@@ -1992,10 +2067,13 @@ export class AnthropicLLMClient implements LLMClient {
     messages: MessageParam[],
     retrying = false,
     callTimeoutMs = this.unaryCallTimeoutMs(),
+    alignBufferedResponseHeaders = false,
   ): Promise<Message> {
     await this.ensureInitialized();
 
-    const client = this.client;
+    const client =
+      (alignBufferedResponseHeaders ? this.bufferedUnaryClient(callTimeoutMs) : this.client) ??
+      this.client;
 
     if (client === undefined) {
       throw new LLMError("Anthropic client failed to initialize");
@@ -2008,7 +2086,11 @@ export class AnthropicLLMClient implements LLMClient {
         signal: options.signal,
         run: (signal) =>
           runWithAnthropicTransportRetries(
-            () => client.messages.create(this.rawMessageParams(options, messages), { signal }),
+            () =>
+              client.messages.create(this.rawMessageParams(options, messages), {
+                signal,
+                timeout: callTimeoutMs,
+              }),
             {
               stallMaxRetries: this.transportStallMaxRetries(),
               signal,
@@ -2035,7 +2117,13 @@ export class AnthropicLLMClient implements LLMClient {
           });
         }
 
-        return this.createRawMessage(options, messages, true, callTimeoutMs);
+        return this.createRawMessage(
+          options,
+          messages,
+          true,
+          callTimeoutMs,
+          alignBufferedResponseHeaders,
+        );
       }
 
       if (isAuthenticationFailure(error) && this.auth?.kind === "oauth") {
@@ -2074,7 +2162,13 @@ export class AnthropicLLMClient implements LLMClient {
     const streamFactory = client.messages.stream?.bind(client.messages);
 
     if (streamFactory === undefined) {
-      return this.createRawMessage(options, messages, retrying, this.streamingCallTimeoutMs());
+      return this.createRawMessage(
+        options,
+        messages,
+        retrying,
+        this.streamingCallTimeoutMs(),
+        true,
+      );
     }
 
     try {
@@ -2090,7 +2184,8 @@ export class AnthropicLLMClient implements LLMClient {
               // SSE delivery, and a buffered response rides through it. This
               // also means a retry can never re-emit deltas already forwarded
               // by the stalled first attempt.
-              const retryClient = this.stallRetryUnaryClient() ?? client;
+              const retryClient =
+                this.bufferedUnaryClient(this.streamingCallTimeoutMs()) ?? client;
               return await retryClient.messages.create(
                 this.rawMessageParams(options, messages),
                 { signal, timeout: this.streamingCallTimeoutMs() },
@@ -2245,7 +2340,14 @@ export class AnthropicLLMClient implements LLMClient {
   }
 
   private async createMessage(options: LLMCompleteOptions): Promise<LLMCompleteResult> {
-    const response = await this.createRawMessage(options, toAnthropicMessages(options.messages));
+    const callTimeoutMs = options.timeoutMs ?? this.unaryCallTimeoutMs();
+    const response = await this.createRawMessage(
+      options,
+      toAnthropicMessages(options.messages),
+      false,
+      callTimeoutMs,
+      true,
+    );
     let structuredOutput: unknown;
 
     try {
@@ -2309,11 +2411,15 @@ export class AnthropicLLMClient implements LLMClient {
   }
 
   private async createConversation(options: LLMConverseOptions): Promise<LLMConverseResult> {
+    const callTimeoutMs = this.unaryCallTimeoutMs();
     const response = await this.createRawMessage(
       options,
       toAnthropicContentBlockMessages(options.messages, {
         attachmentResolver: this.options.attachmentResolver,
       }),
+      false,
+      callTimeoutMs,
+      true,
     );
     let structuredOutput: unknown;
 

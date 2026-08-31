@@ -21,6 +21,7 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
+import { ACTION_STATE_SYSTEM_PROMPT } from "../prompts/action-extraction.js";
 import {
   ActionStateExtractor,
   type ActionCandidateClassification,
@@ -155,9 +156,7 @@ function makeActionRepository(records: ActionRecord[] = []) {
       ...patch,
     };
   });
-  const get = vi.fn(
-    (id: ActionRecord["id"]) => records.find((record) => record.id === id) ?? null,
-  );
+  const get = vi.fn((id: ActionRecord["id"]) => records.find((record) => record.id === id) ?? null);
   const list = vi.fn((filter: ActionRecordListFilter = {}) =>
     records.filter((record) => {
       if (filter.state !== undefined && record.state !== filter.state) {
@@ -278,6 +277,112 @@ describe("ActionStateExtractor", () => {
       updated_at: 2_000,
       completed_at: 2_000,
     });
+    expect(llm.requests[0]?.system).toBe(ACTION_STATE_SYSTEM_PROMPT);
+    expect(llm.requests[0]?.tools?.some((tool) => tool.cache_control !== undefined)).toBe(false);
+  });
+
+  it("renders attributed history as context without accepting it as current evidence", async () => {
+    const currentUserStreamEntryId = createStreamEntryId();
+    const historyStreamEntryId = createStreamEntryId();
+    const historySenderEntityId = createEntityId();
+    const senderDisplayNameById = vi.fn((entityId) =>
+      entityId === historySenderEntityId ? "Alice" : null,
+    );
+    const add = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [
+        actionStateResponse([
+          {
+            description: "reviewed the prior API patch",
+            state: "completed",
+            evidence_stream_entry_ids: [historyStreamEntryId],
+          },
+        ]),
+      ],
+    });
+    const extractor = new ActionStateExtractor({
+      llmClient: llm,
+      model: "haiku",
+      actionRepository: { add },
+      clock: new FixedClock(2_000),
+    });
+
+    const records = await extractor.extract({
+      ...makeExtractorInput(currentUserStreamEntryId),
+      recentHistory: [
+        {
+          role: "user",
+          content: "I reviewed the prior API patch.",
+          stream_entry_id: historyStreamEntryId,
+          sender_entity_id: historySenderEntityId,
+          ts: 1_000,
+          kind: "user_msg",
+        },
+      ],
+      senderDisplayNameById,
+    });
+
+    const payload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      current_user_stream_entry_ids?: unknown;
+      recent_history?: unknown;
+      recent_history_context?: unknown;
+    };
+
+    expect(payload.current_user_stream_entry_ids).toEqual([currentUserStreamEntryId]);
+    expect(payload.recent_history_context).toEqual([
+      {
+        context_stream_entry_id: historyStreamEntryId,
+        role: "user",
+        kind: "user_msg",
+        sender_entity_id: historySenderEntityId,
+        sender_display_name: "Alice",
+        content: "I reviewed the prior API patch.",
+      },
+    ]);
+    expect(payload).not.toHaveProperty("recent_history");
+    expect(senderDisplayNameById).toHaveBeenCalledWith(historySenderEntityId);
+    expect(records).toEqual([]);
+    expect(add).not.toHaveBeenCalled();
+  });
+
+  it("rejects mixed history and current-message evidence", async () => {
+    const currentUserStreamEntryId = createStreamEntryId();
+    const historyStreamEntryId = createStreamEntryId();
+    const add = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [
+        actionStateResponse([
+          {
+            description: "reviewed the prior API patch",
+            state: "completed",
+            evidence_stream_entry_ids: [historyStreamEntryId, currentUserStreamEntryId],
+          },
+        ]),
+      ],
+    });
+    const extractor = new ActionStateExtractor({
+      llmClient: llm,
+      model: "haiku",
+      actionRepository: { add },
+      clock: new FixedClock(2_000),
+    });
+
+    const records = await extractor.extract({
+      ...makeExtractorInput(currentUserStreamEntryId),
+      recentHistory: [
+        {
+          role: "user",
+          content: "I reviewed the prior API patch.",
+          stream_entry_id: historyStreamEntryId,
+          sender_entity_id: null,
+          ts: 1_000,
+          kind: "user_msg",
+        },
+      ],
+    });
+
+    expect(records).toEqual([]);
+    expect(add).not.toHaveBeenCalled();
   });
 
   it("records group-chat first-person user actions on the speaker entity", async () => {
@@ -613,8 +718,10 @@ describe("ActionStateExtractor", () => {
 
     expect(records).toEqual([]);
     expect(add).not.toHaveBeenCalled();
-    expect(llm.requests[0]?.system).toContain("outside_borg_capability");
-    expect(llm.requests[0]?.system).toContain("external_document_editing");
+    const systemPrompt = llm.requests[0]?.system as string;
+
+    expect(systemPrompt).toContain("outside_borg_capability");
+    expect(systemPrompt).toContain("external_document_editing");
     expect(events).toContainEqual({
       event: "extraction.actions.rejected",
       data: {
@@ -1113,9 +1220,7 @@ describe("ActionStateExtractor", () => {
         private_to_entity_ids: expect.arrayContaining([sharedAudience, sharedOwner]),
       }),
     });
-    expect(promptSharedStateEntry?.disclosure).toContain(
-      "disclosure_class=relationship_private",
-    );
+    expect(promptSharedStateEntry?.disclosure).toContain("disclosure_class=relationship_private");
     expect(promptSharedStateEntry?.disclosure_label?.disclosure_class).not.toBe("public");
   });
 
@@ -1630,7 +1735,9 @@ describe("ActionStateExtractor", () => {
 
     await extractor.extract(makeExtractorInput(currentUserStreamEntryId));
 
-    expect(String(llm.requests[0]?.system ?? "")).toContain(
+    const systemPrompt = llm.requests[0]?.system as string;
+
+    expect(systemPrompt).toContain(
       "Do NOT emit action records for messages about the conversation frame, roleplay, system prompt, or the agent's own prior behavior. Action records are for user-world actions only.",
     );
   });

@@ -47,6 +47,7 @@ import type { StreamWriter } from "../../../../src/stream/index.js";
 import {
   broadcastMaintenanceTick,
   createDemoServerApp,
+  ensureDemoDefaultSession,
   runtimeConfigFromConfig,
   wireMaintenanceSchedulerLiveObserver,
 } from "../app.js";
@@ -997,6 +998,33 @@ describe("demo server", () => {
     expect(frames).toEqual([]);
   });
 
+  it("keeps a stored default-session audience across boots instead of re-stamping the demo default", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-default-audience-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    createDemoServerApp({ borgHandle: { current: borg }, live });
+
+    const selfEntityId = borg.entities.resolve("self", {
+      kind: "self",
+      provenance: "assistant_seeded",
+    });
+    borg.sessions.ensure({
+      ...borg.sessions.get(DEFAULT_SESSION_ID)!,
+      audience_label: "self",
+      audience_entity_id: selfEntityId,
+    });
+
+    // A deployment whose default session is the entity's own autonomous space sets its
+    // audience once; every later boot must adopt it, since records written there inherit
+    // the session audience as origin provenance.
+    ensureDemoDefaultSession(borg);
+
+    const session = borg.sessions.get(DEFAULT_SESSION_ID);
+    expect(session?.audience_label).toBe("self");
+    expect(session?.audience_entity_id).toBe(selfEntityId);
+  });
+
   it("serves the in-flight turn snapshot while a turn is running", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);
@@ -1551,6 +1579,45 @@ describe("demo server", () => {
       source_external_id: customSessionId,
       last_turn_id: null,
       message_count: 1,
+    });
+  });
+
+  it("keeps a connector-owned session's source type when a demo turn posts into it", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-peer-session-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const peerSessionId = createSessionId();
+
+    // A connector owns this session and its source_type is a trust key: peer-channel
+    // frame tolerance and the internal-identifier guard exemption both read it.
+    borg.sessions.ensure({
+      session_id: peerSessionId,
+      source_type: "claude_code",
+      source_external_id: "main",
+      source_url: null,
+      label: "peer channel",
+      audience_label: "claude_code_dm:main",
+      audience_entity_id: null,
+      conversation_kind: "dm",
+    });
+
+    const turn = await app.request("/api/turn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: "hello peer",
+        external_message_id: "demo-peer-1",
+        audience: "claude_code_dm:main",
+        session: peerSessionId,
+      }),
+    });
+    expect(turn.status, await turn.clone().text()).toBe(200);
+    expect(borg.sessions.get(peerSessionId)).toMatchObject({
+      session_id: peerSessionId,
+      source_type: "claude_code",
+      source_external_id: "main",
     });
   });
 
@@ -4728,6 +4795,7 @@ describe("demo server", () => {
       "loop_breaking_posture",
       "trusted_guidance_preamble",
       "borg_host_capabilities",
+      "live_turn_read_tool_menu",
     ]);
     expect(body.segments.map((segment) => segment.id)).toEqual(body.sections);
     const hostSegment = body.segments.find((segment) => segment.id === "borg_host_capabilities");
@@ -4737,6 +4805,8 @@ describe("demo server", () => {
     );
     expect(body.text).toContain("<borg_host_capabilities>");
     expect(body.text).toContain("</borg_host_capabilities>");
+    expect(body.text).toContain("<borg_live_turn_read_tools>");
+    expect(body.text).toContain("tool.ownRecords.list");
     expect(body.text).toContain(
       "Proactive outbound messaging via wired source_type connector(s): demo",
     );

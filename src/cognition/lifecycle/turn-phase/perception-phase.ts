@@ -43,6 +43,9 @@ export type FrameAnomalyPhaseResult = {
 const TRUSTED_PEER_CHANNEL_FRAME_ANOMALY_KINDS: ReadonlySet<FrameAnomalyKind> = new Set([
   "assistant_self_claim_in_user_role",
   "roleplay_inversion",
+  // A machine peer may truthfully claim authorship of earlier user-role dialogue.
+  // On non-peer channels this kind still guards against gaslighting about who spoke.
+  "agent_authorship_claim",
 ]);
 
 function isTrustedPeerChannelFrameAnomalyKind(kind: FrameAnomalyKind): boolean {
@@ -336,6 +339,10 @@ async function appendFrameAnomalyEvents(input: {
     input.sourceUserEntryIds.length === 1 ? input.sourceUserEntryIds[0] : undefined;
 
   try {
+    // Two rows with the same payload under two event names. Only
+    // QUARANTINED_USER_ENTRY_EVENT is a strike marker (src/stream/turn-status.ts), so the
+    // `frame_anomaly_gate` copy stays active after the quarantine takes effect -- and with it
+    // the classifier rationale, which quotes the message it struck.
     await input.streamWriter.appendMany([
       {
         kind: "internal_event",

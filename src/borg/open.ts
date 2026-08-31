@@ -171,12 +171,15 @@ export async function openBorgDependencies(
       entryIndex: repositories.entryIndex,
     });
     const toolDispatcher = buildToolDispatcher({
+      dataDir: config.dataDir,
+      entryIndex: repositories.entryIndex,
       retrievalPipeline: repositories.retrievalPipeline,
       episodicRepository: repositories.episodicRepository,
       semanticNodeRepository: repositories.semanticNodeRepository,
       semanticGraph: repositories.semanticGraph,
       commitmentRepository: repositories.commitmentRepository,
       entityRepository: repositories.entityRepository,
+      goalsRepository: repositories.goalsRepository,
       identityService: repositories.identityService,
       skillRepository: repositories.skillRepository,
       trainOfThoughtRepository: repositories.trainOfThoughtRepository,
@@ -323,6 +326,12 @@ export async function openBorgDependencies(
       },
       clock,
     });
+    // The scheduler runs the turn orchestrator, so it is composed second. This
+    // read-only late-bound ref lets turn assembly ask that same scheduler for
+    // its authoritative budget snapshot after openBorgDependencies completes.
+    const autonomySchedulerRef: {
+      current: ReturnType<typeof buildAutonomyScheduler> | null;
+    } = { current: null };
     const turnOrchestrator = buildTurnOrchestrator({
       config,
       retrievalPipeline: repositories.retrievalPipeline,
@@ -362,6 +371,10 @@ export async function openBorgDependencies(
       chatResponseWatermarkCoordinator,
       outboundDelivery,
       autonomousOutboundPolicy,
+      autonomySchedulerStateProvider: async () => {
+        const scheduler = autonomySchedulerRef.current;
+        return scheduler === null ? null : await scheduler.describe();
+      },
       outboundSourceTypes: outboundConnectorRegistry.sourceTypes(),
       createStreamWriter: repositories.createStreamWriter,
       entryIndex: repositories.entryIndex,
@@ -428,10 +441,12 @@ export async function openBorgDependencies(
       trainOfThoughtRepository: repositories.trainOfThoughtRepository,
       turnOrchestrator,
       toolDispatcher,
+      autonomousOutboundPolicy,
       createStreamWriter: repositories.createStreamWriter,
       clock,
       tracer,
     });
+    autonomySchedulerRef.current = autonomyScheduler;
     const maintenanceScheduler = buildMaintenanceScheduler({
       config,
       lance,

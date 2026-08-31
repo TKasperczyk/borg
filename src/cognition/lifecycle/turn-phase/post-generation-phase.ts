@@ -28,6 +28,7 @@ import type { ActivityEventStatus } from "../../../memory/activity/index.js";
 import { CognitionError } from "../../../util/errors.js";
 import type { SharedStateEntry } from "../../../memory/shared-state/index.js";
 import type { OutboundDeliveryReceipt, OutboundDeliveryResult } from "../../../outbound/types.js";
+import type { SessionSourceType } from "../../../sessions/index.js";
 import {
   ACTION_ARCHIVE_ACTIVE_STATES,
   ACTION_ARCHIVE_SCAN_LIMIT,
@@ -157,6 +158,17 @@ async function persistMessageEmission(input: {
     ...(input.turnInput.audience === undefined ? {} : { audience: input.turnInput.audience }),
   };
 
+  // This branch is the only call to `OutboundDelivery.deliver` in the system, and its condition is
+  // `origin === "directed_outbound"`. So transport is a property of how the turn was started, not
+  // of the session or its connector: a self-initiated post goes through the connector and can throw
+  // a `transport_failed` sibling, while an ordinary reply -- same session, same source_type, same
+  // wired connector -- falls to the bare append below and never touches the connector at all. Its
+  // content leaves as the response to whoever called the turn.
+  //
+  // The consequence for anything reading the stream afterwards: an `agent_msg` with no
+  // `outbound_delivery.*` sibling means "delivered" only on the directed-outbound path. On every
+  // other origin the same absence means the question was never asked, so stream presence cannot be
+  // read as evidence that a connector accepted anything.
   if (
     isDirectedOutboundTurnOrigin(input.turnInput.origin) &&
     input.options.outboundDelivery !== undefined
@@ -484,6 +496,7 @@ export async function runPostGenerationPhase(input: {
   appendHookFailureEvent: AppendHookFailureEvent;
   llmClient: LLMClient;
   sessionId: SessionId;
+  sessionSourceType: SessionSourceType | null;
   turnId: string;
   turnInput: TurnPhaseInput;
   streamWriter: StreamWriter;
@@ -536,6 +549,7 @@ export async function runPostGenerationPhase(input: {
     llmClient: input.llmClient,
     turnId: input.turnId,
     sessionId: input.sessionId,
+    sessionSourceType: input.sessionSourceType,
     deliberation: input.deliberation,
     workingMemory,
     userMessage: input.turnInput.userMessage,
@@ -622,6 +636,11 @@ export async function runPostGenerationPhase(input: {
   });
   const activityRepository = input.options.activityRepository;
 
+  // This is the only read of a delivery outcome anywhere downstream of `deliver`, and it reads it
+  // to withhold: a directed-outbound post that failed or found no connector records no activity
+  // event, while every other origin (`outboundDelivery === undefined`) always records one. Success
+  // itself appends no stream event, so the activity row -- not the stream -- is where the
+  // difference between a carried post and a refused one survives, and it survives as an absence.
   const shouldRecordActivity =
     persistedEmission.outboundDelivery === undefined ||
     persistedEmission.outboundDelivery.status === "transported";
@@ -719,6 +738,7 @@ export async function runPostGenerationPhase(input: {
       turnId: actionCoordinatorResult.regenerationBreadcrumb.turnId,
       ts: input.options.clock.now(),
       sourceStreamEntryId: persistedAgentEntry.id,
+      commitments: actionCoordinatorResult.regenerationBreadcrumb.commitments,
     });
   }
   if (

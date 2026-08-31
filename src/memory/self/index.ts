@@ -45,6 +45,7 @@ export {
   TraitsRepository,
   ValuesRepository,
   type GoalListOptions,
+  type GoalRetirementResult,
   type GoalStatusUpdateOptions,
   type GoalsRepositoryOptions,
   type TraitsRepositoryOptions,

@@ -8,6 +8,10 @@ import type {
   AttachmentId,
   ImagePerceptionId,
 } from "../util/ids.js";
+import type {
+  CommitmentCriticalDomain,
+  CommitmentEnforcementClass,
+} from "../memory/commitments/index.js";
 import type { MemoryDisclosureLabel } from "./recall-context.js";
 
 export const RECALL_INTENT_KINDS = [
@@ -110,6 +114,13 @@ export type EvidenceItem = {
   citationType?: "original_image" | "generated_perception_text" | "parent_user_message";
   imageUnavailableReason?: "budget" | "inactive";
   disclosureLabel?: MemoryDisclosureLabel;
+  commitment_enforcement_class?: CommitmentEnforcementClass;
+  commitment_critical_domain?: CommitmentCriticalDomain | null;
+  // Length of the underlying `commitment.directive`, before `text` composes it
+  // as `${type}: ${directive}`. Carried so the verification block can print the
+  // canonical record's own char count next to the composed payload's, instead of
+  // leaving a reader to infer the type prefix from an offset. Commitment evidence only.
+  commitment_directive_chars?: number;
 };
 
 export type EvidencePool = {

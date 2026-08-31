@@ -99,11 +99,18 @@ function makeRetrievalConfidence(
     sourceDiversity: overrides.sourceDiversity ?? 1,
     contradictionPresent: overrides.contradictionPresent ?? false,
     sampleSize: overrides.sampleSize ?? 1,
+    semanticSampleSize: overrides.semanticSampleSize ?? 0,
+    coverageExpected: overrides.coverageExpected ?? 1,
+    diversitySources: overrides.diversitySources ?? 1,
+    diversitySampleSize: overrides.diversitySampleSize ?? 1,
+    evidenceEpisodeStrength: overrides.evidenceEpisodeStrength ?? 0,
+    evidenceSemanticStrength: overrides.evidenceSemanticStrength ?? 0,
   };
 }
 
 function makeRetrievedContext(): RetrievedContext {
   return {
+    retrieval_read_at_ms: 0,
     episodes: [],
     semantic: {
       supports: [],

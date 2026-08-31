@@ -595,6 +595,40 @@ function recordUnknownAgeSample(
   });
 }
 
+// The ladder is one-way and narrow: live -> low_salience_live -> dormant_live, with reactivation
+// only ever back to `live`. `locked` and `tentative` are outside it entirely -- they are never
+// demotion candidates and are never produced, so an entry that reads as locked was written locked by
+// the model on an add/update, never aged into it.
+//
+// `currentTurnCounter` is the host-wide action_lifecycle_turn_counter, not a per-audience one: every
+// session on the host advances the same integer once per turn. Measured on the live demo data dir
+// 2026-08-17, that clock ran ~3.05 turns/hour over the preceding 39 hours, so the 5/15-turn defaults
+// above are roughly 1.6h and 5h of wall clock for an audience that is not itself talking. A quiet
+// room ages at the whole host's cadence.
+//
+// Demotion is not a soft shelf, and what it costs is decided in lifecycle-cap.ts: `dormant_live` is
+// both the first kind SHARED_STATE_LIFECYCLE_PRUNE_ORDER scans and the kind with the smallest
+// default soft cap (1, against 24 for `locked`), so the bottom rung of this ladder is the head of
+// the eviction queue. Observed on the live demo data dir 2026-08-17: one over-cap draw took two
+// `dormant_live` rows -- the younger of them last written five hours earlier -- while 15 `locked`
+// rows staler than it survived the same draw, because kind chooses the pool before staleness orders
+// it. So an entry nobody touches for ~15 host turns is not shelved, it is queued: the band it lands
+// in holds one.
+//
+// Order inside a single pass is decided by the two loops below, not by wall clock: reactivations are
+// emitted first and their entry ids are excluded from the demotion loop, so a row that reactivates
+// cannot also be demoted in the same compile, and the converse cannot happen at all. The compiler
+// calls this after the model's operations are materialized and appends the resulting
+// `transition_kind` operations after them, ahead of applySharedStateArtifactLifecycleCap -- so a row
+// demoted here is already `dormant_live` when the cap scans it on the same turn.
+//
+// The protection sets are asymmetric on purpose, and that asymmetry is what decides whether a
+// demoted row can come back. `reactivatesDemoted` reads only the HARD reasons (touched_by_patch,
+// current_turn_update, ledger_overlap, active_canonicalizer_critical), while
+// `blocksLowSalienceToDormantDemotion` reads hard OR soft. So `recent_retrieval` and
+// `active_canonicalizer_operational` can hold an entry at `low_salience_live` but can never lift one
+// off `dormant_live`: being read does not rescue an entry. Writing to it does, and so does citing a
+// stream entry that is still in the visible ledger.
 export function applyLifecycleAging(input: ApplyLifecycleAgingInput): {
   transitions: SharedStateLifecycleTransition[];
   blockerCountsLiveToLowSalience: LifecycleAgingBlockerCounts;

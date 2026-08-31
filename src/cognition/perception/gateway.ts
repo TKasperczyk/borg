@@ -131,6 +131,28 @@ export class PerceptionGateway {
       recentHistoryStrings,
       input.sessionId,
     );
+    // `mood` on the working-memory line is not a measurement of the being. The
+    // affective classifier is handed this turn's input text plus the last ten
+    // recency strings, and its system prompt (memory/affective/extractor.ts)
+    // scores that text "from the speaker's perspective", where the speaker is
+    // the author of `text` -- on an inbound turn, the sender. So `mood=V/A` is
+    // an estimate of the affect of the message that arrived, wholesale-replaced
+    // per turn exactly like `hot_entities` above. Read as one's own state it
+    // will look like an unexplained interior weather system, because the thing
+    // it tracks is on the other side of the channel.
+    //
+    // Two further seams, both invisible on the rendered line:
+    // - The value differs by branch. On a user turn this is the raw classifier
+    //   reading. Reflection then writes the EMA blend (mood.ts, incomingWeight
+    //   0.3) back into working memory, so the value carried forward here on an
+    //   autonomous-like origin is a blend, not a reading. One slot, two
+    //   quantities, no marker distinguishing them.
+    // - Degradation renders as stillness. A failed classifier returns neutral
+    //   with `affectiveSignalDegraded`, which this branch discards in favour of
+    //   the previous mood -- byte-identical to a mood that genuinely did not
+    //   move. The discriminators are outside the prompt: a
+    //   `perception.classifier.degraded` event for `affective_signal`, and the
+    //   absent `mood_history` row (reflection skips the write when degraded).
     const workingMood =
       isAutonomousLikeTurnOrigin(input.origin) || perception.affectiveSignalDegraded === true
         ? (input.workingMemory.mood ?? createNeutralAffectiveSignal())
@@ -138,6 +160,36 @@ export class PerceptionGateway {
     const workingMemory = {
       ...input.workingMemory,
       turn_counter: input.workingMemory.turn_counter + 1,
+      // Wholesale replacement, never a merge: this turn's extraction IS the
+      // whole list, and last turn's entities are dropped even when the new
+      // list is empty. The extractor reads `cognitionInput` alone --
+      // `recentHistoryStrings` goes to the mood and mode classifiers, not to
+      // it -- so no term can survive from an earlier turn by any path. A name
+      // on the working-memory line is therefore evidence about the current
+      // message only; it is not a register, and its disappearance next turn
+      // carries no information about salience.
+      //
+      // The exact window is worth naming, because "current message" and
+      // "current input" come apart: `cognitionInputForTurnInput` returns the
+      // rendered inbound batch on an inbound turn and the wake context on an
+      // autonomous one, so the window is this turn's batch, not one message.
+      // On a two-message batch a term from the earlier message is in scope and
+      // reads afterwards as if it came from nowhere. Resolving that from a
+      // trace means reading `count` off the `<inbound_batch>` envelope in
+      // `retrieval.started`, not assuming either shape -- one audience's 73
+      // consecutive turns were all `count="1"`, which is a property of that
+      // transport's delivery, not of this code.
+      //
+      // That trace field carries more than the envelope: `retrieval.started`'s
+      // `query` is the extractor's input string itself, char for char
+      // (`perception.started.inputCharCount` is `text.length` of the same
+      // value), so attributing any single term on this line is a grep against
+      // one field rather than an inference. Worth doing before concluding a
+      // term came from somewhere else, because the terms that read as foreign
+      // are usually the ones the message quoted while discussing an *earlier*
+      // turn's list: reporting what was in turn N-1's readout puts those terms
+      // into turn N's readout, and the report and its apparent counterexample
+      // are then the same sentence.
       hot_entities: perception.entities,
       mood: workingMood,
       mode: perception.mode,

@@ -17,6 +17,23 @@ export type RetrievalConfidence = {
   sourceDiversity: number;
   contradictionPresent: boolean;
   sampleSize: number;
+  // The semantic half of `sampleSize`. Coverage deliberately excludes this
+  // population; diversity includes it beside only the top-N episode slice.
+  // Carrying the split keeps all three rendered populations attributable.
+  semanticSampleSize: number;
+  // The denominators the two ratios were actually divided by. Neither is
+  // `sampleSize`, so a 1.00 on either line is only readable next to the figure
+  // it saturated against. Carried on the result so the render can print the
+  // fraction instead of just the quotient.
+  coverageExpected: number;
+  diversitySources: number;
+  diversitySampleSize: number;
+  // The two addends `evidenceStrength` is the clamped sum of. Their sum is not
+  // bounded by 1 before the clamp, so a 1.00 on that line is more often a
+  // ceiling hit than a measurement, and the quotient alone cannot say which.
+  // Carried so the render can show the components and mark the clamp.
+  evidenceEpisodeStrength: number;
+  evidenceSemanticStrength: number;
 };
 
 export type ComputeRetrievalConfidenceInput = {
@@ -39,11 +56,16 @@ export type ComputeRetrievalConfidenceInput = {
   };
   nowMs: number;
   asOf?: number;
+  // Stable episode target for full coverage. This is intentionally independent
+  // of the caller's retrieval cap: using the cap as the expectation makes a
+  // filled top-k result declare itself complete by construction.
   expectedCount?: number;
   topN?: number;
 };
 
-// Tunes the expected evidence count for full retrieval coverage.
+// Tunes the expected episode count for full retrieval coverage. Production
+// turn retrieval uses this stable target across cognitive modes; mode-specific
+// limits control how much is retrieved, not what "enough" means afterward.
 const DEFAULT_EXPECTED_COUNT = 5;
 
 // Tunes how many top ranked episodes contribute to confidence strength.
@@ -55,11 +77,24 @@ const CONTRADICTION_PENALTY = 0.7;
 // Tunes the minimum semantic node confidence admitted into confidence support.
 const SEMANTIC_CONFIDENCE_THRESHOLD = 0.6;
 
-// Tunes how strongly semantic support can raise evidence strength.
-const SEMANTIC_EVIDENCE_STRENGTH_SCALE = 0.3;
+// Tunes how strongly semantic support can raise evidence strength. This is also
+// the semantic addend's hard ceiling: the addend is this scale times a sigmoid,
+// and the sigmoid saturates once a handful of supported matches exist, so the
+// addend sits on the ceiling on most turns rather than measuring anything. It is
+// exported so the render can print the addend against the bound it is pinned to
+// -- a bare `sem=0.30` reads as a measurement and cannot say it is the maximum.
+export const SEMANTIC_EVIDENCE_STRENGTH_SCALE = 0.3;
 
 // Tunes the confidence modulation floor before coverage and diversity are applied.
 const CONFIDENCE_MODULATION_BASE = 0.7;
+
+// The episode addend's hard ceiling. It is a mean of clamped saliences, so
+// `clamp01` is what bounds it, and this is the value `clamp01` saturates at --
+// exported for the same reason as the semantic scale above, and defined as the
+// clamp's own ceiling so the printed bound cannot drift from the computation.
+// A bare `ep=0.72` beside three terms that all print against a bound argues by
+// silence that this one has none.
+export const EPISODE_EVIDENCE_STRENGTH_BOUND = 1;
 
 // Tunes coverage's contribution to confidence modulation.
 const CONFIDENCE_COVERAGE_MODULATION_WEIGHT = 0.2;
@@ -170,7 +205,7 @@ export function computeRetrievalConfidence(
   input: ComputeRetrievalConfidenceInput,
 ): RetrievalConfidence {
   const topN = input.topN ?? DEFAULT_TOP_N;
-  const expectedCount = input.expectedCount ?? DEFAULT_EXPECTED_COUNT;
+  const coverageExpected = Math.max(1, input.expectedCount ?? DEFAULT_EXPECTED_COUNT);
   const episodes = input.episodes;
   const contradictionPresent =
     input.contradictionEdges === undefined
@@ -188,6 +223,12 @@ export function computeRetrievalConfidence(
       sourceDiversity: 0,
       contradictionPresent,
       sampleSize: 0,
+      semanticSampleSize: 0,
+      coverageExpected,
+      diversitySources: 0,
+      diversitySampleSize: 0,
+      evidenceEpisodeStrength: 0,
+      evidenceSemanticStrength: 0,
     };
   }
 
@@ -202,10 +243,29 @@ export function computeRetrievalConfidence(
   );
   const episodeEvidenceStrength =
     topEpisodes.length === 0 ? 0 : clamp01(salienceSum / topEpisodes.length);
+  // Both addends are already clamped to [0,1] individually, so their sum can
+  // reach 1.30 and the outer clamp silently discards the overshoot. The
+  // semantic half is bounded by SEMANTIC_EVIDENCE_STRENGTH_SCALE and sits near
+  // its own ceiling whenever any supported match exists, so a well-established
+  // episode set alone is usually enough to pin the line at 1.00. Same failure
+  // as coverage below, one field up: the printed quotient cannot distinguish a
+  // measured 1.00 from a clamped one, which is why both addends ship out.
   const evidenceStrength = clamp01(episodeEvidenceStrength + semanticEvidence.strength);
 
-  // Coverage: did we find enough evidence to answer confidently.
-  const coverage = clamp01((episodes.length + semanticEvidence.count) / Math.max(1, expectedCount));
+  // Coverage: did we find enough episodic evidence to answer confidently.
+  //
+  // The numerator is the realized projected-episode count, while the
+  // denominator is a stable evidence target. The target must not be the
+  // mode-specific projection cap: dividing a filled top-k result by k makes
+  // fullness true by construction and turns the 0.2 modulation term into a
+  // routing constant. A deliberately thin mode therefore remains visibly
+  // thin, while five or more projected episodes can still reach full coverage.
+  //
+  // Semantic support is excluded here because it already contributes its own
+  // bounded addend to `evidenceStrength` (and source signatures to diversity).
+  // Adding its count here would let the same semantic matches erase an episodic
+  // shortfall a second time.
+  const coverage = clamp01(episodes.length / coverageExpected);
 
   // Source diversity: distinct participant sets across the top-N. Episodes
   // that involve the same participants are more likely to be one conversation
@@ -222,6 +282,22 @@ export function computeRetrievalConfidence(
     participantSignatures.add(`semantic:${signature}`);
   }
 
+  // Note the denominator: `topEpisodes.length`, capped at topN, not the
+  // `episodes.length` used by the reported `sampleSize` below. Once retrieval
+  // returns more than topN episodes the two diverge, and diversity stops being
+  // readable against the sample figure that ships beside it -- a shrinking
+  // sample does not narrow this denominator at all while it stays above topN.
+  // The other half of the reading: in a two-participant session every episode
+  // signature collapses to the same string, so episodes contribute exactly 1 to
+  // the numerator no matter how many there are, and every further point of
+  // diversity comes from distinct `semantic:` source sets. A 1.00 there is not
+  // evidence of breadth across conversations; it is the small-denominator case.
+  // Both halves ship on the result as `diversitySources` / `diversitySampleSize`
+  // so the render can show the fraction rather than only its quotient, and
+  // `semanticSampleSize` ships alongside so the semantic term can be
+  // subtracted from both this denominator and `sampleSize` -- otherwise the
+  // divergence between their episode populations is visible but not
+  // attributable to this cap.
   const diversitySampleSize = topEpisodes.length + semanticEvidence.count;
   const sourceDiversity =
     diversitySampleSize === 0 ? 0 : clamp01(participantSignatures.size / diversitySampleSize);
@@ -246,5 +322,11 @@ export function computeRetrievalConfidence(
     sourceDiversity,
     contradictionPresent,
     sampleSize: episodes.length + semanticEvidence.count,
+    semanticSampleSize: semanticEvidence.count,
+    coverageExpected,
+    diversitySources: participantSignatures.size,
+    diversitySampleSize,
+    evidenceEpisodeStrength: episodeEvidenceStrength,
+    evidenceSemanticStrength: semanticEvidence.strength,
   };
 }

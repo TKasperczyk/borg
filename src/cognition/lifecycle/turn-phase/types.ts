@@ -13,6 +13,8 @@ import type { AutonomyTriggerContext } from "../../autonomy-trigger.js";
 import type { CorrectivePreferenceTurnService } from "../../commitments/corrective-preference-service.js";
 import type { CreatorDirectiveTurnService } from "../../creator-directives/service.js";
 import type { TurnStakes } from "../../deliberation/deliberator.js";
+import type { PlannerContextCapture } from "../../deliberation/planner-context-capture.js";
+import type { FinalizerContextCapture } from "../../deliberation/finalizer-context-capture.js";
 import type { TurnDiscourseStateService } from "../../generation/turn-discourse-state.js";
 import type { TurnEmission } from "../../generation/types.js";
 import type { TurnPostGenerationGuardRunner } from "../../generation/turn-post-generation-guard.js";
@@ -70,6 +72,7 @@ import type { ToolDispatcher } from "../../../tools/dispatcher.js";
 import type { Clock } from "../../../util/clock.js";
 import type { EntityId, SessionId } from "../../../util/ids.js";
 import type { TurnLifecycleTracker } from "../turn-lifecycle-tracker.js";
+import type { AutonomySchedulerDescription } from "../../../autonomy/index.js";
 
 type WithoutLockMode<T> = T extends unknown ? Omit<T, "lockMode"> & { lockMode?: never } : never;
 
@@ -183,6 +186,7 @@ export type TurnPhaseCoordinatorOptions = {
   chatResponseWatermarkCoordinator?: ChatResponseWatermarkCoordinator;
   outboundDelivery?: Pick<OutboundDelivery, "deliver">;
   autonomousOutboundPolicy?: Pick<AutonomousOutboundPolicy, "promptContext">;
+  autonomySchedulerStateProvider?: () => Promise<AutonomySchedulerDescription | null>;
   outboundSourceTypes?: readonly SessionSourceType[];
   llmFactory: () => LLMClient;
   perceptionGateway: PerceptionGateway;
@@ -203,6 +207,8 @@ export type TurnPhaseCoordinatorOptions = {
   turnReflectionCoordinator: TurnReflectionCoordinator;
   clock: Clock;
   tracer: TurnTracer;
+  plannerContextCapture?: PlannerContextCapture;
+  finalizerContextCapture?: FinalizerContextCapture;
   promptOverrideRepository?: Pick<PromptOverrideRepository, "get">;
   sessionsRepository?: Pick<SessionsRepository, "count" | "get" | "list">;
 };

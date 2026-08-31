@@ -12,6 +12,7 @@ import type {
   RecentSuppressionEntry,
 } from "../../memory/working/index.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
+import type { SessionSourceType } from "../../sessions/index.js";
 import {
   activeSessionTranscriptEntries,
   type StreamEntry,
@@ -29,8 +30,13 @@ const COMPLETED_ACTION_LIMIT = 8;
 const RELATIONAL_SLOT_GUARD_LIMIT = 64;
 const INTERNAL_IDENTIFIER_RECENT_STREAM_MAX_ENTRIES = 512;
 const INTERNAL_IDENTIFIER_RECENT_STREAM_MAX_BYTES = 4 * 1024 * 1024;
-const INTERNAL_IDENTIFIER_EXACT_PATTERN =
-  /^(?:strm|sess|ep|goal|val|trt|abp|grw|oq|semn|seme|cmt|ent|act|rslot|skl|procevi|run|exstep)_[a-z0-9]{16}$|^autonomy_wake_[a-f0-9]{16}$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const INTERNAL_IDENTIFIER_PATTERN_SOURCE =
+  "(?:(?:strm|sess|ep|goal|val|trt|abp|grw|oq|semn|seme|cmt|ent|act|rslot|skl|procevi|run|exstep)_[a-z0-9]{16}|autonomy_wake_[a-f0-9]{16}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})";
+const INTERNAL_IDENTIFIER_EXACT_PATTERN = new RegExp(`^${INTERNAL_IDENTIFIER_PATTERN_SOURCE}$`);
+const INTERNAL_IDENTIFIER_TOKEN_PATTERN = new RegExp(
+  `(?<![\\p{L}\\p{M}\\p{N}_-])${INTERNAL_IDENTIFIER_PATTERN_SOURCE}(?![\\p{L}\\p{M}\\p{N}_-])`,
+  "gu",
+);
 
 type TurnPostGenerationGuardEmission = Extract<
   PendingTurnEmission,
@@ -41,6 +47,7 @@ type TurnPostGenerationGuardMessage = Extract<PendingTurnEmission, { kind: "mess
 export type TurnPostGenerationGuardRunnerOptions = {
   auditModel: string;
   closurePressureMode: PostGenerationGuardMode;
+  substratePrivilegedSourceTypes?: readonly SessionSourceType[];
   createStreamReader: (sessionId: SessionId) => StreamReader;
   actionRepository: Pick<ActionRepository, "list">;
   relationalSlotRepository: Pick<RelationalSlotRepository, "list">;
@@ -53,6 +60,7 @@ export type RunTurnPostGenerationGuardInput = {
   turnId: string;
   response: string;
   sessionId: SessionId;
+  sessionSourceType?: SessionSourceType | null;
   persistedUserEntry?: StreamEntry;
   persistedUserEntries?: readonly StreamEntry[];
   retrievedEpisodes: readonly RetrievedEpisode[];
@@ -172,34 +180,93 @@ function collectInternalIdentifiers(input: {
   return [...identifiers].sort();
 }
 
-function leakedInternalIdentifiers(
-  response: string,
-  knownIdentifiers: readonly string[],
-): string[] {
-  const leaked = new Set<string>();
+function internalIdentifiersInText(text: string, knownIdentifiers: readonly string[]): string[] {
+  const present = new Set<string>();
 
   for (const identifier of knownIdentifiers) {
-    if (response.includes(identifier)) {
-      leaked.add(identifier);
+    if (text.includes(identifier)) {
+      present.add(identifier);
     }
   }
 
-  return [...leaked].sort();
+  return [...present].sort();
+}
+
+function internalIdentifierTokensInText(text: string): string[] {
+  return [...text.matchAll(INTERNAL_IDENTIFIER_TOKEN_PATTERN)].map((match) => match[0]);
+}
+
+function knownAudienceAuthoredIdentifiers(input: {
+  audienceContent: readonly string[];
+  knownIdentifiers: readonly string[];
+}): Set<string> {
+  const knownIdentifiers = new Set(input.knownIdentifiers);
+  const audienceIdentifiers = new Set<string>();
+
+  for (const content of input.audienceContent) {
+    for (const identifier of internalIdentifierTokensInText(content)) {
+      if (knownIdentifiers.has(identifier)) {
+        audienceIdentifiers.add(identifier);
+      }
+    }
+  }
+
+  return audienceIdentifiers;
+}
+
+function currentTurnAudienceAuthoredContent(input: {
+  persistedUserEntry?: StreamEntry;
+  persistedUserEntries?: readonly StreamEntry[];
+}): string[] {
+  const entries = [
+    ...(input.persistedUserEntry === undefined ? [] : [input.persistedUserEntry]),
+    ...(input.persistedUserEntries ?? []),
+  ];
+
+  return entries.flatMap((entry) =>
+    entry.kind === "user_msg" && typeof entry.content === "string" ? [entry.content] : [],
+  );
 }
 
 function applyInternalIdentifierGuard(input: {
   turnId: string;
   sessionId?: SessionId;
+  sessionSourceType?: SessionSourceType | null;
   emission: TurnPostGenerationGuardMessage;
   knownIdentifiers: readonly string[];
+  currentTurnAudienceContent: readonly string[];
   tracer: TurnTracer;
 }): TurnPostGenerationGuardEmission {
-  const leakedIdentifiers = leakedInternalIdentifiers(
+  const responseIdentifiers = internalIdentifiersInText(
     input.emission.content,
     input.knownIdentifiers,
   );
+  const audienceAuthoredIdentifiers = knownAudienceAuthoredIdentifiers({
+    audienceContent: input.currentTurnAudienceContent,
+    knownIdentifiers: input.knownIdentifiers,
+  });
+  const exemptedIdentifiers = responseIdentifiers.filter((identifier) =>
+    audienceAuthoredIdentifiers.has(identifier),
+  );
+  const exemptedIdentifierSet = new Set(exemptedIdentifiers);
+  const leakedIdentifiers = responseIdentifiers.filter(
+    (identifier) => !exemptedIdentifierSet.has(identifier),
+  );
 
   if (leakedIdentifiers.length === 0) {
+    if (exemptedIdentifiers.length > 0 && input.tracer.enabled) {
+      input.tracer.emit("internal_identifier_guard.completed", {
+        turnId: input.turnId,
+        ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
+        ...(input.sessionSourceType === undefined
+          ? {}
+          : { session_source_type: input.sessionSourceType }),
+        verdict: "passed",
+        exemption_reason: "current_turn_audience_echo",
+        exempted_identifiers: exemptedIdentifiers,
+      });
+    }
+
     return input.emission;
   }
 
@@ -207,8 +274,17 @@ function applyInternalIdentifierGuard(input: {
     input.tracer.emit("internal_identifier_guard.completed", {
       turnId: input.turnId,
       ...(input.sessionId !== undefined ? { session_id: input.sessionId } : {}),
+      ...(input.sessionSourceType === undefined
+        ? {}
+        : { session_source_type: input.sessionSourceType }),
       verdict: "suppressed",
       leaked_identifiers: leakedIdentifiers,
+      ...(exemptedIdentifiers.length === 0
+        ? {}
+        : {
+            exemption_reason: "current_turn_audience_echo",
+            exempted_identifiers: exemptedIdentifiers,
+          }),
     });
   }
 
@@ -225,16 +301,6 @@ export class TurnPostGenerationGuardRunner {
   constructor(private readonly options: TurnPostGenerationGuardRunnerOptions) {}
 
   async run(input: RunTurnPostGenerationGuardInput): Promise<TurnPostGenerationGuardEmission> {
-    const currentSessionStreamEntries = await this.loadStreamEntries(input.sessionId);
-    const relationalSlots = this.options.relationalSlotRepository.list({
-      limit: RELATIONAL_SLOT_GUARD_LIMIT,
-    });
-    const recentCompletedActions = this.listRecentCompletedActionsForCognition(
-      input.audienceEntityId,
-    );
-    const recentCompletedActionsForInternalIdentifierGuard =
-      this.listRecentCompletedActionsForInternalIdentifierGuard(recentCompletedActions);
-
     const closureGuard = new ClosurePressureGuard({
       llmClient: input.llmClient,
       auditModel: this.options.auditModel,
@@ -257,9 +323,38 @@ export class TurnPostGenerationGuardRunner {
       return closureResult.emission;
     }
 
+    if (
+      input.sessionSourceType !== undefined &&
+      input.sessionSourceType !== null &&
+      (this.options.substratePrivilegedSourceTypes ?? []).includes(input.sessionSourceType)
+    ) {
+      if (this.options.tracer.enabled) {
+        this.options.tracer.emit("internal_identifier_guard.completed", {
+          turnId: input.turnId,
+          session_id: input.sessionId,
+          session_source_type: input.sessionSourceType,
+          verdict: "skipped",
+          reason: "substrate_privileged_source_type",
+        });
+      }
+
+      return closureResult.emission;
+    }
+
+    const currentSessionStreamEntries = await this.loadStreamEntries(input.sessionId);
+    const relationalSlots = this.options.relationalSlotRepository.list({
+      limit: RELATIONAL_SLOT_GUARD_LIMIT,
+    });
+    const recentCompletedActions = this.listRecentCompletedActionsForCognition(
+      input.audienceEntityId,
+    );
+    const recentCompletedActionsForInternalIdentifierGuard =
+      this.listRecentCompletedActionsForInternalIdentifierGuard(recentCompletedActions);
+
     return applyInternalIdentifierGuard({
       turnId: input.turnId,
       sessionId: input.sessionId,
+      sessionSourceType: input.sessionSourceType,
       emission: closureResult.emission,
       knownIdentifiers: collectInternalIdentifiers({
         turnId: input.turnId,
@@ -275,6 +370,10 @@ export class TurnPostGenerationGuardRunner {
         recentCompletedActions: recentCompletedActionsForInternalIdentifierGuard,
         audienceEntityId: input.audienceEntityId,
         knownInternalIdentifiers: input.knownInternalIdentifiers ?? [],
+      }),
+      currentTurnAudienceContent: currentTurnAudienceAuthoredContent({
+        persistedUserEntry: input.persistedUserEntry,
+        persistedUserEntries: input.persistedUserEntries,
       }),
       tracer: this.options.tracer,
     });

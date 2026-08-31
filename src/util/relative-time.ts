@@ -5,6 +5,14 @@ export function formatRelativeAge(timestampMs: number, nowMs: number): string {
   return duration === "1d" ? "yesterday" : `${duration} ago`;
 }
 
+export function formatRelativeUntil(timestampMs: number, nowMs: number): string {
+  if (timestampMs <= nowMs) {
+    return formatRelativeAge(timestampMs, nowMs);
+  }
+
+  return `in ${formatRelativeDuration(timestampMs - nowMs)}`;
+}
+
 export function formatRelativeDuration(durationMs: number): string {
   const elapsedMs = Math.max(0, durationMs);
   const elapsedSeconds = Math.floor(elapsedMs / 1_000);

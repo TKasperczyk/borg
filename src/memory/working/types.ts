@@ -158,12 +158,29 @@ export const recentSuppressionEntrySchema = z
   })
   .strict();
 
+// The guard names the commitments it regenerated for -- they ride on the
+// `requires_regeneration` emission and are handed to the model in the
+// regeneration instruction, once, inside the turn that was rewritten. Nothing
+// carried them out of that turn, so the next turn's mechanism block could only
+// say that *a* commitment guard fired: a class where an identity existed one
+// call upstream. Recording them here is what makes "which constraint is biting"
+// answerable from the entity's own surface instead of only from the traces.
+export const recentRegenerationCommitmentSchema = z
+  .object({
+    id: z.string().min(1),
+    kind: z.string().min(1).optional(),
+    critical_domain: z.string().min(1).optional(),
+    directive_family: z.string().min(1).optional(),
+  })
+  .strict();
+
 export const recentRegenerationEntrySchema = z
   .object({
     turn_id: z.string().min(1),
     mechanism: z.literal("commitment_guard_regeneration"),
     ts: z.number().finite(),
     source_stream_entry_id: workingStreamEntryIdSchema.optional(),
+    commitments: z.array(recentRegenerationCommitmentSchema).optional(),
   })
   .strict();
 
@@ -218,6 +235,7 @@ export type ClosurePressureHistoryEntry = z.infer<typeof closurePressureHistoryE
 export type ClosurePressureHistoryReason = z.infer<typeof closurePressureHistoryReasonSchema>;
 export type RecentSuppressionEntry = z.infer<typeof recentSuppressionEntrySchema>;
 export type RecentRegenerationEntry = z.infer<typeof recentRegenerationEntrySchema>;
+export type RecentRegenerationCommitment = z.infer<typeof recentRegenerationCommitmentSchema>;
 
 /**
  * Derived live-state only. Phase E removed `scratchpad` (S2 planner output

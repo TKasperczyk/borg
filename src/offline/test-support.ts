@@ -206,6 +206,14 @@ export function createTestConfig(
           DEFAULT_CONFIG.frameAnomaly.peerChannelSourceTypes),
       ],
     },
+    internalIdentifierGuard: {
+      ...DEFAULT_CONFIG.internalIdentifierGuard,
+      ...overrides.internalIdentifierGuard,
+      substratePrivilegedSourceTypes: [
+        ...(overrides.internalIdentifierGuard?.substratePrivilegedSourceTypes ??
+          DEFAULT_CONFIG.internalIdentifierGuard.substratePrivilegedSourceTypes),
+      ],
+    },
     affective: {
       ...DEFAULT_CONFIG.affective,
       ...overrides.affective,
@@ -233,6 +241,10 @@ export function createTestConfig(
       semanticOverfetchMultiplier:
         overrides.retrieval?.semanticOverfetchMultiplier ??
         DEFAULT_CONFIG.retrieval.semanticOverfetchMultiplier,
+      attentionWeights: {
+        ...DEFAULT_CONFIG.retrieval.attentionWeights,
+        ...overrides.retrieval?.attentionWeights,
+      },
       lexicalFusion: {
         ...DEFAULT_CONFIG.retrieval.lexicalFusion,
         ...overrides.retrieval?.lexicalFusion,

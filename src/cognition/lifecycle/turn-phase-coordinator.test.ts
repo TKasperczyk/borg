@@ -58,30 +58,97 @@ const DEPLOYMENT_WINDOW_DIRECTIVE_FAMILY = "deployment_window";
 const RELEASE_FREEZE_DIRECTIVE_FAMILY = "release_freeze";
 
 describe("cognitionInputForTurnInput", () => {
-  it("anchors autonomous cognition on structured prior self thought when present", () => {
-    expect(
-      cognitionInputForTurnInput({
-        userMessage: "",
-        autonomyTrigger: {
-          source_name: "scheduled_reflection",
-          source_type: "trigger",
-          event_id: "scheduled-reflection:1000",
-          sort_ts: 1_000,
-          payload: {
-            prior_self_thought: {
-              text: "Continue from the private question about continuity.",
-              disclosure: "self-private",
-              disclosure_label: {
-                disclosure_class: "self_private",
-                origin_audience_entity_ids: [],
-                private_to_entity_ids: [],
-                public_to_entity_ids: [],
-              },
+  it("anchors autonomous cognition on prior self thought and keeps the wake context after it", () => {
+    const input = cognitionInputForTurnInput({
+      userMessage: "",
+      autonomyTrigger: {
+        source_name: "scheduled_reflection",
+        source_type: "trigger",
+        event_id: "scheduled-reflection:1000",
+        sort_ts: 1_000,
+        payload: {
+          prior_self_thought: {
+            text: "Continue from the private question about continuity.",
+            updated_at: 1_700_000_000_000,
+            disclosure: "self-private",
+            disclosure_label: {
+              disclosure_class: "self_private",
+              origin_audience_entity_ids: [],
+              private_to_entity_ids: [],
+              public_to_entity_ids: [],
             },
           },
+          reason: "goal_followup_due",
         },
-      }),
-    ).toBe("Continue from the private question about continuity.");
+      },
+    });
+
+    // The journal anchor leads, behind a provenance line naming its age, its depth
+    // and how it was selected; the structured wake context follows instead of being
+    // replaced, with prior_self_thought hoisted out of the rendered payload.
+    expect(input.startsWith("Journal anchor (written 2023-11-14T22:13:20.000Z")).toBe(true);
+    expect(input).toContain("disclosure: self-private");
+    expect(input).toContain("recency alone");
+    expect(input).toContain("Continue from the private question about continuity.");
+    expect(input).toContain("source_name: scheduled_reflection");
+    expect(input).toContain("goal_followup_due");
+    expect(input.indexOf("Journal anchor (written")).toBeLessThan(
+      input.indexOf("Continue from the private question"),
+    );
+    expect(input.indexOf("Continue from the private question")).toBeLessThan(
+      input.indexOf("source_name: scheduled_reflection"),
+    );
+    expect(input).not.toContain("prior_self_thought");
+  });
+
+  it("scopes the one-row depth to the automatic read and names the on-demand journal read", () => {
+    const input = cognitionInputForTurnInput({
+      userMessage: "",
+      autonomyTrigger: {
+        source_name: "executive_focus_due",
+        source_type: "trigger",
+        event_id: "goal:g1:1000",
+        sort_ts: 1_000,
+        payload: {
+          prior_self_thought: {
+            text: "Continue from the private question about continuity.",
+            updated_at: 1_700_000_000_000,
+          },
+        },
+      },
+    });
+
+    // The depth claim is about what the harness fetches, not about what can be read:
+    // tool.ownRecords.list is registered for the autonomous origin, so an unscoped
+    // "the only journal read in this turn" would read as a capability bound and point
+    // away from the one tool that answers "have I already done this".
+    expect(input).toContain("the only journal read the harness performs for me");
+    expect(input).toContain("tool.ownRecords.list");
+    expect(input).not.toContain("the only journal read in this turn");
+    expect(input).not.toContain("written and never read back");
+  });
+
+  it("names the anchor's age as unknown when the producer omitted the stamp", () => {
+    const input = cognitionInputForTurnInput({
+      userMessage: "",
+      autonomyTrigger: {
+        source_name: "scheduled_reflection",
+        source_type: "trigger",
+        event_id: "scheduled-reflection:1000",
+        sort_ts: 1_000,
+        payload: {
+          prior_self_thought: {
+            text: "Continue from the private question about continuity.",
+          },
+        },
+      },
+    });
+
+    // An absent stamp reads as absent rather than as freshness: no stamp, no
+    // disclosure clause, and the depth/selection caveats still stand.
+    expect(input.startsWith("Journal anchor (written unknown time)")).toBe(true);
+    expect(input).not.toContain("disclosure:");
+    expect(input).toContain("recency alone");
   });
 
   it("falls back to formatted trigger context when prior self thought is absent or empty", () => {
@@ -2048,6 +2115,7 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
       expect(upsertCount).toBe(0);
       expect(requestPayload.source_trust).toEqual({
         citation_eligible_source_stream_entry_id_count: 0,
+        citation_eligible_source_stream_entry_ids: [],
         off_limits_source_stream_entry_ids: [currentSource, quarantinedSource],
       });
       expect(completed?.data).toEqual(

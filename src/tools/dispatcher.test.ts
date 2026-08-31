@@ -217,6 +217,47 @@ describe("ToolDispatcher", () => {
     });
   });
 
+  it("prefers a tool-level timeout over the dispatcher default", async () => {
+    // A Lance-backed search legitimately needs more than the 5s default when
+    // the index is fragmented; the definition-level ceiling must apply without
+    // per-call plumbing.
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(3_000);
+    const dispatcher = new ToolDispatcher({
+      clock,
+      defaultTimeoutMs: 10,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: tempDir,
+          sessionId,
+          clock,
+        }),
+    });
+
+    dispatcher.register({
+      name: "tool.test.slow",
+      description: "Slow tool with its own ceiling.",
+      allowedOrigins: ["autonomous"],
+      writeScope: "read",
+      timeoutMs: 1_000,
+      inputSchema: z.object({}),
+      outputSchema: z.object({ ok: z.boolean() }),
+      async invoke() {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return { ok: true };
+      },
+    });
+
+    const result = await dispatcher.dispatch({
+      toolName: "tool.test.slow",
+      input: {},
+      origin: "autonomous",
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
   it("clears the timeout timer after a successful dispatch", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

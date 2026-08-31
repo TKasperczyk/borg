@@ -76,4 +76,21 @@ export const autonomyMigrations = [
       `);
     },
   },
+  {
+    id: 4,
+    name: "autonomy_wakes_outcome_detail",
+    up: (db) => {
+      // The scheduler already formats the failure that ended a wake -- it writes
+      // it into the stream as `autonomous_action.outcome_summary` -- and then
+      // dropped it on the way to this table, so `outcome='error'` was a count
+      // with its own discriminator computed and discarded one line earlier.
+      // Nullable by construction: rows written before this column existed have
+      // no detail and must stay distinguishable from rows whose outcome carries
+      // none, which is why nothing backfills a placeholder here.
+      db.exec(`
+        ALTER TABLE autonomy_wakes
+        ADD COLUMN outcome_detail TEXT;
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

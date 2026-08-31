@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 
 import { z } from "zod";
 
@@ -45,7 +45,7 @@ export type GetFreshCredentialsOptions = ClaudeOAuthOptions & {
   forceRefresh?: boolean;
 };
 
-function resolveCredentialsPath(options: ClaudeOAuthOptions = {}): string {
+export function resolveClaudeOAuthCredentialsPath(options: ClaudeOAuthOptions = {}): string {
   const env = options.env ?? process.env;
   return expandPath(
     options.credentialsPath ?? env.BORG_CLAUDE_CREDENTIALS_PATH ?? DEFAULT_CREDENTIALS_PATH,
@@ -53,7 +53,7 @@ function resolveCredentialsPath(options: ClaudeOAuthOptions = {}): string {
 }
 
 function readCredentialsFile(options: ClaudeOAuthOptions = {}): LoadedOAuthCredentials {
-  const credentialsPath = resolveCredentialsPath(options);
+  const credentialsPath = resolveClaudeOAuthCredentialsPath(options);
   let rawValue: unknown;
 
   try {
@@ -97,7 +97,7 @@ export function loadCredentials(options: ClaudeOAuthOptions = {}): LoadedOAuthCr
 }
 
 function saveCredentials(creds: OAuthCredentials, options: ClaudeOAuthOptions = {}): void {
-  const credentialsPath = resolveCredentialsPath(options);
+  const credentialsPath = resolveClaudeOAuthCredentialsPath(options);
   const existing = loadCredentials({
     ...options,
     credentialsPath,
@@ -171,7 +171,7 @@ export async function getFreshCredentials(
   options: GetFreshCredentialsOptions = {},
 ): Promise<OAuthCredentials | null> {
   const clock = options.clock ?? new SystemClock();
-  const credentialsPath = resolveCredentialsPath(options);
+  const credentialsPath = resolveClaudeOAuthCredentialsPath(options);
 
   if (!existsSync(credentialsPath)) {
     return null;
@@ -218,8 +218,26 @@ export async function getFreshCredentials(
   }
 }
 
+/**
+ * Cheap change-detector for the credentials file: mtime + size, no parse, no
+ * lock. A long-lived process resolves credentials once and would otherwise hold
+ * a dead access token forever when the operator logs into a different account
+ * (a swap answers 429, not 401, so the auth-failure refresh path never fires).
+ * Callers compare this stamp to re-resolve only when the file actually changed.
+ * Returns null when the file is absent or unreadable, which callers treat as
+ * "nothing new to pick up" rather than an error.
+ */
+export function readCredentialsFileStamp(options: ClaudeOAuthOptions = {}): string | null {
+  try {
+    const stats = statSync(resolveClaudeOAuthCredentialsPath(options));
+    return `${stats.mtimeMs}:${stats.size}`;
+  } catch {
+    return null;
+  }
+}
+
 export function formatCredentialPathForDisplay(options: ClaudeOAuthOptions = {}): string {
-  const resolvedPath = resolveCredentialsPath(options);
+  const resolvedPath = resolveClaudeOAuthCredentialsPath(options);
   const defaultPath = expandPath(DEFAULT_CREDENTIALS_PATH);
   return resolvedPath === defaultPath ? "~/.claude/.credentials.json" : resolvedPath;
 }

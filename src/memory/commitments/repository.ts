@@ -976,6 +976,12 @@ export class CommitmentRepository {
     return next;
   }
 
+  // This predicate is why the four retirement columns are always null on anything a
+  // cognition draw returns: setting any of them is precisely what makes a row
+  // inactive. Callers that render the active set therefore cannot distinguish "no
+  // retirement has ever happened" from "every retirement left the draw". Query the
+  // table directly (or identity_events) when the question is whether a retirement
+  // path fires; note that supersede() records action "update", not "supersede".
   private isActiveCommitment(record: CommitmentRecord, nowMs: number): boolean {
     return (
       record.revoked_at === null &&

@@ -54,6 +54,24 @@ describe("buildHostCapabilitiesSection", () => {
     expect(section).toContain("tool.outbound.post");
     expect(section).toContain("Host-wired outbound capabilities available now:");
     expect(section).toContain("Targets without a wired connector are not transportable");
+    expect(section).toContain(
+      "A wired connector means the host can attempt the post, not that the far side accepts it",
+    );
+    expect(section).toContain("is not evidence it was carried");
+    expect(section).toContain("A post the connector accepted appends no event of its own");
+    expect(section).toContain("their absence is not evidence that nothing was delivered");
+    expect(section).toContain(
+      "the cross-session activity record for a post is written only when the connector accepted it",
+    );
+    expect(section).toContain(
+      "autobiographical recall re-reads that result into an outbound_attempt row bearing the delivery outcome",
+    );
+    expect(section).toContain(
+      "its absence from that section is not evidence that no attempt was made",
+    );
+    // The block asserted this before the outbound_attempt row was traced back to its source. The
+    // tool result carries the connector's verdict and recall renders it, so the negative was false.
+    expect(section).not.toContain("no surface renders the outcome");
     expect(section).not.toContain(
       "Capabilities NOT available unless the host has declared them otherwise:\n- Proactive outbound messaging via wired source_type connector(s): demo",
     );

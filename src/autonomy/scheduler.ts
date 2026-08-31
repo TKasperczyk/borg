@@ -22,6 +22,7 @@ import type {
   AutonomyConditionName,
   AutonomySchedulerDescription,
   AutonomySchedulerSourceDescription,
+  AutonomySchedulerWakeGroupDescription,
   AutonomyTickEventResult,
   AutonomyTriggerName,
   AutonomyWakeSource,
@@ -60,9 +61,33 @@ type GoalWakeOutcome = {
   headway: boolean;
   concern: ReturnType<typeof goalConcernPayload>;
 };
+type ScannedDueEvent = { source: AutonomyWakeSource; event: DueEvent };
 type ScannedDueEvents = {
-  events: Array<{ source: AutonomyWakeSource; event: DueEvent }>;
+  events: ScannedDueEvent[];
   sourceErrorCount: number;
+};
+type GoalWakePresentation = {
+  source_name: DueEvent["sourceName"];
+  source_event_id: string;
+  sort_ts: number;
+  goal_id: string;
+  description: string;
+  priority: number;
+  target_at: number | null;
+  last_progress_ts: number | null;
+  reason: unknown;
+  disclosure: string;
+  disclosure_label: Record<string, unknown>;
+} & Record<string, unknown>;
+type GoalWakeGroup = {
+  presentation: GoalWakePresentation;
+  presentationEvent: ScannedDueEvent;
+  events: ScannedDueEvent[];
+};
+type WakeBatch = {
+  primary: ScannedDueEvent;
+  events: ScannedDueEvent[];
+  goalGroups: GoalWakeGroup[];
 };
 
 const INITIAL_RETRY_BACKOFF_MS = 30_000;
@@ -88,6 +113,7 @@ export type AutonomySchedulerOptions = {
   enabled: boolean;
   intervalMs: number;
   maxWakesPerWindow: number;
+  goalWakeBatchMax?: number;
   budgetWindowMs: number;
   reservedContemplativeWakesPerWindow?: number;
   fleetBrake?: FleetBrakeOptions;
@@ -198,6 +224,83 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function goalWakePresentation(event: DueEvent): GoalWakePresentation | null {
+  const concern = goalConcernPayload(event);
+
+  if (concern === null) {
+    return null;
+  }
+
+  const sourceGoal =
+    event.sourceName === "goal_followup_due"
+      ? event.payload
+      : isRecord(event.payload.selected_goal)
+        ? event.payload.selected_goal
+        : null;
+
+  if (sourceGoal === null) {
+    return null;
+  }
+
+  const description = sourceGoal.description;
+  const priority = sourceGoal.priority;
+  const targetAt = sourceGoal.target_at;
+  const lastProgressTs = sourceGoal.last_progress_ts;
+  const disclosure = sourceGoal.disclosure;
+  const disclosureLabel = sourceGoal.disclosure_label;
+
+  if (
+    typeof description !== "string" ||
+    typeof priority !== "number" ||
+    (targetAt !== null && typeof targetAt !== "number") ||
+    (lastProgressTs !== null && typeof lastProgressTs !== "number") ||
+    typeof disclosure !== "string" ||
+    !isRecord(disclosureLabel)
+  ) {
+    return null;
+  }
+
+  const goalDisclosure = sourceGoal.goal_disclosure;
+  const goalDisclosureLabel = sourceGoal.goal_disclosure_label;
+  const sourceDisclosure = sourceGoal.source_disclosure;
+  const sourceDisclosureLabel = sourceGoal.source_disclosure_label;
+  const daysStale = event.payload.days_stale;
+
+  return {
+    source_name: event.sourceName,
+    source_event_id: event.id,
+    sort_ts: event.sortTs,
+    goal_id: concern.goalId,
+    description,
+    priority,
+    target_at: targetAt,
+    last_progress_ts: lastProgressTs,
+    reason: event.payload.reason,
+    disclosure,
+    disclosure_label: disclosureLabel,
+    ...(typeof goalDisclosure === "string" && isRecord(goalDisclosureLabel)
+      ? {
+          goal_disclosure: goalDisclosure,
+          goal_disclosure_label: goalDisclosureLabel,
+        }
+      : {}),
+    ...(typeof sourceDisclosure === "string" && isRecord(sourceDisclosureLabel)
+      ? {
+          source_disclosure: sourceDisclosure,
+          source_disclosure_label: sourceDisclosureLabel,
+        }
+      : {}),
+    ...(typeof daysStale === "number" ? { days_stale: daysStale } : {}),
+  };
+}
+
+function isDeadlineGoalWake(event: DueEvent): boolean {
+  return (
+    event.sourceName === "goal_followup_due" &&
+    (event.payload.reason === "deadline" || event.payload.reason === "both")
+  );
+}
+
 export function goalConcernPayload(event: DueEvent): {
   goalId: string;
   lastProgressTs: number | null;
@@ -279,6 +382,36 @@ export function turnEmittedHeadway(turnResult: TurnResult): boolean {
   );
 }
 
+/**
+ * What ended a wake the scheduler is about to record as `silent`. The complement
+ * of `turnEmittedHeadway` is a union rather than a behaviour -- a closure the
+ * entity chose, an emission that failed on its way out, and a guard that blocked
+ * one all land in it -- and the fleet brake advances `empty_streak` on all three
+ * identically. The class is already computed for the wake's own narrative, so
+ * writing it here is a route to the counter's surface, not a new judgment.
+ *
+ * Structure only: emission kind and the suppression enum, never words from what
+ * was (or wasn't) said, so it is multilingual-safe and groups exactly.
+ *
+ * Reads the emission defensively even though the type declares it present: this
+ * runs inside the block that persists the wake's outcome, so a throw here would
+ * turn a wake that completed fine into a bookkeeping error. An absent emission
+ * is a missing label, not a failed wake, and says so.
+ */
+export function silentWakeOutcomeDetail(turnResult: TurnResult): string {
+  const emission = turnResult.emission as TurnResult["emission"] | undefined;
+
+  if (emission === undefined || emission === null) {
+    return "no emission recorded";
+  }
+
+  if (emission.kind !== "suppressed") {
+    return emission.kind;
+  }
+
+  return `${classifySuppressionReason(emission.reason)}: ${emission.reason}`;
+}
+
 function goalProgressAdvanced(input: { before: number | null; after: number | null }): boolean {
   return input.after !== null && (input.before === null || input.after > input.before);
 }
@@ -297,6 +430,13 @@ export class AutonomyScheduler {
   private observer: AutonomySchedulerObserver | null = null;
   private intervalStartedTs: number | null = null;
   private lastTickTs: number | null = null;
+  // Fires the interval callback refused because a tick was already running.
+  // Counted here because the early return below is the one path in the
+  // scheduler that produces no row anywhere: a refused fire is a wake that
+  // could not start, and it is indistinguishable downstream from a minute in
+  // which nothing was due.
+  private droppedIntervalFires = 0;
+  private droppedIntervalFiresForActiveTick = 0;
 
   constructor(private readonly options: AutonomySchedulerOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -305,6 +445,195 @@ export class AutonomyScheduler {
     this.clearIntervalFn = options.clearIntervalFn ?? clearInterval;
     this.fleetBrakeOptions = options.fleetBrake ?? { ...DEFAULT_FLEET_BRAKE_OPTIONS };
     this.respectGoalFollowupStaleBackoff = options.respectGoalFollowupStaleBackoff ?? true;
+  }
+
+  private compareGoalWakeEvents(left: ScannedDueEvent, right: ScannedDueEvent): number {
+    const leftRank = left.event.executiveGoalRank ?? Number.MAX_SAFE_INTEGER;
+    const rightRank = right.event.executiveGoalRank ?? Number.MAX_SAFE_INTEGER;
+    const leftScore = left.event.executiveGoalScore?.score ?? 0;
+    const rightScore = right.event.executiveGoalScore?.score ?? 0;
+
+    return (
+      leftRank - rightRank ||
+      rightScore - leftScore ||
+      left.event.sortTs - right.event.sortTs ||
+      left.event.id.localeCompare(right.event.id)
+    );
+  }
+
+  private compareGoalWakeGroups(left: GoalWakeGroup, right: GoalWakeGroup): number {
+    return this.compareGoalWakeEvents(left.presentationEvent, right.presentationEvent);
+  }
+
+  private preferGoalPresentationEvent(
+    current: ScannedDueEvent,
+    candidate: ScannedDueEvent,
+  ): ScannedDueEvent {
+    const currentDeadline = isDeadlineGoalWake(current.event);
+    const candidateDeadline = isDeadlineGoalWake(candidate.event);
+
+    if (currentDeadline !== candidateDeadline) {
+      return candidateDeadline ? candidate : current;
+    }
+
+    return this.compareGoalWakeEvents(candidate, current) < 0 ? candidate : current;
+  }
+
+  private buildWakeBatch(
+    anchor: ScannedDueEvent,
+    dueEvents: readonly ScannedDueEvent[],
+    consumedEventKeys: ReadonlySet<string>,
+  ): WakeBatch {
+    const batchMax = Math.max(1, Math.floor(this.options.goalWakeBatchMax ?? 1));
+    const anchorPresentation = goalWakePresentation(anchor.event);
+
+    if (anchorPresentation === null) {
+      return {
+        primary: anchor,
+        events: [anchor],
+        goalGroups: [],
+      };
+    }
+
+    const groupsByGoalId = new Map<string, GoalWakeGroup>();
+
+    for (const candidate of dueEvents) {
+      if (
+        consumedEventKeys.has(backoffKey(candidate.event)) ||
+        this.sourceRetryIsActive(candidate.event.sourceName, this.clock.now())
+      ) {
+        continue;
+      }
+
+      const presentation = goalWakePresentation(candidate.event);
+
+      if (presentation === null) {
+        continue;
+      }
+
+      const existing = groupsByGoalId.get(presentation.goal_id);
+
+      if (existing === undefined) {
+        groupsByGoalId.set(presentation.goal_id, {
+          presentation,
+          presentationEvent: candidate,
+          events: [candidate],
+        });
+        continue;
+      }
+
+      existing.events.push(candidate);
+      const preferred = this.preferGoalPresentationEvent(existing.presentationEvent, candidate);
+
+      if (preferred !== existing.presentationEvent) {
+        existing.presentationEvent = preferred;
+        existing.presentation = goalWakePresentation(preferred.event) ?? existing.presentation;
+      }
+    }
+
+    const rankedGroups = [...groupsByGoalId.values()].sort((left, right) =>
+      this.compareGoalWakeGroups(left, right),
+    );
+
+    if (rankedGroups.length === 0) {
+      return {
+        primary: anchor,
+        events: [anchor],
+        goalGroups: [],
+      };
+    }
+
+    const deadlineGroups = rankedGroups.filter((group) =>
+      group.events.some(({ event }) => isDeadlineGoalWake(event)),
+    );
+    const staleGroups = rankedGroups.filter(
+      (group) => !group.events.some(({ event }) => isDeadlineGoalWake(event)),
+    );
+    // Deadline demand is admitted first, but it may not consume the final slot
+    // while stale demand is also waiting. This lets old goals keep advancing
+    // through the existing empty-wake/dormancy machinery under sustained
+    // deadline arrivals instead of remaining permanently unpresented.
+    const deadlineCapacity =
+      deadlineGroups.length > 0 && staleGroups.length > 0 ? batchMax - 1 : batchMax;
+    const admittedDeadlineGroups = deadlineGroups.slice(0, deadlineCapacity);
+    const admittedStaleGroups = staleGroups.slice(0, batchMax - admittedDeadlineGroups.length);
+    // Executive score order still chooses the primary focus after structural
+    // lane admission, so the reserved stale goal need not displace the top
+    // scored deadline goal from the primary position.
+    const selectedGroups = [...admittedDeadlineGroups, ...admittedStaleGroups].sort((left, right) =>
+      this.compareGoalWakeGroups(left, right),
+    );
+    const primaryGroup = selectedGroups[0];
+
+    if (primaryGroup === undefined) {
+      return {
+        primary: anchor,
+        events: [anchor],
+        goalGroups: [],
+      };
+    }
+
+    const primary = primaryGroup.presentationEvent;
+    const secondaryDueGoals = selectedGroups.slice(1).map((group) => group.presentation);
+    const primaryWithBatchPayload =
+      secondaryDueGoals.length === 0
+        ? primary
+        : {
+            ...primary,
+            event: {
+              ...primary.event,
+              payload: {
+                ...primary.event.payload,
+                secondary_due_goals: secondaryDueGoals,
+              },
+            },
+          };
+
+    return {
+      primary: primaryWithBatchPayload,
+      events: selectedGroups.flatMap((group) => group.events),
+      goalGroups: selectedGroups,
+    };
+  }
+
+  private eventResultsForBatch(
+    batch: WakeBatch,
+    input: Pick<AutonomyTickEventResult, "status"> &
+      Partial<Pick<AutonomyTickEventResult, "outcomeSummary" | "turnResultId" | "error">>,
+  ): AutonomyTickEventResult[] {
+    return batch.events.map(({ source, event }) => ({
+      id: event.id,
+      sourceName: event.sourceName,
+      sourceType: event.sourceType,
+      sourceCategory: source.sourceCategory,
+      status: input.status,
+      payload: event.payload,
+      ...(input.outcomeSummary === undefined ? {} : { outcomeSummary: input.outcomeSummary }),
+      ...(input.turnResultId === undefined ? {} : { turnResultId: input.turnResultId }),
+      ...(input.error === undefined ? {} : { error: input.error }),
+    }));
+  }
+
+  private scheduleBatchRetryBackoff(batch: WakeBatch): void {
+    for (const { event } of batch.events) {
+      this.scheduleRetryBackoff(event);
+    }
+  }
+
+  private goalOutcomeEvent(group: GoalWakeGroup): DueEvent {
+    if (
+      this.respectGoalFollowupStaleBackoff ||
+      group.presentationEvent.event.sourceName !== "goal_followup_due"
+    ) {
+      return group.presentationEvent.event;
+    }
+
+    return (
+      group.events.find(
+        ({ event }) =>
+          event.sourceName !== "goal_followup_due" && goalConcernPayload(event) !== null,
+      )?.event ?? group.presentationEvent.event
+    );
   }
 
   setObserver(observer: AutonomySchedulerObserver | null): void {
@@ -322,8 +651,12 @@ export class AutonomyScheduler {
 
     this.intervalStartedTs = this.clock.now();
     this.lastTickTs = null;
+    this.droppedIntervalFires = 0;
+    this.droppedIntervalFiresForActiveTick = 0;
     this.intervalHandle = this.setIntervalFn(() => {
       if (this.activeTick !== null) {
+        this.droppedIntervalFires += 1;
+        this.droppedIntervalFiresForActiveTick += 1;
         return;
       }
 
@@ -338,6 +671,8 @@ export class AutonomyScheduler {
     }
     this.intervalStartedTs = null;
     this.lastTickTs = null;
+    this.droppedIntervalFires = 0;
+    this.droppedIntervalFiresForActiveTick = 0;
 
     if (options.graceful === false) {
       return;
@@ -384,15 +719,78 @@ export class AutonomyScheduler {
     }
 
     const fleetBrakeMetadata = this.readFleetBrakeState();
+    const usedInCurrentWindow = this.options.wakeRepository.countSince(budgetCutoff);
+    const currentWindowWakes = this.options.wakeRepository.listSince(
+      budgetCutoff,
+      usedInCurrentWindow,
+    );
+    const wakeGroups = new Map<AutonomyWakeSource["name"], AutonomySchedulerWakeGroupDescription>();
+    let oldestWakeAt: number | null = null;
+
+    for (const wake of currentWindowWakes) {
+      let group = wakeGroups.get(wake.trigger_name);
+
+      if (group === undefined) {
+        group = {
+          trigger_name: wake.trigger_name,
+          wake_count: 0,
+          in_flight: 0,
+          in_flight_started_at: [],
+          outcome_counts: {
+            headway: 0,
+            silent: 0,
+            error: 0,
+            busy: 0,
+          },
+        };
+        wakeGroups.set(wake.trigger_name, group);
+      }
+
+      group.wake_count += 1;
+      if (wake.outcome === null) {
+        group.in_flight += 1;
+        // listSince returns ts DESC; the description states oldest first so a
+        // stuck row keeps a stable leading position across reads.
+        group.in_flight_started_at.unshift(wake.ts);
+      } else {
+        group.outcome_counts[wake.outcome] += 1;
+      }
+      oldestWakeAt = oldestWakeAt === null ? wake.ts : Math.min(oldestWakeAt, wake.ts);
+    }
+
+    const wakesInCurrentWindowByTrigger = AUTONOMY_WAKE_SOURCE_NAMES.flatMap((name) => {
+      const group = wakeGroups.get(name);
+      return group === undefined ? [] : [group];
+    });
+
+    const scheduledTickAt = this.describeScheduledTickAt(nowMs);
 
     return {
+      observed_at: nowMs,
       enabled: this.options.enabled,
+      tick_in_flight: this.activeTick !== null,
       interval_ms: this.options.intervalMs,
-      next_tick_at: this.describeNextTickAt(nowMs),
+      dropped_interval_fires: {
+        since_interval_armed: this.droppedIntervalFires,
+        // Null rather than a stale tally: with no tick running the per-tick
+        // counter still holds whatever the last one accumulated, and a number
+        // that names a tick which has already finished reads as a live cost.
+        current_tick: this.activeTick === null ? null : this.droppedIntervalFiresForActiveTick,
+      },
+      // The epoch the counter above resets against. Held since the first
+      // start(); exported so a reader can tell an unmoved counter from one that
+      // was reset and re-earned, which the count cannot express.
+      interval_armed_at: this.intervalStartedTs,
+      // Floored to the read so a "next evaluation" surface never shows a past
+      // instant. The floor is where the overdue amount used to be lost; it is
+      // preserved unfloored on the next line rather than recomputed downstream.
+      next_tick_at: scheduledTickAt === null ? null : Math.max(scheduledTickAt, nowMs),
+      scheduled_tick_at: scheduledTickAt,
       budget: {
         max_wakes_per_window: this.options.maxWakesPerWindow,
         window_ms: this.options.budgetWindowMs,
-        used_in_current_window: this.options.wakeRepository.countSince(budgetCutoff),
+        window_started_at: budgetCutoff,
+        used_in_current_window: usedInCurrentWindow,
         reserved_contemplative_wakes_per_window: Math.min(
           this.options.maxWakesPerWindow,
           Math.max(0, Math.floor(this.options.reservedContemplativeWakesPerWindow ?? 0)),
@@ -400,31 +798,64 @@ export class AutonomyScheduler {
         contemplative_used_in_current_window: this.options.wakeRepository.countSince(budgetCutoff, {
           sourceCategory: "contemplative",
         }),
+        wakes_in_current_window_by_trigger: wakesInCurrentWindowByTrigger,
+        // countSince/listSince admit ts === cutoff, so the oldest wake remains
+        // in-window through oldestWakeAt + budgetWindowMs.
+        next_budget_slot_frees_at:
+          oldestWakeAt === null ? null : oldestWakeAt + this.options.budgetWindowMs + 1,
       },
       fleet_brake: {
         enabled: this.fleetBrakeOptions.enabled,
         empty_streak: fleetBrakeMetadata.empty_streak,
+        empty_streak_threshold: this.fleetBrakeOptions.emptyStreakThreshold,
         streak_anchor_ts:
           fleetBrakeMetadata.streak_anchor_ts === 0 ? null : fleetBrakeMetadata.streak_anchor_ts,
         cooldown_until: fleetBrakeCooldownUntilMs(fleetBrakeMetadata, this.fleetBrakeOptions),
         error_streak: fleetBrakeMetadata.error_streak,
+        error_streak_threshold: this.fleetBrakeOptions.errorStreakThreshold,
         error_paused_until: fleetBrakeErrorPausedUntilMs(
           fleetBrakeMetadata,
           this.fleetBrakeOptions,
         ),
         bypass_count: fleetBrakeMetadata.bypass_count,
+        freshness_bypass_cap: this.fleetBrakeOptions.freshnessBypassCap,
         window_outcomes: {
           headway: this.options.wakeRepository.countSince(budgetCutoff, { outcome: "headway" }),
           silent: this.options.wakeRepository.countSince(budgetCutoff, { outcome: "silent" }),
           error: this.options.wakeRepository.countSince(budgetCutoff, { outcome: "error" }),
           busy: this.options.wakeRepository.countSince(budgetCutoff, { outcome: "busy" }),
         },
+        // Same rows as window_outcomes.error, one level down. The scheduler
+        // formats the failure that ends a wake and writes it to the stream; it
+        // used to drop it before this table, leaving `error=N` as a count whose
+        // discriminator had been computed and discarded a line earlier -- a
+        // provider outage and N distinct faults printed identically.
+        window_error_reasons: this.options.wakeRepository.summarizeOutcomeDetailsSince(
+          budgetCutoff,
+          "error",
+        ),
+        // Same rows as window_outcomes.silent, one level down, and the same
+        // defect as the line above wearing different clothes: `silent` is the
+        // complement of headway, so a closure the entity chose, an emission that
+        // failed, and a guard that blocked one are one number here -- and one
+        // number in the empty_streak those rows drive.
+        window_silent_reasons: this.options.wakeRepository.summarizeOutcomeDetailsSince(
+          budgetCutoff,
+          "silent",
+        ),
       },
       sources,
     };
   }
 
-  private describeNextTickAt(nowMs: number): number | null {
+  // When the tick the interval handle is counting toward is due, unfloored. The
+  // handle is what actually fires; this is a derivation from the anchor for
+  // description only, and it can sit in the past of `nowMs` -- an interval that
+  // is behind (event-loop pressure, a long-running tick) has a due time that has
+  // already passed. That difference is the only place "how late is the loop" is
+  // expressible, which is why the floor is applied at the field that needs it
+  // rather than here.
+  private describeScheduledTickAt(nowMs: number): number | null {
     if (this.intervalHandle === null) {
       return null;
     }
@@ -434,7 +865,7 @@ export class AutonomyScheduler {
         ? (this.lastTickTs ?? this.intervalStartedTs ?? nowMs)
         : Math.max(this.lastTickTs, this.intervalStartedTs);
 
-    return Math.max(tickAnchor + this.options.intervalMs, nowMs);
+    return tickAnchor + this.options.intervalMs;
   }
 
   private async tickOnce(): Promise<TickResult> {
@@ -485,41 +916,49 @@ export class AutonomyScheduler {
       let errorCount = scanResult.sourceErrorCount;
       let sourceErrorCount = scanResult.sourceErrorCount;
       let bookkeepingErrorCount = 0;
+      const consumedEventKeys = new Set<string>();
 
       try {
         for (const scannedEvent of dueEvents) {
-          const dueEvent = scannedEvent.event;
-          const sourceCategory = scannedEvent.source.sourceCategory;
-
-          if (this.sourceRetryIsActive(dueEvent.sourceName, this.clock.now())) {
+          if (consumedEventKeys.has(backoffKey(scannedEvent.event))) {
             continue;
           }
 
-          const fleetAdmission = this.fleetAdmissionDecision(
-            dueEvent,
+          if (this.sourceRetryIsActive(scannedEvent.event.sourceName, this.clock.now())) {
+            continue;
+          }
+
+          const wakeBatch = this.buildWakeBatch(scannedEvent, dueEvents, consumedEventKeys);
+
+          for (const member of wakeBatch.events) {
+            consumedEventKeys.add(backoffKey(member.event));
+          }
+
+          const dueEvent = wakeBatch.primary.event;
+          const sourceCategory = wakeBatch.primary.source.sourceCategory;
+
+          const fleetAdmission = this.fleetAdmissionDecisionForBatch(
+            wakeBatch,
             sourceCategory,
             this.clock.now(),
           );
 
           if (fleetAdmission.skipStatus !== null) {
             if (fleetAdmission.skipStatus === "error_circuit_skipped") {
-              errorCircuitSkipped += 1;
+              errorCircuitSkipped += wakeBatch.events.length;
             } else {
-              fleetCooldownSkipped += 1;
+              fleetCooldownSkipped += wakeBatch.events.length;
             }
 
-            eventResults.push({
-              id: dueEvent.id,
-              sourceName: dueEvent.sourceName,
-              sourceType: dueEvent.sourceType,
-              sourceCategory,
-              status: fleetAdmission.skipStatus,
-              payload: dueEvent.payload,
-              outcomeSummary:
-                fleetAdmission.skipStatus === "error_circuit_skipped"
-                  ? "Skipped while the durable autonomy error circuit was paused."
-                  : "Skipped while the durable operational fleet cooldown was active.",
-            });
+            eventResults.push(
+              ...this.eventResultsForBatch(wakeBatch, {
+                status: fleetAdmission.skipStatus,
+                outcomeSummary:
+                  fleetAdmission.skipStatus === "error_circuit_skipped"
+                    ? "Skipped while the durable autonomy error circuit was paused."
+                    : "Skipped while the durable operational fleet cooldown was active.",
+              }),
+            );
             continue;
           }
 
@@ -543,16 +982,13 @@ export class AutonomyScheduler {
             totalWakesInWindow >= this.options.maxWakesPerWindow ||
             (sourceCategory !== "contemplative" && totalWakesInWindow >= operationalWakeLimit)
           ) {
-            budgetSkipped += 1;
-            eventResults.push({
-              id: dueEvent.id,
-              sourceName: dueEvent.sourceName,
-              sourceType: dueEvent.sourceType,
-              sourceCategory,
-              status: "budget_skipped",
-              payload: dueEvent.payload,
-              outcomeSummary: "Skipped because autonomy wake budget was exhausted.",
-            });
+            budgetSkipped += wakeBatch.events.length;
+            eventResults.push(
+              ...this.eventResultsForBatch(wakeBatch, {
+                status: "budget_skipped",
+                outcomeSummary: "Skipped because autonomy wake budget was exhausted.",
+              }),
+            );
             continue;
           }
 
@@ -584,7 +1020,7 @@ export class AutonomyScheduler {
             errorCount += 1;
             sourceErrorCount += 1;
             const outcomeSummary = `Autonomous preparation failed: ${preparedEvent.toolError}`;
-            this.options.wakeRepository.recordOutcome(wakeRecord.id, "error");
+            this.options.wakeRepository.recordOutcome(wakeRecord.id, "error", outcomeSummary);
             this.consumeFleetFreshnessBypass(
               dueEvent,
               fleetAdmission.bypassKind,
@@ -601,17 +1037,14 @@ export class AutonomyScheduler {
                 ts: this.clock.now(),
               },
             });
-            eventResults.push({
-              id: dueEvent.id,
-              sourceName: dueEvent.sourceName,
-              sourceType: dueEvent.sourceType,
-              sourceCategory,
-              status: "error",
-              payload: dueEvent.payload,
-              error: preparedEvent.toolError,
-              outcomeSummary,
-              turnResultId: null,
-            });
+            eventResults.push(
+              ...this.eventResultsForBatch(wakeBatch, {
+                status: "error",
+                error: preparedEvent.toolError,
+                outcomeSummary,
+                turnResultId: null,
+              }),
+            );
             await this.notifyError(
               new AutonomySourcePreparationError(dueEvent.sourceName, preparedEvent.toolError),
             );
@@ -627,7 +1060,7 @@ export class AutonomyScheduler {
             sourceErrorCount += 1;
             const preparationError = new AutonomySourcePreparationError(dueEvent.sourceName, error);
             const outcomeSummary = `Autonomous source preparation failed: ${formatError(error)}`;
-            this.options.wakeRepository.recordOutcome(wakeRecord.id, "error");
+            this.options.wakeRepository.recordOutcome(wakeRecord.id, "error", outcomeSummary);
             this.consumeFleetFreshnessBypass(
               dueEvent,
               fleetAdmission.bypassKind,
@@ -644,17 +1077,14 @@ export class AutonomyScheduler {
                 ts: this.clock.now(),
               },
             });
-            eventResults.push({
-              id: dueEvent.id,
-              sourceName: dueEvent.sourceName,
-              sourceType: dueEvent.sourceType,
-              sourceCategory,
-              status: "error",
-              payload: preparedEvent.event.payload,
-              outcomeSummary,
-              turnResultId: null,
-              error: formatError(preparationError),
-            });
+            eventResults.push(
+              ...this.eventResultsForBatch(wakeBatch, {
+                status: "error",
+                outcomeSummary,
+                turnResultId: null,
+                error: formatError(preparationError),
+              }),
+            );
             await this.notifyError(preparationError);
             continue;
           }
@@ -690,10 +1120,10 @@ export class AutonomyScheduler {
 
             if (busy) {
               busySkipped += 1;
-              this.options.wakeRepository.recordOutcome(wakeRecord.id, "busy");
+              this.options.wakeRepository.recordOutcome(wakeRecord.id, "busy", outcomeSummary);
             } else {
               errorCount += 1;
-              this.options.wakeRepository.recordOutcome(wakeRecord.id, "error");
+              this.options.wakeRepository.recordOutcome(wakeRecord.id, "error", outcomeSummary);
               if (isGlobalCircuitFailure(error)) {
                 this.updateFleetBrakeAfterGlobalError(
                   dueEvent,
@@ -708,28 +1138,46 @@ export class AutonomyScheduler {
                 );
               }
             }
-            this.scheduleRetryBackoff(dueEvent);
+            this.scheduleBatchRetryBackoff(wakeBatch);
 
-            eventResults.push({
-              id: dueEvent.id,
-              sourceName: dueEvent.sourceName,
-              sourceType: dueEvent.sourceType,
-              sourceCategory,
-              status: busy ? "busy_skipped" : "error",
-              payload: preparedEvent.event.payload,
-              outcomeSummary,
-              turnResultId: null,
-              ...(busy ? {} : { error: formatError(error) }),
-            });
+            eventResults.push(
+              ...this.eventResultsForBatch(wakeBatch, {
+                status: busy ? "busy_skipped" : "error",
+                outcomeSummary,
+                turnResultId: null,
+                ...(busy ? {} : { error: formatError(error) }),
+              }),
+            );
             continue;
           }
 
           const outcomeSummary = summarizeOutcome(turnResult.response);
           const decisionSummary = summarizeAutonomousDecision(turnResult);
-          let wakeOutcome: GoalWakeOutcome;
+          let perGoalOutcomes: Array<{ event: DueEvent; outcome: GoalWakeOutcome }>;
+          let wakeHeadway: boolean;
 
           try {
-            wakeOutcome = this.evaluateGoalWakeOutcome(preparedEvent.event, turnResult);
+            perGoalOutcomes =
+              wakeBatch.goalGroups.length === 0
+                ? [
+                    {
+                      event: preparedEvent.event,
+                      outcome: this.evaluateGoalWakeOutcome(preparedEvent.event, turnResult),
+                    },
+                  ]
+                : wakeBatch.goalGroups.map((group, index) => {
+                    const event = this.goalOutcomeEvent(group);
+
+                    return {
+                      event,
+                      outcome: this.evaluateGoalWakeOutcome(event, turnResult, {
+                        allowTurnLevelHeadway: index === 0,
+                      }),
+                    };
+                  });
+            wakeHeadway =
+              turnEmittedHeadway(turnResult) ||
+              perGoalOutcomes.some(({ outcome }) => outcome.headway);
             // A completed turn's structural outcome is authoritative. Persist
             // fleet headway before any stream/latch/introspection bookkeeping
             // can fail and accidentally preserve an empty streak.
@@ -737,30 +1185,28 @@ export class AutonomyScheduler {
               event: dueEvent,
               sourceCategory,
               turnResult,
-              headway: wakeOutcome.headway,
+              headway: wakeHeadway,
               bypassKind: fleetAdmission.bypassKind,
               admissionMetadata: fleetAdmission.metadata,
             });
             this.options.wakeRepository.recordOutcome(
               wakeRecord.id,
-              wakeOutcome.headway ? "headway" : "silent",
+              wakeHeadway ? "headway" : "silent",
+              wakeHeadway ? null : silentWakeOutcomeDetail(turnResult),
             );
           } catch (error) {
             firedEvents += 1;
             bookkeepingErrorCount += 1;
-            this.scheduleRetryBackoff(dueEvent);
+            this.scheduleBatchRetryBackoff(wakeBatch);
             const bookkeepingError = new AutonomyBookkeepingError(dueEvent, error);
-            eventResults.push({
-              id: dueEvent.id,
-              sourceName: dueEvent.sourceName,
-              sourceType: dueEvent.sourceType,
-              sourceCategory,
-              status: "bookkeeping_error",
-              payload: preparedEvent.event.payload,
-              outcomeSummary: `Autonomous turn completed; bookkeeping failed: ${formatError(error)}`,
-              turnResultId: turnResult.agentMessageId ?? null,
-              error: formatError(bookkeepingError),
-            });
+            eventResults.push(
+              ...this.eventResultsForBatch(wakeBatch, {
+                status: "bookkeeping_error",
+                outcomeSummary: `Autonomous turn completed; bookkeeping failed: ${formatError(error)}`,
+                turnResultId: turnResult.agentMessageId ?? null,
+                error: formatError(bookkeepingError),
+              }),
+            );
             await this.notifyError(bookkeepingError);
             continue;
           }
@@ -778,11 +1224,24 @@ export class AutonomyScheduler {
                 ts: this.clock.now(),
               },
             });
-            this.options.watermarkRepository.set(dueEvent.watermarkProcessName, this.sessionId, {
-              lastTs: dueEvent.sortTs,
-              lastEntryId: dueEvent.id,
+
+            this.options.watermarkRepository.runInTransaction(() => {
+              // Per-goal outcome state is load-bearing: persist it before the
+              // source latches even inside the transaction. Any write failure
+              // rolls the whole group back, so a retry can never be hidden by
+              // a committed source latch with missing goal accounting.
+              for (const { event, outcome } of perGoalOutcomes) {
+                this.applyPerGoalEmptyWakeBackoff(event, outcome);
+              }
+
+              for (const { event } of wakeBatch.events) {
+                this.options.watermarkRepository.set(event.watermarkProcessName, this.sessionId, {
+                  lastTs: event.sortTs,
+                  lastEntryId: event.id,
+                });
+              }
             });
-            this.applyPerGoalEmptyWakeBackoff(preparedEvent.event, wakeOutcome);
+
             this.options.selfDecisionRepository?.record({
               occurredAt: autonomousActionEntry.timestamp,
               sessionId: this.sessionId,
@@ -795,39 +1254,37 @@ export class AutonomyScheduler {
               turnResultId: turnResult.agentMessageId ?? null,
               sourceStreamEntryIds: [autonomousWakeEntry.id, autonomousActionEntry.id],
             });
-            try {
-              await preparedEvent.source.onFired?.(preparedEvent.event);
-            } catch {
-              // Best-effort: the watermark already enforces one-time semantics
-              // and scan() reconciles row state as a backstop, so a failed
-              // onFired must not demote a successful fire to an error.
+
+            for (const member of wakeBatch.events) {
+              try {
+                await member.source.onFired?.(member.event);
+              } catch {
+                // Best-effort: each watermark already enforces one-time
+                // semantics and scan() reconciles row state as a backstop.
+              }
+
+              this.retryBackoff.delete(backoffKey(member.event));
             }
-            this.retryBackoff.delete(backoffKey(dueEvent));
-            eventResults.push({
-              id: dueEvent.id,
-              sourceName: dueEvent.sourceName,
-              sourceType: dueEvent.sourceType,
-              sourceCategory,
-              status: "fired",
-              payload: preparedEvent.event.payload,
-              outcomeSummary,
-              turnResultId: turnResult.agentMessageId ?? null,
-            });
+
+            eventResults.push(
+              ...this.eventResultsForBatch(wakeBatch, {
+                status: "fired",
+                outcomeSummary,
+                turnResultId: turnResult.agentMessageId ?? null,
+              }),
+            );
           } catch (error) {
             bookkeepingErrorCount += 1;
-            this.scheduleRetryBackoff(dueEvent);
+            this.scheduleBatchRetryBackoff(wakeBatch);
             const bookkeepingError = new AutonomyBookkeepingError(dueEvent, error);
-            eventResults.push({
-              id: dueEvent.id,
-              sourceName: dueEvent.sourceName,
-              sourceType: dueEvent.sourceType,
-              sourceCategory,
-              status: "bookkeeping_error",
-              payload: preparedEvent.event.payload,
-              outcomeSummary: `Autonomous turn completed; bookkeeping failed: ${formatError(error)}`,
-              turnResultId: turnResult.agentMessageId ?? null,
-              error: formatError(bookkeepingError),
-            });
+            eventResults.push(
+              ...this.eventResultsForBatch(wakeBatch, {
+                status: "bookkeeping_error",
+                outcomeSummary: `Autonomous turn completed; bookkeeping failed: ${formatError(error)}`,
+                turnResultId: turnResult.agentMessageId ?? null,
+                error: formatError(bookkeepingError),
+              }),
+            );
             await this.notifyError(bookkeepingError);
           }
         }
@@ -855,7 +1312,11 @@ export class AutonomyScheduler {
     }
   }
 
-  private evaluateGoalWakeOutcome(event: DueEvent, turnResult: TurnResult): GoalWakeOutcome {
+  private evaluateGoalWakeOutcome(
+    event: DueEvent,
+    turnResult: TurnResult,
+    options: { allowTurnLevelHeadway?: boolean } = {},
+  ): GoalWakeOutcome {
     const parsedConcern = goalConcernPayload(event);
     const concern =
       event.sourceName === "goal_followup_due" && !this.respectGoalFollowupStaleBackoff
@@ -863,7 +1324,7 @@ export class AutonomyScheduler {
         : parsedConcern;
     const emittedHeadway = turnEmittedHeadway(turnResult);
 
-    if (concern === null || emittedHeadway) {
+    if (concern === null || (options.allowTurnLevelHeadway !== false && emittedHeadway)) {
       return {
         headway: emittedHeadway,
         concern,
@@ -878,9 +1339,10 @@ export class AutonomyScheduler {
       before: concern.lastProgressTs,
       after: currentLastProgressTs,
     });
+    const closedDuringTurn = currentGoal !== null && currentGoal.status !== "active";
 
     return {
-      headway: progressedDuringTurn,
+      headway: progressedDuringTurn || closedDuringTurn,
       concern,
     };
   }
@@ -909,12 +1371,23 @@ export class AutonomyScheduler {
       concern.lastProgressTs >= previousBackoff.updatedAt;
     const previousMetadata = readExecutiveFocusGoalStaleBackoffMetadata(previousBackoff);
     const previousEmptyCount = progressSincePreviousBackoff ? 0 : previousMetadata.empty_count;
+    // An absent event key means no action path was available for this wake; it
+    // is not evidence that the last structural topology should be forgotten.
+    // Preserving it prevents rolling-cap/unavailable intervals from turning a
+    // later return to the same topology into another migration retry.
+    const actionAvailabilityKey =
+      event.goalStaleBackoffActionAvailabilityKey ?? previousMetadata.action_availability_key;
 
     this.options.watermarkRepository.set(processName, this.sessionId, {
       lastTs: event.sortTs,
       lastEntryId: event.id,
       metadata: {
         empty_count: previousEmptyCount + 1,
+        ...(actionAvailabilityKey === undefined
+          ? {}
+          : {
+              action_availability_key: actionAvailabilityKey,
+            }),
       },
     });
   }
@@ -990,6 +1463,40 @@ export class AutonomyScheduler {
       bypassKind: null,
       metadata,
     };
+  }
+
+  private fleetAdmissionDecisionForBatch(
+    batch: WakeBatch,
+    sourceCategory: AutonomyWakeSourceCategory,
+    nowMs: number,
+  ): FleetAdmissionDecision {
+    const deadlineTimestamps = batch.events.flatMap(({ event }) => {
+      const timestamp = structuralDeadlineTimestamp(event);
+      return timestamp === null ? [] : [timestamp];
+    });
+    const stateTimestamps = batch.events.flatMap(({ event }) =>
+      event.stateTs === undefined ? [] : [event.stateTs],
+    );
+    const earliestDeadline =
+      deadlineTimestamps.length === 0 ? null : Math.min(...deadlineTimestamps);
+    const freshestState = stateTimestamps.length === 0 ? undefined : Math.max(...stateTimestamps);
+    const admissionEvent =
+      earliestDeadline === null && freshestState === undefined
+        ? batch.primary.event
+        : {
+            ...batch.primary.event,
+            ...(freshestState === undefined ? {} : { stateTs: freshestState }),
+            ...(earliestDeadline === null
+              ? {}
+              : {
+                  payload: {
+                    ...batch.primary.event.payload,
+                    target_at: earliestDeadline,
+                  },
+                }),
+          };
+
+    return this.fleetAdmissionDecision(admissionEvent, sourceCategory, nowMs);
   }
 
   private updateFleetBrakeAfterSuccess(input: {
@@ -1114,6 +1621,10 @@ export class AutonomyScheduler {
     }
 
     const notifyObserver = options.notifyObserver ?? false;
+    // Scoped to the tick that is about to start, so the count on the page is
+    // this freeze's cost rather than every freeze since the interval armed --
+    // the running total is reported separately.
+    this.droppedIntervalFiresForActiveTick = 0;
     const promise = (async () => {
       try {
         const result = await this.tickOnce();
@@ -1230,6 +1741,48 @@ export class AutonomyScheduler {
         toolError: string;
       }
   > {
+    const prepared = await this.prepareSourceEvent(dueEvent);
+
+    if ("toolError" in prepared) {
+      return prepared;
+    }
+
+    // The journal is the only place the entity narrates its own acts to itself,
+    // and it is write-only on live turns. Carry the latest entry into every
+    // autonomous wake rather than one trigger kind, so a wake that acts can see
+    // what the previous acting wake recorded.
+    const priorSelfThought = this.options.trainOfThoughtRepository?.get() ?? null;
+
+    if (priorSelfThought === null) {
+      return prepared;
+    }
+
+    return {
+      source: prepared.source,
+      event: {
+        ...prepared.event,
+        payload: {
+          ...prepared.event.payload,
+          prior_self_thought: {
+            text: priorSelfThought.text,
+            updated_at: priorSelfThought.updated_at,
+            self_entity_id: priorSelfThought.self_entity_id,
+            ...memoryDisclosurePayloadFields(selfPrivateMemoryDisclosureLabel()),
+          },
+        },
+      },
+    };
+  }
+
+  private async prepareSourceEvent(dueEvent: DueEvent): Promise<
+    | {
+        source: AutonomyWakeSource;
+        event: DueEvent;
+      }
+    | {
+        toolError: string;
+      }
+  > {
     const source = this.options.sources.find((entry) => entry.name === dueEvent.sourceName);
 
     if (source === undefined) {
@@ -1335,8 +1888,6 @@ export class AutonomyScheduler {
         const output = result.output as {
           events: unknown[];
         };
-        const priorSelfThought = this.options.trainOfThoughtRepository?.get() ?? null;
-
         return {
           source,
           event: {
@@ -1344,16 +1895,6 @@ export class AutonomyScheduler {
             payload: {
               ...dueEvent.payload,
               recent_identity_events: output.events,
-              ...(priorSelfThought === null
-                ? {}
-                : {
-                    prior_self_thought: {
-                      text: priorSelfThought.text,
-                      updated_at: priorSelfThought.updated_at,
-                      self_entity_id: priorSelfThought.self_entity_id,
-                      ...memoryDisclosurePayloadFields(selfPrivateMemoryDisclosureLabel()),
-                    },
-                  }),
             },
           },
         };

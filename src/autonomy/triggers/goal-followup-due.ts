@@ -1,14 +1,19 @@
+import { computeExecutiveContextFits, selectExecutiveFocus } from "../../executive/index.js";
+import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { GoalRecord, GoalTreeNode, GoalsRepository } from "../../memory/self/index.js";
 import {
   goalMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
 } from "../../memory/common/disclosure-serializers.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
+import { buildSelfScoringFeatureSet } from "../../retrieval/scoring-features.js";
 import {
   getExecutiveFocusGoalStaleBackoffProcessName,
-  goalStaleBackoffEndMs,
+  goalStaleBackoffState,
+  type GoalStaleBackoffState,
 } from "../executive-focus-stale-backoff.js";
 import type { AutonomyTrigger, DueEvent } from "../types.js";
 
@@ -41,8 +46,16 @@ export type GoalFollowupDueTriggerOptions = {
     dormancyCount: number;
   };
   respectStaleBackoff: boolean;
+  executiveScoring?: {
+    embeddingClient: EmbeddingClient;
+    threshold: number;
+    deadlineLookaheadMs: number;
+    staleMs: number;
+    tracer?: TurnTracer;
+  };
   clock?: Clock;
   sessionId?: SessionId;
+  goalStaleBackoffActionAvailabilityKey?: () => string | null;
 };
 
 function flattenGoals(goals: readonly GoalTreeNode[]): GoalRecord[] {
@@ -87,18 +100,106 @@ export function createGoalFollowupDueTrigger(
   const clock = options.clock ?? new SystemClock();
   const sessionId = options.sessionId ?? DEFAULT_SESSION_ID;
 
-  function staleBackoffEnd(goal: GoalRecord): number | null {
+  function staleBackoff(
+    goal: GoalRecord,
+    actionAvailabilityKey: string | null,
+  ): GoalStaleBackoffState {
     if (!options.respectStaleBackoff) {
-      return null;
+      return { endMs: null, actionAvailabilityChanged: false };
     }
 
-    return goalStaleBackoffEndMs({
+    return goalStaleBackoffState({
       watermark: options.watermarkRepository.get(
         getExecutiveFocusGoalStaleBackoffProcessName(goal.id),
         sessionId,
       ),
       lastProgressTs: goal.last_progress_ts,
+      actionAvailabilityKey,
       ...options.staleBackoff,
+    });
+  }
+
+  async function attachExecutiveScores(
+    goals: readonly GoalRecord[],
+    dueEvents: readonly DueEvent<GoalFollowupDuePayload>[],
+    nowMs: number,
+  ): Promise<DueEvent<GoalFollowupDuePayload>[]> {
+    const scoring = options.executiveScoring;
+
+    if (scoring === undefined || dueEvents.length === 0) {
+      return [...dueEvents];
+    }
+
+    let goalVectors: Awaited<ReturnType<typeof buildSelfScoringFeatureSet>>["goalVectors"] = [];
+
+    try {
+      goalVectors = (
+        await buildSelfScoringFeatureSet({
+          embeddingClient: scoring.embeddingClient,
+          goals,
+          activeValues: [],
+        })
+      ).goalVectors;
+    } catch (error) {
+      if (scoring.tracer?.enabled === true) {
+        scoring.tracer.emit("retrieval.degraded", {
+          turnId: "autonomy:goal_followup_due",
+          subsystem: "scoring_features",
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    // Use the same wake-time scoring context as today's executive stale-goal
+    // selection so a batch's primary is the goal that path would have named.
+    const autonomyPayload = {
+      trigger: "executive_focus_due",
+      reason: "goal_stale",
+    };
+    const contextText = JSON.stringify(autonomyPayload);
+    let contextFitByGoalId: Awaited<ReturnType<typeof computeExecutiveContextFits>> = new Map();
+
+    try {
+      contextFitByGoalId = await computeExecutiveContextFits({
+        embeddingClient: scoring.embeddingClient,
+        goalVectors,
+        contextText,
+      });
+    } catch (error) {
+      if (scoring.tracer?.enabled === true) {
+        scoring.tracer.emit("retrieval.degraded", {
+          turnId: "autonomy:goal_followup_due",
+          subsystem: "executive_context_fit",
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const focus = selectExecutiveFocus({
+      goals,
+      cognitionInput: contextText,
+      autonomyPayload,
+      nowMs,
+      threshold: scoring.threshold,
+      deadlineLookaheadMs: scoring.deadlineLookaheadMs,
+      staleMs: scoring.staleMs,
+      scoreContext: "wake_time_trigger_selection",
+      contextFitByGoalId,
+    });
+    const scoreByGoalId = new Map(
+      focus.candidates.map((candidate, rank) => [candidate.goal_id, { candidate, rank }]),
+    );
+
+    return dueEvents.map((event) => {
+      const ranked = scoreByGoalId.get(event.payload.goal_id);
+
+      return ranked === undefined
+        ? event
+        : {
+            ...event,
+            executiveGoalScore: ranked.candidate,
+            executiveGoalRank: ranked.rank,
+          };
     });
   }
 
@@ -108,6 +209,7 @@ export function createGoalFollowupDueTrigger(
     sourceCategory: "operational",
     async scan() {
       const nowMs = clock.now();
+      const actionAvailabilityKey = options.goalStaleBackoffActionAvailabilityKey?.() ?? null;
       const goals = flattenGoals(options.goalsRepository.list({ status: "active" }));
       const dueEvents = goals
         .map<DueEvent<GoalFollowupDuePayload> | null>((goal) => {
@@ -125,18 +227,22 @@ export function createGoalFollowupDueTrigger(
           const phase: GoalFollowupPhase = deadlineDue ? "deadline" : "stale";
           const legacyProcessName = legacyLatchProcessName(goal);
           const watermarkProcessName = phaseLatchProcessName(goal, phase);
+          const backoff = staleBackoff(goal, actionAvailabilityKey);
 
+          // A phase latch identifies the goal/progress threshold, so its key
+          // cannot express the newly executable topology. Let only the durable
+          // dormant-key mismatch pierce it; scheduler bookkeeping re-stamps the
+          // key after an empty wake and closes this exception again.
           if (
-            options.watermarkRepository.get(legacyProcessName, sessionId) !== null ||
-            options.watermarkRepository.get(watermarkProcessName, sessionId) !== null
+            !backoff.actionAvailabilityChanged &&
+            (options.watermarkRepository.get(legacyProcessName, sessionId) !== null ||
+              options.watermarkRepository.get(watermarkProcessName, sessionId) !== null)
           ) {
             return null;
           }
 
           if (!deadlineDue) {
-            const backoffEnd = staleBackoffEnd(goal);
-
-            if (backoffEnd !== null && backoffEnd > nowMs) {
+            if (backoff.endMs !== null && backoff.endMs > nowMs) {
               return null;
             }
           }
@@ -155,6 +261,9 @@ export function createGoalFollowupDueTrigger(
             watermarkProcessName,
             sortTs,
             stateTs: baseProgressTs,
+            ...(actionAvailabilityKey === null
+              ? {}
+              : { goalStaleBackoffActionAvailabilityKey: actionAvailabilityKey }),
             payload: {
               goal_id: goal.id,
               selected_goal_id: goal.id,
@@ -174,13 +283,16 @@ export function createGoalFollowupDueTrigger(
         })
         .filter((event): event is DueEvent<GoalFollowupDuePayload> => event !== null);
 
-      return dueEvents.sort(
+      const scoredEvents = await attachExecutiveScores(goals, dueEvents, nowMs);
+
+      return scoredEvents.sort(
         (left, right) =>
           left.sortTs - right.sortTs || right.payload.priority - left.payload.priority,
       );
     },
     async nextDueAt() {
       const nowMs = clock.now();
+      const actionAvailabilityKey = options.goalStaleBackoffActionAvailabilityKey?.() ?? null;
       const candidates = options.goalsRepository.listActiveFollowupDueCandidatesReadOnly({
         lookaheadMs: options.lookaheadMs,
         staleMs: options.staleMs,
@@ -198,15 +310,22 @@ export function createGoalFollowupDueTrigger(
         const baseProgressTs = goal.last_progress_ts ?? goal.created_at;
         const deadlineDue = goal.target_at !== null && goal.target_at - nowMs < options.lookaheadMs;
         const legacyProcessName = legacyLatchProcessName(goal);
+        const backoff = staleBackoff(goal, actionAvailabilityKey);
 
-        if (options.watermarkRepository.get(legacyProcessName, sessionId) !== null) {
+        if (
+          !backoff.actionAvailabilityChanged &&
+          options.watermarkRepository.get(legacyProcessName, sessionId) !== null
+        ) {
           continue;
         }
 
         const deadlineProcessName = phaseLatchProcessName(goal, "deadline");
 
         if (deadlineDue) {
-          if (options.watermarkRepository.get(deadlineProcessName, sessionId) === null) {
+          if (
+            backoff.actionAvailabilityChanged ||
+            options.watermarkRepository.get(deadlineProcessName, sessionId) === null
+          ) {
             return nowMs;
           }
 
@@ -218,15 +337,17 @@ export function createGoalFollowupDueTrigger(
           goal.target_at === null
             ? Number.POSITIVE_INFINITY
             : dueAfterStrictThreshold(goal.target_at - options.lookaheadMs);
-        const backoffEnd = staleBackoffEnd(goal);
         const staleCandidateAt =
-          options.watermarkRepository.get(phaseLatchProcessName(goal, "stale"), sessionId) !==
-            null || backoffEnd === Number.POSITIVE_INFINITY
+          (!backoff.actionAvailabilityChanged &&
+            options.watermarkRepository.get(phaseLatchProcessName(goal, "stale"), sessionId) !==
+              null) ||
+          backoff.endMs === Number.POSITIVE_INFINITY
             ? Number.POSITIVE_INFINITY
-            : Math.max(staleDueAt, backoffEnd ?? Number.NEGATIVE_INFINITY, nowMs);
+            : Math.max(staleDueAt, backoff.endMs ?? Number.NEGATIVE_INFINITY, nowMs);
         // Deadline piercing begins at the structural lookahead boundary, even
         // when that boundary lies in the future at describe-time.
         const deadlineCandidateAt =
+          backoff.actionAvailabilityChanged ||
           options.watermarkRepository.get(deadlineProcessName, sessionId) === null
             ? Math.max(deadlineDueAt, nowMs)
             : Number.POSITIVE_INFINITY;

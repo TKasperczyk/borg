@@ -6,6 +6,7 @@ export {
   type AutonomousOutboundPolicyOptions,
   type AutonomousOutboundPromptContext,
   type AutonomousOutboundPromptTarget,
+  type AutonomousOutboundRouteTopologyTarget,
 } from "./autonomous-policy.js";
 export { DemoMessageConnector } from "./demo-connector.js";
 export { OutboundDelivery } from "./delivery.js";

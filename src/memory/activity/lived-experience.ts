@@ -67,6 +67,11 @@ export type RecentLivedExperienceRow = {
   sourceStreamEntryIds: readonly StreamEntryId[];
   originAudienceEntityIds: readonly EntityId[];
   disclosureLabel?: MemoryDisclosureLabel;
+  plannerDecision?: {
+    outcomeReference: string;
+    summary: string;
+    rationale: string | null;
+  };
   metadata: Record<string, unknown>;
 };
 
@@ -319,6 +324,11 @@ export function selectRecentLivedExperienceRows(
       text: row.text,
       sourceStreamEntryIds: row.sourceStreamEntryIds,
       originAudienceEntityIds: [],
+      plannerDecision: {
+        outcomeReference: row.decisionOutcomeReference,
+        summary: row.decisionSummary,
+        rationale: row.decisionRationale,
+      },
       metadata: {
         trigger_name: row.triggerName,
         trigger_type: row.triggerType,

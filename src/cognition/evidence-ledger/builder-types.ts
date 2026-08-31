@@ -26,7 +26,7 @@ import type { TurnTracer } from "../../tracing/tracer.js";
 import type { AutobiographicalRecallResult } from "../autobiographical-recall.js";
 
 export type ActionLedgerRepository = Pick<ActionRepository, "list"> &
-  Partial<Pick<ActionRepository, "findSimilarDescriptionPairs">>;
+  Partial<Pick<ActionRepository, "findSimilarDescriptionPairs" | "count">>;
 export type CommitmentLedgerRepository = Pick<CommitmentRepository, "list">;
 export type GoalLedgerRepository = Pick<GoalsRepository, "list">;
 
@@ -41,6 +41,8 @@ export type EvidenceLedgerBuilderOptions = {
   actionThreadRenderLimit?: number;
   actionThreadSimilarityThreshold?: number;
   actionThreadSourceRecordLimit?: number;
+  actionThreadSalienceClassReservedSlots?: number;
+  actionThreadAudienceReservedSlots?: number;
   entityRepository?: Pick<EntityRepository, "get">;
   attachmentRepository?: Pick<AttachmentRepository, "get">;
   maxImagesPerLedger?: number;
@@ -52,6 +54,7 @@ export type EvidenceLedgerBuilderOptions = {
 export type EvidenceLedgerBuildInput = {
   sessionId: SessionId;
   turnId?: string;
+  globalTurnCounter?: number;
   nowMs?: number;
   audienceEntityId: EntityId | null;
   currentUserMessage: string;

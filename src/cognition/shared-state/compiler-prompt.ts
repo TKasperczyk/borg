@@ -108,6 +108,10 @@ export function buildSharedStateArtifactMessages(input: {
         source_trust: {
           citation_eligible_source_stream_entry_id_count:
             input.allowedSourceStreamEntryIds?.length ?? null,
+          // The eligible set is enforced as an allowlist, so name it as one. Rendering only the
+          // count next to an explicit off-limits list reads as a denylist and leaves the ids that
+          // are actually citable to be inferred from the surrounding ledger.
+          citation_eligible_source_stream_entry_ids: input.allowedSourceStreamEntryIds ?? null,
           off_limits_source_stream_entry_ids: input.offLimitsSourceStreamEntryIds ?? [],
         },
         ...(input.additionalPromptSections === undefined ||

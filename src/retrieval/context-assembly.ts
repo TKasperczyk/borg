@@ -25,6 +25,7 @@ export type RetrievedContradictionRouting = {
 };
 
 export type RetrievedContext = {
+  retrieval_read_at_ms: number;
   episodes: RetrievedEpisode[];
   semantic: RetrievedSemantic;
   open_questions: OpenQuestion[];
@@ -43,8 +44,14 @@ export function assembleRetrievedContext(input: {
   recallIntents: RecallIntent[];
   contradictionPresent: boolean;
   nowMs: number;
-  expectedCount?: number;
 }): RetrievedContext {
+  // Two booleans leave here under one name. `contradiction_present` below is the
+  // caller's raw flag; `confidence.contradictionPresent` is that flag *and* a
+  // temporal gate -- some edge on some hit's path still valid at `asOf`. They
+  // disagree whenever every contradiction path has expired, and only the second
+  // one moves the 0.7 multiplier. Note the gate reads `hit.edgePath` whole, not
+  // just its `contradicts` edge, so an unrelated still-valid hop on a multi-hop
+  // path is enough to keep the penalty on.
   const contradictionEdges = input.semantic.contradiction_hits.flatMap((hit) => hit.edgePath);
   const confidence = computeRetrievalConfidence({
     episodes: input.episodes,
@@ -57,10 +64,10 @@ export function assembleRetrievedContext(input: {
     },
     nowMs: input.nowMs,
     asOf: input.semantic.as_of ?? undefined,
-    expectedCount: input.expectedCount,
   });
 
   return {
+    retrieval_read_at_ms: input.nowMs,
     episodes: input.episodes,
     semantic: input.semantic,
     open_questions: input.openQuestions,
@@ -70,6 +77,23 @@ export function assembleRetrievedContext(input: {
     contradictionRouting: buildContradictionRouting(input.semantic, input.openQuestions),
     confidence,
   };
+}
+
+/**
+ * How many distinct contradiction *relations* a turn retrieved, as opposed to how
+ * many graph traversals landed on one. `contradiction_hits` is per-traversal: the
+ * contradicts walk runs in both directions, so a relation whose two nodes were both
+ * matched is hit twice. Routing collapses those by fingerprint, which is why the
+ * deliberation contradiction line can name fewer contradictions than the evidence
+ * ledger counts hits.
+ *
+ * Deliberately routed through `buildContradictionRouting` rather than reimplementing
+ * the fingerprint, so the count the ledger reports and the count the line reports
+ * cannot drift apart. Open questions only annotate the items with links; they cannot
+ * change how many items there are, so passing none here is safe.
+ */
+export function countRetrievedContradictionRelations(semantic: RetrievedSemantic): number {
+  return buildContradictionRouting(semantic, []).contradictions.length;
 }
 
 function buildContradictionRouting(

@@ -1,4 +1,5 @@
 import type { AutobiographicalRecallEvidenceItem } from "../../autobiographical-recall.js";
+import { autobiographicalRecallCapStateMetadata } from "../autobiographical-recall-cap-metadata.js";
 import type { BuilderSectionContext } from "../builder-context.js";
 import {
   appendMemoryDisclosureState,
@@ -9,10 +10,11 @@ import {
   AUTOBIOGRAPHICAL_RECALL_TRUST_RANK,
   setSectionFraming,
 } from "../section-buckets.js";
-import type { EvidenceLedgerSourceType } from "../types.js";
+import { SELF_DECISION_LABEL_SCOPE_FRAMING, type EvidenceLedgerSourceType } from "../types.js";
 
 const AUTOBIOGRAPHICAL_RECALL_FRAMING =
-  "Autobiographical recall entries are past evidence for me to re-examine during this turn. I treat recalled self_decision rows as historical decisions and rationales, not standing verdicts; I revise them when current evidence warrants.";
+  "Autobiographical recall entries are past evidence for me to re-examine during this turn. I treat recalled self_decision rows as historical decisions and rationales, not standing verdicts; I revise them when current evidence warrants. " +
+  `${SELF_DECISION_LABEL_SCOPE_FRAMING} This section does carry reaches, separately, as outbound_attempt rows, so a label and an attempt from one turn appear here as two different rows. Those rows compete for recency-ordered slots shared with my thoughts and silence decisions rather than holding a reserved budget of their own, so an attempt missing from this section may simply have been outranked by later stream entries, and its absence here is not evidence that no reach was made.`;
 
 function sourceTypeForAutobiographicalItem(
   item: AutobiographicalRecallEvidenceItem,
@@ -58,6 +60,7 @@ export function addAutobiographicalRecallSection(context: BuilderSectionContext)
         group_id: item.groupId,
         group_label: item.groupLabel,
         source_kind: item.kind,
+        // Raw epoch ms, not ISO -- see the convention note in ../recent-lived-experience.ts.
         occurred_at: item.occurredAt,
         relative_age: item.relativeAge,
         window_start_ms: recall.window.startMs,
@@ -67,6 +70,7 @@ export function addAutobiographicalRecallSection(context: BuilderSectionContext)
         source_stream_ids: [...item.sourceStreamEntryIds],
         source_episode_ids: [...item.sourceEpisodeIds],
         ...item.metadata,
+        ...autobiographicalRecallCapStateMetadata(item.capMetadata),
       },
       disclosureLabel: item.disclosureLabel,
       currentAudienceEntityId: context.input.audienceEntityId,

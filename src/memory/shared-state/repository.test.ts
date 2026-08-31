@@ -292,6 +292,48 @@ describe("SharedStateRepository", () => {
     });
   });
 
+  it("writes a new state key on update while keeping the entry identity", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const entryId = createSharedStateEntryId();
+
+    const initial = repository.upsert(audience, [
+      {
+        type: "add",
+        id: entryId,
+        state_key: "audit.inference.supersede_as_durable_correction_path",
+        kind: "locked",
+        text: "Supersede was recorded as the durable correction path.",
+        provenance_stream_entry_ids: [source],
+        created_at: 1_000,
+      },
+    ]);
+
+    expect(initial?.entries[0]?.created_at).toBe(1_000);
+
+    // No text field: the key alone is the change, and the store applies it to the same row.
+    const renamed = repository.upsert(audience, [
+      {
+        type: "update",
+        id: entryId,
+        state_key: "audit.inference.supersede_binds_old_body_to_new_fate",
+        last_updated_stream_entry_ids: [source],
+        last_updated_at: 2_000,
+      },
+    ]);
+
+    expect(renamed?.entries).toHaveLength(1);
+    expect(renamed?.entries[0]).toMatchObject({
+      id: entryId,
+      state_key: "audit.inference.supersede_binds_old_body_to_new_fate",
+      kind: "locked",
+      text: "Supersede was recorded as the durable correction path.",
+      created_at: 1_000,
+      last_updated_at: 2_000,
+      superseded_by_id: null,
+    });
+  });
+
   it("persists last updated global turn on add update and supersede but not kind transitions", () => {
     const audience = createEntityId();
     const firstSource = createStreamEntryId();
@@ -858,6 +900,89 @@ describe("SharedStateRepository", () => {
       repository.get(audience)?.entries.find((entry) => entry.id === oldEntryId),
     ).toMatchObject({
       superseded_by_id: replacementId,
+    });
+  });
+
+  it("advances record_version once per compile marker regardless of operation count", () => {
+    const audience = createEntityId();
+    const firstSource = createStreamEntryId();
+    const secondSource = createStreamEntryId();
+    const thirdSource = createStreamEntryId();
+
+    const created = repository.upsert(
+      audience,
+      [
+        {
+          type: "add",
+          state_key: "decision.route",
+          kind: "locked",
+          text: "Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 3",
+          provenance_stream_entry_ids: [firstSource],
+        },
+      ],
+      { lastCompiledStreamEntryId: firstSource },
+    );
+
+    expect(created).toMatchObject({ record_version: 1 });
+
+    // A compile that applied nothing still advances the counter, as long as it
+    // carried a compile marker -- so a version bump is not evidence of a write.
+    const afterNoOp = repository.upsert(audience, [], {
+      lastCompiledAt: clock.now(),
+      lastCompiledStreamEntryId: secondSource,
+    });
+
+    expect(afterNoOp).toMatchObject({
+      record_version: 2,
+      last_compiled_stream_entry_id: secondSource,
+    });
+    expect(afterNoOp?.entries).toHaveLength(1);
+
+    // Four applied operations advance it by exactly one, the same as zero did.
+    const afterFour = repository.upsert(
+      audience,
+      [
+        {
+          type: "add",
+          state_key: "decision.flight",
+          kind: "locked",
+          text: "Locked flight: SS to SVQ at 4:15pm",
+          provenance_stream_entry_ids: [thirdSource],
+        },
+        {
+          type: "add",
+          state_key: "decision.hotel",
+          kind: "live",
+          text: "Hotel shortlist is down to two",
+          provenance_stream_entry_ids: [thirdSource],
+        },
+        {
+          type: "add",
+          state_key: "decision.budget",
+          kind: "tentative",
+          text: "Budget ceiling may be raised",
+          provenance_stream_entry_ids: [thirdSource],
+        },
+        {
+          type: "add",
+          state_key: "decision.transfer",
+          kind: "live",
+          text: "Airport transfer still unbooked",
+          provenance_stream_entry_ids: [thirdSource],
+        },
+      ],
+      { lastCompiledStreamEntryId: thirdSource },
+    );
+
+    expect(afterFour).toMatchObject({ record_version: 3 });
+    expect(afterFour?.entries).toHaveLength(5);
+
+    // No operations and no compile marker is the only non-advancing shape.
+    const afterInert = repository.upsert(audience, []);
+
+    expect(afterInert).toMatchObject({
+      record_version: 3,
+      last_compiled_stream_entry_id: thirdSource,
     });
   });
 

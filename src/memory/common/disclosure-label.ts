@@ -36,12 +36,10 @@ export function memoryDisclosureInternalUseNote(
     : MEMORY_DISCLOSURE_INTERNAL_USE_NOTE;
 }
 
-export function renderMemoryDisclosureLabelForModel(
-  label: MemoryDisclosureLabel,
-  options: {
-    context?: MemoryDisclosureLabelRenderContext;
-  } = {},
-): string {
+// Renders the label's provenance fields without the internal-use note. Callers that render many
+// labelled rows under one heading hoist the note to the heading and use this per row; the note is
+// a byte-identical constant, so repeating it per row spends budget without adding information.
+export function renderMemoryDisclosureLabelFieldsForModel(label: MemoryDisclosureLabel): string {
   const fragments = [`disclosure_class=${label.disclosureClass}`];
 
   if (label.originAudienceEntityIds.length > 0) {
@@ -51,10 +49,23 @@ export function renderMemoryDisclosureLabelForModel(
   if (label.disclosureClass !== "public") {
     const privateTo =
       label.privateToEntityIds.length === 0 ? "unknown" : label.privateToEntityIds.join(",");
-    fragments.push(`private-to=${privateTo}; ${memoryDisclosureInternalUseNote(options.context)}`);
+    fragments.push(`private-to=${privateTo}`);
   }
 
   return fragments.join(" ");
+}
+
+export function renderMemoryDisclosureLabelForModel(
+  label: MemoryDisclosureLabel,
+  options: {
+    context?: MemoryDisclosureLabelRenderContext;
+  } = {},
+): string {
+  const fields = renderMemoryDisclosureLabelFieldsForModel(label);
+
+  return label.disclosureClass === "public"
+    ? fields
+    : `${fields}; ${memoryDisclosureInternalUseNote(options.context)}`;
 }
 
 export function renderSemanticSourceDisclosureLabelForModel(label: MemoryDisclosureLabel): string {

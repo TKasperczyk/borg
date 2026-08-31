@@ -244,6 +244,7 @@ describe("Borg", () => {
         "loop_breaking_posture",
         "trusted_guidance_preamble",
         "borg_host_capabilities",
+        "live_turn_read_tool_menu",
       ]);
       expect(initial.segments.map((segment) => segment.id)).toEqual(initial.sections);
       for (const segment of initial.segments) {
@@ -263,6 +264,8 @@ describe("Borg", () => {
       );
       expect(initial.text).toContain("<borg_host_capabilities>");
       expect(initial.text).toContain("</borg_host_capabilities>");
+      expect(initial.text).toContain("<borg_live_turn_read_tools>");
+      expect(initial.text).toContain("tool.ownRecords.list");
       expect(initial.text).toContain(
         "Proactive outbound messaging via wired source_type connector(s): demo",
       );
@@ -716,6 +719,10 @@ describe("Borg", () => {
     const facades = createBorgFacades({
       actionRepository: {},
       retrievalPipeline: { searchEpisodesForDisclosure },
+      // The weights are deployment-tunable via config.retrieval.attentionWeights,
+      // so the facade reads them from config rather than inlining literals; the
+      // assertion below pins the shipped defaults.
+      config: DEFAULT_CONFIG,
     } as unknown as BorgDependencies);
 
     await facades.episodic.search("scoring defaults");
@@ -737,6 +744,43 @@ describe("Borg", () => {
           heat: 0.15,
           suppression_penalty: 0.5,
         },
+      }),
+    );
+  });
+
+  it("lets a deployment override the attention weights from config", async () => {
+    // `semantic` is fused against a raw cosine whose spread is a property of
+    // the corpus, so a bank whose episodes separate poorly must be able to
+    // weight salience higher without a code change. Without this, the two
+    // deployments sharing this architecture cannot both be tuned correctly.
+    const searchEpisodesForDisclosure = vi.fn(async () => []);
+    const facades = createBorgFacades({
+      actionRepository: {},
+      retrievalPipeline: { searchEpisodesForDisclosure },
+      config: {
+        ...DEFAULT_CONFIG,
+        retrieval: {
+          ...DEFAULT_CONFIG.retrieval,
+          attentionWeights: {
+            ...DEFAULT_CONFIG.retrieval.attentionWeights,
+            semantic: 0.35,
+            heat: 0.45,
+          },
+        },
+      },
+    } as unknown as BorgDependencies);
+
+    await facades.episodic.search("narrow corpus");
+
+    expect(searchEpisodesForDisclosure).toHaveBeenCalledWith(
+      "narrow corpus",
+      expect.objectContaining({
+        attentionWeights: expect.objectContaining({
+          semantic: 0.35,
+          heat: 0.45,
+          // unrelated weights keep their configured values
+          suppression_penalty: 0.5,
+        }),
       }),
     );
   });

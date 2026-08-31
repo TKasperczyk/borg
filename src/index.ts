@@ -232,6 +232,7 @@ export {
   type AutonomySchedulerDescription,
   type AutonomySchedulerSourceDescription,
   type AutonomySchedulerTriggerSourceDescription,
+  type AutonomySchedulerWakeGroupDescription,
   type AutonomyTickEventResult,
   type AutonomyWakeRecord,
   type AutonomyWakeRecordInput,

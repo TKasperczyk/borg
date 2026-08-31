@@ -20,7 +20,7 @@ import {
   createTestConfig,
   TestEmbeddingClient,
 } from "../../offline/test-support.js";
-import { StreamWriter } from "../../stream/index.js";
+import { StreamEntryIndexRepository, StreamWriter } from "../../stream/index.js";
 import {
   ToolDispatcher,
   createCommitmentsListTool,
@@ -31,7 +31,12 @@ import {
   createSkillsListTool,
 } from "../../tools/index.js";
 import { ManualClock } from "../../util/clock.js";
-import { createEntityId, createEpisodeId, createSemanticNodeId } from "../../util/ids.js";
+import {
+  createEntityId,
+  createEpisodeId,
+  createSemanticNodeId,
+  createSessionId,
+} from "../../util/ids.js";
 
 const TYPESCRIPT_DEBUG_CONTEXT_KEY = deriveProceduralContextKey({
   problem_kind: "code_debugging",
@@ -83,14 +88,21 @@ function createHarnessToolDispatcher(
     clock,
   });
   promptSurfaceHistoryRepository.observeCurrent();
+  const entryIndex = new StreamEntryIndexRepository({
+    db: harness.db,
+    dataDir: harness.tempDir,
+  });
 
   return buildToolDispatcher({
+    dataDir: harness.tempDir,
+    entryIndex,
     retrievalPipeline: harness.retrievalPipeline,
     episodicRepository: harness.episodicRepository,
     semanticNodeRepository: harness.semanticNodeRepository,
     semanticGraph,
     commitmentRepository: harness.commitmentRepository,
     entityRepository: harness.entityRepository,
+    goalsRepository: harness.goalsRepository,
     identityService: harness.identityService,
     skillRepository: harness.skillRepository,
     trainOfThoughtRepository: new TrainOfThoughtRepository({ db: harness.db, clock }),
@@ -101,6 +113,7 @@ function createHarnessToolDispatcher(
         dataDir: harness.tempDir,
         sessionId,
         clock,
+        entryIndex,
       }),
     clock,
   });
@@ -661,6 +674,119 @@ describe("internal tools", () => {
       expect(JSON.stringify(output)).not.toContain("renderCondition");
       expect(JSON.stringify(output)).not.toContain("purpose");
     } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("lists exact thought and journal records globally through the composed dispatcher", async () => {
+    const harness = await createOfflineTestHarness();
+    const otherSessionId = createSessionId();
+    const sharedEntryIndex = new StreamEntryIndexRepository({
+      db: harness.db,
+      dataDir: harness.tempDir,
+    });
+    const otherWriter = new StreamWriter({
+      dataDir: harness.tempDir,
+      sessionId: otherSessionId,
+      clock: new ManualClock(1_000_050),
+      entryIndex: sharedEntryIndex,
+    });
+
+    try {
+      const localThought = await harness.streamWriter.append({
+        kind: "thought",
+        content: "本地 thought — dokładnie",
+        turn_id: "turn-local-thought",
+      });
+      const crossSessionThought = await otherWriter.append({
+        kind: "thought",
+        content: "عبر جلسة أخرى",
+        turn_id: "turn-cross-session-thought",
+      });
+      const dispatcher = createHarnessToolDispatcher(harness);
+      const journalResult = await dispatcher.dispatch({
+        toolName: "tool.journal.append",
+        input: { text: "Private journal exact payload" },
+        origin: "autonomous",
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-journal-anchor",
+      });
+
+      expect(journalResult.ok).toBe(true);
+
+      const globalResult = await dispatcher.dispatch({
+        toolName: "tool.ownRecords.list",
+        input: {
+          since: new Date(999_000).toISOString(),
+          until: new Date(1_001_000).toISOString(),
+        },
+        origin: "deliberator",
+        sessionId: DEFAULT_SESSION_ID,
+      });
+
+      expect(globalResult.ok).toBe(true);
+      if (!globalResult.ok) {
+        throw new Error(globalResult.error);
+      }
+
+      const globalRecords = (
+        globalResult.output as {
+          records: Array<{
+            kind: string;
+            content: string | null;
+            session_id: string | null;
+            stream_entry_id: string | null;
+            disclosure_label: { disclosure_class: string };
+          }>;
+        }
+      ).records;
+
+      expect(globalRecords.map((record) => record.kind)).toEqual(["journal", "thought", "thought"]);
+      expect(globalRecords.map((record) => record.content)).toEqual([
+        "Private journal exact payload",
+        "عبر جلسة أخرى",
+        "本地 thought — dokładnie",
+      ]);
+      expect(globalRecords.map((record) => record.disclosure_label.disclosure_class)).toEqual([
+        "self_private",
+        "self_private",
+        "self_private",
+      ]);
+      expect(globalRecords.map((record) => record.stream_entry_id)).toEqual([
+        null,
+        crossSessionThought.id,
+        localThought.id,
+      ]);
+
+      const filteredResult = await dispatcher.dispatch({
+        toolName: "tool.ownRecords.list",
+        input: {
+          since: new Date(999_000).toISOString(),
+          until: new Date(1_001_000).toISOString(),
+          session_id: otherSessionId,
+        },
+        origin: "deliberator",
+        sessionId: DEFAULT_SESSION_ID,
+      });
+
+      expect(filteredResult.ok).toBe(true);
+      if (!filteredResult.ok) {
+        throw new Error(filteredResult.error);
+      }
+      expect(
+        (
+          filteredResult.output as {
+            records: Array<{ stream_entry_id: string | null; session_id: string | null }>;
+          }
+        ).records,
+      ).toEqual([
+        expect.objectContaining({
+          stream_entry_id: crossSessionThought.id,
+          session_id: otherSessionId,
+        }),
+      ]);
+    } finally {
+      otherWriter.close();
       await harness.cleanup();
     }
   });

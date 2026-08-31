@@ -13,7 +13,11 @@ import {
   unknownMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
 } from "../../memory/common/disclosure-label.js";
-import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
+import {
+  actionMemoryDisclosureLabel,
+  memoryDisclosurePayloadFields,
+} from "../../memory/common/disclosure-serializers.js";
+import type { ActionRecord } from "../../memory/actions/index.js";
 import {
   livedExperienceDaySummarySchema,
   type ActivityAutobiographicalSourceEvent,
@@ -66,7 +70,7 @@ const livedExperienceDaySummaryToolSchema = z.object({
 export const LIVED_EXPERIENCE_DAY_SUMMARY_TOOL = {
   name: TOOL_NAME,
   description:
-    "Emit one first-person experiential summary for a closed UTC day from self-private decisions, counts, and summarized episode evidence.",
+    "Emit one first-person experiential summary for a closed UTC day from self-private decisions, counts, summarized episode evidence, and my own action records with outcomes.",
   inputSchema: toToolInputSchema(livedExperienceDaySummaryToolSchema),
 } satisfies LLMToolDefinition;
 
@@ -233,15 +237,18 @@ function buildDayPrompt(input: {
   selfDecisionEvents: readonly SelfDecisionProjectionSourceEvent[];
   activityEvents: readonly ActivityAutobiographicalSourceEvent[];
   episodes: readonly Episode[];
+  actionRecords: readonly ActionRecord[];
   countsSnapshot: JsonValue;
   maxSelfDecisionEvents: number;
   maxActivityEvents: number;
   maxEpisodes: number;
+  maxActionRecords: number;
 }): string {
   return [
     "I consolidate one closed UTC day of my own cross-session lived experience.",
     `I emit exactly one ${TOOL_NAME} tool call.`,
     "I write one durable first-person experiential gist: what the day felt like as an arc, what distinct events stood out, and how many repeated wakes or decisions collapsed into a routine pattern.",
+    "When several decision summaries repeat the same rationale across timestamps, I narrate one decision that recurred, not many separate acts of will. Re-deriving an already-settled closure is repetition, not new agency, and I do not multiply it into separate choices.",
     "I preserve provided counts as counts. I do not invent counts.",
     "I do not decide whether any wake, silence, or decision should have happened, succeeded, failed, or deserved approval. I only narrate what the day was like from the evidence.",
     "I do not quote other-audience message text. Activity rows are structural context only.",
@@ -295,6 +302,21 @@ function buildDayPrompt(input: {
         }),
       ),
     ),
+    // Attempts whose outcome was not delivery produce no activity row and no
+    // episode, so without these rows the day narrative was assembled from a
+    // source that only ever received evidence of arrivals -- a success-only
+    // autobiography. The action records are the one durable per-attempt
+    // surface, so they feed the writer directly.
+    `My own action records with outcomes for this day, capped at ${input.maxActionRecords}. An attempt whose outcome was not delivery is part of my day even though it produced no reply and no episode:`,
+    ...input.actionRecords.map((record) =>
+      JSON.stringify({
+        created_at: record.created_at,
+        state: record.state,
+        description: record.description,
+        source_stream_entry_ids: record.provenance_stream_entry_ids,
+        ...memoryDisclosurePayloadFields(actionMemoryDisclosureLabel(record)),
+      }),
+    ),
   ].join("\n");
 }
 
@@ -337,12 +359,14 @@ function buildChange(item: LivedExperienceDaySummarizerPlan["items"][number]): O
 async function combinedDisclosureLabel(input: {
   ctx: OfflineContext;
   activityEvents: readonly ActivityAutobiographicalSourceEvent[];
+  actionRecords: readonly ActionRecord[];
   sourceEpisodeIds: readonly EpisodeId[];
 }): Promise<MemoryDisclosureLabel> {
   const originAudienceIds = uniqueValues(
-    input.activityEvents
-      .map((event) => event.audienceEntityId)
-      .filter((entityId): entityId is EntityId => entityId !== null),
+    [
+      ...input.activityEvents.map((event) => event.audienceEntityId),
+      ...input.actionRecords.map((record) => record.audience_entity_id),
+    ].filter((entityId): entityId is EntityId => entityId !== null),
   );
   const labels: MemoryDisclosureLabel[] = [selfPrivateMemoryDisclosureLabel(originAudienceIds)];
 
@@ -361,11 +385,13 @@ function candidateSourceStreamIds(input: {
   selfDecisionEvents: readonly SelfDecisionProjectionSourceEvent[];
   activityEvents: readonly ActivityAutobiographicalSourceEvent[];
   episodes: readonly Episode[];
+  actionRecords: readonly ActionRecord[];
 }): StreamEntryId[] {
   return uniqueValues([
     ...input.selfDecisionEvents.flatMap((event) => event.sourceStreamEntryIds),
     ...input.activityEvents.flatMap((event) => event.sourceStreamEntryIds),
     ...sourceStreamEntryIdsFromEpisodes(input.episodes),
+    ...input.actionRecords.flatMap((record) => record.provenance_stream_entry_ids),
   ]);
 }
 
@@ -510,6 +536,16 @@ export class LivedExperienceDaySummarizerProcess implements OfflineProcess<Lived
                 { limit: config.maxEpisodesPerDay },
               )
             ).map((candidateEpisode) => candidateEpisode.episode);
+            // recallAllAudiences: cognition recall is global; the labels on
+            // each row carry disclosure. Actor-scoped structurally: these are
+            // my own acts, which is what the day narrative was blind to.
+            const actionRecords = ctx.actionRepository.list({
+              actor: "borg",
+              recallAllAudiences: true,
+              createdSinceMs: candidate.dayStartMs,
+              createdUntilMs: candidate.dayEndMs,
+              limit: config.maxActionRecordsPerDay,
+            });
             const countsSnapshot = densityCountsSnapshot(candidate);
             const response = (
               await callStructuredTool({
@@ -517,7 +553,7 @@ export class LivedExperienceDaySummarizerProcess implements OfflineProcess<Lived
                 request: {
                   model: ctx.config.anthropic.models.background,
                   system: [
-                    "I consolidate my own closed-day lived experience from self-private decision summaries, structural activity counts, and summarized episode evidence.",
+                    "I consolidate my own closed-day lived experience from self-private decision summaries, structural activity counts, summarized episode evidence, and my own action records with outcomes.",
                     "I produce experiential narrative only. I do not judge output quality or decide whether any wake, silence, or decision was justified.",
                     SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
                   ].join("\n"),
@@ -529,10 +565,12 @@ export class LivedExperienceDaySummarizerProcess implements OfflineProcess<Lived
                         selfDecisionEvents,
                         activityEvents,
                         episodes,
+                        actionRecords,
                         countsSnapshot,
                         maxSelfDecisionEvents: config.maxSelfDecisionEventsPerDay,
                         maxActivityEvents: config.maxActivityEventsPerDay,
                         maxEpisodes: config.maxEpisodesPerDay,
+                        maxActionRecords: config.maxActionRecordsPerDay,
                       }),
                     },
                   ],
@@ -551,6 +589,7 @@ export class LivedExperienceDaySummarizerProcess implements OfflineProcess<Lived
                 selfDecisionEvents,
                 activityEvents,
                 episodes,
+                actionRecords,
               }),
             );
 
@@ -595,6 +634,7 @@ export class LivedExperienceDaySummarizerProcess implements OfflineProcess<Lived
             const disclosureLabel = await combinedDisclosureLabel({
               ctx,
               activityEvents,
+              actionRecords,
               sourceEpisodeIds,
             });
             const previous = ctx.livedExperienceDaySummaryRepository.getByDay(

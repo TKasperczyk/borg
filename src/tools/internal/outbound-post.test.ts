@@ -462,6 +462,10 @@ describe("tool.outbound.post", () => {
         state: "not_done",
         completed_at: null,
         not_done_at: expect.any(Number),
+        // The pre-flight refusal never calls postOutbound, so this row is the whole record of the
+        // reach. It must not read as a post that was written and then stranded.
+        description:
+          "Outbound post to Alice not started: no_wired_outbound_connector -- the target turn never ran, so nothing was composed and no entry was written to that session.",
         provenance_stream_entry_ids: [context.toolCallEntryId],
       }),
       { creationSource: "tool" },
@@ -567,6 +571,107 @@ describe("tool.outbound.post", () => {
         },
       },
     });
+  });
+
+  it("records a busy reach as an attempt that never composed", async () => {
+    const operatorSession = session({
+      audience_role: "operator",
+    });
+    const targetSession = session();
+    const actions = actionRepository();
+    const toolCallEntryId = createStreamEntryId();
+    const tool = createOutboundPostTool({
+      sessionsRepository: repository([operatorSession, targetSession]),
+      connectorRegistry: connectorRegistry(),
+      postOutbound: vi.fn(async () => ({
+        targetSessionId: targetSession.session_id,
+        status: "target_busy" as const,
+        emitted: false,
+        response: "",
+        deliveryOutcome: {
+          state: "target_busy" as const,
+          reason: "target_session_busy" as const,
+        },
+      })),
+      actionRepository: actions,
+    });
+
+    await tool.invoke(
+      {
+        target_session_id: targetSession.session_id,
+        instruction: "Reach out.",
+      },
+      {
+        sessionId: operatorSession.session_id,
+        origin: "deliberator",
+        sessionAudienceRole: "operator",
+        currentSenderBorgRole: "creator",
+        toolCallEntryId,
+      },
+    );
+
+    const [record] = actions.add.mock.calls[0] as [{ description: string }];
+
+    expect(record.description).toBe(
+      "Outbound post to Alice not started: target_session_busy -- the target turn never ran, so nothing was composed and no entry was written to that session.",
+    );
+    // Retracted wording, pinned so it cannot return under a rewrite: a busy reach leaves no agent
+    // message, no marker and no delivery event, so this row is the only artifact of it and must not
+    // report a post.
+    expect(record.description).not.toBe("Outbound post to Alice: target_session_busy.");
+    // The correction has to survive the 80-char sample truncation in the older-action-thread
+    // summary, which is where a row this old is read from.
+    expect(record.description.slice(0, 80)).toContain("not started");
+  });
+
+  it("keeps the composed-post wording for outcomes whose target turn ran", async () => {
+    const operatorSession = session({
+      audience_role: "operator",
+    });
+    const targetSession = session();
+    const agentMessageId = createStreamEntryId();
+    const streamEntryId = createStreamEntryId();
+    const actions = actionRepository();
+    const toolCallEntryId = createStreamEntryId();
+    const tool = createOutboundPostTool({
+      sessionsRepository: repository([operatorSession, targetSession]),
+      connectorRegistry: connectorRegistry(),
+      postOutbound: vi.fn(async () => ({
+        targetSessionId: targetSession.session_id,
+        status: "completed" as const,
+        emitted: true,
+        response: "Target-scoped message",
+        agentMessageId,
+        deliveryOutcome: {
+          state: "transport_failed" as const,
+          reason: "transport_failed" as const,
+          agentMessageId,
+          streamEntryId,
+          sourceType: "demo" as const,
+        },
+      })),
+      actionRepository: actions,
+    });
+
+    await tool.invoke(
+      {
+        target_session_id: targetSession.session_id,
+        instruction: "Reach out.",
+      },
+      {
+        sessionId: operatorSession.session_id,
+        origin: "deliberator",
+        sessionAudienceRole: "operator",
+        currentSenderBorgRole: "creator",
+        toolCallEntryId,
+      },
+    );
+
+    const [record] = actions.add.mock.calls[0] as [{ description: string }];
+
+    // A refused transport did compose: the message stands in the target session and the row is one
+    // artifact among several. Only the never-dispatched outcomes change wording.
+    expect(record.description).toBe("Outbound post to Alice: transport_failed.");
   });
 
   it("rejects invalid target shape structurally", async () => {

@@ -43,6 +43,12 @@ export type EvidenceLedgerEntry = {
   state?: string;
   salience_class?: EvidenceLedgerActionSalienceClass;
   state_metadata?: Record<string, unknown>;
+  /** Planner-only presentation metadata for the compact planner digest and its captures. */
+  planner_metadata?: {
+    decision_outcome_ref?: string;
+    decision_summary?: string;
+    decision_rationale?: string | null;
+  };
   taint?: EvidenceLedgerTaint;
   persistence_class?: StreamEntryPersistenceClass;
   via_retrieval?: boolean;
@@ -139,6 +145,20 @@ export type EvidenceLedgerSectionFraming = {
   text: string;
   counts?: Record<string, number>;
 };
+
+// Shared by the two sections that render a self-decision label (13 and 14), so the wording
+// cannot drift apart and leave one of them reading as if it carried no caveat.
+//
+// The label is written by summarizeAutonomousDecision() in src/autonomy/scheduler.ts, which
+// reads turnResult.response and turnResult.emission and nothing else -- notably not
+// turnResult.toolCalls. So the vocabulary is closed over emission kinds, and a turn that made
+// an outbound tool call is described by the same label as one that made none. Observed live on
+// 2026-08-28: autonomous turn 32a3cb12 (wake fired 00:08:22Z) called tool.outbound.post at
+// 00:13:57Z, the delivery came back transport_failed at 00:15:28Z and filed action record
+// act_mj8aryyayv8v95r3, and the turn's self-decision row at 00:15:58Z reads "Continued private
+// train of thought." Both are true of the same turn; only one of them mentions the reach.
+export const SELF_DECISION_LABEL_SCOPE_FRAMING =
+  "A self-decision label reports that turn's emission alone, whether it spoke, stayed silent, or continued privately, and reads nothing the turn did through a tool. An autonomous turn that reached outward and had the reach fail in transport therefore still labels as private thought, and the reach and its outcome are recorded only as an action record.";
 
 export type EvidenceLedgerSection = {
   id: EvidenceLedgerSectionId;

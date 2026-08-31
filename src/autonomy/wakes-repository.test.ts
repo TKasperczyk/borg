@@ -10,7 +10,10 @@ import { DEFAULT_SESSION_ID } from "../util/ids.js";
 
 import { autonomyMigrations } from "./migrations.js";
 import { AUTONOMY_CONDITION_NAMES, AUTONOMY_WAKE_SOURCE_NAMES } from "./types.js";
-import { AutonomyWakesRepository } from "./wakes-repository.js";
+import {
+  AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH,
+  AutonomyWakesRepository,
+} from "./wakes-repository.js";
 
 describe("AutonomyWakesRepository", () => {
   it("records wakes and counts them since a cutoff", () => {
@@ -91,6 +94,99 @@ describe("AutonomyWakesRepository", () => {
           expect.objectContaining({ id: legacyNullWake.id, outcome: null }),
         ]),
       );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("tallies outcome details against the bucket total and names the undetailed remainder", () => {
+    const clock = new ManualClock(1_000);
+    const db = openDatabase(":memory:", { migrations: autonomyMigrations });
+    const repository = new AutonomyWakesRepository({ db, clock });
+
+    try {
+      const recordErrored = (detail?: string | null) => {
+        clock.advance(1);
+        const wake = repository.record({
+          trigger_name: "goal_followup_due",
+          session_id: DEFAULT_SESSION_ID,
+          wake_source_type: "trigger",
+        });
+        repository.recordOutcome(wake.id, "error", detail);
+        return wake;
+      };
+
+      recordErrored("LLMError: Failed to complete Anthropic request");
+      recordErrored("LLMError: Failed to complete Anthropic request");
+      recordErrored("Anthropic connection failed after 3 attempts");
+      // A pre-detail row: the outcome landed, the reason never did.
+      recordErrored(null);
+      clock.advance(1);
+      const headwayWake = repository.record({
+        trigger_name: "scheduled_reflection",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+        source_category: "contemplative",
+      });
+      repository.recordOutcome(headwayWake.id, "headway");
+
+      const tally = repository.summarizeOutcomeDetailsSince(0, "error");
+
+      // The bucket total is the same number countSince reports, so the split can
+      // be checked against the count it claims to decompose.
+      expect(tally.total).toBe(repository.countSince(0, { outcome: "error" }));
+      expect(tally.total).toBe(4);
+      expect(tally.without_detail).toBe(1);
+      expect(tally.reasons).toEqual([
+        { detail: "LLMError: Failed to complete Anthropic request", count: 2 },
+        { detail: "Anthropic connection failed after 3 attempts", count: 1 },
+      ]);
+      // reasons + without_detail always reconciles to total.
+      expect(
+        tally.reasons.reduce((sum, reason) => sum + reason.count, 0) + tally.without_detail,
+      ).toBe(tally.total);
+      // The headway row is a different bucket and contributes nothing here.
+      expect(repository.summarizeOutcomeDetailsSince(0, "headway")).toEqual({
+        total: 1,
+        without_detail: 1,
+        reasons: [],
+      });
+      // The window edge applies to the tally exactly as it does to the counts.
+      expect(repository.summarizeOutcomeDetailsSince(1_003, "error").total).toBe(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("clamps an outcome detail and marks it rather than storing an unbounded error", () => {
+    const clock = new ManualClock(1_000);
+    const db = openDatabase(":memory:", { migrations: autonomyMigrations });
+    const repository = new AutonomyWakesRepository({ db, clock });
+
+    try {
+      const wake = repository.record({
+        trigger_name: "goal_followup_due",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+      });
+      repository.recordOutcome(wake.id, "error", `x${"y".repeat(1_000)}`);
+      clock.advance(1);
+      const blankWake = repository.record({
+        trigger_name: "goal_followup_due",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+      });
+      repository.recordOutcome(blankWake.id, "error", "   ");
+
+      const stored = repository.listSince(0, 10).find((row) => row.id === wake.id);
+
+      expect(stored?.outcome_detail).toHaveLength(
+        AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH + "...".length,
+      );
+      expect(stored?.outcome_detail?.endsWith("...")).toBe(true);
+      // A whitespace-only detail is no detail; it must not become a distinct
+      // reason that looks like an attributed failure.
+      expect(repository.summarizeOutcomeDetailsSince(0, "error").without_detail).toBe(1);
     } finally {
       db.close();
     }

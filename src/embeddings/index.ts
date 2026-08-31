@@ -30,18 +30,112 @@ export type OpenAICompatibleEmbeddingClientOptions = {
   dims: number;
   client?: OpenAIEmbeddingsClient;
   modelReloadRetryDelaysMs?: readonly number[];
+  maxBatchSize?: number;
 };
 
 const DEFAULT_MODEL_RELOAD_RETRY_DELAYS_MS: readonly number[] = [1000, 4000, 10_000];
 
+// Callers pass unbounded arrays (every action record missing an embedding,
+// every reflector tag, every retrieval intent), and a local inference server
+// does not degrade gracefully on a large one: measured against LM Studio with
+// an 8B embedding model, 16 inputs took 7s, 64 took 29s, and 128 returned
+// `400 "Model has unloaded or crashed."` -- taking the model down for every
+// other consumer on the host, not just this one. Chunking here covers every
+// call site at once, which is why it belongs in the client rather than in the
+// callers. 32 sits comfortably under the observed cliff.
+const DEFAULT_MAX_EMBED_BATCH_SIZE = 32;
+
+// A JIT-loading server reports an evicted model in more than one way, and the
+// reload retry below is useless unless every shape is recognised. LM Studio
+// answers 404/model_not_found when the model was never loaded, 400 "Model
+// has unloaded or crashed." once it has evicted an idle one, and 400 "Failed
+// to load model ... Model does not exist." for requests that race into the
+// window between an eviction and the JIT reload starting -- observed live when
+// the host's internal RAG engine loads a different embedding model, evicting
+// ours: the request that triggers the reload rides it out and succeeds, while
+// concurrent siblings fail instantly with that third shape. Each unrecognised
+// shape was a hard turn failure.
+//
+// "does not exist" also matches a permanently misconfigured model id; the
+// retry ladder makes that cost one bounded delay cycle before surfacing the
+// same error, which is acceptable against silently dropping the recoverable
+// race case.
+//
+// This inspects a transport-layer error object, not model output: provider
+// error signatures are the one thing that legitimately has to be matched by
+// shape. Kept narrow on purpose -- a bare 400 is an ordinary bad request.
 function isModelNotLoadedError(error: unknown): boolean {
   if (typeof error !== "object" || error === null) {
     return false;
   }
 
-  const candidate = error as { status?: unknown; code?: unknown };
+  const candidate = error as {
+    status?: unknown;
+    code?: unknown;
+    message?: unknown;
+    error?: { message?: unknown };
+  };
 
-  return candidate.status === 404 && candidate.code === "model_not_found";
+  if (candidate.status === 404 && candidate.code === "model_not_found") {
+    return true;
+  }
+
+  if (candidate.status !== 400) {
+    return false;
+  }
+
+  const message = [candidate.message, candidate.error?.message]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase();
+
+  // Require "model" plus a load-failure half so an unrelated 400 mentioning a
+  // model in passing does not get retried forever.
+  return (
+    message.includes("model") &&
+    (message.includes("unloaded") || message.includes("crashed") || message.includes("does not exist"))
+  );
+}
+
+// The wrapped cause carries the only information that identifies WHY a request
+// failed (transport vs 4xx vs abort vs provider quirk), and it does not survive
+// into the trace or the journal -- every failure reads identically as "Failed to
+// generate embeddings". That cost two wrong diagnoses of a live incident, so the
+// distinguishing fields go in the message itself. Bounded, and no request
+// content: status/code/name are provider metadata, and the message is truncated.
+function describeEmbeddingCause(error: unknown): string {
+  if (typeof error !== "object" || error === null) {
+    return String(error);
+  }
+
+  const candidate = error as {
+    name?: unknown;
+    status?: unknown;
+    code?: unknown;
+    type?: unknown;
+    message?: unknown;
+    error?: { message?: unknown; type?: unknown };
+    cause?: { code?: unknown; message?: unknown };
+  };
+
+  const parts: string[] = [];
+  const push = (label: string, value: unknown): void => {
+    if (value !== undefined && value !== null && value !== "") {
+      parts.push(`${label}=${String(value)}`);
+    }
+  };
+
+  push("name", candidate.name);
+  push("status", candidate.status);
+  push("code", candidate.code ?? candidate.cause?.code);
+  push("type", candidate.type ?? candidate.error?.type);
+
+  const message = candidate.message ?? candidate.error?.message ?? candidate.cause?.message;
+  if (typeof message === "string" && message !== "") {
+    parts.push(`message="${message.slice(0, 300)}"`);
+  }
+
+  return parts.length > 0 ? parts.join(" ") : "unknown cause";
 }
 
 function validateDimensions(embedding: number[], dims: number, model: string): Float32Array {
@@ -59,6 +153,7 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
   private readonly model: string;
   private readonly dims: number;
   private readonly modelReloadRetryDelaysMs: readonly number[];
+  private readonly maxBatchSize: number;
 
   constructor(options: OpenAICompatibleEmbeddingClientOptions) {
     if (!Number.isInteger(options.dims) || options.dims <= 0) {
@@ -90,6 +185,12 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
     this.dims = options.dims;
     this.modelReloadRetryDelaysMs =
       options.modelReloadRetryDelaysMs ?? DEFAULT_MODEL_RELOAD_RETRY_DELAYS_MS;
+
+    const requestedBatchSize = options.maxBatchSize ?? DEFAULT_MAX_EMBED_BATCH_SIZE;
+    if (!Number.isInteger(requestedBatchSize) || requestedBatchSize <= 0) {
+      throw new ConfigError("Embedding max batch size must be a positive integer");
+    }
+    this.maxBatchSize = requestedBatchSize;
   }
 
   async embed(text: string): Promise<Float32Array> {
@@ -106,6 +207,22 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
     if (texts.length === 0) {
       return [];
     }
+
+    // Sequential, not parallel: the point is to keep concurrent load off a
+    // shared local inference server, so firing the chunks at once would
+    // reintroduce the pressure this exists to avoid.
+    if (texts.length > this.maxBatchSize) {
+      const out: Float32Array[] = [];
+      for (let start = 0; start < texts.length; start += this.maxBatchSize) {
+        out.push(...(await this.embedChunk(texts.slice(start, start + this.maxBatchSize))));
+      }
+      return out;
+    }
+
+    return this.embedChunk(texts);
+  }
+
+  private async embedChunk(texts: readonly string[]): Promise<Float32Array[]> {
 
     try {
       const response = await this.createWithModelReloadRetry(texts);
@@ -125,14 +242,18 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
         throw error;
       }
 
-      throw new EmbeddingError("Failed to generate embeddings", {
-        cause: error,
-      });
+      throw new EmbeddingError(
+        `Failed to generate embeddings (${describeEmbeddingCause(error)})`,
+        { cause: error },
+      );
     }
   }
 
-  // JIT-loading inference servers (LM Studio, llama.cpp) evict the model when
-  // a different one is requested, returning 404 model_not_found until reload.
+  // JIT-loading inference servers (LM Studio, llama.cpp) evict the model both
+  // when a different one is requested AND when it sits idle -- see
+  // isModelNotLoadedError for the two error shapes that means. A long turn
+  // (a multi-minute planner call) is enough idle time to lose it, so this
+  // retry is on the normal path, not an edge case.
   private async createWithModelReloadRetry(
     texts: readonly string[],
   ): ReturnType<OpenAIEmbeddingsClient["embeddings"]["create"]> {

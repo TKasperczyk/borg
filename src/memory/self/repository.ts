@@ -9,6 +9,7 @@ export {
   type GoalFollowupDueCandidate,
   type GoalFollowupDueCandidateOptions,
   type GoalListOptions,
+  type GoalRetirementResult,
   type GoalStatusUpdateOptions,
   type GoalsRepositoryOptions,
 } from "./goals-repository.js";

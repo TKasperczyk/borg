@@ -13,6 +13,7 @@ export function createEmbeddingClient(config: Config): EmbeddingClient {
     apiKey: config.embedding.apiKey,
     model: config.embedding.model,
     dims: config.embedding.dims,
+    maxBatchSize: config.embedding.maxBatchSize,
   });
 
   return createCachingEmbeddingClient(inner, {

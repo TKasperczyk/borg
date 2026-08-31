@@ -6,6 +6,7 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createEntityId, createGoalId, createSessionId } from "../../util/ids.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
+import { GOAL_PROMOTION_SYSTEM_PROMPT } from "../prompts/goal-extraction.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import {
   GOAL_PROMOTION_CLASSIFICATIONS,
@@ -19,14 +20,14 @@ type PromotionInput = {
   description?: string;
   terminal_condition?: string | null;
   priority?: number;
-  target_at?: number | null;
+  target_at?: string | null;
   reason?: string;
   confidence?: number;
   duplicate_of_goal_id?: string | null;
   initial_step?: {
     description: string;
     kind: "think" | "ask_user" | "research" | "act" | "wait";
-    due_at?: number | null;
+    due_at?: string | null;
     rationale: string;
   } | null;
 };
@@ -88,6 +89,7 @@ function createExtractorInput(
     userMessage: "Help me track the refactor across sessions.",
     recentHistory: [],
     audienceEntityId: createEntityId(),
+    nowMs: 1_700_000_000_000,
     temporalCue: null,
     activeGoals: [],
     ...overrides,
@@ -144,10 +146,77 @@ describe("GoalPromotionExtractor", () => {
       name: "EmitGoalPromotion",
     });
     expect(llm.requests[0]?.max_tokens).toBe(EXTRACTOR_MAX_TOKENS_DEFAULT);
-    expect(llm.requests[0]?.system).toContain("not_borg_responsibility");
-    expect(llm.requests[0]?.system).toContain("terminal_condition");
-    expect(llm.requests[0]?.system).toContain("structural completion condition");
-    expect(llm.requests[0]?.system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
+    expect(llm.requests[0]?.system).toBe(GOAL_PROMOTION_SYSTEM_PROMPT);
+    expect(llm.requests[0]?.tools?.some((tool) => tool.cache_control !== undefined)).toBe(false);
+    expect(GOAL_PROMOTION_SYSTEM_PROMPT).toContain("not_borg_responsibility");
+    expect(GOAL_PROMOTION_SYSTEM_PROMPT).toContain("terminal_condition");
+    expect(GOAL_PROMOTION_SYSTEM_PROMPT).toContain("meaningful future completion condition");
+    expect(GOAL_PROMOTION_SYSTEM_PROMPT).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
+  });
+
+  it("describes global duplicate coverage and prospective completion in the prompt and tool schema", async () => {
+    const llm = new FakeLLMClient({ responses: [goalPromotionResponse([])] });
+    const extractor = new GoalPromotionExtractor({ llmClient: llm, model: "haiku" });
+
+    await extractor.extract(createExtractorInput());
+
+    const systemPrompt = String(llm.requests[0]?.system ?? "");
+    const properties = llm.requests[0]?.tools?.[0]?.inputSchema.properties as {
+      promotions?: {
+        items?: {
+          properties?: Record<string, { description?: string }>;
+        };
+      };
+    };
+    const promotionProperties = properties.promotions?.items?.properties ?? {};
+
+    expect(systemPrompt).toContain(
+      "active_goals list is the complete global set of active goals across audiences and owners",
+    );
+    expect(systemPrompt).toContain("same underlying Borg responsibility or completion outcome");
+    expect(systemPrompt).toContain("rephrased, translated, renewed later");
+    expect(systemPrompt).toContain("the current turn need not refer to the prior goal");
+    expect(systemPrompt).toContain(
+      "A description of the current conversation, topic, exchange, or what Borg is presently tracking is context, not a goal",
+    );
+    expect(systemPrompt).toContain(
+      "do not invent a terminal condition merely to qualify the candidate",
+    );
+    expect(systemPrompt).not.toContain("genuinely open-ended but actionable");
+    expect(promotionProperties.duplicate_of_goal_id?.description).toContain(
+      "same underlying Borg responsibility or completion outcome",
+    );
+    expect(promotionProperties.duplicate_of_goal_id?.description).toContain(
+      "the current turn need not refer to the prior goal",
+    );
+    expect(promotionProperties.terminal_condition?.description).toContain(
+      "meaningful future completion condition",
+    );
+    expect(promotionProperties.terminal_condition?.description).toContain(
+      "null for non-durable classifications",
+    );
+    expect(promotionProperties.terminal_condition?.description).not.toContain(
+      "genuinely open-ended",
+    );
+  });
+
+  it("anchors the prompt with the current time so deadlines resolve to the right year", async () => {
+    // A year-less date in the user turn ("before August 14") is unresolvable
+    // without this anchor and produced a live goal dated two years in the past.
+    const llm = new FakeLLMClient({ responses: [goalPromotionResponse([])] });
+    const extractor = new GoalPromotionExtractor({
+      llmClient: llm,
+      model: "haiku",
+    });
+    const nowMs = 1_700_000_000_000;
+
+    await extractor.extract(createExtractorInput({ nowMs }));
+
+    const payload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      current_time?: { epoch_ms?: number; iso?: string };
+    };
+    expect(payload.current_time?.epoch_ms).toBe(nowMs);
+    expect(payload.current_time?.iso).toBe(new Date(nowMs).toISOString());
   });
 
   it("emits extractor completion traces with session scope", async () => {
@@ -240,21 +309,23 @@ describe("GoalPromotionExtractor", () => {
         }),
       }),
     );
-    expect(llm.requests[0]?.system).toContain("monitoring p95");
-    expect(llm.requests[0]?.system).toContain("scheduled document edits");
-    expect(llm.requests[0]?.system).toContain(
+    const systemPrompt = llm.requests[0]?.system as string;
+
+    expect(systemPrompt).toContain("monitoring p95");
+    expect(systemPrompt).toContain("scheduled document edits");
+    expect(systemPrompt).toContain(
       "Durable goals are about Borg's durable conversation/memory responsibility",
     );
-    expect(llm.requests[0]?.system).toContain(
+    expect(systemPrompt).toContain(
       'A user saying "my goal is to..." is usually participant-side context',
     );
-    expect(llm.requests[0]?.system).toContain('my goal is to deploy", "friend will respond"');
-    expect(llm.requests[0]?.system).not.toContain("treat that speaker as the goal owner");
-    expect(llm.requests[0]?.system).toContain("user will deploy -> not_borg_responsibility");
-    expect(llm.requests[0]?.system).toContain(
+    expect(systemPrompt).toContain('my goal is to deploy", "friend will respond"');
+    expect(systemPrompt).not.toContain("treat that speaker as the goal owner");
+    expect(systemPrompt).toContain("user will deploy -> not_borg_responsibility");
+    expect(systemPrompt).toContain(
       "Borg will monitor p95 -> impossible_for_borg_without_capability",
     );
-    expect(llm.requests[0]?.system).toContain("My host capability boundary");
+    expect(systemPrompt).toContain("My host capability boundary");
   });
 
   it("returns no candidates when the LLM finds no Borg role", async () => {
@@ -280,13 +351,13 @@ describe("GoalPromotionExtractor", () => {
           {
             description: "Help the user keep the Monday planning review organized",
             priority: 9,
-            target_at: 1_800_000,
+            target_at: "2026-11-30",
             reason: "The user asked Borg to keep the planning review organized.",
             confidence: 0.92,
             initial_step: {
               description: "Ask for review constraints before Monday",
               kind: "ask_user",
-              due_at: 1_700_000,
+              due_at: "2026-11-23T17:00:00Z",
               rationale: "Borg needs the constraints to track the review well.",
             },
           },
@@ -306,14 +377,82 @@ describe("GoalPromotionExtractor", () => {
       ),
     ).resolves.toMatchObject([
       {
-        target_at: 1_800_000,
+        target_at: Date.parse("2026-11-30T23:59:59.999Z"),
         initial_step: {
           description: "Ask for review constraints before Monday",
           kind: "ask_user",
-          due_at: 1_700_000,
+          due_at: Date.parse("2026-11-23T17:00:00Z"),
         },
       },
     ]);
+  });
+
+  it("asks the model for calendar dates rather than epoch integers", async () => {
+    const llm = new FakeLLMClient({ responses: [goalPromotionResponse([])] });
+    const extractor = new GoalPromotionExtractor({ llmClient: llm, model: "haiku" });
+
+    await extractor.extract(createExtractorInput({}));
+
+    const properties = llm.requests[0]?.tools?.[0]?.inputSchema.properties as {
+      promotions?: { items?: { properties?: Record<string, { type?: string }> } };
+    };
+    const promotionProperties = properties.promotions?.items?.properties ?? {};
+
+    // A 13-digit epoch has to be written digit by digit, and one wrong digit is a
+    // silent year-scale error. The wire type is what keeps that off the record.
+    expect(promotionProperties.target_at?.type).not.toBe("number");
+    expect(JSON.stringify(promotionProperties.target_at)).toContain("string");
+  });
+
+  it("resolves a year-forward calendar date to that year rather than to the current one", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        goalPromotionResponse([
+          {
+            description: "Track the one-year verification the participants agreed on",
+            target_at: "2027-08-11",
+            confidence: 0.95,
+          },
+        ]),
+      ],
+    });
+    const extractor = new GoalPromotionExtractor({ llmClient: llm, model: "haiku" });
+
+    const candidates = await extractor.extract(
+      createExtractorInput({ nowMs: Date.parse("2026-08-11T14:40:44Z") }),
+    );
+
+    expect(candidates[0]?.target_at).toBe(Date.parse("2027-08-11T23:59:59.999Z"));
+    expect(candidates[0]?.target_at).toBeGreaterThan(Date.parse("2026-08-11T14:40:44Z"));
+  });
+
+  it("skips a promotion whose deadline is not a parseable calendar date", async () => {
+    const { emit, tracer } = tracingHarness();
+    const llm = new FakeLLMClient({
+      responses: [
+        goalPromotionResponse([
+          {
+            description: "Track something with an unusable deadline",
+            target_at: "next August sometime",
+            confidence: 0.95,
+          },
+        ]),
+      ],
+    });
+    const extractor = new GoalPromotionExtractor({
+      llmClient: llm,
+      model: "haiku",
+      tracer,
+      turnId: "turn_deadline",
+    });
+
+    await expect(extractor.extract(createExtractorInput({}))).resolves.toEqual([]);
+    expect(emit).toHaveBeenCalledWith(
+      "extraction.goals.completed",
+      expect.objectContaining({
+        skipped_promotions: [{ candidate_index: 0, reason: "invalid_target_at" }],
+      }),
+    );
   });
 
   it.each(
@@ -413,6 +552,7 @@ describe("GoalPromotionExtractor", () => {
 
   it("preserves duplicate references for persistence-time dedup", async () => {
     const existingGoalId = createGoalId();
+    const audience = createEntityId();
     const owner = createEntityId();
     const llm = new FakeLLMClient({
       responses: [
@@ -440,6 +580,7 @@ describe("GoalPromotionExtractor", () => {
             terminal_condition: "The release checklist is settled",
             priority: 8,
             target_at: null,
+            audience_entity_id: audience,
             owner_entity_id: owner,
           },
         ],
@@ -454,6 +595,7 @@ describe("GoalPromotionExtractor", () => {
     ]);
     const payload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
       active_goals?: Array<{
+        audience_entity_id?: string | null;
         owner_entity_id?: string | null;
         terminal_condition?: string | null;
         disclosure?: string;
@@ -462,13 +604,14 @@ describe("GoalPromotionExtractor", () => {
     };
     const activeGoal = payload.active_goals?.[0];
 
+    expect(activeGoal?.audience_entity_id).toBe(audience);
     expect(activeGoal?.owner_entity_id).toBe(owner);
     expect(activeGoal?.terminal_condition).toBe("The release checklist is settled");
     expect(activeGoal?.disclosure).toContain("disclosure_class=relationship_private");
-    expect(activeGoal?.disclosure).toContain(`private-to=${owner}`);
+    expect(activeGoal?.disclosure).toContain(`private-to=${audience},${owner}`);
     expect(activeGoal?.disclosure_label).toMatchObject({
       disclosure_class: "relationship_private",
-      private_to_entity_ids: [owner],
+      private_to_entity_ids: [audience, owner],
     });
   });
 

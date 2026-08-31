@@ -149,9 +149,9 @@ type VectorDuplicateReviewResolverVerdict = z.infer<
 
 const newInsightReviewResolverVerdictSchema = z
   .object({
-    decision: z.enum(["accept", "dismiss", "needs_manual"]),
+    verdict: z.enum(["accept", "dismiss", "needs_manual"]),
     confidence: z.enum(["high", "medium", "low"]),
-    rationale: z.string().min(1).max(4_000),
+    reason: z.string().min(1).max(4_000),
   })
   .strict();
 
@@ -159,9 +159,9 @@ type NewInsightReviewResolverVerdict = z.infer<typeof newInsightReviewResolverVe
 
 const semanticPairReviewResolverVerdictSchema = z
   .object({
-    decision: z.enum(["keep_both", "supersede", "invalidate", "dismiss", "needs_manual"]),
+    verdict: z.enum(["keep_both", "supersede", "invalidate", "dismiss", "needs_manual"]),
     winner_node_id: z.string().min(1).optional(),
-    rationale: z.string().min(1).max(4_000),
+    reason: z.string().min(1).max(4_000),
     confidence: z.enum(["high", "medium", "low"]),
   })
   .strict();
@@ -292,8 +292,8 @@ type LoadedNewInsightContext = {
 };
 type PreparedDecisionVerdict =
   | ReviewResolverVerdict["verdict"]
-  | NewInsightReviewResolverVerdict["decision"]
-  | SemanticPairReviewResolverVerdict["decision"];
+  | NewInsightReviewResolverVerdict["verdict"]
+  | SemanticPairReviewResolverVerdict["verdict"];
 type PreparedDecision =
   | {
       action: "resolve";
@@ -1760,7 +1760,7 @@ function semanticPairValidatedWinner(input: {
   loaded: LoadedSemanticPairContext;
   verdict: SemanticPairReviewResolverVerdict;
 }): SemanticNode["id"] | null {
-  if (input.verdict.decision !== "supersede" && input.verdict.decision !== "invalidate") {
+  if (input.verdict.verdict !== "supersede" && input.verdict.verdict !== "invalidate") {
     return null;
   }
 
@@ -1802,17 +1802,17 @@ async function prepareSemanticPairDecision(input: {
     loaded,
   });
 
-  if (verdict.decision === "needs_manual") {
-    return needsManual(verdict.rationale);
+  if (verdict.verdict === "needs_manual") {
+    return needsManual(verdict.reason);
   }
 
-  if (verdict.decision === "dismiss" || verdict.decision === "keep_both") {
+  if (verdict.verdict === "dismiss" || verdict.verdict === "keep_both") {
     return {
       action: "resolve",
-      verdict: verdict.decision,
-      resolution: verdict.decision,
-      reason: verdict.rationale,
-      appliedResolution: verdict.decision,
+      verdict: verdict.verdict,
+      resolution: verdict.verdict,
+      reason: verdict.reason,
+      appliedResolution: verdict.verdict,
     };
   }
 
@@ -1829,10 +1829,10 @@ async function prepareSemanticPairDecision(input: {
 
   return {
     action: "resolve",
-    verdict: verdict.decision,
-    resolution: verdict.decision,
-    reason: verdict.rationale,
-    appliedResolution: verdict.decision,
+    verdict: verdict.verdict,
+    resolution: verdict.verdict,
+    reason: verdict.reason,
+    appliedResolution: verdict.verdict,
     winnerNodeId,
   };
 }
@@ -1855,16 +1855,16 @@ async function prepareNewInsightDecision(input: {
     loaded,
   });
 
-  if (verdict.decision === "needs_manual") {
-    return needsManual(verdict.rationale);
+  if (verdict.verdict === "needs_manual") {
+    return needsManual(verdict.reason);
   }
 
-  if (verdict.decision === "dismiss") {
+  if (verdict.verdict === "dismiss") {
     return {
       action: "resolve",
-      verdict: verdict.decision,
+      verdict: verdict.verdict,
       resolution: "dismiss",
-      reason: verdict.rationale,
+      reason: verdict.reason,
       appliedResolution: "dismiss",
     };
   }
@@ -1888,9 +1888,9 @@ async function prepareNewInsightDecision(input: {
 
   return {
     action: "resolve",
-    verdict: verdict.decision,
+    verdict: verdict.verdict,
     resolution: "accept",
-    reason: verdict.rationale,
+    reason: verdict.reason,
     appliedResolution: "accept",
   };
 }

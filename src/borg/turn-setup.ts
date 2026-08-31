@@ -58,6 +58,7 @@ import type { PromptOverrideRepository } from "../cognition/prompts/override-rep
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { BorgStreamWriterFactory } from "./types.js";
 import type { StreamEntryIndexRepository } from "../stream/index.js";
+import type { AutonomySchedulerDescription } from "../autonomy/index.js";
 
 export type BuildTurnOrchestratorOptions = {
   config: Config;
@@ -98,6 +99,7 @@ export type BuildTurnOrchestratorOptions = {
   chatResponseWatermarkCoordinator?: ChatResponseWatermarkCoordinator;
   outboundDelivery?: Pick<OutboundDelivery, "deliver">;
   autonomousOutboundPolicy?: Pick<AutonomousOutboundPolicy, "promptContext">;
+  autonomySchedulerStateProvider?: () => Promise<AutonomySchedulerDescription | null>;
   outboundSourceTypes?: readonly SessionSourceType[];
   createStreamWriter: BorgStreamWriterFactory;
   entryIndex?: StreamEntryIndexRepository;
@@ -186,6 +188,9 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     ...(options.autonomousOutboundPolicy === undefined
       ? {}
       : { autonomousOutboundPolicy: options.autonomousOutboundPolicy }),
+    ...(options.autonomySchedulerStateProvider === undefined
+      ? {}
+      : { autonomySchedulerStateProvider: options.autonomySchedulerStateProvider }),
     ...(options.outboundSourceTypes === undefined
       ? {}
       : { outboundSourceTypes: options.outboundSourceTypes }),

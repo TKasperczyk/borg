@@ -1,7 +1,7 @@
 // Assembles the base deliberation system prompt from memory, state, and guidance sections.
 import { summarizeProvenanceForPrompt, type Provenance } from "../../../memory/common/index.js";
 import type { ActionRecord } from "../../../memory/actions/index.js";
-import type { ExecutiveFocus } from "../../../executive/index.js";
+import type { ExecutiveFocus, ExecutiveGoalScoreBasis } from "../../../executive/index.js";
 import {
   effectiveCommitmentCriticalDomain,
   effectiveCommitmentEnforcementClass,
@@ -26,7 +26,7 @@ import {
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { ReviewQueueItem } from "../../../memory/review-queue/index.js";
 import { createWorkingMemory, type WorkingMemory } from "../../../memory/working/index.js";
-import { escapeXmlText } from "../../../util/prompt-tags.js";
+import { escapeXmlText, scrubCreatorDirectiveInternalIds } from "../../../util/prompt-tags.js";
 import type { EvidenceLedgerEntry } from "../../evidence-ledger/types.js";
 import {
   MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
@@ -45,10 +45,17 @@ import {
   openQuestionMemoryDisclosureLabel,
   relationalSlotMemoryDisclosureLabel,
 } from "../../../memory/common/disclosure-serializers.js";
-import { formatRelativeAge, formatRelativeDuration } from "../../../util/relative-time.js";
+import {
+  formatRelativeAge,
+  formatRelativeDuration,
+  formatRelativeUntil,
+} from "../../../util/relative-time.js";
+import { utf16SafePrefixEnd } from "../../../util/utf16-boundary.js";
 import { formatUtcDayBoundary, utcDayKey } from "../../../util/utc-day.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
+import type { AutonomySchedulerFleetBrakeDescription } from "../../../autonomy/index.js";
+import { AUTONOMY_SCHEDULER_DESCRIPTION_DROPPED_FIELDS } from "../../mechanism-evidence.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
 import { renderParticipantRoster } from "../../perception/index.js";
@@ -85,8 +92,10 @@ import {
   RECENT_REGENERATIONS_LIMIT,
   RECENT_SUPPRESSIONS_LIMIT,
 } from "../../generation/discourse-state.js";
+import { LIVE_TURN_READ_FINALIZER_TOOL_MENU } from "../autonomous-finalizer-tools.js";
 
 export { formatRelativeAge } from "../../../util/relative-time.js";
+export { scrubCreatorDirectiveInternalIds } from "../../../util/prompt-tags.js";
 
 // Interim mitigation (v94.1.1): boundary_prompt is extractor-authored and not yet
 // operator-reviewed. Render a fixed generic string so unreviewed boundary text can
@@ -131,6 +140,8 @@ export type BuildBaseSystemPromptOptions = {
   promptBlocks?: Partial<Record<PromptKey, string>>;
   participationPolicy?: SessionParticipationPolicy;
   nowMs?: number;
+  /** Internal compact-surface seam: avoid eagerly rendering the legacy standing monolith. */
+  omitStandingAssembly?: boolean;
 };
 
 export type ResolvedPromptBlocks = Record<PromptKey, string>;
@@ -173,7 +184,7 @@ export type BaseSystemPromptSections = {
 
 export type PromptSection = TaggedPromptSection | string | null | undefined;
 
-function renderPromptSection(section: PromptSection): string | null {
+export function renderPromptSection(section: PromptSection): string | null {
   if (section === null || section === undefined) {
     return null;
   }
@@ -216,12 +227,24 @@ function renderParticipationPolicy(policy: SessionParticipationPolicy): string |
 export function renderCurrentTimeSection(
   nowMs: number | undefined,
   context?: CurrentTimePromptContext | null,
+  applicableCommitments?: readonly CommitmentRecord[],
 ): string | null {
   if (nowMs === undefined || !Number.isFinite(nowMs)) {
     return null;
   }
 
-  const lines = [`current_time_iso=${new Date(nowMs).toISOString()}`];
+  // Raw-epoch anchor. Several durable surfaces render their timestamps as bare epoch
+  // milliseconds rather than ISO -- the shared-state compact index (`created_at=`,
+  // `last_updated_at=`), and the ledger sections named in the epoch-convention note at the
+  // top of evidence-ledger/recent-lived-experience.ts. Without
+  // a paired epoch value for "now" anywhere in the prompt, those fields can only be placed
+  // in time by hand-converting a 13-digit integer, and a carry error there is silent and
+  // large. Emitting both units of the same instant once per prompt makes every raw-epoch
+  // field on the surface convertible by subtraction from a known pair.
+  const lines = [
+    `current_time_iso=${new Date(nowMs).toISOString()}`,
+    `current_time_ms=${Math.trunc(nowMs)}`,
+  ];
   const previousUserMessageAt = context?.previousUserMessageAt ?? null;
 
   if (previousUserMessageAt !== null && Number.isFinite(previousUserMessageAt)) {
@@ -254,6 +277,15 @@ export function renderCurrentTimeSection(
     }
   }
 
+  for (const commitment of applicableCommitments ?? []) {
+    lines.push(
+      `applicable_commitment_created_relative_age[${commitment.id}]=${formatRelativeAge(
+        commitment.created_at,
+        nowMs,
+      )}`,
+    );
+  }
+
   return lines.join("\n");
 }
 
@@ -270,7 +302,7 @@ function sanitizeCreatorDisplayNameForPromptLine(value: string): string {
     .trimEnd();
 }
 
-function renderCreatorIdentity(
+export function renderCreatorIdentity(
   creatorIdentity: DeliberationContext["creatorIdentity"],
 ): string | null {
   if (creatorIdentity === null || creatorIdentity === undefined) {
@@ -292,32 +324,11 @@ function escapeXmlAttribute(value: string): string {
   return escapeXmlText(value).replaceAll('"', "&quot;");
 }
 
-// Input-side substrate hygiene: strips internal ids that an operator might
-// paste into creator-directive text or a directed-outbound instruction before
-// that text enters the model-facing prompt. This is defense-in-depth, not a
-// critical leak path -- the instruction is composed into the model's prompt
-// (the model is separately told not to surface internal ids), it is never
-// delivered verbatim to a target audience.
-//
-// The band is a deliberate CURATED SUBSET, not every id prefix in util/ids.ts.
-// It covers the "addressable" ids that actually surface in operator-facing
-// views (creator-directive, entity, session, stream, turn, shared-state), which
-// are the ones an operator could realistically copy back into directive text.
-// It intentionally omits prefixes that collide with ordinary words once the
-// `_[a-z0-9]+` tail is allowed -- e.g. goal_, act_ ("act_now"), run_
-// ("run_tests"), val_, att_ -- because a blanket widen would scrub legitimate
-// operator prose. Widen only with prefixes distinctive enough to avoid that.
-const CREATOR_DIRECTIVE_INTERNAL_ID_PATTERN = /\b(?:cdir|ent|sess|strm|turn|dart)_[a-z0-9]+\b/g;
-
-export function scrubCreatorDirectiveInternalIds(value: string): string {
-  return value.replace(CREATOR_DIRECTIVE_INTERNAL_ID_PATTERN, "[internal_id]");
-}
-
 function escapeCreatorDirectiveXmlText(value: string): string {
   return escapeXmlText(scrubCreatorDirectiveInternalIds(value));
 }
 
-function renderSessionStatusSnapshotLines(
+export function renderSessionStatusSnapshotLines(
   snapshot: OperatorSessionSnapshot | null,
   indent: string,
 ): string[] {
@@ -504,7 +515,7 @@ function indentPayload(payload: string, indent: string): string {
     .join("\n");
 }
 
-function renderCreatorDirectiveDisclosureLines(
+export function renderCreatorDirectiveDisclosureLines(
   briefing: DeliberationContext["creatorDirectiveBriefing"],
   indent: string,
 ): string[] {
@@ -697,7 +708,10 @@ function renderAudienceIdentityLines(context: DeliberationContext, indent: strin
   return lines;
 }
 
-function renderAuthorityContextLines(context: DeliberationContext, indent: string): string[] {
+export function renderAuthorityContextLines(
+  context: DeliberationContext,
+  indent: string,
+): string[] {
   const creatorContext = context.creatorContext;
 
   if (creatorContext === null || creatorContext === undefined) {
@@ -878,11 +892,6 @@ function renderCommitmentDetailsLines(context: DeliberationContext, indent: stri
       `${detailIndent}<commitment_enforcement_class>${escapeXmlText(effectiveCommitmentEnforcementClass(commitment))}</commitment_enforcement_class>`,
       `${detailIndent}<commitment_critical_domain>${escapeXmlText(effectiveCommitmentCriticalDomain(commitment) ?? "none")}</commitment_critical_domain>`,
       `${detailIndent}<created_at>${escapeXmlText(new Date(commitment.created_at).toISOString())}</created_at>`,
-      ...(context.nowMs === undefined
-        ? []
-        : [
-            `${detailIndent}<created_relative_age>${escapeXmlText(formatRelativeAge(commitment.created_at, context.nowMs))}</created_relative_age>`,
-          ]),
       ...refs,
       `${detailIndent}<provenance>${escapeXmlText(summarizeProvenanceForPrompt(commitment.provenance))}</provenance>`,
       `${indent}  </commitment_detail>`,
@@ -1089,18 +1098,14 @@ export function buildStandingWithAudienceSection(context: DeliberationContext): 
   return lines.join("\n");
 }
 
-export function buildBaseSystemPromptSections(
+function buildUntrustedBasePromptSections(
   context: DeliberationContext,
   options: BuildBaseSystemPromptOptions,
-): BaseSystemPromptSections {
-  const contextWithTime: DeliberationContext =
-    options.nowMs === undefined || !Number.isFinite(options.nowMs)
-      ? context
-      : { ...context, nowMs: options.nowMs };
+): TaggedPromptSection[] {
   const evidenceLedgerActive =
     context.evidenceLedgerPromptSection !== undefined &&
     context.evidenceLedgerPromptSection !== null;
-  const untrustedSections: TaggedPromptSection[] = [
+  return [
     {
       tag: "borg_self_snapshot",
       content: summarizeIdentity(context.selfSnapshot, context.workingMemory.turn_counter),
@@ -1119,7 +1124,7 @@ export function buildBaseSystemPromptSections(
     },
     {
       tag: "borg_working_state",
-      content: summarizeWorkingMemory(context.workingMemory),
+      content: summarizeWorkingMemory(context.workingMemory, context.turnOrigin),
     },
     {
       tag: "borg_recent_completed_actions",
@@ -1188,10 +1193,17 @@ export function buildBaseSystemPromptSections(
       content:
         context.autonomyTrigger === null || context.autonomyTrigger === undefined
           ? null
-          : formatAutonomyTriggerContext(context.autonomyTrigger),
+          : summarizeAutonomyTriggerForPrompt(context.autonomyTrigger),
     },
   ];
-  const resolvedBlocks = resolvePromptBlocks(options);
+}
+
+function buildTrustedBasePromptSections(
+  context: DeliberationContext,
+  options: BuildBaseSystemPromptOptions,
+  promptNowMs: number | undefined,
+  resolvedBlocks: ResolvedPromptBlocks,
+): TaggedPromptSection[] {
   const hostCapabilitiesSection = {
     tag: "borg_host_capabilities",
     content: resolvedBlocks.host_capabilities,
@@ -1210,7 +1222,7 @@ export function buildBaseSystemPromptSections(
   };
   const mechanismEvidenceSection = {
     tag: "borg_mechanism_evidence",
-    content: summarizeMechanismEvidence(context),
+    content: summarizeMechanismEvidence(context, promptNowMs),
   };
   const frameAnomalyGateSection = {
     tag: "borg_frame_anomaly_gate",
@@ -1222,7 +1234,11 @@ export function buildBaseSystemPromptSections(
   };
   const currentTimeSection = {
     tag: "borg_current_time",
-    content: renderCurrentTimeSection(options.nowMs, context.currentTimeContext ?? null),
+    content: renderCurrentTimeSection(
+      promptNowMs,
+      context.currentTimeContext ?? null,
+      context.applicableCommitments,
+    ),
   };
   const creatorIdentitySection = {
     tag: "borg_creator_identity",
@@ -1232,19 +1248,7 @@ export function buildBaseSystemPromptSections(
     tag: "borg_memory_disclosure_guidance",
     content: MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
   };
-  const standingWithAudienceSection = buildStandingWithAudienceSection(contextWithTime);
-  const autonomousOutboundAuthorizationSection = buildAutonomousOutboundAuthorizationSection(
-    context.autonomousOutbound ?? null,
-    context.turnOrigin,
-    context.autonomousFinalizerToolMenu,
-  );
-  const promptSectionsById = new Map<string, PromptSection>();
-
-  for (const section of untrustedSections) {
-    promptSectionsById.set(section.tag, section);
-  }
-
-  for (const section of [
+  return [
     currentTimeSection,
     participationPolicySection,
     creatorIdentitySection,
@@ -1255,15 +1259,69 @@ export function buildBaseSystemPromptSections(
     mechanismEvidenceSection,
     discourseControlSection,
     frameAnomalyGateSection,
-  ]) {
+  ];
+}
+
+function buildAudienceBasePromptSections(
+  context: DeliberationContext,
+  options: BuildBaseSystemPromptOptions,
+): { standingWithAudience: PromptSection; autonomousReflection: PromptSection } {
+  const standingWithAudienceSection =
+    options.omitStandingAssembly === true ? null : buildStandingWithAudienceSection(context);
+  const autonomousOutboundAuthorizationSection = buildAutonomousOutboundAuthorizationSection(
+    context.autonomousOutbound ?? null,
+    context.turnOrigin,
+    context.autonomousFinalizerToolMenu,
+  );
+  return {
+    standingWithAudience: standingWithAudienceSection,
+    autonomousReflection: autonomousOutboundAuthorizationSection,
+  };
+}
+
+function indexBasePromptSections(
+  untrustedSections: readonly TaggedPromptSection[],
+  trustedSections: readonly TaggedPromptSection[],
+  audienceSections: ReturnType<typeof buildAudienceBasePromptSections>,
+): ReadonlyMap<string, PromptSection> {
+  const promptSectionsById = new Map<string, PromptSection>();
+
+  for (const section of untrustedSections) {
     promptSectionsById.set(section.tag, section);
   }
 
-  promptSectionsById.set("borg_standing_with_audience", standingWithAudienceSection);
-  promptSectionsById.set("borg_autonomous_reflection", autonomousOutboundAuthorizationSection);
+  for (const section of trustedSections) {
+    promptSectionsById.set(section.tag, section);
+  }
+
+  promptSectionsById.set("borg_standing_with_audience", audienceSections.standingWithAudience);
+  promptSectionsById.set("borg_autonomous_reflection", audienceSections.autonomousReflection);
+
+  return promptSectionsById;
+}
+
+export function buildBaseSystemPromptSections(
+  context: DeliberationContext,
+  options: BuildBaseSystemPromptOptions,
+): BaseSystemPromptSections {
+  const promptNowMs =
+    options.nowMs !== undefined && Number.isFinite(options.nowMs) ? options.nowMs : context.nowMs;
+  const untrustedSections = buildUntrustedBasePromptSections(context, options);
+  const resolvedBlocks = resolvePromptBlocks(options);
+  const trustedSections = buildTrustedBasePromptSections(
+    context,
+    options,
+    promptNowMs,
+    resolvedBlocks,
+  );
+  const audienceSections = buildAudienceBasePromptSections(context, options);
 
   return {
-    promptSectionsById,
+    promptSectionsById: indexBasePromptSections(
+      untrustedSections,
+      trustedSections,
+      audienceSections,
+    ),
     resolvedBlocks,
   };
 }
@@ -1304,6 +1362,8 @@ export function createBasePromptSurfaceRenderContext(
           return LOOP_BREAKING_POSTURE_SECTION;
         case "trusted_guidance_preamble":
           return TRUSTED_GUIDANCE_PREAMBLE;
+        case "live_turn_read_tool_menu":
+          return LIVE_TURN_READ_FINALIZER_TOOL_MENU;
         case "current_user_message_reminder":
           return CURRENT_USER_MESSAGE_REMINDER;
         case "group_chat_sender_scoping_reminder":
@@ -1460,6 +1520,16 @@ function summarizeSelfSnapshotGoal(goal: SelfSnapshot["goals"][number]): string 
   return `${goal.description} ${summarizeProvenanceForPrompt(goal.provenance)}${disclosure}`;
 }
 
+const EXECUTIVE_FOCUS_IDENTITY_LABEL_MAX_CHARS = 120;
+
+function renderExecutiveGoalScoreBasis(scoreBasis: ExecutiveGoalScoreBasis): string {
+  return [
+    `score_context=${scoreBasis.score_context}`,
+    `deadline_lookahead_ms=${scoreBasis.deadline_lookahead_ms}`,
+    `progress_debt_stale_ms=${scoreBasis.progress_debt_stale_ms}`,
+  ].join(" ");
+}
+
 function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): string | null {
   if (
     focus === null ||
@@ -1482,6 +1552,10 @@ function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): stri
 
   return [
     `Current driving goal: ${focus.selected_goal.description} ${selectedGoalDisclosure}`,
+    `Focus identity: goal_id=${focus.selected_goal.id} label=${JSON.stringify(
+      compactPromptText(focus.selected_goal.description, EXECUTIVE_FOCUS_IDENTITY_LABEL_MAX_CHARS),
+    )}`,
+    `Score basis: ${renderExecutiveGoalScoreBasis(focus.score_basis)}`,
     `Why selected: ${focus.selected_score.reason} (score ${focus.selected_score.score.toFixed(2)}, threshold ${focus.threshold.toFixed(2)})`,
     [
       `Components: priority=${components.priority.toFixed(2)}`,
@@ -1496,6 +1570,20 @@ function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): stri
         }) ${renderDisclosureForModelFacingRecord(nextStep, selectedGoalDisclosureLabel)}`,
     SELF_IDENTITY_DISCLOSURE_LINE,
     "I use this as a bias, not an override of the user's request or commitments.",
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\n");
+}
+
+function summarizeAutonomyTriggerForPrompt(
+  context: NonNullable<DeliberationContext["autonomyTrigger"]>,
+): string {
+  const scoreBasis = context.presentation?.score_basis;
+
+  return [
+    scoreBasis === undefined ? null : "Wake-time trigger selection:",
+    scoreBasis === undefined ? null : `Score basis: ${renderExecutiveGoalScoreBasis(scoreBasis)}`,
+    formatAutonomyTriggerContext(context),
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
@@ -1665,35 +1753,457 @@ function summarizeDiscourseControl(
   return lines.length === 0 ? null : lines.join("\n");
 }
 
-function summarizeMechanismEvidence(context: DeliberationContext): string | null {
-  const evidence = context.turnMechanismEvidence ?? {
-    recentSuppressions:
-      context.workingMemory.discourse_state?.recent_suppressions?.map((entry) => ({
-        turnId: entry.turn_id,
-        reason: entry.reason,
-        ts: entry.ts,
-        ...(entry.source_stream_entry_id === undefined
-          ? {}
-          : { sourceStreamEntryId: entry.source_stream_entry_id }),
-      })) ?? [],
-    recentRegenerations:
-      context.workingMemory.discourse_state?.recent_regenerations?.map((entry) => ({
-        turnId: entry.turn_id,
-        mechanism: entry.mechanism,
-        ts: entry.ts,
-        ...(entry.source_stream_entry_id === undefined
-          ? {}
-          : { sourceStreamEntryId: entry.source_stream_entry_id }),
-      })) ?? [],
-  };
+// A window's in_flight rows are bounded by the budget limit, so the list is
+// short, but it is not bounded to one. Cap the print and name what the cap
+// dropped rather than truncating silently. Oldest first is the ordering the
+// description declares and the one that matters: a row whose outcome write was
+// skipped never moves, so it only sinks further to the head as newer wakes
+// resolve past it, and the head of this list is where a stuck row lives.
+const IN_FLIGHT_STAMP_PRINT_LIMIT = 3;
+
+function formatInFlightStamps(startedAt: readonly number[]): string {
+  if (startedAt.length === 0) {
+    return "";
+  }
+
+  const shown = startedAt.slice(0, IN_FLIGHT_STAMP_PRINT_LIMIT);
+  const omitted = startedAt.length - shown.length;
+  const stamps = shown.map((ts) => new Date(ts).toISOString()).join(", ");
+
+  return `(fired ${stamps}${omitted === 0 ? "" : `, ${omitted} newer not listed`})`;
+}
+
+export function summarizeAutonomySchedulerState(
+  schedulerState: NonNullable<
+    NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
+  >,
+  renderNowMs: number,
+  turnOrigin: DeliberationContext["turnOrigin"] = undefined,
+): string {
+  const budget = schedulerState.budget;
+  const reservationStillHeld = Math.max(
+    0,
+    budget.reserved_contemplative_wakes_per_window - budget.contemplative_used_in_current_window,
+  );
+  const operationalLimit = budget.max_wakes_per_window - reservationStillHeld;
+  // The scheduler is read once, when the retrieval phase ends; current_time_ms at the top of the
+  // prompt is stamped later, when finalizer context is assembled. Everything between the two --
+  // creator-directive render, ledger build, and above all the shared-state compile with its
+  // semantic-revision calls -- runs inside the gap, so it is milliseconds on a turn that compiles
+  // nothing and over a minute on a turn that compiles a lot. Both stamps used to sit on the same
+  // surface with nothing saying they were different reads, which makes every count below look
+  // current as of the header clock. Name the read and the lag; the arithmetic is not the reader's.
+  // The stamp is the scheduler's own read (`describe()`'s `observed_at`). It used to be the
+  // retrieval phase's start stamp, which is earlier than the read by the whole retrieval span, so
+  // the lag printed here overstated the age of every count below it -- on live traces by 11s at
+  // the least and 100s at the most. A wrong basis on a line whose only job is to name the basis.
+  const observationLagMs = Math.max(0, Math.trunc(renderNowMs - schedulerState.observedAt));
+  // Every forward countdown on this block hangs on a stamp taken at the read but is measured
+  // against the header clock, which is observationLagMs later. The stamp is as of the read; the
+  // countdown is as of the header. Because the header is the later of the two, the countdown
+  // always reads shorter than the wait as of the read -- and once the lag crosses a granularity
+  // edge of formatRelativeDuration it prints a smaller bucket outright. Measured over the rendered
+  // blocks in the live traces for 2026-08-23T22:37Z -> 2026-08-24T22:42Z: 10 of 82 blocks printed
+  // a different bucket against the two bases, the widest two by a full 2m, and one crossing the
+  // seconds/minutes edge (~41s against the header, 2m against the read). The stamp is the
+  // authoritative field and is left exactly as it was -- what was missing is any statement of
+  // which of the block's two clocks the parenthetical is counting from.
+  const countdownFromHeader = (stampMs: number): string =>
+    observationLagMs === 0
+      ? formatRelativeUntil(stampMs, renderNowMs)
+      : `${formatRelativeUntil(
+          stampMs,
+          renderNowMs,
+        )} as of the current_time_ms at the top of this prompt, ${observationLagMs}ms after that read -- the stamp is as of the read, this countdown is not`;
+  // The block's own gap against the read it declares. Every field `describe()`
+  // produces either renders somewhere below or is named here, derived from the
+  // disposition map that forces the decision at the boundary rather than
+  // restated (a restatement could go quietly false the next time something is
+  // dropped). Without it the number of fields that stop at that boundary is
+  // unreadable from the page at any number of reads -- an omission there throws
+  // nothing and contradicts nothing, so a thinner block and a complete one are
+  // the same page, and five fields have already been lost that way.
+  const boundaryScopeClause =
+    AUTONOMY_SCHEDULER_DESCRIPTION_DROPPED_FIELDS.length === 0
+      ? " Every field the scheduler's read produces is rendered somewhere below, so this block and that read differ by nothing."
+      : ` Every field the scheduler's read produces is rendered somewhere below except ${AUTONOMY_SCHEDULER_DESCRIPTION_DROPPED_FIELDS.join(
+          "; and ",
+        )}. That is the whole difference between this block and the read it names -- what is absent here is that, not an unknown remainder.`;
+  const lines = [
+    `Harness scheduler state: these are properties of the harness scheduler, not properties of my mind.${boundaryScopeClause}`,
+    `Read at ${new Date(schedulerState.observedAt).toISOString()}${
+      observationLagMs === 0
+        ? ""
+        : `, ${observationLagMs}ms before the current_time_ms at the top of this prompt`
+    }: every count and stamp below is as of that read, not as of now. The lag is the ledger build and shared-state compile that run in between and varies per turn, so a wake admitted inside it is not counted here.`,
+    `Wake budget: used=${budget.used_in_current_window} / limit=${budget.max_wakes_per_window} / window=${formatRelativeDuration(budget.window_ms)} rolling, covering wakes stamped at or after ${new Date(budget.window_started_at).toISOString()} (the lower edge moves with every read, so counts below only compare against a read naming the same edge).`,
+    // The closing threshold is derived, but at reservationStillHeld === 0 it
+    // takes the same value as limit, and a derived figure that coincides with
+    // its own input is indistinguishable on the page from a constant. Printing
+    // the subtraction rather than only its result makes the dependence readable
+    // in the state where it is invisible in the result -- which, with the
+    // reservation spent, is the ordinary one.
+    `limit=${budget.max_wakes_per_window} is the ceiling for contemplative sources only. ${budget.reserved_contemplative_wakes_per_window} of it is reserved for them and ${budget.contemplative_used_in_current_window} contemplative wake(s) are in this window, so ${reservationStillHeld} of the reservation is still held and operational sources are refused once used reaches ${operationalLimit} -- that figure is limit minus the ${reservationStillHeld} still held, recomputed at every read rather than a second fixed ceiling. It equals limit exactly while the reservation is spent, so the two agreeing is a state of this window, not an identity.`,
+  ];
+
+  if (budget.wakes_in_current_window_by_trigger.length === 0) {
+    lines.push("Wakes in current window by trigger_name: none.");
+  } else {
+    lines.push(
+      "Wakes in current window by trigger_name:",
+      ...budget.wakes_in_current_window_by_trigger.map(
+        (group) =>
+          `- trigger_name=${group.trigger_name} wake_count=${group.wake_count} in_flight=${group.in_flight}${formatInFlightStamps(group.in_flight_started_at)} outcome_counts(headway=${group.outcome_counts.headway} silent=${group.outcome_counts.silent} error=${group.outcome_counts.error} busy=${group.outcome_counts.busy})`,
+      ),
+      // Rendered whenever the section renders, including on every read where
+      // in_flight is 0 everywhere: a rule that appeared only alongside a
+      // non-zero count would make the zero read as "no such state exists"
+      // rather than as "none right now".
+      "in_flight counts rows written when the wake fired whose outcome was never recorded, stamped with when each fired. Nothing resolves that state: no timeout writes a late outcome, so a row whose outcome write was skipped stays unrecorded for as long as it exists. It does not stay in this count, though -- in_flight is taken over the rolling window named above, so an unresolved row leaves it by ageing past that window's lower edge, and no field on this block reports the row once it is out. in_flight falling back to 0 is therefore consistent with a row from an earlier read still being unresolved, and is not evidence that it closed. wake_count still equals in_flight plus the outcome_counts, so the arithmetic closing here is not evidence the row is live. The stamps are the only cross-read identity this block carries -- one repeating across two reads is a single row not moving, one that changes is a different wake, one that disappears is either -- and the counts alone cannot support that comparison at any number of reads.",
+    );
+  }
+
+  lines.push(
+    budget.next_budget_slot_frees_at === null
+      ? "Next budget slot frees: none."
+      : `Next budget slot frees: ${new Date(
+          budget.next_budget_slot_frees_at,
+        ).toISOString()} (${countdownFromHeader(budget.next_budget_slot_frees_at)}).`,
+  );
+
+  // Budget headroom is not the same statement as "a wake can happen": the loop itself and the
+  // fleet brake refuse independently of it. Both are rendered unconditionally, in their negative
+  // state too, so that a quiet scheduler is legible as a named gate rather than as a gap.
+  //
+  // The tick is stated against the read, because the read is the basis this block declares two
+  // lines above and the only one every other number here shares. Two separate defects lived on
+  // this line while it was rendered as a bare stamp plus formatRelativeUntil(stamp, headerClock):
+  //
+  // (1) next_tick_at is Math.max(scheduled, readClock). A tick already due at the read floors to
+  //     the read clock, so the stamp is the read and the age hanging on it is render lag, not tick
+  //     lateness -- and the overdue amount, the one quantity a "next tick" field exists to carry
+  //     when the loop is behind, was subtracted upstream and unrecoverable from the page. The
+  //     unfloored value is now carried alongside, so the subtraction is stated instead of hidden.
+  // (2) formatRelativeUntil flips to "ago" the instant its stamp is <= the clock it is given, and
+  //     it was given the header clock while the sentence above promised the read. On a turn whose
+  //     compile ran long, a tick still in the future of the read printed as already past -- the
+  //     block asserting "every stamp below is as of that read" and then contradicting it one line
+  //     down. Measured over the rendered blocks in the live traces for 2026-08-23T22:37Z ->
+  //     2026-08-24T22:17Z: 28 of 61 blocks, every one of them a turn with a header lag above 18s.
+  //     Both clocks are now named on the same line, with the sign against each stated explicitly.
+  // (3) the overdue branch printed its amount with no stamp to close it against: next_tick_at is
+  //     floored to the read there, so the only two stamps on the page were the same instant twice
+  //     and the subtraction's other operand never appeared. The scheduled stamp now prints, so
+  //     read - scheduled == overdue closes from stamps like the other branch's pair does. It also
+  //     separates the two ways a loop is behind: the anchor advances when a tick *enters*, and the
+  //     interval drops every fire while one is in flight, so a tick still running holds one stamp
+  //     across reads while an interval merely lagging moves it. The overdue number alone grows the
+  //     same way in both cases; the stamp is what tells them apart.
+  //
+  //     "and only across reads" used to close that sentence, and it was a wrong generalization of
+  //     the same shape it had just corrected. Comparing stamps needs two reads, not one reader:
+  //     every read is archived with its rendered prompt, so anyone holding the archive can run the
+  //     comparison over as many reads as they like. What no *page* could carry was the answer --
+  //     which is now `tick_in_flight` below, the flag the scheduler always had and never exported.
+  // (4) `Scheduler loop: running` asserted liveness off `enabled`, which is the configuration flag
+  //     and only ever that. During a 98-minute stuck tick -- every interval fire dropped, no wake
+  //     possible -- the line still read "running": true of the config, false of the loop, and
+  //     pointed at the noun a reader is actually asking about. The word now names what it reports
+  //     and the liveness fact is rendered separately, including its own blind spot: an autonomous
+  //     turn is built *inside* a tick, so the flag is true by construction there and says nothing.
+  const scheduledTickAt = schedulerState.scheduledTickAt;
+  const tickClause =
+    schedulerState.nextTickAt === null || scheduledTickAt === null
+      ? "no next tick scheduled (no interval handle, so no wake fires until it restarts)."
+      : scheduledTickAt < schedulerState.observedAt
+        ? `next tick was due ${new Date(scheduledTickAt).toISOString()}, ${
+            schedulerState.observedAt - scheduledTickAt
+          }ms before that read, and had not fired, so the loop is behind by that much; next_tick_at floors forward and reports ${new Date(
+            schedulerState.nextTickAt,
+          ).toISOString()}, which is the read clock, not a scheduled time.`
+        : `next tick ${new Date(scheduledTickAt).toISOString()}, ${
+            scheduledTickAt - schedulerState.observedAt
+          }ms after that read${
+            scheduledTickAt <= renderNowMs
+              ? `, and ${renderNowMs - scheduledTickAt}ms before the current_time_ms at the top of this prompt -- it was still ahead as of the read and may have fired inside the lag since.`
+              : `, and ${scheduledTickAt - renderNowMs}ms after the current_time_ms at the top of this prompt -- still ahead on both clocks.`
+          }`;
+  // (5) The stamps above were rendered without the period they are spaced on. A reader holding two
+  //     of them across reads could see that they differed and nothing more: the anchor is written
+  //     on tick entry and the interval keeps its phase across a stuck tick, so consecutive stamps
+  //     are on a grid, and whether a delta sits on that grid is exactly the question "did the loop
+  //     get re-armed" -- which is the one thing `tick_in_flight` cannot answer, because a tick that
+  //     runs nine minutes and returns and a tick that is killed at ninety-eight render identically
+  //     at every read before the end. `interval_ms` was on `describe()` the whole time and stopped
+  //     at the same boundary the three fields above stopped at.
+  const gridClause =
+    scheduledTickAt === null
+      ? ""
+      : ` The scheduled stamp is the last tick entry plus the interval, which is ${schedulerState.intervalMs}ms: while one handle stays armed it moves in whole multiples of that (plus timer drift), so a delta between two reads that is not a multiple means the handle was re-armed -- which needs the loop stopped and started again, since starting it while a handle exists does nothing.`;
+  // (6) A fire that arrives while a tick is running is dropped at the interval callback's early
+  //     return, and that early return is the only path in the scheduler that writes nothing at
+  //     all -- no wake row, no outcome, no error. So the budget and outcome counts above cannot
+  //     distinguish an hour in which every fire was refused from an hour in which nothing was due:
+  //     both leave no trace, and the surface reported the second reading for both. The count is
+  //     also the one liveness quantity that survives the blind spot below, since it is a fact
+  //     about the tick rather than about which turn is reading it.
+  //     The count names an epoch it does not identify. It resets to zero on every arm, so a low
+  //     value is a long-quiet loop and a freshly restarted one alike, and a value that repeats
+  //     across two reads is "the counter did not move" and "the counter was reset and re-earned to
+  //     the same number" alike -- the same identity-free-count shape as `in_flight`, and unreadable
+  //     from the count at any number of reads. Re-arm was inferable only off `scheduled_tick_at`
+  //     grid arithmetic, which needs two reads, an unbroken series, and an off-grid residue larger
+  //     than timer drift. The arming stamp is the epoch itself and needs none of that; the
+  //     scheduler has held it since the first `start()` and it stopped at the evidence boundary.
+  const droppedFires = schedulerState.droppedIntervalFires;
+  const armedAt = schedulerState.intervalArmedAt;
+  const armedClause =
+    armedAt === null
+      ? ""
+      : ` The loop was last armed ${new Date(armedAt).toISOString()}: that stamp is the epoch this count resets against, so one repeating across two reads is a single armed handle and one that changes is a re-arm -- a comparison the count alone cannot support, since a reset is indistinguishable from not having moved.`;
+  const droppedClause = ` Interval fires refused because a tick was already running: ${
+    droppedFires.since_interval_armed
+  } since the loop was last armed${
+    droppedFires.current_tick === null
+      ? ""
+      : `, ${droppedFires.current_tick} of them by the tick that was in flight at that read`
+  }. A refused fire writes nothing anywhere, so the periods it covers are missing from the counts above rather than counted as quiet.${armedClause}`;
+  // The liveness clause and the tick clause answer different questions and are stated separately:
+  // how far behind the loop is, and which of the two causes is producing that. The blind spot is
+  // printed with the flag rather than left for the reader to discover, because a field that is
+  // true in the only state its reader can observe is worse than absent.
+  const inFlightClause = !schedulerState.tickInFlight
+    ? "No tick was in flight at that read, so an overdue amount below is the interval running behind, not a tick holding the stamp."
+    : turnOrigin === "autonomous"
+      ? "A tick was in flight at that read -- but this prompt is being built inside that tick, so the flag is true by construction on an autonomous turn and discriminates nothing here; the refusal count that follows does, being a fact about how long that tick has held rather than about which turn is reading it."
+      : "A tick was in flight at that read, and the interval drops every fire while one is: no wake can start, and the tick stamp below is held rather than moving, so an overdue amount there is a stuck tick and not a lagging interval.";
+  lines.push(
+    schedulerState.enabled
+      ? `Scheduler loop: enabled in configuration -- that word is the config flag the scheduler was built with, not an observation that the loop is alive. ${inFlightClause}${droppedClause} Tick: ${tickClause}${gridClause}`
+      : "Scheduler loop: disabled -- no wake fires regardless of the budget above.",
+  );
+
+  const brake = schedulerState.fleetBrake;
+  const brakeGates = [
+    brake.cooldown_until === null || brake.cooldown_until <= renderNowMs
+      ? null
+      : `empty-streak cooldown until ${new Date(
+          brake.cooldown_until,
+        ).toISOString()} (${countdownFromHeader(brake.cooldown_until)})`,
+    brake.error_paused_until === null || brake.error_paused_until <= renderNowMs
+      ? null
+      : `error-streak pause until ${new Date(
+          brake.error_paused_until,
+        ).toISOString()} (${countdownFromHeader(brake.error_paused_until)})`,
+  ].filter((gate): gate is string => gate !== null);
+
+  lines.push(
+    `Fleet brake (a second refusal path, independent of the budget above): ${
+      brake.enabled ? "enabled" : "disabled"
+    }, ${
+      brakeGates.length === 0
+        ? "not currently holding"
+        : `holding -- ${brakeGates.join("; ")}, so wakes are refused even with budget headroom`
+    }.`,
+  );
+
+  // The two counter groups below are different populations, and printing them
+  // adjacent without saying so invites differencing one into the other:
+  // empty_streak is untimed, operational-only, and blind to errors;
+  // window_outcomes is budget-windowed and counts every category and every
+  // outcome. Each group states its own scope so neither can be read as evidence
+  // about the other. error_streak sits in the first group but is a third
+  // population again -- it is neither operational-only nor a count of every
+  // errored wake, so it carries its own scope rather than inheriting
+  // empty_streak's. Without that, error_streak=0 next to a non-zero error tally
+  // reads as "the errors were separated by successes", which the counter does
+  // not mean and cannot support. bypass_count is a fourth population again, and
+  // printing it bare beside two counters that carry both a bound and a scope
+  // lends it their finished look without their guarantee: it is neither a streak
+  // nor a window count, its bound lives in the brake options rather than on the
+  // value, and its reset condition is narrower than either neighbour's. It
+  // states its own scope for the same reason they do.
+  lines.push(
+    `empty_streak=${brake.empty_streak}/${brake.empty_streak_threshold} error_streak=${
+      brake.error_streak
+    }/${brake.error_streak_threshold} bypass_count=${brake.bypass_count}/${
+      brake.freshness_bypass_cap
+    }${
+      brake.streak_anchor_ts === null
+        ? ""
+        : ` current empty streak began ${new Date(brake.streak_anchor_ts).toISOString()}`
+    } -- empty_streak counts consecutive completed operational wakes that came back silent, with no time bound. Errored and busy-skipped wakes neither increment nor reset it, so it is consecutive within the completed-operational subsequence rather than within the wake sequence, and one streak can span any number of intervening wakes and any amount of wall-clock. error_streak counts something narrower than the error tally below: only a wake that failed inside the turn, with a provider or auth fault, increments it. Wakes that fail before the turn is built, and in-turn failures of any other kind, record error without touching it -- and any successful wake, contemplative included, resets it to zero. So error_streak=0 beside a non-zero error count is the ordinary case, not a sign that the errors were separated by successes. bypass_count is neither a streak nor a window count: it counts freshness bypasses spent, and a bypass is only ever offered while the empty-streak cooldown is actively holding, so a clear cooldown freezes the counter rather than resetting it, and a deadline bypass does not spend one. It returns to zero only on an operational wake that came back with headway, or a contemplative wake that delivered an outbound post -- neither the cooldown expiring nor the budget window rolling clears it, so a non-zero value can outlive the cooldown that produced it and is not a count over the window below. At ${brake.freshness_bypass_cap} a fresh concern stops earning a bypass and is refused along with everything else the cooldown is holding.`,
+  );
+  lines.push(
+    `Outcome tally over the budget window above, both source categories: headway=${
+      brake.window_outcomes.headway
+    } silent=${brake.window_outcomes.silent} error=${brake.window_outcomes.error} busy=${
+      brake.window_outcomes.busy
+    }. This is a different population from empty_streak -- time-bounded where the streak is not, contemplative wakes included where the streak ignores them, errors counted where the streak passes over them -- so no arithmetic over these four numbers yields the streak, and non-headway totals here are not the distance to the brake.`,
+  );
+  // error=N alone cannot separate one provider outage repeated N times from N
+  // distinct faults, and the two carry opposite implications for whether the
+  // wakes are worth retrying. The scheduler formats the failure at the moment it
+  // records the outcome, so the discriminator exists upstream; it simply had no
+  // route to this page. The split below is the same rows as error=N -- total is
+  // restated so it can be checked, and undetailed rows are named rather than
+  // left as an unexplained shortfall in the reason counts.
+  lines.push(...renderWakeErrorReasonLines(brake.window_error_reasons));
+  // silent=N has the same defect as error=N and a worse consequence: it is the
+  // complement of headway, so a closure you chose, an emission that failed on
+  // the way out, and a guard that blocked one are one number -- and they are one
+  // number again in empty_streak, which counts every non-headway operational
+  // wake alike. The split below is the same rows as silent=N. It does not change
+  // what the brake counts; it says what was counted, so "a silence I chose" and
+  // "a wake that produced nothing" stop being indistinguishable from this page.
+  lines.push(...renderWakeSilentReasonLines(brake.window_silent_reasons));
+
+  return lines.join("\n");
+}
+
+/**
+ * Distinct reasons shown per render. A cap rather than the full set because the
+ * detail is an arbitrary formatted error and the tail is long; the residue is
+ * always stated, never silently dropped.
+ */
+const WAKE_ERROR_REASON_RENDER_LIMIT = 5;
+
+function renderWakeErrorReasonLines(
+  tally: AutonomySchedulerFleetBrakeDescription["window_error_reasons"],
+): string[] {
+  if (tally.total === 0) {
+    return ["Errored wakes in that window: none, so there is no failure to attribute."];
+  }
+
+  if (tally.reasons.length === 0) {
+    return [
+      `Errored wakes in that window: ${tally.total}, none of them carrying a recorded failure (rows written before the scheduler kept one). The count is real; why is unavailable from here, and their absence of a reason is not evidence that they share one.`,
+    ];
+  }
+
+  const shown = tally.reasons.slice(0, WAKE_ERROR_REASON_RENDER_LIMIT);
+  const hiddenReasons = tally.reasons.length - shown.length;
+  const hiddenCount = tally.reasons
+    .slice(WAKE_ERROR_REASON_RENDER_LIMIT)
+    .reduce((sum, reason) => sum + reason.count, 0);
+  const remainder = [
+    tally.without_detail === 0
+      ? null
+      : `${tally.without_detail} with no recorded failure (written before the scheduler kept one)`,
+    hiddenReasons === 0
+      ? null
+      : `${hiddenCount} across ${hiddenReasons} further distinct reason(s) not shown`,
+  ].filter((clause): clause is string => clause !== null);
+
+  return [
+    `Why those errored wakes failed, same rows as error=${tally.total} above:`,
+    ...shown.map((reason) => `- ${reason.count}x ${reason.detail}`),
+    remainder.length === 0
+      ? `The reasons above account for all ${tally.total}.`
+      : `The reasons above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
+  ];
+}
+
+/**
+ * Unlike the error details, the silent details are a bounded enumeration: an
+ * emission kind, or an outcome class paired with the suppression enum that
+ * produced it. Naming the classes that can appear keeps a rendered subset from
+ * reading as the whole contrast set -- with only one class shown there is
+ * otherwise no way to tell whether the others are absent or merely unlisted.
+ */
+const WAKE_SILENT_OUTCOME_CLASSES =
+  "deliberate-silence (you closed the wake), emission-failed (an emission was attempted and did not come out), guard-blocked (a post-generation guard stopped it), observed";
+
+function renderWakeSilentReasonLines(
+  tally: AutonomySchedulerFleetBrakeDescription["window_silent_reasons"],
+): string[] {
+  if (tally.total === 0) {
+    return ["Silent wakes in that window: none, so there is no silence to attribute."];
+  }
+
+  if (tally.reasons.length === 0) {
+    return [
+      `Silent wakes in that window: ${tally.total}, none of them carrying a recorded ending (rows written before the scheduler kept one). The count is real; whether they were closures you chose, failed emissions or guard blocks is unavailable from here, and their shared absence of a reason is not evidence that they share an ending.`,
+    ];
+  }
+
+  const shown = tally.reasons.slice(0, WAKE_ERROR_REASON_RENDER_LIMIT);
+  const hiddenReasons = tally.reasons.length - shown.length;
+  const hiddenCount = tally.reasons
+    .slice(WAKE_ERROR_REASON_RENDER_LIMIT)
+    .reduce((sum, reason) => sum + reason.count, 0);
+  const remainder = [
+    tally.without_detail === 0
+      ? null
+      : `${tally.without_detail} with no recorded ending (written before the scheduler kept one)`,
+    hiddenReasons === 0
+      ? null
+      : `${hiddenCount} across ${hiddenReasons} further distinct ending(s) not shown`,
+  ].filter((clause): clause is string => clause !== null);
+
+  return [
+    `How those silent wakes ended, same rows as silent=${tally.total} above. The classes that can appear are ${WAKE_SILENT_OUTCOME_CLASSES}; all of them advance empty_streak identically, so this split is what that counter is made of, not a ranking of it:`,
+    ...shown.map((reason) => `- ${reason.count}x ${reason.detail}`),
+    remainder.length === 0
+      ? `The endings above account for all ${tally.total}.`
+      : `The endings above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
+  ];
+}
+
+function summarizeMechanismEvidence(
+  context: DeliberationContext,
+  promptNowMs?: number,
+): string | null {
+  const evidence: NonNullable<DeliberationContext["turnMechanismEvidence"]> =
+    context.turnMechanismEvidence ?? {
+      recentSuppressions:
+        context.workingMemory.discourse_state?.recent_suppressions?.map((entry) => ({
+          turnId: entry.turn_id,
+          reason: entry.reason,
+          ts: entry.ts,
+          ...(entry.source_stream_entry_id === undefined
+            ? {}
+            : { sourceStreamEntryId: entry.source_stream_entry_id }),
+        })) ?? [],
+      recentRegenerations:
+        context.workingMemory.discourse_state?.recent_regenerations?.map((entry) => ({
+          turnId: entry.turn_id,
+          mechanism: entry.mechanism,
+          ts: entry.ts,
+          ...(entry.source_stream_entry_id === undefined
+            ? {}
+            : { sourceStreamEntryId: entry.source_stream_entry_id }),
+          ...(entry.commitments === undefined ? {} : { commitments: entry.commitments }),
+        })) ?? [],
+    };
   const recentSuppressions = evidence.recentSuppressions.slice(-RECENT_SUPPRESSIONS_LIMIT);
   const recentRegenerations = evidence.recentRegenerations.slice(-RECENT_REGENERATIONS_LIMIT);
   const lines: string[] = [];
+  const schedulerState = evidence.autonomySchedulerState;
+  // Both lists below are count-capped rings, not time windows (RECENT_*_LIMIT, capNewest): an entry
+  // stays until that many newer ones displace it, however long that takes. Without an age the oldest
+  // and newest read alike, so a fossil from a guard that has since been scoped off this session
+  // renders as if it fired this hour. The ts is on every entry; render it.
+  const renderNowMs = promptNowMs ?? context.nowMs;
+
+  if (schedulerState !== undefined) {
+    lines.push(
+      summarizeAutonomySchedulerState(
+        schedulerState,
+        renderNowMs ?? schedulerState.observedAt,
+        context.turnOrigin,
+      ),
+    );
+  }
 
   if (recentSuppressions.length > 0) {
+    // Both rings live in this session's working memory (working/<session_id>.json), so
+    // each is scoped to one conversation. Unstated, that scope is invisible: the list
+    // reads as a record of my silences, and a day with a suppression in another
+    // conversation renders here as a day I spoke. Say the scope on the line.
     lines.push(
-      `Recent silences from my side: ${recentSuppressions
-        .map(renderRecentSuppressionMechanismEvidence)
+      `Recent silences from my side (newest last; this conversation only -- this list is this session's working memory, so a turn of mine suppressed in another conversation is absent here by scope and its absence says nothing about whether I went quiet there; it keeps the newest ${RECENT_SUPPRESSIONS_LIMIT} however old they are, so an age here is the entry's age, not a window): ${recentSuppressions
+        .map((entry) => renderRecentSuppressionMechanismEvidence(entry, renderNowMs))
         .join(
           ", ",
         )}. If asked about going quiet, I attribute it to the actual reason code and rendered diagnostic. I do not invent network failures, latency spikes, or technical errors.`,
@@ -1701,21 +2211,149 @@ function summarizeMechanismEvidence(context: DeliberationContext): string | null
   }
 
   if (recentRegenerations.length > 0) {
+    // The gloss on each entry is a write-time snapshot, and this ring evicts by
+    // displacement rather than by clock, so an entry outlives the row it names.
+    // Test each id against this turn's active commitment draw so the page says
+    // which of the two records is stale instead of leaving that to a join the
+    // reader has to run against a block that omits for its own reasons.
+    //
+    // The liveness token tests row membership, and supersession -- the dominant
+    // ending in the live store -- replaces a row while the directive it carried
+    // continues under a successor id. So no_longer_active retires the id, not
+    // necessarily the constraint, and the note must not license the second
+    // reading from the first.
+    const activeCommitmentIds = activeCommitmentIdsForLiveness(context);
+    const namedCommitmentNote = recentRegenerations.some(
+      (entry) => (entry.commitments ?? []).length > 0,
+    )
+      ? " A named commitment there is the row that gated that draft, not a class of them: it is evidence about which of my own constraints is biting, not scheduler or network weather. Each id carries two tokens from two separate reads. The first is what the write could resolve: kind/domain/family are the row's labels as captured when the guard fired. The guard is handed one array of commitment records, and the writer resolves the ids it emits against that same array, in the same scope, before anything awaits; ids the judge invents are dropped before they reach the emission. So unresolved_at_capture has no path that produces it, and if it prints it marks a defect in that writer rather than a state of the row -- labels are what every reachable entry carries. The second token is tested at render, and it is membership in this turn's active-commitment draw and nothing finer: every row not revoked, not superseded, and not past an expiry, and this store has no deletion path at all. The two draws differ in one way that matters: the capture draw is narrowed by audience, the liveness draw is not. So no_longer_active on a labeled id is an ending -- a row that was in the narrower set is absent from the wider one -- though it does not say which ending caused it; still_active says the row is somewhere in the global draw and not that it is in force for the audience I am speaking to, which nothing on this line carries; liveness_unchecked means this turn carried no draw to test against. Entries leave this list only when newer ones displace them, never by clock, so a no_longer_active entry records a past firing. What ended is the row, not necessarily the constraint: supersession is one of those three endings and it replaces a row rather than ending what the row required, so that id can be dead while the directive continues under a successor this line does not name. The token is membership now, so it cannot date the ending: an id that had already left the draw before this line first rendered reads exactly like one this list watched leave, and no single read separates them. What a second read settles depends on which ending it was, and the token does not say which: revocation and expiry are one-way under every path my own loop has, so on those the value is pinned for the rest of the entry's life here and re-reading it confirms nothing that the first read did not; supersession is the reversible one -- the offline duplicate-merge rollback clears it -- so a flip back to still_active is a real event rather than a defect."
+      : "";
+    const bareEntryNote = recentRegenerations.some(
+      (entry) => entry.commitments === undefined || entry.commitments.length === 0,
+    )
+      ? " An entry that names no commitment says which of two silences it is. commitments_unrecorded means the write that made that entry kept no commitment field at all, so the ids existed when the guard fired and nothing carried them here; it is silent about which constraint bit, not evidence that none did. guard_named_no_commitment means the firing itself named none. Neither token licenses the reading that the regeneration had no cause."
+      : "";
+    // This ring is not a record of regenerations; it is a record of regenerations that
+    // then survived to be emitted. The breadcrumb is minted only under
+    // `finalAnswerRegenerated && guardedEmission.kind === "message"`
+    // (turn-action/turn-action-coordinator.ts), and the append is reached only on the
+    // message branch of the post-generation phase -- the suppressed branch returns
+    // before it. So the two lists are disjoint by construction, never by coincidence,
+    // and the disjointness is at its most misleading exactly where the two would
+    // otherwise meet: a draft the commitment guard regenerated and a guard then
+    // suppressed is in the silences list and nowhere here. Two suppression reason codes
+    // still carry the fact themselves; under any other one it survives in neither list.
+    // Verified on the live store (2026-08-27): zero shared turn ids across all nine
+    // sessions' rings, and one session holding seven `commitment_violation_after_regenerate`
+    // silences alongside a full regeneration ring naming none of them.
+    const emittedOnlyNote = ` This list covers regenerations whose redrafted answer was then emitted; a regeneration the guards suppressed afterwards leaves no entry here at all, so absence from this list is not evidence that a turn was not regenerated. Those turns appear in the silences list above instead, and two reason codes there name the redraft themselves -- commitment_violation_after_regenerate for this same guard's second pass, invalid_tool_after_regenerate for the finalizer's own retry, which is a different mechanism. Under any other reason code the redraft is recorded in neither list.`;
     lines.push(
-      `Regenerated final answers from my side: ${recentRegenerations
+      `Regenerated final answers from my side (newest last; this conversation only, same session working memory as above; newest ${RECENT_REGENERATIONS_LIMIT} kept): ${recentRegenerations
         .map(
           (entry) =>
-            `${escapeXmlText(entry.turnId)}: an internal commitment guard regenerated this turn's final answer`,
+            `${escapeXmlText(entry.turnId)}: an internal commitment guard regenerated this turn's final answer${renderRegenerationCommitmentsSuffix(entry, activeCommitmentIds)}${renderRelativeAgeSuffix(entry.ts, renderNowMs)}`,
         )
-        .join(", ")}.`,
+        .join(", ")}.${emittedOnlyNote}${namedCommitmentNote}${bareEntryNote}`,
     );
   }
 
   return lines.length === 0 ? null : lines.join("\n");
 }
 
+function renderRelativeAgeSuffix(ts: number, renderNowMs: number | undefined): string {
+  return renderNowMs === undefined ? "" : ` (${formatRelativeAge(ts, renderNowMs)})`;
+}
+
+// `applicableCommitments` is the whole active set for this turn -- the cognition
+// draw is `list({activeOnly: true})`, global and uncapped, so an id missing from
+// it was dropped by an active-set predicate rather than by a budget or an audience.
+// That makes membership a sound liveness test, and the only one available here.
+//
+// It is a differently-drawn set from the one the entry was captured against, and
+// the difference is directional. Capture runs off `actionApplicableCommitments`
+// (`getApplicable({audience})` = `list({activeOnly: true, audience})`, retrieval-phase
+// `coordinate()`), which is this same predicate plus an audience narrowing at the same
+// `nowMs` -- so the capture set is a subset of this one. Absence here of an id that was
+// present there is therefore an ending and cannot be a scoping artifact, which is what
+// makes `no_longer_active` the stronger of the two verdicts. Presence is correspondingly
+// weaker: it reports the row is active globally, never that it still applies to the
+// audience being spoken to. Cognition is the right place for the global read (recall is
+// global to the being), so the fix for the gap is to name the scope on the rendered line,
+// not to narrow this set.
+// Undefined when the turn carries no draw at all; the caller must then say so
+// rather than guess, so keep the absence distinguishable from an empty set.
+function activeCommitmentIdsForLiveness(
+  context: DeliberationContext,
+): ReadonlySet<string> | undefined {
+  const commitments = context.applicableCommitments;
+  return commitments === undefined
+    ? undefined
+    : new Set(commitments.map((commitment) => commitment.id));
+}
+
+// A bare mechanism name reads as harness weather. The commitment that actually
+// gated the draft is the whole content of the entry, so name it: id for the
+// cross-reference, kind/domain/family for what it is without one.
+//
+// Those labels are captured when the guard fires and never re-read, and this ring
+// evicts by displacement rather than by clock, so an entry keeps naming a row for
+// however long it takes N newer regenerations to arrive -- past the point where the
+// row is revoked. A joinable id with no liveness on it is worse than none: the join
+// lands on an absence, and absence from the commitments block has several causes.
+// So state the verdict here, in the negative as well as the positive, and say when
+// there was nothing to test against; an unmarked id reads exactly like a live one.
+//
+// An entry with no named commitment is two different facts, and printing nothing for
+// both made the absence of a suffix do double duty: an entry whose write kept no
+// commitment field at all (it predates this ring carrying ids) reads identically to a
+// firing that named none. Both are silences about which constraint bit, but only the
+// second is a statement about the firing. Name which one this is.
+//
+// The same collapse ran one level down, on entries that do name ids. The writer
+// files an id it could not resolve as a bare id (`regenerationCommitmentDescriptors`),
+// and a resolved descriptor always carries at least kind and directive_family, both
+// non-optional on the record, so no labels at all is a write-time signal rather than
+// a thin row. Printing only the liveness token made such an id read exactly like a row
+// that was live and has since ended -- the render asserting an ending where the test
+// only observed an absence.
+//
+// That branch is defensive, not a state: the guard is invoked with
+// `input.applicableCommitments` and the descriptors are resolved against that same
+// array in the same scope, before the regeneration await
+// (`turn-action-coordinator.ts`), while `checker.ts` drops any id the judge returns
+// that is not in the set it was given. Every id that reaches here therefore has a row
+// in the map by construction. The map miss stays handled because a `Map.get` is
+// `T | undefined` and a silent wrong label is worse than a loud one, but the rendered
+// token must not describe it as a condition of the row -- which is what the earlier
+// copy did, explaining `unresolved_at_capture` as an audience-scoped-away row. Capture
+// IS audience-scoped, but that cannot separate the guard's set from this map, because
+// they are the same array.
+function renderRegenerationCommitmentsSuffix(
+  entry: NonNullable<DeliberationContext["turnMechanismEvidence"]>["recentRegenerations"][number],
+  activeCommitmentIds: ReadonlySet<string> | undefined,
+): string {
+  const commitments = entry.commitments;
+  if (commitments === undefined) return " (commitments_unrecorded)";
+  if (commitments.length === 0) return " (guard_named_no_commitment)";
+  const rendered = commitments.map((commitment) => {
+    const descriptors = [commitment.kind, commitment.critical_domain, commitment.directive_family]
+      .filter((value): value is string => value !== undefined)
+      .join("/");
+    const liveness =
+      activeCommitmentIds === undefined
+        ? "liveness_unchecked"
+        : activeCommitmentIds.has(commitment.id)
+          ? "still_active"
+          : "no_longer_active";
+    const capture = descriptors.length === 0 ? "unresolved_at_capture" : descriptors;
+    return `${escapeXmlText(commitment.id)} (${escapeXmlText(`${capture}, ${liveness}`)})`;
+  });
+  return ` over commitment ${rendered.join(" and ")}`;
+}
+
 function renderRecentSuppressionMechanismEvidence(
   entry: NonNullable<DeliberationContext["turnMechanismEvidence"]>["recentSuppressions"][number],
+  renderNowMs: number | undefined,
 ): string {
   const diagnostics = entry.diagnostic;
   const renderedDiagnostics = [
@@ -1735,7 +2373,9 @@ function renderRecentSuppressionMechanismEvidence(
       ? null
       : `finalizer_invalid_tool=${escapeXmlText(JSON.stringify(diagnostics.finalizerInvalidTool))}`,
   ].filter((line): line is string => line !== null);
-  const rendered = `${escapeXmlText(entry.turnId)}:${escapeXmlText(String(entry.reason))}`;
+  const rendered = `${escapeXmlText(entry.turnId)}:${escapeXmlText(
+    String(entry.reason),
+  )}${renderRelativeAgeSuffix(entry.ts, renderNowMs)}`;
 
   return renderedDiagnostics.length === 0
     ? rendered
@@ -1786,21 +2426,72 @@ function summarizeRelationalSlotConstraints(
   ].join("\n");
 }
 
-function summarizeWorkingMemory(workingMemory: WorkingMemory): string {
+// Both fields on the working-state line are single-turn readouts of ONE text,
+// and which text that was is decided by turn origin in
+// `cognitionInputForTurnInput` (lifecycle/turn-phase-coordinator.ts): the
+// inbound batch on a user turn, the wake trigger context on an autonomous one,
+// the directed-outbound instruction on a directed_outbound one. That
+// discriminator exists upstream and used to die here -- the rendered line was
+// byte-identical whether a term arrived inside someone else's message or came
+// out of the being's own previous thought, so a term imported seconds ago read
+// exactly like held knowledge. Name the window on the line instead of leaving
+// it to be inferred from the terms.
+function workingStateInputWindow(turnOrigin: DeliberationContext["turnOrigin"]): string {
+  if (turnOrigin === "autonomous") {
+    return "this wake's own trigger context -- my prior thought plus the wake payload, text I produced rather than text that arrived";
+  }
+
+  if (turnOrigin === "directed_outbound") {
+    return "the directed-outbound instruction that opened this turn -- host-authored text, not a message from the audience";
+  }
+
+  return "the inbound message batch that arrived this turn -- the sender's words, not mine";
+}
+
+function workingStateMoodProvenance(turnOrigin: DeliberationContext["turnOrigin"]): string {
+  // The mood slot holds two different quantities depending on origin
+  // (perception/gateway.ts): the raw classifier reading on an undegraded user
+  // turn, and otherwise whatever was already in working memory -- which
+  // reflection last wrote as an EMA blend (turn-reflection-coordinator.ts,
+  // incomingWeight 0.3), and only on undegraded user turns. Rendered as bare
+  // V/A the two are indistinguishable, and a degraded classifier renders as
+  // stillness rather than as a gap.
+  if (turnOrigin === "autonomous" || turnOrigin === "directed_outbound") {
+    return "mood= is not a reading of this turn on this origin: the value shown is the one already in working memory, an EMA blend (weight 0.3 on each incoming reading) over earlier undegraded user turns in this session. It measures nothing in the text above.";
+  }
+
+  return "mood= scores that text from its author's perspective -- on this origin the sender's affect, not mine. If the affective classifier failed this turn, the previous value is carried forward instead and renders identically; the discriminator for that is outside this prompt (a `perception.classifier.degraded` event) and reaches this page one turn later, as the presence or absence of a trajectory row for this turn.";
+}
+
+function summarizeWorkingMemory(
+  workingMemory: WorkingMemory,
+  turnOrigin: DeliberationContext["turnOrigin"] = undefined,
+): string {
   // Phase E: working memory no longer caches raw agent self-talk
   // (recent_thoughts) or transient planner scratchpad. Recent dialogue
   // reaches cognition via the recency lane (Phase A); persistent thoughts
   // live in the stream. What's left here is derived live-turn state
   // (hot entities, mood) that the model uses to anchor the turn in the
   // *right now*.
+  // `hot_entities` is replaced wholesale each turn from one perception call
+  // (perception/gateway.ts) -- no accumulation, no decay, no salience ranking.
+  // The head of that list used to be rendered separately as `focus=`, which
+  // named an ordering artifact as if it were a ranked, persistent field and
+  // restated `entities[0]` on the same line. Render the list only.
+  // The record cannot carry per-term provenance -- `hot_entities` is
+  // `z.array(z.string())`, bare strings with no field to hang a marker on --
+  // so what gets named here is the window every term came through, which is
+  // the part that actually varies by turn.
   const mood = workingMemory.mood;
-  const focus = workingMemory.hot_entities[0] ?? "none";
   const lines = [
-    `Working memory: focus=${focus}; entities=${workingMemory.hot_entities.join(", ") || "none"}; mood=${
+    `Working memory: entities=${workingMemory.hot_entities.join(", ") || "none"}; mood=${
       mood === null || mood === undefined
         ? "neutral"
         : `${mood.valence.toFixed(2)}/${mood.arousal.toFixed(2)}`
     }`,
+    `Both fields above were extracted this turn from one text: ${workingStateInputWindow(turnOrigin)}. They are replaced wholesale every turn, never merged with the last one.`,
+    "entities= is therefore a list of terms the extractor found in that text. A term is on it because it was in the input -- not because I know it, hold it, or have checked it, and not because it ranks above the others. Something I do know is absent unless that text named it, and a term dropping off next turn carries no information.",
+    workingStateMoodProvenance(turnOrigin),
   ];
 
   if (workingMemory.pending_actions.length > 0) {
@@ -2073,7 +2764,9 @@ function compactPromptText(text: string, maxLength: number): string {
     return normalized;
   }
 
-  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+  const bodyEnd = utf16SafePrefixEnd(normalized, Math.max(0, maxLength - 3));
+
+  return `${normalized.slice(0, bodyEnd).trimEnd()}...`;
 }
 
 function formatPromptNumber(value: number): string {
@@ -2088,8 +2781,19 @@ function summarizeAffectiveTrajectory(
     return null;
   }
 
+  // "current snapshot in working state" said the working-state `mood=` was this series'
+  // newest member. It is never that, on either branch. The rows are the raw classifier
+  // readings stored by `mood.ts` (`INSERT INTO mood_history` takes `input.valence`, not the
+  // blended `next.valence`), written by reflection after the reply -- so the newest row is
+  // the previous scored turn. The slot is written earlier, by the perception gateway: this
+  // turn's own raw reading on an undegraded user turn, and otherwise the blend reflection
+  // last left in working memory, which no row ever carries. Same-quantity-different-turn on
+  // one branch, different-quantity on the other, and unequal either way -- which is what
+  // made the header's implied comparison look like a discriminator when it decides nothing.
+  // What the series does decide is one-sided and worth naming: a row exists only where the
+  // classifier ran, so an absent turn is an autonomous turn or a dead classifier.
   return [
-    "Affective trajectory (newest first; current snapshot in working state):",
+    "Affective trajectory (newest first). Each row is one turn's raw classifier reading of the text that arrived that turn, written after the reply: the newest row is the last scored turn, never this one. Rows exist only for undegraded user turns -- a turn missing here was autonomous or had a dead classifier, never a turn that felt nothing. Working state's mood= is not a member of this series (this turn's own raw reading on an undegraded user turn, a carried-forward blend otherwise), so comparing it against the newest row settles neither.",
     ...entries.slice(0, 5).map((entry) => {
       const triggerText =
         entry.trigger_reason === null ? "" : compactPromptText(entry.trigger_reason, 120);

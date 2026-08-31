@@ -127,6 +127,10 @@ export function createSemanticWalkTool(
     menuSummary: "Walk semantic memory from a known node.",
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "read",
+    // Vector search over the Lance index; between compactions fragment counts
+    // climb into the hundreds and honest queries exceed the 5s dispatcher
+    // default (observed live: seven consecutive ~5s timeouts across two days).
+    timeoutMs: 15_000,
     inputSchema: semanticWalkInputSchema,
     outputSchema: semanticWalkOutputSchema,
     async invoke(input, context) {

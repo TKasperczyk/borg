@@ -22,8 +22,10 @@ import {
 } from "../../util/ids.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { buildRegenerationPromptSection } from "../commitments/guard-runner.js";
+import { LIVE_TURN_READ_FINALIZER_TOOL_MENU } from "../deliberation/autonomous-finalizer-tools.js";
 import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
 import { formatTurnPlanForPrompt } from "../deliberation/prompt/plan-rendering.js";
+import { buildCompactPlannerSystemPrompt } from "../deliberation/prompt/planner-context.js";
 import { summarizeRetrievedEvidence } from "../deliberation/prompt/retrieval.js";
 import {
   buildBaseSystemPrompt,
@@ -63,6 +65,79 @@ const PROMPT_OPTIONS = {
   participationPolicy: "observing" as const,
   nowMs: NOW_MS,
 };
+const FIXTURE_SELF_PRIVATE_DISCLOSURE = {
+  disclosure:
+    "disclosure_class=self_private private-to=unknown; I can use this internally; I do not disclose it to the current audience unless authorized",
+  disclosure_label: {
+    disclosure_class: "self_private" as const,
+    origin_audience_entity_ids: [],
+    private_to_entity_ids: [],
+    public_to_entity_ids: [],
+  },
+};
+const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
+  NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
+> = {
+  observedAt: NOW_MS,
+  enabled: true,
+  tickInFlight: false,
+  intervalMs: 60_000,
+  droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
+  intervalArmedAt: NOW_MS - 3_600_000,
+  nextTickAt: NOW_MS + 60_000,
+  scheduledTickAt: NOW_MS + 60_000,
+  fleetBrake: {
+    enabled: true,
+    empty_streak: 0,
+    empty_streak_threshold: 5,
+    streak_anchor_ts: null,
+    cooldown_until: null,
+    error_streak: 0,
+    error_streak_threshold: 3,
+    error_paused_until: null,
+    bypass_count: 0,
+    freshness_bypass_cap: 3,
+    window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+    window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+    window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+  },
+  budget: {
+    max_wakes_per_window: 6,
+    window_ms: 24 * 60 * 60_000,
+    window_started_at: NOW_MS - 24 * 60 * 60_000,
+    used_in_current_window: 4,
+    reserved_contemplative_wakes_per_window: 2,
+    contemplative_used_in_current_window: 3,
+    wakes_in_current_window_by_trigger: [
+      {
+        trigger_name: "scheduled_reflection",
+        wake_count: 3,
+        in_flight: 0,
+        in_flight_started_at: [],
+        outcome_counts: {
+          headway: 1,
+          silent: 2,
+          error: 0,
+          busy: 0,
+        },
+      },
+      {
+        trigger_name: "goal_followup_due",
+        wake_count: 1,
+        in_flight: 0,
+        in_flight_started_at: [],
+        outcome_counts: {
+          headway: 0,
+          silent: 0,
+          error: 1,
+          busy: 0,
+        },
+      },
+    ],
+    next_budget_slot_frees_at: NOW_MS + 6 * 60 * 60_000,
+  },
+};
+const COMPACT_PLANNER_FIXTURE_NAME = "s2-planner-system-prompt-compact.txt";
 const FIXTURE_NAMES = [
   "base-system-user-group-problem-solving.txt",
   "base-system-autonomous-dm-relational.txt",
@@ -136,6 +211,7 @@ const REGISTRY_ENTRY_FIXTURE_MARKERS: Record<string, string> = {
   current_user_message_reminder: CURRENT_USER_MESSAGE_REMINDER,
   group_chat_sender_scoping_reminder: GROUP_CHAT_SENDER_SCOPING_REMINDER,
   trusted_guidance_preamble: TRUSTED_GUIDANCE_PREAMBLE,
+  live_turn_read_tool_menu: LIVE_TURN_READ_FINALIZER_TOOL_MENU,
   base_trusted_dynamic_guidance_block: TRUSTED_GUIDANCE_PREAMBLE,
   finalizer_emission_protocol: "I do not hide factual or source-sensitive content.",
   finalizer_cacheable_static_prefix: promptBlockDefault("base_identity_preamble"),
@@ -159,8 +235,6 @@ const REGISTRY_ENTRY_FIXTURE_EXEMPTIONS = new Map<string, string>([
   ["contradiction_signal", "contradiction routing signal is covered by separate routing tests"],
   // Reflective-mode open questions are not rendered in the problem-solving/relational fixtures.
   ["borg_open_questions", "open-question base prompt rendering is reflective-mode gated"],
-  // Requires a concrete autonomy trigger payload; the autonomy fixture covers outbound posture only.
-  ["borg_autonomy_trigger", "autonomy trigger rendering needs wake-trigger context"],
   // Requires an intentionally invalid finalizer tool response; finalizer retry behavior tests cover it.
   [
     "finalizer_invalid_tool_retry_instruction",
@@ -426,10 +500,16 @@ function makeContext(overrides: Partial<DeliberationContext> = {}): Deliberation
     retrievalConfidence: {
       overall: 0.74,
       evidenceStrength: 0.7,
-      coverage: 0.6,
+      coverage: 0.4,
       sourceDiversity: 0.5,
       contradictionPresent: true,
       sampleSize: 2,
+      semanticSampleSize: 0,
+      coverageExpected: 5,
+      diversitySources: 1,
+      diversitySampleSize: 2,
+      evidenceEpisodeStrength: 0.55,
+      evidenceSemanticStrength: 0.15,
     },
     contradictionRouting: {
       contradictions: [
@@ -582,6 +662,55 @@ function makeContext(overrides: Partial<DeliberationContext> = {}): Deliberation
     },
     entityRepository: makeEntityRepository(),
     workingMemory: makeWorkingMemory(),
+    turnMechanismEvidence: {
+      recentSuppressions: [
+        {
+          turnId: "turn_fixture_suppressed",
+          reason: "finalizer_no_output",
+          ts: NOW_MS - 800,
+        },
+      ],
+      // Three shapes, because the rendered line differs by shape and only the
+      // first was pinned here: an entry whose write kept no commitment field,
+      // and the two labeled forms -- one naming a row still in this turn's
+      // active draw (`makeCommitment`), one naming a row that has left it. The
+      // labeled line is what the ring actually writes now, so pinning only the
+      // bare shape left the form that reaches the page uncovered by any golden.
+      recentRegenerations: [
+        {
+          turnId: "turn_fixture_regenerated",
+          mechanism: "commitment_guard_regeneration",
+          ts: NOW_MS - 700,
+        },
+        {
+          turnId: "turn_fixture_regenerated_live",
+          mechanism: "commitment_guard_regeneration",
+          ts: NOW_MS - 600,
+          commitments: [
+            {
+              id: "cmt_aaaaaaaaaaaaaaaa",
+              kind: "boundary",
+              critical_domain: "privacy",
+              directive_family: "prompt_surface_privacy",
+            },
+          ],
+        },
+        {
+          turnId: "turn_fixture_regenerated_ended",
+          mechanism: "commitment_guard_regeneration",
+          ts: NOW_MS - 500,
+          commitments: [
+            {
+              id: "cmt_bbbbbbbbbbbbbbbb",
+              kind: "participant_preference",
+              critical_domain: "explicit_no_disclosure",
+              directive_family: "session_history_opacity",
+            },
+          ],
+        },
+      ],
+      autonomySchedulerState: FIXTURE_AUTONOMY_SCHEDULER_STATE,
+    },
     evidenceLedgerPromptSection: null,
     evidenceLedger: null,
     ...overrides,
@@ -622,6 +751,45 @@ function makeAutonomousRelationalContext(): DeliberationContext {
         },
       ],
     },
+    autonomyTrigger: {
+      source_name: "goal_followup_due",
+      source_type: "trigger",
+      event_id: "goal_aaaaaaaaaaaaaaaa:no-target:1699999999000:stale",
+      sort_ts: NOW_MS - 1_000,
+      payload: {
+        goal_id: "goal_aaaaaaaaaaaaaaaa",
+        selected_goal_id: "goal_aaaaaaaaaaaaaaaa",
+        selected_goal: {
+          id: "goal_aaaaaaaaaaaaaaaa",
+          description: "Retire the completed prompt-surface cleanup goal.",
+          priority: 10,
+          target_at: null,
+          last_progress_ts: NOW_MS - 86_400_000,
+          ...FIXTURE_SELF_PRIVATE_DISCLOSURE,
+        },
+        description: "Retire the completed prompt-surface cleanup goal.",
+        priority: 10,
+        target_at: null,
+        last_progress_ts: NOW_MS - 86_400_000,
+        days_stale: 1,
+        reason: "stale",
+        ...FIXTURE_SELF_PRIVATE_DISCLOSURE,
+        secondary_due_goals: [
+          {
+            source_name: "executive_focus_due",
+            source_event_id: "goal:goal_bbbbbbbbbbbbbbbb:1699827200000",
+            sort_ts: NOW_MS - 2_000,
+            goal_id: "goal_bbbbbbbbbbbbbbbb",
+            description: "Write the next verified implementation step.",
+            priority: 8,
+            target_at: NOW_MS + 86_400_000,
+            last_progress_ts: NOW_MS - 172_800_000,
+            reason: "goal_stale",
+            ...FIXTURE_SELF_PRIVATE_DISCLOSURE,
+          },
+        ],
+      },
+    },
     autonomousFinalizerToolMenu: [
       {
         name: "EmitAnswer",
@@ -645,6 +813,11 @@ function makeAutonomousRelationalContext(): DeliberationContext {
           "Append the carryover thought to the private journal and end the autonomous interval.",
       },
       {
+        name: "tool.ownRecords.list",
+        menuSummary:
+          "Browse my own thoughts and journal globally by origin-time range (optional explicit session filter).",
+      },
+      {
         name: "tool.journal.append",
         menuSummary: "Append a self-private journal entry without ending the turn.",
       },
@@ -655,6 +828,10 @@ function makeAutonomousRelationalContext(): DeliberationContext {
       {
         name: "tool.openQuestions.resolve",
         menuSummary: "Resolve an open question with evidence, or surface identity review.",
+      },
+      {
+        name: "tool.goals.retire",
+        menuSummary: "Retire one of my own goals as done/superseded, with my reason.",
       },
       {
         name: "tool.episodic.recent",
@@ -693,6 +870,11 @@ function makeAutonomousRelationalContext(): DeliberationContext {
       discourse_state: { stop_until_substantive_content: null },
       mode: "relational",
     }),
+    turnMechanismEvidence: {
+      recentSuppressions: [],
+      recentRegenerations: [],
+      autonomySchedulerState: FIXTURE_AUTONOMY_SCHEDULER_STATE,
+    },
     frameAnomaly: null,
   });
 }
@@ -918,6 +1100,20 @@ describe("prompt surface fixtures", () => {
     );
   });
 
+  it("keeps batched autonomous goal identities out of the one-hour static prefix", () => {
+    const parts = buildCacheableBaseSystemPromptParts(
+      makeAutonomousRelationalContext(),
+      PROMPT_OPTIONS,
+    );
+    const staticSections = parts.staticPrefixSections.join("\n");
+
+    for (const goalId of ["goal_aaaaaaaaaaaaaaaa", "goal_bbbbbbbbbbbbbbbb"]) {
+      expect(parts.dynamicContent).toContain(goalId);
+      expect(parts.staticPrefix).not.toContain(goalId);
+      expect(staticSections).not.toContain(goalId);
+    }
+  });
+
   it("pins finalizer static and dynamic system blocks with S2 extras", async () => {
     const llm = new FakeLLMClient({
       responses: [
@@ -1021,9 +1217,51 @@ describe("prompt surface fixtures", () => {
         },
       ],
       maxTokens: 512,
+      plannerSurface: { variant: "legacy" },
     });
 
-    expectFixture("s2-planner-system-prompt.txt", String(llm.requests[0]?.system));
+    const legacySystem = String(llm.requests[0]?.system);
+    expect(legacySystem).toContain("Harness scheduler state");
+    expectFixture("s2-planner-system-prompt.txt", legacySystem);
+  });
+
+  it("pins compact S2 planner system prompt", () => {
+    const workingMemory = makeWorkingMemory();
+    const context = makeContext({
+      workingMemory: {
+        ...workingMemory,
+        discourse_state: {
+          ...workingMemory.discourse_state,
+          stop_until_substantive_content: null,
+        },
+      },
+    });
+    const cacheable = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
+    const compact = buildCompactPlannerSystemPrompt({
+      context,
+      staticPrefix: cacheable.staticPrefix,
+      compactPlannerLedger: buildCompactPlannerLedgerPrompt(makeEvidenceLedger()),
+      additionalPromptSections: [
+        {
+          blockId: "borg_unresolved_contradiction_open_questions",
+          text:
+            renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
+              {
+                tag: "borg_unresolved_contradiction_open_questions",
+                content: "Planner routing note: contradiction open question remains unresolved.",
+              },
+            ]) ?? "",
+        },
+      ],
+    });
+    const compactSystem = systemBlocksToFixture(compact.system);
+    const compactTurnState = compact.system[2]?.text.match(
+      /<borg_planner_turn_state>[\s\S]*?<\/borg_planner_turn_state>/,
+    )?.[0];
+
+    expect(compactSystem).toContain("Harness scheduler state");
+    expect(compactTurnState).toContain('<autonomy_scheduler_state source="harness_mechanism">');
+    expectFixture(COMPACT_PLANNER_FIXTURE_NAME, compactSystem);
   });
 
   it("pins autonomous S2 planner system prompt", async () => {
@@ -1073,6 +1311,7 @@ describe("prompt surface fixtures", () => {
       ],
       maxTokens: 512,
       turnOrigin: "autonomous",
+      plannerSurface: { variant: "legacy" },
     });
 
     expectFixture("s2-planner-system-prompt-autonomous.txt", String(llm.requests[0]?.system));
@@ -1170,6 +1409,7 @@ describe("prompt surface fixtures", () => {
       dialogueMessages: [{ role: "user", content: context.userMessage }],
       selfSnapshot: context.selfSnapshot,
       maxTokens: 512,
+      plannerSurface: { variant: "legacy" },
     });
 
     expectFixture("s2-planner-voice-anchors.txt", String(llm.requests[0]?.system));

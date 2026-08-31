@@ -2,6 +2,7 @@ import type {
   ClosurePressureHistoryReason,
   ClosureLoopState,
   DiscourseStopProvenance,
+  RecentRegenerationCommitment,
   RecentRegenerationEntry,
   RecentSuppressionEntry,
   StopUntilSubstantiveContent,
@@ -57,6 +58,7 @@ export type AppendRecentRegenerationInput = {
   turnId: string;
   ts: number;
   sourceStreamEntryId?: StreamEntryId;
+  commitments?: readonly RecentRegenerationCommitment[];
 };
 
 function baseDiscourseState(workingMemory: WorkingMemory): WorkingMemory["discourse_state"] {
@@ -199,6 +201,14 @@ export function appendRecentRegeneration(
     ...(input.sourceStreamEntryId === undefined
       ? {}
       : { source_stream_entry_id: input.sourceStreamEntryId }),
+    // Keep an empty list distinct from an absent one. Collapsing them here made
+    // "the guard fired and named no commitment" and "this entry was written by a
+    // build that kept no commitment field" the same stored shape, and every hop
+    // downstream then read one silence where there were two. The discriminator
+    // only exists at this write; dropping it is unrecoverable further on.
+    ...(input.commitments === undefined
+      ? {}
+      : { commitments: input.commitments.map((commitment) => ({ ...commitment })) }),
   };
   const next = capNewest(
     [...(state.recent_regenerations ?? []), entry],

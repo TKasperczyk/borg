@@ -55,6 +55,7 @@ import {
 } from "../../util/ids.js";
 import { EvidenceLedgerBuilder } from "./builder.js";
 import { isPromptSalientActionSalienceClass } from "./action-threads.js";
+import { renderSection } from "./section-rendering.js";
 import { summarizeEvidenceLedgerTrace } from "./trace-summary.js";
 import {
   compactEvidenceLedger,
@@ -847,6 +848,11 @@ describe("EvidenceLedgerBuilder", () => {
           sourceStreamEntryIds: [createStreamEntryId()],
           originAudienceEntityIds: [],
           text: `Autonomous trigger goal_followup_due completed 2h ago: ${decisionSummary}`,
+          plannerDecision: {
+            outcomeReference: "goal_aaaaaaaaaaaaaaaa:no-target:900",
+            summary: decisionSummary,
+            rationale: null,
+          },
           metadata: {
             trigger_name: "goal_followup_due",
             trigger_type: "trigger",
@@ -869,6 +875,11 @@ describe("EvidenceLedgerBuilder", () => {
         state_metadata: expect.objectContaining({
           disclosure_class: "self_private",
         }),
+        planner_metadata: {
+          decision_outcome_ref: "goal_aaaaaaaaaaaaaaaa:no-target:900",
+          decision_summary: decisionSummary,
+          decision_rationale: null,
+        },
       }),
     ]);
     expect(rendered).not.toContain(decisionSummary);
@@ -3467,9 +3478,173 @@ describe("EvidenceLedgerBuilder", () => {
       "originating_intent: consider writing the harness presentation",
     );
     expect(actionEntries[0]?.text).toContain("transitions: 3, current: completed");
+    // The originating description is the oldest write in the thread; without its own stamp a reader
+    // cannot tell whether it disagrees with `current_intent` because the world changed or because
+    // one of them is wrong.
+    expect(actionEntries[0]?.text).toContain(
+      `at ${new Date(NOW_MS + 20).toISOString()}; originating_intent recorded ${new Date(
+        NOW_MS,
+      ).toISOString()}`,
+    );
     expect(actionEntries[0]?.text).toContain(
       "current_intent: finished writing the harness presentation",
     );
+  });
+
+  it("uses the global lifecycle clock for action recency across a small session counter", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-action-global-recency-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const priorEntry = await writer.append({
+      kind: "user_msg",
+      content: "The earlier action was completed.",
+    });
+    const currentUserEntry = await writer.append({
+      kind: "user_msg",
+      content: "What is still recent?",
+    });
+    const stampedTurnGlobal = 4_800;
+    const completed = makeAction(priorEntry.id, {
+      description: "Completed on the globally stamped turn",
+      actor: "user",
+      state: "completed",
+      completed_at: NOW_MS,
+      scheduled_at: null,
+      last_referenced_turn_counter: 67,
+      last_referenced_turn_global: stampedTurnGlobal,
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: {
+        list: () => [completed],
+        findSimilarDescriptionPairs: async () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+    const actionEntriesAt = async (globalTurnCounter: number) => {
+      const ledger = await builder.build({
+        sessionId: DEFAULT_SESSION_ID,
+        audienceEntityId: null,
+        currentUserMessage: String(currentUserEntry.content),
+        currentUserEntry,
+        globalTurnCounter,
+        workingMemory: { ...makeWorkingMemory(), turn_counter: 67 },
+        applicableCommitments: [],
+        retrievedEvidence: [],
+        retrievedEpisodes: [],
+        retrievedSemantic: null,
+        openQuestions: [],
+        pendingCorrections: [],
+        frameAnomaly: null,
+      });
+
+      return (
+        ledger.sections
+          .find((section) => section.id === "action_states")
+          ?.entries.filter((entry) => entry.id.startsWith("action_thread:")) ?? []
+      );
+    };
+
+    expect(await actionEntriesAt(stampedTurnGlobal + 4)).toHaveLength(0);
+    expect(await actionEntriesAt(stampedTurnGlobal + 2)).toEqual([
+      expect.objectContaining({
+        salience_class: "completed_recent",
+        text: expect.stringContaining("Completed on the globally stamped turn"),
+      }),
+    ]);
+  });
+
+  it("drops out-of-window completed threads instead of counting them as older", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-action-terminal-drop-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const priorEntry = await writer.append({
+      kind: "user_msg",
+      content: "Everything here happened well before this turn.",
+    });
+    const currentUserEntry = await writer.append({
+      kind: "user_msg",
+      content: "What is still open?",
+    });
+    const staleTurnGlobal = 4_800;
+    const outOfWindowCompleted = makeAction(priorEntry.id, {
+      description: "Closed long before this turn",
+      actor: "user",
+      state: "completed",
+      completed_at: NOW_MS,
+      scheduled_at: null,
+      last_referenced_turn_counter: 1,
+      last_referenced_turn_global: staleTurnGlobal,
+    });
+    const stalePending = Array.from({ length: 2 }, (_, index) =>
+      makeAction(priorEntry.id, {
+        description: `Still open long before this turn ${index}`,
+        actor: "user",
+        state: "committed_to_do",
+        committed_at: NOW_MS - index,
+        updated_at: NOW_MS - index,
+        scheduled_at: null,
+        last_referenced_turn_counter: 1,
+        last_referenced_turn_global: staleTurnGlobal,
+      }),
+    );
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: {
+        list: () => [outOfWindowCompleted, ...stalePending],
+        findSimilarDescriptionPairs: async () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+      actionThreadRenderLimit: 1,
+      actionThreadSalienceClassReservedSlots: 0,
+      actionThreadAudienceReservedSlots: 0,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      currentUserMessage: String(currentUserEntry.content),
+      currentUserEntry,
+      globalTurnCounter: staleTurnGlobal + 40,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const actionEntries =
+      ledger.sections.find((section) => section.id === "action_states")?.entries ?? [];
+    const summary = actionEntries.find((entry) => entry.id === "action_threads:older_summary");
+
+    // Stale *pending* backlog stays countable: one takes the render slot, one is summarized.
+    expect(actionEntries.filter((entry) => entry.id.startsWith("action_thread:"))).toHaveLength(1);
+    expect(summary?.text).toContain("threads=1, records=1");
+    expect(summary?.text).toContain(
+      "audience_scope=global salience_class=participant_pending_stale threads=1 records=1",
+    );
+
+    // The out-of-window terminal thread is neither rendered nor summarized: a null salience
+    // class removes it from the pool before the older-thread summary is built, so "omitted"
+    // means "omitted from the render", not "omitted from consideration". The count of what
+    // left that way is stated, so the omitted counts cannot read as the whole remainder.
+    expect(summary?.text).not.toContain("completed=");
+    expect(summary?.text).toContain("salience_dropped_threads=1");
+    expect(
+      actionEntries.some((entry) => String(entry.text).includes("Closed long before this turn")),
+    ).toBe(false);
   });
 
   it("renders action salience ordering and caps stale participant actions", async () => {
@@ -3498,6 +3673,7 @@ describe("EvidenceLedgerBuilder", () => {
       committed_at: NOW_MS - 10,
       scheduled_at: null,
       last_referenced_turn_counter: 4,
+      last_referenced_turn_global: 4,
     });
     const completedRecent = makeAction(userEntry.id, {
       description: "Closed the prior clinic email action",
@@ -3506,6 +3682,7 @@ describe("EvidenceLedgerBuilder", () => {
       completed_at: NOW_MS - 5,
       scheduled_at: null,
       last_referenced_turn_counter: 4,
+      last_referenced_turn_global: 4,
     });
     const stale = Array.from({ length: 7 }, (_, index) =>
       makeAction(userEntry.id, {
@@ -3516,6 +3693,7 @@ describe("EvidenceLedgerBuilder", () => {
         updated_at: NOW_MS - 100 - index,
         scheduled_at: null,
         last_referenced_turn_counter: 0,
+        last_referenced_turn_global: 0,
       }),
     );
     const builder = new EvidenceLedgerBuilder({
@@ -3534,6 +3712,7 @@ describe("EvidenceLedgerBuilder", () => {
       audienceEntityId: null,
       currentUserMessage: String(userEntry.content),
       currentUserEntry: userEntry,
+      globalTurnCounter: 4,
       workingMemory: makeWorkingMemory(),
       applicableCommitments: [],
       retrievedEvidence: [],
@@ -3558,7 +3737,7 @@ describe("EvidenceLedgerBuilder", () => {
     expect(actionEntries.some((entry) => entry.salience_class === "completed_recent")).toBe(true);
     expect(
       actionEntries.filter((entry) => entry.salience_class === "participant_pending_stale"),
-    ).toHaveLength(6);
+    ).toHaveLength(5);
     expect(
       actionEntries.filter((entry) => entry.id.startsWith("action_thread:")).slice(-5),
     ).toEqual(
@@ -3569,9 +3748,354 @@ describe("EvidenceLedgerBuilder", () => {
       ]),
     );
     expect(
-      actionEntries.find((entry) => entry.id === "action_threads:participant_pending_stale_summary")
-        ?.text,
-    ).toContain("count=2");
+      actionEntries.find((entry) => entry.id === "action_threads:older_summary")?.text,
+    ).toContain(
+      "audience_scope=global salience_class=participant_pending_stale threads=2 records=2",
+    );
+  });
+
+  it("prevents a top-ranked Borg flood from starving participant and audience reservations", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const alice = createEntityId();
+    const bob = createEntityId();
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "Keep every structural action scope legible.",
+      sender_entity_id: bob,
+    });
+    const borgFlood = Array.from({ length: 8 }, (_, index) =>
+      makeAction(userEntry.id, {
+        description: `Borg flood action ${index}`,
+        actor: "borg",
+        audience_entity_id: null,
+        state: "committed_to_do",
+        committed_at: NOW_MS + 100 - index,
+        updated_at: NOW_MS + 100 - index,
+        scheduled_at: null,
+      }),
+    );
+    const participantAction = makeAction(userEntry.id, {
+      description: "Bob participant action survives",
+      actor: bob,
+      audience_entity_id: null,
+      state: "committed_to_do",
+      committed_at: NOW_MS - 100,
+      updated_at: NOW_MS - 100,
+      scheduled_at: null,
+      last_referenced_turn_counter: 4,
+      last_referenced_turn_global: 4,
+    });
+    const audienceAction = makeAction(userEntry.id, {
+      description: "Alice audience action survives",
+      actor: "borg",
+      audience_entity_id: alice,
+      state: "committed_to_do",
+      committed_at: NOW_MS - 200,
+      updated_at: NOW_MS - 200,
+      scheduled_at: null,
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: {
+        list: () => [...borgFlood, participantAction, audienceAction],
+        findSimilarDescriptionPairs: async () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+      actionThreadRenderLimit: 3,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: alice,
+      currentUserMessage: String(userEntry.content),
+      currentUserEntry: userEntry,
+      globalTurnCounter: 4,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      activeParticipants: [
+        { entityId: bob, displayName: "Bob", role: "speaker" },
+        { entityId: alice, displayName: "Alice", role: "audience" },
+      ],
+    });
+    const actionEntries =
+      ledger.sections
+        .find((section) => section.id === "action_states")
+        ?.entries.filter((entry) => entry.id.startsWith("action_thread:")) ?? [];
+    const renderedText = actionEntries.map((entry) => entry.text).join("\n");
+
+    expect(actionEntries).toHaveLength(3);
+    expect(renderedText).toContain("Borg flood action 0");
+    expect(renderedText).toContain("Bob participant action survives");
+    expect(renderedText).toContain("Alice audience action survives");
+  });
+
+  it("keeps legacy top-N action order when reservations create no selection pressure", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "Keep the ordinary action ordering stable.",
+    });
+    const actions = Array.from({ length: 5 }, (_, index) =>
+      makeAction(userEntry.id, {
+        description: `Ordered Borg action ${index}`,
+        actor: "borg",
+        state: "committed_to_do",
+        committed_at: NOW_MS + 100 - index,
+        updated_at: NOW_MS + 100 - index,
+        scheduled_at: null,
+      }),
+    );
+    async function buildActionStatesSection(
+      reservationOverrides: {
+        actionThreadSalienceClassReservedSlots?: number;
+        actionThreadAudienceReservedSlots?: number;
+      } = {},
+    ) {
+      const builder = new EvidenceLedgerBuilder({
+        createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+        relationalSlotRepository: { list: () => [] },
+        actionRepository: {
+          list: () => actions,
+          findSimilarDescriptionPairs: async () => [],
+        },
+        currentSessionTranscriptTokenBudget: 50_000,
+        actionThreadRenderLimit: 3,
+        ...reservationOverrides,
+      });
+      const ledger = await builder.build({
+        sessionId: DEFAULT_SESSION_ID,
+        audienceEntityId: null,
+        currentUserMessage: String(userEntry.content),
+        currentUserEntry: userEntry,
+        workingMemory: makeWorkingMemory(),
+        applicableCommitments: [],
+        retrievedEvidence: [],
+        retrievedEpisodes: [],
+        retrievedSemantic: null,
+        openQuestions: [],
+        pendingCorrections: [],
+        frameAnomaly: null,
+      });
+      const actionStatesSection = ledger.sections.find((section) => section.id === "action_states");
+
+      if (actionStatesSection === undefined) {
+        throw new Error("Expected action_states section");
+      }
+
+      return actionStatesSection;
+    }
+
+    const defaultActionStatesSection = await buildActionStatesSection();
+    const unreservedActionStatesSection = await buildActionStatesSection({
+      actionThreadSalienceClassReservedSlots: 0,
+      actionThreadAudienceReservedSlots: 0,
+    });
+    const renderedDescriptions = defaultActionStatesSection.entries
+      .filter((entry) => entry.id.startsWith("action_thread:"))
+      .map((entry) => entry.text);
+
+    expect(renderSection(defaultActionStatesSection)).toBe(
+      renderSection(unreservedActionStatesSection),
+    );
+
+    expect(renderedDescriptions).toHaveLength(3);
+    expect(renderedDescriptions[0]).toContain("Ordered Borg action 0");
+    expect(renderedDescriptions[1]).toContain("Ordered Borg action 1");
+    expect(renderedDescriptions[2]).toContain("Ordered Borg action 2");
+  });
+
+  it("groups the exact omitted-thread complement with separate disclosure labels", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const alice = createEntityId();
+    const bob = createEntityId();
+    const aliceThreadGoal = createGoalId();
+    const unknownSampleText = `Unknown sample should be dropped before its disclosure label ${"tail ".repeat(20)}`;
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "Summarize omitted action scopes independently.",
+      sender_entity_id: bob,
+    });
+    const selected = makeAction(userEntry.id, {
+      description: "Selected global Borg action",
+      actor: "borg",
+      state: "committed_to_do",
+      committed_at: NOW_MS + 30,
+      updated_at: NOW_MS + 30,
+      scheduled_at: null,
+    });
+    const aliceOmitted = makeAction(userEntry.id, {
+      description: "Alice-private omitted Borg action",
+      actor: "borg",
+      audience_entity_id: alice,
+      goal_id: aliceThreadGoal,
+      state: "committed_to_do",
+      committed_at: NOW_MS + 20,
+      updated_at: NOW_MS + 20,
+      scheduled_at: null,
+    });
+    const aliceOmittedPrior = makeAction(userEntry.id, {
+      description: "Earlier self-private phase of Alice action",
+      actor: "borg",
+      audience_entity_id: null,
+      goal_id: aliceThreadGoal,
+      state: "considering",
+      considering_at: NOW_MS + 15,
+      updated_at: NOW_MS + 15,
+      scheduled_at: null,
+    });
+    const participantOmitted = makeAction(userEntry.id, {
+      description: unknownSampleText,
+      actor: bob,
+      audience_entity_id: null,
+      state: "committed_to_do",
+      committed_at: NOW_MS + 10,
+      updated_at: NOW_MS + 10,
+      scheduled_at: null,
+      last_referenced_turn_counter: 4,
+      last_referenced_turn_global: 4,
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: {
+        list: () => [selected, aliceOmitted, aliceOmittedPrior, participantOmitted],
+        // The store holds exactly what the draw saw, so the below-floor count is a real 0 rather
+        // than the unavailable-total token.
+        count: () => 4,
+        findSimilarDescriptionPairs: async () => [
+          {
+            leftId: aliceOmittedPrior.id,
+            rightId: aliceOmitted.id,
+            similarity: 0.9,
+          },
+        ],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+      actionThreadRenderLimit: 1,
+      actionThreadSalienceClassReservedSlots: 0,
+      actionThreadAudienceReservedSlots: 0,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: alice,
+      currentUserMessage: String(userEntry.content),
+      currentUserEntry: userEntry,
+      globalTurnCounter: 4,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      activeParticipants: [
+        { entityId: bob, displayName: "Bob", role: "speaker" },
+        { entityId: alice, displayName: "Alice", role: "audience" },
+      ],
+    });
+    const actionEntries =
+      ledger.sections.find((section) => section.id === "action_states")?.entries ?? [];
+    const summaries = actionEntries.filter((entry) => entry.id === "action_threads:older_summary");
+    const summaryText = summaries[0]?.text ?? "";
+    const summaryLines = summaryText.split("\n");
+    const aliceLine = summaryLines.find((line) => line.includes(`audience_scope=${alice}`));
+    const globalLine = summaryLines.find((line) => line.includes("audience_scope=global"));
+
+    expect(actionEntries.filter((entry) => entry.id.startsWith("action_thread:"))).toHaveLength(1);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.text).toContain("threads=2, records=3");
+    expect(aliceLine).toContain(`salience_class=borg_current_turn_action threads=1 records=2`);
+    expect(aliceLine).toContain("disclosure_label=disclosure_class=self_private");
+    expect(aliceLine).toContain(`origin_audience=${alice}`);
+    expect(globalLine).toContain("salience_class=participant_pending_recent threads=1 records=1");
+    expect(globalLine).toContain("disclosure_label=disclosure_class=unknown");
+    expect(globalLine).not.toContain(alice);
+
+    // Budget covers the head lines (omitted counts + uncounted-population bounds) plus both
+    // group labels, and still cuts inside the second group's samples. The number tracks the head
+    // lines: they are charged first, so widening them buys the same shape at a higher price. The
+    // shape holds across roughly 305-316 here; the value sits mid-band rather than at an edge, so
+    // a head line that moves by a few characters does not silently change what is being tested.
+    const compacted = compactEvidenceLedger(ledger, {
+      maxEntryTextTokens: 310,
+    });
+    const compactedSummaryText =
+      compacted.ledger.sections
+        .find((section) => section.id === "action_states")
+        ?.entries.find((entry) => entry.id === "action_threads:older_summary")?.text ?? "";
+    const disclosureSamples = [
+      {
+        label: "disclosure_label=disclosure_class=self_private",
+        sample: "Alice-private omitted Borg action",
+      },
+      {
+        label: "disclosure_label=disclosure_class=unknown",
+        sample: "Unknown sample should be dropped",
+      },
+    ];
+
+    for (const { label, sample } of disclosureSamples) {
+      expect(summaryText.indexOf(label)).toBeLessThan(summaryText.indexOf(sample));
+
+      const survivingSampleIndex = compactedSummaryText.indexOf(sample);
+
+      if (survivingSampleIndex >= 0) {
+        expect(compactedSummaryText.indexOf(label)).toBeGreaterThanOrEqual(0);
+        expect(compactedSummaryText.indexOf(label)).toBeLessThan(survivingSampleIndex);
+      }
+    }
+
+    expect(compactedSummaryText).toContain("Alice-private omitted Borg action");
+    // The uncounted-population bounds sit above the group detail, so truncation never leaves
+    // the omitted counts reading as a complete accounting of what the section withheld.
+    expect(compactedSummaryText).toContain(
+      "Not counted above: salience_dropped_threads=0, records_below_draw_floor=0",
+    );
+    // The label's load-bearing part is the class and the private-to binding; the sentence that
+    // used to follow them was fixed boilerplate identical on every label, and now sits once above
+    // the group lines instead of once per group. Assert what has to survive per group -- the two
+    // varying fields -- rather than how much of a constant tail happened to fit.
+    expect(compactedSummaryText).toContain(
+      "disclosure_label=disclosure_class=unknown private-to=unknown recent_samples=",
+    );
+    // The thread totals sit with the bounds, above the group detail: truncation may take a
+    // sample, never the identity that says the three thread counts close and that the record
+    // count is a different unit -- nor the slot count that says what `rendered` was measured
+    // against, which is the one term a reader cannot reconstruct from the others.
+    expect(compactedSummaryText).toContain(
+      "threads_built=3 = rendered 1 + omitted 2 + dropped 0; render_slots=1, " +
+        "stale_participant_threads_withheld=0 of that omitted count",
+    );
+    expect(compactedSummaryText).toContain("records_considered=4");
+    expect(compactedSummaryText).not.toContain("Unknown sample should be dropped");
+    expect(compactedSummaryText).toContain("[evidence ledger entry truncated");
   });
 
   it("renders non-raw retrieved evidence sources into ledger sections", async () => {
@@ -3813,6 +4337,8 @@ describe("EvidenceLedgerBuilder", () => {
       },
       currentSessionTranscriptTokenBudget: 50_000,
       actionThreadRenderLimit: 2,
+      actionThreadSalienceClassReservedSlots: 0,
+      actionThreadAudienceReservedSlots: 0,
     });
 
     const ledger = await builder.build({
@@ -3836,6 +4362,9 @@ describe("EvidenceLedgerBuilder", () => {
     expect(actionEntries).toHaveLength(3);
     expect(summary?.text).toContain("threads=4");
     expect(summary?.text).toContain("records=4");
+    expect(summary?.text).toContain(
+      "audience_scope=global salience_class=completed_recent threads=2 records=2",
+    );
     expect(summary?.text).toContain("committed_to_do=1");
     expect(summary?.text).toContain("scheduled=1");
     expect(summary?.text).toContain("completed=2");
