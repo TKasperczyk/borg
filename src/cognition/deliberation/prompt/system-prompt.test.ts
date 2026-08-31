@@ -251,6 +251,75 @@ function extractBlock(prompt: string, tag: string): string {
   return prompt.slice(start, end + closeTag.length);
 }
 
+function makeSchedulerStateWithSources(): NonNullable<
+  NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
+> {
+  return {
+    observedAt: NOW_MS,
+    enabled: true,
+    tickInFlight: false,
+    intervalMs: 60_000,
+    droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
+    intervalArmedAt: NOW_MS - 3_600_000,
+    nextTickAt: NOW_MS + 60_000,
+    scheduledTickAt: NOW_MS + 60_000,
+    sources: [
+      {
+        name: "commitment_expiring",
+        type: "trigger",
+        category: "operational",
+        enabled: true,
+        next_due_at: NOW_MS + 900_000,
+      },
+      {
+        name: "executive_focus_due",
+        type: "trigger",
+        category: "operational",
+        enabled: true,
+        next_due_at: null,
+      },
+      {
+        name: "scheduled_wake",
+        type: "trigger",
+        category: "contemplative",
+        enabled: false,
+        next_due_at: null,
+      },
+      {
+        name: "mood_valence_drop",
+        type: "condition",
+        category: "operational",
+        enabled: true,
+      },
+    ],
+    fleetBrake: {
+      enabled: true,
+      empty_streak: 0,
+      empty_streak_threshold: 5,
+      streak_anchor_ts: null,
+      cooldown_until: null,
+      error_streak: 0,
+      error_streak_threshold: 3,
+      error_paused_until: null,
+      bypass_count: 0,
+      freshness_bypass_cap: 3,
+      window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+      window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+      window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+    },
+    budget: {
+      max_wakes_per_window: 6,
+      window_ms: 24 * 60 * 60_000,
+      window_started_at: NOW_MS - 24 * 60 * 60_000,
+      used_in_current_window: 1,
+      reserved_contemplative_wakes_per_window: 0,
+      contemplative_used_in_current_window: 0,
+      wakes_in_current_window_by_trigger: [],
+      next_budget_slot_frees_at: null,
+    },
+  };
+}
+
 function makeOperatorSessionSnapshot(
   overrides: Partial<OperatorSessionSnapshot> = {},
 ): OperatorSessionSnapshot {
@@ -2619,6 +2688,7 @@ describe("buildBaseSystemPrompt", () => {
               intervalMs: 60_000,
               droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
               intervalArmedAt: NOW_MS - 3_600_000,
+              sources: [],
               nextTickAt: NOW_MS + 60_000,
               scheduledTickAt: NOW_MS + 60_000,
               fleetBrake: {
@@ -2769,6 +2839,7 @@ describe("buildBaseSystemPrompt", () => {
               intervalMs: 60_000,
               droppedIntervalFires,
               intervalArmedAt: NOW_MS - 3_600_000,
+              sources: [],
               nextTickAt: NOW_MS + 60_000,
               scheduledTickAt: NOW_MS + 60_000,
               fleetBrake: {
@@ -2830,6 +2901,92 @@ describe("buildBaseSystemPrompt", () => {
     );
   });
 
+  // The only prospective field the scheduler produces. Everything else on the
+  // block is retrospective or about the loop's own health, so nothing else there
+  // supports a claim about the next wake that could turn out wrong. Rendering it
+  // also empties the dropped-field list, which flips the boundary clause to its
+  // no-gap branch -- the branch existed and had never been reachable.
+  it("renders each wake source's arming state and the ways its due stamp misleads", () => {
+    const block = extractBlock(
+      buildBaseSystemPrompt(
+        makeContext({
+          turnOrigin: "user",
+          turnMechanismEvidence: {
+            recentSuppressions: [],
+            recentRegenerations: [],
+            autonomySchedulerState: makeSchedulerStateWithSources(),
+          },
+        }),
+        { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+      ),
+      "borg_mechanism_evidence",
+    );
+
+    expect(block).toContain(
+      "Wake sources held by that scheduler, with each trigger's own next-due stamp as of that read. This is the forward view; the wakes-by-trigger counts above are the same names counted backwards.",
+    );
+    expect(block).toContain(
+      "- name=commitment_expiring type=trigger category=operational registered=true next_due_at=2023-11-14T22:28:20.000Z (",
+    );
+    expect(block).toContain(
+      "- name=executive_focus_due type=trigger category=operational registered=true next_due_at=none",
+    );
+    expect(block).toContain(
+      "- name=scheduled_wake type=trigger category=contemplative registered=false next_due_at=none",
+    );
+    // Conditions have no such field on the description at all. The line stops
+    // rather than printing a null, so the absence reads as the field not
+    // existing rather than as nothing being due.
+    expect(block).toContain(
+      "- name=mood_valence_drop type=condition category=operational registered=true\n",
+    );
+    expect(block).not.toContain("name=mood_valence_drop type=condition category=operational registered=true next_due_at");
+    // The floor is the same one next_tick_at carries, one layer down: an overdue
+    // source and a source due this instant print the same instant.
+    expect(block).toContain(
+      "next_due_at is that source's own earliest eligibility as of the read, floored to the read clock exactly as next_tick_at is",
+    );
+    // The reading that costs nothing to make and is wrong in the flattering
+    // direction: a null read as a prediction of quiet.
+    expect(block).toContain(
+      "next_due_at=none does not mean nothing is due from that source. It means the source published no stamp",
+    );
+    expect(block).toContain("A none is therefore consistent with that source firing on the very next tick.");
+    // Carrying the field empties the dropped list, so the block's own statement
+    // of its gap flips to the no-gap branch rather than falling silent.
+    expect(block).toContain(
+      "Every field the scheduler's read produces is rendered somewhere below, so this block and that read differ by nothing.",
+    );
+    // Retracted wording, pinned so it cannot return under a rewrite: the block
+    // said this list was the one thing it did not carry.
+    expect(block).not.toContain("except its per-source list");
+    expect(block).not.toContain("That is the whole difference between this block and the read it names");
+  });
+
+  // Every countdown on this block hangs on a stamp taken at the read and is
+  // measured against the header clock. Six more of them arrive with the source
+  // list, and stating the basis once beats repeating it per line.
+  it("names which clock the per-source countdowns are measured from when the read is stale", () => {
+    const block = extractBlock(
+      buildBaseSystemPrompt(
+        makeContext({
+          turnOrigin: "user",
+          turnMechanismEvidence: {
+            recentSuppressions: [],
+            recentRegenerations: [],
+            autonomySchedulerState: makeSchedulerStateWithSources(),
+          },
+        }),
+        { ...PROMPT_OPTIONS, nowMs: NOW_MS + 4_000 },
+      ),
+      "borg_mechanism_evidence",
+    );
+
+    expect(block).toContain(
+      "The parenthesised countdowns are measured from the current_time_ms at the top of this prompt, 4000ms after the read, so like the other countdowns here they read shorter than the wait as of the read.",
+    );
+  });
+
   // Null under the same condition as the tick stamps: with no handle there is no
   // epoch to name, and an armed stamp beside "no next tick scheduled" would be a
   // fossil of the previous arming read as current state.
@@ -2848,6 +3005,7 @@ describe("buildBaseSystemPrompt", () => {
               intervalMs: 60_000,
               droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
               intervalArmedAt: null,
+              sources: [],
               nextTickAt: null,
               scheduledTickAt: null,
               fleetBrake: {
@@ -2913,6 +3071,7 @@ describe("buildBaseSystemPrompt", () => {
               intervalMs: 60_000,
               droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
               intervalArmedAt: NOW_MS - 3_600_000,
+              sources: [],
               nextTickAt: NOW_MS + 60_000,
               scheduledTickAt: NOW_MS + 60_000,
               fleetBrake: {
@@ -3039,6 +3198,7 @@ describe("buildBaseSystemPrompt", () => {
               intervalMs: 60_000,
               droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
               intervalArmedAt: NOW_MS - 3_600_000,
+              sources: [],
               nextTickAt,
               scheduledTickAt,
               fleetBrake: {
@@ -3148,6 +3308,7 @@ describe("buildBaseSystemPrompt", () => {
             intervalMs: 60_000,
             droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
             intervalArmedAt: NOW_MS - 3_600_000,
+            sources: [],
             nextTickAt: NOW_MS + 60_000,
             scheduledTickAt: NOW_MS + 60_000,
             fleetBrake: {
@@ -3207,6 +3368,7 @@ describe("buildBaseSystemPrompt", () => {
             intervalMs: 60_000,
             droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
             intervalArmedAt: NOW_MS - 3_600_000,
+            sources: [],
             nextTickAt: NOW_MS + 60_000,
             scheduledTickAt: NOW_MS + 60_000,
             fleetBrake: {
@@ -3275,6 +3437,7 @@ describe("buildBaseSystemPrompt", () => {
                 intervalMs: 60_000,
                 droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
                 intervalArmedAt: NOW_MS - 3_600_000,
+                sources: [],
                 nextTickAt: NOW_MS + 60_000,
                 scheduledTickAt: NOW_MS + 60_000,
                 fleetBrake: {
@@ -3392,6 +3555,7 @@ describe("buildBaseSystemPrompt", () => {
                 intervalMs: 60_000,
                 droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
                 intervalArmedAt: NOW_MS - 3_600_000,
+                sources: [],
                 nextTickAt: NOW_MS + 60_000,
                 scheduledTickAt: NOW_MS + 60_000,
                 fleetBrake: {

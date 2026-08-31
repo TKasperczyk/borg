@@ -177,6 +177,24 @@ describe("planner context capture", () => {
             intervalMs: 60_000,
             droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
             intervalArmedAt: NOW_MS - 3_600_000,
+            // Non-empty on purpose: an empty list round-trips through a
+            // projector that drops the field just as well as through one that
+            // carries it, and this pair is the only guard on that boundary.
+            sources: [
+              {
+                name: "executive_focus_due",
+                type: "trigger",
+                category: "operational",
+                enabled: true,
+                next_due_at: NOW_MS + 120_000,
+              },
+              {
+                name: "mood_valence_drop",
+                type: "condition",
+                category: "operational",
+                enabled: true,
+              },
+            ],
             nextTickAt: NOW_MS + 60_000,
             scheduledTickAt: NOW_MS + 60_000,
             fleetBrake: {

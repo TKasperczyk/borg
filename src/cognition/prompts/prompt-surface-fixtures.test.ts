@@ -86,6 +86,42 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
   intervalArmedAt: NOW_MS - 3_600_000,
   nextTickAt: NOW_MS + 60_000,
   scheduledTickAt: NOW_MS + 60_000,
+  sources: [
+    {
+      name: "commitment_expiring",
+      type: "trigger",
+      category: "operational",
+      enabled: true,
+      next_due_at: NOW_MS + 900_000,
+    },
+    {
+      name: "executive_focus_due",
+      type: "trigger",
+      category: "operational",
+      enabled: true,
+      next_due_at: null,
+    },
+    {
+      name: "scheduled_reflection",
+      type: "trigger",
+      category: "contemplative",
+      enabled: true,
+      next_due_at: NOW_MS,
+    },
+    {
+      name: "scheduled_wake",
+      type: "trigger",
+      category: "contemplative",
+      enabled: false,
+      next_due_at: null,
+    },
+    {
+      name: "mood_valence_drop",
+      type: "condition",
+      category: "operational",
+      enabled: true,
+    },
+  ],
   fleetBrake: {
     enabled: true,
     empty_streak: 0,

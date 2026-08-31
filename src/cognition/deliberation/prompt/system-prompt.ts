@@ -2057,8 +2057,63 @@ export function summarizeAutonomySchedulerState(
   // what the brake counts; it says what was counted, so "a silence I chose" and
   // "a wake that produced nothing" stop being indistinguishable from this page.
   lines.push(...renderWakeSilentReasonLines(brake.window_silent_reasons));
+  // The only prospective field the scheduler produces, and the last one that
+  // stopped at the evidence boundary. Everything above is retrospective or about
+  // the loop's own health: what has fired, what the window has spent, how far
+  // behind the tick is. None of it supports a statement about the next wake that
+  // could turn out wrong, and the wakes-by-trigger groups are these same source
+  // names counted backwards -- which is why this is not a duplicate of them.
+  lines.push(...renderWakeSourceLines(schedulerState.sources, renderNowMs, observationLagMs));
 
   return lines.join("\n");
+}
+
+function renderWakeSourceLines(
+  sources: NonNullable<
+    NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
+  >["sources"],
+  renderNowMs: number,
+  observationLagMs: number,
+): string[] {
+  if (sources.length === 0) {
+    return ["Wake sources held by that scheduler: none, so nothing can fire from any of them."];
+  }
+
+  return [
+    "Wake sources held by that scheduler, with each trigger's own next-due stamp as of that read. This is the forward view; the wakes-by-trigger counts above are the same names counted backwards.",
+    ...sources.map((source) => {
+      const head = `- name=${source.name} type=${source.type} category=${source.category} registered=${source.enabled}`;
+
+      if (source.type === "condition") {
+        return head;
+      }
+
+      return `${head} next_due_at=${
+        source.next_due_at === null
+          ? "none"
+          : `${new Date(source.next_due_at).toISOString()} (${formatRelativeUntil(
+              source.next_due_at,
+              renderNowMs,
+            )})`
+      }`;
+    }),
+    // Three separate ways this list misleads a reader who takes it at face
+    // value, each of which makes a prediction off it wrong in a different
+    // direction. (1) The stamps carry the same floor next_tick_at does, so an
+    // overdue source and a source due this instant print the same instant.
+    // (2) A stamp is eligibility, and three refusal paths sit between it and a
+    // wake -- all three already on this block, none of them consulted here.
+    // (3) A null is not a prediction of quiet: the reasons a source declines to
+    // publish a stamp include ones that coexist with it firing on the next tick.
+    // The third is the one that matters most, because it is the reading that
+    // costs nothing to make and cannot be checked against a wake that never
+    // comes for some other reason.
+    `next_due_at is that source's own earliest eligibility as of the read, floored to the read clock exactly as next_tick_at is -- each trigger returns the later of its own stamp and the read -- so a stamp equal to the read means already due at or before it, and how long it has been due is not recoverable from this block. Eligibility is not a fire: the tick still has to run, the budget still has to have room under the ceiling for that source's category, and the fleet brake still has to not be holding, and all three refuse independently of the stamp. next_due_at=none does not mean nothing is due from that source. It means the source published no stamp, and it covers several states that are not the same: nothing eligible; the source declining to compute one because its candidate set was larger than the bounded scan it will do for a read-only field; and a trigger deciding part of what it fires on inside the scan, from scoring rather than from schedule data, which a field read before the scan cannot predict at all. A none is therefore consistent with that source firing on the very next tick. Conditions publish no stamp by construction -- they are detected from state when the tick scans -- so their absence here is the field not existing rather than nothing being due. registered says the source was built into this scheduler, not that it is otherwise unblocked.${
+      observationLagMs === 0
+        ? ""
+        : ` The parenthesised countdowns are measured from the current_time_ms at the top of this prompt, ${observationLagMs}ms after the read, so like the other countdowns here they read shorter than the wait as of the read.`
+    }`,
+  ];
 }
 
 /**

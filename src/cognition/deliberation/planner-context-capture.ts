@@ -498,6 +498,7 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
                   }),
                 ),
             },
+            sources: value.autonomySchedulerState.sources.map((source) => ({ ...source })),
           },
         }),
   };

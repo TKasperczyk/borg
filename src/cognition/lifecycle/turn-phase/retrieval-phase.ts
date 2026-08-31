@@ -823,6 +823,7 @@ export async function runRetrievalPhase(input: {
           scheduledTickAt: description.scheduled_tick_at,
           budget: description.budget,
           fleetBrake: description.fleet_brake,
+          sources: description.sources,
         };
       }
     } catch (error) {

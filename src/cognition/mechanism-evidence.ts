@@ -78,6 +78,15 @@ export type HydratedRecentRegeneration = {
 // watch whether the stamp moved, which is a discriminator no single prompt can carry. The flag is
 // already in the scheduler at describe() time; carrying it here makes one read enough.
 //
+// `sources` is the sixth, and it is the only prospective field the scheduler produces. Everything
+// else on this object is retrospective or about the loop itself: what has already fired, what the
+// window has already spent, how far behind the tick is. A reader holding only those can describe
+// the scheduler's past and its health and can state nothing falsifiable about its next move -- the
+// wakes-by-trigger groups are the same source names counted backwards, which is why carrying this
+// is not a duplicate of them. The per-trigger due stamps are the one field on which a prediction
+// made before a wake fires can turn out wrong, and being wrong is the property the rest of the
+// block cannot offer at any number of reads.
+//
 // `intervalMs` and `droppedIntervalFires` are the fourth and fifth, and both were dropped at the
 // same call site as the three above. The interval length is what turns a series of
 // `scheduledTickAt` stamps into a grid: the stamp is the last tick entry plus the interval, so
@@ -100,13 +109,14 @@ export type AutonomySchedulerMechanismEvidence = {
   scheduledTickAt: number | null;
   budget: AutonomySchedulerBudgetDescription;
   fleetBrake: AutonomySchedulerFleetBrakeDescription;
+  sources: AutonomySchedulerDescription["sources"];
 };
 
 /**
  * Per-field disposition at the one boundary where `describe()`'s output crosses
  * into turn evidence (`retrieval-phase.ts`, hand-written and renamed).
  *
- * Five of the nine carried fields were lost at exactly that line and recovered
+ * Five of the ten carried fields were lost at exactly that line and recovered
  * only when a reader noticed the page was thin. That failure has no symptom: the
  * target type is unchanged, so nothing is missing from any literal, no assertion
  * fires, no test goes red -- the surface simply renders less than it could, and
@@ -121,7 +131,10 @@ export type AutonomySchedulerMechanismEvidence = {
  *
  * The dropped reasons are rendered on the block itself, so the page states its
  * own gap against the read rather than leaving the count of missing fields
- * unknowable to anyone who cannot also read this file.
+ * unknowable to anyone who cannot also read this file. With nothing dropped the
+ * block says that instead, which is the same sentence in its empty case rather
+ * than a silence: a page that stops mentioning its gap and a page that has none
+ * would otherwise be the same page.
  */
 export type AutonomySchedulerFieldDisposition = "carried" | { readonly dropped: string };
 
@@ -139,16 +152,7 @@ export const AUTONOMY_SCHEDULER_DESCRIPTION_FIELD_DISPOSITION: Record<
   scheduled_tick_at: "carried",
   budget: "carried",
   fleet_brake: "carried",
-  // Prospective per-source arming state: which wake sources are registered,
-  // which are enabled, and when each trigger is next due. The block renders the
-  // retrospective view of the same sources (wakes-by-trigger over the budget
-  // window) and nothing forward-looking, so this is a real absence rather than a
-  // duplicate. Not carried because rendering it is a section-budget decision
-  // rather than a rename, and one nobody has taken.
-  sources: {
-    dropped:
-      "its per-source list -- which wake sources are registered, which are enabled, and when each trigger is next due",
-  },
+  sources: "carried",
 };
 
 /**
