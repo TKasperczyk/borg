@@ -1108,7 +1108,20 @@ describe("compact planner context", () => {
     expect(text).toContain("HEAD+TAIL EXCERPT");
     expect(text).toContain("pn is an append-ordered log, not a current note");
     expect(text).toContain("so pa dates its tail and never its head");
-    expect(text).toContain("nothing here rewrites or deletes an entry once written");
+    expect(text).not.toContain("nothing here rewrites or deletes an entry once written");
+    // Appending is the writers' convention; the column itself is replaced whole on every write.
+    expect(text).toContain(
+      "Appending is a habit of the writers that reach this field rather than a property the field enforces",
+    );
+    expect(text).toContain("every write replaces the whole column");
+    expect(text).toContain(
+      "the operator progress writer replaces it with the single note it was handed",
+    );
+    expect(text).toContain("an entry can be rewritten or dropped by a write from outside a turn");
+    expect(text).toContain("rv counts such a write exactly as it counts an append,");
+    // pn is an excerpt of the column, so its silence is not evidence about the column.
+    expect(text).toContain("It is also an excerpt and not the log");
+    expect(text).toContain("an entry missing from pn is not evidence it was never written");
     expect(text).toContain("an autonomous turn appends no progress entry at all");
   });
 
@@ -1520,8 +1533,9 @@ describe("compact planner context", () => {
     expect(authorityRows).toHaveLength(100);
     expect(Math.max(...authorityRows.map((row) => row.length))).toBeLessThanOrEqual(250);
     // The complete index still omits nothing at this high-water mark, so the legend's fixed cost
-    // is paid by the overall envelope rather than by dropped goal rows.
-    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_440);
+    // is paid by the overall envelope rather than by dropped goal rows. The ceiling tracks that
+    // fixed cost: naming pn's replace-whole-column write semantics raised it from 9,440 to 9,596.
+    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_600);
     expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(11_900);
     expect(planner.traceSummary.sections.authority_and_directives?.estimatedTokens).toBeGreaterThan(
       4_000,
