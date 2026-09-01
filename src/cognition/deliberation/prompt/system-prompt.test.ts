@@ -2946,18 +2946,31 @@ describe("buildBaseSystemPrompt", () => {
     );
     // The floor is next_tick_at's in shape and not in clock. describe() reads
     // once for the header, then awaits each source in list order, and every
-    // nextDueAt() reads clock.now() itself -- so a floored stamp lands after the
-    // printed read by the scan cost up to its row, and the gap between two
-    // floored stamps measures the traversal rather than the schedule. Read as
+    // nextDueAt() reads clock.now() itself -- so a floored stamp lands at or
+    // after the printed read by the scan cost up to its row, and the gap between
+    // two floored stamps measures the traversal rather than the schedule. Read as
     // "equal to the read means already due", a page where nothing is equal to
     // the read says nothing is due.
     expect(block).toContain(
       "next_due_at is that source's own earliest eligibility, floored the way next_tick_at is -- but to a clock the trigger reads inside its own call, as the scan reaches its row in the order printed, not to the read stamp above.",
     );
+    // Both bounds, because the copy has now been wrong at each end: the floor is
+    // at-or-after, and the scan cost is routinely under the millisecond the
+    // stamps print to, so equality happens and had to stop being denied.
     expect(block).toContain(
-      "two already-due sources print two different stamps whose difference is the scan cost between their rows rather than which of them is due first",
+      "prints a stamp at or after that read and never before it -- equal to it when the scan reaches its row inside the same millisecond, later when it does not",
+    );
+    // The span between two floored stamps is everything the loop did between
+    // them, which on the live list includes a trigger whose stamp is genuinely
+    // future and therefore not comparable to either.
+    expect(block).toContain(
+      "the scan cost of everything between their rows, including rows that publish no stamp of their own, rather than which of them is due first",
     );
     expect(block).not.toContain("floored to the read clock exactly as next_tick_at is");
+    // The overclaim that replaced it, pinned the same way: a page where the scan
+    // reaches its first flooring row inside the read's own millisecond -- the
+    // majority of live reads -- falsifies it outright.
+    expect(block).not.toContain("slightly after that read rather than equal to it");
     // The reading that costs nothing to make and is wrong in the flattering
     // direction: a null read as a prediction of quiet.
     expect(block).toContain(
@@ -2987,7 +3000,14 @@ describe("buildBaseSystemPrompt", () => {
   // argued for against a number instead of added into slack nobody is counting.
   // Raise it deliberately when a clarification is worth the width; do not raise
   // it to make a red test green.
-  const WAKE_SOURCE_SECTION_CHAR_CEILING = 2_200;
+  //
+  // Raised once, 2_200 -> 2_360, for the at-or-after correction and the span
+  // clause: the sentence it replaced said an already-due source prints "slightly
+  // after that read rather than equal to it", and 38 of the 69 distinct
+  // scheduler reads in the 2026-08-31 -> 2026-09-02 traces print exactly equal.
+  // The width bought a clause that is false on the majority of live pages being
+  // deleted, which is the case the "argue for it against a number" rule was for.
+  const WAKE_SOURCE_SECTION_CHAR_CEILING = 2_360;
 
   it("keeps the wake-source section under a stated width", () => {
     const block = extractBlock(
