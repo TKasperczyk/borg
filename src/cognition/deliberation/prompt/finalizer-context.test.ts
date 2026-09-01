@@ -18,6 +18,7 @@ import type { DeliberationContext, SelfSnapshotGoal } from "../types.js";
 import {
   buildCompactFinalizerSystemPrompt,
   COMPACT_FINALIZER_VERIFICATION_RETRIEVAL_BLOCK_ID,
+  CROSS_SESSION_ENTRIES_DRAW_SCOPE,
 } from "./finalizer-context.js";
 import { buildFinalizerSystemPrompt } from "../finalizer.js";
 import { TRUSTED_GUIDANCE_PREAMBLE } from "../../prompts/base-identity.js";
@@ -850,14 +851,17 @@ describe("compact terminal finalizer context", () => {
     // The observed-event and cross-session draws never filter by audience: they are
     // global lists that the current participants rank, so draw_scope must not claim
     // otherwise. With no roster the two relational draws are unfiltered as well.
-    for (const tag of [
-      "relational_slots",
-      "relational_standing",
-      "social_standing",
-      "cross_session_entries",
-    ]) {
+    for (const tag of ["relational_slots", "relational_standing", "social_standing"]) {
       expect(turn).toContain(`<${tag} complete="true" rows_total="1" draw_scope="global">`);
     }
+    // The cross-session draw is unfiltered by audience and filtered by session: it
+    // excludes the current session outright, so it may never claim the global token.
+    expect(turn).toContain(
+      '<cross_session_entries complete="true" rows_total="1" draw_scope="other_sessions_recent_window">',
+    );
+    expect(turn).not.toContain(
+      '<cross_session_entries complete="true" rows_total="1" draw_scope="global">',
+    );
     expect(result.traceSummary.sections.standing_memory_indexes?.truncationCount).toBeGreaterThan(
       0,
     );
@@ -894,7 +898,26 @@ describe("compact terminal finalizer context", () => {
     // A roster constrains the relational lists; it does not constrain these two.
     expect(turn).toContain('<social_standing complete="true" rows_total="1" draw_scope="global">');
     expect(turn).toContain(
-      '<cross_session_entries complete="true" rows_total="0" draw_scope="global">',
+      '<cross_session_entries complete="true" rows_total="0" draw_scope="other_sessions_recent_window">',
+    );
+  });
+
+  it("names the cross-session draw's own predicate instead of claiming it took everything", () => {
+    const turn = build(context({ evidenceLedger: ledger() })).system[3]!.text;
+    const scope = turn.match(/<cross_session_entries[^>]*draw_scope="([^"]+)"/)?.[1];
+    // The lane filters e.session_id <> currentSessionId, so whatever token it carries,
+    // it can never be the one this block defines as filtering by nothing.
+    expect(scope).not.toBe("global");
+    expect(scope).toBe(CROSS_SESSION_ENTRIES_DRAW_SCOPE);
+    // Every token the block prints must be defined where the reader is told to read it.
+    const interpretation = turn.match(
+      /<borg_terminal_standing_memory_indexes[\s\S]*?<interpretation>([\s\S]*?)<\/interpretation>/,
+    )?.[1];
+    expect(interpretation).toContain(`${CROSS_SESSION_ENTRIES_DRAW_SCOPE} means`);
+    // The reading the old label invited -- a quiet stretch means a quiet stretch.
+    expect(interpretation).toContain("not evidence that nothing happened in it");
+    expect(interpretation).toContain(
+      "the current session is absent from that group because it is the transcript",
     );
   });
 

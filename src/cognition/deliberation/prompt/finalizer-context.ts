@@ -962,6 +962,8 @@ function renderCompleteRelationalSlotRows(context: DeliberationContext): Termina
   return { rows, truncationCount };
 }
 
+export const CROSS_SESSION_ENTRIES_DRAW_SCOPE = "other_sessions_recent_window";
+
 function renderCompleteStandingMemoryIndexes(
   context: DeliberationContext,
 ): RenderedTerminalSection {
@@ -996,13 +998,30 @@ function renderCompleteStandingMemoryIndexes(
   // the current audience enters it only as a label on the return-silence row. Neither
   // of the last two is audience-scoped, and saying they were was wrong in the direction
   // that understates what the entity is holding.
+  //
+  // But "global" as this block defines it -- no filter on audience, participant, or
+  // session -- was false for cross_session_entries in the session dimension, and the
+  // falsehood is legible on the page as a hole. listRecentOtherActiveSessionEvents
+  // filters e.session_id <> currentSessionId, requires both the event and its session
+  // to be unarchived, bounds by the recency window, and admits a turn_completed row
+  // only when that same session carried a user_contact or borg_replied on the same UTC
+  // day. So an hours-long stretch can render with no rows while the store holds plenty:
+  // the current session's own events are excluded by construction (they are the
+  // transcript), and an autonomous-only session-day is excluded by the same-day gate.
+  // The scope token now names that predicate instead of claiming the draw took
+  // everything. The cap is a separate bound and still unnamed here: the render site
+  // has the rows, not the limit that produced them.
   const relationalDrawScope =
     (context.activeParticipants ?? []).length === 0 ? "global" : "active_participant_subjects";
   const groups = [
     { tag: "relational_slots", rows: relationalSlots.rows, drawScope: relationalDrawScope },
     { tag: "relational_standing", rows: relationalStanding.rows, drawScope: relationalDrawScope },
     { tag: "social_standing", rows: socialStanding.rows, drawScope: "global" },
-    { tag: "cross_session_entries", rows: crossSession.rows, drawScope: "global" },
+    {
+      tag: "cross_session_entries",
+      rows: crossSession.rows,
+      drawScope: CROSS_SESSION_ENTRIES_DRAW_SCOPE,
+    },
   ];
   const rowCount = groups.reduce((sum, group) => sum + group.rows.length, 0);
   return terminalSection(
@@ -1010,7 +1029,7 @@ function renderCompleteStandingMemoryIndexes(
     "terminal_turn_context",
     [
       `<borg_terminal_standing_memory_indexes rows_total_across_groups="${rowCount}" standing_cadence_due="${standing?.renderRecentLivedExperience === true}">`,
-      "  <interpretation>Complete membership indexes for relational slots, relational standing, social/observed-event memory, and cross-session lived entries. The groups are drawn by different predicates, so each carries draw_scope naming its own: active_participant_subjects means the draw filtered on subject_entity_id against the current roster; global means it did not filter by audience, participant, or session at all. Scope is not inferable from the rows -- a row whose origin_audience is elsewhere is consistent with either -- so read draw_scope, not the contents. Where draw_scope is global, the current audience may still rank or annotate; ranking is never a filter. rows_total is per group and rows_total_across_groups is their sum, which is therefore not a total at any single scope. Payload fields are mechanical head+tail excerpts; an excerpt is never a summary. Disclosure labels survive on every row and govern mention, not recall.</interpretation>",
+      "  <interpretation>Complete membership indexes for relational slots, relational standing, social/observed-event memory, and cross-session lived entries. The groups are drawn by different predicates, so each carries draw_scope naming its own: active_participant_subjects means the draw filtered on subject_entity_id against the current roster; global means it did not filter by audience, participant, or session at all; other_sessions_recent_window means it ran over unarchived sessions other than this one, inside the recent-lived-experience window and under a row cap, and took a turn-completion row only on a day its own session also carried a contact or a reply -- the current session is absent from that group because it is the transcript, so a stretch of time with no rows there is not evidence that nothing happened in it. Scope is not inferable from the rows -- a row whose origin_audience is elsewhere is consistent with any of them -- so read draw_scope, not the contents. Where draw_scope is global, the current audience may still rank or annotate; ranking is never a filter. rows_total is per group and rows_total_across_groups is their sum, which is therefore not a total at any single scope. Each group's complete and omitted_count describe the rows its own draw produced; every one of these draws is separately capped upstream, so neither field is evidence about what the store holds. Payload fields are mechanical head+tail excerpts; an excerpt is never a summary. Disclosure labels survive on every row and govern mention, not recall.</interpretation>",
       ...groups.flatMap((group) => {
         return [
           `  <${group.tag} complete="true" rows_total="${group.rows.length}" draw_scope="${group.drawScope}">`,
