@@ -367,6 +367,26 @@ describe("runFinalizer emission tools", () => {
     ]);
   });
 
+  it("sends each tool once when the live-turn and interior menus overlap", () => {
+    // tool.openQuestions.ruminations is listed in BOTH menus by design. Shipping it twice made
+    // the API reject the whole request ("tools: Tool names must be unique."), which killed every
+    // autonomous wake for two days while user turns -- which take only the live-turn menu --
+    // kept working.
+    const dispatcher = createDispatcher(tempDirs, [
+      fakeTool("tool.ownRecords.list", ["autonomous", "deliberator"]),
+      fakeTool("tool.openQuestions.ruminations", ["autonomous", "deliberator"]),
+      fakeTool("tool.journal.append", ["autonomous"]),
+    ]);
+
+    const names = resolveFinalizerNonTerminalTools({
+      dispatcher,
+      turnOrigin: "autonomous",
+    }).map((tool) => tool.name);
+
+    expect(names).toContain("tool.openQuestions.ruminations");
+    expect(new Set(names).size).toBe(names.length);
+  });
+
   it("exposes prompt-surface changes only to autonomous finalizer interiors", () => {
     const dispatcher = createDispatcher(tempDirs, [
       fakeTool("tool.promptSurface.changes", ["autonomous"]),

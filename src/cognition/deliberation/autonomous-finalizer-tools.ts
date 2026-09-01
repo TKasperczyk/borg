@@ -1,3 +1,4 @@
+import { transformToolNameForOAuth } from "../../llm/index.js";
 import type { ToolDefinition, ToolDispatcher } from "../../tools/dispatcher.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
 import type { TurnOrigin } from "../types.js";
@@ -36,6 +37,22 @@ export type AutonomousFinalizerToolMenuItem = {
   menuSummary: string;
 };
 
+function dedupeToolsByWireName(tools: readonly ToolDefinition[]): ToolDefinition[] {
+  const seen = new Set<string>();
+
+  return tools.filter((tool) => {
+    const wireName = transformToolNameForOAuth(tool.name);
+
+    if (seen.has(wireName)) {
+      return false;
+    }
+
+    seen.add(wireName);
+
+    return true;
+  });
+}
+
 export function resolveFinalizerNonTerminalTools(input: {
   dispatcher: ToolDispatcher;
   turnOrigin?: TurnOrigin;
@@ -65,9 +82,14 @@ export function resolveFinalizerNonTerminalTools(input: {
     return tool === undefined ? [] : [tool];
   });
 
-  const tools = [...liveTurnReadTools, ...interiorTools];
+  // The two lists overlap by design -- a read tool offered in every live turn is also part of
+  // the autonomous interior menu -- and the API rejects a request whose tool names are not
+  // unique, taking the whole turn with it. Dedupe on the name the wire will actually see:
+  // the OAuth transport folds every non-alphanumeric to `_`, so two distinct source names can
+  // still collide there even when they differ here.
+  const tools = dedupeToolsByWireName([...liveTurnReadTools, ...interiorTools]);
 
-  return outboundTool === null ? tools : [...tools, outboundTool];
+  return outboundTool === null ? tools : dedupeToolsByWireName([...tools, outboundTool]);
 }
 
 export function buildFinalizerToolMenuItems(
