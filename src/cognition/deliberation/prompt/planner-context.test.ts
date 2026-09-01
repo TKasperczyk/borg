@@ -1123,6 +1123,80 @@ describe("compact planner context", () => {
     expect(text).toContain("It is also an excerpt and not the log");
     expect(text).toContain("an entry missing from pn is not evidence it was never written");
     expect(text).toContain("an autonomous turn appends no progress entry at all");
+    // The excerpt's size is a budget the marker is charged against, so rendered= is not it.
+    expect(text).toContain('field_excerpt_budget_chars="240"');
+    expect(text).toContain(
+      "that budget is spent on the whole excerpt including the marker that announces the cut",
+    );
+    expect(text).toContain("rendered= cannot be read back as the budget");
+    expect(text).toContain(
+      "The budget is a fixed size rather than a share, so a longer log earns no more of this page than a short one",
+    );
+  });
+
+  it("spends the expanded-field budget on the excerpt marker as well as the field text", () => {
+    // One budget covers d, tc, pn and er, and it is spent on the whole excerpt -- so the
+    // marker's rendered= sits below the printed budget by exactly the marker's own length,
+    // and shifts between rows with the digit widths of the three numbers the marker carries.
+    // Asserted as an identity against whatever the marker currently costs rather than
+    // against a copied constant, so a template change cannot silently break the claim.
+    const renderedByLength = [1_897, 40_028, 400_028].map((totalChars) => {
+      const target = goal("Budgeted progress log", {
+        progress_notes: "p".repeat(totalChars),
+        last_progress_ts: NOW_MS - 60_000,
+      });
+      const text = allSystemText(
+        build(
+          context({
+            selfSnapshot: { values: [], goals: [target], traits: [] },
+            executiveFocus: {
+              selected_goal: target,
+              selected_score: null,
+              candidates: [
+                {
+                  goal_id: target.id,
+                  goal: target,
+                  score: 1,
+                  components: {
+                    priority: 1,
+                    deadline_pressure: 1,
+                    context_fit: 1,
+                    progress_debt: 1,
+                  },
+                  reason: "focus",
+                },
+              ],
+              threshold: 0,
+              score_basis: {
+                score_context: "turn_selection" as const,
+                deadline_lookahead_ms: 1,
+                progress_debt_stale_ms: 1,
+              },
+            },
+          }),
+        ),
+      );
+
+      const budget = Number(/field_excerpt_budget_chars="(\d+)"/.exec(text)?.[1]);
+      const progressAttribute = /\spn="([^"]*)"/.exec(text)?.[1];
+      expect(progressAttribute).toBeDefined();
+      const marker = / \[ELIDED \d+ CHARS; HEAD\+TAIL EXCERPT; rendered=\d+\/total=\d+\] /.exec(
+        progressAttribute!,
+      )?.[0];
+      expect(marker).toBeDefined();
+      const rendered = Number(/rendered=(\d+)\//.exec(marker!)?.[1]);
+      const elided = Number(/\[ELIDED (\d+) CHARS/.exec(marker!)?.[1]);
+
+      expect(marker).toContain(`total=${totalChars}`);
+      expect(rendered + elided).toBe(totalChars);
+      expect(rendered + marker!.length).toBe(budget);
+      expect(rendered).toBeLessThan(budget);
+      return rendered;
+    });
+
+    // Three marker widths, so the ceiling is demonstrably not one number the page could be
+    // read back for -- which is the whole reason the legend says rendered= is not the budget.
+    expect(new Set(renderedByLength).size).toBe(3);
   });
 
   it("reports the next-step draw as uncounted and keeps the index omission zero true by construction", () => {
@@ -1534,8 +1608,9 @@ describe("compact planner context", () => {
     expect(Math.max(...authorityRows.map((row) => row.length))).toBeLessThanOrEqual(250);
     // The complete index still omits nothing at this high-water mark, so the legend's fixed cost
     // is paid by the overall envelope rather than by dropped goal rows. The ceiling tracks that
-    // fixed cost: naming pn's replace-whole-column write semantics raised it from 9,440 to 9,596.
-    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_600);
+    // fixed cost: naming pn's replace-whole-column write semantics raised it from 9,440 to 9,596,
+    // and naming the excerpt budget the marker is charged against raised it from 9,596 to 9,784.
+    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_800);
     expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(11_900);
     expect(planner.traceSummary.sections.authority_and_directives?.estimatedTokens).toBeGreaterThan(
       4_000,
