@@ -280,7 +280,8 @@ So when my current knowledge differs from what those past decisions assumed, I r
 - tool.scheduledWakes.list: List scheduled self-wakes before adding or cancelling one.
 - tool.scheduledWakes.cancel: Cancel a pending scheduled self-wake.
 - tool.outbound.post: Post outbound only to a structurally authorized target session.</action_menu>
-  <reachable_threads max_posts_per_window="6" max_posts_per_target_per_window="2" remaining_posts_in_window="4" window_ms="86400000">
+  <reachable_threads max_posts_per_window="6" max_posts_per_target_per_window="2" remaining_posts_in_window="4" window_ms="86400000" ordered_by="most_recently_active_first">
+    <ordering>These routes are listed most-recently-active first, and the cap on this list drops the least-recently-active routes rather than sampling. A thread's activity stamp moves when a message arrives in it, not only when its turn ends, so the route at the top is the one that most recently received something -- which is also the one most likely to be inside its own turn while I am reading this. Position here says when that thread last moved, and nothing about whether it can be reached now.</ordering>
     <target session_id="default" source_type="demo" authorization="config">
       <label>Backend cleanup review</label>
       <audience_label>Backend Cleanup Room</audience_label>

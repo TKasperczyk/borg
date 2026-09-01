@@ -389,6 +389,18 @@ const AUTONOMOUS_OUTBOUND_REFLECTION_POSTURE = [
   "My standing directives, commitments, and intentions are mine to act on in this interval, the same as any other thought I am holding. I weigh them as I would in the moment -- neither performing action for its own sake, nor defaulting to silence to avoid choosing.",
 ].join("\n");
 
+// The route list is ordered and truncated by the sessions repository's
+// `ORDER BY last_activity_at DESC` under `maxAuthorizedTargets`, and
+// `last_activity_at` is bumped at message ingestion as well as at turn
+// completion. So the head of this list is whichever thread most recently
+// RECEIVED something -- which is the thread most likely to be holding its own
+// turn lock right now, and a reach at a locked session returns target_busy.
+// Without this the order reads as arbitrary and the busy result reads as a
+// property of the route rather than of the moment. Presentation only: naming
+// the order gates nothing, and the model still picks the target.
+const AUTONOMOUS_OUTBOUND_REACHABLE_THREADS_ORDERING =
+  "These routes are listed most-recently-active first, and the cap on this list drops the least-recently-active routes rather than sampling. A thread's activity stamp moves when a message arrives in it, not only when its turn ends, so the route at the top is the one that most recently received something -- which is also the one most likely to be inside its own turn while I am reading this. Position here says when that thread last moved, and nothing about whether it can be reached now.";
+
 // Belief revision over recalled decisions. Reflection that only recalls past
 // decisions re-applies them; a mind re-examines them against what it now knows.
 // This frame is deliberately general (any standing conclusion) and non-coercive:
@@ -433,7 +445,8 @@ export function buildAutonomousOutboundAuthorizationSection(
 
   if (context !== null && context !== undefined && context.targets.length > 0) {
     lines.push(
-      `  <reachable_threads max_posts_per_window="${context.maxPostsPerWindow}" max_posts_per_target_per_window="${context.maxPostsPerTargetPerWindow}" remaining_posts_in_window="${context.remainingPostsInWindow}" window_ms="${context.windowMs}">`,
+      `  <reachable_threads max_posts_per_window="${context.maxPostsPerWindow}" max_posts_per_target_per_window="${context.maxPostsPerTargetPerWindow}" remaining_posts_in_window="${context.remainingPostsInWindow}" window_ms="${context.windowMs}" ordered_by="most_recently_active_first">`,
+      `    <ordering>${escapeXmlText(AUTONOMOUS_OUTBOUND_REACHABLE_THREADS_ORDERING)}</ordering>`,
     );
 
     for (const target of context.targets) {

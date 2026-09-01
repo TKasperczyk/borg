@@ -5008,6 +5008,42 @@ describe("buildAutonomousOutboundAuthorizationSection", () => {
     expect(section).toContain(`<audience_entity_id>${audienceEntityId}</audience_entity_id>`);
   });
 
+  it("names the order the route list is built and truncated by", () => {
+    const section =
+      buildAutonomousOutboundAuthorizationSection(baseContext, "autonomous", toolMenu) ?? "";
+
+    expect(section).toContain('ordered_by="most_recently_active_first"');
+    expect(section).toContain("<ordering>");
+    expect(section).toContain(
+      "the cap on this list drops the least-recently-active routes rather than sampling",
+    );
+    // The head of the list is whichever thread most recently RECEIVED something,
+    // because the ordering key moves at ingestion -- which is the same condition
+    // that makes it likely to be mid-turn and answer a reach with target_busy.
+    expect(section).toContain(
+      "A thread's activity stamp moves when a message arrives in it, not only when its turn ends",
+    );
+    expect(section).toContain(
+      "Position here says when that thread last moved, and nothing about whether it can be reached now.",
+    );
+  });
+
+  it("keeps the ordering line inside the route list rather than the posture", () => {
+    const section =
+      buildAutonomousOutboundAuthorizationSection(baseContext, "autonomous", toolMenu) ?? "";
+    const withoutTargets =
+      buildAutonomousOutboundAuthorizationSection(
+        { ...baseContext, targets: [] },
+        "autonomous",
+        toolMenu,
+      ) ?? "";
+
+    expect(section.indexOf("<ordering>")).toBeGreaterThan(section.indexOf("<reachable_threads "));
+    expect(section.indexOf("<ordering>")).toBeLessThan(section.indexOf("<target "));
+    expect(withoutTargets).not.toContain("<ordering>");
+    expect(withoutTargets).not.toContain("most_recently_active_first");
+  });
+
   it("omits audience_entity_id when the thread has no audience entity", () => {
     const target = baseContext.targets[0]!;
     const section =
