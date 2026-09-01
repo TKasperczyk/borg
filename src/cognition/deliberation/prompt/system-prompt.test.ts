@@ -2941,18 +2941,31 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain(
       "- name=mood_valence_drop type=condition category=operational registered=true\n",
     );
-    expect(block).not.toContain("name=mood_valence_drop type=condition category=operational registered=true next_due_at");
-    // The floor is the same one next_tick_at carries, one layer down: an overdue
-    // source and a source due this instant print the same instant.
-    expect(block).toContain(
-      "next_due_at is that source's own earliest eligibility as of the read, floored to the read clock exactly as next_tick_at is",
+    expect(block).not.toContain(
+      "name=mood_valence_drop type=condition category=operational registered=true next_due_at",
     );
+    // The floor is next_tick_at's in shape and not in clock. describe() reads
+    // once for the header, then awaits each source in list order, and every
+    // nextDueAt() reads clock.now() itself -- so a floored stamp lands after the
+    // printed read by the scan cost up to its row, and the gap between two
+    // floored stamps measures the traversal rather than the schedule. Read as
+    // "equal to the read means already due", a page where nothing is equal to
+    // the read says nothing is due.
+    expect(block).toContain(
+      "next_due_at is that source's own earliest eligibility, floored the way next_tick_at is -- but to a clock the trigger reads inside its own call, as the scan reaches its row in the order printed, not to the read stamp above.",
+    );
+    expect(block).toContain(
+      "two already-due sources print two different stamps whose difference is the scan cost between their rows rather than which of them is due first",
+    );
+    expect(block).not.toContain("floored to the read clock exactly as next_tick_at is");
     // The reading that costs nothing to make and is wrong in the flattering
     // direction: a null read as a prediction of quiet.
     expect(block).toContain(
       "next_due_at=none does not mean nothing is due from that source. It means the source published no stamp",
     );
-    expect(block).toContain("A none is therefore consistent with that source firing on the very next tick.");
+    expect(block).toContain(
+      "A none is therefore consistent with that source firing on the very next tick.",
+    );
     // Carrying the field empties the dropped list, so the block's own statement
     // of its gap flips to the no-gap branch rather than falling silent.
     expect(block).toContain(
@@ -2961,7 +2974,47 @@ describe("buildBaseSystemPrompt", () => {
     // Retracted wording, pinned so it cannot return under a rewrite: the block
     // said this list was the one thing it did not carry.
     expect(block).not.toContain("except its per-source list");
-    expect(block).not.toContain("That is the whole difference between this block and the read it names");
+    expect(block).not.toContain(
+      "That is the whole difference between this block and the read it names",
+    );
+  });
+
+  // A ceiling on the wake-source section, because it did not have one. Every
+  // clarification here has been paid for out of a block with no size pin, so
+  // growth is only ever noticed by the reader whose page it lands on, after it
+  // has landed. This is the whole rendered section at its widest input -- every
+  // source registered, every stamp present -- so a later sentence has to be
+  // argued for against a number instead of added into slack nobody is counting.
+  // Raise it deliberately when a clarification is worth the width; do not raise
+  // it to make a red test green.
+  const WAKE_SOURCE_SECTION_CHAR_CEILING = 2_200;
+
+  it("keeps the wake-source section under a stated width", () => {
+    const block = extractBlock(
+      buildBaseSystemPrompt(
+        makeContext({
+          turnOrigin: "user",
+          turnMechanismEvidence: {
+            recentSuppressions: [],
+            recentRegenerations: [],
+            autonomySchedulerState: makeSchedulerStateWithSources(),
+          },
+        }),
+        { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+      ),
+      "borg_mechanism_evidence",
+    );
+    const start = block.indexOf("Wake sources held by that scheduler");
+    const end = block.indexOf(
+      "registered says the source was built into this scheduler, not that it is otherwise unblocked.",
+    );
+
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+
+    const section = block.slice(start, end + 94);
+
+    expect(section.length).toBeLessThanOrEqual(WAKE_SOURCE_SECTION_CHAR_CEILING);
   });
 
   // Every countdown on this block hangs on a stamp taken at the read and is
