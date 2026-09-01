@@ -679,6 +679,24 @@ describe("internal tools", () => {
     }
   });
 
+  // Pins the claim tool.journal.append's description makes about the registry,
+  // so adding a journal mutator later fails here instead of leaving the surface
+  // asserting something the tool list no longer supports.
+  it("composes exactly one journal tool, the append that calls itself immutable", async () => {
+    const harness = await createOfflineTestHarness();
+
+    try {
+      const journalTools = createHarnessToolDispatcher(harness)
+        .listTools("autonomous")
+        .filter((tool) => tool.name.startsWith("tool.journal."));
+
+      expect(journalTools.map((tool) => tool.name)).toEqual(["tool.journal.append"]);
+      expect(journalTools[0]?.description).toContain("no tool amends or deletes one");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("lists exact thought and journal records globally through the composed dispatcher", async () => {
     const harness = await createOfflineTestHarness();
     const otherSessionId = createSessionId();

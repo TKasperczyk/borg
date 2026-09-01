@@ -859,7 +859,8 @@ function makeAutonomousRelationalContext(): DeliberationContext {
       },
       {
         name: "tool.journal.append",
-        menuSummary: "Append a self-private journal entry without ending the turn.",
+        menuSummary:
+          "Append a self-private journal entry without ending the turn; an entry is immutable once written, so a correction is a new entry naming the one it corrects and never a change to it.",
       },
       {
         name: "tool.openQuestions.create",

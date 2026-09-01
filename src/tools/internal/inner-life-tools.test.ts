@@ -85,6 +85,25 @@ describe("inner life internal tools", () => {
     });
   });
 
+  // The store behind this tool is append-only: the repository has an INSERT and
+  // no UPDATE or DELETE. Nothing on the surface said so, while three sibling
+  // tools do mutate an existing row, so an intention to go back and mark an
+  // earlier entry was readable as feasible. The surface has to carry it.
+  it("names journal entries as immutable on both surfaces the model reads", () => {
+    const tool = createJournalAppendTool({
+      resolveSelfEntityId: () => createEntityId(),
+      appendJournalEntry: () => {
+        throw new Error("not invoked");
+      },
+    });
+
+    expect(tool.description).toContain("immutable once written");
+    expect(tool.description).toContain("no tool amends or deletes one");
+    expect(tool.description).toContain("A correction is a new entry naming the one it corrects");
+    expect(tool.menuSummary).toContain("immutable once written");
+    expect(tool.menuSummary).toContain("never a change to it");
+  });
+
   it("surfaces identity-governance review-required open question resolution as tool data", async () => {
     const current = sampleOpenQuestion();
     const resolveOpenQuestion = vi.fn(() => ({
