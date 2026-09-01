@@ -23,6 +23,7 @@ Conversation remains active.
 ## 4. Current-Session Contradictions And Quarantines
 framing: Contradictions are planning constraints, not facts.
 framing_counts: {"open_questions":1}
+framing_counts_scope: counted over the rows this section was assembled from, before the ledger folded overlapping provenance into higher-priority sections and before it dropped rows for budget; the rows below survived both, so a shortfall against this count is a row removed after it was taken. Only the budget removal is reported, by an omitted-entries row naming the finalizer ledger budget; an omission row naming any other stage counts a different reduction again.
 source_types: system_metadata
 scopes: current_session
 - id=ledger:contradiction source_type=system_metadata scope=current_session actor=system trust_rank=80 taint=contested

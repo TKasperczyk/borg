@@ -1392,4 +1392,137 @@ describe("AutobiographicalRecallService", () => {
     expect(rendered).toContain('"rendered_count":1');
     expect(rendered).not.toContain('"rendered_count":3');
   });
+
+  it("holds framing_counts at the pre-reduction figure while rendered_count follows the survivors", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-autobiographical-framing-counts-"));
+    tempDirs.push(tempDir);
+    const sessionId = createSessionId();
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId,
+      clock: new FixedClock(2_000),
+    });
+    const currentUserEntry = await writer.append({
+      kind: "user_msg",
+      content: "Inspect the recalled horizon.",
+    });
+    writer.close();
+    const disclosureLabel = selfPrivateMemoryDisclosureLabel();
+    const recall: AutobiographicalRecallResult = {
+      window: {
+        startMs: 1_000,
+        endMs: 3_000,
+        label: "rendered horizon",
+        source: "perception_temporal_cue",
+      },
+      evidence: [
+        {
+          // Shares provenance with the current user message, so provenance dedupe folds it into
+          // that higher-priority section and it never reaches the budget stage.
+          id: `self_decision:${currentUserEntry.id}`,
+          kind: "self_decision",
+          groupId: "self_decisions",
+          groupLabel: "Self-decisions and autonomous choices",
+          occurredAt: 2_000,
+          relativeAge: "now",
+          score: 0.9,
+          text: "Deduped self-decision",
+          disclosureLabel,
+          sourceStreamEntryIds: [currentUserEntry.id],
+          sourceEpisodeIds: [],
+          metadata: {},
+          capMetadata: {
+            sourceGroup: { candidateCount: 7, renderedCount: 3 },
+            total: { candidateCount: 9, renderedCount: 3, candidateScope: "post_source_caps" },
+          },
+        },
+        ...[0, 1].map((index) => ({
+          id: `self_decision:${createStreamEntryId()}`,
+          kind: "self_decision" as const,
+          groupId: "self_decisions",
+          groupLabel: "Self-decisions and autonomous choices",
+          occurredAt: 1_900 - index,
+          relativeAge: "moments ago",
+          score: 0.8 - index * 0.1,
+          text: `Surviving self-decision ${index + 1}`,
+          disclosureLabel,
+          sourceStreamEntryIds: [] as const,
+          sourceEpisodeIds: [] as const,
+          metadata: {},
+        })),
+      ],
+    };
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (readerSessionId) =>
+        new StreamReader({ dataDir: tempDir, sessionId: readerSessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+    const ledger = await builder.build({
+      sessionId,
+      audienceEntityId: null,
+      currentUserMessage: String(currentUserEntry.content),
+      currentUserEntry,
+      workingMemory: createWorkingMemory(sessionId, 2_000),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      openQuestions: [],
+      pendingCorrections: [],
+      autobiographicalRecall: recall,
+    });
+    // One row leaves by dedupe, one by budget: the two reductions the scope line names.
+    const compacted = compactEvidenceLedger(ledger, {
+      sectionOptions: {
+        autobiographical_recall: { maxEntries: 1, maxTokens: 5_000 },
+      },
+    });
+    const section = compacted.ledger.sections.find((item) => item.id === "autobiographical_recall");
+    const recallEntries =
+      section?.entries.filter((entry) => typeof entry.state_metadata?.group_id === "string") ?? [];
+
+    // The count is over the assembled rows and is never reconciled; rendered_count is.
+    expect(section?.framing?.counts).toEqual({ self_decision: 3 });
+    expect(recallEntries).toHaveLength(1);
+    expect(
+      (recallEntries[0]?.state_metadata?.autobiographical_recall_cap as Record<string, unknown>)
+        .source_group,
+    ).toEqual({ candidate_count: 7, rendered_count: 1 });
+
+    const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
+
+    expect(rendered).toContain('framing_counts: {"self_decision":3}');
+    expect(rendered).toContain("framing_counts_scope: counted over the rows this section");
+    expect(rendered).toContain("an omission row naming any other stage counts a different reduction");
+  });
+
+  it("prints the framing-counts scope only where a count is printed", () => {
+    const framing = { text: "Framing without counts." };
+    const entry = {
+      id: "autobiographical_recall:probe",
+      source_type: "system_metadata" as const,
+      session_scope: "global" as const,
+      actor: "memory" as const,
+      trust_rank: 60,
+      text: "Probe",
+    };
+
+    expect(
+      renderSection({
+        id: "autobiographical_recall",
+        label: "14. Autobiographical Recall",
+        framing,
+        entries: [entry],
+      }),
+    ).not.toContain("framing_counts_scope:");
+    expect(
+      renderSection({
+        id: "autobiographical_recall",
+        label: "14. Autobiographical Recall",
+        framing: { ...framing, counts: { self_decision: 0 } },
+        entries: [entry],
+      }),
+    ).toContain("framing_counts_scope:");
+  });
 });
