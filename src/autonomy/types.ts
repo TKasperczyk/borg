@@ -33,6 +33,16 @@ export const AUTONOMY_WAKE_OUTCOMES = ["headway", "silent", "error", "busy"] as 
 export type AutonomyWakeOutcome = (typeof AUTONOMY_WAKE_OUTCOMES)[number];
 
 /**
+ * The terminal emission kinds that make a wake `headway` on their own. Named
+ * here rather than inlined at the one comparison because the outcome's
+ * predicate is also printed to the entity, and a list transcribed onto that page
+ * would go quietly false the next time this one changes -- the same
+ * copied-instead-of-derived failure that has already cost this repo a stale
+ * fixture and a stale test array.
+ */
+export const HEADWAY_EMISSION_KINDS = ["message", "continue_thought"] as const;
+
+/**
  * Distinct-detail tally for one outcome bucket over a window. `total` is the
  * bucket's own count, so `reasons` summing short of it is not a discrepancy --
  * `without_detail` is the named difference, and the three always reconcile.

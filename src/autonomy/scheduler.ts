@@ -30,7 +30,11 @@ import type {
   TickResult,
   DueEvent,
 } from "./types.js";
-import { AUTONOMY_WAKE_SOURCE_METADATA, AUTONOMY_WAKE_SOURCE_NAMES } from "./types.js";
+import {
+  AUTONOMY_WAKE_SOURCE_METADATA,
+  AUTONOMY_WAKE_SOURCE_NAMES,
+  HEADWAY_EMISSION_KINDS,
+} from "./types.js";
 import type { AutonomyWakesRepository } from "./wakes-repository.js";
 import {
   getExecutiveFocusGoalStaleBackoffProcessName,
@@ -430,12 +434,13 @@ function firstUndeliveredOutboundPostState(turnResult: TurnResult): string | nul
   return null;
 }
 
+const HEADWAY_EMISSION_KIND_SET: ReadonlySet<string> = new Set(HEADWAY_EMISSION_KINDS);
+
 export function turnEmittedHeadway(turnResult: TurnResult): boolean {
   const emissionKind = turnResult.emission?.kind;
 
   return (
-    emissionKind === "message" ||
-    emissionKind === "continue_thought" ||
+    (emissionKind !== undefined && HEADWAY_EMISSION_KIND_SET.has(emissionKind)) ||
     deliveredOutboundPost(turnResult)
   );
 }

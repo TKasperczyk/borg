@@ -10,6 +10,7 @@ export {
   AUTONOMY_WAKE_OUTCOMES,
   AUTONOMY_WAKE_SOURCE_METADATA,
   AUTONOMY_WAKE_SOURCE_NAMES,
+  HEADWAY_EMISSION_KINDS,
   type AutonomyCondition,
   type AutonomyConditionName,
   type AutonomySchedulerBudgetDescription,

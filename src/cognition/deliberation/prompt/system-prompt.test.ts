@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { HEADWAY_EMISSION_KINDS } from "../../../autonomy/index.js";
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { CommitmentRecord } from "../../../memory/commitments/index.js";
 import type { SocialProfile } from "../../../memory/social/index.js";
@@ -3352,6 +3353,72 @@ describe("buildBaseSystemPrompt", () => {
     // The bare parenthetical is the shape that made the basis unrecoverable from the page: it is
     // one bucket short of the wait as of the read and says nothing about which clock it used.
     expect(block).not.toContain("Next budget slot frees: 2023-11-14T22:14:01.000Z (in ~41s).");
+  });
+
+  it("names every route to headway and denies that a journal entry identifies the outcome", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        turnOrigin: "user",
+        turnMechanismEvidence: {
+          recentSuppressions: [],
+          recentRegenerations: [],
+          autonomySchedulerState: {
+            observedAt: NOW_MS,
+            enabled: true,
+            tickInFlight: false,
+            intervalMs: 60_000,
+            droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
+            intervalArmedAt: NOW_MS - 3_600_000,
+            sources: [],
+            nextTickAt: NOW_MS + 60_000,
+            scheduledTickAt: NOW_MS + 60_000,
+            fleetBrake: {
+              enabled: true,
+              empty_streak: 0,
+              empty_streak_threshold: 5,
+              streak_anchor_ts: null,
+              cooldown_until: null,
+              error_streak: 0,
+              error_streak_threshold: 3,
+              error_paused_until: null,
+              bypass_count: 0,
+              freshness_bypass_cap: 3,
+              window_outcomes: { headway: 4, silent: 2, error: 0, busy: 0 },
+              window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+              window_silent_reasons: { total: 2, without_detail: 2, reasons: [] },
+            },
+            budget: {
+              max_wakes_per_window: 15,
+              window_ms: 24 * 60 * 60_000,
+              window_started_at: NOW_MS - 24 * 60 * 60_000,
+              used_in_current_window: 6,
+              reserved_contemplative_wakes_per_window: 0,
+              contemplative_used_in_current_window: 0,
+              wakes_in_current_window_by_trigger: [],
+              next_budget_slot_frees_at: null,
+            },
+          },
+        },
+      }),
+      { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+    );
+    const block = extractBlock(prompt, "borg_mechanism_evidence");
+
+    // Derived from the constant the scheduler compares against, not transcribed:
+    // a kind added there without reaching this page fails here rather than
+    // leaving the definition quietly one route short.
+    for (const kind of HEADWAY_EMISSION_KINDS) {
+      expect(block).toContain(kind);
+    }
+    expect(block).toContain("headway is a predicate over how the turn ended");
+    expect(block).toContain("a tool.outbound.post inside it came back delivered");
+    expect(block).toContain("that goal's progress stamp advanced during the turn");
+    // The inference the page previously left open: every headway route that
+    // dominates this window also writes a journal entry, so the correlation is
+    // perfect and self-confirming unless the page denies it outright.
+    expect(block).toContain(
+      "which outcome a wake recorded is not recoverable from what it left in the journal",
+    );
   });
 
   it("names the lower operational ceiling while the contemplative reservation is unspent", () => {

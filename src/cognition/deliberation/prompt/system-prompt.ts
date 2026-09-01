@@ -54,7 +54,10 @@ import { utf16SafePrefixEnd } from "../../../util/utf16-boundary.js";
 import { formatUtcDayBoundary, utcDayKey } from "../../../util/utc-day.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
-import type { AutonomySchedulerFleetBrakeDescription } from "../../../autonomy/index.js";
+import {
+  HEADWAY_EMISSION_KINDS,
+  type AutonomySchedulerFleetBrakeDescription,
+} from "../../../autonomy/index.js";
 import { AUTONOMY_SCHEDULER_DESCRIPTION_DROPPED_FIELDS } from "../../mechanism-evidence.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
@@ -2040,6 +2043,18 @@ export function summarizeAutonomySchedulerState(
     } silent=${brake.window_outcomes.silent} error=${brake.window_outcomes.error} busy=${
       brake.window_outcomes.busy
     }. This is a different population from empty_streak -- time-bounded where the streak is not, contemplative wakes included where the streak ignores them, errors counted where the streak passes over them -- so no arithmetic over these four numbers yields the streak, and non-headway totals here are not the distance to the brake.`,
+  );
+  // headway is printed on this line and on every wakes-by-trigger group above,
+  // and its predicate was named nowhere on the page. An undefined term over a
+  // window where one route to it dominates is worse than an unexplained one: the
+  // route's side effects correlate with the outcome perfectly, so a predicate
+  // inferred from them is confirmed by every row and falsified by none. Naming
+  // it is presentation, not machinery -- the scheduler already computes exactly
+  // this and prints only its total.
+  lines.push(
+    `headway is a predicate over how the turn ended, not a measure of whether the interval did anything. A wake is recorded headway when its terminal emission was ${HEADWAY_EMISSION_KINDS.join(
+      " or ",
+    )} (a self-report is emitted as a message), or a tool.outbound.post inside it came back delivered, or -- on a wake that names a goal -- that goal's progress stamp advanced during the turn or the goal is not active when the outcome is written. silent is the whole complement, so a wake that read, searched and reasoned for minutes and then closed with no output is recorded here identically to one that produced nothing at all. Continuing a thought writes a journal entry as part of that same emission, so a journal entry and a headway on one interval are two effects of one decision rather than either being evidence of the other, and tool.journal.append writes that same journal mid-turn without ending it -- so which outcome a wake recorded is not recoverable from what it left in the journal.`,
   );
   // error=N alone cannot separate one provider outage repeated N times from N
   // distinct faults, and the two carry opposite implications for whether the
