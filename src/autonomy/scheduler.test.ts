@@ -149,6 +149,8 @@ const TEST_FLEET_BRAKE: FleetBrakeOptions = {
 function createStructuralTurnResult(input: {
   emissionKind: "message" | "continue_thought" | "suppressed";
   deliveredOutbound?: boolean;
+  undeliveredOutboundState?: string;
+  outboundCallOk?: boolean;
   suppressionReason?: Extract<TurnResult["emission"], { kind: "suppressed" }>["reason"];
 }): TurnResult {
   const emission: TurnResult["emission"] =
@@ -179,7 +181,7 @@ function createStructuralTurnResult(input: {
     referencedEpisodeIds: [],
     intents: [],
     toolCalls:
-      input.deliveredOutbound === true
+      input.deliveredOutbound === true || input.undeliveredOutboundState !== undefined
         ? [
             {
               callId: "toolu_outbound",
@@ -187,14 +189,17 @@ function createStructuralTurnResult(input: {
               input: {},
               output: {
                 outbound: {
-                  emitted: true,
-                  delivery_outcome: {
-                    state: "delivered",
-                    agent_message_id: "strm_delivered",
-                  },
+                  emitted: input.deliveredOutbound === true,
+                  delivery_outcome:
+                    input.undeliveredOutboundState === undefined
+                      ? {
+                          state: "delivered",
+                          agent_message_id: "strm_delivered",
+                        }
+                      : { state: input.undeliveredOutboundState },
                 },
               },
-              ok: true,
+              ok: input.outboundCallOk ?? true,
               durationMs: 1,
             },
           ]
@@ -496,6 +501,59 @@ describe("AutonomyScheduler", () => {
         emission: undefined as never,
       }),
     ).toBe("no emission recorded");
+  });
+
+  it("names a reach that did not land rather than the closure its emission looks like", () => {
+    // A wake whose only act was an outbound post closes with
+    // `finalizer_no_output` whatever the post did, so the emission label reads
+    // as a silence the entity chose. `turnEmittedHeadway` already reads the
+    // delivery state to decide headway; these keep it as far as the reason.
+    for (const state of [
+      "target_busy",
+      "transport_failed",
+      "not_transportable",
+      "not_emitted",
+      "suppressed",
+    ]) {
+      expect(
+        silentWakeOutcomeDetail(
+          createStructuralTurnResult({
+            emissionKind: "suppressed",
+            undeliveredOutboundState: state,
+          }),
+        ),
+      ).toBe(`outbound-undelivered: ${state}`);
+    }
+
+    // An unrecognised state widens the tally by one bucket, not one per value,
+    // so a new state cannot fragment the counter it is summarised into.
+    expect(
+      silentWakeOutcomeDetail(
+        createStructuralTurnResult({
+          emissionKind: "suppressed",
+          undeliveredOutboundState: "some_future_state",
+        }),
+      ),
+    ).toBe("outbound-undelivered: unknown_state");
+
+    // A call the dispatcher failed is still a reach that did not land.
+    expect(
+      silentWakeOutcomeDetail(
+        createStructuralTurnResult({
+          emissionKind: "suppressed",
+          undeliveredOutboundState: "transport_failed",
+          outboundCallOk: false,
+        }),
+      ),
+    ).toBe("outbound-undelivered: call_failed");
+
+    // A delivered post is headway, so it never reaches this label, and a turn
+    // that posted nothing keeps the emission-derived reason unchanged.
+    expect(
+      silentWakeOutcomeDetail(
+        createStructuralTurnResult({ emissionKind: "suppressed", deliveredOutbound: true }),
+      ),
+    ).toBe("deliberate-silence: finalizer_no_output");
   });
 
   it("batches due goals into one budgeted wake while firing every per-goal event", async () => {

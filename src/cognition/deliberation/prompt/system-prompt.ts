@@ -2167,7 +2167,7 @@ function renderWakeErrorReasonLines(
  * otherwise no way to tell whether the others are absent or merely unlisted.
  */
 const WAKE_SILENT_OUTCOME_CLASSES =
-  "deliberate-silence (you closed the wake), emission-failed (an emission was attempted and did not come out), guard-blocked (a post-generation guard stopped it), observed";
+  "deliberate-silence (you closed the wake), emission-failed (an emission was attempted and did not come out), guard-blocked (a post-generation guard stopped it), observed, outbound-undelivered (you posted to another session and it did not come back delivered, so the wake is silent because carriage failed rather than because you closed it)";
 
 function renderWakeSilentReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_silent_reasons"],

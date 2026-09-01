@@ -372,6 +372,64 @@ function deliveredOutboundPost(turnResult: TurnResult): boolean {
   return turnResult.toolCalls.some(outboundPostEmitted);
 }
 
+/**
+ * The states `tool.outbound.post` reports other than `delivered`. Held as an
+ * explicit set rather than echoed from the field so an unrecognised value
+ * widens the silent-reason tally by one bucket instead of one per value.
+ */
+const OUTBOUND_POST_UNDELIVERED_STATES: ReadonlySet<string> = new Set([
+  "suppressed",
+  "not_emitted",
+  "not_transportable",
+  "transport_failed",
+  "target_busy",
+]);
+
+function undeliveredOutboundPostState(call: TurnResult["toolCalls"][number]): string | null {
+  if (call.name !== OUTBOUND_POST_TOOL_NAME) {
+    return null;
+  }
+
+  if (!call.ok) {
+    return "call_failed";
+  }
+
+  if (!isRecord(call.output) || !isRecord(call.output.outbound)) {
+    return "unknown_state";
+  }
+
+  const outbound = call.output.outbound;
+  const deliveryOutcome = outbound.delivery_outcome;
+
+  if (!isRecord(deliveryOutcome)) {
+    // Results written before `delivery_outcome` existed carry only `emitted`,
+    // which says the target turn produced a message and nothing about carriage.
+    return outbound.emitted === true ? null : "unknown_state";
+  }
+
+  const state = deliveryOutcome.state;
+
+  if (state === "delivered") {
+    return null;
+  }
+
+  return typeof state === "string" && OUTBOUND_POST_UNDELIVERED_STATES.has(state)
+    ? state
+    : "unknown_state";
+}
+
+function firstUndeliveredOutboundPostState(turnResult: TurnResult): string | null {
+  for (const call of turnResult.toolCalls) {
+    const state = undeliveredOutboundPostState(call);
+
+    if (state !== null) {
+      return state;
+    }
+  }
+
+  return null;
+}
+
 export function turnEmittedHeadway(turnResult: TurnResult): boolean {
   const emissionKind = turnResult.emission?.kind;
 
@@ -390,8 +448,16 @@ export function turnEmittedHeadway(turnResult: TurnResult): boolean {
  * identically. The class is already computed for the wake's own narrative, so
  * writing it here is a route to the counter's surface, not a new judgment.
  *
- * Structure only: emission kind and the suppression enum, never words from what
- * was (or wasn't) said, so it is multilingual-safe and groups exactly.
+ * Structure only: emission kind, the suppression enum, and the outbound state
+ * enum, never words from what was (or wasn't) said, so it is multilingual-safe
+ * and groups exactly.
+ *
+ * An outbound post that did not come back `delivered` takes precedence over the
+ * emission label. `turnEmittedHeadway` already reads that state, and then the
+ * wake's own reason discarded it: a turn that reached and did not land usually
+ * closes with `finalizer_no_output`, so the recorded ending said the entity
+ * chose the silence when carriage refused it. This branch only runs on the
+ * silent path, where by construction no post was delivered.
  *
  * Reads the emission defensively even though the type declares it present: this
  * runs inside the block that persists the wake's outcome, so a throw here would
@@ -399,6 +465,12 @@ export function turnEmittedHeadway(turnResult: TurnResult): boolean {
  * is a missing label, not a failed wake, and says so.
  */
 export function silentWakeOutcomeDetail(turnResult: TurnResult): string {
+  const undelivered = firstUndeliveredOutboundPostState(turnResult);
+
+  if (undelivered !== null) {
+    return `outbound-undelivered: ${undelivered}`;
+  }
+
   const emission = turnResult.emission as TurnResult["emission"] | undefined;
 
   if (emission === undefined || emission === null) {
