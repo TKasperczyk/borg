@@ -43,6 +43,7 @@ export type EvidenceLedgerBuilderOptions = {
   actionThreadSourceRecordLimit?: number;
   actionThreadSalienceClassReservedSlots?: number;
   actionThreadAudienceReservedSlots?: number;
+  openQuestionStaleNoTractionTicks?: number;
   entityRepository?: Pick<EntityRepository, "get">;
   attachmentRepository?: Pick<AttachmentRepository, "get">;
   maxImagesPerLedger?: number;

@@ -16,6 +16,7 @@ export type BuilderSectionContext = {
     | "actionThreadSourceRecordLimit"
     | "actionThreadSalienceClassReservedSlots"
     | "actionThreadAudienceReservedSlots"
+    | "openQuestionStaleNoTractionTicks"
   >;
   transcript: TranscriptCompactionResult;
   streamEntries: readonly StreamEntry[];

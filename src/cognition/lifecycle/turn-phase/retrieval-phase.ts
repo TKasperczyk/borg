@@ -1319,6 +1319,7 @@ export async function buildCompactedEvidenceLedgerWithoutSharedState(input: {
     actionThreadSourceRecordLimit: config.actionThreadSourceRecordLimit,
     actionThreadSalienceClassReservedSlots: config.actionThreadSalienceClassReservedSlots,
     actionThreadAudienceReservedSlots: config.actionThreadAudienceReservedSlots,
+    openQuestionStaleNoTractionTicks: input.options.config.offline.ruminator.staleNoTractionTicks,
     entityRepository: input.options.entityRepository,
     attachmentRepository: input.options.attachmentRepository,
     maxImagesPerLedger: input.options.config.attachments.maxImagesPerLedger,

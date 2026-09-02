@@ -152,6 +152,7 @@ export class EvidenceLedgerBuilder {
         actionThreadSourceRecordLimit: this.options.actionThreadSourceRecordLimit,
         actionThreadSalienceClassReservedSlots: this.options.actionThreadSalienceClassReservedSlots,
         actionThreadAudienceReservedSlots: this.options.actionThreadAudienceReservedSlots,
+        openQuestionStaleNoTractionTicks: this.options.openQuestionStaleNoTractionTicks,
       },
       transcript,
       streamEntries,
