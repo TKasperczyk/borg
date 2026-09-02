@@ -254,9 +254,7 @@ const REVIEW_RESOLVER_REF_PREFIX = "__borg_review_resolver_";
 // from a refs record so the strict per-kind refs schemas can parse it. Used
 // by handler resolution here and by the resolver itself when it re-judges a
 // previously stamped item in autonomous mode.
-export function stripReviewResolverRefs(
-  refs: Record<string, unknown>,
-): Record<string, unknown> {
+export function stripReviewResolverRefs(refs: Record<string, unknown>): Record<string, unknown> {
   const next = { ...refs };
 
   for (const key of Object.keys(next)) {
@@ -526,6 +524,32 @@ export class ReviewQueueRepository {
 
   enqueue(input: ReviewQueueInsertInput): ReviewQueueItem {
     const parsed = reviewKindSchema.parse(input.kind);
+
+    // Fail fast at the producer. Refs were otherwise validated only at RESOLVE
+    // time, so an unresolvable item entered the queue and threw on every accept
+    // attempt with nothing counting the failures (observed twice in ai-prod: an
+    // edge-closure suggested_valid_to below the edge's valid_from, and an
+    // overseer patch whose keys no target accepts). Kinds without a registered
+    // handler keep enqueueing freely -- there is no schema to hold them to.
+    const handler = this.handlers.get(parsed);
+
+    if (handler !== null) {
+      const refsResult = handler.refsSchema.safeParse(
+        this.refsForHandlerParsing(input.refs, this.handlerApplyingStateKey(handler)),
+      );
+
+      if (!refsResult.success) {
+        throw new SemanticError(
+          `Review refs for kind "${parsed}" would be unresolvable: ${
+            refsResult.error.issues[0]?.message ?? "invalid refs"
+          }`,
+          {
+            code: "REVIEW_QUEUE_REFS_INVALID",
+            cause: { kind: parsed, issues: refsResult.error.issues },
+          },
+        );
+      }
+    }
 
     const timestamp = this.clock.now();
     const result = this.db

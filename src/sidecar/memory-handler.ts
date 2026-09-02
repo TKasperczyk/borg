@@ -9,9 +9,14 @@
 //   POST /memory/commitments { tenant, ...commitment }             -> operator-set commitment
 //   DELETE /memory/commitments?tenant=<id>&id=<commitment_id>      -> retire commitment
 //   GET  /memory/episodes?tenant=<id>&limit=<n>&cursor=<c> -> list raw episodic bank
+//   GET  /memory/self?tenant=<id>&limit=<n>      -> growth markers, periods, open questions
+//   GET  /memory/semantic?tenant=<id>&limit=<n>  -> semantic nodes (no embeddings)
+//   GET  /memory/review?tenant=<id>&openOnly=<0|1>&kind=<k>&limit=<n> -> review queue
 //   GET  /memory/episodes/{id}?tenant=<id>                  -> inspect one raw episode
 //   GET  /memory/trace?tenant=<id>&since=<ts>                -> inspect recall trace buffer
-//   POST /memory/maintenance?tenant=<id>&mode=<light|heavy>&dryRun=<0|1>
+//   POST /memory/maintenance?tenant=<id|*>&mode=<light|heavy>&dryRun=<0|1>
+//        tenant is optional; absent or "*" fans out across every tenant with a
+//        bank on disk and answers {runs:[{tenant,run_id}],skipped:[...]}.
 //   GET  /memory/maintenance/status?tenant=<id>
 //   GET  /memory/maintenance/audit?tenant=<id>&run_id=<id>
 //   POST /memory/maintenance/revert?tenant=<id>&audit_id=<id>
@@ -38,7 +43,9 @@ import {
   type CommitmentRecord,
 } from "../memory/commitments/index.js";
 import type { Episode } from "../memory/episodic/index.js";
+import type { RetrievalDegradation } from "../retrieval/pipeline.js";
 import type { StreamEntryInput } from "../stream/index.js";
+import { EmbeddingError } from "../util/errors.js";
 import {
   parseAuditId,
   parseCommitmentId,
@@ -46,6 +53,7 @@ import {
   parseMaintenanceRunId,
   parseSessionId,
   type EpisodeId,
+  type MaintenanceRunId,
   type SessionId,
 } from "../util/ids.js";
 import type { MemoryMaintenanceCoordinator } from "./memory-maintenance.js";
@@ -56,14 +64,15 @@ import type { MemoryTraceRegistry } from "./memory-trace.js";
 // risking a message leak from) the pool's ConfigError deeper in.
 const TENANT_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
-// The handler only needs withTenant from the pool; typing it structurally keeps
-// the handler unit-testable with a stub.
+// The handler needs withTenant plus tenant discovery (maintenance fan-out);
+// typing it structurally keeps the handler unit-testable with a stub.
 export type MemoryPool = {
   withTenant<T>(
     tenantId: string,
     fn: (borg: Borg) => T | Promise<T>,
     opts?: { exclusive?: boolean },
   ): Promise<T>;
+  listTenantIds(): Promise<string[]>;
 };
 
 export type MemoryHandlerOptions = {
@@ -78,6 +87,15 @@ export type MemoryHandlerOptions = {
   // recalls, so the planned production mechanism is similarity-gated. Keep 0
   // (the default) until that exists.
   recallAbstainThreshold?: number;
+  // Hard ceiling on a single /memory/recall (ms), so the client never gives up
+  // first and turns a structured degradation into an opaque transport timeout.
+  // This is a BACKSTOP for a wedged call, not the operative limit: it must sit
+  // ABOVE borg's own worst-case graceful path (measured healthy prod recall
+  // 2.0-2.6s + a double-stalled query embedding 2x1000 = ~4.6s) so the partial
+  // results and degraded reason still get reported, and BELOW the caller's
+  // recall timeout. Set it too low and it pre-empts the very degradation it
+  // exists to deliver. 0 disables the ceiling.
+  recallDeadlineMs?: number;
   traceRegistry?: MemoryTraceRegistry;
   maintenanceCoordinator?: Pick<
     MemoryMaintenanceCoordinator,
@@ -89,9 +107,44 @@ type RequestHandler = (req: IncomingMessage, res: ServerResponse) => void;
 
 const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
 const DEFAULT_MAX_RECALL_LIMIT = 50;
+const DEFAULT_RECALL_DEADLINE_MS = 5000;
 const DEFAULT_EPISODE_LIST_LIMIT = 20;
 const MAX_EPISODE_LIST_LIMIT = 100;
 const MAX_COMMITMENT_RESPONSE_ITEMS = 100;
+
+class RecallDeadlineExceeded extends Error {
+  constructor(deadlineMs: number) {
+    super(`recall exceeded ${deadlineMs}ms deadline`);
+    this.name = "RecallDeadlineExceeded";
+  }
+}
+
+// Mirrors the pipeline's expansion guard: the abandoned search keeps running
+// and is left to settle on its own (its rejection swallowed) while the caller
+// gets an answer within the deadline.
+async function raceRecallDeadline<T>(search: Promise<T>, deadlineMs: number): Promise<T> {
+  if (deadlineMs <= 0) {
+    return search;
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  search.catch(() => undefined);
+
+  try {
+    return await Promise.race([
+      search,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new RecallDeadlineExceeded(deadlineMs)), deadlineMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 const APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE = "team-agent.sender";
 
 const operatorCommitmentBodySchema = z
@@ -308,6 +361,32 @@ function parseEpisodeIdFromPath(pathname: string): EpisodeId | null | undefined 
   }
 }
 
+// Nodes carry a float32 embedding; the read surface exists to show WHAT was
+// written, so the vector is dropped rather than serialized.
+function projectSemanticNodeForList(node: {
+  id: string;
+  kind: string;
+  label: string;
+  description: string;
+  confidence: number;
+  status: string;
+  archived: boolean;
+  source_episode_ids: readonly string[];
+  created_at: number;
+}): Record<string, unknown> {
+  return {
+    id: node.id,
+    kind: node.kind,
+    label: node.label,
+    description: node.description,
+    confidence: node.confidence,
+    status: node.status,
+    archived: node.archived,
+    source_episode_ids: [...node.source_episode_ids],
+    created_at: node.created_at,
+  };
+}
+
 function projectEpisodeForList(episode: Episode): {
   id: Episode["id"];
   title: string;
@@ -402,6 +481,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const maxRecallLimit = options.maxRecallLimit ?? DEFAULT_MAX_RECALL_LIMIT;
   const recallAbstainThreshold = options.recallAbstainThreshold ?? 0;
+  const recallDeadlineMs = options.recallDeadlineMs ?? DEFAULT_RECALL_DEADLINE_MS;
   let recallTraceSequence = 0;
 
   const nextRecallTraceTurnId = (tenant: string): string => {
@@ -497,8 +577,12 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
     }
 
     if (method === "POST" && rawPath === "/memory/maintenance") {
-      const tenant = requiredSingleQueryValue(res, searchParams, "tenant");
-      if (tenant === null) {
+      // tenant is OPTIONAL. Absent (or "*") means "every tenant that has a bank
+      // on disk", so onboarding a tenant cannot silently skip maintenance the
+      // way a hard-coded caller does. "*" mirrors the same convention on
+      // team-agent's role-run endpoint.
+      const tenantRaw = optionalSingleQueryValue(res, searchParams, "tenant");
+      if (tenantRaw === null) {
         return;
       }
       const mode = requiredSingleQueryValue(res, searchParams, "mode");
@@ -509,7 +593,8 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       if (dryRun === null) {
         return;
       }
-      if (!validateTenantForResponse(res, tenant)) {
+      const fanOut = tenantRaw === undefined || tenantRaw === "*";
+      if (!fanOut && !validateTenantForResponse(res, tenantRaw)) {
         return;
       }
       if (mode !== "light" && mode !== "heavy") {
@@ -524,49 +609,112 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         send(res, 503, { error: "maintenance unavailable" });
         return;
       }
+      const coordinator = maintenanceCoordinator;
 
-      const started = maintenanceCoordinator.tryReserve({
-        tenant,
-        mode,
-        dryRun: dryRun === "1",
-      });
-      switch (started.status) {
-        case "accepted": {
-          try {
-            // Admission is already reserved, so racing POSTs see 409 while the
-            // tenant is opened and its pool initializer establishes readiness.
-            await pool.withTenant(tenant, () => undefined);
-          } catch {
-            maintenanceCoordinator.cancelReservation(tenant, started.runId);
+      let tenants: string[];
+      if (fanOut) {
+        try {
+          tenants = await pool.listTenantIds();
+        } catch {
+          send(res, 503, { error: "tenant discovery unavailable" });
+          return;
+        }
+        if (tenants.length === 0) {
+          // No bank on the volume yet. Reported rather than treated as success
+          // so a misconfigured root does not read as a clean no-op run.
+          send(res, 503, { error: "no tenants discovered" });
+          return;
+        }
+      } else {
+        tenants = [tenantRaw];
+      }
+
+      type Reserved = { readonly tenant: string; readonly runId: MaintenanceRunId };
+      type Skipped = {
+        readonly tenant: string;
+        readonly reason: string;
+        readonly runId?: MaintenanceRunId;
+      };
+      const reserved: Reserved[] = [];
+      const skipped: Skipped[] = [];
+
+      for (const tenant of tenants) {
+        const started = coordinator.tryReserve({ tenant, mode, dryRun: dryRun === "1" });
+        if (started.status !== "accepted") {
+          skipped.push(
+            started.status === "conflict"
+              ? { tenant, reason: "already running", runId: started.runId }
+              : { tenant, reason: started.status === "disabled" ? "disabled" : "shutting down" },
+          );
+          continue;
+        }
+        try {
+          // Admission is already reserved, so racing POSTs see 409 while the
+          // tenant is opened and its pool initializer establishes readiness.
+          await pool.withTenant(tenant, () => undefined);
+        } catch {
+          coordinator.cancelReservation(tenant, started.runId);
+          skipped.push({ tenant, reason: "tenant unavailable" });
+          continue;
+        }
+        if (!coordinator.hasReservation(tenant, started.runId)) {
+          skipped.push({ tenant, reason: "shutting down" });
+          continue;
+        }
+        reserved.push({ tenant, runId: started.runId });
+      }
+
+      // A single named tenant keeps its original response contract exactly --
+      // 202 {run_id} on success, and the specific 409/503 the caller had before
+      // -- so existing callers see no change.
+      if (!fanOut) {
+        const only = reserved[0];
+        if (only === undefined) {
+          const reason = skipped[0]?.reason;
+          if (reason === "already running") {
+            send(res, 409, { error: "maintenance already running", run_id: skipped[0]?.runId });
+          } else if (reason === "disabled") {
+            send(res, 503, { error: "maintenance disabled" });
+          } else if (reason === "tenant unavailable") {
             send(res, 503, { error: "maintenance tenant unavailable" });
-            return;
-          }
-          if (!maintenanceCoordinator.hasReservation(tenant, started.runId)) {
+          } else {
             send(res, 503, { error: "maintenance shutting down" });
-            return;
-          }
-          try {
-            send(res, 202, { run_id: started.runId });
-          } finally {
-            // Scheduling happens only after the acceptance response is handed
-            // to the server, and remains detached from the client connection.
-            maintenanceCoordinator.startReserved(tenant, started.runId);
           }
           return;
         }
-        case "conflict":
-          send(res, 409, {
-            error: "maintenance already running",
-            run_id: started.runId,
-          });
-          return;
-        case "disabled":
-          send(res, 503, { error: "maintenance disabled" });
-          return;
-        case "shutting_down":
-          send(res, 503, { error: "maintenance shutting down" });
-          return;
+        try {
+          send(res, 202, { run_id: only.runId });
+        } finally {
+          // Scheduling happens only after the acceptance response is handed
+          // to the server, and remains detached from the client connection.
+          coordinator.startReserved(only.tenant, only.runId);
+        }
+        return;
       }
+
+      // Fan-out. Runs proceed CONCURRENTLY across tenants (each holds only its
+      // own exclusive per-tenant reservation); nothing is serialized here.
+      if (reserved.length === 0) {
+        // Nothing started: answer non-2xx so a `curl --fail` cron surfaces it as
+        // a failed job instead of a silent no-op.
+        const allConflicts = skipped.every((entry) => entry.reason === "already running");
+        send(res, allConflicts ? 409 : 503, {
+          error: allConflicts ? "maintenance already running" : "no maintenance run started",
+          skipped,
+        });
+        return;
+      }
+      try {
+        send(res, 202, {
+          runs: reserved.map((entry) => ({ tenant: entry.tenant, run_id: entry.runId })),
+          skipped,
+        });
+      } finally {
+        for (const entry of reserved) {
+          coordinator.startReserved(entry.tenant, entry.runId);
+        }
+      }
+      return;
     }
 
     if (method === "POST" && rawPath === "/memory/maintenance/revert") {
@@ -614,27 +762,40 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       const isCommitmentListPath = rawPath === "/memory/commitments";
       const isMaintenanceStatusPath = rawPath === "/memory/maintenance/status";
       const isMaintenanceAuditPath = rawPath === "/memory/maintenance/audit";
-      const episodeId =
+      // Read surface for what the offline processes WRITE. Without these, a
+      // maintenance run can only be inspected as counts plus the audit log's
+      // record ids -- self-narrator growth markers, associator open questions and
+      // reflector insight nodes had no read path at all, so "0 errors" could not be
+      // distinguished from "wrote nine mis-voiced records".
+      const isSelfPath = rawPath === "/memory/self";
+      const isSemanticPath = rawPath === "/memory/semantic";
+      // The review queue is where the reflector's insights and the overseer's flags
+      // actually live: both are PROPOSALS, so nothing appears in the semantic graph
+      // until a resolution accepts them. Without this the only visible trace of a
+      // heavy run's flags was a change count.
+      const isReviewPath = rawPath === "/memory/review";
+      const nonEpisodePath =
         isTracePath ||
         isEpisodeListPath ||
         isCommitmentListPath ||
         isMaintenanceStatusPath ||
-        isMaintenanceAuditPath
-          ? undefined
-          : parseEpisodeIdFromPath(rawPath);
-      if (
-        !isTracePath &&
-        !isEpisodeListPath &&
-        !isCommitmentListPath &&
-        !isMaintenanceStatusPath &&
-        !isMaintenanceAuditPath &&
-        episodeId === undefined
-      ) {
+        isMaintenanceAuditPath ||
+        isSelfPath ||
+        isSemanticPath ||
+        isReviewPath;
+      const episodeId = nonEpisodePath ? undefined : parseEpisodeIdFromPath(rawPath);
+      if (!nonEpisodePath && episodeId === undefined) {
         send(res, 404, { error: "not found" });
         return;
       }
 
-      const strictQuery = isCommitmentListPath || isMaintenanceStatusPath || isMaintenanceAuditPath;
+      const strictQuery =
+        isCommitmentListPath ||
+        isMaintenanceStatusPath ||
+        isMaintenanceAuditPath ||
+        isSelfPath ||
+        isSemanticPath ||
+        isReviewPath;
       const tenant = strictQuery
         ? requiredSingleQueryValue(res, searchParams, "tenant")
         : asString(searchParams.get("tenant"));
@@ -755,6 +916,54 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                 }),
             commitments: bounded.map((commitment) => projectCommitment(commitment)),
             truncated: ordered.length > bounded.length,
+          });
+          return;
+        }
+
+        if (isSelfPath) {
+          const limit = episodeListLimitFromQuery(searchParams);
+          const self = await pool.withTenant(tenant, (borg) => ({
+            growth_markers: borg.self.growthMarkers.list({ limit }),
+            periods: borg.self.autobiographical.listPeriods(),
+            open_questions: borg.self.openQuestions.list({ limit }),
+          }));
+
+          send(res, 200, { ok: true, tenant, ...self });
+          return;
+        }
+
+        if (isReviewPath) {
+          const openOnly = searchParams.get("openOnly") !== "0";
+          const kindRaw = searchParams.get("kind");
+          const items = await pool.withTenant(tenant, (borg) =>
+            borg.review.list({
+              openOnly,
+              ...(kindRaw === null || kindRaw.trim() === "" ? {} : { kind: kindRaw as never }),
+            }),
+          );
+          const limit = episodeListLimitFromQuery(searchParams);
+
+          send(res, 200, {
+            ok: true,
+            tenant,
+            open_only: openOnly,
+            total: items.length,
+            items: items.slice(0, limit),
+            truncated: items.length > limit,
+          });
+          return;
+        }
+
+        if (isSemanticPath) {
+          const limit = episodeListLimitFromQuery(searchParams);
+          const nodes = await pool.withTenant(tenant, (borg) =>
+            borg.semantic.nodes.list({ limit }),
+          );
+
+          send(res, 200, {
+            ok: true,
+            tenant,
+            nodes: nodes.map((node) => projectSemanticNodeForList(node)),
           });
           return;
         }
@@ -989,13 +1198,45 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         typeof body.limit === "number" && Number.isFinite(body.limit) ? body.limit : 10;
       const limit = Math.max(1, Math.min(maxRecallLimit, Math.floor(rawLimit)));
       const traceTurnId = traceRegistry === undefined ? undefined : nextRecallTraceTurnId(tenant);
-      const hits = await pool.withTenant(tenant, (borg) =>
-        borg.episodic.search(query, {
-          limit,
-          ...(traceTurnId === undefined ? {} : { traceTurnId }),
-        }),
-      );
+      const degradations: RetrievalDegradation[] = [];
+      let hits;
+      try {
+        hits = await raceRecallDeadline(
+          pool.withTenant(tenant, (borg) =>
+            borg.episodic.search(query, {
+              limit,
+              onDegraded: (degradation) => degradations.push(degradation),
+              ...(traceTurnId === undefined ? {} : { traceTurnId }),
+            }),
+          ),
+          recallDeadlineMs,
+        );
+      } catch (error) {
+        if (!(error instanceof RecallDeadlineExceeded)) {
+          throw error;
+        }
+        console.error(`memory-sidecar: /memory/recall hit its deadline for tenant "${tenant}"`);
+        send(res, 200, {
+          ok: true,
+          episodes: [],
+          degraded: true,
+          degraded_reason: `deadline: ${error.message}`,
+        });
+        return;
+      }
       const topRawScore = hits.length === 0 ? null : Math.max(...hits.map((hit) => hit.rawScore));
+      // A partial recall must say so: the client cannot otherwise tell "nothing
+      // is stored" from "the search broke", and only the latter justifies
+      // telling the user their memory is unavailable.
+      const degraded =
+        degradations.length === 0
+          ? {}
+          : {
+              degraded: true,
+              degraded_reason: degradations
+                .map((entry) => `${entry.subsystem}: ${entry.reason}`)
+                .join("; "),
+            };
 
       if (
         recallAbstainThreshold > 0 &&
@@ -1007,6 +1248,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           abstained: true,
           abstain_reason: "low_relevance",
           top_raw_score: topRawScore,
+          ...degraded,
         });
         return;
       }
@@ -1014,6 +1256,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       send(res, 200, {
         ok: true,
         top_raw_score: topRawScore,
+        ...degraded,
         episodes: hits.map((hit) => ({
           id: hit.episode.id,
           title: hit.episode.title,
@@ -1027,6 +1270,19 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       // failure (open / storage / provider) that may carry sensitive detail —
       // log server-side, return a generic error.
       console.error(`memory-sidecar: ${rawPath} failed for tenant "${tenant}"`, error);
+      // An embedding stall on the recall path is a known-transient gateway
+      // fault, not a broken request. Answering it as an explicit degradation
+      // lets the caller distinguish it from an empty memory and keeps it off
+      // the 5xx path, where a retry-happy client would only add load.
+      if (rawPath === "/memory/recall" && error instanceof EmbeddingError) {
+        send(res, 200, {
+          ok: true,
+          episodes: [],
+          degraded: true,
+          degraded_reason: `embeddings: ${error.message}`,
+        });
+        return;
+      }
       send(res, 500, { error: "internal error" });
     }
   }

@@ -190,4 +190,70 @@ describe("temporal drift review handler", () => {
       }),
     ).toThrow();
   });
+  it("clamps a suggested close that predates the edge's valid_from", async () => {
+    // refs.suggested_valid_to is frozen at enqueue time and never re-derived, so
+    // a suggestion below valid_from made invalidateEdge throw on EVERY resolver
+    // pass, forever, with the item left in the queue and no attempt counted.
+    const refs = temporalDriftReviewRefsSchema.parse({
+      target_type: "semantic_edge",
+      target_kind: "semantic_edge",
+      target_id: "seme_aaaaaaaaaaaaaaaa",
+      suggested_valid_to: 500, // edge.valid_from is 1_000
+      by_edge_id: "seme_bbbbbbbbbbbbbbbb",
+      reason: "support interval should close",
+    });
+    const invalidateEdge = vi.fn(() => ({ ...edge, valid_to: 1_000 }) as SemanticEdge);
+    const handler = createTemporalDriftReviewQueueHandler();
+    const ctx = ctxWith({
+      semanticEdgeRepository: {
+        getEdge: vi.fn(() => edge),
+        invalidateEdge,
+      } as never,
+    });
+
+    await handler.apply({
+      item: itemFor(refs),
+      refs,
+      resolution: { decision: "accept" },
+      applyingState: null,
+      ctx,
+    });
+
+    expect(invalidateEdge).toHaveBeenCalledWith(
+      "seme_aaaaaaaaaaaaaaaa",
+      expect.objectContaining({ at: 1_000 }),
+    );
+  });
+
+  it("leaves a suggested close at or after valid_from untouched", async () => {
+    const refs = temporalDriftReviewRefsSchema.parse({
+      target_type: "semantic_edge",
+      target_kind: "semantic_edge",
+      target_id: "seme_aaaaaaaaaaaaaaaa",
+      suggested_valid_to: 4_000,
+      by_edge_id: "seme_bbbbbbbbbbbbbbbb",
+      reason: "support interval should close",
+    });
+    const invalidateEdge = vi.fn(() => ({ ...edge, valid_to: 4_000 }) as SemanticEdge);
+    const handler = createTemporalDriftReviewQueueHandler();
+    const ctx = ctxWith({
+      semanticEdgeRepository: {
+        getEdge: vi.fn(() => edge),
+        invalidateEdge,
+      } as never,
+    });
+
+    await handler.apply({
+      item: itemFor(refs),
+      refs,
+      resolution: { decision: "accept" },
+      applyingState: null,
+      ctx,
+    });
+
+    expect(invalidateEdge).toHaveBeenCalledWith(
+      "seme_aaaaaaaaaaaaaaaa",
+      expect.objectContaining({ at: 4_000 }),
+    );
+  });
 });

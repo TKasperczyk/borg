@@ -505,6 +505,36 @@ describe("config", () => {
     ).toThrow();
   });
 
+  it("loads the recall-expansion timeout from the environment and defaults it to 2000ms", () => {
+    const overrideDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const disabledDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const defaultDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(overrideDir, disabledDir, defaultDir);
+
+    expect(
+      loadConfig({
+        dataDir: overrideDir,
+        env: { BORG_RETRIEVAL_RECALL_EXPANSION_TIMEOUT_MS: "4500" },
+      }).retrieval.recallExpansionTimeoutMs,
+    ).toBe(4500);
+    expect(
+      loadConfig({
+        dataDir: disabledDir,
+        env: { BORG_RETRIEVAL_RECALL_EXPANSION_TIMEOUT_MS: "0" },
+      }).retrieval.recallExpansionTimeoutMs,
+    ).toBe(0);
+    expect(loadConfig({ dataDir: defaultDir, env: {} }).retrieval.recallExpansionTimeoutMs).toBe(
+      2000,
+    );
+    expect(() =>
+      configSchema.parse({
+        retrieval: {
+          recallExpansionTimeoutMs: -1,
+        },
+      }),
+    ).toThrow();
+  });
+
   it("loads the lexical fusion flag from the environment and defaults it off", () => {
     const enabledDir = mkdtempSync(join(tmpdir(), "borg-"));
     const defaultDir = mkdtempSync(join(tmpdir(), "borg-"));

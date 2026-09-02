@@ -1246,13 +1246,37 @@ describe("review queue", () => {
     expect(harness.semanticNodeRepository.listDistinctKinds()).toContain(kind);
   });
 
+  // Rows written BEFORE enqueue-time validation existed (or by an older build)
+  // are exactly what the resolve-time guards below protect against, and enqueue()
+  // now refuses to create them -- so these tests insert the legacy rows raw.
+  function insertLegacyRow(
+    harness: {
+      db: {
+        prepare(sql: string): { run(...args: unknown[]): { lastInsertRowid: number | bigint } };
+      };
+      reviewQueueRepository: { get(id: number): { id: number } | null };
+    },
+    input: { kind: string; refs: Record<string, unknown>; reason: string },
+  ) {
+    const result = harness.db
+      .prepare(
+        "INSERT INTO review_queue (kind, refs, reason, created_at, resolved_at, resolution) VALUES (?, ?, ?, ?, NULL, NULL)",
+      )
+      .run(input.kind, JSON.stringify(input.refs), input.reason, 1_000);
+    const item = harness.reviewQueueRepository.get(Number(result.lastInsertRowid));
+    if (item === null) {
+      throw new Error("legacy row readback failed");
+    }
+    return item;
+  }
+
   it("rejects legacy new insight refs even for dismiss", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(8_500),
     });
     cleanup.push(harness.cleanup);
 
-    const legacy = harness.reviewQueueRepository.enqueue({
+    const legacy = insertLegacyRow(harness, {
       kind: "new_insight",
       refs: {
         node_ids: ["semn_cccccccccccccccc"],
@@ -1278,7 +1302,7 @@ describe("review queue", () => {
         kind: "manual",
       },
     });
-    const underSpecifiedMisattribution = harness.reviewQueueRepository.enqueue({
+    const underSpecifiedMisattribution = insertLegacyRow(harness, {
       kind: "misattribution",
       refs: {
         target_type: "episode",
@@ -1286,7 +1310,7 @@ describe("review queue", () => {
       },
       reason: "under-specified row missing patch",
     });
-    const underSpecifiedTemporalDrift = harness.reviewQueueRepository.enqueue({
+    const underSpecifiedTemporalDrift = insertLegacyRow(harness, {
       kind: "temporal_drift",
       refs: {
         target_type: "episode",
@@ -1294,7 +1318,7 @@ describe("review queue", () => {
       },
       reason: "under-specified row missing corrected timestamps",
     });
-    const underSpecifiedIdentityRepair = harness.reviewQueueRepository.enqueue({
+    const underSpecifiedIdentityRepair = insertLegacyRow(harness, {
       kind: "identity_inconsistency",
       refs: {
         target_type: "goal",
@@ -1333,14 +1357,14 @@ describe("review queue", () => {
     });
     cleanup.push(harness.cleanup);
 
-    const malformedDuplicate = harness.reviewQueueRepository.enqueue({
+    const malformedDuplicate = insertLegacyRow(harness, {
       kind: "duplicate",
       refs: {
         node_ids: ["semn_aaaaaaaaaaaaaaaa"],
       },
       reason: "under-specified row lost one side of the pair",
     });
-    const malformedContradiction = harness.reviewQueueRepository.enqueue({
+    const malformedContradiction = insertLegacyRow(harness, {
       kind: "contradiction",
       refs: {},
       reason: "under-specified row lost the pair refs",
@@ -1868,5 +1892,89 @@ describe("review queue", () => {
     } finally {
       db.close();
     }
+  });
+});
+
+describe("enqueue-time refs validation", () => {
+  const cleanup: Array<() => Promise<void> | void> = [];
+
+  afterEach(async () => {
+    while (cleanup.length > 0) {
+      await cleanup.pop()?.();
+    }
+  });
+
+  function queueWithBuiltins() {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...semanticMigrations],
+    });
+    const reviewQueue = new ReviewQueueRepository({ db, clock: new FixedClock(1_000) });
+    registerBuiltinReviewQueueHandlers(reviewQueue);
+    cleanup.push(() => {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+    return reviewQueue;
+  }
+
+  it("rejects refs its registered handler could never resolve", () => {
+    // The exact ai-prod payload: a well-cited overseer flag whose patch key no
+    // target accepts. Refs used to be parsed only at resolve time, so this item
+    // entered the queue and would have thrown on every accept attempt.
+    const reviewQueue = queueWithBuiltins();
+
+    expect(() =>
+      reviewQueue.enqueue({
+        kind: "misattribution",
+        reason: "ownership correction",
+        refs: {
+          target_type: "episode",
+          target_id: "ep_0qab598kxvnelxyv",
+          patch: { business_owner: "Karolina Sabala" },
+        },
+      }),
+    ).toThrow(/unresolvable/);
+
+    expect(reviewQueue.getOpen()).toEqual([]);
+  });
+
+  it("accepts refs that satisfy the handler schema", () => {
+    const reviewQueue = queueWithBuiltins();
+
+    const item = reviewQueue.enqueue({
+      kind: "misattribution",
+      reason: "narrative repair",
+      refs: {
+        target_type: "episode",
+        target_id: "ep_0qab598kxvnelxyv",
+        patch: { narrative: "Corrected narrative." },
+      },
+    });
+
+    expect(item.kind).toBe("misattribution");
+    expect(reviewQueue.getOpen()).toHaveLength(1);
+  });
+
+  it("keeps enqueueing kinds that have no registered handler", () => {
+    // No handler means no schema to hold the refs to; producers of such kinds
+    // must not start failing because validation exists for the others.
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...semanticMigrations],
+    });
+    const reviewQueue = new ReviewQueueRepository({ db, clock: new FixedClock(1_000) });
+    cleanup.push(() => {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const item = reviewQueue.enqueue({
+      kind: "misattribution",
+      reason: "no handler registered on this instance",
+      refs: { anything: "goes" },
+    });
+
+    expect(item.id).toBeGreaterThan(0);
   });
 });

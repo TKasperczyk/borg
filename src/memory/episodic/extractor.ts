@@ -29,6 +29,7 @@ import { createEpisodeId, DEFAULT_SESSION_ID, type SessionId } from "../../util/
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import {
   GENERIC_SELF_ENTITY_VOICE_ANCHOR,
+  MEMORY_SOURCE_LANGUAGE_GUIDANCE,
   SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
 } from "../../util/self-memory-voice.js";
 import { valueAppearsIn } from "../../util/text-presence.js";
@@ -468,6 +469,7 @@ function buildExtractorPrompt(
     "- about 0.95: critical incident or foundational commitment.",
     selfEntityGuidance,
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to the narrative body. Keep the title topic-neutral and scannable rather than first-person narration.`,
+    MEMORY_SOURCE_LANGUAGE_GUIDANCE,
     "For each user_msg with sender_display_name, attribute that message to the exact display name (for example, ‘Name asked …’), never to a generic user.",
     "Any complete source line containing an OUTCOME fp= or decision= token, or beginning with ticket=<X> action=<Y> or action=teams_card, is an opaque dedup record. Copy that complete line verbatim into the episode narrative; never paraphrase, translate, normalize, or omit it.",
     "When a source contains multiple substantive threads, the episode narrative should cover each substantive thread, not only the headline topic. Details that merely elaborate one core thread are not separate threads.",

@@ -305,7 +305,20 @@ export async function revalidateReviewQueue(
       continue;
     }
 
-    const suppression = gateMisattributionFlag(parsedPayload.data, sourceBundle);
+    // Revalidation re-gates already-queued flags, so the applicability check reaches
+    // items enqueued before the gate existed. target_type comes off the item refs;
+    // anything other than the two repairable shapes cannot be re-gated here.
+    const refsTargetType = item.refs.target_type;
+
+    if (refsTargetType !== "episode" && refsTargetType !== "semantic_node") {
+      result.skipped_legacy += 1;
+      result.warnings.push(
+        `review ${item.id} skipped: unsupported misattribution target_type ${String(refsTargetType)}`,
+      );
+      continue;
+    }
+
+    const suppression = gateMisattributionFlag(parsedPayload.data, sourceBundle, refsTargetType);
 
     result.revalidated += 1;
 

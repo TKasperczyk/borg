@@ -1,5 +1,10 @@
 import { z } from "zod";
 
+import {
+  misattributionEpisodePatchSchema,
+  semanticNodeMisattributionPatchSchema,
+} from "../../memory/review-queue/review-handlers/misattribution.js";
+
 import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import { entityIdSchema } from "../../memory/commitments/index.js";
 import {
@@ -100,6 +105,7 @@ export const suppressedFlagReasonSchema = z.enum([
   "INVALID-CITATION",
   "SOURCE-CONTRADICTS",
   "AUDIENCE-NAME-GROUNDED",
+  "PATCH-NOT-APPLICABLE",
 ]);
 
 export const suppressedOverseerFlagSchema = z.object({
@@ -183,10 +189,49 @@ function gateAudienceNameGrounding(
   return null;
 }
 
+// A well-grounded flag can still be unrepairable: the model invents domain-shaped
+// patch keys ({business_owner: ...}) that no target accepts. Refs are validated at
+// RESOLVE time, so such a flag enters the queue and then throws unrecognized_keys
+// on every resolver pass forever -- a throwing apply leaves the item queued and
+// only the needs_manual path counts attempts. Gating here keeps the unrepairable
+// flag out of the queue instead of wedging the resolver with it. Validation uses
+// the resolver's own schemas so the two cannot drift.
+function gatePatchApplicability(
+  flag: OverseerFlagPayload,
+  targetType: MisattributionTargetType,
+): SuppressedOverseerFlag | null {
+  // No patch at all is just as unresolvable as a wrong-shaped one: both refs
+  // schemas REQUIRE a non-empty patch, so a patch-less flag would fail the same
+  // resolve-time parse on accept.
+  if (flag.patch === undefined) {
+    return suppressFlag(flag, "PATCH-NOT-APPLICABLE", flag.cited_stream_ids ?? []);
+  }
+
+  const schema =
+    targetType === "episode"
+      ? misattributionEpisodePatchSchema
+      : semanticNodeMisattributionPatchSchema;
+
+  return schema.safeParse(flag.patch).success
+    ? null
+    : suppressFlag(flag, "PATCH-NOT-APPLICABLE", flag.cited_stream_ids ?? []);
+}
+
+// Target types a misattribution repair can actually be applied to. semantic_edge
+// misattribution is rejected separately at the call site.
+export type MisattributionTargetType = "episode" | "semantic_node";
+
 export function gateMisattributionFlag(
   flag: OverseerFlagPayload,
   sourceBundle: OverseerSourceBundle,
+  targetType: MisattributionTargetType,
 ): SuppressedOverseerFlag | null {
+  const patchSuppression = gatePatchApplicability(flag, targetType);
+
+  if (patchSuppression !== null) {
+    return patchSuppression;
+  }
+
   const audienceNameSuppression = gateAudienceNameGrounding(flag, sourceBundle);
 
   if (audienceNameSuppression !== null) {

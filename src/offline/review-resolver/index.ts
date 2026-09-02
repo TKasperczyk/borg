@@ -2185,6 +2185,62 @@ function markNeedsManual(input: {
   });
 }
 
+// A throwing apply used to leave the item open with nothing recorded, so a
+// persistently failing repair was re-picked and re-thrown on every pass forever
+// (the ai-prod edge-closure wedge: 5 items x every 4-hourly run). Apply failures
+// share the needs_manual attempt counter -- any mix of the two drains one bounded
+// budget -- and in autonomous mode the cap terminally dismisses the item instead
+// of letting the queue rot.
+function recordApplyFailure(input: {
+  db: SqliteDatabase;
+  ctx: OfflineContext;
+  item: ReviewQueueItem;
+  reason: string;
+}): void {
+  // Re-read the row: the failed apply may have stamped applying-state onto refs,
+  // and both update paths CAS on the refs snapshot.
+  const current = input.ctx.reviewQueueRepository.get(input.item.id);
+
+  if (current === null || current.resolved_at !== null) {
+    return;
+  }
+
+  const resolverConfig = input.ctx.config.offline.reviewResolver;
+  const attempts = needsManualAttempts(current) + 1;
+
+  try {
+    if (resolverConfig.autonomous && attempts >= resolverConfig.maxNeedsManualAttempts) {
+      markResolvedWithoutHandler({
+        db: input.db,
+        ctx: input.ctx,
+        item: current,
+        resolution: "dismiss",
+        reason: `autonomous: apply attempts exhausted (${attempts}): ${input.reason}`,
+        bypassHandlerReason: "autonomous_apply_failure_exhausted",
+      });
+      return;
+    }
+
+    updateOpenReviewRefs({
+      db: input.db,
+      item: current,
+      refs: {
+        ...current.refs,
+        [REVIEW_RESOLVER_DIAGNOSTIC_REF_KEY]: {
+          verdict: "apply_failed",
+          reason: input.reason,
+          process: "review-resolver",
+          at: input.ctx.clock.now(),
+          attempts,
+        },
+      },
+    });
+  } catch {
+    // Bookkeeping must never mask the original failure; a lost race means
+    // another writer moved the item and the retry accounting restarts there.
+  }
+}
+
 async function markSemanticNodeSuperseded(input: {
   ctx: OfflineContext;
   item: ReviewQueueItem;
@@ -2658,6 +2714,7 @@ export class ReviewResolverProcess implements OfflineProcess<ReviewResolverPlan>
               item: current,
               reason,
             });
+            recordApplyFailure({ db: this.options.db, ctx, item: current, reason });
           }
         }
       });

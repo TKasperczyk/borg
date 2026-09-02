@@ -41,6 +41,7 @@ import {
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
 import {
   GENERIC_SELF_ENTITY_VOICE_ANCHOR,
+  MEMORY_SOURCE_LANGUAGE_GUIDANCE,
   SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
 } from "../../util/self-memory-voice.js";
 
@@ -339,6 +340,7 @@ function buildMergePrompt(
     "Any complete raw narrative line containing an OUTCOME fp= or decision= token, or beginning with ticket=<X> action=<Y> or action=teams_card, is an opaque dedup record. I copy that complete line verbatim; I never paraphrase, extend, normalize, or omit it.",
     selfEntityGuidance,
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to the merged narrative. I keep the title topic-neutral and scannable rather than first-person narration.`,
+    MEMORY_SOURCE_LANGUAGE_GUIDANCE,
     ...previousContext,
     "New raw evidence:",
     ...candidate.newRawEpisodes.map((episode) =>

@@ -4,7 +4,10 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { buildConsolidationCoverageHash } from "../../memory/episodic/index.js";
 import { memoryDisclosureLabelFromEpisodeAccess } from "../../retrieval/index.js";
 import { createConsolidationFamilyId } from "../../util/ids.js";
-import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
+import {
+  MEMORY_SOURCE_LANGUAGE_GUIDANCE,
+  SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
+} from "../../util/self-memory-voice.js";
 
 import {
   createEpisodeFixture,
@@ -754,6 +757,9 @@ describe("consolidator process", () => {
     expect(prompt).toContain(`I am the self entity ${selfEntityId};`);
     expect(prompt).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
     expect(prompt).toContain("I keep the title topic-neutral and scannable");
+    // The self-referential language rule does not reach a topic-neutral title, so
+    // the source-language anchor must be present in its own right.
+    expect(prompt).toContain(MEMORY_SOURCE_LANGUAGE_GUIDANCE);
     expect(prompt).toContain(alice);
     expect(prompt).toContain(bob);
   });

@@ -21,7 +21,10 @@ import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { EmbeddingError, LLMError } from "../../util/errors.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
-import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
+import {
+  MEMORY_SOURCE_LANGUAGE_GUIDANCE,
+  SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
+} from "../../util/self-memory-voice.js";
 import { retrievalMigrations } from "../../retrieval/migrations.js";
 import { commitmentMigrations, EntityRepository } from "../commitments/index.js";
 import { RelationalSlotRepository, relationalSlotMigrations } from "../relational-slots/index.js";
@@ -467,6 +470,10 @@ describe("episodic extractor", () => {
     );
     expect(prompt).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
     expect(prompt).toContain("Keep the title topic-neutral and scannable");
+    // The voice guidance's language rule is scoped to self-referential content and
+    // the title is pulled out of it, so the source-language anchor must be present
+    // in its own right (prod 2026-08-27: English episode over Polish-adjacent sources).
+    expect(prompt).toContain(MEMORY_SOURCE_LANGUAGE_GUIDANCE);
     expect(tracer.emit).toHaveBeenCalledWith("episodic_extractor.skipped", {
       turnId: DEFAULT_SESSION_ID,
       session_id: DEFAULT_SESSION_ID,

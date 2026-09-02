@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Borg } from "../borg.js";
 import { BorgPool, type BorgPoolOptions } from "./pool.js";
+import { BANK_DB_FILENAME } from "./storage-setup.js";
 import { FakeEmbeddingClient } from "../embeddings/index.js";
 import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
@@ -545,5 +546,62 @@ describe("BorgPool", () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+});
+
+describe("BorgPool.listTenantIds", () => {
+  function bank(root: string, tenantId: string) {
+    mkdirSync(join(root, tenantId), { recursive: true });
+    writeFileSync(join(root, tenantId, BANK_DB_FILENAME), "");
+  }
+
+  it("discovers every banked tenant on the volume, sorted", async () => {
+    const { pool, root } = makePool();
+    bank(root, "team-agent-esb");
+    bank(root, "team-agent-ai");
+    bank(root, "team-agent-rtm");
+
+    expect(await pool.listTenantIds()).toEqual([
+      "team-agent-ai",
+      "team-agent-esb",
+      "team-agent-rtm",
+    ]);
+  });
+
+  it("skips archived banks, foreign directories, files and empty tenant dirs", async () => {
+    const { pool, root } = makePool();
+    bank(root, "team-agent-ai");
+    // Quarantined bank: the dot in the suffix fails the tenant-id slug, so a
+    // corrupt archive can never be fanned out to.
+    bank(root, "team-agent-ai.corrupt-20260714");
+    bank(root, "lost+found");
+    // Present but not a bank -- e.g. a half-created directory.
+    mkdirSync(join(root, "team-agent-half"), { recursive: true });
+    writeFileSync(join(root, "stray-file"), "");
+
+    expect(await pool.listTenantIds()).toEqual(["team-agent-ai"]);
+  });
+
+  it("returns an empty list for a volume with no banks yet", async () => {
+    const { pool } = makePool();
+
+    expect(await pool.listTenantIds()).toEqual([]);
+  });
+
+  it("discovers a tenant the pool has never opened, and does not open it", async () => {
+    const { pool, root } = makePool();
+    bank(root, "team-agent-esb");
+
+    expect(await pool.listTenantIds()).toEqual(["team-agent-esb"]);
+    expect(pool.openTenantIds()).toEqual([]);
+    expect(pool.size()).toBe(0);
+  });
+
+  it("honours a custom tenant-id pattern", async () => {
+    const { pool, root } = makePool({ tenantIdPattern: /^team-agent-[a-z]+$/ });
+    bank(root, "team-agent-ai");
+    bank(root, "acme");
+
+    expect(await pool.listTenantIds()).toEqual(["team-agent-ai"]);
   });
 });

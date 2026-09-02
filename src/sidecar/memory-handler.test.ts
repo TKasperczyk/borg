@@ -14,6 +14,7 @@ import { MemoryTraceRegistry } from "./memory-trace.js";
 import type { Borg } from "../borg.js";
 import { commitmentSchema, type CommitmentRecord } from "../memory/commitments/index.js";
 import type { Episode } from "../memory/episodic/index.js";
+import { EmbeddingError } from "../util/errors.js";
 import {
   createCommitmentId,
   createEntityId,
@@ -22,6 +23,9 @@ import {
 } from "../util/ids.js";
 
 const TOKEN = "secret-token";
+// Default discovery for stub pools: the tenant these tests exercise. Only the
+// fan-out tests override it.
+const STUB_TENANTS = ["acme"];
 
 const servers: Server[] = [];
 
@@ -277,6 +281,7 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     commitmentAdds: [],
   };
   const pool: MemoryPool = {
+    listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
     async withTenant(tenantId, fn, opts) {
       rec.tenants.push(tenantId);
       rec.exclusives.push(opts?.exclusive);
@@ -483,6 +488,309 @@ describe("memory sidecar handler", () => {
     ]);
   });
 
+  it("reads back what the offline processes wrote to the self store", async () => {
+    // The gap this closes: after a heavy maintenance run the only evidence was a
+    // change count plus record ids in the audit log, so mis-voiced self-narrator
+    // output was indistinguishable from clean output.
+    const listOptions: unknown[] = [];
+    const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
+      async withTenant(_tenantId, fn) {
+        return fn({
+          self: {
+            growthMarkers: {
+              list: (opts: unknown) => {
+                listOptions.push(opts);
+                return [{ id: "grw_1", summary: "Nauczyłem się czytać logi ORA-" }];
+              },
+            },
+            autobiographical: {
+              listPeriods: () => [{ id: "abp_1", label: "2026-Q3" }],
+            },
+            openQuestions: {
+              list: () => [{ id: "oq_1", question: "Kto jest właścicielem HK?" }],
+            },
+          },
+        } as unknown as Borg);
+      },
+    };
+    const base = await start(pool);
+
+    const response = await fetch(`${base}/memory/self?tenant=acme&limit=25`, {
+      headers: { "x-borg-token": TOKEN },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      tenant: "acme",
+      growth_markers: [{ id: "grw_1", summary: "Nauczyłem się czytać logi ORA-" }],
+      periods: [{ id: "abp_1", label: "2026-Q3" }],
+      open_questions: [{ id: "oq_1", question: "Kto jest właścicielem HK?" }],
+    });
+    expect(listOptions).toEqual([{ limit: 25 }]);
+  });
+
+  it("reads back semantic nodes without their embeddings", async () => {
+    const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
+      async withTenant(_tenantId, fn) {
+        return fn({
+          semantic: {
+            nodes: {
+              list: async () => [
+                {
+                  id: "semn_1",
+                  kind: "concept",
+                  label: "Notyfikator",
+                  description: "System notyfikacji BSS.",
+                  confidence: 0.8,
+                  status: "active",
+                  archived: false,
+                  source_episode_ids: ["ep_1"],
+                  created_at: 1_000,
+                  embedding: new Float32Array([1, 2, 3, 4]),
+                },
+              ],
+            },
+          },
+        } as unknown as Borg);
+      },
+    };
+    const base = await start(pool);
+
+    const response = await fetch(`${base}/memory/semantic?tenant=acme`, {
+      headers: { "x-borg-token": TOKEN },
+    });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { nodes: Array<Record<string, unknown>> };
+    expect(body.nodes).toHaveLength(1);
+    expect(body.nodes[0]).toEqual({
+      id: "semn_1",
+      kind: "concept",
+      label: "Notyfikator",
+      description: "System notyfikacji BSS.",
+      confidence: 0.8,
+      status: "active",
+      archived: false,
+      source_episode_ids: ["ep_1"],
+      created_at: 1_000,
+    });
+    expect(body.nodes[0]).not.toHaveProperty("embedding");
+  });
+
+  it("reads the review queue, where insights and flags actually live", async () => {
+    // A reflector insight and an overseer flag are PROPOSALS: the semantic graph
+    // shows nothing until a resolution accepts them, so the queue is the only place
+    // their content is visible.
+    const listArgs: unknown[] = [];
+    const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
+      async withTenant(_tenantId, fn) {
+        return fn({
+          review: {
+            list: (opts: unknown) => {
+              listArgs.push(opts);
+              return [
+                { id: 3, kind: "new_insight", refs: { nodeId: "semn_1" }, reason: "pattern" },
+                { id: 11, kind: "misattribution", refs: { patch: {} }, reason: "ownership" },
+              ];
+            },
+          },
+        } as unknown as Borg);
+      },
+    };
+    const base = await start(pool);
+
+    const response = await fetch(`${base}/memory/review?tenant=acme&limit=1`, {
+      headers: { "x-borg-token": TOKEN },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      tenant: "acme",
+      open_only: true,
+      total: 2,
+      items: [{ id: 3, kind: "new_insight", refs: { nodeId: "semn_1" }, reason: "pattern" }],
+      truncated: true,
+    });
+    // openOnly defaults on; openOnly=0 opts into resolved items too.
+    expect(listArgs).toEqual([{ openOnly: true }]);
+  });
+
+  it("requires an explicit tenant on the new read paths", async () => {
+    const { pool } = recordingPool();
+    const base = await start(pool);
+
+    for (const path of ["/memory/self", "/memory/semantic", "/memory/review"]) {
+      const response = await fetch(`${base}${path}`, { headers: { "x-borg-token": TOKEN } });
+      expect(response.status).toBe(400);
+    }
+  });
+
+  it("fans maintenance out across every discovered tenant when tenant is omitted", async () => {
+    const { pool, rec } = recordingPool();
+    pool.listTenantIds = () => Promise.resolve(["team-agent-ai", "team-agent-esb"]);
+    const scheduled: Array<[string, string]> = [];
+    const reserved: string[] = [];
+    const maintenanceCoordinator = {
+      tryReserve: (input: { tenant: string }) => {
+        reserved.push(input.tenant);
+        return {
+          status: "accepted",
+          runId: `run_${input.tenant}`,
+          completion: new Promise(() => {}),
+        };
+      },
+      startReserved: (tenant: string, runId: string) => {
+        scheduled.push([tenant, runId]);
+        return true;
+      },
+      hasReservation: () => true,
+      cancelReservation: () => true,
+      getStatus: () => ({ current: null, last: null }),
+    } as unknown as NonNullable<MemoryHandlerOptions["maintenanceCoordinator"]>;
+    const base = await start(pool, TOKEN, { maintenanceCoordinator });
+
+    const response = await post(base, "/memory/maintenance?mode=light&dryRun=0", {}, TOKEN);
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({
+      runs: [
+        { tenant: "team-agent-ai", run_id: "run_team-agent-ai" },
+        { tenant: "team-agent-esb", run_id: "run_team-agent-esb" },
+      ],
+      skipped: [],
+    });
+    expect(reserved).toEqual(["team-agent-ai", "team-agent-esb"]);
+    // Every reserved run is scheduled, and only after the response is handed off.
+    expect(scheduled).toEqual([
+      ["team-agent-ai", "run_team-agent-ai"],
+      ["team-agent-esb", "run_team-agent-esb"],
+    ]);
+    // Readiness is established per tenant before acceptance.
+    expect(rec.tenants).toEqual(["team-agent-ai", "team-agent-esb"]);
+  });
+
+  it("treats tenant=* as fan-out and keeps going past a tenant that is already running", async () => {
+    const { pool } = recordingPool();
+    pool.listTenantIds = () => Promise.resolve(["a-tenant", "busy-tenant", "z-tenant"]);
+    const scheduled: string[] = [];
+    const maintenanceCoordinator = {
+      tryReserve: (input: { tenant: string }) =>
+        input.tenant === "busy-tenant"
+          ? { status: "conflict", runId: "run_busy" }
+          : { status: "accepted", runId: `run_${input.tenant}`, completion: new Promise(() => {}) },
+      startReserved: (tenant: string) => {
+        scheduled.push(tenant);
+        return true;
+      },
+      hasReservation: () => true,
+      cancelReservation: () => true,
+      getStatus: () => ({ current: null, last: null }),
+    } as unknown as NonNullable<MemoryHandlerOptions["maintenanceCoordinator"]>;
+    const base = await start(pool, TOKEN, { maintenanceCoordinator });
+
+    const response = await post(
+      base,
+      "/memory/maintenance?tenant=*&mode=heavy&dryRun=1",
+      {},
+      TOKEN,
+    );
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({
+      runs: [
+        { tenant: "a-tenant", run_id: "run_a-tenant" },
+        { tenant: "z-tenant", run_id: "run_z-tenant" },
+      ],
+      skipped: [{ tenant: "busy-tenant", reason: "already running", runId: "run_busy" }],
+    });
+    expect(scheduled).toEqual(["a-tenant", "z-tenant"]);
+  });
+
+  it("fails the fan-out request when no tenant run could be started", async () => {
+    const { pool } = recordingPool();
+    pool.listTenantIds = () => Promise.resolve(["one", "two"]);
+    const maintenanceCoordinator = {
+      tryReserve: () => ({ status: "conflict", runId: "run_existing" }),
+      startReserved: () => true,
+      hasReservation: () => true,
+      cancelReservation: () => true,
+      getStatus: () => ({ current: null, last: null }),
+    } as unknown as NonNullable<MemoryHandlerOptions["maintenanceCoordinator"]>;
+    const base = await start(pool, TOKEN, { maintenanceCoordinator });
+
+    const response = await post(base, "/memory/maintenance?mode=light&dryRun=0", {}, TOKEN);
+
+    // Non-2xx so a `curl --fail` cron reports a failed job instead of a silent no-op.
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "maintenance already running",
+      skipped: [
+        { tenant: "one", reason: "already running", runId: "run_existing" },
+        { tenant: "two", reason: "already running", runId: "run_existing" },
+      ],
+    });
+  });
+
+  it("reports an empty volume instead of a clean no-op run", async () => {
+    const { pool } = recordingPool();
+    pool.listTenantIds = () => Promise.resolve([]);
+    const maintenanceCoordinator = {
+      tryReserve: () => {
+        throw new Error("must not reserve without a tenant");
+      },
+      startReserved: () => true,
+      hasReservation: () => true,
+      cancelReservation: () => true,
+      getStatus: () => ({ current: null, last: null }),
+    } as unknown as NonNullable<MemoryHandlerOptions["maintenanceCoordinator"]>;
+    const base = await start(pool, TOKEN, { maintenanceCoordinator });
+
+    const response = await post(base, "/memory/maintenance?mode=light&dryRun=0", {}, TOKEN);
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "no tenants discovered" });
+  });
+
+  it("never runs discovery for an explicitly named tenant", async () => {
+    const { pool } = recordingPool();
+    let discoveries = 0;
+    pool.listTenantIds = () => {
+      discoveries += 1;
+      return Promise.resolve(["acme", "other"]);
+    };
+    const runId = createMaintenanceRunId();
+    const scheduled: Array<[string, string]> = [];
+    const maintenanceCoordinator = {
+      tryReserve: () => ({ status: "accepted", runId, completion: new Promise(() => {}) }),
+      startReserved: (tenant: string, startedRunId: string) => {
+        scheduled.push([tenant, startedRunId]);
+        return true;
+      },
+      hasReservation: () => true,
+      cancelReservation: () => true,
+      getStatus: () => ({ current: null, last: null }),
+    } as unknown as NonNullable<MemoryHandlerOptions["maintenanceCoordinator"]>;
+    const base = await start(pool, TOKEN, { maintenanceCoordinator });
+
+    const response = await post(
+      base,
+      "/memory/maintenance?tenant=acme&mode=light&dryRun=0",
+      {},
+      TOKEN,
+    );
+
+    // Single-tenant contract is unchanged: bare {run_id}, no runs/skipped envelope.
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ run_id: runId });
+    expect(discoveries).toBe(0);
+    expect(scheduled).toEqual([["acme", runId]]);
+  });
+
   it("holds a synchronous reservation during readiness and rejects a racing POST", async () => {
     const runId = createMaintenanceRunId();
     let active = false;
@@ -496,6 +804,7 @@ describe("memory sidecar handler", () => {
       releaseReadiness = resolve;
     });
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(_tenant, fn) {
         readinessStarted();
         await readinessGate;
@@ -546,6 +855,7 @@ describe("memory sidecar handler", () => {
     const runId = createMaintenanceRunId();
     const cancellations: unknown[] = [];
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant() {
         throw new Error("tenant config is invalid");
       },
@@ -675,6 +985,7 @@ describe("memory sidecar handler", () => {
       },
     } as unknown as Borg;
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(tenant, fn, options) {
         calls.push({ tenant, exclusive: options?.exclusive });
         return fn(borg);
@@ -722,6 +1033,7 @@ describe("memory sidecar handler", () => {
       },
     } as unknown as Borg;
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(tenant, fn, options) {
         calls.push({ tenant, exclusive: options?.exclusive });
         return fn(borg);
@@ -793,6 +1105,131 @@ describe("memory sidecar handler", () => {
     expect(onBody).toEqual(offBody);
     expect(offRec.lastRecallTraceTurnId).toBeUndefined();
     expect(onRec.lastRecallTraceTurnId).toMatch(/^sidecar_recall:acme:/);
+  });
+
+  it("labels a partial recall as degraded so the caller can tell it from an empty memory", async () => {
+    const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
+      async withTenant(_tenantId, fn) {
+        return fn({
+          episodic: {
+            search: async (
+              _query: string,
+              opts: { onDegraded?: (d: { subsystem: string; reason: string }) => void },
+            ) => {
+              opts.onDegraded?.({
+                subsystem: "episodic_candidates",
+                reason: "1/2 episodic intent lane(s) failed: EmbeddingError: stalled",
+              });
+              return [
+                {
+                  episode: { id: "ep_1", title: "Title", narrative: "Narrative" },
+                  score: 0.91,
+                  rawScore: 1.16,
+                },
+              ];
+            },
+          },
+        } as unknown as Borg);
+      },
+    };
+    const base = await start(pool);
+    const res = await post(
+      base,
+      "/memory/recall",
+      { tenant: "acme", query: "who leads", limit: 3 },
+      TOKEN,
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      degraded?: boolean;
+      degraded_reason?: string;
+      episodes?: unknown[];
+    };
+    expect(body.degraded).toBe(true);
+    expect(body.degraded_reason).toContain("episodic_candidates");
+    expect(body.episodes).toHaveLength(1);
+  });
+
+  it("omits the degraded flag on a healthy recall", async () => {
+    const { pool } = recordingPool();
+    const base = await start(pool);
+    const res = await post(
+      base,
+      "/memory/recall",
+      { tenant: "acme", query: "who leads", limit: 3 },
+      TOKEN,
+    );
+
+    const body = (await res.json()) as {
+      degraded?: boolean;
+      degraded_reason?: string;
+      episodes?: unknown[];
+    };
+    expect(body.degraded).toBeUndefined();
+    expect(body.degraded_reason).toBeUndefined();
+  });
+
+  it("answers within its deadline when the recall itself stalls", async () => {
+    const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
+      async withTenant(_tenantId, fn) {
+        return fn({
+          episodic: {
+            // Never settles: the shape of a wedged provider call.
+            search: () => new Promise(() => {}),
+          },
+        } as unknown as Borg);
+      },
+    };
+    const base = await start(pool, TOKEN, { recallDeadlineMs: 25 });
+    const res = await post(
+      base,
+      "/memory/recall",
+      { tenant: "acme", query: "who leads", limit: 3 },
+      TOKEN,
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      degraded?: boolean;
+      degraded_reason?: string;
+      episodes?: unknown[];
+    };
+    expect(body.degraded).toBe(true);
+    expect(body.degraded_reason).toContain("deadline");
+    expect(body.episodes).toEqual([]);
+  });
+
+  it("answers an embedding stall as a degradation instead of a 500", async () => {
+    const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
+      async withTenant(_tenantId, fn) {
+        return fn({
+          episodic: {
+            search: async () => {
+              throw new EmbeddingError("Embedding call stalled: 2 attempt(s) exceeded 1000ms each");
+            },
+          },
+        } as unknown as Borg);
+      },
+    };
+    const base = await start(pool);
+    const res = await post(
+      base,
+      "/memory/recall",
+      { tenant: "acme", query: "who leads", limit: 3 },
+      TOKEN,
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      episodes: [],
+      degraded: true,
+      degraded_reason: "embeddings: Embedding call stalled: 2 attempt(s) exceeded 1000ms each",
+    });
   });
 
   it("abstains only when the configured threshold is above the top raw score", async () => {
@@ -939,6 +1376,7 @@ describe("memory sidecar handler", () => {
   it("maps malformed list cursors to 400 client errors", async () => {
     const calls: string[] = [];
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(tenantId, fn) {
         calls.push(tenantId);
         const invalidCursor = Object.assign(new Error("Invalid episode cursor"), {
@@ -964,6 +1402,7 @@ describe("memory sidecar handler", () => {
   it("rejects missing or invalid query tenant for episode GET routes before touching the pool", async () => {
     const calls: string[] = [];
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(tenantId, fn) {
         calls.push(tenantId);
         return fn({} as Borg);
@@ -1016,6 +1455,7 @@ describe("memory sidecar handler", () => {
 
     const invalidCalls: string[] = [];
     const invalidPool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(tenantId, fn) {
         invalidCalls.push(tenantId);
         return fn({} as Borg);
@@ -1487,6 +1927,7 @@ describe("memory sidecar handler", () => {
     } as unknown as Borg;
     let exclusiveTail: Promise<unknown> = Promise.resolve();
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       withTenant<T>(
         _tenantId: string,
         fn: (borg: Borg) => T | Promise<T>,
@@ -1607,6 +2048,7 @@ describe("memory sidecar handler", () => {
   it("rejects a malformed tenant id with 400 before touching the pool", async () => {
     const calls: string[] = [];
     const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(tenantId, fn) {
         calls.push(tenantId);
         return fn({} as Borg);
@@ -1624,6 +2066,7 @@ describe("memory sidecar handler", () => {
 
   it("does not leak internals on an unexpected error (generic 500)", async () => {
     const boomPool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant() {
         throw new Error("sqlite path /secret/db.sqlite is locked");
       },

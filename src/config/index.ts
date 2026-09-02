@@ -375,6 +375,11 @@ const configBaseSchema = z.object({
   retrieval: z
     .object({
       semanticOverfetchMultiplier: z.number().int().min(1).max(10).default(3),
+      // Hard cap for the recall-expansion LLM call (ms); recall degrades to
+      // raw-query intents on timeout. 0 disables the cap. Sized so expansion
+      // (2000) plus a double-stalled query embedding (2x1000) plus local
+      // retrieval work still fits the memory client's hard 5s recall budget.
+      recallExpansionTimeoutMs: z.number().int().min(0).default(2000),
       // Live-turn attention weights. Deployment-tunable on purpose: `semantic`
       // is fused against a RAW cosine similarity, whose spread is a property of
       // the corpus rather than of the code. A corpus whose episodes are
@@ -1248,6 +1253,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["retrieval", "lexicalFusion", "enabled"],
     readOptionalEnvBoolean(env, "BORG_RETRIEVAL_LEXICAL_FUSION_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["retrieval", "recallExpansionTimeoutMs"],
+    readOptionalEnvNumber(env, "BORG_RETRIEVAL_RECALL_EXPANSION_TIMEOUT_MS"),
   );
   setConfigOverride(
     overrides,
@@ -2177,6 +2187,7 @@ export function redactConfig(config: Config): Config {
     },
     retrieval: {
       semanticOverfetchMultiplier: config.retrieval.semanticOverfetchMultiplier,
+      recallExpansionTimeoutMs: config.retrieval.recallExpansionTimeoutMs,
       attentionWeights: {
         ...config.retrieval.attentionWeights,
       },

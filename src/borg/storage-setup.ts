@@ -273,9 +273,14 @@ export function createMigrations(): Migration[] {
   );
 }
 
+// The SQLite bank file inside a tenant's dataDir. Exported because tenant
+// DISCOVERY (BorgPool.listTenantIds) keys on its presence to tell a real bank
+// apart from an unrelated directory that happens to sit under the pool root.
+export const BANK_DB_FILENAME = "borg.db";
+
 export function openBorgStorage(config: Config): BorgStorage {
   return {
-    sqlite: openDatabase(join(config.dataDir, "borg.db"), {
+    sqlite: openDatabase(join(config.dataDir, BANK_DB_FILENAME), {
       migrations: createMigrations(),
     }),
     lance: new LanceDbStore({
