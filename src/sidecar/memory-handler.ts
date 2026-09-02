@@ -44,11 +44,7 @@ import {
   type CommitmentRecord,
   type EntityRecord,
 } from "../memory/commitments/index.js";
-import {
-  episodeParticipantEntityIds,
-  parseEpisodeParticipantEntityIdTerm,
-  type Episode,
-} from "../memory/episodic/index.js";
+import { parseEpisodeParticipantEntityIdTerm, type Episode } from "../memory/episodic/index.js";
 import type { RetrievalDegradation } from "../retrieval/pipeline.js";
 import {
   streamConversationSchema,
@@ -403,12 +399,28 @@ type PublicEpisodeMetadata = {
   participant_names: string[];
 };
 
+function parsePublicEpisodeParticipantEntityId(value: string): EntityRecord["id"] | null {
+  const prefixedEntityId = parseEpisodeParticipantEntityIdTerm(value);
+  if (prefixedEntityId !== null) {
+    return prefixedEntityId;
+  }
+
+  const bareEntityId = entityIdSchema.safeParse(value);
+  return bareEntityId.success ? bareEntityId.data : null;
+}
+
 function createPublicEpisodeMetadataProjector(
   episodes: readonly Pick<Episode, "participants">[],
   entities: Pick<Borg["entities"], "get" | "getSelf">,
 ): (episode: Pick<Episode, "start_time" | "participants">) => PublicEpisodeMetadata {
   const referencedEntityIds = dedupePreservingOrder(
-    episodes.flatMap((episode) => episodeParticipantEntityIds(episode.participants)),
+    episodes.flatMap((episode) =>
+      episode.participants.flatMap((participant) => {
+        const entityId = parsePublicEpisodeParticipantEntityId(participant.trim());
+
+        return entityId === null ? [] : [entityId];
+      }),
+    ),
   );
   const selfEntity = entities.getSelf() ?? undefined;
   const entitiesById = new Map<EntityRecord["id"], EntityRecord>();
@@ -437,7 +449,7 @@ function createPublicEpisodeMetadataProjector(
     participant_names: dedupePreservingOrder(
       episode.participants.flatMap((participant) => {
         const displayName = participant.trim();
-        const entityId = parseEpisodeParticipantEntityIdTerm(displayName);
+        const entityId = parsePublicEpisodeParticipantEntityId(displayName);
 
         if (entityId !== null) {
           const entity = entitiesById.get(entityId);

@@ -1623,6 +1623,33 @@ describe("memory sidecar handler", () => {
     ]);
   });
 
+  it("resolves bare participant entity ids and drops unresolved bare ids", async () => {
+    const { pool, rec } = recordingPool();
+    const participantEntityId = createEntityId();
+    const unresolvedEntityId = createEntityId();
+    rec.entities.push({
+      id: participantEntityId,
+      canonical_name: "Marcin Kowal",
+      aliases: ["Kowal, Marcin"],
+      kind: "person",
+      borg_role: null,
+      name_provenance: "transport_sender",
+      created_at: 1,
+    });
+    rec.episodeOverrides = {
+      participants: [participantEntityId, unresolvedEntityId],
+    };
+    const base = await start(pool);
+    const response = await post(base, "/memory/recall", { tenant: "acme", query: "q" }, TOKEN);
+    const body = (await response.json()) as {
+      episodes: Array<{ participant_names: string[] }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.episodes[0]?.participant_names).toEqual(["Marcin Kowal"]);
+    expect(rec.entityGetIds).toEqual([participantEntityId, unresolvedEntityId]);
+  });
+
   it("404s an unknown episode id and 400s an invalid episode id without touching the pool", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
