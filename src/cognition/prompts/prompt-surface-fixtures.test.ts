@@ -989,7 +989,7 @@ function makeEvidenceLedger(): EvidenceLedger {
         label: "4. Current-Session Contradictions And Quarantines",
         framing: {
           text: "Contradictions are planning constraints, not facts.",
-          counts: { open_questions: 1 },
+          counts: { rows_assembled: 1, open_questions: 1 },
         },
         entries: [
           {

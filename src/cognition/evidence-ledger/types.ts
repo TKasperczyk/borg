@@ -141,9 +141,19 @@ export const EVIDENCE_LEDGER_SECTION_DEFINITIONS = [
 
 export type EvidenceLedgerSectionId = (typeof EVIDENCE_LEDGER_SECTION_DEFINITIONS)[number]["id"];
 
+// Every framing figure is a count of some subset of the rows a section was assembled from, and a
+// subset figure printed alone has no denominator a reader can recover: a section that assembles ten
+// rows of three kinds and counts one of those kinds prints a number that is correct about the kind
+// and reads as a count of the section. So the population is part of the type rather than a
+// convention -- `rows_assembled` is required, every other key is a named subset of it, and no key
+// but that one ever counts the section.
+export type EvidenceLedgerSectionFramingCounts = Record<string, number> & {
+  rows_assembled: number;
+};
+
 export type EvidenceLedgerSectionFraming = {
   text: string;
-  counts?: Record<string, number>;
+  counts?: EvidenceLedgerSectionFramingCounts;
 };
 
 // Shared by the two sections that render a self-decision label (13 and 14), so the wording

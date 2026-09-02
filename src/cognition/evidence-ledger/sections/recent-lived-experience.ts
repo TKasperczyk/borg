@@ -18,7 +18,9 @@ export function addRecentLivedExperienceSection(context: BuilderSectionContext):
   setSectionFraming(context.buckets, "recent_lived_experience", {
     text: RECENT_LIVED_EXPERIENCE_FRAMING,
     counts: {
-      entries: rows.length,
+      // Was `entries`, which named the same number but read as one subset among the others
+      // rather than as the population the other two are subsets of.
+      rows_assembled: rows.length,
       spine: rows.filter((row) => isRecentLivedExperienceSpineKind(row.kind)).length,
       density: rows.filter(
         (row) =>

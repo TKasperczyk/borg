@@ -32,6 +32,7 @@ import {
 } from "../util/ids.js";
 import {
   AutobiographicalRecallService,
+  type AutobiographicalRecallEvidenceItem,
   type AutobiographicalRecallResult,
 } from "./autobiographical-recall.js";
 import { EvidenceLedgerBuilder } from "./evidence-ledger/builder.js";
@@ -390,6 +391,7 @@ describe("AutobiographicalRecallService", () => {
     expect(section?.framing).toEqual({
       text: expect.stringContaining("past evidence"),
       counts: {
+        rows_assembled: 2,
         self_decision: 1,
       },
     });
@@ -413,7 +415,9 @@ describe("AutobiographicalRecallService", () => {
         }),
       ]),
     );
-    expect(renderSection(section!)).toContain('framing_counts: {"self_decision":1}');
+    expect(renderSection(section!)).toContain(
+      'framing_counts: {"rows_assembled":2,"self_decision":1}',
+    );
   });
 
   it("renders goal terminal conditions on the autobiographical surface", async () => {
@@ -1483,7 +1487,7 @@ describe("AutobiographicalRecallService", () => {
       section?.entries.filter((entry) => typeof entry.state_metadata?.group_id === "string") ?? [];
 
     // The count is over the assembled rows and is never reconciled; rendered_count is.
-    expect(section?.framing?.counts).toEqual({ self_decision: 3 });
+    expect(section?.framing?.counts).toEqual({ rows_assembled: 3, self_decision: 3 });
     expect(recallEntries).toHaveLength(1);
     expect(
       (recallEntries[0]?.state_metadata?.autobiographical_recall_cap as Record<string, unknown>)
@@ -1492,9 +1496,91 @@ describe("AutobiographicalRecallService", () => {
 
     const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
 
-    expect(rendered).toContain('framing_counts: {"self_decision":3}');
-    expect(rendered).toContain("framing_counts_scope: counted over the rows this section");
+    expect(rendered).toContain('framing_counts: {"rows_assembled":3,"self_decision":3}');
+    expect(rendered).toContain(
+      "framing_counts_scope: rows_assembled is the population this section was assembled from",
+    );
     expect(rendered).toContain("an omission row naming any other stage counts a different reduction");
+  });
+
+  it("prints the assembled population beside a kind count that spans none of the rendered rows", () => {
+    const disclosureLabel = selfPrivateMemoryDisclosureLabel();
+    const buckets = createSectionBuckets();
+    // Sol's page: ten rows across two groups, none of them self_decision. The kind figure is
+    // correct at zero and the section is at full strength; only the population separates the two.
+    const evidence: AutobiographicalRecallEvidenceItem[] = [
+      ...Array.from({ length: 8 }, (_unused, index) => ({
+        id: `stream_reflection:${index}`,
+        kind: "stream_reflection" as const,
+        groupId: "stream_reflection",
+        groupLabel: "Reflections",
+        occurredAt: 2_000 - index,
+        relativeAge: "moments ago",
+        score: 0.5,
+        text: `Reflection ${index}`,
+        disclosureLabel,
+        sourceStreamEntryIds: [],
+        sourceEpisodeIds: [],
+        metadata: {},
+      })),
+      ...Array.from({ length: 2 }, (_unused, index) => ({
+        id: `observed_presence:${index}`,
+        kind: "observed_presence" as const,
+        groupId: "outbound",
+        groupLabel: "Outbound",
+        occurredAt: 1_900 - index,
+        relativeAge: "moments ago",
+        score: 0.4,
+        text: `Presence ${index}`,
+        disclosureLabel,
+        sourceStreamEntryIds: [],
+        sourceEpisodeIds: [],
+        metadata: {},
+      })),
+    ];
+    addAutobiographicalRecallSection({
+      input: {
+        autobiographicalRecall: {
+          window: { startMs: 1_000, endMs: 3_000, label: "window", source: "recent_default" },
+          evidence,
+        },
+        audienceEntityId: null,
+      } as never,
+      buckets,
+      resolver: {} as never,
+      options: {} as never,
+      transcript: {} as never,
+      streamEntries: [],
+      repos: {} as never,
+    });
+    const section = finalSections(buckets).find((item) => item.id === "autobiographical_recall");
+
+    expect(section?.entries).toHaveLength(10);
+    expect(section?.framing?.counts).toEqual({ rows_assembled: 10, self_decision: 0 });
+    expect(renderSection(section!)).toContain(
+      'framing_counts: {"rows_assembled":10,"self_decision":0}',
+    );
+  });
+
+  it("leads the counts object with the population whatever order the section wrote it in", () => {
+    const rendered = renderSection({
+      id: "autobiographical_recall",
+      label: "14. Autobiographical Recall",
+      framing: { text: "Framing.", counts: { self_decision: 0, rows_assembled: 10 } },
+      entries: [
+        {
+          id: "autobiographical_recall:probe",
+          source_type: "system_metadata",
+          session_scope: "global",
+          actor: "memory",
+          trust_rank: 60,
+          text: "Probe",
+        },
+      ],
+    });
+
+    expect(rendered).toContain('framing_counts: {"rows_assembled":10,"self_decision":0}');
+    expect(rendered).toContain("need not sum to it, need not cover it");
   });
 
   it("prints the framing-counts scope only where a count is printed", () => {
@@ -1520,7 +1606,7 @@ describe("AutobiographicalRecallService", () => {
       renderSection({
         id: "autobiographical_recall",
         label: "14. Autobiographical Recall",
-        framing: { ...framing, counts: { self_decision: 0 } },
+        framing: { ...framing, counts: { rows_assembled: 1, self_decision: 0 } },
         entries: [entry],
       }),
     ).toContain("framing_counts_scope:");

@@ -50,6 +50,10 @@ export function addAutobiographicalRecallSection(context: BuilderSectionContext)
   setSectionFraming(context.buckets, "autobiographical_recall", {
     text: AUTOBIOGRAPHICAL_RECALL_FRAMING,
     counts: {
+      // This section assembles twelve kinds and counts one of them, so the population has to
+      // travel with the figure: without it a self_decision count of zero above a page of
+      // reflections and presences reads as a section that lost its rows.
+      rows_assembled: recall.evidence.length,
       self_decision: recall.evidence.filter((item) => item.kind === "self_decision").length,
     },
   });
