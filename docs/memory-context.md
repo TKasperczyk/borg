@@ -249,9 +249,9 @@ an LLM is deliberately out of scope for this version.
   `memory.base_url` as before.
 - The optional in-process Teams bot route (team_agent/teams_bot) uses the same policy helper but
   never precollects Assets evidence itself, so its precollected-Assets input is always empty; it
-  only diverges from the API on turns the API answers from precollected Assets. That route is
-  disabled in production (the deployment carries no bot connection credentials), where Teams
-  traffic arrives through services/teams_bridge and the API.
+  only diverges from the API on turns the API answers from precollected Assets. In production the
+  route is enabled (bot credentials are configured) but is not the Teams ingress: traffic arrives
+  through services/teams_bridge and the API, and no /api/messages requests have been observed.
 
 ## Non-goals
 
