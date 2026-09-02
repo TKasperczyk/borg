@@ -2581,6 +2581,28 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("Compare against the last clean release state");
   });
 
+  // `entities=` and `mood=` sit on one line under one provenance sentence, and
+  // that sentence used to say both were extracted from one text. Only the
+  // first is: the affective classifier is additionally handed the recency
+  // window (perception/gateway.ts -> memory/affective/extractor.ts), which on a
+  // self-audience session carries the being's own prior turns -- so the
+  // qualifier on the named window, "the sender's words, not mine", was false of
+  // the half it was attached to. Pin the correction and the retired claim
+  // together; the input asymmetry itself is pinned in perception.test.ts.
+  it("scopes the named working-state window to entities and names the mood classifier's recency input", () => {
+    const block = extractBlock(
+      buildBaseSystemPrompt(makeContext(), PROMPT_OPTIONS),
+      "borg_working_state",
+    );
+
+    expect(block).not.toContain("Both fields above were extracted this turn from one text");
+    expect(block).toContain(
+      "That text is the whole of what entities= was extracted from and only part of what mood= was scored against",
+    );
+    expect(block).toContain("up to the last ten recency strings for this session");
+    expect(block).toContain("this reading is not a function of the named text alone");
+  });
+
   it("renders active discourse stop state in trusted guidance", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({

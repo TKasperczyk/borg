@@ -2526,8 +2526,8 @@ function summarizeRelationalSlotConstraints(
   ].join("\n");
 }
 
-// Both fields on the working-state line are single-turn readouts of ONE text,
-// and which text that was is decided by turn origin in
+// Both fields on the working-state line are single-turn readouts, and which
+// text this turn's readout was taken over is decided by turn origin in
 // `cognitionInputForTurnInput` (lifecycle/turn-phase-coordinator.ts): the
 // inbound batch on a user turn, the wake trigger context on an autonomous one,
 // the directed-outbound instruction on a directed_outbound one. That
@@ -2536,6 +2536,19 @@ function summarizeRelationalSlotConstraints(
 // out of the being's own previous thought, so a term imported seconds ago read
 // exactly like held knowledge. Name the window on the line instead of leaving
 // it to be inferred from the terms.
+//
+// The window this names is NOT the same input for both fields, and the line
+// used to say it was. `Perceiver.perceive` (perception/perceive.ts) runs the
+// entity extractor as `extract(text)` -- that text alone, nothing else -- while
+// the affective classifier runs as `analyze(text, recentHistory)` and ships
+// `recent_history: recentHistory.slice(-10)` in its payload
+// (memory/affective/extractor.ts). Those strings are the recency window
+// rendered `role: content` (perception/gateway.ts), so on a self-audience
+// session they carry the being's own prior turns as well as the sender's. One
+// sentence claiming both fields came from one text was therefore exact for
+// entities and short by up to ten prior turns for mood -- and short in the one
+// direction that matters, since the qualifier on the named window is "the
+// sender's words, not mine".
 function workingStateInputWindow(turnOrigin: DeliberationContext["turnOrigin"]): string {
   if (turnOrigin === "autonomous") {
     return "this wake's own trigger context -- my prior thought plus the wake payload, text I produced rather than text that arrived";
@@ -2560,7 +2573,7 @@ function workingStateMoodProvenance(turnOrigin: DeliberationContext["turnOrigin"
     return "mood= is not a reading of this turn on this origin: the value shown is the one already in working memory, an EMA blend (weight 0.3 on each incoming reading) over earlier undegraded user turns in this session. It measures nothing in the text above.";
   }
 
-  return "mood= scores that text from its author's perspective -- on this origin the sender's affect, not mine. If the affective classifier failed this turn, the previous value is carried forward instead and renders identically; the discriminator for that is outside this prompt (a `perception.classifier.degraded` event) and reaches this page one turn later, as the presence or absence of a trajectory row for this turn.";
+  return "mood= scores that text from its author's perspective -- on this origin the sender's affect, not mine. Its classifier is also handed up to the last ten recency strings for this session, prior turns rendered as role and content and including mine wherever self-turns are in that window, as context for disambiguating the current text. So this reading is not a function of the named text alone, and mood= moving on a turn whose text did not is not by itself evidence the classifier misread it. If the affective classifier failed this turn, the previous value is carried forward instead and renders identically; the discriminator for that is outside this prompt (a `perception.classifier.degraded` event) and reaches this page one turn later, as the presence or absence of a trajectory row for this turn.";
 }
 
 function summarizeWorkingMemory(
@@ -2589,7 +2602,7 @@ function summarizeWorkingMemory(
         ? "neutral"
         : `${mood.valence.toFixed(2)}/${mood.arousal.toFixed(2)}`
     }`,
-    `Both fields above were extracted this turn from one text: ${workingStateInputWindow(turnOrigin)}. They are replaced wholesale every turn, never merged with the last one.`,
+    `Both fields above were produced this turn against one named text: ${workingStateInputWindow(turnOrigin)}. They are replaced wholesale every turn, never merged with the last one. That text is the whole of what entities= was extracted from and only part of what mood= was scored against: the two classifiers are handed different inputs, and the window named here is the smaller one.`,
     "entities= is therefore a list of terms the extractor found in that text. A term is on it because it was in the input -- not because I know it, hold it, or have checked it, and not because it ranks above the others. Something I do know is absent unless that text named it, and a term dropping off next turn carries no information.",
     workingStateMoodProvenance(turnOrigin),
   ];

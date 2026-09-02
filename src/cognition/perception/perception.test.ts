@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import { AffectiveExtractor } from "../../memory/affective/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { EntityExtractor } from "./entity-extractor.js";
 import { ModeDetector } from "./mode-detector.js";
@@ -282,6 +283,68 @@ describe("perception", () => {
 
     expect(entities).toEqual(["pgvector", "qdrant"]);
     expect(llm.requests[0]?.messages[0]?.content).toBe(longLowercaseText);
+  });
+
+  // The working-state line in the base system prompt binds `entities=` and
+  // `mood=` to one named input window. They do not share one: the entity
+  // extractor is called with the turn text alone, and the affective extractor
+  // is additionally handed the recency window
+  // (`recent_history: recentHistory.slice(-10)`). The rendered prose says so
+  // now; pin the asymmetry it describes at the call boundary, so that widening
+  // either classifier's input breaks here rather than silently making that
+  // sentence false. The arity assertion is the load-bearing half -- an entity
+  // extractor that grew a history parameter would not fail a payload check
+  // until someone passed one.
+  it("hands the recency window to the affective classifier and never to the entity extractor", async () => {
+    const priorTurn = "assistant: what I said on the turn before this one";
+    const affectiveLlm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_affective",
+              name: "EmitAffectiveSignal",
+              input: { valence: 0.1, arousal: 0.2, dominant_emotion: "neutral" },
+            },
+          ],
+        },
+      ],
+    });
+
+    await new AffectiveExtractor({ llmClient: affectiveLlm, model: "haiku" }).analyze(
+      "the text that arrived this turn",
+      [priorTurn],
+    );
+
+    expect(JSON.stringify(affectiveLlm.requests[0]?.messages)).toContain(priorTurn);
+
+    const entityLlm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_entity",
+              name: ENTITY_TOOL_NAME,
+              input: { entities: ["Atlas"] },
+            },
+          ],
+        },
+      ],
+    });
+    const entityExtractor = new EntityExtractor({ llmClient: entityLlm, model: "haiku" });
+
+    await entityExtractor.extract("the text that arrived this turn");
+
+    expect(JSON.stringify(entityLlm.requests[0]?.messages)).not.toContain(priorTurn);
+    expect(entityExtractor.extract.length).toBe(1);
   });
 
   it("returns the LLM entity payload after output sanitization", async () => {
