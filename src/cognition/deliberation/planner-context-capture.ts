@@ -641,6 +641,7 @@ export function captureCompactPlannerContext(context: DeliberationContext) {
       },
     },
     applicableCommitments: context.applicableCommitments?.map(projectCommitment),
+    applicableCommitmentsReadAtMs: context.applicableCommitmentsReadAtMs,
     openQuestionsContext: context.openQuestionsContext?.map((question) => ({
       id: question.id,
       question: question.question,

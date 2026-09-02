@@ -471,6 +471,7 @@ function makeSocialProfile(): SocialProfile {
 function makeContext(overrides: Partial<DeliberationContext> = {}): DeliberationContext {
   return {
     sessionId: DEFAULT_SESSION_ID,
+    applicableCommitmentsReadAtMs: NOW_MS,
     userMessage: "Please consolidate the prompt surface without changing bytes.",
     participationPolicy: "observing",
     creatorIdentity: { displayName: "Ada Creator" },

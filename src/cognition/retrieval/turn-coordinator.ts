@@ -140,6 +140,7 @@ export type TurnRetrievalCoordinatorInput = {
 
 export type TurnRetrievalCoordinatorResult = {
   applicableCommitments: CommitmentRecord[];
+  applicableCommitmentsReadAtMs?: number;
   actionApplicableCommitments: CommitmentRecord[];
   pendingCorrections: ReviewQueueItem[];
   pendingCommitmentReviews: OpenCommitmentReconciliationStatus[];
@@ -345,6 +346,7 @@ export class TurnRetrievalCoordinator {
 
     return {
       applicableCommitments,
+      applicableCommitmentsReadAtMs: nowMs,
       actionApplicableCommitments,
       pendingCorrections,
       pendingCommitmentReviews,

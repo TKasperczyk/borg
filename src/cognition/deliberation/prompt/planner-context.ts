@@ -1,4 +1,5 @@
 import {
+  COMMITMENT_KINDS,
   effectiveCommitmentCriticalDomain,
   effectiveCommitmentEnforcementClass,
   type CommitmentRecord,
@@ -13,10 +14,12 @@ import {
 import { ACTIVE_ACTION_STATES, type ActionState } from "../../../memory/actions/index.js";
 import {
   combineMemoryDisclosureLabels,
+  MEMORY_DISCLOSURE_CLASSES,
   MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
   relationshipPrivateMemoryDisclosureLabel,
   selfPrivateMemoryDisclosureLabel,
   unknownMemoryDisclosureLabel,
+  type MemoryDisclosureClass,
   type MemoryDisclosureLabel,
 } from "../../../retrieval/index.js";
 import type { LLMSystemBlock } from "../../../llm/index.js";
@@ -126,6 +129,12 @@ const COMPACT_PLANNER_STATIC_PREFIX_CACHE_CONTROL = {
 const PLANNER_ADVISORY_COMMITMENT_MAX_EXCERPT_CHARS = 320;
 const PLANNER_ADVISORY_COMMITMENT_MIN_EXCERPT_CHARS = 96;
 const PLANNER_COMMITMENT_TARGET_TOKENS = 8_000;
+const PLANNER_COMMITMENT_MEMBERSHIP_ORDER =
+  "critical_commitments_first_then_priority_desc_created_at_asc_id_asc";
+const PLANNER_COMMITMENT_MEMBERSHIP_BUDGET_MARKER = "membership_not_enumerated_budget";
+const PLANNER_COMMITMENT_DISCLOSURE_REMAINDER_MARKER =
+  "membership_not_enumerated_by_disclosure_class";
+const PLANNER_COMMITMENT_KIND_REMAINDER_MARKER = "membership_not_enumerated_by_kind";
 // The first production compact call measured provider input at 1.63x the
 // chars/4 estimate. A 25K estimated envelope therefore targets about 40K real
 // provider tokens while retaining honest overflow telemetry for critical text.
@@ -253,13 +262,6 @@ function buildHeadTailPlannerExcerpt(
 
 export function headTailPlannerExcerpt(value: string, maxChars: number): PromptExcerpt {
   return buildHeadTailPlannerExcerpt(value, maxChars).excerpt;
-}
-
-function compactPlannerAttributeExcerpt(value: string, maxChars: number): PromptExcerpt {
-  const built = buildHeadTailPlannerExcerpt(value, maxChars);
-  return built.excerpt.truncated
-    ? { ...built.excerpt, text: `${built.head}[ELIDED]${built.tail}` }
-    : built.excerpt;
 }
 
 function disclosureFromMetadata(
@@ -617,10 +619,10 @@ function renderCommitmentRowsAtBudget(
   let truncationCount = 0;
   const rows = commitments.map((commitment) => {
     const enforcementClass = effectiveCommitmentEnforcementClass(commitment);
-    const critical = enforcementClass === "critical";
+    const critical = isPlannerCommitmentMembershipCarveOut(commitment);
     const directive = critical
       ? exactPlannerExcerpt(commitment.directive)
-      : compactPlannerAttributeExcerpt(commitment.directive, advisoryExcerptBudget);
+      : compactPlannerLeanAttributeExcerpt(commitment.directive, advisoryExcerptBudget);
     const directiveFamily = headTailPlannerExcerpt(
       commitment.directive_family,
       PLANNER_LABEL_EXCERPT_CHARS,
@@ -640,18 +642,84 @@ function renderCommitmentRowsAtBudget(
   return { rows, truncationCount };
 }
 
+function isPlannerCommitmentMembershipCarveOut(commitment: CommitmentRecord): boolean {
+  return (
+    effectiveCommitmentEnforcementClass(commitment) === "critical" ||
+    effectiveCommitmentCriticalDomain(commitment) !== null
+  );
+}
+
+function comparePlannerCommitmentsByExistingOrder(
+  left: CommitmentRecord,
+  right: CommitmentRecord,
+): number {
+  return (
+    right.priority - left.priority ||
+    left.created_at - right.created_at ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+function commitmentDisclosureRemainders(
+  commitments: readonly CommitmentRecord[],
+): ReadonlyMap<MemoryDisclosureClass, number> {
+  const counts = new Map<MemoryDisclosureClass, number>();
+
+  for (const commitment of commitments) {
+    const disclosureClass = commitmentMemoryDisclosureLabel(commitment).disclosureClass;
+    counts.set(disclosureClass, (counts.get(disclosureClass) ?? 0) + 1);
+  }
+
+  return counts;
+}
+
+function renderCommitmentMembershipBudgetMarker(
+  commitments: readonly CommitmentRecord[],
+): string[] {
+  if (commitments.length === 0) {
+    return [];
+  }
+
+  const disclosureCounts = commitmentDisclosureRemainders(commitments);
+  const disclosureAttributes = MEMORY_DISCLOSURE_CLASSES.flatMap((disclosureClass) => {
+    const count = disclosureCounts.get(disclosureClass);
+    return count === undefined ? [] : [`${disclosureClass}="${count}"`];
+  }).join(" ");
+  const kindCounts = new Map<CommitmentRecord["kind"], number>();
+  for (const commitment of commitments) {
+    kindCounts.set(commitment.kind, (kindCounts.get(commitment.kind) ?? 0) + 1);
+  }
+  const kindAttributes = COMMITMENT_KINDS.flatMap((kind) => {
+    const count = kindCounts.get(kind);
+    return count === undefined ? [] : [`${kind}="${count}"`];
+  }).join(" ");
+
+  return [
+    `  <${PLANNER_COMMITMENT_MEMBERSHIP_BUDGET_MARKER} total="${commitments.length}">`,
+    `    <${PLANNER_COMMITMENT_DISCLOSURE_REMAINDER_MARKER} ${disclosureAttributes} />`,
+    `    <${PLANNER_COMMITMENT_KIND_REMAINDER_MARKER} ${kindAttributes} />`,
+    `  </${PLANNER_COMMITMENT_MEMBERSHIP_BUDGET_MARKER}>`,
+  ];
+}
+
 function renderCommitmentDigestText(input: {
   rows: readonly string[];
   commitmentCount: number;
+  omittedCommitments: readonly CommitmentRecord[];
+  rowsTotalAsOf: string;
   advisoryExcerptBudget: number;
   criticalOverflow: boolean;
 }): string {
+  const omissionCount = input.omittedCommitments.length;
+  const membershipBudgetAttribute =
+    omissionCount === 0 ? "" : ` ${PLANNER_COMMITMENT_MEMBERSHIP_BUDGET_MARKER}="${omissionCount}"`;
   return [
-    `<borg_planner_commitment_digest rows_total="${input.commitmentCount}" target_tokens="${PLANNER_COMMITMENT_TARGET_TOKENS}" advisory_excerpt_reserved_chars="${input.advisoryExcerptBudget}" critical_overflow="${input.criticalOverflow}">`,
-    "  <interpretation>This is the complete globally assembled commitment index. Critical directives are exact and never truncated; advisory directives are visibly mechanical excerpts when long, never summaries. Scope fields are disclosure/provenance, not recall gates.</interpretation>",
-    "  <field_legend>c row: i=id, s=status, ec=enforcement_class, cd=critical_domain, k=kind, t=type, cp=closure_pressure_relevance, p=priority, cat=created_at, ca=created_age, ra=reinforced_age, xa=expires_rel, dc=disclosure_class, oa=origin_audience, pt=private_to, pub=public_to, to=made_to, aud=restricted_audience, about=about_entity, by=committed_by_entity_id, ex=directive_exact, shape=directive_excerpt_shape, r=directive_rendered_chars, n=directive_total_chars, e=directive_elided_chars, f=directive_family, d=directive. ex reports elision only, not byte-fidelity of the printed attribute: d and f are XML-attribute-encoded, so quotes, ampersands, angle brackets, newlines and tabs print as entities while r/n/e count the stored string before encoding; that encoder emits no backslash, so a backslash inside d is stored content rather than an artifact of this render; and on a critical row ex is true by construction rather than by measurement, where shape and e are omitted entirely and r and n are both the stored length, so no attribute on such a row measures elision. advisory_excerpt_reserved_chars is what an advisory excerpt is sized against, not what a row prints: sizing deducts a long marker this block then replaces with the short [ELIDED] token, so r falls well below the reservation and that gap is unspent, not elided directive text.</field_legend>",
+    `<borg_planner_commitment_digest complete_membership="${omissionCount === 0}" rows_total="${input.commitmentCount}" rows_total_as_of="${escapeXmlAttribute(input.rowsTotalAsOf)}" membership_order="${PLANNER_COMMITMENT_MEMBERSHIP_ORDER}" target_tokens="${PLANNER_COMMITMENT_TARGET_TOKENS}" advisory_excerpt_reserved_chars="${input.advisoryExcerptBudget}" critical_overflow="${input.criticalOverflow}"${membershipBudgetAttribute}>`,
+    "  <interpretation>Budgeted global commitment snapshot. rows_total remains the full count as of rows_total_as_of. Critical directives are exact and first; long advisory directives are visibly mechanical excerpts, never summaries. An incomplete membership names its exact remainder. Scope fields are disclosure/provenance, not recall gates.</interpretation>",
+    `  <field_legend>c: i=id, s=status, ec=enforcement_class, cd=critical_domain, k=kind, t=type, cp=closure_pressure_relevance, p=priority, cat=created_at, ca=created_age, ra=reinforced_age, xa=expires_rel, dc=disclosure_class, oa=origin_audience, pt=private_to, pub=public_to, to=made_to, aud=restricted_audience, about=about_entity, by=committed_by_entity_id, ex=directive_exact, shape=directive_excerpt_shape, r=directive_rendered_chars, n=directive_total_chars, e=directive_elided_chars, f=directive_family, d=directive. ex reports elision, not printed-byte fidelity: d/f are XML-attribute-encoded while r/n/e count stored characters; the encoder creates no backslash. Critical rows omit shape/e and carry exact d with r=n. advisory_excerpt_reserved_chars is d's stored-string width before XML encoding; on a cut the eight-character [ELIDED] marker spends that width and the remainder is directive text, apart from UTF-16 boundary preservation. target_tokens prices the whole block with the local estimator. membership_order=${PLANNER_COMMITMENT_MEMBERSHIP_ORDER}: ec=critical or structural cd rows first, then priority descending, created_at ascending, id ascending within both partitions; disclosure never affects admission or order. complete_membership=true enumerates all rows_total rows. Otherwise ${PLANNER_COMMITMENT_MEMBERSHIP_BUDGET_MARKER}=N and its total=N marker name the exact suffix; ${PLANNER_COMMITMENT_DISCLOSURE_REMAINDER_MARKER} and ${PLANNER_COMMITMENT_KIND_REMAINDER_MARKER} each partition N exactly. Only critical_overflow=true permits this block above target_tokens.</field_legend>`,
     ...input.rows.map((row) => `  ${row}`),
-    "  <omitted_count>0</omitted_count>",
+    ...renderCommitmentMembershipBudgetMarker(input.omittedCommitments),
+    `  <omitted_count>${omissionCount}</omitted_count>`,
     "</borg_planner_commitment_digest>",
   ].join("\n");
 }
@@ -659,11 +727,20 @@ function renderCommitmentDigestText(input: {
 function renderCommitmentsWithinTarget(input: {
   commitments: readonly CommitmentRecord[];
   nowMs: number | undefined;
+  rowsTotalAsOf: string;
   criticalOverflow: boolean;
-}): RenderedCommitmentRows & { advisoryExcerptBudget: number; text: string } {
-  const renderAtBudget = (advisoryExcerptBudget: number) => {
+}): RenderedCommitmentRows & {
+  advisoryExcerptBudget: number;
+  omissionCount: number;
+  text: string;
+} {
+  const renderAtBudget = (
+    advisoryExcerptBudget: number,
+    includedCommitments = input.commitments,
+    omittedCommitments: readonly CommitmentRecord[] = [],
+  ) => {
     const rendered = renderCommitmentRowsAtBudget(
-      input.commitments,
+      includedCommitments,
       input.nowMs,
       advisoryExcerptBudget,
     );
@@ -673,66 +750,129 @@ function renderCommitmentsWithinTarget(input: {
       text: renderCommitmentDigestText({
         rows: rendered.rows,
         commitmentCount: input.commitments.length,
+        omittedCommitments,
+        rowsTotalAsOf: input.rowsTotalAsOf,
         advisoryExcerptBudget,
         criticalOverflow: input.criticalOverflow,
       }),
+      omissionCount: omittedCommitments.length,
     };
   };
+  const maximizeAdvisoryExcerptBudget = (
+    includedCommitments: readonly CommitmentRecord[],
+    omittedCommitments: readonly CommitmentRecord[],
+  ) => {
+    let low = PLANNER_ADVISORY_COMMITMENT_MIN_EXCERPT_CHARS;
+    let high = PLANNER_ADVISORY_COMMITMENT_MAX_EXCERPT_CHARS;
+    let best = renderAtBudget(low, includedCommitments, omittedCommitments);
+
+    while (low <= high) {
+      const candidateBudget = Math.floor((low + high) / 2);
+      const candidate = renderAtBudget(candidateBudget, includedCommitments, omittedCommitments);
+      if (estimatePromptTokens(candidate.text) <= PLANNER_COMMITMENT_TARGET_TOKENS) {
+        best = candidate;
+        low = candidateBudget + 1;
+      } else {
+        high = candidateBudget - 1;
+      }
+    }
+
+    return best;
+  };
   const maximum = renderAtBudget(PLANNER_ADVISORY_COMMITMENT_MAX_EXCERPT_CHARS);
-  if (
-    input.commitments.every(
-      (commitment) => effectiveCommitmentEnforcementClass(commitment) === "critical",
-    ) ||
-    estimatePromptTokens(maximum.text) <= PLANNER_COMMITMENT_TARGET_TOKENS
-  ) {
+  if (estimatePromptTokens(maximum.text) <= PLANNER_COMMITMENT_TARGET_TOKENS) {
     return maximum;
   }
 
-  let low = PLANNER_ADVISORY_COMMITMENT_MIN_EXCERPT_CHARS;
-  let high = PLANNER_ADVISORY_COMMITMENT_MAX_EXCERPT_CHARS - 1;
-  let best = renderAtBudget(low);
+  const minimum = renderAtBudget(PLANNER_ADVISORY_COMMITMENT_MIN_EXCERPT_CHARS);
+  if (estimatePromptTokens(minimum.text) <= PLANNER_COMMITMENT_TARGET_TOKENS) {
+    return maximizeAdvisoryExcerptBudget(input.commitments, []);
+  }
 
+  const criticalCommitments = input.commitments.filter(isPlannerCommitmentMembershipCarveOut);
+  const ordinaryCommitments = input.commitments.filter(
+    (commitment) => !isPlannerCommitmentMembershipCarveOut(commitment),
+  );
+  const criticalOnly = renderAtBudget(
+    PLANNER_ADVISORY_COMMITMENT_MIN_EXCERPT_CHARS,
+    criticalCommitments,
+    ordinaryCommitments,
+  );
+  if (
+    input.criticalOverflow ||
+    estimatePromptTokens(criticalOnly.text) > PLANNER_COMMITMENT_TARGET_TOKENS
+  ) {
+    return criticalOnly;
+  }
+
+  let low = 1;
+  let high = ordinaryCommitments.length - 1;
+  let includedOrdinaryCount = 0;
   while (low <= high) {
-    const candidateBudget = Math.floor((low + high) / 2);
-    const candidate = renderAtBudget(candidateBudget);
+    const candidateCount = Math.floor((low + high) / 2);
+    const candidate = renderAtBudget(
+      PLANNER_ADVISORY_COMMITMENT_MIN_EXCERPT_CHARS,
+      [...criticalCommitments, ...ordinaryCommitments.slice(0, candidateCount)],
+      ordinaryCommitments.slice(candidateCount),
+    );
     if (estimatePromptTokens(candidate.text) <= PLANNER_COMMITMENT_TARGET_TOKENS) {
-      best = candidate;
-      low = candidateBudget + 1;
+      includedOrdinaryCount = candidateCount;
+      low = candidateCount + 1;
     } else {
-      high = candidateBudget - 1;
+      high = candidateCount - 1;
     }
   }
 
-  return best;
+  const includedCommitments = [
+    ...criticalCommitments,
+    ...ordinaryCommitments.slice(0, includedOrdinaryCount),
+  ];
+  return maximizeAdvisoryExcerptBudget(
+    includedCommitments,
+    ordinaryCommitments.slice(includedOrdinaryCount),
+  );
 }
 
 function renderCommitmentDigest(context: DeliberationContext): RenderedPlannerSection {
   const nowMs = promptTimestamp(context);
-  const commitments = [...(context.applicableCommitments ?? [])].sort((left, right) => {
-    const leftCritical = effectiveCommitmentEnforcementClass(left) === "critical" ? 1 : 0;
-    const rightCritical = effectiveCommitmentEnforcementClass(right) === "critical" ? 1 : 0;
-    return (
-      rightCritical - leftCritical ||
-      right.priority - left.priority ||
-      left.created_at - right.created_at ||
-      left.id.localeCompare(right.id)
-    );
-  });
+  const rowsTotalAsOfMs = finiteTimestamp(context.applicableCommitmentsReadAtMs) ?? nowMs;
+  const rowsTotalAsOf =
+    rowsTotalAsOfMs === undefined ? "unknown" : new Date(rowsTotalAsOfMs).toISOString();
+  const sourceCommitments = context.applicableCommitments ?? [];
+  const criticalCommitments = sourceCommitments
+    .filter(isPlannerCommitmentMembershipCarveOut)
+    .sort(comparePlannerCommitmentsByExistingOrder);
+  const ordinaryCommitments = sourceCommitments
+    .filter((commitment) => !isPlannerCommitmentMembershipCarveOut(commitment))
+    .sort(comparePlannerCommitmentsByExistingOrder);
+  const commitments = [...criticalCommitments, ...ordinaryCommitments];
   const criticalRows = renderCommitmentRowsAtBudget(
-    commitments.filter(
-      (commitment) => effectiveCommitmentEnforcementClass(commitment) === "critical",
-    ),
+    criticalCommitments,
     nowMs,
     PLANNER_ADVISORY_COMMITMENT_MAX_EXCERPT_CHARS,
   );
   const criticalOverflow =
-    estimatePromptTokens(criticalRows.rows.join("\n")) > PLANNER_COMMITMENT_TARGET_TOKENS;
-  const rendered = renderCommitmentsWithinTarget({ commitments, nowMs, criticalOverflow });
+    estimatePromptTokens(
+      renderCommitmentDigestText({
+        rows: criticalRows.rows,
+        commitmentCount: commitments.length,
+        omittedCommitments: ordinaryCommitments,
+        rowsTotalAsOf,
+        advisoryExcerptBudget: PLANNER_ADVISORY_COMMITMENT_MAX_EXCERPT_CHARS,
+        criticalOverflow: false,
+      }),
+    ) > PLANNER_COMMITMENT_TARGET_TOKENS;
+  const rendered = renderCommitmentsWithinTarget({
+    commitments,
+    nowMs,
+    rowsTotalAsOf,
+    criticalOverflow,
+  });
 
   return section("commitments", rendered.text, {
     rowCount: rendered.rows.length,
     truncationCount: rendered.truncationCount,
-    omissionCount: 0,
+    omissionCount: rendered.omissionCount,
     criticalOverflow,
   });
 }
