@@ -217,6 +217,16 @@ describe("compact terminal finalizer context", () => {
       "5m",
     ]);
     expect(result.system[0]?.text).toContain("<borg_terminal_pass_contract>");
+    // The contract used to say a complete index reports complete="true", which made an element
+    // named for completeness read as one that had reported it. A name cannot carry the scope such
+    // a claim is true over, so the contract now says a name is never the claim.
+    expect(result.system[0]?.text).toContain(
+      'A completeness claim rides on a complete="true" attribute beside omitted_count="0"',
+    );
+    expect(result.system[0]?.text).toContain(
+      "An element name is a label and never a claim of coverage, whatever word it contains.",
+    );
+    expect(result.system[0]?.text).not.toContain("A complete index reports");
     expect(result.system[1]?.text).toContain("<borg_terminal_commitments");
     expect(result.system[2]?.text).toContain("<borg_terminal_audience_durable");
     expect(result.system[3]?.text).toContain("<borg_terminal_relative_age_overlay");

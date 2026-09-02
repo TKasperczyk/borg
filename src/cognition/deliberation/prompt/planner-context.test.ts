@@ -1077,7 +1077,7 @@ describe("compact planner context", () => {
     expect(planner.traceSummary.totalEstimatedTokens).toBeGreaterThan(0);
   });
 
-  it("reports the statuses the complete index actually carries instead of claiming completeness over every goal", () => {
+  it("reports the statuses the index actually carries and asserts no coverage in an element name", () => {
     const mixed = build(
       context({
         selfSnapshot: {
@@ -1095,11 +1095,28 @@ describe("compact planner context", () => {
 
     // Derived from the drawn rows, never a literal: the attribute has to widen when the draw does.
     expect(mixedText).toContain(
-      '<complete_goal_index statuses_present="active,done" description_excerpt_budget_chars=',
+      '<goal_index statuses_present="active,done" description_excerpt_budget_chars=',
     );
     expect(mixedText).toContain(
       "A goal whose status is not listed there is absent from this page rather than omitted from it",
     );
+    expect(mixedText).toContain(
+      "That element asserts nothing in its own name, because a name has nowhere to carry the scope a completeness claim would be true over",
+    );
+
+    // A name has nowhere to carry the scope such a claim is true over, so no element name on this
+    // page may assert coverage at all -- statuses_present and omitted_count carry it instead. This
+    // pins the property rather than the one name that broke it, so a future rename cannot restore
+    // the claim under a different word.
+    const digestElementNames = [
+      ...taggedBlock(mixedText, "borg_planner_goal_digest").matchAll(/<\/?([a-z_]+)[\s>]/g),
+    ].map((match) => match[1] ?? "");
+    expect(digestElementNames.length).toBeGreaterThan(0);
+    expect(
+      digestElementNames.filter(
+        (name) => name.includes("complete") || name.includes("all_") || name.includes("full"),
+      ),
+    ).toEqual([]);
 
     const singleStatus = build(
       context({
@@ -1108,13 +1125,13 @@ describe("compact planner context", () => {
     );
 
     expect(allSystemText(singleStatus)).toContain(
-      '<complete_goal_index statuses_present="active" description_excerpt_budget_chars=',
+      '<goal_index statuses_present="active" description_excerpt_budget_chars=',
     );
 
     const empty = build(context({ selfSnapshot: { values: [], goals: [], traits: [] } }));
 
     expect(allSystemText(empty)).toContain(
-      '<complete_goal_index statuses_present="none" description_excerpt_budget_chars=',
+      '<goal_index statuses_present="none" description_excerpt_budget_chars=',
     );
   });
 
@@ -1309,8 +1326,8 @@ describe("compact planner context", () => {
     };
 
     const index = containerBudget(
-      "<complete_goal_index",
-      "</complete_goal_index>",
+      "<goal_index",
+      "</goal_index>",
       "description_excerpt_budget_chars",
     );
     const expanded = containerBudget(
@@ -1739,13 +1756,15 @@ describe("compact planner context", () => {
     );
     expect(authorityRows).toHaveLength(100);
     expect(Math.max(...authorityRows.map((row) => row.length))).toBeLessThanOrEqual(250);
-    // The complete index still omits nothing at this high-water mark, so the legend's fixed cost
-    // is paid by the overall envelope rather than by dropped goal rows. The ceiling tracks that
-    // fixed cost: naming pn's replace-whole-column write semantics raised it from 9,440 to 9,596,
-    // naming the excerpt budget the marker is charged against raised it from 9,596 to 9,784, and
-    // printing the index rows' own description budget -- so the two d columns on this page can no
-    // longer be read against one width -- raised it from 9,784 to 9,927.
-    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_940);
+    // The index still omits nothing at this high-water mark, so the legend's fixed cost is paid by
+    // the overall envelope rather than by dropped goal rows. The ceiling tracks that fixed cost:
+    // naming pn's replace-whole-column write semantics raised it from 9,440 to 9,596, naming the
+    // excerpt budget the marker is charged against raised it from 9,596 to 9,784, and printing the
+    // index rows' own description budget -- so the two d columns on this page can no longer be read
+    // against one width -- raised it from 9,784 to 9,927. Saying that the container asserts nothing
+    // in its own name cost 196 characters net of the shorter tag, 9,927 to 9,976; the ceiling moves
+    // to 9,990 rather than to the measurement, so the next clause has to be argued against a number.
+    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_990);
     expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(11_900);
     expect(planner.traceSummary.sections.authority_and_directives?.estimatedTokens).toBeGreaterThan(
       4_000,

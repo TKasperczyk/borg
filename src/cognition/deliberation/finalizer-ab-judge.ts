@@ -108,7 +108,8 @@ const SYSTEM_PROMPT = [
 export const FINALIZER_AB_SURFACE_SELF_REFERENCE_PHRASES = [
   "This is my terminal response pass. I make the final emission decision from the complete request surface below; any system-2 plan is advisory, not authority.",
   "Durable records appear before turn-local overlays. I join an overlay to its durable record only by the explicit record id. Scope and disclosure fields describe use and mention boundaries; they never gate what I recall.",
-  'A complete index reports complete="true" and omitted_count="0". Any bounded expansion or digest reports its omissions explicitly.',
+  'A completeness claim rides on a complete="true" attribute beside omitted_count="0"; where a container is drawn narrower than the record it names its draw in an attribute instead. An element name is a label and never a claim of coverage, whatever word it contains.',
+  "Any bounded expansion or digest reports its omissions explicitly.",
   "terminal response pass",
   "complete request surface",
   "turn-local overlays",
