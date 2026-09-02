@@ -3759,8 +3759,8 @@ describe("buildBaseSystemPrompt", () => {
       );
 
     // A wake closed on purpose and a wake a guard stopped are the two readings
-    // silent=N cannot separate, and both advance empty_streak; the split is the
-    // only thing on the page that tells them apart.
+    // silent=N cannot separate, but only the first advances empty_streak; the
+    // split names the policy the scheduler applied.
     const attributed = buildPrompt({
       total: 4,
       without_detail: 0,
@@ -3778,7 +3778,8 @@ describe("buildBaseSystemPrompt", () => {
     // The contrast set is named, so one rendered class is never read as the only
     // class that exists.
     expect(attributed).toContain("emission-failed");
-    expect(attributed).toContain("all of them advance empty_streak identically");
+    expect(attributed).toContain("every class except guard-blocked advances empty_streak");
+    expect(attributed).toContain("guard-blocked leaves it unchanged");
 
     // Rows written before the ending was recorded are stated rather than left as
     // an unexplained shortfall against silent=N.

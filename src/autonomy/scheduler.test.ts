@@ -40,6 +40,7 @@ import {
   DEFAULT_FLEET_BRAKE_OPTIONS,
   FLEET_BRAKE_PROCESS_NAME,
   readFleetBrakeMetadata,
+  type FleetBrakeMetadata,
   type FleetBrakeOptions,
 } from "./fleet-brake.js";
 
@@ -471,8 +472,8 @@ describe("AutonomyScheduler", () => {
 
   it("labels the complement of headway with the class that produced it", () => {
     // The predicate above answers "did anything come out"; every no lands in
-    // `silent` and advances the same streak. These are the endings that no
-    // conflates, kept apart by the class the scheduler already computes.
+    // `silent`, but a guard block now holds the streak while the other endings
+    // advance it. The same class keeps the diagnostic and policy aligned.
     expect(
       silentWakeOutcomeDetail(createStructuralTurnResult({ emissionKind: "suppressed" })),
     ).toBe("deliberate-silence: finalizer_no_output");
@@ -484,6 +485,14 @@ describe("AutonomyScheduler", () => {
         }),
       ),
     ).toBe("guard-blocked: commitment_violation_after_regenerate");
+    expect(
+      silentWakeOutcomeDetail(
+        createStructuralTurnResult({
+          emissionKind: "suppressed",
+          suppressionReason: "closure_pressure_only",
+        }),
+      ),
+    ).toBe("guard-blocked: closure_pressure_only");
     expect(
       silentWakeOutcomeDetail(
         createStructuralTurnResult({
@@ -3317,6 +3326,89 @@ describe("AutonomyScheduler", () => {
           silent: 7,
           error: 0,
           busy: 0,
+        },
+      },
+    });
+  });
+
+  it("holds guard-blocked wakes out of the empty streak while preserving its other outcomes", async () => {
+    const clock = new ManualClock(2_025_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
+    setFleetBrakeState(watermarkRepository, clock, {
+      empty_streak: 2,
+      streak_anchor_ts: clock.now() - 1_000,
+      last_wake_ts: clock.now() - 100,
+    });
+    const fleetUpdates: FleetBrakeMetadata[] = [];
+    const originalSet = watermarkRepository.set.bind(watermarkRepository);
+    vi.spyOn(watermarkRepository, "set").mockImplementation((processName, sessionId, input) => {
+      const result = originalSet(processName, sessionId, input);
+
+      if (processName === FLEET_BRAKE_PROCESS_NAME) {
+        fleetUpdates.push(readFleetBrakeMetadata(watermarkRepository.get(processName, sessionId)));
+      }
+
+      return result;
+    });
+    const source = createPersistentDueSource({
+      watermarkRepository,
+      eventIds: ["guard-blocked", "chosen-silence", "transport-failure", "headway"],
+    });
+    const turnRunner = {
+      run: vi
+        .fn()
+        .mockResolvedValueOnce(
+          createStructuralTurnResult({
+            emissionKind: "suppressed",
+            suppressionReason: "commitment_violation_after_regenerate",
+          }),
+        )
+        .mockResolvedValueOnce(createStructuralTurnResult({ emissionKind: "suppressed" }))
+        .mockResolvedValueOnce(
+          createStructuralTurnResult({
+            emissionKind: "suppressed",
+            undeliveredOutboundState: "transport_failed",
+          }),
+        )
+        .mockResolvedValueOnce(createStructuralTurnResult({ emissionKind: "message" })),
+    };
+    const scheduler = createScheduler({
+      db: harness.db,
+      wakeRepository,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 20,
+      budgetWindowMs: 60_000,
+      fleetBrake: TEST_FLEET_BRAKE,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+      watermarkRepository,
+      turnOrchestrator: turnRunner,
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        clock,
+      }),
+      sources: [source],
+    });
+
+    expect((await scheduler.tick()).firedEvents).toBe(4);
+    expect(fleetUpdates.map((metadata) => metadata.empty_streak)).toEqual([2, 3, 4, 0]);
+    await expect(scheduler.describe()).resolves.toMatchObject({
+      fleet_brake: {
+        empty_streak: 0,
+        window_silent_reasons: {
+          total: 3,
+          without_detail: 0,
+          reasons: [
+            { detail: "deliberate-silence: finalizer_no_output", count: 1 },
+            { detail: "guard-blocked: commitment_violation_after_regenerate", count: 1 },
+            { detail: "outbound-undelivered: transport_failed", count: 1 },
+          ],
         },
       },
     });

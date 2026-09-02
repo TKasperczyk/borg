@@ -46,8 +46,10 @@ import {
   emptyFleetBrakeMetadata,
   fleetBrakeCooldownUntilMs,
   fleetBrakeErrorPausedUntilMs,
+  fleetBrakeMetadataAfterOperationalWake,
   readFleetBrakeMetadata,
   type FleetBrakeMetadata,
+  type FleetBrakeOperationalWakeDisposition,
   type FleetBrakeOptions,
 } from "./fleet-brake.js";
 
@@ -445,13 +447,19 @@ export function turnEmittedHeadway(turnResult: TurnResult): boolean {
   );
 }
 
+type SilentWakeOutcome = {
+  detail: string;
+  fleetBrakeDisposition: Exclude<FleetBrakeOperationalWakeDisposition, "reset">;
+};
+
 /**
  * What ended a wake the scheduler is about to record as `silent`. The complement
  * of `turnEmittedHeadway` is a union rather than a behaviour -- a closure the
  * entity chose, an emission that failed on its way out, and a guard that blocked
- * one all land in it -- and the fleet brake advances `empty_streak` on all three
- * identically. The class is already computed for the wake's own narrative, so
- * writing it here is a route to the counter's surface, not a new judgment.
+ * one all land in it. The first two advance the fleet brake's `empty_streak`; a
+ * guard block leaves it unchanged. The class is already computed for the wake's
+ * own narrative, so this one result drives both the counter and its diagnostic
+ * row rather than making the same judgment twice.
  *
  * Structure only: emission kind, the suppression enum, and the outbound state
  * enum, never words from what was (or wasn't) said, so it is multilingual-safe
@@ -469,24 +477,36 @@ export function turnEmittedHeadway(turnResult: TurnResult): boolean {
  * turn a wake that completed fine into a bookkeeping error. An absent emission
  * is a missing label, not a failed wake, and says so.
  */
-export function silentWakeOutcomeDetail(turnResult: TurnResult): string {
+function silentWakeOutcome(turnResult: TurnResult): SilentWakeOutcome {
   const undelivered = firstUndeliveredOutboundPostState(turnResult);
 
   if (undelivered !== null) {
-    return `outbound-undelivered: ${undelivered}`;
+    return {
+      detail: `outbound-undelivered: ${undelivered}`,
+      fleetBrakeDisposition: "advance",
+    };
   }
 
   const emission = turnResult.emission as TurnResult["emission"] | undefined;
 
   if (emission === undefined || emission === null) {
-    return "no emission recorded";
+    return { detail: "no emission recorded", fleetBrakeDisposition: "advance" };
   }
 
   if (emission.kind !== "suppressed") {
-    return emission.kind;
+    return { detail: emission.kind, fleetBrakeDisposition: "advance" };
   }
 
-  return `${classifySuppressionReason(emission.reason)}: ${emission.reason}`;
+  const outcomeClass = classifySuppressionReason(emission.reason);
+
+  return {
+    detail: `${outcomeClass}: ${emission.reason}`,
+    fleetBrakeDisposition: outcomeClass === "guard-blocked" ? "hold" : "advance",
+  };
+}
+
+export function silentWakeOutcomeDetail(turnResult: TurnResult): string {
+  return silentWakeOutcome(turnResult).detail;
 }
 
 function goalProgressAdvanced(input: { before: number | null; after: number | null }): boolean {
@@ -911,11 +931,11 @@ export class AutonomyScheduler {
           budgetCutoff,
           "error",
         ),
-        // Same rows as window_outcomes.silent, one level down, and the same
-        // defect as the line above wearing different clothes: `silent` is the
+        // Same rows as window_outcomes.silent, one level down. `silent` is the
         // complement of headway, so a closure the entity chose, an emission that
-        // failed, and a guard that blocked one are one number here -- and one
-        // number in the empty_streak those rows drive.
+        // failed, and a guard that blocked one are one number here even though
+        // only the first two advance empty_streak. The detail is the same
+        // structural classification that selected the streak disposition.
         window_silent_reasons: this.options.wakeRepository.summarizeOutcomeDetailsSince(
           budgetCutoff,
           "silent",
@@ -1255,6 +1275,7 @@ export class AutonomyScheduler {
             wakeHeadway =
               turnEmittedHeadway(turnResult) ||
               perGoalOutcomes.some(({ outcome }) => outcome.headway);
+            const silentOutcome = wakeHeadway ? null : silentWakeOutcome(turnResult);
             // A completed turn's structural outcome is authoritative. Persist
             // fleet headway before any stream/latch/introspection bookkeeping
             // can fail and accidentally preserve an empty streak.
@@ -1262,14 +1283,15 @@ export class AutonomyScheduler {
               event: dueEvent,
               sourceCategory,
               turnResult,
-              headway: wakeHeadway,
+              operationalDisposition:
+                silentOutcome === null ? "reset" : silentOutcome.fleetBrakeDisposition,
               bypassKind: fleetAdmission.bypassKind,
               admissionMetadata: fleetAdmission.metadata,
             });
             this.options.wakeRepository.recordOutcome(
               wakeRecord.id,
               wakeHeadway ? "headway" : "silent",
-              wakeHeadway ? null : silentWakeOutcomeDetail(turnResult),
+              silentOutcome?.detail ?? null,
             );
           } catch (error) {
             firedEvents += 1;
@@ -1580,7 +1602,7 @@ export class AutonomyScheduler {
     event: DueEvent;
     sourceCategory: AutonomyWakeSourceCategory;
     turnResult: TurnResult;
-    headway: boolean;
+    operationalDisposition: FleetBrakeOperationalWakeDisposition;
     bypassKind: FleetAdmissionDecision["bypassKind"];
     admissionMetadata: FleetBrakeMetadata | null;
   }): void {
@@ -1590,28 +1612,26 @@ export class AutonomyScheduler {
 
     const nowMs = this.clock.now();
     const current = input.admissionMetadata ?? emptyFleetBrakeMetadata();
-    const next: FleetBrakeMetadata = {
-      ...current,
-      error_streak: 0,
-      last_error_ts: 0,
-    };
+    let next: FleetBrakeMetadata;
 
     if (input.sourceCategory === "operational") {
-      if (input.headway) {
+      next = fleetBrakeMetadataAfterOperationalWake(current, {
+        disposition: input.operationalDisposition,
+        nowMs,
+        freshnessBypass: input.bypassKind === "freshness",
+      });
+    } else {
+      next = {
+        ...current,
+        error_streak: 0,
+        last_error_ts: 0,
+      };
+
+      if (deliveredOutboundPost(input.turnResult)) {
         next.empty_streak = 0;
         next.streak_anchor_ts = 0;
-        next.last_wake_ts = nowMs;
         next.bypass_count = 0;
-      } else {
-        next.empty_streak = current.empty_streak + 1;
-        next.streak_anchor_ts = current.empty_streak === 0 ? nowMs : current.streak_anchor_ts;
-        next.last_wake_ts = nowMs;
-        next.bypass_count = current.bypass_count + (input.bypassKind === "freshness" ? 1 : 0);
       }
-    } else if (deliveredOutboundPost(input.turnResult)) {
-      next.empty_streak = 0;
-      next.streak_anchor_ts = 0;
-      next.bypass_count = 0;
     }
 
     this.writeFleetBrakeState(input.event, next, nowMs);

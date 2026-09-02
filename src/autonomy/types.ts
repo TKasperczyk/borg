@@ -200,11 +200,11 @@ export type AutonomySchedulerSourceDescription =
 export type AutonomySchedulerFleetBrakeDescription = {
   enabled: boolean;
   /**
-   * Consecutive completed operational wakes recorded `silent`. Errored and
-   * busy-skipped wakes are transparent to it -- they neither increment nor
-   * reset -- so the streak is consecutive within the *completed operational*
-   * subsequence, not within the wake sequence, and can span any number of
-   * intervening wakes and any amount of wall-clock.
+   * Consecutive counted-empty operational wakes. Chosen silence and failed
+   * emission advance it; a post-generation guard block, an error, or a busy
+   * skip is transparent -- it neither increments nor resets -- so the streak is
+   * consecutive within that filtered operational subsequence, not within the
+   * wake sequence, and can span intervening wakes and wall-clock time.
    */
   empty_streak: number;
   empty_streak_threshold: number;
@@ -255,13 +255,11 @@ export type AutonomySchedulerFleetBrakeDescription = {
    *
    * `silent` is a union, not a behaviour: a wake the entity deliberately closed
    * with no output, a wake whose emission failed on the way out, and a wake a
-   * post-generation guard blocked all land in it, and all three increment
-   * `empty_streak` identically. The scheduler already classifies the ending
-   * (`classifySuppressionReason`) to write the wake's own narrative, so the
-   * discriminator exists at the moment the outcome is recorded; it simply had no
-   * route to the counter's own surface. Without it `silent=N` cannot separate a
-   * choice from a failure, and the brake those rows are driving reads as though
-   * it were counting one thing.
+   * post-generation guard blocked all land in it. The first two advance
+   * `empty_streak`; the guard block leaves it unchanged. The scheduler uses the
+   * same structural classification (`classifySuppressionReason`) for this row
+   * and the streak disposition, so the diagnostic says which policy was applied
+   * without recomputing the ending.
    */
   window_silent_reasons: AutonomyWakeOutcomeDetailTally;
 };

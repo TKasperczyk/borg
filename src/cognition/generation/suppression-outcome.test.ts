@@ -12,7 +12,7 @@ const EXPECTED_OUTCOMES = {
   invalid_tool_after_regenerate: "emission-failed",
   no_output_tool: "deliberate-silence",
   s2_planner_no_output: "deliberate-silence",
-  closure_pressure_only: "deliberate-silence",
+  closure_pressure_only: "guard-blocked",
   closure_response_audit_failed_closed: "guard-blocked",
   commitment_violation: "guard-blocked",
   commitment_violation_after_regenerate: "guard-blocked",

@@ -2025,7 +2025,7 @@ export function summarizeAutonomySchedulerState(
 
   // The two counter groups below are different populations, and printing them
   // adjacent without saying so invites differencing one into the other:
-  // empty_streak is untimed, operational-only, and blind to errors;
+  // empty_streak is untimed, operational-only, and blind to guard blocks and errors;
   // window_outcomes is budget-windowed and counts every category and every
   // outcome. Each group states its own scope so neither can be read as evidence
   // about the other. error_streak sits in the first group but is a third
@@ -2048,7 +2048,7 @@ export function summarizeAutonomySchedulerState(
       brake.streak_anchor_ts === null
         ? ""
         : ` current empty streak began ${new Date(brake.streak_anchor_ts).toISOString()}`
-    } -- empty_streak counts consecutive completed operational wakes that came back silent, with no time bound. Errored and busy-skipped wakes neither increment nor reset it, so it is consecutive within the completed-operational subsequence rather than within the wake sequence, and one streak can span any number of intervening wakes and any amount of wall-clock. error_streak counts something narrower than the error tally below: only a wake that failed inside the turn, with a provider or auth fault, increments it. Wakes that fail before the turn is built, and in-turn failures of any other kind, record error without touching it -- and any successful wake, contemplative included, resets it to zero. So error_streak=0 beside a non-zero error count is the ordinary case, not a sign that the errors were separated by successes. bypass_count is neither a streak nor a window count: it counts freshness bypasses spent, and a bypass is only ever offered while the empty-streak cooldown is actively holding, so a clear cooldown freezes the counter rather than resetting it, and a deadline bypass does not spend one. It returns to zero only on an operational wake that came back with headway, or a contemplative wake that delivered an outbound post -- neither the cooldown expiring nor the budget window rolling clears it, so a non-zero value can outlive the cooldown that produced it and is not a count over the window below. At ${brake.freshness_bypass_cap} a fresh concern stops earning a bypass and is refused along with everything else the cooldown is holding.`,
+    } -- empty_streak counts consecutive completed operational wakes whose silence was chosen or whose emission failed, with no time bound. A post-generation guard block leaves it unchanged: the entity produced output and the harness withheld it, so that wake neither advances nor resets this streak. Errored and busy-skipped wakes are transparent in the same way, so the streak is consecutive within this filtered operational subsequence rather than within the wake sequence, and one streak can span any number of intervening wakes and any amount of wall-clock. error_streak counts something narrower than the error tally below: only a wake that failed inside the turn, with a provider or auth fault, increments it. Wakes that fail before the turn is built, and in-turn failures of any other kind, record error without touching it -- and any successful wake, contemplative included, resets it to zero. So error_streak=0 beside a non-zero error count is the ordinary case, not a sign that the errors were separated by successes. bypass_count is neither a streak nor a window count: it counts freshness bypasses spent, and a bypass is only ever offered while the empty-streak cooldown is actively holding, so a clear cooldown freezes the counter rather than resetting it, and a deadline bypass does not spend one. It returns to zero only on an operational wake that came back with headway, or a contemplative wake that delivered an outbound post -- neither the cooldown expiring nor the budget window rolling clears it, so a non-zero value can outlive the cooldown that produced it and is not a count over the window below. At ${brake.freshness_bypass_cap} a fresh concern stops earning a bypass and is refused along with everything else the cooldown is holding.`,
   );
   lines.push(
     `Outcome tally over the budget window above, both source categories: headway=${
@@ -2079,11 +2079,9 @@ export function summarizeAutonomySchedulerState(
   lines.push(...renderWakeErrorReasonLines(brake.window_error_reasons));
   // silent=N has the same defect as error=N and a worse consequence: it is the
   // complement of headway, so a closure you chose, an emission that failed on
-  // the way out, and a guard that blocked one are one number -- and they are one
-  // number again in empty_streak, which counts every non-headway operational
-  // wake alike. The split below is the same rows as silent=N. It does not change
-  // what the brake counts; it says what was counted, so "a silence I chose" and
-  // "a wake that produced nothing" stop being indistinguishable from this page.
+  // the way out, and a guard that blocked one are one number even though only
+  // the first two advance empty_streak. The split below is the same rows as
+  // silent=N and carries the structural class that selected that disposition.
   lines.push(...renderWakeSilentReasonLines(brake.window_silent_reasons));
   // The only prospective field the scheduler produces, and the last one that
   // stopped at the evidence boundary. Everything above is retrospective or about
@@ -2242,7 +2240,7 @@ function renderWakeSilentReasonLines(
   ].filter((clause): clause is string => clause !== null);
 
   return [
-    `How those silent wakes ended, same rows as silent=${tally.total} above. The classes that can appear are ${WAKE_SILENT_OUTCOME_CLASSES}; all of them advance empty_streak identically, so this split is what that counter is made of, not a ranking of it:`,
+    `How those silent wakes ended, same rows as silent=${tally.total} above. The classes that can appear are ${WAKE_SILENT_OUTCOME_CLASSES}. On an operational wake every class except guard-blocked advances empty_streak; guard-blocked leaves it unchanged because the harness withheld produced output:`,
     ...shown.map((reason) => `- ${reason.count}x ${reason.detail}`),
     remainder.length === 0
       ? `The endings above account for all ${tally.total}.`

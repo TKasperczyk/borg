@@ -12,6 +12,8 @@ export type FleetBrakeMetadata = {
   bypass_count: number;
 };
 
+export type FleetBrakeOperationalWakeDisposition = "reset" | "advance" | "hold";
+
 export type FleetBrakeOptions = {
   enabled: boolean;
   emptyStreakThreshold: number;
@@ -64,6 +66,40 @@ export function emptyFleetBrakeMetadata(): FleetBrakeMetadata {
     last_error_ts: 0,
     bypass_count: 0,
   };
+}
+
+export function fleetBrakeMetadataAfterOperationalWake(
+  current: FleetBrakeMetadata,
+  input: {
+    disposition: FleetBrakeOperationalWakeDisposition;
+    nowMs: number;
+    freshnessBypass: boolean;
+  },
+): FleetBrakeMetadata {
+  const next: FleetBrakeMetadata = {
+    ...current,
+    error_streak: 0,
+    last_error_ts: 0,
+  };
+
+  if (input.disposition === "reset") {
+    next.empty_streak = 0;
+    next.streak_anchor_ts = 0;
+    next.last_wake_ts = input.nowMs;
+    next.bypass_count = 0;
+    return next;
+  }
+
+  if (input.disposition === "hold") {
+    return next;
+  }
+
+  next.empty_streak = current.empty_streak + 1;
+  next.streak_anchor_ts = current.empty_streak === 0 ? input.nowMs : current.streak_anchor_ts;
+  next.last_wake_ts = input.nowMs;
+  next.bypass_count = current.bypass_count + (input.freshnessBypass ? 1 : 0);
+
+  return next;
 }
 
 /**
