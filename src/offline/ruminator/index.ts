@@ -79,30 +79,167 @@ const ruminatorGrowthMarkerResponseSchema = z
   })
   .nullable();
 
+const PARAMETER_WIRE_DELIMITER = "<parameter";
+const PARAMETER_CLOSE_TAG = "</parameter>";
+const PARAMETER_OPEN_TAG_PATTERN = /<parameter\b([^>]*)>/g;
+const PARAMETER_NAME_ATTRIBUTE_PATTERN = /^name\s*=\s*(?:"([^"]*)"|'([^']*)')$/;
+const PARAMETER_INDEX_PATTERN = /^\d+$/;
+
+function parameterName(attributes: string): string {
+  const trimmed = attributes.trim();
+
+  if (trimmed.length === 0) {
+    return "";
+  }
+
+  const match = PARAMETER_NAME_ATTRIBUTE_PATTERN.exec(trimmed);
+
+  if (match === null) {
+    throw new TypeError("Malformed tension parameter wrapper");
+  }
+
+  return match[1] ?? match[2] ?? "";
+}
+
+function isTensionParameterName(name: string): boolean {
+  return (
+    name === "" || name === "tensions" || name === "item" || PARAMETER_INDEX_PATTERN.test(name)
+  );
+}
+
+function wrappedParameterPayloads(value: string): Array<{ name: string; payload: string }> {
+  const matches = [...value.matchAll(PARAMETER_OPEN_TAG_PATTERN)];
+  const firstMatch = matches[0];
+
+  if (firstMatch === undefined || firstMatch.index === undefined) {
+    throw new TypeError("Malformed tension parameter scaffolding");
+  }
+
+  if (value.slice(0, firstMatch.index).trim().length > 0) {
+    throw new TypeError("Unexpected text before tension parameter scaffolding");
+  }
+
+  return matches.map((match, index) => {
+    const matchIndex = match.index;
+
+    if (matchIndex === undefined) {
+      throw new TypeError("Malformed tension parameter scaffolding");
+    }
+
+    const name = parameterName(match[1] ?? "");
+
+    if (!isTensionParameterName(name)) {
+      throw new TypeError(`Unsupported tension parameter name ${JSON.stringify(name)}`);
+    }
+
+    const nextMatchIndex = matches[index + 1]?.index ?? value.length;
+    const wrapped = value.slice(matchIndex + match[0].length, nextMatchIndex);
+    const closeIndex = wrapped.indexOf(PARAMETER_CLOSE_TAG);
+
+    if (closeIndex === -1) {
+      return { name, payload: wrapped.trim() };
+    }
+
+    if (wrapped.slice(closeIndex + PARAMETER_CLOSE_TAG.length).trim().length > 0) {
+      throw new TypeError("Unexpected text after tension parameter wrapper");
+    }
+
+    return { name, payload: wrapped.slice(0, closeIndex).trim() };
+  });
+}
+
+const nonEmptyJsonTensionArraySchema = z.array(
+  z.string().refine((value) => value.trim().length > 0),
+);
+const jsonTensionArraySchema = z.array(z.string());
+
+function jsonTensionArray(value: string): string[] | null {
+  try {
+    const parsed = nonEmptyJsonTensionArraySchema.safeParse(JSON.parse(value) as unknown);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Unwrap model tool-wire `<parameter>` serialization from a stray `tensions`
+ * string. This inspects only machine delimiters and parameter field names; it
+ * does not judge the tension text itself.
+ */
+export function unwrapTensionParameterScaffolding(value: string): string[] {
+  const trimmed = value.trim();
+
+  if (!trimmed.includes(PARAMETER_WIRE_DELIMITER)) {
+    if (trimmed.startsWith("[")) {
+      let parsed: unknown;
+
+      try {
+        parsed = JSON.parse(trimmed) as unknown;
+      } catch {
+        // Not JSON; preserve the existing single-tension fallback below.
+        return trimmed.length > 0 ? [trimmed] : [];
+      }
+
+      if (Array.isArray(parsed)) {
+        return jsonTensionArraySchema.parse(parsed);
+      }
+    }
+
+    return trimmed.length > 0 ? [trimmed] : [];
+  }
+
+  const tensions: string[] = [];
+
+  for (const { payload } of wrappedParameterPayloads(trimmed)) {
+    if (payload.length === 0) {
+      continue;
+    }
+
+    const parsedArray = jsonTensionArray(payload);
+
+    if (parsedArray === null) {
+      tensions.push(payload);
+    } else {
+      tensions.push(...parsedArray);
+    }
+  }
+
+  if (tensions.length === 0) {
+    throw new TypeError("Tension parameter scaffolding contained no usable payload");
+  }
+
+  if (tensions.some((tension) => tension.includes(PARAMETER_WIRE_DELIMITER))) {
+    throw new TypeError("Tension parameter payload still contains parameter scaffolding");
+  }
+
+  return tensions;
+}
+
+const wireSafeTensionSchema = z
+  .string()
+  .min(1)
+  .refine((value) => !value.includes(PARAMETER_WIRE_DELIMITER), {
+    message: "Tension contains tool parameter scaffolding",
+  });
+const wireSafeRuminationTextSchema = z
+  .string()
+  .min(1)
+  .refine((value) => !value.trimStart().startsWith(PARAMETER_WIRE_DELIMITER), {
+    message: "Rumination text starts with tool parameter scaffolding",
+  });
+
 // The model intermittently emits `tensions` as a single string (or a JSON-encoded
 // array) instead of an array, despite the array tool schema + description below.
 // Normalize the tool-call shape at parse time (tool-shape hygiene, not output
 // policing) so a shape slip does not discard an otherwise-valid rumination.
-const tolerantTensionsSchema = z.preprocess(
-  (value) => {
-    if (typeof value !== "string") {
-      return value;
-    }
-    const trimmed = value.trim();
-    if (trimmed.startsWith("[")) {
-      try {
-        const parsed = JSON.parse(trimmed) as unknown;
-        if (Array.isArray(parsed)) {
-          return parsed;
-        }
-      } catch {
-        // Not JSON; fall through to the single-element wrap below.
-      }
-    }
-    return trimmed.length > 0 ? [trimmed] : [];
-  },
-  z.array(z.string().min(1)),
-);
+const tolerantTensionsSchema = z.preprocess((value) => {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  return unwrapTensionParameterScaffolding(value);
+}, z.array(wireSafeTensionSchema));
 
 const ruminationResponseToolSchema = z.object({
   outcome: z.enum(["resolved", "still_open"]),
@@ -117,19 +254,22 @@ const ruminationResponseToolSchema = z.object({
     .optional(),
   connected_open_question_ids: z.array(openQuestionIdSchema).optional(),
 });
-// Tolerant variant used to PARSE the model's tool call (the strict schema above is
-// what the model is shown). Only `tensions` differs: it accepts a stray string.
+// Parse-time variant for tool-wire hygiene (the strict schema above is what the
+// model is shown). It accepts the known stray-string tensions shape while the
+// stored text fields reject a leading parameter delimiter.
 const ruminationResponseParseSchema = ruminationResponseToolSchema.extend({
+  resolution_note: wireSafeRuminationTextSchema.nullable().optional(),
+  reasoning: wireSafeRuminationTextSchema.nullable().optional(),
   tensions: tolerantTensionsSchema.optional(),
 });
 const resolvedRuminationResponseSchema = z.object({
   outcome: z.literal("resolved"),
-  resolution_note: z.string().min(1),
+  resolution_note: wireSafeRuminationTextSchema,
   growth_marker: ruminatorGrowthMarkerResponseSchema.default(null),
 });
 const stillOpenRuminationResponseSchema = z.object({
   outcome: z.literal("still_open"),
-  reasoning: z.string().min(1),
+  reasoning: wireSafeRuminationTextSchema,
   tensions: tolerantTensionsSchema,
   connected_open_question_ids: z.array(openQuestionIdSchema),
 });
@@ -156,7 +296,7 @@ const ruminatorPlanItemSchema = z.discriminatedUnion("action", [
     resolution_evidence_episode_ids: z.array(episodeIdSchema).min(1),
     resolution_evidence_stream_entry_ids: z.array(z.never()).default([]),
     resolution_disclosure_label: memoryDisclosureLabelSchema,
-    resolution_note: z.string().min(1),
+    resolution_note: wireSafeRuminationTextSchema,
     growth_marker: serializableGrowthMarkerSchema.nullable(),
   }),
   z.object({
@@ -186,8 +326,8 @@ const ruminatorPlanItemSchema = z.discriminatedUnion("action", [
     question_id: openQuestionIdSchema,
     previous: openQuestionSchema,
     next_unresolved_rumination_ticks: z.number().int().nonnegative(),
-    rumination_note: z.string().min(1).nullable().default(null),
-    tensions: z.array(z.string().min(1)).default([]),
+    rumination_note: wireSafeRuminationTextSchema.nullable().default(null),
+    tensions: z.array(wireSafeTensionSchema).default([]),
     connected_open_question_ids: z.array(openQuestionIdSchema).default([]),
     evidence_episode_ids: z.array(episodeIdSchema).default([]),
     evidence_stream_entry_ids: z.array(openQuestionResolutionStreamEntryIdSchema).default([]),
