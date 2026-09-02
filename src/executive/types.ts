@@ -72,6 +72,11 @@ export type ExecutiveFocusGoal = GoalRecord & ExecutiveFocusDisclosureFields;
 
 export type ExecutiveFocusStep = ExecutiveStep & ExecutiveFocusDisclosureFields;
 
+export type ExecutiveFocusCandidateSteps = {
+  top_open_steps: ExecutiveFocusStep[];
+  omitted_open_step_count: number;
+};
+
 export const VALID_TRANSITIONS: Record<ExecutiveStepStatus, ReadonlySet<ExecutiveStepStatus>> = {
   queued: new Set(["queued", "doing", "abandoned"]),
   doing: new Set(["doing", "done", "blocked", "abandoned"]),
@@ -114,6 +119,7 @@ export type ExecutiveFocus = {
   selected_goal: ExecutiveFocusGoal | null;
   selected_score: ExecutiveGoalScore | null;
   next_step?: ExecutiveFocusStep | null;
+  candidate_steps?: ExecutiveFocusCandidateSteps;
   candidates: ExecutiveGoalScore[];
   threshold: number;
   score_basis: ExecutiveGoalScoreBasis;

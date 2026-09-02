@@ -109,6 +109,27 @@ function compareGoalScores(left: ExecutiveGoalScore, right: ExecutiveGoalScore):
   );
 }
 
+export function topExecutiveCandidateGoalIds(input: {
+  candidates: readonly ExecutiveGoalScore[];
+  eligibleGoalIds: ReadonlySet<GoalRecord["id"]>;
+  limit: number;
+}): GoalRecord["id"][] {
+  const limit = Number.isFinite(input.limit) ? Math.max(0, Math.floor(input.limit)) : 0;
+  const seenGoalIds = new Set<GoalRecord["id"]>();
+
+  return [...input.candidates]
+    .sort((left, right) => right.score - left.score || left.goal_id.localeCompare(right.goal_id))
+    .map((candidate) => candidate.goal_id)
+    .filter((goalId) => {
+      if (seenGoalIds.has(goalId) || !input.eligibleGoalIds.has(goalId)) {
+        return false;
+      }
+      seenGoalIds.add(goalId);
+      return true;
+    })
+    .slice(0, limit);
+}
+
 export function selectExecutiveFocus(input: SelectExecutiveFocusInput): ExecutiveFocus {
   const threshold = input.threshold ?? DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD;
   const scoreBasis = {

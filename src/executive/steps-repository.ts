@@ -50,6 +50,12 @@ export type ExecutiveDueStepWakeCandidateOptions = {
   limit: number;
 };
 
+export type ExecutiveTopOpenStepForGoal = {
+  goal_id: GoalId;
+  step: ExecutiveStep;
+  open_step_count: number;
+};
+
 export type ExecutiveStepAbandonReason = "goal_closed";
 
 const OPEN_STATUSES = new Set<ExecutiveStepStatus>(["queued", "doing"]);
@@ -282,6 +288,56 @@ export class ExecutiveStepsRepository {
       .get(goalId) as Record<string, unknown> | undefined;
 
     return row === undefined ? null : mapExecutiveStepRow(row);
+  }
+
+  topOpenForGoals(goalIds: readonly GoalId[]): ExecutiveTopOpenStepForGoal[] {
+    const uniqueGoalIds = [...new Set(goalIds)];
+    if (uniqueGoalIds.length === 0) {
+      return [];
+    }
+
+    const placeholders = uniqueGoalIds.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `
+          WITH ranked_open_steps AS (
+            SELECT
+              executive_steps.*,
+              COUNT(*) OVER (PARTITION BY goal_id) AS open_step_count,
+              ROW_NUMBER() OVER (
+                PARTITION BY goal_id
+                ORDER BY
+                  CASE status WHEN 'doing' THEN 0 ELSE 1 END ASC,
+                  due_at IS NULL ASC,
+                  due_at ASC,
+                  created_at ASC,
+                  id ASC
+              ) AS open_step_rank
+            FROM executive_steps
+            WHERE goal_id IN (${placeholders}) AND status IN ('queued', 'doing')
+          )
+          SELECT *
+          FROM ranked_open_steps
+          WHERE open_step_rank = 1
+        `,
+      )
+      .all(...uniqueGoalIds) as Record<string, unknown>[];
+    const rowsByGoalId = new Map(
+      rows.map((row) => [executiveStepGoalIdSchema.parse(row.goal_id), row]),
+    );
+
+    return uniqueGoalIds.flatMap((goalId) => {
+      const row = rowsByGoalId.get(goalId);
+      return row === undefined
+        ? []
+        : [
+            {
+              goal_id: goalId,
+              step: mapExecutiveStepRow(row),
+              open_step_count: Number(row.open_step_count),
+            },
+          ];
+    });
   }
 
   update(id: ExecutiveStepId, patch: ExecutiveStepPatch): ExecutiveStep {

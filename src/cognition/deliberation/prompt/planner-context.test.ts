@@ -1082,11 +1082,7 @@ describe("compact planner context", () => {
       context({
         selfSnapshot: {
           values: [],
-          goals: [
-            goal("Still running"),
-            goal("Retired", { status: "done" }),
-            goal("Also running"),
-          ],
+          goals: [goal("Still running"), goal("Retired", { status: "done" }), goal("Also running")],
           traits: [],
         },
       }),
@@ -1349,26 +1345,39 @@ describe("compact planner context", () => {
     );
   });
 
-  it("reports the next-step draw as uncounted and keeps the index omission zero true by construction", () => {
+  it("renders each expanded candidate's top open step and reports exact in-scope omissions", () => {
     const goals = Array.from({ length: 7 }, (_, index) => goal(`Goal ${index}`));
     const target = goals[0]!;
+    const otherCandidate = goals[1]!;
+    const selectedStep = {
+      id: "exstep_aaaaaaaaaaaaaaaa" as never,
+      goal_id: target.id,
+      description: "Top open step of the selected goal",
+      status: "doing" as const,
+      kind: "think" as const,
+      due_at: null,
+      last_attempt_ts: null,
+      created_at: NOW_MS,
+      updated_at: NOW_MS,
+      provenance: { kind: "manual" as const },
+    };
+    const otherStep = {
+      ...selectedStep,
+      id: "exstep_bbbbbbbbbbbbbbbb" as never,
+      goal_id: otherCandidate.id,
+      description: "Top open step of the other expanded goal",
+      status: "queued" as const,
+    };
     const planner = build(
       context({
         selfSnapshot: { values: [], goals, traits: [] },
         executiveFocus: {
           selected_goal: target,
           selected_score: null,
-          next_step: {
-            id: "exstep_aaaaaaaaaaaaaaaa" as never,
-            goal_id: target.id,
-            description: "Top open step of the selected goal",
-            status: "doing",
-            kind: "think",
-            due_at: null,
-            last_attempt_ts: null,
-            created_at: NOW_MS,
-            updated_at: NOW_MS,
-            provenance: { kind: "manual" },
+          next_step: selectedStep,
+          candidate_steps: {
+            top_open_steps: [selectedStep, otherStep],
+            omitted_open_step_count: 3,
           },
           candidates: [
             {
@@ -1383,6 +1392,18 @@ describe("compact planner context", () => {
               },
               reason: "focus",
             },
+            {
+              goal_id: otherCandidate.id,
+              goal: otherCandidate,
+              score: 0.9,
+              components: {
+                priority: 0.9,
+                deadline_pressure: 1,
+                context_fit: 1,
+                progress_debt: 1,
+              },
+              reason: "other candidate",
+            },
           ],
           threshold: 0,
           score_basis: {
@@ -1395,20 +1416,22 @@ describe("compact planner context", () => {
     );
     const text = allSystemText(planner);
 
-    // The step lane is one row drawn from the selected goal alone, so no number here
-    // can stand for what it left behind: it must not print a count at all.
+    const stepRows = text.match(/<next_step [^\n]+/g) ?? [];
+    expect(stepRows).toHaveLength(2);
+    expect(stepRows.find((row) => row.match(selectedStep.id))).toContain('sel="true"');
+    expect(stepRows.find((row) => row.match(otherStep.id))).toContain('sel="false"');
     expect(text).toContain(
-      '<executive_next_step_omitted_count scope="selected_goal_top_open">uncounted</executive_next_step_omitted_count>',
+      '<executive_next_step_omitted_count scope="expanded_candidates_top_open">3</executive_next_step_omitted_count>',
     );
-    expect(text).not.toMatch(/<executive_next_step_omitted_count[^>]*>\d/);
-    expect(text).toContain("no other goal's steps are queried at all");
-    expect(text).toContain("reports uncounted rather than a zero that would read as a total");
+    expect(text).toContain("follows top_global_candidates_expanded membership and order");
+    expect(text).toContain("Steps of goals outside the expansion are not queried");
+    expect(text).toContain("remain uncounted");
 
-    // The neighbouring zero is a different quantity and is honest: the one-line index
-    // renders one row per snapshot goal and has no cap to drop one against.
     expect(text.match(/<goal /g)).toHaveLength(goals.length);
     expect(text).toContain("<omitted_count>0</omitted_count>");
-    expect(text).toContain("that index renders one row per goal in the snapshot and cannot drop one");
+    expect(text).toContain(
+      "that index renders one row per goal in the snapshot and cannot drop one",
+    );
   });
 
   it("reports source-ledger rows excluded by the compact ledger and carries omission guidance", () => {

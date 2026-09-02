@@ -244,6 +244,7 @@ export {
 } from "./autonomy/index.js";
 export {
   type ExecutiveFocus,
+  type ExecutiveFocusCandidateSteps,
   type ExecutiveGoalScore,
   type ExecutiveGoalScoreComponents,
   type ExecutiveStep,

@@ -21,6 +21,9 @@ export const DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET = 32_000;
 // multi-thousand-row live failure mode.
 export const DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET = 64_000;
 export const DEFAULT_SEMANTIC_CONTEXT_BUDGET = 8_000;
+// One membership boundary drives both the self-context step batch and the rows
+// the compact planner presents; splitting these limits would orphan step data.
+export const PLANNER_GOAL_EXPANSION_LIMIT = 4;
 // The retrieval-confidence floor in the S1/S2 path ladder: below it the natural
 // decision takes S2. The prompt's low-confidence annotation fires on the same
 // boundary and reads this same constant -- two literals at one value are
