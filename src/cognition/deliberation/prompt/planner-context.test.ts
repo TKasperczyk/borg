@@ -895,6 +895,58 @@ describe("compact planner context", () => {
     expect(lane(conversational, "open_loops").cap).toBeNaN();
     expect(lane(wake, "decisions").cap).toBe(lane(conversational, "decisions").cap);
     expect(lane(conversational, "decisions").omitted).toBe(0);
+
+    // The open-loop lane is never queried off an autonomous turn, so a count
+    // there would be reporting an unrun query as an empty result. The wake page
+    // prints a real 0 for the same nothing; the conversational one must not.
+    expect(allSystemText(conversational)).toContain('open_loop_rows_total="not_drawn"');
+    expect(allSystemText(wake)).toContain('open_loop_rows_total="0"');
+
+    // Same totals, different aggregate: the trailing count sums lane residues,
+    // so it moves with the caps and with which lanes were drawn at all.
+    const aggregate = (planner: ReturnType<typeof build>) =>
+      Number(
+        taggedBlock(allSystemText(planner), "borg_planner_lived_experience_digest").match(
+          /<omitted_count>(\d+)<\/omitted_count>/,
+        )?.[1],
+      );
+    expect(aggregate(conversational)).toBe(conversationalActivity.omitted);
+    expect(aggregate(wake)).toBe(wakeActivity.omitted);
+    expect(aggregate(wake)).toBeGreaterThan(aggregate(conversational));
+  });
+
+  it("pins the wake page's mechanism prose against the conversational page's", () => {
+    // Only the conversational render of this digest is reachable to a reader who
+    // cannot see a wake page, and only it is held in a prompt-surface fixture.
+    // Rather than invent a width for the un-watched render, derive it: every
+    // sentence readable on the watched page must appear verbatim on the wake
+    // page, and the wake page may carry exactly one line that cannot be read
+    // from the other side. Wake-only prose then has to be added deliberately.
+    const laneTags = ["open_loops", "decisions", "firings_and_activity", "omitted_count"];
+    const prose = (planner: ReturnType<typeof build>) =>
+      taggedBlock(allSystemText(planner), "borg_planner_lived_experience_digest")
+        .split("\n")
+        .filter((line) => /^ {2}</.test(line))
+        .map((line) => line.trim())
+        .filter(
+          (line) =>
+            !laneTags.some(
+              (tag) =>
+                line.startsWith(`<${tag}>`) ||
+                line.startsWith(`<${tag} `) ||
+                line.startsWith(`</${tag}>`),
+            ),
+        );
+
+    const conversational = prose(build(context({})));
+    const wake = prose(build(context({ turnOrigin: "autonomous" })));
+
+    expect(conversational.length).toBeGreaterThan(0);
+    for (const line of conversational) expect(wake).toContain(line);
+
+    const wakeOnly = wake.filter((line) => !conversational.includes(line));
+    expect(wakeOnly).toHaveLength(1);
+    expect(wakeOnly[0]?.startsWith("<autonomous_selection_policy>")).toBe(true);
   });
 
   it("combines disclosure fail-closed when the same open loop has two structural sources", () => {
