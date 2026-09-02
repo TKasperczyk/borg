@@ -638,11 +638,18 @@ export async function runPostGenerationPhase(input: {
   });
   const activityRepository = input.options.activityRepository;
 
-  // This is the only read of a delivery outcome anywhere downstream of `deliver`, and it reads it
-  // to withhold: a directed-outbound post that failed or found no connector records no activity
-  // event, while every other origin (`outboundDelivery === undefined`) always records one. Success
-  // itself appends no stream event, so the activity row -- not the stream -- is where the
-  // difference between a carried post and a refused one survives, and it survives as an absence.
+  // This gate reads the delivery outcome to withhold: a directed-outbound post that failed or found
+  // no connector records no activity event, while every other origin (`outboundDelivery ===
+  // undefined`) always records one. Success itself appends no stream event, so the activity row --
+  // not the stream -- is where the difference between a carried post and a refused one survives,
+  // and it survives as an absence.
+  //
+  // It is not the only reader of that outcome downstream of `deliver`, and it is the only one that
+  // withholds. The tool that started this turn writes an action record from the same outcome either
+  // way, and the autonomy scheduler reads it again to decide whether the posting wake is recorded
+  // as headway or as silence. An earlier version of this comment asserted uniqueness, and the
+  // prompt line derived from it repeated the claim to the entity; both went stale the moment a
+  // reader was added elsewhere. Count readers at the call sites, not from here.
   const shouldRecordActivity =
     persistedEmission.outboundDelivery === undefined ||
     persistedEmission.outboundDelivery.status === "transported";
