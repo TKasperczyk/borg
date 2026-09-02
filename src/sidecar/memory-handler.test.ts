@@ -1116,6 +1116,7 @@ describe("memory sidecar handler", () => {
 
   it("recalls and maps episodes, routing by tenant, clamping the limit", async () => {
     const { pool, rec } = recordingPool();
+    rec.episodeOverrides = { location: "AI Ninjas" };
     const base = await start(pool);
     const res = await post(
       base,
@@ -1134,6 +1135,7 @@ describe("memory sidecar handler", () => {
           narrative: "Narrative",
           score: 0.91,
           raw_score: 1.16,
+          location: "AI Ninjas",
           occurred_at: 10,
           participant_names: ["Ada"],
         },
@@ -1377,6 +1379,7 @@ describe("memory sidecar handler", () => {
           narrative: "Narrative",
           score: 0.91,
           raw_score: 1.16,
+          location: null,
           occurred_at: 10,
           participant_names: ["Ada"],
         },
@@ -1386,6 +1389,7 @@ describe("memory sidecar handler", () => {
 
   it("lists episodes from the query tenant without a body, clamping limit and passing cursor", async () => {
     const { pool, rec } = recordingPool();
+    rec.episodeOverrides = { location: "AI Ninjas" };
     const base = await start(pool);
     const res = await get(
       base,
@@ -1404,6 +1408,7 @@ describe("memory sidecar handler", () => {
           significance: 0.72,
           tags: ["planning", "admin"],
           source_stream_ids: ["strm_aaaaaaaaaaaaaaaa"],
+          location: "AI Ninjas",
           occurred_at: 10,
           participant_names: ["Ada"],
         },

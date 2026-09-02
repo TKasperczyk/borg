@@ -58,7 +58,7 @@ const extractorCandidateSchema = z.object({
   narrative: z.string().min(1),
   source_stream_ids: z.array(z.string().min(1)).min(1),
   participants: z.array(z.string().min(1)),
-  location: z.string().min(1).nullable(),
+  location: z.string().nullable(),
   tags: z.array(z.string().min(1)),
   emotional_arc: emotionalArcSchema.nullable().default(null),
   confidence: z.number().min(0).max(1),
@@ -817,6 +817,47 @@ function relationalSlotAssertionConfirmation(input: {
   return "direct";
 }
 
+function conversationLocationForEpisode(sourceEntries: readonly StreamEntry[]): string | null {
+  const nameCounts = new Map<string, number>();
+  const typeCounts = new Map<"groupChat" | "channel", number>();
+
+  for (const entry of sourceEntries) {
+    const conversation = entry.conversation;
+    if (conversation === undefined || conversation.type === "personal") {
+      continue;
+    }
+
+    typeCounts.set(conversation.type, (typeCounts.get(conversation.type) ?? 0) + 1);
+    const name = conversation.name.trim();
+    if (name !== "") {
+      nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+    }
+  }
+
+  let selectedName: string | null = null;
+  let selectedNameCount = 0;
+  for (const [name, count] of nameCounts) {
+    if (count > selectedNameCount) {
+      selectedName = name;
+      selectedNameCount = count;
+    }
+  }
+  if (selectedName !== null) {
+    return selectedName;
+  }
+
+  let selectedType: "groupChat" | "channel" | null = null;
+  let selectedTypeCount = 0;
+  for (const [type, count] of typeCounts) {
+    if (count > selectedTypeCount) {
+      selectedType = type;
+      selectedTypeCount = count;
+    }
+  }
+
+  return selectedType === "groupChat" ? "group chat" : selectedType;
+}
+
 function buildEpisodeFromCandidate(
   candidate: ExtractorCandidate,
   sourceEntries: readonly StreamEntry[],
@@ -826,13 +867,17 @@ function buildEpisodeFromCandidate(
   nowMs: number,
 ): Episode {
   const timestamps = sourceEntries.map((entry) => entry.timestamp);
+  const location =
+    candidate.location === null || candidate.location.trim() === ""
+      ? conversationLocationForEpisode(sourceEntries)
+      : candidate.location;
 
   return normalizeEpisodeAccess({
     id: createEpisodeId(),
     title: candidate.title.trim(),
     narrative: candidate.narrative,
     participants: uniqueStrings(candidate.participants),
-    location: candidate.location ?? null,
+    location,
     start_time: Math.min(...timestamps),
     end_time: Math.max(...timestamps),
     source_stream_ids: uniqueStreamEntryIds(sourceEntries),

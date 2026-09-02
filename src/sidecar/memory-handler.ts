@@ -478,6 +478,7 @@ function projectEpisodeForList(
   significance: number;
   tags: string[];
   source_stream_ids: Episode["source_stream_ids"];
+  location: string | null;
   occurred_at: number;
   participant_names: string[];
 } {
@@ -488,6 +489,7 @@ function projectEpisodeForList(
     significance: episode.significance,
     tags: episode.tags,
     source_stream_ids: episode.source_stream_ids,
+    location: episode.location,
     ...metadata,
   };
 }
@@ -1412,6 +1414,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           narrative: hit.episode.narrative,
           score: hit.score,
           raw_score: hit.rawScore,
+          location: hit.episode.location,
           ...hit.sidecarMetadata,
         })),
       });
