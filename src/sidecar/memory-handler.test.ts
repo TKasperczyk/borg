@@ -1,9 +1,12 @@
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { AddressInfo } from "node:net";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { createHash } from "node:crypto";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createMemoryHandler,
@@ -12,18 +15,38 @@ import {
 } from "./memory-handler.js";
 import { MemoryTraceRegistry } from "./memory-trace.js";
 import type { Borg } from "../borg.js";
+import { BorgPool } from "../borg/pool.js";
+import type { BorgDependencies } from "../borg/types.js";
+import { FakeEmbeddingClient } from "../embeddings/index.js";
+import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import {
   commitmentSchema,
   type CommitmentRecord,
   type EntityRecord,
 } from "../memory/commitments/index.js";
+import {
+  creatorDirectiveQueueInputSchema,
+  creatorDirectiveSchema,
+  type CreatorDirective,
+  type CreatorDirectiveApplicable,
+  type CreatorDirectiveQueueInput,
+} from "../memory/creator-directives/index.js";
+import type {
+  ActivityEventRecordInput,
+  ActivityVisibleSessionEvent,
+} from "../memory/activity/index.js";
 import { episodeParticipantEntityIdTerm, type Episode } from "../memory/episodic/index.js";
 import { EmbeddingError } from "../util/errors.js";
 import {
   createCommitmentId,
+  createCreatorDirectiveId,
   createEntityId,
+  createEpisodeId,
   createMaintenanceRunId,
+  parseSessionId,
+  parseStreamEntryId,
   type EntityId,
+  type SessionId,
 } from "../util/ids.js";
 
 const TOKEN = "secret-token";
@@ -57,9 +80,12 @@ type Recorder = {
     inputs: unknown[];
     session?: string;
   }>;
+  appendCalls: Array<{ input: unknown; session?: string }>;
   resolvedExternalSenders: unknown[];
+  resolvedExternalEntities: unknown[];
   lookedUpExternalSenders: Array<{ source: string; externalId: string }>;
   externalSenderIds: Map<string, EntityId>;
+  externalEntityIds: Map<string, EntityId>;
   entities: EntityRecord[];
   entityListCalls: number;
   entityGetIds: EntityId[];
@@ -69,6 +95,24 @@ type Recorder = {
   extractOptions: unknown[];
   commitments: CommitmentRecord[];
   commitmentAdds: unknown[];
+  sessionEnsures: unknown[];
+  sessionTouches: unknown[];
+  activityRecords: ActivityEventRecordInput[];
+  activityProjectionInputs: Array<Parameters<Borg["activity"]["projectCompletedTurn"]>[0]>;
+  activityProjectionError?: Error;
+  observedGroupAudienceIds: EntityId[];
+  visibleActivityEvents: ActivityVisibleSessionEvent[];
+  lastVisibleActivityInput?: unknown;
+  lastRecallOptions?: Record<string, unknown>;
+  recallEpisodes?: Episode[];
+  recallError?: Error;
+  recallPromise?: Promise<never>;
+  creatorDirectives: CreatorDirective[];
+  directiveQueueInputs: unknown[];
+  directiveQueueError?: Error;
+  directiveRevokeError?: Error;
+  directiveApplicable: CreatorDirectiveApplicable[];
+  directiveApplicableOptions: unknown[];
 };
 
 function testEpisode(
@@ -135,16 +179,79 @@ function testCommitment(overrides: Partial<CommitmentRecord> = {}): CommitmentRe
   });
 }
 
+function testDirective(overrides: Partial<CreatorDirective> = {}): CreatorDirective {
+  return creatorDirectiveSchema.parse({
+    id: overrides.id ?? createCreatorDirectiveId(),
+    record_version: overrides.record_version ?? 1,
+    status: overrides.status ?? "active",
+    kind: overrides.kind ?? "response_policy",
+    created_by_entity_id: overrides.created_by_entity_id ?? createEntityId(),
+    source_session_id: overrides.source_session_id ?? "sess_aaaaaaaaaaaaaaaa",
+    authorization_stream_entry_ids: overrides.authorization_stream_entry_ids ?? [
+      "strm_aaaaaaaaaaaaaaaa",
+    ],
+    content_source_stream_entry_ids: overrides.content_source_stream_entry_ids ?? [
+      "strm_aaaaaaaaaaaaaaaa",
+    ],
+    subject_kind: overrides.subject_kind ?? "system",
+    subject_entity_id: overrides.subject_entity_id ?? null,
+    semantic_slot: overrides.semantic_slot ?? null,
+    canonical_fact: overrides.canonical_fact ?? null,
+    operational_directive: overrides.operational_directive ?? "Use concise replies.",
+    disclosure_policy: overrides.disclosure_policy ?? {
+      content_scope: "public",
+      allowed_entity_ids: [],
+      excluded_entity_ids: [],
+      subject_may_know: null,
+      mention_policy: "answer_if_asked",
+      denied_audience_behavior: "omit",
+      boundary_prompt: "A private operator rule applies.",
+      topic_tags: [],
+    },
+    activation_policy: overrides.activation_policy ?? {
+      scope: "same_as_disclosure",
+      allowed_entity_ids: [],
+      excluded_entity_ids: [],
+    },
+    priority: overrides.priority ?? 0,
+    superseded_by: overrides.superseded_by ?? null,
+    revoked_reason: overrides.revoked_reason ?? null,
+    created_at: overrides.created_at ?? 100,
+    updated_at: overrides.updated_at ?? 100,
+  });
+}
+
 function stubBorg(rec: Recorder): Borg {
   return {
     stream: {
-      append: async (input: { content: string }) => ({ timestamp: 1000, content: input.content }),
+      append: async (
+        input: { kind?: string; content: unknown },
+        options?: { session?: string },
+      ) => {
+        rec.appendCalls.push({ input, session: options?.session });
+        return {
+          id: "strm_bbbbbbbbbbbbbbbb",
+          timestamp: 1000,
+          kind: input.kind ?? "user_msg",
+          content: input.content,
+          sender_entity_id: null,
+          reply_target_entity_id: null,
+          session_id: options?.session ?? "sess_0000000000000000",
+          compressed: false,
+        };
+      },
       appendMany: async (inputs: unknown[], options?: { session?: string }) => {
         rec.appendMany = { inputs, session: options?.session };
         rec.appendManyCalls.push(rec.appendMany);
         return inputs.map((input, index) => ({
+          ...(input as Record<string, unknown>),
           id: `strm_${String(index).padStart(16, "a")}`,
+          timestamp: 1000 + index,
           kind: (input as { kind?: string }).kind,
+          sender_entity_id: (input as { sender_entity_id?: EntityId }).sender_entity_id ?? null,
+          reply_target_entity_id: null,
+          session_id: options?.session ?? "sess_0000000000000000",
+          compressed: false,
         }));
       },
     },
@@ -153,31 +260,43 @@ function stubBorg(rec: Recorder): Borg {
         source: string;
         externalId: string;
         canonicalName: string;
-        kind: "person";
+        kind: "person" | "group" | "abstract";
+        provenance?: EntityRecord["name_provenance"];
       }) => {
-        rec.resolvedExternalSenders.push(input);
-        const existing = rec.externalSenderIds.get(input.externalId);
+        rec.resolvedExternalEntities.push(input);
+        if (input.source === "team-agent.sender") {
+          rec.resolvedExternalSenders.push(input);
+        }
+        const key = `${input.source}\u0000${input.externalId}`;
+        const existing = rec.externalEntityIds.get(key);
 
         if (existing !== undefined) {
           return existing;
         }
 
         const entityId = createEntityId();
-        rec.externalSenderIds.set(input.externalId, entityId);
+        rec.externalEntityIds.set(key, entityId);
+        if (input.source === "team-agent.sender") {
+          rec.externalSenderIds.set(input.externalId, entityId);
+        }
         rec.entities.push({
           id: entityId,
           canonical_name: input.canonicalName,
           aliases: [],
           kind: input.kind,
           borg_role: null,
-          name_provenance: "transport_sender",
+          name_provenance: input.provenance ?? "transport_sender",
           created_at: 1,
         });
         return entityId;
       },
       findByExternalId: (source: string, externalId: string) => {
         rec.lookedUpExternalSenders.push({ source, externalId });
-        return rec.externalSenderIds.get(externalId) ?? null;
+        return (
+          rec.externalEntityIds.get(`${source}\u0000${externalId}`) ??
+          (source === "team-agent.sender" ? rec.externalSenderIds.get(externalId) : undefined) ??
+          null
+        );
       },
       get: (id: EntityId) => {
         rec.entityGetIds.push(id);
@@ -270,6 +389,101 @@ function stubBorg(rec: Recorder): Borg {
         return revoked;
       },
     },
+    sessions: {
+      ensure: (input: unknown) => {
+        rec.sessionEnsures.push(input);
+        return input;
+      },
+      touch: (sessionId: string, update: unknown) => {
+        rec.sessionTouches.push({ sessionId, update });
+        return null;
+      },
+    },
+    activity: {
+      record: (input: ActivityEventRecordInput) => {
+        rec.activityRecords.push(input);
+        return input;
+      },
+      projectCompletedTurn: (input: Parameters<Borg["activity"]["projectCompletedTurn"]>[0]) => {
+        rec.activityProjectionInputs.push(input);
+        if (rec.activityProjectionError !== undefined) {
+          throw rec.activityProjectionError;
+        }
+
+        rec.sessionEnsures.push(input.session);
+        rec.activityRecords.push(input.userContact, input.borgReplied);
+        rec.sessionTouches.push({ sessionId: input.session.session_id, update: input.touch });
+        return {
+          userContact: input.userContact,
+          borgReplied: input.borgReplied,
+          session: input.session,
+        };
+      },
+      listObservedGroupAudienceEntityIdsForSpeaker: () => [...rec.observedGroupAudienceIds],
+      listRecentVisibleOtherSessionEvents: (input: unknown) => {
+        rec.lastVisibleActivityInput = input;
+        return [...rec.visibleActivityEvents];
+      },
+    },
+    creatorDirectives: {
+      queue: (input: CreatorDirectiveQueueInput) => {
+        rec.directiveQueueInputs.push(input);
+        if (rec.directiveQueueError !== undefined) {
+          throw rec.directiveQueueError;
+        }
+        const normalized = creatorDirectiveQueueInputSchema.parse(input);
+        const directive = testDirective({
+          kind: normalized.kind,
+          created_by_entity_id: normalized.createdByEntityId,
+          source_session_id: normalized.sourceSessionId,
+          authorization_stream_entry_ids: normalized.authorizationStreamEntryIds,
+          content_source_stream_entry_ids: normalized.contentSourceStreamEntryIds,
+          subject_kind: normalized.subjectKind,
+          subject_entity_id: normalized.subjectEntityId ?? null,
+          semantic_slot: normalized.semanticSlot ?? null,
+          canonical_fact: normalized.canonicalFact ?? normalized.semanticValue ?? null,
+          operational_directive: normalized.operationalDirective ?? null,
+          disclosure_policy: normalized.disclosurePolicy,
+          activation_policy: normalized.activationPolicy ?? {
+            scope: "same_as_disclosure",
+            allowed_entity_ids: [],
+            excluded_entity_ids: [],
+          },
+          priority: normalized.priority,
+        });
+        rec.creatorDirectives.push(directive);
+        return directive;
+      },
+      get: (id: CreatorDirective["id"]) =>
+        rec.creatorDirectives.find((directive) => directive.id === id) ?? null,
+      list: (filter?: { status?: CreatorDirective["status"] }) =>
+        rec.creatorDirectives.filter(
+          (directive) => filter?.status === undefined || directive.status === filter.status,
+        ),
+      listApplicable: (options: unknown) => {
+        rec.directiveApplicableOptions.push(options);
+        return [...rec.directiveApplicable];
+      },
+      revoke: (id: CreatorDirective["id"], reason: string) => {
+        if (rec.directiveRevokeError !== undefined) {
+          throw rec.directiveRevokeError;
+        }
+        const index = rec.creatorDirectives.findIndex((directive) => directive.id === id);
+        const current = rec.creatorDirectives[index];
+        if (current === undefined || current.status !== "active") {
+          return null;
+        }
+        const revoked = testDirective({
+          ...current,
+          status: "revoked",
+          record_version: current.record_version + 1,
+          revoked_reason: reason,
+          updated_at: current.updated_at + 1,
+        });
+        rec.creatorDirectives[index] = revoked;
+        return revoked;
+      },
+    },
     episodic: {
       // Real facade returns numeric counts.
       extract: async (options: unknown) => {
@@ -280,16 +494,31 @@ function stubBorg(rec: Recorder): Borg {
         rec.ingestSessions.push(options?.session ?? "");
         return { ran: true, processedEntries: 2 };
       },
-      search: async (_query: string, opts: { limit?: number; traceTurnId?: string }) => {
+      search: async (
+        _query: string,
+        opts: {
+          limit?: number;
+          traceTurnId?: string;
+          audienceEntityId?: EntityId | null;
+          visibleAudienceEntityIds?: readonly EntityId[];
+        },
+      ) => {
         rec.lastRecallLimit = opts.limit;
         rec.lastRecallTraceTurnId = opts.traceTurnId;
-        return [
-          {
-            episode: testEpisode("ep_1" as Episode["id"], rec.episodeOverrides),
-            score: 0.91,
-            rawScore: 1.16,
-          },
-        ];
+        rec.lastRecallOptions = { ...opts };
+        if (rec.recallError !== undefined) {
+          throw rec.recallError;
+        }
+        if (rec.recallPromise !== undefined) {
+          return rec.recallPromise;
+        }
+        return (
+          rec.recallEpisodes ?? [testEpisode("ep_1" as Episode["id"], rec.episodeOverrides)]
+        ).map((episode, index) => ({
+          episode,
+          score: 0.91,
+          rawScore: 1.16 - index * 0.01,
+        }));
       },
       list: async (options?: { limit?: number; cursor?: string }) => {
         rec.lastListOptions = options;
@@ -322,10 +551,13 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     tenants: [],
     exclusives: [],
     inspectIds: [],
+    appendCalls: [],
     appendManyCalls: [],
     resolvedExternalSenders: [],
+    resolvedExternalEntities: [],
     lookedUpExternalSenders: [],
     externalSenderIds: new Map(),
+    externalEntityIds: new Map(),
     entities: [selfEntity],
     entityListCalls: 0,
     entityGetIds: [],
@@ -335,6 +567,16 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     extractOptions: [],
     commitments: [],
     commitmentAdds: [],
+    sessionEnsures: [],
+    sessionTouches: [],
+    activityRecords: [],
+    activityProjectionInputs: [],
+    observedGroupAudienceIds: [],
+    visibleActivityEvents: [],
+    creatorDirectives: [],
+    directiveQueueInputs: [],
+    directiveApplicable: [],
+    directiveApplicableOptions: [],
   };
   const pool: MemoryPool = {
     listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
@@ -1961,6 +2203,338 @@ describe("memory sidecar handler", () => {
     ).toBe(409);
   });
 
+  it("creates, lists, and revokes operator directives with admin stream provenance", async () => {
+    const { pool, rec } = recordingPool();
+    const person = createEntityId();
+    const group = createEntityId();
+    rec.entities.push(
+      {
+        id: person,
+        canonical_name: "Alice",
+        aliases: [],
+        kind: "person",
+        borg_role: null,
+        name_provenance: "transport_sender",
+        created_at: 1,
+      },
+      {
+        id: group,
+        canonical_name: "AI Ninjas",
+        aliases: [],
+        kind: "group",
+        borg_role: null,
+        name_provenance: "transport_audience_label",
+        created_at: 1,
+      },
+    );
+    rec.externalEntityIds.set("team-agent.sender\u0000alice", person);
+    rec.externalEntityIds.set("team-agent.conversation\u0000ninjas", group);
+    const base = await start(pool);
+    const created = await post(
+      base,
+      "/memory/directives",
+      {
+        tenant: "acme",
+        kind: "response_policy",
+        text: "Keep operational replies concise.",
+        content_scope: "allow_list",
+        allowed_external_ids: ["alice"],
+        allowed_group_external_ids: ["ninjas"],
+        topic_tags: ["operations"],
+      },
+      TOKEN,
+    );
+    const createdBody = (await created.json()) as {
+      directive: { id: CreatorDirective["id"] };
+    };
+
+    expect(created.status).toBe(201);
+    expect(createdBody.directive).toMatchObject({
+      kind: "response_policy",
+      text: "Keep operational replies concise.",
+      content_scope: "allow_list",
+      priority: 0,
+      topic_tags: ["operations"],
+    });
+    expect(rec.directiveQueueInputs).toEqual([
+      expect.objectContaining({
+        operationalDirective: "Keep operational replies concise.",
+        canonicalFact: null,
+        subjectKind: "system",
+        subjectEntityId: null,
+        disclosurePolicy: expect.objectContaining({
+          content_scope: "allow_list",
+          allowed_entity_ids: [person, group],
+          excluded_entity_ids: [],
+          mention_policy: "answer_if_asked",
+          denied_audience_behavior: "omit",
+          boundary_prompt: "Keep operational replies concise.",
+        }),
+        activationPolicy: {
+          scope: "same_as_disclosure",
+          allowed_entity_ids: [],
+          excluded_entity_ids: [],
+        },
+      }),
+    ]);
+    expect(rec.sessionEnsures).toEqual([
+      expect.objectContaining({
+        source_type: "memory_sidecar",
+        audience_role: "operator",
+      }),
+    ]);
+    expect(rec.appendCalls).toEqual([
+      expect.objectContaining({
+        input: expect.objectContaining({
+          kind: "internal_event",
+          content: expect.objectContaining({
+            event: "memory_sidecar.operator_directive_queue_requested",
+          }),
+        }),
+      }),
+    ]);
+    expect(rec.exclusives).toEqual([true]);
+
+    const listed = await get(base, "/memory/directives?tenant=acme", TOKEN);
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toMatchObject({
+      ok: true,
+      directives: [{ id: createdBody.directive.id }],
+    });
+
+    const revoked = await requestRaw(
+      base,
+      `/memory/directives/${createdBody.directive.id}?tenant=acme`,
+      {
+        method: "DELETE",
+        token: TOKEN,
+        body: { reason: "replaced" },
+      },
+    );
+    expect(revoked.status).toBe(200);
+    expect(revoked.body).toMatchObject({
+      ok: true,
+      directive: { id: createdBody.directive.id, status: "revoked" },
+    });
+    expect(rec.appendCalls.at(-1)).toEqual(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          kind: "internal_event",
+          content: {
+            event: "memory_sidecar.operator_directive_revoke_requested",
+            directive_id: createdBody.directive.id,
+            reason: "replaced",
+          },
+        }),
+      }),
+    );
+  });
+
+  it("records a linked failure event when directive queueing fails", async () => {
+    const { pool, rec } = recordingPool();
+    rec.directiveQueueError = Object.assign(new Error("injected queue failure"), {
+      code: "DIRECTIVE_QUEUE_FAILED",
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const base = await start(pool);
+      const response = await post(
+        base,
+        "/memory/directives",
+        {
+          tenant: "acme",
+          kind: "response_policy",
+          text: "A rule that fails to queue.",
+          content_scope: "public",
+        },
+        TOKEN,
+      );
+
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: "internal error" });
+      const provenanceEntryId = "strm_bbbbbbbbbbbbbbbb";
+      expect(rec.appendCalls.map((call) => (call.input as { content: unknown }).content)).toEqual([
+        expect.objectContaining({
+          event: "memory_sidecar.operator_directive_queue_requested",
+        }),
+        expect.objectContaining({
+          event: "memory_sidecar.operator_directive_queue_failed",
+          provenance_stream_entry_id: provenanceEntryId,
+          failure_code: "DIRECTIVE_QUEUE_FAILED",
+        }),
+      ]);
+      expect(rec.creatorDirectives).toEqual([]);
+      expect(rec.sessionTouches).toHaveLength(2);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("records a linked failure event when directive revocation fails", async () => {
+    const { pool, rec } = recordingPool();
+    const directive = testDirective();
+    rec.creatorDirectives.push(directive);
+    rec.directiveRevokeError = Object.assign(new Error("injected revoke failure"), {
+      code: "DIRECTIVE_REVOKE_FAILED",
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const base = await start(pool);
+      const response = await requestRaw(base, `/memory/directives/${directive.id}?tenant=acme`, {
+        method: "DELETE",
+        token: TOKEN,
+        body: { reason: "bad replacement" },
+      });
+
+      expect(response.status).toBe(500);
+      expect(response.body).toEqual({ error: "internal error" });
+      expect(rec.appendCalls.map((call) => (call.input as { content: unknown }).content)).toEqual([
+        {
+          event: "memory_sidecar.operator_directive_revoke_requested",
+          directive_id: directive.id,
+          reason: "bad replacement",
+        },
+        {
+          event: "memory_sidecar.operator_directive_revoke_failed",
+          directive_id: directive.id,
+          reason: "bad replacement",
+          provenance_stream_entry_id: "strm_bbbbbbbbbbbbbbbb",
+          failure_code: "DIRECTIVE_REVOKE_FAILED",
+        },
+      ]);
+      expect(rec.creatorDirectives[0]?.status).toBe("active");
+      expect(rec.sessionTouches).toHaveLength(2);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("fails closed for unknown or contradictory directive external ids", async () => {
+    const { pool, rec } = recordingPool();
+    const person = createEntityId();
+    rec.entities.push({
+      id: person,
+      canonical_name: "Alice",
+      aliases: [],
+      kind: "person",
+      borg_role: null,
+      name_provenance: "transport_sender",
+      created_at: 1,
+    });
+    rec.externalEntityIds.set("team-agent.sender\u0000alice", person);
+    const base = await start(pool);
+    const unknown = await post(
+      base,
+      "/memory/directives",
+      {
+        tenant: "acme",
+        kind: "response_policy",
+        text: "Unknown target",
+        content_scope: "allow_list",
+        allowed_external_ids: ["unknown"],
+      },
+      TOKEN,
+    );
+    const contradictory = await post(
+      base,
+      "/memory/directives",
+      {
+        tenant: "acme",
+        kind: "response_policy",
+        text: "Contradictory target",
+        content_scope: "allow_list",
+        allowed_external_ids: ["alice"],
+        excluded_external_ids: ["alice"],
+      },
+      TOKEN,
+    );
+
+    expect(unknown.status).toBe(400);
+    expect(await unknown.json()).toEqual({ error: "unknown directive external id" });
+    expect(contradictory.status).toBe(400);
+    expect(await contradictory.json()).toEqual({
+      error: "ambiguous directive external ids",
+    });
+    expect(rec.appendCalls).toEqual([]);
+    expect(rec.directiveQueueInputs).toEqual([]);
+  });
+
+  it("maps subject-fact and self-identity directive subjects to deterministic defaults", async () => {
+    const { pool, rec } = recordingPool();
+    const alice = createEntityId();
+    rec.entities.push({
+      id: alice,
+      canonical_name: "Alice",
+      aliases: [],
+      kind: "person",
+      borg_role: null,
+      name_provenance: "transport_sender",
+      created_at: 1,
+    });
+    rec.externalEntityIds.set("team-agent.sender\u0000alice", alice);
+    const base = await start(pool);
+
+    const missingSubject = await post(
+      base,
+      "/memory/directives",
+      {
+        tenant: "acme",
+        kind: "subject_fact",
+        text: "Alice owns the launch decision.",
+        content_scope: "subject_only",
+      },
+      TOKEN,
+    );
+    expect(missingSubject.status).toBe(400);
+
+    const subjectFact = await post(
+      base,
+      "/memory/directives",
+      {
+        tenant: "acme",
+        kind: "subject_fact",
+        text: "Alice owns the launch decision.",
+        content_scope: "subject_only",
+        subject_external_id: "alice",
+      },
+      TOKEN,
+    );
+    const selfIdentity = await post(
+      base,
+      "/memory/directives",
+      {
+        tenant: "acme",
+        kind: "self_identity",
+        text: "The agent is the tenant's operations partner.",
+        content_scope: "public",
+      },
+      TOKEN,
+    );
+
+    expect(subjectFact.status).toBe(201);
+    expect(selfIdentity.status).toBe(201);
+    expect(rec.directiveQueueInputs).toEqual([
+      expect.objectContaining({
+        subjectKind: "entity",
+        subjectEntityId: alice,
+        canonicalFact: "Alice owns the launch decision.",
+        operationalDirective: null,
+        disclosurePolicy: expect.objectContaining({
+          content_scope: "subject_only",
+          subject_may_know: true,
+        }),
+      }),
+      expect.objectContaining({
+        subjectKind: "borg_self",
+        subjectEntityId: null,
+        canonicalFact: "The agent is the tenant's operations partner.",
+        operationalDirective: null,
+      }),
+    ]);
+  });
+
   it("validates commitment audience ids before opening a tenant", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
@@ -2128,6 +2702,622 @@ describe("memory sidecar handler", () => {
       { kind: "user_msg", content: "message from Bob Chen", sender_entity_id: bobId },
       { kind: "agent_msg", content: "acknowledged" },
     ]);
+  });
+
+  it("enriches a personal append with session, audience, operator role, and activity", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const response = await post(
+      base,
+      "/memory/append-turn",
+      {
+        tenant: "acme",
+        session: "tenant::alice::chat",
+        user: "hello",
+        assistant: "hi",
+        sender: {
+          external_id: "alice-external",
+          display_name: "Alice",
+          operator: true,
+        },
+        conversation: { type: "personal", name: "Alice" },
+      },
+      TOKEN,
+    );
+
+    expect(response.status).toBe(200);
+    await response.json();
+    const alice = rec.externalSenderIds.get("alice-external");
+    const session = `sess_${createHash("sha256")
+      .update("tenant::alice::chat")
+      .digest("hex")
+      .slice(0, 16)}`;
+
+    expect(alice).toBeDefined();
+    expect(rec.sessionEnsures).toEqual([
+      expect.objectContaining({
+        session_id: session,
+        source_type: "team_agent",
+        source_external_id: "tenant::alice::chat",
+        audience_label: "Alice",
+        audience_entity_id: alice,
+        conversation_kind: "dm",
+        audience_role: "operator",
+      }),
+    ]);
+    expect(rec.appendMany?.inputs).toEqual([
+      {
+        kind: "user_msg",
+        content: "hello",
+        audience: alice,
+        sender_entity_id: alice,
+        conversation: { type: "personal", name: "Alice" },
+      },
+      {
+        kind: "agent_msg",
+        content: "hi",
+        audience: alice,
+        conversation: { type: "personal", name: "Alice" },
+      },
+    ]);
+    expect(rec.activityRecords).toHaveLength(2);
+    expect(rec.activityRecords[0]).toMatchObject({
+      kind: "user_contact",
+      speakerEntityId: alice,
+      actorEntityId: alice,
+      audienceEntityId: alice,
+    });
+    expect(rec.activityRecords[1]).toMatchObject({
+      kind: "borg_replied",
+      speakerEntityId: rec.entities[0]?.id,
+      actorEntityId: rec.entities[0]?.id,
+      audienceEntityId: alice,
+    });
+    expect(rec.sessionTouches).toEqual([
+      {
+        sessionId: session,
+        update: { at: 1001, messageCountDelta: 1 },
+      },
+    ]);
+  });
+
+  it("returns a durable enhanced append when the awareness projection fails atomically", async () => {
+    const { pool, rec } = recordingPool();
+    const traceRegistry = new MemoryTraceRegistry();
+    rec.activityProjectionError = Object.assign(new Error("injected projection failure"), {
+      code: "SQLITE_BUSY",
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const base = await start(pool, TOKEN, { traceRegistry });
+      const response = await post(
+        base,
+        "/memory/append-turn",
+        {
+          tenant: "acme",
+          session: "tenant::alice::projection-failure",
+          user: "durable user message",
+          assistant: "durable assistant message",
+          sender: { external_id: "alice", display_name: "Alice" },
+          conversation: { type: "personal", name: "Alice" },
+        },
+        TOKEN,
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        ok: true,
+        entries: [
+          { id: "strm_aaaaaaaaaaaaaaa0", kind: "user_msg" },
+          { id: "strm_aaaaaaaaaaaaaaa1", kind: "agent_msg" },
+        ],
+      });
+      expect(rec.appendManyCalls).toHaveLength(1);
+      expect(rec.activityProjectionInputs).toHaveLength(1);
+      expect(rec.sessionEnsures).toEqual([]);
+      expect(rec.activityRecords).toEqual([]);
+      expect(rec.sessionTouches).toEqual([]);
+      expect(traceRegistry.query("acme").events).toEqual([
+        expect.objectContaining({
+          event: "sidecar.append_projection.degraded",
+          reason: "awareness_projection_failed",
+          error_code: "SQLITE_BUSY",
+          source_stream_entry_ids: ["strm_aaaaaaaaaaaaaaa0", "strm_aaaaaaaaaaaaaaa1"],
+        }),
+      ]);
+      expect(consoleError).toHaveBeenCalledWith(
+        'memory-sidecar: append-turn awareness projection failed for tenant "acme"',
+        rec.activityProjectionError,
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("uses a separate stable group identity for enhanced group and channel appends", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+
+    for (const conversation of [
+      { type: "groupChat" as const, name: "AI Ninjas", external_id: "group-42" },
+      { type: "channel" as const, name: "", external_id: "channel-7" },
+    ]) {
+      const response = await post(
+        base,
+        "/memory/append-turn",
+        {
+          tenant: "acme",
+          session: `session-${conversation.external_id}`,
+          user: "hello",
+          assistant: "hi",
+          sender: { external_id: "alice", display_name: "Alice" },
+          conversation,
+        },
+        TOKEN,
+      );
+      expect(response.status).toBe(200);
+      await response.json();
+    }
+
+    const group = rec.externalEntityIds.get("team-agent.conversation\u0000group-42");
+    const channel = rec.externalEntityIds.get("team-agent.conversation\u0000channel-7");
+    expect(group).toBeDefined();
+    expect(channel).toBeDefined();
+    expect(group).not.toBe(rec.externalSenderIds.get("alice"));
+    expect(rec.entities.find((entity) => entity.id === group)).toMatchObject({
+      canonical_name: "AI Ninjas",
+      kind: "group",
+    });
+    expect(rec.entities.find((entity) => entity.id === channel)).toMatchObject({
+      canonical_name: "channel:channel-7",
+      kind: "group",
+    });
+    expect(rec.sessionEnsures).toEqual([
+      expect.objectContaining({ conversation_kind: "thread", audience_entity_id: group }),
+      expect.objectContaining({ conversation_kind: "channel", audience_entity_id: channel }),
+    ]);
+  });
+
+  it("keeps the exact legacy append path when a group sender lacks conversation.external_id", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const response = await post(
+      base,
+      "/memory/append-turn",
+      {
+        tenant: "acme",
+        session: "legacy-group",
+        user: "hello",
+        assistant: "hi",
+        sender: { external_id: "alice", display_name: "Alice", operator: "legacy-value" },
+        conversation: { type: "groupChat", name: "AI Ninjas" },
+      },
+      TOKEN,
+    );
+
+    expect(response.status).toBe(200);
+    await response.json();
+    const alice = rec.externalSenderIds.get("alice");
+    expect(rec.appendMany?.inputs).toEqual([
+      {
+        kind: "user_msg",
+        content: "hello",
+        sender_entity_id: alice,
+        conversation: { type: "groupChat", name: "AI Ninjas" },
+      },
+      {
+        kind: "agent_msg",
+        content: "hi",
+        conversation: { type: "groupChat", name: "AI Ninjas" },
+      },
+    ]);
+    expect(rec.sessionEnsures).toEqual([]);
+    expect(rec.activityRecords).toEqual([]);
+    expect(
+      rec.resolvedExternalEntities.some(
+        (input) => (input as { source?: string }).source === "team-agent.conversation",
+      ),
+    ).toBe(false);
+  });
+
+  it("validates sender.operator only when complete enhanced identity is available", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const response = await post(
+      base,
+      "/memory/append-turn",
+      {
+        tenant: "acme",
+        session: "personal",
+        user: "hello",
+        assistant: "hi",
+        sender: { external_id: "alice", display_name: "Alice", operator: "not-boolean" },
+        conversation: { type: "personal", name: "Alice" },
+      },
+      TOKEN,
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "invalid 'sender.operator'; expected boolean",
+    });
+    expect(rec.tenants).toEqual([]);
+    expect(rec.appendManyCalls).toEqual([]);
+  });
+
+  it("assembles personal context from only the person and observed group audiences", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool, TOKEN, {
+      recentActivityWindowMs: 24 * 60 * 60_000,
+      recentActivityLimit: 12,
+    });
+    const alice = createEntityId();
+    const group = createEntityId();
+    const bob = createEntityId();
+    rec.entities.push(
+      {
+        id: alice,
+        canonical_name: "Alice",
+        aliases: [],
+        kind: "person",
+        borg_role: null,
+        name_provenance: "transport_sender",
+        created_at: 1,
+      },
+      {
+        id: group,
+        canonical_name: "AI Ninjas",
+        aliases: [],
+        kind: "group",
+        borg_role: null,
+        name_provenance: "transport_audience_label",
+        created_at: 1,
+      },
+      {
+        id: bob,
+        canonical_name: "Bob",
+        aliases: [],
+        kind: "person",
+        borg_role: null,
+        name_provenance: "transport_sender",
+        created_at: 1,
+      },
+    );
+    rec.externalEntityIds.set("team-agent.sender\u0000alice", alice);
+    rec.externalSenderIds.set("alice", alice);
+    rec.observedGroupAudienceIds = [group];
+    const occurredAt = Date.now() - 60_000;
+    rec.visibleActivityEvents = [
+      {
+        kind: "user_contact",
+        occurredAt,
+        sessionId: parseSessionId("sess_bbbbbbbbbbbbbbbb"),
+        audienceEntityId: group,
+        conversationKind: "thread",
+        conversationName: "AI Ninjas",
+        participantLabel: "Alice",
+        sourceStreamEntryIds: [parseStreamEntryId("strm_bbbbbbbbbbbbbbbb")],
+      },
+    ];
+    rec.commitments = [
+      testCommitment({ directive: "Global rule", restricted_audience: null, priority: 10 }),
+      testCommitment({ directive: "Alice rule", restricted_audience: alice, priority: 9 }),
+      testCommitment({ directive: "Group rule", restricted_audience: group, priority: 8 }),
+    ];
+    const visibleDirective = testDirective({
+      operational_directive: "Visible operator rule",
+      disclosure_policy: {
+        content_scope: "operator_only",
+        allowed_entity_ids: [],
+        excluded_entity_ids: [],
+        subject_may_know: null,
+        mention_policy: "answer_if_asked",
+        denied_audience_behavior: "omit",
+        boundary_prompt: "Private rule applies.",
+        topic_tags: ["ops"],
+      },
+    });
+    const omittedDirective = testDirective({ operational_directive: "Hidden rule" });
+    rec.directiveApplicable = [
+      {
+        directive: visibleDirective,
+        recipient_entity_ids: [alice],
+        activation: { active: true, reason: "operator_only" },
+        disclosure: { render_mode: "content", reason: "operator_only" },
+        render_mode: "content",
+        reason: "operator_only",
+      },
+      {
+        directive: omittedDirective,
+        recipient_entity_ids: [alice],
+        activation: { active: true, reason: "public" },
+        disclosure: { render_mode: "omit", reason: "unauthorized_omit" },
+        render_mode: "omit",
+        reason: "unauthorized_omit",
+      },
+      {
+        directive: testDirective({ operational_directive: "Inactive rule" }),
+        recipient_entity_ids: [alice],
+        activation: { active: false, reason: "unauthorized_omit" },
+        disclosure: { render_mode: "content", reason: "public" },
+        render_mode: "content",
+        reason: "public",
+      },
+    ];
+    rec.recallEpisodes = [
+      testEpisode("ep_public0000000000" as Episode["id"], {
+        audience_entity_id: null,
+        origin_audience_entity_ids: [],
+        shared: true,
+      }),
+      testEpisode("ep_alice00000000000" as Episode["id"], {
+        audience_entity_id: alice,
+        origin_audience_entity_ids: [alice],
+        shared: false,
+      }),
+      testEpisode("ep_group00000000000" as Episode["id"], {
+        audience_entity_id: group,
+        origin_audience_entity_ids: [group],
+        shared: false,
+      }),
+      testEpisode("ep_bob0000000000000" as Episode["id"], {
+        audience_entity_id: bob,
+        origin_audience_entity_ids: [bob],
+        shared: false,
+      }),
+    ];
+
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "tenant::alice::personal",
+        sender: { external_id: "alice", display_name: "Alice", operator: true },
+        conversation: { type: "personal", name: "Alice" },
+        query: "What matters now?",
+      },
+      TOKEN,
+    );
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(payload.audience).toEqual({
+      entity_id: alice,
+      kind: "person",
+      name: "Alice",
+      role: "operator",
+    });
+    expect((payload.episodes as Array<{ id: string }>).map((episode) => episode.id)).toEqual([
+      "ep_public0000000000",
+      "ep_alice00000000000",
+      "ep_group00000000000",
+    ]);
+    expect(payload.hidden_episode_count).toBe(1);
+    expect(payload.commitments).toEqual([
+      expect.objectContaining({ directive: "Global rule" }),
+      expect.objectContaining({ directive: "Alice rule" }),
+    ]);
+    expect(payload.directives).toEqual([
+      expect.objectContaining({
+        id: visibleDirective.id,
+        render_mode: "content",
+        text: "Visible operator rule",
+      }),
+    ]);
+    expect(payload.recent_activity).toEqual([
+      expect.objectContaining({
+        kind: "user_contact",
+        relative_age: "1m ago",
+        conversation: { type: "groupChat", name: "AI Ninjas" },
+        participant_name: "Alice",
+        text: 'Alice contacted the agent 1m ago in group chat "AI Ninjas".',
+      }),
+    ]);
+    expect(rec.lastRecallOptions).toMatchObject({
+      audienceEntityId: alice,
+      visibleAudienceEntityIds: [alice, group],
+      limit: 8,
+    });
+    expect(rec.lastVisibleActivityInput).toMatchObject({
+      audienceEntityIds: [alice, group],
+      limit: 12,
+    });
+    expect(rec.directiveApplicableOptions).toEqual([
+      {
+        currentAudienceEntityId: alice,
+        participantEntityIds: [alice],
+        allowListAudienceEntityIds: [alice],
+        sessionRole: "operator",
+        trustedTenantOperator: true,
+      },
+    ]);
+    expect(rec.exclusives).toEqual([true, undefined, undefined]);
+  });
+
+  it("does not widen group context through the current speaker's other memberships", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const sender = createEntityId();
+    const currentGroup = createEntityId();
+    const otherGroup = createEntityId();
+    rec.entities.push(
+      {
+        id: sender,
+        canonical_name: "Alice",
+        aliases: [],
+        kind: "person",
+        borg_role: null,
+        name_provenance: "transport_sender",
+        created_at: 1,
+      },
+      {
+        id: currentGroup,
+        canonical_name: "Current Group",
+        aliases: [],
+        kind: "group",
+        borg_role: null,
+        name_provenance: "transport_audience_label",
+        created_at: 1,
+      },
+      {
+        id: otherGroup,
+        canonical_name: "Other Group",
+        aliases: [],
+        kind: "group",
+        borg_role: null,
+        name_provenance: "transport_audience_label",
+        created_at: 1,
+      },
+    );
+    rec.externalEntityIds.set("team-agent.sender\u0000alice", sender);
+    rec.externalEntityIds.set("team-agent.conversation\u0000current", currentGroup);
+    rec.externalSenderIds.set("alice", sender);
+    rec.observedGroupAudienceIds = [otherGroup];
+    rec.recallEpisodes = [
+      testEpisode("ep_current000000000" as Episode["id"], {
+        audience_entity_id: currentGroup,
+        origin_audience_entity_ids: [currentGroup],
+        shared: false,
+      }),
+      testEpisode("ep_other00000000000" as Episode["id"], {
+        audience_entity_id: otherGroup,
+        origin_audience_entity_ids: [otherGroup],
+        shared: false,
+      }),
+    ];
+
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "group-session",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: {
+          type: "groupChat",
+          name: "Current Group",
+          external_id: "current",
+        },
+        query: "group context",
+        sections: ["episodes"],
+      },
+      TOKEN,
+    );
+    const payload = (await response.json()) as {
+      episodes: Array<{ id: string }>;
+      hidden_episode_count: number;
+    };
+
+    expect(payload.episodes.map((episode) => episode.id)).toEqual(["ep_current000000000"]);
+    expect(payload.hidden_episode_count).toBe(1);
+    expect(rec.lastRecallOptions).toMatchObject({
+      audienceEntityId: currentGroup,
+      visibleAudienceEntityIds: [currentGroup],
+    });
+  });
+
+  it("validates context sections and preserves non-episode sections on embedding degradation", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+
+    expect(
+      (
+        await post(
+          base,
+          "/memory/context",
+          {
+            tenant: "acme",
+            session: "personal",
+            sender: { external_id: "alice", display_name: "Alice" },
+            conversation: { type: "personal", name: "Alice" },
+          },
+          TOKEN,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await post(
+          base,
+          "/memory/context",
+          {
+            tenant: "acme",
+            session: "personal",
+            sender: { external_id: "alice", display_name: "Alice" },
+            conversation: { type: "personal", name: "Alice" },
+            sections: ["unknown"],
+          },
+          TOKEN,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await post(
+          base,
+          "/memory/context",
+          {
+            tenant: "acme",
+            session: "group",
+            sender: { external_id: "alice", display_name: "Alice" },
+            conversation: { type: "channel", name: "General" },
+            query: "context",
+          },
+          TOKEN,
+        )
+      ).status,
+    ).toBe(400);
+
+    rec.recallError = new EmbeddingError("gateway stalled");
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "personal",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: { type: "personal", name: "Alice" },
+        query: "context",
+        sections: ["audience", "episodes"],
+      },
+      TOKEN,
+    );
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(payload.audience).toEqual(expect.objectContaining({ name: "Alice" }));
+    expect(payload.episodes).toEqual([]);
+    expect(payload.degraded).toBe(true);
+    expect(payload.degraded_reason).toBe("embeddings: gateway stalled");
+  });
+
+  it("preserves non-episode context when audience-scoped recall exceeds its deadline", async () => {
+    const { pool, rec } = recordingPool();
+    rec.recallPromise = new Promise(() => {});
+    const base = await start(pool, TOKEN, { recallDeadlineMs: 25 });
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "personal",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: { type: "personal", name: "Alice" },
+        query: "context",
+        sections: ["audience", "episodes"],
+      },
+      TOKEN,
+    );
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(payload.audience).toEqual(expect.objectContaining({ name: "Alice" }));
+    expect(payload.episodes).toEqual([]);
+    expect(payload.hidden_episode_count).toBe(0);
+    expect(payload.degraded).toBe(true);
+    expect(payload.degraded_reason).toContain("deadline");
   });
 
   it("rejects malformed optional sender objects before touching the tenant", async () => {
@@ -2362,5 +3552,679 @@ describe("memory sidecar handler", () => {
     const res = await post(base, "/memory/recall", { tenant: "acme", query: "q" }, TOKEN);
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ error: "internal error" }); // no internal detail leaked
+  });
+
+  it("rolls back a failed real append projection and keeps an identical source-id retry idempotent", async () => {
+    const root = mkdtempSync(join(tmpdir(), "borg-memory-projection-http-"));
+    const traceRegistry = new MemoryTraceRegistry();
+    const pool = new BorgPool({
+      root,
+      openOptions: {
+        embeddingDimensions: 4,
+        embeddingClient: new FakeEmbeddingClient(4),
+        llmClient: new FakeLLMClient(),
+        liveExtraction: false,
+        liveCommitmentExtraction: false,
+      },
+      initializeBeing: (_tenantId, borg) => {
+        borg.entities.ensureSelf("Sol", { provenance: "config_default_user" });
+      },
+    });
+    let restoreRecord: (() => void) | undefined;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      await pool.withTenant(
+        "acme",
+        (borg) => {
+          const deps = (borg as unknown as { deps: BorgDependencies }).deps;
+          const originalRecord = deps.activityRepository.record.bind(deps.activityRepository);
+          let recordCalls = 0;
+          const recordSpy = vi
+            .spyOn(deps.activityRepository, "record")
+            .mockImplementation((input) => {
+              const recorded = originalRecord(input);
+              recordCalls += 1;
+              if (recordCalls === 2) {
+                throw Object.assign(new Error("injected second activity failure"), {
+                  code: "ACTIVITY_PROJECTION_INJECTED",
+                });
+              }
+              return recorded;
+            });
+          restoreRecord = () => recordSpy.mockRestore();
+        },
+        { exclusive: true },
+      );
+
+      const base = await start(pool, TOKEN, { traceRegistry });
+      const response = await post(
+        base,
+        "/memory/append-turn",
+        {
+          tenant: "acme",
+          session: "teams::personal::projection-rollback",
+          user: "Durable input",
+          assistant: "Durable reply",
+          sender: { external_id: "alice", display_name: "Alice" },
+          conversation: { type: "personal", name: "Alice" },
+        },
+        TOKEN,
+      );
+      const payload = (await response.json()) as {
+        session: SessionId;
+        entries: Array<{ id: Episode["source_stream_ids"][number]; kind: string }>;
+      };
+      restoreRecord?.();
+      restoreRecord = undefined;
+
+      expect(response.status).toBe(200);
+      expect(payload.entries).toHaveLength(2);
+      const afterFailure = await pool.withTenant("acme", (borg) => {
+        const deps = (borg as unknown as { deps: BorgDependencies }).deps;
+        return {
+          streamEntries: borg.stream.tail(10, { session: payload.session }),
+          session: borg.sessions.get(payload.session),
+          activityCount: Number(
+            deps.sqlite.prepare("SELECT COUNT(*) AS count FROM activity_events").get()?.count ?? 0,
+          ),
+        };
+      });
+      expect(afterFailure.streamEntries).toHaveLength(2);
+      expect(afterFailure.session).toBeNull();
+      expect(afterFailure.activityCount).toBe(0);
+      expect(traceRegistry.query("acme").events).toEqual([
+        expect.objectContaining({
+          event: "sidecar.append_projection.degraded",
+          error_code: "ACTIVITY_PROJECTION_INJECTED",
+        }),
+      ]);
+
+      const afterRetries = await pool.withTenant(
+        "acme",
+        (borg) => {
+          const deps = (borg as unknown as { deps: BorgDependencies }).deps;
+          const entries = borg.stream.tail(10, { session: payload.session });
+          const userEntry = entries.find((entry) => entry.kind === "user_msg");
+          const assistantEntry = entries.find((entry) => entry.kind === "agent_msg");
+          const alice = borg.entities.findByExternalId("team-agent.sender", "alice");
+          const selfEntity = borg.entities.getSelf();
+
+          if (
+            userEntry === undefined ||
+            assistantEntry === undefined ||
+            alice === null ||
+            selfEntity === null
+          ) {
+            throw new Error("expected complete persisted turn identity");
+          }
+
+          const projection = {
+            session: {
+              session_id: payload.session,
+              source_type: "team_agent",
+              source_external_id: "teams::personal::projection-rollback",
+              label: "Alice",
+              audience_label: "Alice",
+              audience_entity_id: alice,
+              conversation_kind: "dm" as const,
+              audience_role: "participant" as const,
+              status: "active" as const,
+              created_at: userEntry.timestamp,
+              last_activity_at: userEntry.timestamp,
+            },
+            userContact: {
+              kind: "user_contact" as const,
+              occurredAt: userEntry.timestamp,
+              sessionId: payload.session,
+              speakerEntityId: alice,
+              actorEntityId: alice,
+              audienceEntityId: alice,
+              participantEntityIds: [alice],
+              sourceStreamEntryIds: [userEntry.id],
+            },
+            borgReplied: {
+              kind: "borg_replied" as const,
+              occurredAt: assistantEntry.timestamp,
+              sessionId: payload.session,
+              speakerEntityId: selfEntity.id,
+              actorEntityId: selfEntity.id,
+              audienceEntityId: alice,
+              participantEntityIds: [selfEntity.id, alice],
+              sourceStreamEntryIds: [assistantEntry.id],
+            },
+            touch: { at: assistantEntry.timestamp, messageCountDelta: 1 },
+          };
+
+          borg.activity.projectCompletedTurn(projection);
+          borg.activity.projectCompletedTurn(projection);
+
+          return {
+            session: borg.sessions.get(payload.session),
+            activityCount: Number(
+              deps.sqlite.prepare("SELECT COUNT(*) AS count FROM activity_events").get()?.count ??
+                0,
+            ),
+          };
+        },
+        { exclusive: true },
+      );
+      expect(afterRetries.session?.message_count).toBe(1);
+      expect(afterRetries.activityCount).toBe(2);
+    } finally {
+      restoreRecord?.();
+      consoleError.mockRestore();
+      await pool.closeAll();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("applies group-only directive allows and excludes with participant exclusions fail-closed", async () => {
+    const root = mkdtempSync(join(tmpdir(), "borg-memory-directive-group-http-"));
+    const pool = new BorgPool({
+      root,
+      openOptions: {
+        embeddingDimensions: 4,
+        embeddingClient: new FakeEmbeddingClient(4),
+        llmClient: new FakeLLMClient(),
+        liveExtraction: false,
+        liveCommitmentExtraction: false,
+      },
+      initializeBeing: (_tenantId, borg) => {
+        borg.entities.ensureSelf("Sol", { provenance: "config_default_user" });
+      },
+    });
+
+    try {
+      const base = await start(pool);
+      const appendResponse = await post(
+        base,
+        "/memory/append-turn",
+        {
+          tenant: "acme",
+          session: "teams::group::directive-room",
+          user: "Hello room",
+          assistant: "Hello Alice",
+          sender: { external_id: "alice", display_name: "Alice" },
+          conversation: {
+            type: "groupChat",
+            name: "Directive Room",
+            external_id: "directive-room",
+          },
+        },
+        TOKEN,
+      );
+      expect(appendResponse.status).toBe(200);
+      await appendResponse.json();
+
+      const definitions = [
+        {
+          key: "groupAllowed",
+          body: {
+            tenant: "acme",
+            kind: "response_policy",
+            text: "Rule allowed for this room.",
+            content_scope: "allow_list",
+            allowed_group_external_ids: ["directive-room"],
+          },
+        },
+        {
+          key: "groupExcluded",
+          body: {
+            tenant: "acme",
+            kind: "response_policy",
+            text: "Rule excluded from this room.",
+            content_scope: "all_except",
+            excluded_group_external_ids: ["directive-room"],
+          },
+        },
+        {
+          key: "participantExcluded",
+          body: {
+            tenant: "acme",
+            kind: "response_policy",
+            text: "Room rule suppressed while Alice is present.",
+            content_scope: "allow_list",
+            allowed_group_external_ids: ["directive-room"],
+            excluded_external_ids: ["alice"],
+          },
+        },
+      ] as const;
+      const ids = new Map<string, CreatorDirective["id"]>();
+
+      for (const definition of definitions) {
+        const response = await post(base, "/memory/directives", definition.body, TOKEN);
+        const payload = (await response.json()) as {
+          directive: { id: CreatorDirective["id"] };
+        };
+        expect(response.status).toBe(201);
+        ids.set(definition.key, payload.directive.id);
+      }
+
+      const contextResponse = await post(
+        base,
+        "/memory/context",
+        {
+          tenant: "acme",
+          session: "teams::group::directive-room",
+          sender: { external_id: "alice", display_name: "Alice" },
+          conversation: {
+            type: "groupChat",
+            name: "Directive Room",
+            external_id: "directive-room",
+          },
+          sections: ["directives"],
+        },
+        TOKEN,
+      );
+      const context = (await contextResponse.json()) as {
+        directives: Array<{ id: CreatorDirective["id"] }>;
+      };
+      const visibleDirectiveIds = context.directives.map((directive) => directive.id);
+
+      expect(contextResponse.status).toBe(200);
+      expect(visibleDirectiveIds).toContain(ids.get("groupAllowed"));
+      expect(visibleDirectiveIds).not.toContain(ids.get("groupExcluded"));
+      expect(visibleDirectiveIds).not.toContain(ids.get("participantExcluded"));
+    } finally {
+      await pool.closeAll();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("integrates enriched turns, scoped context, and directive provenance through a real BorgPool", async () => {
+    const root = mkdtempSync(join(tmpdir(), "borg-memory-context-http-"));
+    const embeddingClient = new FakeEmbeddingClient(4);
+    const llmClient = new FakeLLMClient();
+    const pool = new BorgPool({
+      root,
+      openOptions: {
+        embeddingDimensions: 4,
+        embeddingClient,
+        llmClient,
+        liveExtraction: false,
+        liveCommitmentExtraction: false,
+      },
+      initializeBeing: (_tenantId, borg) => {
+        borg.entities.ensureSelf("Sol", { provenance: "config_default_user" });
+      },
+    });
+
+    try {
+      const base = await start(pool);
+      const turns = [
+        {
+          key: "alice-personal",
+          session: "teams::personal::alice",
+          sender: { external_id: "alice", display_name: "Alice", operator: true },
+          conversation: { type: "personal", name: "Alice" },
+        },
+        {
+          key: "alice-group",
+          session: "teams::group::ai-ninjas",
+          sender: { external_id: "alice", display_name: "Alice" },
+          conversation: {
+            type: "groupChat",
+            name: "AI Ninjas",
+            external_id: "ai-ninjas",
+          },
+        },
+        {
+          key: "bob-personal",
+          session: "teams::personal::bob",
+          sender: { external_id: "bob", display_name: "Bob" },
+          conversation: { type: "personal", name: "Bob" },
+        },
+      ] as const;
+      const sessions = new Map<string, SessionId>();
+
+      for (const turn of turns) {
+        const response = await post(
+          base,
+          "/memory/append-turn",
+          {
+            tenant: "acme",
+            session: turn.session,
+            user: `Message from ${turn.key}`,
+            assistant: `Reply to ${turn.key}`,
+            sender: turn.sender,
+            conversation: turn.conversation,
+          },
+          TOKEN,
+        );
+        const payload = (await response.json()) as { session: SessionId };
+
+        expect(response.status).toBe(200);
+        sessions.set(turn.key, payload.session);
+      }
+
+      const identity = await pool.withTenant("acme", (borg) => {
+        const alice = borg.entities.findByExternalId("team-agent.sender", "alice");
+        const bob = borg.entities.findByExternalId("team-agent.sender", "bob");
+        const group = borg.entities.findByExternalId("team-agent.conversation", "ai-ninjas");
+
+        if (alice === null || bob === null || group === null) {
+          throw new Error("expected sidecar identities to be persisted");
+        }
+
+        return {
+          alice,
+          bob,
+          group,
+          sessions: borg.sessions.list(),
+          observedGroups: borg.activity.listObservedGroupAudienceEntityIdsForSpeaker(alice),
+        };
+      });
+      expect(identity.observedGroups).toEqual([identity.group]);
+      expect(identity.sessions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            session_id: sessions.get("alice-personal"),
+            source_type: "team_agent",
+            source_external_id: "teams::personal::alice",
+            conversation_kind: "dm",
+            audience_entity_id: identity.alice,
+            audience_role: "operator",
+            message_count: 1,
+          }),
+          expect.objectContaining({
+            session_id: sessions.get("alice-group"),
+            source_type: "team_agent",
+            source_external_id: "teams::group::ai-ninjas",
+            conversation_kind: "thread",
+            audience_entity_id: identity.group,
+            message_count: 1,
+          }),
+        ]),
+      );
+
+      const persistedEpisodes = await pool.withTenant(
+        "acme",
+        async (borg) => {
+          const deps = (borg as unknown as { deps: BorgDependencies }).deps;
+          const alicePersonalEntries = borg.stream.tail(10, {
+            session: sessions.get("alice-personal"),
+          });
+          const aliceGroupEntries = borg.stream.tail(10, {
+            session: sessions.get("alice-group"),
+          });
+          const bobPersonalEntries = borg.stream.tail(10, {
+            session: sessions.get("bob-personal"),
+          });
+          const alicePersonalSource = alicePersonalEntries.find(
+            (entry) => entry.kind === "user_msg",
+          );
+          const aliceGroupSource = aliceGroupEntries.find((entry) => entry.kind === "user_msg");
+          const bobPersonalSource = bobPersonalEntries.find((entry) => entry.kind === "user_msg");
+
+          if (
+            alicePersonalSource?.audience === undefined ||
+            aliceGroupSource?.audience === undefined ||
+            bobPersonalSource?.audience === undefined
+          ) {
+            throw new Error("expected audience-stamped source entries");
+          }
+          expect(alicePersonalSource.audience).toBe(identity.alice);
+          expect(aliceGroupSource.audience).toBe(identity.group);
+          expect(bobPersonalSource.audience).toBe(identity.bob);
+
+          const queryEmbedding = await embeddingClient.embed("situational awareness");
+          const now = Date.now();
+          const episodes = [
+            testEpisode(createEpisodeId(), {
+              title: "Public episode",
+              narrative: "Public context visible to every audience.",
+              participants: [episodeParticipantEntityIdTerm(identity.alice)],
+              source_stream_ids: [alicePersonalSource.id],
+              audience_entity_id: null,
+              origin_audience_entity_ids: [],
+              shared: true,
+              embedding: queryEmbedding,
+              start_time: now - 4_000,
+              end_time: now - 3_900,
+              created_at: now - 4_000,
+              updated_at: now - 4_000,
+            }),
+            testEpisode(createEpisodeId(), {
+              title: "Alice personal episode",
+              narrative: "Private context from Alice's personal chat.",
+              participants: [episodeParticipantEntityIdTerm(identity.alice)],
+              source_stream_ids: [alicePersonalSource.id],
+              audience_entity_id: alicePersonalSource.audience as EntityId,
+              origin_audience_entity_ids: [alicePersonalSource.audience as EntityId],
+              shared: false,
+              embedding: queryEmbedding,
+              start_time: now - 3_000,
+              end_time: now - 2_900,
+              created_at: now - 3_000,
+              updated_at: now - 3_000,
+            }),
+            testEpisode(createEpisodeId(), {
+              title: "Observed group episode",
+              narrative: "Context from a group where Alice spoke.",
+              participants: [episodeParticipantEntityIdTerm(identity.alice)],
+              source_stream_ids: [aliceGroupSource.id],
+              audience_entity_id: aliceGroupSource.audience as EntityId,
+              origin_audience_entity_ids: [aliceGroupSource.audience as EntityId],
+              shared: false,
+              embedding: queryEmbedding,
+              start_time: now - 2_000,
+              end_time: now - 1_900,
+              created_at: now - 2_000,
+              updated_at: now - 2_000,
+            }),
+            testEpisode(createEpisodeId(), {
+              title: "Bob personal episode",
+              narrative: "Private context from Bob's personal chat.",
+              participants: [episodeParticipantEntityIdTerm(identity.bob)],
+              source_stream_ids: [bobPersonalSource.id],
+              audience_entity_id: bobPersonalSource.audience as EntityId,
+              origin_audience_entity_ids: [bobPersonalSource.audience as EntityId],
+              shared: false,
+              embedding: queryEmbedding,
+              start_time: now - 1_000,
+              end_time: now - 900,
+              created_at: now - 1_000,
+              updated_at: now - 1_000,
+            }),
+          ];
+
+          for (const episode of episodes) {
+            await deps.episodicRepository.createEpisode(episode);
+          }
+
+          return Object.fromEntries(episodes.map((episode) => [episode.title, episode.id]));
+        },
+        { exclusive: true },
+      );
+
+      const commitmentResponse = await post(
+        base,
+        "/memory/commitments",
+        {
+          tenant: "acme",
+          type: "boundary",
+          kind: "audience_rule",
+          enforcement_class: "critical",
+          critical_domain: "privacy",
+          directive: "Keep Alice's private context in Alice's audience.",
+          family: "Alice private context",
+          priority: 20,
+          audience_entity_id: identity.alice,
+        },
+        TOKEN,
+      );
+      expect(commitmentResponse.status).toBe(201);
+      await commitmentResponse.json();
+
+      const directiveResponse = await post(
+        base,
+        "/memory/directives",
+        {
+          tenant: "acme",
+          kind: "response_policy",
+          text: "Keep operational answers concise.",
+          content_scope: "allow_list",
+          allowed_external_ids: ["alice"],
+          topic_tags: ["operations"],
+        },
+        TOKEN,
+      );
+      expect(directiveResponse.status).toBe(201);
+      const directivePayload = (await directiveResponse.json()) as {
+        directive: { id: CreatorDirective["id"] };
+      };
+      const recallExpansionResponse = {
+        text: "",
+        input_tokens: 0,
+        output_tokens: 0,
+        stop_reason: "tool_use" as const,
+        tool_calls: [
+          {
+            id: "toolu_memory_context_expansion",
+            name: "EmitRecallExpansion",
+            input: { facets: [], named_terms: [] },
+          },
+        ],
+      };
+      llmClient.pushResponse(recallExpansionResponse);
+      llmClient.pushResponse(recallExpansionResponse);
+
+      const contextResponse = await post(
+        base,
+        "/memory/context",
+        {
+          tenant: "acme",
+          session: "teams::personal::alice",
+          sender: { external_id: "alice", display_name: "Alice", operator: true },
+          conversation: { type: "personal", name: "Alice" },
+          query: "situational awareness",
+          sections: ["audience", "episodes", "recent_activity", "commitments", "directives"],
+        },
+        TOKEN,
+      );
+      const context = (await contextResponse.json()) as {
+        audience: { entity_id: EntityId; kind: string; role: string };
+        recent_activity: Array<{
+          conversation: { type: string; name: string };
+          participant_name: string;
+          text: string;
+        }>;
+        commitments: Array<{ directive: string; audience_entity_id: EntityId | null }>;
+        directives: Array<{ id: CreatorDirective["id"]; text: string; render_mode: string }>;
+        episodes: Array<{ id: Episode["id"] }>;
+        hidden_episode_count: number;
+        degraded: boolean;
+      };
+
+      expect(contextResponse.status).toBe(200);
+      expect(context.degraded).toBe(false);
+      expect(context.audience).toEqual({
+        entity_id: identity.alice,
+        kind: "person",
+        role: "operator",
+        name: "Alice",
+      });
+      expect(context.recent_activity).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            conversation: { type: "groupChat", name: "AI Ninjas" },
+            participant_name: "Alice",
+            text: expect.stringContaining('in group chat "AI Ninjas".'),
+          }),
+        ]),
+      );
+      expect(context.recent_activity.map((activity) => activity.participant_name)).not.toContain(
+        "Bob",
+      );
+      expect(context.commitments).toEqual([
+        expect.objectContaining({
+          directive: "Keep Alice's private context in Alice's audience.",
+          audience_entity_id: identity.alice,
+        }),
+      ]);
+      expect(context.directives).toEqual([
+        expect.objectContaining({
+          id: directivePayload.directive.id,
+          text: "Keep operational answers concise.",
+          render_mode: "content",
+        }),
+      ]);
+      const aliceEpisodeIds = context.episodes.map((episode) => episode.id);
+      expect(aliceEpisodeIds).toEqual(
+        expect.arrayContaining([
+          persistedEpisodes["Public episode"],
+          persistedEpisodes["Alice personal episode"],
+          persistedEpisodes["Observed group episode"],
+        ]),
+      );
+      expect(aliceEpisodeIds).not.toContain(persistedEpisodes["Bob personal episode"]);
+      expect(context.hidden_episode_count).toBe(0);
+
+      const groupContextResponse = await post(
+        base,
+        "/memory/context",
+        {
+          tenant: "acme",
+          session: "teams::group::ai-ninjas",
+          sender: { external_id: "alice", display_name: "Alice" },
+          conversation: {
+            type: "groupChat",
+            name: "AI Ninjas",
+            external_id: "ai-ninjas",
+          },
+          query: "situational awareness",
+          sections: ["episodes"],
+        },
+        TOKEN,
+      );
+      const groupContext = (await groupContextResponse.json()) as {
+        episodes: Array<{ id: Episode["id"] }>;
+        hidden_episode_count: number;
+      };
+      const groupEpisodeIds = groupContext.episodes.map((episode) => episode.id);
+
+      expect(groupContextResponse.status).toBe(200);
+      expect(groupEpisodeIds).toEqual(
+        expect.arrayContaining([
+          persistedEpisodes["Public episode"],
+          persistedEpisodes["Observed group episode"],
+        ]),
+      );
+      expect(groupEpisodeIds).not.toContain(persistedEpisodes["Alice personal episode"]);
+      expect(groupEpisodeIds).not.toContain(persistedEpisodes["Bob personal episode"]);
+      expect(groupContext.hidden_episode_count).toBe(0);
+
+      const adminProvenance = await pool.withTenant("acme", (borg) => {
+        const adminSession = borg.sessions
+          .list()
+          .find((session) => session.source_external_id === "memory-sidecar::admin-api");
+
+        if (adminSession === undefined) {
+          throw new Error("expected directive admin session");
+        }
+
+        return {
+          adminSession,
+          entries: borg.stream.tail(10, { session: adminSession.session_id }),
+        };
+      });
+      expect(adminProvenance.adminSession).toMatchObject({
+        source_type: "memory_sidecar",
+        conversation_kind: "dm",
+        audience_role: "operator",
+      });
+      expect(adminProvenance.entries).toEqual([
+        expect.objectContaining({
+          kind: "internal_event",
+          content: expect.objectContaining({
+            event: "memory_sidecar.operator_directive_queue_requested",
+          }),
+        }),
+      ]);
+    } finally {
+      await pool.closeAll();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

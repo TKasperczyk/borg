@@ -3,6 +3,7 @@ export {
   filterEpisodesByAudience,
   inferSinglePrivateAudience,
   isEpisodeAccessVisible,
+  isEpisodeAccessVisibleToAnyAudience,
   type AudienceEpisodeAccess,
   type AudienceFilterResult,
   type AudiencePolicy,

@@ -233,11 +233,12 @@ export type CognitionRetrievalOptions = RetrievalSharedOptions & {
   recallContext: CognitionRecallContext;
   disclosureContext?: DisclosureContext;
   audienceEntityId?: never;
+  visibleAudienceEntityIds?: never;
   crossAudience?: never;
 };
 
 export type DisclosureRetrievalOptions = RetrievalSharedOptions &
-  Pick<EpisodeSearchOptions, "audienceEntityId" | "crossAudience"> & {
+  Pick<EpisodeSearchOptions, "audienceEntityId" | "visibleAudienceEntityIds" | "crossAudience"> & {
     disclosureContext?: DisclosureContext;
     recallContext?: never;
   };
@@ -287,6 +288,7 @@ type RetrievalProjection = "full" | "episodes-only";
 
 export type RetrievalGetEpisodeOptions = {
   audienceEntityId?: EntityId | null;
+  visibleAudienceEntityIds?: readonly EntityId[];
   crossAudience?: boolean;
 };
 
@@ -2402,6 +2404,7 @@ function warmRecallScore(stateHandle: RecallStateHandle): number {
 function episodeVisibilityOptions(options: RetrievalExecutionOptions): EpisodeSearchOptions {
   return {
     audienceEntityId: options.audienceEntityId,
+    visibleAudienceEntityIds: options.visibleAudienceEntityIds,
     crossAudience: options.crossAudience,
   };
 }

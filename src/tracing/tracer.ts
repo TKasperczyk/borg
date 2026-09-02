@@ -165,6 +165,7 @@ export type TurnTraceEventName =
   | "semantic_insert.skipped"
   | "episodic_extractor.skipped"
   | "semantic_node.status.transitioned"
+  | "sidecar.append_projection.degraded"
   | "maintenance_snapshot.completed"
   | "storage.optimize.completed"
   | "commitment_guard.shadow_observation"

@@ -561,8 +561,10 @@ export const creatorDirectiveApplicableOptionsSchema = z
   .object({
     currentAudienceEntityId: creatorDirectiveEntityIdSchema.nullable(),
     currentSenderBorgRole: borgRoleSchema.nullable().optional(),
+    trustedTenantOperator: z.boolean().optional(),
     isPrivateSelfCognition: z.boolean().optional(),
     participantEntityIds: z.array(creatorDirectiveEntityIdSchema).optional(),
+    allowListAudienceEntityIds: z.array(creatorDirectiveEntityIdSchema).optional(),
     sessionRole: sessionAudienceRoleSchema,
   })
   .strict();

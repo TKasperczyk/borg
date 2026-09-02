@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { commitmentMigrations } from "../commitments/index.js";
+import { commitmentMigrations, EntityRepository } from "../commitments/index.js";
 import { sessionMigrations, SessionsRepository } from "../../sessions/index.js";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
@@ -85,6 +85,178 @@ describe("ActivityRepository", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM activity_events").get()).toEqual({
       count: 1,
     });
+
+    db.close();
+  });
+
+  it("derives observed group membership and lists only visible other-session activity", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-activity-visible-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "activity.db"), {
+      migrations: composeMigrations(sessionMigrations, activityMigrations, commitmentMigrations),
+    });
+    const clock = new FixedClock(10_000);
+    const entities = new EntityRepository({ db, clock });
+    const sessions = new SessionsRepository({ db, clock });
+    const repository = new ActivityRepository({ db, clock });
+    const alice = entities.resolve("Alice", { kind: "person" });
+    const bob = entities.resolve("Bob", { kind: "person" });
+    const self = entities.ensureSelf("Borg").id;
+    const group = entities.resolve("AI Ninjas", { kind: "group" });
+    const unobservedGroup = entities.resolve("Hidden Group", { kind: "group" });
+    const currentSessionId = createSessionId();
+    const groupSessionId = createSessionId();
+    const otherSourceGroupSessionId = createSessionId();
+    const hiddenGroupSessionId = createSessionId();
+    const bobSessionId = createSessionId();
+
+    for (const input of [
+      {
+        session_id: currentSessionId,
+        label: "Alice current",
+        audience_label: "Alice",
+        audience_entity_id: alice,
+        conversation_kind: "dm" as const,
+      },
+      {
+        session_id: groupSessionId,
+        label: "AI Ninjas",
+        audience_label: "AI Ninjas",
+        audience_entity_id: group,
+        conversation_kind: "thread" as const,
+      },
+      {
+        session_id: otherSourceGroupSessionId,
+        label: "AI Ninjas elsewhere",
+        audience_label: "AI Ninjas",
+        audience_entity_id: group,
+        conversation_kind: "channel" as const,
+        source_type: "botarena",
+      },
+      {
+        session_id: hiddenGroupSessionId,
+        label: "Hidden Group",
+        audience_label: "Hidden Group",
+        audience_entity_id: unobservedGroup,
+        conversation_kind: "thread" as const,
+      },
+      {
+        session_id: bobSessionId,
+        label: "Bob private",
+        audience_label: "Bob",
+        audience_entity_id: bob,
+        conversation_kind: "dm" as const,
+      },
+    ]) {
+      sessions.ensure({
+        ...input,
+        source_type: input.source_type ?? "team_agent",
+        audience_role: "participant",
+        status: "active",
+        created_at: 1_000,
+        last_activity_at: 9_000,
+      });
+    }
+
+    repository.record({
+      kind: "user_contact",
+      occurredAt: 2_000,
+      sessionId: groupSessionId,
+      speakerEntityId: alice,
+      actorEntityId: alice,
+      audienceEntityId: group,
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "borg_replied",
+      occurredAt: 4_000,
+      sessionId: groupSessionId,
+      speakerEntityId: self,
+      actorEntityId: self,
+      audienceEntityId: group,
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "user_contact",
+      occurredAt: 4_500,
+      sessionId: otherSourceGroupSessionId,
+      speakerEntityId: alice,
+      actorEntityId: alice,
+      audienceEntityId: group,
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "user_contact",
+      occurredAt: 5_000,
+      sessionId: hiddenGroupSessionId,
+      speakerEntityId: bob,
+      actorEntityId: bob,
+      audienceEntityId: unobservedGroup,
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "user_contact",
+      occurredAt: 6_000,
+      sessionId: bobSessionId,
+      speakerEntityId: bob,
+      actorEntityId: bob,
+      audienceEntityId: bob,
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "user_contact",
+      occurredAt: 7_000,
+      sessionId: currentSessionId,
+      speakerEntityId: alice,
+      actorEntityId: alice,
+      audienceEntityId: alice,
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
+      kind: "user_contact",
+      occurredAt: 8_000,
+      sessionId: hiddenGroupSessionId,
+      speakerEntityId: alice,
+      actorEntityId: alice,
+      audienceEntityId: unobservedGroup,
+      status: "inactive",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+
+    expect(repository.listObservedGroupAudienceEntityIdsForSpeaker(alice)).toEqual([group]);
+    expect(
+      repository.listRecentVisibleOtherSessionEvents({
+        currentSessionId,
+        audienceEntityIds: [alice, group],
+        sinceMs: 1_500,
+        limit: 12,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        kind: "user_contact",
+        occurredAt: 4_500,
+        sessionId: otherSourceGroupSessionId,
+        audienceEntityId: group,
+        conversationKind: "channel",
+        conversationName: "AI Ninjas",
+        participantLabel: "Alice",
+      }),
+      expect.objectContaining({
+        kind: "borg_replied",
+        occurredAt: 4_000,
+        sessionId: groupSessionId,
+        audienceEntityId: group,
+        conversationKind: "thread",
+        conversationName: "AI Ninjas",
+        participantLabel: "AI Ninjas",
+      }),
+      expect.objectContaining({
+        kind: "user_contact",
+        occurredAt: 2_000,
+        sessionId: groupSessionId,
+        participantLabel: "Alice",
+      }),
+    ]);
 
     db.close();
   });

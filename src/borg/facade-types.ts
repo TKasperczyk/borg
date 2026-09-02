@@ -9,6 +9,7 @@ import type {
 import type { CorrectionService } from "../correction/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
+import type { ActivityRepository } from "../memory/activity/index.js";
 import type {
   BorgRole,
   CommitmentRepository,
@@ -432,6 +433,24 @@ export type BorgCommitmentsFacade = {
   countCanonicalized: () => ReturnType<CommitmentRepository["countCanonicalized"]>;
 };
 
+export type BorgActivityFacade = Pick<
+  ActivityRepository,
+  "record" | "listObservedGroupAudienceEntityIdsForSpeaker" | "listRecentVisibleOtherSessionEvents"
+> & {
+  projectCompletedTurn(input: BorgActivityCompletedTurnProjectionInput): {
+    userContact: ReturnType<ActivityRepository["record"]>;
+    borgReplied: ReturnType<ActivityRepository["record"]>;
+    session: SessionRecord;
+  };
+};
+
+export type BorgActivityCompletedTurnProjectionInput = {
+  session: SessionEnsureInput;
+  userContact: Parameters<ActivityRepository["record"]>[0];
+  borgReplied: Parameters<ActivityRepository["record"]>[0];
+  touch: SessionTouchUpdate;
+};
+
 export type BorgCreatorDirectivesFacade = {
   queue: (
     ...args: Parameters<CreatorDirectiveRepository["queue"]>
@@ -627,6 +646,7 @@ export type BorgFacades = {
   semantic: BorgSemanticFacade;
   relationalSlots: BorgRelationalSlotsFacade;
   commitments: BorgCommitmentsFacade;
+  activity: BorgActivityFacade;
   creatorDirectives: BorgCreatorDirectivesFacade;
   identity: BorgIdentityFacade;
   correction: BorgCorrectionFacade;

@@ -1916,6 +1916,60 @@ describe("episodic extractor", () => {
     ).toBeNull();
   });
 
+  it("uses an existing entity id audience as a stable handle and renders its canonical label", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const groupAudience = harness.entityRepository.resolveExternal({
+      source: "team-agent.conversation",
+      externalId: "group-42",
+      canonicalName: "AI Ninjas",
+      kind: "group",
+      provenance: "transport_audience_label",
+    });
+    const user = await harness.writer.append({
+      kind: "user_msg",
+      content: "Remember the release decision.",
+      audience: groupAudience,
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse([
+          {
+            title: "Group release decision",
+            narrative: "The group settled the release decision.",
+            source_stream_ids: [user.id],
+            participants: ["AI Ninjas"],
+            tags: ["release"],
+            confidence: 0.9,
+            significance: 0.8,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      clock: harness.clock,
+    });
+
+    await extractor.extractFromStream();
+
+    const [episode] = await harness.repo.listAll();
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(episode?.audience_entity_id).toBe(groupAudience);
+    expect(episode?.origin_audience_entity_ids).toEqual([groupAudience]);
+    expect(prompt).toContain("(audience routing label) AI Ninjas");
+    expect(prompt).not.toContain(`(audience routing label) ${groupAudience}`);
+    expect(
+      harness.entityRepository.list().some((entity) => entity.canonical_name === groupAudience),
+    ).toBe(false);
+  });
+
   it("converges relational slots for default user and current-sender subject refs under one audience", async () => {
     const harness = await createRelationalExtractorHarness();
     const tom = harness.entityRepository.resolve("Tom");

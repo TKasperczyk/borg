@@ -25,7 +25,12 @@ import {
 import { uniqueStrings } from "../../util/collections.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError } from "../../util/errors.js";
-import { createEpisodeId, DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
+import {
+  createEpisodeId,
+  DEFAULT_SESSION_ID,
+  entityIdHelpers,
+  type SessionId,
+} from "../../util/ids.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import {
   GENERIC_SELF_ENTITY_VOICE_ANCHOR,
@@ -91,6 +96,7 @@ type RelationalSlotSubject = {
   entity_id: EntityId;
   label: string;
   source: "default_user" | "audience" | "sender";
+  isSelfAudience?: boolean;
 };
 type SelfPromptEntity = {
   id: EntityId;
@@ -294,7 +300,10 @@ function perceptionSignalForUserEntry(
   return null;
 }
 
-function perceptionContextLine(entry: StreamEntry): string | null {
+function perceptionContextLine(
+  entry: StreamEntry,
+  audienceLabelsById: ReadonlyMap<string, string> = new Map(),
+): string | null {
   if (entry.kind !== "perception") {
     return null;
   }
@@ -312,7 +321,10 @@ function perceptionContextLine(entry: StreamEntry): string | null {
     temporalCue: parsed.data.temporalCue,
     affectiveSignal: parsed.data.affectiveSignal,
     affectiveSignalDegraded: parsed.data.affectiveSignalDegraded === true,
-    audience: entry.audience,
+    audience:
+      entry.audience === undefined
+        ? undefined
+        : (audienceLabelsById.get(entry.audience) ?? entry.audience),
   });
 }
 
@@ -396,6 +408,7 @@ function buildExtractorPrompt(
   relationalSlotSubjects: readonly RelationalSlotSubject[],
   senderParticipants: readonly SenderParticipant[],
   selfEntity: SelfPromptEntity | null,
+  audienceLabelsById: ReadonlyMap<string, string>,
   options: {
     salienceGateEnabled: boolean;
     protectedSourceEntryIds: readonly StreamEntryId[];
@@ -419,11 +432,13 @@ function buildExtractorPrompt(
       content: entry.content,
       conversation: entry.conversation,
       audience:
-        entry.audience === undefined ? undefined : `(audience routing label) ${entry.audience}`,
+        entry.audience === undefined
+          ? undefined
+          : `(audience routing label) ${audienceLabelsById.get(entry.audience) ?? entry.audience}`,
     });
   });
   const perceptionLines = perceptionContextEntries.flatMap((entry) => {
-    const line = perceptionContextLine(entry);
+    const line = perceptionContextLine(entry, audienceLabelsById);
 
     return line === null ? [] : [line];
   });
@@ -521,12 +536,17 @@ function buildExtractorPrompt(
   return promptLines.join("\n");
 }
 
-function subjectForPrompt(subject: RelationalSlotSubject): RelationalSlotSubject & {
+function subjectForPrompt(subject: RelationalSlotSubject): Omit<
+  RelationalSlotSubject,
+  "isSelfAudience"
+> & {
   routing_label?: string;
 } {
+  const { isSelfAudience: _isSelfAudience, ...promptSubject } = subject;
+
   if (subject.source === "audience") {
     return {
-      ...subject,
+      ...promptSubject,
       label: `(audience routing label) ${subject.label}`,
       routing_label: subject.label,
     };
@@ -534,13 +554,13 @@ function subjectForPrompt(subject: RelationalSlotSubject): RelationalSlotSubject
 
   if (subject.source === "sender") {
     return {
-      ...subject,
+      ...promptSubject,
       label: `(stream sender) ${subject.label}`,
     };
   }
 
   return {
-    ...subject,
+    ...promptSubject,
     label: `(config default user) ${subject.label}`,
     routing_label: subject.label,
   };
@@ -654,7 +674,10 @@ function humanAudienceForRelationalSlot(
 
   return (
     relationalSlotSubjects.find(
-      (subject) => subject.source === "audience" && subject.label === audience,
+      (subject) =>
+        subject.source === "audience" &&
+        subject.isSelfAudience !== true &&
+        (subject.entity_id === audience || subject.label === audience),
     ) ?? null
   );
 }
@@ -927,6 +950,35 @@ export class EpisodicExtractor {
     });
   }
 
+  private resolveStreamAudience(audience: string): {
+    entityId: EntityId;
+    canonicalLabel: string;
+  } {
+    const trimmed = audience.trim();
+
+    if (entityIdHelpers.is(trimmed)) {
+      const existing = this.options.entityRepository.get(trimmed as EntityId);
+
+      if (existing !== null) {
+        return {
+          entityId: existing.id,
+          canonicalLabel: existing.canonical_name,
+        };
+      }
+    }
+
+    const entityId = this.options.entityRepository.resolve(trimmed, {
+      ...(trimmed === "self" ? { kind: "self" as const } : {}),
+      provenance: "transport_audience_label",
+    });
+    const entity = this.options.entityRepository.get(entityId);
+
+    return {
+      entityId,
+      canonicalLabel: entity?.canonical_name ?? trimmed,
+    };
+  }
+
   private deriveEpisodeAccess(
     sourceEntries: readonly StreamEntry[],
   ): Pick<Episode, "audience_entity_id" | "origin_audience_entity_ids" | "shared"> {
@@ -944,11 +996,8 @@ export class EpisodicExtractor {
       };
     }
 
-    const originAudienceEntityIds = audiences.map((audience) =>
-      this.options.entityRepository.resolve(audience, {
-        ...(audience === "self" ? { kind: "self" as const } : {}),
-        provenance: "transport_audience_label",
-      }),
+    const originAudienceEntityIds = audiences.map(
+      (audience) => this.resolveStreamAudience(audience).entityId,
     );
 
     return {
@@ -983,12 +1032,13 @@ export class EpisodicExtractor {
         entry.audience === undefined || entry.audience.trim().length === 0 ? [] : [entry.audience],
       ),
     )) {
+      const resolved = this.resolveStreamAudience(audience);
+
       subjects.push({
-        entity_id: this.options.entityRepository.resolve(audience, {
-          provenance: "transport_audience_label",
-        }),
-        label: audience,
+        entity_id: resolved.entityId,
+        label: resolved.canonicalLabel,
         source: "audience",
+        isSelfAudience: this.options.entityRepository.get(resolved.entityId)?.kind === "self",
       });
     }
 
@@ -1190,12 +1240,32 @@ export class EpisodicExtractor {
       }
     }
 
-    const activeContextEntries = filterActiveStreamEntries(contextEntries);
+    const audienceLabelsById = new Map<string, string>();
+    const normalizedContextEntries = contextEntries.map((entry) => {
+      if (entry.audience === undefined || entry.audience.trim().length === 0) {
+        return entry;
+      }
+
+      const resolved = this.resolveStreamAudience(entry.audience);
+      audienceLabelsById.set(resolved.entityId, resolved.canonicalLabel);
+
+      return {
+        ...entry,
+        audience: resolved.entityId,
+      };
+    });
+    const normalizedContextEntriesById = new Map(
+      normalizedContextEntries.map((entry) => [entry.id, entry]),
+    );
+    const normalizedStreamEntries = streamEntries.map(
+      (entry) => normalizedContextEntriesById.get(entry.id) ?? entry,
+    );
+    const activeContextEntries = filterActiveStreamEntries(normalizedContextEntries);
     const activeStreamEntryIds = new Set(activeContextEntries.map((entry) => entry.id));
     const suppressedUserEntryIds = new Set(
       activeContextEntries.flatMap((entry) => suppressedUserEntryIdsFromMarker(entry)),
     );
-    const extractableStreamEntries = streamEntries
+    const extractableStreamEntries = normalizedStreamEntries
       .filter((entry) => activeStreamEntryIds.has(entry.id))
       .filter((entry) => entry.kind !== "user_msg" || !suppressedUserEntryIds.has(entry.id));
 
@@ -1251,6 +1321,7 @@ export class EpisodicExtractor {
                     relationalSlotSubjects,
                     senderParticipants,
                     selfEntity,
+                    audienceLabelsById,
                     {
                       salienceGateEnabled,
                       protectedSourceEntryIds,

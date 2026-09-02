@@ -794,6 +794,13 @@ export class EpisodicRepository {
         return capability.audienceEntityId === null
           ? lancePublicOriginSql()
           : `(${lancePublicOriginSql()} OR ${lanceOriginContainsSql(capability.audienceEntityId)})`;
+      case "audience_set":
+        return capability.audienceEntityIds.length === 0
+          ? lancePublicOriginSql()
+          : `(${[
+              lancePublicOriginSql(),
+              ...capability.audienceEntityIds.map((entityId) => lanceOriginContainsSql(entityId)),
+            ].join(" OR ")})`;
       default: {
         const exhaustive: never = capability;
         throw new Error(`unhandled ViewerCapability kind: ${JSON.stringify(exhaustive)}`);
@@ -824,6 +831,19 @@ export class EpisodicRepository {
           : {
               sql: `(${indexedPublicOriginSql(alias)} OR ${indexedOriginContainsSql(alias)})`,
               params: [capability.audienceEntityId, capability.audienceEntityId],
+            };
+      case "audience_set":
+        return capability.audienceEntityIds.length === 0
+          ? {
+              sql: indexedPublicOriginSql(alias),
+              params: [],
+            }
+          : {
+              sql: `(${[
+                indexedPublicOriginSql(alias),
+                ...capability.audienceEntityIds.map(() => indexedOriginContainsSql(alias)),
+              ].join(" OR ")})`,
+              params: capability.audienceEntityIds.flatMap((entityId) => [entityId, entityId]),
             };
       default: {
         const exhaustive: never = capability;

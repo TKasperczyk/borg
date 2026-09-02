@@ -11,6 +11,11 @@ import type {
 } from "../autonomy/types.js";
 import type { MoodHistoryEntry, MoodState } from "../memory/affective/types.js";
 import type {
+  ActivityEvent,
+  ActivityEventRecordInput,
+  ActivityVisibleSessionEvent,
+} from "../memory/activity/types.js";
+import type {
   ActionActor,
   ActionRecord,
   ActionRecordPatch,
@@ -802,6 +807,29 @@ export type BorgCommitmentsFacade = {
   countCanonicalized(): number;
 };
 
+export type BorgActivityFacade = {
+  record(input: ActivityEventRecordInput): ActivityEvent;
+  projectCompletedTurn(input: BorgActivityCompletedTurnProjectionInput): {
+    userContact: ActivityEvent;
+    borgReplied: ActivityEvent;
+    session: SessionRecord;
+  };
+  listObservedGroupAudienceEntityIdsForSpeaker(speakerEntityId: EntityId): EntityId[];
+  listRecentVisibleOtherSessionEvents(input: {
+    currentSessionId: SessionId;
+    audienceEntityIds: readonly EntityId[];
+    sinceMs: number;
+    limit: number;
+  }): ActivityVisibleSessionEvent[];
+};
+
+export type BorgActivityCompletedTurnProjectionInput = {
+  session: SessionEnsureInput;
+  userContact: ActivityEventRecordInput;
+  borgReplied: ActivityEventRecordInput;
+  touch: SessionTouchUpdate;
+};
+
 export type BorgCreatorDirectivesFacade = {
   queue(input: CreatorDirectiveQueueInput): CreatorDirective;
   get(id: CreatorDirectiveId): CreatorDirective | null;
@@ -1312,6 +1340,7 @@ export type BorgFacades = {
   semantic: BorgSemanticFacade;
   relationalSlots: BorgRelationalSlotsFacade;
   commitments: BorgCommitmentsFacade;
+  activity: BorgActivityFacade;
   creatorDirectives: BorgCreatorDirectivesFacade;
   identity: BorgIdentityFacade;
   correction: BorgCorrectionFacade;

@@ -47,6 +47,7 @@ export class Borg {
   readonly semantic: BorgFacades["semantic"];
   readonly relationalSlots: BorgFacades["relationalSlots"];
   readonly commitments: BorgFacades["commitments"];
+  readonly activity: BorgFacades["activity"];
   readonly creatorDirectives: BorgFacades["creatorDirectives"];
   readonly identity: BorgFacades["identity"];
   readonly correction: BorgFacades["correction"];
@@ -76,6 +77,7 @@ export class Borg {
     this.semantic = facades.semantic;
     this.relationalSlots = facades.relationalSlots;
     this.commitments = facades.commitments;
+    this.activity = facades.activity;
     this.creatorDirectives = facades.creatorDirectives;
     this.identity = facades.identity;
     this.correction = facades.correction;

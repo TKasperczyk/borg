@@ -356,6 +356,92 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     expect(results.map((result) => result.episode.id)).toContain(publicEpisode.id);
   });
 
+  it("enforces disclosure audience sets in Lance, indexed searches, and final retrieval", async () => {
+    const query = "membership-scoped architecture";
+    harness = await createOfflineTestHarness({
+      embeddingClient: new TestEmbeddingClient(new Map([[query, [1, 0, 0, 0]]])),
+    });
+    const person = harness.entityRepository.resolve("Alice");
+    const observedGroup = harness.entityRepository.resolve("AI Ninjas", { kind: "group" });
+    const hiddenPerson = harness.entityRepository.resolve("Bob");
+    const publicEpisode = createEpisodeFixture(
+      {
+        title: "Public membership architecture",
+        tags: ["membership"],
+        audience_entity_id: null,
+        origin_audience_entity_ids: [],
+        shared: true,
+      },
+      [1, 0, 0, 0],
+    );
+    const personEpisode = createEpisodeFixture(
+      {
+        title: "Alice membership architecture",
+        tags: ["membership"],
+        audience_entity_id: person,
+        origin_audience_entity_ids: [person],
+        shared: false,
+      },
+      [1, 0, 0, 0],
+    );
+    const groupEpisode = createEpisodeFixture(
+      {
+        title: "AI Ninjas membership architecture",
+        tags: ["membership"],
+        audience_entity_id: observedGroup,
+        origin_audience_entity_ids: [observedGroup],
+        shared: false,
+      },
+      [1, 0, 0, 0],
+    );
+    const hiddenEpisode = createEpisodeFixture(
+      {
+        title: "Bob membership architecture",
+        tags: ["membership"],
+        audience_entity_id: hiddenPerson,
+        origin_audience_entity_ids: [hiddenPerson],
+        shared: false,
+      },
+      [1, 0, 0, 0],
+    );
+
+    for (const episode of [publicEpisode, personEpisode, groupEpisode, hiddenEpisode]) {
+      await harness.episodicRepository.createEpisode(episode);
+    }
+
+    const visibility = {
+      audienceEntityId: person,
+      visibleAudienceEntityIds: [observedGroup],
+    };
+    const expectedIds = [publicEpisode.id, personEpisode.id, groupEpisode.id].sort();
+    const vectorIds = (
+      await harness.episodicRepository.searchByVectorForDisclosure(
+        Float32Array.from([1, 0, 0, 0]),
+        { ...visibility, limit: 10 },
+      )
+    )
+      .map((result) => result.episode.id)
+      .sort();
+    const indexedIds = (
+      await harness.episodicRepository.searchByParticipantsOrTagsForDisclosure(["membership"], {
+        ...visibility,
+        limit: 10,
+      })
+    )
+      .map((result) => result.episode.id)
+      .sort();
+    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(query, {
+      ...visibility,
+      entityTerms: ["membership"],
+      limit: 10,
+    });
+
+    expect(vectorIds).toEqual(expectedIds);
+    expect(indexedIds).toEqual(expectedIds);
+    expect(results.map((result) => result.episode.id).sort()).toEqual(expectedIds);
+    expect(results.map((result) => result.episode.id)).not.toContain(hiddenEpisode.id);
+  });
+
   it("recalls self-scoped and other private episodes globally while preserving labels", async () => {
     harness = await createOfflineTestHarness();
     const selfEntityId = harness.entityRepository.add({

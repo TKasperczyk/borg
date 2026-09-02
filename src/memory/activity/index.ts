@@ -3,7 +3,6 @@ export {
   ActivityRepository,
   type ActivityAutobiographicalSourceEvent,
   type ActivityDailyDensityRow,
-  type ActivityEventRecordInput,
   type ActivityEventKindCounts,
   type ActivityGlobalDailyDensityRow,
   type ActivityProjectionSourceEvent,
@@ -46,6 +45,8 @@ export {
   activityEventSchema,
   activityEventStatusSchema,
   type ActivityEvent,
+  type ActivityEventRecordInput,
   type ActivityEventKind,
   type ActivityEventStatus,
+  type ActivityVisibleSessionEvent,
 } from "./types.js";

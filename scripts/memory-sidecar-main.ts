@@ -20,7 +20,11 @@ import {
   loadConfig,
   type OpenAIChatCompletionsClient,
 } from "../src/index.js";
-import { createMemoryHandler } from "../src/sidecar/memory-handler.js";
+import {
+  createMemoryHandler,
+  DEFAULT_RECENT_ACTIVITY_LIMIT,
+  DEFAULT_RECENT_ACTIVITY_WINDOW_MS,
+} from "../src/sidecar/memory-handler.js";
 import {
   memoryCommitmentExtractionBudgetFromEnv,
   memoryCommitmentExtractionEnabledFromEnv,
@@ -67,6 +71,20 @@ const recallAbstainThreshold = Number.isFinite(recallAbstainThresholdRaw)
 // caller's recall timeout (team-agent: memory.recall_timeout, 6s on prod).
 const recallDeadlineMsRaw = Number(process.env.BORG_RECALL_DEADLINE_MS ?? 5000);
 const recallDeadlineMs = Number.isFinite(recallDeadlineMsRaw) ? recallDeadlineMsRaw : 5000;
+const recentActivityWindowMsRaw = Number(
+  process.env.BORG_MEMORY_RECENT_ACTIVITY_WINDOW_MS ?? DEFAULT_RECENT_ACTIVITY_WINDOW_MS,
+);
+const recentActivityWindowMs =
+  Number.isFinite(recentActivityWindowMsRaw) && recentActivityWindowMsRaw >= 0
+    ? Math.floor(recentActivityWindowMsRaw)
+    : DEFAULT_RECENT_ACTIVITY_WINDOW_MS;
+const recentActivityLimitRaw = Number(
+  process.env.BORG_MEMORY_RECENT_ACTIVITY_LIMIT ?? DEFAULT_RECENT_ACTIVITY_LIMIT,
+);
+const recentActivityLimit =
+  Number.isFinite(recentActivityLimitRaw) && recentActivityLimitRaw > 0
+    ? Math.floor(recentActivityLimitRaw)
+    : DEFAULT_RECENT_ACTIVITY_LIMIT;
 // Bound every provider call so a hung kratos can't pin a request + pool slot
 // (and block shutdown) indefinitely.
 const requestTimeoutMs = Number(process.env.BORG_MEMORY_LLM_TIMEOUT_MS ?? 120_000);
@@ -167,6 +185,8 @@ const server = createServer(
     maintenanceCoordinator,
     recallAbstainThreshold,
     recallDeadlineMs,
+    recentActivityWindowMs,
+    recentActivityLimit,
     ...(traceRegistry === undefined ? {} : { traceRegistry }),
   }),
 );

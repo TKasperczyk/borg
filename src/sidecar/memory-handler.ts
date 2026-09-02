@@ -3,12 +3,18 @@
 //
 //   POST /memory/remember    { tenant, content, author? }          -> append + extract episode(s)
 //   POST /memory/append-turn { tenant, session, user, assistant, sender?, conversation? }
-//                                                            -> append + async extract
+//        sender.operator? and conversation.external_id? enrich sessions/audience/activity;
+//        incomplete legacy identity keeps the original append behavior -> append + async extract
+//   POST /memory/context { tenant, session, sender, conversation, query?, limit?, sections? }
+//                                                            -> audience-scoped turn context
 //   POST /memory/recall      { tenant, query, limit? }             -> semantic episodic search
 //   GET  /memory/commitments?tenant=<id>&audience=<entity_id>      -> active commitments
 //        Alternative audience_external_id resolves team-agent sender identity.
 //   POST /memory/commitments { tenant, ...commitment }             -> operator-set commitment
 //   DELETE /memory/commitments?tenant=<id>&id=<commitment_id>      -> retire commitment
+//   POST /memory/directives { tenant, kind, text, content_scope, ... } -> queue operator directive
+//   GET  /memory/directives?tenant=<id>                            -> list active directives
+//   DELETE /memory/directives/{id}?tenant=<id> { reason }          -> revoke directive
 //   GET  /memory/episodes?tenant=<id>&limit=<n>&cursor=<c> -> list raw episodic bank
 //   GET  /memory/self?tenant=<id>&limit=<n>      -> growth markers, periods, open questions
 //   GET  /memory/semantic?tenant=<id>&limit=<n>  -> semantic nodes (no embeddings)
@@ -23,9 +29,9 @@
 //   POST /memory/maintenance/revert?tenant=<id>&audit_id=<id>
 //   GET  /healthz                                           -> liveness (no auth)
 //
-// Recall is tenant-wide by design: the pool routes to one being per tenant and,
-// within a being, recall is global (borg's "recall is global to the being", with
-// being == tenant). All authenticated routes require the shared x-borg-token.
+// Cognition recall remains global within each tenant being. These HTTP routes are
+// disclosure/export surfaces: /memory/context applies audience visibility before
+// returning episodes or activity. All authenticated routes require x-borg-token.
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -34,6 +40,7 @@ import { z } from "zod";
 
 import type { Borg } from "../borg.js";
 import { normalizeCommitmentClassification } from "../cognition/commitments/classification-normalizer.js";
+import type { ActivityVisibleSessionEvent } from "../memory/activity/index.js";
 import {
   commitmentCriticalDomainSchema,
   commitmentEnforcementClassSchema,
@@ -44,8 +51,24 @@ import {
   type CommitmentRecord,
   type EntityRecord,
 } from "../memory/commitments/index.js";
-import { parseEpisodeParticipantEntityIdTerm, type Episode } from "../memory/episodic/index.js";
+import {
+  creatorDirectiveContentScopeSchema,
+  creatorDirectiveKindSchema,
+  creatorDirectiveMentionPolicySchema,
+  creatorDirectiveQueueInputSchema,
+  creatorDirectiveTopicTagSchema,
+  type CreatorDirective,
+  type CreatorDirectiveApplicable,
+  type CreatorDirectiveQueueInput,
+} from "../memory/creator-directives/index.js";
+import { memoryDisclosureLabelFromEpisodeAccess } from "../memory/common/index.js";
+import {
+  isEpisodeAccessVisibleToAnyAudience,
+  parseEpisodeParticipantEntityIdTerm,
+  type Episode,
+} from "../memory/episodic/index.js";
 import type { RetrievalDegradation } from "../retrieval/pipeline.js";
+import type { SessionEnsureInput } from "../sessions/index.js";
 import {
   streamConversationSchema,
   type StreamConversation,
@@ -54,15 +77,19 @@ import {
 import { dedupePreservingOrder } from "../util/collections.js";
 import { EmbeddingError } from "../util/errors.js";
 import {
+  createStreamEntryId,
   parseAuditId,
   parseCommitmentId,
+  parseCreatorDirectiveId,
   parseEpisodeId,
   parseMaintenanceRunId,
   parseSessionId,
   type EpisodeId,
+  type EntityId,
   type MaintenanceRunId,
   type SessionId,
 } from "../util/ids.js";
+import { formatRelativeAge } from "../util/relative-time.js";
 import type { MemoryMaintenanceCoordinator } from "./memory-maintenance.js";
 import type { MemoryTraceRegistry } from "./memory-trace.js";
 
@@ -103,6 +130,8 @@ export type MemoryHandlerOptions = {
   // recall timeout. Set it too low and it pre-empts the very degradation it
   // exists to deliver. 0 disables the ceiling.
   recallDeadlineMs?: number;
+  recentActivityWindowMs?: number;
+  recentActivityLimit?: number;
   traceRegistry?: MemoryTraceRegistry;
   maintenanceCoordinator?: Pick<
     MemoryMaintenanceCoordinator,
@@ -115,6 +144,8 @@ type RequestHandler = (req: IncomingMessage, res: ServerResponse) => void;
 const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
 const DEFAULT_MAX_RECALL_LIMIT = 50;
 const DEFAULT_RECALL_DEADLINE_MS = 5000;
+export const DEFAULT_RECENT_ACTIVITY_WINDOW_MS = 24 * 60 * 60_000;
+export const DEFAULT_RECENT_ACTIVITY_LIMIT = 12;
 const DEFAULT_EPISODE_LIST_LIMIT = 20;
 const MAX_EPISODE_LIST_LIMIT = 100;
 const MAX_COMMITMENT_RESPONSE_ITEMS = 100;
@@ -153,6 +184,103 @@ async function raceRecallDeadline<T>(search: Promise<T>, deadlineMs: number): Pr
 }
 
 const APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE = "team-agent.sender";
+const TEAM_AGENT_CONVERSATION_EXTERNAL_ID_SOURCE = "team-agent.conversation";
+const SIDECAR_ADMIN_EXTERNAL_ID_SOURCE = "memory-sidecar.admin";
+const SIDECAR_ADMIN_EXTERNAL_ID = "operator-api";
+const SIDECAR_ADMIN_SESSION_EXTERNAL_ID = "memory-sidecar::admin-api";
+
+const sidecarConversationSchema = streamConversationSchema.extend({
+  external_id: z.string().trim().min(1).optional(),
+});
+const contextConversationSchema = sidecarConversationSchema.strict();
+
+const contextSenderSchema = z
+  .object({
+    external_id: z.string().trim().min(1),
+    display_name: z.string().trim().min(1),
+    operator: z.boolean().optional().default(false),
+  })
+  .strict();
+
+const memoryContextSectionSchema = z.enum([
+  "audience",
+  "episodes",
+  "recent_activity",
+  "commitments",
+  "directives",
+]);
+
+const memoryContextBodySchema = z
+  .object({
+    tenant: z.string().trim().regex(TENANT_ID_RE),
+    session: z.string().trim().min(1),
+    sender: contextSenderSchema,
+    conversation: contextConversationSchema,
+    query: z.string().trim().min(1).optional(),
+    limit: z.number().finite().optional(),
+    sections: z.array(memoryContextSectionSchema).min(1).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.conversation.type !== "personal" && value.conversation.external_id === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["conversation", "external_id"],
+        message: "groupChat and channel context requires conversation.external_id",
+      });
+    }
+
+    if (
+      (value.sections ?? memoryContextSectionSchema.options).includes("episodes") &&
+      !value.query
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["query"],
+        message: "query is required when episodes are requested",
+      });
+    }
+  });
+
+const directiveAdminBodySchema = z
+  .object({
+    tenant: z.string().trim().regex(TENANT_ID_RE),
+    kind: creatorDirectiveKindSchema,
+    text: z.string().trim().min(1),
+    content_scope: creatorDirectiveContentScopeSchema,
+    allowed_external_ids: z.array(z.string().trim().min(1)).optional().default([]),
+    excluded_external_ids: z.array(z.string().trim().min(1)).optional().default([]),
+    allowed_group_external_ids: z.array(z.string().trim().min(1)).optional().default([]),
+    excluded_group_external_ids: z.array(z.string().trim().min(1)).optional().default([]),
+    subject_external_id: z.string().trim().min(1).optional(),
+    mention_policy: creatorDirectiveMentionPolicySchema.optional().default("answer_if_asked"),
+    priority: z.number().int().optional().default(0),
+    topic_tags: z.array(creatorDirectiveTopicTagSchema).max(32).optional().default([]),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.kind === "subject_fact" && value.subject_external_id === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["subject_external_id"],
+        message: "subject_fact requires subject_external_id",
+      });
+    }
+
+    if (value.kind !== "subject_fact" && value.subject_external_id !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["subject_external_id"],
+        message: "subject_external_id is only valid for subject_fact",
+      });
+    }
+  });
+
+const directiveRevokeBodySchema = z
+  .object({
+    reason: z.string().trim().min(1),
+  })
+  .strict();
 
 const operatorCommitmentBodySchema = z
   .object({
@@ -220,6 +348,32 @@ function readBody(req: IncomingMessage, maxBytes: number): Promise<string> {
   });
 }
 
+async function readJsonObjectBody(
+  req: IncomingMessage,
+  res: ServerResponse,
+  maxBytes: number,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const raw = await readBody(req, maxBytes);
+    const parsed: unknown = raw.trim() === "" ? {} : JSON.parse(raw);
+
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      send(res, 400, { error: "request body must be a JSON object" });
+      return null;
+    }
+
+    return parsed as Record<string, unknown>;
+  } catch (error) {
+    if (error instanceof PayloadTooLargeError) {
+      send(res, 413, { error: "request body too large" });
+      return null;
+    }
+
+    send(res, 400, { error: "invalid JSON body" });
+    return null;
+  }
+}
+
 // Constant-time bearer check. Fail closed on an empty configured token, a missing
 // header, or a folded/duplicated header (array) — duplicate-header semantics are
 // proxy-dependent and not worth trusting.
@@ -243,6 +397,24 @@ function asContentString(value: unknown): string {
 type AppendTurnSender = {
   externalId: string;
   displayName: string;
+  operator: unknown;
+};
+
+type EnhancedAppendTurnSender = {
+  externalId: string;
+  displayName: string;
+  operator: boolean;
+};
+
+type SidecarConversation = z.infer<typeof sidecarConversationSchema>;
+
+type TeamAgentIdentity = {
+  session: SessionId;
+  senderEntityId: EntityId;
+  audienceEntity: EntityRecord;
+  audienceRole: "participant" | "operator";
+  conversation: StreamConversation;
+  sessionEnsureInput: SessionEnsureInput;
 };
 
 function parseAppendTurnSender(
@@ -259,6 +431,7 @@ function parseAppendTurnSender(
   const sender = value as Record<string, unknown>;
   const externalId = asString(sender.external_id);
   const displayName = asString(sender.display_name);
+  const operator = sender.operator;
 
   if (externalId.length === 0 || displayName.length === 0) {
     return { valid: false };
@@ -269,6 +442,7 @@ function parseAppendTurnSender(
     sender: {
       externalId,
       displayName,
+      operator,
     },
   };
 }
@@ -363,6 +537,26 @@ function parseEpisodeIdFromPath(pathname: string): EpisodeId | null | undefined 
 
   try {
     return parseEpisodeId(segments[3] ?? "");
+  } catch {
+    return null;
+  }
+}
+
+function parseCreatorDirectiveIdFromPath(
+  pathname: string,
+): ReturnType<typeof parseCreatorDirectiveId> | null | undefined {
+  const prefix = "/memory/directives/";
+  if (!pathname.startsWith(prefix)) {
+    return undefined;
+  }
+
+  const rawId = pathname.slice(prefix.length);
+  if (rawId === "" || rawId.includes("/")) {
+    return null;
+  }
+
+  try {
+    return parseCreatorDirectiveId(rawId);
   } catch {
     return null;
   }
@@ -538,6 +732,40 @@ function compareCommitmentsForResponse(left: CommitmentRecord, right: Commitment
   );
 }
 
+function directiveContentText(directive: CreatorDirective): string {
+  return directive.operational_directive ?? directive.canonical_fact ?? "";
+}
+
+function projectCreatorDirectiveForAdmin(directive: CreatorDirective) {
+  return {
+    id: directive.id,
+    kind: directive.kind,
+    status: directive.status,
+    text: directiveContentText(directive),
+    content_scope: directive.disclosure_policy.content_scope,
+    priority: directive.priority,
+    topic_tags: [...directive.disclosure_policy.topic_tags],
+    created_at: directive.created_at,
+  };
+}
+
+function projectApplicableCreatorDirective(applicable: CreatorDirectiveApplicable) {
+  const text =
+    applicable.render_mode === "boundary"
+      ? (applicable.directive.disclosure_policy.boundary_prompt ?? "")
+      : directiveContentText(applicable.directive);
+
+  return {
+    id: applicable.directive.id,
+    kind: applicable.directive.kind,
+    render_mode: applicable.render_mode,
+    text,
+    content_scope: applicable.directive.disclosure_policy.content_scope,
+    priority: applicable.directive.priority,
+    topic_tags: [...applicable.directive.disclosure_policy.topic_tags],
+  };
+}
+
 function errorCode(error: unknown): unknown {
   return error !== null && typeof error === "object" && "code" in error
     ? (error as { code?: unknown }).code
@@ -557,6 +785,237 @@ function sessionFromCaller(value: string): SessionId {
   }
 }
 
+function conversationKindForSidecar(
+  type: SidecarConversation["type"],
+): "dm" | "thread" | "channel" {
+  switch (type) {
+    case "personal":
+      return "dm";
+    case "groupChat":
+      return "thread";
+    case "channel":
+      return "channel";
+  }
+}
+
+function resolveTeamAgentIdentity(input: {
+  borg: Borg;
+  session: SessionId;
+  rawSession: string;
+  sender: EnhancedAppendTurnSender;
+  conversation: SidecarConversation;
+}): TeamAgentIdentity {
+  const senderEntityId = input.borg.entities.resolveExternal({
+    source: APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE,
+    externalId: input.sender.externalId,
+    canonicalName: input.sender.displayName,
+    kind: "person",
+    provenance: "transport_sender",
+  });
+  let audienceEntityId = senderEntityId;
+
+  if (input.conversation.type !== "personal") {
+    const externalId = input.conversation.external_id;
+
+    if (externalId === undefined) {
+      throw new Error("group conversation identity requires an external id");
+    }
+
+    audienceEntityId = input.borg.entities.resolveExternal({
+      source: TEAM_AGENT_CONVERSATION_EXTERNAL_ID_SOURCE,
+      externalId,
+      canonicalName:
+        input.conversation.name.length > 0
+          ? input.conversation.name
+          : `${input.conversation.type}:${externalId}`,
+      kind: "group",
+      provenance: "transport_audience_label",
+    });
+  }
+
+  const audienceEntity = input.borg.entities.get(audienceEntityId);
+
+  if (audienceEntity === null) {
+    throw new Error(`resolved audience entity ${audienceEntityId} is missing`);
+  }
+
+  const audienceRole = input.sender.operator ? "operator" : "participant";
+  const conversation = {
+    type: input.conversation.type,
+    name: input.conversation.name,
+  } satisfies StreamConversation;
+
+  const sessionEnsureInput = {
+    session_id: input.session,
+    source_type: "team_agent",
+    source_external_id: input.rawSession,
+    label: input.conversation.name || audienceEntity.canonical_name,
+    audience_label: audienceEntity.canonical_name,
+    audience_entity_id: audienceEntity.id,
+    conversation_kind: conversationKindForSidecar(input.conversation.type),
+    audience_role: audienceRole,
+    status: "active",
+  } satisfies SessionEnsureInput;
+
+  return {
+    session: input.session,
+    senderEntityId,
+    audienceEntity,
+    audienceRole,
+    conversation,
+    sessionEnsureInput,
+  };
+}
+
+function projectRecentActivity(event: ActivityVisibleSessionEvent, nowMs: number) {
+  const relativeAge = formatRelativeAge(event.occurredAt, nowMs);
+  const conversation =
+    event.conversationKind === "dm"
+      ? { type: "personal" as const, name: event.conversationName }
+      : event.conversationKind === "thread"
+        ? { type: "groupChat" as const, name: event.conversationName }
+        : { type: "channel" as const, name: event.conversationName };
+  const location =
+    conversation.type === "personal"
+      ? `personal chat "${conversation.name}"`
+      : conversation.type === "groupChat"
+        ? `group chat "${conversation.name}"`
+        : `channel "${conversation.name}"`;
+  const text =
+    event.kind === "user_contact"
+      ? `${event.participantLabel} contacted the agent ${relativeAge} in ${location}.`
+      : `The agent replied to ${event.participantLabel} ${relativeAge} in ${location}.`;
+
+  return {
+    kind: event.kind,
+    occurred_at: event.occurredAt,
+    occurred_at_iso: new Date(event.occurredAt).toISOString(),
+    relative_age: relativeAge,
+    session: event.sessionId,
+    conversation,
+    participant_name: event.participantLabel,
+    text,
+  };
+}
+
+function resolveKnownExternalEntityIds(input: {
+  borg: Borg;
+  source: string;
+  externalIds: readonly string[];
+  kind: "person" | "group";
+}): EntityId[] | null {
+  const resolved: EntityId[] = [];
+
+  for (const externalId of dedupePreservingOrder(input.externalIds)) {
+    const entityId = input.borg.entities.findByExternalId(input.source, externalId);
+    const entity = entityId === null ? null : input.borg.entities.get(entityId);
+
+    if (entity === null || entity.kind !== input.kind) {
+      return null;
+    }
+
+    resolved.push(entity.id);
+  }
+
+  return resolved;
+}
+
+function buildCreatorDirectiveQueueInput(input: {
+  body: z.infer<typeof directiveAdminBodySchema>;
+  adminEntityId: EntityId;
+  adminSessionId: SessionId;
+  sourceStreamEntryId: ReturnType<typeof createStreamEntryId>;
+  allowedEntityIds: readonly EntityId[];
+  excludedEntityIds: readonly EntityId[];
+  subjectEntityId: EntityId | null;
+}): CreatorDirectiveQueueInput {
+  const operational =
+    input.body.kind === "response_policy" || input.body.kind === "routing_instruction";
+  const subjectKind =
+    input.body.kind === "self_identity"
+      ? "borg_self"
+      : input.body.kind === "subject_fact"
+        ? "entity"
+        : "system";
+
+  return {
+    kind: input.body.kind,
+    createdByEntityId: input.adminEntityId,
+    sourceSessionId: input.adminSessionId,
+    authorizationStreamEntryIds: [input.sourceStreamEntryId],
+    contentSourceStreamEntryIds: [input.sourceStreamEntryId],
+    subjectKind,
+    subjectEntityId: subjectKind === "entity" ? input.subjectEntityId : null,
+    canonicalFact: operational ? null : input.body.text,
+    operationalDirective: operational ? input.body.text : null,
+    disclosurePolicy: {
+      content_scope: input.body.content_scope,
+      allowed_entity_ids: [...input.allowedEntityIds],
+      excluded_entity_ids: [...input.excludedEntityIds],
+      subject_may_know: input.body.content_scope === "subject_only" ? true : null,
+      mention_policy: input.body.mention_policy,
+      denied_audience_behavior: "omit",
+      boundary_prompt: input.body.text,
+      topic_tags: [...input.body.topic_tags],
+    },
+    activationPolicy: {
+      scope: "same_as_disclosure",
+      allowed_entity_ids: [],
+      excluded_entity_ids: [],
+    },
+    priority: input.body.priority,
+  };
+}
+
+type DirectiveAdminIdentity = {
+  entityId: EntityId;
+  sessionId: SessionId;
+};
+
+function ensureDirectiveAdminIdentity(borg: Borg): DirectiveAdminIdentity {
+  const entityId = borg.entities.resolveExternal({
+    source: SIDECAR_ADMIN_EXTERNAL_ID_SOURCE,
+    externalId: SIDECAR_ADMIN_EXTERNAL_ID,
+    canonicalName: "Memory sidecar admin API",
+    kind: "abstract",
+    provenance: "creator_directive",
+  });
+  const sessionId = sessionFromCaller(SIDECAR_ADMIN_SESSION_EXTERNAL_ID);
+  borg.sessions.ensure({
+    session_id: sessionId,
+    source_type: "memory_sidecar",
+    source_external_id: SIDECAR_ADMIN_SESSION_EXTERNAL_ID,
+    label: "Memory sidecar admin API",
+    audience_label: "Memory sidecar admin API",
+    audience_entity_id: entityId,
+    conversation_kind: "dm",
+    audience_role: "operator",
+    status: "active",
+  });
+
+  return { entityId, sessionId };
+}
+
+async function appendDirectiveAdminEvent(input: {
+  borg: Borg;
+  admin: DirectiveAdminIdentity;
+  content: Record<string, unknown>;
+}) {
+  const entry = await input.borg.stream.append(
+    {
+      kind: "internal_event",
+      content: input.content,
+      audience: input.admin.entityId,
+    },
+    { session: input.admin.sessionId },
+  );
+  input.borg.sessions.touch(input.admin.sessionId, {
+    at: entry.timestamp,
+    messageCountDelta: 1,
+  });
+  return entry;
+}
+
 function scheduleIngestion(pool: MemoryPool, tenant: string, session: SessionId): void {
   void pool
     .withTenant(tenant, (borg) => borg.episodic.ingest({ session }))
@@ -571,6 +1030,14 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
   const maxRecallLimit = options.maxRecallLimit ?? DEFAULT_MAX_RECALL_LIMIT;
   const recallAbstainThreshold = options.recallAbstainThreshold ?? 0;
   const recallDeadlineMs = options.recallDeadlineMs ?? DEFAULT_RECALL_DEADLINE_MS;
+  const recentActivityWindowMs = Math.max(
+    0,
+    Math.floor(options.recentActivityWindowMs ?? DEFAULT_RECENT_ACTIVITY_WINDOW_MS),
+  );
+  const recentActivityLimit = Math.max(
+    1,
+    Math.floor(options.recentActivityLimit ?? DEFAULT_RECENT_ACTIVITY_LIMIT),
+  );
   let recallTraceSequence = 0;
 
   const nextRecallTraceTurnId = (tenant: string): string => {
@@ -589,6 +1056,117 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
 
     if (!tokenMatches(req.headers["x-borg-token"], token)) {
       send(res, 401, { error: "unauthorized" });
+      return;
+    }
+
+    const creatorDirectiveId = parseCreatorDirectiveIdFromPath(rawPath);
+
+    if (method === "DELETE" && creatorDirectiveId !== undefined) {
+      if (creatorDirectiveId === null) {
+        send(res, 400, { error: "invalid directive id" });
+        return;
+      }
+      const tenant = requiredSingleQueryValue(res, searchParams, "tenant");
+      if (tenant === null || !validateTenantForResponse(res, tenant)) {
+        return;
+      }
+      const body = await readJsonObjectBody(req, res, maxBodyBytes);
+      if (body === null) {
+        return;
+      }
+      const parsedBody = directiveRevokeBodySchema.safeParse(body);
+      if (!parsedBody.success) {
+        send(res, 400, { error: "invalid directive revoke body" });
+        return;
+      }
+
+      try {
+        const result = await pool.withTenant(
+          tenant,
+          async (borg) => {
+            const current = borg.creatorDirectives.get(creatorDirectiveId);
+
+            if (current === null) {
+              return { status: "missing" as const };
+            }
+            if (current.status !== "active") {
+              return { status: "inactive" as const };
+            }
+
+            const admin = ensureDirectiveAdminIdentity(borg);
+            const provenanceEntry = await appendDirectiveAdminEvent({
+              borg,
+              admin,
+              content: {
+                event: "memory_sidecar.operator_directive_revoke_requested",
+                directive_id: creatorDirectiveId,
+                reason: parsedBody.data.reason,
+              },
+            });
+
+            let directive: CreatorDirective | null;
+            try {
+              directive = borg.creatorDirectives.revoke(creatorDirectiveId, parsedBody.data.reason);
+            } catch (error) {
+              try {
+                const code = errorCode(error);
+                await appendDirectiveAdminEvent({
+                  borg,
+                  admin,
+                  content: {
+                    event: "memory_sidecar.operator_directive_revoke_failed",
+                    directive_id: creatorDirectiveId,
+                    reason: parsedBody.data.reason,
+                    provenance_stream_entry_id: provenanceEntry.id,
+                    failure_code: typeof code === "string" ? code : "UNKNOWN",
+                  },
+                });
+              } catch (auditError) {
+                console.error(
+                  `memory-sidecar: failed to record directive revoke failure for tenant "${tenant}"`,
+                  auditError,
+                );
+              }
+              throw error;
+            }
+
+            if (directive !== null) {
+              return { status: "revoked" as const, directive };
+            }
+
+            await appendDirectiveAdminEvent({
+              borg,
+              admin,
+              content: {
+                event: "memory_sidecar.operator_directive_revoke_failed",
+                directive_id: creatorDirectiveId,
+                reason: parsedBody.data.reason,
+                provenance_stream_entry_id: provenanceEntry.id,
+                failure_code: "DIRECTIVE_NOT_ACTIVE",
+              },
+            });
+            return { status: "inactive" as const };
+          },
+          { exclusive: true },
+        );
+
+        if (result.status === "missing") {
+          send(res, 404, { error: "directive not found" });
+          return;
+        }
+        if (result.status === "inactive") {
+          send(res, 409, { error: "directive is not active" });
+          return;
+        }
+
+        send(res, 200, {
+          ok: true,
+          directive: projectCreatorDirectiveForAdmin(result.directive),
+        });
+      } catch (error) {
+        console.error(`memory-sidecar: ${rawPath} failed for tenant "${tenant}"`, error);
+        send(res, 500, { error: "internal error" });
+      }
       return;
     }
 
@@ -849,6 +1427,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       const isTracePath = rawPath === "/memory/trace";
       const isEpisodeListPath = rawPath === "/memory/episodes";
       const isCommitmentListPath = rawPath === "/memory/commitments";
+      const isDirectiveListPath = rawPath === "/memory/directives";
       const isMaintenanceStatusPath = rawPath === "/memory/maintenance/status";
       const isMaintenanceAuditPath = rawPath === "/memory/maintenance/audit";
       // Read surface for what the offline processes WRITE. Without these, a
@@ -867,6 +1446,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         isTracePath ||
         isEpisodeListPath ||
         isCommitmentListPath ||
+        isDirectiveListPath ||
         isMaintenanceStatusPath ||
         isMaintenanceAuditPath ||
         isSelfPath ||
@@ -880,6 +1460,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
 
       const strictQuery =
         isCommitmentListPath ||
+        isDirectiveListPath ||
         isMaintenanceStatusPath ||
         isMaintenanceAuditPath ||
         isSelfPath ||
@@ -1006,6 +1587,14 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             commitments: bounded.map((commitment) => projectCommitment(commitment)),
             truncated: ordered.length > bounded.length,
           });
+          return;
+        }
+
+        if (isDirectiveListPath) {
+          const directives = await pool.withTenant(tenant, (borg) =>
+            borg.creatorDirectives.list({ status: "active" }).map(projectCreatorDirectiveForAdmin),
+          );
+          send(res, 200, { ok: true, directives });
           return;
         }
 
@@ -1138,27 +1727,16 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       (rawPath !== "/memory/remember" &&
         rawPath !== "/memory/recall" &&
         rawPath !== "/memory/append-turn" &&
-        rawPath !== "/memory/commitments")
+        rawPath !== "/memory/commitments" &&
+        rawPath !== "/memory/context" &&
+        rawPath !== "/memory/directives")
     ) {
       send(res, 404, { error: "not found" });
       return;
     }
 
-    let body: Record<string, unknown>;
-    try {
-      const raw = await readBody(req, maxBodyBytes);
-      const parsed: unknown = raw.trim() === "" ? {} : JSON.parse(raw);
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        send(res, 400, { error: "request body must be a JSON object" });
-        return;
-      }
-      body = parsed as Record<string, unknown>;
-    } catch (error) {
-      if (error instanceof PayloadTooLargeError) {
-        send(res, 413, { error: "request body too large" });
-        return;
-      }
-      send(res, 400, { error: "invalid JSON body" });
+    const body = await readJsonObjectBody(req, res, maxBodyBytes);
+    if (body === null) {
       return;
     }
 
@@ -1168,6 +1746,399 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
     }
 
     try {
+      if (rawPath === "/memory/context") {
+        const parsed = memoryContextBodySchema.safeParse(body);
+
+        if (!parsed.success) {
+          send(res, 400, { error: "invalid memory context body" });
+          return;
+        }
+
+        const requestedSections = new Set(
+          parsed.data.sections ?? memoryContextSectionSchema.options,
+        );
+        const session = sessionFromCaller(parsed.data.session);
+        const identity = await pool.withTenant(
+          tenant,
+          (borg) => {
+            const resolved = resolveTeamAgentIdentity({
+              borg,
+              session,
+              rawSession: parsed.data.session,
+              sender: {
+                externalId: parsed.data.sender.external_id,
+                displayName: parsed.data.sender.display_name,
+                operator: parsed.data.sender.operator,
+              },
+              conversation: parsed.data.conversation,
+            });
+            borg.sessions.ensure(resolved.sessionEnsureInput);
+            return resolved;
+          },
+          { exclusive: true },
+        );
+        const nowMs = Date.now();
+        const context = await pool.withTenant(tenant, (borg) => {
+          const observedGroupAudienceEntityIds =
+            parsed.data.conversation.type === "personal" &&
+            (requestedSections.has("episodes") || requestedSections.has("recent_activity"))
+              ? borg.activity.listObservedGroupAudienceEntityIdsForSpeaker(identity.senderEntityId)
+              : [];
+          const visibleAudienceEntityIds = dedupePreservingOrder([
+            identity.audienceEntity.id,
+            ...observedGroupAudienceEntityIds,
+          ]);
+          const recentActivity = requestedSections.has("recent_activity")
+            ? borg.activity
+                .listRecentVisibleOtherSessionEvents({
+                  currentSessionId: session,
+                  audienceEntityIds: visibleAudienceEntityIds,
+                  sinceMs: nowMs - recentActivityWindowMs,
+                  limit: recentActivityLimit,
+                })
+                .map((event) => projectRecentActivity(event, nowMs))
+            : [];
+          const commitments = requestedSections.has("commitments")
+            ? borg.commitments
+                .list({
+                  activeOnly: true,
+                  audienceEntityId: identity.audienceEntity.id,
+                })
+                .sort(compareCommitmentsForResponse)
+                .slice(0, MAX_COMMITMENT_RESPONSE_ITEMS)
+                .map(projectCommitment)
+            : [];
+          const participantEntityIds = dedupePreservingOrder([
+            identity.senderEntityId,
+            identity.audienceEntity.id,
+          ]);
+          const directives = requestedSections.has("directives")
+            ? borg.creatorDirectives
+                .listApplicable({
+                  currentAudienceEntityId: identity.audienceEntity.id,
+                  participantEntityIds,
+                  allowListAudienceEntityIds: [identity.audienceEntity.id],
+                  sessionRole: identity.audienceRole,
+                  trustedTenantOperator: parsed.data.sender.operator,
+                })
+                .filter(
+                  (applicable) => applicable.activation.active && applicable.render_mode !== "omit",
+                )
+                .map(projectApplicableCreatorDirective)
+            : [];
+
+          return {
+            visibleAudienceEntityIds,
+            recentActivity,
+            commitments,
+            directives,
+          };
+        });
+        const degradations: RetrievalDegradation[] = [];
+        let episodes: Array<Record<string, unknown>> = [];
+        let hiddenEpisodeCount = 0;
+        let degraded = false;
+        let degradedReason = "";
+        let abstained = false;
+
+        if (requestedSections.has("episodes")) {
+          const traceTurnId =
+            traceRegistry === undefined ? undefined : nextRecallTraceTurnId(tenant);
+
+          try {
+            const recallResult = await raceRecallDeadline(
+              pool.withTenant(tenant, async (borg) => {
+                const recalled = await borg.episodic.search(parsed.data.query!, {
+                  limit: Math.max(
+                    1,
+                    Math.min(
+                      maxRecallLimit,
+                      Math.floor(parsed.data.limit === undefined ? 8 : parsed.data.limit),
+                    ),
+                  ),
+                  audienceEntityId: identity.audienceEntity.id,
+                  visibleAudienceEntityIds: context.visibleAudienceEntityIds,
+                  onDegraded: (degradation) => degradations.push(degradation),
+                  ...(traceTurnId === undefined ? {} : { traceTurnId }),
+                });
+                const visible = recalled.filter((hit) =>
+                  isEpisodeAccessVisibleToAnyAudience(
+                    hit.episode,
+                    context.visibleAudienceEntityIds,
+                  ),
+                );
+                const projectMetadata = createPublicEpisodeMetadataProjector(
+                  visible.map((hit) => hit.episode),
+                  borg.entities,
+                );
+                const originAudienceEntityIds = dedupePreservingOrder(
+                  visible.flatMap(
+                    (hit) =>
+                      memoryDisclosureLabelFromEpisodeAccess(hit.episode).originAudienceEntityIds,
+                  ),
+                );
+                const originAudienceNames = new Map<EntityId, string>();
+
+                for (const entityId of originAudienceEntityIds) {
+                  const entity = borg.entities.get(entityId);
+                  if (entity !== null) {
+                    originAudienceNames.set(entityId, entity.canonical_name);
+                  }
+                }
+
+                return {
+                  hiddenEpisodeCount: recalled.length - visible.length,
+                  topRawScore:
+                    visible.length === 0 ? null : Math.max(...visible.map((hit) => hit.rawScore)),
+                  episodes: visible.map((hit) => {
+                    const disclosure = memoryDisclosureLabelFromEpisodeAccess(hit.episode);
+
+                    return {
+                      id: hit.episode.id,
+                      title: hit.episode.title,
+                      narrative: hit.episode.narrative,
+                      score: hit.score,
+                      raw_score: hit.rawScore,
+                      location: hit.episode.location,
+                      ...projectMetadata(hit.episode),
+                      disclosure: {
+                        class: disclosure.disclosureClass,
+                        origin_audience_names: disclosure.originAudienceEntityIds.flatMap(
+                          (entityId) => {
+                            const name = originAudienceNames.get(entityId);
+                            return name === undefined ? [] : [name];
+                          },
+                        ),
+                      },
+                    };
+                  }),
+                };
+              }),
+              recallDeadlineMs,
+            );
+
+            hiddenEpisodeCount = recallResult.hiddenEpisodeCount;
+            if (
+              recallAbstainThreshold > 0 &&
+              (recallResult.topRawScore === null ||
+                recallResult.topRawScore < recallAbstainThreshold)
+            ) {
+              abstained = true;
+              episodes = [];
+            } else {
+              episodes = recallResult.episodes;
+            }
+          } catch (error) {
+            if (error instanceof RecallDeadlineExceeded) {
+              degraded = true;
+              degradedReason = `deadline: ${error.message}`;
+            } else if (error instanceof EmbeddingError) {
+              degraded = true;
+              degradedReason = `embeddings: ${error.message}`;
+            } else {
+              throw error;
+            }
+          }
+
+          if (degradations.length > 0) {
+            degraded = true;
+            const pipelineReason = degradations
+              .map((entry) => `${entry.subsystem}: ${entry.reason}`)
+              .join("; ");
+            degradedReason =
+              degradedReason.length === 0 ? pipelineReason : `${degradedReason}; ${pipelineReason}`;
+          }
+        }
+
+        const response: Record<string, unknown> = {
+          ok: true,
+          degraded,
+          degraded_reason: degradedReason,
+        };
+
+        if (requestedSections.has("audience")) {
+          response.audience = {
+            entity_id: identity.audienceEntity.id,
+            kind: identity.audienceEntity.kind,
+            name: identity.audienceEntity.canonical_name,
+            role: identity.audienceRole,
+          };
+        }
+        if (requestedSections.has("episodes")) {
+          response.episodes = episodes;
+          response.hidden_episode_count = hiddenEpisodeCount;
+          if (abstained) {
+            response.abstained = true;
+            response.abstain_reason = "low_relevance";
+          }
+        }
+        if (requestedSections.has("recent_activity")) {
+          response.recent_activity = context.recentActivity;
+        }
+        if (requestedSections.has("commitments")) {
+          response.commitments = context.commitments;
+        }
+        if (requestedSections.has("directives")) {
+          response.directives = context.directives;
+        }
+
+        send(res, 200, response);
+        return;
+      }
+
+      if (rawPath === "/memory/directives") {
+        const parsed = directiveAdminBodySchema.safeParse(body);
+
+        if (!parsed.success) {
+          send(res, 400, { error: "invalid directive body" });
+          return;
+        }
+
+        const result = await pool.withTenant(
+          tenant,
+          async (borg) => {
+            const allowedPeople = resolveKnownExternalEntityIds({
+              borg,
+              source: APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE,
+              externalIds: parsed.data.allowed_external_ids,
+              kind: "person",
+            });
+            const excludedPeople = resolveKnownExternalEntityIds({
+              borg,
+              source: APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE,
+              externalIds: parsed.data.excluded_external_ids,
+              kind: "person",
+            });
+            const allowedGroups = resolveKnownExternalEntityIds({
+              borg,
+              source: TEAM_AGENT_CONVERSATION_EXTERNAL_ID_SOURCE,
+              externalIds: parsed.data.allowed_group_external_ids,
+              kind: "group",
+            });
+            const excludedGroups = resolveKnownExternalEntityIds({
+              borg,
+              source: TEAM_AGENT_CONVERSATION_EXTERNAL_ID_SOURCE,
+              externalIds: parsed.data.excluded_group_external_ids,
+              kind: "group",
+            });
+
+            if (
+              allowedPeople === null ||
+              excludedPeople === null ||
+              allowedGroups === null ||
+              excludedGroups === null
+            ) {
+              return { status: "unknown_external_id" as const };
+            }
+
+            const subjectEntityIds =
+              parsed.data.subject_external_id === undefined
+                ? []
+                : resolveKnownExternalEntityIds({
+                    borg,
+                    source: APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE,
+                    externalIds: [parsed.data.subject_external_id],
+                    kind: "person",
+                  });
+
+            if (subjectEntityIds === null) {
+              return { status: "unknown_external_id" as const };
+            }
+
+            const allowedEntityIds = dedupePreservingOrder([...allowedPeople, ...allowedGroups]);
+            const excludedEntityIds = dedupePreservingOrder([...excludedPeople, ...excludedGroups]);
+            const excludedEntityIdSet = new Set(excludedEntityIds);
+
+            if (allowedEntityIds.some((entityId) => excludedEntityIdSet.has(entityId))) {
+              return { status: "ambiguous_external_id" as const };
+            }
+
+            const admin = ensureDirectiveAdminIdentity(borg);
+            const queueInput = buildCreatorDirectiveQueueInput({
+              body: parsed.data,
+              adminEntityId: admin.entityId,
+              adminSessionId: admin.sessionId,
+              sourceStreamEntryId: createStreamEntryId(),
+              allowedEntityIds,
+              excludedEntityIds,
+              subjectEntityId: subjectEntityIds[0] ?? null,
+            });
+
+            if (!creatorDirectiveQueueInputSchema.safeParse(queueInput).success) {
+              return { status: "invalid_policy" as const };
+            }
+
+            const sourceEntry = await appendDirectiveAdminEvent({
+              borg,
+              admin,
+              content: {
+                event: "memory_sidecar.operator_directive_queue_requested",
+                kind: parsed.data.kind,
+                text: parsed.data.text,
+                content_scope: parsed.data.content_scope,
+              },
+            });
+            const persistedQueueInput = buildCreatorDirectiveQueueInput({
+              body: parsed.data,
+              adminEntityId: admin.entityId,
+              adminSessionId: admin.sessionId,
+              sourceStreamEntryId: sourceEntry.id,
+              allowedEntityIds,
+              excludedEntityIds,
+              subjectEntityId: subjectEntityIds[0] ?? null,
+            });
+            let directive: CreatorDirective;
+
+            try {
+              directive = borg.creatorDirectives.queue(persistedQueueInput);
+            } catch (error) {
+              try {
+                const code = errorCode(error);
+                await appendDirectiveAdminEvent({
+                  borg,
+                  admin,
+                  content: {
+                    event: "memory_sidecar.operator_directive_queue_failed",
+                    kind: parsed.data.kind,
+                    content_scope: parsed.data.content_scope,
+                    provenance_stream_entry_id: sourceEntry.id,
+                    failure_code: typeof code === "string" ? code : "UNKNOWN",
+                  },
+                });
+              } catch (auditError) {
+                console.error(
+                  `memory-sidecar: failed to record directive queue failure for tenant "${tenant}"`,
+                  auditError,
+                );
+              }
+              throw error;
+            }
+
+            return { status: "created" as const, directive };
+          },
+          { exclusive: true },
+        );
+
+        if (result.status === "unknown_external_id") {
+          send(res, 400, { error: "unknown directive external id" });
+          return;
+        }
+        if (result.status === "ambiguous_external_id") {
+          send(res, 400, { error: "ambiguous directive external ids" });
+          return;
+        }
+        if (result.status === "invalid_policy") {
+          send(res, 400, { error: "invalid directive policy" });
+          return;
+        }
+
+        send(res, 201, {
+          ok: true,
+          directive: projectCreatorDirectiveForAdmin(result.directive),
+        });
+        return;
+      }
+
       if (rawPath === "/memory/commitments") {
         const parsed = operatorCommitmentBodySchema.safeParse(body);
 
@@ -1268,9 +2239,9 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           });
           return;
         }
-        let conversation: StreamConversation | undefined;
+        let conversation: SidecarConversation | undefined;
         if (body.conversation !== undefined) {
-          const parsedConversation = streamConversationSchema.safeParse(body.conversation);
+          const parsedConversation = sidecarConversationSchema.safeParse(body.conversation);
 
           if (!parsedConversation.success) {
             send(res, 400, {
@@ -1284,9 +2255,127 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         }
 
         const session = sessionFromCaller(sessionRaw);
+        const enhancedIdentityAvailable =
+          parsedSender.sender !== null &&
+          conversation !== undefined &&
+          (conversation.type === "personal" || conversation.external_id !== undefined);
+        let enhancedSender: EnhancedAppendTurnSender | null = null;
+
+        if (enhancedIdentityAvailable && parsedSender.sender !== null) {
+          if (
+            parsedSender.sender.operator !== undefined &&
+            typeof parsedSender.sender.operator !== "boolean"
+          ) {
+            send(res, 400, { error: "invalid 'sender.operator'; expected boolean" });
+            return;
+          }
+
+          enhancedSender = {
+            externalId: parsedSender.sender.externalId,
+            displayName: parsedSender.sender.displayName,
+            operator: parsedSender.sender.operator === true,
+          };
+        }
         const entries = await pool.withTenant(
           tenant,
-          (borg) => {
+          async (borg) => {
+            if (enhancedSender !== null && conversation !== undefined) {
+              const identity = resolveTeamAgentIdentity({
+                borg,
+                session,
+                rawSession: sessionRaw,
+                sender: enhancedSender,
+                conversation,
+              });
+              const enrichedEntries = await borg.stream.appendMany(
+                [
+                  {
+                    kind: "user_msg",
+                    content: user,
+                    audience: identity.audienceEntity.id,
+                    sender_entity_id: identity.senderEntityId,
+                    conversation: identity.conversation,
+                  },
+                  {
+                    kind: "agent_msg",
+                    content: assistant,
+                    audience: identity.audienceEntity.id,
+                    conversation: identity.conversation,
+                  },
+                ],
+                { session },
+              );
+              const userEntry = enrichedEntries[0];
+              const assistantEntry = enrichedEntries[1];
+
+              if (userEntry === undefined || assistantEntry === undefined) {
+                throw new Error("enhanced append did not produce a complete turn identity");
+              }
+
+              try {
+                const selfEntity = borg.entities.getSelf();
+
+                if (selfEntity === null) {
+                  throw new Error("enhanced append awareness projection requires a self entity");
+                }
+
+                borg.activity.projectCompletedTurn({
+                  session: {
+                    ...identity.sessionEnsureInput,
+                    created_at: userEntry.timestamp,
+                    last_activity_at: userEntry.timestamp,
+                  },
+                  userContact: {
+                    kind: "user_contact",
+                    occurredAt: userEntry.timestamp,
+                    sessionId: userEntry.session_id,
+                    speakerEntityId: identity.senderEntityId,
+                    actorEntityId: identity.senderEntityId,
+                    audienceEntityId: identity.audienceEntity.id,
+                    participantEntityIds: dedupePreservingOrder([
+                      identity.senderEntityId,
+                      identity.audienceEntity.id,
+                    ]),
+                    sourceStreamEntryIds: [userEntry.id],
+                  },
+                  borgReplied: {
+                    kind: "borg_replied",
+                    occurredAt: assistantEntry.timestamp,
+                    sessionId: assistantEntry.session_id,
+                    speakerEntityId: selfEntity.id,
+                    actorEntityId: selfEntity.id,
+                    audienceEntityId: identity.audienceEntity.id,
+                    participantEntityIds: dedupePreservingOrder([
+                      selfEntity.id,
+                      identity.senderEntityId,
+                      identity.audienceEntity.id,
+                    ]),
+                    sourceStreamEntryIds: [assistantEntry.id],
+                  },
+                  touch: {
+                    at: assistantEntry.timestamp,
+                    messageCountDelta: 1,
+                  },
+                });
+              } catch (error) {
+                console.error(
+                  `memory-sidecar: append-turn awareness projection failed for tenant "${tenant}"`,
+                  error,
+                );
+                const projectionErrorCode = errorCode(error);
+                traceRegistry?.tracerFor(tenant).emit("sidecar.append_projection.degraded", {
+                  turnId: `sidecar_append:${assistantEntry.id}`,
+                  session_id: session,
+                  reason: "awareness_projection_failed",
+                  error_code:
+                    typeof projectionErrorCode === "string" ? projectionErrorCode : undefined,
+                  source_stream_entry_ids: [userEntry.id, assistantEntry.id],
+                });
+              }
+
+              return enrichedEntries;
+            }
+
             const senderEntityId =
               parsedSender.sender === null
                 ? undefined
@@ -1297,17 +2386,25 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                     kind: "person",
                     provenance: "transport_sender",
                   });
+            const persistedConversation =
+              conversation === undefined
+                ? undefined
+                : { type: conversation.type, name: conversation.name };
             const inputs: StreamEntryInput[] = [
               {
                 kind: "user_msg",
                 content: user,
                 ...(senderEntityId === undefined ? {} : { sender_entity_id: senderEntityId }),
-                ...(conversation === undefined ? {} : { conversation }),
+                ...(persistedConversation === undefined
+                  ? {}
+                  : { conversation: persistedConversation }),
               },
               {
                 kind: "agent_msg",
                 content: assistant,
-                ...(conversation === undefined ? {} : { conversation }),
+                ...(persistedConversation === undefined
+                  ? {}
+                  : { conversation: persistedConversation }),
               },
             ];
             return borg.stream.appendMany(inputs, { session });

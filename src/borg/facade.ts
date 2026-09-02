@@ -143,6 +143,47 @@ async function countPendingSemanticExtractionEpisodes(
 
 type CreatorDirectivesFacadeDeps = Pick<BorgDependencies, "creatorDirectiveRepository">;
 
+function createActivityFacade(deps: BorgDependencies): BorgFacades["activity"] {
+  return {
+    record: (...args) => deps.activityRepository.record(...args),
+    projectCompletedTurn: (input) => {
+      const project = deps.sqlite.transaction(() => {
+        const userContactAlreadyStored =
+          deps.activityRepository.getByKindAndSource(
+            input.userContact.kind,
+            input.userContact.sourceStreamEntryIds,
+          ) !== null;
+        const borgReplyAlreadyStored =
+          deps.activityRepository.getByKindAndSource(
+            input.borgReplied.kind,
+            input.borgReplied.sourceStreamEntryIds,
+          ) !== null;
+        const session = deps.sessionsRepository.ensure(input.session);
+        const userContact = deps.activityRepository.record(input.userContact);
+        const borgReplied = deps.activityRepository.record(input.borgReplied);
+        const touchedSession =
+          userContactAlreadyStored && borgReplyAlreadyStored
+            ? session
+            : deps.sessionsRepository.touch(input.session.session_id, input.touch);
+
+        if (touchedSession === null) {
+          throw new StorageError(`Session ${input.session.session_id} was not stored`, {
+            code: "SESSION_TURN_PROJECTION_FAILED",
+          });
+        }
+
+        return { userContact, borgReplied, session: touchedSession };
+      });
+
+      return project.immediate();
+    },
+    listObservedGroupAudienceEntityIdsForSpeaker: (...args) =>
+      deps.activityRepository.listObservedGroupAudienceEntityIdsForSpeaker(...args),
+    listRecentVisibleOtherSessionEvents: (...args) =>
+      deps.activityRepository.listRecentVisibleOtherSessionEvents(...args),
+  };
+}
+
 export function createCreatorDirectivesFacade(
   deps: CreatorDirectivesFacadeDeps,
 ): BorgFacades["creatorDirectives"] {
@@ -516,6 +557,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       get: (id, options = {}) =>
         deps.retrievalPipeline.getEpisode(id, {
           audienceEntityId: resolveEpisodeAudienceEntityId(options),
+          visibleAudienceEntityIds: options.visibleAudienceEntityIds,
           crossAudience: options.crossAudience,
         }),
       inspect: (id) => deps.episodicRepository.get(id, { includeArchived: true }),
@@ -893,6 +935,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       countExpired: () => deps.commitmentRepository.countExpired(),
       countCanonicalized: () => deps.commitmentRepository.countCanonicalized(),
     },
+    activity: createActivityFacade(deps),
     creatorDirectives: createCreatorDirectivesFacade(deps),
     identity: {
       updateValue: (...args) => deps.identityService.updateValue(...args),
