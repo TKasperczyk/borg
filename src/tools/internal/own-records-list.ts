@@ -18,6 +18,7 @@ import { sessionIdSchema, streamEntryIdSchema } from "../../util/id-schemas.js";
 import type { SessionId, StreamEntryId } from "../../util/ids.js";
 import { formatRelativeAge } from "../../util/relative-time.js";
 import { estimatePromptTokens, stringifyPromptContent } from "../../util/token-estimate.js";
+import { OWN_RECORDS_PAGE_END_CLAIM } from "./own-records-page-end-claim.js";
 import type { ToolDefinition } from "../dispatcher.js";
 
 const OWN_RECORD_KINDS = ["thought", "journal"] as const;
@@ -284,9 +285,11 @@ export function createOwnRecordsListTool(
   return {
     name: "tool.ownRecords.list",
     description:
-      "Browse my own durable thought stream and train-of-thought journal by inclusive origin-time range. This is global unless I explicitly pass session_id. It has no text query: I choose dates, kinds, and pages, then inspect exact content. A page can also end below the limit I asked for, because the result carries its own token budget: page_end_reason says whether the range ran out, my limit filled, or that budget cut the page, and has_more never says how many records are left. So the size of a page is a fact about how long its records are, not about how many the range holds.",
+      "Browse my own durable thought stream and train-of-thought journal by inclusive origin-time range. This is global unless I explicitly pass session_id. It has no text query: I choose dates, kinds, and pages, then inspect exact content. " +
+      OWN_RECORDS_PAGE_END_CLAIM,
     menuSummary:
-      "Browse my own thoughts and journal globally by origin-time range (optional explicit session filter); page_end_reason says whether the range, my limit, or the result's own token budget ended the page.",
+      "Browse my own thoughts and journal globally by origin-time range, with an optional explicit session filter. " +
+      OWN_RECORDS_PAGE_END_CLAIM,
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "read",
     inputSchema: ownRecordsListInputSchema,

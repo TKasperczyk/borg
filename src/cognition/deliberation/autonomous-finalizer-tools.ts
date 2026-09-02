@@ -1,6 +1,7 @@
 import { transformToolNameForOAuth } from "../../llm/index.js";
 import type { ToolDefinition, ToolDispatcher } from "../../tools/dispatcher.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
+import { OWN_RECORDS_PAGE_END_CLAIM } from "../../tools/internal/own-records-page-end-claim.js";
 import type { TurnOrigin } from "../types.js";
 
 export const LIVE_TURN_READ_FINALIZER_TOOL_NAMES = [
@@ -11,7 +12,7 @@ export const LIVE_TURN_READ_FINALIZER_TOOL_NAMES = [
 export const LIVE_TURN_READ_FINALIZER_TOOL_MENU = [
   "<borg_live_turn_read_tools>",
   "Read tools available inside every live turn, including ordinary user turns:",
-  "- tool.ownRecords.list: Browse my own durable thoughts and journal globally by inclusive origin-time range, with an optional explicit session filter. A page can end below the limit I asked for, because the result carries its own token budget: page_end_reason says whether the range ran out, my limit filled, or that budget cut the page, and has_more never says how many records are left, so a short page is a fact about how long its records are and not about how many the range holds.",
+  `- tool.ownRecords.list: Browse my own durable thoughts and journal globally by inclusive origin-time range, with an optional explicit session filter. ${OWN_RECORDS_PAGE_END_CLAIM}`,
   "- tool.openQuestions.ruminations: Browse the rumination notes my offline mind-maintenance wrote against my open questions, by inclusive created-at range and optionally one question id. A note outlives the question it was written against, so this reaches questions I later resolved and questions the loop abandoned for me -- which it does without asking me, when a question's still-open passes reach the no-traction threshold and no episode created after it cites it and no action against it is active; nothing else in my turn carries those notes.",
   "I may use these at my own initiative when I need to check what I thought or noticed at an earlier time. They are structural time-range browses, not text search, so I choose the relevant dates, kinds, and pages.",
   "</borg_live_turn_read_tools>",

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { LIVE_TURN_READ_FINALIZER_TOOL_MENU } from "../../cognition/deliberation/autonomous-finalizer-tools.js";
 import type { TrainOfThoughtJournalEntry } from "../../memory/train-of-thought/index.js";
 import type { StreamEntry, StreamEntryIndexRecord } from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
@@ -10,6 +11,19 @@ import {
   type OwnRecordKind,
   type OwnRecordsListRange,
 } from "./own-records-list.js";
+import { OWN_RECORDS_PAGE_END_CLAIM } from "./own-records-page-end-claim.js";
+
+function countOccurrences(haystack: string, needle: string): number {
+  let count = 0;
+  let index = haystack.indexOf(needle);
+
+  while (index !== -1) {
+    count += 1;
+    index = haystack.indexOf(needle, index + needle.length);
+  }
+
+  return count;
+}
 
 const CURRENT_SESSION_ID = "sess_aaaaaaaaaaaaaaaa" as SessionId;
 const OTHER_SESSION_ID = "sess_bbbbbbbbbbbbbbbb" as SessionId;
@@ -518,5 +532,30 @@ describe("tool.ownRecords.list", () => {
     });
     expect(JSON.stringify(output)).not.toContain(oversizedTurnId.slice(0, 1_000));
     expect(JSON.stringify(output).length).toBeLessThan(5_000);
+  });
+
+  it("states the page-end claim once, from one authoring, on every surface that carries it", () => {
+    const tool = createOwnRecordsListTool({
+      listThoughtRecords: () => [],
+      readThoughtRecord: () => null,
+      listJournalRecords: () => [],
+      clock: new ManualClock(0),
+    });
+
+    // The three surfaces the claim reaches: the tool schema the model is handed, the live-turn
+    // read-tool menu, and the autonomous interior menu built from menuSummary.
+    const surfaces = [
+      tool.description,
+      tool.menuSummary ?? "",
+      LIVE_TURN_READ_FINALIZER_TOOL_MENU,
+    ];
+
+    for (const surface of surfaces) {
+      expect(countOccurrences(surface, OWN_RECORDS_PAGE_END_CLAIM)).toBe(1);
+      // A second authoring would have to name the field again. Requiring the field name to
+      // appear only inside the shared claim is what makes this fail on a new copy rather than
+      // only on an edit to the existing one.
+      expect(countOccurrences(surface, "page_end_reason")).toBe(1);
+    }
   });
 });

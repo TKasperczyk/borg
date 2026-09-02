@@ -22,7 +22,13 @@ import {
 } from "../../util/ids.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { buildRegenerationPromptSection } from "../commitments/guard-runner.js";
-import { LIVE_TURN_READ_FINALIZER_TOOL_MENU } from "../deliberation/autonomous-finalizer-tools.js";
+import {
+  AUTONOMOUS_INTERIOR_FINALIZER_TOOL_NAMES,
+  LIVE_TURN_READ_FINALIZER_TOOL_MENU,
+  LIVE_TURN_READ_FINALIZER_TOOL_NAMES,
+} from "../deliberation/autonomous-finalizer-tools.js";
+import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
+import { OWN_RECORDS_PAGE_END_CLAIM } from "../../tools/internal/own-records-page-end-claim.js";
 import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
 import { formatTurnPlanForPrompt } from "../deliberation/prompt/plan-rendering.js";
 import { buildCompactPlannerSystemPrompt } from "../deliberation/prompt/planner-context.js";
@@ -855,7 +861,13 @@ function makeAutonomousRelationalContext(): DeliberationContext {
       {
         name: "tool.ownRecords.list",
         menuSummary:
-          "Browse my own thoughts and journal globally by origin-time range (optional explicit session filter); page_end_reason says whether the range, my limit, or the result's own token budget ended the page.",
+          "Browse my own thoughts and journal globally by origin-time range, with an optional explicit session filter. " +
+          OWN_RECORDS_PAGE_END_CLAIM,
+      },
+      {
+        name: "tool.openQuestions.ruminations",
+        menuSummary:
+          "Browse my offline rumination notes on open questions by created-at range, including questions that have since resolved or been abandoned.",
       },
       {
         name: "tool.journal.append",
@@ -1542,5 +1554,24 @@ describe("prompt surface fixtures", () => {
         `Prompt-surface registry entry ${entry.id} is not present in fixtures and is not exempted`,
       ).toBe(true);
     }
+  });
+
+  it("offers the same tool namespace in the fixture menu as the registry builds", () => {
+    // The fixture hand-authors this menu rather than constructing live tool definitions, so the
+    // set of names is derived here instead of transcribed. A tool added to either registry list
+    // and not to the fixture is a fixture pinning a menu production does not emit.
+    const expected = [
+      ...new Set([
+        ...LIVE_TURN_READ_FINALIZER_TOOL_NAMES,
+        ...AUTONOMOUS_INTERIOR_FINALIZER_TOOL_NAMES,
+        OUTBOUND_POST_TOOL_NAME,
+      ]),
+    ].sort();
+    const rendered = (makeAutonomousRelationalContext().autonomousFinalizerToolMenu ?? [])
+      .map((item) => item.name)
+      .filter((name) => name.startsWith("tool."))
+      .sort();
+
+    expect(rendered).toEqual(expected);
   });
 });

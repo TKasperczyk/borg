@@ -267,7 +267,8 @@ So when my current knowledge differs from what those past decisions assumed, I r
 - EmitNoOutput: End the turn with no visible message.
 - EmitSelfReport: Speak visibly as a first-person interior self-report.
 - EmitContinueThought: Append the carryover thought to the private journal and end the autonomous interval.
-- tool.ownRecords.list: Browse my own thoughts and journal globally by origin-time range (optional explicit session filter); page_end_reason says whether the range, my limit, or the result's own token budget ended the page.
+- tool.ownRecords.list: Browse my own thoughts and journal globally by origin-time range, with an optional explicit session filter. A page can end below the limit I asked for, because the result carries its own token budget: page_end_reason says whether the range ran out, my limit filled, or that budget cut the page, and has_more never says how many records are left, so a short page is a fact about how long its records are and not about how many the range holds.
+- tool.openQuestions.ruminations: Browse my offline rumination notes on open questions by created-at range, including questions that have since resolved or been abandoned.
 - tool.journal.append: Append a self-private journal entry without ending the turn; an entry is immutable once written, so a correction is a new entry naming the one it corrects and never a change to it.
 - tool.openQuestions.create: Create a self-memory open question.
 - tool.openQuestions.resolve: Resolve an open question with evidence, or surface identity review.
