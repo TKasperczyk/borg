@@ -1094,7 +1094,9 @@ describe("compact planner context", () => {
     const mixedText = allSystemText(mixed);
 
     // Derived from the drawn rows, never a literal: the attribute has to widen when the draw does.
-    expect(mixedText).toContain('<complete_goal_index statuses_present="active,done">');
+    expect(mixedText).toContain(
+      '<complete_goal_index statuses_present="active,done" description_excerpt_budget_chars=',
+    );
     expect(mixedText).toContain(
       "A goal whose status is not listed there is absent from this page rather than omitted from it",
     );
@@ -1106,12 +1108,14 @@ describe("compact planner context", () => {
     );
 
     expect(allSystemText(singleStatus)).toContain(
-      '<complete_goal_index statuses_present="active">',
+      '<complete_goal_index statuses_present="active" description_excerpt_budget_chars=',
     );
 
     const empty = build(context({ selfSnapshot: { values: [], goals: [], traits: [] } }));
 
-    expect(allSystemText(empty)).toContain('<complete_goal_index statuses_present="none">');
+    expect(allSystemText(empty)).toContain(
+      '<complete_goal_index statuses_present="none" description_excerpt_budget_chars=',
+    );
   });
 
   it("renders the progress log oldest first and names pn as an append-only log in the legend", () => {
@@ -1249,6 +1253,83 @@ describe("compact planner context", () => {
     // Three marker widths, so the ceiling is demonstrably not one number the page could be
     // read back for -- which is the whole reason the legend says rendered= is not the budget.
     expect(new Set(renderedByLength).size).toBe(3);
+  });
+
+  it("prints the index description budget and closes each container against its own", () => {
+    // The same goal's description is cut twice on this page, against two different
+    // budgets, so a width reconstructed from one container's residue is not evidence
+    // about the other. Both budgets are read off the page rather than copied, so
+    // changing either constant cannot make the identity pass by accident.
+    const target = goal("d".repeat(4_096));
+    const text = allSystemText(
+      build(
+        context({
+          selfSnapshot: { values: [], goals: [target], traits: [] },
+          executiveFocus: {
+            selected_goal: target,
+            selected_score: null,
+            candidates: [
+              {
+                goal_id: target.id,
+                goal: target,
+                score: 1,
+                components: {
+                  priority: 1,
+                  deadline_pressure: 1,
+                  context_fit: 1,
+                  progress_debt: 1,
+                },
+                reason: "focus",
+              },
+            ],
+            threshold: 0,
+            score_basis: {
+              score_context: "turn_selection" as const,
+              deadline_lookahead_ms: 1,
+              progress_debt_stale_ms: 1,
+            },
+          },
+        }),
+      ),
+    );
+
+    const containerBudget = (open: string, close: string, attribute: string) => {
+      const section = text.slice(text.indexOf(open), text.indexOf(close));
+      expect(section).not.toBe("");
+      const budget = Number(new RegExp(`${attribute}="(\\d+)"`).exec(section)?.[1]);
+      const excerpt = /\sd="([^"]*)"/.exec(section)?.[1];
+      expect(excerpt).toBeDefined();
+      const marker = / \[ELIDED \d+ CHARS; HEAD\+TAIL EXCERPT; rendered=\d+\/total=\d+\] /.exec(
+        excerpt!,
+      )?.[0];
+      expect(marker).toBeDefined();
+      const rendered = Number(/rendered=(\d+)\//.exec(marker!)?.[1]);
+      expect(rendered + marker!.length).toBe(budget);
+      return { budget, rendered };
+    };
+
+    const index = containerBudget(
+      "<complete_goal_index",
+      "</complete_goal_index>",
+      "description_excerpt_budget_chars",
+    );
+    const expanded = containerBudget(
+      "<top_global_candidates_expanded",
+      "</top_global_candidates_expanded>",
+      "field_excerpt_budget_chars",
+    );
+
+    // Two containers, one description, two widths -- which is the whole reason the
+    // legend says a budget governs the container that prints it and nothing else.
+    expect(index.budget).not.toBe(expanded.budget);
+    expect(index.rendered).not.toBe(expanded.rendered);
+    expect(text).toContain(
+      "The one-line index rows carry a d of their own, sized against a separate and smaller budget",
+    );
+    expect(text).toContain("A budget printed on one container governs that container alone");
+    expect(text).toContain(
+      "a number matching it elsewhere is a different budget that happens to agree rather than the same one seen twice",
+    );
   });
 
   it("reports the next-step draw as uncounted and keeps the index omission zero true by construction", () => {
@@ -1661,8 +1742,10 @@ describe("compact planner context", () => {
     // The complete index still omits nothing at this high-water mark, so the legend's fixed cost
     // is paid by the overall envelope rather than by dropped goal rows. The ceiling tracks that
     // fixed cost: naming pn's replace-whole-column write semantics raised it from 9,440 to 9,596,
-    // and naming the excerpt budget the marker is charged against raised it from 9,596 to 9,784.
-    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_800);
+    // naming the excerpt budget the marker is charged against raised it from 9,596 to 9,784, and
+    // printing the index rows' own description budget -- so the two d columns on this page can no
+    // longer be read against one width -- raised it from 9,784 to 9,927.
+    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_940);
     expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(11_900);
     expect(planner.traceSummary.sections.authority_and_directives?.estimatedTokens).toBeGreaterThan(
       4_000,
