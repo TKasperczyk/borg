@@ -141,6 +141,12 @@ export async function runDeliberationPhase(input: {
       contradictionRouting: input.retrievalPhase.retrieval.contradictionRouting,
       retrievalConfidence: input.retrievalPhase.retrieval.confidence,
       applicableCommitments: input.retrievalPhase.applicableCommitments,
+      ...(input.retrievalPhase.retrievalContext.applicableCommitmentsReadAtMs === undefined
+        ? {}
+        : {
+            applicableCommitmentsReadAtMs:
+              input.retrievalPhase.retrievalContext.applicableCommitmentsReadAtMs,
+          }),
       commitmentEntityLabels: resolveCommitmentEntityLabels(
         input.retrievalPhase.applicableCommitments,
         input.options.entityRepository,

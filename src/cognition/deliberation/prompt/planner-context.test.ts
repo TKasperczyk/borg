@@ -1082,11 +1082,7 @@ describe("compact planner context", () => {
       context({
         selfSnapshot: {
           values: [],
-          goals: [
-            goal("Still running"),
-            goal("Retired", { status: "done" }),
-            goal("Also running"),
-          ],
+          goals: [goal("Still running"), goal("Retired", { status: "done" }), goal("Also running")],
           traits: [],
         },
       }),
@@ -1349,26 +1345,39 @@ describe("compact planner context", () => {
     );
   });
 
-  it("reports the next-step draw as uncounted and keeps the index omission zero true by construction", () => {
+  it("renders each expanded candidate's top open step and reports exact in-scope omissions", () => {
     const goals = Array.from({ length: 7 }, (_, index) => goal(`Goal ${index}`));
     const target = goals[0]!;
+    const otherCandidate = goals[1]!;
+    const selectedStep = {
+      id: "exstep_aaaaaaaaaaaaaaaa" as never,
+      goal_id: target.id,
+      description: "Top open step of the selected goal",
+      status: "doing" as const,
+      kind: "think" as const,
+      due_at: null,
+      last_attempt_ts: null,
+      created_at: NOW_MS,
+      updated_at: NOW_MS,
+      provenance: { kind: "manual" as const },
+    };
+    const otherStep = {
+      ...selectedStep,
+      id: "exstep_bbbbbbbbbbbbbbbb" as never,
+      goal_id: otherCandidate.id,
+      description: "Top open step of the other expanded goal",
+      status: "queued" as const,
+    };
     const planner = build(
       context({
         selfSnapshot: { values: [], goals, traits: [] },
         executiveFocus: {
           selected_goal: target,
           selected_score: null,
-          next_step: {
-            id: "exstep_aaaaaaaaaaaaaaaa" as never,
-            goal_id: target.id,
-            description: "Top open step of the selected goal",
-            status: "doing",
-            kind: "think",
-            due_at: null,
-            last_attempt_ts: null,
-            created_at: NOW_MS,
-            updated_at: NOW_MS,
-            provenance: { kind: "manual" },
+          next_step: selectedStep,
+          candidate_steps: {
+            top_open_steps: [selectedStep, otherStep],
+            omitted_open_step_count: 3,
           },
           candidates: [
             {
@@ -1383,6 +1392,18 @@ describe("compact planner context", () => {
               },
               reason: "focus",
             },
+            {
+              goal_id: otherCandidate.id,
+              goal: otherCandidate,
+              score: 0.9,
+              components: {
+                priority: 0.9,
+                deadline_pressure: 1,
+                context_fit: 1,
+                progress_debt: 1,
+              },
+              reason: "other candidate",
+            },
           ],
           threshold: 0,
           score_basis: {
@@ -1395,20 +1416,22 @@ describe("compact planner context", () => {
     );
     const text = allSystemText(planner);
 
-    // The step lane is one row drawn from the selected goal alone, so no number here
-    // can stand for what it left behind: it must not print a count at all.
+    const stepRows = text.match(/<next_step [^\n]+/g) ?? [];
+    expect(stepRows).toHaveLength(2);
+    expect(stepRows.find((row) => row.match(selectedStep.id))).toContain('sel="true"');
+    expect(stepRows.find((row) => row.match(otherStep.id))).toContain('sel="false"');
     expect(text).toContain(
-      '<executive_next_step_omitted_count scope="selected_goal_top_open">uncounted</executive_next_step_omitted_count>',
+      '<executive_next_step_omitted_count scope="expanded_candidates_top_open">3</executive_next_step_omitted_count>',
     );
-    expect(text).not.toMatch(/<executive_next_step_omitted_count[^>]*>\d/);
-    expect(text).toContain("no other goal's steps are queried at all");
-    expect(text).toContain("reports uncounted rather than a zero that would read as a total");
+    expect(text).toContain("follows top_global_candidates_expanded membership and order");
+    expect(text).toContain("Steps of goals outside the expansion are not queried");
+    expect(text).toContain("remain uncounted");
 
-    // The neighbouring zero is a different quantity and is honest: the one-line index
-    // renders one row per snapshot goal and has no cap to drop one against.
     expect(text.match(/<goal /g)).toHaveLength(goals.length);
     expect(text).toContain("<omitted_count>0</omitted_count>");
-    expect(text).toContain("that index renders one row per goal in the snapshot and cannot drop one");
+    expect(text).toContain(
+      "that index renders one row per goal in the snapshot and cannot drop one",
+    );
   });
 
   it("reports source-ledger rows excluded by the compact ledger and carries omission guidance", () => {
@@ -1469,7 +1492,7 @@ describe("compact planner context", () => {
 
   it("uses visible head+tail excerpts for advisory commitments and never truncates critical directives", () => {
     const advisoryDirective = `ADVISORY_HEAD_${"a".repeat(1_500)}_ADVISORY_TAIL`;
-    const criticalDirective = `CRITICAL_HEAD_${"c".repeat(170_000)}_CRITICAL_TAIL`;
+    const criticalDirective = `CRITICAL_HEAD_${"c".repeat(1_500)}_CRITICAL_TAIL`;
     const planner = build(
       context({
         applicableCommitments: [
@@ -1489,11 +1512,95 @@ describe("compact planner context", () => {
     expect(text).toContain('shape="head+tail"');
     expect(text).toMatch(/ r="\d+" n="\d+" e="\d+"/);
     expect(text).toContain(criticalDirective);
-    expect(text).toContain('critical_overflow="true"');
-    expect(planner.traceSummary.criticalOverflow).toBe(true);
-    expect(planner.traceSummary.overallOverflow).toBe(true);
+    expect(text).toContain('critical_overflow="false"');
+    expect(planner.traceSummary.criticalOverflow).toBe(false);
     expect(planner.traceSummary.sections.commitments?.truncationCount).toBe(1);
     expect(planner.traceSummary.sections.commitments?.omissionCount).toBe(0);
+  });
+
+  it("keeps critical membership and reports the exact budget remainder at live row scale", () => {
+    const restrictedAudience = createEntityId();
+    const critical = [
+      commitment("CRITICAL_BUDGET_ALPHA", {
+        id: "cmt_0000000000000001" as CommitmentRecord["id"],
+        enforcement_class: "critical",
+        critical_domain: "privacy",
+        priority: -1,
+      }),
+      commitment("CRITICAL_BUDGET_BETA", {
+        id: "cmt_0000000000000002" as CommitmentRecord["id"],
+        enforcement_class: "critical",
+        critical_domain: "safety",
+        priority: -2,
+      }),
+    ];
+    const ordinary = Array.from({ length: 156 }, (_unused, index) =>
+      commitment(`ADVISORY_${index}_${"d".repeat(1_000)}`, {
+        id: `cmt_${(index + 3).toString(36).padStart(16, "0")}` as CommitmentRecord["id"],
+        kind: (["assistant_commitment", "participant_preference", "process_norm"] as const)[
+          index % 3
+        ],
+        priority: 156 - index,
+        created_at: NOW_MS - (156 - index) * 1_000,
+        restricted_audience: index % 2 === 0 ? restrictedAudience : null,
+      }),
+    );
+    const planner = build(
+      context({
+        applicableCommitments: [...ordinary, ...critical],
+        applicableCommitmentsReadAtMs: NOW_MS - 1_234,
+      }),
+    );
+    const block = taggedBlock(allSystemText(planner), "borg_planner_commitment_digest");
+    const renderedIds = new Set([...block.matchAll(/<c i="([^"]+)"/g)].map((match) => match[1]));
+    const omitted = ordinary.filter((entry) => !renderedIds.has(entry.id));
+    const omittedCount = Number(/membership_not_enumerated_budget="(\d+)"/.exec(block)?.[1]);
+    const advisoryBudget = Number(/advisory_excerpt_reserved_chars="(\d+)"/.exec(block)?.[1]);
+    const firstRenderedAdvisory = ordinary.find((entry) => renderedIds.has(entry.id));
+    const firstRenderedAdvisoryRow =
+      firstRenderedAdvisory === undefined
+        ? ""
+        : (block.match(new RegExp(`<c i="${firstRenderedAdvisory.id}"[^>]+/>`))?.[0] ?? "");
+    const retainedDirectiveChars = Number(/ r="(\d+)"/.exec(firstRenderedAdvisoryRow)?.[1]);
+    const disclosureBreakdown =
+      block.match(/<membership_not_enumerated_by_disclosure_class ([^>]+)\/>/)?.[1] ?? "";
+    const kindBreakdown = block.match(/<membership_not_enumerated_by_kind ([^>]+)\/>/)?.[1] ?? "";
+    const omittedRelationshipPrivate = omitted.filter(
+      (entry) => entry.restricted_audience !== null,
+    ).length;
+    const omittedUnknown = omitted.length - omittedRelationshipPrivate;
+
+    expect(block).toContain('rows_total="158"');
+    expect(block).toContain('rows_total_as_of="2026-08-12T23:59:58.766Z"');
+    expect(block).toContain(
+      'membership_order="critical_commitments_first_then_priority_desc_created_at_asc_id_asc"',
+    );
+    expect(block).toContain('complete_membership="false"');
+    expect(renderedIds).toContain(critical[0]!.id);
+    expect(renderedIds).toContain(critical[1]!.id);
+    expect(omitted.length).toBeGreaterThan(0);
+    expect(omittedCount).toBe(omitted.length);
+    expect(block).toContain(`<membership_not_enumerated_budget total="${omitted.length}">`);
+    expect(disclosureBreakdown).toContain(`relationship_private="${omittedRelationshipPrivate}"`);
+    expect(disclosureBreakdown).toContain(`unknown="${omittedUnknown}"`);
+    for (const kind of [
+      "assistant_commitment",
+      "participant_preference",
+      "process_norm",
+    ] as const) {
+      expect(kindBreakdown).toContain(
+        `${kind}="${omitted.filter((entry) => entry.kind === kind).length}"`,
+      );
+    }
+    expect(firstRenderedAdvisory).toBeDefined();
+    expect(firstRenderedAdvisoryRow).toContain("[ELIDED]");
+    expect(retainedDirectiveChars + "[ELIDED]".length).toBe(advisoryBudget);
+    expect(planner.traceSummary.sections.commitments).toMatchObject({
+      estimatedTokens: expect.any(Number),
+      omissionCount: omitted.length,
+      criticalOverflow: false,
+    });
+    expect(planner.traceSummary.sections.commitments!.estimatedTokens).toBeLessThanOrEqual(8_000);
   });
 
   it("detects critical overflow from the actual XML-escaped row", () => {
@@ -1745,7 +1852,11 @@ describe("compact planner context", () => {
     );
 
     expect(planner.traceSummary.sections.goal_index?.rowCount).toBe(113);
-    expect(planner.traceSummary.sections.commitments?.rowCount).toBe(126);
+    expect(planner.traceSummary.sections.commitments?.rowCount).toBeLessThan(126);
+    expect(
+      (planner.traceSummary.sections.commitments?.rowCount ?? 0) +
+        (planner.traceSummary.sections.commitments?.omissionCount ?? 0),
+    ).toBe(126);
     expect(planner.traceSummary.sections.authority_and_directives).toMatchObject({
       rowCount: 100,
       omissionCount: 0,
@@ -1765,11 +1876,13 @@ describe("compact planner context", () => {
     // in its own name cost 196 characters net of the shorter tag, 9,927 to 9,976; the ceiling moves
     // to 9,990 rather than to the measurement, so the next clause has to be argued against a number.
     expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_990);
-    expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(11_900);
+    expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(8_000);
     expect(planner.traceSummary.sections.authority_and_directives?.estimatedTokens).toBeGreaterThan(
       4_000,
     );
-    expect(planner.traceSummary.totalEstimatedTokens).toBeGreaterThanOrEqual(28_000);
+    expect(planner.traceSummary.totalEstimatedTokens).toBeGreaterThan(
+      COMPACT_PLANNER_TARGET_TOKENS,
+    );
     expect(planner.traceSummary.overallOverflow).toBe(true);
   });
 

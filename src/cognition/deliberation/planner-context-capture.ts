@@ -580,7 +580,7 @@ function projectWorkingMemory(context: DeliberationContext) {
 
 function projectExecutiveFocus(value: DeliberationContext["executiveFocus"]) {
   return projectNullable(value, (focus) => {
-    const nextStep = projectNullable(focus.next_step, (step) => {
+    const projectStep = (step: NonNullable<NonNullable<typeof focus>["next_step"]>) => {
       const disclosureLabel = projectDisclosureLabel(step.disclosure_label);
       return {
         id: step.id,
@@ -592,10 +592,19 @@ function projectExecutiveFocus(value: DeliberationContext["executiveFocus"]) {
         last_attempt_ts: step.last_attempt_ts,
         ...(disclosureLabel === undefined ? {} : { disclosure_label: disclosureLabel }),
       };
-    });
+    };
+    const nextStep = projectNullable(focus.next_step, projectStep);
+    const candidateSteps =
+      focus.candidate_steps === undefined
+        ? undefined
+        : {
+            topOpenSteps: focus.candidate_steps.top_open_steps.map(projectStep),
+            omittedOpenStepCount: focus.candidate_steps.omitted_open_step_count,
+          };
     return {
       selectedGoalId: focus.selected_goal?.id ?? null,
       nextStep,
+      ...(candidateSteps === undefined ? {} : { candidateSteps }),
       candidates: focus.candidates.map((candidate) => ({
         goal_id: candidate.goal_id,
         score: candidate.score,
@@ -641,6 +650,7 @@ export function captureCompactPlannerContext(context: DeliberationContext) {
       },
     },
     applicableCommitments: context.applicableCommitments?.map(projectCommitment),
+    applicableCommitmentsReadAtMs: context.applicableCommitmentsReadAtMs,
     openQuestionsContext: context.openQuestionsContext?.map((question) => ({
       id: question.id,
       question: question.question,
@@ -1016,6 +1026,14 @@ function restoreCompactPlannerContext(context: CompactPlannerContextCapture): De
               executive.selectedGoalId === null ? null : { id: executive.selectedGoalId },
             selected_score: null,
             next_step: executive.nextStep,
+            ...(executive.candidateSteps === undefined
+              ? {}
+              : {
+                  candidate_steps: {
+                    top_open_steps: executive.candidateSteps.topOpenSteps,
+                    omitted_open_step_count: executive.candidateSteps.omittedOpenStepCount,
+                  },
+                }),
             candidates: executive.candidates,
             threshold: 0,
             score_basis: {

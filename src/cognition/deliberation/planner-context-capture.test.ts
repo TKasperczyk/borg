@@ -14,7 +14,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { LLMCompleteResult } from "../../llm/index.js";
-import { DEFAULT_SESSION_ID, createCreatorDirectiveId, createEntityId } from "../../util/ids.js";
+import {
+  DEFAULT_SESSION_ID,
+  createCreatorDirectiveId,
+  createEntityId,
+  createExecutiveStepId,
+  createGoalId,
+} from "../../util/ids.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { DeliberationContext } from "./types.js";
 import {
@@ -448,6 +454,59 @@ describe("planner context capture", () => {
     expect(captured).not.toHaveProperty("retrievalResult");
     expect(captured).not.toHaveProperty("recencyMessages");
     expect(captured).not.toHaveProperty("currentUserContent");
+  });
+
+  it("round-trips expanded-candidate step data for planner replay", () => {
+    const goalId = createGoalId();
+    const topStep = {
+      id: createExecutiveStepId(),
+      goal_id: goalId,
+      description: "Preserve the expanded candidate's top step",
+      status: "doing" as const,
+      kind: "think" as const,
+      due_at: NOW_MS + 60_000,
+      last_attempt_ts: NOW_MS - 60_000,
+      created_at: NOW_MS - 120_000,
+      updated_at: NOW_MS,
+      provenance: { kind: "manual" as const },
+    };
+    const input = renderInput(
+      context({
+        executiveFocus: {
+          selected_goal: null,
+          selected_score: null,
+          next_step: null,
+          candidate_steps: {
+            top_open_steps: [topStep],
+            omitted_open_step_count: 2,
+          },
+          candidates: [],
+          threshold: 0,
+          score_basis: {
+            score_context: "turn_selection",
+            deadline_lookahead_ms: 0,
+            progress_debt_stale_ms: 0,
+          },
+        },
+      }),
+    );
+    const parsed = parsePlannerContextCaptureRecord(
+      JSON.parse(JSON.stringify(record(input))) as unknown,
+    );
+
+    expect(parsed.render_input.compactContext.executiveFocus?.candidateSteps).toMatchObject({
+      topOpenSteps: [
+        {
+          id: topStep.id,
+          goal_id: goalId,
+          description: topStep.description,
+        },
+      ],
+      omittedOpenStepCount: 2,
+    });
+    expect(renderCapturedPlannerSurfacePair(parsed.render_input).compact.fingerprint).toEqual(
+      renderCapturedPlannerSurfacePair(input).compact.fingerprint,
+    );
   });
 
   it("omits unused nested sensitive payloads while preserving disclosure labels", () => {

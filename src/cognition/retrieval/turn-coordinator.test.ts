@@ -465,6 +465,7 @@ describe("TurnRetrievalCoordinator", () => {
     });
 
     expect(result.applicableCommitments).toEqual([high, low]);
+    expect(result.applicableCommitmentsReadAtMs).toBe(2_000);
     expect(result.actionApplicableCommitments).toEqual([high, low]);
     expect(list).toHaveBeenCalledWith({
       activeOnly: true,

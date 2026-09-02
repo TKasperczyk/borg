@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { ExecutiveStep } from "../../executive/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
@@ -69,7 +69,7 @@ describe("turn self-context human-mind invariants", () => {
         list: () => [],
       },
       executiveStepsRepository: {
-        topOpen: () => null,
+        topOpenForGoals: () => [],
       },
       clock: new ManualClock(1_000),
       tracer: NOOP_TRACER,
@@ -159,7 +159,13 @@ describe("turn self-context human-mind invariants", () => {
         list: () => [],
       },
       executiveStepsRepository: {
-        topOpen: () => nextStep,
+        topOpenForGoals: () => [
+          {
+            goal_id: goal.id,
+            step: nextStep,
+            open_step_count: 1,
+          },
+        ],
       },
       clock,
       tracer: NOOP_TRACER,
@@ -213,6 +219,9 @@ describe("turn self-context human-mind invariants", () => {
         private_to_entity_ids: [aliceId],
       },
     });
+    expect(context.executiveFocus.candidate_steps?.top_open_steps).toEqual([
+      context.executiveFocus.next_step,
+    ]);
   });
 
   it("forces a validated followup goal below threshold over a higher-scoring competitor", async () => {
@@ -250,7 +259,7 @@ describe("turn self-context human-mind invariants", () => {
         ],
       },
       traitsRepository: { list: () => [] },
-      executiveStepsRepository: { topOpen: () => null },
+      executiveStepsRepository: { topOpenForGoals: () => [] },
       clock,
       tracer: NOOP_TRACER,
       goalFocusThreshold: 0.45,
@@ -286,5 +295,83 @@ describe("turn self-context human-mind invariants", () => {
         ?.score,
     ).toBeLessThan(context.executiveFocus.threshold);
     expect(context.executiveFocus.selected_goal?.id).toBe(selectedGoal.id);
+  });
+
+  it("loads top open steps and exact extra-step counts for expanded candidates in one batch", async () => {
+    const clock = new ManualClock(4_000_000);
+    const goals = Array.from(
+      { length: 5 },
+      (_, index): GoalRecord => ({
+        id: createGoalId(),
+        description: `Candidate goal ${index}`,
+        terminal_condition: null,
+        priority: 10 - index,
+        parent_goal_id: null,
+        status: "active",
+        progress_notes: null,
+        last_progress_ts: null,
+        created_at: clock.now() - index,
+        target_at: null,
+        audience_entity_id: null,
+        owner_entity_id: null,
+        source_stream_entry_ids: [],
+        provenance: { kind: "manual" },
+      }),
+    );
+    const steps = goals.slice(0, 2).map(
+      (goal, index): ExecutiveStep => ({
+        id: createExecutiveStepId(),
+        goal_id: goal.id,
+        description: `Top open step ${index}`,
+        status: index === 0 ? "doing" : "queued",
+        kind: "think",
+        due_at: null,
+        last_attempt_ts: null,
+        created_at: clock.now(),
+        updated_at: clock.now(),
+        provenance: { kind: "manual" },
+      }),
+    );
+    const topOpenForGoals = vi.fn((goalIds: readonly GoalRecord["id"][]) =>
+      steps
+        .filter((step) => goalIds.includes(step.goal_id))
+        .map((step, index) => ({
+          goal_id: step.goal_id,
+          step,
+          open_step_count: index === 0 ? 3 : 2,
+        })),
+    );
+    const builder = new TurnSelfContextBuilder({
+      embeddingClient,
+      valuesRepository: { list: () => [] },
+      goalsRepository: { list: () => goals.map((goal) => ({ ...goal, children: [] })) },
+      traitsRepository: { list: () => [] },
+      executiveStepsRepository: { topOpenForGoals },
+      clock,
+      tracer: NOOP_TRACER,
+      goalFocusThreshold: 0,
+      goalFollowupLookaheadMs: 0,
+      goalFollowupStaleMs: 86_400_000,
+    });
+
+    const context = await builder.build({
+      turnId: "turn_candidate_step_batch",
+      cognitionInput: "advance the leading work",
+      perception: {
+        entities: [],
+        mode: "problem_solving",
+        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+        temporalCue: null,
+      },
+      audienceEntityId: null,
+    });
+
+    expect(topOpenForGoals).toHaveBeenCalledTimes(1);
+    expect(topOpenForGoals.mock.calls[0]?.[0]).toEqual(goals.slice(0, 4).map((goal) => goal.id));
+    expect(context.executiveFocus.candidate_steps?.top_open_steps.map((step) => step.id)).toEqual(
+      steps.map((step) => step.id),
+    );
+    expect(context.executiveFocus.candidate_steps?.omitted_open_step_count).toBe(3);
+    expect(context.executiveFocus.next_step?.id).toBe(steps[0]?.id);
   });
 });
