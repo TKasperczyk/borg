@@ -159,6 +159,113 @@ describe("episodic extractor", () => {
     };
   }
 
+  it("uses transport conversation context for venue and stamps the self participant handle", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const selfEntity = harness.entityRepository.ensureSelf("Memory Borg");
+    const conversation = { type: "groupChat" as const, name: "AI Ninjas" };
+    const user = await harness.writer.append({
+      kind: "user_msg",
+      content: "Let's settle the release plan.",
+      conversation,
+    });
+    harness.clock.advance(10);
+    const agent = await harness.writer.append({
+      kind: "agent_msg",
+      content: "I confirmed the release plan.",
+      conversation,
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse([
+          {
+            title: "Release plan confirmed",
+            narrative:
+              'The release plan was settled in the "AI Ninjas" group chat. I confirmed the plan.',
+            source_stream_ids: [user.id, agent.id],
+            participants: ["Memory Borg"],
+            location: "AI Ninjas",
+            tags: ["release"],
+            confidence: 0.9,
+            significance: 0.7,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      clock: harness.clock,
+    });
+
+    const result = await extractor.extractFromStream();
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const [episode] = await harness.repo.listAll();
+
+    expect(result).toEqual({ inserted: 1, updated: 0, skipped: 0 });
+    expect(prompt.split('"conversation":{"type":"groupChat","name":"AI Ninjas"}').length - 1).toBe(
+      2,
+    );
+    expect(prompt).toContain(
+      "Stream entry conversation fields are authoritative transport venue context",
+    );
+    expect(prompt).toContain("never invent a venue name");
+    expect(episode?.narrative).toContain('the "AI Ninjas" group chat');
+    expect(episode?.location).toBe("AI Ninjas");
+    expect(episode?.participants).toEqual([
+      "Memory Borg",
+      episodeParticipantEntityIdTerm(selfEntity.id),
+    ]);
+  });
+
+  it("preserves an unnamed conversation type without inventing a venue name", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const user = await harness.writer.append({
+      kind: "user_msg",
+      content: "Please remember the channel release decision.",
+      conversation: { type: "channel", name: "" },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse([
+          {
+            title: "Channel release decision",
+            narrative: "The release decision was made in a channel whose name was not supplied.",
+            source_stream_ids: [user.id],
+            participants: ["team"],
+            location: null,
+            tags: ["release"],
+            confidence: 0.9,
+            significance: 0.7,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      clock: harness.clock,
+    });
+
+    await extractor.extractFromStream();
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const [episode] = await harness.repo.listAll();
+
+    expect(prompt).toContain('"conversation":{"type":"channel","name":""}');
+    expect(prompt).toContain("never invent a venue name");
+    expect(episode?.location).toBeNull();
+    expect(episode?.narrative).toContain("whose name was not supplied");
+  });
+
   it("keeps repeated similar episodes on different days as distinct episodes", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const clock = new ManualClock(1_000);
@@ -465,6 +572,7 @@ describe("episodic extractor", () => {
     expect(prompt).toContain("multiple substantive threads");
     expect(prompt).toContain("not only the headline topic");
     expect(prompt).toContain("prioritize coverage over length");
+    expect(prompt).not.toContain("authoritative transport venue context");
     expect(prompt).toContain(
       `You are entity ${selfEntityId} (self); messages with kind "agent_msg" are your own.`,
     );

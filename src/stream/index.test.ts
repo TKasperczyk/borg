@@ -155,6 +155,48 @@ describe("stream", () => {
     expect(entry?.sender_entity_id).toBe(senderEntityId);
   });
 
+  it("persists normalized conversation metadata on every appended turn entry", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+    });
+
+    try {
+      await writer.appendMany([
+        {
+          kind: "user_msg",
+          content: "hello",
+          conversation: { type: "groupChat", name: "  AI Ninjas  " },
+        },
+        {
+          kind: "agent_msg",
+          content: "hi",
+          conversation: { type: "groupChat", name: "  AI Ninjas  " },
+        },
+      ]);
+    } finally {
+      writer.close();
+    }
+
+    const reader = new StreamReader({ dataDir: tempDir });
+    const entries = reader.tail(2);
+    const persistedLines = readFileSync(getSessionStreamPath(tempDir, DEFAULT_SESSION_ID), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { conversation?: unknown });
+
+    expect(entries.map((entry) => entry.conversation)).toEqual([
+      { type: "groupChat", name: "AI Ninjas" },
+      { type: "groupChat", name: "AI Ninjas" },
+    ]);
+    expect(persistedLines.map((entry) => entry.conversation)).toEqual([
+      { type: "groupChat", name: "AI Ninjas" },
+      { type: "groupChat", name: "AI Ninjas" },
+    ]);
+  });
+
   it("persists and reads reply target entity ids", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -309,6 +351,7 @@ describe("stream", () => {
 
     expect(entry?.sender_entity_id).toBeNull();
     expect(entry?.reply_target_entity_id).toBeNull();
+    expect(entry?.conversation).toBeUndefined();
   });
 
   it("assigns append timestamps after acquiring the stream lock", async () => {

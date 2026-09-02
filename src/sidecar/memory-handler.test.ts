@@ -12,8 +12,12 @@ import {
 } from "./memory-handler.js";
 import { MemoryTraceRegistry } from "./memory-trace.js";
 import type { Borg } from "../borg.js";
-import { commitmentSchema, type CommitmentRecord } from "../memory/commitments/index.js";
-import type { Episode } from "../memory/episodic/index.js";
+import {
+  commitmentSchema,
+  type CommitmentRecord,
+  type EntityRecord,
+} from "../memory/commitments/index.js";
+import { episodeParticipantEntityIdTerm, type Episode } from "../memory/episodic/index.js";
 import { EmbeddingError } from "../util/errors.js";
 import {
   createCommitmentId,
@@ -56,13 +60,21 @@ type Recorder = {
   resolvedExternalSenders: unknown[];
   lookedUpExternalSenders: Array<{ source: string; externalId: string }>;
   externalSenderIds: Map<string, EntityId>;
+  entities: EntityRecord[];
+  entityListCalls: number;
+  entityGetIds: EntityId[];
+  selfEntityGetCalls: number;
+  episodeOverrides: Partial<Episode>;
   ingestSessions: string[];
   extractOptions: unknown[];
   commitments: CommitmentRecord[];
   commitmentAdds: unknown[];
 };
 
-function testEpisode(id: Episode["id"] = "ep_aaaaaaaaaaaaaaaa" as Episode["id"]): Episode {
+function testEpisode(
+  id: Episode["id"] = "ep_aaaaaaaaaaaaaaaa" as Episode["id"],
+  overrides: Partial<Episode> = {},
+): Episode {
   return {
     id,
     title: "Title",
@@ -89,6 +101,7 @@ function testEpisode(id: Episode["id"] = "ep_aaaaaaaaaaaaaaaa" as Episode["id"])
     embedding: Float32Array.from([1, 0, 0, 0]),
     created_at: 1,
     updated_at: 2,
+    ...overrides,
   };
 }
 
@@ -136,7 +149,12 @@ function stubBorg(rec: Recorder): Borg {
       },
     },
     entities: {
-      resolveExternal: (input: { source: string; externalId: string }) => {
+      resolveExternal: (input: {
+        source: string;
+        externalId: string;
+        canonicalName: string;
+        kind: "person";
+      }) => {
         rec.resolvedExternalSenders.push(input);
         const existing = rec.externalSenderIds.get(input.externalId);
 
@@ -146,23 +164,45 @@ function stubBorg(rec: Recorder): Borg {
 
         const entityId = createEntityId();
         rec.externalSenderIds.set(input.externalId, entityId);
+        rec.entities.push({
+          id: entityId,
+          canonical_name: input.canonicalName,
+          aliases: [],
+          kind: input.kind,
+          borg_role: null,
+          name_provenance: "transport_sender",
+          created_at: 1,
+        });
         return entityId;
       },
       findByExternalId: (source: string, externalId: string) => {
         rec.lookedUpExternalSenders.push({ source, externalId });
         return rec.externalSenderIds.get(externalId) ?? null;
       },
-      get: (id: EntityId) =>
-        [...rec.externalSenderIds.values()].some((entityId) => entityId === id)
-          ? {
-              id,
-              canonical_name: "Known sender",
-              aliases: [],
-              kind: "person",
-              borg_role: null,
-              created_at: 1,
-            }
-          : null,
+      get: (id: EntityId) => {
+        rec.entityGetIds.push(id);
+        return (
+          rec.entities.find((entity) => entity.id === id) ??
+          ([...rec.externalSenderIds.values()].some((entityId) => entityId === id)
+            ? {
+                id,
+                canonical_name: "Known sender",
+                aliases: [],
+                kind: "person",
+                borg_role: null,
+                created_at: 1,
+              }
+            : null)
+        );
+      },
+      getSelf: () => {
+        rec.selfEntityGetCalls += 1;
+        return rec.entities.find((entity) => entity.kind === "self") ?? null;
+      },
+      list: () => {
+        rec.entityListCalls += 1;
+        return [...rec.entities];
+      },
     },
     identity: {
       addCommitment: (input: {
@@ -245,7 +285,7 @@ function stubBorg(rec: Recorder): Borg {
         rec.lastRecallTraceTurnId = opts.traceTurnId;
         return [
           {
-            episode: { id: "ep_1", title: "Title", narrative: "Narrative" },
+            episode: testEpisode("ep_1" as Episode["id"], rec.episodeOverrides),
             score: 0.91,
             rawScore: 1.16,
           },
@@ -254,19 +294,30 @@ function stubBorg(rec: Recorder): Borg {
       list: async (options?: { limit?: number; cursor?: string }) => {
         rec.lastListOptions = options;
         return {
-          items: [testEpisode()],
+          items: [testEpisode(undefined, rec.episodeOverrides)],
           nextCursor: "next-cursor",
         };
       },
       inspect: async (id: Episode["id"]) => {
         rec.inspectIds.push(id);
-        return id === ("ep_missingmissing00" as Episode["id"]) ? null : testEpisode(id);
+        return id === ("ep_missingmissing00" as Episode["id"])
+          ? null
+          : testEpisode(id, rec.episodeOverrides);
       },
     },
   } as unknown as Borg;
 }
 
 function recordingPool(): { pool: MemoryPool; rec: Recorder } {
+  const selfEntity: EntityRecord = {
+    id: createEntityId(),
+    canonical_name: "team-agent",
+    aliases: ["self"],
+    kind: "self",
+    borg_role: null,
+    name_provenance: "config_default_user",
+    created_at: 0,
+  };
   const rec: Recorder = {
     tenants: [],
     exclusives: [],
@@ -275,6 +326,11 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     resolvedExternalSenders: [],
     lookedUpExternalSenders: [],
     externalSenderIds: new Map(),
+    entities: [selfEntity],
+    entityListCalls: 0,
+    entityGetIds: [],
+    selfEntityGetCalls: 0,
+    episodeOverrides: {},
     ingestSessions: [],
     extractOptions: [],
     commitments: [],
@@ -1072,12 +1128,58 @@ describe("memory sidecar handler", () => {
       ok: true,
       top_raw_score: 1.16,
       episodes: [
-        { id: "ep_1", title: "Title", narrative: "Narrative", score: 0.91, raw_score: 1.16 },
+        {
+          id: "ep_1",
+          title: "Title",
+          narrative: "Narrative",
+          score: 0.91,
+          raw_score: 1.16,
+          occurred_at: 10,
+          participant_names: ["Ada"],
+        },
       ],
     });
     expect(rec.tenants).toEqual(["acme"]);
     expect(rec.lastRecallLimit).toBe(50); // clamped to maxRecallLimit
     expect(rec.lastRecallTraceTurnId).toBeUndefined();
+  });
+
+  it("skips entity lookups when recall returns no episodes", async () => {
+    const entityAccesses: string[] = [];
+    const pool: MemoryPool = {
+      listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
+      async withTenant(_tenantId, fn) {
+        return fn({
+          episodic: {
+            search: async () => [],
+          },
+          entities: {
+            get: () => {
+              entityAccesses.push("get");
+              return null;
+            },
+            getSelf: () => {
+              entityAccesses.push("getSelf");
+              return null;
+            },
+            list: () => {
+              entityAccesses.push("list");
+              return [];
+            },
+          },
+        } as unknown as Borg);
+      },
+    };
+    const base = await start(pool);
+    const res = await post(base, "/memory/recall", { tenant: "acme", query: "q" }, TOKEN);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      top_raw_score: null,
+      episodes: [],
+    });
+    expect(entityAccesses).toEqual([]);
   });
 
   it("keeps recall response unchanged while passing a trace turn id when tracing is enabled", async () => {
@@ -1123,12 +1225,16 @@ describe("memory sidecar handler", () => {
               });
               return [
                 {
-                  episode: { id: "ep_1", title: "Title", narrative: "Narrative" },
+                  episode: testEpisode("ep_1" as Episode["id"]),
                   score: 0.91,
                   rawScore: 1.16,
                 },
               ];
             },
+          },
+          entities: {
+            get: () => null,
+            getSelf: () => null,
           },
         } as unknown as Borg);
       },
@@ -1265,7 +1371,15 @@ describe("memory sidecar handler", () => {
       ok: true,
       top_raw_score: 1.16,
       episodes: [
-        { id: "ep_1", title: "Title", narrative: "Narrative", score: 0.91, raw_score: 1.16 },
+        {
+          id: "ep_1",
+          title: "Title",
+          narrative: "Narrative",
+          score: 0.91,
+          raw_score: 1.16,
+          occurred_at: 10,
+          participant_names: ["Ada"],
+        },
       ],
     });
   });
@@ -1290,6 +1404,8 @@ describe("memory sidecar handler", () => {
           significance: 0.72,
           tags: ["planning", "admin"],
           source_stream_ids: ["strm_aaaaaaaaaaaaaaaa"],
+          occurred_at: 10,
+          participant_names: ["Ada"],
         },
       ],
       nextCursor: "next-cursor",
@@ -1432,15 +1548,79 @@ describe("memory sidecar handler", () => {
         title: "Title",
         narrative: "Narrative",
         participants: ["Ada"],
+        participant_names: ["Ada"],
+        occurred_at: 10,
         source_stream_ids: ["strm_aaaaaaaaaaaaaaaa"],
         significance: 0.72,
         tags: ["planning", "admin"],
       },
     });
+    expect(body.episode.created_at).toBe(1);
+    expect(body.episode.participants).toEqual(["Ada"]);
     expect(body.episode).not.toHaveProperty("embedding");
     expect(rec.tenants).toEqual(["acme"]);
     expect(rec.exclusives).toEqual([undefined]);
     expect(rec.inspectIds).toEqual(["ep_aaaaaaaaaaaaaaaa"]);
+  });
+
+  it("adds event time and canonical participant names without changing inspect internals", async () => {
+    const { pool, rec } = recordingPool();
+    const selfEntity = rec.entities.find((entity) => entity.kind === "self");
+    const participantEntityId = createEntityId();
+    const unresolvedEntityId = createEntityId();
+
+    expect(selfEntity).toBeDefined();
+    Object.assign(selfEntity!, {
+      canonical_name: "Current Borg",
+      aliases: ["self", "Former Borg"],
+    });
+    rec.entities.push({
+      id: participantEntityId,
+      canonical_name: "Ada Lovelace",
+      aliases: ["Ada"],
+      kind: "person",
+      borg_role: null,
+      name_provenance: "transport_sender",
+      created_at: 1,
+    });
+    const rawParticipants = [
+      "Former Borg",
+      episodeParticipantEntityIdTerm(participantEntityId),
+      "Ada Lovelace",
+      episodeParticipantEntityIdTerm(unresolvedEntityId),
+      episodeParticipantEntityIdTerm(participantEntityId),
+      "Current Borg",
+    ];
+    rec.episodeOverrides = {
+      participants: rawParticipants,
+      start_time: 1_725_000_123_456,
+    };
+    const base = await start(pool);
+    const recall = await post(base, "/memory/recall", { tenant: "acme", query: "q" }, TOKEN);
+    const listed = await get(base, "/memory/episodes?tenant=acme", TOKEN);
+    const inspected = await get(base, "/memory/episodes/ep_aaaaaaaaaaaaaaaa?tenant=acme", TOKEN);
+    const recallBody = (await recall.json()) as { episodes: Array<Record<string, unknown>> };
+    const listBody = (await listed.json()) as { episodes: Array<Record<string, unknown>> };
+    const inspectBody = (await inspected.json()) as { episode: Record<string, unknown> };
+
+    for (const episode of [recallBody.episodes[0], listBody.episodes[0], inspectBody.episode]) {
+      expect(episode).toMatchObject({
+        occurred_at: 1_725_000_123_456,
+        participant_names: ["Current Borg", "Ada Lovelace"],
+      });
+    }
+    expect(inspectBody.episode.created_at).toBe(1);
+    expect(inspectBody.episode.participants).toEqual(rawParticipants);
+    expect(rec.entityListCalls).toBe(0);
+    expect(rec.selfEntityGetCalls).toBe(3);
+    expect(rec.entityGetIds).toEqual([
+      participantEntityId,
+      unresolvedEntityId,
+      participantEntityId,
+      unresolvedEntityId,
+      participantEntityId,
+      unresolvedEntityId,
+    ]);
   });
 
   it("404s an unknown episode id and 400s an invalid episode id without touching the pool", async () => {
@@ -1815,9 +1995,49 @@ describe("memory sidecar handler", () => {
         { kind: "agent_msg", content: "hi there" },
       ],
     });
+    expect(JSON.stringify(rec.appendMany?.inputs)).toBe(
+      '[{"kind":"user_msg","content":"hello"},{"kind":"agent_msg","content":"hi there"}]',
+    );
     expect(rec.tenants).toEqual(["acme", "acme"]);
     expect(rec.exclusives).toEqual([true, undefined]);
     expect(rec.ingestSessions).toEqual([expectedSession]);
+  });
+
+  it.each([
+    {
+      conversation: { type: "personal", name: "Alice" },
+      persisted: { type: "personal", name: "Alice" },
+    },
+    {
+      conversation: { type: "groupChat", name: "AI Ninjas" },
+      persisted: { type: "groupChat", name: "AI Ninjas" },
+    },
+    {
+      conversation: { type: "channel", name: "   " },
+      persisted: { type: "channel", name: "" },
+    },
+  ])("persists a $conversation.type conversation on both turn entries", async (testCase) => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const response = await post(
+      base,
+      "/memory/append-turn",
+      {
+        tenant: "acme",
+        session: "room",
+        user: "hello",
+        assistant: "hi",
+        conversation: testCase.conversation,
+      },
+      TOKEN,
+    );
+
+    expect(response.status).toBe(200);
+    await response.json();
+    expect(rec.appendMany?.inputs).toEqual([
+      { kind: "user_msg", content: "hello", conversation: testCase.persisted },
+      { kind: "agent_msg", content: "hi", conversation: testCase.persisted },
+    ]);
   });
 
   it("resolves optional sender identities and stamps only their user stream entries", async () => {
@@ -1900,6 +2120,41 @@ describe("memory sidecar handler", () => {
     });
     expect(rec.tenants).toEqual([]);
   });
+
+  it.each([
+    null,
+    [],
+    "personal",
+    { type: "directMessage", name: "Alice" },
+    { type: "personal", name: 42 },
+    { type: 42, name: "Alice" },
+    { type: "channel" },
+  ])(
+    "rejects malformed optional conversation %# before touching the tenant",
+    async (conversation) => {
+      const { pool, rec } = recordingPool();
+      const base = await start(pool);
+      const response = await post(
+        base,
+        "/memory/append-turn",
+        {
+          tenant: "acme",
+          session: "room",
+          user: "hello",
+          assistant: "hi",
+          conversation,
+        },
+        TOKEN,
+      );
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error:
+          "invalid 'conversation'; expected type 'personal', 'groupChat', or 'channel' and string 'name'",
+      });
+      expect(rec.tenants).toEqual([]);
+    },
+  );
 
   it("does not serialize later append-turn requests behind pending ingestion", async () => {
     const appendSessions: string[] = [];

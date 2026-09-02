@@ -417,6 +417,7 @@ function buildExtractorPrompt(
       sender_entity_id: entry.sender_entity_id ?? undefined,
       sender_display_name: sender?.display_name,
       content: entry.content,
+      conversation: entry.conversation,
       audience:
         entry.audience === undefined ? undefined : `(audience routing label) ${entry.audience}`,
     });
@@ -452,6 +453,13 @@ function buildExtractorPrompt(
           "You MUST emit at least one episode covering every protected source entry listed below.",
           `Protected source_stream_ids: ${JSON.stringify(options.protectedSourceEntryIds)}`,
         ];
+  const conversationVenueGuidance = chunk.some((entry) => entry.conversation !== undefined)
+    ? [
+        "Stream entry conversation fields are authoritative transport venue context, not user-authored claims.",
+        "When conversation.name is non-empty, state naturally in the narrative that the exchange happened in that named conversation and populate location with the venue name when appropriate.",
+        "When conversation.name is empty, use only the supplied conversation type when relevant; never invent a venue name, and leave location null unless another source grounds one.",
+      ]
+    : [];
 
   const promptLines = [
     "You extract episodic memories from a stream chunk.",
@@ -471,6 +479,7 @@ function buildExtractorPrompt(
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to the narrative body. Keep the title topic-neutral and scannable rather than first-person narration.`,
     MEMORY_SOURCE_LANGUAGE_GUIDANCE,
     "For each user_msg with sender_display_name, attribute that message to the exact display name (for example, ‘Name asked …’), never to a generic user.",
+    ...conversationVenueGuidance,
     "Any complete source line containing an OUTCOME fp= or decision= token, or beginning with ticket=<X> action=<Y> or action=teams_card, is an opaque dedup record. Copy that complete line verbatim into the episode narrative; never paraphrase, translate, normalize, or omit it.",
     "When a source contains multiple substantive threads, the episode narrative should cover each substantive thread, not only the headline topic. Details that merely elaborate one core thread are not separate threads.",
     "A thread is substantive when the user introduces a specific name, place, observation, callback, or concrete detail; trivial filler does not count.",
@@ -988,6 +997,7 @@ export class EpisodicExtractor {
     candidate: ExtractorCandidate,
     chunkById: Map<string, StreamEntry>,
     contextEntries: readonly StreamEntry[],
+    selfEntity: SelfPromptEntity | null,
   ): Promise<CandidateOutcome> {
     const sourceEntries = sourceEntriesFromCandidate(candidate, chunkById);
     const access = this.deriveEpisodeAccess(sourceEntries);
@@ -1015,6 +1025,9 @@ export class EpisodicExtractor {
         ...senderParticipants.map((participant) =>
           episodeParticipantEntityIdTerm(participant.entity_id),
         ),
+        ...(selfEntity !== null && sourceEntries.some((entry) => entry.kind === "agent_msg")
+          ? [episodeParticipantEntityIdTerm(selfEntity.id)]
+          : []),
       ]),
     };
 
@@ -1226,7 +1239,12 @@ export class EpisodicExtractor {
       }
 
       for (const candidate of candidates) {
-        const outcome = await this.processCandidate(candidate, chunkById, activeContextEntries);
+        const outcome = await this.processCandidate(
+          candidate,
+          chunkById,
+          activeContextEntries,
+          selfEntity,
+        );
 
         if (outcome === "inserted") {
           inserted += 1;

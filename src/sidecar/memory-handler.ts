@@ -2,7 +2,8 @@
 // over BorgPool that exposes long-term memory to an external (e.g. Python) service.
 //
 //   POST /memory/remember    { tenant, content, author? }          -> append + extract episode(s)
-//   POST /memory/append-turn { tenant, session, user, assistant, sender? } -> append + async extract
+//   POST /memory/append-turn { tenant, session, user, assistant, sender?, conversation? }
+//                                                            -> append + async extract
 //   POST /memory/recall      { tenant, query, limit? }             -> semantic episodic search
 //   GET  /memory/commitments?tenant=<id>&audience=<entity_id>      -> active commitments
 //        Alternative audience_external_id resolves team-agent sender identity.
@@ -41,10 +42,20 @@ import {
   directiveFamilySchema,
   entityIdSchema,
   type CommitmentRecord,
+  type EntityRecord,
 } from "../memory/commitments/index.js";
-import type { Episode } from "../memory/episodic/index.js";
+import {
+  episodeParticipantEntityIds,
+  parseEpisodeParticipantEntityIdTerm,
+  type Episode,
+} from "../memory/episodic/index.js";
 import type { RetrievalDegradation } from "../retrieval/pipeline.js";
-import type { StreamEntryInput } from "../stream/index.js";
+import {
+  streamConversationSchema,
+  type StreamConversation,
+  type StreamEntryInput,
+} from "../stream/index.js";
+import { dedupePreservingOrder } from "../util/collections.js";
 import { EmbeddingError } from "../util/errors.js";
 import {
   parseAuditId,
@@ -387,13 +398,76 @@ function projectSemanticNodeForList(node: {
   };
 }
 
-function projectEpisodeForList(episode: Episode): {
+type PublicEpisodeMetadata = {
+  occurred_at: number;
+  participant_names: string[];
+};
+
+function createPublicEpisodeMetadataProjector(
+  episodes: readonly Pick<Episode, "participants">[],
+  entities: Pick<Borg["entities"], "get" | "getSelf">,
+): (episode: Pick<Episode, "start_time" | "participants">) => PublicEpisodeMetadata {
+  const referencedEntityIds = dedupePreservingOrder(
+    episodes.flatMap((episode) => episodeParticipantEntityIds(episode.participants)),
+  );
+  const selfEntity = entities.getSelf() ?? undefined;
+  const entitiesById = new Map<EntityRecord["id"], EntityRecord>();
+  if (selfEntity !== undefined) {
+    entitiesById.set(selfEntity.id, selfEntity);
+  }
+
+  for (const entityId of referencedEntityIds) {
+    if (entitiesById.has(entityId)) {
+      continue;
+    }
+
+    const entity = entities.get(entityId);
+    if (entity !== null) {
+      entitiesById.set(entityId, entity);
+    }
+  }
+  const selfNames = new Set(
+    selfEntity === undefined
+      ? []
+      : [selfEntity.canonical_name, ...selfEntity.aliases].map((name) => name.trim()),
+  );
+
+  return (episode) => ({
+    occurred_at: episode.start_time,
+    participant_names: dedupePreservingOrder(
+      episode.participants.flatMap((participant) => {
+        const displayName = participant.trim();
+        const entityId = parseEpisodeParticipantEntityIdTerm(displayName);
+
+        if (entityId !== null) {
+          const entity = entitiesById.get(entityId);
+          return entity === undefined ? [] : [entity.canonical_name];
+        }
+
+        if (displayName === "") {
+          return [];
+        }
+
+        return selfEntity !== undefined && selfNames.has(displayName)
+          ? [selfEntity.canonical_name]
+          : [displayName];
+      }),
+    ),
+  });
+}
+
+function projectEpisodeForList(
+  episode: Episode,
+  metadata: PublicEpisodeMetadata,
+): {
   id: Episode["id"];
   title: string;
   narrative: string;
   significance: number;
   tags: string[];
   source_stream_ids: Episode["source_stream_ids"];
+  occurred_at: number;
+  participant_names: string[];
 } {
   return {
     id: episode.id,
@@ -402,6 +476,7 @@ function projectEpisodeForList(episode: Episode): {
     significance: episode.significance,
     tags: episode.tags,
     source_stream_ids: episode.source_stream_ids,
+    ...metadata,
   };
 }
 
@@ -971,16 +1046,31 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         if (rawPath === "/memory/episodes") {
           const limit = episodeListLimitFromQuery(searchParams);
           const cursor = episodeListCursorFromQuery(searchParams);
-          const result = await pool.withTenant(tenant, (borg) =>
-            borg.episodic.list({
+          const result = await pool.withTenant(tenant, async (borg) => {
+            const listed = await borg.episodic.list({
               limit,
               ...(cursor === undefined ? {} : { cursor }),
-            }),
-          );
+            });
+            if (listed.items.length === 0) {
+              return listed;
+            }
+
+            const projectMetadata = createPublicEpisodeMetadataProjector(
+              listed.items,
+              borg.entities,
+            );
+
+            return {
+              ...listed,
+              items: listed.items.map((episode) =>
+                projectEpisodeForList(episode, projectMetadata(episode)),
+              ),
+            };
+          });
 
           send(res, 200, {
             ok: true,
-            episodes: result.items.map((episode) => projectEpisodeForList(episode)),
+            episodes: result.items,
             ...(result.nextCursor === undefined ? {} : { nextCursor: result.nextCursor }),
           });
           return;
@@ -991,13 +1081,28 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           return;
         }
         if (episodeId !== undefined) {
-          const episode = await pool.withTenant(tenant, (borg) => borg.episodic.inspect(episodeId));
+          const episode = await pool.withTenant(tenant, async (borg) => {
+            const inspected = await borg.episodic.inspect(episodeId);
+
+            if (inspected === null) {
+              return null;
+            }
+
+            const projectMetadata = createPublicEpisodeMetadataProjector(
+              [inspected],
+              borg.entities,
+            );
+            return {
+              ...episodeWithoutEmbedding(inspected),
+              ...projectMetadata(inspected),
+            };
+          });
           if (episode === null) {
             send(res, 404, { ok: false });
             return;
           }
 
-          send(res, 200, { ok: true, episode: episodeWithoutEmbedding(episode) });
+          send(res, 200, { ok: true, episode });
           return;
         }
 
@@ -1149,6 +1254,20 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           });
           return;
         }
+        let conversation: StreamConversation | undefined;
+        if (body.conversation !== undefined) {
+          const parsedConversation = streamConversationSchema.safeParse(body.conversation);
+
+          if (!parsedConversation.success) {
+            send(res, 400, {
+              error:
+                "invalid 'conversation'; expected type 'personal', 'groupChat', or 'channel' and string 'name'",
+            });
+            return;
+          }
+
+          conversation = parsedConversation.data;
+        }
 
         const session = sessionFromCaller(sessionRaw);
         const entries = await pool.withTenant(
@@ -1169,8 +1288,13 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                 kind: "user_msg",
                 content: user,
                 ...(senderEntityId === undefined ? {} : { sender_entity_id: senderEntityId }),
+                ...(conversation === undefined ? {} : { conversation }),
               },
-              { kind: "agent_msg", content: assistant },
+              {
+                kind: "agent_msg",
+                content: assistant,
+                ...(conversation === undefined ? {} : { conversation }),
+              },
             ];
             return borg.stream.appendMany(inputs, { session });
           },
@@ -1202,13 +1326,26 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       let hits;
       try {
         hits = await raceRecallDeadline(
-          pool.withTenant(tenant, (borg) =>
-            borg.episodic.search(query, {
+          pool.withTenant(tenant, async (borg) => {
+            const recalled = await borg.episodic.search(query, {
               limit,
               onDegraded: (degradation) => degradations.push(degradation),
               ...(traceTurnId === undefined ? {} : { traceTurnId }),
-            }),
-          ),
+            });
+            if (recalled.length === 0) {
+              return [];
+            }
+
+            const projectMetadata = createPublicEpisodeMetadataProjector(
+              recalled.map((hit) => hit.episode),
+              borg.entities,
+            );
+
+            return recalled.map((hit) => ({
+              ...hit,
+              sidecarMetadata: projectMetadata(hit.episode),
+            }));
+          }),
           recallDeadlineMs,
         );
       } catch (error) {
@@ -1263,6 +1400,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           narrative: hit.episode.narrative,
           score: hit.score,
           raw_score: hit.rawScore,
+          ...hit.sidecarMetadata,
         })),
       });
     } catch (error) {

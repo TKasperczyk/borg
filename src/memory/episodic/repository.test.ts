@@ -196,7 +196,9 @@ describe("episodic repository", () => {
     );
     expect(search[0]?.episode.id).toBe(first.id);
     expect(listed.items).toHaveLength(1);
+    expect(listed.items[0]?.id).toBe(first.id);
     expect(paged.items).toHaveLength(1);
+    expect(paged.items[0]?.id).toBe(second.id);
     expect(await harness.repo.delete(second.id)).toBe(true);
     expect(await harness.repo.get(second.id)).toBeNull();
   });
