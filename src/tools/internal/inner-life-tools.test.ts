@@ -102,6 +102,34 @@ describe("inner life internal tools", () => {
     expect(tool.description).toContain("A correction is a new entry naming the one it corrects");
     expect(tool.menuSummary).toContain("immutable once written");
     expect(tool.menuSummary).toContain("never a change to it");
+    // The store makes both entries permanent; it does not make them co-visible.
+    // The reader is an origin-time range with no text or id query, so a claim
+    // that a read-back sees both is true of the store and false of the only
+    // instrument that reaches it. State the reachability, not the store.
+    expect(tool.description).not.toContain("sees both");
+    expect(tool.description).toContain("Nothing on either entry links them");
+    expect(tool.description).toContain("no text or id query");
+    expect(tool.description).toContain(
+      "reading back to the corrected entry's own window can never contain it",
+    );
+  });
+
+  // last_ruminated_at is nulled by the same UPDATE that sets the terminal status,
+  // exactly as the ticks are zeroed. The surface named one and not the other, so a
+  // reader who checked the unnamed field read the write's own doing as history.
+  it("names both rumination fields this write resets, not only the counter", () => {
+    const tool = createOpenQuestionsResolveTool({
+      identityService: {
+        resolveOpenQuestion: () => {
+          throw new Error("not invoked");
+        },
+      },
+      disclosureLabelForEvidence: async () => selfPrivateMemoryDisclosureLabel(),
+    });
+
+    expect(tool.description).toContain("unresolved_rumination_ticks reads 0");
+    expect(tool.description).toContain("last_ruminated_at reads null");
+    expect(tool.description).toContain("because this write set them there");
   });
 
   it("surfaces identity-governance review-required open question resolution as tool data", async () => {

@@ -40,7 +40,7 @@ export function createJournalAppendTool(
   return {
     name: "tool.journal.append",
     description:
-      "Append a self-private journal entry during an autonomous reflection turn. I use this for private interior notes I want retained without ending the turn. An entry is immutable once written: no tool amends or deletes one, so I cannot go back and mark an earlier entry as mistaken the way I can resolve a question, cancel a wake, or retire a goal. A correction is a new entry naming the one it corrects; the earlier text stays exactly as written, and anything reading the journal back sees both.",
+      "Append a self-private journal entry during an autonomous reflection turn. I use this for private interior notes I want retained without ending the turn. An entry is immutable once written: no tool amends or deletes one, so I cannot go back and mark an earlier entry as mistaken the way I can resolve a question, cancel a wake, or retire a goal. A correction is a new entry naming the one it corrects, and the earlier text stays exactly as written. Nothing on either entry links them: the browse that reads them back takes an origin-time range and no text or id query, so a correction is reachable only from a range whose end is at or after the correction's own time, and reading back to the corrected entry's own window can never contain it. That browse returns newest first and pages backwards, so where a range does span both, the correction arrives before the entry it corrects.",
     menuSummary:
       "Append a self-private journal entry without ending the turn; an entry is immutable once written, so a correction is a new entry naming the one it corrects and never a change to it.",
     allowedOrigins: ["autonomous"],

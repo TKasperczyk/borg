@@ -230,6 +230,71 @@ describe("OpenQuestionsRepository", () => {
     }
   });
 
+  // Four consecutive resolutions read back with last_ruminated_at null, which is
+  // readable as "nothing ever ruminated on these". It is not: both terminal writes
+  // clear the active-open lifecycle in the same statement that sets the status, so
+  // the null is that write's own doing and carries no history. The notes are the
+  // record that survives it, so pin both halves in one place.
+  it("clears the rumination lifecycle on terminal writes while the notes survive", () => {
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      const resolved = repository.add({
+        question: "Which pass settled this?",
+        urgency: 0.5,
+        source: "ruminator",
+        provenance: manualProvenance,
+      });
+      const abandoned = repository.add({
+        question: "Which pass gave up on this?",
+        urgency: 0.5,
+        source: "ruminator",
+        provenance: manualProvenance,
+      });
+
+      for (const question of [resolved, abandoned]) {
+        repository.recordRumination({
+          open_question_id: question.id,
+          note: "A pass ran against this question.",
+          tensions: [],
+          connected_open_question_ids: [],
+          source_process: "test",
+          provenance: manualProvenance,
+          created_at: 11_000,
+        });
+        expect(repository.markRuminated(question.id, 3)).toMatchObject({
+          unresolved_rumination_ticks: 3,
+          last_ruminated_at: 10_000,
+        });
+      }
+
+      const afterResolve = repository.resolve(resolved.id, {
+        resolution_note: "The evidence settled it.",
+        resolution_evidence_episode_ids: [createEpisodeId()],
+      });
+      const afterAbandon = repository.abandon(abandoned.id, "No traction.");
+
+      for (const record of [afterResolve, afterAbandon]) {
+        expect(record.unresolved_rumination_ticks).toBe(0);
+        expect(record.last_ruminated_at).toBeNull();
+      }
+
+      for (const question of [resolved, abandoned]) {
+        expect(
+          repository.listRecentRuminations(question.id, { limit: 5 }).map((item) => item.note),
+        ).toEqual(["A pass ran against this question."]);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
   it("CAS-protects open question deletion", async () => {
     const clock = new FixedClock(10_000);
     const db = openDatabase(":memory:", {

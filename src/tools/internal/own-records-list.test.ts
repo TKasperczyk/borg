@@ -321,6 +321,62 @@ describe("tool.ownRecords.list", () => {
     }
   });
 
+  // A journal correction is a new entry naming the one it corrects, and nothing on
+  // either entry links them. This browse is the only reader of that store and it
+  // has no text query and no id filter, so co-retrieval is a property of the range
+  // the reader chose rather than of the correction. Pin the whole shape the journal
+  // surface now claims, including which end of a cut page survives.
+  it("reaches a journal correction only from a range ending at or after it", async () => {
+    const target = journalRecord({ id: 1, createdAt: 1_000, text: "the claim that was wrong" });
+    const correction = journalRecord({ id: 3, createdAt: 3_000, text: "entry 1 was wrong" });
+    const listFrom = (middle: TrainOfThoughtJournalEntry) =>
+      createOwnRecordsListTool({
+        listThoughtRecords: () => [],
+        readThoughtRecord: () => null,
+        listJournalRecords: journalRangeLister([correction, middle, target]),
+        clock: new ManualClock(4_000),
+      });
+    const filler = journalRecord({ id: 2, createdAt: 2_000, text: "an unrelated note" });
+    const kinds = ["journal"] as OwnRecordKind[];
+
+    const targetWindow = await listFrom(filler).invoke(
+      { since: iso(1_000), until: iso(1_000), kinds, limit: 10 },
+      invocationContext(),
+    );
+    const spanning = await listFrom(filler).invoke(
+      { since: iso(1_000), until: iso(3_000), kinds, limit: 10 },
+      invocationContext(),
+    );
+    const cut = await listFrom(
+      journalRecord({ id: 2, createdAt: 2_000, text: "序".repeat(150_000) }),
+    ).invoke({ since: iso(1_000), until: iso(3_000), kinds, limit: 3 }, invocationContext());
+
+    // Reading back to the entry's own window can never contain its correction.
+    expect(targetWindow.records.map((record) => record.handle)).toEqual(["journal:1"]);
+    // Where the range does span both, the correction arrives first, not last.
+    expect(spanning.records.map((record) => record.handle)).toEqual([
+      "journal:3",
+      "journal:2",
+      "journal:1",
+    ]);
+    // A budget cut keeps a newest-first prefix, so the correction survives a cut
+    // that the entry it corrects does not.
+    expect(cut.page_end_reason).toBe("context_budget");
+    expect(cut.records.map((record) => record.handle)).toEqual(["journal:3"]);
+
+    // Nothing on the input can key the two together. If either of these ever
+    // parses, the journal surface's reachability claim has to be rewritten.
+    for (const linking of [{ query: "entry 1" }, { journal_entry_id: 1 }]) {
+      expect(
+        listFrom(filler).inputSchema.safeParse({
+          since: iso(1_000),
+          until: iso(3_000),
+          ...linking,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it("returns exact multilingual content, origin times, nullable anchors, and row-local labels", async () => {
     const multilingual = "我在火车上注意到了它。 لاحظتُ ذلك أيضًا. Zażółć gęślą jaźń. 🧠";
     const exactThought = thoughtRecord({
