@@ -931,6 +931,37 @@ describe("compact terminal finalizer context", () => {
     );
   });
 
+  it("leaves the cross-session group unbounded by a shared budget and says its days fold", () => {
+    // The group is a union of separately-drawn lanes -- events, self-decisions, day
+    // rows, period rows -- each capped upstream on its own. The render site maps one
+    // for one, so rows_total is their sum and never one limit's output. If this ever
+    // starts truncating, the per-kind counts on the page stop being readable at all.
+    const mixed: EvidenceLedgerEntry[] = Array.from({ length: 9 }, (_, index) => ({
+      id: `lived-${index}`,
+      source_type: "system_metadata",
+      session_scope: "prior_session",
+      actor: "memory",
+      trust_rank: 70,
+      text: `lived entry ${index}`,
+    }));
+    const turn = build(context({ evidenceLedger: ledger(mixed) })).system[3]!.text;
+    expect(turn).toContain(
+      `<cross_session_entries complete="true" rows_total="9" draw_scope="${CROSS_SESSION_ENTRIES_DRAW_SCOPE}">`,
+    );
+    for (const index of [0, 8]) {
+      expect(turn).toContain(`<cross_session_row id="lived-${index}"`);
+    }
+    const interpretation = turn.match(
+      /<borg_terminal_standing_memory_indexes[\s\S]*?<interpretation>([\s\S]*?)<\/interpretation>/,
+    )?.[1];
+    // Two bounds the definition used to leave the reader to discover from a hole: the
+    // lanes share no budget, so one kind's count says nothing about another's; and
+    // older days are carried by a day row while their own events are dropped, so a day
+    // present only as a day row is compressed rather than quiet.
+    expect(interpretation).toContain("no budget shared between them");
+    expect(interpretation).toContain("a compressed day and not a quiet one");
+  });
+
   it("keeps mutable self state and ledger scope out of the one-hour global block", () => {
     const valueId = createValueId();
     const traitId = createTraitId();
