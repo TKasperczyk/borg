@@ -535,6 +535,18 @@ const SHARED_STATE_SNAPSHOT_BASIS_LINE =
 const SHARED_STATE_OMISSION_BASIS_LINE =
   "omission_basis=render_budget (omitted entries are still active and unchanged in the store; omission is this render's token budget over the active set, not the store's lifecycle cap, so expanding an omitted key costs render salience, not a stored slot)";
 
+// The omission line above says the lifecycle cap is the one that deletes; this one says what deleting
+// costs. `pruneEntry` is a bare DELETE and `updateEntry` overwrites `text` in place, and neither
+// writes a prior version anywhere -- there is no history table for these rows and no identity event
+// is recorded against them, unlike a goal row, whose replaced progress log survives on the identity
+// event the write emits. Without saying so, a reader who has been told that one store keeps what it
+// replaces will carry that default here and read an absent key as out of reach rather than gone,
+// which turns a permanent loss into a retrieval question nobody has to ask. Supersede is named
+// because it is the one operation that does keep its predecessor, so "destructive" is not a property
+// of the store but of two of its verbs.
+const SHARED_STATE_REMOVAL_BASIS_LINE =
+  "removal_basis=destructive (a prune deletes the row and an update overwrites its text in place, neither keeping a prior version or writing an audit event elsewhere; supersede alone preserves its predecessor, as the row it links. So a key absent from this index is gone from the store rather than out of reach from this page.)";
+
 function renderSharedStateArtifactContent(input: {
   artifact: SharedStateArtifact;
   activeEntries: readonly SharedStateEntry[];
@@ -562,6 +574,7 @@ function renderSharedStateArtifactContent(input: {
     `audience_entity_id=${input.artifact.audience_entity_id}`,
     `record_version=${input.artifact.record_version}`,
     SHARED_STATE_SNAPSHOT_BASIS_LINE,
+    SHARED_STATE_REMOVAL_BASIS_LINE,
     renderSharedStateCompactIndex({
       activeEntries: input.activeEntries,
       supersededPredecessorIds,
@@ -601,6 +614,7 @@ function renderSharedStateArtifactOmissionOnly(input: {
     `audience_entity_id=${input.artifact.audience_entity_id}`,
     `record_version=${input.artifact.record_version}`,
     SHARED_STATE_SNAPSHOT_BASIS_LINE,
+    SHARED_STATE_REMOVAL_BASIS_LINE,
     renderSharedStateCompactIndex({
       activeEntries: input.activeEntries,
       supersededPredecessorIds: supersededPredecessorIdsBySuccessor(input.artifact),
