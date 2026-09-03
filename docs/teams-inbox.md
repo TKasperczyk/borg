@@ -1,9 +1,10 @@
 # Teams inbox: coalesced turns through borg's durable inbox
 
-Status: v1.4 contract, 2026-09-03. All OPEN points are settled; v1.3 added the implementers'
+Status: v1.5 contract, 2026-09-03. All OPEN points are settled; v1.3 added the implementers'
 clarifications (transport envelope, await tenant mapping, response union, terminal reclaim,
 recovery settings, delivery guarantees); v1.4 adds the review outcomes (seal-on-claim, stale
-batches, connector failures park, batch rendering order, atomic post-send bookkeeping).
+batches, connector failures park, batch rendering order, atomic post-send bookkeeping); v1.5
+makes bridge intake refuse-proof after the first production burst.
 Identical copies live in `team-agent/docs/teams-inbox.md` and `borg/docs/teams-inbox.md`;
 every amendment must land in both. Implementers report needed amendments; they do not edit
 this file.
@@ -285,6 +286,14 @@ Response unchanged: `{ "action": "reply" | "silent", "content"?: "...", "reason"
   (the quoted-bot ledger read included), so arrival order is the enqueue order. New: strip
   every `<quoted messageId="..."/>` marker from the text after detection; persist the
   conversation reference (aliased Pydantic JSON) with each pending activity.
+- Admission gates only the await, never the intake. A valid Activity is always claimed,
+  enqueued in FIFO order and answered 202; only then does it need a slot for the long await.
+  When the global or per-thread cap (`TEAMS_BRIDGE_MAX_IN_FLIGHT_TURNS`,
+  `TEAMS_BRIDGE_MAX_IN_FLIGHT_TURNS_PER_THREAD`, now meaning concurrent awaits) is exhausted
+  the row is parked due-now with one warning log line and recovery re-awaits it as capacity
+  frees. 503 with Retry-After is reserved for a ledger that cannot record the claim at all.
+  (First production burst: five messages in four seconds against a per-thread cap of 4 refused
+  the fifth, the mention; Teams retries a 503 once and then drops the message.)
 - Per message: enqueue under the ingress FIFO, then await outside it. Typing indicator only
   while awaiting a message that is personal, mentions or quotes the bot. On `answered`: claim
   `(sidecar_session_id, terminal_id)` in `delivered_terminals`; the winner posts, records
