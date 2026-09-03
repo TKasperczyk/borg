@@ -126,4 +126,63 @@ describe("open question dormant trigger", () => {
     expect(rendered).toContain("relationship_private");
     expect(rendered).toContain(sam);
   });
+
+  it("carries the offline rumination bookkeeping the wake itself does not produce", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+    const untouched = harness.openQuestionsRepository.add({
+      question: "What has no offline pass reached?",
+      urgency: 0.6,
+      provenance: { kind: "system" },
+      source: "user",
+      last_touched: clock.now() - 100_000,
+    });
+    const ruminated = harness.openQuestionsRepository.add({
+      question: "What has the offline loop worked?",
+      urgency: 0.4,
+      provenance: { kind: "system" },
+      source: "user",
+      last_touched: clock.now() - 100_000,
+    });
+    harness.openQuestionsRepository.markRuminated(ruminated.id, 2);
+
+    const trigger = createOpenQuestionDormantTrigger({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      watermarkRepository,
+      dormantMs: 50_000,
+      clock,
+    });
+
+    const events = await trigger.scan();
+    const payloads = new Map(events.map((event) => [event.payload.open_question_id, event.payload]));
+
+    // A question no offline pass has reached says so on its face rather than
+    // arriving indistinguishable from one the loop has worked repeatedly.
+    expect(payloads.get(untouched.id)).toMatchObject({
+      unresolved_rumination_ticks: 0,
+      last_ruminated_at: null,
+    });
+    expect(payloads.get(ruminated.id)).toMatchObject({
+      unresolved_rumination_ticks: 2,
+      last_ruminated_at: clock.now(),
+    });
+    // Rumination is not a touch, so it neither clears the dormancy nor moves the
+    // stamp the event id latches on.
+    expect(payloads.get(ruminated.id)?.last_touched).toBe(ruminated.last_touched);
+
+    const rendered = formatAutonomyTriggerContext(
+      trigger.buildTurn(events.find((event) => event.payload.open_question_id === untouched.id)!)
+        .autonomyTrigger!,
+    );
+
+    expect(rendered).toContain('"last_ruminated_at": null');
+    expect(rendered).toContain("no offline pass has been written against it since it was opened");
+  });
 });

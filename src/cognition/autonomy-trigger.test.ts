@@ -71,6 +71,40 @@ describe("formatAutonomyTriggerContext epoch annotation", () => {
     expect(absent).not.toContain("not every write a record received");
   });
 
+  it("names what an old sort_ts on a dormant-question wake does and does not mean", () => {
+    const rendered = formatAutonomyTriggerContext({
+      source_name: "open_question_dormant",
+      source_type: "trigger",
+      event_id: "oq_aaaaaaaaaaaaaaaa:1787050000000",
+      sort_ts: 1_787_050_000_000,
+      payload: {
+        open_question_id: "oq_aaaaaaaaaaaaaaaa",
+        question: "What is the right autonomy cadence?",
+        urgency: 0.6,
+        last_touched: 1_787_050_000_000,
+        unresolved_rumination_ticks: 0,
+        last_ruminated_at: null,
+      },
+    });
+
+    expect(rendered).toContain("cannot wake me a second time");
+    expect(rendered).toContain("never a count of how often it has already woken me");
+    expect(rendered).toContain("leaves the pair unlatched and can return");
+    expect(rendered).toContain("which this wake neither feeds nor writes");
+    expect(rendered.indexOf("note on this dormant-question wake")).toBeGreaterThan(
+      rendered.indexOf('"last_ruminated_at": null'),
+    );
+  });
+
+  it("stays silent on dormancy for a wake that carries no open question", () => {
+    const rendered = formatAutonomyTriggerContext({
+      ...BASE,
+      payload: { goal_id: "goal_aaaaaaaaaaaaaaaa", last_touched: 1_787_050_000_000 },
+    });
+
+    expect(rendered).not.toContain("note on this dormant-question wake");
+  });
+
   it("leaves an existing sibling and an unrepresentable instant alone", () => {
     const rendered = formatAutonomyTriggerContext({
       ...BASE,

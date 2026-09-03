@@ -22,6 +22,13 @@ type OpenQuestionDormantPayload = {
   question: string;
   urgency: number;
   last_touched: number;
+  // The offline rumination loop selects questions on its own criteria, and this
+  // trigger neither feeds it nor reads its result. Carrying its bookkeeping here
+  // is the only way the wake says whether the question it is handing over has
+  // ever been worked offline -- otherwise a question no offline pass has reached
+  // arrives looking exactly like one that has been ruminated a dozen times.
+  unresolved_rumination_ticks: number;
+  last_ruminated_at: number | null;
   related_episodes?: EpisodicSearchHit[];
 } & ReturnType<typeof memoryDisclosurePayloadFields>;
 
@@ -73,6 +80,8 @@ export function createOpenQuestionDormantTrigger(
               question: question.question,
               urgency: question.urgency,
               last_touched: question.last_touched,
+              unresolved_rumination_ticks: question.unresolved_rumination_ticks,
+              last_ruminated_at: question.last_ruminated_at,
               ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
             },
           };
