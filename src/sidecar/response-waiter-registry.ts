@@ -3,6 +3,7 @@ import type { SessionId, StreamEntryId } from "../util/ids.js";
 
 export type InboxAwaitResponse =
   | { status: "pending" }
+  | { status: "generating" }
   | {
       status: "answered";
       terminal_id: StreamEntryId;
@@ -39,7 +40,7 @@ function waiterKey(tenant: string, sessionId: SessionId, entryId: StreamEntryId)
 
 export function awaitResponseForTerminal(input: {
   terminalEntry: StreamEntry;
-}): Exclude<InboxAwaitResponse, { status: "pending" }> {
+}): Exclude<InboxAwaitResponse, { status: "pending" } | { status: "generating" }> {
   const responseTo = input.terminalEntry.response_to;
   if (responseTo === undefined) {
     throw new Error("terminal entry is missing response_to");
@@ -59,6 +60,7 @@ export function awaitResponseForTerminal(input: {
 
 export class ResponseWaiterRegistry {
   private readonly waiters = new Map<string, Set<Waiter>>();
+  private readonly generating = new Set<string>();
   private shuttingDown = false;
 
   constructor(private readonly options: ResponseWaiterRegistryOptions = {}) {}
@@ -74,6 +76,9 @@ export class ResponseWaiterRegistry {
     }
 
     const key = waiterKey(input.tenant, input.sessionId, input.entryId);
+    if (this.generating.has(key)) {
+      return { promise: Promise.resolve({ status: "generating" }), cancel() {} };
+    }
     const lease = this.options.acquireTenantLease?.(input.tenant);
     let settle!: (response: InboxAwaitResponse) => void;
     const promise = new Promise<InboxAwaitResponse>((resolve) => {
@@ -108,10 +113,33 @@ export class ResponseWaiterRegistry {
     };
   }
 
+  markGenerating(input: {
+    tenant: string;
+    sessionId: SessionId;
+    entryIds: readonly StreamEntryId[];
+  }): void {
+    if (this.shuttingDown) {
+      return;
+    }
+
+    for (const entryId of new Set(input.entryIds)) {
+      const key = waiterKey(input.tenant, input.sessionId, entryId);
+      this.generating.add(key);
+      const bucket = this.waiters.get(key);
+      if (bucket === undefined) {
+        continue;
+      }
+      for (const waiter of [...bucket]) {
+        waiter.resolve({ status: "generating" });
+      }
+    }
+  }
+
   resolveTerminal(tenant: string, terminalEntry: StreamEntry): void {
     const response = awaitResponseForTerminal({ terminalEntry });
     for (const entryId of response.entry_ids) {
       const key = waiterKey(tenant, terminalEntry.session_id, entryId);
+      this.generating.delete(key);
       const bucket = this.waiters.get(key);
       if (bucket === undefined) {
         continue;
@@ -124,6 +152,7 @@ export class ResponseWaiterRegistry {
 
   shutdown(): void {
     this.shuttingDown = true;
+    this.generating.clear();
     for (const bucket of [...this.waiters.values()]) {
       for (const waiter of [...bucket]) {
         waiter.resolve({ status: "pending" });

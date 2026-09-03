@@ -28,7 +28,7 @@ import {
   type SessionId,
 } from "../util/ids.js";
 import { ResponseWaiterRegistry } from "./response-waiter-registry.js";
-import { TeamAgentTurnRunner } from "./team-agent-turn-runner.js";
+import { TeamAgentTurnRunner, type TeamAgentTurnRunnerOptions } from "./team-agent-turn-runner.js";
 
 const cleanups: Array<() => void> = [];
 
@@ -39,7 +39,10 @@ afterEach(() => {
   }
 });
 
-function harness(fetchResponse: () => Promise<Response>) {
+function harness(
+  fetchResponse: () => Promise<Response>,
+  options: Pick<TeamAgentTurnRunnerOptions, "onGenerating"> = {},
+) {
   const sessionId = createSessionId();
   const sourceId = createStreamEntryId();
   const senderId = createEntityId();
@@ -120,6 +123,7 @@ function harness(fetchResponse: () => Promise<Response>) {
       get: () => ({ canonical_name: "Sender" }) as never,
     },
     clock: new FixedClock(1_000),
+    ...options,
     fetchFn,
   });
   const input = {
@@ -247,6 +251,68 @@ function openRealHarness(input: {
 }
 
 describe("TeamAgentTurnRunner", () => {
+  it("signals a full-turn batch before starting the Team Agent request", async () => {
+    const events: string[] = [];
+    const onGenerating = vi.fn(() => events.push("generating"));
+    const h = harness(
+      async () => {
+        events.push("fetch");
+        return new Response(JSON.stringify({ action: "reply", content: "answer" }), {
+          status: 200,
+        });
+      },
+      { onGenerating },
+    );
+
+    await h.runner.run(h.input);
+
+    expect(onGenerating).toHaveBeenCalledWith({
+      sessionId: h.input.sessionId,
+      entryIds: h.input.inboundBatch.entryIds,
+    });
+    expect(events).toEqual(["generating", "fetch"]);
+  });
+
+  it("does not signal a classifier batch", async () => {
+    const onGenerating = vi.fn();
+    const h = harness(
+      async () =>
+        new Response(JSON.stringify({ action: "silent", reason: "not selected" }), {
+          status: 200,
+        }),
+      { onGenerating },
+    );
+    h.sourceEntry.metadata = {
+      teams_inbox: {
+        thread_id: "thread",
+        sender: { external_id: "sender", display_name: "Sender", bot: false },
+        mentioned: false,
+        quotes_bot: false,
+      },
+    };
+
+    await h.runner.run(h.input);
+
+    expect(onGenerating).not.toHaveBeenCalled();
+  });
+
+  it("continues the terminal path when the generating observer throws", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const h = harness(
+      async () =>
+        new Response(JSON.stringify({ action: "reply", content: "answer" }), { status: 200 }),
+      {
+        onGenerating: () => {
+          throw new Error("progress unavailable");
+        },
+      },
+    );
+
+    await expect(h.runner.run(h.input)).resolves.toBeUndefined();
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+    expect(h.appendBacklogTerminal).toHaveBeenCalledTimes(1);
+  });
+
   it("retries the same real prefix, resolves only after commit, ingests exactly, and stops cleanly", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const waiters = new ResponseWaiterRegistry();

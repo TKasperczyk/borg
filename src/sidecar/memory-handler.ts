@@ -4,6 +4,7 @@
 //   POST /memory/remember    { tenant, content, author? }          -> append + extract episode(s)
 //   POST /memory/enqueue     { tenant, session, conversation, sender, text, ... } -> durable inbox
 //   POST /memory/await-response { tenant, sidecar_session_id, entry_id, timeout_ms? } -> long poll
+//   POST /memory/inbox-progress { tenant, sidecar_session_id, entry_ids, phase } -> interim status
 //   POST /memory/append-turn { tenant, session, user?, assistant?, observed_at?, sender?, conversation? }
 //        sender.operator? and conversation.external_id? enrich sessions/audience/activity;
 //        absent assistant records an observation; absent user records a reply-only turn;
@@ -335,6 +336,15 @@ const memoryAwaitResponseBodySchema = z
     sidecar_session_id: sessionIdSchema,
     entry_id: streamEntryIdSchema,
     timeout_ms: z.number().int().min(0).max(120_000).optional().default(90_000),
+  })
+  .strict();
+
+const memoryInboxProgressBodySchema = z
+  .object({
+    tenant: z.string().trim().regex(TENANT_ID_RE),
+    sidecar_session_id: sessionIdSchema,
+    entry_ids: z.array(streamEntryIdSchema).min(1),
+    phase: z.literal("generating"),
   })
   .strict();
 
@@ -1129,7 +1139,9 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
 
     if (
       method === "POST" &&
-      (rawPath === "/memory/enqueue" || rawPath === "/memory/await-response")
+      (rawPath === "/memory/enqueue" ||
+        rawPath === "/memory/await-response" ||
+        rawPath === "/memory/inbox-progress")
     ) {
       if (inboxWaiters === undefined) {
         send(res, 503, { error: "teams inbox unavailable" });
@@ -1218,6 +1230,35 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         return;
       }
 
+      if (rawPath === "/memory/inbox-progress") {
+        const parsed = memoryInboxProgressBodySchema.safeParse(body);
+        if (!parsed.success) {
+          send(res, 400, { error: "invalid memory inbox-progress body" });
+          return;
+        }
+        const input = parsed.data;
+        try {
+          const sessionExists = await pool.withTenant(
+            input.tenant,
+            (borg) => borg.sessions.get(input.sidecar_session_id) !== null,
+          );
+          if (!sessionExists) {
+            send(res, 404, { error: "session not found" });
+            return;
+          }
+          inboxWaiters.markGenerating({
+            tenant: input.tenant,
+            sessionId: input.sidecar_session_id,
+            entryIds: input.entry_ids,
+          });
+          send(res, 200, { ok: true });
+        } catch (error) {
+          console.error(`memory-sidecar: ${rawPath} failed for tenant "${input.tenant}"`, error);
+          send(res, 503, { error: "tenant unavailable" });
+        }
+        return;
+      }
+
       const parsed = memoryAwaitResponseBodySchema.safeParse(body);
       if (!parsed.success) {
         send(res, 400, { error: "invalid memory await-response body" });
@@ -1271,6 +1312,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           return;
         }
         if (first.status === "found") {
+          inboxWaiters.resolveTerminal(input.tenant, first.terminalEntry);
           send(res, 200, awaitResponseForTerminal({ terminalEntry: first.terminalEntry }));
           return;
         }
@@ -1295,7 +1337,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           return;
         }
         if (second.status === "found") {
-          waiter.cancel();
+          inboxWaiters.resolveTerminal(input.tenant, second.terminalEntry);
           if (!disconnected) {
             send(res, 200, awaitResponseForTerminal({ terminalEntry: second.terminalEntry }));
           }

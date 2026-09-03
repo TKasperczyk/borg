@@ -1,10 +1,12 @@
 # Teams inbox: coalesced turns through borg's durable inbox
 
-Status: v1.5 contract, 2026-09-03. All OPEN points are settled; v1.3 added the implementers'
+Status: v1.6 contract, 2026-09-03. All OPEN points are settled; v1.3 added the implementers'
 clarifications (transport envelope, await tenant mapping, response union, terminal reclaim,
 recovery settings, delivery guarantees); v1.4 adds the review outcomes (seal-on-claim, stale
 batches, connector failures park, batch rendering order, atomic post-send bookkeeping); v1.5
-makes bridge intake refuse-proof after the first production burst.
+makes bridge intake refuse-proof after the first production burst; v1.6 adds the `generating`
+interim status so the bridge can show a typing indicator exactly while the agent composes, and
+resolves the classifier's praise contradiction.
 Identical copies live in `team-agent/docs/teams-inbox.md` and `borg/docs/teams-inbox.md`;
 every amendment must land in both. Implementers report needed amendments; they do not edit
 this file.
@@ -133,7 +135,14 @@ Errors: 400 validation, 401 auth, 503 tenant unavailable.
 
 Response is a discriminated union:
 `{ "status": "answered", "terminal_id", "entry_ids", "reply" }`,
-`{ "status": "observed", "terminal_id", "entry_ids" }`, or `{ "status": "pending" }`.
+`{ "status": "observed", "terminal_id", "entry_ids" }`, `{ "status": "generating" }`, or
+`{ "status": "pending" }`.
+
+`generating` is an interim wake-up, not a terminal: it means the agent has decided to reply to
+a batch covering this entry and is composing. The caller shows a typing indicator and re-awaits
+the same entry; the next answer is the terminal (or `pending` on timeout). The registry
+remembers the generating state per covered entry until its terminal commits, so a waiter that
+registers after the signal receives `generating` immediately.
 
 - `answered`: an `agent_msg` whose `response_to` stamp covers `entry_id`; `reply` is its
   content. `observed`: an `agent_observed` or `agent_suppressed` stamp covers it.
@@ -147,6 +156,22 @@ Response is a discriminated union:
   read-only and does not take the tenant's exclusive write chain.
 - `terminal_id` is the terminal entry's stream id; callers key their once-only delivery on
   `(sidecar_session_id, terminal_id)`.
+
+### POST /memory/inbox-progress
+
+```json
+{ "tenant": "team-agent-ai", "sidecar_session_id": "sess_...", "entry_ids": ["..."], "phase": "generating" }
+```
+
+Marks the covered entries as generating and wakes their waiters with `{ "status": "generating" }`.
+Response `200 { "ok": true }`; 404 on unknown session; idempotent. Best-effort by design: a
+failed or late progress call must never affect the turn or the terminal.
+
+Who calls it: the runner itself, right before its team-agent request, for a batch that will run
+as a full turn (personal conversation, or any message with `mentioned` or `quotes_bot`), since it
+already knows a reply will follow; team-agent, for a classifier batch, right after the
+classifier decides to speak and the guardrails admit the chip-in, before generation begins.
+Silent batches never signal.
 
 ## Runner (sidecar, TypeScript)
 
@@ -269,11 +294,14 @@ Response unchanged: `{ "action": "reply" | "silent", "content"?: "...", "reason"
 
 ### Classifier changes (same change set)
 
-- New solicited reason `directed_at_agent`: formal or second-person address, or a follow-up
-  inside an exchange the agent is already part of. Treated like `addressed_by_name`: no
-  gap, no hourly cap.
+- New solicited reason `directed_at_agent`: formal or second-person address, praise, thanks,
+  banter, or a follow-up inside an exchange the agent is already part of. Treated like
+  `addressed_by_name`: no gap, no hourly cap. This emulates a coworker: anything said to you
+  gets at least a brief acknowledgement, whether or not it contains a question.
 - Humour between humans stays silent; humour aimed at the agent is a message to answer
-  briefly.
+  briefly. The "statements without a question or request stay silent" rule applies only to
+  speech not aimed at the agent; the first production run showed the model letting that rule
+  override rule 2 for "Piknie, brawo TA".
 - `unanswered_domain_question` requires an actual question or request, not a statement
   that might be one.
 - The reply-only step may return nothing for a pure reaction; treat that as silent.
@@ -294,8 +322,10 @@ Response unchanged: `{ "action": "reply" | "silent", "content"?: "...", "reason"
   frees. 503 with Retry-After is reserved for a ledger that cannot record the claim at all.
   (First production burst: five messages in four seconds against a per-thread cap of 4 refused
   the fifth, the mention; Teams retries a 503 once and then drops the message.)
-- Per message: enqueue under the ingress FIFO, then await outside it. Typing indicator only
-  while awaiting a message that is personal, mentions or quotes the bot. On `answered`: claim
+- Per message: enqueue under the ingress FIFO, then await outside it. Typing indicator from the
+  start of the await for a message that is personal, mentions or quotes the bot; for any other
+  message only once the await returns `generating`, after which the bridge re-awaits the same
+  entry and keeps typing until the terminal arrives. Recovery never types. On `answered`: claim
   `(sidecar_session_id, terminal_id)` in `delivered_terminals`; the winner posts, records
   `sent_at` and the bot message id, losers complete silently. The owning activity may reclaim
   a terminal it claimed but never marked sent (a crash or cancellation between claim and

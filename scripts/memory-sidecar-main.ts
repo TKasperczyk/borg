@@ -189,6 +189,12 @@ pool = new BorgPool({
                 terminal,
                 entityRepository,
                 clock: sidecarClock,
+                onGenerating: ({ sessionId, entryIds }) =>
+                  inboxWaiters!.markGenerating({
+                    tenant: tenantId,
+                    sessionId,
+                    entryIds,
+                  }),
               }),
             sessionPredicate: (session) => session?.source_type === "teams_inbox",
             acquireLease: () => pool.acquireBackgroundLease(tenantId),

@@ -124,10 +124,11 @@ entry point. The HTTP memory sidecar (entry points:
 long-lived `node:http` server exposing per-tenant long-term memory as a sibling
 surface over the same Borg substrate. It provides `POST /memory/remember`,
 `POST /memory/append-turn`, `POST /memory/enqueue`,
-`POST /memory/await-response`, `POST /memory/recall`, and unauthenticated
-`GET /healthz`. Authenticated routes use a constant-time `x-borg-token` header
-check, not an `Authorization: Bearer` parser. The handler enforces a 64KB body
-cap and caps recall limits at 50. Sidecar configuration is process-env based:
+`POST /memory/await-response`, `POST /memory/inbox-progress`, `POST /memory/recall`,
+and unauthenticated `GET /healthz`. Authenticated routes use a constant-time
+`x-borg-token` header check, not an `Authorization: Bearer` parser. The handler
+enforces a 64KB body cap and caps recall limits at 50. Sidecar configuration is
+process-env based:
 `BORG_MEMORY_TOKEN`, `BORG_MEMORY_HOST`, `BORG_MEMORY_PORT`,
 `BORG_MEMORY_MAX_OPEN`, and `BORG_DATA_ROOT`; tenant routing goes through
 `BorgPool`.
@@ -841,9 +842,12 @@ commit even if later watermark or ingestion work fails, and reconciliation of a
 previously committed stamp supplies the same notification. Scheduled and
 in-flight drains and registered waiters hold non-exclusive pool leases. Existing
 inbox ownership is sticky across `/memory/context` and `/memory/append-turn`
-refreshes.
-Without `TEAM_AGENT_BASE_URL`, no inbox workers start and these two routes return
-503 while all pre-existing sidecar behavior remains unchanged.
+refreshes. `/memory/inbox-progress` publishes the in-memory `generating` interim
+state without changing the Stream or response watermark; full-turn runner
+batches publish it immediately before the Team Agent request, while classifier
+batches leave signalling to Team Agent.
+Without `TEAM_AGENT_BASE_URL`, no inbox workers start and these inbox routes
+return 503 while all pre-existing sidecar behavior remains unchanged.
 
 ## A Single Turn End To End
 

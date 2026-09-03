@@ -53,6 +53,86 @@ describe("ResponseWaiterRegistry", () => {
     expect(registry.size()).toBe(0);
   });
 
+  it("serves remembered generating state to late waiters until a terminal clears it", async () => {
+    const registry = new ResponseWaiterRegistry();
+    const sessionId = createSessionId();
+    const generatingEntryId = createStreamEntryId();
+    const otherEntryId = createStreamEntryId();
+    registry.markGenerating({
+      tenant: "tenant",
+      sessionId,
+      entryIds: [generatingEntryId, otherEntryId],
+    });
+
+    const late = registry.register({
+      tenant: "tenant",
+      sessionId,
+      entryId: generatingEntryId,
+      timeoutMs: 50,
+    });
+    await expect(late.promise).resolves.toEqual({ status: "generating" });
+    expect(registry.size()).toBe(0);
+
+    registry.resolveTerminal("tenant", {
+      id: createStreamEntryId(),
+      session_id: sessionId,
+      timestamp: 2,
+      kind: "agent_observed",
+      content: { reason: "done" },
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+      compressed: false,
+      response_to: {
+        kind: "stream_backlog",
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: { ts: 1, entryId: generatingEntryId },
+        source_entry_ids: [generatingEntryId],
+        count: 1,
+      },
+    } satisfies StreamEntry);
+
+    const cleared = registry.register({
+      tenant: "tenant",
+      sessionId,
+      entryId: generatingEntryId,
+      timeoutMs: 5,
+    });
+    const stillGenerating = registry.register({
+      tenant: "tenant",
+      sessionId,
+      entryId: otherEntryId,
+      timeoutMs: 5,
+    });
+    await expect(stillGenerating.promise).resolves.toEqual({ status: "generating" });
+    await vi.advanceTimersByTimeAsync(5);
+    await expect(cleared.promise).resolves.toEqual({ status: "pending" });
+  });
+
+  it("idempotently wakes current waiters when entries start generating", async () => {
+    const registry = new ResponseWaiterRegistry();
+    const sessionId = createSessionId();
+    const entryId = createStreamEntryId();
+    const first = registry.register({
+      tenant: "tenant",
+      sessionId,
+      entryId,
+      timeoutMs: 50,
+    });
+    const second = registry.register({
+      tenant: "tenant",
+      sessionId,
+      entryId,
+      timeoutMs: 50,
+    });
+
+    registry.markGenerating({ tenant: "tenant", sessionId, entryIds: [entryId, entryId] });
+    registry.markGenerating({ tenant: "tenant", sessionId, entryIds: [entryId] });
+
+    await expect(first.promise).resolves.toEqual({ status: "generating" });
+    await expect(second.promise).resolves.toEqual({ status: "generating" });
+    expect(registry.size()).toBe(0);
+  });
+
   it("cleans up on timeout, cancellation, and shutdown", async () => {
     const registry = new ResponseWaiterRegistry();
     const sessionId = createSessionId();

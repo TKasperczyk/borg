@@ -61,16 +61,23 @@ function makeHarness() {
   }));
   const sealPendingBacklog = vi.fn(async () => null);
   let lookup: Borg["inbox"]["findTerminalCoveringEntry"] = () => ({ status: "pending" });
+  let sessionExists = false;
+  const getSession = vi.fn(() =>
+    sessionExists ? ({ source_type: "teams_inbox" } as never) : null,
+  );
+  const findTerminalCoveringEntry = vi.fn(
+    (input: Parameters<Borg["inbox"]["findTerminalCoveringEntry"]>[0]) => lookup(input),
+  );
   const borg = {
     entities: {
       resolveExternal: (input: { kind: string }) => (input.kind === "group" ? groupId : senderId),
       get: (id: string) => entities.get(id) ?? null,
     },
-    sessions: { get: () => null },
+    sessions: { get: getSession },
     enqueueMessage,
     inbox: {
       sealPendingBacklog,
-      findTerminalCoveringEntry: (input: never) => lookup(input),
+      findTerminalCoveringEntry,
     },
   } as unknown as Borg;
   const exclusives: Array<boolean | undefined> = [];
@@ -89,11 +96,15 @@ function makeHarness() {
     waiters,
     enqueueMessage,
     sealPendingBacklog,
+    findTerminalCoveringEntry,
     exclusives,
     sessionId,
     entryId,
     setLookup(next: typeof lookup) {
       lookup = next;
+    },
+    setSessionExists(next: boolean) {
+      sessionExists = next;
     },
     setBeforeWithTenant(next: (() => Promise<void>) | undefined) {
       beforeWithTenant = next;
@@ -279,6 +290,146 @@ describe("memory inbox routes", () => {
         }),
       ).toMatchObject({ status: "found", terminalEntry: { kind: "agent_msg" } }),
     );
+  });
+
+  it("authenticates inbox progress before parsing or mutation", async () => {
+    const harness = makeHarness();
+    const base = await start(harness);
+    const response = await fetch(`${base}/memory/inbox-progress`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        tenant: "tenant",
+        sidecar_session_id: harness.sessionId,
+        entry_ids: [harness.entryId],
+        phase: "generating",
+      }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(harness.exclusives).toEqual([]);
+  });
+
+  it("returns 404 when inbox progress names an unknown session", async () => {
+    const harness = makeHarness();
+    const base = await start(harness);
+    const response = await post(base, "/memory/inbox-progress", {
+      tenant: "tenant",
+      sidecar_session_id: harness.sessionId,
+      entry_ids: [harness.entryId],
+      phase: "generating",
+    });
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "session not found" });
+    expect(harness.exclusives).toEqual([undefined]);
+  });
+
+  it("idempotently marks inbox progress and wakes all current waiters", async () => {
+    const harness = makeHarness();
+    harness.setSessionExists(true);
+    const first = harness.waiters.register({
+      tenant: "tenant",
+      sessionId: harness.sessionId,
+      entryId: harness.entryId,
+      timeoutMs: 1_000,
+    });
+    const second = harness.waiters.register({
+      tenant: "tenant",
+      sessionId: harness.sessionId,
+      entryId: harness.entryId,
+      timeoutMs: 1_000,
+    });
+    const base = await start(harness);
+    const body = {
+      tenant: "tenant",
+      sidecar_session_id: harness.sessionId,
+      entry_ids: [harness.entryId, harness.entryId],
+      phase: "generating",
+    };
+    const firstResponse = await post(base, "/memory/inbox-progress", body);
+    const secondResponse = await post(base, "/memory/inbox-progress", body);
+
+    expect(firstResponse.status).toBe(200);
+    await expect(firstResponse.json()).resolves.toEqual({ ok: true });
+    expect(secondResponse.status).toBe(200);
+    await expect(secondResponse.json()).resolves.toEqual({ ok: true });
+    await expect(first.promise).resolves.toEqual({ status: "generating" });
+    await expect(second.promise).resolves.toEqual({ status: "generating" });
+    expect(harness.findTerminalCoveringEntry).not.toHaveBeenCalled();
+    expect(harness.exclusives).toEqual([undefined, undefined]);
+  });
+
+  it("returns remembered generating progress as an interim await result", async () => {
+    const harness = makeHarness();
+    harness.waiters.markGenerating({
+      tenant: "tenant",
+      sessionId: harness.sessionId,
+      entryIds: [harness.entryId],
+    });
+    const base = await start(harness);
+    const response = await post(base, "/memory/await-response", {
+      tenant: "tenant",
+      sidecar_session_id: harness.sessionId,
+      entry_id: harness.entryId,
+      timeout_ms: 1_000,
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ status: "generating" });
+    expect(harness.findTerminalCoveringEntry).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns a terminal rather than remembered generating progress", async () => {
+    const harness = makeHarness();
+    const terminalId = createStreamEntryId();
+    harness.waiters.markGenerating({
+      tenant: "tenant",
+      sessionId: harness.sessionId,
+      entryIds: [harness.entryId],
+    });
+    harness.setLookup(() => ({
+      status: "found",
+      terminalEntry: {
+        id: terminalId,
+        session_id: harness.sessionId,
+        timestamp: 2,
+        kind: "agent_msg",
+        content: "answer",
+        sender_entity_id: null,
+        reply_target_entity_id: null,
+        compressed: false,
+        response_to: {
+          kind: "stream_backlog",
+          from_cursor_exclusive: null,
+          through_cursor_inclusive: { ts: 1, entryId: harness.entryId },
+          source_entry_ids: [harness.entryId],
+          count: 1,
+        },
+      },
+      responseTo: {
+        kind: "stream_backlog",
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: { ts: 1, entryId: harness.entryId },
+        source_entry_ids: [harness.entryId],
+        count: 1,
+      },
+    }));
+    const base = await start(harness);
+    const response = await post(base, "/memory/await-response", {
+      tenant: "tenant",
+      sidecar_session_id: harness.sessionId,
+      entry_id: harness.entryId,
+      timeout_ms: 1_000,
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: "answered",
+      terminal_id: terminalId,
+      entry_ids: [harness.entryId],
+      reply: "answer",
+    });
   });
 
   it("returns 404 for an unknown entry without registering a waiter", async () => {

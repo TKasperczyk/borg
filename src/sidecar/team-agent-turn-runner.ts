@@ -56,6 +56,10 @@ export type TeamAgentTurnRunnerOptions = {
   terminal: BacklogTerminalService;
   entityRepository: Pick<EntityRepository, "get">;
   clock: Clock;
+  onGenerating?: (input: {
+    sessionId: ChatResponseCatchUpRunInput["sessionId"];
+    entryIds: ChatResponseCatchUpRunInput["inboundBatch"]["entryIds"];
+  }) => void;
   fetchFn?: typeof fetch;
 };
 
@@ -138,6 +142,31 @@ export class TeamAgentTurnRunner implements ChatResponseCatchUpRunner {
       throw new Error("teams inbox entry is missing durable conversation identity");
     }
 
+    const requestBody = {
+      model: this.options.tenant,
+      source: "inbox",
+      thread_id: firstMetadata.thread_id,
+      sidecar_session_id: input.sessionId,
+      conversation: { ...conversation, external_id: externalId },
+      messages,
+    };
+    const runsFullTurn =
+      conversation.type === "personal" ||
+      transportMetadata.some(
+        (entryMetadata) =>
+          entryMetadata.teams_inbox.mentioned || entryMetadata.teams_inbox.quotes_bot,
+      );
+    if (runsFullTurn) {
+      try {
+        this.options.onGenerating?.({
+          sessionId: input.sessionId,
+          entryIds: input.inboundBatch.entryIds,
+        });
+      } catch (error) {
+        console.error("Team Agent inbox generating observer failed", error);
+      }
+    }
+
     const response = await this.fetchFn(new URL("/v1/chat/observe", this.options.baseUrl), {
       method: "POST",
       redirect: "error",
@@ -146,14 +175,7 @@ export class TeamAgentTurnRunner implements ChatResponseCatchUpRunner {
         authorization: `Bearer ${this.options.apiToken}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({
-        model: this.options.tenant,
-        source: "inbox",
-        thread_id: firstMetadata.thread_id,
-        sidecar_session_id: input.sessionId,
-        conversation: { ...conversation, external_id: externalId },
-        messages,
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (response.status >= 400 && response.status < 500) {
