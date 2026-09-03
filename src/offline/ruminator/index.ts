@@ -107,7 +107,17 @@ function isTensionParameterName(name: string): boolean {
   );
 }
 
-function wrappedParameterPayloads(value: string): Array<{ name: string; payload: string }> {
+/**
+ * What to do with a wrapper naming some other tool parameter. `reject` is for
+ * the repair script, where a person decides per stored row; `drop` is for live
+ * parsing, where the alternative is discarding the whole rumination.
+ */
+type ForeignParameterPolicy = "reject" | "drop";
+
+function wrappedParameterPayloads(
+  value: string,
+  foreignParameterNames: ForeignParameterPolicy,
+): Array<{ name: string; payload: string }> {
   const matches = [...value.matchAll(PARAMETER_OPEN_TAG_PATTERN)];
   const firstMatch = matches[0];
 
@@ -119,7 +129,7 @@ function wrappedParameterPayloads(value: string): Array<{ name: string; payload:
     throw new TypeError("Unexpected text before tension parameter scaffolding");
   }
 
-  return matches.map((match, index) => {
+  return matches.flatMap((match, index) => {
     const matchIndex = match.index;
 
     if (matchIndex === undefined) {
@@ -129,6 +139,10 @@ function wrappedParameterPayloads(value: string): Array<{ name: string; payload:
     const name = parameterName(match[1] ?? "");
 
     if (!isTensionParameterName(name)) {
+      if (foreignParameterNames === "drop") {
+        return [];
+      }
+
       throw new TypeError(`Unsupported tension parameter name ${JSON.stringify(name)}`);
     }
 
@@ -137,14 +151,14 @@ function wrappedParameterPayloads(value: string): Array<{ name: string; payload:
     const closeIndex = wrapped.indexOf(PARAMETER_CLOSE_TAG);
 
     if (closeIndex === -1) {
-      return { name, payload: wrapped.trim() };
+      return [{ name, payload: wrapped.trim() }];
     }
 
     if (wrapped.slice(closeIndex + PARAMETER_CLOSE_TAG.length).trim().length > 0) {
       throw new TypeError("Unexpected text after tension parameter wrapper");
     }
 
-    return { name, payload: wrapped.slice(0, closeIndex).trim() };
+    return [{ name, payload: wrapped.slice(0, closeIndex).trim() }];
   });
 }
 
@@ -162,12 +176,10 @@ function jsonTensionArray(value: string): string[] | null {
   }
 }
 
-/**
- * Unwrap model tool-wire `<parameter>` serialization from a stray `tensions`
- * string. This inspects only machine delimiters and parameter field names; it
- * does not judge the tension text itself.
- */
-export function unwrapTensionParameterScaffolding(value: string): string[] {
+function unwrapParameterScaffolding(
+  value: string,
+  foreignParameterNames: ForeignParameterPolicy,
+): string[] {
   const trimmed = value.trim();
 
   if (!trimmed.includes(PARAMETER_WIRE_DELIMITER)) {
@@ -191,7 +203,7 @@ export function unwrapTensionParameterScaffolding(value: string): string[] {
 
   const tensions: string[] = [];
 
-  for (const { payload } of wrappedParameterPayloads(trimmed)) {
+  for (const { payload } of wrappedParameterPayloads(trimmed, foreignParameterNames)) {
     if (payload.length === 0) {
       continue;
     }
@@ -205,6 +217,10 @@ export function unwrapTensionParameterScaffolding(value: string): string[] {
     }
   }
 
+  if (foreignParameterNames === "drop") {
+    return tensions.filter((tension) => !tension.includes(PARAMETER_WIRE_DELIMITER));
+  }
+
   if (tensions.length === 0) {
     throw new TypeError("Tension parameter scaffolding contained no usable payload");
   }
@@ -214,6 +230,35 @@ export function unwrapTensionParameterScaffolding(value: string): string[] {
   }
 
   return tensions;
+}
+
+/**
+ * Unwrap model tool-wire `<parameter>` serialization from a stray `tensions`
+ * string. This inspects only machine delimiters and parameter field names; it
+ * does not judge the tension text itself.
+ */
+export function unwrapTensionParameterScaffolding(value: string): string[] {
+  return unwrapParameterScaffolding(value, "reject");
+}
+
+/**
+ * Live-parse variant of {@link unwrapTensionParameterScaffolding}. A tensions
+ * field that fails to parse takes the whole rumination with it -- note, tensions
+ * and tick alike -- so wire scaffolding that names some other tool parameter is
+ * dropped here instead of rejected: by the tool's own schema that payload was
+ * addressed to a different field, so it is not tension content. Same structural
+ * predicate as the rejecting variant, different cost when it fires.
+ */
+export function unwrapTensionParameterScaffoldingForParse(value: string): string[] {
+  if (!value.includes(PARAMETER_WIRE_DELIMITER)) {
+    return unwrapParameterScaffolding(value, "reject");
+  }
+
+  try {
+    return unwrapParameterScaffolding(value, "drop");
+  } catch {
+    return [];
+  }
 }
 
 const wireSafeTensionSchema = z
@@ -230,15 +275,24 @@ const wireSafeRuminationTextSchema = z
   });
 
 // The model intermittently emits `tensions` as a single string (or a JSON-encoded
-// array) instead of an array, despite the array tool schema + description below.
+// array) instead of an array, despite the array tool schema + description below,
+// and intermittently leaks tool-wire scaffolding into an array element as well.
 // Normalize the tool-call shape at parse time (tool-shape hygiene, not output
 // policing) so a shape slip does not discard an otherwise-valid rumination.
 const tolerantTensionsSchema = z.preprocess((value) => {
-  if (typeof value !== "string") {
-    return value;
+  if (typeof value === "string") {
+    return unwrapTensionParameterScaffoldingForParse(value);
   }
 
-  return unwrapTensionParameterScaffolding(value);
+  if (Array.isArray(value)) {
+    return (value as readonly unknown[]).flatMap((element) =>
+      typeof element === "string" && element.includes(PARAMETER_WIRE_DELIMITER)
+        ? unwrapTensionParameterScaffoldingForParse(element)
+        : [element],
+    );
+  }
+
+  return value;
 }, z.array(wireSafeTensionSchema));
 
 const ruminationResponseToolSchema = z.object({
