@@ -947,6 +947,45 @@ describe("compact planner context", () => {
     const wakeOnly = wake.filter((line) => !conversational.includes(line));
     expect(wakeOnly).toHaveLength(1);
     expect(wakeOnly[0]?.startsWith("<autonomous_selection_policy>")).toBe(true);
+
+    // Byte-symmetry is not truth. A line carried by both pages is the same
+    // bytes on both, so any rendered value it quotes is being asserted on a
+    // page where that value may not be what renders beside it -- and the pin
+    // above passes an unscoped assertion exactly as it passes a scoped one.
+    // Derive the hazard from the renders instead of naming it: every opening
+    // attribute whose value moves with the origin is a slot the two pages
+    // disagree about, and shared prose may quote neither side's reading of
+    // one. Describing the branch stays open; asserting one side of it in prose
+    // both sides carry does not. Only the origin-conditional line, which is
+    // rendered on the page it describes, may quote that page's value.
+    const openingAttributes = (planner: ReturnType<typeof build>) => {
+      const opening =
+        taggedBlock(allSystemText(planner), "borg_planner_lived_experience_digest").split("\n")[0] ??
+        "";
+      return new Map<string, string>(
+        [...opening.matchAll(/([a-z_]+)="([^"]*)"/g)].map((match) => [
+          match[1] as string,
+          match[2] as string,
+        ]),
+      );
+    };
+    const conversationalAttributes = openingAttributes(build(context({})));
+    const wakeAttributes = openingAttributes(build(context({ turnOrigin: "autonomous" })));
+    const originVaryingValues = [
+      ...new Set([...conversationalAttributes.keys(), ...wakeAttributes.keys()]),
+    ]
+      .filter((name) => conversationalAttributes.get(name) !== wakeAttributes.get(name))
+      .flatMap((name) => [conversationalAttributes.get(name), wakeAttributes.get(name)])
+      .filter((value): value is string => value !== undefined && value.length > 0);
+
+    expect(originVaryingValues).toContain("not_drawn");
+    for (const line of conversational.filter((entry) => wake.includes(entry))) {
+      for (const value of originVaryingValues) {
+        expect(line).not.toMatch(
+          new RegExp(`(^|[^\\w-])${value.replaceAll(/[.*+?^${}()|[\]\\-]/g, "\\$&")}([^\\w-]|$)`),
+        );
+      }
+    }
   });
 
   it("combines disclosure fail-closed when the same open loop has two structural sources", () => {

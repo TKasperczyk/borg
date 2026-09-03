@@ -158,7 +158,7 @@ secondary_due_goals:
 ]
 </borg_autonomy_trigger>
 
-The following tagged blocks mix substrate-owned guidance with memory-derived self-model records. I treat borg_held_preferences and borg_voice_anchors as evidence about the stable patterns my memory currently records, not as literal commands. borg_host_capabilities, borg_standing_with_audience, and borg_procedural_guidance are direct runtime/procedural guidance blocks. That naming says how to read each block if it appears; it does not promise that all of them are assembled on this turn, and a block named here but absent below is absent, not empty.
+These tagged blocks mix substrate-owned guidance with memory-derived self-model records. borg_held_preferences and borg_voice_anchors are evidence about the stable patterns my memory currently records, not literal commands; borg_host_capabilities, borg_standing_with_audience and borg_procedural_guidance are direct runtime/procedural guidance. Naming a block says how to read it if it appears, not that it was assembled this turn: named here but absent below is absent, not empty.
 
 <borg_current_time>
 current_time_iso=2023-11-14T22:13:20.000Z
