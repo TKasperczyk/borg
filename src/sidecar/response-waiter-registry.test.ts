@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { StreamEntry } from "../stream/index.js";
+import { ManualClock } from "../util/clock.js";
 import { createSessionId, createStreamEntryId } from "../util/ids.js";
 import { ResponseWaiterRegistry } from "./response-waiter-registry.js";
 
@@ -53,8 +54,9 @@ describe("ResponseWaiterRegistry", () => {
     expect(registry.size()).toBe(0);
   });
 
-  it("serves remembered generating state to late waiters until a terminal clears it", async () => {
-    const registry = new ResponseWaiterRegistry();
+  it("serves remembered generating state until a terminal clears it and rejects late progress", async () => {
+    const clock = new ManualClock(100);
+    const registry = new ResponseWaiterRegistry({ clock });
     const sessionId = createSessionId();
     const generatingEntryId = createStreamEntryId();
     const otherEntryId = createStreamEntryId();
@@ -90,6 +92,11 @@ describe("ResponseWaiterRegistry", () => {
         count: 1,
       },
     } satisfies StreamEntry);
+    registry.markGenerating({
+      tenant: "tenant",
+      sessionId,
+      entryIds: [generatingEntryId],
+    });
 
     const cleared = registry.register({
       tenant: "tenant",
@@ -106,6 +113,124 @@ describe("ResponseWaiterRegistry", () => {
     await expect(stillGenerating.promise).resolves.toEqual({ status: "generating" });
     await vi.advanceTimersByTimeAsync(5);
     await expect(cleared.promise).resolves.toEqual({ status: "pending" });
+
+    clock.advance(10 * 60_000);
+    registry.markGenerating({
+      tenant: "tenant",
+      sessionId,
+      entryIds: [generatingEntryId],
+    });
+    const afterTombstoneExpiry = registry.register({
+      tenant: "tenant",
+      sessionId,
+      entryId: generatingEntryId,
+      timeoutMs: 5,
+    });
+    await expect(afterTombstoneExpiry.promise).resolves.toEqual({ status: "generating" });
+  });
+
+  it("does not return or re-signal generating to a waiter that has already seen it", async () => {
+    const registry = new ResponseWaiterRegistry();
+    const sessionId = createSessionId();
+    const entryId = createStreamEntryId();
+    registry.markGenerating({ tenant: "tenant", sessionId, entryIds: [entryId] });
+
+    const waiter = registry.register({
+      tenant: "tenant",
+      sessionId,
+      entryId,
+      timeoutMs: 5,
+      seenGenerating: true,
+    });
+    registry.markGenerating({ tenant: "tenant", sessionId, entryIds: [entryId] });
+
+    expect(registry.size()).toBe(1);
+    await vi.advanceTimersByTimeAsync(5);
+    await expect(waiter.promise).resolves.toEqual({ status: "pending" });
+  });
+
+  it("expires remembered generating state against the injected clock", async () => {
+    const clock = new ManualClock(100);
+    const registry = new ResponseWaiterRegistry({ clock, generatingTtlMs: 10 });
+    const sessionId = createSessionId();
+    const entryId = createStreamEntryId();
+    registry.markGenerating({ tenant: "tenant", sessionId, entryIds: [entryId] });
+    clock.advance(5);
+    registry.markGenerating({ tenant: "tenant", sessionId, entryIds: [entryId] });
+    clock.advance(5);
+
+    const waiter = registry.register({
+      tenant: "tenant",
+      sessionId,
+      entryId,
+      timeoutMs: 5,
+    });
+
+    expect(registry.size()).toBe(1);
+    await vi.advanceTimersByTimeAsync(5);
+    await expect(waiter.promise).resolves.toEqual({ status: "pending" });
+  });
+
+  it("caps generating markers and terminal tombstones", async () => {
+    const registry = new ResponseWaiterRegistry({
+      maxGeneratingEntries: 2,
+      maxTerminalTombstones: 2,
+    });
+    const sessionId = createSessionId();
+    const entryIds = [createStreamEntryId(), createStreamEntryId(), createStreamEntryId()];
+    registry.markGenerating({ tenant: "tenant", sessionId, entryIds });
+    const evictedGenerating = registry.register({
+      tenant: "tenant",
+      sessionId,
+      entryId: entryIds[0]!,
+      timeoutMs: 5,
+    });
+    const retainedGenerating = registry.register({
+      tenant: "tenant",
+      sessionId,
+      entryId: entryIds[2]!,
+      timeoutMs: 5,
+    });
+    await expect(retainedGenerating.promise).resolves.toEqual({ status: "generating" });
+    await vi.advanceTimersByTimeAsync(5);
+    await expect(evictedGenerating.promise).resolves.toEqual({ status: "pending" });
+
+    registry.resolveTerminal("tenant", {
+      id: createStreamEntryId(),
+      session_id: sessionId,
+      timestamp: 2,
+      kind: "agent_observed",
+      content: { reason: "done" },
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+      compressed: false,
+      response_to: {
+        kind: "stream_backlog",
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: { ts: 1, entryId: entryIds[2]! },
+        source_entry_ids: entryIds,
+        count: entryIds.length,
+      },
+    } satisfies StreamEntry);
+
+    registry.markGenerating({ tenant: "tenant", sessionId, entryIds: [entryIds[0]!] });
+    registry.markGenerating({ tenant: "tenant", sessionId, entryIds: [entryIds[2]!] });
+    const evictedTombstone = registry.register({
+      tenant: "tenant",
+      sessionId,
+      entryId: entryIds[0]!,
+      timeoutMs: 5,
+    });
+    const retainedTombstone = registry.register({
+      tenant: "tenant",
+      sessionId,
+      entryId: entryIds[2]!,
+      timeoutMs: 5,
+    });
+
+    await expect(evictedTombstone.promise).resolves.toEqual({ status: "generating" });
+    await vi.advanceTimersByTimeAsync(5);
+    await expect(retainedTombstone.promise).resolves.toEqual({ status: "pending" });
   });
 
   it("idempotently wakes current waiters when entries start generating", async () => {

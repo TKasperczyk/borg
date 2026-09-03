@@ -161,6 +161,8 @@ let pool!: BorgPool;
 const inboxWaiters = teamsInboxConfig.enabled
   ? new ResponseWaiterRegistry({
       acquireTenantLease: (tenantId) => pool.acquireBackgroundLease(tenantId),
+      clock: sidecarClock,
+      generatingTtlMs: teamsInboxConfig.timeoutMs + 10_000,
     })
   : undefined;
 

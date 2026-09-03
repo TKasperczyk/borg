@@ -843,9 +843,12 @@ previously committed stamp supplies the same notification. Scheduled and
 in-flight drains and registered waiters hold non-exclusive pool leases. Existing
 inbox ownership is sticky across `/memory/context` and `/memory/append-turn`
 refreshes. `/memory/inbox-progress` publishes the in-memory `generating` interim
-state without changing the Stream or response watermark; full-turn runner
-batches publish it immediately before the Team Agent request, while classifier
-batches leave signalling to Team Agent.
+state without changing the Stream or response watermark. A re-await carrying
+`seen_generating: true` skips that remembered interim state and waits for a
+terminal or timeout; terminal tombstones reject late progress, and progress
+state expires after the Team Agent request bound. Full-turn runner batches
+publish it immediately before the Team Agent request, while classifier batches
+leave signalling to Team Agent.
 Without `TEAM_AGENT_BASE_URL`, no inbox workers start and these inbox routes
 return 503 while all pre-existing sidecar behavior remains unchanged.
 

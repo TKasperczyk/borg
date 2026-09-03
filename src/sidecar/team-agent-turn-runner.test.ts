@@ -141,6 +141,7 @@ function openRealHarness(input: {
   fetchFn: typeof fetch;
   clock?: ManualClock;
   staleMs?: number;
+  onGenerating?: TeamAgentTurnRunnerOptions["onGenerating"];
   onTerminalCommitted?: (entry: StreamEntry) => void;
   onReconcileAdvance?: (event: {
     sessionId: SessionId;
@@ -187,6 +188,7 @@ function openRealHarness(input: {
       get: () => ({ canonical_name: "Sender" }) as never,
     },
     clock,
+    ...(input.onGenerating === undefined ? {} : { onGenerating: input.onGenerating }),
     fetchFn: input.fetchFn,
   });
   const worker = new ChatResponseCatchUpWorker({
@@ -296,21 +298,107 @@ describe("TeamAgentTurnRunner", () => {
     expect(onGenerating).not.toHaveBeenCalled();
   });
 
-  it("continues the terminal path when the generating observer throws", async () => {
+  it("keeps the real terminal path and registry lifecycle intact when progress signalling throws", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const h = harness(
-      async () =>
-        new Response(JSON.stringify({ action: "reply", content: "answer" }), { status: 200 }),
-      {
-        onGenerating: () => {
-          throw new Error("progress unavailable");
+    const clock = new ManualClock(1_000);
+    const waiters = new ResponseWaiterRegistry({ clock, generatingTtlMs: 1_010 });
+    const events: string[] = [];
+    let requestBody: unknown;
+    let signalFetchStarted: () => void = () => {};
+    const fetchStarted = new Promise<void>((resolve) => {
+      signalFetchStarted = resolve;
+    });
+    let resolveFetch: (response: Response) => void = () => {};
+    const deferredFetch = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchFn = vi.fn(async (_url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as unknown;
+      events.push("fetch");
+      signalFetchStarted();
+      return deferredFetch;
+    }) as unknown as typeof fetch;
+    let real!: ReturnType<typeof openRealHarness>;
+    real = openRealHarness({
+      fetchFn,
+      clock,
+      onGenerating: ({ sessionId, entryIds }) => {
+        events.push("generating");
+        waiters.markGenerating({ tenant: "tenant", sessionId, entryIds });
+        throw new Error("progress unavailable");
+      },
+      onTerminalCommitted: (entry) => {
+        expect(real.entryIndex.lookup(entry.id)).not.toBeNull();
+        events.push("terminal-committed");
+        waiters.resolveTerminal("tenant", entry);
+      },
+    });
+    const sessionId = createSessionId();
+    const source = await real.appendInbox(sessionId, 900, "hello");
+    const progressWaiter = waiters.register({
+      tenant: "tenant",
+      sessionId,
+      entryId: source.id,
+      timeoutMs: 1_000,
+    });
+
+    const drain = real.worker.tick(sessionId);
+    await fetchStarted;
+    await expect(progressWaiter.promise).resolves.toEqual({ status: "generating" });
+    const terminalWaiter = waiters.register({
+      tenant: "tenant",
+      sessionId,
+      entryId: source.id,
+      timeoutMs: 1_000,
+      seenGenerating: true,
+    });
+    expect(waiters.size()).toBe(1);
+    expect(events).toEqual(["generating", "fetch"]);
+    expect(requestBody).toEqual({
+      model: "tenant",
+      source: "inbox",
+      thread_id: "thread",
+      sidecar_session_id: sessionId,
+      conversation: { type: "groupChat", name: "Room", external_id: "conversation" },
+      messages: [
+        {
+          entry_id: source.id,
+          text: "hello",
+          sender: { external_id: "sender", display_name: "Sender", bot: false },
+          observed_at: new Date(900).toISOString(),
+          mentioned: true,
+          quotes_bot: false,
+        },
+      ],
+    });
+
+    resolveFetch(
+      new Response(JSON.stringify({ action: "reply", content: "answer" }), { status: 200 }),
+    );
+    await expect(drain).resolves.toMatchObject({ status: "drained", drained: 1 });
+    const answered = await terminalWaiter.promise;
+    expect(answered).toMatchObject({ status: "answered", reply: "answer" });
+    if (answered.status !== "answered") {
+      throw new Error("expected an answered waiter result");
+    }
+    expect(events).toEqual(["generating", "fetch", "terminal-committed"]);
+    expect(
+      real.terminal.findTerminalCoveringEntry({ sessionId, entryId: source.id }),
+    ).toMatchObject({
+      status: "found",
+      terminalEntry: {
+        id: answered.terminal_id,
+        kind: "agent_msg",
+        content: "answer",
+        response_to: {
+          kind: "stream_backlog",
+          from_cursor_exclusive: null,
+          through_cursor_inclusive: { ts: source.timestamp, entryId: source.id },
+          source_entry_ids: [source.id],
+          count: 1,
         },
       },
-    );
-
-    await expect(h.runner.run(h.input)).resolves.toBeUndefined();
-    expect(h.fetchFn).toHaveBeenCalledTimes(1);
-    expect(h.appendBacklogTerminal).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("retries the same real prefix, resolves only after commit, ingests exactly, and stops cleanly", async () => {

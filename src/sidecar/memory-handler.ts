@@ -336,6 +336,7 @@ const memoryAwaitResponseBodySchema = z
     sidecar_session_id: sessionIdSchema,
     entry_id: streamEntryIdSchema,
     timeout_ms: z.number().int().min(0).max(120_000).optional().default(90_000),
+    seen_generating: z.boolean().optional().default(false),
   })
   .strict();
 
@@ -1322,6 +1323,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           sessionId: input.sidecar_session_id,
           entryId: input.entry_id,
           timeoutMs: input.timeout_ms,
+          seenGenerating: input.seen_generating,
         });
         cancelWaiter = waiter.cancel;
         if (disconnected || connectionDestroyed()) {

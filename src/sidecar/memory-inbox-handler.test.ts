@@ -360,7 +360,7 @@ describe("memory inbox routes", () => {
     expect(harness.exclusives).toEqual([undefined, undefined]);
   });
 
-  it("returns remembered generating progress as an interim await result", async () => {
+  it("returns generating once, then a seen-generating re-await holds for the terminal", async () => {
     const harness = makeHarness();
     harness.waiters.markGenerating({
       tenant: "tenant",
@@ -378,16 +378,122 @@ describe("memory inbox routes", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ status: "generating" });
     expect(harness.findTerminalCoveringEntry).toHaveBeenCalledTimes(2);
-  });
 
-  it("returns a terminal rather than remembered generating progress", async () => {
-    const harness = makeHarness();
     const terminalId = createStreamEntryId();
+    const secondResponse = post(base, "/memory/await-response", {
+      tenant: "tenant",
+      sidecar_session_id: harness.sessionId,
+      entry_id: harness.entryId,
+      timeout_ms: 1_000,
+      seen_generating: true,
+    });
+    await vi.waitFor(() => expect(harness.waiters.size()).toBe(1));
     harness.waiters.markGenerating({
       tenant: "tenant",
       sessionId: harness.sessionId,
       entryIds: [harness.entryId],
     });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(harness.waiters.size()).toBe(1);
+
+    harness.waiters.resolveTerminal("tenant", {
+      id: terminalId,
+      session_id: harness.sessionId,
+      timestamp: 2,
+      kind: "agent_msg",
+      content: "answer",
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+      compressed: false,
+      response_to: {
+        kind: "stream_backlog",
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: { ts: 1, entryId: harness.entryId },
+        source_entry_ids: [harness.entryId],
+        count: 1,
+      },
+    } satisfies StreamEntry);
+    const terminalResponse = await secondResponse;
+    expect(terminalResponse.status).toBe(200);
+    await expect(terminalResponse.json()).resolves.toEqual({
+      status: "answered",
+      terminal_id: terminalId,
+      entry_ids: [harness.entryId],
+      reply: "answer",
+    });
+  });
+
+  it("lets the second scan's terminal win over generating remembered during the first scan", async () => {
+    const harness = makeHarness();
+    const terminalId = createStreamEntryId();
+    const terminalEntry = {
+      id: terminalId,
+      session_id: harness.sessionId,
+      timestamp: 2,
+      kind: "agent_msg",
+      content: "answer",
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+      compressed: false,
+      response_to: {
+        kind: "stream_backlog",
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: { ts: 1, entryId: harness.entryId },
+        source_entry_ids: [harness.entryId],
+        count: 1,
+      },
+    } satisfies StreamEntry;
+    let scanCount = 0;
+    harness.setLookup(() => {
+      scanCount += 1;
+      if (scanCount === 1) {
+        harness.waiters.markGenerating({
+          tenant: "tenant",
+          sessionId: harness.sessionId,
+          entryIds: [harness.entryId],
+        });
+        return { status: "pending" };
+      }
+      return {
+        status: "found",
+        terminalEntry,
+        responseTo: terminalEntry.response_to,
+      };
+    });
+    const base = await start(harness);
+    const response = await post(base, "/memory/await-response", {
+      tenant: "tenant",
+      sidecar_session_id: harness.sessionId,
+      entry_id: harness.entryId,
+      timeout_ms: 1_000,
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: "answered",
+      terminal_id: terminalId,
+      entry_ids: [harness.entryId],
+      reply: "answer",
+    });
+    expect(scanCount).toBe(2);
+
+    harness.waiters.markGenerating({
+      tenant: "tenant",
+      sessionId: harness.sessionId,
+      entryIds: [harness.entryId],
+    });
+    const afterTerminal = harness.waiters.register({
+      tenant: "tenant",
+      sessionId: harness.sessionId,
+      entryId: harness.entryId,
+      timeoutMs: 0,
+    });
+    await expect(afterTerminal.promise).resolves.toEqual({ status: "pending" });
+  });
+
+  it("returns a terminal already present on the first scan", async () => {
+    const harness = makeHarness();
+    const terminalId = createStreamEntryId();
     harness.setLookup(() => ({
       status: "found",
       terminalEntry: {
@@ -430,6 +536,7 @@ describe("memory inbox routes", () => {
       entry_ids: [harness.entryId],
       reply: "answer",
     });
+    expect(harness.findTerminalCoveringEntry).toHaveBeenCalledTimes(1);
   });
 
   it("returns 404 for an unknown entry without registering a waiter", async () => {
