@@ -2986,8 +2986,14 @@ describe("buildBaseSystemPrompt", () => {
     // them, which on the live list includes a trigger whose stamp is genuinely
     // future and therefore not comparable to either.
     expect(block).toContain(
-      "the scan cost of everything between their rows, including rows that publish no stamp of their own, rather than which of them is due first",
+      "the scan cost of everything between their rows, including rows whose own stamp is null or genuinely future, rather than which of them is due first",
     );
+    // The narrower wording this replaced, pinned because it read as an
+    // enumeration and left out the case that actually sits in the span: a row
+    // publishing a genuinely future stamp is publishing a stamp, so "rows that
+    // publish no stamp of their own" excludes scheduled_wake -- the row between
+    // the two triggers whose 1ms gap a reader on the live list would measure.
+    expect(block).not.toContain("rows that publish no stamp of their own");
     expect(block).not.toContain("floored to the read clock exactly as next_tick_at is");
     // The overclaim that replaced it, pinned the same way: a page where the scan
     // reaches its first flooring row inside the read's own millisecond -- the
