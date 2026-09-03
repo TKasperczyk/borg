@@ -401,6 +401,49 @@ describe("identity service", () => {
     }
   });
 
+  it("carries the replaced progress log on the identity event of the write that replaced it", () => {
+    // The planner field legend tells the model that a write dropping a pn entry does not destroy
+    // it: the same write records the whole prior row, progress log included, as its identity
+    // event's old value. Pin that at both goal write paths, so a change that stops carrying the
+    // prior row forces the legend's claim to be revisited rather than quietly falsifying it.
+    const harness = createHarness(new FixedClock(1_000));
+
+    try {
+      const goal = harness.identity.addGoal({
+        description: "Track the staked sentence",
+        priority: 6,
+        provenance: { kind: "manual" },
+        progressNotes: "[1] first entry\n[2] second entry",
+      });
+      const beforeGeneralPatch = harness.goalsRepository.get(goal.id)?.progress_notes ?? null;
+
+      // The facade/CLI/demo progress writer reaches update() with a bare note, which SETs the
+      // whole column: the two entries above are gone from the row after this write.
+      harness.goalsRepository.update(goal.id, { progress_notes: "[3] bare replacement" }, {
+        kind: "manual",
+      });
+      // The lower-level repository verb replaces the column the same way.
+      harness.goalsRepository.updateProgress(goal.id, "[4] bare replacement again", {
+        kind: "manual",
+      });
+
+      expect(harness.goalsRepository.get(goal.id)?.progress_notes).toBe("[4] bare replacement again");
+      expect(beforeGeneralPatch).toBe("[1] first entry\n[2] second entry");
+
+      const events = harness.identityEvents.list({ recordType: "goal", recordId: goal.id });
+      const replacements = events
+        .filter((event) => event.action === "update" || event.action === "update_progress")
+        .sort((left, right) => left.id - right.id);
+
+      expect(replacements).toHaveLength(2);
+      expect(
+        replacements.map((event) => (event.old_value as { progress_notes: string }).progress_notes),
+      ).toEqual([beforeGeneralPatch, "[3] bare replacement"]);
+    } finally {
+      harness.db.close();
+    }
+  });
+
   it("creates commitments through identity governance", () => {
     const harness = createHarness(new FixedClock(1_000));
 

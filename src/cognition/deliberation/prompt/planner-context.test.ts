@@ -1188,6 +1188,11 @@ describe("compact planner context", () => {
     );
     expect(text).toContain("an entry can be rewritten or dropped by a write from outside a turn");
     expect(text).toContain("rv counts such a write exactly as it counts an append,");
+    // A replacing write displaces the entry it drops into the identity event it writes; it does not
+    // destroy it. Without this, "dropped" reads as gone and an unread register reads as a limit.
+    expect(text).toContain(
+      "Those events carry the whole prior row, so a pn entry a later write replaced survives in them, out of reach from this page rather than gone",
+    );
     // pn is an excerpt of the column, so its silence is not evidence about the column.
     expect(text).toContain("It is also an excerpt and not the log");
     expect(text).toContain("an entry missing from pn is not evidence it was never written");
@@ -1341,7 +1346,7 @@ describe("compact planner context", () => {
     );
     expect(text).toContain("A budget printed on one container governs that container alone");
     expect(text).toContain(
-      "a number matching it elsewhere is a different budget that happens to agree rather than the same one seen twice",
+      "a number matching it elsewhere is a different budget that happens to agree",
     );
   });
 
@@ -1875,6 +1880,10 @@ describe("compact planner context", () => {
     // against one width -- raised it from 9,784 to 9,927. Saying that the container asserts nothing
     // in its own name cost 196 characters net of the shorter tag, 9,927 to 9,976; the ceiling moves
     // to 9,990 rather than to the measurement, so the next clause has to be argued against a number.
+    // Saying that a replaced pn entry survives on the write's identity event cost 3 net, 9,976 to
+    // 9,979, because it was paid for: the representative high-water surface was 15 tokens under the
+    // compaction target, so the container-budget generalization was compressed to fund it. The
+    // ceiling holds at 9,990 and the funding, not the ceiling, is what the next clause has to find.
     expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_990);
     expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(8_000);
     expect(planner.traceSummary.sections.authority_and_directives?.estimatedTokens).toBeGreaterThan(
