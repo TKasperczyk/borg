@@ -6,7 +6,10 @@ import {
   type GenerationGateResult,
   type GenerationGateStructuralSignals,
 } from "../generation/generation-gate.js";
-import { orderedPendingResponseUserRecords } from "../ingestion/backlog-prefix.js";
+import {
+  buildStreamBacklogResponseTo,
+  hydrateStreamBacklogBatch,
+} from "../ingestion/backlog-terminal.js";
 import { buildParticipantRosterFromRepositories } from "../perception/index.js";
 import {
   resolveActiveParticipants,
@@ -14,7 +17,6 @@ import {
   scanRecentParticipantStreamEntries,
 } from "../participants.js";
 import type {
-  StreamCursor,
   StreamEntry,
   StreamEntryIndexRecord,
   StreamResponseTo,
@@ -237,13 +239,6 @@ type HydratedInboundBatch = {
   records: readonly StreamEntryIndexRecord[];
 };
 
-function batchEntryCursor(entry: HydratedInboundMessage): StreamCursor {
-  return {
-    ts: entry.timestamp,
-    entryId: entry.id,
-  };
-}
-
 function batchEntryAsStreamEntry(entry: HydratedInboundMessage): StreamEntry {
   return {
     id: entry.id,
@@ -259,6 +254,9 @@ function batchEntryAsStreamEntry(entry: HydratedInboundMessage): StreamEntry {
     ...(entry.source_message_key === undefined
       ? {}
       : { source_message_key: entry.source_message_key }),
+    ...(entry.observed_at === undefined ? {} : { observed_at: entry.observed_at }),
+    ...(entry.conversation === undefined ? {} : { conversation: entry.conversation }),
+    ...(entry.metadata === undefined ? {} : { metadata: entry.metadata }),
   };
 }
 
@@ -382,39 +380,6 @@ function validateInboundBatchRequest(input: {
   return entryIds;
 }
 
-function requiredEntryIndex(record: StreamEntryIndexRecord, code: string): number {
-  if (record.entry_index === null) {
-    throw new CognitionError("Inbound batch source entry has no durable order", {
-      code,
-    });
-  }
-
-  return record.entry_index;
-}
-
-async function readHydratedStreamEntriesById(input: {
-  options: TurnPhaseCoordinatorOptions;
-  sessionId: SessionId;
-  entryIds: readonly StreamEntryId[];
-}): Promise<Map<StreamEntryId, StreamEntry>> {
-  const wanted = new Set(input.entryIds);
-  const entries = new Map<StreamEntryId, StreamEntry>();
-
-  for await (const entry of input.options.createStreamReader(input.sessionId).iterate({
-    kinds: ["user_msg"],
-  })) {
-    if (wanted.has(entry.id)) {
-      entries.set(entry.id, entry);
-    }
-
-    if (entries.size === wanted.size) {
-      break;
-    }
-  }
-
-  return entries;
-}
-
 async function hydrateInboundBatch(input: {
   options: TurnPhaseCoordinatorOptions;
   sessionId: SessionId;
@@ -429,14 +394,16 @@ async function hydrateInboundBatch(input: {
     });
   }
 
-  const recordsById = entryIndex.lookupMany(input.entryIds);
-  const sourceEntriesById = await readHydratedStreamEntriesById({
-    options: input.options,
+  const batch = await hydrateStreamBacklogBatch({
+    dataDir: input.options.config.dataDir,
+    entryIndex,
+    createStreamReader: input.options.createStreamReader,
     sessionId: input.sessionId,
     entryIds: input.entryIds,
+    throughCursorInclusive: isInboundBatchTurnInput(input.rawTurnInput)
+      ? input.rawTurnInput.inboundBatch.throughCursorInclusive
+      : undefined,
   });
-  const records: StreamEntryIndexRecord[] = [];
-  const sourceEntries: StreamEntry[] = [];
   const hydrated: HydratedInboundMessage[] = [];
   const attachmentsByParentEntry = new Map<StreamEntryId, HydratedInboundAttachment[]>();
   const perceptionByAttachmentId = new Map(
@@ -476,266 +443,32 @@ async function hydrateInboundBatch(input: {
     );
   }
 
-  for (const entryId of input.entryIds) {
-    const record = recordsById.get(entryId);
-
-    if (record === undefined) {
-      throw new CognitionError("Inbound batch source entry is missing from the stream index", {
-        code: "INBOUND_BATCH_ENTRY_MISSING",
-      });
-    }
-
-    if (record.session_id !== input.sessionId) {
-      throw new CognitionError("Inbound batch source entry belongs to a different session", {
-        code: "INBOUND_BATCH_SESSION_MISMATCH",
-      });
-    }
-
-    if (record.kind !== "user_msg") {
-      throw new CognitionError("Inbound batch entries must be user_msg stream entries", {
-        code: "INBOUND_BATCH_ENTRY_KIND_INVALID",
-      });
-    }
-
-    const entryIndexValue = requiredEntryIndex(record, "INBOUND_BATCH_ENTRY_ORDER_MISSING");
-    const sourceEntry = sourceEntriesById.get(entryId);
-
-    if (sourceEntry === undefined) {
-      throw new CognitionError("Inbound batch source entry is missing from the stream", {
-        code: "INBOUND_BATCH_ENTRY_MISSING",
-      });
-    }
-
-    if (
-      sourceEntry.session_id !== record.session_id ||
-      sourceEntry.timestamp !== record.timestamp ||
-      sourceEntry.kind !== record.kind ||
-      (sourceEntry.sender_entity_id ?? null) !== record.sender_entity_id
-    ) {
-      throw new CognitionError("Inbound batch stream entry and index facts disagree", {
-        code: "INBOUND_BATCH_INDEX_MISMATCH",
-      });
-    }
-
-    if (typeof sourceEntry.content !== "string") {
-      throw new CognitionError("Inbound batch entries must be text-only user messages", {
-        code: "INBOUND_BATCH_CONTENT_INVALID",
-      });
-    }
-
-    records.push(record);
-    sourceEntries.push({
-      ...sourceEntry,
-      entry_index: entryIndexValue,
-      sender_entity_id: sourceEntry.sender_entity_id ?? null,
-    });
+  for (const sourceEntry of batch.sourceEntries) {
     const hydratedAttachments = attachmentsByParentEntry.get(sourceEntry.id);
 
     hydrated.push({
       id: sourceEntry.id,
       session_id: sourceEntry.session_id,
-      entry_index: entryIndexValue,
+      entry_index: sourceEntry.entry_index!,
       timestamp: sourceEntry.timestamp,
       kind: "user_msg",
-      content: sourceEntry.content,
+      content: sourceEntry.content as string,
       sender_entity_id: sourceEntry.sender_entity_id ?? null,
       ...(hydratedAttachments === undefined ? {} : { attachments: hydratedAttachments }),
       ...(sourceEntry.audience === undefined ? {} : { audience: sourceEntry.audience }),
       ...(sourceEntry.source_message_key === undefined
         ? {}
         : { source_message_key: sourceEntry.source_message_key }),
+      ...(sourceEntry.observed_at === undefined ? {} : { observed_at: sourceEntry.observed_at }),
+      ...(sourceEntry.conversation === undefined ? {} : { conversation: sourceEntry.conversation }),
+      ...(sourceEntry.metadata === undefined ? {} : { metadata: sourceEntry.metadata }),
     });
-  }
-
-  for (let index = 1; index < records.length; index += 1) {
-    const previous = requiredEntryIndex(records[index - 1]!, "INBOUND_BATCH_ENTRY_ORDER_MISSING");
-    const current = requiredEntryIndex(records[index]!, "INBOUND_BATCH_ENTRY_ORDER_MISSING");
-
-    if (current <= previous) {
-      throw new CognitionError("Inbound batch source entries must be ordered oldest-first", {
-        code: "INBOUND_BATCH_ORDER_INVALID",
-      });
-    }
-  }
-
-  const requestedThrough = isInboundBatchTurnInput(input.rawTurnInput)
-    ? input.rawTurnInput.inboundBatch.throughCursorInclusive
-    : undefined;
-  const lastEntry = hydrated[hydrated.length - 1];
-
-  if (
-    requestedThrough !== undefined &&
-    lastEntry !== undefined &&
-    (requestedThrough.entryId !== lastEntry.id || requestedThrough.ts !== lastEntry.timestamp)
-  ) {
-    throw new CognitionError(
-      "Inbound batch through cursor does not match the hydrated tail entry",
-      {
-        code: "INBOUND_BATCH_CURSOR_MISMATCH",
-      },
-    );
   }
 
   return {
     entries: orderedInboundBatchEntries(hydrated),
-    sourceEntries,
-    records,
-  };
-}
-
-function watermarkEntryIndex(input: {
-  entryIndex: NonNullable<TurnPhaseCoordinatorOptions["entryIndex"]>;
-  sessionId: SessionId;
-  watermark: StreamCursor | null;
-}): number {
-  if (input.watermark === null) {
-    return -1;
-  }
-
-  const record = input.entryIndex.lookup(input.watermark.entryId);
-
-  if (record === null) {
-    throw new CognitionError("Inbound batch watermark cursor is missing from the stream index", {
-      code: "INBOUND_BATCH_WATERMARK_NOT_INDEXED",
-    });
-  }
-
-  if (record.session_id !== input.sessionId || record.timestamp !== input.watermark.ts) {
-    throw new CognitionError("Inbound batch watermark cursor mismatches the stream index", {
-      code: "INBOUND_BATCH_WATERMARK_CURSOR_MISMATCH",
-    });
-  }
-
-  return requiredEntryIndex(record, "INBOUND_BATCH_WATERMARK_ORDER_MISSING");
-}
-
-function assertNoExistingTerminalStamp(input: {
-  coordinator: TurnPhaseCoordinatorOptions["chatResponseWatermarkCoordinator"];
-  sessionId: SessionId;
-  fromCursorExclusive: StreamCursor | null;
-  throughCursorInclusive: StreamCursor;
-  sourceUserEntryIds: readonly StreamEntryId[];
-}): void {
-  const existing = input.coordinator?.findTerminalStampForBatch({
-    sessionId: input.sessionId,
-    fromCursorExclusive: input.fromCursorExclusive,
-    throughCursorInclusive: input.throughCursorInclusive,
-    sourceEntryIds: input.sourceUserEntryIds,
-    count: input.sourceUserEntryIds.length,
-  });
-
-  if (existing !== null && existing !== undefined) {
-    throw new CognitionError("Inbound batch already has a terminal response stamp", {
-      code: "INBOUND_BATCH_ALREADY_RESPONDED",
-    });
-  }
-}
-
-function assertContiguousUnrespondedBatch(input: {
-  entryIndex: NonNullable<TurnPhaseCoordinatorOptions["entryIndex"]>;
-  sessionId: SessionId;
-  fromCursorExclusive: StreamCursor | null;
-  throughCursorInclusive: StreamCursor;
-  throughRecord: StreamEntryIndexRecord;
-  sourceUserEntryIds: readonly StreamEntryId[];
-}): void {
-  const watermarkIndex = watermarkEntryIndex({
-    entryIndex: input.entryIndex,
-    sessionId: input.sessionId,
-    watermark: input.fromCursorExclusive,
-  });
-  const throughIndex = requiredEntryIndex(input.throughRecord, "INBOUND_BATCH_ENTRY_ORDER_MISSING");
-
-  if (throughIndex <= watermarkIndex) {
-    throw new CognitionError("Inbound batch through cursor is not after the response watermark", {
-      code: "INBOUND_BATCH_STALE",
-    });
-  }
-
-  const expectedIds = orderedPendingResponseUserRecords({
-    records: input.entryIndex.lookupSessionEntriesByKind({
-      sessionId: input.sessionId,
-      kind: "user_msg",
-    }),
-    afterEntryIndex: watermarkIndex,
-    throughEntryIndexInclusive: throughIndex,
-    orderMissingCode: "INBOUND_BATCH_CONTIGUITY_ORDER_MISSING",
-  }).map((record) => record.entry_id);
-
-  if (
-    expectedIds.length !== input.sourceUserEntryIds.length ||
-    expectedIds.some((entryId, index) => entryId !== input.sourceUserEntryIds[index])
-  ) {
-    throw new CognitionError(
-      "Inbound batch must be the contiguous oldest-first unresponded user_msg prefix",
-      {
-        code: "INBOUND_BATCH_NOT_CONTIGUOUS",
-      },
-    );
-  }
-}
-
-function buildStreamBacklogResponseTo(input: {
-  coordinator: TurnPhaseCoordinatorOptions["chatResponseWatermarkCoordinator"];
-  entryIndex: TurnPhaseCoordinatorOptions["entryIndex"];
-  sessionId: SessionId;
-  entries: readonly HydratedInboundMessage[];
-  records: readonly StreamEntryIndexRecord[];
-  sourceUserEntryIds: readonly StreamEntryId[];
-}): StreamResponseTo {
-  if (input.coordinator === undefined) {
-    throw new CognitionError("Inbound batch turns require chat response watermark coordination", {
-      code: "CHAT_RESPONSE_WATERMARK_COORDINATOR_REQUIRED",
-    });
-  }
-
-  if (input.entryIndex === undefined) {
-    throw new CognitionError("Inbound batch turns require the stream entry index", {
-      code: "INBOUND_BATCH_INDEX_REQUIRED",
-    });
-  }
-
-  const throughEntry = input.entries[input.entries.length - 1];
-  const throughRecord = input.records[input.records.length - 1];
-
-  if (throughEntry === undefined || throughRecord === undefined) {
-    throw new CognitionError("Inbound batch turns require at least one source entry", {
-      code: "INBOUND_BATCH_EMPTY",
-    });
-  }
-
-  const throughCursorInclusive = batchEntryCursor(throughEntry);
-  assertNoExistingTerminalStamp({
-    coordinator: input.coordinator,
-    sessionId: input.sessionId,
-    fromCursorExclusive: input.coordinator.getWatermark(input.sessionId),
-    throughCursorInclusive,
-    sourceUserEntryIds: input.sourceUserEntryIds,
-  });
-  const reconciled = input.coordinator.reconcile(input.sessionId);
-
-  assertNoExistingTerminalStamp({
-    coordinator: input.coordinator,
-    sessionId: input.sessionId,
-    fromCursorExclusive: reconciled.watermark,
-    throughCursorInclusive,
-    sourceUserEntryIds: input.sourceUserEntryIds,
-  });
-  assertContiguousUnrespondedBatch({
-    entryIndex: input.entryIndex,
-    sessionId: input.sessionId,
-    fromCursorExclusive: reconciled.watermark,
-    throughCursorInclusive,
-    throughRecord,
-    sourceUserEntryIds: input.sourceUserEntryIds,
-  });
-
-  return {
-    kind: "stream_backlog",
-    from_cursor_exclusive: reconciled.watermark,
-    through_cursor_inclusive: throughCursorInclusive,
-    source_entry_ids: [...input.sourceUserEntryIds],
-    count: input.sourceUserEntryIds.length,
+    sourceEntries: batch.sourceEntries,
+    records: batch.records,
   };
 }
 
@@ -927,16 +660,21 @@ export class TurnPhaseCoordinator {
     const batchSourceUserEntryIds = hydratedBatch?.entries.map((entry) => entry.id) ?? [];
     const batchSingleNonNullSenderEntityId =
       batchEntries === null ? null : singleNonNullBatchSenderId(batchEntries);
+    if (hydratedBatch !== null && this.options.chatResponseWatermarkCoordinator === undefined) {
+      throw new CognitionError("Inbound batch turns require chat response watermark coordination", {
+        code: "CHAT_RESPONSE_WATERMARK_COORDINATOR_REQUIRED",
+      });
+    }
     const batchResponseTo =
       hydratedBatch === null
         ? undefined
         : buildStreamBacklogResponseTo({
-            coordinator: this.options.chatResponseWatermarkCoordinator,
-            entryIndex: this.options.entryIndex,
+            coordinator: this.options.chatResponseWatermarkCoordinator!,
+            entryIndex: this.options.entryIndex!,
             sessionId,
-            entries: hydratedBatch.entries,
+            sourceEntries: hydratedBatch.sourceEntries,
             records: hydratedBatch.records,
-            sourceUserEntryIds: batchSourceUserEntryIds,
+            sourceEntryIds: batchSourceUserEntryIds,
           });
     let currentTurnUserInput = initialCurrentTurnUserInput({
       rawTurnInput,

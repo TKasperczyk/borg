@@ -1116,6 +1116,11 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     },
     inbox: {
       catchUp: deps.chatResponseCatchUpWorker,
+      appendBacklogTerminal: (input) => deps.backlogTerminalService.appendBacklogTerminal(input),
+      sealPendingBacklog: (input) => deps.backlogTerminalService.sealPendingBacklog(input),
+      sealStaleBacklog: (input) => deps.backlogTerminalService.sealStaleBacklog(input),
+      findTerminalCoveringEntry: (input) =>
+        deps.backlogTerminalService.findTerminalCoveringEntry(input),
     },
     workmem: {
       load: (sessionId = DEFAULT_SESSION_ID) => deps.workingMemoryStore.load(sessionId),

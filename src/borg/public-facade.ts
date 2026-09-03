@@ -1305,8 +1305,52 @@ export type BorgInboxCatchUpController = {
   tick(sessionId: SessionId): Promise<BorgInboxCatchUpDrainResult>;
 };
 
+export type BorgAppendBacklogTerminalInput = {
+  sessionId: SessionId;
+  sourceEntryIds: readonly StreamEntryId[];
+  terminal: { kind: "agent_msg"; content: string } | { kind: "agent_observed"; reason: string };
+  audience?: string;
+  turnId?: string;
+};
+
+export type BorgAppendBacklogTerminalResult = {
+  terminalEntry: StreamEntry;
+  responseTo: NonNullable<StreamEntry["response_to"]>;
+  sourceEntries: readonly StreamEntry[];
+};
+
+export type BorgFindTerminalCoveringEntryResult =
+  | { status: "unknown_entry" }
+  | { status: "session_mismatch" }
+  | { status: "pending" }
+  | {
+      status: "found";
+      terminalEntry: StreamEntry;
+      responseTo: NonNullable<StreamEntry["response_to"]>;
+    };
+
 export type BorgInboxFacade = {
   catchUp: BorgInboxCatchUpController;
+  appendBacklogTerminal(
+    input: BorgAppendBacklogTerminalInput,
+  ): Promise<BorgAppendBacklogTerminalResult>;
+  sealPendingBacklog(input: {
+    sessionId: SessionId;
+    reason?: string;
+    audience?: string;
+    turnId?: string;
+  }): Promise<BorgAppendBacklogTerminalResult | null>;
+  sealStaleBacklog(input: {
+    sessionId: SessionId;
+    staleBefore: number;
+    reason?: string;
+    audience?: string;
+    turnId?: string;
+  }): Promise<BorgAppendBacklogTerminalResult | null>;
+  findTerminalCoveringEntry(input: {
+    sessionId: SessionId;
+    entryId: StreamEntryId;
+  }): BorgFindTerminalCoveringEntryResult;
 };
 
 export type BorgWorkmemFacade = {

@@ -168,10 +168,24 @@ export {
 } from "./ingestion/chat-response-watermark.js";
 export {
   ChatResponseCatchUpWorker,
+  TurnOrchestratorChatResponseCatchUpRunner,
+  type ChatResponseCatchUpRunner,
+  type ChatResponseCatchUpRunInput,
+  type ChatResponseCatchUpLease,
+  type ChatResponseReconcileAdvance,
   type ChatResponseCatchUpWorkerConfig,
   type ChatResponseCatchUpWorkerOptions,
   type DrainResult,
 } from "./ingestion/chat-response-catch-up-worker.js";
+export {
+  BacklogTerminalService,
+  type AppendBacklogTerminalInput,
+  type AppendBacklogTerminalResult,
+  type FindTerminalCoveringEntryResult,
+  type SealBacklogPrefixInput,
+  type SealPendingBacklogInput,
+  type SealStaleBacklogInput,
+} from "./ingestion/backlog-terminal.js";
 export {
   MessageEnqueuer,
   type BorgEnqueueMessageInput,

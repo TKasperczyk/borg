@@ -41,6 +41,10 @@ import {
   memoryTraceEnabledFromEnv,
   memoryTraceMaxTenantsFromEnv,
 } from "../src/sidecar/memory-trace.js";
+import { ResponseWaiterRegistry } from "../src/sidecar/response-waiter-registry.js";
+import { TeamAgentTurnRunner } from "../src/sidecar/team-agent-turn-runner.js";
+import { teamsInboxConfigFromEnv } from "../src/sidecar/teams-inbox-config.js";
+import { SystemClock } from "../src/util/clock.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -151,21 +155,58 @@ const traceRegistry = memoryTraceEnabledFromEnv(process.env)
 // pass it to BorgPool: each being must load <root>/<tenant>/config.json itself.
 const sidecarConfig = loadConfig({ env: process.env, dataDir: root });
 const selfName = memorySelfNameFromEnv(process.env);
+const teamsInboxConfig = teamsInboxConfigFromEnv(process.env);
+const sidecarClock = new SystemClock();
+let pool!: BorgPool;
+const inboxWaiters = teamsInboxConfig.enabled
+  ? new ResponseWaiterRegistry({
+      acquireTenantLease: (tenantId) => pool.acquireBackgroundLease(tenantId),
+    })
+  : undefined;
 
-const pool = new BorgPool({
+pool = new BorgPool({
   root,
   maxOpen,
   openOptions: {
     embeddingDimensions: embeddingDims,
     embeddingClient,
     llmClient,
+    clock: sidecarClock,
     liveCommitmentExtraction: memoryCommitmentExtractionEnabledFromEnv(process.env),
     liveCommitmentExtractionBudget: memoryCommitmentExtractionBudgetFromEnv(process.env),
   },
+  ...(teamsInboxConfig.enabled
+    ? {
+        openOptionsForTenant: (tenantId: string) => ({
+          inbox: {
+            runner: ({ terminal, entityRepository }) =>
+              new TeamAgentTurnRunner({
+                tenant: tenantId,
+                baseUrl: teamsInboxConfig.baseUrl,
+                apiToken: teamsInboxConfig.apiToken,
+                timeoutMs: teamsInboxConfig.timeoutMs,
+                staleMs: teamsInboxConfig.staleMs,
+                terminal,
+                entityRepository,
+                clock: sidecarClock,
+              }),
+            sessionPredicate: (session) => session?.source_type === "teams_inbox",
+            acquireLease: () => pool.acquireBackgroundLease(tenantId),
+            onTerminalCommitted: (terminalEntry) =>
+              inboxWaiters!.resolveTerminal(tenantId, terminalEntry),
+            settleMs: teamsInboxConfig.settleMs,
+            maxSettleMs: teamsInboxConfig.maxSettleMs,
+          },
+        }),
+      }
+    : {}),
   initializeBeing: (_tenantId, borg) => {
     // This is idempotent tenant provisioning performed by the pool lifecycle,
     // not a dream mutation. It intentionally also runs before a dry-run dream.
     borg.entities.ensureSelf(selfName, { provenance: "config_default_user" });
+    if (teamsInboxConfig.enabled) {
+      borg.inbox.catchUp.start();
+    }
   },
   ...(traceRegistry === undefined
     ? {}
@@ -187,6 +228,7 @@ const server = createServer(
     recallDeadlineMs,
     recentActivityWindowMs,
     recentActivityLimit,
+    ...(inboxWaiters === undefined ? {} : { inboxWaiters }),
     ...(traceRegistry === undefined ? {} : { traceRegistry }),
   }),
 );
@@ -209,7 +251,10 @@ async function shutdown(signal: string): Promise<void> {
   console.log(`memory-sidecar: ${signal} received, draining in-flight requests...`);
   const result = await drainMemorySidecar({
     timeoutMs: shutdownTimeoutMs,
-    beginShutdown: () => maintenanceCoordinator.beginShutdown(),
+    beginShutdown: () => {
+      inboxWaiters?.shutdown();
+      return maintenanceCoordinator.beginShutdown();
+    },
     forceFinalizeMaintenance: () => maintenanceCoordinator.forceFinalizeAborted(),
     onAbandoned: (runIds) => {
       if (runIds.length > 0) {

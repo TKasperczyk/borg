@@ -14,7 +14,7 @@ export {
   type BorgEpisodeSearchOptions,
   type BorgOpenOptions,
 } from "./borg.js";
-export { BorgPool, type BorgPoolOptions } from "./borg/pool.js";
+export { BorgPool, type BorgPoolBackgroundLease, type BorgPoolOptions } from "./borg/pool.js";
 export type {
   BorgActionsFacade,
   BorgActivityCompletedTurnProjectionInput,
@@ -36,6 +36,9 @@ export type {
   BorgIdentityFacade,
   BorgInboxCatchUpController,
   BorgInboxCatchUpDrainResult,
+  BorgAppendBacklogTerminalInput,
+  BorgAppendBacklogTerminalResult,
+  BorgFindTerminalCoveringEntryResult,
   BorgInboxFacade,
   BorgMaintenanceFacade,
   BorgMoodFacade,
@@ -59,6 +62,12 @@ export type {
   BorgStreamFacade,
   BorgWorkmemFacade,
 } from "./borg/public-facade.js";
+export type {
+  ChatResponseCatchUpLease,
+  ChatResponseCatchUpRunInput,
+  ChatResponseCatchUpRunner,
+  ChatResponseReconcileAdvance,
+} from "./cognition/ingestion/index.js";
 export { PROMPT_KEYS, type PromptKey } from "./cognition/prompts/registry.js";
 export {
   CompositeTracer,
@@ -537,6 +546,7 @@ export {
   type StreamConversation,
   type StreamEntry,
   type StreamEntryInput,
+  type StreamEntryMetadata,
   type StreamEntryKind,
   type StreamEntryPersistenceClass,
   type StreamResponseTo,

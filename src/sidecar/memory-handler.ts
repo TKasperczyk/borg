@@ -2,6 +2,8 @@
 // over BorgPool that exposes long-term memory to an external (e.g. Python) service.
 //
 //   POST /memory/remember    { tenant, content, author? }          -> append + extract episode(s)
+//   POST /memory/enqueue     { tenant, session, conversation, sender, text, ... } -> durable inbox
+//   POST /memory/await-response { tenant, sidecar_session_id, entry_id, timeout_ms? } -> long poll
 //   POST /memory/append-turn { tenant, session, user?, assistant?, observed_at?, sender?, conversation? }
 //        sender.operator? and conversation.external_id? enrich sessions/audience/activity;
 //        absent assistant records an observation; absent user records a reply-only turn;
@@ -36,7 +38,7 @@
 // disclosure/export surfaces: /memory/context applies audience visibility before
 // returning episodes or activity. All authenticated routes require x-borg-token.
 
-import { createHash, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { z } from "zod";
@@ -72,13 +74,8 @@ import {
 } from "../memory/episodic/index.js";
 import type { RetrievalDegradation } from "../retrieval/pipeline.js";
 import type { RetrievedEpisode } from "../retrieval/index.js";
-import type { SessionEnsureInput } from "../sessions/index.js";
-import {
-  streamConversationSchema,
-  type StreamConversation,
-  type StreamEntry,
-  type StreamEntryInput,
-} from "../stream/index.js";
+import { type StreamEntry, type StreamEntryInput } from "../stream/index.js";
+import { sessionIdSchema, streamEntryIdSchema } from "../util/id-schemas.js";
 import { dedupePreservingOrder } from "../util/collections.js";
 import { EmbeddingError } from "../util/errors.js";
 import {
@@ -88,7 +85,6 @@ import {
   parseCreatorDirectiveId,
   parseEpisodeId,
   parseMaintenanceRunId,
-  parseSessionId,
   type EpisodeId,
   type EntityId,
   type MaintenanceRunId,
@@ -97,6 +93,19 @@ import {
 import { formatRelativeAge } from "../util/relative-time.js";
 import type { MemoryMaintenanceCoordinator } from "./memory-maintenance.js";
 import type { MemoryTraceRegistry } from "./memory-trace.js";
+import {
+  awaitResponseForTerminal,
+  type ResponseWaiterRegistry,
+} from "./response-waiter-registry.js";
+import {
+  resolveTeamAgentIdentity,
+  sessionFromCaller,
+  sidecarConversationSchema,
+  TEAM_AGENT_CONVERSATION_EXTERNAL_ID_SOURCE,
+  TEAM_AGENT_SENDER_EXTERNAL_ID_SOURCE,
+  type SidecarConversation,
+  type TeamAgentIdentity,
+} from "./team-agent-identity.js";
 
 // Mirror of BorgPool's DEFAULT_TENANT_ID_PATTERN so the handler returns a clean
 // 400 for a malformed tenant id at the boundary, rather than relying on (and
@@ -142,6 +151,7 @@ export type MemoryHandlerOptions = {
     MemoryMaintenanceCoordinator,
     "cancelReservation" | "getStatus" | "hasReservation" | "startReserved" | "tryReserve"
   >;
+  inboxWaiters?: ResponseWaiterRegistry;
 };
 
 type RequestHandler = (req: IncomingMessage, res: ServerResponse) => void;
@@ -194,15 +204,10 @@ async function raceRecallDeadline<T>(search: Promise<T>, deadlineMs: number): Pr
   }
 }
 
-const APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE = "team-agent.sender";
-const TEAM_AGENT_CONVERSATION_EXTERNAL_ID_SOURCE = "team-agent.conversation";
 const SIDECAR_ADMIN_EXTERNAL_ID_SOURCE = "memory-sidecar.admin";
 const SIDECAR_ADMIN_EXTERNAL_ID = "operator-api";
 const SIDECAR_ADMIN_SESSION_EXTERNAL_ID = "memory-sidecar::admin-api";
 
-const sidecarConversationSchema = streamConversationSchema.extend({
-  external_id: z.string().trim().min(1).optional(),
-});
 const contextConversationSchema = sidecarConversationSchema.strict();
 
 const contextSenderSchema = z
@@ -299,6 +304,37 @@ const memoryRecallBodySchema = z
     limit: z.number().finite().optional(),
     time_range: episodeTimeRangeSchema.optional(),
     exclude: episodeExclusionsSchema.optional(),
+  })
+  .strict();
+
+const memoryEnqueueBodySchema = z
+  .object({
+    tenant: z.string().trim().regex(TENANT_ID_RE),
+    session: z.string().trim().min(1),
+    conversation: sidecarConversationSchema
+      .extend({ external_id: z.string().trim().min(1) })
+      .strict(),
+    sender: z
+      .object({
+        external_id: z.string().trim().min(1),
+        display_name: z.string().trim().min(1),
+        bot: z.boolean(),
+        operator: z.boolean(),
+      })
+      .strict(),
+    text: z.string().min(1),
+    external_message_id: z.string().trim().min(1),
+    observed_at: z.iso.datetime({ offset: true }),
+    flags: z.object({ mentioned: z.boolean(), quotes_bot: z.boolean() }).strict(),
+  })
+  .strict();
+
+const memoryAwaitResponseBodySchema = z
+  .object({
+    tenant: z.string().trim().regex(TENANT_ID_RE),
+    sidecar_session_id: sessionIdSchema,
+    entry_id: streamEntryIdSchema,
+    timeout_ms: z.number().int().min(0).max(120_000).optional().default(90_000),
   })
   .strict();
 
@@ -464,24 +500,6 @@ type EnhancedAppendTurnSender = {
   externalId: string;
   displayName: string;
   operator: boolean;
-};
-
-type SidecarConversation = z.infer<typeof sidecarConversationSchema>;
-
-type TeamAgentAudienceIdentity = {
-  session: SessionId;
-  audienceEntity: EntityRecord;
-  audienceRole: "participant" | "operator";
-  conversation: StreamConversation;
-  sessionEnsureInput: SessionEnsureInput;
-};
-
-type TeamAgentIdentity = TeamAgentAudienceIdentity & {
-  senderEntityId: EntityId;
-};
-
-type TeamAgentReplyIdentity = TeamAgentAudienceIdentity & {
-  senderEntityId: EntityId | null;
 };
 
 function parseAppendTurnSender(
@@ -917,122 +935,6 @@ function isInvalidEpisodeCursorError(error: unknown): boolean {
   return errorCode(error) === "EPISODE_CURSOR_INVALID";
 }
 
-function sessionFromCaller(value: string): SessionId {
-  try {
-    return parseSessionId(value);
-  } catch {
-    const hash = createHash("sha256").update(value).digest("hex").slice(0, 16);
-    return parseSessionId(`sess_${hash}`);
-  }
-}
-
-function conversationKindForSidecar(
-  type: SidecarConversation["type"],
-): "dm" | "thread" | "channel" {
-  switch (type) {
-    case "personal":
-      return "dm";
-    case "groupChat":
-      return "thread";
-    case "channel":
-      return "channel";
-  }
-}
-
-function resolveTeamAgentAudienceIdentity(input: {
-  borg: Borg;
-  session: SessionId;
-  rawSession: string;
-  senderEntityId: EntityId | null;
-  senderOperator: boolean;
-  conversation: SidecarConversation;
-}): TeamAgentAudienceIdentity {
-  let audienceEntityId = input.senderEntityId;
-
-  if (input.conversation.type !== "personal") {
-    const externalId = input.conversation.external_id;
-
-    if (externalId === undefined) {
-      throw new Error("group conversation identity requires an external id");
-    }
-
-    audienceEntityId = input.borg.entities.resolveExternal({
-      source: TEAM_AGENT_CONVERSATION_EXTERNAL_ID_SOURCE,
-      externalId,
-      canonicalName:
-        input.conversation.name.length > 0
-          ? input.conversation.name
-          : `${input.conversation.type}:${externalId}`,
-      kind: "group",
-      provenance: "transport_audience_label",
-    });
-  }
-
-  if (audienceEntityId === null) {
-    throw new Error("personal conversation identity requires a sender entity");
-  }
-
-  const audienceEntity = input.borg.entities.get(audienceEntityId);
-
-  if (audienceEntity === null) {
-    throw new Error(`resolved audience entity ${audienceEntityId} is missing`);
-  }
-
-  const audienceRole = input.senderOperator ? "operator" : "participant";
-  const conversation = {
-    type: input.conversation.type,
-    name: input.conversation.name,
-  } satisfies StreamConversation;
-
-  const sessionEnsureInput = {
-    session_id: input.session,
-    source_type: "team_agent",
-    source_external_id: input.rawSession,
-    label: input.conversation.name || audienceEntity.canonical_name,
-    audience_label: audienceEntity.canonical_name,
-    audience_entity_id: audienceEntity.id,
-    conversation_kind: conversationKindForSidecar(input.conversation.type),
-    audience_role: audienceRole,
-    status: "active",
-  } satisfies SessionEnsureInput;
-
-  return {
-    session: input.session,
-    audienceEntity,
-    audienceRole,
-    conversation,
-    sessionEnsureInput,
-  };
-}
-
-function resolveTeamAgentIdentity(input: {
-  borg: Borg;
-  session: SessionId;
-  rawSession: string;
-  sender: EnhancedAppendTurnSender;
-  conversation: SidecarConversation;
-}): TeamAgentIdentity {
-  const senderEntityId = input.borg.entities.resolveExternal({
-    source: APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE,
-    externalId: input.sender.externalId,
-    canonicalName: input.sender.displayName,
-    kind: "person",
-    provenance: "transport_sender",
-  });
-
-  return {
-    ...resolveTeamAgentAudienceIdentity({
-      borg: input.borg,
-      session: input.session,
-      rawSession: input.rawSession,
-      senderEntityId,
-      senderOperator: input.sender.operator,
-      conversation: input.conversation,
-    }),
-    senderEntityId,
-  };
-}
-
 function projectRecentActivity(event: ActivityVisibleSessionEvent, nowMs: number) {
   const relativeAge = formatRelativeAge(event.occurredAt, nowMs);
   const conversation =
@@ -1191,7 +1093,7 @@ function scheduleIngestion(pool: MemoryPool, tenant: string, session: SessionId)
 }
 
 export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandler {
-  const { pool, token, traceRegistry, maintenanceCoordinator } = options;
+  const { pool, token, traceRegistry, maintenanceCoordinator, inboxWaiters } = options;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const maxRecallLimit = options.maxRecallLimit ?? DEFAULT_MAX_RECALL_LIMIT;
   const recallAbstainThreshold = options.recallAbstainThreshold ?? 0;
@@ -1222,6 +1124,197 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
 
     if (!tokenMatches(req.headers["x-borg-token"], token)) {
       send(res, 401, { error: "unauthorized" });
+      return;
+    }
+
+    if (
+      method === "POST" &&
+      (rawPath === "/memory/enqueue" || rawPath === "/memory/await-response")
+    ) {
+      if (inboxWaiters === undefined) {
+        send(res, 503, { error: "teams inbox unavailable" });
+        return;
+      }
+      const body = await readJsonObjectBody(req, res, maxBodyBytes);
+      if (body === null) {
+        return;
+      }
+
+      if (rawPath === "/memory/enqueue") {
+        const parsed = memoryEnqueueBodySchema.safeParse(body);
+        if (!parsed.success) {
+          send(res, 400, { error: "invalid memory enqueue body" });
+          return;
+        }
+        const input = parsed.data;
+        const session = sessionFromCaller(input.session);
+        try {
+          const result = await pool.withTenant(
+            input.tenant,
+            async (borg) => {
+              const claimsInbox = borg.sessions.get(session)?.source_type !== "teams_inbox";
+              const identity = resolveTeamAgentIdentity({
+                borg,
+                session,
+                rawSession: input.session,
+                sender: {
+                  externalId: input.sender.external_id,
+                  displayName: input.sender.display_name,
+                  operator: input.sender.operator,
+                },
+                conversation: input.conversation,
+                claimInbox: true,
+              });
+              if (identity.senderEntityId === null) {
+                throw new Error("memory enqueue identity requires a sender entity");
+              }
+              if (claimsInbox) {
+                await borg.inbox.sealPendingBacklog({
+                  sessionId: session,
+                  reason: "Legacy append-turn backlog sealed when the session joined Teams inbox",
+                });
+              }
+              return borg.enqueueMessage({
+                session: {
+                  ...identity.sessionEnsureInput,
+                  source_external_id: input.conversation.external_id,
+                },
+                userMessage: input.text,
+                senderEntityId: identity.senderEntityId,
+                sourceMessageKey: {
+                  source_type: "teams_inbox",
+                  source_external_id: input.conversation.external_id,
+                  external_message_id: input.external_message_id,
+                },
+                observedAt: Date.parse(input.observed_at),
+                audience: identity.audienceEntity.canonical_name,
+                audienceEntityId: identity.audienceEntity.id,
+                conversation: identity.conversation,
+                metadata: {
+                  teams_inbox: {
+                    thread_id: input.session,
+                    sender: {
+                      external_id: input.sender.external_id,
+                      display_name: input.sender.display_name,
+                      bot: input.sender.bot,
+                    },
+                    mentioned: input.flags.mentioned,
+                    quotes_bot: input.flags.quotes_bot,
+                  },
+                },
+              });
+            },
+            { exclusive: true },
+          );
+          send(res, 200, {
+            status: result.status,
+            sidecar_session_id: result.sessionId,
+            entry_id: result.streamEntryId,
+          });
+        } catch (error) {
+          console.error(`memory-sidecar: ${rawPath} failed for tenant "${input.tenant}"`, error);
+          send(res, 503, { error: "tenant unavailable" });
+        }
+        return;
+      }
+
+      const parsed = memoryAwaitResponseBodySchema.safeParse(body);
+      if (!parsed.success) {
+        send(res, 400, { error: "invalid memory await-response body" });
+        return;
+      }
+      const input = parsed.data;
+      const scan = async () =>
+        pool.withTenant(input.tenant, (borg) =>
+          borg.inbox.findTerminalCoveringEntry({
+            sessionId: input.sidecar_session_id,
+            entryId: input.entry_id,
+          }),
+        );
+      let cancelWaiter: (() => void) | undefined;
+      let disconnected = false;
+      const connectionDestroyed = () =>
+        req.aborted || res.destroyed || (req.destroyed && !req.complete);
+      const markDisconnected = () => {
+        disconnected = true;
+        cancelWaiter?.();
+      };
+      const onRequestClose = () => {
+        if (req.aborted || !req.complete) {
+          markDisconnected();
+        }
+      };
+      const onResponseClose = () => {
+        if (!res.writableEnded) {
+          markDisconnected();
+        }
+      };
+      const removeDisconnectListeners = () => {
+        req.off("aborted", markDisconnected);
+        req.off("close", onRequestClose);
+        res.off("close", onResponseClose);
+      };
+      req.once("aborted", markDisconnected);
+      req.once("close", onRequestClose);
+      res.once("close", onResponseClose);
+      if (connectionDestroyed()) {
+        markDisconnected();
+      }
+      try {
+        const first = await scan();
+        if (disconnected || connectionDestroyed()) {
+          markDisconnected();
+          return;
+        }
+        if (first.status === "unknown_entry" || first.status === "session_mismatch") {
+          send(res, 404, { error: "entry not found in session" });
+          return;
+        }
+        if (first.status === "found") {
+          send(res, 200, awaitResponseForTerminal({ terminalEntry: first.terminalEntry }));
+          return;
+        }
+
+        const waiter = inboxWaiters.register({
+          tenant: input.tenant,
+          sessionId: input.sidecar_session_id,
+          entryId: input.entry_id,
+          timeoutMs: input.timeout_ms,
+        });
+        cancelWaiter = waiter.cancel;
+        if (disconnected || connectionDestroyed()) {
+          markDisconnected();
+          return;
+        }
+        const second = await scan();
+        if (second.status === "unknown_entry" || second.status === "session_mismatch") {
+          waiter.cancel();
+          if (!disconnected) {
+            send(res, 404, { error: "entry not found in session" });
+          }
+          return;
+        }
+        if (second.status === "found") {
+          waiter.cancel();
+          if (!disconnected) {
+            send(res, 200, awaitResponseForTerminal({ terminalEntry: second.terminalEntry }));
+          }
+          return;
+        }
+
+        const response = await waiter.promise;
+        if (!disconnected) {
+          send(res, 200, response);
+        }
+      } catch (error) {
+        cancelWaiter?.();
+        console.error(`memory-sidecar: ${rawPath} failed for tenant "${input.tenant}"`, error);
+        if (!disconnected) {
+          send(res, 503, { error: "tenant unavailable" });
+        }
+      } finally {
+        removeDisconnectListeners();
+      }
       return;
     }
 
@@ -1725,7 +1818,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
               audienceExternalIdRaw === undefined
                 ? parsedAudience.data
                 : borg.entities.findByExternalId(
-                    APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE,
+                    TEAM_AGENT_SENDER_EXTERNAL_ID_SOURCE,
                     audienceExternalIdRaw,
                   );
 
@@ -1958,6 +2051,10 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
               },
               conversation: parsed.data.conversation,
             });
+            if (resolved.senderEntityId === null) {
+              throw new Error("memory context identity requires a sender entity");
+            }
+            const senderEntityId = resolved.senderEntityId;
             const seenParticipantExternalIds = new Set([parsed.data.sender.external_id]);
             const participantEntityIds: EntityId[] = [];
 
@@ -1968,7 +2065,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
               seenParticipantExternalIds.add(participant.external_id);
               participantEntityIds.push(
                 borg.entities.resolveExternal({
-                  source: APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE,
+                  source: TEAM_AGENT_SENDER_EXTERNAL_ID_SOURCE,
                   externalId: participant.external_id,
                   canonicalName: participant.display_name,
                   kind: "person",
@@ -1978,7 +2075,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             }
 
             borg.sessions.ensure(resolved.sessionEnsureInput);
-            return { ...resolved, participantEntityIds };
+            return { ...resolved, senderEntityId, participantEntityIds };
           },
           { exclusive: true },
         );
@@ -2220,13 +2317,13 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           async (borg) => {
             const allowedPeople = resolveKnownExternalEntityIds({
               borg,
-              source: APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE,
+              source: TEAM_AGENT_SENDER_EXTERNAL_ID_SOURCE,
               externalIds: parsed.data.allowed_external_ids,
               kind: "person",
             });
             const excludedPeople = resolveKnownExternalEntityIds({
               borg,
-              source: APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE,
+              source: TEAM_AGENT_SENDER_EXTERNAL_ID_SOURCE,
               externalIds: parsed.data.excluded_external_ids,
               kind: "person",
             });
@@ -2257,7 +2354,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                 ? []
                 : resolveKnownExternalEntityIds({
                     borg,
-                    source: APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE,
+                    source: TEAM_AGENT_SENDER_EXTERNAL_ID_SOURCE,
                     externalIds: [parsed.data.subject_external_id],
                     kind: "person",
                   });
@@ -2533,26 +2630,13 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           tenant,
           async (borg) => {
             if (enhancedIdentityAvailable && conversation !== undefined) {
-              const identity: TeamAgentReplyIdentity =
-                enhancedSender === null
-                  ? {
-                      ...resolveTeamAgentAudienceIdentity({
-                        borg,
-                        session,
-                        rawSession: sessionRaw,
-                        senderEntityId: null,
-                        senderOperator: false,
-                        conversation,
-                      }),
-                      senderEntityId: null,
-                    }
-                  : resolveTeamAgentIdentity({
-                      borg,
-                      session,
-                      rawSession: sessionRaw,
-                      sender: enhancedSender,
-                      conversation,
-                    });
+              const identity: TeamAgentIdentity = resolveTeamAgentIdentity({
+                borg,
+                session,
+                rawSession: sessionRaw,
+                sender: enhancedSender,
+                conversation,
+              });
               const userEntryInput =
                 userProvided && identity.senderEntityId !== null
                   ? {
@@ -2737,7 +2821,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
               parsedSender.sender === null
                 ? undefined
                 : borg.entities.resolveExternal({
-                    source: APPEND_TURN_SENDER_EXTERNAL_ID_SOURCE,
+                    source: TEAM_AGENT_SENDER_EXTERNAL_ID_SOURCE,
                     externalId: parsedSender.sender.externalId,
                     canonicalName: parsedSender.sender.displayName,
                     kind: "person",

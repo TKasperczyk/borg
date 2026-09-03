@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { sessionIdSchema, streamEntryIdSchema } from "../util/id-schemas.js";
 import { DEFAULT_SESSION_ID, entityIdHelpers, type EntityId, type SessionId } from "../util/ids.js";
+import { jsonValueSchema, type JsonValue } from "../util/json-value.js";
 
 export { sessionIdSchema, streamEntryIdSchema };
 
@@ -74,6 +75,7 @@ export const streamEntrySchema = z.object({
   tool_calls: z.array(z.unknown()).optional(),
   audience: z.string().min(1).optional(),
   conversation: streamConversationSchema.optional(),
+  metadata: z.record(z.string(), jsonValueSchema).optional(),
   sender_entity_id: streamEntryEntityIdSchema.nullable().default(null),
   reply_target_entity_id: streamEntryEntityIdSchema.nullable().default(null),
   source_message_key: streamSourceMessageKeySchema.optional(),
@@ -98,6 +100,7 @@ export const streamEntryInputSchema = streamEntrySchema
 export type StreamEntryKind = z.infer<typeof streamEntryKindSchema>;
 export type StreamEntryPersistenceClass = z.infer<typeof streamEntryPersistenceClassSchema>;
 export type StreamConversation = z.infer<typeof streamConversationSchema>;
+export type StreamEntryMetadata = Record<string, JsonValue>;
 export type NarrativeStreamEntryKind = (typeof NARRATIVE_STREAM_ENTRY_KINDS)[number];
 export type StreamTurnStatus = z.infer<typeof streamTurnStatusSchema>;
 export type StreamEntry = Omit<z.infer<typeof streamEntrySchema>, "turn_status"> & {

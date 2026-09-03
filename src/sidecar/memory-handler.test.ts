@@ -402,6 +402,7 @@ function stubBorg(rec: Recorder): Borg {
       },
     },
     sessions: {
+      get: () => null,
       ensure: (input: unknown) => {
         rec.sessionEnsures.push(input);
         return input;

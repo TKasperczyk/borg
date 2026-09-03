@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export type JsonPrimitive = boolean | number | null | string;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
@@ -57,3 +59,12 @@ export function serializeJsonValue(value: unknown): string {
 
   return JSON.stringify(value);
 }
+
+export const jsonValueSchema = z.custom<JsonValue>((value) => {
+  try {
+    assertJsonValue(value);
+    return true;
+  } catch {
+    return false;
+  }
+});

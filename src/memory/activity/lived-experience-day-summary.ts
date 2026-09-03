@@ -16,7 +16,12 @@ import {
   type MaintenanceRunId,
   type StreamEntryId,
 } from "../../util/ids.js";
-import { assertJsonValue, serializeJsonValue, type JsonValue } from "../../util/json-value.js";
+import {
+  assertJsonValue,
+  jsonValueSchema,
+  serializeJsonValue,
+  type JsonValue,
+} from "../../util/json-value.js";
 import { timestampFromUtcDayKey, utcDayKey } from "../../util/utc-day.js";
 import {
   memoryDisclosureLabelSchema,
@@ -76,15 +81,6 @@ const utcDaySchema = z.string().refine(
     message: "Invalid UTC day key",
   },
 );
-
-const jsonValueSchema = z.custom<JsonValue>((value) => {
-  try {
-    assertJsonValue(value);
-    return true;
-  } catch {
-    return false;
-  }
-});
 
 export const livedExperienceDaySummarySchema = z
   .object({

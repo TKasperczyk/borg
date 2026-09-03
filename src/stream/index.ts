@@ -21,6 +21,7 @@ export {
   type StreamEntry,
   type StreamCursor,
   type StreamConversation,
+  type StreamEntryMetadata,
   type StreamEntryInput,
   type StreamEntryKind,
   type StreamEntryPersistenceClass,

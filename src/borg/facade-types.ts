@@ -49,7 +49,15 @@ import type { SocialRepository } from "../memory/social/index.js";
 import type { LanceDbOptimizeStorageResult } from "../storage/lancedb/index.js";
 import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../memory/working/index.js";
-import type { ChatResponseCatchUpWorker, IngestionResult } from "../cognition/ingestion/index.js";
+import type {
+  AppendBacklogTerminalInput,
+  AppendBacklogTerminalResult,
+  ChatResponseCatchUpWorker,
+  FindTerminalCoveringEntryResult,
+  IngestionResult,
+  SealPendingBacklogInput,
+  SealStaleBacklogInput,
+} from "../cognition/ingestion/index.js";
 import type { MemoryDisclosureLabel } from "../retrieval/index.js";
 import type { PromptKey } from "../cognition/prompts/registry.js";
 import type { OfflineProcessName } from "../offline/index.js";
@@ -70,6 +78,7 @@ import type {
   EpisodeId,
   MaintenanceRunId,
   SessionId,
+  StreamEntryId,
 } from "../util/ids.js";
 import type {
   BorgDependencies,
@@ -608,6 +617,13 @@ export type BorgMaintenanceFacade = {
 
 export type BorgInboxFacade = {
   catchUp: ChatResponseCatchUpWorker;
+  appendBacklogTerminal(input: AppendBacklogTerminalInput): Promise<AppendBacklogTerminalResult>;
+  sealPendingBacklog(input: SealPendingBacklogInput): Promise<AppendBacklogTerminalResult | null>;
+  sealStaleBacklog(input: SealStaleBacklogInput): Promise<AppendBacklogTerminalResult | null>;
+  findTerminalCoveringEntry(input: {
+    sessionId: SessionId;
+    entryId: StreamEntryId;
+  }): FindTerminalCoveringEntryResult;
 };
 
 export type BorgWorkmemFacade = {

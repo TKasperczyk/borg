@@ -1,4 +1,17 @@
 export {
+  BacklogTerminalService,
+  buildStreamBacklogResponseTo,
+  hydrateStreamBacklogBatch,
+  type AppendBacklogTerminalInput,
+  type AppendBacklogTerminalResult,
+  type BacklogTerminalServiceOptions,
+  type FindTerminalCoveringEntryResult,
+  type HydratedStreamBacklogBatch,
+  type SealBacklogPrefixInput,
+  type SealPendingBacklogInput,
+  type SealStaleBacklogInput,
+} from "./backlog-terminal.js";
+export {
   ChatResponseBacklogPrefixBuilder,
   type BacklogPrefixCaps,
   type BacklogPrefixResult,
@@ -17,6 +30,11 @@ export {
 } from "./chat-response-watermark.js";
 export {
   ChatResponseCatchUpWorker,
+  TurnOrchestratorChatResponseCatchUpRunner,
+  type ChatResponseCatchUpRunner,
+  type ChatResponseCatchUpRunInput,
+  type ChatResponseCatchUpLease,
+  type ChatResponseReconcileAdvance,
   type ChatResponseCatchUpWorkerConfig,
   type ChatResponseCatchUpWorkerOptions,
   type DrainResult,
