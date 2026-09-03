@@ -1549,6 +1549,108 @@ describe("episodic extractor", () => {
     });
   });
 
+  it("ingests a delayed observation after the stream watermark and uses its observed time", async () => {
+    const clock = new ManualClock(100);
+    const harness = await createRelationalExtractorHarness(clock);
+    const first = await harness.writer.append({
+      kind: "user_msg",
+      content: "The first durable observation.",
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse([
+          {
+            title: "First observation",
+            narrative: "The first durable observation was recorded.",
+            source_stream_ids: [first.id],
+            participants: ["team"],
+            tags: ["observation"],
+            confidence: 0.9,
+            significance: 0.6,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "qwen3",
+      entityRepository: harness.entityRepository,
+      salienceGateEnabled: false,
+      clock,
+    });
+    const watermarkDb = openDatabase(":memory:", {
+      migrations: streamWatermarkMigrations,
+    });
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: watermarkDb,
+      clock,
+    });
+    const coordinator = new StreamIngestionCoordinator({
+      extractor,
+      watermarkRepository,
+      dataDir: harness.tempDir,
+      minEntriesThreshold: 1,
+    });
+
+    cleanup.push(async () => {
+      watermarkDb.close();
+    });
+
+    await expect(coordinator.ingest(DEFAULT_SESSION_ID)).resolves.toMatchObject({
+      ran: true,
+      processedEntries: 1,
+    });
+    expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+      lastTs: first.timestamp,
+      lastEntryId: first.id,
+    });
+
+    clock.advance(100);
+    const delayed = await harness.writer.append({
+      kind: "user_msg",
+      content: "A delayed but still durable observation.",
+      observed_at: 50,
+    });
+    llm.pushResponse(
+      createEpisodeToolResponse([
+        {
+          title: "Delayed observation",
+          narrative: "A delayed durable observation was recorded.",
+          source_stream_ids: [delayed.id],
+          participants: ["team"],
+          tags: ["observation"],
+          confidence: 0.9,
+          significance: 0.6,
+        },
+      ]),
+    );
+
+    expect(delayed.timestamp).toBe(200);
+    expect(delayed.observed_at).toBe(50);
+    await expect(coordinator.ingest(DEFAULT_SESSION_ID)).resolves.toMatchObject({
+      ran: true,
+      processedEntries: 1,
+    });
+
+    const episodes = await harness.repo.listAll();
+    const delayedEpisode = episodes.find((episode) =>
+      episode.source_stream_ids.includes(delayed.id),
+    );
+
+    expect(delayedEpisode).toMatchObject({
+      start_time: 50,
+      end_time: 50,
+    });
+    expect(llm.requests).toHaveLength(2);
+    expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+      lastTs: delayed.timestamp,
+      lastEntryId: delayed.id,
+    });
+  });
+
   it("uses sender display names in episode rosters and binds self.name per sender", async () => {
     const harness = await createRelationalExtractorHarness();
     const alice = harness.entityRepository.resolve("Alice Nowak", {

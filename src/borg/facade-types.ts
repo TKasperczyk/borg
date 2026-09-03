@@ -92,6 +92,11 @@ export type BorgEpisodicFacade = {
   get: (id: EpisodeId, options?: BorgEpisodeGetOptions) => Promise<RetrievedEpisode | null>;
   inspect: (id: EpisodeId) => ReturnType<EpisodicRepository["get"]>;
   search: (query: string, options?: BorgEpisodeSearchOptions) => Promise<RetrievedEpisode[]>;
+  searchWithTimeRangeFallback: (
+    query: string,
+    options: BorgEpisodeSearchOptions & { timeRange: { start: number; end: number } },
+  ) => Promise<{ episodes: RetrievedEpisode[]; timeRangeFallback: boolean }>;
+  recordRetrieval: (episodeId: EpisodeId, score: number) => void;
   extract: (options?: {
     sinceTs?: number;
     sinceCursor?: StreamCursor;
@@ -102,6 +107,9 @@ export type BorgEpisodicFacade = {
   ingest: (options?: { session?: SessionId }) => Promise<IngestionResult>;
   list: (...args: Parameters<EpisodicRepository["list"]>) => ReturnType<EpisodicRepository["list"]>;
   listAll: () => ReturnType<EpisodicRepository["listAll"]>;
+  listRecentForSession: (
+    ...args: Parameters<EpisodicRepository["listRecentForSessionForDisclosure"]>
+  ) => ReturnType<EpisodicRepository["listRecentForSessionForDisclosure"]>;
   getStats: (
     ...args: Parameters<EpisodicRepository["getStats"]>
   ) => ReturnType<EpisodicRepository["getStats"]>;
@@ -437,11 +445,31 @@ export type BorgActivityFacade = Pick<
   ActivityRepository,
   "record" | "listObservedGroupAudienceEntityIdsForSpeaker" | "listRecentVisibleOtherSessionEvents"
 > & {
+  projectObservedTurn(input: BorgActivityObservedTurnProjectionInput): {
+    userContact: ReturnType<ActivityRepository["record"]>;
+    session: SessionRecord;
+  };
+  projectRepliedTurn(input: BorgActivityRepliedTurnProjectionInput): {
+    borgReplied: ReturnType<ActivityRepository["record"]>;
+    session: SessionRecord;
+  };
   projectCompletedTurn(input: BorgActivityCompletedTurnProjectionInput): {
     userContact: ReturnType<ActivityRepository["record"]>;
     borgReplied: ReturnType<ActivityRepository["record"]>;
     session: SessionRecord;
   };
+};
+
+export type BorgActivityObservedTurnProjectionInput = {
+  session: SessionEnsureInput;
+  userContact: Parameters<ActivityRepository["record"]>[0];
+  touch: SessionTouchUpdate;
+};
+
+export type BorgActivityRepliedTurnProjectionInput = {
+  session: SessionEnsureInput;
+  borgReplied: Parameters<ActivityRepository["record"]>[0];
+  touch: SessionTouchUpdate;
 };
 
 export type BorgActivityCompletedTurnProjectionInput = {

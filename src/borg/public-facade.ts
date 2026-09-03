@@ -222,6 +222,11 @@ export type BorgEpisodicFacade = {
   get(id: EpisodeId, options?: BorgEpisodeGetOptions): Promise<BorgRetrievedEpisode | null>;
   inspect(id: Episode["id"]): Promise<Episode | null>;
   search(query: string, options?: BorgEpisodeSearchOptions): Promise<BorgRetrievedEpisode[]>;
+  searchWithTimeRangeFallback(
+    query: string,
+    options: BorgEpisodeSearchOptions & { timeRange: { start: number; end: number } },
+  ): Promise<{ episodes: BorgRetrievedEpisode[]; timeRangeFallback: boolean }>;
+  recordRetrieval(episodeId: Episode["id"], score: number): void;
   extract(options?: {
     sinceTs?: number;
     sinceCursor?: StreamCursor;
@@ -232,6 +237,14 @@ export type BorgEpisodicFacade = {
   ingest(options?: { session?: SessionId }): Promise<IngestionResult>;
   list(options?: EpisodeListOptions): Promise<EpisodeListResult>;
   listAll(): Promise<Episode[]>;
+  listRecentForSession(options: {
+    sessionId: SessionId;
+    sinceMs: number;
+    limit?: number;
+    audienceEntityId?: EntityId | null;
+    visibleAudienceEntityIds?: readonly EntityId[];
+    crossAudience?: boolean;
+  }): Promise<EpisodeSearchCandidate[]>;
   getStats(id: Episode["id"]): EpisodeStats | null;
 };
 
@@ -809,6 +822,14 @@ export type BorgCommitmentsFacade = {
 
 export type BorgActivityFacade = {
   record(input: ActivityEventRecordInput): ActivityEvent;
+  projectObservedTurn(input: BorgActivityObservedTurnProjectionInput): {
+    userContact: ActivityEvent;
+    session: SessionRecord;
+  };
+  projectRepliedTurn(input: BorgActivityRepliedTurnProjectionInput): {
+    borgReplied: ActivityEvent;
+    session: SessionRecord;
+  };
   projectCompletedTurn(input: BorgActivityCompletedTurnProjectionInput): {
     userContact: ActivityEvent;
     borgReplied: ActivityEvent;
@@ -821,6 +842,18 @@ export type BorgActivityFacade = {
     sinceMs: number;
     limit: number;
   }): ActivityVisibleSessionEvent[];
+};
+
+export type BorgActivityObservedTurnProjectionInput = {
+  session: SessionEnsureInput;
+  userContact: ActivityEventRecordInput;
+  touch: SessionTouchUpdate;
+};
+
+export type BorgActivityRepliedTurnProjectionInput = {
+  session: SessionEnsureInput;
+  borgReplied: ActivityEventRecordInput;
+  touch: SessionTouchUpdate;
 };
 
 export type BorgActivityCompletedTurnProjectionInput = {

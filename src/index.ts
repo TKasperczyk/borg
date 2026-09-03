@@ -18,6 +18,8 @@ export { BorgPool, type BorgPoolOptions } from "./borg/pool.js";
 export type {
   BorgActionsFacade,
   BorgActivityCompletedTurnProjectionInput,
+  BorgActivityObservedTurnProjectionInput,
+  BorgActivityRepliedTurnProjectionInput,
   BorgActivityFacade,
   BorgAttachmentBytesResult,
   BorgAttachmentMetadataResult,

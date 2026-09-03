@@ -14,6 +14,7 @@ import { ManualClock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
 import {
   createConsolidationFamilyId,
+  createEntityId,
   createEpisodeId,
   createStreamEntryId,
 } from "../../util/ids.js";
@@ -26,7 +27,9 @@ import {
   episodeLexicalSearchTokens,
 } from "./repository.js";
 import type { Episode } from "./types.js";
+import { episodeToRawLanceRowForTest } from "./test-support.js";
 import { retrievalMigrations } from "../../retrieval/migrations.js";
+import { streamEntryIndexMigrations } from "../../stream/index.js";
 
 type Harness = {
   tempDir: string;
@@ -63,34 +66,6 @@ function createEpisode(id: string, nowMs: number, overrides: Partial<Episode> = 
   };
 }
 
-function toRawEpisodeRow(episode: Episode): Record<string, unknown> {
-  const audienceEntityId = episode.audience_entity_id ?? null;
-
-  return {
-    id: episode.id,
-    title: episode.title,
-    narrative: episode.narrative,
-    participants: JSON.stringify(episode.participants),
-    location: episode.location,
-    start_time: episode.start_time,
-    end_time: episode.end_time,
-    source_stream_ids: JSON.stringify(episode.source_stream_ids),
-    significance: episode.significance,
-    tags: JSON.stringify(episode.tags),
-    confidence: episode.confidence,
-    lineage_derived_from: JSON.stringify(episode.lineage.derived_from),
-    lineage_supersedes: JSON.stringify(episode.lineage.supersedes),
-    source_fingerprint: [...new Set(episode.source_stream_ids)].sort().join("\n"),
-    audience_entity_id: audienceEntityId,
-    origin_audience_entity_ids: JSON.stringify(episode.origin_audience_entity_ids ?? []),
-    shared: episode.shared ?? audienceEntityId === null,
-    emotional_arc: episode.emotional_arc === null ? null : JSON.stringify(episode.emotional_arc),
-    embedding: Array.from(episode.embedding),
-    created_at: episode.created_at,
-    updated_at: episode.updated_at,
-  };
-}
-
 function explainQueryPlan(harness: Harness, sql: string, ...params: unknown[]): string {
   return (
     harness.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as Array<{ detail: string }>
@@ -111,6 +86,7 @@ async function createHarness(): Promise<Harness> {
       selfMigrations,
       retrievalMigrations,
       offlineMigrations,
+      streamEntryIndexMigrations,
     ),
   });
   const table = await store.openTable({
@@ -460,7 +436,10 @@ describe("episodic repository", () => {
     ).table;
     await rawTable.add(
       makeArrowTable(
-        [toRawEpisodeRow(publicShared), { ...toRawEpisodeRow(publicLegacyNull), shared: null }],
+        [
+          episodeToRawLanceRowForTest(publicShared),
+          { ...episodeToRawLanceRowForTest(publicLegacyNull), shared: null },
+        ],
         {
           schema: (await rawTable.schema()) as never,
         },
@@ -1194,29 +1173,18 @@ describe("episodic repository", () => {
     const harness = await createHarness();
     closers.push(harness.close);
     const nowMs = harness.clock.now();
-
-    for (let index = 0; index < 65; index += 1) {
-      await harness.repo.createEpisode(
-        createEpisode(createEpisodeId(), nowMs + 20_000 + index, {
-          title: `Recent nonmatch ${index}`,
-          source_stream_ids: [createStreamEntryId()],
-        }),
-      );
-    }
-
-    for (let index = 0; index < 65; index += 1) {
-      const archived = createEpisode(createEpisodeId(), nowMs + 10_000 + index, {
+    const recentNonmatches = Array.from({ length: 65 }, (_, index) =>
+      createEpisode(createEpisodeId(), nowMs + 20_000 + index, {
+        title: `Recent nonmatch ${index}`,
+        source_stream_ids: [createStreamEntryId()],
+      }),
+    );
+    const archived = Array.from({ length: 65 }, (_, index) =>
+      createEpisode(createEpisodeId(), nowMs + 10_000 + index, {
         title: `Quasar archived ${index}`,
         source_stream_ids: [createStreamEntryId()],
-      });
-      await harness.repo.createEpisode(archived);
-      harness.repo.archiveEpisode(archived.id, {
-        caller: "repository.test.ts",
-        reason: "lexical visibility fixture",
-        process: "consolidator",
-      });
-    }
-
+      }),
+    );
     const visible = [
       createEpisode(createEpisodeId(), nowMs + 5_000, {
         title: "Quasar newest visible",
@@ -1236,8 +1204,18 @@ describe("episodic repository", () => {
       }),
     ];
 
-    for (const episode of visible) {
-      await harness.repo.createEpisode(episode);
+    await harness.table.upsert(
+      [...recentNonmatches, ...archived, ...visible].map(episodeToRawLanceRowForTest),
+      { on: "id" },
+    );
+    await harness.repo.reconcileCrossStoreState();
+
+    for (const episode of archived) {
+      harness.repo.archiveEpisode(episode.id, {
+        caller: "repository.test.ts",
+        reason: "lexical visibility fixture",
+        process: "consolidator",
+      });
     }
 
     const matches = await harness.repo.searchByLexicalTermsForDisclosure(["Quasar", "Nebula"], {
@@ -1371,6 +1349,168 @@ describe("episodic repository", () => {
     expect(scopedToAlex.map((item) => item.episode.id)).toContain(multiOrigin.id);
   });
 
+  it("lists visible episodes sourced from one session since a lower bound in occurred-at order", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const nowMs = harness.clock.now();
+    const currentSession = "sess_venuecurrent001" as Parameters<
+      typeof harness.repo.listRecentForSessionForDisclosure
+    >[0]["sessionId"];
+    const otherSession = "sess_venueother0001" as typeof currentSession;
+    const currentAudience = createEntityId();
+    const otherAudience = createEntityId();
+    const sourceIds = Array.from({ length: 5 }, () => createStreamEntryId());
+    const insertStreamEntry = harness.db.prepare(
+      `INSERT INTO stream_entry_index (entry_id, session_id, byte_offset, timestamp)
+       VALUES (?, ?, ?, ?)`,
+    );
+
+    sourceIds.forEach((sourceId, index) => {
+      insertStreamEntry.run(
+        sourceId,
+        index === sourceIds.length - 1 ? otherSession : currentSession,
+        index * 100,
+        nowMs + index,
+      );
+    });
+
+    const oldCurrent = createEpisode(createEpisodeId(), nowMs - 1_000, {
+      source_stream_ids: [sourceIds[0]!],
+      start_time: nowMs - 1_000,
+      end_time: nowMs - 900,
+    });
+    const newestCurrent = createEpisode(createEpisodeId(), nowMs + 3_000, {
+      source_stream_ids: [sourceIds[1]!],
+      start_time: nowMs + 3_000,
+      end_time: nowMs + 3_100,
+      audience_entity_id: currentAudience,
+      origin_audience_entity_ids: [currentAudience],
+      shared: false,
+    });
+    const middleCurrent = createEpisode(createEpisodeId(), nowMs + 2_000, {
+      source_stream_ids: [sourceIds[2]!],
+      start_time: nowMs + 2_000,
+      end_time: nowMs + 2_100,
+    });
+    const hiddenCurrent = createEpisode(createEpisodeId(), nowMs + 4_000, {
+      source_stream_ids: [sourceIds[3]!],
+      start_time: nowMs + 4_000,
+      end_time: nowMs + 4_100,
+      audience_entity_id: otherAudience,
+      origin_audience_entity_ids: [otherAudience],
+      shared: false,
+    });
+    const otherVenue = createEpisode(createEpisodeId(), nowMs + 5_000, {
+      source_stream_ids: [sourceIds[4]!],
+      start_time: nowMs + 5_000,
+      end_time: nowMs + 5_100,
+    });
+
+    for (const episode of [oldCurrent, newestCurrent, middleCurrent, hiddenCurrent, otherVenue]) {
+      await harness.repo.createEpisode(episode);
+    }
+
+    const results = await harness.repo.listRecentForSessionForDisclosure({
+      sessionId: currentSession,
+      sinceMs: nowMs,
+      audienceEntityId: currentAudience,
+      limit: 10,
+    });
+
+    expect(results.map((candidate) => candidate.episode.id)).toEqual([
+      newestCurrent.id,
+      middleCurrent.id,
+    ]);
+    expect(
+      harness.db
+        .prepare(
+          "SELECT COUNT(*) AS count FROM episode_index WHERE json_array_length(source_stream_ids) = 1",
+        )
+        .get() as {
+        count: number;
+      },
+    ).toEqual({ count: 5 });
+  });
+
+  it("requires all consolidation provenance to be indexed in one venue session", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const nowMs = harness.clock.now();
+    const currentSession = "sess_venuecurrent002" as Parameters<
+      typeof harness.repo.listRecentForSessionForDisclosure
+    >[0]["sessionId"];
+    const otherSession = "sess_venueother0002" as typeof currentSession;
+    const currentSourceA = createStreamEntryId();
+    const currentSourceB = createStreamEntryId();
+    const otherSource = createStreamEntryId();
+    const missingSource = createStreamEntryId();
+    const insertStreamEntry = harness.db.prepare(
+      `INSERT INTO stream_entry_index (entry_id, session_id, byte_offset, timestamp)
+       VALUES (?, ?, ?, ?)`,
+    );
+
+    insertStreamEntry.run(currentSourceA, currentSession, 0, nowMs);
+    insertStreamEntry.run(currentSourceB, currentSession, 100, nowMs + 1);
+    insertStreamEntry.run(otherSource, otherSession, 200, nowMs + 2);
+
+    const mixedFamilyId = createConsolidationFamilyId();
+    const singleFamilyId = createConsolidationFamilyId();
+    const missingFamilyId = createConsolidationFamilyId();
+    const mixed = createEpisode(createEpisodeId(), nowMs + 3_000, {
+      episode_kind: "consolidation_version",
+      consolidation_family_id: mixedFamilyId,
+      consolidation_coverage_hash: buildConsolidationCoverageHash([currentSourceA, otherSource]),
+      source_stream_ids: [currentSourceA, otherSource],
+    });
+    const singleVenue = createEpisode(createEpisodeId(), nowMs + 2_000, {
+      episode_kind: "consolidation_version",
+      consolidation_family_id: singleFamilyId,
+      consolidation_coverage_hash: buildConsolidationCoverageHash([currentSourceA, currentSourceB]),
+      source_stream_ids: [currentSourceA, currentSourceB],
+    });
+    const missingIndex = createEpisode(createEpisodeId(), nowMs + 1_000, {
+      episode_kind: "consolidation_version",
+      consolidation_family_id: missingFamilyId,
+      consolidation_coverage_hash: buildConsolidationCoverageHash([currentSourceA, missingSource]),
+      source_stream_ids: [currentSourceA, missingSource],
+    });
+
+    for (const episode of [mixed, singleVenue, missingIndex]) {
+      await harness.repo.createEpisode(episode);
+      harness.db
+        .prepare(
+          `INSERT INTO consolidation_families (
+             family_id, current_version_episode_id, coverage_hash, policy_version,
+             created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          episode.consolidation_family_id,
+          episode.id,
+          episode.consolidation_coverage_hash,
+          1,
+          nowMs,
+          nowMs,
+        );
+    }
+
+    const currentVenue = await harness.repo.listRecentForSessionForDisclosure({
+      sessionId: currentSession,
+      sinceMs: nowMs,
+      crossAudience: true,
+      limit: 10,
+    });
+    const otherVenue = await harness.repo.listRecentForSessionForDisclosure({
+      sessionId: otherSession,
+      sinceMs: nowMs,
+      crossAudience: true,
+      limit: 10,
+    });
+
+    expect(currentVenue.map((candidate) => candidate.episode.id)).toEqual([singleVenue.id]);
+    expect(otherVenue).toEqual([]);
+  });
+
   it("fails closed for unknown-origin records across indexed disclosure lanes", async () => {
     const harness = await createHarness();
     closers.push(harness.close);
@@ -1438,7 +1578,7 @@ describe("episodic repository", () => {
       tags: ["Atlas"],
     });
 
-    await harness.table.upsert([toRawEpisodeRow(existing)], { on: "id" });
+    await harness.table.upsert([episodeToRawLanceRowForTest(existing)], { on: "id" });
 
     expect(harness.repo.getStats(existing.id)).toBeNull();
 
@@ -1477,7 +1617,7 @@ describe("episodic repository", () => {
     );
 
     await harness.table.upsert(
-      episodes.map((episode) => toRawEpisodeRow(episode)),
+      episodes.map((episode) => episodeToRawLanceRowForTest(episode)),
       { on: "id" },
     );
     await harness.repo.reconcileCrossStoreState();

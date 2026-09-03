@@ -64,6 +64,7 @@ export const streamEntryEntityIdSchema = z
 export const streamEntrySchema = z.object({
   id: streamEntryIdSchema,
   timestamp: z.number().finite(),
+  observed_at: z.number().int().nonnegative().optional(),
   entry_index: z.number().int().nonnegative().optional(),
   kind: streamEntryKindSchema,
   content: z.unknown(),

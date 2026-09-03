@@ -99,12 +99,20 @@ type Recorder = {
   sessionTouches: unknown[];
   activityRecords: ActivityEventRecordInput[];
   activityProjectionInputs: Array<Parameters<Borg["activity"]["projectCompletedTurn"]>[0]>;
+  activityObservationProjectionInputs: Array<
+    Parameters<Borg["activity"]["projectObservedTurn"]>[0]
+  >;
+  activityReplyProjectionInputs: Array<Parameters<Borg["activity"]["projectRepliedTurn"]>[0]>;
   activityProjectionError?: Error;
   observedGroupAudienceIds: EntityId[];
   visibleActivityEvents: ActivityVisibleSessionEvent[];
   lastVisibleActivityInput?: unknown;
   lastRecallOptions?: Record<string, unknown>;
+  recallOptionsCalls: Array<Record<string, unknown>>;
+  retrievalRecords: Array<{ episodeId: Episode["id"]; score: number }>;
   recallEpisodes?: Episode[];
+  venueEpisodes: Episode[];
+  lastVenueOptions?: unknown;
   recallError?: Error;
   recallPromise?: Promise<never>;
   creatorDirectives: CreatorDirective[];
@@ -228,8 +236,12 @@ function stubBorg(rec: Recorder): Borg {
         input: { kind?: string; content: unknown },
         options?: { session?: string },
       ) => {
-        rec.appendCalls.push({ input, session: options?.session });
+        rec.appendCalls.push({
+          input,
+          session: options?.session,
+        });
         return {
+          ...input,
           id: "strm_bbbbbbbbbbbbbbbb",
           timestamp: 1000,
           kind: input.kind ?? "user_msg",
@@ -404,6 +416,34 @@ function stubBorg(rec: Recorder): Borg {
         rec.activityRecords.push(input);
         return input;
       },
+      projectObservedTurn: (input: Parameters<Borg["activity"]["projectObservedTurn"]>[0]) => {
+        rec.activityObservationProjectionInputs.push(input);
+        if (rec.activityProjectionError !== undefined) {
+          throw rec.activityProjectionError;
+        }
+
+        rec.sessionEnsures.push(input.session);
+        rec.activityRecords.push(input.userContact);
+        rec.sessionTouches.push({ sessionId: input.session.session_id, update: input.touch });
+        return {
+          userContact: input.userContact,
+          session: input.session,
+        };
+      },
+      projectRepliedTurn: (input: Parameters<Borg["activity"]["projectRepliedTurn"]>[0]) => {
+        rec.activityReplyProjectionInputs.push(input);
+        if (rec.activityProjectionError !== undefined) {
+          throw rec.activityProjectionError;
+        }
+
+        rec.sessionEnsures.push(input.session);
+        rec.activityRecords.push(input.borgReplied);
+        rec.sessionTouches.push({ sessionId: input.session.session_id, update: input.touch });
+        return {
+          borgReplied: input.borgReplied,
+          session: input.session,
+        };
+      },
       projectCompletedTurn: (input: Parameters<Borg["activity"]["projectCompletedTurn"]>[0]) => {
         rec.activityProjectionInputs.push(input);
         if (rec.activityProjectionError !== undefined) {
@@ -501,11 +541,13 @@ function stubBorg(rec: Recorder): Borg {
           traceTurnId?: string;
           audienceEntityId?: EntityId | null;
           visibleAudienceEntityIds?: readonly EntityId[];
+          recordRetrieval?: boolean;
         },
       ) => {
         rec.lastRecallLimit = opts.limit;
         rec.lastRecallTraceTurnId = opts.traceTurnId;
         rec.lastRecallOptions = { ...opts };
+        rec.recallOptionsCalls.push({ ...opts });
         if (rec.recallError !== undefined) {
           throw rec.recallError;
         }
@@ -518,6 +560,70 @@ function stubBorg(rec: Recorder): Borg {
           episode,
           score: 0.91,
           rawScore: 1.16 - index * 0.01,
+        }));
+      },
+      searchWithTimeRangeFallback: async (
+        _query: string,
+        opts: {
+          limit?: number;
+          traceTurnId?: string;
+          audienceEntityId?: EntityId | null;
+          visibleAudienceEntityIds?: readonly EntityId[];
+          timeRange: { start: number; end: number };
+          recordRetrieval?: boolean;
+        },
+      ) => {
+        rec.lastRecallLimit = opts.limit;
+        rec.lastRecallTraceTurnId = opts.traceTurnId;
+        rec.lastRecallOptions = { ...opts };
+        rec.recallOptionsCalls.push({ ...opts });
+        if (rec.recallError !== undefined) {
+          throw rec.recallError;
+        }
+        if (rec.recallPromise !== undefined) {
+          return rec.recallPromise;
+        }
+        const recalled = (
+          rec.recallEpisodes ?? [testEpisode("ep_1" as Episode["id"], rec.episodeOverrides)]
+        ).map((episode, index) => ({
+          episode,
+          score: 0.91,
+          rawScore: 1.16 - index * 0.01,
+        }));
+        const strict = recalled.filter(
+          (hit) =>
+            hit.episode.start_time >= opts.timeRange.start &&
+            hit.episode.start_time <= opts.timeRange.end,
+        );
+
+        return strict.length > 0
+          ? { episodes: strict, timeRangeFallback: false }
+          : { episodes: recalled, timeRangeFallback: true };
+      },
+      recordRetrieval: (episodeId: Episode["id"], score: number) => {
+        rec.retrievalRecords.push({ episodeId, score });
+      },
+      listRecentForSession: async (options: unknown) => {
+        rec.lastVenueOptions = options;
+        return rec.venueEpisodes.map((episode) => ({
+          episode,
+          stats: {
+            episode_id: episode.id,
+            retrieval_count: 0,
+            use_count: 0,
+            last_retrieved: null,
+            win_rate: 0,
+            tier: "T1" as const,
+            promoted_at: episode.created_at,
+            promoted_from: null,
+            gist: null,
+            gist_generated_at: null,
+            last_decayed_at: null,
+            heat_multiplier: 1,
+            valence_mean: 0,
+            archived: false,
+          },
+          similarity: 0,
         }));
       },
       list: async (options?: { limit?: number; cursor?: string }) => {
@@ -571,8 +677,13 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     sessionTouches: [],
     activityRecords: [],
     activityProjectionInputs: [],
+    activityObservationProjectionInputs: [],
+    activityReplyProjectionInputs: [],
     observedGroupAudienceIds: [],
     visibleActivityEvents: [],
+    recallOptionsCalls: [],
+    retrievalRecords: [],
+    venueEpisodes: [],
     creatorDirectives: [],
     directiveQueueInputs: [],
     directiveApplicable: [],
@@ -1384,8 +1495,10 @@ describe("memory sidecar handler", () => {
       ],
     });
     expect(rec.tenants).toEqual(["acme"]);
-    expect(rec.lastRecallLimit).toBe(50); // clamped to maxRecallLimit
+    expect(rec.lastRecallLimit).toBe(50);
     expect(rec.lastRecallTraceTurnId).toBeUndefined();
+    expect(rec.lastRecallOptions).not.toHaveProperty("recordRetrieval");
+    expect(rec.retrievalRecords).toEqual([]);
   });
 
   it("skips entity lookups when recall returns no episodes", async () => {
@@ -2609,6 +2722,21 @@ describe("memory sidecar handler", () => {
     expect(rec.ingestSessions).toEqual([expectedSession]);
   });
 
+  it("rejects append-turn when both user and assistant are absent", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const response = await post(
+      base,
+      "/memory/append-turn",
+      { tenant: "acme", session: "empty-turn" },
+      TOKEN,
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "missing 'user' or 'assistant'" });
+    expect(rec.tenants).toEqual([]);
+  });
+
   it.each([
     {
       conversation: { type: "personal", name: "Alice" },
@@ -2779,6 +2907,153 @@ describe("memory sidecar handler", () => {
         update: { at: 1001, messageCountDelta: 1 },
       },
     ]);
+  });
+
+  it("records observation time as metadata and projects activity at append time", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const observedAt = Date.now() - 5_000;
+    const response = await post(
+      base,
+      "/memory/append-turn",
+      {
+        tenant: "acme",
+        session: "tenant::group::observed",
+        user: "Alice told Bob about the launch.",
+        observed_at: observedAt,
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: {
+          type: "groupChat",
+          name: "AI Ninjas",
+          external_id: "group-42",
+        },
+      },
+      TOKEN,
+    );
+    const payload = (await response.json()) as {
+      entries: Array<{ id: string; kind: string }>;
+      session: string;
+    };
+    const alice = rec.externalSenderIds.get("alice");
+    const group = rec.externalEntityIds.get("team-agent.conversation\u0000group-42");
+
+    expect(response.status).toBe(200);
+    expect(payload.entries).toEqual([{ id: "strm_bbbbbbbbbbbbbbbb", kind: "user_msg" }]);
+    expect(rec.appendManyCalls).toEqual([]);
+    expect(rec.appendCalls).toEqual([
+      {
+        session: payload.session,
+        input: {
+          kind: "user_msg",
+          content: "Alice told Bob about the launch.",
+          observed_at: observedAt,
+          audience: group,
+          sender_entity_id: alice,
+          conversation: { type: "groupChat", name: "AI Ninjas" },
+        },
+      },
+    ]);
+    expect(rec.activityObservationProjectionInputs).toEqual([
+      expect.objectContaining({
+        userContact: expect.objectContaining({
+          kind: "user_contact",
+          occurredAt: 1000,
+          speakerEntityId: alice,
+          audienceEntityId: group,
+          sourceStreamEntryIds: ["strm_bbbbbbbbbbbbbbbb"],
+        }),
+        touch: { at: 1000, messageCountDelta: 1 },
+      }),
+    ]);
+    expect(rec.activityRecords).toHaveLength(1);
+    expect(rec.sessionTouches).toEqual([
+      {
+        sessionId: payload.session,
+        update: { at: 1000, messageCountDelta: 1 },
+      },
+    ]);
+    expect(rec.ingestSessions).toEqual([payload.session]);
+  });
+
+  it("records a reply-only agent entry and projects the self reply for its group session", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const response = await post(
+      base,
+      "/memory/append-turn",
+      {
+        tenant: "acme",
+        session: "tenant::group::reply-only",
+        assistant: "A proactive update from the agent.",
+        conversation: {
+          type: "groupChat",
+          name: "AI Ninjas",
+          external_id: "group-42",
+        },
+      },
+      TOKEN,
+    );
+    const payload = (await response.json()) as {
+      entries: Array<{ id: string; kind: string }>;
+      session: string;
+    };
+    const group = rec.externalEntityIds.get("team-agent.conversation\u0000group-42");
+    const selfEntityId = rec.entities[0]?.id;
+
+    expect(response.status).toBe(200);
+    expect(payload.entries).toEqual([{ id: "strm_bbbbbbbbbbbbbbbb", kind: "agent_msg" }]);
+    expect(rec.appendManyCalls).toEqual([]);
+    expect(rec.appendCalls).toEqual([
+      {
+        session: payload.session,
+        input: {
+          kind: "agent_msg",
+          content: "A proactive update from the agent.",
+          audience: group,
+          conversation: { type: "groupChat", name: "AI Ninjas" },
+        },
+      },
+    ]);
+    expect(
+      rec.appendCalls.some((call) => (call.input as { kind?: string }).kind === "user_msg"),
+    ).toBe(false);
+    expect(rec.activityReplyProjectionInputs).toEqual([
+      expect.objectContaining({
+        session: expect.objectContaining({
+          session_id: payload.session,
+          source_type: "team_agent",
+          source_external_id: "tenant::group::reply-only",
+          conversation_kind: "thread",
+          audience_entity_id: group,
+          audience_role: "participant",
+        }),
+        borgReplied: {
+          kind: "borg_replied",
+          occurredAt: 1000,
+          sessionId: payload.session,
+          speakerEntityId: selfEntityId,
+          actorEntityId: selfEntityId,
+          audienceEntityId: group,
+          participantEntityIds: [selfEntityId, group],
+          sourceStreamEntryIds: ["strm_bbbbbbbbbbbbbbbb"],
+        },
+        touch: { at: 1000, messageCountDelta: 1 },
+      }),
+    ]);
+    expect(rec.activityRecords).toEqual([
+      expect.objectContaining({
+        kind: "borg_replied",
+        speakerEntityId: selfEntityId,
+        actorEntityId: selfEntityId,
+      }),
+    ]);
+    expect(rec.sessionTouches).toEqual([
+      {
+        sessionId: payload.session,
+        update: { at: 1000, messageCountDelta: 1 },
+      },
+    ]);
+    expect(rec.ingestSessions).toEqual([payload.session]);
   });
 
   it("returns a durable enhanced append when the awareness projection fails atomically", async () => {
@@ -3218,6 +3493,380 @@ describe("memory sidecar handler", () => {
     });
   });
 
+  it("strictly scopes episode time ranges and marks an automatic unscoped fallback", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const inRange = testEpisode("ep_timerangeinside1" as Episode["id"], {
+      title: "Today in range",
+      start_time: 150,
+      end_time: 160,
+      shared: true,
+    });
+    const outside = testEpisode("ep_timerangeoutside" as Episode["id"], {
+      title: "Older fallback",
+      start_time: 50,
+      end_time: 60,
+      shared: true,
+    });
+    rec.recallEpisodes = [outside, inRange];
+
+    const strictResponse = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "personal-time-range",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: { type: "personal", name: "Alice" },
+        query: "today's discussion",
+        limit: 2,
+        sections: ["episodes"],
+        time_range: { start: 100, end: 200 },
+      },
+      TOKEN,
+    );
+    const strictPayload = (await strictResponse.json()) as Record<string, unknown>;
+
+    expect(strictResponse.status).toBe(200);
+    expect((strictPayload.episodes as Array<{ id: string }>).map((episode) => episode.id)).toEqual([
+      inRange.id,
+    ]);
+    expect(strictPayload).not.toHaveProperty("episodes_time_range_fallback");
+    expect(rec.lastRecallOptions).toMatchObject({
+      limit: 2,
+      timeRange: { start: 100, end: 200 },
+    });
+
+    rec.recallEpisodes = [outside];
+    const fallbackResponse = await post(
+      base,
+      "/memory/recall",
+      {
+        tenant: "acme",
+        query: "today's discussion",
+        limit: 2,
+        time_range: { start: 100, end: 200 },
+      },
+      TOKEN,
+    );
+    const fallbackPayload = (await fallbackResponse.json()) as Record<string, unknown>;
+
+    expect(fallbackResponse.status).toBe(200);
+    expect(fallbackPayload.episodes_time_range_fallback).toBe(true);
+    expect(
+      (fallbackPayload.episodes as Array<{ id: string }>).map((episode) => episode.id),
+    ).toEqual([outside.id]);
+  });
+
+  it("applies episode exclusions before the requested limit on recall and context", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const excludedTitle = testEpisode("ep_excludedtitle001" as Episode["id"], {
+      title: "OUTCOME rollup: launch",
+      shared: true,
+    });
+    const excludedNarrative = testEpisode("ep_excludedmarker01" as Episode["id"], {
+      title: "Decision digest",
+      narrative: "OUTCOME fp=123 decision=ship",
+      shared: true,
+    });
+    const firstIncluded = testEpisode("ep_includedfirst001" as Episode["id"], {
+      title: "Python discussion",
+      shared: true,
+    });
+    const secondIncluded = testEpisode("ep_includedsecond01" as Episode["id"], {
+      title: "TanStack discussion",
+      shared: true,
+    });
+    const overflow = testEpisode("ep_includedoverflow" as Episode["id"], {
+      title: "Overflow discussion",
+      shared: true,
+    });
+    rec.recallEpisodes = [
+      excludedTitle,
+      excludedNarrative,
+      firstIncluded,
+      secondIncluded,
+      overflow,
+    ];
+    const exclude = {
+      title_prefixes: ["OUTCOME rollup"],
+      narrative_markers: ["OUTCOME fp="],
+    };
+
+    const recallResponse = await post(
+      base,
+      "/memory/recall",
+      { tenant: "acme", query: "technology", limit: 2, exclude },
+      TOKEN,
+    );
+    const recallPayload = (await recallResponse.json()) as {
+      episodes: Array<{ id: string }>;
+    };
+
+    expect(recallResponse.status).toBe(200);
+    expect(recallPayload.episodes.map((episode) => episode.id)).toEqual([
+      firstIncluded.id,
+      secondIncluded.id,
+    ]);
+    expect(rec.lastRecallLimit).toBe(6);
+    expect(rec.lastRecallOptions).toMatchObject({ recordRetrieval: false });
+    expect(rec.retrievalRecords).toEqual([
+      { episodeId: firstIncluded.id, score: 0.91 },
+      { episodeId: secondIncluded.id, score: 0.91 },
+    ]);
+
+    rec.retrievalRecords.length = 0;
+
+    const contextResponse = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "personal-exclusions",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: { type: "personal", name: "Alice" },
+        query: "technology",
+        limit: 2,
+        sections: ["episodes"],
+        exclude,
+      },
+      TOKEN,
+    );
+    const contextPayload = (await contextResponse.json()) as {
+      episodes: Array<{ id: string }>;
+    };
+
+    expect(contextResponse.status).toBe(200);
+    expect(contextPayload.episodes.map((episode) => episode.id)).toEqual([
+      firstIncluded.id,
+      secondIncluded.id,
+    ]);
+    expect(rec.lastRecallOptions).toMatchObject({ recordRetrieval: false });
+    expect(rec.retrievalRecords).toEqual([
+      { episodeId: firstIncluded.id, score: 0.91 },
+      { episodeId: secondIncluded.id, score: 0.91 },
+    ]);
+  });
+
+  it("returns excluded-filtered recent episodes for only the current venue", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const venueSince = 1_725_000_000_000;
+    const excluded = testEpisode("ep_venueexcluded001" as Episode["id"], {
+      title: "OUTCOME rollup: room",
+      start_time: venueSince + 3_000,
+      shared: true,
+    });
+    const newest = testEpisode("ep_venuenewest00001" as Episode["id"], {
+      title: "Newest room memory",
+      start_time: venueSince + 2_000,
+      shared: true,
+    });
+    const older = testEpisode("ep_venueolder000001" as Episode["id"], {
+      title: "Older room memory",
+      start_time: venueSince + 1_000,
+      shared: true,
+    });
+    rec.venueEpisodes = [excluded, newest, older];
+
+    const missingSince = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "venue-room",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: {
+          type: "groupChat",
+          name: "AI Ninjas",
+          external_id: "group-42",
+        },
+        sections: ["venue_recent"],
+      },
+      TOKEN,
+    );
+    expect(missingSince.status).toBe(400);
+
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "venue-room",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: {
+          type: "groupChat",
+          name: "AI Ninjas",
+          external_id: "group-42",
+        },
+        sections: ["venue_recent"],
+        venue_since: venueSince,
+        exclude: { title_prefixes: ["OUTCOME rollup"], narrative_markers: [] },
+      },
+      TOKEN,
+    );
+    const payload = (await response.json()) as {
+      venue_recent: Array<{ id: string; score: number; raw_score: number }>;
+    };
+    const expectedSession = `sess_${createHash("sha256")
+      .update("venue-room")
+      .digest("hex")
+      .slice(0, 16)}`;
+
+    expect(response.status).toBe(200);
+    expect(payload.venue_recent.map((episode) => episode.id)).toEqual([newest.id, older.id]);
+    expect(payload.venue_recent).toEqual([
+      expect.objectContaining({
+        id: newest.id,
+        score: 0,
+        raw_score: 0,
+        disclosure: expect.anything(),
+      }),
+      expect.objectContaining({
+        id: older.id,
+        score: 0,
+        raw_score: 0,
+        disclosure: expect.anything(),
+      }),
+    ]);
+    expect(rec.lastVenueOptions).toEqual({
+      sessionId: expectedSession,
+      sinceMs: venueSince,
+      audienceEntityId: rec.externalEntityIds.get("team-agent.conversation\u0000group-42"),
+      limit: 36,
+    });
+    expect(rec.recallOptionsCalls).toEqual([]);
+  });
+
+  it("strictly validates observation and episode-scoping extension fields", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+
+    expect(
+      (
+        await post(
+          base,
+          "/memory/append-turn",
+          { tenant: "acme", session: "observed", user: "message", observed_at: "now" },
+          TOKEN,
+        )
+      ).status,
+    ).toBe(400);
+    const serverNow = Date.now();
+    expect(
+      (
+        await post(
+          base,
+          "/memory/append-turn",
+          {
+            tenant: "acme",
+            session: "observed",
+            user: "message",
+            observed_at: serverNow - 10 * 60_000,
+          },
+          TOKEN,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await post(
+          base,
+          "/memory/append-turn",
+          {
+            tenant: "acme",
+            session: "observed",
+            user: "message",
+            observed_at: serverNow + 2 * 60_000,
+          },
+          TOKEN,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await post(
+          base,
+          "/memory/recall",
+          { tenant: "acme", query: "query", time_range: { start: 200, end: 100 } },
+          TOKEN,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await post(
+          base,
+          "/memory/recall",
+          {
+            tenant: "acme",
+            query: "query",
+            exclude: { title_prefixes: [], narrative_markers: [], extra: true },
+          },
+          TOKEN,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await post(
+          base,
+          "/memory/context",
+          {
+            tenant: "acme",
+            session: "venue",
+            sender: { external_id: "alice", display_name: "Alice" },
+            conversation: { type: "personal", name: "Alice" },
+            sections: ["venue_recent"],
+            venue_since: 100,
+            venue_limit: 51,
+          },
+          TOKEN,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await post(
+          base,
+          "/memory/context",
+          {
+            tenant: "acme",
+            session: "participants",
+            sender: { external_id: "alice", display_name: "Alice" },
+            conversation: { type: "personal", name: "Alice" },
+            participants: [{ external_id: "bob", display_name: "Bob", operator: "not-a-boolean" }],
+            sections: ["audience"],
+          },
+          TOKEN,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await post(
+          base,
+          "/memory/context",
+          {
+            tenant: "acme",
+            session: "participants",
+            sender: { external_id: "alice", display_name: "Alice" },
+            conversation: { type: "personal", name: "Alice" },
+            participants: Array.from({ length: 33 }, (_, index) => ({
+              external_id: `person-${index}`,
+              display_name: `Person ${index}`,
+              operator: false,
+            })),
+            sections: ["audience"],
+          },
+          TOKEN,
+        )
+      ).status,
+    ).toBe(400);
+    expect(rec.tenants).toEqual([]);
+  });
+
   it("validates context sections and preserves non-episode sections on embedding degradation", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
@@ -3468,7 +4117,7 @@ describe("memory sidecar handler", () => {
     expect(rec.appendMany?.session).toBe(session);
   });
 
-  it("validates required fields", async () => {
+  it("validates required fields and accepts observation and reply-only appends", async () => {
     const { pool } = recordingPool();
     const base = await start(pool);
     expect((await post(base, "/memory/recall", { query: "q" }, TOKEN)).status).toBe(400); // no tenant
@@ -3493,11 +4142,11 @@ describe("memory sidecar handler", () => {
           TOKEN,
         )
       ).status,
-    ).toBe(400);
+    ).toBe(200);
     expect(
       (await post(base, "/memory/append-turn", { tenant: "acme", session: "s", user: "u" }, TOKEN))
         .status,
-    ).toBe(400);
+    ).toBe(200);
   });
 
   it("400s on invalid or non-object JSON", async () => {
@@ -3719,7 +4368,242 @@ describe("memory sidecar handler", () => {
     }
   });
 
-  it("applies group-only directive allows and excludes with participant exclusions fail-closed", async () => {
+  it("persists observation time as metadata and awareness at append time through a real BorgPool", async () => {
+    const root = mkdtempSync(join(tmpdir(), "borg-memory-observation-http-"));
+    const llmClient = new FakeLLMClient();
+    const pool = new BorgPool({
+      root,
+      openOptions: {
+        embeddingDimensions: 4,
+        embeddingClient: new FakeEmbeddingClient(4),
+        llmClient,
+        liveExtraction: true,
+        liveCommitmentExtraction: false,
+      },
+      initializeBeing: (_tenantId, borg) => {
+        borg.entities.ensureSelf("Sol", { provenance: "config_default_user" });
+      },
+    });
+
+    try {
+      const base = await start(pool);
+      const observedAt = Date.now() - 5_000;
+      const requestedAt = Date.now();
+      const response = await post(
+        base,
+        "/memory/append-turn",
+        {
+          tenant: "acme",
+          session: "teams::group::observation",
+          user: "An observed room message",
+          observed_at: observedAt,
+          sender: { external_id: "alice", display_name: "Alice" },
+          conversation: {
+            type: "groupChat",
+            name: "Observation Room",
+            external_id: "observation-room",
+          },
+        },
+        TOKEN,
+      );
+      const payload = (await response.json()) as {
+        session: SessionId;
+        entries: Array<{ id: string; kind: string }>;
+      };
+
+      expect(response.status).toBe(200);
+      expect(payload.entries).toHaveLength(1);
+      expect(payload.entries[0]?.kind).toBe("user_msg");
+
+      llmClient.pushResponse({
+        text: "",
+        input_tokens: 10,
+        output_tokens: 20,
+        stop_reason: "tool_use",
+        tool_calls: [
+          {
+            id: "toolu_observation_episode",
+            name: "EmitEpisodeCandidates",
+            input: {
+              episodes: [
+                {
+                  title: "Observed room message",
+                  narrative: "Alice posted an observed message in the Observation Room.",
+                  source_stream_ids: [payload.entries[0]?.id],
+                  participants: ["Alice"],
+                  location: "Observation Room",
+                  tags: ["observation"],
+                  emotional_arc: null,
+                  confidence: 0.9,
+                  significance: 0.6,
+                },
+              ],
+              relational_slot_updates: [],
+            },
+          },
+        ],
+      });
+      await pool.withTenant("acme", async (borg) => {
+        const deps = (borg as unknown as { deps: BorgDependencies }).deps;
+        await deps.streamIngestionCoordinator?.flush(payload.session);
+      });
+
+      const persisted = await pool.withTenant("acme", async (borg) => {
+        const deps = (borg as unknown as { deps: BorgDependencies }).deps;
+        return {
+          entries: borg.stream.tail(10, { session: payload.session }),
+          episodes: await borg.episodic.listAll(),
+          session: borg.sessions.get(payload.session),
+          activities: deps.sqlite
+            .prepare(
+              `SELECT kind, occurred_at, source_stream_entry_ids
+               FROM activity_events
+               ORDER BY occurred_at ASC, id ASC`,
+            )
+            .all() as Array<{
+            kind: string;
+            occurred_at: number;
+            source_stream_entry_ids: string;
+          }>,
+        };
+      });
+
+      expect(persisted.entries).toEqual([
+        expect.objectContaining({
+          id: payload.entries[0]?.id,
+          kind: "user_msg",
+          observed_at: observedAt,
+        }),
+      ]);
+      expect(persisted.entries[0]?.timestamp).toBeGreaterThanOrEqual(requestedAt);
+      expect(persisted.entries.some((entry) => entry.kind === "agent_msg")).toBe(false);
+      expect(persisted.session).toMatchObject({
+        session_id: payload.session,
+        message_count: 1,
+        last_activity_at: persisted.entries[0]?.timestamp,
+      });
+      expect(persisted.activities).toEqual([
+        expect.objectContaining({
+          kind: "user_contact",
+          occurred_at: persisted.entries[0]?.timestamp,
+        }),
+      ]);
+      expect(persisted.episodes).toEqual([
+        expect.objectContaining({
+          source_stream_ids: [payload.entries[0]?.id],
+          start_time: observedAt,
+          end_time: observedAt,
+        }),
+      ]);
+    } finally {
+      await pool.closeAll();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("persists a reply-only self activity and session count through a real BorgPool", async () => {
+    const root = mkdtempSync(join(tmpdir(), "borg-memory-reply-only-http-"));
+    const pool = new BorgPool({
+      root,
+      openOptions: {
+        embeddingDimensions: 4,
+        embeddingClient: new FakeEmbeddingClient(4),
+        llmClient: new FakeLLMClient(),
+        liveExtraction: false,
+        liveCommitmentExtraction: false,
+      },
+      initializeBeing: (_tenantId, borg) => {
+        borg.entities.ensureSelf("Sol", { provenance: "config_default_user" });
+      },
+    });
+
+    try {
+      const base = await start(pool);
+      const response = await post(
+        base,
+        "/memory/append-turn",
+        {
+          tenant: "acme",
+          session: "teams::group::reply-only",
+          assistant: "A proactive update from Sol.",
+          conversation: {
+            type: "groupChat",
+            name: "AI Ninjas",
+            external_id: "reply-only-room",
+          },
+        },
+        TOKEN,
+      );
+      const payload = (await response.json()) as {
+        session: SessionId;
+        entries: Array<{ id: string; kind: string }>;
+      };
+
+      expect(response.status).toBe(200);
+      expect(payload.entries).toHaveLength(1);
+      expect(payload.entries[0]?.kind).toBe("agent_msg");
+
+      const persisted = await pool.withTenant("acme", (borg) => {
+        const deps = (borg as unknown as { deps: BorgDependencies }).deps;
+        const selfEntity = borg.entities.getSelf();
+        const groupEntityId = borg.entities.findByExternalId(
+          "team-agent.conversation",
+          "reply-only-room",
+        );
+
+        return {
+          selfEntity,
+          groupEntityId,
+          entries: borg.stream.tail(10, { session: payload.session }),
+          session: borg.sessions.get(payload.session),
+          activities: deps.sqlite
+            .prepare(
+              `SELECT kind, speaker_entity_id, actor_entity_id, audience_entity_id,
+                      source_stream_entry_ids
+               FROM activity_events
+               ORDER BY occurred_at ASC, id ASC`,
+            )
+            .all() as Array<{
+            kind: string;
+            speaker_entity_id: string | null;
+            actor_entity_id: string | null;
+            audience_entity_id: string | null;
+            source_stream_entry_ids: string;
+          }>,
+        };
+      });
+
+      expect(persisted.entries).toEqual([
+        expect.objectContaining({
+          id: payload.entries[0]?.id,
+          kind: "agent_msg",
+          content: "A proactive update from Sol.",
+          audience: persisted.groupEntityId,
+          conversation: { type: "groupChat", name: "AI Ninjas" },
+        }),
+      ]);
+      expect(persisted.entries.some((entry) => entry.kind === "user_msg")).toBe(false);
+      expect(persisted.session).toMatchObject({
+        session_id: payload.session,
+        audience_entity_id: persisted.groupEntityId,
+        message_count: 1,
+      });
+      expect(persisted.activities).toEqual([
+        {
+          kind: "borg_replied",
+          speaker_entity_id: persisted.selfEntity?.id,
+          actor_entity_id: persisted.selfEntity?.id,
+          audience_entity_id: persisted.groupEntityId,
+          source_stream_entry_ids: JSON.stringify([payload.entries[0]?.id]),
+        },
+      ]);
+    } finally {
+      await pool.closeAll();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("applies group and participant directive allows with participant exclusions fail-closed", async () => {
     const root = mkdtempSync(join(tmpdir(), "borg-memory-directive-group-http-"));
     const pool = new BorgPool({
       root,
@@ -3757,6 +4641,31 @@ describe("memory sidecar handler", () => {
       expect(appendResponse.status).toBe(200);
       await appendResponse.json();
 
+      const participantIdentityResponse = await post(
+        base,
+        "/memory/context",
+        {
+          tenant: "acme",
+          session: "teams::group::directive-room",
+          sender: { external_id: "alice", display_name: "Alice" },
+          conversation: {
+            type: "groupChat",
+            name: "Directive Room",
+            external_id: "directive-room",
+          },
+          participants: [
+            { external_id: "bob", display_name: "Bob", operator: true },
+            { external_id: "bob", display_name: "Duplicate Bob", operator: false },
+          ],
+          sections: ["audience"],
+        },
+        TOKEN,
+      );
+      expect(participantIdentityResponse.status).toBe(200);
+      await expect(participantIdentityResponse.json()).resolves.toMatchObject({
+        audience: { role: "participant" },
+      });
+
       const definitions = [
         {
           key: "groupAllowed",
@@ -3783,10 +4692,20 @@ describe("memory sidecar handler", () => {
           body: {
             tenant: "acme",
             kind: "response_policy",
-            text: "Room rule suppressed while Alice is present.",
+            text: "Room rule suppressed while Bob is present.",
             content_scope: "allow_list",
             allowed_group_external_ids: ["directive-room"],
-            excluded_external_ids: ["alice"],
+            excluded_external_ids: ["bob"],
+          },
+        },
+        {
+          key: "participantAllowed",
+          body: {
+            tenant: "acme",
+            kind: "response_policy",
+            text: "Rule allowed when Bob is a current participant.",
+            content_scope: "allow_list",
+            allowed_external_ids: ["bob"],
           },
         },
       ] as const;
@@ -3813,6 +4732,7 @@ describe("memory sidecar handler", () => {
             name: "Directive Room",
             external_id: "directive-room",
           },
+          participants: [{ external_id: "bob", display_name: "Bob", operator: true }],
           sections: ["directives"],
         },
         TOKEN,
@@ -3824,6 +4744,7 @@ describe("memory sidecar handler", () => {
 
       expect(contextResponse.status).toBe(200);
       expect(visibleDirectiveIds).toContain(ids.get("groupAllowed"));
+      expect(visibleDirectiveIds).toContain(ids.get("participantAllowed"));
       expect(visibleDirectiveIds).not.toContain(ids.get("groupExcluded"));
       expect(visibleDirectiveIds).not.toContain(ids.get("participantExcluded"));
     } finally {
@@ -4098,6 +5019,7 @@ describe("memory sidecar handler", () => {
           session: "teams::personal::alice",
           sender: { external_id: "alice", display_name: "Alice", operator: true },
           conversation: { type: "personal", name: "Alice" },
+          participants: [{ external_id: "bob", display_name: "Bob", operator: true }],
           query: "situational awareness",
           sections: ["audience", "episodes", "recent_activity", "commitments", "directives"],
         },
@@ -4194,6 +5116,57 @@ describe("memory sidecar handler", () => {
       expect(groupEpisodeIds).not.toContain(persistedEpisodes["Alice personal episode"]);
       expect(groupEpisodeIds).not.toContain(persistedEpisodes["Bob personal episode"]);
       expect(groupContext.hidden_episode_count).toBe(0);
+
+      const retrievalCountsBefore = await pool.withTenant("acme", (borg) =>
+        Object.fromEntries(
+          Object.values(persistedEpisodes).map((episodeId) => [
+            episodeId,
+            borg.episodic.getStats(episodeId)?.retrieval_count ?? 0,
+          ]),
+        ),
+      );
+      llmClient.pushResponse(recallExpansionResponse);
+      const excludedContextResponse = await post(
+        base,
+        "/memory/context",
+        {
+          tenant: "acme",
+          session: "teams::personal::alice",
+          sender: { external_id: "alice", display_name: "Alice", operator: true },
+          conversation: { type: "personal", name: "Alice" },
+          query: "situational awareness",
+          limit: 1,
+          sections: ["episodes"],
+          exclude: {
+            title_prefixes: ["Public episode"],
+            narrative_markers: [],
+          },
+        },
+        TOKEN,
+      );
+      const excludedContext = (await excludedContextResponse.json()) as {
+        episodes: Array<{ id: Episode["id"] }>;
+      };
+      const returnedEpisodeId = excludedContext.episodes[0]?.id;
+
+      expect(excludedContextResponse.status).toBe(200);
+      expect(excludedContext.episodes).toHaveLength(1);
+      expect(returnedEpisodeId).not.toBe(persistedEpisodes["Public episode"]);
+
+      const retrievalCountsAfter = await pool.withTenant("acme", (borg) =>
+        Object.fromEntries(
+          Object.values(persistedEpisodes).map((episodeId) => [
+            episodeId,
+            borg.episodic.getStats(episodeId)?.retrieval_count ?? 0,
+          ]),
+        ),
+      );
+
+      for (const episodeId of Object.values(persistedEpisodes)) {
+        expect(retrievalCountsAfter[episodeId]).toBe(
+          (retrievalCountsBefore[episodeId] ?? 0) + (episodeId === returnedEpisodeId ? 1 : 0),
+        );
+      }
 
       const adminProvenance = await pool.withTenant("acme", (borg) => {
         const adminSession = borg.sessions

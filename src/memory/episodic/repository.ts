@@ -30,6 +30,7 @@ import {
   type EntityId,
   type EpisodeId,
   type MaintenanceRunId,
+  type SessionId,
 } from "../../util/ids.js";
 import { emotionalArcSchema } from "../affective/types.js";
 import { computeEpisodeHeat, computeEpisodeHeatForTimestamp } from "./heat.js";
@@ -1004,10 +1005,10 @@ export class EpisodicRepository {
         `
           INSERT INTO episode_index (
             episode_id, audience_entity_id, origin_audience_entity_ids, shared, episode_kind,
-            consolidation_family_id, consolidation_coverage_hash, start_time, end_time, created_at,
-            updated_at, retrieval_count, win_rate, last_retrieved, tier, archived, heat_multiplier,
-            heat_score
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            consolidation_family_id, consolidation_coverage_hash, source_stream_ids, start_time,
+            end_time, created_at, updated_at, retrieval_count, win_rate, last_retrieved, tier,
+            archived, heat_multiplier, heat_score
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (episode_id) DO UPDATE SET
             audience_entity_id = excluded.audience_entity_id,
             origin_audience_entity_ids = excluded.origin_audience_entity_ids,
@@ -1015,6 +1016,7 @@ export class EpisodicRepository {
             episode_kind = excluded.episode_kind,
             consolidation_family_id = excluded.consolidation_family_id,
             consolidation_coverage_hash = excluded.consolidation_coverage_hash,
+            source_stream_ids = excluded.source_stream_ids,
             start_time = excluded.start_time,
             end_time = excluded.end_time,
             created_at = excluded.created_at,
@@ -1036,6 +1038,7 @@ export class EpisodicRepository {
         normalizedEpisodeKind(normalized),
         normalizedConsolidationFamilyId(normalized),
         normalizedConsolidationCoverageHash(normalized),
+        serializeJsonValue(uniqueStrings(normalized.source_stream_ids)),
         normalized.start_time,
         normalized.end_time,
         normalized.created_at,
@@ -1058,7 +1061,6 @@ export class EpisodicRepository {
     const insertTag = this.db.prepare(
       "INSERT OR IGNORE INTO episode_tags (episode_id, term, value) VALUES (?, ?, ?)",
     );
-
     for (const participant of uniqueStrings(normalized.participants)) {
       const term = normalizeTerm(participant);
 
@@ -2404,6 +2406,59 @@ export class EpisodicRepository {
     return this.hydrateCandidatesByIds(
       this.queryVisibleIndexedEpisodeIds(options, "recent", limit),
     );
+  }
+
+  async listRecentForSessionForDisclosure(
+    options: EpisodeVisibilityOptions & {
+      sessionId: SessionId;
+      sinceMs: number;
+      limit?: number;
+    },
+  ): Promise<EpisodeSearchCandidate[]> {
+    const limit = assertPositiveLimit(options.limit ?? DEFAULT_SEARCH_LIMIT, "List limit");
+
+    if (!Number.isFinite(options.sinceMs)) {
+      throw new StorageError("Session episode lower bound must be finite", {
+        code: "EPISODE_SESSION_SINCE_INVALID",
+      });
+    }
+
+    await this.ensureEpisodeIndexBackfilled();
+    const visibility = this.buildIndexedVisibilityWhereClause(
+      resolveViewerCapability(options),
+      "ei",
+    );
+    const rows = this.db
+      .prepare(
+        `
+          SELECT ei.episode_id
+          FROM episode_index AS ei INDEXED BY idx_episode_index_time_start
+          WHERE ${this.buildEffectiveVisibilityWhereClause("ei")}
+            AND ${visibility.sql}
+            AND ei.start_time >= ?
+            AND EXISTS (
+              SELECT 1
+              FROM json_each(ei.source_stream_ids) AS source
+              JOIN stream_entry_index AS sei ON sei.entry_id = source.value
+            )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM json_each(ei.source_stream_ids) AS source
+              LEFT JOIN stream_entry_index AS sei ON sei.entry_id = source.value
+              WHERE sei.entry_id IS NULL OR sei.session_id <> ?
+            )
+          ORDER BY ei.start_time DESC, ei.episode_id DESC
+          LIMIT ?
+        `,
+      )
+      .all(
+        ...visibility.params,
+        options.sinceMs,
+        options.sessionId,
+        limit,
+      ) as IndexedEpisodeIdRow[];
+
+    return this.hydrateCandidatesByIds(rows.map((row) => parseEpisodeId(row.episode_id)));
   }
 
   async listRecent(

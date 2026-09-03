@@ -144,38 +144,84 @@ async function countPendingSemanticExtractionEpisodes(
 type CreatorDirectivesFacadeDeps = Pick<BorgDependencies, "creatorDirectiveRepository">;
 
 function createActivityFacade(deps: BorgDependencies): BorgFacades["activity"] {
+  type ObservedTurnInput = Parameters<BorgFacades["activity"]["projectObservedTurn"]>[0];
+  type RepliedTurnInput = Parameters<BorgFacades["activity"]["projectRepliedTurn"]>[0];
+  type CompletedTurnInput = Parameters<BorgFacades["activity"]["projectCompletedTurn"]>[0];
+
+  const projectTurn = (input: ObservedTurnInput | RepliedTurnInput | CompletedTurnInput) => {
+    const project = deps.sqlite.transaction(() => {
+      const userContactAlreadyStored =
+        !("userContact" in input) ||
+        deps.activityRepository.getByKindAndSource(
+          input.userContact.kind,
+          input.userContact.sourceStreamEntryIds,
+        ) !== null;
+      const borgReplyAlreadyStored =
+        !("borgReplied" in input) ||
+        deps.activityRepository.getByKindAndSource(
+          input.borgReplied.kind,
+          input.borgReplied.sourceStreamEntryIds,
+        ) !== null;
+      const session = deps.sessionsRepository.ensure(input.session);
+      const userContact =
+        "userContact" in input ? deps.activityRepository.record(input.userContact) : undefined;
+      const borgReplied =
+        "borgReplied" in input ? deps.activityRepository.record(input.borgReplied) : undefined;
+      const touchedSession =
+        userContactAlreadyStored && borgReplyAlreadyStored
+          ? session
+          : deps.sessionsRepository.touch(input.session.session_id, input.touch);
+
+      if (touchedSession === null) {
+        throw new StorageError(`Session ${input.session.session_id} was not stored`, {
+          code: "SESSION_TURN_PROJECTION_FAILED",
+        });
+      }
+
+      return { userContact, borgReplied, session: touchedSession };
+    });
+
+    return project.immediate();
+  };
+
   return {
     record: (...args) => deps.activityRepository.record(...args),
+    projectObservedTurn: (input) => {
+      const projected = projectTurn(input);
+
+      if (projected.userContact === undefined) {
+        throw new StorageError("Observed turn projection did not store the user contact", {
+          code: "SESSION_TURN_PROJECTION_FAILED",
+        });
+      }
+
+      return { ...projected, userContact: projected.userContact };
+    },
+    projectRepliedTurn: (input) => {
+      const projected = projectTurn(input);
+
+      if (projected.borgReplied === undefined) {
+        throw new StorageError("Replied turn projection did not store the Borg reply", {
+          code: "SESSION_TURN_PROJECTION_FAILED",
+        });
+      }
+
+      return { ...projected, borgReplied: projected.borgReplied };
+    },
     projectCompletedTurn: (input) => {
-      const project = deps.sqlite.transaction(() => {
-        const userContactAlreadyStored =
-          deps.activityRepository.getByKindAndSource(
-            input.userContact.kind,
-            input.userContact.sourceStreamEntryIds,
-          ) !== null;
-        const borgReplyAlreadyStored =
-          deps.activityRepository.getByKindAndSource(
-            input.borgReplied.kind,
-            input.borgReplied.sourceStreamEntryIds,
-          ) !== null;
-        const session = deps.sessionsRepository.ensure(input.session);
-        const userContact = deps.activityRepository.record(input.userContact);
-        const borgReplied = deps.activityRepository.record(input.borgReplied);
-        const touchedSession =
-          userContactAlreadyStored && borgReplyAlreadyStored
-            ? session
-            : deps.sessionsRepository.touch(input.session.session_id, input.touch);
+      const projected = projectTurn(input);
 
-        if (touchedSession === null) {
-          throw new StorageError(`Session ${input.session.session_id} was not stored`, {
-            code: "SESSION_TURN_PROJECTION_FAILED",
-          });
-        }
+      if (projected.userContact === undefined || projected.borgReplied === undefined) {
+        throw new StorageError("Completed turn projection did not store both activity events", {
+          code: "SESSION_TURN_PROJECTION_FAILED",
+        });
+      }
 
-        return { userContact, borgReplied, session: touchedSession };
-      });
-
-      return project.immediate();
+      return {
+        ...projected,
+        userContact: projected.userContact,
+        borgReplied: projected.borgReplied,
+      };
     },
     listObservedGroupAudienceEntityIdsForSpeaker: (...args) =>
       deps.activityRepository.listObservedGroupAudienceEntityIdsForSpeaker(...args),
@@ -566,6 +612,13 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           query,
           resolveEpisodeSearchOptions(options),
         ),
+      searchWithTimeRangeFallback: (query, options) =>
+        deps.retrievalPipeline.searchEpisodesForDisclosureWithTimeRangeFallback(query, {
+          ...resolveEpisodeSearchOptions(options),
+          timeRange: options.timeRange,
+        }),
+      recordRetrieval: (episodeId, score) =>
+        deps.episodicRepository.recordRetrieval(episodeId, deps.clock.now(), score),
       extract: async (options = {}) => {
         const extractor = new EpisodicExtractor({
           dataDir: deps.config.dataDir,
@@ -595,6 +648,8 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         Promise.resolve({ ran: false, processedEntries: 0 }),
       list: (...args) => deps.episodicRepository.list(...args),
       listAll: () => deps.episodicRepository.listAll(),
+      listRecentForSession: (...args) =>
+        deps.episodicRepository.listRecentForSessionForDisclosure(...args),
       getStats: (...args) => deps.episodicRepository.getStats(...args),
     },
     self: {

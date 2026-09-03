@@ -426,6 +426,7 @@ function buildExtractorPrompt(
     return JSON.stringify({
       id: entry.id,
       timestamp: entry.timestamp,
+      observed_at: entry.observed_at,
       kind: entry.kind,
       sender_entity_id: entry.sender_entity_id ?? undefined,
       sender_display_name: sender?.display_name,
@@ -889,7 +890,7 @@ function buildEpisodeFromCandidate(
   embedding: Float32Array,
   nowMs: number,
 ): Episode {
-  const timestamps = sourceEntries.map((entry) => entry.timestamp);
+  const timestamps = sourceEntries.map((entry) => entry.observed_at ?? entry.timestamp);
   const location =
     candidate.location === null || candidate.location.trim() === ""
       ? conversationLocationForEpisode(sourceEntries)

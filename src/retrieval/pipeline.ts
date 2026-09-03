@@ -497,11 +497,59 @@ export class RetrievalPipeline {
     return result.episodes;
   }
 
+  async searchEpisodesForDisclosureWithTimeRangeFallback(
+    query: string,
+    options: DisclosureRetrievalOptions & {
+      timeRange: { start: number; end: number };
+    },
+  ): Promise<{ episodes: RetrievedEpisode[]; timeRangeFallback: boolean }> {
+    const expansion = await this.tryExpandRecall(query, options);
+    const scoped = await this.searchWithContextInternal(
+      query,
+      { ...options, recordRetrieval: false },
+      "disclosure",
+      "episodes-only",
+      expansion,
+    );
+    const strictEpisodes = scoped.episodes.filter(
+      (result) =>
+        result.episode.start_time >= options.timeRange.start &&
+        result.episode.start_time <= options.timeRange.end,
+    );
+
+    if (strictEpisodes.length > 0) {
+      if (options.recordRetrieval !== false) {
+        const retrievedAt = this.clock.now();
+        for (const result of strictEpisodes) {
+          this.options.episodicRepository.recordRetrieval(
+            result.episode.id,
+            retrievedAt,
+            result.score,
+          );
+        }
+      }
+
+      return { episodes: strictEpisodes, timeRangeFallback: false };
+    }
+
+    const { timeRange: _timeRange, ...unscopedOptions } = options;
+    const fallback = await this.searchWithContextInternal(
+      query,
+      { ...unscopedOptions, strictTimeRange: false },
+      "disclosure",
+      "episodes-only",
+      expansion,
+    );
+
+    return { episodes: fallback.episodes, timeRangeFallback: true };
+  }
+
   private async searchWithContextInternal(
     query: string,
     options: RetrievalExecutionOptions,
     mode: RetrievalExecutionMode,
     projection: RetrievalProjection = "full",
+    expansionOverride?: ExpansionOutcome,
   ): Promise<RetrievedContext> {
     if (this.tracer.enabled && options.traceTurnId !== undefined) {
       this.tracer.emit("retrieval.started", {
@@ -546,7 +594,7 @@ export class RetrievalPipeline {
       }
     }
 
-    const intents = await this.buildRecallIntents(query, options);
+    const intents = await this.buildRecallIntents(query, options, expansionOverride);
     const episodeCandidates = await this.collectEpisodicEvidenceCandidates(
       intents,
       options,
@@ -1267,6 +1315,7 @@ export class RetrievalPipeline {
   private async buildRecallIntents(
     query: string,
     options: RetrievalExecutionOptions,
+    expansionOverride?: ExpansionOutcome,
   ): Promise<RecallIntent[]> {
     const intents: RecallIntent[] = [
       {
@@ -1278,7 +1327,7 @@ export class RetrievalPipeline {
         source: "raw-user-message",
       },
     ];
-    const expansion = await this.tryExpandRecall(query, options);
+    const expansion = expansionOverride ?? (await this.tryExpandRecall(query, options));
 
     intents.push(...expansion.facetIntents);
 

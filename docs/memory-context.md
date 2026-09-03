@@ -135,6 +135,79 @@ an LLM is deliberately out of scope for this version.
 - Admin passthrough for directives (list/create/revoke) following the existing admin/debug API
   pattern, so the console or curl can manage operator rules.
 
+## Extension 2: observations, time scoping, venue recency, exclusions (2026-09-02, late)
+
+Motivation: two measured gaps in the AI Ninjas group. (1) Teams only delivers group/channel
+messages that @mention the bot, so human-to-human talk never entered the system; with RSC the
+bridge will receive every message and must be able to record it WITHOUT generating a reply.
+(2) A 16:45 discussion about Python vs TanStack was ingested and extracted into five episodes, yet
+"pamiętasz dzisiejszą dyskusję o technologii?" at 23:21 did not surface them: the time cue was
+ignored, semantic scores were compressed, and autonomous OUTCOME rollups occupied recall slots.
+
+### Observations: POST /memory/append-turn with no assistant reply
+
+- `assistant` becomes optional. A body with `user` but no `assistant` is an OBSERVATION: append only
+  the user stream entry (sender, conversation, audience exactly as for a full turn), record a
+  `user_contact` activity event, touch the session (message count +1), schedule ingestion as usual.
+  Response shape unchanged (only the appended ids are present). Requests with both fields behave
+  exactly as today.
+- Optional `observed_at` (epoch ms) records a delayed observation's event time as entry metadata;
+  the stream `timestamp` remains append time so ingestion cursors stay monotonic.
+  The sidecar accepts it only when it is no earlier than five minutes before and no later than one
+  minute after server receipt time; omitted metadata defaults episode occurrence to append time.
+- `POST /memory/append-turn` with `assistant` but no `user` is a REPLY-ONLY record: append only the
+  agent stream entry (conversation and audience exactly as for a full turn), record a
+  `borg_replied` activity event with the self entity as speaker and actor, touch the session
+  (message count +1), and schedule ingestion as usual. `sender` may be absent; a complete
+  conversation identity is still required for the enhanced path. Requests with neither `user` nor
+  `assistant` return 400.
+
+### Group participant set on context requests
+
+An unsolicited group reply may add `participants` to `POST /memory/context` as an ordered array of
+`{"external_id": "...", "display_name": "...", "operator": false}`. Duplicate external ids are
+removed by team-agent. The sidecar resolves these people as the current group recipient set for
+directive applicability and visibility/exclusion checks; the group conversation remains the sole
+audience, and participant entries cannot confer operator authority. A team-agent compatibility
+retry after HTTP 400 removes this field once.
+
+### Time scoping and exclusions on episodes (POST /memory/context and POST /memory/recall)
+
+- `time_range: {"start": <epoch ms>, "end": <epoch ms>}` optional. Applies a strict filter on the
+  episode's occurred_at for the episodes section. If the strict search returns no hits, the sidecar
+  retries once WITHOUT the range and sets `episodes_time_range_fallback: true` in the response, so
+  the caller always makes one request. The venue_recent section ignores time_range (it has its own).
+- `exclude: {"title_prefixes": [..], "narrative_markers": [..]}` optional (each up to 8 strings,
+  case-sensitive substring/prefix match). Applied BEFORE `limit`: the sidecar over-fetches
+  (3x limit, bounded) and drops matching episodes so every returned slot is a real candidate.
+  Applies to both the episodes and venue_recent sections. team-agent sends
+  `{"title_prefixes": ["OUTCOME rollup"], "narrative_markers": ["OUTCOME fp=", "decision="]}` for
+  chat surfaces and keeps its client-side filter only as a safety net.
+
+### New section `venue_recent` (POST /memory/context)
+
+- Requested with `sections` containing "venue_recent" plus `venue_since` (epoch ms, required) and
+  optional `venue_limit` (default 12, max 50). Returns the episodes extracted from the CURRENT
+  session (same sidecar session id as the request) with occurred_at >= venue_since, newest first,
+  same projection as the episodes section (incl. disclosure), exclusions applied, no semantic query
+  needed. Because the current session's own history is always visible to itself, no widening is
+  involved. team-agent sends venue_since = start of today in the tenant timezone and renders the
+  block as "Earlier in this conversation today", deduplicated against recalled episodes by id.
+- Response key: `"venue_recent": [ ... ]`. Missing/invalid venue_since with the section requested
+  -> 400.
+
+### team-agent side (summary; details in docs/group-presence.md)
+
+- `POST /v1/chat/observe` records unmentioned group/channel messages into the shared thread history
+  and into borg (observation append), then decides whether to chip in (Layer 2). Only groupChat and
+  channel conversation types are accepted.
+- Temporal cues in the user's latest message ("dzisiaj", "dziś", "dzisiejsz*", "wczoraj", "przed
+  chwilą", "chwilę temu", "rano", "po południu", "wieczorem", "w tym tygodniu", "today",
+  "yesterday", "this morning", "earlier today", "just now", "this week") are detected
+  deterministically and mapped to a time_range in the tenant timezone. No model call.
+
+team-agent compatibility: until a sidecar accepting the reply-only shape is live, team-agent treats an HTTP 400 on it as a one-log compatibility skip and never retries it as a full turn; a 400 caused by `participants` is retried once without the field.
+
 ## Implementation notes (sidecar)
 
 - A syntactically valid, existing Borg `EntityId` in `StreamEntry.audience` is a stable audience
@@ -176,7 +249,8 @@ an LLM is deliberately out of scope for this version.
   authorization handle for the room; the sender and group remain the observed recipient set for
   exclusions. Thus a group-only allow applies without separately allowing its sender, while an
   excluded group or any excluded person present suppresses it fail-closed with the existing
-  `group_contains_excluded_entity` semantics.
+  `group_contains_excluded_entity` semantics. Context `participants` extend that recipient set and
+  its allow-list authorization candidates without replacing the group audience.
 - Directive administration creates a stable per-tenant admin API entity and admin session, appends
   a structured `internal_event` provenance entry, then queues the directive. Person ids in
   `allowed_external_ids`, `excluded_external_ids`, and `subject_external_id` resolve only through
@@ -206,6 +280,54 @@ an LLM is deliberately out of scope for this version.
   (team-agent retries only on transport failures, never on a received response). Replays of the
   same stream entry ids are idempotent and do not double-count; there is no crash-repair pass that
   re-derives projections from the stream.
+- An append without `assistant` is an observation. With complete Teams identity it uses the same
+  sender, audience, conversation and best-effort atomic awareness projection as a full turn, but
+  records only `user_contact` and increments the session message count once. Incomplete identity
+  keeps the corresponding legacy behavior (one user entry and no awareness projection). The stream
+  entry always retains the writer's append-time `timestamp`, preserving cursor order;
+  `observed_at` is optional entry metadata and must be no earlier than five minutes before and no
+  later than one minute after server receipt time or the sidecar returns 400. Extraction uses it as the
+  episode's occurred-at time, while session/activity projections use append time. Ordinary
+  two-entry turns keep their existing writer timestamps and serialized shape.
+- A reply-only append has `assistant` but no `user`. It appends one `agent_msg`, records only a
+  `borg_replied` activity whose speaker and actor are the Borg self entity, and increments the
+  session message count once through the same best-effort atomic projection. A group/channel
+  reply-only append can use `conversation.external_id` as its enhanced audience identity without a
+  sender; a personal enhanced append still requires the person handle in `sender`. Otherwise it
+  keeps the corresponding legacy one-entry behavior without awareness projection. A request with
+  neither message field returns 400.
+- `/memory/context` accepts up to 32 strict participant objects. It collapses duplicate external
+  ids in first-seen order, resolves each remaining person through `team-agent.sender` during the
+  exclusive identity phase, and merges the resulting entity ids into directive recipients and
+  allow-list authorization candidates. These ids never enter episode or recent-activity audience
+  capabilities, so personal participants cannot widen memory visibility and the group remains the
+  sole group/channel audience. Participant `operator` values are validated as booleans but ignored;
+  only `sender.operator` can confer the trusted-operator/session-role authority.
+- `time_range` and `venue_since` accept integer epoch milliseconds; a time range is inclusive and
+  requires `start <= end`. Strict episode scoping uses the public `occurred_at` value
+  (`episode.start_time`). If no visible strict hit survives, the retrieval pipeline reuses the same
+  prepared recall expansion for one unscoped pass, so fallback does not add an LLM call and retains
+  the original disclosure audience capability. The `episodes_time_range_fallback` key is emitted
+  only when that pass occurs. Fallback eligibility is decided before caller exclusions, so an
+  in-range episode suppressed by `exclude` does not widen the search silently.
+- Episode exclusions are case-sensitive protocol matching: title prefixes use prefix matching and
+  narrative markers use substring matching. Only requests that supply `exclude` fetch up to three
+  times the requested response limit (bounded at three times the configured endpoint maximum),
+  apply exclusions, then take the requested limit; requests without it retain the legacy candidate
+  budget. Over-fetched retrieval candidates are read without accounting mutations, and only the
+  final non-excluded, non-overflow episodes actually returned are recorded in `retrieval_log`,
+  episode stats, and heat inputs. Exclusion drops are not included in `hidden_episode_count`, which
+  retains its disclosure-defense meaning above.
+- `venue_recent` is opt-in and therefore is not added to the default context sections, preserving
+  existing requests that omit `sections`; it requires `venue_since`, defaults `venue_limit` to 12,
+  and caps it at 50. The SQLite episode index stores source stream ids and joins them to
+  `stream_entry_index`, so this section admits an episode only when it has indexed provenance and
+  every source entry belongs to the current sidecar session. Mixed-session consolidations and
+  missing-index provenance fail closed. Results order by `start_time` newest first and do not run
+  semantic retrieval. The migration invalidates the old Lance backfill marker once so existing
+  episode provenance is indexed. Venue entries use the same public metadata and disclosure
+  projection as recalled episodes; because this lane has no relevance score, `score` and
+  `raw_score` are both `0`.
 
 ## Implementation notes (team-agent)
 
@@ -252,8 +374,24 @@ an LLM is deliberately out of scope for this version.
   only diverges from the API on turns the API answers from precollected Assets. In production the
   route is enabled (bot credentials are configured) but is not the Teams ingress: traffic arrives
   through services/teams_bridge and the API, and no /api/messages requests have been observed.
+- Extension 2 observation requests add an optional strict boolean `sender.bot`
+  to the bridge-to-team-agent message shape for the newest-bot silence guard.
+  It is transport metadata only: the append-turn sender builder drops it, so
+  the sidecar still receives only `external_id`, `display_name`, and the
+  server-computed `operator` sender fields.
+- Ordinary chat episodic context requests include `episodes` and `venue_recent`, start-of-
+  day `venue_since`, `venue_limit: 12`, and the documented exclusion object.
+  Assistant capability/meta turns and turns with precollected Assets evidence
+  request `venue_recent` alone so same-conversation context is still present
+  without re-enabling semantic episodic recall.
+  A structured HTTP 400 receives one retry against the same endpoint with every
+  Extension 2 field removed (and `venue_recent` removed from sections). Enhanced
+  legacy recall similarly retries `/memory/recall` once without `time_range` or
+  `exclude`; a successful compatibility retry produces no unavailable marker.
+  For a venue-only request that retry uses `sections: ["audience"]`, a valid old-
+  contract no-query shape that cannot accidentally restore suppressed episodes.
 
-## Non-goals
+## Extension 1 non-goals
 
 - No new LLM calls on the request path; no deliberation/reflection/closure phases.
 - Existing episodes stay shared within the tenant; only new turns get audience scoping.
