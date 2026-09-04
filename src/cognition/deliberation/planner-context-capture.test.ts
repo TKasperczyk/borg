@@ -228,6 +228,7 @@ describe("planner context capture", () => {
               },
               window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+              window_error_span: null,
               window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
             budget: {

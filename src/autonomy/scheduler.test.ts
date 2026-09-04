@@ -3792,7 +3792,13 @@ describe("AutonomyScheduler", () => {
     expect(wakeRepository.summarizeOutcomeDetailsSince(0, "silent")).toEqual({
       total: 5,
       without_detail: 0,
-      reasons: [{ detail: "deliberate-silence: finalizer_no_output", count: 5 }],
+      reasons: [
+        {
+          detail: "deliberate-silence: finalizer_no_output",
+          count: 5,
+          triggers: [{ trigger: "goal_followup_due", count: 5 }],
+        },
+      ],
     });
     expect(
       readFleetBrakeMetadata(watermarkRepository.get(FLEET_BRAKE_PROCESS_NAME, DEFAULT_SESSION_ID)),

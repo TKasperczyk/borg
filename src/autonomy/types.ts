@@ -52,11 +52,45 @@ export const HEADWAY_EMISSION_KINDS = ["message", "continue_thought"] as const;
  * Distinct-detail tally for one outcome bucket over a window. `total` is the
  * bucket's own count, so `reasons` summing short of it is not a discrepancy --
  * `without_detail` is the named difference, and the three always reconcile.
+ *
+ * `triggers` carries the join. The window's wakes are also tallied by trigger a
+ * few fields up, so without it the block prints two independent splits of the
+ * same rows and no way to compose them: a reader with `3 + 1` by reason and
+ * `3 + 1` by trigger can see the shapes agree and cannot tell agreement from
+ * correspondence. The trigger sits on the same row as the detail, so the join is
+ * a `GROUP BY` rather than an inference, and printing it makes the composition a
+ * read instead of a guess.
  */
 export type AutonomyWakeOutcomeDetailTally = {
   total: number;
   without_detail: number;
-  reasons: Array<{ detail: string; count: number }>;
+  reasons: Array<{
+    detail: string;
+    count: number;
+    triggers: Array<{ trigger: string; count: number }>;
+  }>;
+};
+
+/**
+ * Where one outcome's rows sit relative to the window's other wakes. A bucket
+ * count alone cannot distinguish one continuous run from the same number of
+ * failures scattered through successes, and the two support opposite readings:
+ * a run is one incident whose trigger mix is whatever happened to be firing
+ * during it, while a scatter is a rate that can differ by trigger. The rows hold
+ * the ordering; the tally discarded it.
+ *
+ * `other_outcomes_between` counts the window's wakes that fall strictly between
+ * this bucket's first and last row and did NOT land in it -- zero means an
+ * unbroken run, any positive number means the bucket is interleaved.
+ * `extends_before_window` reports whether the wake immediately preceding the
+ * bucket's first row -- which may sit outside the window, the table retains more
+ * than the window covers -- shares the outcome, so a run that started earlier is
+ * not read as beginning at the window edge. It is null when no earlier wake is
+ * retained, which is the absence of evidence rather than a no.
+ */
+export type AutonomyWakeOutcomeSpan = {
+  other_outcomes_between: number;
+  extends_before_window: boolean | null;
 };
 
 export const AUTONOMY_WAKE_SOURCE_METADATA = {
@@ -256,6 +290,13 @@ export type AutonomySchedulerFleetBrakeDescription = {
    * reasons never have to be read as covering the bucket.
    */
   window_error_reasons: AutonomyWakeOutcomeDetailTally;
+  /**
+   * Where those same errored rows sit in the window's order. Carried for errors
+   * and not for the other buckets because this is the bucket whose count invites
+   * a rate reading, and a rate over a window that clips a longer run is a slice
+   * of that run rather than a property of anything the window contains.
+   */
+  window_error_span: AutonomyWakeOutcomeSpan | null;
   /**
    * The `silent` entry of `window_outcomes` above, split by what actually ended
    * the wake -- same rows, same window, same categories, one level of detail

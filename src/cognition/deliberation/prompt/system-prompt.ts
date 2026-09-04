@@ -57,6 +57,8 @@ import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session
 import {
   HEADWAY_EMISSION_KINDS,
   type AutonomySchedulerFleetBrakeDescription,
+  type AutonomyWakeOutcomeDetailTally,
+  type AutonomyWakeOutcomeSpan,
 } from "../../../autonomy/index.js";
 import { AUTONOMY_SCHEDULER_DESCRIPTION_DROPPED_FIELDS } from "../../mechanism-evidence.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
@@ -2076,7 +2078,7 @@ export function summarizeAutonomySchedulerState(
   // route to this page. The split below is the same rows as error=N -- total is
   // restated so it can be checked, and undetailed rows are named rather than
   // left as an unexplained shortfall in the reason counts.
-  lines.push(...renderWakeErrorReasonLines(brake.window_error_reasons));
+  lines.push(...renderWakeErrorReasonLines(brake.window_error_reasons, brake.window_error_span));
   // silent=N has the same defect as error=N and a worse consequence: it is the
   // complement of headway, so a closure you chose, an emission that failed on
   // the way out, and a guard that blocked one are one number even though only
@@ -2171,6 +2173,59 @@ function renderWakeSourceLines(
  */
 const WAKE_REASON_RENDER_LIMIT = 5;
 
+/**
+ * The trigger split for one detail, rendered on the detail's own line. The
+ * window's wakes are tallied by trigger further up this block, so two splits of
+ * the same rows print without a join and their shapes can agree by coincidence.
+ * This is that join, read off the row rather than composed across the block.
+ */
+function renderWakeReasonTriggerClause(
+  triggers: AutonomyWakeOutcomeDetailTally["reasons"][number]["triggers"],
+): string {
+  if (triggers.length === 0) {
+    return "";
+  }
+
+  return ` [${triggers
+    .map(
+      (entry) =>
+        `${entry.trigger.length === 0 ? "trigger unrecorded" : entry.trigger} ${entry.count}`,
+    )
+    .join(", ")}]`;
+}
+
+function renderWakeReasonLine(reason: AutonomyWakeOutcomeDetailTally["reasons"][number]): string {
+  return `- ${reason.count}x ${reason.detail}${renderWakeReasonTriggerClause(reason.triggers)}`;
+}
+
+/**
+ * Where the errored rows sit among the window's other wakes. Kept to what the
+ * rows state -- how many non-errors fall inside the span, and whether the run
+ * predates the window -- with the reading left open: an unbroken run and a
+ * scatter support different conclusions about whether a trigger's share of the
+ * failures is a property of the trigger, and which one applies is the entity's
+ * call, not a verdict this block should reach for it.
+ */
+function renderWakeErrorSpanLine(span: AutonomyWakeOutcomeSpan | null): string[] {
+  if (span === null) {
+    return [];
+  }
+
+  const between =
+    span.other_outcomes_between === 0
+      ? "No wake that ended any other way falls between the first and last of them, so inside this window they are one unbroken run"
+      : `${span.other_outcomes_between} wake(s) that ended some other way fall between the first and last of them, so inside this window the failures are interleaved rather than one run`;
+
+  const before =
+    span.extends_before_window === null
+      ? "no earlier wake is retained, so whether the failures start at the window edge or merely become visible there is not answerable from here"
+      : span.extends_before_window
+        ? "the wake immediately before the first of them also errored, and that wake is outside this window -- the run started earlier, so any rate taken over this window is a slice of it and the trigger mix of that slice is whatever was firing when the edge fell"
+        : "the wake immediately before the first of them did not error, so the run does begin inside this window";
+
+  return [`Where those errored wakes sit: ${between}; ${before}.`];
+}
+
 function renderWakeHeadwayReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_headway_reasons"],
 ): string[] {
@@ -2199,8 +2254,8 @@ function renderWakeHeadwayReasonLines(
   ].filter((clause): clause is string => clause !== null);
 
   return [
-    `Why those wakes counted as headway, same rows as headway=${tally.total} above. A row with several structural bases lists them in accounting order:`,
-    ...shown.map((reason) => `- ${reason.count}x ${reason.detail}`),
+    `Why those wakes counted as headway, same rows as headway=${tally.total} above. A row with several structural bases lists them in accounting order; the bracket after each is that basis's own split by trigger, joined on the row rather than composed against the by-trigger tally above:`,
+    ...shown.map(renderWakeReasonLine),
     remainder.length === 0
       ? `The bases above account for all ${tally.total}.`
       : `The bases above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
@@ -2209,6 +2264,7 @@ function renderWakeHeadwayReasonLines(
 
 function renderWakeErrorReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_error_reasons"],
+  span: AutonomySchedulerFleetBrakeDescription["window_error_span"],
 ): string[] {
   if (tally.total === 0) {
     return ["Errored wakes in that window: none, so there is no failure to attribute."];
@@ -2217,6 +2273,7 @@ function renderWakeErrorReasonLines(
   if (tally.reasons.length === 0) {
     return [
       `Errored wakes in that window: ${tally.total}, none of them carrying a recorded failure (rows written before the scheduler kept one). The count is real; why is unavailable from here, and their absence of a reason is not evidence that they share one.`,
+      ...renderWakeErrorSpanLine(span),
     ];
   }
 
@@ -2235,11 +2292,12 @@ function renderWakeErrorReasonLines(
   ].filter((clause): clause is string => clause !== null);
 
   return [
-    `Why those errored wakes failed, same rows as error=${tally.total} above:`,
-    ...shown.map((reason) => `- ${reason.count}x ${reason.detail}`),
+    `Why those errored wakes failed, same rows as error=${tally.total} above. The bracket after each reason is that reason's own split by trigger, joined on the row -- the by-trigger tally further up splits the same wakes a second way, and two splits agreeing in shape is not a correspondence unless something joins them:`,
+    ...shown.map(renderWakeReasonLine),
     remainder.length === 0
       ? `The reasons above account for all ${tally.total}.`
       : `The reasons above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
+    ...renderWakeErrorSpanLine(span),
   ];
 }
 
@@ -2281,8 +2339,8 @@ function renderWakeSilentReasonLines(
   ].filter((clause): clause is string => clause !== null);
 
   return [
-    `How those silent wakes ended, same rows as silent=${tally.total} above. The classes that can appear are ${WAKE_SILENT_OUTCOME_CLASSES}. On an operational wake every class except guard-blocked advances empty_streak; guard-blocked leaves it unchanged because the harness withheld produced output:`,
-    ...shown.map((reason) => `- ${reason.count}x ${reason.detail}`),
+    `How those silent wakes ended, same rows as silent=${tally.total} above, each with its own split by trigger in brackets. The classes that can appear are ${WAKE_SILENT_OUTCOME_CLASSES}. On an operational wake every class except guard-blocked advances empty_streak; guard-blocked leaves it unchanged because the harness withheld produced output:`,
+    ...shown.map(renderWakeReasonLine),
     remainder.length === 0
       ? `The endings above account for all ${tally.total}.`
       : `The endings above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,

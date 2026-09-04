@@ -26,6 +26,8 @@ export {
   type AutonomyWakeSourceName,
   type AutonomyWakeSourceType,
   type AutonomyWakeOutcome,
+  type AutonomyWakeOutcomeDetailTally,
+  type AutonomyWakeOutcomeSpan,
   type AutonomyTrigger,
   type AutonomyTriggerName,
   type DueEvent,

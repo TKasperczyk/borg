@@ -24,6 +24,7 @@ import {
   type AutonomyConditionName,
   type AutonomyWakeOutcome,
   type AutonomyWakeOutcomeDetailTally,
+  type AutonomyWakeOutcomeSpan,
   type AutonomyWakeSourceCategory,
   type AutonomyWakeSourceName,
   type AutonomyWakeSourceType,
@@ -339,18 +340,19 @@ export class AutonomyWakesRepository {
     const rows = this.db
       .prepare(
         `
-          SELECT outcome_detail AS detail, COUNT(*) AS count
+          SELECT outcome_detail AS detail, trigger_name AS trigger, COUNT(*) AS count
           FROM autonomy_wakes
           WHERE ts >= ? AND outcome = ?
-          GROUP BY outcome_detail
-          ORDER BY count DESC, detail ASC
+          GROUP BY outcome_detail, trigger_name
+          ORDER BY count DESC, detail ASC, trigger ASC
         `,
       )
-      .all(ts, outcome) as Array<{ detail: unknown; count: unknown }>;
+      .all(ts, outcome) as Array<{ detail: unknown; trigger: unknown; count: unknown }>;
 
     let total = 0;
     let withoutDetail = 0;
-    const reasons: Array<{ detail: string; count: number }> = [];
+    const reasons: AutonomyWakeOutcomeDetailTally["reasons"] = [];
+    const byDetail = new Map<string, AutonomyWakeOutcomeDetailTally["reasons"][number]>();
 
     for (const row of rows) {
       const count = Number(row.count ?? 0);
@@ -361,10 +363,85 @@ export class AutonomyWakesRepository {
         continue;
       }
 
-      reasons.push({ detail: row.detail, count });
+      const trigger = typeof row.trigger === "string" ? row.trigger : "";
+      const existing = byDetail.get(row.detail);
+
+      if (existing === undefined) {
+        const reason = { detail: row.detail, count, triggers: [{ trigger, count }] };
+        byDetail.set(row.detail, reason);
+        reasons.push(reason);
+        continue;
+      }
+
+      existing.count += count;
+      existing.triggers.push({ trigger, count });
     }
 
+    // The GROUP BY is by (detail, trigger), so a detail spread over several
+    // triggers arrives as several rows and its folded count can pass a detail
+    // ordered ahead of it. Re-sorting on the folded counts keeps the render cap
+    // cutting the smallest details rather than the ones that happened to arrive
+    // undivided.
+    reasons.sort((a, b) => b.count - a.count || a.detail.localeCompare(b.detail));
+
     return { total, without_detail: withoutDetail, reasons };
+  }
+
+  /**
+   * Where one outcome's rows sit among the window's other wakes: how many wakes
+   * that did not land in the bucket fall strictly between its first and last row,
+   * and whether the wake immediately before its first row carries the same
+   * outcome. The second read deliberately ignores the window -- the table retains
+   * more than the window covers, and a run clipped by the window edge is exactly
+   * the case a count inside the window cannot distinguish from a run that began
+   * there.
+   */
+  describeOutcomeSpanSince(
+    ts: number,
+    outcome: AutonomyWakeOutcome,
+  ): AutonomyWakeOutcomeSpan | null {
+    const bounds = this.db
+      .prepare(
+        `
+          SELECT MIN(ts) AS first_ts, MAX(ts) AS last_ts, COUNT(*) AS count
+          FROM autonomy_wakes
+          WHERE ts >= ? AND outcome = ?
+        `,
+      )
+      .get(ts, outcome) as { first_ts: unknown; last_ts: unknown; count: unknown } | undefined;
+
+    const count = Number(bounds?.count ?? 0);
+
+    if (count === 0 || typeof bounds?.first_ts !== "number" || typeof bounds.last_ts !== "number") {
+      return null;
+    }
+
+    const between = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM autonomy_wakes
+          WHERE ts > ? AND ts < ? AND (outcome IS NULL OR outcome != ?)
+        `,
+      )
+      .get(bounds.first_ts, bounds.last_ts, outcome) as { count: unknown } | undefined;
+
+    const previous = this.db
+      .prepare(
+        `
+          SELECT outcome
+          FROM autonomy_wakes
+          WHERE ts < ?
+          ORDER BY ts DESC
+          LIMIT 1
+        `,
+      )
+      .get(bounds.first_ts) as { outcome: unknown } | undefined;
+
+    return {
+      other_outcomes_between: Number(between?.count ?? 0),
+      extends_before_window: previous === undefined ? null : previous.outcome === outcome,
+    };
   }
 
   prune(olderThan: number): number {
