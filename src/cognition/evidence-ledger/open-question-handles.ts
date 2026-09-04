@@ -117,8 +117,10 @@ export function relevantOpenQuestionEpisodeIds(input: EvidenceLedgerBuildInput):
 export function openQuestionStateMetadata(
   question: OpenQuestion,
   nowMs?: number,
+  staleNoTractionTicks?: number,
 ): Record<string, unknown> | undefined {
   if (question.status === "open") {
+    const ticks = question.unresolved_rumination_ticks;
     return {
       created_at: new Date(question.created_at).toISOString(),
       last_touched: new Date(question.last_touched).toISOString(),
@@ -127,6 +129,25 @@ export function openQuestionStateMetadata(
         : {
             created_relative_age: formatRelativeAge(question.created_at, nowMs),
             last_touched_relative_age: formatRelativeAge(question.last_touched, nowMs),
+          }),
+      unresolved_rumination_ticks: ticks,
+      last_ruminated_at:
+        question.last_ruminated_at === null
+          ? null
+          : new Date(question.last_ruminated_at).toISOString(),
+      ...(nowMs === undefined || question.last_ruminated_at === null
+        ? {}
+        : { last_ruminated_relative_age: formatRelativeAge(question.last_ruminated_at, nowMs) }),
+      ...(staleNoTractionTicks === undefined
+        ? {}
+        : { dismissal_threshold_ticks: staleNoTractionTicks }),
+      // The count is inert at zero and self-describing there, so the sentence is spent only on
+      // rows where the number is live and could be read as sufficient on its own.
+      ...(ticks === 0
+        ? {}
+        : {
+            unresolved_rumination_ticks_note:
+              "Offline passes that ended with this question still open; the count on its own does not close it, because that dismissal also requires no episode created after the question citing it and no active action against it. Zero on another row means the loop has never selected that question, not that it is fresh.",
           }),
     };
   }

@@ -7,14 +7,14 @@ import {
   SessionBusyError,
   findInErrorCauseChain,
 } from "../util/errors.js";
-import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
+import { DEFAULT_SESSION_ID, goalIdHelpers, type GoalId, type SessionId } from "../util/ids.js";
 import type { ToolDispatcher } from "../tools/dispatcher.js";
 import { classifySuppressionReason } from "../cognition/generation/suppression-outcome.js";
 import type { TurnOrchestrator, TurnResult } from "../cognition/index.js";
 import { memoryDisclosurePayloadFields } from "../memory/common/disclosure-serializers.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
-import type { GoalsRepository } from "../memory/self/index.js";
+import { goalStatusSchema, type GoalsRepository, type GoalStatus } from "../memory/self/index.js";
 import { selfPrivateMemoryDisclosureLabel } from "../memory/common/disclosure-label.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../tools/internal/outbound-post-name.js";
 
@@ -30,7 +30,11 @@ import type {
   TickResult,
   DueEvent,
 } from "./types.js";
-import { AUTONOMY_WAKE_SOURCE_METADATA, AUTONOMY_WAKE_SOURCE_NAMES } from "./types.js";
+import {
+  AUTONOMY_WAKE_SOURCE_METADATA,
+  AUTONOMY_WAKE_SOURCE_NAMES,
+  HEADWAY_EMISSION_KINDS,
+} from "./types.js";
 import type { AutonomyWakesRepository } from "./wakes-repository.js";
 import {
   getExecutiveFocusGoalStaleBackoffProcessName,
@@ -42,8 +46,10 @@ import {
   emptyFleetBrakeMetadata,
   fleetBrakeCooldownUntilMs,
   fleetBrakeErrorPausedUntilMs,
+  fleetBrakeMetadataAfterOperationalWake,
   readFleetBrakeMetadata,
   type FleetBrakeMetadata,
+  type FleetBrakeOperationalWakeDisposition,
   type FleetBrakeOptions,
 } from "./fleet-brake.js";
 
@@ -57,9 +63,15 @@ type FleetAdmissionDecision = {
   bypassKind: "deadline" | "freshness" | null;
   metadata: FleetBrakeMetadata | null;
 };
+type GoalWakeSnapshot = {
+  goalId: string;
+  lastProgressTs: number | null;
+  status: GoalStatus | null;
+};
 type GoalWakeOutcome = {
-  headway: boolean;
-  concern: ReturnType<typeof goalConcernPayload>;
+  goalAttributedHeadway: boolean;
+  bases: string[];
+  backoffConcern: GoalWakeSnapshot | null;
 };
 type ScannedDueEvent = { source: AutonomyWakeSource; event: DueEvent };
 type ScannedDueEvents = {
@@ -75,6 +87,7 @@ type GoalWakePresentation = {
   priority: number;
   target_at: number | null;
   last_progress_ts: number | null;
+  status: GoalStatus | null;
   reason: unknown;
   disclosure: string;
   disclosure_label: Record<string, unknown>;
@@ -98,7 +111,7 @@ const WAKE_PRUNE_SAFETY_BUFFER_MS = 7 * 24 * 60 * 60 * 1_000;
 // latency-sensitive, and the dispatcher's 5s default is too tight for that
 // search under load, which made prep fail and the trigger retry-loop. Live/
 // reactive tool calls keep the 5s default; only prep gets this longer bound.
-const AUTONOMY_PREP_TOOL_TIMEOUT_MS = 30_000;
+const DEFAULT_AUTONOMY_PREP_TOOL_TIMEOUT_MS = 30_000;
 
 export type AutonomySchedulerObserver = {
   onTick?(result: TickResult): void | Promise<void>;
@@ -112,6 +125,7 @@ export type AutonomySchedulerStopOptions = {
 export type AutonomySchedulerOptions = {
   enabled: boolean;
   intervalMs: number;
+  prepToolTimeoutMs?: number;
   maxWakesPerWindow: number;
   goalWakeBatchMax?: number;
   budgetWindowMs: number;
@@ -275,6 +289,7 @@ function goalWakePresentation(event: DueEvent): GoalWakePresentation | null {
     priority,
     target_at: targetAt,
     last_progress_ts: lastProgressTs,
+    status: concern.status,
     reason: event.payload.reason,
     disclosure,
     disclosure_label: disclosureLabel,
@@ -301,10 +316,31 @@ function isDeadlineGoalWake(event: DueEvent): boolean {
   );
 }
 
-export function goalConcernPayload(event: DueEvent): {
-  goalId: string;
-  lastProgressTs: number | null;
-} | null {
+function executiveFocusGoalSnapshot(event: DueEvent): GoalWakeSnapshot | null {
+  if (
+    event.sourceType !== "trigger" ||
+    event.sourceName !== "executive_focus_due" ||
+    typeof event.payload.selected_goal_id !== "string" ||
+    !isRecord(event.payload.selected_goal)
+  ) {
+    return null;
+  }
+
+  const lastProgressTs = event.payload.selected_goal.last_progress_ts;
+  const parsedStatus = goalStatusSchema.safeParse(event.payload.selected_goal.status);
+
+  if (lastProgressTs !== null && typeof lastProgressTs !== "number") {
+    return null;
+  }
+
+  return {
+    goalId: event.payload.selected_goal_id,
+    lastProgressTs,
+    status: parsedStatus.success ? parsedStatus.data : null,
+  };
+}
+
+export function goalConcernPayload(event: DueEvent): GoalWakeSnapshot | null {
   if (event.sourceType !== "trigger") {
     return null;
   }
@@ -313,6 +349,8 @@ export function goalConcernPayload(event: DueEvent): {
 
   if (event.sourceName === "goal_followup_due") {
     const lastProgressTs = payload.last_progress_ts;
+    const selectedGoal = isRecord(payload.selected_goal) ? payload.selected_goal : null;
+    const parsedStatus = goalStatusSchema.safeParse(selectedGoal?.status);
 
     if (
       typeof payload.goal_id !== "string" ||
@@ -324,28 +362,30 @@ export function goalConcernPayload(event: DueEvent): {
     return {
       goalId: payload.goal_id,
       lastProgressTs,
+      status: parsedStatus.success ? parsedStatus.data : null,
     };
   }
 
-  if (
-    event.sourceName !== "executive_focus_due" ||
-    payload.reason !== "goal_stale" ||
-    typeof payload.selected_goal_id !== "string" ||
-    !isRecord(payload.selected_goal)
-  ) {
+  if (event.sourceName !== "executive_focus_due" || payload.reason !== "goal_stale") {
     return null;
   }
 
-  const lastProgressTs = payload.selected_goal.last_progress_ts;
+  return executiveFocusGoalSnapshot(event);
+}
 
-  if (lastProgressTs !== null && typeof lastProgressTs !== "number") {
+function namedGoalSnapshot(event: DueEvent): GoalWakeSnapshot | null {
+  return goalConcernPayload(event) ?? executiveFocusGoalSnapshot(event);
+}
+
+function selectedGoalIdForWake(event: DueEvent): GoalId | null {
+  if (event.sourceName !== "goal_followup_due" && event.sourceName !== "executive_focus_due") {
     return null;
   }
 
-  return {
-    goalId: payload.selected_goal_id,
-    lastProgressTs,
-  };
+  const selectedGoalId = event.payload.selected_goal_id;
+  return typeof selectedGoalId === "string" && goalIdHelpers.is(selectedGoalId)
+    ? selectedGoalId
+    : null;
 }
 
 function outboundPostEmitted(call: TurnResult["toolCalls"][number]): boolean {
@@ -372,44 +412,173 @@ function deliveredOutboundPost(turnResult: TurnResult): boolean {
   return turnResult.toolCalls.some(outboundPostEmitted);
 }
 
-export function turnEmittedHeadway(turnResult: TurnResult): boolean {
-  const emissionKind = turnResult.emission?.kind;
+/**
+ * The states `tool.outbound.post` reports other than `delivered`. Held as an
+ * explicit set rather than echoed from the field so an unrecognised value
+ * widens the silent-reason tally by one bucket instead of one per value.
+ */
+const OUTBOUND_POST_UNDELIVERED_STATES: ReadonlySet<string> = new Set([
+  "suppressed",
+  "not_emitted",
+  "not_transportable",
+  "transport_failed",
+  "target_busy",
+]);
 
+function undeliveredOutboundPostState(call: TurnResult["toolCalls"][number]): string | null {
+  if (call.name !== OUTBOUND_POST_TOOL_NAME) {
+    return null;
+  }
+
+  if (!call.ok) {
+    return "call_failed";
+  }
+
+  if (!isRecord(call.output) || !isRecord(call.output.outbound)) {
+    return "unknown_state";
+  }
+
+  const outbound = call.output.outbound;
+  const deliveryOutcome = outbound.delivery_outcome;
+
+  if (!isRecord(deliveryOutcome)) {
+    // Results written before `delivery_outcome` existed carry only `emitted`,
+    // which says the target turn produced a message and nothing about carriage.
+    return outbound.emitted === true ? null : "unknown_state";
+  }
+
+  const state = deliveryOutcome.state;
+
+  if (state === "delivered") {
+    return null;
+  }
+
+  return typeof state === "string" && OUTBOUND_POST_UNDELIVERED_STATES.has(state)
+    ? state
+    : "unknown_state";
+}
+
+function firstUndeliveredOutboundPostState(turnResult: TurnResult): string | null {
+  for (const call of turnResult.toolCalls) {
+    const state = undeliveredOutboundPostState(call);
+
+    if (state !== null) {
+      return state;
+    }
+  }
+
+  return null;
+}
+
+const HEADWAY_EMISSION_DETAIL_BY_KIND = {
+  message: "emitted message",
+  continue_thought: "continue_thought",
+} as const satisfies Record<(typeof HEADWAY_EMISSION_KINDS)[number], string>;
+
+export function turnEmissionHeadwayBases(turnResult: TurnResult): string[] {
+  const bases: string[] = [];
+  const emissionKind = turnResult.emission?.kind;
+  const headwayEmissionKind = HEADWAY_EMISSION_KINDS.find((kind) => kind === emissionKind);
+
+  if (headwayEmissionKind !== undefined) {
+    bases.push(HEADWAY_EMISSION_DETAIL_BY_KIND[headwayEmissionKind]);
+  }
+
+  if (deliveredOutboundPost(turnResult)) {
+    bases.push("delivered outbound post");
+  }
+
+  return bases;
+}
+
+export function turnEmittedHeadway(turnResult: TurnResult): boolean {
+  return turnEmissionHeadwayBases(turnResult).length > 0;
+}
+
+function goalRetiredByTurnTool(turnResult: TurnResult, goalId: string): boolean {
+  return turnResult.toolCalls.some((call) => {
+    if (
+      call.name !== "tool.goals.retire" ||
+      !call.ok ||
+      !isRecord(call.input) ||
+      call.input.goal_id !== goalId ||
+      !isRecord(call.output) ||
+      call.output.status !== "applied" ||
+      !isRecord(call.output.goal)
+    ) {
+      return false;
+    }
+
+    return call.output.goal.id === goalId && call.output.goal.status === "abandoned";
+  });
+}
+
+function goalRetiredByTurnReflection(turnResult: TurnResult, goalId: string): boolean {
   return (
-    emissionKind === "message" ||
-    emissionKind === "continue_thought" ||
-    deliveredOutboundPost(turnResult)
+    turnResult.reflectionRetiredGoalIds?.some((retiredGoalId) => retiredGoalId === goalId) ?? false
   );
 }
+
+type SilentWakeOutcome = {
+  detail: string;
+  fleetBrakeDisposition: Exclude<FleetBrakeOperationalWakeDisposition, "reset">;
+};
 
 /**
  * What ended a wake the scheduler is about to record as `silent`. The complement
  * of `turnEmittedHeadway` is a union rather than a behaviour -- a closure the
  * entity chose, an emission that failed on its way out, and a guard that blocked
- * one all land in it -- and the fleet brake advances `empty_streak` on all three
- * identically. The class is already computed for the wake's own narrative, so
- * writing it here is a route to the counter's surface, not a new judgment.
+ * one all land in it. The first two advance the fleet brake's `empty_streak`; a
+ * guard block leaves it unchanged. The class is already computed for the wake's
+ * own narrative, so this one result drives both the counter and its diagnostic
+ * row rather than making the same judgment twice.
  *
- * Structure only: emission kind and the suppression enum, never words from what
- * was (or wasn't) said, so it is multilingual-safe and groups exactly.
+ * Structure only: emission kind, the suppression enum, and the outbound state
+ * enum, never words from what was (or wasn't) said, so it is multilingual-safe
+ * and groups exactly.
+ *
+ * An outbound post that did not come back `delivered` takes precedence over the
+ * emission label. `turnEmittedHeadway` already reads that state, and then the
+ * wake's own reason discarded it: a turn that reached and did not land usually
+ * closes with `finalizer_no_output`, so the recorded ending said the entity
+ * chose the silence when carriage refused it. This branch only runs on the
+ * silent path, where by construction no post was delivered.
  *
  * Reads the emission defensively even though the type declares it present: this
  * runs inside the block that persists the wake's outcome, so a throw here would
  * turn a wake that completed fine into a bookkeeping error. An absent emission
  * is a missing label, not a failed wake, and says so.
  */
-export function silentWakeOutcomeDetail(turnResult: TurnResult): string {
+function silentWakeOutcome(turnResult: TurnResult): SilentWakeOutcome {
+  const undelivered = firstUndeliveredOutboundPostState(turnResult);
+
+  if (undelivered !== null) {
+    return {
+      detail: `outbound-undelivered: ${undelivered}`,
+      fleetBrakeDisposition: "advance",
+    };
+  }
+
   const emission = turnResult.emission as TurnResult["emission"] | undefined;
 
   if (emission === undefined || emission === null) {
-    return "no emission recorded";
+    return { detail: "no emission recorded", fleetBrakeDisposition: "advance" };
   }
 
   if (emission.kind !== "suppressed") {
-    return emission.kind;
+    return { detail: emission.kind, fleetBrakeDisposition: "advance" };
   }
 
-  return `${classifySuppressionReason(emission.reason)}: ${emission.reason}`;
+  const outcomeClass = classifySuppressionReason(emission.reason);
+
+  return {
+    detail: `${outcomeClass}: ${emission.reason}`,
+    fleetBrakeDisposition: outcomeClass === "guard-blocked" ? "hold" : "advance",
+  };
+}
+
+export function silentWakeOutcomeDetail(turnResult: TurnResult): string {
+  return silentWakeOutcome(turnResult).detail;
 }
 
 function goalProgressAdvanced(input: { before: number | null; after: number | null }): boolean {
@@ -421,6 +590,7 @@ export class AutonomyScheduler {
   private readonly sessionId: SessionId;
   private readonly setIntervalFn: typeof setInterval;
   private readonly clearIntervalFn: typeof clearInterval;
+  private readonly prepToolTimeoutMs: number;
   private readonly fleetBrakeOptions: FleetBrakeOptions;
   private readonly respectGoalFollowupStaleBackoff: boolean;
   private readonly retryBackoff = new Map<string, RetryBackoffState>();
@@ -443,6 +613,7 @@ export class AutonomyScheduler {
     this.sessionId = options.sessionId ?? DEFAULT_SESSION_ID;
     this.setIntervalFn = options.setIntervalFn ?? setInterval;
     this.clearIntervalFn = options.clearIntervalFn ?? clearInterval;
+    this.prepToolTimeoutMs = options.prepToolTimeoutMs ?? DEFAULT_AUTONOMY_PREP_TOOL_TIMEOUT_MS;
     this.fleetBrakeOptions = options.fleetBrake ?? { ...DEFAULT_FLEET_BRAKE_OPTIONS };
     this.respectGoalFollowupStaleBackoff = options.respectGoalFollowupStaleBackoff ?? true;
   }
@@ -741,6 +912,7 @@ export class AutonomyScheduler {
             silent: 0,
             error: 0,
             busy: 0,
+            interrupted: 0,
           },
         };
         wakeGroups.set(wake.trigger_name, group);
@@ -824,7 +996,16 @@ export class AutonomyScheduler {
           silent: this.options.wakeRepository.countSince(budgetCutoff, { outcome: "silent" }),
           error: this.options.wakeRepository.countSince(budgetCutoff, { outcome: "error" }),
           busy: this.options.wakeRepository.countSince(budgetCutoff, { outcome: "busy" }),
+          interrupted: this.options.wakeRepository.countSince(budgetCutoff, {
+            outcome: "interrupted",
+          }),
         },
+        // Same rows as window_outcomes.headway, one level down. Each detail is
+        // the ordered structural basis recorded when the turn completed.
+        window_headway_reasons: this.options.wakeRepository.summarizeOutcomeDetailsSince(
+          budgetCutoff,
+          "headway",
+        ),
         // Same rows as window_outcomes.error, one level down. The scheduler
         // formats the failure that ends a wake and writes it to the stream; it
         // used to drop it before this table, leaving `error=N` as a count whose
@@ -834,11 +1015,11 @@ export class AutonomyScheduler {
           budgetCutoff,
           "error",
         ),
-        // Same rows as window_outcomes.silent, one level down, and the same
-        // defect as the line above wearing different clothes: `silent` is the
+        // Same rows as window_outcomes.silent, one level down. `silent` is the
         // complement of headway, so a closure the entity chose, an emission that
-        // failed, and a guard that blocked one are one number here -- and one
-        // number in the empty_streak those rows drive.
+        // failed, and a guard that blocked one are one number here even though
+        // only the first two advance empty_streak. The detail is the same
+        // structural classification that selected the streak disposition.
         window_silent_reasons: this.options.wakeRepository.summarizeOutcomeDetailsSince(
           budgetCutoff,
           "silent",
@@ -1012,6 +1193,7 @@ export class AutonomyScheduler {
             session_id: this.sessionId,
             wake_source_type: dueEvent.sourceType,
             source_category: sourceCategory,
+            selected_goal_id: selectedGoalIdForWake(dueEvent),
           });
 
           const preparedEvent = await this.prepareEvent(dueEvent);
@@ -1155,6 +1337,7 @@ export class AutonomyScheduler {
           const decisionSummary = summarizeAutonomousDecision(turnResult);
           let perGoalOutcomes: Array<{ event: DueEvent; outcome: GoalWakeOutcome }>;
           let wakeHeadway: boolean;
+          let wakeHeadwayBases: string[];
 
           try {
             perGoalOutcomes =
@@ -1165,19 +1348,20 @@ export class AutonomyScheduler {
                       outcome: this.evaluateGoalWakeOutcome(preparedEvent.event, turnResult),
                     },
                   ]
-                : wakeBatch.goalGroups.map((group, index) => {
+                : wakeBatch.goalGroups.map((group) => {
                     const event = this.goalOutcomeEvent(group);
 
                     return {
                       event,
-                      outcome: this.evaluateGoalWakeOutcome(event, turnResult, {
-                        allowTurnLevelHeadway: index === 0,
-                      }),
+                      outcome: this.evaluateGoalWakeOutcome(event, turnResult),
                     };
                   });
-            wakeHeadway =
-              turnEmittedHeadway(turnResult) ||
-              perGoalOutcomes.some(({ outcome }) => outcome.headway);
+            wakeHeadwayBases = [
+              ...turnEmissionHeadwayBases(turnResult),
+              ...perGoalOutcomes.flatMap(({ outcome }) => outcome.bases),
+            ];
+            wakeHeadway = wakeHeadwayBases.length > 0;
+            const silentOutcome = wakeHeadway ? null : silentWakeOutcome(turnResult);
             // A completed turn's structural outcome is authoritative. Persist
             // fleet headway before any stream/latch/introspection bookkeeping
             // can fail and accidentally preserve an empty streak.
@@ -1185,16 +1369,31 @@ export class AutonomyScheduler {
               event: dueEvent,
               sourceCategory,
               turnResult,
-              headway: wakeHeadway,
+              operationalDisposition:
+                silentOutcome === null ? "reset" : silentOutcome.fleetBrakeDisposition,
               bypassKind: fleetAdmission.bypassKind,
               admissionMetadata: fleetAdmission.metadata,
             });
             this.options.wakeRepository.recordOutcome(
               wakeRecord.id,
               wakeHeadway ? "headway" : "silent",
-              wakeHeadway ? null : silentWakeOutcomeDetail(turnResult),
+              wakeHeadway ? null : (silentOutcome?.detail ?? null),
+              wakeHeadway ? wakeHeadwayBases : null,
             );
           } catch (error) {
+            const outcomeSummary = `Autonomous turn completed; bookkeeping failed: ${formatError(error)}`;
+            let interruptedOutcomeError: unknown;
+
+            try {
+              this.options.wakeRepository.recordOutcome(
+                wakeRecord.id,
+                "interrupted",
+                outcomeSummary,
+              );
+            } catch (recordError) {
+              interruptedOutcomeError = recordError;
+            }
+
             firedEvents += 1;
             bookkeepingErrorCount += 1;
             this.scheduleBatchRetryBackoff(wakeBatch);
@@ -1202,12 +1401,17 @@ export class AutonomyScheduler {
             eventResults.push(
               ...this.eventResultsForBatch(wakeBatch, {
                 status: "bookkeeping_error",
-                outcomeSummary: `Autonomous turn completed; bookkeeping failed: ${formatError(error)}`,
+                outcomeSummary,
                 turnResultId: turnResult.agentMessageId ?? null,
                 error: formatError(bookkeepingError),
               }),
             );
             await this.notifyError(bookkeepingError);
+            if (interruptedOutcomeError !== undefined) {
+              await this.notifyError(
+                new AutonomyBookkeepingError(dueEvent, interruptedOutcomeError),
+              );
+            }
             continue;
           }
 
@@ -1312,43 +1516,54 @@ export class AutonomyScheduler {
     }
   }
 
-  private evaluateGoalWakeOutcome(
-    event: DueEvent,
-    turnResult: TurnResult,
-    options: { allowTurnLevelHeadway?: boolean } = {},
-  ): GoalWakeOutcome {
-    const parsedConcern = goalConcernPayload(event);
-    const concern =
+  private evaluateGoalWakeOutcome(event: DueEvent, turnResult: TurnResult): GoalWakeOutcome {
+    const attributionSnapshot = namedGoalSnapshot(event);
+    const parsedBackoffConcern = goalConcernPayload(event);
+    const backoffConcern =
       event.sourceName === "goal_followup_due" && !this.respectGoalFollowupStaleBackoff
         ? null
-        : parsedConcern;
-    const emittedHeadway = turnEmittedHeadway(turnResult);
-
-    if (concern === null || (options.allowTurnLevelHeadway !== false && emittedHeadway)) {
+        : parsedBackoffConcern;
+    if (attributionSnapshot === null) {
       return {
-        headway: emittedHeadway,
-        concern,
+        goalAttributedHeadway: false,
+        bases: [],
+        backoffConcern,
       };
     }
 
     const currentGoal =
-      this.options.goalsRepository?.get(concern.goalId as Parameters<GoalsRepository["get"]>[0]) ??
-      null;
-    const currentLastProgressTs = currentGoal?.last_progress_ts ?? concern.lastProgressTs;
+      this.options.goalsRepository?.get(
+        attributionSnapshot.goalId as Parameters<GoalsRepository["get"]>[0],
+      ) ?? null;
+    const currentLastProgressTs =
+      currentGoal?.last_progress_ts ?? attributionSnapshot.lastProgressTs;
     const progressedDuringTurn = goalProgressAdvanced({
-      before: concern.lastProgressTs,
+      before: attributionSnapshot.lastProgressTs,
       after: currentLastProgressTs,
     });
-    const closedDuringTurn = currentGoal !== null && currentGoal.status !== "active";
+    const statusChangedToClosed =
+      attributionSnapshot.status !== null &&
+      attributionSnapshot.status === "active" &&
+      currentGoal !== null &&
+      currentGoal.status !== attributionSnapshot.status;
+    const closedByTurn =
+      statusChangedToClosed &&
+      (goalRetiredByTurnTool(turnResult, attributionSnapshot.goalId) ||
+        goalRetiredByTurnReflection(turnResult, attributionSnapshot.goalId));
+    const bases = [
+      ...(progressedDuringTurn ? [`progress recorded on ${attributionSnapshot.goalId}`] : []),
+      ...(closedByTurn ? [`goal ${attributionSnapshot.goalId} retired by this turn`] : []),
+    ];
 
     return {
-      headway: progressedDuringTurn || closedDuringTurn,
-      concern,
+      goalAttributedHeadway: bases.length > 0,
+      bases,
+      backoffConcern,
     };
   }
 
   private applyPerGoalEmptyWakeBackoff(event: DueEvent, outcome: GoalWakeOutcome): void {
-    const concern = outcome.concern;
+    const concern = outcome.backoffConcern;
 
     if (
       concern === null ||
@@ -1359,7 +1574,7 @@ export class AutonomyScheduler {
 
     const processName = getExecutiveFocusGoalStaleBackoffProcessName(concern.goalId);
 
-    if (outcome.headway) {
+    if (outcome.goalAttributedHeadway) {
       this.options.watermarkRepository.reset(processName, this.sessionId);
       return;
     }
@@ -1503,7 +1718,7 @@ export class AutonomyScheduler {
     event: DueEvent;
     sourceCategory: AutonomyWakeSourceCategory;
     turnResult: TurnResult;
-    headway: boolean;
+    operationalDisposition: FleetBrakeOperationalWakeDisposition;
     bypassKind: FleetAdmissionDecision["bypassKind"];
     admissionMetadata: FleetBrakeMetadata | null;
   }): void {
@@ -1513,28 +1728,26 @@ export class AutonomyScheduler {
 
     const nowMs = this.clock.now();
     const current = input.admissionMetadata ?? emptyFleetBrakeMetadata();
-    const next: FleetBrakeMetadata = {
-      ...current,
-      error_streak: 0,
-      last_error_ts: 0,
-    };
+    let next: FleetBrakeMetadata;
 
     if (input.sourceCategory === "operational") {
-      if (input.headway) {
+      next = fleetBrakeMetadataAfterOperationalWake(current, {
+        disposition: input.operationalDisposition,
+        nowMs,
+        freshnessBypass: input.bypassKind === "freshness",
+      });
+    } else {
+      next = {
+        ...current,
+        error_streak: 0,
+        last_error_ts: 0,
+      };
+
+      if (deliveredOutboundPost(input.turnResult)) {
         next.empty_streak = 0;
         next.streak_anchor_ts = 0;
-        next.last_wake_ts = nowMs;
         next.bypass_count = 0;
-      } else {
-        next.empty_streak = current.empty_streak + 1;
-        next.streak_anchor_ts = current.empty_streak === 0 ? nowMs : current.streak_anchor_ts;
-        next.last_wake_ts = nowMs;
-        next.bypass_count = current.bypass_count + (input.bypassKind === "freshness" ? 1 : 0);
       }
-    } else if (deliveredOutboundPost(input.turnResult)) {
-      next.empty_streak = 0;
-      next.streak_anchor_ts = 0;
-      next.bypass_count = 0;
     }
 
     this.writeFleetBrakeState(input.event, next, nowMs);
@@ -1804,7 +2017,7 @@ export class AutonomyScheduler {
           origin: "autonomous",
           sessionId: this.sessionId,
           provenance,
-          timeoutMs: AUTONOMY_PREP_TOOL_TIMEOUT_MS,
+          timeoutMs: this.prepToolTimeoutMs,
         });
 
         if (!result.ok) {
@@ -1842,7 +2055,7 @@ export class AutonomyScheduler {
           origin: "autonomous",
           sessionId: this.sessionId,
           provenance,
-          timeoutMs: AUTONOMY_PREP_TOOL_TIMEOUT_MS,
+          timeoutMs: this.prepToolTimeoutMs,
         });
 
         if (!result.ok) {
@@ -1876,7 +2089,7 @@ export class AutonomyScheduler {
           origin: "autonomous",
           sessionId: this.sessionId,
           provenance,
-          timeoutMs: AUTONOMY_PREP_TOOL_TIMEOUT_MS,
+          timeoutMs: this.prepToolTimeoutMs,
         });
 
         if (!result.ok) {

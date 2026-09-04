@@ -257,6 +257,8 @@ export type DeliberationContext = {
   deliberationPath?: "system_1" | "system_2";
   retrievalConfidence?: RetrievalConfidence | null;
   applicableCommitments?: readonly CommitmentRecord[];
+  /** Store-read time for the active commitment membership assembled for this turn. */
+  applicableCommitmentsReadAtMs?: number;
   /** Canonical names resolved during turn assembly for commitment scope refs. */
   commitmentEntityLabels?: Readonly<Record<string, string>>;
   openQuestionsContext?: readonly OpenQuestion[];

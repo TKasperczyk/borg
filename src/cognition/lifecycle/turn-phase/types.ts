@@ -41,6 +41,7 @@ import type {
 } from "../../../memory/activity/index.js";
 import type { ActionRepository } from "../../../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../../../memory/commitments/index.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../../../memory/common/index.js";
 import type { CreatorDirectiveRepository } from "../../../memory/creator-directives/index.js";
 import type { SharedStateRepository } from "../../../memory/shared-state/index.js";
 import type { EpisodicRepository } from "../../../memory/episodic/index.js";
@@ -70,7 +71,7 @@ import type {
 } from "../../../stream/index.js";
 import type { ToolDispatcher } from "../../../tools/dispatcher.js";
 import type { Clock } from "../../../util/clock.js";
-import type { EntityId, SessionId } from "../../../util/ids.js";
+import type { EntityId, GoalId, SessionId } from "../../../util/ids.js";
 import type { TurnLifecycleTracker } from "../turn-lifecycle-tracker.js";
 import type { AutonomySchedulerDescription } from "../../../autonomy/index.js";
 
@@ -107,6 +108,7 @@ export type TurnPhaseResult = {
   referencedEpisodeIds: string[];
   intents: IntentRecord[];
   toolCalls: ToolLoopCallRecord[];
+  reflectionRetiredGoalIds?: GoalId[];
   agentMessageId?: string;
   outboundDelivery?: OutboundDeliveryReceipt;
   terminalOutcome?: TurnTerminalOutcome;
@@ -128,6 +130,7 @@ export type TurnPhaseCoordinatorOptions = {
   actionRepository: Pick<ActionRepository, "get" | "list" | "update"> &
     Partial<Pick<ActionRepository, "findSimilarDescriptionPairs">>;
   commitmentRepository: CommitmentRepository;
+  sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   creatorDirectiveRepository: CreatorDirectiveRepository;
   sharedStateRepository: Pick<SharedStateRepository, "get" | "upsert"> &
     Partial<Pick<SharedStateRepository, "listRecentEntriesForCognition">>;

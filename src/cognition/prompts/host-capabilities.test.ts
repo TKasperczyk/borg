@@ -63,6 +63,21 @@ describe("buildHostCapabilitiesSection", () => {
     expect(section).toContain(
       "the cross-session activity record for a post is written only when the connector accepted it",
     );
+    // The withholding gate is one reader among several, and the one that matters most to a wake is
+    // the classifier: `turnEmittedHeadway` reads the same delivery state (pinned in
+    // src/autonomy/scheduler.test.ts), so headway-versus-silence can turn on the connector rather
+    // than on the emission. Both halves are asserted here because the line claims both.
+    expect(section).toContain("that outcome has several readers and only one of them withholds");
+    expect(section).toContain(
+      "the action record for the attempt is written either way and carries the refusal in its state",
+    );
+    expect(section).toContain(
+      "counts that wake as headway even when I emitted nothing else, and a refusal leaves it counted as silence",
+    );
+    // A hand-counted census of readers, written into prose that is never recomputed, goes false
+    // silently the next time one is added -- which is how this line came to tell the entity that
+    // the classifier it is describing could not exist. The block states the shape and no count.
+    expect(section).not.toContain("read in exactly one place");
     expect(section).toContain(
       "autobiographical recall re-reads that result into an outbound_attempt row bearing the delivery outcome",
     );

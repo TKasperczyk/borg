@@ -82,6 +82,7 @@ type ActionArchiveScanResult = {
 type PersistedMessageEmission = {
   entry: StreamEntry;
   outboundDelivery?: OutboundDeliveryReceipt;
+  journalEntryId?: number;
 };
 
 function currentTurnSharedStateEntries(input: {
@@ -238,7 +239,10 @@ async function persistContinueThoughtEmission(input: {
     audience: input.turnInput.audience,
   });
 
-  return { entry };
+  return {
+    entry,
+    journalEntryId: stored.id,
+  };
 }
 
 function advanceChatResponseWatermark(input: {
@@ -638,11 +642,18 @@ export async function runPostGenerationPhase(input: {
   });
   const activityRepository = input.options.activityRepository;
 
-  // This is the only read of a delivery outcome anywhere downstream of `deliver`, and it reads it
-  // to withhold: a directed-outbound post that failed or found no connector records no activity
-  // event, while every other origin (`outboundDelivery === undefined`) always records one. Success
-  // itself appends no stream event, so the activity row -- not the stream -- is where the
-  // difference between a carried post and a refused one survives, and it survives as an absence.
+  // This gate reads the delivery outcome to withhold: a directed-outbound post that failed or found
+  // no connector records no activity event, while every other origin (`outboundDelivery ===
+  // undefined`) always records one. Success itself appends no stream event, so the activity row --
+  // not the stream -- is where the difference between a carried post and a refused one survives,
+  // and it survives as an absence.
+  //
+  // It is not the only reader of that outcome downstream of `deliver`, and it is the only one that
+  // withholds. The tool that started this turn writes an action record from the same outcome either
+  // way, and the autonomy scheduler reads it again to decide whether the posting wake is recorded
+  // as headway or as silence. An earlier version of this comment asserted uniqueness, and the
+  // prompt line derived from it repeated the claim to the entity; both went stale the moment a
+  // reader was added elsewhere. Count readers at the call sites, not from here.
   const shouldRecordActivity =
     persistedEmission.outboundDelivery === undefined ||
     persistedEmission.outboundDelivery.status === "transported";
@@ -824,7 +835,7 @@ export async function runPostGenerationPhase(input: {
     });
   }
 
-  await traceTurnPhase({
+  const reflection = await traceTurnPhase({
     tracer: input.options.tracer,
     clock: input.options.clock,
     turnId: input.turnId,
@@ -860,6 +871,8 @@ export async function runPostGenerationPhase(input: {
         sourceUserEntryIds: input.sourceUserEntryIds,
         persistedPerceptionEntry: input.persistedPerceptionEntry,
         persistedAgentEntry,
+        currentTurnJournalEntryIds:
+          persistedEmission.journalEntryId === undefined ? [] : [persistedEmission.journalEntryId],
         isUserTurn: input.isUserTurn,
         frameAnomaly: input.currentTurnFrameAnomaly,
         streamWriter: input.streamWriter,
@@ -934,6 +947,7 @@ export async function runPostGenerationPhase(input: {
     referencedEpisodeIds: [...(deliberation.referencedEpisodeIds ?? [])],
     intents: actionResult.intents,
     toolCalls: [...actionResult.tool_calls],
+    reflectionRetiredGoalIds: [...(reflection?.effects.retiredGoalIds ?? [])],
     ...(actionEmission.kind === "message" ? { agentMessageId: persistedAgentEntry.id } : {}),
     ...(persistedEmission.outboundDelivery === undefined
       ? {}

@@ -732,21 +732,23 @@ describe("consolidator process", () => {
     });
     const episodes = await harness.episodicRepository.listAll();
     const merged = episodes.find((episode) => episode.title === "Merged architecture pattern");
-    const expectedPrivateTo = [alice, bob].sort();
+    // Origins follow source raws by created_at (oldest first); disclosure targets stay sorted.
+    const expectedOriginAudiences = [alice, bob];
+    const expectedPrivateTo = [...expectedOriginAudiences].sort();
 
     expect(result.changes).toHaveLength(1);
     expect(merged?.episode_kind).toBe("consolidation_version");
     expect(merged?.lineage.derived_from).toEqual(sourceEpisodes.map((episode) => episode.id));
     expect(merged?.lineage.supersedes).toEqual(sourceEpisodes.map((episode) => episode.id));
     expect(merged?.audience_entity_id).toBeNull();
-    expect(merged?.origin_audience_entity_ids).toEqual(expectedPrivateTo);
+    expect(merged?.origin_audience_entity_ids).toEqual(expectedOriginAudiences);
     expect(merged?.shared).toBe(false);
     expect(
       sourceEpisodes.map((episode) => harness.episodicRepository.getStats(episode.id)?.archived),
     ).toEqual([false, false, false]);
     expect(memoryDisclosureLabelFromEpisodeAccess(merged!)).toEqual({
       disclosureClass: "relationship_private",
-      originAudienceEntityIds: expectedPrivateTo,
+      originAudienceEntityIds: expectedOriginAudiences,
       privateToEntityIds: expectedPrivateTo,
       publicToEntityIds: [],
     });

@@ -5,10 +5,11 @@ import type { ScheduledWakesRepository } from "../autonomy/index.js";
 import type { PromptSurfaceHistoryRepository } from "../cognition/prompts/prompt-surface-history.js";
 import {
   combineMemoryDisclosureLabels,
+  type SourceStreamAudienceDisclosureResolver,
   unknownMemoryDisclosureLabel,
 } from "../memory/common/index.js";
 import {
-  commitmentMemoryDisclosureLabel,
+  goalMemoryDisclosureLabel,
   identityEventMemoryDisclosureLabel,
 } from "../memory/common/disclosure-serializers.js";
 import type { CommitmentRepository } from "../memory/commitments/index.js";
@@ -20,7 +21,7 @@ import {
   type IdentityService,
 } from "../memory/identity/index.js";
 import type { SkillRepository } from "../memory/procedural/index.js";
-import type { GoalsRepository } from "../memory/self/index.js";
+import type { GoalsRepository, OpenQuestionsRepository } from "../memory/self/index.js";
 import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
 import {
   SELF_RECALL_SCOPE,
@@ -49,6 +50,7 @@ import {
   createJournalAppendTool,
   createOpenQuestionsCreateTool,
   createOpenQuestionsResolveTool,
+  createOpenQuestionsRuminationsTool,
   createOwnRecordsListTool,
   createPromptSurfaceChangesTool,
   createScheduledWakesCancelTool,
@@ -62,6 +64,7 @@ import type { BorgStreamWriterFactory } from "./types.js";
 export type BuildToolDispatcherOptions = {
   dataDir: string;
   entryIndex: StreamEntryIndexRepository;
+  sourceStreamAudienceDisclosureResolver: SourceStreamAudienceDisclosureResolver;
   retrievalPipeline: RetrievalPipeline;
   episodicRepository: EpisodicRepository;
   semanticNodeRepository: SemanticNodeRepository;
@@ -69,6 +72,7 @@ export type BuildToolDispatcherOptions = {
   commitmentRepository: CommitmentRepository;
   entityRepository: EntityRepository;
   goalsRepository: GoalsRepository;
+  openQuestionsRepository: OpenQuestionsRepository;
   identityService: IdentityService;
   skillRepository: SkillRepository;
   trainOfThoughtRepository: TrainOfThoughtRepository;
@@ -81,29 +85,40 @@ export type BuildToolDispatcherOptions = {
 async function identityEventDisclosureLabelsForCollection(
   events: readonly IdentityEvent[],
   episodicRepository: EpisodicRepository,
+  sourceStreamAudienceDisclosureResolver: SourceStreamAudienceDisclosureResolver,
 ): Promise<ReadonlyMap<IdentityEvent["id"], MemoryDisclosureLabel>> {
-  const episodeIds = [
-    ...new Set(
-      events.flatMap(
-        (event) => parseIdentityEventDisclosureSources(event).sourceEpisodeIds,
-      ),
-    ),
-  ];
+  const parsedSources = events.map((event) => parseIdentityEventDisclosureSources(event));
+  const episodeIds = [...new Set(parsedSources.flatMap((sources) => sources.sourceEpisodeIds))];
+  const commitmentLabels = sourceStreamAudienceDisclosureResolver.resolveLabels({
+    commitments: parsedSources.flatMap((sources) => sources.commitmentAccesses),
+  }).commitmentLabels;
+  let commitmentLabelOffset = 0;
+  const commitmentDisclosureLabelsByEvent = parsedSources.map((sources) => {
+    const labels = commitmentLabels.slice(
+      commitmentLabelOffset,
+      commitmentLabelOffset + sources.commitmentAccesses.length,
+    );
+    commitmentLabelOffset += sources.commitmentAccesses.length;
+    return labels;
+  });
   const episodes = episodeIds.length === 0 ? [] : await episodicRepository.getMany(episodeIds);
   const episodesById = new Map(episodes.map((episode) => [episode.id, episode]));
   const cachedEpisodicRepository: Pick<EpisodicRepository, "getMany"> = {
     async getMany(ids) {
-      return ids
-        .map((id) => episodesById.get(id))
-        .filter((episode) => episode !== undefined);
+      return ids.map((id) => episodesById.get(id)).filter((episode) => episode !== undefined);
     },
   };
-  const labels = await mapWithDisclosureConcurrency(events, async (event) => [
-    event.id,
-    await identityEventMemoryDisclosureLabel(event, {
-      episodicRepository: cachedEpisodicRepository,
-    }),
-  ] as const);
+  const labels = await mapWithDisclosureConcurrency(
+    events,
+    async (event, index) =>
+      [
+        event.id,
+        await identityEventMemoryDisclosureLabel(event, {
+          episodicRepository: cachedEpisodicRepository,
+          commitmentDisclosureLabels: commitmentDisclosureLabelsByEvent[index],
+        }),
+      ] as const,
+  );
 
   return new Map(labels);
 }
@@ -229,7 +244,9 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
           options.commitmentRepository.list({
             activeOnly: true,
           }),
-        disclosureLabelForCommitment: (commitment) => commitmentMemoryDisclosureLabel(commitment),
+        disclosureLabelsForCommitments: (commitments) =>
+          options.sourceStreamAudienceDisclosureResolver.resolveLabels({ commitments })
+            .commitmentLabelsById,
       }),
     )
     .register(
@@ -244,14 +261,30 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
           combineMemoryDisclosureLabels([
             ...(episodeIds.length === 0
               ? []
-              : [await resolveMemoryDisclosureLabelForEpisodeIds(options.episodicRepository, episodeIds)]),
+              : [
+                  await resolveMemoryDisclosureLabelForEpisodeIds(
+                    options.episodicRepository,
+                    episodeIds,
+                  ),
+                ]),
             ...streamEntryIds.map(() => unknownMemoryDisclosureLabel()),
           ]),
       }),
     )
     .register(
+      createOpenQuestionsRuminationsTool({
+        listRuminations: (listOptions) =>
+          options.openQuestionsRepository.listRuminationsInRange(listOptions),
+        getOpenQuestion: (id) => options.openQuestionsRepository.get(id),
+      }),
+    )
+    .register(
       createGoalsRetireTool({
         goalsRepository: options.goalsRepository,
+        disclosureLabelForGoal: (goal) =>
+          options.sourceStreamAudienceDisclosureResolver
+            .resolveLabels({ goals: [goal] })
+            .goalLabelsById.get(goal.id) ?? goalMemoryDisclosureLabel(goal),
       }),
     )
     .register(
@@ -283,7 +316,11 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
       createIdentityEventsListForCognitionTool({
         listEvents: (listOptions) => options.identityService.listEvents(listOptions),
         disclosureLabelsForEvents: (events) =>
-          identityEventDisclosureLabelsForCollection(events, options.episodicRepository),
+          identityEventDisclosureLabelsForCollection(
+            events,
+            options.episodicRepository,
+            options.sourceStreamAudienceDisclosureResolver,
+          ),
       }),
     )
     .register(

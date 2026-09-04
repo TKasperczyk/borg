@@ -856,6 +856,81 @@ describe("SharedStateRepository", () => {
     }
   });
 
+  // Pins the `removal_basis=destructive` line the render carries. An update overwrites `text` in
+  // place and a prune is a bare DELETE, so neither leaves the replaced body anywhere in the database
+  // -- there is no history table for these rows and nothing writes an audit event against them. If a
+  // later change starts retaining either, the render's claim becomes an under-claim and this fails.
+  it("keeps no prior body for an updated or pruned entry while supersede retains its predecessor", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const initial = repository.upsert(audience, [
+      {
+        type: "add",
+        state_key: "decision.route",
+        kind: "locked",
+        text: "original body",
+        provenance_stream_entry_ids: [source],
+      },
+      {
+        type: "add",
+        state_key: "decision.window",
+        kind: "live",
+        text: "doomed body",
+        provenance_stream_entry_ids: [source],
+      },
+    ]);
+    const updatedId = initial?.entries.find((entry) => entry.state_key === "decision.route")?.id;
+    const prunedId = initial?.entries.find((entry) => entry.state_key === "decision.window")?.id;
+
+    expect(updatedId).toBeDefined();
+    expect(prunedId).toBeDefined();
+
+    repository.upsert(audience, [
+      {
+        type: "update",
+        id: updatedId!,
+        state_key: "decision.route",
+        text: "replacement body",
+        last_updated_stream_entry_ids: [source],
+      },
+      {
+        type: "prune",
+        id: prunedId!,
+      },
+    ]);
+
+    const rowCountFor = (needle: string): number =>
+      (
+        db
+          .prepare("SELECT COUNT(*) AS count FROM shared_state_entries WHERE text LIKE ?")
+          .get(`%${needle}%`) as { count: number }
+      ).count;
+
+    expect(rowCountFor("replacement body")).toBe(1);
+    expect(rowCountFor("original body")).toBe(0);
+    expect(rowCountFor("doomed body")).toBe(0);
+    expect(repository.get(audience)?.entries.some((entry) => entry.id === prunedId)).toBe(false);
+
+    const superseded = repository.upsert(audience, [
+      {
+        type: "supersede",
+        id: updatedId!,
+        replacement: {
+          state_key: "decision.route",
+          kind: "locked",
+          text: "successor body",
+          provenance_stream_entry_ids: [source],
+        },
+        last_updated_stream_entry_ids: [source],
+      },
+    ]);
+
+    expect(superseded?.entries.find((entry) => entry.id === updatedId)?.text).toBe(
+      "replacement body",
+    );
+    expect(rowCountFor("replacement body")).toBe(1);
+  });
+
   it("rejects pruning a replacement entry while superseded entries still point to it", () => {
     const audience = createEntityId();
     const firstSource = createStreamEntryId();

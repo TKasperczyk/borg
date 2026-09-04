@@ -8,7 +8,15 @@ import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { parseEpisodeId, parseSemanticNodeId } from "../../util/ids.js";
+import {
+  createEntityId,
+  createOpenQuestionId,
+  parseEntityId,
+  parseEpisodeId,
+  parseOpenQuestionId,
+  parseSemanticNodeId,
+} from "../../util/ids.js";
+import { relationshipPrivateMemoryDisclosureLabel } from "../common/disclosure-label.js";
 import type { ReviewQueueItem } from "../review-queue/index.js";
 import { OpenQuestionsRepository, selfMigrations } from "./index.js";
 import {
@@ -73,6 +81,7 @@ describe("review open-question extractor", () => {
   });
 
   it("extracts a structured LLM proposal with the configured model", async () => {
+    const candidateId = parseOpenQuestionId("oq_aaaaaaaaaaaaaaaa");
     const llm = new FakeLLMClient({
       responses: [
         createToolResponse({
@@ -88,19 +97,41 @@ describe("review open-question extractor", () => {
       model: "bg-model",
     });
 
-    const proposal = await extractor.extract(createReviewItem(), createContext());
+    const proposal = await extractor.extract(
+      createReviewItem(),
+      createContext({
+        open_question_duplicate_candidates: {
+          complete: true,
+          total_open_questions: 1,
+          presented_count: 1,
+          omitted_count: 0,
+          rows: [
+            {
+              id: candidateId,
+              text_excerpt: "¿Qué atribución sigue sin resolverse?",
+              urgency: 0.4,
+              source: "reflection",
+              disclosure_label: relationshipPrivateMemoryDisclosureLabel([createEntityId()]),
+            },
+          ],
+        },
+      }),
+    );
 
     expect(proposal).toEqual({
       question: "¿Qué atribución debería conservar esta memoria?",
       urgency: 0.64,
       related_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
       related_semantic_node_ids: ["semn_aaaaaaaaaaaaaaaa"],
+      duplicate_of_open_question_id: null,
     });
     expect(llm.requests[0]?.model).toBe("bg-model");
     expect(llm.requests[0]?.tool_choice).toEqual({
       type: "tool",
       name: TOOL_NAME,
     });
+    expect(String(llm.requests[0]?.messages[0]?.content)).toContain(candidateId);
+    expect(String(llm.requests[0]?.messages[0]?.content)).toContain('"complete":true');
   });
 
   it("fails closed and emits degraded observability when no LLM is configured", async () => {
@@ -373,6 +404,110 @@ describe("review open-question extractor", () => {
     expect(openQuestions[0]?.urgency).toBeCloseTo(0.63);
   });
 
+  it("honors a presented model duplicate across audiences and folds evidence fail-closed", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...selfMigrations],
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+    cleanup.push(() => {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+    // Keep source order deliberately opposite lexical ID order.
+    const firstAudience = parseEntityId("ent_bbbbbbbbbbbbbbbb");
+    const secondAudience = parseEntityId("ent_aaaaaaaaaaaaaaaa");
+    const firstEpisodeId = parseEpisodeId("ep_bbbbbbbbbbbbbbbb");
+    const secondEpisodeId = parseEpisodeId("ep_aaaaaaaaaaaaaaaa");
+    const existing = repository.add({
+      question: "Which attribution remains unsettled?",
+      urgency: 0.41,
+      audience_entity_id: firstAudience,
+      disclosure_label: relationshipPrivateMemoryDisclosureLabel([firstAudience]),
+      related_episode_ids: [firstEpisodeId],
+      source: "overseer",
+      provenance: { kind: "offline", process: "overseer" },
+    });
+    const extractor = {
+      extract: vi.fn(async (_item: ReviewQueueItem, context: ReviewOpenQuestionContext) => {
+        expect(context.open_question_duplicate_candidates).toMatchObject({
+          complete: true,
+          total_open_questions: 1,
+          rows: [expect.objectContaining({ id: existing.id })],
+        });
+
+        return {
+          question: "¿Qué autoría sigue sin aclararse?",
+          urgency: 0.72,
+          related_episode_ids: [secondEpisodeId],
+          related_semantic_node_ids: [],
+          duplicate_of_open_question_id: existing.id,
+        };
+      }),
+    };
+
+    await enqueueOpenQuestionForReview(
+      repository,
+      createReviewItem({
+        refs: {
+          target_type: "episode",
+          target_id: secondEpisodeId,
+          audience_entity_id: secondAudience,
+          disclosure_label: relationshipPrivateMemoryDisclosureLabel([secondAudience]),
+        },
+      }),
+      { extractor },
+    );
+
+    const openQuestions = repository.listAllOpen();
+    expect(openQuestions).toHaveLength(1);
+    expect(openQuestions[0]).toMatchObject({
+      id: existing.id,
+      urgency: 0.43,
+      related_episode_ids: [firstEpisodeId, secondEpisodeId],
+      disclosure_label: {
+        disclosureClass: "relationship_private",
+        originAudienceEntityIds: [firstAudience, secondAudience],
+        privateToEntityIds: [firstAudience, secondAudience].sort(),
+      },
+    });
+  });
+
+  it("ignores a duplicate advisory id that was not presented", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...selfMigrations],
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+    cleanup.push(() => {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+    const extractor = {
+      extract: vi.fn(async () => ({
+        question: "Which unrepresented uncertainty should remain separate?",
+        urgency: 0.5,
+        related_episode_ids: [parseEpisodeId("ep_aaaaaaaaaaaaaaaa")],
+        related_semantic_node_ids: [],
+        duplicate_of_open_question_id: createOpenQuestionId(),
+      })),
+    };
+
+    await enqueueOpenQuestionForReview(repository, createReviewItem(), { extractor });
+
+    expect(repository.listAllOpen()).toEqual([
+      expect.objectContaining({
+        question: "Which unrepresented uncertainty should remain separate?",
+      }),
+    ]);
+  });
+
   it("does not collapse distinct review questions that share wording but differ on a specific", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const db = openDatabase(join(tempDir, "borg.db"), {
@@ -445,12 +580,24 @@ describe("review open-question extractor", () => {
     }
 
     const extractor = {
-      extract: vi.fn(async () => ({
-        question: "Should the participant roster collapse Borg and assistant?",
-        urgency: 0.7,
-        related_episode_ids: [parseEpisodeId("ep_aaaaaaaaaaaaaaaa")],
-        related_semantic_node_ids: [],
-      })),
+      extract: vi.fn(async (_item: ReviewQueueItem, context: ReviewOpenQuestionContext) => {
+        expect(context.open_question_duplicate_candidates).toMatchObject({
+          complete: true,
+          total_open_questions: 61,
+          presented_count: 61,
+          omitted_count: 0,
+        });
+        expect(context.open_question_duplicate_candidates?.rows.map((row) => row.id)).toContain(
+          lowUrgencyTarget.id,
+        );
+
+        return {
+          question: "Should the participant roster collapse Borg and assistant?",
+          urgency: 0.7,
+          related_episode_ids: [parseEpisodeId("ep_aaaaaaaaaaaaaaaa")],
+          related_semantic_node_ids: [],
+        };
+      }),
     };
 
     await enqueueOpenQuestionForReview(repository, createReviewItem(), { extractor });

@@ -491,6 +491,31 @@ describe("renderSharedStateArtifact", () => {
 
     expect(rendered).toContain("SharedStateArtifact omitted:");
     expect(rendered).toContain("record_version=1\nsnapshot_basis=turn_start");
+    expect(rendered).toContain("removal_basis=destructive");
+  });
+
+  it("names removal as destructive so an absent key does not read as merely unreachable", () => {
+    const audience = createEntityId();
+    const entries = [
+      entry({
+        audience,
+        kind: "live",
+        rank: 0,
+        updatedAt: 20,
+        stateKey: "project.alpha",
+        text: "alpha",
+      }),
+    ];
+
+    const rendered =
+      renderSharedStateArtifact(artifact(entries), {
+        maxEntries: 4,
+        maxTokens: 50_000,
+      }) ?? "";
+
+    expect(rendered).toContain("removal_basis=destructive");
+    expect(rendered).toContain("gone from the store rather than out of reach from this page");
+    expect(rendered).toContain("supersede alone preserves its predecessor");
   });
 
   it("names omission as a render budget rather than a store cap", () => {

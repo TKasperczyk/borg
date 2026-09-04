@@ -1067,7 +1067,7 @@ describe("autonomy integration", () => {
     }
   });
 
-  it("names independent goal-stale wake and turn selections with both score bases", async () => {
+  it("uses the shared progress-debt denominator for wake and turn selection", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_800_000_000_000);
@@ -1140,11 +1140,11 @@ describe("autonomy integration", () => {
       const wakeSelectedGoal = borg.self.goals.add({
         description: "Wake-selected stale goal",
         priority: 10,
-        createdAt: clock.now() - 2 * DAY_MS,
+        createdAt: clock.now() - 15 * DAY_MS,
         provenance: { kind: "manual" },
       });
-      const turnSelectedGoal = borg.self.goals.add({
-        description: "Turn-selected deadline goal",
+      const deadlineCompetitor = borg.self.goals.add({
+        description: "Deadline competitor goal",
         priority: 9,
         targetAt: clock.now() + Math.floor(0.8 * 604_800_000),
         provenance: { kind: "manual" },
@@ -1169,18 +1169,18 @@ describe("autonomy integration", () => {
       const executiveBlock = finalizerSystem.slice(executiveStart, executiveEnd);
       const autonomyBlock = finalizerSystem.slice(autonomyStart, autonomyEnd);
 
-      expect(executiveBlock).toContain(`goal_id=${turnSelectedGoal.id}`);
-      expect(executiveBlock).toContain("Current driving goal: Turn-selected deadline goal");
-      expect(executiveBlock).not.toContain("Wake-selected stale goal");
+      expect(executiveBlock).toContain(`goal_id=${wakeSelectedGoal.id}`);
+      expect(executiveBlock).toContain("Current driving goal: Wake-selected stale goal");
+      expect(executiveBlock).not.toContain(`goal_id=${deadlineCompetitor.id}`);
       expect(executiveBlock).toContain(
         "Score basis: score_context=turn_selection deadline_lookahead_ms=604800000 progress_debt_stale_ms=1209600000",
       );
       expect(autonomyBlock).toContain("Wake-time trigger selection:");
       expect(autonomyBlock).toContain(`\"goal_id\": \"${wakeSelectedGoal.id}\"`);
       expect(autonomyBlock).toContain("Wake-selected stale goal");
-      expect(autonomyBlock).not.toContain("Turn-selected deadline goal");
+      expect(autonomyBlock).not.toContain("Deadline competitor goal");
       expect(autonomyBlock).toContain(
-        "Score basis: score_context=wake_time_trigger_selection deadline_lookahead_ms=604800000 progress_debt_stale_ms=86400000",
+        "Score basis: score_context=wake_time_trigger_selection deadline_lookahead_ms=604800000 progress_debt_stale_ms=1209600000",
       );
     } finally {
       await borg.close();

@@ -285,6 +285,39 @@ describe("llm", () => {
     },
   );
 
+  it("names the auth cause in the message rather than only in the dropped cause chain", async () => {
+    // Callers record the top-level message and drop the cause chain, so an OAuth failure that
+    // says only "Failed to complete Anthropic request" is indistinguishable from every other
+    // request failure at the only surface that keeps it.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ error: { error: { message: "invalid x-api-key" } } }), {
+            status: 401,
+            headers: { "content-type": "application/json" },
+          }),
+      ),
+    );
+    const client = new AnthropicLLMClient({ env: { ANTHROPIC_AUTH_TOKEN: "oauth-token" } });
+
+    const failure = await client
+      .complete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        budget: "test",
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+    expect(failure).toBeInstanceOf(LLMError);
+    expect((failure as LLMError).message).toMatch(
+      /^Failed to complete Anthropic request: OAuth .+/,
+    );
+  });
+
   it("passes structured output config and extracts parsed JSON text", async () => {
     const outputConfig = {
       format: {

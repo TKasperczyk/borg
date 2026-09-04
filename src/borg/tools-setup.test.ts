@@ -53,6 +53,14 @@ describe("buildToolDispatcher", () => {
     const dispatcher = buildToolDispatcher({
       dataDir: "/tmp/borg-tools-setup-test",
       entryIndex: {} as never,
+      sourceStreamAudienceDisclosureResolver: {
+        resolveLabels: () => ({
+          commitmentLabels: [],
+          goalLabels: [],
+          commitmentLabelsById: new Map(),
+          goalLabelsById: new Map(),
+        }),
+      } as never,
       retrievalPipeline: {} as never,
       episodicRepository: { getMany } as never,
       semanticNodeRepository: { get: vi.fn(async () => root) } as never,
@@ -60,6 +68,10 @@ describe("buildToolDispatcher", () => {
       commitmentRepository: {} as never,
       entityRepository: {} as never,
       goalsRepository: { retire: vi.fn() } as never,
+      openQuestionsRepository: {
+        listRuminationsInRange: vi.fn(() => []),
+        get: vi.fn(() => null),
+      } as never,
       identityService: {} as never,
       skillRepository: {} as never,
       trainOfThoughtRepository: {} as never,

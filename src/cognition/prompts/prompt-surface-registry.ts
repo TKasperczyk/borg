@@ -550,6 +550,18 @@ export const PROMPT_SURFACE_BLOCKS = [
     surfaces: [{ surface: PROMPT_SURFACES.finalizerDynamicSystem, order: 10 }],
   }),
   block({
+    id: "borg_finalizer_tool_availability",
+    owner: "cognition.deliberation",
+    purpose: "Turn-local structural availability for origin-static finalizer tool schemas.",
+    renderCondition: "always on finalizer calls",
+    source: {
+      file: "src/cognition/deliberation/prompt/finalizer-context.ts",
+      exportName: "renderFinalizerToolAvailability",
+    },
+    tag: "borg_finalizer_tool_availability",
+    surfaces: [{ surface: PROMPT_SURFACES.finalizerDynamicSystem, order: 15 }],
+  }),
+  block({
     id: "s2_planner_base_system_prompt",
     owner: "cognition.deliberation",
     purpose: "Base prompt passed into S2 planner.",

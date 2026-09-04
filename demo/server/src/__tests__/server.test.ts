@@ -2240,7 +2240,15 @@ describe("demo server", () => {
       priority: 2,
     });
     expect(goal.status).toBe(200);
-    const goalBody = (await goal.json()) as { id: string };
+    const goalBody = (await goal.json()) as {
+      id: string;
+      disclosure?: string;
+      disclosure_label?: { disclosure_class?: string };
+    };
+    expect(goalBody).toMatchObject({
+      disclosure: expect.stringContaining("disclosure_class=self_private"),
+      disclosure_label: { disclosure_class: "self_private" },
+    });
     expect(goalAddSpy).toHaveBeenCalledWith(
       expect.objectContaining({ description: "ship sprint B", priority: 2 }),
     );
@@ -3050,10 +3058,20 @@ describe("demo server", () => {
     });
 
     expect(response.status).toBe(200);
-    const created = (await response.json()) as { id: string; source: string };
+    const created = (await response.json()) as {
+      id: string;
+      source: string;
+      disclosure?: string;
+      disclosure_label?: { disclosure_class?: string; origin_audience_entity_ids?: string[] };
+    };
     expect(created).toMatchObject({
       id: expect.stringMatching(/^cmt_/),
       source: "manual",
+      disclosure: expect.stringContaining("disclosure_class=relationship_private"),
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        origin_audience_entity_ids: expect.any(Array),
+      },
     });
 
     const list = await app.request("/api/commitments?audience=Alice&state=all");
@@ -3068,6 +3086,10 @@ describe("demo server", () => {
           made_to: "Tom",
           about: "Project Atlas",
           directive_family: "creator_guidance",
+          disclosure: expect.stringContaining("disclosure_class=relationship_private"),
+          disclosure_label: expect.objectContaining({
+            disclosure_class: "relationship_private",
+          }),
         }),
       ],
     });

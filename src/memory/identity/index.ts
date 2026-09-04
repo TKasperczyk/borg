@@ -18,6 +18,7 @@ export {
 export { identityMigrations } from "./migrations.js";
 export {
   IdentityService,
+  type IdentityOpenQuestionDuplicateMergeResult,
   type IdentityServiceOptions,
   type IdentityUpdateOptions,
   type IdentityUpdateResult,

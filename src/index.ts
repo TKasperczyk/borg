@@ -27,9 +27,11 @@ export type {
   BorgAuditFacade,
   BorgAutonomyFacade,
   BorgCommitmentsFacade,
+  BorgCommitmentWithDisclosure,
   BorgCorrectionFacade,
   BorgCreatorDirectivesFacade,
   BorgDreamFacade,
+  BorgDisclosurePayloadFields,
   BorgEntitiesFacade,
   BorgEpisodicFacade,
   BorgFacades,
@@ -49,6 +51,8 @@ export type {
   BorgReviewFacade,
   BorgReviewResolutionInput,
   BorgSelfFacade,
+  BorgGoalTreeWithDisclosure,
+  BorgGoalWithDisclosure,
   BorgSemanticEdgeWithDisclosure,
   BorgSemanticFacade,
   BorgSemanticNodeListResultWithDisclosure,
@@ -257,6 +261,7 @@ export {
 } from "./autonomy/index.js";
 export {
   type ExecutiveFocus,
+  type ExecutiveFocusCandidateSteps,
   type ExecutiveGoalScore,
   type ExecutiveGoalScoreComponents,
   type ExecutiveStep,

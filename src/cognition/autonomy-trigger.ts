@@ -61,6 +61,36 @@ function annotateEpochFields(value: unknown): unknown {
   return annotated;
 }
 
+// The identity-event log records writes that went through the audited identity
+// service; several repository writers bump a record's record_version without
+// appending an event (the ruminator's own tick and urgency bookkeeping is the
+// routine one). So the newest event for a record reports its values with the
+// same confidence whether or not the record was written afterwards -- it
+// degrades to stale, not to absent, and nothing on the event marks which. Key on
+// the payload key, never on what the events say, and render for an empty array
+// too: absence is exactly where the reading is most tempting.
+const RECENT_IDENTITY_EVENTS_DOMAIN_NOTE =
+  "note on recent_identity_events: this is the log of writes that went through my audited identity path, not every write a record received. Several writers change a record and bump its record_version without appending an event here, so the newest event for a record is not a witness to that record's current state: it reports its own values with the same confidence whether or not something wrote the record afterwards, degrading to stale rather than to absent, and no field on the event says which it is. Each event carries the record_version that write produced, so that number against the record's current version elsewhere is the only check available from here. The list is also the most recent events globally rather than per record, so a record's absence from it is not evidence that the record did not change.";
+
+function carriesRecentIdentityEvents(payload: Record<string, unknown>): boolean {
+  return Array.isArray(payload.recent_identity_events);
+}
+
+// A dormant-question wake's event id is the question paired with the same stamp
+// its sort_ts reports, and that pair is what the scheduler latches -- so the
+// event is one-shot per dormancy, and an old sort_ts means the question has
+// stood unwritten that long rather than that it has been waking me all along.
+// Nothing in the rendered block says so: the block shows a date eight days back
+// on a wake that fired today and looks like recurrence. The offline rumination
+// loop's bookkeeping rides in the payload for the same reason -- the wake is not
+// that loop's selector and cannot report its own passes as offline work.
+const OPEN_QUESTION_DORMANCY_DOMAIN_NOTE =
+  "note on this dormant-question wake: last_touched is the dormancy anchor this trigger measures against, and my event_id pairs the question with that same stamp, which is what gets latched once the wake completes. So this event cannot wake me a second time -- only a later write that moves last_touched mints a new stamp and a new event -- and an old sort_ts is how long the question has stood at that stamp, never a count of how often it has already woken me. Not every write moves it: the offline loop's rumination bookkeeping does not, and a question rendered into a context section is not written at all. A wake that fails before it completes leaves the pair unlatched and can return. unresolved_rumination_ticks and last_ruminated_at are that offline loop's own record under its own selection, which this wake neither feeds nor writes: on a question that is still open, a null last_ruminated_at means no offline pass has been written against it since it was opened.";
+
+function carriesOpenQuestionDormancy(payload: Record<string, unknown>): boolean {
+  return typeof payload.open_question_id === "string" && typeof payload.last_touched === "number";
+}
+
 export function formatAutonomyTriggerContext(context: AutonomyTriggerContext): string {
   const secondaryDueGoals = context.payload.secondary_due_goals;
   const hasGoalBatch = Array.isArray(secondaryDueGoals) && secondaryDueGoals.length > 0;
@@ -80,6 +110,8 @@ export function formatAutonomyTriggerContext(context: AutonomyTriggerContext): s
     `sort_ts: ${sortTs}`,
     hasGoalBatch ? "primary_focus_payload:" : "payload:",
     payload,
+    carriesRecentIdentityEvents(context.payload) ? RECENT_IDENTITY_EVENTS_DOMAIN_NOTE : null,
+    carriesOpenQuestionDormancy(context.payload) ? OPEN_QUESTION_DORMANCY_DOMAIN_NOTE : null,
     hasGoalBatch ? "secondary_due_goals:" : null,
     hasGoalBatch ? (JSON.stringify(annotateEpochFields(secondaryDueGoals), null, 2) ?? "[]") : null,
   ]

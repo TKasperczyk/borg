@@ -54,7 +54,10 @@ import { utf16SafePrefixEnd } from "../../../util/utf16-boundary.js";
 import { formatUtcDayBoundary, utcDayKey } from "../../../util/utc-day.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
-import type { AutonomySchedulerFleetBrakeDescription } from "../../../autonomy/index.js";
+import {
+  HEADWAY_EMISSION_KINDS,
+  type AutonomySchedulerFleetBrakeDescription,
+} from "../../../autonomy/index.js";
 import { AUTONOMY_SCHEDULER_DESCRIPTION_DROPPED_FIELDS } from "../../mechanism-evidence.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
@@ -386,6 +389,18 @@ const AUTONOMOUS_OUTBOUND_REFLECTION_POSTURE = [
   "My standing directives, commitments, and intentions are mine to act on in this interval, the same as any other thought I am holding. I weigh them as I would in the moment -- neither performing action for its own sake, nor defaulting to silence to avoid choosing.",
 ].join("\n");
 
+// The route list is ordered and truncated by the sessions repository's
+// `ORDER BY last_activity_at DESC` under `maxAuthorizedTargets`, and
+// `last_activity_at` is bumped at message ingestion as well as at turn
+// completion. So the head of this list is whichever thread most recently
+// RECEIVED something -- which is the thread most likely to be holding its own
+// turn lock right now, and a reach at a locked session returns target_busy.
+// Without this the order reads as arbitrary and the busy result reads as a
+// property of the route rather than of the moment. Presentation only: naming
+// the order gates nothing, and the model still picks the target.
+const AUTONOMOUS_OUTBOUND_REACHABLE_THREADS_ORDERING =
+  "These routes are listed most-recently-active first, and the cap on this list drops the least-recently-active routes rather than sampling. A thread's activity stamp moves when a message arrives in it, not only when its turn ends, so the route at the top is the one that most recently received something -- which is also the one most likely to be inside its own turn while I am reading this. Position here says when that thread last moved, and nothing about whether it can be reached now.";
+
 // Belief revision over recalled decisions. Reflection that only recalls past
 // decisions re-applies them; a mind re-examines them against what it now knows.
 // This frame is deliberately general (any standing conclusion) and non-coercive:
@@ -430,7 +445,8 @@ export function buildAutonomousOutboundAuthorizationSection(
 
   if (context !== null && context !== undefined && context.targets.length > 0) {
     lines.push(
-      `  <reachable_threads max_posts_per_window="${context.maxPostsPerWindow}" max_posts_per_target_per_window="${context.maxPostsPerTargetPerWindow}" remaining_posts_in_window="${context.remainingPostsInWindow}" window_ms="${context.windowMs}">`,
+      `  <reachable_threads max_posts_per_window="${context.maxPostsPerWindow}" max_posts_per_target_per_window="${context.maxPostsPerTargetPerWindow}" remaining_posts_in_window="${context.remainingPostsInWindow}" window_ms="${context.windowMs}" ordered_by="most_recently_active_first">`,
+      `    <ordering>${escapeXmlText(AUTONOMOUS_OUTBOUND_REACHABLE_THREADS_ORDERING)}</ordering>`,
     );
 
     for (const target of context.targets) {
@@ -1517,7 +1533,7 @@ function summarizeSelfSnapshotGoal(goal: SelfSnapshot["goals"][number]): string 
     goalMemoryDisclosureLabel(goal),
   )}`;
 
-  return `${goal.description} ${summarizeProvenanceForPrompt(goal.provenance)}${disclosure}`;
+  return `${goal.description} counterparty_entity_id=${goal.counterparty_entity_id ?? "none"} (participant the responsibility runs toward; not owner or audience) ${summarizeProvenanceForPrompt(goal.provenance)}${disclosure}`;
 }
 
 const EXECUTIVE_FOCUS_IDENTITY_LABEL_MAX_CHARS = 120;
@@ -1551,7 +1567,7 @@ function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): stri
   );
 
   return [
-    `Current driving goal: ${focus.selected_goal.description} ${selectedGoalDisclosure}`,
+    `Current driving goal: ${focus.selected_goal.description} counterparty_entity_id=${focus.selected_goal.counterparty_entity_id ?? "none"} (participant the responsibility runs toward; not owner or audience) ${selectedGoalDisclosure}`,
     `Focus identity: goal_id=${focus.selected_goal.id} label=${JSON.stringify(
       compactPromptText(focus.selected_goal.description, EXECUTIVE_FOCUS_IDENTITY_LABEL_MAX_CHARS),
     )}`,
@@ -1756,9 +1772,8 @@ function summarizeDiscourseControl(
 // A window's in_flight rows are bounded by the budget limit, so the list is
 // short, but it is not bounded to one. Cap the print and name what the cap
 // dropped rather than truncating silently. Oldest first is the ordering the
-// description declares and the one that matters: a row whose outcome write was
-// skipped never moves, so it only sinks further to the head as newer wakes
-// resolve past it, and the head of this list is where a stuck row lives.
+// description declares and the one that matters when comparing an active row
+// across consecutive scheduler reads.
 const IN_FLIGHT_STAMP_PRINT_LIMIT = 3;
 
 function formatInFlightStamps(startedAt: readonly number[]): string {
@@ -1853,13 +1868,13 @@ export function summarizeAutonomySchedulerState(
       "Wakes in current window by trigger_name:",
       ...budget.wakes_in_current_window_by_trigger.map(
         (group) =>
-          `- trigger_name=${group.trigger_name} wake_count=${group.wake_count} in_flight=${group.in_flight}${formatInFlightStamps(group.in_flight_started_at)} outcome_counts(headway=${group.outcome_counts.headway} silent=${group.outcome_counts.silent} error=${group.outcome_counts.error} busy=${group.outcome_counts.busy})`,
+          `- trigger_name=${group.trigger_name} wake_count=${group.wake_count} in_flight=${group.in_flight}${formatInFlightStamps(group.in_flight_started_at)} outcome_counts(headway=${group.outcome_counts.headway} silent=${group.outcome_counts.silent} error=${group.outcome_counts.error} busy=${group.outcome_counts.busy} interrupted=${group.outcome_counts.interrupted})`,
       ),
       // Rendered whenever the section renders, including on every read where
       // in_flight is 0 everywhere: a rule that appeared only alongside a
       // non-zero count would make the zero read as "no such state exists"
       // rather than as "none right now".
-      "in_flight counts rows written when the wake fired whose outcome was never recorded, stamped with when each fired. Nothing resolves that state: no timeout writes a late outcome, so a row whose outcome write was skipped stays unrecorded for as long as it exists. It does not stay in this count, though -- in_flight is taken over the rolling window named above, so an unresolved row leaves it by ageing past that window's lower edge, and no field on this block reports the row once it is out. in_flight falling back to 0 is therefore consistent with a row from an earlier read still being unresolved, and is not evidence that it closed. wake_count still equals in_flight plus the outcome_counts, so the arithmetic closing here is not evidence the row is live. The stamps are the only cross-read identity this block carries -- one repeating across two reads is a single row not moving, one that changes is a different wake, one that disappears is either -- and the counts alone cannot support that comparison at any number of reads.",
+      "in_flight counts rows written when the wake fired whose terminal outcome has not yet been recorded, stamped with when each fired. A normal completion records headway, silent, error, or busy; a post-turn bookkeeping failure records interrupted, and startup reconciliation records any NULL row left by a prior process as interrupted. A non-zero in_flight count can therefore be a healthy turn currently running. It is taken over the rolling window named above, so a live row can also leave this display by ageing past the lower edge before it closes. The stamps support cross-read identity: one repeating across two reads is one row still open, one that changes is a different wake, and one that disappears either closed or left the window.",
     );
   }
 
@@ -2009,7 +2024,7 @@ export function summarizeAutonomySchedulerState(
 
   // The two counter groups below are different populations, and printing them
   // adjacent without saying so invites differencing one into the other:
-  // empty_streak is untimed, operational-only, and blind to errors;
+  // empty_streak is untimed, operational-only, and blind to guard blocks and errors;
   // window_outcomes is budget-windowed and counts every category and every
   // outcome. Each group states its own scope so neither can be read as evidence
   // about the other. error_streak sits in the first group but is a third
@@ -2032,15 +2047,28 @@ export function summarizeAutonomySchedulerState(
       brake.streak_anchor_ts === null
         ? ""
         : ` current empty streak began ${new Date(brake.streak_anchor_ts).toISOString()}`
-    } -- empty_streak counts consecutive completed operational wakes that came back silent, with no time bound. Errored and busy-skipped wakes neither increment nor reset it, so it is consecutive within the completed-operational subsequence rather than within the wake sequence, and one streak can span any number of intervening wakes and any amount of wall-clock. error_streak counts something narrower than the error tally below: only a wake that failed inside the turn, with a provider or auth fault, increments it. Wakes that fail before the turn is built, and in-turn failures of any other kind, record error without touching it -- and any successful wake, contemplative included, resets it to zero. So error_streak=0 beside a non-zero error count is the ordinary case, not a sign that the errors were separated by successes. bypass_count is neither a streak nor a window count: it counts freshness bypasses spent, and a bypass is only ever offered while the empty-streak cooldown is actively holding, so a clear cooldown freezes the counter rather than resetting it, and a deadline bypass does not spend one. It returns to zero only on an operational wake that came back with headway, or a contemplative wake that delivered an outbound post -- neither the cooldown expiring nor the budget window rolling clears it, so a non-zero value can outlive the cooldown that produced it and is not a count over the window below. At ${brake.freshness_bypass_cap} a fresh concern stops earning a bypass and is refused along with everything else the cooldown is holding.`,
+    } -- empty_streak counts consecutive completed operational wakes whose silence was chosen or whose emission failed, with no time bound. A post-generation guard block leaves it unchanged: the entity produced output and the harness withheld it, so that wake neither advances nor resets this streak. Errored and busy-skipped wakes are transparent in the same way, so the streak is consecutive within this filtered operational subsequence rather than within the wake sequence, and one streak can span any number of intervening wakes and any amount of wall-clock. error_streak counts something narrower than the error tally below: only a wake that failed inside the turn, with a provider or auth fault, increments it. Wakes that fail before the turn is built, and in-turn failures of any other kind, record error without touching it -- and any successful wake, contemplative included, resets it to zero. So error_streak=0 beside a non-zero error count is the ordinary case, not a sign that the errors were separated by successes. bypass_count is neither a streak nor a window count: it counts freshness bypasses spent, and a bypass is only ever offered while the empty-streak cooldown is actively holding, so a clear cooldown freezes the counter rather than resetting it, and a deadline bypass does not spend one. It returns to zero only on an operational wake that came back with headway, or a contemplative wake that delivered an outbound post -- neither the cooldown expiring nor the budget window rolling clears it, so a non-zero value can outlive the cooldown that produced it and is not a count over the window below. At ${brake.freshness_bypass_cap} a fresh concern stops earning a bypass and is refused along with everything else the cooldown is holding.`,
   );
   lines.push(
     `Outcome tally over the budget window above, both source categories: headway=${
       brake.window_outcomes.headway
     } silent=${brake.window_outcomes.silent} error=${brake.window_outcomes.error} busy=${
       brake.window_outcomes.busy
-    }. This is a different population from empty_streak -- time-bounded where the streak is not, contemplative wakes included where the streak ignores them, errors counted where the streak passes over them -- so no arithmetic over these four numbers yields the streak, and non-headway totals here are not the distance to the brake.`,
+    } interrupted=${brake.window_outcomes.interrupted}. This is a different population from empty_streak -- time-bounded where the streak is not, contemplative wakes included where the streak ignores them, errors and interruptions counted where the streak passes over them -- so no arithmetic over these five numbers yields the streak, and non-headway totals here are not the distance to the brake.`,
   );
+  // headway is printed on this line and on every wakes-by-trigger group above,
+  // and its predicate was named nowhere on the page. An undefined term over a
+  // window where one route to it dominates is worse than an unexplained one: the
+  // route's side effects correlate with the outcome perfectly, so a predicate
+  // inferred from them is confirmed by every row and falsified by none. Naming
+  // it is presentation, not machinery -- the scheduler already computes exactly
+  // this and prints only its total.
+  lines.push(
+    `headway is a predicate over how the turn ended, not a measure of whether the interval did anything. A wake is recorded headway when its terminal emission was ${HEADWAY_EMISSION_KINDS.join(
+      " or ",
+    )} (a self-report is emitted as a message), a tool.outbound.post inside it came back delivered, or -- on a wake that names a goal -- the turn recorded progress on that goal or changed its snapshotted active status by successfully retiring it through its own tool call or reflection. A closure by another actor between the scan and this accounting is not this wake's headway. silent is the whole complement, so a wake that read, searched and reasoned for minutes and then closed with no output is recorded here identically to one that produced nothing at all. An emission still counts for this fleet-level outcome, but only goal progress or a retirement attributable to this turn resets that goal's empty-wake backoff. Continuing a thought writes a journal entry as part of that same emission, so a journal entry and a headway on one interval are two effects of one decision rather than either being evidence of the other, and tool.journal.append writes that same journal mid-turn without ending it -- so which outcome a wake recorded is not recoverable from what it left in the journal.`,
+  );
+  lines.push(...renderWakeHeadwayReasonLines(brake.window_headway_reasons));
   // error=N alone cannot separate one provider outage repeated N times from N
   // distinct faults, and the two carry opposite implications for whether the
   // wakes are worth retrying. The scheduler formats the failure at the moment it
@@ -2051,14 +2079,89 @@ export function summarizeAutonomySchedulerState(
   lines.push(...renderWakeErrorReasonLines(brake.window_error_reasons));
   // silent=N has the same defect as error=N and a worse consequence: it is the
   // complement of headway, so a closure you chose, an emission that failed on
-  // the way out, and a guard that blocked one are one number -- and they are one
-  // number again in empty_streak, which counts every non-headway operational
-  // wake alike. The split below is the same rows as silent=N. It does not change
-  // what the brake counts; it says what was counted, so "a silence I chose" and
-  // "a wake that produced nothing" stop being indistinguishable from this page.
+  // the way out, and a guard that blocked one are one number even though only
+  // the first two advance empty_streak. The split below is the same rows as
+  // silent=N and carries the structural class that selected that disposition.
   lines.push(...renderWakeSilentReasonLines(brake.window_silent_reasons));
+  // The only prospective field the scheduler produces, and the last one that
+  // stopped at the evidence boundary. Everything above is retrospective or about
+  // the loop's own health: what has fired, what the window has spent, how far
+  // behind the tick is. None of it supports a statement about the next wake that
+  // could turn out wrong, and the wakes-by-trigger groups are these same source
+  // names counted backwards -- which is why this is not a duplicate of them.
+  lines.push(...renderWakeSourceLines(schedulerState.sources, renderNowMs, observationLagMs));
 
   return lines.join("\n");
+}
+
+function renderWakeSourceLines(
+  sources: NonNullable<
+    NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
+  >["sources"],
+  renderNowMs: number,
+  observationLagMs: number,
+): string[] {
+  if (sources.length === 0) {
+    return ["Wake sources held by that scheduler: none, so nothing can fire from any of them."];
+  }
+
+  return [
+    "Wake sources held by that scheduler, with each trigger's own next-due stamp as of that read. This is the forward view; the wakes-by-trigger counts above are the same names counted backwards.",
+    ...sources.map((source) => {
+      const head = `- name=${source.name} type=${source.type} category=${source.category} registered=${source.enabled}`;
+
+      if (source.type === "condition") {
+        return head;
+      }
+
+      return `${head} next_due_at=${
+        source.next_due_at === null
+          ? "none"
+          : `${new Date(source.next_due_at).toISOString()} (${formatRelativeUntil(
+              source.next_due_at,
+              renderNowMs,
+            )})`
+      }`;
+    }),
+    // Three separate ways this list misleads a reader who takes it at face
+    // value, each of which makes a prediction off it wrong in a different
+    // direction. (1) The stamps carry a floor of the same shape next_tick_at
+    // does, but not against the same clock: describe() takes one read for the
+    // header and then awaits each source in turn, and every nextDueAt() calls
+    // clock.now() itself, inside its own body. So the floor is per-call, and a
+    // floored stamp lands at or after the printed read -- never before it -- by
+    // the cost of the scan up to that row, which on the live store is the
+    // difference between a trigger whose candidate query is empty and one that
+    // lists ten thousand open questions with a watermark lookup each. That cost
+    // is frequently under the millisecond the stamps are printed to, so equality
+    // is the ordinary case rather than an impossible one: across the 69 distinct
+    // scheduler reads in the traces for 2026-08-31 -> 2026-09-02, the first
+    // flooring source printed the read's own millisecond 38 times, one later 30
+    // times, two later once, and earlier never. The previous wording here said
+    // the read is always strictly earlier, which is the same overclaim the old
+    // "equal means already due" copy made, pointed the other way.
+    // A difference between two floored stamps is the whole traversal between
+    // their rows, not the cost of the two rows themselves: rows that publish no
+    // stamp (a null, or a genuinely future one) still sit in that span and still
+    // spend time in it. The prose said "rows that publish no stamp of their
+    // own", which names the null and excludes the future stamp by its own
+    // wording -- a genuinely future stamp IS a stamp. On the live list the row
+    // between scheduled_reflection and goal_followup_due is scheduled_wake,
+    // whose stamp is days out, so the one case the sentence left out is the one
+    // sitting in the middle of the span a reader is most likely to measure.
+    // (2) A stamp is eligibility, and three refusal paths sit between it and a
+    // wake -- all three already on this block, none of them consulted here.
+    // (3) A null is not a prediction of quiet: the reasons a source declines to
+    // publish a stamp include ones that coexist with it firing on the next tick.
+    // The third is the one that matters most, because it is the reading that
+    // costs nothing to make and cannot be checked against a wake that never
+    // comes for some other reason.
+    `next_due_at is that source's own earliest eligibility, floored the way next_tick_at is -- but to a clock the trigger reads inside its own call, as the scan reaches its row in the order printed, not to the read stamp above. So an already-due source prints a stamp at or after that read and never before it -- equal to it when the scan reaches its row inside the same millisecond, later when it does not -- and two already-due sources print two different stamps whose difference is the scan cost of everything between their rows, including rows whose own stamp is null or genuinely future, rather than which of them is due first. How long a floored source had already been due is not recoverable from this block. Eligibility is not a fire: the tick still has to run, the budget still has to have room under the ceiling for that source's category, and the fleet brake still has to not be holding, and all three refuse independently of the stamp. next_due_at=none does not mean nothing is due from that source. It means the source published no stamp, and it covers several states that are not the same: nothing eligible; the source declining to compute one because its candidate set was larger than the bounded scan it will do for a read-only field; and a trigger deciding part of what it fires on inside the scan, from scoring rather than from schedule data, which a field read before the scan cannot predict at all. A none is therefore consistent with that source firing on the very next tick. Conditions publish no stamp by construction -- they are detected from state when the tick scans -- so their absence here is the field not existing rather than nothing being due. registered says the source was built into this scheduler, not that it is otherwise unblocked.${
+      observationLagMs === 0
+        ? ""
+        : ` The parenthesised countdowns are measured from the current_time_ms at the top of this prompt, ${observationLagMs}ms after the read, so like the other countdowns here they read shorter than the wait as of the read.`
+    }`,
+  ];
 }
 
 /**
@@ -2066,7 +2169,43 @@ export function summarizeAutonomySchedulerState(
  * detail is an arbitrary formatted error and the tail is long; the residue is
  * always stated, never silently dropped.
  */
-const WAKE_ERROR_REASON_RENDER_LIMIT = 5;
+const WAKE_REASON_RENDER_LIMIT = 5;
+
+function renderWakeHeadwayReasonLines(
+  tally: AutonomySchedulerFleetBrakeDescription["window_headway_reasons"],
+): string[] {
+  if (tally.total === 0) {
+    return ["Headway wakes in that window: none, so there is no basis to attribute."];
+  }
+
+  if (tally.reasons.length === 0) {
+    return [
+      `Headway wakes in that window: ${tally.total}, none of them carrying a recorded basis (rows written before the scheduler kept one). The count is real; whether the wake emitted, recorded goal progress, or retired its goal is unavailable from here.`,
+    ];
+  }
+
+  const shown = tally.reasons.slice(0, WAKE_REASON_RENDER_LIMIT);
+  const hiddenReasons = tally.reasons.length - shown.length;
+  const hiddenCount = tally.reasons
+    .slice(WAKE_REASON_RENDER_LIMIT)
+    .reduce((sum, reason) => sum + reason.count, 0);
+  const remainder = [
+    tally.without_detail === 0
+      ? null
+      : `${tally.without_detail} with no recorded basis (written before the scheduler kept one)`,
+    hiddenReasons === 0
+      ? null
+      : `${hiddenCount} across ${hiddenReasons} further distinct basis combination(s) not shown`,
+  ].filter((clause): clause is string => clause !== null);
+
+  return [
+    `Why those wakes counted as headway, same rows as headway=${tally.total} above. A row with several structural bases lists them in accounting order:`,
+    ...shown.map((reason) => `- ${reason.count}x ${reason.detail}`),
+    remainder.length === 0
+      ? `The bases above account for all ${tally.total}.`
+      : `The bases above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
+  ];
+}
 
 function renderWakeErrorReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_error_reasons"],
@@ -2081,10 +2220,10 @@ function renderWakeErrorReasonLines(
     ];
   }
 
-  const shown = tally.reasons.slice(0, WAKE_ERROR_REASON_RENDER_LIMIT);
+  const shown = tally.reasons.slice(0, WAKE_REASON_RENDER_LIMIT);
   const hiddenReasons = tally.reasons.length - shown.length;
   const hiddenCount = tally.reasons
-    .slice(WAKE_ERROR_REASON_RENDER_LIMIT)
+    .slice(WAKE_REASON_RENDER_LIMIT)
     .reduce((sum, reason) => sum + reason.count, 0);
   const remainder = [
     tally.without_detail === 0
@@ -2112,7 +2251,7 @@ function renderWakeErrorReasonLines(
  * otherwise no way to tell whether the others are absent or merely unlisted.
  */
 const WAKE_SILENT_OUTCOME_CLASSES =
-  "deliberate-silence (you closed the wake), emission-failed (an emission was attempted and did not come out), guard-blocked (a post-generation guard stopped it), observed";
+  "deliberate-silence (you closed the wake), emission-failed (an emission was attempted and did not come out), guard-blocked (a post-generation guard stopped it), observed, outbound-undelivered (you posted to another session and it did not come back delivered, so the wake is silent because carriage failed rather than because you closed it)";
 
 function renderWakeSilentReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_silent_reasons"],
@@ -2127,10 +2266,10 @@ function renderWakeSilentReasonLines(
     ];
   }
 
-  const shown = tally.reasons.slice(0, WAKE_ERROR_REASON_RENDER_LIMIT);
+  const shown = tally.reasons.slice(0, WAKE_REASON_RENDER_LIMIT);
   const hiddenReasons = tally.reasons.length - shown.length;
   const hiddenCount = tally.reasons
-    .slice(WAKE_ERROR_REASON_RENDER_LIMIT)
+    .slice(WAKE_REASON_RENDER_LIMIT)
     .reduce((sum, reason) => sum + reason.count, 0);
   const remainder = [
     tally.without_detail === 0
@@ -2142,7 +2281,7 @@ function renderWakeSilentReasonLines(
   ].filter((clause): clause is string => clause !== null);
 
   return [
-    `How those silent wakes ended, same rows as silent=${tally.total} above. The classes that can appear are ${WAKE_SILENT_OUTCOME_CLASSES}; all of them advance empty_streak identically, so this split is what that counter is made of, not a ranking of it:`,
+    `How those silent wakes ended, same rows as silent=${tally.total} above. The classes that can appear are ${WAKE_SILENT_OUTCOME_CLASSES}. On an operational wake every class except guard-blocked advances empty_streak; guard-blocked leaves it unchanged because the harness withheld produced output:`,
     ...shown.map((reason) => `- ${reason.count}x ${reason.detail}`),
     remainder.length === 0
       ? `The endings above account for all ${tally.total}.`
@@ -2426,8 +2565,8 @@ function summarizeRelationalSlotConstraints(
   ].join("\n");
 }
 
-// Both fields on the working-state line are single-turn readouts of ONE text,
-// and which text that was is decided by turn origin in
+// Both fields on the working-state line are single-turn readouts, and which
+// text this turn's readout was taken over is decided by turn origin in
 // `cognitionInputForTurnInput` (lifecycle/turn-phase-coordinator.ts): the
 // inbound batch on a user turn, the wake trigger context on an autonomous one,
 // the directed-outbound instruction on a directed_outbound one. That
@@ -2436,6 +2575,19 @@ function summarizeRelationalSlotConstraints(
 // out of the being's own previous thought, so a term imported seconds ago read
 // exactly like held knowledge. Name the window on the line instead of leaving
 // it to be inferred from the terms.
+//
+// The window this names is NOT the same input for both fields, and the line
+// used to say it was. `Perceiver.perceive` (perception/perceive.ts) runs the
+// entity extractor as `extract(text)` -- that text alone, nothing else -- while
+// the affective classifier runs as `analyze(text, recentHistory)` and ships
+// `recent_history: recentHistory.slice(-10)` in its payload
+// (memory/affective/extractor.ts). Those strings are the recency window
+// rendered `role: content` (perception/gateway.ts), so on a self-audience
+// session they carry the being's own prior turns as well as the sender's. One
+// sentence claiming both fields came from one text was therefore exact for
+// entities and short by up to ten prior turns for mood -- and short in the one
+// direction that matters, since the qualifier on the named window is "the
+// sender's words, not mine".
 function workingStateInputWindow(turnOrigin: DeliberationContext["turnOrigin"]): string {
   if (turnOrigin === "autonomous") {
     return "this wake's own trigger context -- my prior thought plus the wake payload, text I produced rather than text that arrived";
@@ -2460,7 +2612,7 @@ function workingStateMoodProvenance(turnOrigin: DeliberationContext["turnOrigin"
     return "mood= is not a reading of this turn on this origin: the value shown is the one already in working memory, an EMA blend (weight 0.3 on each incoming reading) over earlier undegraded user turns in this session. It measures nothing in the text above.";
   }
 
-  return "mood= scores that text from its author's perspective -- on this origin the sender's affect, not mine. If the affective classifier failed this turn, the previous value is carried forward instead and renders identically; the discriminator for that is outside this prompt (a `perception.classifier.degraded` event) and reaches this page one turn later, as the presence or absence of a trajectory row for this turn.";
+  return "mood= scores that text from its author's perspective -- on this origin the sender's affect, not mine. Its classifier is also handed up to the last ten recency strings for this session, prior turns rendered as role and content and including mine wherever self-turns are in that window, as context for disambiguating the current text. So this reading is not a function of the named text alone, and mood= moving on a turn whose text did not is not by itself evidence the classifier misread it. If the affective classifier failed this turn, the previous value is carried forward instead and renders identically; the discriminator for that is outside this prompt (a `perception.classifier.degraded` event) and reaches this page one turn later, as the presence or absence of a trajectory row for this turn.";
 }
 
 function summarizeWorkingMemory(
@@ -2489,7 +2641,7 @@ function summarizeWorkingMemory(
         ? "neutral"
         : `${mood.valence.toFixed(2)}/${mood.arousal.toFixed(2)}`
     }`,
-    `Both fields above were extracted this turn from one text: ${workingStateInputWindow(turnOrigin)}. They are replaced wholesale every turn, never merged with the last one.`,
+    `Both fields above were produced this turn against one named text: ${workingStateInputWindow(turnOrigin)}. They are replaced wholesale every turn, never merged with the last one. That text is the whole of what entities= was extracted from and only part of what mood= was scored against: the two classifiers are handed different inputs, and the window named here is the smaller one.`,
     "entities= is therefore a list of terms the extractor found in that text. A term is on it because it was in the input -- not because I know it, hold it, or have checked it, and not because it ranks above the others. Something I do know is absent unless that text named it, and a term dropping off next turn carries no information.",
     workingStateMoodProvenance(turnOrigin),
   ];

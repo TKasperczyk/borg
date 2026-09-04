@@ -22,7 +22,13 @@ import {
   PROMPT_SURFACES,
   promptSurfaceBlocksForSurface,
 } from "../cognition/prompts/prompt-surface-registry.js";
-import type { BorgPromptBlockView, BorgPromptsFacade } from "./facade-types.js";
+import type {
+  BorgCommitmentWithDisclosure,
+  BorgGoalTreeWithDisclosure,
+  BorgGoalWithDisclosure,
+  BorgPromptBlockView,
+  BorgPromptsFacade,
+} from "./facade-types.js";
 import {
   OFFLINE_PROCESS_NAMES,
   revalidateReviewQueue,
@@ -59,6 +65,14 @@ import type {
   BorgDreamRunner,
   BorgEpisodeSearchOptions,
 } from "./types.js";
+import {
+  commitmentMemoryDisclosureLabel,
+  goalMemoryDisclosureLabel,
+  memoryDisclosurePayloadFields,
+} from "../memory/common/disclosure-serializers.js";
+import type { CommitmentRecord } from "../memory/commitments/index.js";
+import type { GoalRecord, GoalTreeNode } from "../memory/self/index.js";
+import type { IdentityUpdateResult } from "../memory/identity/index.js";
 
 function errorCode(error: unknown): unknown {
   return error !== null && typeof error === "object" && "code" in error
@@ -74,6 +88,67 @@ function isCommittedStreamIndexUpdateFailure(error: unknown): boolean {
 
 function describeCaughtError(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+
+function commitmentWithDisclosure(
+  deps: BorgDependencies,
+  commitment: CommitmentRecord,
+): BorgCommitmentWithDisclosure {
+  const resolved =
+    deps.sourceStreamAudienceDisclosureResolver.resolve({ commitments: [commitment] })
+      .commitments[0] ?? commitment;
+
+  return {
+    ...resolved,
+    ...memoryDisclosurePayloadFields(commitmentMemoryDisclosureLabel(resolved)),
+  };
+}
+
+function commitmentsWithDisclosure(
+  deps: BorgDependencies,
+  commitments: readonly CommitmentRecord[],
+): BorgCommitmentWithDisclosure[] {
+  const resolved = deps.sourceStreamAudienceDisclosureResolver.resolve({ commitments }).commitments;
+
+  return resolved.map((commitment) => ({
+    ...commitment,
+    ...memoryDisclosurePayloadFields(commitmentMemoryDisclosureLabel(commitment)),
+  }));
+}
+
+function goalWithDisclosure(deps: BorgDependencies, goal: GoalRecord): BorgGoalWithDisclosure {
+  const resolved =
+    deps.sourceStreamAudienceDisclosureResolver.resolve({ goals: [goal] }).goals[0] ?? goal;
+
+  return {
+    ...resolved,
+    ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(resolved)),
+  };
+}
+
+function goalTreesWithDisclosure(
+  deps: BorgDependencies,
+  goals: readonly GoalTreeNode[],
+): BorgGoalTreeWithDisclosure[] {
+  const resolved = deps.sourceStreamAudienceDisclosureResolver.resolve({
+    goalTrees: goals,
+  }).goalTrees;
+  const decorate = (goal: (typeof resolved)[number]): BorgGoalTreeWithDisclosure => ({
+    ...goal,
+    ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
+    children: goal.children.map(decorate),
+  });
+
+  return resolved.map(decorate);
+}
+
+function identityResultWithDisclosure<TSource, TResult>(
+  result: IdentityUpdateResult<TSource>,
+  decorate: (record: TSource) => TResult,
+): IdentityUpdateResult<TResult> {
+  return result.status === "applied"
+    ? { status: "applied", record: decorate(result.record) }
+    : { status: "requires_review", current: decorate(result.current) };
 }
 
 function participationPolicyRollbackFailedError(
@@ -675,12 +750,24 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           deps.valuesRepository.listContradictionEvents(...args),
       },
       goals: {
-        get: (...args) => deps.goalsRepository.get(...args),
-        list: (...args) => deps.goalsRepository.list(...args),
-        add: (...args) => deps.identityService.addGoal(...args),
-        update: (...args) => deps.identityService.updateGoal(...args),
-        updateStatus: (...args) => deps.identityService.updateGoalStatus(...args),
-        updateProgress: (...args) => deps.identityService.updateGoalProgress(...args),
+        get: (...args) => {
+          const goal = deps.goalsRepository.get(...args);
+          return goal === null ? null : goalWithDisclosure(deps, goal);
+        },
+        list: (...args) => goalTreesWithDisclosure(deps, deps.goalsRepository.list(...args)),
+        add: (...args) => goalWithDisclosure(deps, deps.identityService.addGoal(...args)),
+        update: (...args) =>
+          identityResultWithDisclosure(deps.identityService.updateGoal(...args), (goal) =>
+            goalWithDisclosure(deps, goal),
+          ),
+        updateStatus: (...args) =>
+          identityResultWithDisclosure(deps.identityService.updateGoalStatus(...args), (goal) =>
+            goalWithDisclosure(deps, goal),
+          ),
+        updateProgress: (...args) =>
+          identityResultWithDisclosure(deps.identityService.updateGoalProgress(...args), (goal) =>
+            goalWithDisclosure(deps, goal),
+          ),
       },
       traits: {
         get: (...args) => deps.traitsRepository.get(...args),
@@ -948,49 +1035,61 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     },
     commitments: {
       add: (input) =>
-        deps.identityService.addCommitment({
-          type: input.type,
-          kind: input.kind,
-          enforcementClass: input.enforcementClass,
-          criticalDomain: input.criticalDomain,
-          directiveFamily: input.directiveFamily,
-          directive: input.directive,
-          priority: input.priority,
-          madeToEntity:
-            input.madeTo === undefined || input.madeTo === null
-              ? null
-              : deps.entityRepository.resolve(input.madeTo),
-          restrictedAudience:
-            input.audience === undefined || input.audience === null
-              ? null
-              : deps.entityRepository.resolve(input.audience),
-          aboutEntity:
-            input.about === undefined || input.about === null
-              ? null
-              : deps.entityRepository.resolve(input.about),
-          provenance: input.provenance,
-          expiresAt: input.expiresAt ?? null,
-        }),
-      get: (id) => deps.commitmentRepository.get(id),
-      revoke: (...args) => deps.commitmentRepository.revoke(...args),
-      list: (options = {}) =>
-        deps.commitmentRepository.list({
-          activeOnly: options.activeOnly,
-          audience:
-            options.audienceEntityId !== undefined
-              ? options.audienceEntityId
-              : options.audience === undefined
-                ? undefined
-                : options.audience === null
-                  ? null
-                  : deps.entityRepository.resolve(options.audience),
-          aboutEntity:
-            options.aboutEntity === undefined
-              ? undefined
-              : options.aboutEntity === null
+        commitmentWithDisclosure(
+          deps,
+          deps.identityService.addCommitment({
+            type: input.type,
+            kind: input.kind,
+            enforcementClass: input.enforcementClass,
+            criticalDomain: input.criticalDomain,
+            directiveFamily: input.directiveFamily,
+            directive: input.directive,
+            priority: input.priority,
+            madeToEntity:
+              input.madeTo === undefined || input.madeTo === null
                 ? null
-                : deps.entityRepository.resolve(options.aboutEntity),
-        }),
+                : deps.entityRepository.resolve(input.madeTo),
+            restrictedAudience:
+              input.audience === undefined || input.audience === null
+                ? null
+                : deps.entityRepository.resolve(input.audience),
+            aboutEntity:
+              input.about === undefined || input.about === null
+                ? null
+                : deps.entityRepository.resolve(input.about),
+            provenance: input.provenance,
+            expiresAt: input.expiresAt ?? null,
+          }),
+        ),
+      get: (id) => {
+        const commitment = deps.commitmentRepository.get(id);
+        return commitment === null ? null : commitmentWithDisclosure(deps, commitment);
+      },
+      revoke: (...args) => {
+        const commitment = deps.commitmentRepository.revoke(...args);
+        return commitment === null ? null : commitmentWithDisclosure(deps, commitment);
+      },
+      list: (options = {}) =>
+        commitmentsWithDisclosure(
+          deps,
+          deps.commitmentRepository.list({
+            activeOnly: options.activeOnly,
+            audience:
+              options.audienceEntityId !== undefined
+                ? options.audienceEntityId
+                : options.audience === undefined
+                  ? undefined
+                  : options.audience === null
+                    ? null
+                    : deps.entityRepository.resolve(options.audience),
+            aboutEntity:
+              options.aboutEntity === undefined
+                ? undefined
+                : options.aboutEntity === null
+                  ? null
+                  : deps.entityRepository.resolve(options.aboutEntity),
+          }),
+        ),
       countActive: () => deps.commitmentRepository.countActive(),
       countActiveByKind: () => deps.commitmentRepository.countActiveByKind(),
       countActiveByEnforcementClass: () =>
@@ -1004,10 +1103,17 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     creatorDirectives: createCreatorDirectivesFacade(deps),
     identity: {
       updateValue: (...args) => deps.identityService.updateValue(...args),
-      updateGoal: (...args) => deps.identityService.updateGoal(...args),
+      updateGoal: (...args) =>
+        identityResultWithDisclosure(deps.identityService.updateGoal(...args), (goal) =>
+          goalWithDisclosure(deps, goal),
+        ),
       updateTrait: (...args) => deps.identityService.updateTrait(...args),
-      addCommitment: (...args) => deps.identityService.addCommitment(...args),
-      updateCommitment: (...args) => deps.identityService.updateCommitment(...args),
+      addCommitment: (...args) =>
+        commitmentWithDisclosure(deps, deps.identityService.addCommitment(...args)),
+      updateCommitment: (...args) =>
+        identityResultWithDisclosure(deps.identityService.updateCommitment(...args), (commitment) =>
+          commitmentWithDisclosure(deps, commitment),
+        ),
       updatePeriod: (...args) => deps.identityService.updatePeriod(...args),
       updateGrowthMarker: (...args) => deps.identityService.updateGrowthMarker(...args),
       updateOpenQuestion: (...args) => deps.identityService.updateOpenQuestion(...args),

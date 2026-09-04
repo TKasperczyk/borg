@@ -1,4 +1,8 @@
-import type { EvidenceLedgerEntry, EvidenceLedgerSection } from "./types.js";
+import type {
+  EvidenceLedgerEntry,
+  EvidenceLedgerSection,
+  EvidenceLedgerSectionFramingCounts,
+} from "./types.js";
 
 export function renderEntry(entry: EvidenceLedgerEntry): string {
   const stateMetadata =
@@ -29,6 +33,36 @@ export function renderEntry(entry: EvidenceLedgerEntry): string {
   return [`- ${metadata.join(" ")}`, ...body].join("\n");
 }
 
+// A framing count can be misread on two independent axes, and naming one leaves the other running.
+//
+// Stage: the counts are taken when a section is assembled, upstream of both reductions the ledger
+// then applies to it -- provenance dedupe folding an entry into a higher-priority section, and
+// budget omission -- and are never recomputed against what survived. The per-entry
+// autobiographical_recall_cap.rendered_count IS recomputed, twice, so the two numbers on the same
+// section are measured at different stages and can disagree without either being wrong. Only the
+// budget reduction announces itself, as an evidence_ledger_omitted entry; the dedupe half leaves
+// no count anywhere, so the shortfall is not always accountable from the page. And a section can
+// carry an omission entry from a stage earlier than either -- recent_lived_experience prints the
+// compiler's own detail-omission breadcrumb -- so the clause has to name which reduction the
+// reported number belongs to, or it reads as accounting for a gap it does not cover.
+//
+// Partition: every key counts a named subset, and until the population was printed beside them a
+// reader had no denominator. autobiographical_recall counts one kind out of the twelve it can
+// assemble, so a page carrying ten rows of other kinds prints a figure of zero above them: not a
+// shortfall at all, and unreachable by any amount of stage-naming. rows_assembled is the fix and
+// it is required by the type rather than agreed by convention, so a subset figure cannot be
+// printed without the population it was taken over.
+const FRAMING_COUNTS_SCOPE =
+  "framing_counts_scope: rows_assembled is the population this section was assembled from, and every other figure counts one named subset of that population, so the figures need not sum to it, need not cover it, and one of them can sit below the number of rows printed here without a row having gone missing. The assembly is upstream of both reductions the ledger then applies, provenance dedupe folding overlapping rows into higher-priority sections and budget omission, and the rows below survived both, so a shortfall against rows_assembled is a row removed after the count was taken. Only the budget removal is reported, by an omitted-entries row naming the finalizer ledger budget; an omission row naming any other stage counts a different reduction again.";
+
+function orderedFramingCounts(
+  counts: EvidenceLedgerSectionFramingCounts,
+): EvidenceLedgerSectionFramingCounts {
+  const { rows_assembled: rowsAssembled, ...subsets } = counts;
+
+  return { rows_assembled: rowsAssembled, ...subsets };
+}
+
 export function renderSection(section: EvidenceLedgerSection): string {
   const framingLines =
     section.framing === undefined
@@ -37,7 +71,12 @@ export function renderSection(section: EvidenceLedgerSection): string {
           `framing: ${section.framing.text}`,
           ...(section.framing.counts === undefined
             ? []
-            : [`framing_counts: ${JSON.stringify(section.framing.counts)}`]),
+            : [
+                // The population leads the object wherever the call site happens to put it, so the
+                // key the scope line names is never buried between the subsets it bounds.
+                `framing_counts: ${JSON.stringify(orderedFramingCounts(section.framing.counts))}`,
+                FRAMING_COUNTS_SCOPE,
+              ]),
         ];
 
   if (section.entries.length === 0) {

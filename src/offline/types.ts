@@ -3,6 +3,7 @@ import type { TurnTracer } from "../tracing/tracer.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../memory/common/index.js";
 import type {
   ActivityRepository,
   LivedExperienceDaySummaryRepository,
@@ -65,6 +66,7 @@ export type OfflineResult = {
   tokens_used: number;
   errors: OfflineProcessError[];
   budget_exhausted: boolean;
+  notes?: string[];
   candidate_stats?: {
     proposed: number;
     accepted: number;
@@ -90,6 +92,7 @@ export type OfflineContext = {
   auditLog: AuditLog;
   streamWriter: StreamWriter;
   entryIndex: StreamEntryIndexRepository;
+  sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   embeddingClient: EmbeddingClient;
   tracer?: TurnTracer;
   llm: {

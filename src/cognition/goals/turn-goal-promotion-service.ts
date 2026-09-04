@@ -2,7 +2,10 @@ import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { LLMClient } from "../../llm/index.js";
 import type { ExecutiveStepsRepository } from "../../executive/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
+import type { EntityRepository } from "../../memory/commitments/index.js";
+import type { MemoryDisclosureLabelMetadata } from "../../memory/common/index.js";
 import type { GoalRecord, GoalsRepository } from "../../memory/self/index.js";
+import type { StreamEntry } from "../../stream/index.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import type { Clock } from "../../util/clock.js";
 import type {
@@ -13,6 +16,7 @@ import type {
   StreamEntryId,
 } from "../../util/ids.js";
 import type { ExtractCorrectivePreferenceInput } from "../commitments/corrective-preference-extractor.js";
+import type { CurrentTurnUserInputSenderAttribution } from "../turn-input.js";
 import { listActiveGoalsForCognition } from "../self/active-goals.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import type { TemporalCue } from "../types.js";
@@ -39,6 +43,7 @@ export type TurnGoalPromotionServiceOptions = {
   goalsRepository: Pick<GoalsRepository, "list">;
   executiveStepsRepository: Pick<ExecutiveStepsRepository, "add">;
   embeddingClient: EmbeddingClient;
+  entityRepository?: Pick<EntityRepository, "get" | "getSelf">;
   clock: Clock;
   tracer: TurnTracer;
 };
@@ -50,11 +55,15 @@ export type ExtractTurnGoalPromotionsInput = {
   isUserTurn: boolean;
   userMessage: string;
   recentHistory: ExtractCorrectivePreferenceInput["recentHistory"];
+  sourceUserEntries?: readonly StreamEntry[];
+  senderAttribution?: readonly CurrentTurnUserInputSenderAttribution[];
   audienceEntityId: EntityId | null;
-  ownerEntityId?: EntityId | null;
+  speakerEntityId?: EntityId | null;
   speakerDisplayName?: string | null;
   temporalCue: TemporalCue | null;
-  activeGoals: readonly GoalRecord[];
+  activeGoals: readonly (GoalRecord & {
+    disclosure_label?: MemoryDisclosureLabelMetadata;
+  })[];
   persistedUserEntryId?: StreamEntryId;
   sourceUserEntryIds?: readonly StreamEntryId[];
   onHookFailure: (hook: string, error: unknown, details?: Record<string, unknown>) => Promise<void>;
@@ -88,12 +97,25 @@ export class TurnGoalPromotionService {
         });
       },
     });
+    const selfIdentity = this.options.entityRepository?.getSelf() ?? null;
+    const currentMessageStreamEntryIds =
+      input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0
+        ? input.persistedUserEntryId === undefined
+          ? []
+          : [input.persistedUserEntryId]
+        : [...input.sourceUserEntryIds];
     const goalPromotionCandidates = await goalPromotionExtractor.extract({
       userMessage: input.userMessage,
+      selfIdentity,
       recentHistory: input.recentHistory,
+      currentMessageEntries: input.sourceUserEntries,
+      currentMessageStreamEntryIds,
+      currentMessageSenderAttribution: input.senderAttribution,
       audienceEntityId: input.audienceEntityId,
-      speakerEntityId: input.ownerEntityId ?? null,
+      speakerEntityId: input.speakerEntityId ?? null,
       speakerDisplayName: input.speakerDisplayName ?? null,
+      senderDisplayNameById: (entityId) =>
+        this.options.entityRepository?.get(entityId)?.canonical_name ?? null,
       nowMs: this.options.clock.now(),
       temporalCue: input.temporalCue,
       activeGoals: input.activeGoals.map((goal) => ({
@@ -104,6 +126,8 @@ export class TurnGoalPromotionService {
         target_at: goal.target_at,
         audience_entity_id: goal.audience_entity_id,
         owner_entity_id: goal.owner_entity_id ?? null,
+        counterparty_entity_id: goal.counterparty_entity_id,
+        ...(goal.disclosure_label === undefined ? {} : { disclosure_label: goal.disclosure_label }),
       })),
     });
 
@@ -117,7 +141,6 @@ export class TurnGoalPromotionService {
     return this.persistGoalPromotions({
       candidates: goalPromotionCandidates,
       audienceEntityId: input.audienceEntityId,
-      ownerEntityId: input.ownerEntityId ?? null,
       persistedUserEntryId: input.persistedUserEntryId,
       sourceUserEntryIds: input.sourceUserEntryIds,
       turnId: input.turnId,
@@ -129,7 +152,6 @@ export class TurnGoalPromotionService {
   private async persistGoalPromotions(input: {
     candidates: readonly GoalPromotionCandidate[];
     audienceEntityId: EntityId | null;
-    ownerEntityId: EntityId | null;
     persistedUserEntryId?: StreamEntryId;
     sourceUserEntryIds?: readonly StreamEntryId[];
     turnId: string;
@@ -249,7 +271,8 @@ export class TurnGoalPromotionService {
           status: "active",
           targetAt: candidate.target_at,
           audienceEntityId: input.audienceEntityId,
-          ownerEntityId: input.ownerEntityId,
+          ownerEntityId: null,
+          counterpartyEntityId: candidate.counterparty_entity_id,
           provenance: GOAL_PROMOTION_PROVENANCE,
           sourceStreamEntryIds,
         });

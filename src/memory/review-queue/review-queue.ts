@@ -349,7 +349,7 @@ export function commitmentReconciliationReviewDisclosureLabel(
     (member) => member.disclosure_label ?? unknownMemoryDisclosureLabel(),
   );
   const labels =
-    refs.disclosure_label === undefined ? memberLabels : [...memberLabels, refs.disclosure_label];
+    refs.disclosure_label === undefined ? memberLabels : [refs.disclosure_label, ...memberLabels];
 
   return combineMemoryDisclosureLabels(labels);
 }

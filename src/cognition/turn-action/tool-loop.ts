@@ -96,6 +96,8 @@ export type ExecuteToolLoopOptions = {
   maxToolCallsPerIteration?: number;
   clock?: Pick<Clock, "now">;
   terminalToolNames?: readonly string[];
+  /** Advertised schemas that are structurally unavailable on this turn. */
+  unavailableToolNames?: readonly string[];
   stream?: boolean;
   onTextDelta?: LLMStreamTextHandler;
   tracer?: TurnTracer;
@@ -200,6 +202,18 @@ function buildUnavailableToolResultBlock(
   };
 }
 
+function buildDeferredTerminalToolResultBlock(
+  block: LLMToolUseBlock,
+): Extract<LLMContentBlock, { type: "tool_result" }> {
+  return {
+    type: "tool_result",
+    tool_use_id: block.id,
+    content:
+      "Terminal emission was not accepted because a sibling tool call was unavailable. Handle the tool error, then call exactly one enabled terminal emission tool again.",
+    is_error: true,
+  };
+}
+
 function toCallRecord(block: LLMToolUseBlock, result: ToolDispatchResult): ToolLoopCallRecord {
   return {
     callId: result.callId,
@@ -295,6 +309,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
   const messages = options.initialMessages.map((message) => cloneMessage(message));
   const anthropicTools = toAnthropicToolDefinitions(options.tools);
   const allowedToolNames = new Set(options.tools.map((tool) => tool.name));
+  const unavailableToolNames = new Set(options.unavailableToolNames ?? []);
   const terminalToolNames = new Set(options.terminalToolNames ?? []);
   const toolCallsMade: ToolLoopCallRecord[] = [];
   let iterations = 0;
@@ -436,8 +451,16 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
 
     const toolUseBlocks = response.messageBlocks.filter(isToolUseBlock);
     const terminalToolCalls = toolUseBlocks.filter(
-      (block) => allowedToolNames.has(block.name) && terminalToolNames.has(block.name),
+      (block) =>
+        allowedToolNames.has(block.name) &&
+        !unavailableToolNames.has(block.name) &&
+        terminalToolNames.has(block.name),
     );
+    const unavailableToolCalls = toolUseBlocks.filter(
+      (block) => !allowedToolNames.has(block.name) || unavailableToolNames.has(block.name),
+    );
+    const deferTerminalAcceptance =
+      toolsEnabled && terminalToolCalls.length > 0 && unavailableToolCalls.length > 0;
 
     if (traceEnabled && options.turnId !== undefined) {
       options.tracer?.emit("llm_call.completed", {
@@ -458,7 +481,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
       });
     }
 
-    if (toolsEnabled && terminalToolCalls.length > 0) {
+    if (toolsEnabled && terminalToolCalls.length > 0 && !deferTerminalAcceptance) {
       return {
         text: extractText(response.messageBlocks),
         iterations,
@@ -499,7 +522,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
         });
       }
 
-      if (!allowedToolNames.has(block.name)) {
+      if (!allowedToolNames.has(block.name) || unavailableToolNames.has(block.name)) {
         const skippedResult = await options.dispatcher.recordSkippedCall({
           callId: block.id,
           toolName: block.name,
@@ -515,6 +538,50 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
         });
         toolCallsMade.push(toCallRecord(block, skippedResult));
         const toolResultBlock = buildUnavailableToolResultBlock(block);
+        toolResultBlocks.push(toolResultBlock);
+        if (options.toolResultObserver !== undefined) {
+          observeToolResult(options.toolResultObserver, {
+            ordinal: toolCallsMade.length,
+            iteration: iterations + 1,
+            batchPosition: toolResultBlocks.length,
+            callId: skippedResult.callId,
+            toolName: skippedResult.toolName,
+            rawArguments: block.input,
+            disposition: "skipped_unavailable",
+            result: { ok: false, error: String(toolResultBlock.content) },
+            durationMs: skippedResult.durationMs,
+          });
+        }
+        if (traceEnabled && options.turnId !== undefined) {
+          options.tracer?.emit("tool_call.completed", {
+            turnId: options.turnId,
+            session_id: options.sessionId,
+            callId: skippedResult.callId,
+            toolName: skippedResult.toolName,
+            success: skippedResult.ok,
+            ms: skippedResult.durationMs,
+          });
+        }
+        continue;
+      }
+
+      if (deferTerminalAcceptance && terminalToolNames.has(block.name)) {
+        const toolResultBlock = buildDeferredTerminalToolResultBlock(block);
+        const skippedResult = await options.dispatcher.recordSkippedCall({
+          callId: block.id,
+          toolName: block.name,
+          input: block.input,
+          sessionId: options.sessionId,
+          turnId: options.turnId,
+          origin: options.origin,
+          turnOrigin: options.turnOrigin,
+          currentSenderBorgRole: options.currentSenderBorgRole,
+          sessionAudienceRole: options.sessionAudienceRole,
+          provenance: options.provenance,
+          skipReason: "terminal_deferred_for_unavailable_sibling",
+          error: String(toolResultBlock.content),
+        });
+        toolCallsMade.push(toCallRecord(block, skippedResult));
         toolResultBlocks.push(toolResultBlock);
         if (options.toolResultObserver !== undefined) {
           observeToolResult(options.toolResultObserver, {
@@ -586,6 +653,8 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
     }
 
     for (const block of droppedBlocks) {
+      const droppedBecauseUnavailable =
+        !allowedToolNames.has(block.name) || unavailableToolNames.has(block.name);
       if (traceEnabled && options.turnId !== undefined) {
         options.tracer?.emit("tool_call.started", {
           turnId: options.turnId,
@@ -593,8 +662,53 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
           callId: block.id,
           toolName: block.name,
           skipped: true,
-          reason: "max_tool_calls_per_iteration",
+          reason: droppedBecauseUnavailable
+            ? "tool_not_available_in_context"
+            : "max_tool_calls_per_iteration",
         });
+      }
+
+      if (droppedBecauseUnavailable) {
+        const skippedResult = await options.dispatcher.recordSkippedCall({
+          callId: block.id,
+          toolName: block.name,
+          input: block.input,
+          sessionId: options.sessionId,
+          origin: options.origin,
+          turnOrigin: options.turnOrigin,
+          currentSenderBorgRole: options.currentSenderBorgRole,
+          sessionAudienceRole: options.sessionAudienceRole,
+          turnId: options.turnId,
+          provenance: options.provenance,
+          skipReason: "tool_not_available_in_context",
+        });
+        toolCallsMade.push(toCallRecord(block, skippedResult));
+        const toolResultBlock = buildUnavailableToolResultBlock(block);
+        toolResultBlocks.push(toolResultBlock);
+        if (options.toolResultObserver !== undefined) {
+          observeToolResult(options.toolResultObserver, {
+            ordinal: toolCallsMade.length,
+            iteration: iterations + 1,
+            batchPosition: toolResultBlocks.length,
+            callId: skippedResult.callId,
+            toolName: skippedResult.toolName,
+            rawArguments: block.input,
+            disposition: "skipped_unavailable",
+            result: { ok: false, error: String(toolResultBlock.content) },
+            durationMs: skippedResult.durationMs,
+          });
+        }
+        if (traceEnabled && options.turnId !== undefined) {
+          options.tracer?.emit("tool_call.completed", {
+            turnId: options.turnId,
+            session_id: options.sessionId,
+            callId: skippedResult.callId,
+            toolName: skippedResult.toolName,
+            success: skippedResult.ok,
+            ms: skippedResult.durationMs,
+          });
+        }
+        continue;
       }
 
       const skippedResult = await options.dispatcher.recordSkippedCall({

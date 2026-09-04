@@ -34,6 +34,7 @@ function createHarness(start = 1_000) {
     db,
     clock,
     goal,
+    goals,
     steps,
   };
 }
@@ -237,6 +238,77 @@ describe("ExecutiveStepsRepository", () => {
         noDeadlineOlder.id,
         noDeadlineNewer.id,
       ]);
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("loads each goal's top open step and open count in one ordered batch", () => {
+    const harness = createHarness();
+
+    try {
+      const secondGoal = harness.goals.add({
+        description: "Ship the second goal",
+        priority: 9,
+        provenance: manualProvenance,
+      });
+      const emptyGoal = harness.goals.add({
+        description: "Goal without open steps",
+        priority: 8,
+        provenance: manualProvenance,
+      });
+      const firstQueued = harness.steps.add({
+        goalId: harness.goal.id,
+        description: "First goal queued",
+        kind: "think",
+        dueAt: 1_500,
+        provenance: manualProvenance,
+      });
+      harness.clock.advance(10);
+      const firstDoing = harness.steps.add({
+        goalId: harness.goal.id,
+        description: "First goal doing",
+        kind: "act",
+        status: "doing",
+        dueAt: 2_000,
+        provenance: manualProvenance,
+      });
+      harness.clock.advance(10);
+      const secondDated = harness.steps.add({
+        goalId: secondGoal.id,
+        description: "Second goal dated",
+        kind: "research",
+        dueAt: 1_800,
+        provenance: manualProvenance,
+      });
+      harness.clock.advance(10);
+      harness.steps.add({
+        goalId: secondGoal.id,
+        description: "Second goal undated",
+        kind: "think",
+        provenance: manualProvenance,
+      });
+
+      const results = harness.steps.topOpenForGoals([
+        secondGoal.id,
+        harness.goal.id,
+        emptyGoal.id,
+        secondGoal.id,
+      ]);
+
+      expect(results).toEqual([
+        {
+          goal_id: secondGoal.id,
+          step: secondDated,
+          open_step_count: 2,
+        },
+        {
+          goal_id: harness.goal.id,
+          step: firstDoing,
+          open_step_count: 2,
+        },
+      ]);
+      expect(firstQueued.id).not.toBe(firstDoing.id);
     } finally {
       harness.db.close();
     }

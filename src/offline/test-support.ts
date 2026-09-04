@@ -771,6 +771,7 @@ export async function createOfflineTestHarness(
     onEnqueue: (item) =>
       enqueueOpenQuestionForReview(identityService, item, {
         extractor: options.reviewOpenQuestionExtractor ?? null,
+        openQuestionsRepository,
       }),
     onEnqueueError: (error) => {
       const promise = appendOpenQuestionHookFailureEvent(

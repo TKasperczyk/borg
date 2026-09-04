@@ -13,6 +13,7 @@ import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
 import { MoodRepository } from "../memory/affective/index.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../memory/common/index.js";
 import type {
   ActivityRepository,
   LivedExperienceDaySummaryRepository,
@@ -54,7 +55,7 @@ import {
 import type { ToolDispatcher } from "../tools/dispatcher.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { SessionBusyError } from "../util/errors.js";
-import { DEFAULT_SESSION_ID, type EntityId, type SessionId } from "../util/ids.js";
+import { DEFAULT_SESSION_ID, type EntityId, type GoalId, type SessionId } from "../util/ids.js";
 import type { ToolLoopCallRecord } from "./turn-action/index.js";
 import { TurnActionCoordinator } from "./turn-action/turn-action-coordinator.js";
 import { TurnActionStateService } from "./actions/turn-action-state-service.js";
@@ -113,6 +114,7 @@ export type TurnResult = {
   referencedEpisodeIds: string[];
   intents: IntentRecord[];
   toolCalls: ToolLoopCallRecord[];
+  reflectionRetiredGoalIds?: GoalId[];
   agentMessageId?: string;
   outboundDelivery?: OutboundDeliveryReceipt;
 };
@@ -136,6 +138,7 @@ export type TurnOrchestratorOptions = {
   relationalSlotRepository: RelationalSlotRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
+  sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   creatorDirectiveRepository: CreatorDirectiveRepository;
   sharedStateRepository: SharedStateRepository;
   activityRepository?: ActivityRepository;
@@ -241,6 +244,7 @@ export class TurnOrchestrator {
     });
     const turnRetrievalCoordinator = new TurnRetrievalCoordinator({
       commitmentRepository: options.commitmentRepository,
+      sourceStreamAudienceDisclosureResolver: options.sourceStreamAudienceDisclosureResolver,
       entityRepository: options.entityRepository,
       reviewQueueRepository: options.reviewQueueRepository,
       moodRepository: options.moodRepository,
@@ -263,6 +267,7 @@ export class TurnOrchestrator {
       embeddingClient: options.embeddingClient,
       valuesRepository: options.valuesRepository,
       goalsRepository: options.goalsRepository,
+      sourceStreamAudienceDisclosureResolver: options.sourceStreamAudienceDisclosureResolver,
       traitsRepository: options.traitsRepository,
       autobiographicalRepository: options.autobiographicalRepository,
       growthMarkersRepository: options.growthMarkersRepository,
@@ -276,7 +281,9 @@ export class TurnOrchestrator {
     const correctivePreferenceTurnService = new CorrectivePreferenceTurnService({
       model: options.config.anthropic.models.recallExpansion,
       commitmentRepository: options.commitmentRepository,
+      sourceStreamAudienceDisclosureResolver: options.sourceStreamAudienceDisclosureResolver,
       identityService: options.identityService,
+      entityRepository: options.entityRepository,
       relationalSlotRepository: options.relationalSlotRepository,
       workingMemoryStore: options.workingMemoryStore,
       clock: this.clock,
@@ -301,6 +308,7 @@ export class TurnOrchestrator {
       goalsRepository: options.goalsRepository,
       executiveStepsRepository: options.executiveStepsRepository,
       embeddingClient: options.embeddingClient,
+      entityRepository: options.entityRepository,
       clock: this.clock,
       tracer: this.tracer,
     });
@@ -325,6 +333,8 @@ export class TurnOrchestrator {
         : new PlannerContextCapture({
             dataDir: options.config.dataDir,
             sampleRate: options.config.deliberation.plannerContextCaptureSampleRate,
+            maxFileBytes: options.config.deliberation.plannerContextCaptureMaxFileBytes,
+            rotationKeep: options.config.deliberation.contextCaptureRotationKeep,
             clock: this.clock,
             tracer: this.tracer,
           });
@@ -334,6 +344,8 @@ export class TurnOrchestrator {
         : new FinalizerContextCapture({
             dataDir: options.config.dataDir,
             sampleRate: options.config.deliberation.finalizerContextCaptureSampleRate,
+            maxFileBytes: options.config.deliberation.finalizerContextCaptureMaxFileBytes,
+            rotationKeep: options.config.deliberation.contextCaptureRotationKeep,
             clock: this.clock,
             tracer: this.tracer,
             attachmentResolver: (attachmentId) =>
@@ -368,6 +380,7 @@ export class TurnOrchestrator {
       relationalSlotRepository: options.relationalSlotRepository,
       actionRepository: options.actionRepository,
       commitmentRepository: options.commitmentRepository,
+      sourceStreamAudienceDisclosureResolver: options.sourceStreamAudienceDisclosureResolver,
       creatorDirectiveRepository: options.creatorDirectiveRepository,
       sharedStateRepository: options.sharedStateRepository,
       activityRepository: options.activityRepository,

@@ -1,4 +1,5 @@
 import type { ActionRepository } from "../../memory/actions/index.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../../memory/common/index.js";
 import type { CommitmentRecord, CommitmentRepository } from "../../memory/commitments/index.js";
 import type { EntityRepository } from "../../memory/commitments/index.js";
 import type { RelationalSlotRepository } from "../../memory/relational-slots/index.js";
@@ -35,6 +36,7 @@ export type EvidenceLedgerBuilderOptions = {
   relationalSlotRepository: Pick<RelationalSlotRepository, "list">;
   actionRepository: ActionLedgerRepository;
   commitmentRepository?: CommitmentLedgerRepository;
+  sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   goalsRepository?: GoalLedgerRepository;
   openQuestionsRepository?: Pick<OpenQuestionsRepository, "findByHandles">;
   currentSessionTranscriptTokenBudget: number;
@@ -43,6 +45,7 @@ export type EvidenceLedgerBuilderOptions = {
   actionThreadSourceRecordLimit?: number;
   actionThreadSalienceClassReservedSlots?: number;
   actionThreadAudienceReservedSlots?: number;
+  openQuestionStaleNoTractionTicks?: number;
   entityRepository?: Pick<EntityRepository, "get">;
   attachmentRepository?: Pick<AttachmentRepository, "get">;
   maxImagesPerLedger?: number;

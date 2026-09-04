@@ -2,8 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import type { StreamEntry } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { createEntityId, createGoalId, createStreamEntryId } from "../../util/ids.js";
+import {
+  createEntityId,
+  createGoalId,
+  createSessionId,
+  createStreamEntryId,
+} from "../../util/ids.js";
 import type { GoalRecord, GoalTreeNode } from "../../memory/self/index.js";
 import type { GoalPromotionClassification } from "./goal-promotion-extractor.js";
 import { TurnGoalPromotionService } from "./turn-goal-promotion-service.js";
@@ -13,6 +19,7 @@ type GoalPromotionFixture = {
   description?: string;
   terminal_condition?: string | null;
   priority?: number;
+  counterparty_entity_id?: GoalRecord["counterparty_entity_id"];
   target_at?: number | null;
   reason?: string;
   confidence?: number;
@@ -48,6 +55,7 @@ function goalPromotionResponse(
             terminal_condition:
               promotion.terminal_condition ?? "Alice's launch brief tracking reaches handoff",
             priority: promotion.priority ?? 6,
+            counterparty_entity_id: promotion.counterparty_entity_id ?? null,
             target_at: promotion.target_at ?? null,
             reason: promotion.reason ?? "Borg was asked to keep the work task organized.",
             confidence: promotion.confidence ?? 0.93,
@@ -77,6 +85,7 @@ function goalRecord(
     target_at: overrides.target_at ?? null,
     audience_entity_id: overrides.audience_entity_id ?? null,
     owner_entity_id: overrides.owner_entity_id ?? null,
+    counterparty_entity_id: overrides.counterparty_entity_id ?? null,
     source_stream_entry_ids: overrides.source_stream_entry_ids,
     canonicalized_by_artifact_entry_id: overrides.canonicalized_by_artifact_entry_id ?? null,
     provenance: overrides.provenance ?? {
@@ -111,6 +120,7 @@ describe("TurnGoalPromotionService", () => {
   it("rejects group-chat participant goals instead of persisting them as speaker-owned goals", async () => {
     const group = createEntityId();
     const alice = createEntityId();
+    const historicalOrigin = createEntityId();
     const userEntryId = createStreamEntryId();
     const addGoal = vi.fn();
     const llm = new FakeLLMClient({
@@ -139,10 +149,20 @@ describe("TurnGoalPromotionService", () => {
       userMessage: "Help track this: I'll draft the launch brief.",
       recentHistory: [],
       audienceEntityId: group,
-      ownerEntityId: alice,
+      speakerEntityId: alice,
       speakerDisplayName: "Alice",
       temporalCue: null,
-      activeGoals: [],
+      activeGoals: [
+        {
+          ...goalRecord({ audience_entity_id: group, owner_entity_id: alice }),
+          disclosure_label: {
+            disclosure_class: "relationship_private",
+            origin_audience_entity_ids: [historicalOrigin],
+            private_to_entity_ids: [group, alice],
+            public_to_entity_ids: [],
+          },
+        },
+      ],
       persistedUserEntryId: userEntryId,
       onHookFailure: vi.fn(),
     });
@@ -152,6 +172,91 @@ describe("TurnGoalPromotionService", () => {
     expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
       `"speaker_entity_id":"${alice}"`,
     );
+    expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
+      `"origin_audience_entity_ids":["${historicalOrigin}"]`,
+    );
+  });
+
+  it("persists counterparty separately while leaving extractor-created ownership null", async () => {
+    const audience = createEntityId();
+    const speaker = createEntityId();
+    const counterparty = createEntityId();
+    const sourceEntryId = createStreamEntryId();
+    const persistedGoalId = createGoalId();
+    const sourceEntry = {
+      id: sourceEntryId,
+      timestamp: 1_900,
+      kind: "user_msg",
+      content: "Carry this responsibility through review.",
+      turn_status: "active",
+      sender_entity_id: speaker,
+      reply_target_entity_id: counterparty,
+      session_id: createSessionId(),
+      compressed: false,
+    } satisfies StreamEntry;
+    const addGoal = vi.fn(
+      (input): GoalRecord =>
+        goalRecord({
+          id: persistedGoalId,
+          description: input.description,
+          terminal_condition: input.terminalCondition ?? null,
+          priority: input.priority,
+          audience_entity_id: input.audienceEntityId,
+          owner_entity_id: input.ownerEntityId,
+          counterparty_entity_id: input.counterpartyEntityId,
+          source_stream_entry_ids: input.sourceStreamEntryIds,
+          provenance: input.provenance,
+        }),
+    );
+    const llm = new FakeLLMClient({
+      responses: [
+        goalPromotionResponse({
+          description: "Carry the review responsibility to completion",
+          counterparty_entity_id: counterparty,
+        }),
+      ],
+    });
+    const service = new TurnGoalPromotionService({
+      model: "haiku",
+      identityService: { addGoal },
+      goalsRepository: { list: () => [] },
+      executiveStepsRepository: { add: vi.fn() },
+      embeddingClient: new ScriptedEmbeddingClient(),
+      clock: new FixedClock(2_000),
+      tracer: { enabled: false, includePayloads: false, emit: vi.fn() },
+    });
+
+    const result = await service.extractAndPersist({
+      llmClient: llm,
+      turnId: "turn-counterparty-owner",
+      isUserTurn: true,
+      userMessage: "Carry this responsibility through review.",
+      recentHistory: [],
+      sourceUserEntries: [sourceEntry],
+      sourceUserEntryIds: [sourceEntryId],
+      senderAttribution: [
+        { entryId: sourceEntryId, senderEntityId: speaker, senderDisplayName: "Speaker" },
+      ],
+      audienceEntityId: audience,
+      speakerEntityId: speaker,
+      speakerDisplayName: "Speaker",
+      temporalCue: null,
+      activeGoals: [],
+      onHookFailure: vi.fn(),
+    });
+
+    expect(result.goalIds).toEqual([persistedGoalId]);
+    expect(addGoal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ownerEntityId: null,
+        counterpartyEntityId: counterparty,
+        sourceStreamEntryIds: [sourceEntryId],
+      }),
+    );
+    expect(addGoal.mock.results[0]?.value).toMatchObject({
+      owner_entity_id: null,
+      counterparty_entity_id: counterparty,
+    });
   });
 
   it("drops wait initial steps without due_at while keeping the promoted goal", async () => {
@@ -172,6 +277,7 @@ describe("TurnGoalPromotionService", () => {
         target_at: input.targetAt,
         audience_entity_id: input.audienceEntityId,
         owner_entity_id: input.ownerEntityId,
+        counterparty_entity_id: input.counterpartyEntityId,
         source_stream_entry_ids: input.sourceStreamEntryIds,
         provenance: input.provenance,
       }),
@@ -211,7 +317,7 @@ describe("TurnGoalPromotionService", () => {
       userMessage: "Keep the quarterly review packet moving.",
       recentHistory: [],
       audienceEntityId: audience,
-      ownerEntityId: null,
+      speakerEntityId: null,
       temporalCue: null,
       activeGoals: [],
       onHookFailure,
@@ -280,7 +386,7 @@ describe("TurnGoalPromotionService", () => {
       userMessage: "Keep tracking the deployment checklist review.",
       recentHistory: [],
       audienceEntityId: audience,
-      ownerEntityId: owner,
+      speakerEntityId: owner,
       temporalCue: null,
       activeGoals: [],
       onHookFailure: vi.fn(),
@@ -315,6 +421,7 @@ describe("TurnGoalPromotionService", () => {
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
           owner_entity_id: input.ownerEntityId,
+          counterparty_entity_id: input.counterpartyEntityId,
           source_stream_entry_ids: input.sourceStreamEntryIds,
           provenance: input.provenance,
         }),
@@ -345,7 +452,7 @@ describe("TurnGoalPromotionService", () => {
       userMessage: "Track the documentation handoff.",
       recentHistory: [],
       audienceEntityId: audience,
-      ownerEntityId: owner,
+      speakerEntityId: owner,
       temporalCue: null,
       activeGoals: [],
       onHookFailure: vi.fn(),
@@ -373,6 +480,7 @@ describe("TurnGoalPromotionService", () => {
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
           owner_entity_id: input.ownerEntityId,
+          counterparty_entity_id: input.counterpartyEntityId,
           source_stream_entry_ids: input.sourceStreamEntryIds,
           provenance: input.provenance,
         }),
@@ -407,7 +515,7 @@ describe("TurnGoalPromotionService", () => {
       userMessage: "Track the onboarding cleanup.",
       recentHistory: [],
       audienceEntityId: audience,
-      ownerEntityId: owner,
+      speakerEntityId: owner,
       temporalCue: null,
       activeGoals: [],
       onHookFailure: vi.fn(),
@@ -441,6 +549,7 @@ describe("TurnGoalPromotionService", () => {
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
           owner_entity_id: input.ownerEntityId,
+          counterparty_entity_id: input.counterpartyEntityId,
           source_stream_entry_ids: input.sourceStreamEntryIds,
           provenance: input.provenance,
         }),
@@ -474,7 +583,7 @@ describe("TurnGoalPromotionService", () => {
       userMessage: "Track the build pipeline cleanup.",
       recentHistory: [],
       audienceEntityId: audience,
-      ownerEntityId: owner,
+      speakerEntityId: owner,
       temporalCue: null,
       activeGoals: [],
       onHookFailure: vi.fn(),
@@ -511,6 +620,7 @@ describe("TurnGoalPromotionService", () => {
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
           owner_entity_id: input.ownerEntityId,
+          counterparty_entity_id: input.counterpartyEntityId,
           source_stream_entry_ids: input.sourceStreamEntryIds,
           provenance: input.provenance,
         }),
@@ -544,7 +654,7 @@ describe("TurnGoalPromotionService", () => {
       userMessage: "Track the dashboard polish pass.",
       recentHistory: [],
       audienceEntityId: audience,
-      ownerEntityId: owner,
+      speakerEntityId: owner,
       temporalCue: null,
       activeGoals: [],
       onHookFailure: vi.fn(),
@@ -610,7 +720,7 @@ describe("TurnGoalPromotionService", () => {
       userMessage: "Keep tracking the API migration plan.",
       recentHistory: [],
       audienceEntityId: audience,
-      ownerEntityId: owner,
+      speakerEntityId: owner,
       temporalCue: null,
       activeGoals: [],
       onHookFailure: vi.fn(),
@@ -645,6 +755,7 @@ describe("TurnGoalPromotionService", () => {
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
           owner_entity_id: input.ownerEntityId,
+          counterparty_entity_id: input.counterpartyEntityId,
           source_stream_entry_ids: input.sourceStreamEntryIds,
           provenance: input.provenance,
         }),
@@ -683,7 +794,7 @@ describe("TurnGoalPromotionService", () => {
       userMessage: "Track the accessibility audit follow-up.",
       recentHistory: [],
       audienceEntityId: audience,
-      ownerEntityId: owner,
+      speakerEntityId: owner,
       temporalCue: null,
       activeGoals: [],
       onHookFailure: vi.fn(),
@@ -722,6 +833,7 @@ describe("TurnGoalPromotionService", () => {
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
           owner_entity_id: input.ownerEntityId,
+          counterparty_entity_id: input.counterpartyEntityId,
           source_stream_entry_ids: input.sourceStreamEntryIds,
           provenance: input.provenance,
         }),
@@ -762,7 +874,7 @@ describe("TurnGoalPromotionService", () => {
       userMessage: "Track the release notes checklist.",
       recentHistory: [],
       audienceEntityId: audience,
-      ownerEntityId: currentOwner,
+      speakerEntityId: currentOwner,
       temporalCue: null,
       activeGoals: [],
       onHookFailure: vi.fn(),
@@ -799,6 +911,7 @@ describe("TurnGoalPromotionService", () => {
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
           owner_entity_id: input.ownerEntityId,
+          counterparty_entity_id: input.counterpartyEntityId,
           source_stream_entry_ids: input.sourceStreamEntryIds,
           provenance: input.provenance,
         }),
@@ -829,7 +942,7 @@ describe("TurnGoalPromotionService", () => {
       userMessage: "Track the incident follow-up checklist.",
       recentHistory: [],
       audienceEntityId: audience,
-      ownerEntityId: owner,
+      speakerEntityId: owner,
       temporalCue: null,
       activeGoals: [],
       onHookFailure: vi.fn(),

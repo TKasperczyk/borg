@@ -58,14 +58,11 @@ function computeDeadlinePressure(goal: GoalRecord, nowMs: number, lookaheadMs: n
   return clamp01(1 - remainingMs / lookaheadMs);
 }
 
-// staleMs is supplied per scoring context, not by this module: turn selection
-// passes autonomy.triggers.goalFollowupDue.staleMs, the executive-focus wake
-// trigger passes autonomy.executiveFocus.stalenessSec. Those two defaults differ
-// by an order of magnitude, so the same goal scores a different progress_debt in
-// each pass, and the clamp below pins every row older than the shorter window at
-// 1.00 -- where the component stops discriminating between candidates and just
-// adds its weight uniformly. Both facts are rendered for the model in the goal
-// digest's score_basis; keep them in step if this divisor moves.
+// staleMs is supplied per scoring context, not by this module. Turn selection and
+// both wake-time selectors all receive autonomy.triggers.goalFollowupDue.staleMs,
+// so the progress-debt divisor agrees everywhere. The executive-focus trigger's
+// shorter stalenessSec remains a due-cadence threshold only. The divisor is
+// rendered for the model in score_basis; keep that surface in step if it moves.
 function computeProgressDebt(goal: GoalRecord, nowMs: number, staleMs: number): number {
   if (staleMs <= 0) {
     return 0;
@@ -107,6 +104,27 @@ function compareGoalScores(left: ExecutiveGoalScore, right: ExecutiveGoalScore):
     left.goal.created_at - right.goal.created_at ||
     left.goal.id.localeCompare(right.goal.id)
   );
+}
+
+export function topExecutiveCandidateGoalIds(input: {
+  candidates: readonly ExecutiveGoalScore[];
+  eligibleGoalIds: ReadonlySet<GoalRecord["id"]>;
+  limit: number;
+}): GoalRecord["id"][] {
+  const limit = Number.isFinite(input.limit) ? Math.max(0, Math.floor(input.limit)) : 0;
+  const seenGoalIds = new Set<GoalRecord["id"]>();
+
+  return [...input.candidates]
+    .sort((left, right) => right.score - left.score || left.goal_id.localeCompare(right.goal_id))
+    .map((candidate) => candidate.goal_id)
+    .filter((goalId) => {
+      if (seenGoalIds.has(goalId) || !input.eligibleGoalIds.has(goalId)) {
+        return false;
+      }
+      seenGoalIds.add(goalId);
+      return true;
+    })
+    .slice(0, limit);
 }
 
 export function selectExecutiveFocus(input: SelectExecutiveFocusInput): ExecutiveFocus {

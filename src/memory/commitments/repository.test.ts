@@ -20,6 +20,37 @@ import { CommitmentRepository, EntityRepository } from "./repository.js";
 describe("commitment repository", () => {
   const manualProvenance = { kind: "manual" } as const;
 
+  it("resolves a batch of canonical and alias names with first-match semantics", () => {
+    const db = openDatabase(":memory:", {
+      migrations: commitmentMigrations,
+    });
+    const entities = new EntityRepository({ db, clock: new FixedClock(1_000) });
+    const first = entities.add({
+      canonicalName: "Room Alpha",
+      aliases: ["Historic Room"],
+      createdAt: 100,
+    });
+    entities.add({
+      canonicalName: "Room Beta",
+      aliases: ["Historic Room"],
+      createdAt: 200,
+    });
+
+    try {
+      expect(
+        entities.findByNames(["room alpha", "HISTORIC ROOM", "missing", "room alpha"]),
+      ).toEqual(
+        new Map([
+          ["room alpha", first.id],
+          ["HISTORIC ROOM", first.id],
+          ["missing", null],
+        ]),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
   it("keeps borg_role creator as a single repository-level role", () => {
     const db = openDatabase(":memory:", {
       migrations: commitmentMigrations,

@@ -10,6 +10,7 @@ export {
   AUTONOMY_WAKE_OUTCOMES,
   AUTONOMY_WAKE_SOURCE_METADATA,
   AUTONOMY_WAKE_SOURCE_NAMES,
+  HEADWAY_EMISSION_KINDS,
   type AutonomyCondition,
   type AutonomyConditionName,
   type AutonomySchedulerBudgetDescription,
@@ -64,6 +65,8 @@ export {
   type OpenQuestionUrgencyBumpConditionOptions,
 } from "./conditions/index.js";
 export {
+  AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+  AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS,
   AutonomyWakesRepository,
   type AutonomyWakeRecord,
   type AutonomyWakeRecordInput,

@@ -366,10 +366,12 @@ describe("reflector process", () => {
     });
     cleanup.push(harness.cleanup);
     const audience = createEntityId();
+    const counterparty = createEntityId();
     const goal = harness.goalsRepository.add({
       description: "Keep the private launch goal grounded",
       priority: 7,
       audienceEntityId: audience,
+      counterpartyEntityId: counterparty,
       provenance: { kind: "manual" },
     });
     const episodes = [10_000, 20_000, 30_000].map((timestamp, index) =>
@@ -419,6 +421,11 @@ describe("reflector process", () => {
     expect(activeGoalsLine).toContain('"disclosure_label"');
     expect(activeGoalsLine).toContain('"disclosure_class":"relationship_private"');
     expect(activeGoalsLine).toContain(audience);
+    expect(activeGoalsLine).toContain(`"counterparty_entity_id":"${counterparty}"`);
+    expect(activeGoalsLine).not.toContain(`private-to=${counterparty}`);
+    expect(prompt).toContain(
+      "counterparty_entity_id is the participant the responsibility runs toward, not an owner or an audience",
+    );
   });
 
   it("keeps existing insight updates pending until review acceptance and restores snapshots", async () => {

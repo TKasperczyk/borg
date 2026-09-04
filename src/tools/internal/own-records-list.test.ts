@@ -1,11 +1,29 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { LIVE_TURN_READ_FINALIZER_TOOL_MENU } from "../../cognition/deliberation/autonomous-finalizer-tools.js";
 import type { TrainOfThoughtJournalEntry } from "../../memory/train-of-thought/index.js";
 import type { StreamEntry, StreamEntryIndexRecord } from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
-import { createOwnRecordsListTool, type OwnRecordsListRange } from "./own-records-list.js";
+import {
+  createOwnRecordsListTool,
+  type OwnRecordKind,
+  type OwnRecordsListRange,
+} from "./own-records-list.js";
+import { OWN_RECORDS_PAGE_END_CLAIM } from "./own-records-page-end-claim.js";
+
+function countOccurrences(haystack: string, needle: string): number {
+  let count = 0;
+  let index = haystack.indexOf(needle);
+
+  while (index !== -1) {
+    count += 1;
+    index = haystack.indexOf(needle, index + needle.length);
+  }
+
+  return count;
+}
 
 const CURRENT_SESSION_ID = "sess_aaaaaaaaaaaaaaaa" as SessionId;
 const OTHER_SESSION_ID = "sess_bbbbbbbbbbbbbbbb" as SessionId;
@@ -262,6 +280,103 @@ describe("tool.ownRecords.list", () => {
     expect(new Set(handles).size).toBe(handles.length);
   });
 
+  it("distinguishes a page the limit ended from one the token budget ended, which has_more cannot", async () => {
+    const newest = journalRecord({ id: 3, createdAt: 3_000, text: "newest" });
+    const oldest = journalRecord({ id: 1, createdAt: 1_000, text: "oldest" });
+    const listAll = (middle: TrainOfThoughtJournalEntry) =>
+      createOwnRecordsListTool({
+        listThoughtRecords: () => [],
+        readThoughtRecord: () => null,
+        listJournalRecords: journalRangeLister([newest, middle, oldest]),
+        clock: new ManualClock(4_000),
+      });
+    const range = {
+      since: iso(1_000),
+      until: iso(3_000),
+      kinds: ["journal"] as OwnRecordKind[],
+    };
+    const limitEnded = await listAll(
+      journalRecord({ id: 2, createdAt: 2_000, text: "middle" }),
+    ).invoke({ ...range, limit: 2 }, invocationContext());
+    const budgetEnded = await listAll(
+      journalRecord({ id: 2, createdAt: 2_000, text: "序".repeat(150_000) }),
+    ).invoke({ ...range, limit: 2 }, invocationContext());
+    const exhausted = await listAll(
+      journalRecord({ id: 2, createdAt: 2_000, text: "middle" }),
+    ).invoke({ ...range, limit: 3 }, invocationContext());
+
+    // Identical has_more, identical requested limit, different cause: the short
+    // page is short because its records are long, not because the range is.
+    expect(limitEnded.has_more).toBe(true);
+    expect(budgetEnded.has_more).toBe(true);
+    expect(limitEnded.records).toHaveLength(2);
+    expect(budgetEnded.records).toHaveLength(1);
+    expect(limitEnded.page_end_reason).toBe("limit_reached");
+    expect(budgetEnded.page_end_reason).toBe("context_budget");
+    expect(exhausted.has_more).toBe(false);
+    expect(exhausted.page_end_reason).toBe("range_exhausted");
+
+    for (const page of [limitEnded, budgetEnded, exhausted]) {
+      expect(page.page_end_reason === "range_exhausted").toBe(!page.has_more);
+    }
+  });
+
+  // A journal correction is a new entry naming the one it corrects, and nothing on
+  // either entry links them. This browse is the only reader of that store and it
+  // has no text query and no id filter, so co-retrieval is a property of the range
+  // the reader chose rather than of the correction. Pin the whole shape the journal
+  // surface now claims, including which end of a cut page survives.
+  it("reaches a journal correction only from a range ending at or after it", async () => {
+    const target = journalRecord({ id: 1, createdAt: 1_000, text: "the claim that was wrong" });
+    const correction = journalRecord({ id: 3, createdAt: 3_000, text: "entry 1 was wrong" });
+    const listFrom = (middle: TrainOfThoughtJournalEntry) =>
+      createOwnRecordsListTool({
+        listThoughtRecords: () => [],
+        readThoughtRecord: () => null,
+        listJournalRecords: journalRangeLister([correction, middle, target]),
+        clock: new ManualClock(4_000),
+      });
+    const filler = journalRecord({ id: 2, createdAt: 2_000, text: "an unrelated note" });
+    const kinds = ["journal"] as OwnRecordKind[];
+
+    const targetWindow = await listFrom(filler).invoke(
+      { since: iso(1_000), until: iso(1_000), kinds, limit: 10 },
+      invocationContext(),
+    );
+    const spanning = await listFrom(filler).invoke(
+      { since: iso(1_000), until: iso(3_000), kinds, limit: 10 },
+      invocationContext(),
+    );
+    const cut = await listFrom(
+      journalRecord({ id: 2, createdAt: 2_000, text: "序".repeat(150_000) }),
+    ).invoke({ since: iso(1_000), until: iso(3_000), kinds, limit: 3 }, invocationContext());
+
+    // Reading back to the entry's own window can never contain its correction.
+    expect(targetWindow.records.map((record) => record.handle)).toEqual(["journal:1"]);
+    // Where the range does span both, the correction arrives first, not last.
+    expect(spanning.records.map((record) => record.handle)).toEqual([
+      "journal:3",
+      "journal:2",
+      "journal:1",
+    ]);
+    // A budget cut keeps a newest-first prefix, so the correction survives a cut
+    // that the entry it corrects does not.
+    expect(cut.page_end_reason).toBe("context_budget");
+    expect(cut.records.map((record) => record.handle)).toEqual(["journal:3"]);
+
+    // Nothing on the input can key the two together. If either of these ever
+    // parses, the journal surface's reachability claim has to be rewritten.
+    for (const linking of [{ query: "entry 1" }, { journal_entry_id: 1 }]) {
+      expect(
+        listFrom(filler).inputSchema.safeParse({
+          since: iso(1_000),
+          until: iso(3_000),
+          ...linking,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it("returns exact multilingual content, origin times, nullable anchors, and row-local labels", async () => {
     const multilingual = "我在火车上注意到了它。 لاحظتُ ذلك أيضًا. Zażółć gęślą jaźń. 🧠";
     const exactThought = thoughtRecord({
@@ -397,7 +512,9 @@ describe("tool.ownRecords.list", () => {
         },
       ],
       has_more: true,
+      page_end_reason: "context_budget",
     });
+    expect(firstPage.records.length).toBeLessThan(2);
     expect(firstPage.next_cursor).not.toBeNull();
 
     const secondPage = await tool.invoke(
@@ -423,6 +540,7 @@ describe("tool.ownRecords.list", () => {
         },
       ],
       has_more: false,
+      page_end_reason: "range_exhausted",
       next_cursor: null,
     });
     expect(JSON.stringify(secondPage)).not.toContain(oversizedText.slice(0, 1_000));
@@ -470,5 +588,30 @@ describe("tool.ownRecords.list", () => {
     });
     expect(JSON.stringify(output)).not.toContain(oversizedTurnId.slice(0, 1_000));
     expect(JSON.stringify(output).length).toBeLessThan(5_000);
+  });
+
+  it("states the page-end claim once, from one authoring, on every surface that carries it", () => {
+    const tool = createOwnRecordsListTool({
+      listThoughtRecords: () => [],
+      readThoughtRecord: () => null,
+      listJournalRecords: () => [],
+      clock: new ManualClock(0),
+    });
+
+    // The three surfaces the claim reaches: the tool schema the model is handed, the live-turn
+    // read-tool menu, and the autonomous interior menu built from menuSummary.
+    const surfaces = [
+      tool.description,
+      tool.menuSummary ?? "",
+      LIVE_TURN_READ_FINALIZER_TOOL_MENU,
+    ];
+
+    for (const surface of surfaces) {
+      expect(countOccurrences(surface, OWN_RECORDS_PAGE_END_CLAIM)).toBe(1);
+      // A second authoring would have to name the field again. Requiring the field name to
+      // appear only inside the shared claim is what makes this fail on a new copy rather than
+      // only on an edit to the existing one.
+      expect(countOccurrences(surface, "page_end_reason")).toBe(1);
+    }
   });
 });

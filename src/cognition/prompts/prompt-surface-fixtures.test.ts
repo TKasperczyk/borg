@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { MoodHistoryEntry } from "../../memory/affective/index.js";
 import type { CommitmentRecord, EntityRecord } from "../../memory/commitments/index.js";
 import type { SharedStateArtifact } from "../../memory/shared-state/index.js";
+import type { GoalRecord } from "../../memory/self/index.js";
+import type { MemoryDisclosureLabelMetadata } from "../../memory/common/index.js";
 import type { SocialProfile } from "../../memory/social/index.js";
 import { StreamWriter } from "../../stream/index.js";
 import { ToolDispatcher } from "../../tools/index.js";
@@ -22,10 +24,19 @@ import {
 } from "../../util/ids.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { buildRegenerationPromptSection } from "../commitments/guard-runner.js";
-import { LIVE_TURN_READ_FINALIZER_TOOL_MENU } from "../deliberation/autonomous-finalizer-tools.js";
+import {
+  AUTONOMOUS_INTERIOR_FINALIZER_TOOL_NAMES,
+  LIVE_TURN_READ_FINALIZER_TOOL_MENU,
+  LIVE_TURN_READ_FINALIZER_TOOL_NAMES,
+} from "../deliberation/autonomous-finalizer-tools.js";
+import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
+import { OWN_RECORDS_PAGE_END_CLAIM } from "../../tools/internal/own-records-page-end-claim.js";
 import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
 import { formatTurnPlanForPrompt } from "../deliberation/prompt/plan-rendering.js";
-import { buildCompactPlannerSystemPrompt } from "../deliberation/prompt/planner-context.js";
+import {
+  buildCompactPlannerSystemPrompt,
+  PLANNER_GOAL_TARGET_TOKENS,
+} from "../deliberation/prompt/planner-context.js";
 import { summarizeRetrievedEvidence } from "../deliberation/prompt/retrieval.js";
 import {
   buildBaseSystemPrompt,
@@ -37,6 +48,10 @@ import type { DeliberationContext } from "../deliberation/types.js";
 import { buildCompactPlannerLedgerPrompt, renderEvidenceLedger } from "../evidence-ledger/index.js";
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/types.js";
 import { buildSessionReentryContinuityPrompt } from "../session-reentry-continuity.js";
+import {
+  DEFAULT_HOST_CAPABILITIES_SECTION,
+  withDerivedOutboundCapabilities,
+} from "./host-capabilities.js";
 import { formatDirectedOutboundInstruction } from "../../outbound/outbound-turn.js";
 import {
   CURRENT_USER_MESSAGE_REMINDER,
@@ -86,6 +101,42 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
   intervalArmedAt: NOW_MS - 3_600_000,
   nextTickAt: NOW_MS + 60_000,
   scheduledTickAt: NOW_MS + 60_000,
+  sources: [
+    {
+      name: "commitment_expiring",
+      type: "trigger",
+      category: "operational",
+      enabled: true,
+      next_due_at: NOW_MS + 900_000,
+    },
+    {
+      name: "executive_focus_due",
+      type: "trigger",
+      category: "operational",
+      enabled: true,
+      next_due_at: null,
+    },
+    {
+      name: "scheduled_reflection",
+      type: "trigger",
+      category: "contemplative",
+      enabled: true,
+      next_due_at: NOW_MS,
+    },
+    {
+      name: "scheduled_wake",
+      type: "trigger",
+      category: "contemplative",
+      enabled: false,
+      next_due_at: null,
+    },
+    {
+      name: "mood_valence_drop",
+      type: "condition",
+      category: "operational",
+      enabled: true,
+    },
+  ],
   fleetBrake: {
     enabled: true,
     empty_streak: 0,
@@ -97,7 +148,8 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
     error_paused_until: null,
     bypass_count: 0,
     freshness_bypass_cap: 3,
-    window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+    window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0, interrupted: 0 },
+    window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
     window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
     window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
   },
@@ -119,6 +171,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
           silent: 2,
           error: 0,
           busy: 0,
+          interrupted: 0,
         },
       },
       {
@@ -131,6 +184,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
           silent: 0,
           error: 1,
           busy: 0,
+          interrupted: 0,
         },
       },
     ],
@@ -153,6 +207,7 @@ const FIXTURE_NAMES = [
   "directed-outbound-framing.txt",
   "session-reentry-continuity.txt",
   "s2-planner-voice-anchors.txt",
+  "goal-origin-divergence.txt",
 ] as const;
 
 if (UPDATE_FIXTURES && process.env.CI !== undefined) {
@@ -278,7 +333,9 @@ function makeEntityRepository() {
   } as DeliberationContext["entityRepository"];
 }
 
-function makeCommitment(): CommitmentRecord {
+function makeCommitment(): CommitmentRecord & {
+  disclosure_label: MemoryDisclosureLabelMetadata;
+} {
   return {
     id: "cmt_aaaaaaaaaaaaaaaa" as CommitmentRecord["id"],
     record_version: 1,
@@ -305,6 +362,37 @@ function makeCommitment(): CommitmentRecord {
     superseded_by: null,
     canonicalized_by_artifact_entry_id: null,
     last_reinforced_at: NOW_MS,
+    disclosure_label: {
+      disclosure_class: "relationship_private",
+      origin_audience_entity_ids: [MEMBER_ID],
+      private_to_entity_ids: [GROUP_ID],
+      public_to_entity_ids: [],
+    },
+  };
+}
+
+function makeGoal(): GoalRecord & { disclosure_label: MemoryDisclosureLabelMetadata } {
+  return {
+    id: "goal_aaaaaaaaaaaaaaaa" as GoalRecord["id"],
+    description: "Finish the prompt-surface provenance rollout.",
+    terminal_condition: "All model-facing fixtures preserve historical origin audiences.",
+    priority: 9,
+    parent_goal_id: null,
+    status: "active",
+    progress_notes: "Resolver and serializer foundation completed.",
+    last_progress_ts: NOW_MS - 2_000,
+    created_at: NOW_MS - 8_000,
+    target_at: NOW_MS + 86_400_000,
+    audience_entity_id: GROUP_ID,
+    owner_entity_id: CREATOR_ID,
+    source_stream_entry_ids: [USER_ENTRY_ID],
+    provenance: { kind: "manual" },
+    disclosure_label: {
+      disclosure_class: "relationship_private",
+      origin_audience_entity_ids: [MEMBER_ID],
+      private_to_entity_ids: [GROUP_ID, CREATOR_ID],
+      public_to_entity_ids: [],
+    },
   };
 }
 
@@ -425,6 +513,7 @@ function makeSocialProfile(): SocialProfile {
 function makeContext(overrides: Partial<DeliberationContext> = {}): DeliberationContext {
   return {
     sessionId: DEFAULT_SESSION_ID,
+    applicableCommitmentsReadAtMs: NOW_MS,
     userMessage: "Please consolidate the prompt surface without changing bytes.",
     participationPolicy: "observing",
     creatorIdentity: { displayName: "Ada Creator" },
@@ -815,11 +904,18 @@ function makeAutonomousRelationalContext(): DeliberationContext {
       {
         name: "tool.ownRecords.list",
         menuSummary:
-          "Browse my own thoughts and journal globally by origin-time range (optional explicit session filter).",
+          "Browse my own thoughts and journal globally by origin-time range, with an optional explicit session filter. " +
+          OWN_RECORDS_PAGE_END_CLAIM,
+      },
+      {
+        name: "tool.openQuestions.ruminations",
+        menuSummary:
+          "Browse my offline rumination notes on open questions by created-at range, including questions that have since resolved or been abandoned.",
       },
       {
         name: "tool.journal.append",
-        menuSummary: "Append a self-private journal entry without ending the turn.",
+        menuSummary:
+          "Append a self-private journal entry without ending the turn; an entry is immutable once written, so a correction is a new entry naming the one it corrects and never a change to it.",
       },
       {
         name: "tool.openQuestions.create",
@@ -936,7 +1032,7 @@ function makeEvidenceLedger(): EvidenceLedger {
         label: "4. Current-Session Contradictions And Quarantines",
         framing: {
           text: "Contradictions are planning constraints, not facts.",
-          counts: { open_questions: 1 },
+          counts: { rows_assembled: 1, open_questions: 1 },
         },
         entries: [
           {
@@ -1085,7 +1181,26 @@ describe("prompt surface fixtures", () => {
       buildBaseSystemPrompt(makeAutonomousRelationalContext(), {
         ...PROMPT_OPTIONS,
         participationPolicy: "active",
+        // open.ts derives this from the connector registry, so a host with a wired
+        // connector never renders the unwired capability text. Every other fixture
+        // pins the unwired branch; this one pins the branch a deployed being reads,
+        // and it is the branch this context's own outbound target already assumes.
+        hostCapabilities: withDerivedOutboundCapabilities({
+          hostCapabilities: DEFAULT_HOST_CAPABILITIES_SECTION,
+          outboundSourceTypes: ["demo"],
+        }),
       }),
+    );
+    // Named so the branch is not pinned only by accident of the bytes: without a
+    // wired connector this fixture would render the "I cannot reach out" text and
+    // nothing anywhere would byte-check the lines a deployed being actually reads.
+    const wired = readFileSync(
+      join(FIXTURE_DIR, "base-system-autonomous-dm-relational.txt"),
+      "utf8",
+    );
+    expect(wired).toContain("Host-wired outbound capabilities available now:");
+    expect(wired).not.toContain(
+      "Proactive outbound messaging (I cannot reach out to participants later on my own initiative)",
     );
   });
 
@@ -1261,7 +1376,48 @@ describe("prompt surface fixtures", () => {
 
     expect(compactSystem).toContain("Harness scheduler state");
     expect(compactTurnState).toContain('<autonomy_scheduler_state source="harness_mechanism">');
+    expect(compactSystem).toContain(
+      `<borg_planner_goal_digest complete_membership="true" rows_total="0" goal_index_rows_rendered="0" membership_order="global_executive_score_desc_then_priority_desc_created_at_asc_id_asc" target_tokens="${PLANNER_GOAL_TARGET_TOKENS}"`,
+    );
+    expect(compact.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(
+      PLANNER_GOAL_TARGET_TOKENS,
+    );
     expectFixture(COMPACT_PLANNER_FIXTURE_NAME, compactSystem);
+  });
+
+  it("pins scope-divergent goal origin labels without changing baseline membership", () => {
+    const workingMemory = makeWorkingMemory();
+    const baseline = makeContext({
+      workingMemory: {
+        ...workingMemory,
+        discourse_state: {
+          ...workingMemory.discourse_state,
+          stop_until_substantive_content: null,
+        },
+      },
+    });
+    const goal = makeGoal();
+    const context: DeliberationContext = {
+      ...baseline,
+      selfSnapshot: {
+        ...baseline.selfSnapshot,
+        goals: [goal],
+      },
+    };
+    const cacheable = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
+    const compact = buildCompactPlannerSystemPrompt({
+      context,
+      staticPrefix: cacheable.staticPrefix,
+      compactPlannerLedger: null,
+    });
+    const goalRows = systemBlocksToFixture(compact.system)
+      .split("\n")
+      .filter((line) => line.includes(goal.id))
+      .join("\n");
+
+    expect(goalRows).toContain(`oa="${MEMBER_ID}"`);
+    expect(goalRows).toContain(`pt="${GROUP_ID},${CREATOR_ID}"`);
+    expectFixture("goal-origin-divergence.txt", goalRows);
   });
 
   it("pins autonomous S2 planner system prompt", async () => {
@@ -1482,5 +1638,24 @@ describe("prompt surface fixtures", () => {
         `Prompt-surface registry entry ${entry.id} is not present in fixtures and is not exempted`,
       ).toBe(true);
     }
+  });
+
+  it("offers the same tool namespace in the fixture menu as the registry builds", () => {
+    // The fixture hand-authors this menu rather than constructing live tool definitions, so the
+    // set of names is derived here instead of transcribed. A tool added to either registry list
+    // and not to the fixture is a fixture pinning a menu production does not emit.
+    const expected = [
+      ...new Set([
+        ...LIVE_TURN_READ_FINALIZER_TOOL_NAMES,
+        ...AUTONOMOUS_INTERIOR_FINALIZER_TOOL_NAMES,
+        OUTBOUND_POST_TOOL_NAME,
+      ]),
+    ].sort();
+    const rendered = (makeAutonomousRelationalContext().autonomousFinalizerToolMenu ?? [])
+      .map((item) => item.name)
+      .filter((name) => name.startsWith("tool."))
+      .sort();
+
+    expect(rendered).toEqual(expected);
   });
 });

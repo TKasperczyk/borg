@@ -104,7 +104,7 @@ const extractorEdgeSchema = z.object({
 });
 
 const extractorResponseSchema = z.object({
-  nodes: z.array(extractorNodeSchema).max(MAX_EXTRACTOR_NODES),
+  nodes: z.array(z.unknown()),
   edges: z.array(z.unknown()).max(MAX_EXTRACTOR_EDGES),
 });
 const extractorResponseToolSchema = z.object({
@@ -175,6 +175,7 @@ export type ExtractSemanticResult = {
 type SemanticInsertSkipReason =
   | "dedupe_match"
   | "schema_invalid"
+  | "over_cap"
   | "invalid_ref"
   | "invalid_endpoint"
   | "identity_guard"
@@ -182,6 +183,11 @@ type SemanticInsertSkipReason =
   | "episode_archived_post_plan"
   | "relationship_claim_ungrounded"
   | "other";
+
+type SkippedNodeTraceDetail = {
+  candidate_index: number;
+  reason: Extract<SemanticInsertSkipReason, "schema_invalid" | "over_cap">;
+};
 
 function buildPrompt(input: {
   episodes: readonly Episode[];
@@ -274,6 +280,11 @@ function buildPrompt(input: {
 function parseResponse(input: unknown): {
   nodes: ExtractorNode[];
   edges: ParsedExtractorEdge[];
+  rawNodeCount: number;
+  retainedNodeCount: number;
+  schemaInvalidNodeCount: number;
+  overCapNodeCount: number;
+  skippedNodeDetails: SkippedNodeTraceDetail[];
   rawEdgeCount: number;
   schemaInvalidEdgeCount: number;
   schemaInvalidEdgeDetails: SkippedEdgeTraceDetail[];
@@ -284,6 +295,54 @@ function parseResponse(input: unknown): {
     throw new LLMError("Semantic extractor returned invalid payload", {
       cause: parsed.error,
       code: "SEMANTIC_EXTRACTOR_INVALID",
+    });
+  }
+
+  const nodes: ExtractorNode[] = [];
+  const skippedNodeDetails: SkippedNodeTraceDetail[] = [];
+  const candidateNodesWithinCap = parsed.data.nodes.slice(0, MAX_EXTRACTOR_NODES);
+  const schemaInvalidNodeErrors: Array<{ candidateIndex: number; error: z.ZodError }> = [];
+  let schemaInvalidNodeCount = 0;
+
+  for (const [candidateIndex, node] of candidateNodesWithinCap.entries()) {
+    const parsedNode = extractorNodeSchema.safeParse(node);
+
+    if (!parsedNode.success) {
+      schemaInvalidNodeCount += 1;
+      schemaInvalidNodeErrors.push({ candidateIndex, error: parsedNode.error });
+      skippedNodeDetails.push({
+        candidate_index: candidateIndex,
+        reason: "schema_invalid",
+      });
+      continue;
+    }
+
+    nodes.push(parsedNode.data);
+  }
+
+  if (parsed.data.nodes.length > 0 && nodes.length === 0) {
+    throw new LLMError("Semantic extractor returned no valid node candidates", {
+      cause: new z.ZodError(
+        schemaInvalidNodeErrors.flatMap(({ candidateIndex, error }) =>
+          error.issues.map((issue) => ({
+            ...issue,
+            path: ["nodes", candidateIndex, ...issue.path],
+          })),
+        ),
+      ),
+      code: "SEMANTIC_EXTRACTOR_INVALID",
+    });
+  }
+
+  const overCapNodeCount = parsed.data.nodes.length - candidateNodesWithinCap.length;
+  for (
+    let candidateIndex = candidateNodesWithinCap.length;
+    candidateIndex < parsed.data.nodes.length;
+    candidateIndex += 1
+  ) {
+    skippedNodeDetails.push({
+      candidate_index: candidateIndex,
+      reason: "over_cap",
     });
   }
 
@@ -310,8 +369,13 @@ function parseResponse(input: unknown): {
   }
 
   return {
-    nodes: parsed.data.nodes,
+    nodes,
     edges,
+    rawNodeCount: parsed.data.nodes.length,
+    retainedNodeCount: nodes.length,
+    schemaInvalidNodeCount,
+    overCapNodeCount,
+    skippedNodeDetails,
     rawEdgeCount: parsed.data.edges.length,
     schemaInvalidEdgeCount,
     schemaInvalidEdgeDetails,
@@ -562,6 +626,7 @@ export class SemanticExtractor {
   private traceInsertSkipped(input: {
     kind: "node" | "edge";
     reason: SemanticInsertSkipReason;
+    candidateIndex?: number;
     relationshipClaims?: readonly RelationshipClaim[];
     ungroundedRelationshipClaims?: readonly RelationshipClaim[];
   }): void {
@@ -573,6 +638,7 @@ export class SemanticExtractor {
       turnId: this.options.traceTurnId ?? "semantic_extractor",
       kind: input.kind,
       reason: input.reason,
+      ...(input.candidateIndex === undefined ? {} : { candidate_index: input.candidateIndex }),
       ...(input.relationshipClaims === undefined
         ? {}
         : {
@@ -593,6 +659,10 @@ export class SemanticExtractor {
 
   private traceExtractorInvoked(input: {
     inputEpisodeCount: number;
+    rawNodeCount: number;
+    retainedNodeCount: number;
+    schemaInvalidNodeCount: number;
+    overCapNodeCount: number;
     parsedNodeCount: number;
     parsedEdgeCount: number;
     acceptedNodeCount: number;
@@ -607,6 +677,10 @@ export class SemanticExtractor {
       turnId: this.options.traceTurnId ?? "semantic_extractor",
       input_episode_count: input.inputEpisodeCount,
       prompt_label: "semantic-extraction",
+      raw_node_count: input.rawNodeCount,
+      retained_node_count: input.retainedNodeCount,
+      schema_invalid_node_count: input.schemaInvalidNodeCount,
+      over_cap_node_count: input.overCapNodeCount,
       parsed_node_count: input.parsedNodeCount,
       parsed_edge_count: input.parsedEdgeCount,
       accepted_node_count: input.acceptedNodeCount,
@@ -617,6 +691,10 @@ export class SemanticExtractor {
 
   private tracePartialFailure(input: {
     inputEpisodeCount: number;
+    rawNodeCount: number;
+    retainedNodeCount: number;
+    schemaInvalidNodeCount: number;
+    overCapNodeCount: number;
     parsedNodeCount: number;
     parsedEdgeCount: number;
     acceptedNodeCount: number;
@@ -624,6 +702,7 @@ export class SemanticExtractor {
     skippedNodeCount: number;
     skippedEdgeCount: number;
     skipReasons: readonly string[];
+    skippedNodeDetails: readonly SkippedNodeTraceDetail[];
     skippedEdgeDetails: readonly SkippedEdgeTraceDetail[];
   }): void {
     if (this.options.tracer?.enabled !== true) {
@@ -633,6 +712,10 @@ export class SemanticExtractor {
     this.options.tracer.emit("semantic_extractor.degraded", {
       turnId: this.options.traceTurnId ?? "semantic_extractor",
       input_episode_count: input.inputEpisodeCount,
+      raw_node_count: input.rawNodeCount,
+      retained_node_count: input.retainedNodeCount,
+      schema_invalid_node_count: input.schemaInvalidNodeCount,
+      over_cap_node_count: input.overCapNodeCount,
       parsed_node_count: input.parsedNodeCount,
       parsed_edge_count: input.parsedEdgeCount,
       accepted_node_count: input.acceptedNodeCount,
@@ -640,6 +723,7 @@ export class SemanticExtractor {
       skipped_node_count: input.skippedNodeCount,
       skipped_edge_count: input.skippedEdgeCount,
       skip_reasons: [...input.skipReasons],
+      skipped_node_details: input.skippedNodeDetails.slice(0, SKIPPED_EDGE_TRACE_DETAIL_LIMIT),
       skipped_edge_details: input.skippedEdgeDetails.slice(0, SKIPPED_EDGE_TRACE_DETAIL_LIMIT),
     });
   }
@@ -1023,6 +1107,10 @@ export class SemanticExtractor {
       if (isStructuredToolCallError(error, "llm_failed")) {
         this.traceExtractorInvoked({
           inputEpisodeCount: episodes.length,
+          rawNodeCount: 0,
+          retainedNodeCount: 0,
+          schemaInvalidNodeCount: 0,
+          overCapNodeCount: 0,
           parsedNodeCount: 0,
           parsedEdgeCount: 0,
           acceptedNodeCount: 0,
@@ -1034,6 +1122,10 @@ export class SemanticExtractor {
 
       this.traceExtractorInvoked({
         inputEpisodeCount: episodes.length,
+        rawNodeCount: 0,
+        retainedNodeCount: 0,
+        schemaInvalidNodeCount: 0,
+        overCapNodeCount: 0,
         parsedNodeCount: 0,
         parsedEdgeCount: 0,
         acceptedNodeCount: 0,
@@ -1056,12 +1148,22 @@ export class SemanticExtractor {
     const skipReasons = new Set<string>();
     let insertedNodes = 0;
     let updatedNodes = 0;
-    let skippedNodes = 0;
+    const parsedNodeSkips = parsed.schemaInvalidNodeCount + parsed.overCapNodeCount;
+    let skippedNodes = parsedNodeSkips;
     let insertedEdges = 0;
     let updatedEdges = 0;
     let skippedEdges = parsed.schemaInvalidEdgeCount;
     let invalidEdgeSkips = parsed.schemaInvalidEdgeCount;
     const skippedEdgeDetails = [...parsed.schemaInvalidEdgeDetails];
+
+    for (const skippedNode of parsed.skippedNodeDetails) {
+      skipReasons.add(skippedNode.reason);
+      this.traceInsertSkipped({
+        kind: "node",
+        reason: skippedNode.reason,
+        candidateIndex: skippedNode.candidate_index,
+      });
+    }
 
     if (parsed.schemaInvalidEdgeCount > 0) {
       skipReasons.add("schema_invalid");
@@ -1272,6 +1374,10 @@ export class SemanticExtractor {
 
       this.traceExtractorInvoked({
         inputEpisodeCount: episodes.length,
+        rawNodeCount: parsed.rawNodeCount,
+        retainedNodeCount: parsed.retainedNodeCount,
+        schemaInvalidNodeCount: parsed.schemaInvalidNodeCount,
+        overCapNodeCount: parsed.overCapNodeCount,
         parsedNodeCount: parsed.nodes.length,
         parsedEdgeCount: parsed.rawEdgeCount,
         acceptedNodeCount: insertedNodes + updatedNodes,
@@ -1281,9 +1387,16 @@ export class SemanticExtractor {
       throw error;
     }
 
-    if (invalidEdgeSkips > 0 && insertedNodes + updatedNodes + insertedEdges + updatedEdges > 0) {
+    if (
+      (parsedNodeSkips > 0 || invalidEdgeSkips > 0) &&
+      insertedNodes + updatedNodes + insertedEdges + updatedEdges > 0
+    ) {
       this.tracePartialFailure({
         inputEpisodeCount: episodes.length,
+        rawNodeCount: parsed.rawNodeCount,
+        retainedNodeCount: parsed.retainedNodeCount,
+        schemaInvalidNodeCount: parsed.schemaInvalidNodeCount,
+        overCapNodeCount: parsed.overCapNodeCount,
         parsedNodeCount: parsed.nodes.length,
         parsedEdgeCount: parsed.rawEdgeCount,
         acceptedNodeCount: insertedNodes + updatedNodes,
@@ -1291,12 +1404,17 @@ export class SemanticExtractor {
         skippedNodeCount: skippedNodes,
         skippedEdgeCount: skippedEdges,
         skipReasons: [...skipReasons],
+        skippedNodeDetails: parsed.skippedNodeDetails,
         skippedEdgeDetails,
       });
     }
 
     this.traceExtractorInvoked({
       inputEpisodeCount: episodes.length,
+      rawNodeCount: parsed.rawNodeCount,
+      retainedNodeCount: parsed.retainedNodeCount,
+      schemaInvalidNodeCount: parsed.schemaInvalidNodeCount,
+      overCapNodeCount: parsed.overCapNodeCount,
       parsedNodeCount: parsed.nodes.length,
       parsedEdgeCount: parsed.rawEdgeCount,
       acceptedNodeCount: insertedNodes + updatedNodes,

@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -11,10 +12,18 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { LLMCompleteResult } from "../../llm/index.js";
-import { DEFAULT_SESSION_ID, createCreatorDirectiveId, createEntityId } from "../../util/ids.js";
+import { FixedClock } from "../../util/clock.js";
+import {
+  DEFAULT_SESSION_ID,
+  createCreatorDirectiveId,
+  createEntityId,
+  createExecutiveStepId,
+  createGoalId,
+} from "../../util/ids.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { DeliberationContext } from "./types.js";
 import {
@@ -35,11 +44,13 @@ import {
 } from "./planner-context-capture.js";
 import { replayPlannerContextCapture } from "./planner-ab-replay.js";
 import { createS2PlannerRequestSnapshot } from "./s2-planner.js";
+import { waitForContextCaptureMaintenance } from "./context-capture-storage.js";
 
 const NOW_MS = Date.UTC(2026, 7, 13, 20, 0, 0);
 const tempDirs: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
+  await waitForContextCaptureMaintenance();
   vi.restoreAllMocks();
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
@@ -177,6 +188,24 @@ describe("planner context capture", () => {
             intervalMs: 60_000,
             droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
             intervalArmedAt: NOW_MS - 3_600_000,
+            // Non-empty on purpose: an empty list round-trips through a
+            // projector that drops the field just as well as through one that
+            // carries it, and this pair is the only guard on that boundary.
+            sources: [
+              {
+                name: "executive_focus_due",
+                type: "trigger",
+                category: "operational",
+                enabled: true,
+                next_due_at: NOW_MS + 120_000,
+              },
+              {
+                name: "mood_valence_drop",
+                type: "condition",
+                category: "operational",
+                enabled: true,
+              },
+            ],
             nextTickAt: NOW_MS + 60_000,
             scheduledTickAt: NOW_MS + 60_000,
             fleetBrake: {
@@ -190,7 +219,14 @@ describe("planner context capture", () => {
               error_paused_until: null,
               bypass_count: 0,
               freshness_bypass_cap: 3,
-              window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+              window_outcomes: {
+                headway: 0,
+                silent: 0,
+                error: 0,
+                busy: 0,
+                interrupted: 0,
+              },
+              window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
@@ -212,6 +248,7 @@ describe("planner context capture", () => {
                     silent: 0,
                     error: 0,
                     busy: 0,
+                    interrupted: 0,
                   },
                 },
               ],
@@ -354,32 +391,53 @@ describe("planner context capture", () => {
     expect(existsSync(plannerContextCapturePath(dataDir))).toBe(false);
   });
 
-  it("caps append-only file growth and counts records skipped at the cap", async () => {
+  it("rotates at the file cap and captures the triggering record", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "borg-planner-capture-cap-"));
     tempDirs.push(dataDir);
-    const captureRecord = record();
-    const lineBytes = Buffer.byteLength(`${JSON.stringify(captureRecord)}\n`);
+    const firstRecord = { ...record(), capture_id: "capture_a" };
+    const triggeringRecord = { ...record(), capture_id: "capture_b" };
+    const lineBytes = Buffer.byteLength(`${JSON.stringify(firstRecord)}\n`);
+    const emit = vi.fn();
+    const logger = { info: vi.fn(), error: vi.fn() };
     const capture = new PlannerContextCapture({
       dataDir,
       sampleRate: 1,
       maxRecordBytes: lineBytes,
       maxFileBytes: lineBytes,
+      clock: new FixedClock(NOW_MS),
+      tracer: { enabled: true, includePayloads: false, emit },
+      logger,
     });
 
-    await expect(capture.write(captureRecord)).resolves.toMatchObject({ status: "captured" });
-    await expect(capture.write(captureRecord)).resolves.toMatchObject({
-      status: "skipped",
-      reason: "file_full",
-    });
+    await expect(capture.write(firstRecord)).resolves.toMatchObject({ status: "captured" });
+    await expect(capture.write(triggeringRecord)).resolves.toMatchObject({ status: "captured" });
 
     const path = plannerContextCapturePath(dataDir);
+    await waitForContextCaptureMaintenance(path);
     expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(1);
+    expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({ capture_id: "capture_b" });
+    const [rotatedName] = readdirSync(join(dataDir, "captures")).filter((name) =>
+      name.startsWith("planner-contexts.jsonl.rotated-"),
+    );
+    expect(rotatedName).toBe("planner-contexts.jsonl.rotated-20260813T200000.000Z.gz");
+    expect(
+      JSON.parse(gunzipSync(readFileSync(join(dataDir, "captures", rotatedName!))).toString()),
+    ).toMatchObject({ capture_id: "capture_a" });
     expect(capture.snapshotStats()).toEqual({
-      captured: 1,
+      captured: 2,
       oversizedSkipped: 0,
-      fileFullSkipped: 1,
+      fileFullSkipped: 0,
       failed: 0,
     });
+    expect(emit).toHaveBeenCalledWith(
+      "deliberation.planner_context_capture.captured",
+      expect.objectContaining({ reason: "rotated" }),
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      "Rotated deliberation context capture",
+      expect.objectContaining({ capturePath: path }),
+    );
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
   it("repairs pre-existing capture directory and file permissions under umask 0022", async () => {
@@ -430,6 +488,59 @@ describe("planner context capture", () => {
     expect(captured).not.toHaveProperty("retrievalResult");
     expect(captured).not.toHaveProperty("recencyMessages");
     expect(captured).not.toHaveProperty("currentUserContent");
+  });
+
+  it("round-trips expanded-candidate step data for planner replay", () => {
+    const goalId = createGoalId();
+    const topStep = {
+      id: createExecutiveStepId(),
+      goal_id: goalId,
+      description: "Preserve the expanded candidate's top step",
+      status: "doing" as const,
+      kind: "think" as const,
+      due_at: NOW_MS + 60_000,
+      last_attempt_ts: NOW_MS - 60_000,
+      created_at: NOW_MS - 120_000,
+      updated_at: NOW_MS,
+      provenance: { kind: "manual" as const },
+    };
+    const input = renderInput(
+      context({
+        executiveFocus: {
+          selected_goal: null,
+          selected_score: null,
+          next_step: null,
+          candidate_steps: {
+            top_open_steps: [topStep],
+            omitted_open_step_count: 2,
+          },
+          candidates: [],
+          threshold: 0,
+          score_basis: {
+            score_context: "turn_selection",
+            deadline_lookahead_ms: 0,
+            progress_debt_stale_ms: 0,
+          },
+        },
+      }),
+    );
+    const parsed = parsePlannerContextCaptureRecord(
+      JSON.parse(JSON.stringify(record(input))) as unknown,
+    );
+
+    expect(parsed.render_input.compactContext.executiveFocus?.candidateSteps).toMatchObject({
+      topOpenSteps: [
+        {
+          id: topStep.id,
+          goal_id: goalId,
+          description: topStep.description,
+        },
+      ],
+      omittedOpenStepCount: 2,
+    });
+    expect(renderCapturedPlannerSurfacePair(parsed.render_input).compact.fingerprint).toEqual(
+      renderCapturedPlannerSurfacePair(input).compact.fingerprint,
+    );
   });
 
   it("omits unused nested sensitive payloads while preserving disclosure labels", () => {

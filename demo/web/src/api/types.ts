@@ -232,6 +232,10 @@ export type AutonomyWakeRecord = {
   session_label: string | null;
   wake_source_type: "trigger" | "condition";
   source_category: "contemplative" | "operational";
+  selected_goal_id: string | null;
+  outcome: "headway" | "silent" | "error" | "busy" | null;
+  outcome_detail: string | null;
+  headway_bases: string[] | null;
 };
 
 export type AutonomyStateResponse = {
@@ -359,6 +363,9 @@ export type IdentityGoal = {
   last_progress_ts: number | null;
   created_at: number;
   target_at: number | null;
+  counterparty_entity_id: string | null;
+  disclosure?: string;
+  disclosure_label?: DisclosureLabel;
   children?: IdentityGoal[];
 };
 
@@ -503,6 +510,8 @@ export type Commitment = {
   revoked_reason: string | null;
   superseded_by_id: string | null;
   last_reinforced_at: number;
+  disclosure?: string;
+  disclosure_label?: DisclosureLabel;
 };
 
 export type CommitmentsResponse = {

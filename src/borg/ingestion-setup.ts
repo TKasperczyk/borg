@@ -10,6 +10,7 @@ import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../memory/common/index.js";
 import { EpisodicExtractor, type EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityEventRepository, IdentityService } from "../memory/identity/index.js";
 import type { RelationalSlotRepository } from "../memory/relational-slots/index.js";
@@ -28,6 +29,7 @@ export type BuildIngestionCoordinatorOptions = {
   lazyLlmClient: LLMClient;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
+  sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   identityService: IdentityService;
   identityEventRepository: Pick<IdentityEventRepository, "runInTransaction">;
   relationalSlotRepository: RelationalSlotRepository;
@@ -73,7 +75,9 @@ export function buildStreamIngestionCoordinator(
           service: new CorrectivePreferenceTurnService({
             model: options.config.anthropic.models.recallExpansion,
             commitmentRepository: options.commitmentRepository,
+            sourceStreamAudienceDisclosureResolver: options.sourceStreamAudienceDisclosureResolver,
             identityService: options.identityService,
+            entityRepository: options.entityRepository,
             relationalSlotRepository: options.relationalSlotRepository,
             workingMemoryStore: options.workingMemoryStore,
             clock: options.clock,

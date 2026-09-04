@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -107,6 +108,34 @@ describe("appendDurableJsonl", () => {
     await expect(
       appendDurableJsonl(path, { next: 2 }, { maxFileBytes: cap, privateDirectory: captures }),
     ).resolves.toMatchObject({ status: "appended", repairedTailBytes: 7 });
+  });
+
+  it("rotates and appends the triggering record while holding the append lock", async () => {
+    const root = mkdtempSync(join(tmpdir(), "borg-rotate-jsonl-"));
+    tempDirectories.push(root);
+    const captures = join(root, "captures");
+    const path = join(captures, "records.jsonl");
+    const rotatedPath = `${path}.rotated-20260904T120000.000Z`;
+    const first = { record: "first" };
+    const triggering = { record: "next!" };
+    const cap = Buffer.byteLength(`${JSON.stringify(first)}\n`);
+    await appendDurableJsonl(path, first, { maxFileBytes: cap, privateDirectory: captures });
+    let observedLock = false;
+
+    const result = await appendDurableJsonl(path, triggering, {
+      maxFileBytes: cap,
+      privateDirectory: captures,
+      rotatedFilePath: () => {
+        observedLock = existsSync(`${path}.lock`);
+        return rotatedPath;
+      },
+    });
+
+    expect(result).toMatchObject({ status: "rotated", startOffset: 0, rotatedPath });
+    expect(observedLock).toBe(true);
+    expect(existsSync(`${path}.lock`)).toBe(false);
+    expect(readFileSync(rotatedPath, "utf8")).toBe(`${JSON.stringify(first)}\n`);
+    expect(readFileSync(path, "utf8")).toBe(`${JSON.stringify(triggering)}\n`);
   });
 
   it("truncates back to the record start when an append fails after a partial write", async () => {

@@ -6,12 +6,18 @@ import { describe, expect, it } from "vitest";
 
 import { openDatabase } from "../storage/sqlite/index.js";
 import { ManualClock } from "../util/clock.js";
-import { DEFAULT_SESSION_ID } from "../util/ids.js";
+import { DEFAULT_SESSION_ID, parseGoalId } from "../util/ids.js";
 
 import { autonomyMigrations } from "./migrations.js";
-import { AUTONOMY_CONDITION_NAMES, AUTONOMY_WAKE_SOURCE_NAMES } from "./types.js";
+import {
+  AUTONOMY_CONDITION_NAMES,
+  AUTONOMY_WAKE_OUTCOMES,
+  AUTONOMY_WAKE_SOURCE_NAMES,
+} from "./types.js";
 import {
   AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH,
+  AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+  AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS,
   AutonomyWakesRepository,
 } from "./wakes-repository.js";
 
@@ -62,12 +68,14 @@ describe("AutonomyWakesRepository", () => {
       migrations: autonomyMigrations,
     });
     const repository = new AutonomyWakesRepository({ db, clock });
+    const selectedGoalId = parseGoalId("goal_aaaaaaaaaaaaaaaa");
 
     try {
       const headwayWake = repository.record({
         trigger_name: "goal_followup_due",
         session_id: DEFAULT_SESSION_ID,
         wake_source_type: "trigger",
+        selected_goal_id: selectedGoalId,
       });
       clock.advance(1);
       const legacyNullWake = repository.record({
@@ -90,10 +98,78 @@ describe("AutonomyWakesRepository", () => {
       ).toBe(1);
       expect(repository.listSince(0, 10)).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ id: headwayWake.id, outcome: "headway" }),
+          expect.objectContaining({
+            id: headwayWake.id,
+            outcome: "headway",
+            selected_goal_id: selectedGoalId,
+          }),
           expect.objectContaining({ id: legacyNullWake.id, outcome: null }),
         ]),
       );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reconciles only old orphaned wakes and never overwrites a terminal outcome", () => {
+    const clock = new ManualClock(1_000);
+    const db = openDatabase(":memory:", { migrations: autonomyMigrations });
+    const repository = new AutonomyWakesRepository({ db, clock });
+
+    try {
+      const firstOrphan = repository.record({
+        trigger_name: "goal_followup_due",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+      });
+      const secondOrphan = repository.record({
+        trigger_name: "scheduled_reflection",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+        source_category: "contemplative",
+      });
+      clock.advance(AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS + 1);
+      const recentInFlight = repository.record({
+        trigger_name: "goal_followup_due",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+      });
+      const completed = repository.record({
+        trigger_name: "scheduled_wake",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+        source_category: "contemplative",
+      });
+      repository.recordOutcome(completed.id, "headway");
+
+      expect(repository.interruptOrphanedWakesAtStartup()).toBe(2);
+      expect(repository.interruptOrphanedWakesAtStartup()).toBe(0);
+      repository.recordOutcome(completed.id, "interrupted", "must not replace headway");
+
+      const wakes = repository.listSince(0, 10);
+      expect(
+        wakes.filter((wake) => wake.id === firstOrphan.id || wake.id === secondOrphan.id),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            outcome: "interrupted",
+            outcome_detail: AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+          }),
+          expect.objectContaining({
+            outcome: "interrupted",
+            outcome_detail: AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+          }),
+        ]),
+      );
+      expect(wakes.find((wake) => wake.id === completed.id)).toMatchObject({
+        outcome: "headway",
+        outcome_detail: null,
+      });
+      expect(wakes.find((wake) => wake.id === recentInFlight.id)).toMatchObject({
+        outcome: null,
+        outcome_detail: null,
+      });
+      expect(repository.countSince(0, { outcome: "interrupted" })).toBe(2);
     } finally {
       db.close();
     }
@@ -192,7 +268,120 @@ describe("AutonomyWakesRepository", () => {
     }
   });
 
-  it("applies the additive outcome migration over legacy wake rows", () => {
+  it("stores every basis in a maximum goal batch without clipping the joined detail", () => {
+    const clock = new ManualClock(1_000);
+    const db = openDatabase(":memory:", { migrations: autonomyMigrations });
+    const repository = new AutonomyWakesRepository({ db, clock });
+    const goalIds = [
+      "goal_aaaaaaaaaaaaaaaa",
+      "goal_bbbbbbbbbbbbbbbb",
+      "goal_cccccccccccccccc",
+      "goal_dddddddddddddddd",
+      "goal_eeeeeeeeeeeeeeee",
+    ];
+    const bases = goalIds.flatMap((goalId) => [
+      `progress recorded on ${goalId}`,
+      `goal ${goalId} retired by this turn`,
+    ]);
+
+    try {
+      const wake = repository.record({
+        trigger_name: "goal_followup_due",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+      });
+      repository.recordOutcome(wake.id, "headway", null, bases);
+
+      const stored = repository.listSince(0, 1)[0];
+      const joinedBases = bases.join("; ");
+
+      expect(joinedBases.length).toBeGreaterThan(AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH);
+      expect(stored).toMatchObject({
+        outcome: "headway",
+        outcome_detail: joinedBases,
+        headway_bases: bases,
+      });
+      expect(repository.summarizeOutcomeDetailsSince(0, "headway").reasons).toEqual([
+        { detail: joinedBases, count: 1 },
+      ]);
+      for (const goalId of goalIds) {
+        expect(stored?.outcome_detail).toContain(goalId);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it("applies the complete wake schema chain in deterministic order", () => {
+    const db = openDatabase(":memory:", { migrations: autonomyMigrations });
+
+    try {
+      expect(db.listAppliedMigrations().map(({ id, name }) => ({ id, name }))).toEqual([
+        { id: 1, name: "autonomy_baseline" },
+        { id: 2, name: "autonomy_wakes_source_category" },
+        { id: 3, name: "autonomy_wakes_outcome" },
+        { id: 4, name: "autonomy_wakes_outcome_detail" },
+        { id: 5, name: "autonomy_wakes_interrupted_outcome" },
+        { id: 6, name: "autonomy_wakes_selected_goal" },
+        { id: 7, name: "autonomy_wakes_headway_bases" },
+      ]);
+
+      const table = db
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'autonomy_wakes'")
+        .get() as { sql: string };
+      expect(table.sql).toContain(
+        "outcome IN ('headway', 'silent', 'error', 'busy', 'interrupted')",
+      );
+
+      const columns = db.prepare("PRAGMA table_info(autonomy_wakes)").all() as Array<{
+        name: string;
+        notnull: number;
+      }>;
+      expect(columns.find((column) => column.name === "selected_goal_id")).toMatchObject({
+        notnull: 0,
+      });
+      expect(columns.find((column) => column.name === "headway_bases_json")).toMatchObject({
+        notnull: 0,
+      });
+
+      const indexes = db
+        .prepare(
+          `SELECT name, tbl_name AS table_name
+           FROM sqlite_master
+           WHERE type = 'index' AND sql IS NOT NULL
+           ORDER BY name ASC`,
+        )
+        .all();
+      expect(indexes).toEqual([
+        { name: "idx_autonomy_wakes_ts", table_name: "autonomy_wakes" },
+        { name: "idx_scheduled_wakes_due", table_name: "scheduled_wakes" },
+      ]);
+
+      const insert = db.prepare(
+        `INSERT INTO autonomy_wakes (
+           id, ts, trigger_name, condition_name, session_id, wake_source_type, source_category,
+           outcome, outcome_detail, selected_goal_id, headway_bases_json
+         ) VALUES (?, ?, 'goal_followup_due', NULL, ?, 'trigger', 'operational', ?, NULL, NULL, NULL)`,
+      );
+      for (const [index, outcome] of AUTONOMY_WAKE_OUTCOMES.entries()) {
+        expect(() =>
+          insert.run(
+            `autonomy_wake_outcome_${String(index).padStart(8, "0")}`,
+            1_000 + index,
+            DEFAULT_SESSION_ID,
+            outcome,
+          ),
+        ).not.toThrow();
+      }
+      expect(() =>
+        insert.run("autonomy_wake_outcome_invalid", 2_000, DEFAULT_SESSION_ID, "not_an_outcome"),
+      ).toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("applies additive outcome, selected-goal, and headway-basis migrations over legacy rows", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-autonomy-migration-"));
     const dbPath = join(tempDir, "borg.db");
     let db = openDatabase(dbPath, {
@@ -224,12 +413,69 @@ describe("AutonomyWakesRepository", () => {
       }>;
 
       expect(columns.map((column) => column.name)).toContain("outcome");
+      expect(columns.map((column) => column.name)).toContain("selected_goal_id");
+      expect(columns.map((column) => column.name)).toContain("headway_bases_json");
       expect(repository.listSince(0, 10)).toEqual([
         expect.objectContaining({
           id: "autonomy_wake_aaaaaaaaaaaaaaaa",
           outcome: null,
+          selected_goal_id: null,
+          headway_bases: null,
         }),
       ]);
+    } finally {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rebuilds the outcome CHECK without changing existing outcome details", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-autonomy-interrupted-migration-"));
+    const dbPath = join(tempDir, "borg.db");
+    let db = openDatabase(dbPath, { migrations: autonomyMigrations.slice(0, 4) });
+
+    try {
+      db.prepare(
+        `
+          INSERT INTO autonomy_wakes (
+            id, ts, trigger_name, condition_name, session_id, wake_source_type, source_category,
+            outcome, outcome_detail
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      ).run(
+        "autonomy_wake_aaaaaaaaaaaaaaaa",
+        1_000,
+        "goal_followup_due",
+        null,
+        DEFAULT_SESSION_ID,
+        "trigger",
+        "operational",
+        "error",
+        "provider unavailable",
+      );
+      db.close();
+
+      db = openDatabase(dbPath, { migrations: autonomyMigrations });
+      const repository = new AutonomyWakesRepository({ db, clock: new ManualClock(2_000) });
+      const preserved = repository.listSince(0, 10)[0];
+
+      expect(preserved).toMatchObject({
+        outcome: "error",
+        outcome_detail: "provider unavailable",
+      });
+      const next = repository.record({
+        trigger_name: "scheduled_reflection",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+        source_category: "contemplative",
+      });
+      expect(() =>
+        repository.recordOutcome(next.id, "interrupted", "bookkeeping failed"),
+      ).not.toThrow();
+      expect(repository.listSince(0, 10).find((wake) => wake.id === next.id)).toMatchObject({
+        outcome: "interrupted",
+        outcome_detail: "bookkeeping failed",
+      });
     } finally {
       db.close();
       rmSync(tempDir, { recursive: true, force: true });

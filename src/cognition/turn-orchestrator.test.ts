@@ -23,6 +23,7 @@ import type {
 } from "../attachments/index.js";
 import type { BorgDependencies } from "../borg/types.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
+import { LIVE_TURN_READ_FINALIZER_TOOL_NAMES } from "./deliberation/autonomous-finalizer-tools.js";
 import { Deliberator, type SelfSnapshot } from "./deliberation/deliberator.js";
 import { ActionStateExtractor } from "./actions/action-state-extractor.js";
 import { CREATOR_DIRECTIVE_TOOL_NAME } from "./creator-directives/extractor.js";
@@ -743,6 +744,7 @@ function createCorrectivePreferenceResponse(input: {
     | "internal_tool_hygiene"
     | null;
   directive?: string | null;
+  directive_source_stream_entry_id?: string | null;
   directive_family?: string | null;
   closure_pressure_relevance?: "no_closure" | "neutral" | "closure_seeking" | null;
   priority?: number | null;
@@ -772,6 +774,7 @@ function createCorrectivePreferenceResponse(input: {
             (input.classification === "corrective_preference" ? "advisory" : null),
           critical_domain: input.critical_domain ?? null,
           directive: input.directive ?? null,
+          directive_source_stream_entry_id: input.directive_source_stream_entry_id ?? null,
           directive_family:
             input.directive_family ??
             (input.classification === "corrective_preference" ? "test_directive_family" : null),
@@ -794,6 +797,7 @@ function createGoalPromotionResponse(
   promotions: Array<{
     description: string;
     priority?: number;
+    counterparty_entity_id?: string | null;
     terminal_condition: string | null;
     target_at?: string | null;
     reason?: string;
@@ -823,6 +827,7 @@ function createGoalPromotionResponse(
             classification: "durable_borg_goal",
             description: promotion.description,
             priority: promotion.priority ?? 8,
+            counterparty_entity_id: promotion.counterparty_entity_id ?? null,
             terminal_condition: promotion.terminal_condition,
             target_at: promotion.target_at ?? null,
             reason: promotion.reason ?? "The user asked Borg to carry this as an ongoing goal.",
@@ -2390,6 +2395,14 @@ describe("TurnOrchestrator inbound batch catch-up", () => {
           confidence: 0.98,
           rationale: "The classifier flagged a frame assignment.",
         }),
+        createFinalizerToolResponse({
+          id: "toolu_blocked_outbound_multi_sender",
+          name: "tool.outbound.post",
+          input: {
+            target_session_id: otherSessionId,
+            instruction: "This mixed-sender attempt must be rejected.",
+          },
+        }),
         createEmitAnswerResponse("Handled without privileged authority."),
         createIntentUpdateReflectionResponse("Track the multi-sender batch"),
       ],
@@ -2538,13 +2551,26 @@ describe("TurnOrchestrator inbound batch catch-up", () => {
           current_sender_borg_role: null,
         }),
       );
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "tool_call.completed",
+          toolName: "tool.outbound.post",
+          success: false,
+        }),
+      );
       expect(finalizerSystem).not.toContain("operator-only diagnostic directive");
       expect(finalizerSystem).not.toContain("<borg_session_status_snapshot");
       expect(finalizerSystem).not.toContain("Cross-Session Self Activity");
       expect(finalizerSystem).toContain("contacted Borg");
       expect(finalizerSystem).toContain("disclosure_class=self_private");
       expect(finalizerSystem).toContain("source_stream_ids");
-      expect(finalizerRequest?.tools?.map((tool) => tool.name)).not.toContain("tool.outbound.post");
+      expect(finalizerSystem).toContain(
+        '<borg_finalizer_tool_availability turn_origin="user" participation_policy="active" outbound_post="unavailable"',
+      );
+      // Finalizer schemas are now origin-static for prompt-cache stability. The
+      // mixed-sender security contract is the unavailable dispatch gate above;
+      // the advertised outbound schema must not imply or grant authority.
+      expect(finalizerRequest?.tools?.map((tool) => tool.name)).toContain("tool.outbound.post");
     } finally {
       await borg.close();
     }
@@ -2563,6 +2589,14 @@ describe("TurnOrchestrator inbound batch catch-up", () => {
           kind: "roleplay_inversion",
           confidence: 0.98,
           rationale: "The classifier flagged a frame assignment.",
+        }),
+        createFinalizerToolResponse({
+          id: "toolu_blocked_outbound_null_sender",
+          name: "tool.outbound.post",
+          input: {
+            target_session_id: otherSessionId,
+            instruction: "This null-sender batch attempt must be rejected.",
+          },
         }),
         createEmitAnswerResponse("Handled without privileged authority."),
         createIntentUpdateReflectionResponse("Track the null-sender batch"),
@@ -2687,6 +2721,13 @@ describe("TurnOrchestrator inbound batch catch-up", () => {
           current_sender_borg_role: null,
         }),
       );
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "tool_call.completed",
+          toolName: "tool.outbound.post",
+          success: false,
+        }),
+      );
       expect(finalizerSystem).not.toContain("operator-only null-sender directive");
       expect(finalizerSystem).not.toContain('mode="private_operation"');
       expect(finalizerSystem).not.toContain("<operational_directive>");
@@ -2695,7 +2736,12 @@ describe("TurnOrchestrator inbound batch catch-up", () => {
       expect(finalizerSystem).toContain("contacted Borg");
       expect(finalizerSystem).toContain("disclosure_class=self_private");
       expect(finalizerSystem).toContain("source_stream_ids");
-      expect(finalizerRequest?.tools?.map((tool) => tool.name)).not.toContain("tool.outbound.post");
+      expect(finalizerSystem).toContain(
+        '<borg_finalizer_tool_availability turn_origin="user" participation_policy="active" outbound_post="unavailable"',
+      );
+      // A null sender still removes creator authority. Origin-static schema
+      // advertisement is harmless because this turn's dispatch gate rejects it.
+      expect(finalizerRequest?.tools?.map((tool) => tool.name)).toContain("tool.outbound.post");
     } finally {
       await borg.close();
     }
@@ -3337,8 +3383,14 @@ describe("TurnOrchestrator evidence ledger", () => {
         "EmitObserve",
         "EmitNoOutput",
         "EmitSelfReport",
-        "tool.ownRecords.list",
+        ...LIVE_TURN_READ_FINALIZER_TOOL_NAMES,
+        // User-origin finalizer schemas are cache-stable; live availability is
+        // carried by the overlay and enforced by the tool loop.
+        "tool.outbound.post",
       ]);
+      expect(finalizerSystem).toContain(
+        '<borg_finalizer_tool_availability turn_origin="user" participation_policy="active" outbound_post="unavailable"',
+      );
       expect(finalizerRequest?.tools?.map((tool) => tool.name)).not.toContain(
         "tool.journal.append",
       );

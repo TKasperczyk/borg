@@ -168,6 +168,13 @@ const TAIL_PRESERVING_FULL_LEDGER_SECTIONS = new Set<EvidenceLedgerSectionId>([
   "current_session_transcript",
 ]);
 
+// Sections whose entries carry a lifecycle status as the leading token of `state`. For these a bare
+// omitted count cannot answer "was anything of this kind cut?": retention keeps a prefix of assembly
+// order, so the omitted tail can be entirely one status, and a reader checking a status that
+// rendered nothing cannot tell an empty draw from a budget cut. The composition is counted off the
+// `state` field itself, so it stays true for whatever statuses the section's rows actually carry.
+const STATUS_COMPOSED_OMISSION_SECTIONS = new Set<EvidenceLedgerSectionId>(["open_questions"]);
+
 function truncateTextForFullEvidenceLedger(
   value: string | undefined,
   maxTokens: number,
@@ -199,10 +206,13 @@ function compactFullLedgerEntry(
   };
 }
 
+type OmittedStateTally = Readonly<Record<string, number>>;
+
 type FullLedgerSectionState = {
   section: EvidenceLedgerSection;
   omittedCount: number;
   omittedSpan?: OmittedEntrySpan;
+  omittedStates?: OmittedStateTally;
   dropped: boolean;
   retentionPolicy: FullLedgerSectionRetentionPolicy;
 };
@@ -226,6 +236,77 @@ function omittedSpanForEntries(entries: readonly EvidenceLedgerEntry[]): Omitted
     firstOccurredAt: Math.min(...occurredAts),
     lastOccurredAt: Math.max(...occurredAts),
   };
+}
+
+// `state` is a space-joined list of `key=value` parts, optionally led by a bare lifecycle token. Only
+// the bare token names a status; a `key=value` head (`score=0.42`) is per-row metadata and would mint
+// one tally bucket per distinct value, so it is skipped rather than counted.
+function entryStateHead(entry: EvidenceLedgerEntry): string | null {
+  if (typeof entry.state !== "string") {
+    return null;
+  }
+
+  const [head] = entry.state.trim().split(/\s+/, 1);
+
+  return head === undefined || head.length === 0 || head.includes("=") ? null : head;
+}
+
+function omittedStateTallyForEntries(
+  sectionId: EvidenceLedgerSectionId,
+  entries: readonly EvidenceLedgerEntry[],
+): OmittedStateTally | null {
+  if (!STATUS_COMPOSED_OMISSION_SECTIONS.has(sectionId)) {
+    return null;
+  }
+
+  const tally: Record<string, number> = {};
+
+  for (const entry of entries) {
+    const head = entryStateHead(entry);
+
+    if (head !== null) {
+      tally[head] = (tally[head] ?? 0) + 1;
+    }
+  }
+
+  // An empty tally is a result, not an absence: for an opted-in section it says no status-bearing row
+  // was cut. Collapsing it to null would render the same as "this section does not report composition".
+  return tally;
+}
+
+function mergeOmittedStateTallies(
+  left: OmittedStateTally | undefined,
+  right: OmittedStateTally | null,
+): OmittedStateTally | undefined {
+  if (right === null) {
+    return left;
+  }
+
+  if (left === undefined) {
+    return right;
+  }
+
+  const merged: Record<string, number> = { ...left };
+
+  for (const [state, count] of Object.entries(right)) {
+    merged[state] = (merged[state] ?? 0) + count;
+  }
+
+  return merged;
+}
+
+function formatOmittedStateTally(tally: OmittedStateTally | undefined): string {
+  if (tally === undefined) {
+    return "";
+  }
+
+  const parts = Object.entries(tally)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([state, count]) => `${state} ${count}`);
+
+  return parts.length === 0
+    ? " Omitted by state: none of the omitted entries carried a status, so no status had rows cut here."
+    : ` Omitted by state: ${parts.join(", ")}. A status absent from that list had no rows cut here, so its absence from the section above is an empty draw rather than a budget cut.`;
 }
 
 function mergeOmittedSpans(
@@ -290,6 +371,7 @@ function fullLedgerOmittedEntry(
   omittedCount: number,
   retentionPolicy: FullLedgerSectionRetentionPolicy,
   omittedSpan?: OmittedEntrySpan,
+  omittedStates?: OmittedStateTally,
 ): EvidenceLedgerEntry {
   const omittedKind = retentionPolicy === "tail" ? "older" : "lower-priority";
   const text =
@@ -300,7 +382,9 @@ function fullLedgerOmittedEntry(
             omittedSpan.firstOccurredAt,
             omittedSpan.lastOccurredAt,
           )}; omitted detail is summarized in the dated spine above.`
-      : `Evidence ledger omitted ${omittedCount} ${omittedKind} entries from ${section.id} to stay within the finalizer ledger budget.`;
+      : `Evidence ledger omitted ${omittedCount} ${omittedKind} entries from ${section.id} to stay within the finalizer ledger budget.${formatOmittedStateTally(
+          omittedStates,
+        )}`;
   const disclosure = recentLivedExperienceBreadcrumbDisclosure(section, {
     breadcrumb_kind: "recent_lived_experience_omission",
     omitted_entry_count: omittedCount,
@@ -327,6 +411,7 @@ function fullLedgerOmittedEntry(
 function fullLedgerDroppedSectionEntry(
   section: EvidenceLedgerSection,
   omittedCount: number,
+  omittedStates?: OmittedStateTally,
 ): EvidenceLedgerEntry {
   const disclosure = recentLivedExperienceBreadcrumbDisclosure(section, {
     breadcrumb_kind: "recent_lived_experience_dropped_section",
@@ -340,7 +425,9 @@ function fullLedgerDroppedSectionEntry(
     actor: "system",
     trust_rank: 0,
     ...disclosure,
-    text: `Evidence ledger dropped all entries from ${section.id} to stay within the global hard cap: entries=${omittedCount}.`,
+    text: `Evidence ledger dropped all entries from ${section.id} to stay within the global hard cap: entries=${omittedCount}.${formatOmittedStateTally(
+      omittedStates,
+    )}`,
     taint: "none",
   };
 }
@@ -352,7 +439,13 @@ function materializeFullLedgerSectionState(state: FullLedgerSectionState): Evide
       entries:
         state.omittedCount <= 0
           ? []
-          : [fullLedgerDroppedSectionEntry(state.section, state.omittedCount)],
+          : [
+              fullLedgerDroppedSectionEntry(
+                state.section,
+                state.omittedCount,
+                state.omittedStates,
+              ),
+            ],
     };
   }
 
@@ -368,6 +461,7 @@ function materializeFullLedgerSectionState(state: FullLedgerSectionState): Evide
               state.omittedCount,
               state.retentionPolicy,
               state.omittedSpan,
+              state.omittedStates,
             ),
           ],
   };
@@ -529,11 +623,19 @@ function capFullLedgerSection(input: {
     retentionPolicy === "tail"
       ? input.section.entries.slice(-input.options.maxEntries)
       : input.section.entries.slice(0, input.options.maxEntries);
+  const entryCountCutEntries =
+    retentionPolicy === "tail"
+      ? input.section.entries.slice(0, Math.max(0, input.section.entries.length - entries.length))
+      : input.section.entries.slice(entries.length);
   const compactedEntries = entries.map((entry) =>
     compactFullLedgerEntry(entry, input.maxEntryTextTokens),
   );
   let includedEntries: EvidenceLedgerEntry[] = [];
   let omittedCount = Math.max(0, input.section.entries.length - compactedEntries.length);
+  let omittedStates = mergeOmittedStateTallies(
+    undefined,
+    omittedStateTallyForEntries(input.section.id, entryCountCutEntries),
+  );
 
   if (retentionPolicy === "tail") {
     for (let index = compactedEntries.length - 1; index >= 0; index -= 1) {
@@ -550,7 +652,13 @@ function capFullLedgerSection(input: {
             ? candidateEntries
             : [
                 ...candidateEntries,
-                fullLedgerOmittedEntry(candidateSection, omittedCount, retentionPolicy),
+                fullLedgerOmittedEntry(
+                  candidateSection,
+                  omittedCount,
+                  retentionPolicy,
+                  undefined,
+                  omittedStates,
+                ),
               ],
       });
 
@@ -563,6 +671,10 @@ function capFullLedgerSection(input: {
       }
 
       omittedCount += index + 1;
+      omittedStates = mergeOmittedStateTallies(
+        omittedStates,
+        omittedStateTallyForEntries(input.section.id, compactedEntries.slice(0, index + 1)),
+      );
       break;
     }
 
@@ -572,6 +684,7 @@ function capFullLedgerSection(input: {
         entries: includedEntries,
       },
       omittedCount,
+      ...(omittedStates === undefined ? {} : { omittedStates }),
       dropped: false,
       retentionPolicy,
     };
@@ -591,7 +704,13 @@ function capFullLedgerSection(input: {
           ? candidateEntries
           : [
               ...candidateEntries,
-              fullLedgerOmittedEntry(candidateSection, omittedCount, retentionPolicy),
+              fullLedgerOmittedEntry(
+                candidateSection,
+                omittedCount,
+                retentionPolicy,
+                undefined,
+                omittedStates,
+              ),
             ],
     });
 
@@ -601,6 +720,10 @@ function capFullLedgerSection(input: {
     }
 
     omittedCount += compactedEntries.length - index;
+    omittedStates = mergeOmittedStateTallies(
+      omittedStates,
+      omittedStateTallyForEntries(input.section.id, compactedEntries.slice(index)),
+    );
     break;
   }
 
@@ -610,6 +733,7 @@ function capFullLedgerSection(input: {
       entries: includedEntries,
     },
     omittedCount,
+    ...(omittedStates === undefined ? {} : { omittedStates }),
     dropped: false,
     retentionPolicy,
   };
@@ -669,6 +793,10 @@ function trimFullLedgerToTarget(
     };
     state.omittedCount += 1;
     state.omittedSpan = mergeOmittedSpans(state.omittedSpan, omittedSpanForEntries(removedEntries));
+    state.omittedStates = mergeOmittedStateTallies(
+      state.omittedStates,
+      omittedStateTallyForEntries(state.section.id, removedEntries),
+    );
   }
 }
 
@@ -698,6 +826,10 @@ function dropFullLedgerSectionsToHardCap(
     state.omittedSpan = mergeOmittedSpans(
       state.omittedSpan,
       omittedSpanForEntries(state.section.entries),
+    );
+    state.omittedStates = mergeOmittedStateTallies(
+      state.omittedStates,
+      omittedStateTallyForEntries(state.section.id, state.section.entries),
     );
     state.section = {
       ...state.section,

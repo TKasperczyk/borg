@@ -42,6 +42,7 @@ import type { SelfSnapshot } from "../deliberation/deliberator.js";
 import { deriveProceduralContext } from "../procedural/context-derivation.js";
 import type { PerceptionResult } from "../types.js";
 import { correctionMemoryDisclosureLabel } from "../../memory/common/disclosure-serializers.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../../memory/common/index.js";
 
 function buildSkillSelectionQuery(userMessage: string, entities: readonly string[]): string {
   return [userMessage, ...entities]
@@ -105,6 +106,7 @@ function coordinatorContextFromRecallDisclosureContext(input: {
 
 export type TurnRetrievalCoordinatorOptions = {
   commitmentRepository: Pick<CommitmentRepository, "getApplicable" | "list">;
+  sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   entityRepository: Pick<EntityRepository, "getSelf">;
   reviewQueueRepository: Pick<ReviewQueueRepository, "list"> &
     Partial<Pick<ReviewQueueRepository, "listOpenCommitmentReconciliationsForCognition">>;
@@ -140,6 +142,7 @@ export type TurnRetrievalCoordinatorInput = {
 
 export type TurnRetrievalCoordinatorResult = {
   applicableCommitments: CommitmentRecord[];
+  applicableCommitmentsReadAtMs?: number;
   actionApplicableCommitments: CommitmentRecord[];
   pendingCorrections: ReviewQueueItem[];
   pendingCommitmentReviews: OpenCommitmentReconciliationStatus[];
@@ -195,10 +198,28 @@ export class TurnRetrievalCoordinator {
   async coordinate(input: TurnRetrievalCoordinatorInput): Promise<TurnRetrievalCoordinatorResult> {
     const coordinatorContext = coordinatorContextFromRecallDisclosureContext(input);
     const nowMs = this.options.clock.now();
-    const applicableCommitments = this.recallActiveCommitmentsForCognition(nowMs);
-    const actionApplicableCommitments = this.collectApplicableCommitmentsForActionAuthorization(
+    const rawApplicableCommitments = this.recallActiveCommitmentsForCognition(nowMs);
+    const rawActionApplicableCommitments = this.collectApplicableCommitmentsForActionAuthorization(
       coordinatorContext.audienceEntityId,
       nowMs,
+    );
+    const commitmentsById = new Map(
+      [...rawApplicableCommitments, ...rawActionApplicableCommitments].map((commitment) => [
+        commitment.id,
+        commitment,
+      ]),
+    );
+    const resolvedCommitments = this.options.sourceStreamAudienceDisclosureResolver?.resolve({
+      commitments: [...commitmentsById.values()],
+    }).commitments ?? [...commitmentsById.values()];
+    const resolvedCommitmentsById = new Map(
+      resolvedCommitments.map((commitment) => [commitment.id, commitment]),
+    );
+    const applicableCommitments = rawApplicableCommitments.map(
+      (commitment) => resolvedCommitmentsById.get(commitment.id) ?? commitment,
+    );
+    const actionApplicableCommitments = rawActionApplicableCommitments.map(
+      (commitment) => resolvedCommitmentsById.get(commitment.id) ?? commitment,
     );
     const pendingCorrections = this.options.reviewQueueRepository
       .list({
@@ -289,7 +310,8 @@ export class TurnRetrievalCoordinator {
               ...(input.inputAudience === undefined ? [] : [input.inputAudience]),
             ],
       entityTerms: input.perception.entities,
-      ...(input.currentTurnAttachmentIds === undefined || input.currentTurnAttachmentIds.length === 0
+      ...(input.currentTurnAttachmentIds === undefined ||
+      input.currentTurnAttachmentIds.length === 0
         ? {}
         : { currentTurnAttachmentIds: input.currentTurnAttachmentIds }),
       suppressionSet: input.suppressionSet,
@@ -345,6 +367,7 @@ export class TurnRetrievalCoordinator {
 
     return {
       applicableCommitments,
+      applicableCommitmentsReadAtMs: nowMs,
       actionApplicableCommitments,
       pendingCorrections,
       pendingCommitmentReviews,

@@ -34,12 +34,17 @@ import {
 import {
   appendBoundedContextCapture,
   resolveContextCaptureStoragePath,
+  type ContextCaptureLogger,
 } from "./context-capture-storage.js";
+import {
+  DEFAULT_CONTEXT_CAPTURE_ROTATION_KEEP,
+  DEFAULT_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES,
+} from "./constants.js";
 
 export const PLANNER_CONTEXT_CAPTURE_SCHEMA_VERSION = 2 as const;
 export const PLANNER_CONTEXT_CAPTURE_RELATIVE_PATH = join("captures", "planner-contexts.jsonl");
 export const DEFAULT_PLANNER_CONTEXT_CAPTURE_MAX_RECORD_BYTES = 16 * 1024 * 1024;
-export const DEFAULT_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES = 512 * 1024 * 1024;
+export { DEFAULT_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES } from "./constants.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -259,6 +264,7 @@ function projectSelfSnapshot(snapshot: SelfSnapshot) {
       target_at: goal.target_at,
       audience_entity_id: goal.audience_entity_id,
       owner_entity_id: goal.owner_entity_id,
+      counterparty_entity_id: goal.counterparty_entity_id,
       ...(projectDisclosureLabel(goal.disclosure_label) === undefined
         ? {}
         : { disclosure_label: projectDisclosureLabel(goal.disclosure_label) }),
@@ -480,6 +486,9 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
             fleetBrake: {
               ...value.autonomySchedulerState.fleetBrake,
               window_outcomes: { ...value.autonomySchedulerState.fleetBrake.window_outcomes },
+              window_headway_reasons: cloneWakeOutcomeDetailTally(
+                value.autonomySchedulerState.fleetBrake.window_headway_reasons,
+              ),
               window_error_reasons: cloneWakeOutcomeDetailTally(
                 value.autonomySchedulerState.fleetBrake.window_error_reasons,
               ),
@@ -498,6 +507,7 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
                   }),
                 ),
             },
+            sources: value.autonomySchedulerState.sources.map((source) => ({ ...source })),
           },
         }),
   };
@@ -579,7 +589,7 @@ function projectWorkingMemory(context: DeliberationContext) {
 
 function projectExecutiveFocus(value: DeliberationContext["executiveFocus"]) {
   return projectNullable(value, (focus) => {
-    const nextStep = projectNullable(focus.next_step, (step) => {
+    const projectStep = (step: NonNullable<NonNullable<typeof focus>["next_step"]>) => {
       const disclosureLabel = projectDisclosureLabel(step.disclosure_label);
       return {
         id: step.id,
@@ -591,10 +601,19 @@ function projectExecutiveFocus(value: DeliberationContext["executiveFocus"]) {
         last_attempt_ts: step.last_attempt_ts,
         ...(disclosureLabel === undefined ? {} : { disclosure_label: disclosureLabel }),
       };
-    });
+    };
+    const nextStep = projectNullable(focus.next_step, projectStep);
+    const candidateSteps =
+      focus.candidate_steps === undefined
+        ? undefined
+        : {
+            topOpenSteps: focus.candidate_steps.top_open_steps.map(projectStep),
+            omittedOpenStepCount: focus.candidate_steps.omitted_open_step_count,
+          };
     return {
       selectedGoalId: focus.selected_goal?.id ?? null,
       nextStep,
+      ...(candidateSteps === undefined ? {} : { candidateSteps }),
       candidates: focus.candidates.map((candidate) => ({
         goal_id: candidate.goal_id,
         score: candidate.score,
@@ -640,6 +659,7 @@ export function captureCompactPlannerContext(context: DeliberationContext) {
       },
     },
     applicableCommitments: context.applicableCommitments?.map(projectCommitment),
+    applicableCommitmentsReadAtMs: context.applicableCommitmentsReadAtMs,
     openQuestionsContext: context.openQuestionsContext?.map((question) => ({
       id: question.id,
       question: question.question,
@@ -781,6 +801,8 @@ export type PlannerContextCaptureOptions = {
   random?: () => number;
   maxRecordBytes?: number;
   maxFileBytes?: number;
+  rotationKeep?: number;
+  logger?: ContextCaptureLogger;
 };
 
 const plannerSurfaceFingerprintSchema = z
@@ -1015,6 +1037,14 @@ function restoreCompactPlannerContext(context: CompactPlannerContextCapture): De
               executive.selectedGoalId === null ? null : { id: executive.selectedGoalId },
             selected_score: null,
             next_step: executive.nextStep,
+            ...(executive.candidateSteps === undefined
+              ? {}
+              : {
+                  candidate_steps: {
+                    top_open_steps: executive.candidateSteps.topOpenSteps,
+                    omitted_open_step_count: executive.candidateSteps.omittedOpenStepCount,
+                  },
+                }),
             candidates: executive.candidates,
             threshold: 0,
             score_basis: {
@@ -1184,6 +1214,8 @@ export class PlannerContextCapture {
   private readonly random: () => number;
   private readonly maxRecordBytes: number;
   private readonly maxFileBytes: number;
+  private readonly rotationKeep: number;
+  private readonly logger: ContextCaptureLogger;
   private readonly stats: PlannerContextCaptureStats = {
     captured: 0,
     oversizedSkipped: 0,
@@ -1198,6 +1230,8 @@ export class PlannerContextCapture {
     this.maxRecordBytes =
       options.maxRecordBytes ?? DEFAULT_PLANNER_CONTEXT_CAPTURE_MAX_RECORD_BYTES;
     this.maxFileBytes = options.maxFileBytes ?? DEFAULT_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES;
+    this.rotationKeep = options.rotationKeep ?? DEFAULT_CONTEXT_CAPTURE_ROTATION_KEEP;
+    this.logger = options.logger ?? console;
   }
 
   private resolvedStoragePath(): { path: string; captureDirectory: string } {
@@ -1248,14 +1282,15 @@ export class PlannerContextCapture {
         fileName: "planner-contexts.jsonl",
         record,
         maxFileBytes: this.maxFileBytes,
+        rotationKeep: this.rotationKeep,
+        rotationTimestampMs: this.clock.now(),
+        logger: this.logger,
       });
-      if (result.status === "file_full") {
-        this.stats.fileFullSkipped += 1;
-        this.emit(record, "skipped", { reason: "file_full", record_bytes: bytes });
-        return { status: "skipped", reason: "file_full", bytes };
-      }
       this.stats.captured += 1;
-      this.emit(record, "captured", { record_bytes: bytes });
+      this.emit(record, "captured", {
+        ...(result.status === "rotated" ? { reason: "rotated" } : {}),
+        record_bytes: bytes,
+      });
       return { status: "captured", path, bytes, record };
     } catch (error) {
       this.stats.failed += 1;

@@ -282,7 +282,7 @@ describe("semantic extractor process", () => {
     );
   });
 
-  it("repairs one invalid node payload and charges both calls to the process budget", async () => {
+  it("repairs when every proposed node is invalid and charges both calls to the process budget", async () => {
     const episode = createEpisodeFixture({
       title: "Repairable semantic extraction",
       narrative: "A grounded concept should survive one structurally invalid model response.",
@@ -340,6 +340,56 @@ describe("semantic extractor process", () => {
     expect(repairPrompt).toContain('"label":42');
     await expect(harness.semanticNodeRepository.list()).resolves.toEqual([
       expect.objectContaining({ label: "Repaired concept" }),
+    ]);
+  });
+
+  it("keeps valid node candidates without repair when a sibling candidate is invalid", async () => {
+    const episode = createEpisodeFixture({
+      title: "Partially valid semantic extraction",
+      narrative: "One structurally valid concept should survive a malformed sibling candidate.",
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createSemanticToolResponse({
+          nodes: [
+            {
+              kind: "concept",
+              label: 42,
+              description: "The first candidate has a non-string label.",
+              domain: null,
+              aliases: [],
+              confidence: 0.6,
+              source_episode_ids: [episode.id],
+            },
+            {
+              kind: "concept",
+              label: "Surviving concept",
+              description: "The valid sibling conforms to the semantic schema.",
+              domain: null,
+              aliases: [],
+              confidence: 0.7,
+              source_episode_ids: [episode.id],
+            },
+          ],
+          edges: [],
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(harness.cleanup);
+    await harness.episodicRepository.createEpisode(episode);
+    const process = createProcess(harness);
+    const ctx = harness.createContext();
+
+    const plan = await process.plan(ctx);
+    const result = await process.apply(ctx, plan);
+
+    expect(result.errors).toEqual([]);
+    expect(result.tokens_used).toBe(15);
+    expect(result.candidate_stats).toEqual({ proposed: 2, accepted: 1, rejected: 1 });
+    expect(llm.requests).toHaveLength(1);
+    await expect(harness.semanticNodeRepository.list()).resolves.toEqual([
+      expect.objectContaining({ label: "Surviving concept" }),
     ]);
   });
 

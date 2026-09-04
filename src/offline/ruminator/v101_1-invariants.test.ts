@@ -74,7 +74,10 @@ describe("v101.1 ruminator cognition invariants", () => {
         question: questionText,
         urgency: 0.8,
         source: "reflection",
-        created_at: 1_000_000,
+        // Rotation now visits only due or newly touched questions. Preserve
+        // this test's global-recall purpose by supplying the scheduler's
+        // structural new-evidence signal without aging out the episode.
+        created_at: 900_000,
         last_touched: 1_000_000,
         provenance: { kind: "manual" },
       });
@@ -82,6 +85,7 @@ describe("v101.1 ruminator cognition invariants", () => {
       const plan = await process.plan(harness.createContext(), {});
       const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
 
+      expect(plan.scheduling.selected_question_ids).toEqual([question.id]);
       expect(llm.requests).toHaveLength(1);
       expect(prompt).toContain("Bob private resolution evidence");
       expect(prompt).toContain("relationship_private");

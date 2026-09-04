@@ -1,10 +1,11 @@
 import { computeExecutiveContextFits, selectExecutiveFocus } from "../../executive/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
-import type { GoalRecord, GoalTreeNode, GoalsRepository } from "../../memory/self/index.js";
+import { flattenGoalTree, type GoalRecord, type GoalsRepository } from "../../memory/self/index.js";
 import {
   goalMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
 } from "../../memory/common/disclosure-serializers.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../../memory/common/index.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
@@ -36,6 +37,7 @@ export type GoalFollowupDuePayload = {
 
 export type GoalFollowupDueTriggerOptions = {
   goalsRepository: GoalsRepository;
+  sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   watermarkRepository: StreamWatermarkRepository;
   lookaheadMs: number;
   staleMs: number;
@@ -57,25 +59,6 @@ export type GoalFollowupDueTriggerOptions = {
   sessionId?: SessionId;
   goalStaleBackoffActionAvailabilityKey?: () => string | null;
 };
-
-function flattenGoals(goals: readonly GoalTreeNode[]): GoalRecord[] {
-  const flattened: GoalRecord[] = [];
-  const stack = [...goals];
-
-  while (stack.length > 0) {
-    const next = stack.shift();
-
-    if (next === undefined) {
-      continue;
-    }
-
-    const { children, ...goal } = next;
-    flattened.push(goal);
-    stack.push(...children);
-  }
-
-  return flattened;
-}
 
 function dueAfterStrictThreshold(thresholdTs: number): number {
   return thresholdTs + 1;
@@ -210,7 +193,10 @@ export function createGoalFollowupDueTrigger(
     async scan() {
       const nowMs = clock.now();
       const actionAvailabilityKey = options.goalStaleBackoffActionAvailabilityKey?.() ?? null;
-      const goals = flattenGoals(options.goalsRepository.list({ status: "active" }));
+      const rawGoals = flattenGoalTree(options.goalsRepository.list({ status: "active" }));
+      const goals =
+        options.sourceStreamAudienceDisclosureResolver?.resolve({ goals: rawGoals }).goals ??
+        rawGoals;
       const dueEvents = goals
         .map<DueEvent<GoalFollowupDuePayload> | null>((goal) => {
           const baseProgressTs = goal.last_progress_ts ?? goal.created_at;

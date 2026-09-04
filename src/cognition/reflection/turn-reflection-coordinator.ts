@@ -31,6 +31,7 @@ function emptyReflectionEffects(): ReflectionEffects {
     createdOpenQuestionIds: [],
     updatedExecutiveSteps: [],
     updatedGoals: [],
+    retiredGoalIds: [],
     resolvedOpenQuestions: [],
     updatedEpisodeStats: [],
   };
@@ -75,6 +76,7 @@ export type RunTurnReflectionInput = {
   sourceUserEntryIds?: readonly StreamEntryId[];
   persistedPerceptionEntry?: StreamEntry;
   persistedAgentEntry: StreamEntry;
+  currentTurnJournalEntryIds?: readonly number[];
   isUserTurn: boolean;
   frameAnomaly?: ActualFrameAnomalyClassification | null;
   streamWriter: StreamWriter;
@@ -192,6 +194,8 @@ export class TurnReflectionCoordinator {
             : []),
           input.persistedAgentEntry.id,
         ].filter((entryId): entryId is StreamEntryId => entryId !== undefined),
+        currentTurnProducedStreamEntryIds: [input.persistedAgentEntry.id],
+        currentTurnJournalEntryIds: input.currentTurnJournalEntryIds ?? [],
       },
       input.streamWriter,
     );

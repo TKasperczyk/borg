@@ -5,6 +5,7 @@ import {
   emptyFleetBrakeMetadata,
   fleetBrakeCooldownUntilMs,
   fleetBrakeErrorPausedUntilMs,
+  fleetBrakeMetadataAfterOperationalWake,
   readFleetBrakeMetadata,
 } from "./fleet-brake.js";
 
@@ -73,6 +74,30 @@ describe("autonomy fleet brake", () => {
         DEFAULT_FLEET_BRAKE_OPTIONS,
       ),
     ).toBe(anchor + 6 * 60 * 60 * 1_000);
+  });
+
+  it("holds an operational empty streak when a guard blocked produced output", () => {
+    const current = {
+      ...emptyFleetBrakeMetadata(),
+      empty_streak: 4,
+      streak_anchor_ts: 10_000,
+      last_wake_ts: 20_000,
+      error_streak: 2,
+      last_error_ts: 30_000,
+      bypass_count: 1,
+    };
+
+    expect(
+      fleetBrakeMetadataAfterOperationalWake(current, {
+        disposition: "hold",
+        nowMs: 40_000,
+        freshnessBypass: false,
+      }),
+    ).toEqual({
+      ...current,
+      error_streak: 0,
+      last_error_ts: 0,
+    });
   });
 
   it("derives the three-error circuit pause with a finite thirty-minute cap", () => {

@@ -21,6 +21,7 @@ import {
   TestEmbeddingClient,
 } from "../../offline/test-support.js";
 import { StreamEntryIndexRepository, StreamWriter } from "../../stream/index.js";
+import { SourceStreamAudienceDisclosureResolver } from "../../memory/common/index.js";
 import {
   ToolDispatcher,
   createCommitmentsListTool,
@@ -96,6 +97,12 @@ function createHarnessToolDispatcher(
   return buildToolDispatcher({
     dataDir: harness.tempDir,
     entryIndex,
+    sourceStreamAudienceDisclosureResolver: new SourceStreamAudienceDisclosureResolver({
+      dataDir: harness.tempDir,
+      entryIndex,
+      sessionsRepository: { getMany: () => [] },
+      entityRepository: harness.entityRepository,
+    }),
     retrievalPipeline: harness.retrievalPipeline,
     episodicRepository: harness.episodicRepository,
     semanticNodeRepository: harness.semanticNodeRepository,
@@ -103,6 +110,7 @@ function createHarnessToolDispatcher(
     commitmentRepository: harness.commitmentRepository,
     entityRepository: harness.entityRepository,
     goalsRepository: harness.goalsRepository,
+    openQuestionsRepository: harness.openQuestionsRepository,
     identityService: harness.identityService,
     skillRepository: harness.skillRepository,
     trainOfThoughtRepository: new TrainOfThoughtRepository({ db: harness.db, clock }),
@@ -673,6 +681,24 @@ describe("internal tools", () => {
       });
       expect(JSON.stringify(output)).not.toContain("renderCondition");
       expect(JSON.stringify(output)).not.toContain("purpose");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  // Pins the claim tool.journal.append's description makes about the registry,
+  // so adding a journal mutator later fails here instead of leaving the surface
+  // asserting something the tool list no longer supports.
+  it("composes exactly one journal tool, the append that calls itself immutable", async () => {
+    const harness = await createOfflineTestHarness();
+
+    try {
+      const journalTools = createHarnessToolDispatcher(harness)
+        .listTools("autonomous")
+        .filter((tool) => tool.name.startsWith("tool.journal."));
+
+      expect(journalTools.map((tool) => tool.name)).toEqual(["tool.journal.append"]);
+      expect(journalTools[0]?.description).toContain("no tool amends or deletes one");
     } finally {
       await harness.cleanup();
     }

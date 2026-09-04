@@ -270,6 +270,7 @@ describe("maintenance orchestrator", () => {
         },
       ],
       budget_exhausted: false,
+      notes: ["tension scaffolding dropped: 0"],
       candidate_stats: {
         proposed: 3,
         accepted: 2,
@@ -334,7 +335,7 @@ describe("maintenance orchestrator", () => {
         candidates_accepted: 2,
         candidates_rejected: 1,
         candidates_truncated: 1,
-        notes: ["candidate_cap_truncated:1"],
+        notes: ["tension scaffolding dropped: 0", "candidate_cap_truncated:1"],
         errors: 1,
       }),
     });
@@ -347,6 +348,51 @@ describe("maintenance orchestrator", () => {
         candidates_rejected: 2,
         errors: 2,
       }),
+    });
+    const dreamReport = new StreamReader({
+      dataDir: harness.tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+    }).tail(1)[0];
+
+    expect(dreamReport?.content).toMatchObject({
+      notes: ["overseer: tension scaffolding dropped: 0"],
+    });
+  });
+
+  it("carries ruminator due, visited, and budget-cut counts into the dream report", async () => {
+    const harness = await createOfflineTestHarness({});
+    cleanup.push(harness.cleanup);
+    const schedulerNote =
+      "rumination scheduler: due=9; selected=8; visited=3; budget_cut=5; budget_cut_question_ids=oq_cut";
+    const ruminator = fakeProcess("ruminator", {
+      process: "ruminator",
+      dryRun: false,
+      changes: [],
+      tokens_used: 150_010,
+      errors: [],
+      budget_exhausted: true,
+      notes: [schedulerNote],
+    });
+    const orchestrator = new MaintenanceOrchestrator({
+      baseContext: baseContextFrom(harness.createContext()),
+      auditLog: harness.auditLog,
+      createStreamWriter: () =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId: DEFAULT_SESSION_ID,
+          clock: harness.clock,
+        }),
+      processRegistry: createProcessRegistry({ ruminator }),
+    });
+
+    await orchestrator.run({ processes: [ruminator], opts: { dryRun: false } });
+
+    const dreamReport = new StreamReader({
+      dataDir: harness.tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+    }).tail(1)[0];
+    expect(dreamReport?.content).toMatchObject({
+      notes: [`ruminator: ${schedulerNote}`, "Budget exhausted: ruminator"],
     });
   });
 });

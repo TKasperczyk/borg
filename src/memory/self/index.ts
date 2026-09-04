@@ -28,23 +28,43 @@ export {
   type GrowthMarkersSummary,
 } from "./growth-markers.js";
 export { selfMigrations } from "./migrations.js";
+export { flattenGoalTree } from "./goal-tree.js";
 export {
   buildOpenQuestionDedupeKey,
   createOpenQuestionsTableSchema,
   OpenQuestionsRepository,
   type OpenQuestionEmbeddingBackfillReport,
   type OpenQuestionEmbeddingFailureDetails,
+  type OpenQuestionDuplicateMergeOptions,
+  type OpenQuestionDuplicateMergeReferenceCounts,
+  type OpenQuestionDuplicateMergeResult,
   type OpenQuestionRumination,
   type OpenQuestionRuminationInput,
   type OpenQuestionRuminationListOptions,
+  type OpenQuestionRuminationRangeOptions,
+  type OpenQuestionRuminationRunStampInput,
+  type OpenQuestionRuminationRunStampResult,
   type OpenQuestionResolveOptions,
   type OpenQuestionsRepositoryOptions,
 } from "./open-questions.js";
 export {
+  OPEN_QUESTION_DUPLICATE_BACKSTOP_SIMILARITY_THRESHOLD,
+  OPEN_QUESTION_DUPLICATE_PRESENTATION_LIMIT,
+  buildOpenQuestionDuplicatePresentation,
+  buildOpenQuestionReinforcementPatch,
+  findOpenQuestionDuplicateBackstop,
+  openQuestionDuplicatePresentationRow,
+  type OpenQuestionDuplicatePresentation,
+  type OpenQuestionDuplicatePresentationRow,
+} from "./open-question-duplicates.js";
+export {
+  GOAL_TURN_ROLLBACK_REASON,
   GoalsRepository,
   TraitsRepository,
   ValuesRepository,
   type GoalListOptions,
+  type GoalRemovalAuditContext,
+  type GoalRemovalOptions,
   type GoalRetirementResult,
   type GoalStatusUpdateOptions,
   type GoalsRepositoryOptions,
@@ -67,7 +87,9 @@ export {
 } from "./review-open-question-extractor.js";
 export {
   goalAudienceEntityIdSchema,
+  goalCounterpartyEntityIdSchema,
   goalIdSchema,
+  goalOwnerEntityIdSchema,
   goalPatchSchema,
   goalSchema,
   goalSourceStreamEntryIdSchema,

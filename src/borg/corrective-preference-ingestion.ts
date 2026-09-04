@@ -106,13 +106,11 @@ export class CorrectivePreferenceIngestion {
         continue;
       }
 
-      const existingReceipt =
-        this.options.entryIndex.getCorrectivePreferenceIngestionReceipt(entry.id);
+      const existingReceipt = this.options.entryIndex.getCorrectivePreferenceIngestionReceipt(
+        entry.id,
+      );
 
-      if (
-        existingReceipt?.status === "processed" ||
-        existingReceipt?.status === "dead_letter"
-      ) {
+      if (existingReceipt?.status === "processed" || existingReceipt?.status === "dead_letter") {
         continue;
       }
 
@@ -313,6 +311,14 @@ export class CorrectivePreferenceIngestion {
             userMessage,
             persistedUserEntryId: entry.id,
             sourceUserEntryIds: [entry.id],
+            sourceUserEntries: [entry],
+            senderAttribution: [
+              {
+                entryId: entry.id,
+                senderEntityId,
+                senderDisplayName: sender.canonical_name,
+              },
+            ],
             recentHistory,
             audienceEntityId: senderEntityId,
             committedByEntityId: senderEntityId,

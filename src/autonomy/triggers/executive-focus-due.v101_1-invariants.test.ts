@@ -38,7 +38,7 @@ describe("v101.1 executive focus cognition invariants", () => {
           kind: "episodes",
           episode_ids: [privateEpisode.id],
         },
-        createdAt: clock.now() - 90_000_000,
+        createdAt: clock.now() - 15 * 24 * 60 * 60 * 1_000,
       });
       const step = harness.executiveStepsRepository.add({
         goalId: goal.id,
@@ -56,6 +56,7 @@ describe("v101.1 executive focus cognition invariants", () => {
         watermarkRepository,
         threshold: 0.45,
         stalenessMs: 86_400_000,
+        progressDebtStaleMs: 1_209_600_000,
         dueLeadMs: 0,
         wakeCooldownMs: 3_600_000,
         wakeCooldownBackoffMultiplier: 2,
@@ -128,7 +129,7 @@ describe("v101.1 executive focus cognition invariants", () => {
           kind: "episodes",
           episode_ids: [privateEpisode.id, missingEpisodeId],
         },
-        createdAt: clock.now() - 90_000_000,
+        createdAt: clock.now() - 15 * 24 * 60 * 60 * 1_000,
       });
       const trigger = createExecutiveFocusDueTrigger({
         enabled: true,
@@ -139,6 +140,7 @@ describe("v101.1 executive focus cognition invariants", () => {
         watermarkRepository,
         threshold: 0.45,
         stalenessMs: 86_400_000,
+        progressDebtStaleMs: 1_209_600_000,
         dueLeadMs: 0,
         wakeCooldownMs: 3_600_000,
         wakeCooldownBackoffMultiplier: 2,

@@ -29,8 +29,24 @@ export type AutonomyWakeSourceName = (typeof AUTONOMY_WAKE_SOURCE_NAMES)[number]
 export type AutonomyWakeSourceType = "trigger" | "condition";
 export type AutonomyWakeSourceCategory = "contemplative" | "operational";
 
-export const AUTONOMY_WAKE_OUTCOMES = ["headway", "silent", "error", "busy"] as const;
+export const AUTONOMY_WAKE_OUTCOMES = [
+  "headway",
+  "silent",
+  "error",
+  "busy",
+  "interrupted",
+] as const;
 export type AutonomyWakeOutcome = (typeof AUTONOMY_WAKE_OUTCOMES)[number];
+
+/**
+ * The terminal emission kinds that make a wake `headway` on their own. Named
+ * here rather than inlined at the one comparison because the outcome's
+ * predicate is also printed to the entity, and a list transcribed onto that page
+ * would go quietly false the next time this one changes -- the same
+ * copied-instead-of-derived failure that has already cost this repo a stale
+ * fixture and a stale test array.
+ */
+export const HEADWAY_EMISSION_KINDS = ["message", "continue_thought"] as const;
 
 /**
  * Distinct-detail tally for one outcome bucket over a window. `total` is the
@@ -132,20 +148,16 @@ export type AutonomySchedulerWakeGroupDescription = {
   /**
    * Fire stamps of the rows counted by `in_flight`, oldest first.
    *
-   * `in_flight` alone is identity-free: an outcome write that never lands (the
-   * bookkeeping catch around recordOutcome returns without recording one) leaves
-   * its row's outcome NULL for the row's whole life, and an orphaned row and a
-   * healthy transient both render as the same integer, with the block's
-   * arithmetic closing either way. Carrying the stamps makes the two separable
-   * across reads -- a stamp that repeats is one row not moving; a stamp that
-   * changes is a new wake -- which is a comparison the count cannot support at
-   * any number of reads.
+   * `in_flight` alone is identity-free: a healthy transient and a wake whose
+   * terminal write has not yet landed both render as the same integer. The
+   * bookkeeping catch records the latter as `interrupted`, and startup
+   * reconciliation closes any NULL row left by a prior process. Carrying the
+   * stamps still makes open rows separable across reads -- a stamp that repeats
+   * is one row not moving; a stamp that changes is a new wake.
    *
-   * The stamps are also the only guard against reading a return to zero as a
-   * resolution. This count is taken over the rolling budget window, so an
-   * unresolved row leaves it by ageing past the window's lower edge rather than
-   * by closing, and nothing downstream reports the row after that. Resolution is
-   * the one thing that cannot have happened to it.
+   * This count is taken over the rolling budget window, so an open row can leave
+   * it by ageing past the window's lower edge before its terminal outcome lands.
+   * A disappearing stamp therefore means either closure or window expiry.
    */
   in_flight_started_at: number[];
   outcome_counts: Record<AutonomyWakeOutcome, number>;
@@ -190,11 +202,11 @@ export type AutonomySchedulerSourceDescription =
 export type AutonomySchedulerFleetBrakeDescription = {
   enabled: boolean;
   /**
-   * Consecutive completed operational wakes recorded `silent`. Errored and
-   * busy-skipped wakes are transparent to it -- they neither increment nor
-   * reset -- so the streak is consecutive within the *completed operational*
-   * subsequence, not within the wake sequence, and can span any number of
-   * intervening wakes and any amount of wall-clock.
+   * Consecutive counted-empty operational wakes. Chosen silence and failed
+   * emission advance it; a post-generation guard block, an error, or a busy
+   * skip is transparent -- it neither increments nor resets -- so the streak is
+   * consecutive within that filtered operational subsequence, not within the
+   * wake sequence, and can span intervening wakes and wall-clock time.
    */
   empty_streak: number;
   empty_streak_threshold: number;
@@ -225,10 +237,16 @@ export type AutonomySchedulerFleetBrakeDescription = {
    * Outcome tally over the *budget* window, across both source categories.
    * A different population from `empty_streak` above: it is time-bounded where
    * the streak is not, counts contemplative wakes where the streak ignores
-   * them, and counts errors where the streak passes over them. It does not
-   * feed the streak and cannot be differenced into one.
+   * them, and counts errors and interruptions where the streak passes over them.
+   * It does not feed the streak and cannot be differenced into one.
    */
   window_outcomes: Record<AutonomyWakeOutcome, number>;
+  /**
+   * The `headway` entry of `window_outcomes`, split by the structural basis the
+   * scheduler recorded for the same rows. A row may name more than one basis;
+   * the joined detail remains one tally key rather than being reinterpreted.
+   */
+  window_headway_reasons: AutonomyWakeOutcomeDetailTally;
   /**
    * The `error` entry of `window_outcomes` above, split by the failure the
    * scheduler recorded -- same rows, same window, same categories, one level of
@@ -245,13 +263,11 @@ export type AutonomySchedulerFleetBrakeDescription = {
    *
    * `silent` is a union, not a behaviour: a wake the entity deliberately closed
    * with no output, a wake whose emission failed on the way out, and a wake a
-   * post-generation guard blocked all land in it, and all three increment
-   * `empty_streak` identically. The scheduler already classifies the ending
-   * (`classifySuppressionReason`) to write the wake's own narrative, so the
-   * discriminator exists at the moment the outcome is recorded; it simply had no
-   * route to the counter's own surface. Without it `silent=N` cannot separate a
-   * choice from a failure, and the brake those rows are driving reads as though
-   * it were counting one thing.
+   * post-generation guard blocked all land in it. The first two advance
+   * `empty_streak`; the guard block leaves it unchanged. The scheduler uses the
+   * same structural classification (`classifySuppressionReason`) for this row
+   * and the streak disposition, so the diagnostic says which policy was applied
+   * without recomputing the ending.
    */
   window_silent_reasons: AutonomyWakeOutcomeDetailTally;
 };

@@ -36,6 +36,75 @@ describe("formatAutonomyTriggerContext epoch annotation", () => {
     expect(rendered).toContain('"sort_ts_iso": "2026-08-12T17:40:00.000Z"');
   });
 
+  it("names the identity-event log's domain whenever the payload carries that reader", () => {
+    const rendered = formatAutonomyTriggerContext({
+      ...BASE,
+      source_name: "scheduled_reflection",
+      payload: {
+        interval_ms: 14_400_000,
+        recent_identity_events: [
+          { id: 1, record_type: "trait", record_id: "trt_aaaaaaaaaaaaaaaa", action: "decay" },
+        ],
+      },
+    });
+
+    expect(rendered).toContain("not every write a record received");
+    expect(rendered).toContain("record_version that write produced");
+    expect(rendered).toContain("not evidence that the record did not change");
+    expect(rendered.indexOf("recent_identity_events: this is the log")).toBeGreaterThan(
+      rendered.indexOf('"record_id": "trt_aaaaaaaaaaaaaaaa"'),
+    );
+  });
+
+  it("still names the domain when the reader returned nothing, and stays silent when it did not run", () => {
+    const empty = formatAutonomyTriggerContext({
+      ...BASE,
+      source_name: "scheduled_reflection",
+      payload: { interval_ms: 14_400_000, recent_identity_events: [] },
+    });
+    const absent = formatAutonomyTriggerContext({
+      ...BASE,
+      payload: { interval_ms: 14_400_000 },
+    });
+
+    expect(empty).toContain("not every write a record received");
+    expect(absent).not.toContain("not every write a record received");
+  });
+
+  it("names what an old sort_ts on a dormant-question wake does and does not mean", () => {
+    const rendered = formatAutonomyTriggerContext({
+      source_name: "open_question_dormant",
+      source_type: "trigger",
+      event_id: "oq_aaaaaaaaaaaaaaaa:1787050000000",
+      sort_ts: 1_787_050_000_000,
+      payload: {
+        open_question_id: "oq_aaaaaaaaaaaaaaaa",
+        question: "What is the right autonomy cadence?",
+        urgency: 0.6,
+        last_touched: 1_787_050_000_000,
+        unresolved_rumination_ticks: 0,
+        last_ruminated_at: null,
+      },
+    });
+
+    expect(rendered).toContain("cannot wake me a second time");
+    expect(rendered).toContain("never a count of how often it has already woken me");
+    expect(rendered).toContain("leaves the pair unlatched and can return");
+    expect(rendered).toContain("which this wake neither feeds nor writes");
+    expect(rendered.indexOf("note on this dormant-question wake")).toBeGreaterThan(
+      rendered.indexOf('"last_ruminated_at": null'),
+    );
+  });
+
+  it("stays silent on dormancy for a wake that carries no open question", () => {
+    const rendered = formatAutonomyTriggerContext({
+      ...BASE,
+      payload: { goal_id: "goal_aaaaaaaaaaaaaaaa", last_touched: 1_787_050_000_000 },
+    });
+
+    expect(rendered).not.toContain("note on this dormant-question wake");
+  });
+
   it("leaves an existing sibling and an unrepresentable instant alone", () => {
     const rendered = formatAutonomyTriggerContext({
       ...BASE,

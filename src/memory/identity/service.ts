@@ -23,6 +23,7 @@ import {
   type AutobiographicalPeriod,
   type GrowthMarker,
   type OpenQuestion,
+  type OpenQuestionDuplicateMergeResult,
   type OpenQuestionSearchCandidate,
   type OpenQuestionSimilarLookupOptions,
   autobiographicalPeriodPatchSchema,
@@ -64,6 +65,19 @@ export type IdentityUpdateResult<T> =
   | {
       status: "requires_review";
       current: T;
+    };
+
+export type IdentityOpenQuestionDuplicateMergeResult =
+  | {
+      status: "applied";
+      record: OpenQuestionDuplicateMergeResult;
+    }
+  | {
+      status: "requires_review";
+      current: {
+        primary: OpenQuestion;
+        duplicate: OpenQuestion;
+      };
     };
 
 export type IdentityServiceOptions = {
@@ -680,11 +694,10 @@ export class IdentityService {
       };
     }
 
-    if (
-      options.origin !== "user" ||
-      !isOnlineReflectorProvenance(provenance) ||
-      !isProgressOnlyGoalPatch(parsedPatch)
-    ) {
+    // User and autonomous turn reflectors share this narrow structural lane:
+    // online-reflector provenance plus a progress-only patch. Any broader patch
+    // still follows updateGoal's normal guard, audit, and review behavior.
+    if (!isOnlineReflectorProvenance(provenance) || !isProgressOnlyGoalPatch(parsedPatch)) {
       return this.updateGoal(goalId, parsedPatch, provenance, options);
     }
 
@@ -1202,6 +1215,87 @@ export class IdentityService {
       });
 
       return updated;
+    });
+
+    return {
+      status: "applied",
+      record,
+    };
+  }
+
+  mergeOpenQuestionDuplicate(
+    primaryOpenQuestionId: OpenQuestionId,
+    duplicateOpenQuestionId: OpenQuestionId,
+    primaryPatch: unknown,
+    abandonedReason: string,
+    provenance: Provenance,
+    options: IdentityUpdateOptions = {},
+  ): IdentityOpenQuestionDuplicateMergeResult {
+    const primary = this.options.openQuestionsRepository.get(primaryOpenQuestionId);
+    const duplicate = this.options.openQuestionsRepository.get(duplicateOpenQuestionId);
+
+    if (primary === null || duplicate === null) {
+      throw new StorageError("Open question duplicate merge target is missing", {
+        code: "OPEN_QUESTION_NOT_FOUND",
+      });
+    }
+
+    const parsedPatch = openQuestionPatchSchema.parse(primaryPatch);
+    const primaryDecision = this.guard.evaluateChange({
+      current: openQuestionGuardState(primary),
+      provenance,
+      throughReview: options.throughReview,
+    });
+    const duplicateDecision = this.guard.evaluateChange({
+      current: openQuestionGuardState(duplicate),
+      provenance,
+      throughReview: options.throughReview,
+    });
+
+    if (!primaryDecision.allowed || !duplicateDecision.allowed) {
+      return {
+        status: "requires_review",
+        current: { primary, duplicate },
+      };
+    }
+
+    const record = this.options.identityEventRepository.runInTransaction(() => {
+      const merged = this.options.openQuestionsRepository.mergeDuplicate(
+        primary.id,
+        duplicate.id,
+        {
+          ...parsedPatch,
+          ...(options.preserveRecordProvenance === true ? {} : { provenance }),
+        },
+        abandonedReason,
+        {
+          expectedPrimaryVersion: expectedRecordVersion(primary),
+          expectedDuplicateVersion: expectedRecordVersion(duplicate),
+        },
+      );
+
+      this.options.identityEventRepository.record({
+        record_type: "open_question",
+        record_id: primary.id,
+        action: "update",
+        old_value: primary,
+        new_value: merged.primary,
+        reason: options.reason ?? "open_question_duplicate_merge",
+        provenance,
+        review_item_id: options.reviewItemId ?? null,
+      });
+      this.options.identityEventRepository.record({
+        record_type: "open_question",
+        record_id: duplicate.id,
+        action: "abandon",
+        old_value: duplicate,
+        new_value: merged.duplicate,
+        reason: options.reason ?? abandonedReason,
+        provenance,
+        review_item_id: options.reviewItemId ?? null,
+      });
+
+      return merged;
     });
 
     return {

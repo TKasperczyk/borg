@@ -7,13 +7,14 @@ import {
 } from "../../memory/common/disclosure-serializers.js";
 import { StreamWriter } from "../../stream/index.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
-import { createEntityId, DEFAULT_SESSION_ID } from "../../util/ids.js";
+import { createEntityId, createOpenQuestionId, DEFAULT_SESSION_ID } from "../../util/ids.js";
 
 import { MaintenanceOrchestrator, type OfflineProcess, type OfflineProcessName } from "../index.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
   createSemanticNodeFixture,
+  TestEmbeddingClient,
 } from "../test-support.js";
 import { ASSOCIATOR_PROMPT, ASSOCIATOR_TOOL, AssociatorProcess } from "./index.js";
 
@@ -269,7 +270,7 @@ describe("associator process", () => {
     });
   });
 
-  it("creates open questions and reinforces exact normalized duplicates", async () => {
+  it("presents the complete global set and honors a model duplicate in the same call", async () => {
     const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({ llmClient: llm });
     cleanup.push(() => harness.cleanup());
@@ -282,7 +283,7 @@ describe("associator process", () => {
           kind: "open_question",
           question: "Is there a real connection between rehearsal and recovery?",
           urgency: 0.42,
-          source_episode_ids: [episodes[0]!.id, episodes[1]!.id],
+          source_episode_ids: [episodes[0]!.id],
         },
       ]),
     );
@@ -296,7 +297,7 @@ describe("associator process", () => {
     expect(createdQuestions[0]).toMatchObject({
       question: "Is there a real connection between rehearsal and recovery?",
       urgency: 0.42,
-      related_episode_ids: [episodes[0]!.id, episodes[1]!.id],
+      related_episode_ids: [episodes[0]!.id],
       provenance: {
         kind: "offline",
         process: "associator",
@@ -307,9 +308,10 @@ describe("associator process", () => {
       createAssociatorResponse([
         {
           kind: "open_question",
-          question: "  is there a real connection between rehearsal and recovery?  ",
+          question: "¿Ensayo y recuperación expresan la misma incertidumbre?",
           urgency: 0.8,
-          source_episode_ids: [episodes[0]!.id],
+          source_episode_ids: [episodes[1]!.id],
+          duplicate_of_open_question_id: createdQuestions[0]!.id,
         },
       ]),
     );
@@ -321,6 +323,56 @@ describe("associator process", () => {
     });
     expect(reinforcedQuestions).toHaveLength(1);
     expect(reinforcedQuestions[0]?.urgency).toBeCloseTo(0.44);
+    expect(reinforcedQuestions[0]?.related_episode_ids).toEqual([episodes[0]!.id, episodes[1]!.id]);
+    const secondPrompt = String(llm.requests[1]?.messages[0]?.content ?? "");
+    expect(secondPrompt).toContain(createdQuestions[0]!.id);
+    expect(secondPrompt).toContain('"complete":true');
+  });
+
+  it("ignores unpresented advisory ids and retains the cosine backstop", async () => {
+    const existingText = "Should recovery remain linked to the rehearsal?";
+    const backstopText = "Does recovery still belong with rehearsal?";
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [existingText, [1, 0, 0, 0]],
+          [backstopText, [1, 0, 0, 0]],
+        ]),
+      ),
+    });
+    cleanup.push(() => harness.cleanup());
+    const episodes = await createEpisodes(harness, 2);
+    const existing = harness.openQuestionsRepository.add({
+      question: existingText,
+      urgency: 0.31,
+      related_episode_ids: [episodes[0]!.id],
+      source: "reflection",
+      provenance: { kind: "manual" },
+    });
+    await harness.openQuestionsRepository.waitForPendingEmbeddings();
+    llm.pushResponse(
+      createAssociatorResponse([
+        {
+          kind: "open_question",
+          question: backstopText,
+          urgency: 0.7,
+          source_episode_ids: [episodes[1]!.id],
+          duplicate_of_open_question_id: createOpenQuestionId(),
+        },
+      ]),
+    );
+
+    await createProcess(harness).run(harness.createContext(), { dryRun: false });
+
+    expect(harness.openQuestionsRepository.listAllOpen()).toEqual([
+      expect.objectContaining({
+        id: existing.id,
+        urgency: 0.33,
+        related_episode_ids: [episodes[0]!.id, episodes[1]!.id],
+      }),
+    ]);
   });
 
   it("rejects out-of-sample episode ids and surfaces them through generic offline traces", async () => {

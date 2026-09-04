@@ -30,6 +30,7 @@ import type { EmbeddingClient } from "../embeddings/index.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { LLMClient } from "../llm/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../memory/common/index.js";
 import type {
   ActivityRepository,
   LivedExperienceDaySummaryRepository,
@@ -103,6 +104,7 @@ export type BorgDependencies = {
   sqlite: SqliteDatabase;
   lance: LanceDbStore;
   entryIndex: StreamEntryIndexRepository;
+  sourceStreamAudienceDisclosureResolver: SourceStreamAudienceDisclosureResolver;
   episodicRepository: EpisodicRepository;
   semanticNodeRepository: SemanticNodeRepository;
   semanticEdgeRepository: SemanticEdgeRepository;

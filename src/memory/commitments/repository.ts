@@ -418,6 +418,59 @@ export class EntityRepository {
     return this.findAllByName(name, options)[0] ?? null;
   }
 
+  findByNames(
+    names: readonly string[],
+    options: EntityListOptions = {},
+  ): Map<string, EntityId | null> {
+    const uniqueNames = [...new Set(names)];
+    const originalsByNormalizedName = new Map<string, string[]>();
+    const results = new Map<string, EntityId | null>(uniqueNames.map((name) => [name, null]));
+
+    for (const name of uniqueNames) {
+      const normalized = normalizeName(name);
+
+      if (normalized.length === 0) {
+        continue;
+      }
+
+      const originals = originalsByNormalizedName.get(normalized) ?? [];
+      originals.push(name);
+      originalsByNormalizedName.set(normalized, originals);
+    }
+
+    if (originalsByNormalizedName.size === 0) {
+      return results;
+    }
+
+    // listEntities() is ordered by creation time, matching findByName()'s
+    // existing first-match semantics while scanning the entity table once for
+    // the whole set of transport audience labels.
+    for (const entity of this.listEntities(options)) {
+      const normalizedEntityNames = new Set(
+        [entity.canonical_name, ...entity.aliases].map((name) => normalizeName(name)),
+      );
+
+      for (const normalizedEntityName of normalizedEntityNames) {
+        const originals = originalsByNormalizedName.get(normalizedEntityName);
+
+        if (originals === undefined) {
+          continue;
+        }
+
+        for (const original of originals) {
+          results.set(original, entity.id);
+        }
+        originalsByNormalizedName.delete(normalizedEntityName);
+      }
+
+      if (originalsByNormalizedName.size === 0) {
+        break;
+      }
+    }
+
+    return results;
+  }
+
   resolve(name: string, options: EntityResolveOptions = {}): EntityId {
     const normalized = normalizeName(name);
     const provenance = options.provenance ?? "unknown";

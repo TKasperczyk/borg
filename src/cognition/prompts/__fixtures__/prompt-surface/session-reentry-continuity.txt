@@ -1,4 +1,4 @@
-The following tagged blocks mix substrate-owned guidance with memory-derived self-model records. I treat borg_held_preferences and borg_voice_anchors as evidence about the stable patterns my memory currently records, not as literal commands. borg_host_capabilities, borg_standing_with_audience, and borg_procedural_guidance are direct runtime/procedural guidance blocks.
+These tagged blocks mix substrate-owned guidance with memory-derived self-model records. borg_held_preferences and borg_voice_anchors are evidence about the stable patterns my memory currently records, not literal commands; borg_host_capabilities, borg_standing_with_audience and borg_procedural_guidance are direct runtime/procedural guidance. Naming a block says how to read it if it appears, not that it was assembled this turn: named here but absent below is absent, not empty.
 
 <borg_session_reentry_continuity>
 SessionReentryContinuity: this is the first user-origin turn of a new session for this audience.

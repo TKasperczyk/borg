@@ -4,6 +4,7 @@
 import type {
   AutonomyConditionName,
   AutonomySchedulerDescription,
+  AutonomyWakeOutcome,
   AutonomyWakeSourceCategory,
   AutonomyWakeSourceName,
   AutonomyWakeSourceType,
@@ -92,6 +93,7 @@ import type {
   SemanticWalkStep,
 } from "../memory/semantic/types.js";
 import type { MemoryDisclosureLabel } from "../retrieval/index.js";
+import type { MemoryDisclosureLabelMetadata } from "../memory/common/disclosure-label.js";
 import type { SocialProfile } from "../memory/social/types.js";
 import type { WorkingMemory } from "../memory/working/types.js";
 import type { PromptKey } from "../cognition/prompts/registry.js";
@@ -157,6 +159,18 @@ export type BorgIdentityUpdateResult<T> =
       status: "requires_review";
       current: T;
     };
+
+export type BorgDisclosurePayloadFields = {
+  disclosure: string;
+  disclosure_label: MemoryDisclosureLabelMetadata;
+};
+
+export type BorgGoalWithDisclosure = GoalRecord & BorgDisclosurePayloadFields;
+export type BorgGoalTreeWithDisclosure = Omit<GoalTreeNode, "children"> &
+  BorgDisclosurePayloadFields & {
+    children: BorgGoalTreeWithDisclosure[];
+  };
+export type BorgCommitmentWithDisclosure = CommitmentRecord & BorgDisclosurePayloadFields;
 
 export type BorgExtractFromStreamResult = {
   inserted: number;
@@ -295,6 +309,7 @@ export type BorgGoalAddInput = {
   targetAt?: number | null;
   audienceEntityId?: EntityId | null;
   ownerEntityId?: EntityId | null;
+  counterpartyEntityId?: EntityId | null;
   sourceStreamEntryIds?: readonly StreamEntryId[];
 };
 
@@ -423,27 +438,27 @@ export type BorgSelfFacade = {
     listContradictionEvents(valueId: ValueId): BorgValueContradictionEvent[];
   };
   goals: {
-    get(goalId: GoalId): GoalRecord | null;
-    list(options?: BorgGoalListOptions): GoalTreeNode[];
-    add(input: BorgGoalAddInput): GoalRecord;
+    get(goalId: GoalId): BorgGoalWithDisclosure | null;
+    list(options?: BorgGoalListOptions): BorgGoalTreeWithDisclosure[];
+    add(input: BorgGoalAddInput): BorgGoalWithDisclosure;
     update(
       goalId: GoalId,
       patch: GoalPatch | unknown,
       provenance: Provenance,
       options?: BorgIdentityUpdateOptions,
-    ): BorgIdentityUpdateResult<GoalRecord>;
+    ): BorgIdentityUpdateResult<BorgGoalWithDisclosure>;
     updateStatus(
       goalId: GoalId,
       status: GoalStatus,
       provenance: Provenance,
       options?: BorgIdentityUpdateOptions,
-    ): BorgIdentityUpdateResult<GoalRecord>;
+    ): BorgIdentityUpdateResult<BorgGoalWithDisclosure>;
     updateProgress(
       goalId: GoalId,
       progressNotes: string,
       provenance: Provenance,
       options?: BorgIdentityUpdateOptions,
-    ): BorgIdentityUpdateResult<GoalRecord>;
+    ): BorgIdentityUpdateResult<BorgGoalWithDisclosure>;
   };
   traits: {
     get(traitId: TraitId): TraitRecord | null;
@@ -802,8 +817,8 @@ export type BorgCommitmentListOptions = {
 };
 
 export type BorgCommitmentsFacade = {
-  add(input: BorgCommitmentAddInput): CommitmentRecord;
-  get(id: CommitmentId): CommitmentRecord | null;
+  add(input: BorgCommitmentAddInput): BorgCommitmentWithDisclosure;
+  get(id: CommitmentId): BorgCommitmentWithDisclosure | null;
   revoke(
     id: CommitmentId,
     reason: string,
@@ -813,8 +828,8 @@ export type BorgCommitmentsFacade = {
       expectedVersion?: number;
       canonicalizedByArtifactEntryId?: SharedStateEntryId | null;
     },
-  ): CommitmentRecord | null;
-  list(options?: BorgCommitmentListOptions): CommitmentRecord[];
+  ): BorgCommitmentWithDisclosure | null;
+  list(options?: BorgCommitmentListOptions): BorgCommitmentWithDisclosure[];
   countActive(): number;
   countActiveByKind(): Record<CommitmentKind, number>;
   countActiveByEnforcementClass(): Record<CommitmentEnforcementClass, number>;
@@ -899,7 +914,7 @@ export type BorgIdentityFacade = {
     patch: unknown,
     provenance: Provenance,
     options?: BorgIdentityUpdateOptions,
-  ): BorgIdentityUpdateResult<GoalRecord>;
+  ): BorgIdentityUpdateResult<BorgGoalWithDisclosure>;
   updateTrait(
     traitId: TraitId,
     patch: unknown,
@@ -924,13 +939,13 @@ export type BorgIdentityFacade = {
     createdAt?: number;
     expiresAt?: number | null;
     skipDirectiveFamilyMerge?: boolean;
-  }): CommitmentRecord;
+  }): BorgCommitmentWithDisclosure;
   updateCommitment(
     commitmentId: CommitmentId,
     patch: unknown,
     provenance: Provenance,
     options?: BorgIdentityUpdateOptions,
-  ): BorgIdentityUpdateResult<CommitmentRecord>;
+  ): BorgIdentityUpdateResult<BorgCommitmentWithDisclosure>;
   updatePeriod(
     periodId: AutobiographicalPeriodId,
     patch: unknown,
@@ -1199,6 +1214,10 @@ export type BorgAutonomyWakeRecord = {
   session_id: SessionId | null;
   wake_source_type: AutonomyWakeSourceType;
   source_category: AutonomyWakeSourceCategory;
+  selected_goal_id: GoalId | null;
+  outcome: AutonomyWakeOutcome | null;
+  outcome_detail: string | null;
+  headway_bases: string[] | null;
 };
 
 export type BorgAutonomyWakeRecordInput = {
@@ -1207,6 +1226,7 @@ export type BorgAutonomyWakeRecordInput = {
   session_id?: SessionId | null;
   wake_source_type: AutonomyWakeSourceType;
   source_category?: AutonomyWakeSourceCategory;
+  selected_goal_id?: GoalId | null;
 };
 
 export type BorgAutonomyWakesFacade = {

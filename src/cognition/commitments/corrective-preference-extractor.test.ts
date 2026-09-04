@@ -3,10 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import type { StreamEntry } from "../../stream/index.js";
 import {
   createCommitmentId,
   createEntityId,
   createRelationalSlotId,
+  createSessionId,
   createStreamEntryId,
 } from "../../util/ids.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
@@ -31,6 +33,7 @@ function correctivePreferenceResponse(input: {
     | "internal_tool_hygiene"
     | null;
   directive?: string | null;
+  directiveSourceStreamEntryId?: ReturnType<typeof createStreamEntryId> | null;
   directive_family?: string | null;
   closure_pressure_relevance?: "no_closure" | "neutral" | "closure_seeking" | null;
   priority?: number | null;
@@ -60,6 +63,7 @@ function correctivePreferenceResponse(input: {
             (input.classification === "corrective_preference" ? "advisory" : null),
           critical_domain: input.critical_domain ?? null,
           directive: input.directive ?? null,
+          directive_source_stream_entry_id: input.directiveSourceStreamEntryId ?? null,
           directive_family: input.directive_family ?? null,
           closure_pressure_relevance:
             input.closure_pressure_relevance ??
@@ -140,8 +144,133 @@ describe("CorrectivePreferenceExtractor", () => {
     expect(llm.requests[0]?.tools?.some((tool) => tool.cache_control !== undefined)).toBe(false);
   });
 
+  it("presents self identity, attributed history, and current structural addressing", async () => {
+    const selfEntityId = createEntityId();
+    const priorSenderEntityId = createEntityId();
+    const currentSenderEntityId = createEntityId();
+    const audienceEntityId = createEntityId();
+    const priorAgentEntryId = createStreamEntryId();
+    const priorUserEntryId = createStreamEntryId();
+    const currentEntryId = createStreamEntryId();
+    const currentEntry = {
+      id: currentEntryId,
+      timestamp: 1_700_000_000_300,
+      kind: "user_msg",
+      content: "Which design should you choose?",
+      turn_status: "active",
+      audience: "Operator room",
+      sender_entity_id: currentSenderEntityId,
+      reply_target_entity_id: selfEntityId,
+      session_id: createSessionId(),
+      compressed: false,
+    } satisfies StreamEntry;
+    const displayNames = new Map([
+      [priorSenderEntityId, "Prior participant"],
+      [currentSenderEntityId, "Operator"],
+    ]);
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          classification: "none",
+          reason: "The source asked Borg to choose rather than stating a directive.",
+        }),
+      ],
+    });
+    const extractor = new CorrectivePreferenceExtractor({ llmClient: llm, model: "haiku" });
+
+    await extractor.extract({
+      userMessage: "Which design should you choose?",
+      selfIdentity: {
+        id: selfEntityId,
+        canonical_name: "Borg",
+        aliases: ["Memory Keeper"],
+      },
+      currentUserStreamEntryId: currentEntryId,
+      currentUserStreamEntryIds: [currentEntryId],
+      currentMessageEntries: [currentEntry],
+      currentMessageSenderAttribution: [
+        {
+          entryId: currentEntryId,
+          senderEntityId: currentSenderEntityId,
+          senderDisplayName: "Operator",
+        },
+      ],
+      recentHistory: [
+        {
+          role: "assistant",
+          content: "I can choose after comparing the options.",
+          stream_entry_id: priorAgentEntryId,
+          sender_entity_id: null,
+          ts: 1_700_000_000_100,
+          kind: "agent_msg",
+        },
+        {
+          role: "user",
+          content: "A participant supplied context.",
+          stream_entry_id: priorUserEntryId,
+          sender_entity_id: priorSenderEntityId,
+          ts: 1_700_000_000_200,
+          kind: "user_msg",
+        },
+      ],
+      audienceEntityId,
+      speakerEntityId: currentSenderEntityId,
+      speakerDisplayName: "Operator",
+      senderDisplayNameById: (entityId) => displayNames.get(entityId) ?? null,
+      activeCommitments: [],
+    });
+
+    const payload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as any;
+    expect(payload.self_identity).toEqual({
+      entity_id: selfEntityId,
+      canonical_name: "Borg",
+      handles: ["Memory Keeper"],
+    });
+    expect(payload.recent_history).toEqual([
+      expect.objectContaining({
+        stream_entry_id: priorAgentEntryId,
+        sender_entity_id: selfEntityId,
+        sender_display_name: "Borg",
+        sender_is_self: true,
+      }),
+      expect.objectContaining({
+        stream_entry_id: priorUserEntryId,
+        sender_entity_id: priorSenderEntityId,
+        sender_display_name: "Prior participant",
+        sender_is_self: false,
+      }),
+    ]);
+    expect(payload.current_message_entries).toEqual([
+      expect.objectContaining({
+        stream_entry_id: currentEntryId,
+        sender_entity_id: currentSenderEntityId,
+        sender_display_name: "Operator",
+        sender_is_self: false,
+        audience_routing_label: "Operator room",
+        audience_entity_id: audienceEntityId,
+        reply_target_entity_id: selfEntityId,
+      }),
+    ]);
+    expect(payload.presented_entity_ids).toEqual(
+      expect.arrayContaining([
+        selfEntityId,
+        priorSenderEntityId,
+        currentSenderEntityId,
+        audienceEntityId,
+      ]),
+    );
+    expect(CORRECTIVE_PREFERENCE_SYSTEM_PROMPT).toContain(
+      "A corrective directive must be stated by an attributed current source message",
+    );
+    expect(CORRECTIVE_PREFERENCE_SYSTEM_PROMPT).toContain(
+      "A question posed to Borg, or a request for Borg to choose",
+    );
+  });
+
   it("emits a high-confidence retire-only commitment result", async () => {
     const commitmentId = createCommitmentId();
+    const currentScope = createEntityId();
+    const historicalOrigin = createEntityId();
     const llm = new FakeLLMClient({
       responses: [
         correctivePreferenceResponse({
@@ -160,7 +289,7 @@ describe("CorrectivePreferenceExtractor", () => {
     const result = await extractor.extractWithSlotNegations({
       userMessage: "That standing boundary is resolved now.",
       recentHistory: [],
-      audienceEntityId: createEntityId(),
+      audienceEntityId: currentScope,
       activeCommitments: [
         {
           id: commitmentId,
@@ -172,6 +301,13 @@ describe("CorrectivePreferenceExtractor", () => {
           directive_family: "temporary_discussion_constraint",
           closure_pressure_relevance: "neutral",
           priority: 5,
+          restricted_audience: currentScope,
+          disclosure_label: {
+            disclosureClass: "relationship_private",
+            originAudienceEntityIds: [historicalOrigin],
+            privateToEntityIds: [currentScope],
+            publicToEntityIds: [],
+          },
         },
       ],
     });
@@ -185,6 +321,64 @@ describe("CorrectivePreferenceExtractor", () => {
       },
       slot_negations: [],
     });
+    const prompt = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      active_commitments: Array<{
+        disclosure_label?: { origin_audience_entity_ids?: string[] };
+      }>;
+    };
+    expect(prompt.active_commitments[0]?.disclosure_label?.origin_audience_entity_ids).toEqual([
+      historicalOrigin,
+    ]);
+  });
+
+  it("accepts directive sources only from the presented current entries", async () => {
+    const currentEntryId = createStreamEntryId();
+    const outsideEntryId = createStreamEntryId();
+    const onDegraded = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          classification: "corrective_preference",
+          type: "rule",
+          directive: "Keep future responses concise.",
+          directive_family: "concise_future_responses",
+          directiveSourceStreamEntryId: currentEntryId,
+          priority: 6,
+        }),
+        correctivePreferenceResponse({
+          classification: "corrective_preference",
+          type: "rule",
+          directive: "Keep future responses concise.",
+          directive_family: "concise_future_responses",
+          directiveSourceStreamEntryId: outsideEntryId,
+          priority: 6,
+        }),
+      ],
+    });
+    const extractor = new CorrectivePreferenceExtractor({
+      llmClient: llm,
+      model: "haiku",
+      onDegraded,
+    });
+    const input = {
+      userMessage: "Keep future responses concise.",
+      currentUserStreamEntryIds: [currentEntryId],
+      recentHistory: [],
+      audienceEntityId: null,
+      activeCommitments: [],
+    };
+
+    await expect(extractor.extract(input)).resolves.toMatchObject({
+      directive_source_stream_entry_id: currentEntryId,
+    });
+    await expect(extractor.extract(input)).resolves.toBeNull();
+    expect(onDegraded).toHaveBeenCalledWith(
+      "invalid_payload",
+      expect.objectContaining({
+        issues: [expect.objectContaining({ path: ["directive_source_stream_entry_id"] })],
+      }),
+      expect.objectContaining({ stopReason: "tool_use" }),
+    );
   });
 
   it("carries relationship claims on corrective preference candidates", async () => {
@@ -468,6 +662,10 @@ describe("CorrectivePreferenceExtractor", () => {
         activeCommitments: [],
       }),
     ).resolves.toBeNull();
+    const payload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      self_identity?: unknown;
+    };
+    expect(payload.self_identity).toBeNull();
   });
 
   it("returns slot negations separately from durable corrective preferences", async () => {

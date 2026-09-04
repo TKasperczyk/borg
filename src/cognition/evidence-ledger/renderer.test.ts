@@ -64,6 +64,7 @@ function syntheticEntry(input: {
   source_type?: EvidenceLedger["sections"][number]["entries"][number]["source_type"];
   text?: string;
   trust_rank?: number;
+  state?: string;
   state_metadata?: Record<string, unknown>;
 }) {
   return {
@@ -73,6 +74,7 @@ function syntheticEntry(input: {
     actor: "memory" as const,
     trust_rank: input.trust_rank ?? 50,
     text: input.text ?? "synthetic ledger entry",
+    ...(input.state === undefined ? {} : { state: input.state }),
     state_metadata: input.state_metadata,
     taint: "none" as const,
   };
@@ -928,6 +930,93 @@ describe("compactEvidenceLedger", () => {
     );
     expect(rendered).toContain("Evidence ledger omitted");
     expect(rendered).toContain("lower-priority entries from prior_session_memory");
+    expect(rendered).not.toContain("Omitted by state:");
+  });
+
+  it("decomposes the open questions omission by lifecycle status", () => {
+    const ledger = makeLedger();
+    const pressureText = "open question pressure ".repeat(40);
+    const statuses = ["open", "resolved", "resolved", "abandoned"] as const;
+
+    // Retention for open_questions keeps a prefix of assembly order, so the omitted set is the tail.
+    // The scored rows lead the section exactly as the retrieved-evidence lane places them in production.
+    section(ledger, "open_questions").entries = [
+      ...Array.from({ length: 4 }, (_, index) =>
+        syntheticEntry({
+          id: `retrieved_evidence:oq_scored_${index}`,
+          text: `scored ${index} ${pressureText}`,
+          trust_rank: 38,
+          state: `score=0.${40 + index} intent=recall_${index}`,
+        }),
+      ),
+      ...Array.from({ length: 12 }, (_, index) =>
+        syntheticEntry({
+          id: `open_question:oq_${index}`,
+          text: `question ${index} ${pressureText}`,
+          trust_rank: 38,
+          state: `${statuses[index % statuses.length]!} private to one participant`,
+        }),
+      ),
+    ];
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 30_000,
+      maxEntryTextTokens: 60,
+      sectionOptions: {
+        open_questions: {
+          maxEntries: 8,
+          maxTokens: 4_000,
+        },
+      },
+    });
+    const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
+
+    expect(rendered).toContain("lower-priority entries from open_questions");
+    expect(rendered).toContain("A status absent from that list had no rows cut here");
+
+    const clause = /Omitted by state: ([^.]+)\./.exec(rendered)?.[1] ?? "";
+    const tallied = [...clause.matchAll(/([a-z_]+) (\d+)/g)];
+    const talliedTotal = tallied.reduce((sum, [, , count]) => sum + Number(count), 0);
+
+    // Scored rows lead the section and are retained here, but even when cut they carry no status:
+    // a `key=value` head would otherwise mint one bucket per distinct score.
+    expect(clause).not.toContain("score");
+    expect(tallied.map(([, status]) => status)).toEqual(["abandoned", "open", "resolved"]);
+    expect(talliedTotal).toBe(compacted.traceSummary.omittedEntryCountsBySection.open_questions);
+    expect(talliedTotal).toBe(8);
+  });
+
+  it("reports an empty open questions omission composition when no cut row carried a status", () => {
+    const ledger = makeLedger();
+    const pressureText = "open question pressure ".repeat(40);
+
+    section(ledger, "open_questions").entries = Array.from({ length: 12 }, (_, index) =>
+      syntheticEntry({
+        id: `retrieved_evidence:oq_scored_${index}`,
+        text: `scored ${index} ${pressureText}`,
+        trust_rank: 38,
+        state: `score=0.${40 + index} intent=recall_${index}`,
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 30_000,
+      maxEntryTextTokens: 60,
+      sectionOptions: {
+        open_questions: {
+          maxEntries: 8,
+          maxTokens: 4_000,
+        },
+      },
+    });
+    const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
+
+    expect(compacted.traceSummary.omittedEntryCountsBySection.open_questions).toBe(4);
+    expect(rendered).toContain(
+      "none of the omitted entries carried a status, so no status had rows cut here",
+    );
   });
 
   it("trims recent lived experience before core retrieved evidence sections", () => {

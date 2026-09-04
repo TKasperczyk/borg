@@ -62,6 +62,26 @@ describe("outbound prompt surfaces", () => {
     ).toBeNull();
   });
 
+  it("names target_busy as a second failure mode distinct from transport", () => {
+    const rendered =
+      renderAutonomousOutboundActionAvailabilitySection(
+        context(),
+        [{ name: OUTBOUND_POST_TOOL_NAME }],
+        "autonomous",
+      ) ?? "";
+
+    // Before this the only named failure was transport, so a busy result had no
+    // vocabulary and read as the far side declining or the route being bad.
+    expect(rendered).toContain("a listed route can still fail at transport");
+    expect(rendered).toContain(
+      "A reach can also come back target_busy, which is neither a transport failure nor a refusal by the far side",
+    );
+    expect(rendered).toContain("holding its own turn lock when I called");
+    expect(rendered).toContain(
+      "It is a fact about when I reached, not about the route or about how the far side received me, and a later reach at the same route can land.",
+    );
+  });
+
   it("keeps the directed-outbound surface byte-identical while sharing its block definition", () => {
     expect(
       renderDirectedOutboundInstructionSurface({

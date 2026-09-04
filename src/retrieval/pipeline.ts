@@ -4,6 +4,7 @@ import {
   imagePerceptionMemoryDisclosureLabel,
   openQuestionMemoryDisclosureLabel,
 } from "../memory/common/disclosure-serializers.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../memory/common/index.js";
 import type { ImagePerceptionRepository, ImagePerceptionSearchHit } from "../attachments/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
@@ -44,6 +45,7 @@ import { describeError, StorageError } from "../util/errors.js";
 import {
   DEFAULT_SESSION_ID,
   type AttachmentId,
+  type CommitmentId,
   type EntityId,
   type EpisodeId,
   type SessionId,
@@ -158,6 +160,7 @@ export type RetrievalPipelineOptions = {
   episodicRepository: EpisodicRepository;
   dataDir: string;
   entryIndex?: StreamEntryIndexRepository;
+  sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   semanticNodeRepository?: SemanticNodeRepository;
   semanticEdgeRepository?: Pick<SemanticEdgeRepository, "getEdge">;
   semanticGraph?: SemanticGraph;
@@ -800,6 +803,24 @@ export class RetrievalPipeline {
       context.turn,
       maxWarmEvidenceRendered,
     );
+    const warmCommitmentIds = new Set<CommitmentId>(
+      candidates.flatMap(({ handle }) =>
+        handle.source === "commitment" ? [handle.commitmentId] : [],
+      ),
+    );
+    const rawWarmCommitments =
+      warmCommitmentIds.size === 0 || this.options.commitmentRepository === undefined
+        ? []
+        : this.options.commitmentRepository
+            .list({ activeOnly: true, nowMs })
+            .filter((commitment) => warmCommitmentIds.has(commitment.id));
+    const warmCommitments =
+      this.options.sourceStreamAudienceDisclosureResolver?.resolve({
+        commitments: rawWarmCommitments,
+      }).commitments ?? rawWarmCommitments;
+    const warmCommitmentsById = new Map(
+      warmCommitments.map((commitment) => [commitment.id, commitment]),
+    );
 
     for (const { handle, stateHandle } of candidates) {
       const item = await this.rehydrateRecallHandle(
@@ -811,6 +832,7 @@ export class RetrievalPipeline {
         options,
         nowMs,
         mode,
+        warmCommitmentsById,
       );
 
       if (item !== null) {
@@ -831,6 +853,7 @@ export class RetrievalPipeline {
     options: RetrievalExecutionOptions,
     nowMs: number,
     mode: RetrievalExecutionMode,
+    warmCommitmentsById: ReadonlyMap<CommitmentId, CommitmentRecord>,
   ): Promise<EvidenceItem | null> {
     if (handle.source === "episode") {
       return this.rehydrateEpisodeHandle(handle, stateHandle, options, mode);
@@ -849,7 +872,7 @@ export class RetrievalPipeline {
     }
 
     if (handle.source === "commitment") {
-      return this.rehydrateCommitmentHandle(handle, stateHandle, nowMs);
+      return this.rehydrateCommitmentHandle(handle, stateHandle, warmCommitmentsById);
     }
 
     if (handle.source === "image_perception") {
@@ -1110,22 +1133,11 @@ export class RetrievalPipeline {
   private rehydrateCommitmentHandle(
     handle: Extract<RecallEvidenceHandle, { source: "commitment" }>,
     stateHandle: RecallStateHandle,
-    nowMs: number,
+    warmCommitmentsById: ReadonlyMap<CommitmentId, CommitmentRecord>,
   ): EvidenceItem | null {
-    const commitment = this.options.commitmentRepository?.get(handle.commitmentId);
+    const commitment = warmCommitmentsById.get(handle.commitmentId);
 
-    if (commitment === undefined || commitment === null) {
-      return null;
-    }
-
-    const activeVisible = this.options.commitmentRepository
-      ?.list({
-        activeOnly: true,
-        nowMs,
-      })
-      .some((item) => item.id === commitment.id);
-
-    if (activeVisible !== true) {
+    if (commitment === undefined) {
       return null;
     }
 
@@ -1996,10 +2008,14 @@ export class RetrievalPipeline {
       return [];
     }
 
-    const activeCommitments = this.options.commitmentRepository.list({
+    const rawActiveCommitments = this.options.commitmentRepository.list({
       activeOnly: true,
       nowMs: this.clock.now(),
     });
+    const activeCommitments =
+      this.options.sourceStreamAudienceDisclosureResolver?.resolve({
+        commitments: rawActiveCommitments,
+      }).commitments ?? rawActiveCommitments;
 
     if (activeCommitments.length === 0) {
       return [];

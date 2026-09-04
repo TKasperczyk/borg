@@ -124,6 +124,7 @@ describe("config", () => {
     ).toBe(OFFLINE_PROCESS_NAMES.length);
     expect(config.executive.goalFocusThreshold).toBe(0.45);
     expect(config.autonomy.maxWakesPerWindow).toBe(6);
+    expect(config.autonomy.prepToolTimeoutMs).toBe(30_000);
     expect(config.autonomy.goalWakeBatchMax).toBe(5);
     expect(config.autonomy.budgetWindowMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.autonomy.reservedContemplativeWakesPerWindow).toBe(1);
@@ -172,8 +173,11 @@ describe("config", () => {
     expect(config.deliberation.finalizerDynamicPromptCacheEnabled).toBe(true);
     expect(config.deliberation.finalizerSurfaceVariant).toBe("legacy");
     expect(config.deliberation.finalizerContextCaptureSampleRate).toBe(0);
+    expect(config.deliberation.finalizerContextCaptureMaxFileBytes).toBe(1024 * 1024 * 1024);
     expect(config.deliberation.plannerSurfaceVariant).toBe("compact");
     expect(config.deliberation.plannerContextCaptureSampleRate).toBe(0);
+    expect(config.deliberation.plannerContextCaptureMaxFileBytes).toBe(512 * 1024 * 1024);
+    expect(config.deliberation.contextCaptureRotationKeep).toBe(2);
     expect(config.commitments).toEqual({
       enforce: {
         regenerateBeforeSuppress: true,
@@ -433,6 +437,50 @@ describe("config", () => {
     expect(config.deliberation.plannerContextCaptureSampleRate).toBe(0.75);
   });
 
+  it("loads context capture rotation limits from config.json and lets env override them", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      deliberation: {
+        contextCaptureRotationKeep: 3,
+        plannerContextCaptureMaxFileBytes: 1_024,
+        finalizerContextCaptureMaxFileBytes: 2_048,
+      },
+    });
+
+    const fromFile = loadConfig({ dataDir: tempDir, env: {} });
+    expect(fromFile.deliberation).toMatchObject({
+      contextCaptureRotationKeep: 3,
+      plannerContextCaptureMaxFileBytes: 1_024,
+      finalizerContextCaptureMaxFileBytes: 2_048,
+    });
+
+    const fromEnv = loadConfig({
+      dataDir: tempDir,
+      env: {
+        BORG_DELIBERATION_CONTEXT_CAPTURE_ROTATION_KEEP: "4",
+        BORG_DELIBERATION_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES: "4096",
+        BORG_DELIBERATION_FINALIZER_CONTEXT_CAPTURE_MAX_FILE_BYTES: "8192",
+      },
+    });
+    expect(fromEnv.deliberation).toMatchObject({
+      contextCaptureRotationKeep: 4,
+      plannerContextCaptureMaxFileBytes: 4_096,
+      finalizerContextCaptureMaxFileBytes: 8_192,
+    });
+  });
+
+  it.each([
+    ["BORG_DELIBERATION_CONTEXT_CAPTURE_ROTATION_KEEP", "-1"],
+    ["BORG_DELIBERATION_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES", "0"],
+    ["BORG_DELIBERATION_FINALIZER_CONTEXT_CAPTURE_MAX_FILE_BYTES", "1.5"],
+  ])("rejects invalid context capture rotation override %s", (name, value) => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    expect(() => loadConfig({ dataDir: tempDir, env: { [name]: value } })).toThrow(ConfigError);
+  });
+
   it.each(["-0.01", "1.01", "not-a-number"])(
     "rejects invalid planner context capture sample rate %s",
     (sampleRate) => {
@@ -614,6 +662,39 @@ describe("config", () => {
     expect(config.maintenance).toEqual(DEFAULT_CONFIG.maintenance);
   });
 
+  it("loads ruminator revisit periods from defaults and environment", () => {
+    const defaultDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const overrideDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(defaultDir, overrideDir);
+
+    expect(loadConfig({ dataDir: defaultDir, env: {} }).offline.ruminator).toMatchObject({
+      revisitPeriodMinDays: 2,
+      revisitPeriodMaxDays: 30,
+    });
+    expect(
+      loadConfig({
+        dataDir: overrideDir,
+        env: {
+          BORG_OFFLINE_RUMINATOR_REVISIT_PERIOD_MIN_DAYS: "1.5",
+          BORG_OFFLINE_RUMINATOR_REVISIT_PERIOD_MAX_DAYS: "45",
+        },
+      }).offline.ruminator,
+    ).toMatchObject({
+      revisitPeriodMinDays: 1.5,
+      revisitPeriodMaxDays: 45,
+    });
+    expect(() =>
+      configSchema.parse({
+        offline: {
+          ruminator: {
+            revisitPeriodMinDays: 31,
+            revisitPeriodMaxDays: 30,
+          },
+        },
+      }),
+    ).toThrow(/minimum revisit period/);
+  });
+
   it("accepts deprecated llm fallback env aliases", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -640,6 +721,7 @@ describe("config", () => {
         BORG_AUTONOMY_MAX_WAKES_PER_WINDOW: "9",
         BORG_AUTONOMY_GOAL_WAKE_BATCH_MAX: "4",
         BORG_AUTONOMY_BUDGET_WINDOW_MS: "7200000",
+        BORG_AUTONOMY_PREP_TOOL_TIMEOUT_MS: "45000",
         BORG_AUTONOMY_RESERVED_CONTEMPLATIVE_WAKES_PER_WINDOW: "2",
       },
     });
@@ -647,6 +729,7 @@ describe("config", () => {
     expect(config.autonomy.maxWakesPerWindow).toBe(9);
     expect(config.autonomy.goalWakeBatchMax).toBe(4);
     expect(config.autonomy.budgetWindowMs).toBe(7_200_000);
+    expect(config.autonomy.prepToolTimeoutMs).toBe(45_000);
     expect(config.autonomy.reservedContemplativeWakesPerWindow).toBe(2);
   });
 

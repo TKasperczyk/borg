@@ -2,7 +2,12 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { DEFAULT_HOST_CAPABILITIES_SECTION } from "../cognition/prompts/host-capability-contracts.js";
-import { DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET } from "../cognition/deliberation/constants.js";
+import {
+  DEFAULT_CONTEXT_CAPTURE_ROTATION_KEEP,
+  DEFAULT_FINALIZER_CONTEXT_CAPTURE_MAX_FILE_BYTES,
+  DEFAULT_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES,
+  DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
+} from "../cognition/deliberation/constants.js";
 import {
   EVIDENCE_LEDGER_SECTION_DEFINITIONS,
   type EvidenceLedgerSectionId,
@@ -288,8 +293,23 @@ const deliberationConfigSchema = z
       .enum(["compact", "compact_conversational", "legacy"])
       .default("legacy"),
     finalizerContextCaptureSampleRate: z.number().min(0).max(1).default(0),
+    finalizerContextCaptureMaxFileBytes: z
+      .number()
+      .int()
+      .positive()
+      .default(DEFAULT_FINALIZER_CONTEXT_CAPTURE_MAX_FILE_BYTES),
     plannerSurfaceVariant: z.enum(["compact", "legacy"]).default("compact"),
     plannerContextCaptureSampleRate: z.number().min(0).max(1).default(0),
+    plannerContextCaptureMaxFileBytes: z
+      .number()
+      .int()
+      .positive()
+      .default(DEFAULT_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES),
+    contextCaptureRotationKeep: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(DEFAULT_CONTEXT_CAPTURE_ROTATION_KEEP),
   })
   .strict()
   .prefault({});
@@ -594,6 +614,8 @@ const configBaseSchema = z.object({
           // epistemic evidence-quality signal, not the relevance ranking score.
           resolveConfidenceThreshold: z.number().min(0).max(1).default(0.55),
           duplicateSimilarityThreshold: z.number().min(0).max(1).default(0.9),
+          revisitPeriodMinDays: z.number().positive().default(2),
+          revisitPeriodMaxDays: z.number().positive().default(30),
           stalenessDays: z.number().positive().default(30),
           staleNoTractionTicks: z.number().int().positive().default(4),
           // Aborted at 40k-48k against the old 40k cap on five of nine runs.
@@ -701,6 +723,7 @@ const configBaseSchema = z.object({
       // deployments once their records have matured.
       enabled: z.boolean().default(true),
       intervalMs: z.number().int().positive().default(60_000),
+      prepToolTimeoutMs: z.number().int().positive().default(30_000),
       maxWakesPerWindow: z.number().int().positive().default(6),
       goalWakeBatchMax: z.number().int().positive().default(5),
       budgetWindowMs: z.number().int().positive().default(86_400_000),
@@ -861,6 +884,14 @@ export const configSchema = configOutputSchema.superRefine((value, context) => {
       code: z.ZodIssueCode.custom,
       message: `Maintenance light/heavy process lists must be disjoint: ${overlap.join(", ")}`,
       path: ["maintenance", "heavyProcesses"],
+    });
+  }
+
+  if (value.offline.ruminator.revisitPeriodMinDays > value.offline.ruminator.revisitPeriodMaxDays) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Ruminator minimum revisit period must not exceed its maximum revisit period",
+      path: ["offline", "ruminator", "revisitPeriodMinDays"],
     });
   }
 });
@@ -1289,6 +1320,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
+    ["deliberation", "finalizerContextCaptureMaxFileBytes"],
+    readOptionalEnvNumber(env, "BORG_DELIBERATION_FINALIZER_CONTEXT_CAPTURE_MAX_FILE_BYTES"),
+  );
+  setConfigOverride(
+    overrides,
     ["deliberation", "plannerSurfaceVariant"],
     readOptionalEnvString(env, "BORG_DELIBERATION_PLANNER_SURFACE_VARIANT"),
   );
@@ -1296,6 +1332,16 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["deliberation", "plannerContextCaptureSampleRate"],
     readOptionalEnvUnitInterval(env, "BORG_DELIBERATION_PLANNER_CONTEXT_CAPTURE_SAMPLE_RATE"),
+  );
+  setConfigOverride(
+    overrides,
+    ["deliberation", "plannerContextCaptureMaxFileBytes"],
+    readOptionalEnvNumber(env, "BORG_DELIBERATION_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES"),
+  );
+  setConfigOverride(
+    overrides,
+    ["deliberation", "contextCaptureRotationKeep"],
+    readOptionalEnvNumber(env, "BORG_DELIBERATION_CONTEXT_CAPTURE_ROTATION_KEEP"),
   );
   setConfigOverride(
     overrides,
@@ -1679,6 +1725,16 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
+    ["offline", "ruminator", "revisitPeriodMinDays"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_RUMINATOR_REVISIT_PERIOD_MIN_DAYS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "ruminator", "revisitPeriodMaxDays"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_RUMINATOR_REVISIT_PERIOD_MAX_DAYS"),
+  );
+  setConfigOverride(
+    overrides,
     ["offline", "ruminator", "stalenessDays"],
     readOptionalEnvFloat(env, "BORG_OFFLINE_RUMINATOR_STALENESS_DAYS"),
   );
@@ -1872,6 +1928,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["autonomy", "intervalMs"],
     readOptionalEnvNumber(env, "BORG_AUTONOMY_INTERVAL_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "prepToolTimeoutMs"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_PREP_TOOL_TIMEOUT_MS"),
   );
   setConfigOverride(
     overrides,

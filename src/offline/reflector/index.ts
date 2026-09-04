@@ -194,6 +194,7 @@ function renderActiveGoalPromptRow(goal: GoalRecord): string {
   return JSON.stringify({
     id: goal.id,
     description: goal.description,
+    counterparty_entity_id: goal.counterparty_entity_id ?? null,
     ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
   });
 }
@@ -389,6 +390,7 @@ async function buildInsightCandidate(
   ctx: OfflineContext,
   llmClient: LLMClient,
   cluster: ReflectionCluster,
+  activeGoals: readonly GoalRecord[],
 ): Promise<{
   label: string;
   description: string;
@@ -411,7 +413,7 @@ async function buildInsightCandidate(
           messages: [
             {
               role: "user",
-              content: buildPrompt(cluster, ctx.goalsRepository.list({ status: "active" })),
+              content: buildPrompt(cluster, activeGoals),
             },
           ],
           tools: [REFLECTOR_TOOL],
@@ -576,7 +578,10 @@ export class ReflectorProcess implements OfflineProcess {
     const items: ReflectorPlan["items"] = [];
     const budget = opts.budget ?? ctx.config.offline.reflector.budget;
     const episodes = await ctx.episodicRepository.listEffectivelyVisible();
-    const activeGoals = ctx.goalsRepository.list({ status: "active" });
+    const rawActiveGoals = ctx.goalsRepository.list({ status: "active" });
+    const activeGoals =
+      ctx.sourceStreamAudienceDisclosureResolver?.resolve({ goalTrees: rawActiveGoals })
+        .goalTrees ?? rawActiveGoals;
     let goalVectors: ReflectionGoalVector[] = [];
     let tagGroups: ReflectionTagGroup[] = [];
 
@@ -631,7 +636,7 @@ export class ReflectorProcess implements OfflineProcess {
 
         for (const cluster of clusters) {
           try {
-            const candidate = await buildInsightCandidate(ctx, llmClient, cluster);
+            const candidate = await buildInsightCandidate(ctx, llmClient, cluster, activeGoals);
             const byLabel = await ctx.semanticNodeRepository.findByExactLabelOrAlias(
               candidate.label,
               3,

@@ -429,6 +429,46 @@ describe("correction service", () => {
     }
   });
 
+  it("does not expose a private goal's counterparty as correction audience or origin", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_000),
+    });
+
+    try {
+      const correction = createHarnessCorrectionService(harness);
+      const privateAudience = createEntityId();
+      const thirdPartyCounterparty = createEntityId();
+      const goal = harness.goalsRepository.add({
+        description: "Carry the private responsibility to completion",
+        priority: 6,
+        audienceEntityId: privateAudience,
+        ownerEntityId: null,
+        counterpartyEntityId: thirdPartyCounterparty,
+        provenance: { kind: "online", process: "goal-promotion-extractor" },
+      });
+
+      const queued = await correction.correct(goal.id, { priority: 5 });
+
+      expect(queued.refs).toMatchObject({
+        target_id: goal.id,
+        target_type: "goal",
+        audience_entity_id: privateAudience,
+        disclosure_label: {
+          origin_audience_entity_ids: [privateAudience],
+          private_to_entity_ids: [privateAudience],
+        },
+      });
+      expect(queued.refs.disclosure_label).not.toMatchObject({
+        origin_audience_entity_ids: expect.arrayContaining([thirdPartyCounterparty]),
+      });
+      expect(queued.refs.disclosure_label).not.toMatchObject({
+        private_to_entity_ids: expect.arrayContaining([thirdPartyCounterparty]),
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("invalidates semantic edges manually with explicit event time idempotently", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(5_000),
@@ -782,6 +822,42 @@ describe("correction service", () => {
           abandoned_reason: null,
         }),
       );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("records correction goal deletion only as forget, without a false rollback event", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_750),
+    });
+
+    try {
+      const correction = createHarnessCorrectionService(harness);
+      const goal = harness.goalsRepository.add({
+        description: "Keep correction deletion audit semantics exact",
+        priority: 6,
+        provenance: { kind: "manual" },
+      });
+
+      await expect(correction.forget(goal.id)).resolves.toMatchObject({
+        id: goal.id,
+        target_type: "goal",
+        archived: true,
+      });
+      expect(harness.goalsRepository.get(goal.id)).toBeNull();
+
+      const events = harness.identityEventRepository.list({
+        recordType: "goal",
+        recordId: goal.id,
+        limit: 10,
+      });
+      expect(events.map((event) => event.action)).toEqual(["forget", "create"]);
+      expect(events.find((event) => event.action === "forget")).toMatchObject({
+        old_value: goal,
+        new_value: null,
+        reason: "forgotten manually",
+      });
     } finally {
       await harness.cleanup();
     }

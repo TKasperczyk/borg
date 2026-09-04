@@ -259,6 +259,7 @@ function makeGoal(
     target_at: null,
     audience_entity_id: null,
     owner_entity_id: null,
+    counterparty_entity_id: null,
     source_stream_entry_ids: [streamEntryId],
     provenance: {
       kind: "system",
@@ -418,6 +419,9 @@ function attributionBuilder(input: {
   goals?: readonly GoalRecord[];
   entities?: readonly EntityRecord[];
   tracer?: TurnTracer;
+  sourceStreamAudienceDisclosureResolver?: ConstructorParameters<
+    typeof EvidenceLedgerBuilder
+  >[0]["sourceStreamAudienceDisclosureResolver"];
 }) {
   return new EvidenceLedgerBuilder({
     createStreamReader: (sessionId) => new StreamReader({ dataDir: input.tempDir, sessionId }),
@@ -436,11 +440,109 @@ function attributionBuilder(input: {
     currentSessionTranscriptTokenBudget: 50_000,
     entityRepository: entityRepository(input.entities ?? []),
     tracer: input.tracer,
+    sourceStreamAudienceDisclosureResolver: input.sourceStreamAudienceDisclosureResolver,
   });
 }
 
 describe("EvidenceLedgerBuilder", () => {
   const tempDirs: string[] = [];
+
+  it("resolves applicable, repository commitment, and goal collections once per build", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-ledger-disclosure-batch-"));
+    tempDirs.push(tempDir);
+    const scope = createEntityId();
+    const historicalOrigin = createEntityId();
+    const persisted = makeCommitment(createStreamEntryId());
+    persisted.restricted_audience = scope;
+    const temporary = {
+      ...makeCommitment(createStreamEntryId()),
+      provenance: { kind: "online" as const, process: "corrective-preference-extractor" },
+      restricted_audience: scope,
+    };
+    const goal = makeGoal(createStreamEntryId(), { audience_entity_id: scope });
+    const disclosureLabel = {
+      disclosureClass: "relationship_private" as const,
+      originAudienceEntityIds: [historicalOrigin],
+      privateToEntityIds: [scope],
+      publicToEntityIds: [],
+    };
+    const disclosureMetadata = {
+      disclosure_class: "relationship_private" as const,
+      origin_audience_entity_ids: [historicalOrigin],
+      private_to_entity_ids: [scope],
+      public_to_entity_ids: [],
+    };
+    const resolve = vi.fn(
+      (input: {
+        commitments?: readonly CommitmentRecord[];
+        goalTrees?: readonly GoalTreeNode[];
+      }) => ({
+        commitments: (input.commitments ?? []).map((commitment) => ({
+          ...commitment,
+          disclosure_label: disclosureMetadata,
+        })),
+        goals: [],
+        goalTrees: (input.goalTrees ?? []).map((tree) => ({
+          ...tree,
+          disclosure_label: disclosureMetadata,
+        })),
+        commitmentLabelsById: new Map([[persisted.id, disclosureLabel]]),
+        goalLabelsById: new Map([[goal.id, disclosureLabel]]),
+      }),
+    );
+    const builder = attributionBuilder({
+      tempDir,
+      commitments: [persisted],
+      goals: [goal],
+      entities: [makeEntity(scope, "Current room", "group")],
+      sourceStreamAudienceDisclosureResolver: { resolve } as never,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: scope,
+      currentUserMessage: "Show the current room memory.",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [persisted, temporary],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve.mock.calls[0]?.[0].commitments?.map((record) => record.id)).toEqual([
+      persisted.id,
+      temporary.id,
+    ]);
+    expect(resolve.mock.calls[0]?.[0].goalTrees?.map((record) => record.id)).toEqual([goal.id]);
+    const groupEntries = ledger.sections.find(
+      (section) => section.id === "group_channel_memory",
+    )?.entries;
+    expect(
+      groupEntries?.find((entry) => entry.id === `group_commitment:${persisted.id}`),
+    ).toMatchObject({
+      state_metadata: {
+        disclosure_label: { origin_audience_entity_ids: [historicalOrigin] },
+      },
+    });
+    expect(groupEntries?.find((entry) => entry.id === `group_goal:${goal.id}`)).toMatchObject({
+      state_metadata: {
+        disclosure_label: { origin_audience_entity_ids: [historicalOrigin] },
+      },
+    });
+    expect(
+      ledger.audienceStanding?.commitmentEntries.find(
+        (entry) => entry.id === `commitment:${temporary.id}`,
+      ),
+    ).toMatchObject({
+      state_metadata: {
+        disclosure_label: { origin_audience_entity_ids: [historicalOrigin] },
+      },
+    });
+  });
 
   it("budgets ledger image attachments separately and renders citation types", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-ledger-images-"));
@@ -2445,7 +2547,7 @@ describe("EvidenceLedgerBuilder", () => {
         commitment_ids: [firstCommitmentId, secondCommitmentId],
         disclosure_label: expect.objectContaining({
           disclosure_class: "relationship_private",
-          origin_audience_entity_ids: sortedAudienceIds,
+          origin_audience_entity_ids: [alice, bob],
           private_to_entity_ids: sortedAudienceIds,
         }),
         disclosure_note:
@@ -2529,6 +2631,101 @@ describe("EvidenceLedgerBuilder", () => {
     expect(rendered).toContain("Should I ask Alice about the private launch timing?");
     expect(rendered).toContain("disclosure_class=relationship_private");
     expect(rendered).toContain(`private_to_entity_ids":["${alice}"]`);
+  });
+
+  it("merges retrieved open-question metadata into the lifecycle row before omission accounting", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const question: OpenQuestion = {
+      ...makeOpenQuestion(createEpisodeId()),
+      unresolved_rumination_ticks: 3,
+      last_ruminated_at: NOW_MS - 60_000,
+    };
+    const evidence: EvidenceItem = {
+      id: `evidence_open_question_${question.id}_followup`,
+      source: "open_question",
+      text: question.question,
+      provenance: {
+        openQuestionId: question.id,
+      },
+      recallIntentId: "intent-open-question-followup",
+      matchedTerms: ["callback attribution"],
+      score: 0.81,
+      scoreBreakdown: {
+        salience: 0.7,
+      },
+      partial_source_visibility: true,
+      source_visibility_fraction: 0.5,
+    };
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+      openQuestionStaleNoTractionTicks: 6,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      nowMs: NOW_MS,
+      audienceEntityId: null,
+      currentUserMessage: "What remains unresolved?",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [evidence],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [question],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const assembledEntries =
+      ledger.sections.find((section) => section.id === "open_questions")?.entries ?? [];
+    const retrievedEntry = assembledEntries.find(
+      (entry) => entry.id === `retrieved_evidence:${evidence.id}`,
+    );
+
+    expect(retrievedEntry?.state_metadata).toMatchObject({
+      open_question_id: question.id,
+    });
+    expect(assembledEntries).toHaveLength(2);
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+      sectionOptions: {
+        open_questions: {
+          maxEntries: 1,
+          maxTokens: 2_500,
+        },
+      },
+    });
+    const entries =
+      compacted.ledger.sections.find((section) => section.id === "open_questions")?.entries ?? [];
+    const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: `open_question:${question.id}`,
+      value: "deliberator",
+      via_retrieval: true,
+      state_metadata: expect.objectContaining({
+        open_question_id: question.id,
+        retrieval_sources: ["open_question"],
+        unresolved_rumination_ticks: 3,
+        last_ruminated_at: new Date(NOW_MS - 60_000).toISOString(),
+        dismissal_threshold_ticks: 6,
+      }),
+    });
+    expect(entries[0]?.state).toContain("open");
+    expect(entries[0]?.state).toContain("score=0.81");
+    expect(entries[0]?.state).toContain("intent=intent-open-question-followup");
+    expect(entries[0]?.state).toContain("terms=callback attribution");
+    expect(entries[0]?.state).toContain("partial_sources=true");
+    expect(entries[0]?.state).toContain("visible_fraction=0.50");
+    expect(rendered).not.toContain(`id=retrieved_evidence:${evidence.id}`);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
+    expect(compacted.traceSummary.omittedEntryCountsBySection.open_questions).toBe(0);
   });
 
   it("renders relational slots scoped and ordered by active participant", async () => {
@@ -2700,12 +2897,14 @@ describe("EvidenceLedgerBuilder", () => {
     const groupGoal = makeGoal(userEntry.id, {
       audience_entity_id: group,
       owner_entity_id: null,
+      counterparty_entity_id: bob,
       last_progress_ts: NOW_MS - 30 * 60_000,
       description: "Coordinate the Spain trip channel.",
     });
     const aliceGoal = makeGoal(userEntry.id, {
       audience_entity_id: group,
       owner_entity_id: alice,
+      counterparty_entity_id: group,
       last_progress_ts: NOW_MS - 45 * 60_000,
       description: "Alice will book the Alhambra visit.",
     });
@@ -2920,6 +3119,7 @@ describe("EvidenceLedgerBuilder", () => {
         last_progress_relative_age: "30m ago",
         owner_entity_id: null,
         audience_entity_id: group,
+        counterparty_entity_id: bob,
       }),
     );
     expect(groupText).not.toContain("book Alhambra");
@@ -2944,7 +3144,11 @@ describe("EvidenceLedgerBuilder", () => {
         last_progress_relative_age: "45m ago",
         owner_entity_id: alice,
         audience_entity_id: group,
+        counterparty_entity_id: group,
       }),
+    );
+    expect(rendered).toContain(
+      "counterparty_entity_id is the participant the responsibility runs toward, not an owner or an audience",
     );
     expect(rendered).toContain("book Alhambra");
     expect(rendered).toContain("actor: Alice");

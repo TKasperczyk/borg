@@ -20,7 +20,7 @@ import {
   type GetFreshCredentialsOptions,
 } from "../auth/claude-oauth.js";
 import type { Clock } from "../util/clock.js";
-import { AuthError, ConfigError, findInErrorCauseChain, LLMError } from "../util/errors.js";
+import { AuthError, ConfigError, findInErrorCauseChain, LLMError, describeError} from "../util/errors.js";
 import type { AttachmentId } from "../util/ids.js";
 import { toAnthropicContentBlockMessages } from "./anthropic-content-blocks.js";
 import { clampMaxOutputTokens, getModelMaxOutputTokens } from "./max-tokens.js";
@@ -647,7 +647,33 @@ function extractMessageBlocks(message: Message): LLMContentBlock[] {
   return blocks;
 }
 
-function transformToolNameForOAuth(name: string): string {
+/**
+ * The upstream reason, for the LLMError message itself. Callers log the top-level message and
+ * drop the cause chain, so an API rejection like "tools: Tool names must be unique." otherwise
+ * reaches the trace as a bare "Failed to complete Anthropic request" -- which is what turned a
+ * one-line request defect into a two-day outage diagnosis.
+ *
+ * Every throw site must append this, the auth branches included. Those branches shipped without
+ * it, so an OAuth failure and a request defect reached `autonomy_wakes.outcome_detail` as the
+ * same 70-character string: the wake recorded that it failed and no surface anywhere recorded
+ * why, which is the same outage this helper exists to prevent.
+ */
+function describeUpstreamError(error: unknown): string {
+  const apiMessage = (error as { error?: { error?: { message?: unknown } } } | null)?.error?.error
+    ?.message;
+
+  return typeof apiMessage === "string" && apiMessage.length > 0
+    ? apiMessage
+    : describeError(error);
+}
+
+/**
+ * The wire name a tool is sent under in OAuth mode. Exported because callers that assemble a
+ * tool list must dedupe on this, not on the source name: the API rejects a request whose tool
+ * names collide, and this fold (every non-alphanumeric to `_`) can collide two names that are
+ * distinct at the source.
+ */
+export function transformToolNameForOAuth(name: string): string {
   if (!name) {
     return name;
   }
@@ -2106,15 +2132,18 @@ export class AnthropicLLMClient implements LLMClient {
         try {
           await this.refreshOauthClient();
         } catch (authError) {
-          throw new LLMError("Failed to complete Anthropic request", {
-            cause:
-              authError instanceof AuthError
-                ? authError
-                : new AuthError("Failed to refresh Claude OAuth credentials", {
-                    code: "AUTH_REFRESH_FAILED",
-                    cause: authError,
-                  }),
-          });
+          throw new LLMError(
+            `Failed to complete Anthropic request: OAuth credential refresh failed: ${describeUpstreamError(authError)}`,
+            {
+              cause:
+                authError instanceof AuthError
+                  ? authError
+                  : new AuthError("Failed to refresh Claude OAuth credentials", {
+                      code: "AUTH_REFRESH_FAILED",
+                      cause: authError,
+                    }),
+            },
+          );
         }
 
         return this.createRawMessage(
@@ -2127,19 +2156,22 @@ export class AnthropicLLMClient implements LLMClient {
       }
 
       if (isAuthenticationFailure(error) && this.auth?.kind === "oauth") {
-        throw new LLMError("Failed to complete Anthropic request", {
-          cause: new AuthError("Claude OAuth authentication failed", {
-            code: "AUTH_REFRESH_FAILED",
-            cause: error,
-          }),
-        });
+        throw new LLMError(
+          `Failed to complete Anthropic request: OAuth authentication rejected: ${describeUpstreamError(error)}`,
+          {
+            cause: new AuthError("Claude OAuth authentication failed", {
+              code: "AUTH_REFRESH_FAILED",
+              cause: error,
+            }),
+          },
+        );
       }
 
       if (error instanceof ConfigError || error instanceof AuthError) {
         throw error;
       }
 
-      throw new LLMError("Failed to complete Anthropic request", {
+      throw new LLMError(`Failed to complete Anthropic request: ${describeUpstreamError(error)}`, {
         cause: error,
       });
     }
@@ -2281,34 +2313,40 @@ export class AnthropicLLMClient implements LLMClient {
         try {
           await this.refreshOauthClient();
         } catch (authError) {
-          throw new LLMError("Failed to complete Anthropic request", {
-            cause:
-              authError instanceof AuthError
-                ? authError
-                : new AuthError("Failed to refresh Claude OAuth credentials", {
-                    code: "AUTH_REFRESH_FAILED",
-                    cause: authError,
-                  }),
-          });
+          throw new LLMError(
+            `Failed to complete Anthropic request: OAuth credential refresh failed: ${describeUpstreamError(authError)}`,
+            {
+              cause:
+                authError instanceof AuthError
+                  ? authError
+                  : new AuthError("Failed to refresh Claude OAuth credentials", {
+                      code: "AUTH_REFRESH_FAILED",
+                      cause: authError,
+                    }),
+            },
+          );
         }
 
         return this.streamRawMessage(options, messages, onTextDelta, true);
       }
 
       if (isAuthenticationFailure(error) && this.auth?.kind === "oauth") {
-        throw new LLMError("Failed to complete Anthropic request", {
-          cause: new AuthError("Claude OAuth authentication failed", {
-            code: "AUTH_REFRESH_FAILED",
-            cause: error,
-          }),
-        });
+        throw new LLMError(
+          `Failed to complete Anthropic request: OAuth authentication rejected: ${describeUpstreamError(error)}`,
+          {
+            cause: new AuthError("Claude OAuth authentication failed", {
+              code: "AUTH_REFRESH_FAILED",
+              cause: error,
+            }),
+          },
+        );
       }
 
       if (error instanceof ConfigError || error instanceof AuthError) {
         throw error;
       }
 
-      throw new LLMError("Failed to complete Anthropic request", {
+      throw new LLMError(`Failed to complete Anthropic request: ${describeUpstreamError(error)}`, {
         cause: error,
       });
     }

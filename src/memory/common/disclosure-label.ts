@@ -187,7 +187,9 @@ function mergeEntityIds(
   labels: readonly MemoryDisclosureLabel[],
   key: MemoryDisclosureEntityIdListKey,
 ) {
-  return [...new Set(labels.flatMap((label) => label[key]))].sort();
+  const entityIds = [...new Set(labels.flatMap((label) => label[key]))];
+
+  return key === "originAudienceEntityIds" ? entityIds : entityIds.sort();
 }
 
 export function combineMemoryDisclosureLabels(
@@ -242,7 +244,9 @@ export async function resolveDisclosureLabelsByEpisodeId<TEpisodeId extends stri
   episodeIds: readonly TEpisodeId[],
   resolveAccess: (
     episodeIds: readonly TEpisodeId[],
-  ) => Promise<readonly EpisodeAccessRecord<TEpisodeId>[]> | readonly EpisodeAccessRecord<TEpisodeId>[],
+  ) =>
+    | Promise<readonly EpisodeAccessRecord<TEpisodeId>[]>
+    | readonly EpisodeAccessRecord<TEpisodeId>[],
 ): Promise<Map<TEpisodeId, MemoryDisclosureLabel>> {
   const uniqueEpisodeIds = [...new Set(episodeIds)];
 
@@ -261,7 +265,9 @@ export async function combineDisclosureLabelForEpisodeIds<TEpisodeId extends str
   episodeIds: readonly TEpisodeId[],
   resolveAccess: (
     episodeIds: readonly TEpisodeId[],
-  ) => Promise<readonly EpisodeAccessRecord<TEpisodeId>[]> | readonly EpisodeAccessRecord<TEpisodeId>[],
+  ) =>
+    | Promise<readonly EpisodeAccessRecord<TEpisodeId>[]>
+    | readonly EpisodeAccessRecord<TEpisodeId>[],
 ): Promise<MemoryDisclosureLabel> {
   const labelsByEpisodeId = await resolveDisclosureLabelsByEpisodeId(episodeIds, resolveAccess);
 

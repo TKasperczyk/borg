@@ -1,4 +1,5 @@
 import {
+  COMMITMENT_KINDS,
   effectiveCommitmentCriticalDomain,
   effectiveCommitmentEnforcementClass,
   type CommitmentRecord,
@@ -13,13 +14,16 @@ import {
 import { ACTIVE_ACTION_STATES, type ActionState } from "../../../memory/actions/index.js";
 import {
   combineMemoryDisclosureLabels,
+  MEMORY_DISCLOSURE_CLASSES,
   MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
   relationshipPrivateMemoryDisclosureLabel,
   selfPrivateMemoryDisclosureLabel,
   unknownMemoryDisclosureLabel,
+  type MemoryDisclosureClass,
   type MemoryDisclosureLabel,
 } from "../../../retrieval/index.js";
 import type { LLMSystemBlock } from "../../../llm/index.js";
+import { topExecutiveCandidateGoalIds } from "../../../executive/index.js";
 import { escapeXmlText } from "../../../util/prompt-tags.js";
 import { formatRelativeAge, formatRelativeUntil } from "../../../util/relative-time.js";
 import { estimatePromptTokens } from "../../../util/token-estimate.js";
@@ -59,6 +63,7 @@ import {
   buildPlannerDirective,
   COMPACT_PLANNER_FIELD_CONTRACT,
 } from "./planner-contract.js";
+import { PLANNER_GOAL_EXPANSION_LIMIT } from "../constants.js";
 
 export type PlannerSurfaceVariant = "compact" | "legacy";
 
@@ -126,16 +131,31 @@ const COMPACT_PLANNER_STATIC_PREFIX_CACHE_CONTROL = {
 const PLANNER_ADVISORY_COMMITMENT_MAX_EXCERPT_CHARS = 320;
 const PLANNER_ADVISORY_COMMITMENT_MIN_EXCERPT_CHARS = 96;
 const PLANNER_COMMITMENT_TARGET_TOKENS = 8_000;
-// The first production compact call measured provider input at 1.63x the
-// chars/4 estimate. A 25K estimated envelope therefore targets about 40K real
-// provider tokens while retaining honest overflow telemetry for critical text.
-export const COMPACT_PLANNER_TARGET_TOKENS = 25_000;
+const PLANNER_COMMITMENT_MEMBERSHIP_ORDER =
+  "critical_commitments_first_then_priority_desc_created_at_asc_id_asc";
+const PLANNER_COMMITMENT_MEMBERSHIP_BUDGET_MARKER = "membership_not_enumerated_budget";
+const PLANNER_COMMITMENT_DISCLOSURE_REMAINDER_MARKER =
+  "membership_not_enumerated_by_disclosure_class";
+const PLANNER_COMMITMENT_KIND_REMAINDER_MARKER = "membership_not_enumerated_by_kind";
+// Measured over 317 live compact planner calls (trace usage, 2026-08-25 to
+// 2026-09-04): real provider input runs a median 1.98x the chars/4 estimate
+// (min 1.75x, max 2.03x). A 25.2K estimated envelope therefore targets roughly
+// 50K real provider tokens while retaining honest overflow telemetry for
+// critical text. The earlier 1.63x figure came from a single call.
+// Commit 7638cc5a left 55 residual estimated tokens above the former 25K ceiling;
+// all three trusted-guidance boundaries remain necessary because untrusted data
+// is rendered between each consecutive pair. The goal-counterparty legend lifts
+// the representative bounded high-water surface to 25,120 estimated tokens.
+export const COMPACT_PLANNER_TARGET_TOKENS = 25_200;
 const PLANNER_LABEL_EXCERPT_CHARS = 320;
 const PLANNER_ATTRIBUTE_EXCERPT_CHARS = 240;
-const PLANNER_GOAL_TARGET_TOKENS = 5_000;
-const PLANNER_GOAL_INDEX_DESCRIPTION_CHARS = 96;
+export const PLANNER_GOAL_TARGET_TOKENS = 12_000;
+const PLANNER_GOAL_INDEX_DESCRIPTION_MIN_CHARS = 16;
+const PLANNER_GOAL_INDEX_DESCRIPTION_MAX_CHARS = 96;
+const PLANNER_GOAL_MEMBERSHIP_ORDER =
+  "global_executive_score_desc_then_priority_desc_created_at_asc_id_asc";
+const PLANNER_GOAL_MEMBERSHIP_BUDGET_MARKER = "goal_index_not_enumerated_budget";
 const PLANNER_GOAL_EXPANDED_FIELD_CHARS = 240;
-const PLANNER_GOAL_EXPANSION_LIMIT = 4;
 const PLANNER_RECENT_GROWTH_LIMIT = 5;
 const PLANNER_LIVED_EXPERIENCE_TARGET_TOKENS = 4_000;
 const PLANNER_AUTONOMOUS_LIVED_EXPERIENCE_TARGET_TOKENS = 8_000;
@@ -253,13 +273,6 @@ function buildHeadTailPlannerExcerpt(
 
 export function headTailPlannerExcerpt(value: string, maxChars: number): PromptExcerpt {
   return buildHeadTailPlannerExcerpt(value, maxChars).excerpt;
-}
-
-function compactPlannerAttributeExcerpt(value: string, maxChars: number): PromptExcerpt {
-  const built = buildHeadTailPlannerExcerpt(value, maxChars);
-  return built.excerpt.truncated
-    ? { ...built.excerpt, text: `${built.head}[ELIDED]${built.tail}` }
-    : built.excerpt;
 }
 
 function disclosureFromMetadata(
@@ -427,17 +440,18 @@ function renderGoalIndexRows(
   goals: readonly SelfSnapshotGoal[],
   scoreById: ReadonlyMap<string, number>,
   nowMs: number | undefined,
+  descriptionExcerptBudget: number,
 ): RenderedPlannerRows {
   let truncationCount = 0;
   const rows = goals.map((goal) => {
-    const description = headTailPlannerExcerpt(
+    const description = compactPlannerLeanAttributeExcerpt(
       singleLinePlannerText(goal.description),
-      PLANNER_GOAL_INDEX_DESCRIPTION_CHARS,
+      descriptionExcerptBudget,
     );
     truncationCount += description.truncated ? 1 : 0;
     const score = scoreById.get(goal.id);
 
-    return `<goal i="${escapeXmlAttribute(goal.id)}" s="${escapeXmlAttribute(goal.status)}" ca="${escapeXmlAttribute(relativeAge(goal.created_at, nowMs))}" pa="${escapeXmlAttribute(relativeAge(goal.last_progress_ts, nowMs))}" ta="${escapeXmlAttribute(relativeUntil(goal.target_at, nowMs))}" p="${goal.priority}" x="${score === undefined ? "unscored" : score.toFixed(4)}" ${goalDisclosureAttributes(goal)} d="${escapeXmlSingleLineAttribute(description.text)}" />`;
+    return `<goal i="${escapeXmlAttribute(goal.id)}" s="${escapeXmlAttribute(goal.status)}" ca="${escapeXmlAttribute(relativeAge(goal.created_at, nowMs))}" pa="${escapeXmlAttribute(relativeAge(goal.last_progress_ts, nowMs))}" ta="${escapeXmlAttribute(relativeUntil(goal.target_at, nowMs))}" p="${goal.priority}" x="${score === undefined ? "unscored" : score.toFixed(4)}"${goal.counterparty_entity_id === null || goal.counterparty_entity_id === undefined ? "" : ` cp="${escapeXmlAttribute(goal.counterparty_entity_id)}"`} ${goalDisclosureAttributes(goal)} d="${escapeXmlSingleLineAttribute(description.text)}" />`;
   });
 
   return { rows, truncationCount };
@@ -465,7 +479,7 @@ function renderExpandedGoalRow(
     PLANNER_GOAL_EXPANDED_FIELD_CHARS,
   );
   return {
-    row: `<goal_detail i="${escapeXmlAttribute(goal.id)}" s="${escapeXmlAttribute(goal.status)}" sel="${context.executiveFocus?.selected_goal?.id === goal.id}" rv="${goal.record_version ?? "unknown"}" cat="${new Date(goal.created_at).toISOString()}" ca="${escapeXmlAttribute(relativeAge(goal.created_at, nowMs))}" pa="${escapeXmlAttribute(relativeAge(goal.last_progress_ts, nowMs))}" ta="${escapeXmlAttribute(relativeUntil(goal.target_at, nowMs))}" p="${goal.priority}" x="${(scoreById.get(goal.id) ?? 0).toFixed(4)}" ${goalDisclosureAttributes(goal)} d="${escapeXmlSingleLineAttribute(description.text)}" tc="${escapeXmlSingleLineAttribute(terminal.text)}" pn="${escapeXmlSingleLineAttribute(progress.text)}"${candidate === undefined ? "" : ` sp="${candidate.components.priority.toFixed(4)}" sd="${candidate.components.deadline_pressure.toFixed(4)}" sc="${candidate.components.context_fit.toFixed(4)}" sdebt="${candidate.components.progress_debt.toFixed(4)}"`} er="${escapeXmlSingleLineAttribute(executiveReason.text)}" owner="${escapeXmlAttribute(goal.owner_entity_id ?? "none")}" audience="${escapeXmlAttribute(goal.audience_entity_id ?? "none")}" />`,
+    row: `<goal_detail i="${escapeXmlAttribute(goal.id)}" s="${escapeXmlAttribute(goal.status)}" sel="${context.executiveFocus?.selected_goal?.id === goal.id}" rv="${goal.record_version ?? "unknown"}" cat="${new Date(goal.created_at).toISOString()}" ca="${escapeXmlAttribute(relativeAge(goal.created_at, nowMs))}" pa="${escapeXmlAttribute(relativeAge(goal.last_progress_ts, nowMs))}" ta="${escapeXmlAttribute(relativeUntil(goal.target_at, nowMs))}" p="${goal.priority}" x="${(scoreById.get(goal.id) ?? 0).toFixed(4)}"${goal.counterparty_entity_id === null || goal.counterparty_entity_id === undefined ? "" : ` cp="${escapeXmlAttribute(goal.counterparty_entity_id)}"`} ${goalDisclosureAttributes(goal)} d="${escapeXmlSingleLineAttribute(description.text)}" tc="${escapeXmlSingleLineAttribute(terminal.text)}" pn="${escapeXmlSingleLineAttribute(progress.text)}"${candidate === undefined ? "" : ` sp="${candidate.components.priority.toFixed(4)}" sd="${candidate.components.deadline_pressure.toFixed(4)}" sc="${candidate.components.context_fit.toFixed(4)}" sdebt="${candidate.components.progress_debt.toFixed(4)}"`} er="${escapeXmlSingleLineAttribute(executiveReason.text)}" owner="${escapeXmlAttribute(goal.owner_entity_id ?? "none")}" audience="${escapeXmlAttribute(goal.audience_entity_id ?? "none")}" />`,
     truncationCount: [description, terminal, progress, executiveReason].filter(
       (entry) => entry.truncated,
     ).length,
@@ -478,12 +492,14 @@ function renderExpandedGoalRows(
   scoreById: ReadonlyMap<string, number>,
   candidateById: ReturnType<typeof goalCandidateById>,
   nowMs: number | undefined,
-): RenderedPlannerRows & { omissionCount: number } {
+): RenderedPlannerRows & { omissionCount: number; goalIds: SelfSnapshotGoal["id"][] } {
   const goalsById = new Map(goals.map((goal) => [goal.id, goal]));
-  const rankedCandidateIds = [...(context.executiveFocus?.candidates ?? [])]
-    .sort((left, right) => right.score - left.score || left.goal_id.localeCompare(right.goal_id))
-    .map((candidate) => candidate.goal_id)
-    .filter((goalId, index, values) => values.indexOf(goalId) === index && goalsById.has(goalId));
+  const candidates = context.executiveFocus?.candidates ?? [];
+  const rankedCandidateIds = topExecutiveCandidateGoalIds({
+    candidates,
+    eligibleGoalIds: new Set(goalsById.keys()),
+    limit: candidates.length,
+  });
   const expandedGoalIds = rankedCandidateIds.slice(0, PLANNER_GOAL_EXPANSION_LIMIT);
   const rows: string[] = [];
   let truncationCount = 0;
@@ -502,22 +518,42 @@ function renderExpandedGoalRows(
     rows,
     truncationCount,
     omissionCount: Math.max(0, rankedCandidateIds.length - rows.length),
+    goalIds: expandedGoalIds,
   };
 }
 
-function renderExecutiveNextStep(
+function renderExecutiveNextSteps(
   context: DeliberationContext,
+  expandedGoalIds: readonly SelfSnapshotGoal["id"][],
   nowMs: number | undefined,
-): { row: string | null; truncationCount: number } {
-  const nextStep = context.executiveFocus?.next_step ?? null;
-  if (nextStep === null) {
-    return { row: null, truncationCount: 0 };
+): RenderedPlannerRows & { omissionCount: number } {
+  const candidateSteps = context.executiveFocus?.candidate_steps;
+  const topOpenSteps =
+    candidateSteps?.top_open_steps ??
+    (context.executiveFocus?.next_step === null || context.executiveFocus?.next_step === undefined
+      ? []
+      : [context.executiveFocus.next_step]);
+  const topOpenStepByGoalId = new Map(topOpenSteps.map((step) => [step.goal_id, step]));
+  const selectedGoalId = context.executiveFocus?.selected_goal?.id ?? null;
+  const rows: string[] = [];
+  let truncationCount = 0;
+
+  for (const goalId of expandedGoalIds) {
+    const nextStep = topOpenStepByGoalId.get(goalId);
+    if (nextStep === undefined) {
+      continue;
+    }
+    const excerpt = headTailPlannerExcerpt(nextStep.description, PLANNER_GOAL_EXPANDED_FIELD_CHARS);
+    truncationCount += excerpt.truncated ? 1 : 0;
+    rows.push(
+      `<next_step i="${escapeXmlAttribute(nextStep.id)}" g="${escapeXmlAttribute(nextStep.goal_id)}" sel="${selectedGoalId === goalId}" k="${escapeXmlAttribute(nextStep.kind)}" s="${escapeXmlAttribute(nextStep.status)}" due="${escapeXmlAttribute(relativeUntil(nextStep.due_at, nowMs))}" attempt="${escapeXmlAttribute(relativeAge(nextStep.last_attempt_ts, nowMs))}" ${compactDisclosureAttributes(disclosureFromMetadata(nextStep.disclosure_label, selfPrivateMemoryDisclosureLabel()))} d="${escapeXmlSingleLineAttribute(excerpt.text)}" />`,
+    );
   }
 
-  const excerpt = headTailPlannerExcerpt(nextStep.description, PLANNER_GOAL_EXPANDED_FIELD_CHARS);
   return {
-    row: `<next_step i="${escapeXmlAttribute(nextStep.id)}" g="${escapeXmlAttribute(nextStep.goal_id)}" k="${escapeXmlAttribute(nextStep.kind)}" s="${escapeXmlAttribute(nextStep.status)}" due="${escapeXmlAttribute(relativeUntil(nextStep.due_at, nowMs))}" attempt="${escapeXmlAttribute(relativeAge(nextStep.last_attempt_ts, nowMs))}" ${compactDisclosureAttributes(disclosureFromMetadata(nextStep.disclosure_label, selfPrivateMemoryDisclosureLabel()))} d="${escapeXmlSingleLineAttribute(excerpt.text)}" />`,
-    truncationCount: excerpt.truncated ? 1 : 0,
+    rows,
+    truncationCount,
+    omissionCount: candidateSteps?.omitted_open_step_count ?? 0,
   };
 }
 
@@ -535,40 +571,119 @@ export function renderGoalDigest(context: DeliberationContext): RenderedPlannerS
       left.id.localeCompare(right.id)
     );
   });
-  const goalIndex = renderGoalIndexRows(goals, scoreById, nowMs);
-  const expandedGoals = renderExpandedGoalRows(context, goals, scoreById, candidateById, nowMs);
-  const executiveNextStep = renderExecutiveNextStep(context, nowMs);
-  return section(
-    "goal_index",
-    [
-      `<borg_planner_goal_digest rows_total="${goals.length}" target_tokens="${PLANNER_GOAL_TARGET_TOKENS}" focus_threshold="${context.executiveFocus === undefined || context.executiveFocus === null ? "none" : context.executiveFocus.threshold.toFixed(4)}" progress_debt_stale_ms="${context.executiveFocus?.score_basis?.progress_debt_stale_ms ?? "none"}">`,
-      "  <interpretation>The one-line index is complete for the globally assembled self snapshot. Status and ages are comparable across rows. Expanded rows are the highest global executive-score candidates, not an audience visibility filter.</interpretation>",
-      "  <score_basis>x = 0.35*sp + 0.30*sd + 0.20*sc + 0.15*sdebt, clamped to [0,1]. sel=true means top x at or above focus_threshold, or that an autonomy trigger named the goal outright, in which case x did not decide it. sp is priority over the highest active priority. sd is 0 without a target, ramps as ta nears, and pins at 1.00 once ta is past. sdebt is the age at pa (or ca where no progress note exists) divided by the staleness window printed as progress_debt_stale_ms on this tag, clamped to 1.00 once the age exceeds that window: it rises with the clock and falls only when a progress note is written, so a row already past the window reads 1.00 and stays there whatever its real age. sc is a cosine between the goal's stored vector and one embedding of this turn's context text - cognition input, perception entities, plus the autonomy payload on a triggered turn - recomputed from scratch each turn with nothing carried forward, so it tracks the wording in front of you and not accumulated attention. These are turn-selection scores. A figure inside an autonomy trigger payload is a different quantity on two axes, not one: its sc was embedded against that payload alone, and its sdebt was divided by that context's own progress_debt_stale_ms, which each scoring context carries separately and which need not equal the one on this tag. So sdebt is comparable only against other sdebt values from the same score_context, and the same goal can read one number here and another inside a trigger without either being stale.</score_basis>",
-      "  <field_legend>goal: i=id, s=status, ca=created_age, pa=last_progress_age, ta=target_rel, p=priority, x=global_executive_score, dc=disclosure_class, oa=origin_audience, pt=private_to, pub=public_to, d=description. goal_detail adds sel=selected, rv=record_version, cat=created_at, tc=terminal_condition, pn=progress_notes, sp/sd/sc/sdebt=score priority/deadline_pressure/context_fit/progress_debt, er=executive_reason, owner=owner_entity_id, audience=audience_entity_id. rv counts writes to the row rather than edits to one field, and is a count, not a time: goals carry no last-written stamp, so no attribute here reports when the row last changed. rv-1 exceeding the row's non-create identity events marks a write that left no audit event, which is what a direct repair looks like from here. next_step: i=id, g=goal_id, k=kind, s=status, due=due_rel, attempt=last_attempt_age, dc/oa/pt/pub=disclosure label, d=description.</field_legend>",
-      "  <complete_goal_index>",
-      ...goalIndex.rows.map((row) => `    ${row}`),
-      "    <omitted_count>0</omitted_count>",
-      "  </complete_goal_index>",
-      `  <top_global_candidates_expanded limit="${PLANNER_GOAL_EXPANSION_LIMIT}">`,
-      ...expandedGoals.rows.map((row) => `    ${row}`),
-      `    <omitted_count>${expandedGoals.omissionCount}</omitted_count>`,
-      "  </top_global_candidates_expanded>",
-      ...(executiveNextStep.row === null ? [] : [`  ${executiveNextStep.row}`]),
-      "  <executive_next_step_omitted_count>0</executive_next_step_omitted_count>",
-      "</borg_planner_goal_digest>",
-    ].join("\n"),
-    {
-      rowCount:
-        goalIndex.rows.length +
-        expandedGoals.rows.length +
-        (executiveNextStep.row === null ? 0 : 1),
+  const renderAtBudget = (
+    descriptionExcerptBudget: number,
+    includedGoals: readonly SelfSnapshotGoal[] = goals,
+  ) => {
+    const indexOmissionCount = goals.length - includedGoals.length;
+    const goalIndex = renderGoalIndexRows(
+      includedGoals,
+      scoreById,
+      nowMs,
+      descriptionExcerptBudget,
+    );
+    const statusesPresent = [...new Set(includedGoals.map((goal) => goal.status))].sort();
+    const expandedGoals = renderExpandedGoalRows(
+      context,
+      includedGoals,
+      scoreById,
+      candidateById,
+      nowMs,
+    );
+    const executiveNextSteps = renderExecutiveNextSteps(context, expandedGoals.goalIds, nowMs);
+    const membershipBudgetAttribute =
+      indexOmissionCount === 0
+        ? ""
+        : ` ${PLANNER_GOAL_MEMBERSHIP_BUDGET_MARKER}="${indexOmissionCount}"`;
+
+    return {
+      text: [
+        `<borg_planner_goal_digest complete_membership="${indexOmissionCount === 0}" rows_total="${goals.length}" goal_index_rows_rendered="${includedGoals.length}" membership_order="${PLANNER_GOAL_MEMBERSHIP_ORDER}" target_tokens="${PLANNER_GOAL_TARGET_TOKENS}" focus_threshold="${context.executiveFocus === undefined || context.executiveFocus === null ? "none" : context.executiveFocus.threshold.toFixed(4)}" progress_debt_stale_ms="${context.executiveFocus?.score_basis?.progress_debt_stale_ms ?? "none"}"${membershipBudgetAttribute}>`,
+        `  <interpretation>Budgeted global goal snapshot. Membership fields say whether all rows_total index members appear and identify any exact ranked suffix omitted. The upstream snapshot is status-scoped; statuses_present names retained statuses, so absence may originate upstream or at this budget. Status and ages compare across rows. Expanded rows are the highest-scored retained members; disclosure never filters membership.</interpretation>`,
+        "  <score_basis>x = 0.35*sp + 0.30*sd + 0.20*sc + 0.15*sdebt, clamped to [0,1]. sel=true means top x at or above focus_threshold, or that an autonomy trigger named the goal outright, in which case x did not decide it. sp is priority over the highest active priority. sd is 0 without a target, ramps as ta nears, and pins at 1.00 once ta is past. sdebt is the age at pa (or ca where no progress note exists) divided by the staleness window printed as progress_debt_stale_ms on this tag, clamped to 1.00 once the age exceeds that window: it rises with the clock and falls only when a progress note is written, so a row already past the window reads 1.00 and stays there whatever its real age. sc is a cosine between the goal's stored vector and one embedding of this turn's context text - cognition input, perception entities, plus the autonomy payload on a triggered turn - recomputed from scratch each turn with nothing carried forward, so it tracks the wording in front of you and not accumulated attention. These are turn-selection scores. Inside an autonomy trigger payload sc is embedded against that payload alone, while sdebt uses this same progress_debt_stale_ms denominator. The separate executive-focus staleness cadence controls when the stale lane is eligible to wake; it does not rescale progress debt. Thus sc can differ across score_context values, while sdebt for the same goal and instant has one denominator.</score_basis>",
+        "  <field_legend>goal: i=id, s=status, ca=created_age, pa=last_progress_age, ta=target_rel, p=priority, x=global_executive_score, cp=counterparty_entity_id (absent means none), dc=disclosure_class, oa=origin_audience, pt=private_to, pub=public_to, d=description. cp is the participant the responsibility runs toward, not an owner or audience. goal_detail adds sel=selected, rv=record_version, cat=created_at, tc=terminal_condition, pn=progress_notes, sp/sd/sc/sdebt=score priority/deadline_pressure/context_fit/progress_debt, er=executive_reason, owner=owner_entity_id, audience=audience_entity_id. rv counts writes to the row rather than edits to one field, and is a count, not a time: goals carry no last-written stamp, so no attribute here reports when the row last changed. rv-1 exceeding the row's non-create identity events marks a write that left no audit event, which is what a direct repair looks like from here. That comparison's other term is not on this page: no attribute here counts a row's identity events, and no reader offered to me inside a turn returns them, so rv can raise the question and never settle it alone. Those events carry the whole prior row, so a pn entry a later write replaced survives in them, out of reach from this page rather than gone. pn is an append-ordered log, not a current note: oldest entry first, so pa dates its tail and never its head. It is also an excerpt and not the log - a head slice and a tail slice of one text column that on an established goal runs to thousands of characters - so a long log has no middle here at all, and an entry missing from pn is not evidence it was never written. Appending is a habit of the writers that reach this field rather than a property the field enforces: every write replaces the whole column, the online turn reflector on user and autonomous turns and the retire verb replace it with the old text plus one line, and the operator progress writer replaces it with the single note it was handed. The reflector appends only when its own structured judgment says the turn made concrete movement; an emission alone does not write progress. So an entry can be rewritten or dropped by a write from outside a turn, nothing in the row marks that this happened, and rv counts such a write exactly as it counts an append. The excerpt is sized by a character budget, printed as field_excerpt_budget_chars on top_global_candidates_expanded and covering d, tc, pn and er alike, and that budget is spent on the whole excerpt including the marker that announces the cut. So the rendered= figure inside the marker is the budget less the marker's own length and never reaches it, and because the marker carries three numbers whose digit widths differ between rows, two rows can print different rendered= values under one unchanged budget: rendered= cannot be read back as the budget. The budget is a fixed size rather than a share, so a longer log earns no more of this page than a short one and the fraction of it reaching you falls as it grows. The one-line index rows carry a d of their own, sized against a separate, smaller, dynamically selected budget printed as description_excerpt_budget_chars on goal_index. A cut there uses a mechanical head+tail [ELIDED] marker with no rendered= figure, so its width cannot be read or compared through the expanded row marker. A budget printed on one container governs that container alone, so a number matching it elsewhere is a different budget that happens to agree. next_step: i=id, g=goal_id, sel=selected, k=kind, s=status, due=due_rel, attempt=last_attempt_age, dc/oa/pt/pub=disclosure label, d=description. The lane follows top_global_candidates_expanded membership and order: one top open step per expanded candidate that has one, doing before queued then by due date; sel=true marks the selected goal if present. executive_next_step_omitted_count at scope=expanded_candidates_top_open counts open steps beyond those per-goal tops. Steps of goals outside the expansion are not queried and remain uncounted. membership_order declares global executive score descending, then priority descending, created_at ascending, and id ascending. target_tokens prices the whole block: prose, rows, steps, counts, and markers. complete_membership=true means every rows_total goal has an index row. Otherwise goal_index_not_enumerated_budget=N, the marker total=N, and goal_index omitted_count=N all name the exact rank-ordered suffix excluded by the whole-block token budget. The status draw that decides which goals reach the snapshot runs before this index, so these fields report nothing about goals that draw left out.</field_legend>",
+        `  <goal_index complete_membership="${indexOmissionCount === 0}" rows="${includedGoals.length}" statuses_present="${escapeXmlAttribute(statusesPresent.length === 0 ? "none" : statusesPresent.join(","))}" description_excerpt_budget_chars="${descriptionExcerptBudget}">`,
+        ...goalIndex.rows.map((row) => `    ${row}`),
+        ...(indexOmissionCount === 0
+          ? []
+          : [
+              `    <${PLANNER_GOAL_MEMBERSHIP_BUDGET_MARKER} total="${indexOmissionCount}" membership_order="${PLANNER_GOAL_MEMBERSHIP_ORDER}" />`,
+            ]),
+        `    <omitted_count>${indexOmissionCount}</omitted_count>`,
+        "  </goal_index>",
+        `  <top_global_candidates_expanded limit="${PLANNER_GOAL_EXPANSION_LIMIT}" field_excerpt_budget_chars="${PLANNER_GOAL_EXPANDED_FIELD_CHARS}">`,
+        ...expandedGoals.rows.map((row) => `    ${row}`),
+        `    <omitted_count>${expandedGoals.omissionCount}</omitted_count>`,
+        "  </top_global_candidates_expanded>",
+        ...executiveNextSteps.rows.map((row) => `  ${row}`),
+        `  <executive_next_step_omitted_count scope="expanded_candidates_top_open">${executiveNextSteps.omissionCount}</executive_next_step_omitted_count>`,
+        "</borg_planner_goal_digest>",
+      ].join("\n"),
+      rowCount: goalIndex.rows.length + expandedGoals.rows.length + executiveNextSteps.rows.length,
       truncationCount:
         goalIndex.truncationCount +
         expandedGoals.truncationCount +
-        executiveNextStep.truncationCount,
-      omissionCount: expandedGoals.omissionCount,
-    },
-  );
+        executiveNextSteps.truncationCount,
+      omissionCount:
+        indexOmissionCount + expandedGoals.omissionCount + executiveNextSteps.omissionCount,
+    };
+  };
+  const maximizeDescriptionExcerptBudget = (includedGoals: readonly SelfSnapshotGoal[]) => {
+    let low = PLANNER_GOAL_INDEX_DESCRIPTION_MIN_CHARS;
+    let high = PLANNER_GOAL_INDEX_DESCRIPTION_MAX_CHARS;
+    let best = renderAtBudget(low, includedGoals);
+
+    while (low <= high) {
+      const candidateBudget = Math.floor((low + high) / 2);
+      const candidate = renderAtBudget(candidateBudget, includedGoals);
+
+      if (estimatePromptTokens(candidate.text) <= PLANNER_GOAL_TARGET_TOKENS) {
+        best = candidate;
+        low = candidateBudget + 1;
+      } else {
+        high = candidateBudget - 1;
+      }
+    }
+
+    return best;
+  };
+  const maximum = renderAtBudget(PLANNER_GOAL_INDEX_DESCRIPTION_MAX_CHARS);
+  let rendered = maximum;
+
+  if (estimatePromptTokens(maximum.text) > PLANNER_GOAL_TARGET_TOKENS) {
+    const minimum = renderAtBudget(PLANNER_GOAL_INDEX_DESCRIPTION_MIN_CHARS);
+
+    if (estimatePromptTokens(minimum.text) <= PLANNER_GOAL_TARGET_TOKENS) {
+      rendered = maximizeDescriptionExcerptBudget(goals);
+    } else {
+      let low = 0;
+      let high = goals.length - 1;
+      let includedGoalCount = 0;
+
+      while (low <= high) {
+        const candidateCount = Math.floor((low + high) / 2);
+        const candidate = renderAtBudget(
+          PLANNER_GOAL_INDEX_DESCRIPTION_MIN_CHARS,
+          goals.slice(0, candidateCount),
+        );
+
+        if (estimatePromptTokens(candidate.text) <= PLANNER_GOAL_TARGET_TOKENS) {
+          includedGoalCount = candidateCount;
+          low = candidateCount + 1;
+        } else {
+          high = candidateCount - 1;
+        }
+      }
+
+      rendered = maximizeDescriptionExcerptBudget(goals.slice(0, includedGoalCount));
+    }
+  }
+
+  return section("goal_index", rendered.text, {
+    rowCount: rendered.rowCount,
+    truncationCount: rendered.truncationCount,
+    omissionCount: rendered.omissionCount,
+  });
 }
 
 function commitmentStatus(commitment: CommitmentRecord): string {
@@ -616,10 +731,10 @@ function renderCommitmentRowsAtBudget(
   let truncationCount = 0;
   const rows = commitments.map((commitment) => {
     const enforcementClass = effectiveCommitmentEnforcementClass(commitment);
-    const critical = enforcementClass === "critical";
+    const critical = isPlannerCommitmentMembershipCarveOut(commitment);
     const directive = critical
       ? exactPlannerExcerpt(commitment.directive)
-      : compactPlannerAttributeExcerpt(commitment.directive, advisoryExcerptBudget);
+      : compactPlannerLeanAttributeExcerpt(commitment.directive, advisoryExcerptBudget);
     const directiveFamily = headTailPlannerExcerpt(
       commitment.directive_family,
       PLANNER_LABEL_EXCERPT_CHARS,
@@ -639,18 +754,84 @@ function renderCommitmentRowsAtBudget(
   return { rows, truncationCount };
 }
 
+function isPlannerCommitmentMembershipCarveOut(commitment: CommitmentRecord): boolean {
+  return (
+    effectiveCommitmentEnforcementClass(commitment) === "critical" ||
+    effectiveCommitmentCriticalDomain(commitment) !== null
+  );
+}
+
+function comparePlannerCommitmentsByExistingOrder(
+  left: CommitmentRecord,
+  right: CommitmentRecord,
+): number {
+  return (
+    right.priority - left.priority ||
+    left.created_at - right.created_at ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+function commitmentDisclosureRemainders(
+  commitments: readonly CommitmentRecord[],
+): ReadonlyMap<MemoryDisclosureClass, number> {
+  const counts = new Map<MemoryDisclosureClass, number>();
+
+  for (const commitment of commitments) {
+    const disclosureClass = commitmentMemoryDisclosureLabel(commitment).disclosureClass;
+    counts.set(disclosureClass, (counts.get(disclosureClass) ?? 0) + 1);
+  }
+
+  return counts;
+}
+
+function renderCommitmentMembershipBudgetMarker(
+  commitments: readonly CommitmentRecord[],
+): string[] {
+  if (commitments.length === 0) {
+    return [];
+  }
+
+  const disclosureCounts = commitmentDisclosureRemainders(commitments);
+  const disclosureAttributes = MEMORY_DISCLOSURE_CLASSES.flatMap((disclosureClass) => {
+    const count = disclosureCounts.get(disclosureClass);
+    return count === undefined ? [] : [`${disclosureClass}="${count}"`];
+  }).join(" ");
+  const kindCounts = new Map<CommitmentRecord["kind"], number>();
+  for (const commitment of commitments) {
+    kindCounts.set(commitment.kind, (kindCounts.get(commitment.kind) ?? 0) + 1);
+  }
+  const kindAttributes = COMMITMENT_KINDS.flatMap((kind) => {
+    const count = kindCounts.get(kind);
+    return count === undefined ? [] : [`${kind}="${count}"`];
+  }).join(" ");
+
+  return [
+    `  <${PLANNER_COMMITMENT_MEMBERSHIP_BUDGET_MARKER} total="${commitments.length}">`,
+    `    <${PLANNER_COMMITMENT_DISCLOSURE_REMAINDER_MARKER} ${disclosureAttributes} />`,
+    `    <${PLANNER_COMMITMENT_KIND_REMAINDER_MARKER} ${kindAttributes} />`,
+    `  </${PLANNER_COMMITMENT_MEMBERSHIP_BUDGET_MARKER}>`,
+  ];
+}
+
 function renderCommitmentDigestText(input: {
   rows: readonly string[];
   commitmentCount: number;
+  omittedCommitments: readonly CommitmentRecord[];
+  rowsTotalAsOf: string;
   advisoryExcerptBudget: number;
   criticalOverflow: boolean;
 }): string {
+  const omissionCount = input.omittedCommitments.length;
+  const membershipBudgetAttribute =
+    omissionCount === 0 ? "" : ` ${PLANNER_COMMITMENT_MEMBERSHIP_BUDGET_MARKER}="${omissionCount}"`;
   return [
-    `<borg_planner_commitment_digest rows_total="${input.commitmentCount}" target_tokens="${PLANNER_COMMITMENT_TARGET_TOKENS}" advisory_excerpt_reserved_chars="${input.advisoryExcerptBudget}" critical_overflow="${input.criticalOverflow}">`,
-    "  <interpretation>This is the complete globally assembled commitment index. Critical directives are exact and never truncated; advisory directives are visibly mechanical excerpts when long, never summaries. Scope fields are disclosure/provenance, not recall gates.</interpretation>",
-    "  <field_legend>c row: i=id, s=status, ec=enforcement_class, cd=critical_domain, k=kind, t=type, cp=closure_pressure_relevance, p=priority, cat=created_at, ca=created_age, ra=reinforced_age, xa=expires_rel, dc=disclosure_class, oa=origin_audience, pt=private_to, pub=public_to, to=made_to, aud=restricted_audience, about=about_entity, by=committed_by_entity_id, ex=directive_exact, shape=directive_excerpt_shape, r=directive_rendered_chars, n=directive_total_chars, e=directive_elided_chars, f=directive_family, d=directive. ex reports elision only, not byte-fidelity of the printed attribute: d and f are XML-attribute-encoded, so quotes, ampersands, angle brackets, newlines and tabs print as entities while r/n/e count the stored string before encoding; that encoder emits no backslash, so a backslash inside d is stored content rather than an artifact of this render; and on a critical row ex is true by construction rather than by measurement, where shape and e are omitted entirely and r and n are both the stored length, so no attribute on such a row measures elision. advisory_excerpt_reserved_chars is what an advisory excerpt is sized against, not what a row prints: sizing deducts a long marker this block then replaces with the short [ELIDED] token, so r falls well below the reservation and that gap is unspent, not elided directive text.</field_legend>",
+    `<borg_planner_commitment_digest complete_membership="${omissionCount === 0}" rows_total="${input.commitmentCount}" rows_total_as_of="${escapeXmlAttribute(input.rowsTotalAsOf)}" membership_order="${PLANNER_COMMITMENT_MEMBERSHIP_ORDER}" target_tokens="${PLANNER_COMMITMENT_TARGET_TOKENS}" advisory_excerpt_reserved_chars="${input.advisoryExcerptBudget}" critical_overflow="${input.criticalOverflow}"${membershipBudgetAttribute}>`,
+    "  <interpretation>Budgeted global commitment snapshot. rows_total remains the full count as of rows_total_as_of. Critical directives are exact and first; long advisory directives are visibly mechanical excerpts, never summaries. An incomplete membership names its exact remainder. Scope fields are disclosure/provenance, not recall gates.</interpretation>",
+    `  <field_legend>c: i=id, s=status, ec=enforcement_class, cd=critical_domain, k=kind, t=type, cp=closure_pressure_relevance, p=priority, cat=created_at, ca=created_age, ra=reinforced_age, xa=expires_rel, dc=disclosure_class, oa=origin_audience, pt=private_to, pub=public_to, to=made_to, aud=restricted_audience, about=about_entity, by=committed_by_entity_id, ex=directive_exact, shape=directive_excerpt_shape, r=directive_rendered_chars, n=directive_total_chars, e=directive_elided_chars, f=directive_family, d=directive. ex reports elision, not printed-byte fidelity: d/f are XML-attribute-encoded while r/n/e count stored characters; the encoder creates no backslash. Critical rows omit shape/e and carry exact d with r=n. advisory_excerpt_reserved_chars is d's stored-string width before XML encoding; on a cut the eight-character [ELIDED] marker spends that width and the remainder is directive text, apart from UTF-16 boundary preservation. target_tokens prices the whole block with the local estimator. membership_order=${PLANNER_COMMITMENT_MEMBERSHIP_ORDER}: ec=critical or structural cd rows first, then priority descending, created_at ascending, id ascending within both partitions; disclosure never affects admission or order. complete_membership=true enumerates all rows_total rows. Otherwise ${PLANNER_COMMITMENT_MEMBERSHIP_BUDGET_MARKER}=N and its total=N marker name the exact suffix; ${PLANNER_COMMITMENT_DISCLOSURE_REMAINDER_MARKER} and ${PLANNER_COMMITMENT_KIND_REMAINDER_MARKER} each partition N exactly. Only critical_overflow=true permits this block above target_tokens.</field_legend>`,
     ...input.rows.map((row) => `  ${row}`),
-    "  <omitted_count>0</omitted_count>",
+    ...renderCommitmentMembershipBudgetMarker(input.omittedCommitments),
+    `  <omitted_count>${omissionCount}</omitted_count>`,
     "</borg_planner_commitment_digest>",
   ].join("\n");
 }
@@ -658,11 +839,20 @@ function renderCommitmentDigestText(input: {
 function renderCommitmentsWithinTarget(input: {
   commitments: readonly CommitmentRecord[];
   nowMs: number | undefined;
+  rowsTotalAsOf: string;
   criticalOverflow: boolean;
-}): RenderedCommitmentRows & { advisoryExcerptBudget: number; text: string } {
-  const renderAtBudget = (advisoryExcerptBudget: number) => {
+}): RenderedCommitmentRows & {
+  advisoryExcerptBudget: number;
+  omissionCount: number;
+  text: string;
+} {
+  const renderAtBudget = (
+    advisoryExcerptBudget: number,
+    includedCommitments = input.commitments,
+    omittedCommitments: readonly CommitmentRecord[] = [],
+  ) => {
     const rendered = renderCommitmentRowsAtBudget(
-      input.commitments,
+      includedCommitments,
       input.nowMs,
       advisoryExcerptBudget,
     );
@@ -672,66 +862,129 @@ function renderCommitmentsWithinTarget(input: {
       text: renderCommitmentDigestText({
         rows: rendered.rows,
         commitmentCount: input.commitments.length,
+        omittedCommitments,
+        rowsTotalAsOf: input.rowsTotalAsOf,
         advisoryExcerptBudget,
         criticalOverflow: input.criticalOverflow,
       }),
+      omissionCount: omittedCommitments.length,
     };
   };
+  const maximizeAdvisoryExcerptBudget = (
+    includedCommitments: readonly CommitmentRecord[],
+    omittedCommitments: readonly CommitmentRecord[],
+  ) => {
+    let low = PLANNER_ADVISORY_COMMITMENT_MIN_EXCERPT_CHARS;
+    let high = PLANNER_ADVISORY_COMMITMENT_MAX_EXCERPT_CHARS;
+    let best = renderAtBudget(low, includedCommitments, omittedCommitments);
+
+    while (low <= high) {
+      const candidateBudget = Math.floor((low + high) / 2);
+      const candidate = renderAtBudget(candidateBudget, includedCommitments, omittedCommitments);
+      if (estimatePromptTokens(candidate.text) <= PLANNER_COMMITMENT_TARGET_TOKENS) {
+        best = candidate;
+        low = candidateBudget + 1;
+      } else {
+        high = candidateBudget - 1;
+      }
+    }
+
+    return best;
+  };
   const maximum = renderAtBudget(PLANNER_ADVISORY_COMMITMENT_MAX_EXCERPT_CHARS);
-  if (
-    input.commitments.every(
-      (commitment) => effectiveCommitmentEnforcementClass(commitment) === "critical",
-    ) ||
-    estimatePromptTokens(maximum.text) <= PLANNER_COMMITMENT_TARGET_TOKENS
-  ) {
+  if (estimatePromptTokens(maximum.text) <= PLANNER_COMMITMENT_TARGET_TOKENS) {
     return maximum;
   }
 
-  let low = PLANNER_ADVISORY_COMMITMENT_MIN_EXCERPT_CHARS;
-  let high = PLANNER_ADVISORY_COMMITMENT_MAX_EXCERPT_CHARS - 1;
-  let best = renderAtBudget(low);
+  const minimum = renderAtBudget(PLANNER_ADVISORY_COMMITMENT_MIN_EXCERPT_CHARS);
+  if (estimatePromptTokens(minimum.text) <= PLANNER_COMMITMENT_TARGET_TOKENS) {
+    return maximizeAdvisoryExcerptBudget(input.commitments, []);
+  }
 
+  const criticalCommitments = input.commitments.filter(isPlannerCommitmentMembershipCarveOut);
+  const ordinaryCommitments = input.commitments.filter(
+    (commitment) => !isPlannerCommitmentMembershipCarveOut(commitment),
+  );
+  const criticalOnly = renderAtBudget(
+    PLANNER_ADVISORY_COMMITMENT_MIN_EXCERPT_CHARS,
+    criticalCommitments,
+    ordinaryCommitments,
+  );
+  if (
+    input.criticalOverflow ||
+    estimatePromptTokens(criticalOnly.text) > PLANNER_COMMITMENT_TARGET_TOKENS
+  ) {
+    return criticalOnly;
+  }
+
+  let low = 1;
+  let high = ordinaryCommitments.length - 1;
+  let includedOrdinaryCount = 0;
   while (low <= high) {
-    const candidateBudget = Math.floor((low + high) / 2);
-    const candidate = renderAtBudget(candidateBudget);
+    const candidateCount = Math.floor((low + high) / 2);
+    const candidate = renderAtBudget(
+      PLANNER_ADVISORY_COMMITMENT_MIN_EXCERPT_CHARS,
+      [...criticalCommitments, ...ordinaryCommitments.slice(0, candidateCount)],
+      ordinaryCommitments.slice(candidateCount),
+    );
     if (estimatePromptTokens(candidate.text) <= PLANNER_COMMITMENT_TARGET_TOKENS) {
-      best = candidate;
-      low = candidateBudget + 1;
+      includedOrdinaryCount = candidateCount;
+      low = candidateCount + 1;
     } else {
-      high = candidateBudget - 1;
+      high = candidateCount - 1;
     }
   }
 
-  return best;
+  const includedCommitments = [
+    ...criticalCommitments,
+    ...ordinaryCommitments.slice(0, includedOrdinaryCount),
+  ];
+  return maximizeAdvisoryExcerptBudget(
+    includedCommitments,
+    ordinaryCommitments.slice(includedOrdinaryCount),
+  );
 }
 
 function renderCommitmentDigest(context: DeliberationContext): RenderedPlannerSection {
   const nowMs = promptTimestamp(context);
-  const commitments = [...(context.applicableCommitments ?? [])].sort((left, right) => {
-    const leftCritical = effectiveCommitmentEnforcementClass(left) === "critical" ? 1 : 0;
-    const rightCritical = effectiveCommitmentEnforcementClass(right) === "critical" ? 1 : 0;
-    return (
-      rightCritical - leftCritical ||
-      right.priority - left.priority ||
-      left.created_at - right.created_at ||
-      left.id.localeCompare(right.id)
-    );
-  });
+  const rowsTotalAsOfMs = finiteTimestamp(context.applicableCommitmentsReadAtMs) ?? nowMs;
+  const rowsTotalAsOf =
+    rowsTotalAsOfMs === undefined ? "unknown" : new Date(rowsTotalAsOfMs).toISOString();
+  const sourceCommitments = context.applicableCommitments ?? [];
+  const criticalCommitments = sourceCommitments
+    .filter(isPlannerCommitmentMembershipCarveOut)
+    .sort(comparePlannerCommitmentsByExistingOrder);
+  const ordinaryCommitments = sourceCommitments
+    .filter((commitment) => !isPlannerCommitmentMembershipCarveOut(commitment))
+    .sort(comparePlannerCommitmentsByExistingOrder);
+  const commitments = [...criticalCommitments, ...ordinaryCommitments];
   const criticalRows = renderCommitmentRowsAtBudget(
-    commitments.filter(
-      (commitment) => effectiveCommitmentEnforcementClass(commitment) === "critical",
-    ),
+    criticalCommitments,
     nowMs,
     PLANNER_ADVISORY_COMMITMENT_MAX_EXCERPT_CHARS,
   );
   const criticalOverflow =
-    estimatePromptTokens(criticalRows.rows.join("\n")) > PLANNER_COMMITMENT_TARGET_TOKENS;
-  const rendered = renderCommitmentsWithinTarget({ commitments, nowMs, criticalOverflow });
+    estimatePromptTokens(
+      renderCommitmentDigestText({
+        rows: criticalRows.rows,
+        commitmentCount: commitments.length,
+        omittedCommitments: ordinaryCommitments,
+        rowsTotalAsOf,
+        advisoryExcerptBudget: PLANNER_ADVISORY_COMMITMENT_MAX_EXCERPT_CHARS,
+        criticalOverflow: false,
+      }),
+    ) > PLANNER_COMMITMENT_TARGET_TOKENS;
+  const rendered = renderCommitmentsWithinTarget({
+    commitments,
+    nowMs,
+    rowsTotalAsOf,
+    criticalOverflow,
+  });
 
   return section("commitments", rendered.text, {
     rowCount: rendered.rows.length,
     truncationCount: rendered.truncationCount,
-    omissionCount: 0,
+    omissionCount: rendered.omissionCount,
     criticalOverflow,
   });
 }
@@ -787,7 +1040,9 @@ function livedDecisionGroups(entries: readonly EvidenceLedgerEntry[]): LivedDeci
         reference,
         entries: sorted,
         representative: sorted[0]!,
-        disclosure: combineMemoryDisclosureLabels(sorted.map(entryDisclosure)),
+        disclosure: combineMemoryDisclosureLabels(
+          [...groupedEntries].sort(compareLivedEntriesChronologically).map(entryDisclosure),
+        ),
       };
     })
     .sort(
@@ -1026,12 +1281,12 @@ export function renderLivedExperienceDigest(context: DeliberationContext): Rende
       (left, right) =>
         entryOccurredAt(right) - entryOccurredAt(left) || left.id.localeCompare(right.id),
     );
+  const activityCap = autonomous
+    ? PLANNER_AUTONOMOUS_LIVED_ACTIVITY_LIMIT
+    : PLANNER_LIVED_ACTIVITY_LIMIT;
   const allDecisionGroups = livedDecisionGroups(decisionEntries);
   const renderedDecisionGroups = allDecisionGroups.slice(0, PLANNER_LIVED_DECISION_LIMIT);
-  const renderedActivityEntries = activityEntries.slice(
-    0,
-    autonomous ? PLANNER_AUTONOMOUS_LIVED_ACTIVITY_LIMIT : PLANNER_LIVED_ACTIVITY_LIMIT,
-  );
+  const renderedActivityEntries = activityEntries.slice(0, activityCap);
   const allOpenLoops = autonomousOpenLoops(context);
   const renderedOpenLoops = allOpenLoops.slice(0, PLANNER_AUTONOMOUS_OPEN_LOOP_LIMIT);
   let truncationCount = 0;
@@ -1078,26 +1333,26 @@ export function renderLivedExperienceDigest(context: DeliberationContext): Rende
     truncationCount += text.truncated ? 1 : 0;
     return `<open_loop_row id="${escapeXmlAttribute(loop.id)}" kind="${loop.kind}" status="${escapeXmlAttribute(loop.status)}" outcome="${escapeXmlAttribute(loop.outcome)}" occurred_at="${loop.occurredAt === 0 ? "unknown" : new Date(loop.occurredAt).toISOString()}" stream_index="${loop.sourceStreamIndex ?? "none"}" disclosure="${escapeXmlAttribute(renderedDisclosure(loop.disclosure))}" text_exact="${!text.truncated}" text_included_chars="${text.renderedChars}" text_total_chars="${text.totalChars}">${escapeXmlText(text.text)}</open_loop_row>`;
   });
-  const omissionCount =
-    Math.max(0, allDecisionGroups.length - decisionRows.length) +
-    Math.max(0, activityEntries.length - activityRows.length) +
-    Math.max(0, allOpenLoops.length - openLoopRows.length);
+  const decisionOmitted = Math.max(0, allDecisionGroups.length - decisionRows.length);
+  const activityOmitted = Math.max(0, activityEntries.length - activityRows.length);
+  const openLoopOmitted = Math.max(0, allOpenLoops.length - openLoopRows.length);
+  const omissionCount = decisionOmitted + activityOmitted + openLoopOmitted;
 
   return section(
     "lived_experience",
     [
-      `<borg_planner_lived_experience_digest decision_groups_total="${allDecisionGroups.length}" activity_rows_total="${activityEntries.length}" open_loop_rows_total="${allOpenLoops.length}" autonomous_open_loop_priority="${autonomous}" standing_cadence_due="${standing?.renderRecentLivedExperience === true}" target_tokens="${targetTokens}">`,
+      `<borg_planner_lived_experience_digest decision_groups_total="${allDecisionGroups.length}" activity_rows_total="${activityEntries.length}" open_loop_rows_total="${autonomous ? allOpenLoops.length : "not_drawn"}" autonomous_open_loop_priority="${autonomous}" standing_cadence_due="${standing?.renderRecentLivedExperience === true}" target_tokens="${targetTokens}">`,
       "  <interpretation>What I decided is distinct from what merely fired or occurred. Repeated derivations sharing one structural outcome reference render once with derivation_count; text is never compared to decide sameness. derivation_order and each distinct activity row's timestamp/stream index preserve source chronology, including which structurally separate row came later. Density/firing rows describe volume, not N separate acts of will. Outbound attempts remain one row per structural stream handle with an explicit outcome; unknown and failed attempts are not treated as unmade attempts.</interpretation>",
+      "  <lane_budget>Each lane is cut to its own cap before anything else: cap is that lane's row limit for this turn's origin, and omitted is how many of that lane's total did not render. The caps are neither equal to each other nor stable across origins -- an autonomous turn caps completed activity lower than a conversational one while giving open loops the widest lane -- so a short activity lane on a wake is a slot allocation and not evidence that little was done. target_tokens is a declared envelope rather than a trim: no lane is cut to fit it and nothing here is re-fitted against it, so the caps are the only thing that binds. The open-loop lane is drawn only on an autonomous turn, so open_loop_rows_total reports whether it was drawn before it reports a size: a number there was counted and may legitimately be none, while no number there means the lane was never queried. The single omitted_count below sums these lanes' own residues, so it moves with the caps and with which lanes were drawn at all: identical totals print a larger aggregate on a wake than on a conversational turn, and that number changing is not by itself a change in how much happened.</lane_budget>",
       ...(autonomous
         ? [
             "  <autonomous_selection_policy>Structurally open questions, pending/unknown/failed outbound attempts, pending/unknown actions, and pending working intents are selected before completed-activity volume. No payload language is inspected to decide openness.</autonomous_selection_policy>",
-            "  <open_loops>",
+            `  <open_loops cap="${PLANNER_AUTONOMOUS_OPEN_LOOP_LIMIT}" omitted="${openLoopOmitted}">`,
             ...openLoopRows.map((row) => `    ${row}`),
-            `    <omitted_count>${Math.max(0, allOpenLoops.length - openLoopRows.length)}</omitted_count>`,
             "  </open_loops>",
           ]
         : []),
-      "  <decisions>",
+      `  <decisions cap="${PLANNER_LIVED_DECISION_LIMIT}" omitted="${decisionOmitted}">`,
       ...decisionRows.map((row) =>
         row
           .split("\n")
@@ -1105,7 +1360,7 @@ export function renderLivedExperienceDigest(context: DeliberationContext): Rende
           .join("\n"),
       ),
       "  </decisions>",
-      "  <firings_and_activity>",
+      `  <firings_and_activity cap="${activityCap}" omitted="${activityOmitted}">`,
       ...activityRows.map((row) => `    ${row}`),
       "  </firings_and_activity>",
       `  <omitted_count>${omissionCount}</omitted_count>`,
@@ -1904,6 +2159,7 @@ function renderTurnStateAutonomyScheduler(
     rowCount:
       2 +
       schedulerState.budget.wakes_in_current_window_by_trigger.length +
+      schedulerState.fleetBrake.window_headway_reasons.reasons.length +
       schedulerState.fleetBrake.window_error_reasons.reasons.length +
       schedulerState.fleetBrake.window_silent_reasons.reasons.length,
     truncationCount: 0,

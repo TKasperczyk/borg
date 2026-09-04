@@ -637,8 +637,9 @@ describe("ProceduralSynthesizerProcess", () => {
   );
 
   it("synthesizes cross-private-audience evidence with per-row labels and an inherited label", async () => {
-    const sam = "ent_aaaaaaaaaaaaaaaa" as EntityId;
-    const alex = "ent_bbbbbbbbbbbbbbbb" as EntityId;
+    const sam = "ent_bbbbbbbbbbbbbbbb" as EntityId;
+    const alex = "ent_aaaaaaaaaaaaaaaa" as EntityId;
+    const clock = new ManualClock(1_000_000);
     const approach = "Compare the private plan against the active milestone list.";
     const samProblem = "Sam private planning issue one";
     const alexProblem = "Alex private planning issue two";
@@ -651,6 +652,7 @@ describe("ProceduralSynthesizerProcess", () => {
       ],
     });
     harness = await createOfflineTestHarness({
+      clock,
       configOverrides: proceduralConfig({ minSupport: 2 }),
       embeddingClient: new TestEmbeddingClient(
         new Map([
@@ -666,6 +668,7 @@ describe("ProceduralSynthesizerProcess", () => {
       approachSummary: approach,
       evidenceText: "Sam confirmed the private planning comparison worked.",
     });
+    clock.advance(1);
     await addSuccessEvidence(harness, {
       audienceEntityId: alex,
       problemText: alexProblem,
@@ -689,8 +692,10 @@ describe("ProceduralSynthesizerProcess", () => {
       applies_when: "private planning comparison",
       disclosure_label: {
         disclosureClass: "relationship_private",
+        // Source origins retain earliest-first evidence order even when that
+        // differs from the sorted authorization set below.
         originAudienceEntityIds: [sam, alex],
-        privateToEntityIds: [sam, alex],
+        privateToEntityIds: [alex, sam],
         publicToEntityIds: [],
       },
     });
