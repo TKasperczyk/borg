@@ -953,7 +953,9 @@ function livedDecisionGroups(entries: readonly EvidenceLedgerEntry[]): LivedDeci
         reference,
         entries: sorted,
         representative: sorted[0]!,
-        disclosure: combineMemoryDisclosureLabels(sorted.map(entryDisclosure)),
+        disclosure: combineMemoryDisclosureLabels(
+          [...groupedEntries].sort(compareLivedEntriesChronologically).map(entryDisclosure),
+        ),
       };
     })
     .sort(

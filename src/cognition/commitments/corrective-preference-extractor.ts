@@ -35,6 +35,10 @@ import {
   memoryDisclosurePayloadFields,
   relationalSlotMemoryDisclosureLabel,
 } from "../../memory/common/disclosure-serializers.js";
+import type {
+  MemoryDisclosureLabel,
+  MemoryDisclosureLabelMetadata,
+} from "../../memory/common/disclosure-label.js";
 import {
   relationshipClaimSchema,
   type RelationshipClaim,
@@ -273,6 +277,7 @@ export type ExtractCorrectivePreferenceInput = {
     priority: number;
     restricted_audience?: EntityId | null;
     made_to_entity?: EntityId | null;
+    disclosure_label?: MemoryDisclosureLabel | MemoryDisclosureLabelMetadata;
   }[];
   relationalSlots?: readonly {
     id?: string;
@@ -502,6 +507,7 @@ function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInp
               commitmentMemoryDisclosureLabel({
                 restricted_audience: commitment.restricted_audience ?? null,
                 made_to_entity: commitment.made_to_entity ?? null,
+                disclosure_label: commitment.disclosure_label,
               }),
             ),
           };

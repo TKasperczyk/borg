@@ -72,11 +72,20 @@ export class EvidenceLedgerBuilder {
     if (disclosureResolver !== undefined) {
       const listedCommitments = commitmentRepository?.list({ activeOnly: true }) ?? [];
       const listedGoalTrees = (goalsRepository?.list({ status: "active" }) ?? []) as GoalTreeNode[];
+      const commitmentsToResolve = [...applicableCommitments];
+      const commitmentIdsToResolve = new Set(
+        commitmentsToResolve.map((commitment) => commitment.id),
+      );
+
+      for (const commitment of listedCommitments) {
+        if (!commitmentIdsToResolve.has(commitment.id)) {
+          commitmentsToResolve.push(commitment);
+          commitmentIdsToResolve.add(commitment.id);
+        }
+      }
+
       const resolved = disclosureResolver.resolve({
-        // A corrective-preference candidate can be commitment-shaped and carry
-        // source ids before it is persisted. Resolve only repository-backed
-        // rows so that temporary value remains on the scope-derived fallback.
-        commitments: listedCommitments,
+        commitments: commitmentsToResolve,
         goalTrees: listedGoalTrees,
       });
       const resolvedCommitmentsById = new Map(

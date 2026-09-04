@@ -446,7 +446,7 @@ function attributionBuilder(input: {
 describe("EvidenceLedgerBuilder", () => {
   const tempDirs: string[] = [];
 
-  it("resolves repository-backed commitment and goal collections once per build", async () => {
+  it("resolves applicable, repository commitment, and goal collections once per build", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-ledger-disclosure-batch-"));
     tempDirs.push(tempDir);
     const scope = createEntityId();
@@ -514,6 +514,7 @@ describe("EvidenceLedgerBuilder", () => {
     expect(resolve).toHaveBeenCalledTimes(1);
     expect(resolve.mock.calls[0]?.[0].commitments?.map((record) => record.id)).toEqual([
       persisted.id,
+      temporary.id,
     ]);
     expect(resolve.mock.calls[0]?.[0].goalTrees?.map((record) => record.id)).toEqual([goal.id]);
     const groupEntries = ledger.sections.find(
@@ -527,6 +528,15 @@ describe("EvidenceLedgerBuilder", () => {
       },
     });
     expect(groupEntries?.find((entry) => entry.id === `group_goal:${goal.id}`)).toMatchObject({
+      state_metadata: {
+        disclosure_label: { origin_audience_entity_ids: [historicalOrigin] },
+      },
+    });
+    expect(
+      ledger.audienceStanding?.commitmentEntries.find(
+        (entry) => entry.id === `commitment:${temporary.id}`,
+      ),
+    ).toMatchObject({
       state_metadata: {
         disclosure_label: { origin_audience_entity_ids: [historicalOrigin] },
       },

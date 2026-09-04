@@ -254,6 +254,7 @@ export async function openBorgDependencies(
       lazyLlmClient,
       entityRepository: repositories.entityRepository,
       commitmentRepository: repositories.commitmentRepository,
+      sourceStreamAudienceDisclosureResolver: repositories.sourceStreamAudienceDisclosureResolver,
       identityService: repositories.identityService,
       identityEventRepository: repositories.identityEventRepository,
       relationalSlotRepository: repositories.relationalSlotRepository,

@@ -15,10 +15,11 @@ export function flattenGoalTree(goals: ReadonlyArray<GoalTreeNodeLike>): GoalRec
       continue;
     }
 
-    flattened.push(next);
+    const { children, ...goal } = next;
+    flattened.push(goal);
 
-    if (Array.isArray(next.children)) {
-      stack.push(...next.children);
+    if (Array.isArray(children)) {
+      stack.push(...children);
     }
   }
 

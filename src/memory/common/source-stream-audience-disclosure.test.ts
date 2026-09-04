@@ -252,10 +252,7 @@ describe("SourceStreamAudienceDisclosureResolver", () => {
     });
 
     const duplicateIdLabels = resolver.resolveLabels({
-      commitments: [
-        commitment,
-        { ...commitment, source_stream_entry_ids: [late.id] },
-      ],
+      commitments: [commitment, { ...commitment, source_stream_entry_ids: [late.id] }],
     }).commitmentLabels;
     expect(duplicateIdLabels.map((label) => label.originAudienceEntityIds)).toEqual([
       [earlyAudience, lateAudience],
@@ -285,6 +282,116 @@ describe("SourceStreamAudienceDisclosureResolver", () => {
     expect(lookupMany).toHaveBeenCalledTimes(1);
     expect(findByNames).not.toHaveBeenCalled();
     expect(getMany).not.toHaveBeenCalled();
+  });
+
+  it("orders timestamp ties with null entry indexes last and needs no session row for labeled entries", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "borg-source-audience-tie-"));
+    tempDirs.push(dataDir);
+    db = openDatabase(":memory:", {
+      migrations: composeMigrations(
+        commitmentMigrations,
+        sessionMigrations,
+        streamEntryIndexMigrations,
+      ),
+    });
+    const clock = new ManualClock(500);
+    const entityRepository = new EntityRepository({ db, clock });
+    const sessionsRepository = new SessionsRepository({ db, clock });
+    const entryIndex = new StreamEntryIndexRepository({ db, dataDir });
+    const scope = entityRepository.add({
+      id: createEntityId(),
+      canonicalName: "Current scope",
+    }).id;
+    const numericIndexAudience = entityRepository.add({
+      id: createEntityId(),
+      canonicalName: "Numeric index audience",
+    }).id;
+    const nullIndexAudience = entityRepository.add({
+      id: createEntityId(),
+      canonicalName: "Null index audience",
+    }).id;
+    const labelOnlySessionId = createSessionId();
+    const writer = new StreamWriter({ dataDir, sessionId: labelOnlySessionId, clock, entryIndex });
+    const nullIndexEntry = await writer.append({
+      kind: "user_msg",
+      content: "written first",
+      audience: "Null index audience",
+    });
+    const numericIndexEntry = await writer.append({
+      kind: "user_msg",
+      content: "written second",
+      audience: "Numeric index audience",
+    });
+    writer.close();
+    db.prepare(
+      "UPDATE stream_entry_index SET timestamp = 500, entry_index = NULL WHERE entry_id = ?",
+    ).run(nullIndexEntry.id);
+    db.prepare("UPDATE stream_entry_index SET timestamp = 500 WHERE entry_id = ?").run(
+      numericIndexEntry.id,
+    );
+
+    const getMany = vi.spyOn(sessionsRepository, "getMany");
+    const resolver = new SourceStreamAudienceDisclosureResolver({
+      dataDir,
+      entryIndex,
+      sessionsRepository,
+      entityRepository,
+    });
+    const fullyResolved = makeCommitment({
+      scope,
+      sourceStreamEntryIds: [nullIndexEntry.id, numericIndexEntry.id],
+    });
+    const validThenMissing = makeCommitment({
+      scope,
+      sourceStreamEntryIds: [numericIndexEntry.id, createStreamEntryId()],
+    });
+
+    const resolved = resolver.resolve({ commitments: [fullyResolved, validThenMissing] });
+
+    expect(
+      commitmentMemoryDisclosureLabel(resolved.commitments[0]!).originAudienceEntityIds,
+    ).toEqual([numericIndexAudience, nullIndexAudience]);
+    expect(
+      commitmentMemoryDisclosureLabel(resolved.commitments[1]!).originAudienceEntityIds,
+    ).toEqual([scope]);
+    expect(getMany).not.toHaveBeenCalled();
+  });
+
+  it("preserves nested goal trees while attaching a label to every node", () => {
+    const scope = createEntityId();
+    const parent = makeGoal({ scope, sourceStreamEntryIds: [] });
+    const child = {
+      ...makeGoal({ scope, sourceStreamEntryIds: [] }),
+      parent_goal_id: parent.id,
+      children: [],
+    };
+    const tree: GoalTreeNode = { ...parent, children: [child] };
+    const resolver = new SourceStreamAudienceDisclosureResolver({
+      dataDir: "/does/not/matter",
+      entryIndex: { lookupMany: vi.fn(() => new Map()) },
+      sessionsRepository: { getMany: vi.fn(() => []) },
+      entityRepository: { findByNames: vi.fn(() => new Map()) },
+    });
+
+    const [resolvedTree] = resolver.resolve({ goalTrees: [tree] }).goalTrees;
+
+    expect(resolvedTree).toMatchObject({
+      id: parent.id,
+      disclosure_label: {
+        origin_audience_entity_ids: [scope],
+      },
+      children: [
+        {
+          id: child.id,
+          parent_goal_id: parent.id,
+          disclosure_label: {
+            origin_audience_entity_ids: [scope],
+          },
+          children: [],
+        },
+      ],
+    });
+    expect(tree.children[0]).not.toHaveProperty("disclosure_label");
   });
 
   it("keeps attached metadata authoritative and combines labels in canonical order", () => {

@@ -64,6 +64,43 @@ describe("goal followup due trigger", () => {
     expect(events[0]?.stateTs).toBe(goal.created_at);
   });
 
+  it("does not embed unlabeled descendants in a selected goal payload", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    const parent = harness.goalsRepository.add({
+      description: "Parent deadline",
+      priority: 9,
+      provenance: { kind: "manual" },
+      targetAt: clock.now() + 10_000,
+    });
+    const child = harness.goalsRepository.add({
+      description: "Later child work",
+      priority: 8,
+      parentId: parent.id,
+      provenance: { kind: "manual" },
+      targetAt: clock.now() + 120_000,
+    });
+    const trigger = createGoalFollowupDueTrigger({
+      goalsRepository: harness.goalsRepository,
+      watermarkRepository,
+      lookaheadMs: 20_000,
+      staleMs: 14 * 24 * 60 * 60 * 1_000,
+      staleBackoff: STALE_BACKOFF,
+      respectStaleBackoff: true,
+      clock,
+    });
+
+    const events = await trigger.scan();
+
+    expect(events).toHaveLength(1);
+    expect(events[0]?.payload.selected_goal.id).toBe(parent.id);
+    expect(events[0]?.payload.selected_goal).not.toHaveProperty("children");
+    expect(JSON.stringify(events[0]?.payload)).not.toContain(child.id);
+    expect(events[0]?.payload.selected_goal).toHaveProperty("disclosure_label");
+  });
+
   it("describes the next deadline or staleness threshold without firing", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({ clock });

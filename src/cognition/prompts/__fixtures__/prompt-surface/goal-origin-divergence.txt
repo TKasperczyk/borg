@@ -1,0 +1,1 @@
+    <goal i="goal_aaaaaaaaaaaaaaaa" s="active" ca="unknown" pa="unknown" ta="unknown" p="9" x="unscored" dc="relationship_private" oa="ent_cccccccccccccccc" pt="ent_aaaaaaaaaaaaaaaa,ent_bbbbbbbbbbbbbbbb" pub="none" d="Finish the prompt-surface provenance rollout." />

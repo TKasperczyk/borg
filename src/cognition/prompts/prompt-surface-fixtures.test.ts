@@ -201,6 +201,7 @@ const FIXTURE_NAMES = [
   "directed-outbound-framing.txt",
   "session-reentry-continuity.txt",
   "s2-planner-voice-anchors.txt",
+  "goal-origin-divergence.txt",
 ] as const;
 
 if (UPDATE_FIXTURES && process.env.CI !== undefined) {
@@ -684,7 +685,7 @@ function makeContext(overrides: Partial<DeliberationContext> = {}): Deliberation
           created_at: NOW_MS - 4000,
         },
       ],
-      goals: [makeGoal()],
+      goals: [],
       traits: [
         {
           id: "trt_aaaaaaaaaaaaaaaa" as DeliberationContext["selfSnapshot"]["traits"][number]["id"],
@@ -1370,6 +1371,41 @@ describe("prompt surface fixtures", () => {
     expect(compactSystem).toContain("Harness scheduler state");
     expect(compactTurnState).toContain('<autonomy_scheduler_state source="harness_mechanism">');
     expectFixture(COMPACT_PLANNER_FIXTURE_NAME, compactSystem);
+  });
+
+  it("pins scope-divergent goal origin labels without changing baseline membership", () => {
+    const workingMemory = makeWorkingMemory();
+    const baseline = makeContext({
+      workingMemory: {
+        ...workingMemory,
+        discourse_state: {
+          ...workingMemory.discourse_state,
+          stop_until_substantive_content: null,
+        },
+      },
+    });
+    const goal = makeGoal();
+    const context: DeliberationContext = {
+      ...baseline,
+      selfSnapshot: {
+        ...baseline.selfSnapshot,
+        goals: [goal],
+      },
+    };
+    const cacheable = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
+    const compact = buildCompactPlannerSystemPrompt({
+      context,
+      staticPrefix: cacheable.staticPrefix,
+      compactPlannerLedger: null,
+    });
+    const goalRows = systemBlocksToFixture(compact.system)
+      .split("\n")
+      .filter((line) => line.includes(goal.id))
+      .join("\n");
+
+    expect(goalRows).toContain(`oa="${MEMBER_ID}"`);
+    expect(goalRows).toContain(`pt="${GROUP_ID},${CREATOR_ID}"`);
+    expectFixture("goal-origin-divergence.txt", goalRows);
   });
 
   it("pins autonomous S2 planner system prompt", async () => {

@@ -280,6 +280,7 @@ export class TurnOrchestrator {
     const correctivePreferenceTurnService = new CorrectivePreferenceTurnService({
       model: options.config.anthropic.models.recallExpansion,
       commitmentRepository: options.commitmentRepository,
+      sourceStreamAudienceDisclosureResolver: options.sourceStreamAudienceDisclosureResolver,
       identityService: options.identityService,
       relationalSlotRepository: options.relationalSlotRepository,
       workingMemoryStore: options.workingMemoryStore,

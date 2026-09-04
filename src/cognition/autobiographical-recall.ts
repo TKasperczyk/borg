@@ -18,11 +18,11 @@ import type {
   AutobiographicalPeriod,
   AutobiographicalRepository,
   GoalRecord,
+  GoalTreeNode,
   OpenQuestion,
   OpenQuestionsRepository,
   GoalsRepository,
 } from "../memory/self/index.js";
-import { flattenGoalTree } from "../memory/self/index.js";
 import type { SourceStreamAudienceDisclosureResolver } from "../memory/common/index.js";
 import type { Provenance } from "../memory/common/provenance.js";
 import {
@@ -436,6 +436,10 @@ function actionTimestamp(action: ActionRecord): number {
   );
 }
 
+function flattenGoalsPreorder(goals: readonly GoalTreeNode[]): GoalRecord[] {
+  return goals.flatMap(({ children, ...goal }) => [goal, ...flattenGoalsPreorder(children)]);
+}
+
 type StreamEventCandidate = {
   entry: StreamEntry;
   kind: AutobiographicalRecallSourceKind;
@@ -600,7 +604,7 @@ export class AutobiographicalRecallService {
       });
     };
     const rawGoalTrees = this.options.goalsRepository?.list({}) ?? [];
-    const goals = flattenGoalTree(
+    const goals = flattenGoalsPreorder(
       this.options.sourceStreamAudienceDisclosureResolver?.resolve({
         goalTrees: rawGoalTrees,
       }).goalTrees ?? rawGoalTrees,

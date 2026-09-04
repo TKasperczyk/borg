@@ -9,6 +9,10 @@ import {
   type CommitmentRepository,
 } from "../../memory/commitments/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
+import {
+  commitmentMemoryDisclosureLabel,
+  type SourceStreamAudienceDisclosureResolver,
+} from "../../memory/common/index.js";
 import { supersedeCommitment } from "../../memory/lifecycle-ops/index.js";
 import type {
   RelationalSlot,
@@ -48,6 +52,7 @@ export type CorrectivePreferenceTurnServiceOptions = {
   identityService: Pick<IdentityService, "addCommitment">;
   relationalSlotRepository: Pick<RelationalSlotRepository, "list" | "applyNegation">;
   workingMemoryStore: Pick<WorkingMemoryStore, "load" | "sanitizePendingActionsForRelationalSlot">;
+  sourceStreamAudienceDisclosureResolver?: Pick<SourceStreamAudienceDisclosureResolver, "resolve">;
   clock: Clock;
   tracer: TurnTracer;
   // When enabled, propagate degraded extraction and failed mutations upstream.
@@ -602,10 +607,14 @@ export class CorrectivePreferenceTurnService {
     input: ExtractCorrectivePreferenceForTurnInput,
   ): Promise<CorrectivePreferenceTurnResult> {
     let correctiveCommitment: CommitmentRecord | null = null;
-    const activeCommitmentsForExtractor = this.options.commitmentRepository.getApplicable({
+    const activeCommitments = this.options.commitmentRepository.getApplicable({
       audience: input.audienceEntityId,
       nowMs: this.options.clock.now(),
     });
+    const activeCommitmentsForExtractor =
+      this.options.sourceStreamAudienceDisclosureResolver?.resolve({
+        commitments: activeCommitments,
+      }).commitments ?? activeCommitments;
     const correctivePreferenceExtractor = new CorrectivePreferenceExtractor({
       llmClient: input.llmClient,
       model: this.options.model,
@@ -656,6 +665,7 @@ export class CorrectivePreferenceTurnService {
         priority: commitment.priority,
         restricted_audience: commitment.restricted_audience,
         made_to_entity: commitment.made_to_entity,
+        disclosure_label: commitmentMemoryDisclosureLabel(commitment),
       })),
       relationalSlots: this.relationalSlotsForCorrectionExtractor(),
     });
@@ -871,9 +881,7 @@ export class CorrectivePreferenceTurnService {
                 supersededId: supersession.supersededId,
                 newId: added.id,
                 reason:
-                  superseded.status === "conflict"
-                    ? "supersede_failed"
-                    : "unknown_commitment_id",
+                  superseded.status === "conflict" ? "supersede_failed" : "unknown_commitment_id",
                 error: failure,
               });
               throw failure;

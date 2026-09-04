@@ -329,6 +329,81 @@ describe("CorrectivePreferenceTurnService", () => {
     );
   });
 
+  it("batch-resolves active commitments before projecting them to the extractor", async () => {
+    const scope = createEntityId();
+    const historicalOrigin = createEntityId();
+    const activeCommitment = commitmentFixture({
+      id: createCommitmentId(),
+      restricted_audience: scope,
+      source_stream_entry_ids: [createStreamEntryId()],
+    });
+    const disclosureLabel = {
+      disclosureClass: "relationship_private" as const,
+      originAudienceEntityIds: [historicalOrigin],
+      privateToEntityIds: [scope],
+      publicToEntityIds: [],
+    };
+    const resolve = vi.fn(() => ({
+      commitments: [
+        {
+          ...activeCommitment,
+          disclosure_label: {
+            disclosure_class: "relationship_private" as const,
+            origin_audience_entity_ids: [historicalOrigin],
+            private_to_entity_ids: [scope],
+            public_to_entity_ids: [],
+          },
+        },
+      ],
+      goals: [],
+      goalTrees: [],
+      commitmentLabelsById: new Map([[activeCommitment.id, disclosureLabel]]),
+      goalLabelsById: new Map(),
+    }));
+    const llm = new FakeLLMClient({ responses: [correctivePreferenceResponse()] });
+    const service = new CorrectivePreferenceTurnService({
+      model: "haiku",
+      commitmentRepository: {
+        get: () => null,
+        getApplicable: () => [activeCommitment],
+        revoke: vi.fn(),
+        supersede: vi.fn(),
+      },
+      sourceStreamAudienceDisclosureResolver: { resolve } as never,
+      identityService: { addCommitment: vi.fn() },
+      relationalSlotRepository: { list: () => [], applyNegation: vi.fn() },
+      workingMemoryStore: {
+        load: () => createWorkingMemory(DEFAULT_SESSION_ID, 2_000),
+        sanitizePendingActionsForRelationalSlot: vi.fn(),
+      },
+      clock: new FixedClock(2_000),
+      tracer: { enabled: false, includePayloads: false, emit: vi.fn() },
+    });
+
+    await service.extractAndApply({
+      llmClient: llm,
+      turnId: "turn-resolved-active-commitments",
+      ...defaultCorrectiveTurnContext,
+      userMessage: "Keep the durable preference active.",
+      recentHistory: [],
+      audienceEntityId: scope,
+      sessionId: DEFAULT_SESSION_ID,
+      onHookFailure: vi.fn(),
+      trackAppliedSlotNegation: vi.fn(),
+    });
+
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledWith({ commitments: [activeCommitment] });
+    const prompt = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      active_commitments: Array<{
+        disclosure_label?: { origin_audience_entity_ids?: string[] };
+      }>;
+    };
+    expect(prompt.active_commitments[0]?.disclosure_label?.origin_audience_entity_ids).toEqual([
+      historicalOrigin,
+    ]);
+  });
+
   it("applies classification normalization before building a corrective commitment", async () => {
     const userEntryId = createStreamEntryId();
     const llm = new FakeLLMClient({
