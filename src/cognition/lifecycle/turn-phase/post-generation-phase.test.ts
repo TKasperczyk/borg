@@ -126,6 +126,7 @@ describe("runPostGenerationPhase", () => {
     const retiredGoalId = createGoalId();
     const carriedText = "I should resume with the unresolved continuity question.";
     const actionRepository = makeActionRepository([]);
+    const runReflection = vi.fn(async () => ({ effects: { retiredGoalIds: [retiredGoalId] } }));
     const options = {
       config: {
         ...DEFAULT_CONFIG,
@@ -192,7 +193,7 @@ describe("runPostGenerationPhase", () => {
         markClosureLoopNamed: vi.fn((arg: { workingMemory: unknown }) => arg.workingMemory),
       },
       turnReflectionCoordinator: {
-        run: vi.fn(async () => ({ effects: { retiredGoalIds: [retiredGoalId] } })),
+        run: runReflection,
       },
       turnActionStateService: { closeBorgSelfPerformedActions: vi.fn(async () => undefined) },
       correctivePreferenceTurnService: { persistCommitment: vi.fn(async () => undefined) },
@@ -302,6 +303,11 @@ describe("runPostGenerationPhase", () => {
     expect(trainOfThoughtRepository.latest()).toMatchObject({
       source_turn_id: turnId,
     });
+    expect(runReflection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        currentTurnJournalEntryIds: [trainOfThoughtRepository.latest()?.id],
+      }),
+    );
     expect(JSON.stringify(marker?.content)).not.toContain(carriedText);
   });
 
