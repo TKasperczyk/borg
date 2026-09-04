@@ -1,4 +1,4 @@
-import { legacyCommitmentSchema } from "../commitments/index.js";
+import { legacyCommitmentSchema, type CommitmentRecord } from "../commitments/index.js";
 import {
   memoryDisclosureLabelFromMetadata,
   type MemoryDisclosureLabel,
@@ -7,10 +7,10 @@ import { isEpisodeAccessVisible, type Episode, type EpisodeAccessLike } from "..
 import { entityIdHelpers, episodeIdHelpers, type EntityId } from "../../util/ids.js";
 import type { IdentityEvent } from "./types.js";
 
-type CommitmentAccess = {
-  made_to_entity: EntityId | null;
-  restricted_audience: EntityId | null;
-};
+export type CommitmentAccess = Pick<
+  CommitmentRecord,
+  "id" | "made_to_entity" | "restricted_audience" | "source_stream_entry_ids"
+>;
 
 export type IdentityEventValueDisclosureSources = {
   audienceEntityIds: EntityId[];
@@ -234,8 +234,10 @@ function collectIdentityEventValueDisclosureSources(
       result.malformed = true;
     } else {
       result.commitmentAccesses.push({
+        id: parsedCommitment.data.id,
         made_to_entity: parsedCommitment.data.made_to_entity,
         restricted_audience: parsedCommitment.data.restricted_audience,
+        source_stream_entry_ids: parsedCommitment.data.source_stream_entry_ids,
       });
     }
   }

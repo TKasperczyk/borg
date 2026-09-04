@@ -57,6 +57,7 @@ import {
   goalMemoryDisclosureLabel,
   openQuestionMemoryDisclosureLabel,
 } from "../memory/common/disclosure-serializers.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../memory/common/index.js";
 
 const MANUAL_PROVENANCE = {
   kind: "manual" as const,
@@ -280,6 +281,7 @@ export type CorrectionServiceOptions = {
   socialRepository: SocialRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
+  sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   reviewQueueRepository: ReviewQueueRepository;
   identityService: IdentityService;
   identityEventRepository: IdentityEventRepository;
@@ -379,10 +381,14 @@ export class CorrectionService {
           });
         }
 
+        const resolvedRecord =
+          this.options.sourceStreamAudienceDisclosureResolver?.resolve({ goals: [record] })
+            .goals[0] ?? record;
+
         return {
           targetLabel: truncate(record.description),
           audienceEntityId: record.audience_entity_id ?? record.owner_entity_id ?? null,
-          disclosureLabel: goalMemoryDisclosureLabel(record),
+          disclosureLabel: goalMemoryDisclosureLabel(resolvedRecord),
         };
       }
       case "trait": {
@@ -411,10 +417,14 @@ export class CorrectionService {
           });
         }
 
+        const resolvedRecord =
+          this.options.sourceStreamAudienceDisclosureResolver?.resolve({ commitments: [record] })
+            .commitments[0] ?? record;
+
         return {
           targetLabel: truncate(record.directive),
           audienceEntityId: record.restricted_audience ?? record.made_to_entity,
-          disclosureLabel: commitmentMemoryDisclosureLabel(record),
+          disclosureLabel: commitmentMemoryDisclosureLabel(resolvedRecord),
         };
       }
       case "open_question": {

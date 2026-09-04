@@ -1107,6 +1107,24 @@ describe("AutobiographicalRecallService", () => {
     expect(renderSection(section)).not.toContain("autobiographical_recall_cap");
   });
 
+  it("retains preorder goal-tree membership when the source cap bites", async () => {
+    const root = goalNode(1);
+    const child = goalNode(2, { parent_goal_id: root.id });
+    const nestedRoot = { ...root, children: [child] };
+    const laterRoot = goalNode(3);
+
+    const result = await recallGoals({
+      goals: [nestedRoot, laterRoot],
+      sourceCap: 2,
+      totalCap: 10,
+    });
+
+    expect(result.evidence.map((item) => item.metadata.goal_id).sort()).toEqual(
+      [root.id, child.id].sort(),
+    );
+    expect(result.evidence.map((item) => item.metadata.goal_id)).not.toContain(laterRoot.id);
+  });
+
   it("renders exact shown and candidate counts when a source-group cap bites", async () => {
     const result = await recallGoals({
       goals: [goalNode(1), goalNode(2), goalNode(3), goalNode(4)],
@@ -1500,7 +1518,9 @@ describe("AutobiographicalRecallService", () => {
     expect(rendered).toContain(
       "framing_counts_scope: rows_assembled is the population this section was assembled from",
     );
-    expect(rendered).toContain("an omission row naming any other stage counts a different reduction");
+    expect(rendered).toContain(
+      "an omission row naming any other stage counts a different reduction",
+    );
   });
 
   it("prints the assembled population beside a kind count that spans none of the rendered rows", () => {

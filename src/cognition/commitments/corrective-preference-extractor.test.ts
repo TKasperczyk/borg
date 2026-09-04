@@ -269,6 +269,8 @@ describe("CorrectivePreferenceExtractor", () => {
 
   it("emits a high-confidence retire-only commitment result", async () => {
     const commitmentId = createCommitmentId();
+    const currentScope = createEntityId();
+    const historicalOrigin = createEntityId();
     const llm = new FakeLLMClient({
       responses: [
         correctivePreferenceResponse({
@@ -287,7 +289,7 @@ describe("CorrectivePreferenceExtractor", () => {
     const result = await extractor.extractWithSlotNegations({
       userMessage: "That standing boundary is resolved now.",
       recentHistory: [],
-      audienceEntityId: createEntityId(),
+      audienceEntityId: currentScope,
       activeCommitments: [
         {
           id: commitmentId,
@@ -299,6 +301,13 @@ describe("CorrectivePreferenceExtractor", () => {
           directive_family: "temporary_discussion_constraint",
           closure_pressure_relevance: "neutral",
           priority: 5,
+          restricted_audience: currentScope,
+          disclosure_label: {
+            disclosureClass: "relationship_private",
+            originAudienceEntityIds: [historicalOrigin],
+            privateToEntityIds: [currentScope],
+            publicToEntityIds: [],
+          },
         },
       ],
     });
@@ -312,6 +321,14 @@ describe("CorrectivePreferenceExtractor", () => {
       },
       slot_negations: [],
     });
+    const prompt = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      active_commitments: Array<{
+        disclosure_label?: { origin_audience_entity_ids?: string[] };
+      }>;
+    };
+    expect(prompt.active_commitments[0]?.disclosure_label?.origin_audience_entity_ids).toEqual([
+      historicalOrigin,
+    ]);
   });
 
   it("accepts directive sources only from the presented current entries", async () => {

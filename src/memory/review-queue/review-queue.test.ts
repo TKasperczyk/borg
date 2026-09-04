@@ -15,6 +15,8 @@ import {
   createEntityId,
   createSemanticNodeId,
   createStreamEntryId,
+  commitmentIdHelpers,
+  entityIdHelpers,
   type EpisodeId,
   type SkillId,
 } from "../../util/ids.js";
@@ -172,13 +174,13 @@ describe("review queue", () => {
     cleanup.push(async () => {
       rmSync(tempDir, { recursive: true, force: true });
     });
-    const firstId = createCommitmentId();
-    const secondId = createCommitmentId();
-    const alice = createEntityId();
-    const bob = createEntityId();
+    const firstId = commitmentIdHelpers.parse("cmt_zzzzzzzzzzzzzzzz");
+    const secondId = commitmentIdHelpers.parse("cmt_aaaaaaaaaaaaaaaa");
+    const alice = entityIdHelpers.parse("ent_zzzzzzzzzzzzzzzz");
+    const bob = entityIdHelpers.parse("ent_aaaaaaaaaaaaaaaa");
     const firstEntryId = createStreamEntryId();
     const secondEntryId = createStreamEntryId();
-    const sortedAudienceIds = [alice, bob].sort();
+    const sortedAudienceIds = [bob, alice];
     const db = openDatabase(join(tempDir, "borg.db"), {
       migrations: [...semanticMigrations],
     });
@@ -195,7 +197,7 @@ describe("review queue", () => {
       refs: {
         target_type: "commitment_reconciliation",
         subkind: "cross_scope_conflict",
-        commitment_ids: [firstId, secondId],
+        commitment_ids: [secondId, firstId],
         scope_key: {
           kind: "participant_preference",
           restricted_audience: null,
@@ -209,26 +211,6 @@ describe("review queue", () => {
         },
         reason: "The cross-scope commitments conflict.",
         members: [
-          {
-            id: firstId,
-            kind: "participant_preference",
-            type: "preference",
-            directive_family: "reply_style",
-            directive: "Keep Alice replies short.",
-            scope_key: {
-              kind: "participant_preference",
-              restricted_audience: alice,
-              made_to_entity: null,
-              about_entity: null,
-            },
-            source_stream_entry_ids: [firstEntryId],
-            disclosure_label: {
-              disclosureClass: "relationship_private",
-              originAudienceEntityIds: [alice],
-              privateToEntityIds: [alice],
-              publicToEntityIds: [],
-            },
-          },
           {
             id: secondId,
             kind: "participant_preference",
@@ -249,9 +231,29 @@ describe("review queue", () => {
               publicToEntityIds: [],
             },
           },
+          {
+            id: firstId,
+            kind: "participant_preference",
+            type: "preference",
+            directive_family: "reply_style",
+            directive: "Keep Alice replies short.",
+            scope_key: {
+              kind: "participant_preference",
+              restricted_audience: alice,
+              made_to_entity: null,
+              about_entity: null,
+            },
+            source_stream_entry_ids: [firstEntryId],
+            disclosure_label: {
+              disclosureClass: "relationship_private",
+              originAudienceEntityIds: [alice],
+              privateToEntityIds: [alice],
+              publicToEntityIds: [],
+            },
+          },
         ],
         judgment: {
-          commitment_ids: [firstId, secondId],
+          commitment_ids: [secondId, firstId],
           resolution: "conflict",
           survivor_commitment_id: null,
           superseded_commitment_ids: [],
@@ -259,9 +261,9 @@ describe("review queue", () => {
         },
         source_stream_entry_ids: [firstEntryId, secondEntryId],
         disclosure_label: {
-          disclosureClass: "public",
-          originAudienceEntityIds: [],
-          privateToEntityIds: [],
+          disclosureClass: "relationship_private",
+          originAudienceEntityIds: [alice, bob],
+          privateToEntityIds: sortedAudienceIds,
           publicToEntityIds: [],
         },
       },
@@ -276,24 +278,24 @@ describe("review queue", () => {
     expect(reviews[0]).toMatchObject({
       reason: "cross-scope commitment reconciliation",
       subkind: "cross_scope_conflict",
-      commitment_ids: [firstId, secondId],
+      commitment_ids: [secondId, firstId],
       source_stream_entry_ids: [firstEntryId, secondEntryId],
       disclosureLabel: {
         disclosureClass: "relationship_private",
-        originAudienceEntityIds: sortedAudienceIds,
+        originAudienceEntityIds: [alice, bob],
         privateToEntityIds: sortedAudienceIds,
         publicToEntityIds: [],
       },
     });
     expect(reviews[0]?.refs.disclosure_label).toEqual({
-      disclosureClass: "public",
-      originAudienceEntityIds: [],
-      privateToEntityIds: [],
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: [alice, bob],
+      privateToEntityIds: sortedAudienceIds,
       publicToEntityIds: [],
     });
     expect(reviews[0]?.members.map((member) => member.directive)).toEqual([
-      "Keep Alice replies short.",
       "Give Bob detailed replies.",
+      "Keep Alice replies short.",
     ]);
   });
 

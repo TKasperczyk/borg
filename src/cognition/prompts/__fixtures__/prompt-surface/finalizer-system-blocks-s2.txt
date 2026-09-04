@@ -198,7 +198,7 @@ For a group audience, origin_audience means a memory was shared in that venue, n
         <prompt_summary>- [CRITICAL:privacy boundary/boundary] Do not disclose private rollout details outside the authorized room. audience=Backend Cleanup Room about=Ada Creator committed_by=Ada Creator (manual)</prompt_summary>
         <directive>Do not disclose private rollout details outside the authorized room.</directive>
         <directive_family>prompt_surface_privacy</directive_family>
-        <disclosure>disclosure_class=relationship_private origin_audience=ent_aaaaaaaaaaaaaaaa private-to=ent_aaaaaaaaaaaaaaaa; I can use this internally; I do not disclose it to the current audience unless authorized</disclosure>
+        <disclosure>disclosure_class=relationship_private origin_audience=ent_cccccccccccccccc private-to=ent_aaaaaaaaaaaaaaaa; I can use this internally; I do not disclose it to the current audience unless authorized</disclosure>
         <commitment_kind>boundary</commitment_kind>
         <commitment_type>boundary</commitment_type>
         <commitment_enforcement_class>critical</commitment_enforcement_class>

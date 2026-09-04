@@ -7,6 +7,7 @@ import { SemanticGraph } from "../../memory/semantic/index.js";
 import { TrainOfThoughtRepository } from "../../memory/train-of-thought/index.js";
 import { createEpisodeFixture, createOfflineTestHarness } from "../../offline/test-support.js";
 import { StreamEntryIndexRepository, StreamWriter } from "../../stream/index.js";
+import { SourceStreamAudienceDisclosureResolver } from "../../memory/common/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 
@@ -31,6 +32,12 @@ function createHarnessToolDispatcher(
   return buildToolDispatcher({
     dataDir: harness.tempDir,
     entryIndex,
+    sourceStreamAudienceDisclosureResolver: new SourceStreamAudienceDisclosureResolver({
+      dataDir: harness.tempDir,
+      entryIndex,
+      sessionsRepository: { getMany: () => [] },
+      entityRepository: harness.entityRepository,
+    }),
     retrievalPipeline: harness.retrievalPipeline,
     episodicRepository: harness.episodicRepository,
     semanticNodeRepository: harness.semanticNodeRepository,
@@ -108,6 +115,66 @@ describe("v101.1 identity-events cognition-tool invariants", () => {
       expect(returnedEvent).toBeDefined();
       expect(eventJson).toContain("relationship_private");
       expect(eventJson).toContain(alice);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("keeps source-derived commitment origin when an identity event embeds the row", async () => {
+    const harness = await createOfflineTestHarness();
+    const historicalAudience = "ent_aaaaaaaaaaaaaaaa" as never;
+    const currentScope = "ent_cccccccccccccccc" as never;
+
+    try {
+      harness.entityRepository.add({
+        id: historicalAudience,
+        canonicalName: "Historical operator thread",
+      });
+      harness.entityRepository.add({ id: currentScope, canonicalName: "Continuous room" });
+      const source = await harness.streamWriter.append({
+        kind: "user_msg",
+        content: "historical commitment source",
+        audience: "Historical operator thread",
+      });
+      const commitment = harness.identityService.addCommitment({
+        type: "boundary",
+        kind: "boundary",
+        directiveFamily: "identity_event_origin",
+        directive: "Keep historical origin distinct from current scope.",
+        priority: 10,
+        restrictedAudience: currentScope,
+        provenance: { kind: "manual" },
+        sourceStreamEntryIds: [source.id],
+      });
+      const dispatcher = createHarnessToolDispatcher(harness);
+      const result = await dispatcher.dispatch({
+        toolName: "tool.identityEvents.listForCognition",
+        input: { recordType: "commitment", limit: 10 },
+        origin: "deliberator",
+        sessionId: DEFAULT_SESSION_ID,
+        audienceEntityId: currentScope,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+      const returnedEvent = (
+        result.output as {
+          events: Array<{
+            record_id: string;
+            disclosure_label: {
+              origin_audience_entity_ids: string[];
+              private_to_entity_ids: string[];
+            };
+          }>;
+        }
+      ).events.find((event) => event.record_id === commitment.id);
+
+      expect(returnedEvent?.disclosure_label).toMatchObject({
+        origin_audience_entity_ids: [historicalAudience],
+        private_to_entity_ids: [currentScope],
+      });
     } finally {
       await harness.cleanup();
     }

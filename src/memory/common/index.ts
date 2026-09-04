@@ -44,6 +44,19 @@ export {
   uniqueDisclosureEntityIds,
 } from "./disclosure-serializers.js";
 export {
+  SourceStreamAudienceDisclosureResolver,
+  type CommitmentDisclosureSource,
+  type DisclosureResolvedCommitment,
+  type DisclosureResolvedGoal,
+  type DisclosureResolvedGoalTreeNode,
+  type GoalDisclosureSource,
+  type ResolveCommitmentGoalDisclosureInput,
+  type ResolveCommitmentGoalDisclosureLabelsInput,
+  type ResolvedCommitmentGoalDisclosure,
+  type ResolvedCommitmentGoalDisclosureLabels,
+  type SourceStreamAudienceDisclosureResolverOptions,
+} from "./source-stream-audience-disclosure.js";
+export {
   getEpisodeProvenanceIds,
   parseReviewProvenance,
   isEpisodeProvenance,

@@ -21,6 +21,7 @@ import type { EmbeddingClient } from "../embeddings/index.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
 import type { CommitmentRepository } from "../memory/commitments/index.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../memory/common/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
@@ -37,6 +38,7 @@ import type { BorgStreamWriterFactory } from "./types.js";
 export type BuildAutonomySchedulerOptions = {
   config: Config;
   commitmentRepository: CommitmentRepository;
+  sourceStreamAudienceDisclosureResolver: SourceStreamAudienceDisclosureResolver;
   episodicRepository: EpisodicRepository;
   embeddingClient: EmbeddingClient;
   goalsRepository: GoalsRepository;
@@ -82,6 +84,7 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
       ? [
           createCommitmentExpiringTrigger({
             commitmentRepository: options.commitmentRepository,
+            sourceStreamAudienceDisclosureResolver: options.sourceStreamAudienceDisclosureResolver,
             watermarkRepository: options.streamWatermarkRepository,
             lookaheadMs: options.config.autonomy.triggers.commitmentExpiring.lookaheadMs,
             clock: options.clock,
@@ -92,6 +95,7 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
       ? [
           createGoalFollowupDueTrigger({
             goalsRepository: options.goalsRepository,
+            sourceStreamAudienceDisclosureResolver: options.sourceStreamAudienceDisclosureResolver,
             watermarkRepository: options.streamWatermarkRepository,
             lookaheadMs: options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
             staleMs: options.config.autonomy.triggers.goalFollowupDue.staleMs,
@@ -122,6 +126,7 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
           createExecutiveFocusDueTrigger({
             enabled: options.config.autonomy.executiveFocus.enabled,
             goalsRepository: options.goalsRepository,
+            sourceStreamAudienceDisclosureResolver: options.sourceStreamAudienceDisclosureResolver,
             executiveStepsRepository: options.executiveStepsRepository,
             episodicRepository: options.episodicRepository,
             embeddingClient: options.embeddingClient,
@@ -179,6 +184,7 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
       ? [
           createCommitmentRevokedCondition({
             commitmentRepository: options.commitmentRepository,
+            sourceStreamAudienceDisclosureResolver: options.sourceStreamAudienceDisclosureResolver,
             watermarkRepository: options.streamWatermarkRepository,
             clock: options.clock,
           }),

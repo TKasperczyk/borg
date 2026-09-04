@@ -232,6 +232,35 @@ export class SessionsRepository {
     return row === undefined ? null : mapSessionRow(row);
   }
 
+  getMany(sessionIds: readonly SessionId[]): SessionRecord[] {
+    const uniqueSessionIds = [
+      ...new Set(sessionIds.map((sessionId) => sessionIdSchema.parse(sessionId))),
+    ];
+
+    if (uniqueSessionIds.length === 0) {
+      return [];
+    }
+
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            session_id, source_type, source_external_id, source_url, label, audience_label,
+            audience_entity_id, conversation_kind, created_at, last_activity_at, last_turn_id,
+            message_count, status, privacy_level, participation_policy, audience_role
+          FROM sessions
+          WHERE session_id IN (${uniqueSessionIds.map(() => "?").join(", ")})
+        `,
+      )
+      .all(...uniqueSessionIds) as SessionRow[];
+    const recordsById = new Map(rows.map((row) => [row.session_id, mapSessionRow(row)]));
+
+    return uniqueSessionIds.flatMap((sessionId) => {
+      const record = recordsById.get(sessionId);
+      return record === undefined ? [] : [record];
+    });
+  }
+
   list(options?: SessionListOptions): SessionRecord[] {
     const parsed = options === undefined ? undefined : sessionListOptionsSchema.parse(options);
     const filter = buildSessionFilters(parsed);

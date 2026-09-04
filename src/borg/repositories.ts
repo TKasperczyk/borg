@@ -9,6 +9,7 @@ import type { EmbeddingClient } from "../embeddings/index.js";
 import { ExecutiveStepsRepository } from "../executive/index.js";
 import type { LLMClient } from "../llm/index.js";
 import { MoodRepository } from "../memory/affective/index.js";
+import { SourceStreamAudienceDisclosureResolver } from "../memory/common/index.js";
 import {
   ActivityRepository,
   LivedExperienceDaySummaryRepository,
@@ -84,6 +85,7 @@ import {
 export type BorgRepositorySetup = Pick<
   BorgDependencies,
   | "entryIndex"
+  | "sourceStreamAudienceDisclosureResolver"
   | "episodicRepository"
   | "semanticNodeRepository"
   | "semanticEdgeRepository"
@@ -329,6 +331,12 @@ export async function buildBorgRepositories(
     clock,
     identityEventRepository,
   });
+  const sourceStreamAudienceDisclosureResolver = new SourceStreamAudienceDisclosureResolver({
+    dataDir: config.dataDir,
+    entryIndex,
+    sessionsRepository,
+    entityRepository,
+  });
   const creatorDirectiveRepository = new CreatorDirectiveRepository({
     db: sqlite,
     clock,
@@ -535,6 +543,7 @@ export async function buildBorgRepositories(
     recallStateRepository,
     dataDir: config.dataDir,
     entryIndex,
+    sourceStreamAudienceDisclosureResolver,
     clock,
     tracer: options.tracer,
     semanticUnderReviewMultiplier: config.retrieval.semantic.underReviewMultiplier,
@@ -560,6 +569,7 @@ export async function buildBorgRepositories(
     socialRepository,
     entityRepository,
     commitmentRepository,
+    sourceStreamAudienceDisclosureResolver,
     reviewQueueRepository: createdReviewQueueRepository,
     identityService,
     identityEventRepository,
@@ -583,6 +593,7 @@ export async function buildBorgRepositories(
   }
   return {
     entryIndex,
+    sourceStreamAudienceDisclosureResolver,
     episodicRepository,
     semanticNodeRepository,
     semanticEdgeRepository,

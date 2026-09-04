@@ -8,6 +8,7 @@ import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { EpisodicRepository } from "../../memory/episodic/index.js";
 import type { GoalRecord, GoalsRepository } from "../../memory/self/index.js";
 import { goalMemoryDisclosureLabel } from "../../memory/common/disclosure-serializers.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../../memory/common/index.js";
 import { listActiveGoalsForCognition } from "../../cognition/self/active-goals.js";
 import {
   combineMemoryDisclosureLabels,
@@ -86,6 +87,7 @@ export type ExecutiveFocusDuePayload = {
 export type ExecutiveFocusDueTriggerOptions = {
   enabled: boolean;
   goalsRepository: GoalsRepository;
+  sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   executiveStepsRepository: ExecutiveStepsRepository;
   episodicRepository: EpisodicRepository;
   embeddingClient: EmbeddingClient;
@@ -426,7 +428,10 @@ export function createExecutiveFocusDueTrigger(
 
       const nowMs = clock.now();
       const actionAvailabilityKey = options.goalStaleBackoffActionAvailabilityKey?.() ?? null;
-      const goals = listActiveGoalsForCognition(options.goalsRepository);
+      const rawGoals = listActiveGoalsForCognition(options.goalsRepository);
+      const goals =
+        options.sourceStreamAudienceDisclosureResolver?.resolve({ goals: rawGoals }).goals ??
+        rawGoals;
       const goalDisclosureById = await buildGoalDisclosurePayloads({
         goals,
         episodicRepository: options.episodicRepository,

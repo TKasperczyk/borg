@@ -28,6 +28,7 @@ import {
   memoryDisclosureLabelFromMetadata,
   memoryDisclosurePayloadFields,
 } from "../../memory/common/disclosure-serializers.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../../memory/common/index.js";
 import type { SelfSnapshot } from "../deliberation/deliberator.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import type { PerceptionResult } from "../types.js";
@@ -38,6 +39,7 @@ export type TurnSelfContextOptions = {
   embeddingClient: EmbeddingClient;
   valuesRepository: Pick<ValuesRepository, "list">;
   goalsRepository: Pick<GoalsRepository, "list">;
+  sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   traitsRepository: Pick<TraitsRepository, "list">;
   autobiographicalRepository?: Pick<AutobiographicalRepository, "currentPeriod">;
   growthMarkersRepository?: Pick<GrowthMarkersRepository, "list">;
@@ -165,7 +167,10 @@ export class TurnSelfContextBuilder {
   constructor(private readonly options: TurnSelfContextOptions) {}
 
   async buildSelfSnapshot(_audienceEntityId: EntityId | null): Promise<SelfSnapshot> {
-    const goals = listActiveGoalRecordsForCognition(this.options.goalsRepository);
+    const rawGoals = listActiveGoalRecordsForCognition(this.options.goalsRepository);
+    const goals =
+      this.options.sourceStreamAudienceDisclosureResolver?.resolve({ goals: rawGoals }).goals ??
+      rawGoals;
     const values = this.options.valuesRepository.list();
     const traits = this.options.traitsRepository.list();
     const currentPeriod = this.options.autobiographicalRepository?.currentPeriod() ?? null;
@@ -181,7 +186,8 @@ export class TurnSelfContextBuilder {
   }
 
   async listActiveGoalsForCognition(_audienceEntityId: EntityId | null): Promise<GoalRecord[]> {
-    return listActiveGoalRecordsForCognition(this.options.goalsRepository);
+    const goals = listActiveGoalRecordsForCognition(this.options.goalsRepository);
+    return this.options.sourceStreamAudienceDisclosureResolver?.resolve({ goals }).goals ?? goals;
   }
 
   async build(input: TurnSelfContextInput): Promise<TurnSelfContext> {

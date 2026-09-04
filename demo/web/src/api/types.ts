@@ -364,6 +364,8 @@ export type IdentityGoal = {
   created_at: number;
   target_at: number | null;
   counterparty_entity_id: string | null;
+  disclosure?: string;
+  disclosure_label?: DisclosureLabel;
   children?: IdentityGoal[];
 };
 
@@ -508,6 +510,8 @@ export type Commitment = {
   revoked_reason: string | null;
   superseded_by_id: string | null;
   last_reinforced_at: number;
+  disclosure?: string;
+  disclosure_label?: DisclosureLabel;
 };
 
 export type CommitmentsResponse = {

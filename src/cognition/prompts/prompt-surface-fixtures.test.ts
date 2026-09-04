@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { MoodHistoryEntry } from "../../memory/affective/index.js";
 import type { CommitmentRecord, EntityRecord } from "../../memory/commitments/index.js";
 import type { SharedStateArtifact } from "../../memory/shared-state/index.js";
+import type { GoalRecord } from "../../memory/self/index.js";
+import type { MemoryDisclosureLabelMetadata } from "../../memory/common/index.js";
 import type { SocialProfile } from "../../memory/social/index.js";
 import { StreamWriter } from "../../stream/index.js";
 import { ToolDispatcher } from "../../tools/index.js";
@@ -205,6 +207,7 @@ const FIXTURE_NAMES = [
   "directed-outbound-framing.txt",
   "session-reentry-continuity.txt",
   "s2-planner-voice-anchors.txt",
+  "goal-origin-divergence.txt",
 ] as const;
 
 if (UPDATE_FIXTURES && process.env.CI !== undefined) {
@@ -330,7 +333,9 @@ function makeEntityRepository() {
   } as DeliberationContext["entityRepository"];
 }
 
-function makeCommitment(): CommitmentRecord {
+function makeCommitment(): CommitmentRecord & {
+  disclosure_label: MemoryDisclosureLabelMetadata;
+} {
   return {
     id: "cmt_aaaaaaaaaaaaaaaa" as CommitmentRecord["id"],
     record_version: 1,
@@ -357,6 +362,37 @@ function makeCommitment(): CommitmentRecord {
     superseded_by: null,
     canonicalized_by_artifact_entry_id: null,
     last_reinforced_at: NOW_MS,
+    disclosure_label: {
+      disclosure_class: "relationship_private",
+      origin_audience_entity_ids: [MEMBER_ID],
+      private_to_entity_ids: [GROUP_ID],
+      public_to_entity_ids: [],
+    },
+  };
+}
+
+function makeGoal(): GoalRecord & { disclosure_label: MemoryDisclosureLabelMetadata } {
+  return {
+    id: "goal_aaaaaaaaaaaaaaaa" as GoalRecord["id"],
+    description: "Finish the prompt-surface provenance rollout.",
+    terminal_condition: "All model-facing fixtures preserve historical origin audiences.",
+    priority: 9,
+    parent_goal_id: null,
+    status: "active",
+    progress_notes: "Resolver and serializer foundation completed.",
+    last_progress_ts: NOW_MS - 2_000,
+    created_at: NOW_MS - 8_000,
+    target_at: NOW_MS + 86_400_000,
+    audience_entity_id: GROUP_ID,
+    owner_entity_id: CREATOR_ID,
+    source_stream_entry_ids: [USER_ENTRY_ID],
+    provenance: { kind: "manual" },
+    disclosure_label: {
+      disclosure_class: "relationship_private",
+      origin_audience_entity_ids: [MEMBER_ID],
+      private_to_entity_ids: [GROUP_ID, CREATOR_ID],
+      public_to_entity_ids: [],
+    },
   };
 }
 
@@ -1347,6 +1383,41 @@ describe("prompt surface fixtures", () => {
       PLANNER_GOAL_TARGET_TOKENS,
     );
     expectFixture(COMPACT_PLANNER_FIXTURE_NAME, compactSystem);
+  });
+
+  it("pins scope-divergent goal origin labels without changing baseline membership", () => {
+    const workingMemory = makeWorkingMemory();
+    const baseline = makeContext({
+      workingMemory: {
+        ...workingMemory,
+        discourse_state: {
+          ...workingMemory.discourse_state,
+          stop_until_substantive_content: null,
+        },
+      },
+    });
+    const goal = makeGoal();
+    const context: DeliberationContext = {
+      ...baseline,
+      selfSnapshot: {
+        ...baseline.selfSnapshot,
+        goals: [goal],
+      },
+    };
+    const cacheable = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
+    const compact = buildCompactPlannerSystemPrompt({
+      context,
+      staticPrefix: cacheable.staticPrefix,
+      compactPlannerLedger: null,
+    });
+    const goalRows = systemBlocksToFixture(compact.system)
+      .split("\n")
+      .filter((line) => line.includes(goal.id))
+      .join("\n");
+
+    expect(goalRows).toContain(`oa="${MEMBER_ID}"`);
+    expect(goalRows).toContain(`pt="${GROUP_ID},${CREATOR_ID}"`);
+    expectFixture("goal-origin-divergence.txt", goalRows);
   });
 
   it("pins autonomous S2 planner system prompt", async () => {

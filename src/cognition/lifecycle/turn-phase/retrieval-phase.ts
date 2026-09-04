@@ -1064,6 +1064,8 @@ export async function runRetrievalPhase(input: {
         episodicRepository: input.options.episodicRepository,
         actionRepository: input.options.actionRepository,
         goalsRepository: input.options.goalsRepository,
+        sourceStreamAudienceDisclosureResolver:
+          input.options.sourceStreamAudienceDisclosureResolver,
         openQuestionsRepository: input.options.openQuestionsRepository,
         autobiographicalRepository: input.options.autobiographicalRepository,
         sessionsRepository: input.options.sessionsRepository,
@@ -1311,6 +1313,7 @@ export async function buildCompactedEvidenceLedgerWithoutSharedState(input: {
     relationalSlotRepository: input.options.relationalSlotRepository,
     actionRepository: input.options.actionRepository,
     commitmentRepository: input.options.commitmentRepository,
+    sourceStreamAudienceDisclosureResolver: input.options.sourceStreamAudienceDisclosureResolver,
     goalsRepository: input.options.goalsRepository,
     openQuestionsRepository: input.options.openQuestionsRepository,
     currentSessionTranscriptTokenBudget: config.currentSessionTranscriptTokenBudget,
@@ -1971,14 +1974,20 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
       audienceEntityId,
       activeParticipants: input.input.activeParticipants,
     });
-  const activeGoals = input.options.goalsRepository.list({
+  const rawActiveGoals = input.options.goalsRepository.list({
     status: "active",
     visibleToAudienceEntityId: audienceEntityId,
   });
-  const activeCommitments = input.options.commitmentRepository.list({
+  const rawActiveCommitments = input.options.commitmentRepository.list({
     activeOnly: true,
     audience: audienceEntityId,
   });
+  const resolvedDisclosure = input.options.sourceStreamAudienceDisclosureResolver?.resolve({
+    commitments: rawActiveCommitments,
+    goalTrees: rawActiveGoals,
+  });
+  const activeGoals = resolvedDisclosure?.goalTrees ?? rawActiveGoals;
+  const activeCommitments = resolvedDisclosure?.commitments ?? rawActiveCommitments;
   const activeCommitmentCanonicalizationRecords = activeCommitments.filter(
     isSharedStateCommitmentCanonicalizationRecord,
   );

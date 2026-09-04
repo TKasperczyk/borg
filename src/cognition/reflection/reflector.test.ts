@@ -3261,6 +3261,16 @@ describe("reflector", () => {
       counterpartyEntityId: bob,
       provenance: { kind: "manual" },
     });
+    const historicalOrigin = createEntityId();
+    const labeledGoal = {
+      ...goal,
+      disclosure_label: {
+        disclosure_class: "relationship_private" as const,
+        origin_audience_entity_ids: [historicalOrigin],
+        private_to_entity_ids: [alice],
+        public_to_entity_ids: [],
+      },
+    };
     const nextStep = {
       id: createExecutiveStepId(),
       description: "Draft Alice's private launch follow-up",
@@ -3286,14 +3296,14 @@ describe("reflector", () => {
         ...createOpenQuestionReflectionContext(),
         selfSnapshot: {
           values: [],
-          goals: [goal],
+          goals: [labeledGoal],
           traits: [],
         },
         activeOpenQuestions: [question],
         retrievedEpisodes: [retrieved],
         audienceEntityId: bob,
         executiveFocus: {
-          selected_goal: goal,
+          selected_goal: labeledGoal,
           selected_score: null,
           next_step: nextStep,
           candidates: [],
@@ -3308,7 +3318,11 @@ describe("reflector", () => {
         terminal_condition?: string | null;
         counterparty_entity_id?: string | null;
         disclosure?: string;
-        disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
+        disclosure_label?: {
+          disclosure_class?: string;
+          origin_audience_entity_ids?: string[];
+          private_to_entity_ids?: string[];
+        };
       }>;
       active_open_questions?: Array<{
         source?: string;
@@ -3324,7 +3338,11 @@ describe("reflector", () => {
           terminal_condition?: string | null;
           counterparty_entity_id?: string | null;
           disclosure?: string;
-          disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
+          disclosure_label?: {
+            disclosure_class?: string;
+            origin_audience_entity_ids?: string[];
+            private_to_entity_ids?: string[];
+          };
         };
         next_step?: {
           disclosure?: string;
@@ -3343,6 +3361,7 @@ describe("reflector", () => {
     expect(payload.active_goals?.[0]?.disclosure).toContain(`private-to=${alice}`);
     expect(payload.active_goals?.[0]?.disclosure_label).toMatchObject({
       disclosure_class: "relationship_private",
+      origin_audience_entity_ids: [historicalOrigin],
       private_to_entity_ids: [alice],
     });
     expect(payload.active_open_questions?.[0]?.disclosure).toContain(
@@ -3364,6 +3383,7 @@ describe("reflector", () => {
     });
     expect(payload.executive_focus?.selected_goal?.disclosure_label).toMatchObject({
       disclosure_class: "relationship_private",
+      origin_audience_entity_ids: [historicalOrigin],
       private_to_entity_ids: [alice],
     });
     expect(payload.executive_focus?.selected_goal?.terminal_condition).toBe(

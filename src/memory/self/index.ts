@@ -28,6 +28,7 @@ export {
   type GrowthMarkersSummary,
 } from "./growth-markers.js";
 export { selfMigrations } from "./migrations.js";
+export { flattenGoalTree } from "./goal-tree.js";
 export {
   buildOpenQuestionDedupeKey,
   createOpenQuestionsTableSchema,

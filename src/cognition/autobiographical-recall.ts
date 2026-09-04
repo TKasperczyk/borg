@@ -23,6 +23,7 @@ import type {
   OpenQuestionsRepository,
   GoalsRepository,
 } from "../memory/self/index.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../memory/common/index.js";
 import type { Provenance } from "../memory/common/provenance.js";
 import {
   memoryDisclosureLabelFromEpisodeAccess,
@@ -130,6 +131,7 @@ export type AutobiographicalRecallServiceOptions = {
   episodicRepository?: Partial<Pick<EpisodicRepository, "listRecentForCognition">>;
   actionRepository?: Pick<ActionRepository, "list">;
   goalsRepository?: Pick<GoalsRepository, "list">;
+  sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   openQuestionsRepository?: Pick<OpenQuestionsRepository, "list">;
   autobiographicalRepository?: Pick<AutobiographicalRepository, "listPeriods">;
   sessionsRepository?: Pick<SessionsRepository, "list">;
@@ -434,8 +436,8 @@ function actionTimestamp(action: ActionRecord): number {
   );
 }
 
-function flattenGoals(goals: readonly GoalTreeNode[]): GoalRecord[] {
-  return goals.flatMap((goal) => [goal, ...flattenGoals(goal.children)]);
+function flattenGoalsPreorder(goals: readonly GoalTreeNode[]): GoalRecord[] {
+  return goals.flatMap(({ children, ...goal }) => [goal, ...flattenGoalsPreorder(children)]);
 }
 
 type StreamEventCandidate = {
@@ -601,6 +603,12 @@ export class AutobiographicalRecallService {
         relativeAge: formatRelativeAge(item.occurredAt, nowMs),
       });
     };
+    const rawGoalTrees = this.options.goalsRepository?.list({}) ?? [];
+    const goals = flattenGoalsPreorder(
+      this.options.sourceStreamAudienceDisclosureResolver?.resolve({
+        goalTrees: rawGoalTrees,
+      }).goalTrees ?? rawGoalTrees,
+    );
 
     await this.collectActivity({ window, sourceCap, addItem, recordGroupSelection });
     this.collectSelfDecisions({ window, sourceCap, addItem, recordGroupSelection });
@@ -608,7 +616,7 @@ export class AutobiographicalRecallService {
     await this.collectEpisodes({ window, sourceCap, addItem, recordGroupSelection });
     this.collectObservedEvents({ window, sourceCap, addItem, recordGroupSelection });
     this.collectOpenQuestions({ window, sourceCap, addItem, recordGroupSelection });
-    this.collectGoals({ window, sourceCap, addItem, recordGroupSelection });
+    this.collectGoals({ window, sourceCap, addItem, recordGroupSelection, goals });
     this.collectAutobiographicalPeriods({ window, sourceCap, addItem, recordGroupSelection });
     this.collectActions({ window, sourceCap, addItem, recordGroupSelection });
 
@@ -1107,8 +1115,9 @@ export class AutobiographicalRecallService {
     sourceCap: number;
     addItem: (item: AddItemInput) => void;
     recordGroupSelection: RecordGroupSelection;
+    goals: readonly GoalRecord[];
   }): void {
-    const goals = flattenGoals(this.options.goalsRepository?.list({}) ?? []).filter((goal) =>
+    const goals = input.goals.filter((goal) =>
       withinWindow(goal.last_progress_ts ?? goal.created_at, input.window),
     );
     const selected = selectWindowEligibleCandidatesWithinSourceCap(goals, input.sourceCap);

@@ -20,6 +20,7 @@ import {
   type AttachmentId,
   type AutonomyWakeRecord,
   type Borg,
+  type BorgCommitmentWithDisclosure,
   type CommitmentEnforcementClass,
   type CommitmentRecord,
   type Config,
@@ -2139,7 +2140,7 @@ function commitmentState(record: CommitmentRecord): "active" | "revoked" | "expi
   return "active";
 }
 
-function mapCommitment(borg: Borg, record: CommitmentRecord) {
+function mapCommitment(borg: Borg, record: BorgCommitmentWithDisclosure) {
   return {
     id: record.id,
     text: record.directive,
@@ -2164,6 +2165,8 @@ function mapCommitment(borg: Borg, record: CommitmentRecord) {
     superseded_by_id: record.superseded_by,
     canonicalized_by_artifact_entry_id: record.canonicalized_by_artifact_entry_id ?? null,
     last_reinforced_at: record.last_reinforced_at,
+    disclosure: record.disclosure,
+    disclosure_label: record.disclosure_label,
   };
 }
 

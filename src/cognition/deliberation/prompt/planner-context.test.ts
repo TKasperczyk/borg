@@ -18,6 +18,8 @@ import {
   createStreamEntryId,
   createTraitId,
   createValueId,
+  entityIdHelpers,
+  type EntityId,
 } from "../../../util/ids.js";
 import type { DeliberationContext, SelfSnapshotGoal } from "../types.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../../tools/internal/outbound-post-name.js";
@@ -235,6 +237,7 @@ function livedEntry(input: {
   text: string;
   outcomeReference?: string;
   disclosureClass?: "public" | "self_private" | "sensitive";
+  originAudienceEntityIds?: readonly EntityId[];
   stance?: string;
   beliefEffect?: string;
 }): EvidenceLedgerEntry {
@@ -255,7 +258,7 @@ function livedEntry(input: {
       ...(input.beliefEffect === undefined ? {} : { belief_effect: input.beliefEffect }),
       disclosure_label: {
         disclosure_class: disclosureClass,
-        origin_audience_entity_ids: [],
+        origin_audience_entity_ids: [...(input.originAudienceEntityIds ?? [])],
         private_to_entity_ids: [],
         public_to_entity_ids: [],
       },
@@ -764,6 +767,36 @@ describe("compact planner context", () => {
     expect(text).toContain(
       'derivation_order="1:decision_unlabeled:2026-08-12T23:59:57.000Z:none:stance=none:belief_effect=none|2:decision_old:2026-08-12T23:59:58.000Z:none:stance=claim:belief_effect=introduced|3:decision_new:2026-08-12T23:59:59.000Z:none:stance=correction:belief_effect=revised"',
     );
+  });
+
+  it("combines repeated decision origins in chronology rather than reverse-lexical id order", () => {
+    const oldestOrigin = entityIdHelpers.parse("ent_zzzzzzzzzzzzzzzz");
+    const newestOrigin = entityIdHelpers.parse("ent_aaaaaaaaaaaaaaaa");
+    const entries = [
+      livedEntry({
+        id: "decision_zzzzzzzzzzzzzzzz",
+        kind: "self_decision_introspection",
+        occurredAt: NOW_MS - 2_000,
+        text: "Oldest derivation.",
+        outcomeReference: "goal_chronological_origin",
+        disclosureClass: "sensitive",
+        originAudienceEntityIds: [oldestOrigin],
+      }),
+      livedEntry({
+        id: "decision_aaaaaaaaaaaaaaaa",
+        kind: "self_decision_introspection",
+        occurredAt: NOW_MS - 1_000,
+        text: "Newest derivation.",
+        outcomeReference: "goal_chronological_origin",
+        disclosureClass: "sensitive",
+        originAudienceEntityIds: [newestOrigin],
+      }),
+    ];
+
+    const text = allSystemText(build(context({ evidenceLedger: evidenceLedger(entries) })));
+
+    expect(text).toContain(`origin_audience=${oldestOrigin},${newestOrigin}`);
+    expect(text).not.toContain(`origin_audience=${newestOrigin},${oldestOrigin}`);
   });
 
   it("prioritizes structural open loops and expands the lived budget on autonomous turns", () => {

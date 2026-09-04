@@ -87,6 +87,32 @@ describe("SessionsRepository", () => {
     expect(harness.repo.get(DEFAULT_SESSION_ID)).toEqual(updated);
   });
 
+  it("gets a deduplicated session batch in requested order and omits missing rows", () => {
+    const harness = openRepo();
+    db = harness.db;
+    const firstId = createSessionId();
+    const secondId = createSessionId();
+
+    for (const [sessionId, label] of [
+      [firstId, "first"],
+      [secondId, "second"],
+    ] as const) {
+      harness.repo.ensure({
+        session_id: sessionId,
+        source_type: "demo",
+        label,
+        audience_label: label,
+        conversation_kind: "demo",
+      });
+    }
+
+    expect(
+      harness.repo
+        .getMany([secondId, createSessionId(), firstId, secondId])
+        .map((row) => row.session_id),
+    ).toEqual([secondId, firstId]);
+  });
+
   it("migration 2 rebuilds a legacy closed-CHECK sessions table to accept connector source types", () => {
     const db = openDatabase(":memory:", { migrations: [] });
     // Simulate a legacy DB: the original baseline table WITH the closed source_type CHECK.
@@ -124,9 +150,9 @@ describe("SessionsRepository", () => {
     db.exec(
       "INSERT INTO sessions (session_id, source_type, label, audience_label, conversation_kind, created_at, last_activity_at, status) VALUES ('sess_ba','botarena','l','a','thread',1,1,'active')",
     );
-    const legacy = db.prepare("SELECT source_type FROM sessions WHERE session_id = 'sess_legacy'").get() as
-      | { source_type: string }
-      | undefined;
+    const legacy = db
+      .prepare("SELECT source_type FROM sessions WHERE session_id = 'sess_legacy'")
+      .get() as { source_type: string } | undefined;
     const ba = db.prepare("SELECT source_type FROM sessions WHERE session_id = 'sess_ba'").get() as
       | { source_type: string }
       | undefined;
