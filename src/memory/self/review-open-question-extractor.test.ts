@@ -11,6 +11,7 @@ import { FixedClock } from "../../util/clock.js";
 import {
   createEntityId,
   createOpenQuestionId,
+  parseEntityId,
   parseEpisodeId,
   parseOpenQuestionId,
   parseSemanticNodeId,
@@ -416,8 +417,9 @@ describe("review open-question extractor", () => {
       db.close();
       rmSync(tempDir, { recursive: true, force: true });
     });
-    const firstAudience = createEntityId();
-    const secondAudience = createEntityId();
+    // Keep source order deliberately opposite lexical ID order.
+    const firstAudience = parseEntityId("ent_bbbbbbbbbbbbbbbb");
+    const secondAudience = parseEntityId("ent_aaaaaaaaaaaaaaaa");
     const firstEpisodeId = parseEpisodeId("ep_bbbbbbbbbbbbbbbb");
     const secondEpisodeId = parseEpisodeId("ep_aaaaaaaaaaaaaaaa");
     const existing = repository.add({
@@ -468,7 +470,7 @@ describe("review open-question extractor", () => {
       related_episode_ids: [firstEpisodeId, secondEpisodeId],
       disclosure_label: {
         disclosureClass: "relationship_private",
-        originAudienceEntityIds: [firstAudience, secondAudience].sort(),
+        originAudienceEntityIds: [firstAudience, secondAudience],
         privateToEntityIds: [firstAudience, secondAudience].sort(),
       },
     });
