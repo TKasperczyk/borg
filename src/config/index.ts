@@ -594,6 +594,8 @@ const configBaseSchema = z.object({
           // epistemic evidence-quality signal, not the relevance ranking score.
           resolveConfidenceThreshold: z.number().min(0).max(1).default(0.55),
           duplicateSimilarityThreshold: z.number().min(0).max(1).default(0.9),
+          revisitPeriodMinDays: z.number().positive().default(2),
+          revisitPeriodMaxDays: z.number().positive().default(30),
           stalenessDays: z.number().positive().default(30),
           staleNoTractionTicks: z.number().int().positive().default(4),
           // Aborted at 40k-48k against the old 40k cap on five of nine runs.
@@ -861,6 +863,14 @@ export const configSchema = configOutputSchema.superRefine((value, context) => {
       code: z.ZodIssueCode.custom,
       message: `Maintenance light/heavy process lists must be disjoint: ${overlap.join(", ")}`,
       path: ["maintenance", "heavyProcesses"],
+    });
+  }
+
+  if (value.offline.ruminator.revisitPeriodMinDays > value.offline.ruminator.revisitPeriodMaxDays) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Ruminator minimum revisit period must not exceed its maximum revisit period",
+      path: ["offline", "ruminator", "revisitPeriodMinDays"],
     });
   }
 });
@@ -1676,6 +1686,16 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "ruminator", "resolveConfidenceThreshold"],
     readOptionalEnvFloat(env, "BORG_OFFLINE_RUMINATOR_RESOLVE_CONFIDENCE_THRESHOLD"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "ruminator", "revisitPeriodMinDays"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_RUMINATOR_REVISIT_PERIOD_MIN_DAYS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "ruminator", "revisitPeriodMaxDays"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_RUMINATOR_REVISIT_PERIOD_MAX_DAYS"),
   );
   setConfigOverride(
     overrides,

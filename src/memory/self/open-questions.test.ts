@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
@@ -19,6 +19,10 @@ import {
 import { expectedRecordVersion } from "../common/cas.js";
 
 import { selfMigrations } from "./migrations.js";
+import {
+  OPEN_QUESTION_DUPLICATE_PRESENTATION_LIMIT,
+  buildOpenQuestionDuplicatePresentation,
+} from "./open-question-duplicates.js";
 import { OpenQuestionsRepository, createOpenQuestionsTableSchema } from "./open-questions.js";
 
 class MapEmbeddingClient implements EmbeddingClient {
@@ -808,6 +812,105 @@ describe("OpenQuestionsRepository", () => {
           .findByHandles({ streamEntryIds: [], episodeIds: [episodeId] })
           .map((question) => question.id),
       ).toEqual([high.id, touchedTie.id, untouchedTie.id, low.id]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("retrieves cosine candidates globally across audience scopes", async () => {
+    const firstText = "Which private uncertainty belongs to the first audience?";
+    const secondText = "¿Qué incertidumbre equivalente pertenece a la segunda audiencia?";
+    const { repository } = await openVectorFixture(
+      new MapEmbeddingClient(
+        new Map([
+          [firstText, [1, 0, 0, 0]],
+          [secondText, [1, 0, 0, 0]],
+        ]),
+      ),
+    );
+    const first = repository.add({
+      question: firstText,
+      urgency: 0.4,
+      audience_entity_id: createEntityId(),
+      source: "reflection",
+      provenance: manualProvenance,
+    });
+    const second = repository.add({
+      question: secondText,
+      urgency: 0.5,
+      audience_entity_id: createEntityId(),
+      source: "reflection",
+      provenance: manualProvenance,
+    });
+    await repository.waitForPendingEmbeddings();
+
+    expect((await repository.searchSimilar(first, { minSimilarity: 0.9 }))[0]).toMatchObject({
+      question: { id: second.id },
+      similarity: 1,
+    });
+  });
+
+  it("uses the complete open set until the presentation limit, then marks proxy fallback", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      const questions = Array.from(
+        { length: OPEN_QUESTION_DUPLICATE_PRESENTATION_LIMIT },
+        (_, index) =>
+          repository.add({
+            question: `Open uncertainty ${index}?`,
+            urgency: 0.5,
+            source: "reflection",
+            provenance: manualProvenance,
+          }),
+      );
+      const complete = await buildOpenQuestionDuplicatePresentation({
+        repository,
+        sourceTextProxy: "complete-set proxy",
+      });
+
+      expect(complete).toMatchObject({
+        complete: true,
+        total_open_questions: OPEN_QUESTION_DUPLICATE_PRESENTATION_LIMIT,
+        presented_count: OPEN_QUESTION_DUPLICATE_PRESENTATION_LIMIT,
+        omitted_count: 0,
+      });
+
+      const overflow = repository.add({
+        question: "Overflow uncertainty?",
+        urgency: 0.5,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const nearest = [...questions.slice(1), overflow];
+      const searchByText = vi.spyOn(repository, "searchByText").mockResolvedValue(
+        nearest.map((question, index) => ({
+          question,
+          similarity: 1 - index / 1_000,
+        })),
+      );
+      const incomplete = await buildOpenQuestionDuplicatePresentation({
+        repository,
+        sourceTextProxy: "overflow proxy",
+      });
+
+      expect(searchByText).toHaveBeenCalledWith("overflow proxy", {
+        status: "open",
+        limit: OPEN_QUESTION_DUPLICATE_PRESENTATION_LIMIT,
+      });
+      expect(incomplete).toMatchObject({
+        complete: false,
+        total_open_questions: OPEN_QUESTION_DUPLICATE_PRESENTATION_LIMIT + 1,
+        presented_count: OPEN_QUESTION_DUPLICATE_PRESENTATION_LIMIT,
+        omitted_count: 1,
+      });
+      expect(incomplete.rows.map((row) => row.id)).toEqual(nearest.map((question) => question.id));
     } finally {
       db.close();
     }

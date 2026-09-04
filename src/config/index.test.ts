@@ -614,6 +614,39 @@ describe("config", () => {
     expect(config.maintenance).toEqual(DEFAULT_CONFIG.maintenance);
   });
 
+  it("loads ruminator revisit periods from defaults and environment", () => {
+    const defaultDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const overrideDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(defaultDir, overrideDir);
+
+    expect(loadConfig({ dataDir: defaultDir, env: {} }).offline.ruminator).toMatchObject({
+      revisitPeriodMinDays: 2,
+      revisitPeriodMaxDays: 30,
+    });
+    expect(
+      loadConfig({
+        dataDir: overrideDir,
+        env: {
+          BORG_OFFLINE_RUMINATOR_REVISIT_PERIOD_MIN_DAYS: "1.5",
+          BORG_OFFLINE_RUMINATOR_REVISIT_PERIOD_MAX_DAYS: "45",
+        },
+      }).offline.ruminator,
+    ).toMatchObject({
+      revisitPeriodMinDays: 1.5,
+      revisitPeriodMaxDays: 45,
+    });
+    expect(() =>
+      configSchema.parse({
+        offline: {
+          ruminator: {
+            revisitPeriodMinDays: 31,
+            revisitPeriodMaxDays: 30,
+          },
+        },
+      }),
+    ).toThrow(/minimum revisit period/);
+  });
+
   it("accepts deprecated llm fallback env aliases", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

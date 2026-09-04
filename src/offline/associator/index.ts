@@ -9,7 +9,15 @@ import {
 } from "../../llm/index.js";
 import { episodeIdSchema, type Episode, type EpisodeStats } from "../../memory/episodic/index.js";
 import { memoryDisclosureLabelSchema } from "../../memory/common/disclosure-label.js";
-import { buildOpenQuestionDedupeKey, openQuestionSchema } from "../../memory/self/index.js";
+import {
+  buildOpenQuestionDedupeKey,
+  buildOpenQuestionDuplicatePresentation,
+  buildOpenQuestionReinforcementPatch,
+  findOpenQuestionDuplicateBackstop,
+  openQuestionIdSchema,
+  openQuestionSchema,
+  type OpenQuestionDuplicatePresentation,
+} from "../../memory/self/index.js";
 import {
   semanticEdgeIdSchema,
   semanticNodeCorrectionRefSchema,
@@ -44,6 +52,8 @@ export const ASSOCIATOR_PROMPT = [
   "Finding nothing is an honest and common outcome of a sweep like this. Emptiness is not failure.",
   "When something does connect, I decide its weight honestly.",
   "If it is a weak hypothesis worth holding, I write it as an open question with low urgency by default.",
+  "Before writing an open question, I compare it with every supplied open-question candidate. The candidates are global across audiences and sources. Rephrasing, translation, audience, source, and elapsed time do not make a second question when the underlying unresolved uncertainty is the same.",
+  "When a supplied open question already covers the proposed uncertainty, I set duplicate_of_open_question_id to that supplied id. I never name an id outside the supplied candidate rows.",
   "If it is a pattern I would assert subject to review, I write it as an insight with conservative confidence.",
   "I cite only the episode ids that actually ground the finding.",
   "I do not force symmetry, analogy, or closure. I return an empty findings list when the supplied episodes do not responsibly support a finding.",
@@ -56,6 +66,7 @@ const associatorOpenQuestionFindingSchema = z.object({
   question: z.string().min(1),
   urgency: z.number().min(0).max(1),
   source_episode_ids: z.array(z.string().min(1)).min(1),
+  duplicate_of_open_question_id: openQuestionIdSchema.nullable().default(null),
 });
 
 const associatorNewInsightFindingSchema = z.object({
@@ -138,6 +149,7 @@ const associatorPlanFindingSchema = z.discriminatedUnion("kind", [
     urgency: z.number().min(0).max(1),
     episode_ids: z.array(episodeIdSchema).min(1),
     source_disclosure_label: memoryDisclosureLabelSchema,
+    duplicate_of_open_question_id: openQuestionIdSchema.nullable().default(null),
   }),
   z.object({
     kind: z.literal("new_insight"),
@@ -157,6 +169,9 @@ const associatorPlanSampleSchema = z.object({
   seed: z.string().min(1),
   episode_ids: z.array(episodeIdSchema).min(1),
   source_disclosure_label: memoryDisclosureLabelSchema,
+  presented_open_question_ids: z.array(openQuestionIdSchema).default([]),
+  open_question_candidate_set_complete: z.boolean().default(true),
+  open_question_candidates_omitted: z.number().int().nonnegative().default(0),
   findings: z.array(associatorPlanFindingSchema).default([]),
 });
 
@@ -516,6 +531,7 @@ async function collectAssociationSamples(ctx: OfflineContext): Promise<Associati
 function renderSamplePrompt(
   sample: AssociationSample,
   statsById: ReadonlyMap<Episode["id"], EpisodeStats>,
+  duplicatePresentation: OpenQuestionDuplicatePresentation,
 ): string {
   return [
     ASSOCIATOR_PROMPT,
@@ -536,6 +552,14 @@ function renderSamplePrompt(
         }),
       ),
     ),
+    "Open-question duplicate candidate set:",
+    JSON.stringify({
+      complete: duplicatePresentation.complete,
+      total_open_questions: duplicatePresentation.total_open_questions,
+      presented_count: duplicatePresentation.presented_count,
+      omitted_count: duplicatePresentation.omitted_count,
+    }),
+    ...duplicatePresentation.rows.map((row) => JSON.stringify(row)),
   ].join("\n");
 }
 
@@ -696,11 +720,25 @@ async function buildSampleFindings(input: {
 }): Promise<{
   findings: AssociatorPlan["samples"][number]["findings"];
   truncatedFindings: number;
+  duplicatePresentation: OpenQuestionDuplicatePresentation;
 }> {
   const allowedIds = new Set(input.sample.episodes.map((episode) => episode.id));
   const statsById = input.ctx.episodicRepository.getStatsMany(
     input.sample.episodes.map((episode) => episode.id),
   );
+  const duplicatePresentation = await buildOpenQuestionDuplicatePresentation({
+    repository: input.ctx.openQuestionsRepository,
+    sourceTextProxy: input.sample.episodes
+      .map((episode) => `${episode.title}\n${episode.narrative}`)
+      .join("\n"),
+    onSearchFailure: (error) => {
+      console.warn("Associator open-question candidate search failed open", {
+        run_id: input.ctx.runId,
+        error,
+      });
+    },
+  });
+  const presentedOpenQuestionIds = new Set(duplicatePresentation.rows.map((row) => row.id));
   let response: z.infer<typeof associatorResponseSchema>;
 
   try {
@@ -713,7 +751,7 @@ async function buildSampleFindings(input: {
           messages: [
             {
               role: "user",
-              content: renderSamplePrompt(input.sample, statsById),
+              content: renderSamplePrompt(input.sample, statsById, duplicatePresentation),
             },
           ],
           tools: [ASSOCIATOR_TOOL],
@@ -747,6 +785,11 @@ async function buildSampleFindings(input: {
             input.ctx.episodicRepository,
             episodeIds,
           ),
+          duplicate_of_open_question_id:
+            finding.duplicate_of_open_question_id !== null &&
+            presentedOpenQuestionIds.has(finding.duplicate_of_open_question_id)
+              ? finding.duplicate_of_open_question_id
+              : null,
         }),
       );
       continue;
@@ -764,6 +807,7 @@ async function buildSampleFindings(input: {
   return {
     findings,
     truncatedFindings,
+    duplicatePresentation,
   };
 }
 
@@ -961,6 +1005,9 @@ export class AssociatorProcess implements OfflineProcess<AssociatorPlan> {
               seed: sample.seed,
               episode_ids: sample.episodes.map((episode) => episode.id),
               source_disclosure_label: sampleSourceDisclosureLabel,
+              presented_open_question_ids: result.duplicatePresentation.rows.map((row) => row.id),
+              open_question_candidate_set_complete: result.duplicatePresentation.complete,
+              open_question_candidates_omitted: result.duplicatePresentation.omitted_count,
               findings,
             });
           } catch (error) {
@@ -1037,23 +1084,47 @@ export class AssociatorProcess implements OfflineProcess<AssociatorPlan> {
               audienceEntityId: null,
             }),
           );
-          const similar =
-            existingByDedupeKey?.status === "open"
-              ? { question: existingByDedupeKey, similarity: 1 }
-              : await ctx.identityService.findSimilarOpenQuestion({
+          const advisoryDuplicate =
+            finding.duplicate_of_open_question_id !== null &&
+            sample.presented_open_question_ids.includes(finding.duplicate_of_open_question_id)
+              ? ctx.openQuestionsRepository.get(finding.duplicate_of_open_question_id)
+              : null;
+          const backstop =
+            advisoryDuplicate?.status === "open" || existingByDedupeKey?.status === "open"
+              ? null
+              : await findOpenQuestionDuplicateBackstop({
+                  repository: ctx.openQuestionsRepository,
                   question: finding.question,
-                  audienceEntityId: null,
+                  onSearchFailure: (error) => {
+                    console.warn("Associator open-question duplicate backstop failed open", {
+                      run_id: ctx.runId,
+                      error,
+                    });
+                  },
                 });
+          const similar =
+            advisoryDuplicate?.status === "open"
+              ? { question: advisoryDuplicate, similarity: null }
+              : existingByDedupeKey?.status === "open"
+                ? { question: existingByDedupeKey, similarity: 1 }
+                : backstop;
 
           if (similar !== null) {
             const previous = similar.question;
-            const result = ctx.identityService.bumpOpenQuestionUrgency(
+            const result = ctx.identityService.updateOpenQuestion(
               previous.id,
-              OPEN_QUESTION_REINFORCEMENT_DELTA,
+              buildOpenQuestionReinforcementPatch({
+                existing: previous,
+                incomingRelatedEpisodeIds: finding.episode_ids,
+                incomingRelatedSemanticNodeIds: [],
+                incomingDisclosureLabel: finding.source_disclosure_label,
+                urgencyDelta: OPEN_QUESTION_REINFORCEMENT_DELTA,
+              }),
               processProvenance,
               {
                 throughReview: true,
                 reason: "associator_open_question_reinforcement",
+                preserveRecordProvenance: true,
               },
             );
 

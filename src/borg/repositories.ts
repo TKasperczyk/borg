@@ -463,6 +463,7 @@ export async function buildBorgRepositories(
     onEnqueue: (item) =>
       enqueueOpenQuestionForReview(identityService, item, {
         extractor: reviewOpenQuestionExtractor,
+        openQuestionsRepository,
       }),
     onEnqueueError: (error) => {
       const writer = createDefaultStreamWriter();

@@ -670,6 +670,23 @@ export class OpenQuestionsRepository {
     return results;
   }
 
+  async searchByText(
+    text: string,
+    options: {
+      status?: OpenQuestionStatus;
+      limit?: number;
+      minSimilarity?: number;
+    } = {},
+  ): Promise<OpenQuestionSearchCandidate[]> {
+    const embeddingClient = this.embeddingClient;
+
+    if (embeddingClient === undefined) {
+      return [];
+    }
+
+    return this.searchByVector(await embeddingClient.embed(text), options);
+  }
+
   async searchSimilar(
     question: OpenQuestion,
     options: {
@@ -690,7 +707,6 @@ export class OpenQuestionsRepository {
     return (
       await this.searchByVector(vector, {
         status: "open",
-        visibleToAudienceEntityId: question.audience_entity_id,
         limit: options.limit,
         minSimilarity: options.minSimilarity,
       })
@@ -706,25 +722,15 @@ export class OpenQuestionsRepository {
     input: OpenQuestionSimilarLookupOptions,
   ): Promise<OpenQuestionSearchCandidate | null> {
     const normalizedQuestion = normalizeQuestionForDedupe(input.question);
-    const filters: string[] = ["status = 'open'"];
-    const values: unknown[] = [];
-
-    if (input.audienceEntityId === null || input.audienceEntityId === undefined) {
-      filters.push("audience_entity_id IS NULL");
-    } else {
-      filters.push("(audience_entity_id IS NULL OR audience_entity_id = ?)");
-      values.push(openQuestionAudienceEntityIdSchema.parse(input.audienceEntityId));
-    }
-
     const rows = this.db
       .prepare(
         `
           SELECT *
           FROM open_questions
-          WHERE ${filters.join(" AND ")}
+          WHERE status = 'open'
         `,
       )
-      .all(...values) as Record<string, unknown>[];
+      .all() as Record<string, unknown>[];
 
     for (const row of rows) {
       if (normalizeQuestionForDedupe(String(row.question ?? "")) === normalizedQuestion) {
@@ -1085,6 +1091,21 @@ export class OpenQuestionsRepository {
         `,
       )
       .all(...values, limit) as Record<string, unknown>[];
+
+    return rows.map((row) => mapOpenQuestionRow(row));
+  }
+
+  listAllOpen(): OpenQuestion[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM open_questions
+          WHERE status = 'open'
+          ORDER BY urgency DESC, last_touched DESC, created_at DESC, id ASC
+        `,
+      )
+      .all() as Record<string, unknown>[];
 
     return rows.map((row) => mapOpenQuestionRow(row));
   }
