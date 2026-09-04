@@ -2952,6 +2952,104 @@ describe("buildBaseSystemPrompt", () => {
     );
   });
 
+  // A resting brake has two causes and used to render one string. Below threshold
+  // and threshold-crossed-but-expired are a different number of failures from a
+  // refusal, and a reader who carries the first reading into the second is wrong
+  // about how close the next wake is to being refused. Both branches are asserted
+  // here rather than one, because the defect was that they were indistinguishable.
+  it("separates the two states a resting fleet brake renders", () => {
+    const brakeLine = (
+      brake: Partial<{
+        empty_streak: number;
+        cooldown_until: number | null;
+        error_streak: number;
+        error_paused_until: number | null;
+      }>,
+    ): string => {
+      const block = extractBlock(
+        buildBaseSystemPrompt(
+          makeContext({
+            turnOrigin: "user",
+            turnMechanismEvidence: {
+              recentSuppressions: [],
+              recentRegenerations: [],
+              autonomySchedulerState: {
+                observedAt: NOW_MS,
+                enabled: true,
+                tickInFlight: false,
+                intervalMs: 60_000,
+                droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
+                intervalArmedAt: NOW_MS - 3_600_000,
+                sources: [],
+                nextTickAt: NOW_MS + 60_000,
+                scheduledTickAt: NOW_MS + 60_000,
+                fleetBrake: {
+                  enabled: true,
+                  empty_streak: 0,
+                  empty_streak_threshold: 5,
+                  streak_anchor_ts: null,
+                  cooldown_until: null,
+                  error_streak: 0,
+                  error_streak_threshold: 3,
+                  error_paused_until: null,
+                  bypass_count: 0,
+                  freshness_bypass_cap: 3,
+                  window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0, interrupted: 0 },
+                  window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
+                  window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+                  window_error_span: null,
+                  window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+                  ...brake,
+                },
+                budget: {
+                  max_wakes_per_window: 6,
+                  window_ms: 60 * 60_000,
+                  window_started_at: NOW_MS - 60 * 60_000,
+                  used_in_current_window: 1,
+                  reserved_contemplative_wakes_per_window: 0,
+                  contemplative_used_in_current_window: 0,
+                  wakes_in_current_window_by_trigger: [],
+                  next_budget_slot_frees_at: NOW_MS + 30 * 60_000,
+                },
+              },
+            },
+          }),
+          { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+        ),
+        "borg_mechanism_evidence",
+      );
+      return block.split("\n").find((entry) => entry.startsWith("Fleet brake")) ?? "";
+    };
+
+    const belowThreshold = brakeLine({});
+    const expiredPause = brakeLine({
+      error_streak: 3,
+      error_paused_until: NOW_MS - 30 * 60_000,
+    });
+
+    expect(belowThreshold).toContain("not currently holding");
+    expect(expiredPause).toContain("not currently holding");
+    // The whole point: the phrase is shared and the rest of the line is not.
+    expect(belowThreshold).not.toEqual(expiredPause);
+    expect(belowThreshold).toContain("no error-streak pause is set, the streak behind it");
+    expect(belowThreshold).not.toContain("ran out");
+    expect(expiredPause).toContain("the error-streak pause it opened ran out");
+    expect(expiredPause).toContain("still at 3/3");
+    expect(expiredPause).toContain("re-anchors that pause rather than starting the streak over");
+    for (const line of [belowThreshold, expiredPause]) {
+      expect(line).toContain(
+        "Not holding is two states, not one: a streak below its threshold, and a threshold already crossed whose pause has expired",
+      );
+    }
+
+    const holding = brakeLine({
+      error_streak: 3,
+      error_paused_until: NOW_MS + 30 * 60_000,
+    });
+    expect(holding).toContain("holding -- error-streak pause until");
+    expect(holding).not.toContain("Not holding is two states");
+  });
+
   // The only prospective field the scheduler produces. Everything else on the
   // block is retrospective or about the loop's own health, so nothing else there
   // supports a claim about the next wake that could turn out wrong. Rendering it

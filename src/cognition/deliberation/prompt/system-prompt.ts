@@ -2014,12 +2014,46 @@ export function summarizeAutonomySchedulerState(
         ).toISOString()} (${countdownFromHeader(brake.error_paused_until)})`,
   ].filter((gate): gate is string => gate !== null);
 
+  // "not currently holding" was true in two states this line rendered identically, and they are
+  // not equivalent -- they are a different number of failures apart from a refusal. A gate stamp
+  // is null only while its streak is below threshold (fleet-brake.ts: both
+  // fleetBrakeCooldownUntilMs and fleetBrakeErrorPausedUntilMs return null on that branch), so
+  // null means the streak has not reached the trigger at all. A stamp in the past means the
+  // streak IS at or over threshold and the pause it opened -- anchored on the streak's last
+  // failure, widened by the streak -- has merely elapsed: the next failure re-anchors at that
+  // failure's stamp with the exponent already accumulated, so the brake is one event from
+  // holding rather than `threshold` events. The resting clause names which, because the phrase
+  // alone cannot, and a reader can otherwise carry one reading across a window where the other
+  // was true.
+  const restingGate = (
+    label: string,
+    until: number | null,
+    streak: number,
+    threshold: number,
+  ): string =>
+    until === null
+      ? `no ${label} is set, the streak behind it standing at ${streak}/${threshold}`
+      : `the ${label} it opened ran out ${new Date(until).toISOString()} (${formatRelativeAge(
+          until,
+          renderNowMs,
+        )}) with the streak behind it still at ${streak}/${threshold}, so the next one re-anchors that pause rather than starting the streak over`;
+
   lines.push(
     `Fleet brake (a second refusal path, independent of the budget above): ${
       brake.enabled ? "enabled" : "disabled"
     }, ${
       brakeGates.length === 0
-        ? "not currently holding"
+        ? `not currently holding -- ${restingGate(
+            "empty-streak cooldown",
+            brake.cooldown_until,
+            brake.empty_streak,
+            brake.empty_streak_threshold,
+          )}; ${restingGate(
+            "error-streak pause",
+            brake.error_paused_until,
+            brake.error_streak,
+            brake.error_streak_threshold,
+          )}. Not holding is two states, not one: a streak below its threshold, and a threshold already crossed whose pause has expired`
         : `holding -- ${brakeGates.join("; ")}, so wakes are refused even with budget headroom`
     }.`,
   );
