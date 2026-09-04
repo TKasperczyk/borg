@@ -10,19 +10,25 @@ import {
 import type { ReviewQueueItem } from "../review-queue/review-queue.js";
 import {
   episodeIdHelpers,
+  openQuestionIdHelpers,
   parseEpisodeId,
+  parseOpenQuestionId,
   parseSemanticNodeId,
   semanticNodeIdHelpers,
   type EntityId,
   type EpisodeId,
   type SemanticNodeId,
 } from "../../util/ids.js";
+import type { OpenQuestionDuplicatePresentation } from "./open-question-duplicates.js";
 
 const episodeIdToolSchema = z.string().regex(episodeIdHelpers.pattern, {
   message: "Invalid episode id",
 });
 const semanticNodeIdToolSchema = z.string().regex(semanticNodeIdHelpers.pattern, {
   message: "Invalid semantic node id",
+});
+const openQuestionIdToolSchema = z.string().regex(openQuestionIdHelpers.pattern, {
+  message: "Invalid open question id",
 });
 
 const reviewOpenQuestionProposalSchema = z
@@ -31,6 +37,7 @@ const reviewOpenQuestionProposalSchema = z
     urgency: z.number().min(0).max(1),
     related_episode_ids: z.array(episodeIdToolSchema).default([]),
     related_semantic_node_ids: z.array(semanticNodeIdToolSchema).default([]),
+    duplicate_of_open_question_id: openQuestionIdToolSchema.nullable().default(null),
   })
   .strict();
 
@@ -49,6 +56,8 @@ const REVIEW_OPEN_QUESTION_SYSTEM_PROMPT = [
   "Write the question in the user's language when the review reason, labels, memory text, or surrounding fields make that language clear. If the language is not clear, choose the natural language that best fits the supplied text.",
   "",
   "Emit only IDs that are present in the allowed related ID lists. If no allowed ID is relevant, emit an empty list for that ID type.",
+  "The open-question candidate rows are global across audiences and sources. Compare the proposed question with every supplied row. Rephrasing, translation, audience, source, and elapsed time do not make a second question when the underlying unresolved uncertainty is the same.",
+  "When a supplied row already covers the proposed uncertainty, set duplicate_of_open_question_id to that row's id. Never name an id outside the supplied rows. The candidate-set marker says whether the rows are complete and how many were omitted.",
 ].join("\n");
 
 export type OpenQuestionProposal = {
@@ -56,12 +65,14 @@ export type OpenQuestionProposal = {
   urgency: number;
   related_episode_ids: EpisodeId[];
   related_semantic_node_ids: SemanticNodeId[];
+  duplicate_of_open_question_id?: ReturnType<typeof parseOpenQuestionId> | null;
 };
 
 export type ReviewOpenQuestionContext = {
   audience_entity_id: EntityId | null;
   allowed_episode_ids: readonly EpisodeId[];
   allowed_semantic_node_ids: readonly SemanticNodeId[];
+  open_question_duplicate_candidates?: OpenQuestionDuplicatePresentation;
 };
 
 export type ReviewOpenQuestionExtractorDegradedEvent = {
@@ -93,6 +104,10 @@ function toOpenQuestionProposal(
     urgency: input.urgency,
     related_episode_ids: input.related_episode_ids.map((id) => parseEpisodeId(id)),
     related_semantic_node_ids: input.related_semantic_node_ids.map((id) => parseSemanticNodeId(id)),
+    duplicate_of_open_question_id:
+      input.duplicate_of_open_question_id === null
+        ? null
+        : parseOpenQuestionId(input.duplicate_of_open_question_id),
   };
 }
 

@@ -17,7 +17,9 @@ import {
   type Float32ArrayCodecOptions,
 } from "../../storage/codecs.js";
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
+import { tableExists } from "../../storage/sqlite/migrations-utils.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
+import { dedupePreservingOrder } from "../../util/collections.js";
 import { ProvenanceError, StorageError } from "../../util/errors.js";
 import { clamp } from "../../util/math.js";
 import {
@@ -31,7 +33,7 @@ import {
   type MaintenanceRunId,
   type OpenQuestionId,
 } from "../../util/ids.js";
-import { serializeJsonValue } from "../../util/json-value.js";
+import { assertJsonValue, serializeJsonValue, type JsonValue } from "../../util/json-value.js";
 import { episodeIdSchema } from "../episodic/types.js";
 import { semanticNodeIdSchema } from "../semantic/types.js";
 import {
@@ -155,6 +157,41 @@ export type OpenQuestionRuminationRangeOptions = {
   untilMs: number;
   openQuestionId?: OpenQuestionId;
   limit?: number;
+};
+
+export type OpenQuestionRuminationRunStampResult = {
+  question: OpenQuestion;
+  stamped: boolean;
+  rumination: OpenQuestionRumination | null;
+};
+
+export type OpenQuestionRuminationRunStampInput = {
+  open_question_id: OpenQuestionId;
+  source_run_id: MaintenanceRunId;
+  next_unresolved_rumination_ticks: number;
+  rumination?: Omit<OpenQuestionRuminationInput, "open_question_id" | "source_run_id"> | null;
+};
+
+export type OpenQuestionDuplicateMergeReferenceCounts = {
+  ruminations: number;
+  rumination_connections: number;
+  rumination_stamps: number;
+  actions: number;
+  shared_state_entries: number;
+  review_queue_items: number;
+  recall_states: number;
+  stream_watermarks: number;
+};
+
+export type OpenQuestionDuplicateMergeResult = {
+  primary: OpenQuestion;
+  duplicate: OpenQuestion;
+  reparented: OpenQuestionDuplicateMergeReferenceCounts;
+};
+
+export type OpenQuestionDuplicateMergeOptions = {
+  expectedPrimaryVersion?: number;
+  expectedDuplicateVersion?: number;
 };
 
 type OpenQuestionVectorRow = {
@@ -304,7 +341,9 @@ export function buildOpenQuestionDedupeKey(input: {
 
 function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
   const disclosureLabel =
-    row.disclosure_label === null || row.disclosure_label === undefined || row.disclosure_label === ""
+    row.disclosure_label === null ||
+    row.disclosure_label === undefined ||
+    row.disclosure_label === ""
       ? undefined
       : parseMemoryDisclosureLabel(row.disclosure_label);
   const parsed = openQuestionRecordSchema.safeParse({
@@ -431,9 +470,7 @@ function mapOpenQuestionRuminationRow(row: Record<string, unknown>): OpenQuestio
       source_run_id:
         row.source_run_id === null || row.source_run_id === undefined ? null : row.source_run_id,
       source_turn_id:
-        row.source_turn_id === null || row.source_turn_id === undefined
-          ? null
-          : row.source_turn_id,
+        row.source_turn_id === null || row.source_turn_id === undefined ? null : row.source_turn_id,
       provenance: parseStoredProvenance({
         provenance_kind: row.provenance_kind,
         provenance_episode_ids: row.provenance_episode_ids,
@@ -454,6 +491,77 @@ function mapOpenQuestionRuminationRow(row: Record<string, unknown>): OpenQuestio
 
 function uniqueNonEmptyStrings(values: readonly string[] | undefined): string[] {
   return [...new Set((values ?? []).filter((value) => value.length > 0))];
+}
+
+function parseJsonColumn(value: unknown, label: string): JsonValue {
+  try {
+    const parsed = JSON.parse(String(value)) as unknown;
+    assertJsonValue(parsed);
+    return parsed;
+  } catch (error) {
+    throw new StorageError(`Failed to parse ${label}`, {
+      cause: error,
+      code: "OPEN_QUESTION_REFERENCE_INVALID",
+    });
+  }
+}
+
+// Open-question ids and recall-handle keys are machine-generated source handles.
+// Moving an exact handle is structural bookkeeping, not an interpretation of text.
+function reparentOpenQuestionHandles(
+  value: JsonValue,
+  duplicateId: OpenQuestionId,
+  primaryId: OpenQuestionId,
+): JsonValue {
+  const duplicateRecallKey = `open_question:${duplicateId}`;
+  const primaryRecallKey = `open_question:${primaryId}`;
+
+  if (typeof value === "string") {
+    if (value === duplicateId) {
+      return primaryId;
+    }
+
+    return value === duplicateRecallKey ? primaryRecallKey : value;
+  }
+
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => reparentOpenQuestionHandles(item, duplicateId, primaryId));
+  }
+
+  const result: { [key: string]: JsonValue } = {};
+  const entries = Object.entries(value).sort(([leftKey], [rightKey]) => {
+    const leftIsDuplicate = leftKey === duplicateId || leftKey === duplicateRecallKey;
+    const rightIsDuplicate = rightKey === duplicateId || rightKey === duplicateRecallKey;
+    return Number(leftIsDuplicate) - Number(rightIsDuplicate);
+  });
+
+  for (const [key, nestedValue] of entries) {
+    const nextKey =
+      key === duplicateId ? primaryId : key === duplicateRecallKey ? primaryRecallKey : key;
+    const nextValue = reparentOpenQuestionHandles(nestedValue, duplicateId, primaryId);
+    const existing = result[nextKey];
+
+    // The only expected key collision is recall-state suppression expiry. Keep
+    // the later expiry; otherwise preserve the value already held by the primary.
+    if (typeof existing === "number" && typeof nextValue === "number") {
+      result[nextKey] = Math.max(existing, nextValue);
+    } else if (existing === undefined) {
+      result[nextKey] = nextValue;
+    }
+  }
+
+  return result;
+}
+
+function openQuestionMergeTombstoneDedupeKey(
+  duplicateId: OpenQuestionId,
+  primaryId: OpenQuestionId,
+): string {
+  return `merged:${duplicateId}:into:${primaryId}`;
 }
 
 export class OpenQuestionsRepository {
@@ -670,6 +778,23 @@ export class OpenQuestionsRepository {
     return results;
   }
 
+  async searchByText(
+    text: string,
+    options: {
+      status?: OpenQuestionStatus;
+      limit?: number;
+      minSimilarity?: number;
+    } = {},
+  ): Promise<OpenQuestionSearchCandidate[]> {
+    const embeddingClient = this.embeddingClient;
+
+    if (embeddingClient === undefined) {
+      return [];
+    }
+
+    return this.searchByVector(await embeddingClient.embed(text), options);
+  }
+
   async searchSimilar(
     question: OpenQuestion,
     options: {
@@ -690,7 +815,6 @@ export class OpenQuestionsRepository {
     return (
       await this.searchByVector(vector, {
         status: "open",
-        visibleToAudienceEntityId: question.audience_entity_id,
         limit: options.limit,
         minSimilarity: options.minSimilarity,
       })
@@ -706,25 +830,15 @@ export class OpenQuestionsRepository {
     input: OpenQuestionSimilarLookupOptions,
   ): Promise<OpenQuestionSearchCandidate | null> {
     const normalizedQuestion = normalizeQuestionForDedupe(input.question);
-    const filters: string[] = ["status = 'open'"];
-    const values: unknown[] = [];
-
-    if (input.audienceEntityId === null || input.audienceEntityId === undefined) {
-      filters.push("audience_entity_id IS NULL");
-    } else {
-      filters.push("(audience_entity_id IS NULL OR audience_entity_id = ?)");
-      values.push(openQuestionAudienceEntityIdSchema.parse(input.audienceEntityId));
-    }
-
     const rows = this.db
       .prepare(
         `
           SELECT *
           FROM open_questions
-          WHERE ${filters.join(" AND ")}
+          WHERE status = 'open'
         `,
       )
-      .all(...values) as Record<string, unknown>[];
+      .all() as Record<string, unknown>[];
 
     for (const row of rows) {
       if (normalizeQuestionForDedupe(String(row.question ?? "")) === normalizedQuestion) {
@@ -1089,6 +1203,21 @@ export class OpenQuestionsRepository {
     return rows.map((row) => mapOpenQuestionRow(row));
   }
 
+  listAllOpen(): OpenQuestion[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM open_questions
+          WHERE status = 'open'
+          ORDER BY urgency DESC, last_touched DESC, created_at DESC, id ASC
+        `,
+      )
+      .all() as Record<string, unknown>[];
+
+    return rows.map((row) => mapOpenQuestionRow(row));
+  }
+
   get(id: OpenQuestionId): OpenQuestion | null {
     const row = this.db.prepare("SELECT * FROM open_questions WHERE id = ?").get(id) as
       | Record<string, unknown>
@@ -1137,7 +1266,11 @@ export class OpenQuestionsRepository {
         : z.string().min(1).parse(input.source_turn_id);
     const provenance = provenanceSchema.parse(input.provenance);
     const storedProvenance = toStoredProvenance(provenance);
-    const createdAt = z.number().int().nonnegative().parse(input.created_at ?? this.clock.now());
+    const createdAt = z
+      .number()
+      .int()
+      .nonnegative()
+      .parse(input.created_at ?? this.clock.now());
     const result = this.db
       .prepare(
         `
@@ -1228,6 +1361,381 @@ export class OpenQuestionsRepository {
       .all(sinceMs, untilMs, openQuestionId, openQuestionId, limit) as Record<string, unknown>[];
 
     return rows.map((row) => mapOpenQuestionRuminationRow(row));
+  }
+
+  private reparentKnownOpenQuestionReferences(
+    duplicateId: OpenQuestionId,
+    primaryId: OpenQuestionId,
+  ): OpenQuestionDuplicateMergeReferenceCounts {
+    // Saved maintenance plans are external files, while maintenance_audit and
+    // identity_events are immutable history. They intentionally retain the old
+    // handle, which remains valid because the duplicate row is abandoned rather
+    // than deleted. The tables below are mutable current-state references.
+    const counts: OpenQuestionDuplicateMergeReferenceCounts = {
+      ruminations: 0,
+      rumination_connections: 0,
+      rumination_stamps: 0,
+      actions: 0,
+      shared_state_entries: 0,
+      review_queue_items: 0,
+      recall_states: 0,
+      stream_watermarks: 0,
+    };
+    const ruminationRows = this.db
+      .prepare(
+        `
+          SELECT id, open_question_id, connected_open_question_ids
+          FROM open_question_ruminations
+          WHERE open_question_id = ?
+             OR instr(connected_open_question_ids, ?) > 0
+        `,
+      )
+      .all(duplicateId, duplicateId) as Array<{
+      id: number;
+      open_question_id: string;
+      connected_open_question_ids: string;
+    }>;
+
+    for (const row of ruminationRows) {
+      const currentOwnerId = openQuestionIdSchema.parse(row.open_question_id);
+      const nextOwnerId = currentOwnerId === duplicateId ? primaryId : currentOwnerId;
+      const currentConnectedIds = parseIdArray(
+        row.connected_open_question_ids,
+        openQuestionIdSchema,
+        "open question rumination connected_open_question_ids",
+      );
+      const nextConnectedIds = dedupePreservingOrder(
+        currentConnectedIds.map((id) => (id === duplicateId ? primaryId : id)),
+      ).filter((id) => id !== nextOwnerId);
+
+      this.db
+        .prepare(
+          `
+            UPDATE open_question_ruminations
+            SET open_question_id = ?, connected_open_question_ids = ?
+            WHERE id = ?
+          `,
+        )
+        .run(nextOwnerId, serializeJsonValue(nextConnectedIds), row.id);
+
+      if (currentOwnerId === duplicateId) {
+        counts.ruminations += 1;
+      }
+      if (serializeJsonValue(currentConnectedIds) !== serializeJsonValue(nextConnectedIds)) {
+        counts.rumination_connections += 1;
+      }
+    }
+
+    if (tableExists(this.db, "open_question_rumination_stamps")) {
+      const stampCount = this.db
+        .prepare(
+          "SELECT COUNT(*) AS count FROM open_question_rumination_stamps WHERE open_question_id = ?",
+        )
+        .get(duplicateId) as { count: number } | undefined;
+      counts.rumination_stamps = Number(stampCount?.count ?? 0);
+      this.db
+        .prepare(
+          `
+            INSERT OR IGNORE INTO open_question_rumination_stamps (
+              open_question_id, source_run_id, stamped_at
+            )
+            SELECT ?, source_run_id, stamped_at
+            FROM open_question_rumination_stamps
+            WHERE open_question_id = ?
+          `,
+        )
+        .run(primaryId, duplicateId);
+      this.db
+        .prepare("DELETE FROM open_question_rumination_stamps WHERE open_question_id = ?")
+        .run(duplicateId);
+    }
+
+    if (tableExists(this.db, "action_records")) {
+      counts.actions = this.db
+        .prepare("UPDATE action_records SET open_question_id = ? WHERE open_question_id = ?")
+        .run(primaryId, duplicateId).changes;
+    }
+
+    if (tableExists(this.db, "shared_state_entries")) {
+      const rows = this.db
+        .prepare(
+          `
+            SELECT id, canonicalizes
+            FROM shared_state_entries
+            WHERE instr(canonicalizes, ?) > 0
+          `,
+        )
+        .all(duplicateId) as Array<{ id: string; canonicalizes: string }>;
+
+      for (const row of rows) {
+        const canonicalizes = parseJsonColumn(row.canonicalizes, "shared state canonicalizes");
+
+        if (
+          canonicalizes === null ||
+          typeof canonicalizes !== "object" ||
+          Array.isArray(canonicalizes)
+        ) {
+          throw new StorageError("Shared state canonicalizes must be an object", {
+            code: "OPEN_QUESTION_REFERENCE_INVALID",
+          });
+        }
+
+        const openQuestionIds = z
+          .array(openQuestionIdSchema)
+          .parse(canonicalizes.open_question_ids ?? []);
+        const nextOpenQuestionIds = dedupePreservingOrder(
+          openQuestionIds.map((id) => (id === duplicateId ? primaryId : id)),
+        );
+
+        if (serializeJsonValue(openQuestionIds) === serializeJsonValue(nextOpenQuestionIds)) {
+          continue;
+        }
+
+        this.db.prepare("UPDATE shared_state_entries SET canonicalizes = ? WHERE id = ?").run(
+          serializeJsonValue({
+            ...canonicalizes,
+            open_question_ids: nextOpenQuestionIds,
+          }),
+          row.id,
+        );
+        counts.shared_state_entries += 1;
+      }
+    }
+
+    if (tableExists(this.db, "review_queue")) {
+      const rows = this.db
+        .prepare("SELECT id, refs FROM review_queue WHERE instr(refs, ?) > 0")
+        .all(duplicateId) as Array<{ id: number; refs: string }>;
+
+      for (const row of rows) {
+        const refs = parseJsonColumn(row.refs, "review queue refs");
+        const nextRefs = reparentOpenQuestionHandles(refs, duplicateId, primaryId);
+
+        this.db
+          .prepare("UPDATE review_queue SET refs = ? WHERE id = ?")
+          .run(serializeJsonValue(nextRefs), row.id);
+        counts.review_queue_items += 1;
+      }
+    }
+
+    if (tableExists(this.db, "recall_state")) {
+      const rows = this.db
+        .prepare("SELECT scope_key, state_json FROM recall_state WHERE instr(state_json, ?) > 0")
+        .all(duplicateId) as Array<{ scope_key: string; state_json: string }>;
+
+      for (const row of rows) {
+        const state = parseJsonColumn(row.state_json, "recall state");
+        const nextState = reparentOpenQuestionHandles(state, duplicateId, primaryId);
+
+        this.db
+          .prepare("UPDATE recall_state SET state_json = ? WHERE scope_key = ?")
+          .run(serializeJsonValue(nextState), row.scope_key);
+        counts.recall_states += 1;
+      }
+    }
+
+    if (tableExists(this.db, "stream_watermarks")) {
+      const rows = this.db
+        .prepare(
+          `
+            SELECT process_name, session_id, last_ts, last_entry_id, updated_at, metadata_json
+            FROM stream_watermarks
+            WHERE instr(process_name, ?) > 0 OR instr(COALESCE(metadata_json, ''), ?) > 0
+          `,
+        )
+        .all(duplicateId, duplicateId) as Array<{
+        process_name: string;
+        session_id: string;
+        last_ts: number;
+        last_entry_id: string;
+        updated_at: number;
+        metadata_json: string | null;
+      }>;
+
+      for (const row of rows) {
+        const nextProcessName = row.process_name.replaceAll(duplicateId, primaryId);
+        const nextMetadataJson =
+          row.metadata_json === null
+            ? null
+            : serializeJsonValue(
+                reparentOpenQuestionHandles(
+                  parseJsonColumn(row.metadata_json, "stream watermark metadata"),
+                  duplicateId,
+                  primaryId,
+                ),
+              );
+
+        if (nextProcessName === row.process_name) {
+          this.db
+            .prepare(
+              `
+                UPDATE stream_watermarks
+                SET metadata_json = ?
+                WHERE process_name = ? AND session_id = ?
+              `,
+            )
+            .run(nextMetadataJson, row.process_name, row.session_id);
+          counts.stream_watermarks += 1;
+          continue;
+        }
+
+        const target = this.db
+          .prepare(
+            `
+              SELECT process_name, session_id, last_ts, last_entry_id, updated_at, metadata_json
+              FROM stream_watermarks
+              WHERE process_name = ? AND session_id = ?
+            `,
+          )
+          .get(nextProcessName, row.session_id) as
+          | {
+              process_name: string;
+              session_id: string;
+              last_ts: number;
+              last_entry_id: string;
+              updated_at: number;
+              metadata_json: string | null;
+            }
+          | undefined;
+
+        if (target === undefined) {
+          this.db
+            .prepare(
+              `
+                UPDATE stream_watermarks
+                SET process_name = ?, metadata_json = ?
+                WHERE process_name = ? AND session_id = ?
+              `,
+            )
+            .run(nextProcessName, nextMetadataJson, row.process_name, row.session_id);
+        } else {
+          const sourceIsNewer = row.updated_at > target.updated_at;
+          const targetMetadataJson =
+            target.metadata_json === null
+              ? null
+              : serializeJsonValue(
+                  reparentOpenQuestionHandles(
+                    parseJsonColumn(target.metadata_json, "stream watermark metadata"),
+                    duplicateId,
+                    primaryId,
+                  ),
+                );
+          this.db
+            .prepare(
+              `
+                UPDATE stream_watermarks
+                SET last_ts = ?, last_entry_id = ?, updated_at = ?, metadata_json = ?
+                WHERE process_name = ? AND session_id = ?
+              `,
+            )
+            .run(
+              sourceIsNewer ? row.last_ts : target.last_ts,
+              sourceIsNewer ? row.last_entry_id : target.last_entry_id,
+              sourceIsNewer ? row.updated_at : target.updated_at,
+              sourceIsNewer ? nextMetadataJson : targetMetadataJson,
+              nextProcessName,
+              row.session_id,
+            );
+          this.db
+            .prepare("DELETE FROM stream_watermarks WHERE process_name = ? AND session_id = ?")
+            .run(row.process_name, row.session_id);
+        }
+        counts.stream_watermarks += 1;
+      }
+    }
+
+    return counts;
+  }
+
+  mergeDuplicate(
+    primaryId: OpenQuestionId,
+    duplicateId: OpenQuestionId,
+    primaryPatch: OpenQuestionPatch,
+    abandonedReason: string,
+    options: OpenQuestionDuplicateMergeOptions = {},
+  ): OpenQuestionDuplicateMergeResult {
+    const parsedPrimaryId = openQuestionIdSchema.parse(primaryId);
+    const parsedDuplicateId = openQuestionIdSchema.parse(duplicateId);
+    const parsedPatch = openQuestionPatchSchema.parse(primaryPatch);
+    const reason = z.string().trim().min(1).parse(abandonedReason);
+
+    if (parsedPrimaryId === parsedDuplicateId) {
+      throw new StorageError("Cannot merge an open question into itself", {
+        code: "OPEN_QUESTION_INVALID_TRANSITION",
+      });
+    }
+
+    return this.db.transaction(() => {
+      const primary = this.get(parsedPrimaryId);
+      const duplicate = this.get(parsedDuplicateId);
+
+      if (primary === null || duplicate === null) {
+        throw new StorageError("Open question duplicate merge target is missing", {
+          code: "OPEN_QUESTION_NOT_FOUND",
+        });
+      }
+      if (primary.status !== "open" || duplicate.status !== "open") {
+        throw new StorageError("Open question duplicate merge requires two open questions", {
+          code: "OPEN_QUESTION_INVALID_TRANSITION",
+        });
+      }
+
+      const primaryExpectedVersion =
+        options.expectedPrimaryVersion ?? expectedRecordVersion(primary);
+      const duplicateExpectedVersion =
+        options.expectedDuplicateVersion ?? expectedRecordVersion(duplicate);
+
+      if (primaryExpectedVersion !== expectedRecordVersion(primary)) {
+        assertIdentityCasUpdated({
+          result: { changes: 0 },
+          recordType: "open_question",
+          recordId: primary.id,
+          expectedVersion: primaryExpectedVersion,
+        });
+      }
+      if (duplicateExpectedVersion !== expectedRecordVersion(duplicate)) {
+        assertIdentityCasUpdated({
+          result: { changes: 0 },
+          recordType: "open_question",
+          recordId: duplicate.id,
+          expectedVersion: duplicateExpectedVersion,
+        });
+      }
+
+      const reparented = this.reparentKnownOpenQuestionReferences(duplicate.id, primary.id);
+      const tombstoneKeyResult = this.db
+        .prepare(
+          `
+            UPDATE open_questions
+            SET dedupe_key = ?
+            WHERE id = ? AND record_version = ? AND status = 'open'
+          `,
+        )
+        .run(
+          openQuestionMergeTombstoneDedupeKey(duplicate.id, primary.id),
+          duplicate.id,
+          duplicateExpectedVersion,
+        );
+      assertIdentityCasUpdated({
+        result: tombstoneKeyResult,
+        recordType: "open_question",
+        recordId: duplicate.id,
+        expectedVersion: duplicateExpectedVersion,
+      });
+
+      const updatedPrimary = this.update(primary.id, parsedPatch, {
+        expectedVersion: primaryExpectedVersion,
+      });
+      const abandonedDuplicate = this.abandon(duplicate.id, reason, {
+        expectedVersion: duplicateExpectedVersion,
+      });
+
+      return {
+        primary: updatedPrimary,
+        duplicate: abandonedDuplicate,
+        reparented,
+      };
+    })();
   }
 
   update(
@@ -1769,6 +2277,88 @@ export class OpenQuestionsRepository {
     });
 
     return updated;
+  }
+
+  stampRuminationForRun(
+    input: OpenQuestionRuminationRunStampInput,
+    options: IdentityCasOptions = {},
+  ): OpenQuestionRuminationRunStampResult {
+    const openQuestionId = openQuestionIdSchema.parse(input.open_question_id);
+    const sourceRunId = maintenanceRunIdSchema.parse(input.source_run_id);
+    const plannedTicks = z
+      .number()
+      .int()
+      .nonnegative()
+      .parse(input.next_unresolved_rumination_ticks);
+
+    return this.db.transaction(() => {
+      const existing = this.get(openQuestionId);
+
+      if (existing === null) {
+        throw new StorageError(`Unknown open question id: ${openQuestionId}`, {
+          code: "OPEN_QUESTION_NOT_FOUND",
+        });
+      }
+
+      const priorStamp = this.db
+        .prepare(
+          `
+            SELECT stamped_at
+            FROM open_question_rumination_stamps
+            WHERE open_question_id = ? AND source_run_id = ?
+          `,
+        )
+        .get(openQuestionId, sourceRunId);
+
+      if (priorStamp !== undefined || existing.status !== "open") {
+        return {
+          question: existing,
+          stamped: false,
+          rumination: null,
+        };
+      }
+
+      const expectedVersion = options.expectedVersion ?? expectedRecordVersion(existing);
+
+      if (expectedVersion !== expectedRecordVersion(existing)) {
+        assertIdentityCasUpdated({
+          result: { changes: 0 },
+          recordType: "open_question",
+          recordId: existing.id,
+          expectedVersion,
+        });
+      }
+
+      const stampedAt = this.clock.now();
+      this.db
+        .prepare(
+          `
+            INSERT INTO open_question_rumination_stamps (
+              open_question_id, source_run_id, stamped_at
+            ) VALUES (?, ?, ?)
+          `,
+        )
+        .run(openQuestionId, sourceRunId, stampedAt);
+
+      const nextTicks = Math.max(plannedTicks, existing.unresolved_rumination_ticks + 1);
+      const question = this.markRuminated(openQuestionId, nextTicks, {
+        expectedVersion,
+      });
+      const rumination =
+        input.rumination === undefined || input.rumination === null
+          ? null
+          : this.recordRumination({
+              ...input.rumination,
+              open_question_id: openQuestionId,
+              source_run_id: sourceRunId,
+            });
+
+      return {
+        question,
+        stamped: true,
+        rumination,
+      };
+    })();
   }
 
   reopenForReversal(

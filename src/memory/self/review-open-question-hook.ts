@@ -8,14 +8,24 @@ import {
   type SemanticNodeId,
 } from "../../util/ids.js";
 import type { IdentityService } from "../identity/index.js";
+import { parseIdentityEventValueDisclosureSources } from "../identity/index.js";
 import type { Provenance } from "../common/provenance.js";
+import { expectedRecordVersion } from "../common/cas.js";
+import {
+  combineMemoryDisclosureLabels,
+  relationshipPrivateMemoryDisclosureLabel,
+  selfPrivateMemoryDisclosureLabel,
+  unknownMemoryDisclosureLabel,
+} from "../common/disclosure-label.js";
 
-import type {
-  OpenQuestion,
-  OpenQuestionSearchCandidate,
-  OpenQuestionSimilarLookupOptions,
-  OpenQuestionsRepository,
-} from "./open-questions.js";
+import { OpenQuestionsRepository } from "./open-questions.js";
+import type { OpenQuestion } from "./open-questions.js";
+import {
+  buildOpenQuestionDuplicatePresentation,
+  buildOpenQuestionReinforcementPatch,
+  findOpenQuestionDuplicateBackstop,
+  type OpenQuestionDuplicatePresentation,
+} from "./open-question-duplicates.js";
 import type {
   OpenQuestionProposal,
   ReviewOpenQuestionContext,
@@ -25,14 +35,12 @@ import type {
 type OpenQuestionCreateInput = Parameters<OpenQuestionsRepository["add"]>[0];
 type OpenQuestionWriter =
   | OpenQuestionsRepository
-  | Pick<
-      IdentityService,
-      "addOpenQuestion" | "findSimilarOpenQuestion" | "bumpOpenQuestionUrgency"
-    >;
+  | Pick<IdentityService, "addOpenQuestion" | "findSimilarOpenQuestion" | "updateOpenQuestion">;
 export type ReviewOpenQuestionExtractorLike = Pick<ReviewOpenQuestionExtractor, "extract">;
 
 export type ReviewOpenQuestionHookOptions = {
   extractor?: ReviewOpenQuestionExtractorLike | null;
+  openQuestionsRepository?: OpenQuestionsRepository;
 };
 
 function addOpenQuestion(writer: OpenQuestionWriter, input: OpenQuestionCreateInput): OpenQuestion {
@@ -43,27 +51,43 @@ function addOpenQuestion(writer: OpenQuestionWriter, input: OpenQuestionCreateIn
   return writer.add(input);
 }
 
-async function findSimilarOpenQuestion(
-  writer: OpenQuestionWriter,
-  input: OpenQuestionSimilarLookupOptions,
-): Promise<OpenQuestionSearchCandidate | null> {
-  return writer.findSimilarOpenQuestion(input);
-}
-
 function reinforceOpenQuestion(
   writer: OpenQuestionWriter,
   question: OpenQuestion,
+  incoming: OpenQuestionCreateInput,
   provenance: Provenance,
 ): void {
-  if ("bumpOpenQuestionUrgency" in writer) {
-    writer.bumpOpenQuestionUrgency(question.id, 0.02, provenance, {
+  const patch = buildOpenQuestionReinforcementPatch({
+    existing: question,
+    incomingRelatedEpisodeIds: incoming.related_episode_ids ?? [],
+    incomingRelatedSemanticNodeIds: incoming.related_semantic_node_ids ?? [],
+    incomingDisclosureLabel: incoming.disclosure_label ?? unknownMemoryDisclosureLabel(),
+    urgencyDelta: 0.02,
+  });
+
+  if ("updateOpenQuestion" in writer) {
+    writer.updateOpenQuestion(question.id, patch, provenance, {
       throughReview: true,
       reason: "Similar review-derived open question already exists.",
+      preserveRecordProvenance: true,
     });
     return;
   }
 
-  writer.touch(question.id);
+  writer.update(question.id, patch, {
+    expectedVersion: expectedRecordVersion(question),
+  });
+}
+
+function repositoryForDuplicateHandling(
+  writer: OpenQuestionWriter,
+  options: ReviewOpenQuestionHookOptions,
+): OpenQuestionsRepository | null {
+  if (options.openQuestionsRepository !== undefined) {
+    return options.openQuestionsRepository;
+  }
+
+  return writer instanceof OpenQuestionsRepository ? writer : null;
 }
 
 function reviewItemAudienceEntityId(item: ReviewQueueItem) {
@@ -125,7 +149,31 @@ function buildReviewOpenQuestionContext(item: ReviewQueueItem): ReviewOpenQuesti
     audience_entity_id: reviewItemAudienceEntityId(item),
     allowed_episode_ids: [...episodeIds],
     allowed_semantic_node_ids: [...semanticNodeIds],
+    open_question_duplicate_candidates: {
+      complete: false,
+      total_open_questions: 0,
+      presented_count: 0,
+      omitted_count: 0,
+      rows: [],
+    },
   };
+}
+
+function reviewOpenQuestionDisclosureLabel(
+  item: ReviewQueueItem,
+  context: ReviewOpenQuestionContext,
+) {
+  const sources = parseIdentityEventValueDisclosureSources(item.refs, "open_question");
+  const baseLabel =
+    context.audience_entity_id === null
+      ? selfPrivateMemoryDisclosureLabel()
+      : relationshipPrivateMemoryDisclosureLabel([context.audience_entity_id]);
+  const sourceLabels =
+    sources.disclosureLabels.length === 0 || sources.malformed
+      ? [unknownMemoryDisclosureLabel()]
+      : sources.disclosureLabels;
+
+  return combineMemoryDisclosureLabels([baseLabel, ...sourceLabels]);
 }
 
 function filterProposalIds(
@@ -185,6 +233,25 @@ export async function enqueueOpenQuestionForReview(
   }
 
   const context = buildReviewOpenQuestionContext(item);
+  const duplicateRepository = repositoryForDuplicateHandling(writer, options);
+
+  if (duplicateRepository !== null) {
+    context.open_question_duplicate_candidates = await buildOpenQuestionDuplicatePresentation({
+      repository: duplicateRepository,
+      sourceTextProxy: JSON.stringify({
+        kind: item.kind,
+        reason: item.reason,
+        refs: item.refs,
+      }),
+      onSearchFailure: (error) => {
+        console.warn("Review open-question candidate search failed open", {
+          review_item_id: item.id,
+          error,
+        });
+      },
+    });
+  }
+
   const proposal = await options.extractor.extract(item, context);
 
   if (proposal === null) {
@@ -197,19 +264,42 @@ export async function enqueueOpenQuestionForReview(
     question: proposal.question,
     urgency: proposal.urgency,
     audience_entity_id: context.audience_entity_id,
+    disclosure_label: reviewOpenQuestionDisclosureLabel(item, context),
     ...relatedIds,
     provenance,
     source: sourceForReviewItem(item),
   };
-  const existing = await findSimilarOpenQuestion(writer, {
-    question: createInput.question,
-    audienceEntityId: createInput.audience_entity_id,
-  });
+  const presentedIds = new Set(
+    (context.open_question_duplicate_candidates?.rows ?? []).map((candidate) => candidate.id),
+  );
+  const advisoryDuplicate =
+    duplicateRepository !== null &&
+    proposal.duplicate_of_open_question_id != null &&
+    presentedIds.has(proposal.duplicate_of_open_question_id)
+      ? duplicateRepository.get(proposal.duplicate_of_open_question_id)
+      : null;
+  const backstop =
+    advisoryDuplicate?.status === "open"
+      ? null
+      : duplicateRepository === null
+        ? await writer.findSimilarOpenQuestion({ question: createInput.question })
+        : await findOpenQuestionDuplicateBackstop({
+            repository: duplicateRepository,
+            question: createInput.question,
+            onSearchFailure: (error) => {
+              console.warn("Review open-question duplicate backstop failed open", {
+                review_item_id: item.id,
+                error,
+              });
+            },
+          });
+  const existing = advisoryDuplicate?.status === "open" ? advisoryDuplicate : backstop?.question;
 
-  if (existing !== null) {
+  if (existing !== null && existing !== undefined) {
     reinforceOpenQuestion(
       writer,
-      existing.question,
+      existing,
+      createInput,
       provenance ?? {
         kind: "offline",
         process: sourceForReviewItem(item),
