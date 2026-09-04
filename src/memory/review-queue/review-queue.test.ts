@@ -180,7 +180,8 @@ describe("review queue", () => {
     const bob = entityIdHelpers.parse("ent_aaaaaaaaaaaaaaaa");
     const firstEntryId = createStreamEntryId();
     const secondEntryId = createStreamEntryId();
-    const sortedAudienceIds = [bob, alice];
+    // Origins keep source chronology; authorization IDs use lexical set order.
+    const authorizationAudienceIds = [bob, alice];
     const db = openDatabase(join(tempDir, "borg.db"), {
       migrations: [...semanticMigrations],
     });
@@ -263,7 +264,7 @@ describe("review queue", () => {
         disclosure_label: {
           disclosureClass: "relationship_private",
           originAudienceEntityIds: [alice, bob],
-          privateToEntityIds: sortedAudienceIds,
+          privateToEntityIds: authorizationAudienceIds,
           publicToEntityIds: [],
         },
       },
@@ -283,14 +284,14 @@ describe("review queue", () => {
       disclosureLabel: {
         disclosureClass: "relationship_private",
         originAudienceEntityIds: [alice, bob],
-        privateToEntityIds: sortedAudienceIds,
+        privateToEntityIds: authorizationAudienceIds,
         publicToEntityIds: [],
       },
     });
     expect(reviews[0]?.refs.disclosure_label).toEqual({
       disclosureClass: "relationship_private",
       originAudienceEntityIds: [alice, bob],
-      privateToEntityIds: sortedAudienceIds,
+      privateToEntityIds: authorizationAudienceIds,
       publicToEntityIds: [],
     });
     expect(reviews[0]?.members.map((member) => member.directive)).toEqual([

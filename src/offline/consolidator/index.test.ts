@@ -744,8 +744,7 @@ describe("consolidator process", () => {
     const episodes = await harness.episodicRepository.listAll();
     const merged = episodes.find((episode) => episode.title === "Merged architecture pattern");
     const expectedSourceEpisodes = [sourceEpisodes[1]!, sourceEpisodes[2]!, sourceEpisodes[0]!];
-    // Tied source raws use their IDs as a stable secondary key. Origins keep that
-    // chronology while authorization IDs use lexical set order.
+    // Tied raws use ID order; origins retain that chronology and authorization IDs sort lexically.
     const expectedOriginAudiences = [alice, bob];
     const expectedPrivateTo = [...expectedOriginAudiences].sort();
 

@@ -69,7 +69,8 @@ describe("commitment reconciliation review handler", () => {
     const secondAudienceId = createEntityId();
     const firstEntryId = createStreamEntryId();
     const secondEntryId = createStreamEntryId();
-    const sortedAudienceIds = [firstAudienceId, secondAudienceId].sort();
+    const originAudienceIds = [firstAudienceId, secondAudienceId];
+    const authorizationAudienceIds = [...originAudienceIds].sort();
 
     const refs = commitmentReconciliationReviewRefsSchema.parse({
       target_type: "commitment_reconciliation",
@@ -139,14 +140,20 @@ describe("commitment reconciliation review handler", () => {
       source_stream_entry_ids: [firstEntryId, secondEntryId],
       disclosure_label: {
         disclosureClass: "relationship_private",
-        originAudienceEntityIds: sortedAudienceIds,
-        privateToEntityIds: sortedAudienceIds,
+        // Origins keep member chronology; authorization IDs use lexical set order.
+        originAudienceEntityIds: originAudienceIds,
+        privateToEntityIds: authorizationAudienceIds,
         publicToEntityIds: [],
       },
     });
 
     expect(refs.subkind).toBe("cross_scope_conflict");
     expect(refs.source_stream_entry_ids).toEqual([firstEntryId, secondEntryId]);
-    expect(refs.disclosure_label?.originAudienceEntityIds).toEqual(sortedAudienceIds);
+    expect(refs.disclosure_label).toEqual({
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: originAudienceIds,
+      privateToEntityIds: authorizationAudienceIds,
+      publicToEntityIds: [],
+    });
   });
 });
