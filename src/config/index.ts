@@ -566,6 +566,10 @@ const configBaseSchema = z.object({
             .number()
             .positive()
             .default(24 * 60 * 60 * 1_000),
+          traitDecayIntervalMs: z
+            .number()
+            .positive()
+            .default(24 * 60 * 60 * 1_000),
           episodeSalienceHalfLifeDays: z.number().positive().default(30),
           episodeHeatHalfLifeDays: z.number().positive().default(7),
           traitHalfLifeDays: z.number().positive().default(30),
@@ -1657,6 +1661,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "curator", "episodeDecayIntervalMs"],
     readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_EPISODE_DECAY_INTERVAL_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "curator", "traitDecayIntervalMs"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_TRAIT_DECAY_INTERVAL_MS"),
   );
   setConfigOverride(
     overrides,

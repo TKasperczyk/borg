@@ -150,6 +150,7 @@ const TERMINAL_PASS_CONTRACT = [
   "<borg_terminal_pass_contract>",
   "This is my terminal response pass. I make the final emission decision from the complete request surface below; any system-2 plan is advisory, not authority.",
   "Durable records appear before turn-local overlays. I join an overlay to its durable record only by the explicit record id. Scope and disclosure fields describe use and mention boundaries; they never gate what I recall.",
+  "The commitment membership denominator is commitment_rows_total in the turn-local relative-age overlay. It stays out of cacheable block 1 so that block's header remains byte-stable across turns.",
   "Where an exact absolute timestamp is present, I derive its relative age by subtracting it from the borg_current_time current_time_ms value; a duplicate relative-age label is intentionally omitted.",
   'A completeness claim rides on a complete="true" attribute beside omitted_count="0"; where a container is drawn narrower than the record it names its draw in an attribute instead. An element name is a label and never a claim of coverage, whatever word it contains. A complete="unmeasured" attribute with no omitted_count is not a weaker yes: it means the container checked nothing, so I read it as making no coverage claim in either direction.',
   "Any bounded expansion or digest reports its omissions explicitly.",
@@ -429,18 +430,16 @@ function renderLedgerOnlyCommitmentRecord(entry: EvidenceLedgerEntry): {
 // state are deliberately outside its cache prefix.
 //
 // The tag used to carry rows_total, canonical_rows, and ledger_only_rows; fcd95cb6 removed
-// them as counts the rows themselves already carry. Nothing replaced them, so complete="true"
-// now stands with no denominator beside it while the sibling terminal blocks still print one,
-// and a reader wanting this block's count has to count rows.
+// them from this early cacheable header. The equivalent commitment-prefixed counts now live
+// on the turn-local overlay, leaving this block's prefix unchanged when membership changes.
 //
 // The invariant those attributes documented still holds and is worth keeping written down:
 // evidenceLedger.audienceStanding.commitmentEntries is a straight 1:1 map of the very
 // applicableCommitments this render already walks (buildCommitmentEntries in
 // evidence-ledger/audience-standing.ts), so every ledger entry matches a canonical row
-// by id and ledgerOnlyRendered is empty by construction. That zero was never a second
-// population's contribution -- it said nothing about what an audience-scoped standing ledger
-// would add, because nothing in this path can add anything -- and it is no longer printed,
-// so it can no longer be misread in either direction.
+// by id and ledgerOnlyRendered is empty by construction. The turn-local ledger-only count is a
+// divergence check on those inputs, not a second population's contribution: it says nothing
+// about what an audience-scoped standing ledger would add because nothing in this path can add it.
 function renderCommitments(context: DeliberationContext): RenderedTerminalSection {
   const commitments = context.applicableCommitments ?? [];
   const ledgerEntries = context.evidenceLedger?.audienceStanding?.commitmentEntries ?? [];
@@ -465,7 +464,7 @@ function renderCommitments(context: DeliberationContext): RenderedTerminalSectio
     [
       `<borg_terminal_commitments complete="true" advisory_excerpt_budget_chars="${TERMINAL_ADVISORY_COMMITMENT_EXCERPT_CHARS}">`,
       "  <interpretation>One row per commitment: canonical records first, then any standing-ledger record that matched none of them by id. Both arms are built from the same complete active-commitment draw and membership is unchanged. Critical directives are exact. A long advisory directive is a visibly annotated mechanical head+tail cut carrying both included and total source-character counts, never a clean-looking summary. Entity scope and disclosure are exact provenance and handling constraints, never audience-dependent recall selection. Updated time, optional scheduled expiry, mutable standing state, retrieval scope, and resolved labels are carried by the turn-local overlay keyed by id.</interpretation>",
-      '  <field_legend>Canonical rows omit canonical_record; only a ledger-only fallback carries canonical_record=false. A ledger_value or ledger_text exactly equal to family or directive is omitted; a divergent projection retains its exact value, and a present projection with no value or text prints "missing" explicitly. ledger_state duplicates status plus disclosure and is omitted while disclosure remains on every row; a structurally divergent state is retained exactly. Active rows omit expired_at and revoked_at because their absence follows membership; a future expires_at, when present, is exact in the ID-keyed overlay, as are updated_at and the retrieval-derived persistence_class. Relative ages follow the terminal pass contract. directive_exact, directive_excerpt_shape, directive_included_chars, and directive_total_chars state whether the directive is complete and, when cut, exactly how much source text is present. advisory_excerpt_budget_chars is the whole width a cut advisory directive is rendered into, including its head+tail marker. directive_exact reports elision only, not byte-fidelity of the XML-encoded attribute. On a critical row directive_exact is true by construction, directive_excerpt_shape is full, and directive_included_chars equals directive_total_chars. A search over this block reaches only its rendered characters: on a cut row the elided middle is present here in no form, so a string not found in this block may still be in the stored directive, and the honest form of any such negative names the width it did not reach. That width is the per-row difference between directive_total_chars and directive_included_chars summed over the rows above; no total for it is printed here, and complete="true" is a claim about membership only, never about how much of each row is present.</field_legend>',
+      '  <field_legend>Canonical rows omit canonical_record; only a ledger-only fallback carries canonical_record=false. The membership denominator is commitment_rows_total on the turn-local borg_terminal_relative_age_overlay header; commitment_canonical_rows and commitment_ledger_only_rows partition it exactly. Those counts live in turn block 3 rather than this cacheable block 1 so this header stays byte-stable across turns. A ledger_value or ledger_text exactly equal to family or directive is omitted; a divergent projection retains its exact value, and a present projection with no value or text prints "missing" explicitly. ledger_state duplicates status plus disclosure and is omitted while disclosure remains on every row; a structurally divergent state is retained exactly. Active rows omit expired_at and revoked_at because their absence follows membership; a future expires_at, when present, is exact in the ID-keyed overlay, as are updated_at and the retrieval-derived persistence_class. Relative ages follow the terminal pass contract. directive_exact, directive_excerpt_shape, directive_included_chars, and directive_total_chars state whether the directive is complete and, when cut, exactly how much source text is present. advisory_excerpt_budget_chars is the whole width a cut advisory directive is rendered into, including its head+tail marker. directive_exact reports elision only, not byte-fidelity of the XML-encoded attribute. On a critical row directive_exact is true by construction, directive_excerpt_shape is full, and directive_included_chars equals directive_total_chars. A search over this block reaches only its rendered characters: on a cut row the elided middle is present here in no form, so a string not found in this block may still be in the stored directive, and the honest form of any such negative names the width it did not reach. That width is the per-row difference between directive_total_chars and directive_included_chars summed over the rows above; no total for it is printed here, and complete="true" is a claim about membership only, never about how much of each row is present.</field_legend>',
       ...rows.map((row) => `  ${row}`),
       "  <omitted_count>0</omitted_count>",
       "</borg_terminal_commitments>",
@@ -808,9 +807,10 @@ function assembledEntityLabel(
 
 function renderRelativeAgeOverlay(context: DeliberationContext): RenderedTerminalSection {
   const rows: string[] = [];
+  const commitments = context.applicableCommitments ?? [];
   const commitmentLedgerEntries = context.evidenceLedger?.audienceStanding?.commitmentEntries ?? [];
   const commitmentLedgerById = new Map(commitmentLedgerEntries.map((entry) => [entry.id, entry]));
-  for (const commitment of context.applicableCommitments ?? []) {
+  for (const commitment of commitments) {
     const ledgerEntry = commitmentLedgerById.get(`commitment:${commitment.id}`);
     const expiresAt =
       commitment.expires_at === null || commitment.expires_at === undefined
@@ -821,10 +821,12 @@ function renderRelativeAgeOverlay(context: DeliberationContext): RenderedTermina
     );
   }
   const canonicalLedgerIds = new Set(
-    (context.applicableCommitments ?? []).map((commitment) => `commitment:${commitment.id}`),
+    commitments.map((commitment) => `commitment:${commitment.id}`),
   );
+  let ledgerOnlyCommitmentRows = 0;
   for (const entry of commitmentLedgerEntries) {
     if (canonicalLedgerIds.has(entry.id)) continue;
+    ledgerOnlyCommitmentRows += 1;
     rows.push(
       `<commitment_age id="${escapeXmlAttribute(entry.id)}" ledger_scope="${escapeXmlAttribute(entry.session_scope)}" persistence_class="${escapeXmlAttribute(entry.persistence_class ?? "unknown")}" via_retrieval="${entry.via_retrieval === true}" made_to_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, typeof entry.state_metadata?.made_to_entity_id === "string" ? (entry.state_metadata.made_to_entity_id as CommitmentRecord["made_to_entity"]) : null))}" committed_by_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, typeof entry.state_metadata?.committed_by_entity_id === "string" ? (entry.state_metadata.committed_by_entity_id as CommitmentRecord["made_to_entity"]) : null))}" />`,
     );
@@ -843,8 +845,8 @@ function renderRelativeAgeOverlay(context: DeliberationContext): RenderedTermina
     "relative_age_overlay",
     "terminal_turn_context",
     [
-      `<borg_terminal_relative_age_overlay complete="true" rows_total="${rows.length}">`,
-      "  <interpretation>Turn-local mutable state, session/retrieval scope, persistence class, assembled entity labels, and exact mutable timestamps keyed to durable record ids. Commitment updated_at lives here; optional expires_at appears only when a scheduled expiry exists, and its absence means no scheduled expiry. Relative ages follow the terminal pass contract.</interpretation>",
+      `<borg_terminal_relative_age_overlay complete="true" rows_total="${rows.length}" commitment_rows_total="${commitments.length + ledgerOnlyCommitmentRows}" commitment_canonical_rows="${commitments.length}" commitment_ledger_only_rows="${ledgerOnlyCommitmentRows}">`,
+      "  <interpretation>Turn-local mutable state, session/retrieval scope, persistence class, assembled entity labels, and exact mutable timestamps keyed to durable record ids. rows_total counts every overlay row. commitment_rows_total is the complete commitment membership denominator for cacheable block 1; commitment_canonical_rows and commitment_ledger_only_rows partition it exactly. Commitment updated_at lives here; optional expires_at appears only when a scheduled expiry exists, and its absence means no scheduled expiry. Relative ages follow the terminal pass contract.</interpretation>",
       ...rows.map((row) => `  ${row}`),
       "  <omitted_count>0</omitted_count>",
       "</borg_terminal_relative_age_overlay>",

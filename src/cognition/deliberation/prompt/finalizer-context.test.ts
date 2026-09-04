@@ -678,20 +678,19 @@ describe("compact terminal finalizer context", () => {
       value: "participant_family",
       trust_rank: 79,
     };
-    const rendered = text(
-      build(
-        context({
-          applicableCommitments: [canonical],
-          evidenceLedger: {
-            ...ledger(),
-            audienceStanding: {
-              ...ledger().audienceStanding!,
-              commitmentEntries: [canonicalEntry, participantEntry],
-            },
+    const result = build(
+      context({
+        applicableCommitments: [canonical],
+        evidenceLedger: {
+          ...ledger(),
+          audienceStanding: {
+            ...ledger().audienceStanding!,
+            commitmentEntries: [canonicalEntry, participantEntry],
           },
-        }),
-      ),
+        },
+      }),
     );
+    const rendered = text(result);
     expect(rendered.match(/<commitment id=/g)).toHaveLength(2);
     expect(rendered).toContain(`ledger_ref="commitment:${canonical.id}"`);
     expect(rendered).toContain('ledger_trust_rank="82"');
@@ -699,6 +698,9 @@ describe("compact terminal finalizer context", () => {
     expect(rendered).toContain('directive="participant directive exact"');
     expect(rendered).toContain(
       '<commitment_age id="participant_commitment:ent_fixture:com_fixture"',
+    );
+    expect(result.system[3]?.text).toContain(
+      'commitment_rows_total="2" commitment_canonical_rows="1" commitment_ledger_only_rows="1"',
     );
   });
 
@@ -871,6 +873,15 @@ describe("compact terminal finalizer context", () => {
     expect(first.system[1]?.text).toBe(second.system[1]?.text);
     expect(first.system[3]?.text).not.toBe(second.system[3]?.text);
     expect(commitmentBlock).not.toMatch(/\b(rows_total|canonical_rows|ledger_only_rows)=/);
+    expect(first.system[3]?.text).toContain(
+      '<borg_terminal_relative_age_overlay complete="true" rows_total="1" commitment_rows_total="1" commitment_canonical_rows="1" commitment_ledger_only_rows="0">',
+    );
+    expect(first.system[0]?.text).toContain(
+      "The commitment membership denominator is commitment_rows_total in the turn-local relative-age overlay.",
+    );
+    expect(commitmentBlock).toContain(
+      "Those counts live in turn block 3 rather than this cacheable block 1",
+    );
     expect(durableRow).toContain("disclosure=");
     for (const field of [
       "canonical_record",
