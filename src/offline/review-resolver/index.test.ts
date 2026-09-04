@@ -21,7 +21,7 @@ import {
   createOfflineTestHarness,
   createSemanticNodeFixture,
 } from "../test-support.js";
-import { ReviewResolverProcess } from "./index.js";
+import { REVIEW_RESOLVER_REASON_SENTINEL, ReviewResolverProcess } from "./index.js";
 
 const REVIEW_RESOLVER_TOOL_NAME = "EmitReviewResolverDecision";
 const NEW_INSIGHT_REVIEW_RESOLVER_TOOL_NAME = "EmitNewInsightVerdict";
@@ -470,7 +470,6 @@ describe("review resolver process", () => {
     llm.pushResponse(
       resolverResponse({
         verdict: "accept_repair",
-        reason: "The cited source says Ben wrote the script.",
         cited_stream_ids: [sourceEntryId],
       }),
     );
@@ -508,6 +507,7 @@ describe("review resolver process", () => {
     expect(resolved?.refs.__borg_review_resolver_repair).toMatchObject({
       mode: "repair_via_supersede",
       corrected_by: sourceEntryId,
+      reason: REVIEW_RESOLVER_REASON_SENTINEL,
     });
     expect(node).toMatchObject({
       status: "superseded",
@@ -552,13 +552,19 @@ describe("review resolver process", () => {
       kind: "misattribution",
       verdict: "accept_repair",
       applied_resolution: "repair_via_supersede",
+      reason: REVIEW_RESOLVER_REASON_SENTINEL,
+    });
+    expect(llm.requests[0]?.tools?.[0]?.inputSchema.properties?.reason).toMatchObject({
+      description: expect.stringContaining("audit rationale"),
     });
   });
 
   it("resolves vector-only duplicate candidates by superseding after LLM compatibility judgment", async () => {
     const llm = new FakeLLMClient();
+    const tracer = new ArrayTracer();
     const harness = await createOfflineTestHarness({
       llmClient: llm,
+      tracer,
       reviewOpenQuestionExtractor: null,
     });
     cleanup.push(harness.cleanup);
@@ -601,7 +607,6 @@ describe("review resolver process", () => {
     llm.pushResponse(
       resolverResponse({
         verdict: "accept_repair",
-        reason: "The supplied node records describe the same deployment service.",
         support_basis: "direct_user_or_source",
         cited_stream_ids: [loser.id, winner.id],
       }),
@@ -642,6 +647,15 @@ describe("review resolver process", () => {
       disclosure_class: "public",
     });
     expect(promptPayload.review?.refs?.overseer_flag).toBeUndefined();
+    expect(
+      tracer.events.find((event) => event.event === "review_resolver.decision.completed"),
+    ).toMatchObject({
+      review_id: item.id,
+      reason: REVIEW_RESOLVER_REASON_SENTINEL,
+    });
+    expect(llm.requests[0]?.tools?.[0]?.inputSchema.properties?.reason).toMatchObject({
+      description: expect.stringContaining("audit rationale"),
+    });
   });
 
   it.each([
@@ -1015,8 +1029,10 @@ describe("review resolver process", () => {
 
   it("resolves contradiction supersede verdicts with a validated semantic-pair winner", async () => {
     const llm = new FakeLLMClient();
+    const tracer = new ArrayTracer();
     const harness = await createOfflineTestHarness({
       llmClient: llm,
+      tracer,
       reviewOpenQuestionExtractor: null,
     });
     cleanup.push(harness.cleanup);
@@ -1052,7 +1068,6 @@ describe("review resolver process", () => {
       semanticPairResolverResponse({
         verdict: "supersede",
         winner_node_id: winner.id,
-        reason: "The Atlas node is better grounded and more current.",
         confidence: "high",
       }),
     );
@@ -1088,6 +1103,15 @@ describe("review resolver process", () => {
       disclosure_class: "public",
     });
     expect(promptPayload.review?.refs?.overseer_flag).toBeUndefined();
+    expect(
+      tracer.events.find((event) => event.event === "review_resolver.decision.completed"),
+    ).toMatchObject({
+      review_id: item.id,
+      reason: REVIEW_RESOLVER_REASON_SENTINEL,
+    });
+    expect(llm.requests[0]?.tools?.[0]?.inputSchema.properties?.reason).toMatchObject({
+      description: expect.stringContaining("audit rationale"),
+    });
   });
 
   it("keeps invalid semantic-pair winners out of the handler and marks needs_manual", async () => {
@@ -1257,8 +1281,10 @@ describe("review resolver process", () => {
 
   it("accepts grounded new insight proposals through the existing review handler", async () => {
     const llm = new FakeLLMClient();
+    const tracer = new ArrayTracer();
     const harness = await createOfflineTestHarness({
       llmClient: llm,
+      tracer,
       reviewOpenQuestionExtractor: null,
     });
     cleanup.push(harness.cleanup);
@@ -1286,7 +1312,6 @@ describe("review resolver process", () => {
       newInsightResolverResponse({
         verdict: "accept",
         confidence: "high",
-        reason: "The supplied episode directly grounds a useful self-memory.",
       }),
     );
 
@@ -1296,11 +1321,16 @@ describe("review resolver process", () => {
     const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
     const promptPayload = JSON.parse(prompt) as {
       review?: {
+        queue_reason?: string;
+        reason?: string;
         disclosure?: string;
         disclosure_label?: {
           disclosure_class?: string;
           private_to_entity_ids?: string[];
         };
+      };
+      output_fields?: {
+        reason?: string;
       };
       evidence_cluster?: {
         disclosure?: string;
@@ -1329,10 +1359,22 @@ describe("review resolver process", () => {
     expect(prompt).toContain("evidence_fetch_bound");
     expect(prompt).toContain("I repeatedly ask for rollback plans");
     expect(promptPayload.review).toMatchObject({
+      queue_reason: item.reason,
       disclosure_label: expect.objectContaining({
         disclosure_class: "relationship_private",
         private_to_entity_ids: [sourceAudienceId],
       }),
+    });
+    expect(promptPayload.review?.reason).toBeUndefined();
+    expect(promptPayload.output_fields?.reason).toContain("audit rationale");
+    expect(
+      tracer.events.find((event) => event.event === "review_resolver.decision.completed"),
+    ).toMatchObject({
+      review_id: item.id,
+      reason: REVIEW_RESOLVER_REASON_SENTINEL,
+    });
+    expect(llm.requests[0]?.tools?.[0]?.inputSchema.properties?.reason).toMatchObject({
+      description: expect.stringContaining("audit rationale"),
     });
     expect(promptPayload.review?.disclosure).toContain("disclosure_class=relationship_private");
     expect(promptPayload.evidence_cluster).toMatchObject({
@@ -2409,8 +2451,10 @@ describe("review resolver autonomous mode", () => {
 
   it("resolves identity_inconsistency items when autonomous", async () => {
     const llm = new FakeLLMClient();
+    const tracer = new ArrayTracer();
     const harness = await createOfflineTestHarness({
       llmClient: llm,
+      tracer,
       reviewOpenQuestionExtractor: null,
       configOverrides: AUTONOMOUS_OVERRIDES,
     });
@@ -2440,7 +2484,6 @@ describe("review resolver autonomous mode", () => {
     llm.pushResponse(
       identityResolverResponse({
         verdict: "accept_repair",
-        reason: "The reinforcement is supported by the stated evidence.",
       }),
     );
 
@@ -2451,6 +2494,15 @@ describe("review resolver autonomous mode", () => {
     expect(resolved?.resolved_at).not.toBeNull();
     expect(resolved?.resolution).toBe("accept");
     expect(llm.requests).toHaveLength(1);
+    expect(
+      tracer.events.find((event) => event.event === "review_resolver.decision.completed"),
+    ).toMatchObject({
+      review_id: item.id,
+      reason: REVIEW_RESOLVER_REASON_SENTINEL,
+    });
+    expect(llm.requests[0]?.tools?.[0]?.inputSchema.properties?.reason).toMatchObject({
+      description: expect.stringContaining("audit rationale"),
+    });
   });
 
   it("retries needs_manual items and terminally dismisses at the attempt cap", async () => {
