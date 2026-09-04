@@ -9,7 +9,11 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import { goalIdSchema, goalOwnerEntityIdSchema, type GoalRecord } from "../../memory/self/index.js";
+import {
+  goalCounterpartyEntityIdSchema,
+  goalIdSchema,
+  type GoalRecord,
+} from "../../memory/self/index.js";
 import type { StreamEntry } from "../../stream/index.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
@@ -233,7 +237,7 @@ const goalPromotionSchema = z
       .describe(
         "Relative priority from 0 to 10, calibrated against active_goal_priority_distribution and active_goals. A 9 or 10 asserts that this goal outranks nearly everything active.",
       ),
-    counterparty_entity_id: goalOwnerEntityIdSchema
+    counterparty_entity_id: goalCounterpartyEntityIdSchema
       .nullable()
       .describe(
         "Entity toward whom this durable Borg responsibility runs, copied verbatim from presented_entity_ids. Use null when the responsibility has no counterparty or the classification is not durable_borg_goal. Never infer or invent an entity id.",
@@ -378,6 +382,7 @@ export type ExtractGoalPromotionInput = {
     | "target_at"
     | "audience_entity_id"
     | "owner_entity_id"
+    | "counterparty_entity_id"
   >[];
 };
 
@@ -733,6 +738,7 @@ function buildGoalPromotionMessages(
           target_at: goal.target_at,
           audience_entity_id: goal.audience_entity_id,
           owner_entity_id: goal.owner_entity_id ?? null,
+          counterparty_entity_id: goal.counterparty_entity_id ?? null,
           ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
         })),
       }),

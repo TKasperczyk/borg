@@ -15,6 +15,7 @@ export const CORRECTIVE_PREFERENCE_SYSTEM_PROMPT = [
   "self_identity names Borg's own entity when available. Use its entity_id, canonical_name, and handles to anchor references to Borg; self_identity=null means the identity record was unavailable and never makes the current speaker the self entity.",
   "recent_history and current_message_entries preserve structural authorship. Attribute each statement to that entry's sender, using sender_is_self and entity ids rather than the two dialogue roles alone. audience and reply-target fields are routing/addressing context, not an automatic instruction or persistence gate; decide their significance from the supplied context.",
   "A corrective directive must be stated by an attributed current source message. Do not invent a design, choice, constraint, or operational detail that the source did not assert.",
+  "For corrective_preference, set directive_source_stream_entry_id to the exact stream_entry_id of the current_message_entries row that stated the directive. Use null when no current entry stated it, and for retire_commitment or none; never copy an id from recent_history or invent one.",
   "A question posed to Borg, or a request for Borg to choose among possibilities, asks Borg for a decision and is not itself a directive from the source. Return none unless the attributed source also states a durable future response rule.",
   RELATIONSHIP_LABELS_PROMPT,
   RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,

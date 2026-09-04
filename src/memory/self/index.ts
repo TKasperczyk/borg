@@ -68,6 +68,7 @@ export {
 } from "./review-open-question-extractor.js";
 export {
   goalAudienceEntityIdSchema,
+  goalCounterpartyEntityIdSchema,
   goalIdSchema,
   goalOwnerEntityIdSchema,
   goalPatchSchema,

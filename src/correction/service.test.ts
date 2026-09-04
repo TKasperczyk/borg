@@ -429,6 +429,46 @@ describe("correction service", () => {
     }
   });
 
+  it("does not expose a private goal's counterparty as correction audience or origin", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_000),
+    });
+
+    try {
+      const correction = createHarnessCorrectionService(harness);
+      const privateAudience = createEntityId();
+      const thirdPartyCounterparty = createEntityId();
+      const goal = harness.goalsRepository.add({
+        description: "Carry the private responsibility to completion",
+        priority: 6,
+        audienceEntityId: privateAudience,
+        ownerEntityId: null,
+        counterpartyEntityId: thirdPartyCounterparty,
+        provenance: { kind: "online", process: "goal-promotion-extractor" },
+      });
+
+      const queued = await correction.correct(goal.id, { priority: 5 });
+
+      expect(queued.refs).toMatchObject({
+        target_id: goal.id,
+        target_type: "goal",
+        audience_entity_id: privateAudience,
+        disclosure_label: {
+          origin_audience_entity_ids: [privateAudience],
+          private_to_entity_ids: [privateAudience],
+        },
+      });
+      expect(queued.refs.disclosure_label).not.toMatchObject({
+        origin_audience_entity_ids: expect.arrayContaining([thirdPartyCounterparty]),
+      });
+      expect(queued.refs.disclosure_label).not.toMatchObject({
+        private_to_entity_ids: expect.arrayContaining([thirdPartyCounterparty]),
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("invalidates semantic edges manually with explicit event time idempotently", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(5_000),

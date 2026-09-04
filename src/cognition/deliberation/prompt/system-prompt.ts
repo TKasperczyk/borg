@@ -1533,7 +1533,7 @@ function summarizeSelfSnapshotGoal(goal: SelfSnapshot["goals"][number]): string 
     goalMemoryDisclosureLabel(goal),
   )}`;
 
-  return `${goal.description} ${summarizeProvenanceForPrompt(goal.provenance)}${disclosure}`;
+  return `${goal.description} counterparty_entity_id=${goal.counterparty_entity_id ?? "none"} (participant the responsibility runs toward; not owner or audience) ${summarizeProvenanceForPrompt(goal.provenance)}${disclosure}`;
 }
 
 const EXECUTIVE_FOCUS_IDENTITY_LABEL_MAX_CHARS = 120;
@@ -1567,7 +1567,7 @@ function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): stri
   );
 
   return [
-    `Current driving goal: ${focus.selected_goal.description} ${selectedGoalDisclosure}`,
+    `Current driving goal: ${focus.selected_goal.description} counterparty_entity_id=${focus.selected_goal.counterparty_entity_id ?? "none"} (participant the responsibility runs toward; not owner or audience) ${selectedGoalDisclosure}`,
     `Focus identity: goal_id=${focus.selected_goal.id} label=${JSON.stringify(
       compactPromptText(focus.selected_goal.description, EXECUTIVE_FOCUS_IDENTITY_LABEL_MAX_CHARS),
     )}`,

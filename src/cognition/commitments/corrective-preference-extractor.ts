@@ -120,6 +120,11 @@ const correctivePreferenceSchema = z
       .describe(
         "A concise first-person operational directive Borg can enforce when drafting or revising responses. Use null when classification is retire_commitment or none.",
       ),
+    directive_source_stream_entry_id: correctivePreferenceStreamEntryIdSchema
+      .nullable()
+      .describe(
+        "For corrective_preference, copy the stream_entry_id of the attributed current_message_entries row that stated the directive. Use null when no current entry stated it, or when classification is retire_commitment or none.",
+      ),
     directive_family: z
       .string()
       .min(1)
@@ -201,6 +206,7 @@ export type CorrectivePreferenceCandidate = {
   confidence: number;
   supersedes_commitment_id?: CommitmentId | null;
   applies_to_audience_entity_id: EntityId | null;
+  directive_source_stream_entry_id: StreamEntryId | null;
   relationship_claims: RelationshipClaim[];
 };
 
@@ -384,6 +390,7 @@ function toCandidate(
     confidence: input.confidence,
     supersedes_commitment_id: input.supersedes_commitment_id ?? null,
     applies_to_audience_entity_id: input.applies_to_audience_entity_id ?? null,
+    directive_source_stream_entry_id: input.directive_source_stream_entry_id,
     relationship_claims: input.relationship_claims.map((claim) => ({
       ...claim,
       evidence_relational_slot_ids: [...claim.evidence_relational_slot_ids],
@@ -451,6 +458,7 @@ function toExtractionResult(
 
 function parseResponse(
   input: unknown,
+  presentedCurrentStreamEntryIds: readonly StreamEntryId[],
   traceOptions: Pick<CorrectivePreferenceExtractorOptions, "tracer" | "turnId" | "sessionId"> = {},
 ): CorrectivePreferenceExtractionResult {
   const parsed = correctivePreferenceSchema.safeParse(input);
@@ -459,10 +467,28 @@ function parseResponse(
     throw parsed.error;
   }
 
+  if (
+    parsed.data.directive_source_stream_entry_id !== null &&
+    !presentedCurrentStreamEntryIds.some(
+      (streamEntryId) => streamEntryId === parsed.data.directive_source_stream_entry_id,
+    )
+  ) {
+    throw new z.ZodError([
+      {
+        code: "custom",
+        path: ["directive_source_stream_entry_id"],
+        message: "Directive source stream entry id was not presented in current_message_entries",
+      },
+    ]);
+  }
+
   return toExtractionResult(parsed.data, traceOptions);
 }
 
-function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInput): LLMMessage[] {
+function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInput): {
+  messages: LLMMessage[];
+  presentedCurrentStreamEntryIds: StreamEntryId[];
+} {
   const currentMessageStreamEntryIds =
     input.currentUserStreamEntryIds === undefined || input.currentUserStreamEntryIds.length === 0
       ? input.currentUserStreamEntryId === null || input.currentUserStreamEntryId === undefined
@@ -481,76 +507,81 @@ function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInp
     senderDisplayNameById: input.senderDisplayNameById,
   });
 
-  return [
-    {
-      role: "user",
-      content: JSON.stringify({
-        current_user_message: input.userMessage,
-        current_user_stream_entry_id: input.currentUserStreamEntryId ?? null,
-        current_user_stream_entry_ids: currentMessageStreamEntryIds,
-        ...conversationContext,
-        participant_roster: renderParticipantRoster(input.participantRoster),
-        cross_audience_targets: (input.crossAudienceTargets ?? []).map((target) => ({
-          entity_id: target.entity_id,
-          label: target.label,
-        })),
-        active_commitments: input.activeCommitments.map((commitment) => {
-          const enforcementFields =
-            commitment.kind === null || commitment.kind === undefined
-              ? null
-              : {
-                  kind: commitment.kind,
-                  enforcement_class: commitment.enforcement_class ?? undefined,
-                  critical_domain: commitment.critical_domain ?? undefined,
-                };
-
-          return {
-            id: commitment.id,
-            type: commitment.type,
-            kind: commitment.kind ?? null,
-            enforcement_class:
-              enforcementFields === null
+  return {
+    presentedCurrentStreamEntryIds: conversationContext.current_message_entries.map(
+      (entry) => entry.stream_entry_id,
+    ),
+    messages: [
+      {
+        role: "user",
+        content: JSON.stringify({
+          current_user_message: input.userMessage,
+          current_user_stream_entry_id: input.currentUserStreamEntryId ?? null,
+          current_user_stream_entry_ids: currentMessageStreamEntryIds,
+          ...conversationContext,
+          participant_roster: renderParticipantRoster(input.participantRoster),
+          cross_audience_targets: (input.crossAudienceTargets ?? []).map((target) => ({
+            entity_id: target.entity_id,
+            label: target.label,
+          })),
+          active_commitments: input.activeCommitments.map((commitment) => {
+            const enforcementFields =
+              commitment.kind === null || commitment.kind === undefined
                 ? null
-                : effectiveCommitmentEnforcementClass(enforcementFields),
-            critical_domain:
-              enforcementFields === null
-                ? null
-                : effectiveCommitmentCriticalDomain(enforcementFields),
-            directive_family: commitment.directive_family ?? null,
-            closure_pressure_relevance: commitment.closure_pressure_relevance ?? null,
-            directive: commitment.directive,
-            priority: commitment.priority,
-            ...memoryDisclosurePayloadFields(
-              commitmentMemoryDisclosureLabel({
-                restricted_audience: commitment.restricted_audience ?? null,
-                made_to_entity: commitment.made_to_entity ?? null,
-              }),
-            ),
-          };
-        }),
-        relational_slots: (input.relationalSlots ?? []).map((slot) => {
-          const disclosureFields = memoryDisclosurePayloadFields(
-            relationalSlotMemoryDisclosureLabel(slot),
-          );
+                : {
+                    kind: commitment.kind,
+                    enforcement_class: commitment.enforcement_class ?? undefined,
+                    critical_domain: commitment.critical_domain ?? undefined,
+                  };
 
-          return {
-            id: slot.id ?? null,
-            subject_entity_id: slot.subject_entity_id,
-            slot_key: slot.slot_key,
-            value: slot.value,
-            state: slot.state,
-            alternate_values: slot.alternate_values.map((alternate) => ({
-              value: alternate.value,
+            return {
+              id: commitment.id,
+              type: commitment.type,
+              kind: commitment.kind ?? null,
+              enforcement_class:
+                enforcementFields === null
+                  ? null
+                  : effectiveCommitmentEnforcementClass(enforcementFields),
+              critical_domain:
+                enforcementFields === null
+                  ? null
+                  : effectiveCommitmentCriticalDomain(enforcementFields),
+              directive_family: commitment.directive_family ?? null,
+              closure_pressure_relevance: commitment.closure_pressure_relevance ?? null,
+              directive: commitment.directive,
+              priority: commitment.priority,
+              ...memoryDisclosurePayloadFields(
+                commitmentMemoryDisclosureLabel({
+                  restricted_audience: commitment.restricted_audience ?? null,
+                  made_to_entity: commitment.made_to_entity ?? null,
+                }),
+              ),
+            };
+          }),
+          relational_slots: (input.relationalSlots ?? []).map((slot) => {
+            const disclosureFields = memoryDisclosurePayloadFields(
+              relationalSlotMemoryDisclosureLabel(slot),
+            );
+
+            return {
+              id: slot.id ?? null,
+              subject_entity_id: slot.subject_entity_id,
+              slot_key: slot.slot_key,
+              value: slot.value,
+              state: slot.state,
+              alternate_values: slot.alternate_values.map((alternate) => ({
+                value: alternate.value,
+                disclosure: disclosureFields.disclosure,
+                disclosure_label: disclosureFields.disclosure_label,
+              })),
               disclosure: disclosureFields.disclosure,
               disclosure_label: disclosureFields.disclosure_label,
-            })),
-            disclosure: disclosureFields.disclosure,
-            disclosure_label: disclosureFields.disclosure_label,
-          };
+            };
+          }),
         }),
-      }),
-    },
-  ];
+      },
+    ],
+  };
 }
 
 export class CorrectivePreferenceExtractor {
@@ -591,7 +622,8 @@ export class CorrectivePreferenceExtractor {
       );
     }
 
-    const messages = buildCorrectivePreferenceMessages(input);
+    const requestContext = buildCorrectivePreferenceMessages(input);
+    const messages = requestContext.messages;
     const tools = [CORRECTIVE_PREFERENCE_TOOL];
 
     try {
@@ -608,7 +640,7 @@ export class CorrectivePreferenceExtractor {
         },
         toolName: CORRECTIVE_PREFERENCE_TOOL_NAME,
         parse: (toolInput) =>
-          parseResponse(toolInput, {
+          parseResponse(toolInput, requestContext.presentedCurrentStreamEntryIds, {
             tracer: this.options.tracer,
             turnId: this.options.turnId,
             sessionId: this.options.sessionId,

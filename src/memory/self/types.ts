@@ -74,6 +74,13 @@ export const goalOwnerEntityIdSchema = z
   })
   .transform((value) => value as EntityId);
 
+export const goalCounterpartyEntityIdSchema = z
+  .string()
+  .refine((value) => entityIdHelpers.is(value), {
+    message: "Invalid goal counterparty entity id",
+  })
+  .transform((value) => value as EntityId);
+
 export const goalSourceStreamEntryIdSchema = z
   .string()
   .refine((value) => streamEntryIdHelpers.is(value), {
@@ -214,6 +221,7 @@ export const goalSchema = z.object({
   target_at: z.number().finite().nullable(),
   audience_entity_id: goalAudienceEntityIdSchema.nullable().default(null),
   owner_entity_id: goalOwnerEntityIdSchema.nullable().optional(),
+  counterparty_entity_id: goalCounterpartyEntityIdSchema.nullable().optional(),
   source_stream_entry_ids: z.array(goalSourceStreamEntryIdSchema).min(1).optional(),
   canonicalized_by_artifact_entry_id: goalCanonicalizedByArtifactEntryIdSchema
     .nullable()
@@ -260,12 +268,14 @@ export const goalPatchSchema = goalSchema
     created_at: true,
     audience_entity_id: true,
     owner_entity_id: true,
+    counterparty_entity_id: true,
     source_stream_entry_ids: true,
   })
   .extend({
     terminal_condition: z.string().min(1).nullable().optional(),
     audience_entity_id: goalAudienceEntityIdSchema.nullable().optional(),
     owner_entity_id: goalOwnerEntityIdSchema.nullable().optional(),
+    counterparty_entity_id: goalCounterpartyEntityIdSchema.nullable().optional(),
     source_stream_entry_ids: z.array(goalSourceStreamEntryIdSchema).min(1).optional(),
   })
   .partial()

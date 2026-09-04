@@ -744,6 +744,7 @@ function createCorrectivePreferenceResponse(input: {
     | "internal_tool_hygiene"
     | null;
   directive?: string | null;
+  directive_source_stream_entry_id?: string | null;
   directive_family?: string | null;
   closure_pressure_relevance?: "no_closure" | "neutral" | "closure_seeking" | null;
   priority?: number | null;
@@ -773,6 +774,7 @@ function createCorrectivePreferenceResponse(input: {
             (input.classification === "corrective_preference" ? "advisory" : null),
           critical_domain: input.critical_domain ?? null,
           directive: input.directive ?? null,
+          directive_source_stream_entry_id: input.directive_source_stream_entry_id ?? null,
           directive_family:
             input.directive_family ??
             (input.classification === "corrective_preference" ? "test_directive_family" : null),

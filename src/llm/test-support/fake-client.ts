@@ -694,6 +694,7 @@ function defaultCorrectivePreferenceResponse(): LLMCompleteResult {
           type: null,
           kind: null,
           directive: null,
+          directive_source_stream_entry_id: null,
           directive_family: null,
           closure_pressure_relevance: null,
           priority: null,

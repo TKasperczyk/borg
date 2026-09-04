@@ -51,6 +51,7 @@ export const selfMigrations = [
           last_progress_ts INTEGER,
           audience_entity_id TEXT,
           owner_entity_id TEXT,
+          counterparty_entity_id TEXT,
           source_stream_entry_ids TEXT, canonicalized_by_artifact_entry_id TEXT NULL,
           FOREIGN KEY (parent_goal_id) REFERENCES goals(id) ON DELETE SET NULL
         );
@@ -399,6 +400,15 @@ export const selfMigrations = [
     up: (db) => {
       if (!tableHasColumn(db, "goals", "provenance_stream_entry_ids")) {
         db.exec("ALTER TABLE goals ADD COLUMN provenance_stream_entry_ids TEXT");
+      }
+    },
+  },
+  {
+    id: 8,
+    name: "goal_counterparty_entity_id",
+    up: (db) => {
+      if (!tableHasColumn(db, "goals", "counterparty_entity_id")) {
+        db.exec("ALTER TABLE goals ADD COLUMN counterparty_entity_id TEXT");
       }
     },
   },

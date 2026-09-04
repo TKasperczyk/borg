@@ -26,6 +26,7 @@ import { requireProvenance } from "./shared/provenance.js";
 import { mapGoalRow } from "./shared/sql-mapping.js";
 import {
   goalAudienceEntityIdSchema,
+  goalCounterpartyEntityIdSchema,
   goalOwnerEntityIdSchema,
   goalPatchSchema,
   goalSchema,
@@ -62,7 +63,7 @@ export type GoalFollowupDueCandidateOptions = {
 const GOAL_SELECT_COLUMNS = `
   id, record_version, description, terminal_condition, priority, parent_goal_id, status,
   progress_notes, last_progress_ts, created_at, target_at, audience_entity_id, owner_entity_id,
-  source_stream_entry_ids, canonicalized_by_artifact_entry_id, provenance_kind,
+  counterparty_entity_id, source_stream_entry_ids, canonicalized_by_artifact_entry_id, provenance_kind,
   provenance_episode_ids, provenance_stream_entry_ids, provenance_process
 `;
 
@@ -158,6 +159,7 @@ export class GoalsRepository {
     targetAt?: number | null;
     audienceEntityId?: EntityId | null;
     ownerEntityId?: EntityId | null;
+    counterpartyEntityId?: EntityId | null;
     sourceStreamEntryIds?: readonly StreamEntryId[];
   }): GoalRecord {
     const parentGoalId = input.parentId ?? null;
@@ -191,6 +193,10 @@ export class GoalsRepository {
       target_at: input.targetAt ?? null,
       audience_entity_id: input.audienceEntityId ?? null,
       owner_entity_id: input.ownerEntityId ?? null,
+      counterparty_entity_id:
+        input.counterpartyEntityId === undefined
+          ? null
+          : goalCounterpartyEntityIdSchema.nullable().parse(input.counterpartyEntityId),
       canonicalized_by_artifact_entry_id: null,
       ...(input.sourceStreamEntryIds === undefined || input.sourceStreamEntryIds.length === 0
         ? {}
@@ -206,9 +212,9 @@ export class GoalsRepository {
             INSERT INTO goals (
               id, description, terminal_condition, priority, parent_goal_id, status, progress_notes,
               last_progress_ts, created_at, target_at, audience_entity_id, owner_entity_id,
-              source_stream_entry_ids, canonicalized_by_artifact_entry_id, provenance_kind,
+              counterparty_entity_id, source_stream_entry_ids, canonicalized_by_artifact_entry_id, provenance_kind,
               provenance_episode_ids, provenance_stream_entry_ids, provenance_process
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
         .run(
@@ -224,6 +230,7 @@ export class GoalsRepository {
           goal.target_at,
           goal.audience_entity_id,
           goal.owner_entity_id,
+          goal.counterparty_entity_id,
           goal.source_stream_entry_ids === undefined
             ? null
             : serializeJsonValue(goal.source_stream_entry_ids),
@@ -576,7 +583,8 @@ export class GoalsRepository {
             UPDATE goals
             SET description = ?, terminal_condition = ?, priority = ?, parent_goal_id = ?,
                 status = ?, progress_notes = ?, last_progress_ts = ?, target_at = ?,
-                audience_entity_id = ?, owner_entity_id = ?, source_stream_entry_ids = ?,
+                audience_entity_id = ?, owner_entity_id = ?, counterparty_entity_id = ?,
+                source_stream_entry_ids = ?,
                 canonicalized_by_artifact_entry_id = ?,
                 provenance_kind = ?, provenance_episode_ids = ?, provenance_stream_entry_ids = ?,
                 provenance_process = ?,
@@ -595,6 +603,7 @@ export class GoalsRepository {
           next.target_at,
           next.audience_entity_id,
           next.owner_entity_id,
+          next.counterparty_entity_id,
           next.source_stream_entry_ids === undefined
             ? null
             : serializeJsonValue(next.source_stream_entry_ids),
@@ -646,7 +655,8 @@ export class GoalsRepository {
             UPDATE goals
             SET description = ?, terminal_condition = ?, priority = ?, parent_goal_id = ?,
                 status = ?, progress_notes = ?, last_progress_ts = ?, created_at = ?,
-                target_at = ?, audience_entity_id = ?, owner_entity_id = ?, source_stream_entry_ids = ?,
+                target_at = ?, audience_entity_id = ?, owner_entity_id = ?,
+                counterparty_entity_id = ?, source_stream_entry_ids = ?,
                 canonicalized_by_artifact_entry_id = ?, provenance_kind = ?, provenance_episode_ids = ?,
                 provenance_stream_entry_ids = ?, provenance_process = ?
             WHERE id = ?
@@ -664,6 +674,7 @@ export class GoalsRepository {
           parsed.target_at,
           parsed.audience_entity_id,
           parsed.owner_entity_id,
+          parsed.counterparty_entity_id ?? null,
           parsed.source_stream_entry_ids === undefined
             ? null
             : serializeJsonValue(parsed.source_stream_entry_ids),

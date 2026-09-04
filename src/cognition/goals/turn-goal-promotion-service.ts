@@ -123,6 +123,7 @@ export class TurnGoalPromotionService {
         target_at: goal.target_at,
         audience_entity_id: goal.audience_entity_id,
         owner_entity_id: goal.owner_entity_id ?? null,
+        counterparty_entity_id: goal.counterparty_entity_id,
       })),
     });
 
@@ -266,7 +267,8 @@ export class TurnGoalPromotionService {
           status: "active",
           targetAt: candidate.target_at,
           audienceEntityId: input.audienceEntityId,
-          ownerEntityId: candidate.counterparty_entity_id,
+          ownerEntityId: null,
+          counterpartyEntityId: candidate.counterparty_entity_id,
           provenance: GOAL_PROMOTION_PROVENANCE,
           sourceStreamEntryIds,
         });

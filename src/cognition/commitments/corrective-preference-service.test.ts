@@ -9,6 +9,7 @@ import {
 } from "../../memory/commitments/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
 import { createWorkingMemory } from "../../memory/working/index.js";
+import type { StreamEntry } from "../../stream/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { IdentityCasMismatchError } from "../../util/errors.js";
@@ -47,6 +48,7 @@ function correctivePreferenceResponse(
       | "internal_tool_hygiene"
       | null;
     directive?: string;
+    directiveSourceStreamEntryId?: ReturnType<typeof createStreamEntryId> | null;
     directiveFamily?: string;
     relationshipClaims?: RelationshipClaim[];
     appliesToAudienceEntityId?: string | null;
@@ -68,6 +70,7 @@ function correctivePreferenceResponse(
           enforcement_class: input.enforcementClass ?? "advisory",
           critical_domain: input.criticalDomain ?? null,
           directive: input.directive ?? "Keep Alice's trip tasks separate from the group channel.",
+          directive_source_stream_entry_id: input.directiveSourceStreamEntryId ?? null,
           directive_family: input.directiveFamily ?? "separate_trip_tasks",
           closure_pressure_relevance: "neutral",
           priority: 8,
@@ -105,6 +108,7 @@ function retireCommitmentResponse(input: {
           enforcement_class: null,
           critical_domain: null,
           directive: null,
+          directive_source_stream_entry_id: null,
           directive_family: null,
           closure_pressure_relevance: null,
           priority: null,
@@ -268,7 +272,7 @@ describe("CorrectivePreferenceTurnService", () => {
     const userEntryId = createStreamEntryId();
     const addCommitment = vi.fn();
     const llm = new FakeLLMClient({
-      responses: [correctivePreferenceResponse()],
+      responses: [correctivePreferenceResponse({ directiveSourceStreamEntryId: userEntryId })],
     });
     const service = new CorrectivePreferenceTurnService({
       model: "haiku",
@@ -300,6 +304,7 @@ describe("CorrectivePreferenceTurnService", () => {
       recentHistory: [],
       audienceEntityId: group,
       committedByEntityId: alice,
+      senderAttribution: [{ entryId: userEntryId, senderEntityId: alice }],
       speakerDisplayName: "Alice",
       sessionId: DEFAULT_SESSION_ID,
       onHookFailure: vi.fn(),
@@ -327,6 +332,141 @@ describe("CorrectivePreferenceTurnService", () => {
     expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
       `"speaker_entity_id":"${alice}"`,
     );
+  });
+
+  it("binds a mixed-sender directive to the exact named current source entry", async () => {
+    const group = createEntityId();
+    const alice = createEntityId();
+    const bob = createEntityId();
+    const firstEntryId = createStreamEntryId();
+    const secondEntryId = createStreamEntryId();
+    const sourceUserEntries = [
+      {
+        id: firstEntryId,
+        timestamp: 1_900,
+        kind: "user_msg",
+        content: "Which option should Borg choose?",
+        turn_status: "active",
+        sender_entity_id: alice,
+        reply_target_entity_id: null,
+        session_id: DEFAULT_SESSION_ID,
+        compressed: false,
+      },
+      {
+        id: secondEntryId,
+        timestamp: 2_000,
+        kind: "user_msg",
+        content: "Keep future replies concise.",
+        turn_status: "active",
+        sender_entity_id: bob,
+        reply_target_entity_id: null,
+        session_id: DEFAULT_SESSION_ID,
+        compressed: false,
+      },
+    ] satisfies StreamEntry[];
+    const llm = new FakeLLMClient({
+      responses: [correctivePreferenceResponse({ directiveSourceStreamEntryId: secondEntryId })],
+    });
+    const service = new CorrectivePreferenceTurnService({
+      model: "haiku",
+      commitmentRepository: {
+        get: () => null,
+        getApplicable: () => [],
+        revoke: vi.fn(),
+        supersede: vi.fn(),
+      },
+      identityService: { addCommitment: vi.fn() },
+      relationalSlotRepository: {
+        list: () => [],
+        applyNegation: vi.fn(),
+      },
+      workingMemoryStore: {
+        load: () => createWorkingMemory(DEFAULT_SESSION_ID, 2_000),
+        sanitizePendingActionsForRelationalSlot: vi.fn(),
+      },
+      clock: new FixedClock(2_000),
+      tracer: { enabled: false, includePayloads: false, emit: vi.fn() },
+    });
+
+    const result = await service.extractAndApply({
+      llmClient: llm,
+      turnId: "turn-mixed-source-commitment",
+      ...defaultCorrectiveTurnContext,
+      userMessage: "<inbound_batch>...</inbound_batch>",
+      sourceUserEntryIds: [firstEntryId, secondEntryId],
+      sourceUserEntries,
+      senderAttribution: [
+        { entryId: firstEntryId, senderEntityId: alice, senderDisplayName: "Alice" },
+        { entryId: secondEntryId, senderEntityId: bob, senderDisplayName: "Bob" },
+      ],
+      recentHistory: [],
+      audienceEntityId: group,
+      committedByEntityId: null,
+      sessionId: DEFAULT_SESSION_ID,
+      onHookFailure: vi.fn(),
+      trackAppliedSlotNegation: vi.fn(),
+    });
+
+    expect(result.commitment).toMatchObject({
+      committed_by_entity_id: bob,
+      source_stream_entry_ids: [secondEntryId],
+    });
+    const payload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      current_message_entries?: Array<{
+        stream_entry_id: string;
+        sender_entity_id: string | null;
+      }>;
+    };
+    expect(payload.current_message_entries).toEqual([
+      expect.objectContaining({ stream_entry_id: firstEntryId, sender_entity_id: alice }),
+      expect.objectContaining({ stream_entry_id: secondEntryId, sender_entity_id: bob }),
+    ]);
+  });
+
+  it("keeps batch provenance and no committer when no directive source is named", async () => {
+    const firstEntryId = createStreamEntryId();
+    const secondEntryId = createStreamEntryId();
+    const llm = new FakeLLMClient({ responses: [correctivePreferenceResponse()] });
+    const service = new CorrectivePreferenceTurnService({
+      model: "haiku",
+      commitmentRepository: {
+        get: () => null,
+        getApplicable: () => [],
+        revoke: vi.fn(),
+        supersede: vi.fn(),
+      },
+      identityService: { addCommitment: vi.fn() },
+      relationalSlotRepository: { list: () => [], applyNegation: vi.fn() },
+      workingMemoryStore: {
+        load: () => createWorkingMemory(DEFAULT_SESSION_ID, 2_000),
+        sanitizePendingActionsForRelationalSlot: vi.fn(),
+      },
+      clock: new FixedClock(2_000),
+      tracer: { enabled: false, includePayloads: false, emit: vi.fn() },
+    });
+
+    const result = await service.extractAndApply({
+      llmClient: llm,
+      turnId: "turn-unnamed-source-commitment",
+      ...defaultCorrectiveTurnContext,
+      userMessage: "<inbound_batch>...</inbound_batch>",
+      sourceUserEntryIds: [firstEntryId, secondEntryId],
+      senderAttribution: [
+        { entryId: firstEntryId, senderEntityId: createEntityId() },
+        { entryId: secondEntryId, senderEntityId: createEntityId() },
+      ],
+      recentHistory: [],
+      audienceEntityId: createEntityId(),
+      committedByEntityId: createEntityId(),
+      sessionId: DEFAULT_SESSION_ID,
+      onHookFailure: vi.fn(),
+      trackAppliedSlotNegation: vi.fn(),
+    });
+
+    expect(result.commitment).toMatchObject({
+      committed_by_entity_id: null,
+      source_stream_entry_ids: [firstEntryId, secondEntryId],
+    });
   });
 
   it("applies classification normalization before building a corrective commitment", async () => {

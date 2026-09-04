@@ -19,7 +19,7 @@ type GoalPromotionFixture = {
   description?: string;
   terminal_condition?: string | null;
   priority?: number;
-  counterparty_entity_id?: GoalRecord["owner_entity_id"];
+  counterparty_entity_id?: GoalRecord["counterparty_entity_id"];
   target_at?: number | null;
   reason?: string;
   confidence?: number;
@@ -85,6 +85,7 @@ function goalRecord(
     target_at: overrides.target_at ?? null,
     audience_entity_id: overrides.audience_entity_id ?? null,
     owner_entity_id: overrides.owner_entity_id ?? null,
+    counterparty_entity_id: overrides.counterparty_entity_id ?? null,
     source_stream_entry_ids: overrides.source_stream_entry_ids,
     canonicalized_by_artifact_entry_id: overrides.canonicalized_by_artifact_entry_id ?? null,
     provenance: overrides.provenance ?? {
@@ -162,7 +163,7 @@ describe("TurnGoalPromotionService", () => {
     );
   });
 
-  it("persists the model-selected presented counterparty instead of the speaker", async () => {
+  it("persists counterparty separately while leaving extractor-created ownership null", async () => {
     const audience = createEntityId();
     const speaker = createEntityId();
     const counterparty = createEntityId();
@@ -188,6 +189,7 @@ describe("TurnGoalPromotionService", () => {
           priority: input.priority,
           audience_entity_id: input.audienceEntityId,
           owner_entity_id: input.ownerEntityId,
+          counterparty_entity_id: input.counterpartyEntityId,
           source_stream_entry_ids: input.sourceStreamEntryIds,
           provenance: input.provenance,
         }),
@@ -232,11 +234,15 @@ describe("TurnGoalPromotionService", () => {
     expect(result.goalIds).toEqual([persistedGoalId]);
     expect(addGoal).toHaveBeenCalledWith(
       expect.objectContaining({
-        ownerEntityId: counterparty,
+        ownerEntityId: null,
+        counterpartyEntityId: counterparty,
         sourceStreamEntryIds: [sourceEntryId],
       }),
     );
-    expect(addGoal).not.toHaveBeenCalledWith(expect.objectContaining({ ownerEntityId: speaker }));
+    expect(addGoal.mock.results[0]?.value).toMatchObject({
+      owner_entity_id: null,
+      counterparty_entity_id: counterparty,
+    });
   });
 
   it("drops wait initial steps without due_at while keeping the promoted goal", async () => {
@@ -257,6 +263,7 @@ describe("TurnGoalPromotionService", () => {
         target_at: input.targetAt,
         audience_entity_id: input.audienceEntityId,
         owner_entity_id: input.ownerEntityId,
+        counterparty_entity_id: input.counterpartyEntityId,
         source_stream_entry_ids: input.sourceStreamEntryIds,
         provenance: input.provenance,
       }),
@@ -400,6 +407,7 @@ describe("TurnGoalPromotionService", () => {
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
           owner_entity_id: input.ownerEntityId,
+          counterparty_entity_id: input.counterpartyEntityId,
           source_stream_entry_ids: input.sourceStreamEntryIds,
           provenance: input.provenance,
         }),
@@ -458,6 +466,7 @@ describe("TurnGoalPromotionService", () => {
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
           owner_entity_id: input.ownerEntityId,
+          counterparty_entity_id: input.counterpartyEntityId,
           source_stream_entry_ids: input.sourceStreamEntryIds,
           provenance: input.provenance,
         }),
@@ -526,6 +535,7 @@ describe("TurnGoalPromotionService", () => {
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
           owner_entity_id: input.ownerEntityId,
+          counterparty_entity_id: input.counterpartyEntityId,
           source_stream_entry_ids: input.sourceStreamEntryIds,
           provenance: input.provenance,
         }),
@@ -596,6 +606,7 @@ describe("TurnGoalPromotionService", () => {
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
           owner_entity_id: input.ownerEntityId,
+          counterparty_entity_id: input.counterpartyEntityId,
           source_stream_entry_ids: input.sourceStreamEntryIds,
           provenance: input.provenance,
         }),
@@ -730,6 +741,7 @@ describe("TurnGoalPromotionService", () => {
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
           owner_entity_id: input.ownerEntityId,
+          counterparty_entity_id: input.counterpartyEntityId,
           source_stream_entry_ids: input.sourceStreamEntryIds,
           provenance: input.provenance,
         }),
@@ -807,6 +819,7 @@ describe("TurnGoalPromotionService", () => {
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
           owner_entity_id: input.ownerEntityId,
+          counterparty_entity_id: input.counterpartyEntityId,
           source_stream_entry_ids: input.sourceStreamEntryIds,
           provenance: input.provenance,
         }),
@@ -884,6 +897,7 @@ describe("TurnGoalPromotionService", () => {
           target_at: input.targetAt,
           audience_entity_id: input.audienceEntityId,
           owner_entity_id: input.ownerEntityId,
+          counterparty_entity_id: input.counterpartyEntityId,
           source_stream_entry_ids: input.sourceStreamEntryIds,
           provenance: input.provenance,
         }),

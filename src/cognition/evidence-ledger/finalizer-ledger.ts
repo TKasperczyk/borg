@@ -19,6 +19,7 @@ const HIERARCHY_GUIDANCE = [
   "Current user claims about what has or has not happened in this session outrank prior-session shared-state carryover unless the user explicitly asks to continue the prior thread.",
   "Episodes and semantic graph are summaries; I use source handles when making exact claims.",
   "Quarantined/contested/assistant-seeded values are not facts.",
+  "In goal state_metadata, counterparty_entity_id is the participant the responsibility runs toward, not an owner or an audience.",
 ].join("\n");
 
 export function renderEvidenceLedger(

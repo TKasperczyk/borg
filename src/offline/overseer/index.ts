@@ -228,6 +228,7 @@ function summarizeSelfState(ctx: OfflineContext): string {
         JSON.stringify({
           id: goal.id,
           description: goal.description,
+          counterparty_entity_id: goal.counterparty_entity_id ?? null,
           ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
         }),
       )
@@ -292,6 +293,7 @@ async function buildPrompt(
     "For temporal drift, provide corrected timestamps and/or a replacement description.",
     "For semantic_edge temporal drift or identity inconsistency, provide suggested_valid_to and optional by_edge_id; only flag edges that should be reviewed for closure.",
     "For identity inconsistency, target a specific value, goal, trait, commitment, or autobiographical period by id and propose reinforce, contradict, or patch.",
+    "In goal records, counterparty_entity_id is the participant the responsibility runs toward, not an owner or an audience.",
     `Emit your result by calling the ${OVERSEER_TOOL_NAME} tool exactly once.`,
     summarizeSelfState(ctx),
     "Memory item:",

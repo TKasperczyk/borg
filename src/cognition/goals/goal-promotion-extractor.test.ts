@@ -750,6 +750,7 @@ describe("GoalPromotionExtractor", () => {
     const existingGoalId = createGoalId();
     const audience = createEntityId();
     const owner = createEntityId();
+    const counterparty = createEntityId();
     const llm = new FakeLLMClient({
       responses: [
         goalPromotionResponse([
@@ -778,6 +779,7 @@ describe("GoalPromotionExtractor", () => {
             target_at: null,
             audience_entity_id: audience,
             owner_entity_id: owner,
+            counterparty_entity_id: counterparty,
           },
         ],
       }),
@@ -793,6 +795,7 @@ describe("GoalPromotionExtractor", () => {
       active_goals?: Array<{
         audience_entity_id?: string | null;
         owner_entity_id?: string | null;
+        counterparty_entity_id?: string | null;
         terminal_condition?: string | null;
         disclosure?: string;
         disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
@@ -802,9 +805,11 @@ describe("GoalPromotionExtractor", () => {
 
     expect(activeGoal?.audience_entity_id).toBe(audience);
     expect(activeGoal?.owner_entity_id).toBe(owner);
+    expect(activeGoal?.counterparty_entity_id).toBe(counterparty);
     expect(activeGoal?.terminal_condition).toBe("The release checklist is settled");
     expect(activeGoal?.disclosure).toContain("disclosure_class=relationship_private");
     expect(activeGoal?.disclosure).toContain(`private-to=${audience},${owner}`);
+    expect(activeGoal?.disclosure).not.toContain(counterparty);
     expect(activeGoal?.disclosure_label).toMatchObject({
       disclosure_class: "relationship_private",
       private_to_entity_ids: [audience, owner],

@@ -702,6 +702,13 @@ export class CorrectivePreferenceTurnService {
         });
       } else {
         acceptedCorrectiveCandidate = correctiveCandidate;
+        const directiveSourceStreamEntryId = correctiveCandidate.directive_source_stream_entry_id;
+        const directiveSourceEntry = input.sourceUserEntries?.find(
+          (entry) => entry.id === directiveSourceStreamEntryId,
+        );
+        const directiveSourceAttribution = input.senderAttribution?.find(
+          (attribution) => attribution.entryId === directiveSourceStreamEntryId,
+        );
         correctiveCommitment = buildCorrectivePreferenceCommitment({
           candidate: correctiveCandidate,
           restrictedAudience: this.resolveCorrectiveRestrictedAudience({
@@ -712,13 +719,20 @@ export class CorrectivePreferenceTurnService {
             turnId: input.turnId,
             sessionId: input.sessionId,
           }),
-          committedByEntityId: input.committedByEntityId ?? null,
+          committedByEntityId:
+            directiveSourceStreamEntryId === null
+              ? null
+              : (directiveSourceEntry?.sender_entity_id ??
+                directiveSourceAttribution?.senderEntityId ??
+                null),
           sourceStreamEntryIds:
-            input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0
-              ? input.persistedUserEntryId === undefined
-                ? undefined
-                : [input.persistedUserEntryId]
-              : [...input.sourceUserEntryIds],
+            directiveSourceStreamEntryId === null
+              ? input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0
+                ? input.persistedUserEntryId === undefined
+                  ? undefined
+                  : [input.persistedUserEntryId]
+                : [...input.sourceUserEntryIds]
+              : [directiveSourceStreamEntryId],
           nowMs: this.options.clock.now(),
         });
       }

@@ -33,6 +33,7 @@ function correctivePreferenceResponse(input: {
     | "internal_tool_hygiene"
     | null;
   directive?: string | null;
+  directiveSourceStreamEntryId?: ReturnType<typeof createStreamEntryId> | null;
   directive_family?: string | null;
   closure_pressure_relevance?: "no_closure" | "neutral" | "closure_seeking" | null;
   priority?: number | null;
@@ -62,6 +63,7 @@ function correctivePreferenceResponse(input: {
             (input.classification === "corrective_preference" ? "advisory" : null),
           critical_domain: input.critical_domain ?? null,
           directive: input.directive ?? null,
+          directive_source_stream_entry_id: input.directiveSourceStreamEntryId ?? null,
           directive_family: input.directive_family ?? null,
           closure_pressure_relevance:
             input.closure_pressure_relevance ??
@@ -310,6 +312,56 @@ describe("CorrectivePreferenceExtractor", () => {
       },
       slot_negations: [],
     });
+  });
+
+  it("accepts directive sources only from the presented current entries", async () => {
+    const currentEntryId = createStreamEntryId();
+    const outsideEntryId = createStreamEntryId();
+    const onDegraded = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          classification: "corrective_preference",
+          type: "rule",
+          directive: "Keep future responses concise.",
+          directive_family: "concise_future_responses",
+          directiveSourceStreamEntryId: currentEntryId,
+          priority: 6,
+        }),
+        correctivePreferenceResponse({
+          classification: "corrective_preference",
+          type: "rule",
+          directive: "Keep future responses concise.",
+          directive_family: "concise_future_responses",
+          directiveSourceStreamEntryId: outsideEntryId,
+          priority: 6,
+        }),
+      ],
+    });
+    const extractor = new CorrectivePreferenceExtractor({
+      llmClient: llm,
+      model: "haiku",
+      onDegraded,
+    });
+    const input = {
+      userMessage: "Keep future responses concise.",
+      currentUserStreamEntryIds: [currentEntryId],
+      recentHistory: [],
+      audienceEntityId: null,
+      activeCommitments: [],
+    };
+
+    await expect(extractor.extract(input)).resolves.toMatchObject({
+      directive_source_stream_entry_id: currentEntryId,
+    });
+    await expect(extractor.extract(input)).resolves.toBeNull();
+    expect(onDegraded).toHaveBeenCalledWith(
+      "invalid_payload",
+      expect.objectContaining({
+        issues: [expect.objectContaining({ path: ["directive_source_stream_entry_id"] })],
+      }),
+      expect.objectContaining({ stopReason: "tool_use" }),
+    );
   });
 
   it("carries relationship claims on corrective preference candidates", async () => {
