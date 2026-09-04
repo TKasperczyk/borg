@@ -1100,6 +1100,17 @@ describe("compact terminal finalizer context", () => {
     // present only as a day row is compressed rather than quiet.
     expect(interpretation).toContain("no budget shared between them");
     expect(interpretation).toContain("a compressed day and not a quiet one");
+    // "No shared budget" invites the reading that each lane carries its own limit.
+    // Two of them carry the same one, so their counts matching is a single number
+    // seen twice rather than two lanes agreeing -- and a self-decision's stamp is
+    // the end of its turn, not the moment its trigger fired, so the obvious join
+    // against wake times lands on the following wake instead of failing.
+    expect(interpretation).toContain(
+      "the event lane and the self-decision lane are handed one configured cap value rather than two",
+    );
+    expect(interpretation).toContain(
+      "stamped when its decision was recorded at the end of its turn, not when its trigger fired",
+    );
   });
 
   it("orders durable self rows by immutable keys instead of mutable ranking", () => {
