@@ -618,6 +618,8 @@ const configBaseSchema = z.object({
           // epistemic evidence-quality signal, not the relevance ranking score.
           resolveConfidenceThreshold: z.number().min(0).max(1).default(0.55),
           duplicateSimilarityThreshold: z.number().min(0).max(1).default(0.9),
+          duplicateJudgmentMaxPairs: z.number().int().positive().default(24),
+          duplicateJudgmentMinRemainingBudgetFraction: z.number().min(0).max(1).default(0.25),
           revisitPeriodMinDays: z.number().positive().default(2),
           revisitPeriodMaxDays: z.number().positive().default(30),
           stalenessDays: z.number().positive().default(30),
@@ -1731,6 +1733,19 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "ruminator", "resolveConfidenceThreshold"],
     readOptionalEnvFloat(env, "BORG_OFFLINE_RUMINATOR_RESOLVE_CONFIDENCE_THRESHOLD"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "ruminator", "duplicateJudgmentMaxPairs"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_DUPLICATE_JUDGMENT_MAX_PAIRS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "ruminator", "duplicateJudgmentMinRemainingBudgetFraction"],
+    readOptionalEnvUnitInterval(
+      env,
+      "BORG_OFFLINE_RUMINATOR_DUPLICATE_JUDGMENT_MIN_REMAINING_BUDGET_FRACTION",
+    ),
   );
   setConfigOverride(
     overrides,

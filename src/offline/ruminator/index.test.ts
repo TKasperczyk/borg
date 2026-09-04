@@ -507,7 +507,6 @@ describe("RuminatorProcess", () => {
         provenance: { kind: "manual" },
       });
       await harness.openQuestionsRepository.waitForPendingEmbeddings();
-      llm.pushResponse(createDuplicateJudgmentResponse([]));
       llm.pushResponse(
         createStillOpenRuminatorResponse({
           reasoning:
@@ -518,6 +517,7 @@ describe("RuminatorProcess", () => {
           connected_open_question_ids: [connected.id, invalidConnectedOpenQuestionId],
         }),
       );
+      llm.pushResponse(createDuplicateJudgmentResponse([]));
       harness.openQuestionsRepository.recordRumination({
         open_question_id: question.id,
         note: "Earlier I saw timing as the live tension.",
@@ -529,9 +529,9 @@ describe("RuminatorProcess", () => {
       });
 
       const plan = await process.plan(harness.createContext(), {});
-      const prompt = String(llm.requests[1]?.messages[0]?.content ?? "");
+      const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
 
-      expect(llm.requests[1]?.system).toBe(RUMINATOR_SYSTEM_PROMPT);
+      expect(llm.requests[0]?.system).toBe(RUMINATOR_SYSTEM_PROMPT);
       expect(prompt).toContain("Connected open-question candidates:");
       expect(prompt).toContain(connected.id);
       expect(prompt).toContain("Is rollout ownership still unresolved?");
@@ -2532,6 +2532,81 @@ describe("RuminatorProcess", () => {
     }
   });
 
+  it("caps duplicate judgment at the highest-cosine candidate pairs", async () => {
+    const questions = [
+      { text: "Which route should the first plan take?", vector: [1, 0, 0, 0] },
+      { text: "Which route should the second plan take?", vector: [0.8, 0.6, 0, 0] },
+      { text: "Which route should the third plan take?", vector: [0, 1, 0, 0] },
+      { text: "Which route should the fourth plan take?", vector: [0, 0, 1, 0] },
+    ] as const;
+    const llm = new FakeLLMClient({ responses: [createDuplicateJudgmentResponse([])] });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map(questions.map(({ text, vector }) => [text, vector])),
+      ),
+      configOverrides: {
+        offline: {
+          ruminator: {
+            duplicateJudgmentMaxPairs: 2,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      for (const [index, question] of questions.entries()) {
+        harness.openQuestionsRepository.add({
+          question: question.text,
+          urgency: 0.5,
+          source: "reflection",
+          provenance: { kind: "manual" },
+          created_at: 1_000 + index,
+          last_touched: 1_000 + index,
+        });
+      }
+      await harness.openQuestionsRepository.waitForPendingEmbeddings();
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      expect(plan.duplicate_judgment).toEqual({
+        pairs_candidates: 6,
+        pairs_presented: 2,
+        pairs_skipped_budget: 4,
+        judgment_ran: true,
+      });
+      expect(llm.requests).toHaveLength(1);
+      const prompt = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "")) as {
+        candidate_pairs: Array<{
+          left_candidate: Record<string, unknown>;
+          cosine_similarity: number;
+        }>;
+      };
+      expect(prompt.candidate_pairs).toHaveLength(2);
+      expect(prompt.candidate_pairs.map((pair) => pair.cosine_similarity)).toEqual([
+        expect.closeTo(0.8),
+        expect.closeTo(0.6),
+      ]);
+      expect(Object.keys(prompt.candidate_pairs[0]?.left_candidate ?? {})).toEqual([
+        "id",
+        "excerpt",
+        "urgency",
+        "source",
+        "disclosure_label",
+      ]);
+      expect(process.preview(plan).notes).toContain(
+        "duplicate judgment: pairs_candidates=6; pairs_presented=2; pairs_skipped_budget=4; judgment_ran=true",
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("installs no cosine backstop merge when duplicate judgment output is malformed", async () => {
     const firstText = "Which malformed duplicate verdict should fail open?";
     const secondText = "Does this malformed duplicate verdict fail open safely?";
@@ -2906,10 +2981,212 @@ describe("RuminatorProcess", () => {
     }
   });
 
+  it("skips duplicate judgment below its remaining-budget reserve and reports the skipped pairs", async () => {
+    const firstQuestionText = "What settled the reserved-budget planning question?";
+    const secondQuestionText = "What remains open in the other planning question?";
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          ...createRuminatorResponse({
+            resolution_note: "The fresh evidence settled the reserved-budget question.",
+            growth_marker: null,
+          }),
+          input_tokens: 60,
+          output_tokens: 20,
+        },
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [firstQuestionText, [1, 0, 0, 0]],
+          [secondQuestionText, [0, 1, 0, 0]],
+        ]),
+      ),
+      configOverrides: {
+        offline: {
+          ruminator: {
+            maxQuestionsPerRun: 1,
+            resolveConfidenceThreshold: 0,
+            duplicateJudgmentMinRemainingBudgetFraction: 0.25,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture(
+          {
+            title: "Reserved-budget planning evidence",
+            narrative: "Fresh planning evidence settled the first question.",
+            tags: ["planning"],
+            significance: 0.95,
+            created_at: 2_000_000,
+            updated_at: 2_000_000,
+          },
+          [1, 0, 0, 0],
+        ),
+      );
+      const firstQuestion = harness.openQuestionsRepository.add({
+        question: firstQuestionText,
+        urgency: 0.9,
+        source: "reflection",
+        provenance: { kind: "manual" },
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+      });
+      harness.openQuestionsRepository.add({
+        question: secondQuestionText,
+        urgency: 0.1,
+        source: "reflection",
+        provenance: { kind: "manual" },
+        created_at: 1_100_000,
+        last_touched: 1_100_000,
+      });
+      await harness.openQuestionsRepository.waitForPendingEmbeddings();
+
+      const plan = await process.plan(harness.createContext(), { budget: 100 });
+
+      expect(plan.budget_exhausted).toBe(false);
+      expect(plan.tokens_used).toBe(80);
+      expect(llm.requests).toHaveLength(1);
+      expect(llm.requests[0]?.tool_choice).toEqual({
+        type: "tool",
+        name: RUMINATOR_TOOL_NAME,
+      });
+      expect(plan.scheduling.visited_question_ids).toEqual([firstQuestion.id]);
+      expect(plan.duplicate_judgment).toEqual({
+        pairs_candidates: 1,
+        pairs_presented: 0,
+        pairs_skipped_budget: 1,
+        judgment_ran: false,
+      });
+      const result = await process.apply(harness.createContext(), plan);
+      expect(result.notes).toContain(
+        "duplicate judgment: pairs_candidates=1; pairs_presented=0; pairs_skipped_budget=1; judgment_ran=false",
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("visits the scheduled question before an over-budget duplicate judgment", async () => {
+    const firstQuestionText = "What settled the rotation-first planning question?";
+    const secondQuestionText = "What remains open in the rotation companion question?";
+    const warn = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          ...createRuminatorResponse({
+            resolution_note: "The fresh evidence settled the rotation-first question.",
+            growth_marker: null,
+          }),
+          input_tokens: 20,
+          output_tokens: 20,
+        },
+        createDuplicateJudgmentResponse([], { input_tokens: 70, output_tokens: 1 }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [firstQuestionText, [1, 0, 0, 0]],
+          [secondQuestionText, [0, 1, 0, 0]],
+        ]),
+      ),
+      configOverrides: {
+        offline: {
+          ruminator: {
+            maxQuestionsPerRun: 1,
+            resolveConfidenceThreshold: 0,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+      logger: { warn },
+    });
+
+    try {
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture(
+          {
+            title: "Rotation-first planning evidence",
+            narrative: "Fresh planning evidence settled the first question.",
+            tags: ["planning"],
+            significance: 0.95,
+            created_at: 2_000_000,
+            updated_at: 2_000_000,
+          },
+          [1, 0, 0, 0],
+        ),
+      );
+      const firstQuestion = harness.openQuestionsRepository.add({
+        question: firstQuestionText,
+        urgency: 0.9,
+        source: "reflection",
+        provenance: { kind: "manual" },
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+      });
+      harness.openQuestionsRepository.add({
+        question: secondQuestionText,
+        urgency: 0.1,
+        source: "reflection",
+        provenance: { kind: "manual" },
+        created_at: 1_100_000,
+        last_touched: 1_100_000,
+      });
+      await harness.openQuestionsRepository.waitForPendingEmbeddings();
+
+      const plan = await process.plan(harness.createContext(), { budget: 100 });
+
+      expect(plan.budget_exhausted).toBe(true);
+      expect(plan.tokens_used).toBe(111);
+      expect(llm.requests.map((request) => request.tool_choice)).toEqual([
+        { type: "tool", name: RUMINATOR_TOOL_NAME },
+        { type: "tool", name: RUMINATOR_DUPLICATE_TOOL.name },
+      ]);
+      expect(plan.scheduling).toMatchObject({
+        selected_question_ids: [firstQuestion.id],
+        visited_question_ids: [firstQuestion.id],
+        model_called_question_ids: [firstQuestion.id],
+        budget_cut_question_ids: [],
+      });
+      expect(plan.duplicate_judgment).toEqual({
+        pairs_candidates: 1,
+        pairs_presented: 1,
+        pairs_skipped_budget: 0,
+        judgment_ran: true,
+      });
+      expect(plan.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ action: "resolve", question_id: firstQuestion.id }),
+        ]),
+      );
+      expect(warn).toHaveBeenCalledWith(
+        "Ruminator duplicate judgment failed open without backstop merges",
+        expect.objectContaining({ error: expect.any(Error) }),
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("halts on budget exhaustion without making further LLM calls", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        createDuplicateJudgmentResponse([], { input_tokens: 1, output_tokens: 1 }),
         {
           ...createRuminatorResponse({
             resolution_note: "First answer",
@@ -2918,6 +3195,7 @@ describe("RuminatorProcess", () => {
           input_tokens: 20,
           output_tokens: 20,
         },
+        createDuplicateJudgmentResponse([], { input_tokens: 1, output_tokens: 1 }),
       ],
     });
     const harness = await createOfflineTestHarness({
@@ -2982,7 +3260,7 @@ describe("RuminatorProcess", () => {
       });
 
       expect(plan.budget_exhausted).toBe(true);
-      expect(llm.requests).toHaveLength(2);
+      expect(llm.requests).toHaveLength(1);
       expect(plan.scheduling).toMatchObject({
         due_question_ids: [firstQuestion.id, secondQuestion.id],
         selected_question_ids: [firstQuestion.id, secondQuestion.id],
