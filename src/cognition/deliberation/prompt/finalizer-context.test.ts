@@ -1162,6 +1162,35 @@ describe("compact terminal finalizer context", () => {
     expect(first.system[3]?.text).not.toBe(second.system[3]?.text);
     expect(durable.indexOf(olderValue.id)).toBeLessThan(durable.indexOf(newerValue.id));
     expect(durable.indexOf(firstTrait.id)).toBeLessThan(durable.indexOf(secondTrait.id));
+
+    // The coverage claim is checked against counts the stores report by their own
+    // statements, so it cannot stay true for a reason that has stopped holding.
+    const durableSelf = (text: string) =>
+      text.match(/<borg_terminal_values_traits[\s\S]*?<\/borg_terminal_values_traits>/)?.[0] ?? "";
+    const rendered = {
+      goals: [],
+      values: [olderValue, newerValue],
+      traits: [firstTrait, secondTrait],
+    };
+
+    const unmeasured = durableSelf(build(context({ selfSnapshot: rendered })).system[1]!.text);
+    expect(unmeasured).toContain('complete="unmeasured"');
+    expect(unmeasured).not.toContain("<omitted_count>");
+
+    const agreeing = durableSelf(
+      build(context({ selfSnapshot: { ...rendered, valuesStoredTotal: 2, traitsStoredTotal: 2 } }))
+        .system[1]!.text,
+    );
+    expect(agreeing).toContain('complete="true"');
+    expect(agreeing).toContain("<omitted_count>0</omitted_count>");
+
+    const narrowed = durableSelf(
+      build(context({ selfSnapshot: { ...rendered, valuesStoredTotal: 5, traitsStoredTotal: 3 } }))
+        .system[1]!.text,
+    );
+    expect(narrowed).toContain('complete="false"');
+    expect(narrowed).toContain("<omitted_count>4</omitted_count>");
+    expect(narrowed).toContain('rows_total="4"');
   });
 
   it("keeps mutable self state and ledger scope out of the one-hour global block", () => {

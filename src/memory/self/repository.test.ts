@@ -128,6 +128,52 @@ describe("self repositories", () => {
     }
   });
 
+  it("counts every stored value and trait, so list() cannot narrow unnoticed", () => {
+    // A renderer claims it printed every value and trait by comparing its draw
+    // against these counts. That check is only worth anything while list() and
+    // count() see the same rows, and nothing on the rendered surface would show
+    // a filter appearing in list(). This is where that shows up instead.
+    const db = openDatabase(":memory:", { migrations: [...selfMigrations] });
+    const values = new ValuesRepository({ db, clock: new FixedClock(100) });
+    const traits = new TraitsRepository({ db, clock: new FixedClock(100) });
+
+    try {
+      expect(values.count()).toBe(0);
+      expect(traits.count()).toBe(0);
+
+      for (const [index, label] of ["stability", "candour", "restraint"].entries()) {
+        values.add({
+          label,
+          description: `Value ${label}.`,
+          priority: index + 1,
+          provenance: manualProvenance,
+        });
+      }
+      // Deliberately spread across strengths and states: any future draw that
+      // ranks, thresholds, or filters by either would drop rows here.
+      traits.reinforce({ label: "terse", delta: 0.9, provenance: manualProvenance, timestamp: 100 });
+      traits.reinforce({
+        label: "patient",
+        delta: 0.05,
+        provenance: manualProvenance,
+        timestamp: 100,
+      });
+
+      expect(values.count()).toBe(values.list().length);
+      expect(traits.count()).toBe(traits.list().length);
+      expect(values.count()).toBe(3);
+      expect(traits.count()).toBe(2);
+
+      const removed = values.list()[0];
+      expect(removed).toBeDefined();
+      if (removed !== undefined) values.remove(removed.id);
+      expect(values.count()).toBe(values.list().length);
+      expect(values.count()).toBe(2);
+    } finally {
+      db.close();
+    }
+  });
+
   it("CAS-protects value, goal, and trait removals", () => {
     const db = openDatabase(":memory:", {
       migrations: [...selfMigrations],

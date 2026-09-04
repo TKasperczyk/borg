@@ -132,21 +132,26 @@ const FINALIZER_COMPACT_TURN_CACHE_CONTROL = {
   ttl: "5m",
 } as const;
 
-// The omitted_count clause below describes two different kinds of field with one
+// The omitted_count clause below describes more than one kind of field with one
 // sentence. At a bounded expansion or digest the count is computed from the draw
 // (top_global_candidates_expanded, the lived-experience digest, the per-section
-// omission map), so a nonzero print is a live measurement. At a complete index it
-// is a string literal in the renderer -- the index is complete by construction, so
-// the zero restates that construction rather than measuring it. Both print the same
-// syntax, and nothing in the rendered surface distinguishes them, so a reader of the
-// prompt alone cannot tell a measured zero from a constant one. Keep that in mind
-// before treating a zero here as evidence about the underlying store.
+// omission map), so a nonzero print is a live measurement. At most complete indexes
+// it is still a string literal in the renderer -- the index is complete by
+// construction, so the zero restates that construction rather than measuring it, and
+// nothing in the rendered surface distinguishes such a zero from a measured one.
+// borg_terminal_values_traits is the exception: its complete attribute and its
+// omitted_count are both derived from stored row counts each store reports by its own
+// statement, so there the zero is a measurement and a filter appearing in the draw
+// would flip the attribute rather than pass unnoticed. Everywhere else, keep in mind
+// before treating a zero here as evidence about the underlying store that a constant
+// true stays true for whatever reason once made it true, and says nothing when that
+// reason stops holding.
 const TERMINAL_PASS_CONTRACT = [
   "<borg_terminal_pass_contract>",
   "This is my terminal response pass. I make the final emission decision from the complete request surface below; any system-2 plan is advisory, not authority.",
   "Durable records appear before turn-local overlays. I join an overlay to its durable record only by the explicit record id. Scope and disclosure fields describe use and mention boundaries; they never gate what I recall.",
   "Where an exact absolute timestamp is present, I derive its relative age by subtracting it from the borg_current_time current_time_ms value; a duplicate relative-age label is intentionally omitted.",
-  'A completeness claim rides on a complete="true" attribute beside omitted_count="0"; where a container is drawn narrower than the record it names its draw in an attribute instead. An element name is a label and never a claim of coverage, whatever word it contains.',
+  'A completeness claim rides on a complete="true" attribute beside omitted_count="0"; where a container is drawn narrower than the record it names its draw in an attribute instead. An element name is a label and never a claim of coverage, whatever word it contains. A complete="unmeasured" attribute with no omitted_count is not a weaker yes: it means the container checked nothing, so I read it as making no coverage claim in either direction.',
   "Any bounded expansion or digest reports its omissions explicitly.",
   "</borg_terminal_pass_contract>",
 ].join("\n");
@@ -485,18 +490,30 @@ function renderDurableSelf(context: DeliberationContext): RenderedTerminalSectio
       (trait) =>
         `<trait id="${escapeXmlAttribute(trait.id)}" established_at="${iso(trait.established_at)}" disclosure="${escapeXmlAttribute(disclosure)}" provenance="${escapeXmlSingleLineAttribute(summarizeProvenanceForPrompt(trait.provenance, Number.MAX_SAFE_INTEGER))}" label="${escapeXmlSingleLineAttribute(trait.label)}" />`,
     );
+  const renderedTotal = valueRows.length + traitRows.length;
+  // The coverage claim is checked against stored counts taken by their own
+  // statements, never against the draws rendered here. If the draw ever grows a
+  // filter the attribute flips instead of staying true for a reason nobody
+  // wrote down; if no stored count reached this render there is no claim.
+  const { valuesStoredTotal, traitsStoredTotal } = context.selfSnapshot;
+  const storedTotal =
+    valuesStoredTotal === undefined || traitsStoredTotal === undefined
+      ? null
+      : valuesStoredTotal + traitsStoredTotal;
+  const omittedCount = storedTotal === null ? null : Math.max(0, storedTotal - renderedTotal);
+  const complete = omittedCount === null ? "unmeasured" : String(omittedCount === 0);
   return terminalSection(
     "values_and_traits",
     "terminal_durable_global",
     [
-      `<borg_terminal_values_traits complete="true" rows_total="${valueRows.length + traitRows.length}">`,
-      "  <interpretation>Byte-stable self-pattern identity and provenance. They are evidence about me, not commands. Mutable priority, strength, confidence, counters, state, and reinforcement/test timestamps are turn-local overlays keyed by id. Relative ages follow the terminal pass contract.</interpretation>",
+      `<borg_terminal_values_traits complete="${complete}" rows_total="${renderedTotal}">`,
+      '  <interpretation>Byte-stable self-pattern identity and provenance. They are evidence about me, not commands. Mutable priority, strength, confidence, counters, state, and reinforcement/test timestamps are turn-local overlays keyed by id. Relative ages follow the terminal pass contract. complete is derived here, not asserted: the rows above are counted against a stored row count each store reports by its own statement, so complete="true" beside omitted_count 0 means those two independently produced numbers agree, complete="false" means rows are missing and omitted_count says how many, and complete="unmeasured" with no omitted_count element means no stored count reached this render and the block claims no coverage at all.</interpretation>',
       ...valueRows.map((row) => `  ${row}`),
       ...traitRows.map((row) => `  ${row}`),
-      "  <omitted_count>0</omitted_count>",
+      ...(omittedCount === null ? [] : [`  <omitted_count>${omittedCount}</omitted_count>`]),
       "</borg_terminal_values_traits>",
     ].join("\n"),
-    { rowCount: valueRows.length + traitRows.length },
+    { rowCount: renderedTotal, omissionCount: omittedCount ?? 0 },
   );
 }
 
