@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -62,14 +63,23 @@ describe("goal speaker-owner repair", () => {
     ).toThrow("Unknown argument");
   });
 
-  it("clears only non-self owners on goals created by promotion and records identity events", async () => {
+  it("clears only matching creation owners without later owner assignments", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-goal-speaker-owner-repair-"));
     tempDirs.push(tempDir);
+    const databasePath = join(tempDir, "borg.db");
     const seed = await openTestBorg({ dataDir: tempDir });
     const self = seed.entities.ensureSelf("Borg");
     const legacySpeaker = seed.entities.resolve("Legacy speaker", {
       kind: "person",
       provenance: "transport_sender",
+    });
+    const intentionalOwner = seed.entities.resolve("Intentional owner", {
+      kind: "person",
+      provenance: "user_declared",
+    });
+    const unauditedOwner = seed.entities.resolve("Unaudited owner", {
+      kind: "person",
+      provenance: "user_declared",
     });
     const promotionWithLegacyOwner = seed.self.goals.add({
       description: "Carry the extracted responsibility to completion.",
@@ -95,21 +105,69 @@ describe("goal speaker-owner repair", () => {
       ownerEntityId: legacySpeaker,
       provenance: { kind: "manual" },
     });
+    const promotionWithLaterOwnerChange = seed.self.goals.add({
+      description: "Preserve a later intentional owner assignment.",
+      priority: 4,
+      ownerEntityId: legacySpeaker,
+      provenance: { kind: "online", process: "goal-promotion-extractor" },
+    });
+    const laterOwnerUpdate = seed.identity.updateGoal(
+      promotionWithLaterOwnerChange.id,
+      { owner_entity_id: intentionalOwner },
+      { kind: "manual" },
+      { throughReview: true, reason: "Intentional owner assignment after extraction" },
+    );
+    expect(laterOwnerUpdate.status).toBe("applied");
+    const promotionWithCurrentOwnerMismatch = seed.self.goals.add({
+      description: "Preserve a current owner that no identity event explains.",
+      priority: 3,
+      ownerEntityId: legacySpeaker,
+      provenance: { kind: "online", process: "goal-promotion-extractor" },
+    });
     await seed.close();
+
+    const raw = new DatabaseSync(databasePath);
+    try {
+      raw
+        .prepare(
+          `
+            UPDATE goals
+            SET owner_entity_id = ?, record_version = record_version + 1
+            WHERE id = ?
+          `,
+        )
+        .run(unauditedOwner, promotionWithCurrentOwnerMismatch.id);
+    } finally {
+      raw.close();
+    }
 
     const plan = planGoalSpeakerOwnerRepair({ dataDir: tempDir });
     expect(plan.selfEntityId).toBe(self.id);
     expect(plan.candidates.map((candidate) => candidate.id)).toEqual([promotionWithLegacyOwner.id]);
+    expect(plan.skipped).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: promotionWithLaterOwnerChange.id,
+          reason: "a later identity event changed owner_entity_id",
+        }),
+        expect.objectContaining({
+          id: promotionWithCurrentOwnerMismatch.id,
+          reason: "current owner_entity_id differs from creation owner_entity_id",
+        }),
+      ]),
+    );
     expect(plan.counts).toEqual({
-      total: 4,
+      total: 6,
       selected: 1,
       creationEventMissing: 0,
       otherCreationPath: 1,
+      creationOwnerMissing: 0,
+      laterOwnerChange: 1,
+      currentOwnerMismatch: 1,
       promotionOwnerNull: 1,
       promotionOwnerSelf: 1,
     });
 
-    const databasePath = join(tempDir, "borg.db");
     const beforeDryRun = readFileSync(databasePath);
     const dryRunOpenBorg = vi.fn(openTestBorg);
     const dryRunStdout = createOutputBuffer();
@@ -124,7 +182,13 @@ describe("goal speaker-owner repair", () => {
     expect(readFileSync(databasePath)).toEqual(beforeDryRun);
     expect(dryRunStdout.read()).toContain("mode=dry-run");
     expect(dryRunStdout.read()).toContain(
-      "total=4 selected=1 creation_event_missing=0 other_creation_path=1 promotion_owner_null=1 promotion_owner_self=1",
+      `skipped id=${promotionWithLaterOwnerChange.id} reason="a later identity event changed owner_entity_id"`,
+    );
+    expect(dryRunStdout.read()).toContain(
+      `skipped id=${promotionWithCurrentOwnerMismatch.id} reason="current owner_entity_id differs from creation owner_entity_id"`,
+    );
+    expect(dryRunStdout.read()).toContain(
+      "total=6 selected=1 creation_event_missing=0 other_creation_path=1 creation_owner_missing=0 later_owner_change=1 current_owner_mismatch=1 promotion_owner_null=1 promotion_owner_self=1",
     );
 
     const applyStdout = createOutputBuffer();
@@ -140,9 +204,24 @@ describe("goal speaker-owner repair", () => {
 
     const inspection = await openTestBorg({ dataDir: tempDir });
     expect(inspection.self.goals.get(promotionWithLegacyOwner.id)?.owner_entity_id).toBeNull();
+    expect(
+      inspection.self.goals.get(promotionWithLegacyOwner.id)?.counterparty_entity_id,
+    ).toBeNull();
     expect(inspection.self.goals.get(promotionWithSelfOwner.id)?.owner_entity_id).toBe(self.id);
     expect(inspection.self.goals.get(promotionWithNullOwner.id)?.owner_entity_id).toBeNull();
     expect(inspection.self.goals.get(manualWithOtherOwner.id)?.owner_entity_id).toBe(legacySpeaker);
+    expect(inspection.self.goals.get(promotionWithLaterOwnerChange.id)?.owner_entity_id).toBe(
+      intentionalOwner,
+    );
+    expect(
+      inspection.self.goals.get(promotionWithLaterOwnerChange.id)?.counterparty_entity_id,
+    ).toBeNull();
+    expect(inspection.self.goals.get(promotionWithCurrentOwnerMismatch.id)?.owner_entity_id).toBe(
+      unauditedOwner,
+    );
+    expect(
+      inspection.self.goals.get(promotionWithCurrentOwnerMismatch.id)?.counterparty_entity_id,
+    ).toBeNull();
     expect(
       inspection.identity
         .listEvents({ limit: 100 })

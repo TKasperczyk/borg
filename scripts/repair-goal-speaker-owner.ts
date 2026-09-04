@@ -49,6 +49,9 @@ const planningGoalRowSchema = z
     owner_entity_id: goalOwnerEntityIdSchema.nullable(),
     creation_event_id: z.number().int().positive().nullable(),
     creation_provenance_process: z.string().nullable(),
+    creation_owner_value_type: z.enum(["null", "text"]).nullable(),
+    creation_owner_entity_id: goalOwnerEntityIdSchema.nullable(),
+    later_owner_change_event_id: z.number().int().positive().nullable(),
   })
   .strict();
 
@@ -58,6 +61,9 @@ type GoalSpeakerOwnerRepairSnapshot = {
   currentOwnerEntityId: EntityId | null;
   creationEventId: number | null;
   creationProvenanceProcess: string | null;
+  creationOwnerRecorded: boolean;
+  creationOwnerEntityId: EntityId | null;
+  laterOwnerChangeEventId: number | null;
 };
 
 export type GoalSpeakerOwnerRepairCandidate = GoalSpeakerOwnerRepairSnapshot & {
@@ -71,6 +77,9 @@ export type GoalSpeakerOwnerRepairSkip = GoalSpeakerOwnerRepairSnapshot & {
   reason:
     | "creation identity event is missing"
     | "creation provenance is not goal-promotion-extractor"
+    | "creation identity event does not record owner_entity_id"
+    | "a later identity event changed owner_entity_id"
+    | "current owner_entity_id differs from creation owner_entity_id"
     | "owner_entity_id is already NULL"
     | "owner_entity_id is self";
 };
@@ -86,6 +95,9 @@ export type GoalSpeakerOwnerRepairPlan = {
     selected: number;
     creationEventMissing: number;
     otherCreationPath: number;
+    creationOwnerMissing: number;
+    laterOwnerChange: number;
+    currentOwnerMismatch: number;
     promotionOwnerNull: number;
     promotionOwnerSelf: number;
   };
@@ -148,6 +160,18 @@ function planningSnapshot(row: Record<string, unknown>): GoalSpeakerOwnerRepairS
       row.creation_provenance_process === null || row.creation_provenance_process === undefined
         ? null
         : String(row.creation_provenance_process),
+    creation_owner_value_type:
+      row.creation_owner_value_type === null || row.creation_owner_value_type === undefined
+        ? null
+        : String(row.creation_owner_value_type),
+    creation_owner_entity_id:
+      row.creation_owner_entity_id === null || row.creation_owner_entity_id === undefined
+        ? null
+        : String(row.creation_owner_entity_id),
+    later_owner_change_event_id:
+      row.later_owner_change_event_id === null || row.later_owner_change_event_id === undefined
+        ? null
+        : Number(row.later_owner_change_event_id),
   });
 
   return {
@@ -156,6 +180,9 @@ function planningSnapshot(row: Record<string, unknown>): GoalSpeakerOwnerRepairS
     currentOwnerEntityId: parsed.owner_entity_id,
     creationEventId: parsed.creation_event_id,
     creationProvenanceProcess: parsed.creation_provenance_process,
+    creationOwnerRecorded: parsed.creation_owner_value_type !== null,
+    creationOwnerEntityId: parsed.creation_owner_entity_id,
+    laterOwnerChangeEventId: parsed.later_owner_change_event_id,
   };
 }
 
@@ -186,29 +213,53 @@ export function planGoalSpeakerOwnerRepair(input: unknown): GoalSpeakerOwnerRepa
     const rows = db
       .prepare(
         `
+          WITH creation_events AS (
+            SELECT
+              event.*,
+              ROW_NUMBER() OVER (
+                PARTITION BY event.record_id
+                ORDER BY event.ts ASC, event.id ASC
+              ) AS creation_rank
+            FROM identity_events AS event
+            WHERE event.record_type = 'goal'
+              AND event.action = 'create'
+          )
           SELECT
             goal.id,
             goal.record_version,
             goal.owner_entity_id,
+            creation.id AS creation_event_id,
+            creation.provenance_process AS creation_provenance_process,
+            json_type(
+              creation.new_value_json,
+              '$.owner_entity_id'
+            ) AS creation_owner_value_type,
+            json_extract(
+              creation.new_value_json,
+              '$.owner_entity_id'
+            ) AS creation_owner_entity_id,
             (
-              SELECT event.id
-              FROM identity_events AS event
-              WHERE event.record_type = 'goal'
-                AND event.record_id = goal.id
-                AND event.action = 'create'
-              ORDER BY event.ts ASC, event.id ASC
+              SELECT later.id
+              FROM identity_events AS later
+              WHERE later.record_type = 'goal'
+                AND later.record_id = goal.id
+                AND (
+                  later.ts > creation.ts
+                  OR (later.ts = creation.ts AND later.id > creation.id)
+                )
+                AND (
+                  json_type(later.old_value_json, '$.owner_entity_id')
+                    IS NOT json_type(later.new_value_json, '$.owner_entity_id')
+                  OR json_extract(later.old_value_json, '$.owner_entity_id')
+                    IS NOT json_extract(later.new_value_json, '$.owner_entity_id')
+                )
+              ORDER BY later.ts ASC, later.id ASC
               LIMIT 1
-            ) AS creation_event_id,
-            (
-              SELECT event.provenance_process
-              FROM identity_events AS event
-              WHERE event.record_type = 'goal'
-                AND event.record_id = goal.id
-                AND event.action = 'create'
-              ORDER BY event.ts ASC, event.id ASC
-              LIMIT 1
-            ) AS creation_provenance_process
+            ) AS later_owner_change_event_id
           FROM goals AS goal
+          LEFT JOIN creation_events AS creation
+            ON creation.record_id = goal.id
+           AND creation.creation_rank = 1
           ORDER BY goal.created_at ASC, goal.id ASC
         `,
       )
@@ -221,6 +272,9 @@ export function planGoalSpeakerOwnerRepair(input: unknown): GoalSpeakerOwnerRepa
       selected: 0,
       creationEventMissing: 0,
       otherCreationPath: 0,
+      creationOwnerMissing: 0,
+      laterOwnerChange: 0,
+      currentOwnerMismatch: 0,
       promotionOwnerNull: 0,
       promotionOwnerSelf: 0,
     };
@@ -235,6 +289,15 @@ export function planGoalSpeakerOwnerRepair(input: unknown): GoalSpeakerOwnerRepa
       } else if (snapshot.creationProvenanceProcess !== GOAL_PROMOTION_PROCESS) {
         skipReason = "creation provenance is not goal-promotion-extractor";
         counts.otherCreationPath += 1;
+      } else if (!snapshot.creationOwnerRecorded) {
+        skipReason = "creation identity event does not record owner_entity_id";
+        counts.creationOwnerMissing += 1;
+      } else if (snapshot.laterOwnerChangeEventId !== null) {
+        skipReason = "a later identity event changed owner_entity_id";
+        counts.laterOwnerChange += 1;
+      } else if (snapshot.currentOwnerEntityId !== snapshot.creationOwnerEntityId) {
+        skipReason = "current owner_entity_id differs from creation owner_entity_id";
+        counts.currentOwnerMismatch += 1;
       } else if (snapshot.currentOwnerEntityId === null) {
         skipReason = "owner_entity_id is already NULL";
         counts.promotionOwnerNull += 1;
@@ -258,6 +321,9 @@ export function planGoalSpeakerOwnerRepair(input: unknown): GoalSpeakerOwnerRepa
         ...snapshot,
         action: "clear",
         currentOwnerEntityId: snapshot.currentOwnerEntityId as EntityId,
+        // The legacy owner is the turn speaker, which is provenance rather than
+        // evidence of whom the responsibility runs toward. Do not copy it into
+        // counterparty_entity_id; untouched legacy rows keep that field null/unknown.
         patch: { owner_entity_id: null },
       };
       entries.push(candidate);
@@ -365,12 +431,21 @@ export function formatGoalSpeakerOwnerRepairReport(report: GoalSpeakerOwnerRepai
     );
   }
 
+  for (const skip of report.plan.skipped) {
+    lines.push(
+      `skipped id=${skip.id} reason=${JSON.stringify(skip.reason)} current_owner_entity_id=${skip.currentOwnerEntityId ?? "NULL"} creation_owner_entity_id=${skip.creationOwnerRecorded ? (skip.creationOwnerEntityId ?? "NULL") : "not-recorded"} later_owner_change_event_id=${skip.laterOwnerChangeEventId ?? "none"}`,
+    );
+  }
+
   lines.push(
     [
       `total=${report.plan.counts.total}`,
       `selected=${report.plan.counts.selected}`,
       `creation_event_missing=${report.plan.counts.creationEventMissing}`,
       `other_creation_path=${report.plan.counts.otherCreationPath}`,
+      `creation_owner_missing=${report.plan.counts.creationOwnerMissing}`,
+      `later_owner_change=${report.plan.counts.laterOwnerChange}`,
+      `current_owner_mismatch=${report.plan.counts.currentOwnerMismatch}`,
       `promotion_owner_null=${report.plan.counts.promotionOwnerNull}`,
       `promotion_owner_self=${report.plan.counts.promotionOwnerSelf}`,
     ].join(" "),
