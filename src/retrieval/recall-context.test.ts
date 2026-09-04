@@ -61,18 +61,26 @@ describe("memory disclosure labels", () => {
   });
 
   it("preserves disclosure origin order while sorting authorization ids", () => {
-    expect(
-      combineMemoryDisclosureLabels([
-        relationshipPrivateMemoryDisclosureLabel([bob]),
-        relationshipPrivateMemoryDisclosureLabel([alice]),
-      ]),
-    ).toMatchObject({
+    const expected = {
       disclosureClass: "relationship_private",
       // Origins preserve canonical source chronology; only permission sets use
       // lexical ordering for stable equality and persistence.
       originAudienceEntityIds: [bob, alice],
       privateToEntityIds: [alice, bob],
       publicToEntityIds: [],
-    });
+    } as const;
+
+    expect(
+      combineMemoryDisclosureLabels([
+        relationshipPrivateMemoryDisclosureLabel([bob]),
+        relationshipPrivateMemoryDisclosureLabel([alice]),
+      ]),
+    ).toMatchObject(expected);
+    expect(
+      memoryDisclosureLabelFromEpisodeAccess({
+        origin_audience_entity_ids: [bob, alice],
+        shared: false,
+      }),
+    ).toMatchObject(expected);
   });
 });

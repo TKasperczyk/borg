@@ -231,7 +231,7 @@ export function memoryDisclosureLabelFromEpisodeAccess(
   return {
     disclosureClass: "relationship_private",
     originAudienceEntityIds,
-    privateToEntityIds: originAudienceEntityIds,
+    privateToEntityIds: [...originAudienceEntityIds].sort(),
     publicToEntityIds: [],
   };
 }

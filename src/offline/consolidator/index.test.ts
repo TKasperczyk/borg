@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { buildConsolidationCoverageHash } from "../../memory/episodic/index.js";
 import { memoryDisclosureLabelFromEpisodeAccess } from "../../retrieval/index.js";
-import { createConsolidationFamilyId } from "../../util/ids.js";
+import { createConsolidationFamilyId, parseEntityId, parseEpisodeId } from "../../util/ids.js";
 import {
   MEMORY_SOURCE_LANGUAGE_GUIDANCE,
   SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
@@ -680,8 +680,16 @@ describe("consolidator process", () => {
       llmClient: llm,
     });
     cleanup.push(harness.cleanup);
-    const alice = harness.entityRepository.resolve("Alice");
-    const bob = harness.entityRepository.resolve("Bob");
+    // Keep origin chronology opposite lexical authorization order so both contracts
+    // are exercised independently and do not depend on randomly generated IDs.
+    const alice = harness.entityRepository.add({
+      id: parseEntityId("ent_bbbbbbbbbbbbbbbb"),
+      canonicalName: "Alice",
+    }).id;
+    const bob = harness.entityRepository.add({
+      id: parseEntityId("ent_aaaaaaaaaaaaaaaa"),
+      canonicalName: "Bob",
+    }).id;
     const selfEntityId = harness.entityRepository.resolve("self", {
       kind: "self",
       provenance: "assistant_seeded",
@@ -689,6 +697,7 @@ describe("consolidator process", () => {
     const sourceEpisodes = [
       createEpisodeFixture(
         {
+          id: parseEpisodeId("ep_cccccccccccccccc"),
           title: "Public architecture note one",
           tags: ["architecture"],
           audience_entity_id: null,
@@ -700,23 +709,25 @@ describe("consolidator process", () => {
       ),
       createEpisodeFixture(
         {
+          id: parseEpisodeId("ep_aaaaaaaaaaaaaaaa"),
           title: "Alice-only architecture note",
           tags: ["architecture"],
           audience_entity_id: alice,
           shared: false,
-          created_at: 20_000,
-          updated_at: 20_000,
+          created_at: 10_000,
+          updated_at: 10_000,
         },
         [0.99, 0, 0, 0],
       ),
       createEpisodeFixture(
         {
+          id: parseEpisodeId("ep_bbbbbbbbbbbbbbbb"),
           title: "Bob-only architecture note",
           tags: ["architecture"],
           audience_entity_id: bob,
           shared: false,
-          created_at: 30_000,
-          updated_at: 30_000,
+          created_at: 10_000,
+          updated_at: 10_000,
         },
         [0.98, 0, 0, 0],
       ),
@@ -732,14 +743,18 @@ describe("consolidator process", () => {
     });
     const episodes = await harness.episodicRepository.listAll();
     const merged = episodes.find((episode) => episode.title === "Merged architecture pattern");
-    // Origins follow source raws by created_at (oldest first); disclosure targets stay sorted.
+    const expectedSourceEpisodes = [sourceEpisodes[1]!, sourceEpisodes[2]!, sourceEpisodes[0]!];
+    // Tied source raws use their IDs as a stable secondary key. Origins keep that
+    // chronology while authorization IDs use lexical set order.
     const expectedOriginAudiences = [alice, bob];
     const expectedPrivateTo = [...expectedOriginAudiences].sort();
 
     expect(result.changes).toHaveLength(1);
     expect(merged?.episode_kind).toBe("consolidation_version");
-    expect(merged?.lineage.derived_from).toEqual(sourceEpisodes.map((episode) => episode.id));
-    expect(merged?.lineage.supersedes).toEqual(sourceEpisodes.map((episode) => episode.id));
+    expect(merged?.lineage.derived_from).toEqual(
+      expectedSourceEpisodes.map((episode) => episode.id),
+    );
+    expect(merged?.lineage.supersedes).toEqual(expectedSourceEpisodes.map((episode) => episode.id));
     expect(merged?.audience_entity_id).toBeNull();
     expect(merged?.origin_audience_entity_ids).toEqual(expectedOriginAudiences);
     expect(merged?.shared).toBe(false);
