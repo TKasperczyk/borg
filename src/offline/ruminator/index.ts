@@ -36,6 +36,7 @@ import {
 import {
   combineMemoryDisclosureLabels,
   memoryDisclosureLabelFromEpisodeAccess,
+  renderMemoryDisclosureLabelFieldsForModel,
   selfPrivateMemoryDisclosureLabel,
 } from "../../memory/common/disclosure-label.js";
 import {
@@ -460,6 +461,13 @@ const ruminatorPlanItemSchema = z.discriminatedUnion("action", [
   }),
 ]);
 
+const ruminatorDuplicateJudgmentReportSchema = z.object({
+  pairs_candidates: z.number().int().nonnegative().default(0),
+  pairs_presented: z.number().int().nonnegative().default(0),
+  pairs_skipped_budget: z.number().int().nonnegative().default(0),
+  judgment_ran: z.boolean().default(false),
+});
+
 export const ruminatorPlanSchema = z.object({
   process: z.literal("ruminator"),
   items: z.array(ruminatorPlanItemSchema),
@@ -491,6 +499,12 @@ export const ruminatorPlanSchema = z.object({
       model_called_question_ids: [],
       budget_cut_question_ids: [],
     }),
+  duplicate_judgment: ruminatorDuplicateJudgmentReportSchema.default({
+    pairs_candidates: 0,
+    pairs_presented: 0,
+    pairs_skipped_budget: 0,
+    judgment_ran: false,
+  }),
   tension_scaffolding_drops: z
     .array(
       z.object({
@@ -880,11 +894,24 @@ async function collectDuplicateCandidatePairs(
 
   return [...pairsByKey.values()].sort(
     (left, right) =>
+      right.similarity - left.similarity ||
       left.left.created_at - right.left.created_at ||
       left.left.id.localeCompare(right.left.id) ||
       left.right.created_at - right.right.created_at ||
       left.right.id.localeCompare(right.right.id),
   );
+}
+
+function compactDuplicatePresentationRow(question: OpenQuestion) {
+  const row = openQuestionDuplicatePresentationRow(question);
+
+  return {
+    id: row.id,
+    excerpt: row.text_excerpt,
+    urgency: row.urgency,
+    source: row.source,
+    disclosure_label: renderMemoryDisclosureLabelFieldsForModel(row.disclosure_label),
+  };
 }
 
 function duplicateJudgmentPrompt(pairs: readonly RuminatorDuplicateCandidatePair[]): string {
@@ -893,8 +920,8 @@ function duplicateJudgmentPrompt(pairs: readonly RuminatorDuplicateCandidatePair
     candidate_set:
       "All rows are globally retrieved without audience filtering. Cosine similarity generated candidates only and is not a duplicate verdict.",
     candidate_pairs: pairs.map((pair) => ({
-      left_candidate: openQuestionDuplicatePresentationRow(pair.left),
-      right_candidate: openQuestionDuplicatePresentationRow(pair.right),
+      left_candidate: compactDuplicatePresentationRow(pair.left),
+      right_candidate: compactDuplicatePresentationRow(pair.right),
       cosine_similarity: pair.similarity,
     })),
     output_rule:
@@ -926,7 +953,7 @@ async function judgeDuplicateCandidatePairs(
         ],
         tools: [RUMINATOR_DUPLICATE_TOOL],
         tool_choice: { type: "tool", name: RUMINATOR_DUPLICATE_TOOL_NAME },
-        max_tokens: 12_000,
+        max_tokens: 4_000,
         budget: "offline-ruminator-duplicate-judgment",
       },
       toolName: RUMINATOR_DUPLICATE_TOOL_NAME,
@@ -1340,6 +1367,12 @@ function tensionScaffoldingNotes(
   ];
 }
 
+function duplicateJudgmentNotes(report: RuminatorPlan["duplicate_judgment"]): string[] {
+  return [
+    `duplicate judgment: pairs_candidates=${report.pairs_candidates}; pairs_presented=${report.pairs_presented}; pairs_skipped_budget=${report.pairs_skipped_budget}; judgment_ran=${report.judgment_ran}`,
+  ];
+}
+
 type ScheduledOpenQuestion = {
   question: OpenQuestion;
   overdueRatio: number;
@@ -1517,16 +1550,21 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       revisitPeriodMinDays: ctx.config.offline.ruminator.revisitPeriodMinDays,
       revisitPeriodMaxDays: ctx.config.offline.ruminator.revisitPeriodMaxDays,
     });
-    const mergeParticipantIds = new Set<OpenQuestion["id"]>();
-    const staleDismissedIds = new Set<OpenQuestion["id"]>();
+    const selectedQuestions = dueQuestions
+      .slice(0, maxQuestionsPerRun)
+      .map(({ question }) => question);
     const attemptedQuestionIds = new Set<OpenQuestion["id"]>();
     const modelCalledQuestionIds = new Set<OpenQuestion["id"]>();
     const tensionScaffoldingDrops: RuminatorPlan["tension_scaffolding_drops"] = [];
-    let selectedQuestions: OpenQuestion[] = [];
-    let duplicateMergesInstalled = false;
     let tokensUsed = 0;
     let budgetExhausted = false;
     let duplicateCandidatePairs: RuminatorDuplicateCandidatePair[] = [];
+    let duplicateJudgmentReport: RuminatorPlan["duplicate_judgment"] = {
+      pairs_candidates: 0,
+      pairs_presented: 0,
+      pairs_skipped_budget: 0,
+      judgment_ran: false,
+    };
 
     try {
       duplicateCandidatePairs = await collectDuplicateCandidatePairs(
@@ -1546,88 +1584,18 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
     } catch (error) {
       errors.push(offlineProcessError(this.name, error));
     }
-
-    const finalizeDuplicateMerges = (judgments: readonly RuminatorDuplicateJudgment[] | null) => {
-      if (duplicateMergesInstalled) {
-        return;
-      }
-
-      const duplicateMerges =
-        judgments === null
-          ? []
-          : planDuplicateMerges(
-              duplicateCandidatePairs,
-              judgments,
-              ctx.config.offline.ruminator.duplicateSimilarityThreshold,
-            );
-      items.push(...duplicateMerges);
-
-      for (const item of duplicateMerges) {
-        if (item.action === "merge_duplicate") {
-          mergeParticipantIds.add(item.duplicate_question_id);
-          mergeParticipantIds.add(item.primary_question_id);
-        }
-      }
-
-      selectedQuestions = dueQuestions
-        .filter(({ question }) => !mergeParticipantIds.has(question.id))
-        .slice(0, maxQuestionsPerRun)
-        .map(({ question }) => question);
-      duplicateMergesInstalled = true;
+    duplicateJudgmentReport = {
+      ...duplicateJudgmentReport,
+      pairs_candidates: duplicateCandidatePairs.length,
+      pairs_skipped_budget: duplicateCandidatePairs.length,
     };
 
     try {
-      const budgeted = await withBudget(this.name, budget, async ({ wrapClient }) => {
+      const budgeted = await withBudget(this.name, budget, async ({ tracker, wrapClient }) => {
         const llmClient = wrapClient(ctx.llm.background);
-
-        try {
-          finalizeDuplicateMerges(
-            await judgeDuplicateCandidatePairs(ctx, llmClient, duplicateCandidatePairs),
-          );
-        } catch (error) {
-          finalizeDuplicateMerges(null);
-          (this.options.logger ?? console).warn(
-            "Ruminator duplicate judgment failed open without backstop merges",
-            {
-              run_id: ctx.runId,
-              error,
-            },
-          );
-
-          if (error instanceof BudgetExceededError) {
-            throw error;
-          }
-
-          errors.push(offlineProcessError(this.name, error));
-        }
-
         const llmWindowIds = new Set(selectedQuestions.map((question) => question.id));
 
-        try {
-          for (const question of allOpenQuestions) {
-            if (mergeParticipantIds.has(question.id) || llmWindowIds.has(question.id)) {
-              continue;
-            }
-
-            if (await shouldDismissStaleNoTraction(ctx, question)) {
-              items.push({
-                action: "abandon",
-                question_id: question.id,
-                previous: question,
-                reason: "stale_no_traction",
-              });
-              staleDismissedIds.add(question.id);
-            }
-          }
-        } catch (error) {
-          errors.push(offlineProcessError(this.name, error));
-        }
-
         for (const question of selectedQuestions) {
-          if (mergeParticipantIds.has(question.id) || staleDismissedIds.has(question.id)) {
-            continue;
-          }
-
           attemptedQuestionIds.add(question.id);
 
           try {
@@ -1696,6 +1664,85 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
             errors.push(offlineProcessError(this.name, error));
           }
         }
+
+        const remainingBudgetFraction =
+          Math.max(0, budget - tracker.getTokensUsed(this.name)) / budget;
+        const hasDuplicateJudgmentReserve =
+          remainingBudgetFraction >=
+          ctx.config.offline.ruminator.duplicateJudgmentMinRemainingBudgetFraction;
+
+        if (duplicateCandidatePairs.length > 0 && hasDuplicateJudgmentReserve) {
+          const presentedPairs = duplicateCandidatePairs.slice(
+            0,
+            ctx.config.offline.ruminator.duplicateJudgmentMaxPairs,
+          );
+          duplicateJudgmentReport = {
+            pairs_candidates: duplicateCandidatePairs.length,
+            pairs_presented: presentedPairs.length,
+            pairs_skipped_budget: duplicateCandidatePairs.length - presentedPairs.length,
+            judgment_ran: true,
+          };
+
+          try {
+            const judgments = await judgeDuplicateCandidatePairs(ctx, llmClient, presentedPairs);
+            const terminalQuestionIds = new Set(
+              items.flatMap((item) =>
+                item.action === "resolve" || item.action === "abandon" ? [item.question_id] : [],
+              ),
+            );
+            const duplicateMerges = planDuplicateMerges(
+              presentedPairs,
+              judgments,
+              ctx.config.offline.ruminator.duplicateSimilarityThreshold,
+            ).filter(
+              (item) =>
+                item.action === "merge_duplicate" &&
+                !terminalQuestionIds.has(item.primary_question_id) &&
+                !terminalQuestionIds.has(item.duplicate_question_id),
+            );
+            items.push(...duplicateMerges);
+          } catch (error) {
+            (this.options.logger ?? console).warn(
+              "Ruminator duplicate judgment failed open without backstop merges",
+              {
+                run_id: ctx.runId,
+                error,
+              },
+            );
+
+            if (error instanceof BudgetExceededError) {
+              throw error;
+            }
+
+            errors.push(offlineProcessError(this.name, error));
+          }
+        }
+
+        const mergeParticipantIds = new Set(
+          items.flatMap((item) =>
+            item.action === "merge_duplicate"
+              ? [item.primary_question_id, item.duplicate_question_id]
+              : [],
+          ),
+        );
+        try {
+          for (const question of allOpenQuestions) {
+            if (llmWindowIds.has(question.id) || mergeParticipantIds.has(question.id)) {
+              continue;
+            }
+
+            if (await shouldDismissStaleNoTraction(ctx, question)) {
+              items.push({
+                action: "abandon",
+                question_id: question.id,
+                previous: question,
+                reason: "stale_no_traction",
+              });
+            }
+          }
+        } catch (error) {
+          errors.push(offlineProcessError(this.name, error));
+        }
       });
 
       tokensUsed = budgeted.tokens_used;
@@ -1704,8 +1751,6 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       budgetExhausted = error instanceof BudgetExceededError;
       errors.push(offlineProcessError(this.name, error));
     }
-
-    finalizeDuplicateMerges(null);
 
     const actionQuestionIds = new Set(
       items.flatMap((item) => ("question_id" in item ? [item.question_id] : [])),
@@ -1754,6 +1799,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
         model_called_question_ids: [...modelCalledQuestionIds],
         budget_cut_question_ids: budgetCutQuestionIds,
       },
+      duplicate_judgment: duplicateJudgmentReport,
       tension_scaffolding_drops: tensionScaffoldingDrops,
     });
   }
@@ -1770,6 +1816,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       budget_exhausted: parsed.budget_exhausted,
       notes: [
         ...ruminationSchedulingNotes(parsed.scheduling),
+        ...duplicateJudgmentNotes(parsed.duplicate_judgment),
         ...tensionScaffoldingNotes(parsed.tension_scaffolding_drops),
       ],
     };
@@ -2135,6 +2182,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       budget_exhausted: plan.budget_exhausted,
       notes: [
         ...ruminationSchedulingNotes(plan.scheduling, stampCasConflictIds),
+        ...duplicateJudgmentNotes(plan.duplicate_judgment),
         ...tensionScaffoldingNotes(plan.tension_scaffolding_drops, droppedFromRuminationIds),
       ],
     };
