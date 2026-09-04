@@ -545,6 +545,11 @@ describe("TurnRetrievalCoordinator", () => {
         traceTurnId: "turn-1",
       }),
     );
+    const cognitionCalls = recallEpisodesForCognition.mock.calls as unknown[][];
+    expect(cognitionCalls).toHaveLength(2);
+    for (const call of cognitionCalls) {
+      expect(call[1]).not.toHaveProperty("recallQueryReformulationContext");
+    }
   });
 
   it("recalls Alice-scoped pending corrections during a Bob turn with disclosure labels", async () => {

@@ -284,6 +284,7 @@ const PAYLOAD_GATED_TRACE_KEYS = new Set([
   "rawToolInput",
   "record",
   "recall_intents",
+  "reformulated_query",
   "response",
   "rewritten_response",
   "skipped_promotions",

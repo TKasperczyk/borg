@@ -85,6 +85,7 @@ export {
   type RetrievalSharedOptions,
   type RetrievalSearchOptions,
 } from "./pipeline.js";
+export type { RecallQueryReformulationContext } from "./recall-expansion.js";
 export {
   mapWithDisclosureConcurrency,
   memoryDisclosureLabelForEpisodeIds,

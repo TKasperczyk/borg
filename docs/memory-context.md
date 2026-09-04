@@ -310,6 +310,17 @@ team-agent compatibility: until a sidecar accepting the reply-only shape is live
   the original disclosure audience capability. The `episodes_time_range_fallback` key is emitted
   only when that pass occurs. Fallback eligibility is decided before caller exclusions, so an
   in-range episode suppressed by `exclude` does not widen the search silently.
+- `BORG_MEMORY_RECALL_REFORMULATION_ENABLED=1` opts sidecar disclosure searches into an extension
+  of the existing recall-expansion request. `/memory/context` supplies the resolved memory-owner,
+  sender, audience, conversation, and entity handles; legacy `/memory/recall` supplies only the
+  owner. Every reformulation handle is clipped to 128 characters immediately before the expansion
+  LLM boundary, and entity handles are capped at 32; stored identity and conversation values remain
+  unchanged. The LLM emits one priority-85 episodic vector intent, fused without a boost or reserved
+  slot. With the option absent, the original prompt, schema, messages, intents, and scores are
+  unchanged, and cognition cannot carry the option.
+
+Opus 5.0: in-scope because Borg currently omits identity and venue handles from recall expansion and lacks a memory-oriented query representation, so a stronger response model cannot recover an episode that retrieval never surfaces.
+
 - Episode exclusions are case-sensitive protocol matching: title prefixes use prefix matching and
   narrative markers use substring matching. Only requests that supply `exclude` fetch up to three
   times the requested response limit (bounded at three times the configured endpoint maximum),

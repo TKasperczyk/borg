@@ -24,6 +24,7 @@ import {
   createMemoryHandler,
   DEFAULT_RECENT_ACTIVITY_LIMIT,
   DEFAULT_RECENT_ACTIVITY_WINDOW_MS,
+  memoryRecallQueryReformulationEnabledFromEnv,
 } from "../src/sidecar/memory-handler.js";
 import {
   memoryCommitmentExtractionBudgetFromEnv,
@@ -107,6 +108,7 @@ const recencyPrior = recencyPriorEnabled
           : 36,
     }
   : undefined;
+const recallQueryReformulationEnabled = memoryRecallQueryReformulationEnabledFromEnv(process.env);
 // Bound every provider call so a hung kratos can't pin a request + pool slot
 // (and block shutdown) indefinitely.
 const requestTimeoutMs = Number(process.env.BORG_MEMORY_LLM_TIMEOUT_MS ?? 120_000);
@@ -254,6 +256,9 @@ const server = createServer(
     recallDeadlineMs,
     recentActivityWindowMs,
     recentActivityLimit,
+    ...(recallQueryReformulationEnabled
+      ? { recallQueryReformulation: { memoryOwnerName: selfName } }
+      : {}),
     ...(recencyPrior === undefined ? {} : { recencyPrior }),
     ...(inboxWaiters === undefined ? {} : { inboxWaiters }),
     ...(traceRegistry === undefined ? {} : { traceRegistry }),

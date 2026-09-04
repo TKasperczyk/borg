@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createMemoryHandler,
+  memoryRecallQueryReformulationEnabledFromEnv,
   type MemoryHandlerOptions,
   type MemoryPool,
 } from "./memory-handler.js";
@@ -824,6 +825,30 @@ async function requestRaw(
 }
 
 describe("memory sidecar handler", () => {
+  it("parses the exact recall query reformulation opt-in flag", () => {
+    expect(memoryRecallQueryReformulationEnabledFromEnv({})).toBe(false);
+    expect(
+      memoryRecallQueryReformulationEnabledFromEnv({
+        BORG_MEMORY_RECALL_REFORMULATION_ENABLED: "0",
+      }),
+    ).toBe(false);
+    expect(
+      memoryRecallQueryReformulationEnabledFromEnv({
+        BORG_MEMORY_RECALL_REFORMULATION_ENABLED: "true",
+      }),
+    ).toBe(false);
+    expect(
+      memoryRecallQueryReformulationEnabledFromEnv({
+        BORG_MEMORY_RECALL_REFORMULATION_ENABLED: " 1 ",
+      }),
+    ).toBe(true);
+    expect(
+      memoryRecallQueryReformulationEnabledFromEnv({
+        BORG_MEMORY_RECALL_REFORMULATION_ENABLED: "1",
+      }),
+    ).toBe(true);
+  });
+
   it("serves /healthz without auth", async () => {
     const { pool } = recordingPool();
     const base = await start(pool);
@@ -1533,7 +1558,28 @@ describe("memory sidecar handler", () => {
     expect(rec.lastRecallLimit).toBe(50);
     expect(rec.lastRecallTraceTurnId).toBeUndefined();
     expect(rec.lastRecallOptions).not.toHaveProperty("recordRetrieval");
+    expect(rec.lastRecallOptions).not.toHaveProperty("recallQueryReformulationContext");
     expect(rec.retrievalRecords).toEqual([]);
+  });
+
+  it("passes only the configured memory owner to reformulated legacy recall", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool, TOKEN, {
+      recallQueryReformulation: { memoryOwnerName: "Atlas Memory" },
+    });
+
+    const response = await post(
+      base,
+      "/memory/recall",
+      { tenant: "acme", query: "who leads" },
+      TOKEN,
+    );
+
+    expect(response.status).toBe(200);
+    await response.json();
+    expect(rec.lastRecallOptions?.recallQueryReformulationContext).toEqual({
+      memoryOwnerName: "Atlas Memory",
+    });
   });
 
   it("skips entity lookups when recall returns no episodes", async () => {
@@ -1842,6 +1888,12 @@ describe("memory sidecar handler", () => {
       episodeCount: 1,
       semanticHits: 0,
     });
+    now = 5_200;
+    tracer.emit("recall_expansion.completed", {
+      turnId: "turn_trace_3",
+      intent_count: 1,
+      reformulated_query: "I described the remembered exchange",
+    });
     const since = traceRegistry.query("acme", 0).events[0]!.ts;
     const { pool, rec } = recordingPool();
     const base = await start(pool, TOKEN, { traceRegistry });
@@ -1855,6 +1907,11 @@ describe("memory sidecar handler", () => {
         expect.objectContaining({
           turnId: "turn_trace_2",
           event: "retrieval.completed",
+        }),
+        expect.objectContaining({
+          turnId: "turn_trace_3",
+          event: "recall_expansion.completed",
+          reformulated_query: "I described the remembered exchange",
         }),
       ],
       nextSince: expect.any(Number),
@@ -3472,11 +3529,13 @@ describe("memory sidecar handler", () => {
       entityTerms: ["Jacek", "team-agent"],
       recencyPrior: { weight: 0.15, halfLifeHours: 36 },
     });
+    expect(rec.lastRecallOptions).not.toHaveProperty("recallQueryReformulationContext");
 
     const oldShape = await post(base, "/memory/context", request, TOKEN);
     expect(oldShape.status).toBe(200);
     await oldShape.json();
     expect(rec.lastRecallOptions).not.toHaveProperty("entityTerms");
+    expect(rec.lastRecallOptions).not.toHaveProperty("recallQueryReformulationContext");
 
     const overLimit = await post(
       base,
@@ -3485,6 +3544,42 @@ describe("memory sidecar handler", () => {
       TOKEN,
     );
     expect(overLimit.status).toBe(400);
+  });
+
+  it("passes all resolved context handles to enabled context reformulation", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool, TOKEN, {
+      recallQueryReformulation: { memoryOwnerName: "team-agent" },
+    });
+
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "tenant::ai-ninjas::thread",
+        sender: { external_id: "jacek", display_name: "Jacek Nowak" },
+        conversation: {
+          type: "groupChat",
+          name: "AI Ninjas",
+          external_id: "ai-ninjas",
+        },
+        query: "O które role pytał Jacek?",
+        entity_terms: ["Jacek", "AI Ninjas"],
+        sections: ["episodes"],
+      },
+      TOKEN,
+    );
+
+    expect(response.status).toBe(200);
+    await response.json();
+    expect(rec.lastRecallOptions?.recallQueryReformulationContext).toEqual({
+      memoryOwnerName: "team-agent",
+      currentSenderName: "Jacek Nowak",
+      currentAudienceName: "AI Ninjas",
+      conversation: { type: "groupChat", name: "AI Ninjas" },
+      entityTerms: ["Jacek", "AI Ninjas"],
+    });
   });
 
   it("projects only visible episode source messages with shared count and text caps", async () => {

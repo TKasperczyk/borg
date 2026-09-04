@@ -219,6 +219,7 @@ describe("TurnTracer", () => {
       named_term_count: 1,
       facets: [{ kind: "topic", query: "Atlas rollback", priority: 0.9 }],
       named_terms: ["Atlas"],
+      reformulated_query: "I discussed the Atlas rollback",
       recall_intents: [{ kind: "topic", query: "Atlas rollback", priority: 78 }],
       matched_terms_by_candidate: [{ episode_id: "ep_1", matched_terms: ["Atlas"] }],
     };
@@ -237,6 +238,7 @@ describe("TurnTracer", () => {
     });
     expect(strippedEntries[0]).not.toHaveProperty("facets");
     expect(strippedEntries[0]).not.toHaveProperty("named_terms");
+    expect(strippedEntries[0]).not.toHaveProperty("reformulated_query");
     expect(strippedEntries[0]).not.toHaveProperty("recall_intents");
     expect(strippedEntries[0]).not.toHaveProperty("matched_terms_by_candidate");
 
@@ -245,6 +247,7 @@ describe("TurnTracer", () => {
       event: "recall_expansion.completed",
       facets: [{ kind: "topic", query: "Atlas rollback", priority: 0.9 }],
       named_terms: ["Atlas"],
+      reformulated_query: "I discussed the Atlas rollback",
       recall_intents: [{ kind: "topic", query: "Atlas rollback", priority: 78 }],
       matched_terms_by_candidate: [{ episode_id: "ep_1", matched_terms: ["Atlas"] }],
     });

@@ -87,6 +87,7 @@ import {
   DEFAULT_RECALL_EXPANSION_MODEL,
   expandRecall,
   type RecallExpansionResult,
+  type RecallQueryReformulationContext,
 } from "./recall-expansion.js";
 import type {
   EvidenceItem,
@@ -237,12 +238,14 @@ export type CognitionRetrievalOptions = RetrievalSharedOptions & {
   audienceEntityId?: never;
   visibleAudienceEntityIds?: never;
   crossAudience?: never;
+  recallQueryReformulationContext?: never;
 };
 
 export type DisclosureRetrievalOptions = RetrievalSharedOptions &
   Pick<EpisodeSearchOptions, "audienceEntityId" | "visibleAudienceEntityIds" | "crossAudience"> & {
     disclosureContext?: DisclosureContext;
     recallContext?: never;
+    recallQueryReformulationContext?: RecallQueryReformulationContext;
   };
 
 export type CognitionRecallSearchOptions = CognitionRetrievalOptions;
@@ -298,6 +301,7 @@ type ExpansionOutcome = {
   succeeded: boolean;
   facetIntents: RecallIntent[];
   namedTerms: string[];
+  reformulatedIntent?: RecallIntent;
 };
 
 type EpisodeEvidenceCandidate = {
@@ -1333,6 +1337,9 @@ export class RetrievalPipeline {
     const expansion = expansionOverride ?? (await this.tryExpandRecall(query, options));
 
     intents.push(...expansion.facetIntents);
+    if (expansion.reformulatedIntent !== undefined) {
+      intents.push(expansion.reformulatedIntent);
+    }
 
     const knownTerms = dedupeTermInputs([
       ...expansion.namedTerms.map((term) => ({ term, source: "llm-expansion" as const })),
@@ -1406,6 +1413,11 @@ export class RetrievalPipeline {
           tracer: this.tracer,
           turnId: options.traceTurnId,
           sessionId: options.sessionId,
+          ...(options.recallQueryReformulationContext === undefined
+            ? {}
+            : {
+                recallQueryReformulationContext: options.recallQueryReformulationContext,
+              }),
         }),
       );
       const namedTerms = dedupeStrings(expansion.named_terms);
@@ -1421,11 +1433,23 @@ export class RetrievalPipeline {
           source: "llm-expansion",
         };
       });
+      const reformulatedIntent =
+        expansion.reformulated_query === undefined
+          ? undefined
+          : {
+              id: "recall_reformulated_query_0",
+              kind: "reformulated_query" as const,
+              query: expansion.reformulated_query,
+              terms: [],
+              priority: 85,
+              source: "llm-reformulation" as const,
+            };
 
       return {
         succeeded: true,
         facetIntents,
         namedTerms,
+        ...(reformulatedIntent === undefined ? {} : { reformulatedIntent }),
       };
     } catch (error) {
       if (this.tracer.enabled && options.traceTurnId !== undefined) {
@@ -1623,7 +1647,12 @@ export class RetrievalPipeline {
     const indexedBudget = Math.max(limit * 2, 8);
     const recentBudget = Math.max(limit, 4);
 
-    if (intent.kind === "raw_text" || intent.kind === "topic" || intent.kind === "relationship") {
+    if (
+      intent.kind === "raw_text" ||
+      intent.kind === "reformulated_query" ||
+      intent.kind === "topic" ||
+      intent.kind === "relationship"
+    ) {
       const intentVector = await this.options.embeddingClient.embed(intent.query);
       const candidates =
         mode === "cognition"

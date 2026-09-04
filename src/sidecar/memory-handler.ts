@@ -81,6 +81,11 @@ import {
 import type { EpisodeRecencyPrior, RetrievedEpisode } from "../retrieval/index.js";
 import type { RetrievalDegradation } from "../retrieval/pipeline.js";
 import {
+  clipRecallQueryReformulationContext,
+  MAX_RECALL_QUERY_REFORMULATION_ENTITY_TERMS,
+  MAX_RECALL_QUERY_REFORMULATION_HANDLE_CHARS,
+} from "../retrieval/recall-expansion.js";
+import {
   isNarrativeStreamEntry,
   type StreamEntry,
   type StreamEntryInput,
@@ -159,6 +164,9 @@ export type MemoryHandlerOptions = {
   recentActivityLimit?: number;
   activityExcerptHydrationBudgetMs?: number;
   recencyPrior?: EpisodeRecencyPrior;
+  recallQueryReformulation?: {
+    memoryOwnerName: string;
+  };
   traceRegistry?: MemoryTraceRegistry;
   maintenanceCoordinator?: Pick<
     MemoryMaintenanceCoordinator,
@@ -175,18 +183,26 @@ const DEFAULT_RECALL_DEADLINE_MS = 5000;
 export const DEFAULT_RECENT_ACTIVITY_WINDOW_MS = 24 * 60 * 60_000;
 export const DEFAULT_RECENT_ACTIVITY_LIMIT = 12;
 export const DEFAULT_ACTIVITY_EXCERPT_HYDRATION_BUDGET_MS = 50;
+export const MEMORY_RECALL_QUERY_REFORMULATION_ENABLED_ENV =
+  "BORG_MEMORY_RECALL_REFORMULATION_ENABLED";
 const RECENT_ACTIVITY_EXCERPT_HYDRATION_FAILURE_REASON = "recent_activity_excerpt_hydration_failed";
 const DEFAULT_VENUE_RECENT_LIMIT = 12;
 const MAX_VENUE_RECENT_LIMIT = 50;
 const MAX_CONTEXT_PARTICIPANTS = 32;
-const MAX_CONTEXT_ENTITY_TERMS = 32;
-const MAX_CONTEXT_ENTITY_TERM_CHARS = 128;
+const MAX_CONTEXT_ENTITY_TERMS = MAX_RECALL_QUERY_REFORMULATION_ENTITY_TERMS;
+const MAX_CONTEXT_ENTITY_TERM_CHARS = MAX_RECALL_QUERY_REFORMULATION_HANDLE_CHARS;
 const EPISODE_OVERFETCH_MULTIPLIER = 3;
 const OBSERVATION_MAX_PAST_AGE_MS = 5 * 60_000;
 const OBSERVATION_MAX_FUTURE_SKEW_MS = 60_000;
 const DEFAULT_EPISODE_LIST_LIMIT = 20;
 const MAX_EPISODE_LIST_LIMIT = 100;
 const MAX_COMMITMENT_RESPONSE_ITEMS = 100;
+
+export function memoryRecallQueryReformulationEnabledFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return env[MEMORY_RECALL_QUERY_REFORMULATION_ENABLED_ENV]?.trim() === "1";
+}
 
 class RecallDeadlineExceeded extends Error {
   constructor(deadlineMs: number) {
@@ -1195,6 +1211,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
     ),
   );
   const recencyPrior = options.recencyPrior;
+  const recallQueryReformulation = options.recallQueryReformulation;
   let recallTraceSequence = 0;
 
   const nextRecallTraceTurnId = (tenant: string): string => {
@@ -2329,6 +2346,19 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                   ...(parsed.data.entity_terms === undefined
                     ? {}
                     : { entityTerms: parsed.data.entity_terms }),
+                  ...(recallQueryReformulation === undefined
+                    ? {}
+                    : {
+                        recallQueryReformulationContext: clipRecallQueryReformulationContext({
+                          memoryOwnerName: recallQueryReformulation.memoryOwnerName,
+                          currentSenderName: parsed.data.sender.display_name,
+                          currentAudienceName: identity.audienceEntity.canonical_name,
+                          conversation: identity.conversation,
+                          ...(parsed.data.entity_terms === undefined
+                            ? {}
+                            : { entityTerms: parsed.data.entity_terms }),
+                        }),
+                      }),
                   ...(recencyPrior === undefined ? {} : { recencyPrior }),
                   ...(deferEpisodeRetrievalAccounting ? { recordRetrieval: false } : {}),
                   ...(traceTurnId === undefined ? {} : { traceTurnId }),
@@ -3070,6 +3100,13 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             const recallOptions = {
               limit: searchLimit,
               onDegraded: (degradation: RetrievalDegradation) => degradations.push(degradation),
+              ...(recallQueryReformulation === undefined
+                ? {}
+                : {
+                    recallQueryReformulationContext: clipRecallQueryReformulationContext({
+                      memoryOwnerName: recallQueryReformulation.memoryOwnerName,
+                    }),
+                  }),
               ...(recencyPrior === undefined ? {} : { recencyPrior }),
               ...(deferRetrievalAccounting ? { recordRetrieval: false } : {}),
               ...(traceTurnId === undefined ? {} : { traceTurnId }),
