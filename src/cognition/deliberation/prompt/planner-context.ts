@@ -137,9 +137,11 @@ const PLANNER_COMMITMENT_MEMBERSHIP_BUDGET_MARKER = "membership_not_enumerated_b
 const PLANNER_COMMITMENT_DISCLOSURE_REMAINDER_MARKER =
   "membership_not_enumerated_by_disclosure_class";
 const PLANNER_COMMITMENT_KIND_REMAINDER_MARKER = "membership_not_enumerated_by_kind";
-// The first production compact call measured provider input at 1.63x the
-// chars/4 estimate. A 25.1K estimated envelope therefore targets about 41K real
-// provider tokens while retaining honest overflow telemetry for critical text.
+// Measured over 317 live compact planner calls (trace usage, 2026-08-25 to
+// 2026-09-04): real provider input runs a median 1.98x the chars/4 estimate
+// (min 1.75x, max 2.03x). A 25.1K estimated envelope therefore targets roughly
+// 50K real provider tokens while retaining honest overflow telemetry for
+// critical text. The earlier 1.63x figure came from a single call.
 // Commit 7638cc5a left 55 residual estimated tokens above the former 25K ceiling;
 // all three trusted-guidance boundaries remain necessary because untrusted data
 // is rendered between each consecutive pair.
