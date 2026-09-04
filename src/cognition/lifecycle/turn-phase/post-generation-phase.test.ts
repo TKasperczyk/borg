@@ -24,6 +24,7 @@ import { FixedClock } from "../../../util/clock.js";
 import {
   createActionId,
   createEntityId,
+  createGoalId,
   createSessionId,
   createStreamEntryId,
   type EntityId,
@@ -122,6 +123,7 @@ describe("runPostGenerationPhase", () => {
     cleanup.push(() => writer.close());
     const trainOfThoughtRepository = new TrainOfThoughtRepository({ db, clock });
     const selfEntityId = createEntityId();
+    const retiredGoalId = createGoalId();
     const carriedText = "I should resume with the unresolved continuity question.";
     const actionRepository = makeActionRepository([]);
     const options = {
@@ -189,7 +191,9 @@ describe("runPostGenerationPhase", () => {
         setStopState: vi.fn((arg: { workingMemory: unknown }) => arg.workingMemory),
         markClosureLoopNamed: vi.fn((arg: { workingMemory: unknown }) => arg.workingMemory),
       },
-      turnReflectionCoordinator: { run: vi.fn(async () => undefined) },
+      turnReflectionCoordinator: {
+        run: vi.fn(async () => ({ effects: { retiredGoalIds: [retiredGoalId] } })),
+      },
       turnActionStateService: { closeBorgSelfPerformedActions: vi.fn(async () => undefined) },
       correctivePreferenceTurnService: { persistCommitment: vi.fn(async () => undefined) },
       streamIngestionCoordinator: undefined,
@@ -211,7 +215,7 @@ describe("runPostGenerationPhase", () => {
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
       sessionSourceType: null,
-    sessionAudienceRole: "participant" as const,
+      sessionAudienceRole: "participant" as const,
       turnId,
       turnInput: {
         userMessage: "",
@@ -272,6 +276,7 @@ describe("runPostGenerationPhase", () => {
       kind: "continue_thought",
       markerEntryId: expect.any(String),
     });
+    expect(result.reflectionRetiredGoalIds).toEqual([retiredGoalId]);
     expect(trainOfThoughtRepository.get()).toMatchObject({
       text: carriedText,
       self_entity_id: selfEntityId,
@@ -572,7 +577,7 @@ describe("runPostGenerationPhase", () => {
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
       sessionSourceType: null,
-    sessionAudienceRole: "participant" as const,
+      sessionAudienceRole: "participant" as const,
       turnId,
       turnInput: {
         userMessage: String(currentUserEntry.content),
@@ -828,7 +833,7 @@ describe("runPostGenerationPhase", () => {
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
       sessionSourceType: null,
-    sessionAudienceRole: "participant" as const,
+      sessionAudienceRole: "participant" as const,
       turnId,
       turnInput: {
         userMessage: "Directed outbound instruction",
@@ -961,7 +966,7 @@ describe("runPostGenerationPhase", () => {
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
       sessionSourceType: null,
-    sessionAudienceRole: "participant" as const,
+      sessionAudienceRole: "participant" as const,
       turnId,
       turnInput: { userMessage: "Caught-up batch" },
       streamWriter: { append: vi.fn(async () => agentEntry) } as never,
@@ -1141,7 +1146,7 @@ describe("runPostGenerationPhase", () => {
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
       sessionSourceType: null,
-    sessionAudienceRole: "participant" as const,
+      sessionAudienceRole: "participant" as const,
       turnId: "turn_post_generation_archive",
       turnInput: {
         userMessage: "Observation turn",
@@ -1322,7 +1327,7 @@ describe("runPostGenerationPhase", () => {
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
       sessionSourceType: null,
-    sessionAudienceRole: "participant" as const,
+      sessionAudienceRole: "participant" as const,
       turnId: "turn_post_generation_suppressed_archive",
       turnInput: {
         userMessage: "No output needed",
@@ -1510,7 +1515,7 @@ describe("runPostGenerationPhase outbound activity gate", () => {
       llmClient: new FakeLLMClient({ responses: [] }),
       sessionId,
       sessionSourceType: null,
-    sessionAudienceRole: "participant" as const,
+      sessionAudienceRole: "participant" as const,
       turnId,
       turnInput: { userMessage: "Directed outbound instruction", origin: "directed_outbound" },
       streamWriter: { append: vi.fn(async () => agentEntry) } as never,

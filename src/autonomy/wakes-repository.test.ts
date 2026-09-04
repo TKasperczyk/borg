@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { openDatabase } from "../storage/sqlite/index.js";
 import { ManualClock } from "../util/clock.js";
-import { DEFAULT_SESSION_ID } from "../util/ids.js";
+import { DEFAULT_SESSION_ID, parseGoalId } from "../util/ids.js";
 
 import { autonomyMigrations } from "./migrations.js";
 import { AUTONOMY_CONDITION_NAMES, AUTONOMY_WAKE_SOURCE_NAMES } from "./types.js";
@@ -62,12 +62,14 @@ describe("AutonomyWakesRepository", () => {
       migrations: autonomyMigrations,
     });
     const repository = new AutonomyWakesRepository({ db, clock });
+    const selectedGoalId = parseGoalId("goal_aaaaaaaaaaaaaaaa");
 
     try {
       const headwayWake = repository.record({
         trigger_name: "goal_followup_due",
         session_id: DEFAULT_SESSION_ID,
         wake_source_type: "trigger",
+        selected_goal_id: selectedGoalId,
       });
       clock.advance(1);
       const legacyNullWake = repository.record({
@@ -90,7 +92,11 @@ describe("AutonomyWakesRepository", () => {
       ).toBe(1);
       expect(repository.listSince(0, 10)).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ id: headwayWake.id, outcome: "headway" }),
+          expect.objectContaining({
+            id: headwayWake.id,
+            outcome: "headway",
+            selected_goal_id: selectedGoalId,
+          }),
           expect.objectContaining({ id: legacyNullWake.id, outcome: null }),
         ]),
       );
@@ -192,7 +198,7 @@ describe("AutonomyWakesRepository", () => {
     }
   });
 
-  it("applies the additive outcome migration over legacy wake rows", () => {
+  it("applies additive outcome and selected-goal migrations over legacy wake rows", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-autonomy-migration-"));
     const dbPath = join(tempDir, "borg.db");
     let db = openDatabase(dbPath, {
@@ -224,10 +230,12 @@ describe("AutonomyWakesRepository", () => {
       }>;
 
       expect(columns.map((column) => column.name)).toContain("outcome");
+      expect(columns.map((column) => column.name)).toContain("selected_goal_id");
       expect(repository.listSince(0, 10)).toEqual([
         expect.objectContaining({
           id: "autonomy_wake_aaaaaaaaaaaaaaaa",
           outcome: null,
+          selected_goal_id: null,
         }),
       ]);
     } finally {

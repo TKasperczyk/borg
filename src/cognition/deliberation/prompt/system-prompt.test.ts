@@ -305,6 +305,7 @@ function makeSchedulerStateWithSources(): NonNullable<
       bypass_count: 0,
       freshness_bypass_cap: 3,
       window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+      window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
       window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
       window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
     },
@@ -2233,7 +2234,7 @@ describe("buildBaseSystemPrompt", () => {
         score_basis: {
           score_context: "wake_time_trigger_selection" as const,
           deadline_lookahead_ms: 604_800_000,
-          progress_debt_stale_ms: 86_400_000,
+          progress_debt_stale_ms: 1_209_600_000,
         },
       },
     };
@@ -2243,7 +2244,7 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(autonomyBlock).toContain("Wake-time trigger selection:");
     expect(autonomyBlock).toContain(
-      "Score basis: score_context=wake_time_trigger_selection deadline_lookahead_ms=604800000 progress_debt_stale_ms=86400000",
+      "Score basis: score_context=wake_time_trigger_selection deadline_lookahead_ms=604800000 progress_debt_stale_ms=1209600000",
     );
     expect(autonomyBlock.indexOf("Wake-time trigger selection:")).toBeLessThan(
       autonomyBlock.indexOf('"reason": "goal_stale"'),
@@ -2726,6 +2727,7 @@ describe("buildBaseSystemPrompt", () => {
                 bypass_count: 0,
                 freshness_bypass_cap: 3,
                 window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+                window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
@@ -2877,6 +2879,7 @@ describe("buildBaseSystemPrompt", () => {
                 bypass_count: 0,
                 freshness_bypass_cap: 3,
                 window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+                window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
@@ -3122,6 +3125,7 @@ describe("buildBaseSystemPrompt", () => {
                 bypass_count: 0,
                 freshness_bypass_cap: 3,
                 window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+                window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
@@ -3188,6 +3192,7 @@ describe("buildBaseSystemPrompt", () => {
                 bypass_count: 0,
                 freshness_bypass_cap: 3,
                 window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+                window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
@@ -3315,6 +3320,7 @@ describe("buildBaseSystemPrompt", () => {
                 bypass_count: 0,
                 freshness_bypass_cap: 3,
                 window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+                window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
@@ -3425,6 +3431,7 @@ describe("buildBaseSystemPrompt", () => {
               bypass_count: 0,
               freshness_bypass_cap: 3,
               window_outcomes: { headway: 0, silent: 5, error: 0, busy: 0 },
+              window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
@@ -3485,6 +3492,19 @@ describe("buildBaseSystemPrompt", () => {
               bypass_count: 0,
               freshness_bypass_cap: 3,
               window_outcomes: { headway: 4, silent: 2, error: 0, busy: 0 },
+              window_headway_reasons: {
+                total: 4,
+                without_detail: 0,
+                reasons: [
+                  { detail: "emitted message", count: 2 },
+                  { detail: "continue_thought", count: 1 },
+                  {
+                    detail:
+                      "progress recorded on goal_aaaaaaaaaaaaaaaa; goal goal_aaaaaaaaaaaaaaaa retired by this turn",
+                    count: 1,
+                  },
+                ],
+              },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_silent_reasons: { total: 2, without_detail: 2, reasons: [] },
             },
@@ -3513,7 +3533,17 @@ describe("buildBaseSystemPrompt", () => {
     }
     expect(block).toContain("headway is a predicate over how the turn ended");
     expect(block).toContain("a tool.outbound.post inside it came back delivered");
-    expect(block).toContain("that goal's progress stamp advanced during the turn");
+    expect(block).toContain("the turn recorded progress on that goal");
+    expect(block).toContain("A closure by another actor between the scan and this accounting");
+    expect(block).toContain(
+      "only goal progress or a retirement attributable to this turn resets that goal's empty-wake backoff",
+    );
+    expect(block).toContain("Why those wakes counted as headway, same rows as headway=4 above");
+    expect(block).toContain("- 2x emitted message");
+    expect(block).toContain("- 1x continue_thought");
+    expect(block).toContain(
+      "- 1x progress recorded on goal_aaaaaaaaaaaaaaaa; goal goal_aaaaaaaaaaaaaaaa retired by this turn",
+    );
     // The inference the page previously left open: every headway route that
     // dominates this window also writes a journal entry, so the correlation is
     // perfect and self-confirming unless the page denies it outright.
@@ -3551,6 +3581,7 @@ describe("buildBaseSystemPrompt", () => {
               bypass_count: 0,
               freshness_bypass_cap: 3,
               window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+              window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
@@ -3625,6 +3656,7 @@ describe("buildBaseSystemPrompt", () => {
                     error: windowErrorReasons.total,
                     busy: 0,
                   },
+                  window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                   window_error_reasons: windowErrorReasons,
                   window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
                 },
@@ -3743,6 +3775,7 @@ describe("buildBaseSystemPrompt", () => {
                     error: 0,
                     busy: 0,
                   },
+                  window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                   window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                   window_silent_reasons: windowSilentReasons,
                 },

@@ -31,6 +31,7 @@ function emptyReflectionEffects(): ReflectionEffects {
     createdOpenQuestionIds: [],
     updatedExecutiveSteps: [],
     updatedGoals: [],
+    retiredGoalIds: [],
     resolvedOpenQuestions: [],
     updatedEpisodeStats: [],
   };

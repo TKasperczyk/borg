@@ -2067,8 +2067,9 @@ export function summarizeAutonomySchedulerState(
   lines.push(
     `headway is a predicate over how the turn ended, not a measure of whether the interval did anything. A wake is recorded headway when its terminal emission was ${HEADWAY_EMISSION_KINDS.join(
       " or ",
-    )} (a self-report is emitted as a message), or a tool.outbound.post inside it came back delivered, or -- on a wake that names a goal -- that goal's progress stamp advanced during the turn or the goal is not active when the outcome is written. silent is the whole complement, so a wake that read, searched and reasoned for minutes and then closed with no output is recorded here identically to one that produced nothing at all. Continuing a thought writes a journal entry as part of that same emission, so a journal entry and a headway on one interval are two effects of one decision rather than either being evidence of the other, and tool.journal.append writes that same journal mid-turn without ending it -- so which outcome a wake recorded is not recoverable from what it left in the journal.`,
+    )} (a self-report is emitted as a message), a tool.outbound.post inside it came back delivered, or -- on a wake that names a goal -- the turn recorded progress on that goal or changed its snapshotted active status by successfully retiring it through its own tool call or reflection. A closure by another actor between the scan and this accounting is not this wake's headway. silent is the whole complement, so a wake that read, searched and reasoned for minutes and then closed with no output is recorded here identically to one that produced nothing at all. An emission still counts for this fleet-level outcome, but only goal progress or a retirement attributable to this turn resets that goal's empty-wake backoff. Continuing a thought writes a journal entry as part of that same emission, so a journal entry and a headway on one interval are two effects of one decision rather than either being evidence of the other, and tool.journal.append writes that same journal mid-turn without ending it -- so which outcome a wake recorded is not recoverable from what it left in the journal.`,
   );
+  lines.push(...renderWakeHeadwayReasonLines(brake.window_headway_reasons));
   // error=N alone cannot separate one provider outage repeated N times from N
   // distinct faults, and the two carry opposite implications for whether the
   // wakes are worth retrying. The scheduler formats the failure at the moment it
@@ -2169,7 +2170,43 @@ function renderWakeSourceLines(
  * detail is an arbitrary formatted error and the tail is long; the residue is
  * always stated, never silently dropped.
  */
-const WAKE_ERROR_REASON_RENDER_LIMIT = 5;
+const WAKE_REASON_RENDER_LIMIT = 5;
+
+function renderWakeHeadwayReasonLines(
+  tally: AutonomySchedulerFleetBrakeDescription["window_headway_reasons"],
+): string[] {
+  if (tally.total === 0) {
+    return ["Headway wakes in that window: none, so there is no basis to attribute."];
+  }
+
+  if (tally.reasons.length === 0) {
+    return [
+      `Headway wakes in that window: ${tally.total}, none of them carrying a recorded basis (rows written before the scheduler kept one). The count is real; whether the wake emitted, recorded goal progress, or retired its goal is unavailable from here.`,
+    ];
+  }
+
+  const shown = tally.reasons.slice(0, WAKE_REASON_RENDER_LIMIT);
+  const hiddenReasons = tally.reasons.length - shown.length;
+  const hiddenCount = tally.reasons
+    .slice(WAKE_REASON_RENDER_LIMIT)
+    .reduce((sum, reason) => sum + reason.count, 0);
+  const remainder = [
+    tally.without_detail === 0
+      ? null
+      : `${tally.without_detail} with no recorded basis (written before the scheduler kept one)`,
+    hiddenReasons === 0
+      ? null
+      : `${hiddenCount} across ${hiddenReasons} further distinct basis combination(s) not shown`,
+  ].filter((clause): clause is string => clause !== null);
+
+  return [
+    `Why those wakes counted as headway, same rows as headway=${tally.total} above. A row with several structural bases lists them in accounting order:`,
+    ...shown.map((reason) => `- ${reason.count}x ${reason.detail}`),
+    remainder.length === 0
+      ? `The bases above account for all ${tally.total}.`
+      : `The bases above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
+  ];
+}
 
 function renderWakeErrorReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_error_reasons"],
@@ -2184,10 +2221,10 @@ function renderWakeErrorReasonLines(
     ];
   }
 
-  const shown = tally.reasons.slice(0, WAKE_ERROR_REASON_RENDER_LIMIT);
+  const shown = tally.reasons.slice(0, WAKE_REASON_RENDER_LIMIT);
   const hiddenReasons = tally.reasons.length - shown.length;
   const hiddenCount = tally.reasons
-    .slice(WAKE_ERROR_REASON_RENDER_LIMIT)
+    .slice(WAKE_REASON_RENDER_LIMIT)
     .reduce((sum, reason) => sum + reason.count, 0);
   const remainder = [
     tally.without_detail === 0
@@ -2230,10 +2267,10 @@ function renderWakeSilentReasonLines(
     ];
   }
 
-  const shown = tally.reasons.slice(0, WAKE_ERROR_REASON_RENDER_LIMIT);
+  const shown = tally.reasons.slice(0, WAKE_REASON_RENDER_LIMIT);
   const hiddenReasons = tally.reasons.length - shown.length;
   const hiddenCount = tally.reasons
-    .slice(WAKE_ERROR_REASON_RENDER_LIMIT)
+    .slice(WAKE_REASON_RENDER_LIMIT)
     .reduce((sum, reason) => sum + reason.count, 0);
   const remainder = [
     tally.without_detail === 0

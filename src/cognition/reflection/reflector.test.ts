@@ -1451,7 +1451,7 @@ describe("reflector", () => {
     expect(llm.requests[0]?.system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
   });
 
-  it("ignores autonomous-turn advanced goal output", async () => {
+  it("applies autonomous-turn advanced goal output as progress", async () => {
     const harness = await createExecutiveReflectionHarness(new FixedClock(4_500));
     cleanup.push(harness.cleanup);
     const goal = harness.goalsRepository.add({
@@ -1497,7 +1497,7 @@ describe("reflector", () => {
       executiveStepsRepository: harness.executiveStepsRepository,
     });
 
-    await reflector.reflect(
+    const result = await reflector.reflect(
       createExecutiveReflectionContext({
         origin: "autonomous",
         goal,
@@ -1507,7 +1507,13 @@ describe("reflector", () => {
     );
 
     expect(llm.requests).toHaveLength(1);
-    expect(harness.goalsRepository.get(goal.id)?.progress_notes).toBeNull();
+    expect(harness.goalsRepository.get(goal.id)).toMatchObject({
+      progress_notes: expect.stringContaining(
+        "The autonomous turn claimed launch readiness moved forward.",
+      ),
+      last_progress_ts: 4_500,
+    });
+    expect(result.effects.updatedGoals).toEqual([expect.objectContaining({ id: goal.id })]);
   });
 
   it("retires goals from autonomous reflection output through the goal status path", async () => {
@@ -1573,7 +1579,7 @@ describe("reflector", () => {
       tracer,
     });
 
-    await reflector.reflect(
+    const result = await reflector.reflect(
       {
         ...createExecutiveReflectionContext({
           origin: "autonomous",
@@ -1609,6 +1615,7 @@ describe("reflector", () => {
       },
     });
     expect(harness.executiveStepsRepository.get(step.id)?.status).toBe("abandoned");
+    expect(result.effects.retiredGoalIds).toEqual([goal.id]);
     expect(tracer.events).toEqual(
       expect.arrayContaining([
         {

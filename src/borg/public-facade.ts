@@ -4,6 +4,7 @@
 import type {
   AutonomyConditionName,
   AutonomySchedulerDescription,
+  AutonomyWakeOutcome,
   AutonomyWakeSourceCategory,
   AutonomyWakeSourceName,
   AutonomyWakeSourceType,
@@ -1134,6 +1135,9 @@ export type BorgAutonomyWakeRecord = {
   session_id: SessionId | null;
   wake_source_type: AutonomyWakeSourceType;
   source_category: AutonomyWakeSourceCategory;
+  selected_goal_id: GoalId | null;
+  outcome: AutonomyWakeOutcome | null;
+  outcome_detail: string | null;
 };
 
 export type BorgAutonomyWakeRecordInput = {
@@ -1142,6 +1146,7 @@ export type BorgAutonomyWakeRecordInput = {
   session_id?: SessionId | null;
   wake_source_type: AutonomyWakeSourceType;
   source_category?: AutonomyWakeSourceCategory;
+  selected_goal_id?: GoalId | null;
 };
 
 export type BorgAutonomyWakesFacade = {

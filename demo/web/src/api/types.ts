@@ -232,6 +232,9 @@ export type AutonomyWakeRecord = {
   session_label: string | null;
   wake_source_type: "trigger" | "condition";
   source_category: "contemplative" | "operational";
+  selected_goal_id: string | null;
+  outcome: "headway" | "silent" | "error" | "busy" | null;
+  outcome_detail: string | null;
 };
 
 export type AutonomyStateResponse = {

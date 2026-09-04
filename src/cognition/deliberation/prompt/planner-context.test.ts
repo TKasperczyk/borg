@@ -960,8 +960,9 @@ describe("compact planner context", () => {
     // rendered on the page it describes, may quote that page's value.
     const openingAttributes = (planner: ReturnType<typeof build>) => {
       const opening =
-        taggedBlock(allSystemText(planner), "borg_planner_lived_experience_digest").split("\n")[0] ??
-        "";
+        taggedBlock(allSystemText(planner), "borg_planner_lived_experience_digest").split(
+          "\n",
+        )[0] ?? "";
       return new Map<string, string>(
         [...opening.matchAll(/([a-z_]+)="([^"]*)"/g)].map((match) => [
           match[1] as string,
@@ -1226,7 +1227,7 @@ describe("compact planner context", () => {
       "the operator progress writer replaces it with the single note it was handed",
     );
     expect(text).toContain("an entry can be rewritten or dropped by a write from outside a turn");
-    expect(text).toContain("rv counts such a write exactly as it counts an append,");
+    expect(text).toContain("rv counts such a write exactly as it counts an append.");
     // A replacing write displaces the entry it drops into the identity event it writes; it does not
     // destroy it. Without this, "dropped" reads as gone and an unread register reads as a limit.
     expect(text).toContain(
@@ -1235,7 +1236,14 @@ describe("compact planner context", () => {
     // pn is an excerpt of the column, so its silence is not evidence about the column.
     expect(text).toContain("It is also an excerpt and not the log");
     expect(text).toContain("an entry missing from pn is not evidence it was never written");
-    expect(text).toContain("an autonomous turn appends no progress entry at all");
+    expect(text).toContain("the online turn reflector on user and autonomous turns");
+    expect(text).toContain(
+      "The reflector appends only when its own structured judgment says the turn made concrete movement; an emission alone does not write progress",
+    );
+    expect(text).toContain("sdebt uses this same progress_debt_stale_ms denominator");
+    expect(text).toContain(
+      "The separate executive-focus staleness cadence controls when the stale lane is eligible to wake; it does not rescale progress debt",
+    );
     // The excerpt's size is a budget the marker is charged against, so rendered= is not it.
     expect(text).toContain('field_excerpt_budget_chars="240"');
     expect(text).toContain(

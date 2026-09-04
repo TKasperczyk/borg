@@ -419,15 +419,21 @@ describe("identity service", () => {
 
       // The facade/CLI/demo progress writer reaches update() with a bare note, which SETs the
       // whole column: the two entries above are gone from the row after this write.
-      harness.goalsRepository.update(goal.id, { progress_notes: "[3] bare replacement" }, {
-        kind: "manual",
-      });
+      harness.goalsRepository.update(
+        goal.id,
+        { progress_notes: "[3] bare replacement" },
+        {
+          kind: "manual",
+        },
+      );
       // The lower-level repository verb replaces the column the same way.
       harness.goalsRepository.updateProgress(goal.id, "[4] bare replacement again", {
         kind: "manual",
       });
 
-      expect(harness.goalsRepository.get(goal.id)?.progress_notes).toBe("[4] bare replacement again");
+      expect(harness.goalsRepository.get(goal.id)?.progress_notes).toBe(
+        "[4] bare replacement again",
+      );
       expect(beforeGeneralPatch).toBe("[1] first entry\n[2] second entry");
 
       const events = harness.identityEvents.list({ recordType: "goal", recordId: goal.id });
@@ -777,7 +783,7 @@ describe("identity service", () => {
     }
   });
 
-  it("does not bypass review for autonomous-origin reflector progress updates", () => {
+  it("allows autonomous reflector progress-only updates but reviews broader patches", () => {
     const harness = createHarness(new FixedClock(2_750));
 
     try {
@@ -807,20 +813,39 @@ describe("identity service", () => {
 
       expect(result).toEqual(
         expect.objectContaining({
-          status: "requires_review",
+          status: "applied",
         }),
       );
       expect(harness.goalsRepository.get(goal.id)).toEqual(
         expect.objectContaining({
-          progress_notes: null,
-          last_progress_ts: null,
+          progress_notes: "Updated the deployment checklist.",
+          last_progress_ts: 2_750,
         }),
       );
-      expect(harness.identityEvents.list({ recordType: "goal", recordId: goal.id })).toEqual([
+      const broaderResult = harness.identity.updateGoalProgressFromReflection(
+        goal.id,
+        {
+          progress_notes: "Updated the deployment checklist.",
+          last_progress_ts: 2_750,
+          status: "done",
+        },
+        {
+          kind: "online",
+          process: "reflector",
+        },
+        {
+          origin: "autonomous",
+        },
+      );
+      expect(broaderResult).toEqual(
         expect.objectContaining({
-          action: "create",
+          status: "requires_review",
         }),
-      ]);
+      );
+      expect(harness.goalsRepository.get(goal.id)?.status).toBe("active");
+      expect(harness.identityEvents.list({ recordType: "goal", recordId: goal.id })[0]).toEqual(
+        expect.objectContaining({ action: "update" }),
+      );
     } finally {
       harness.db.close();
     }

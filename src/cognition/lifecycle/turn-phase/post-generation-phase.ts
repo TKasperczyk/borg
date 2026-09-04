@@ -831,7 +831,7 @@ export async function runPostGenerationPhase(input: {
     });
   }
 
-  await traceTurnPhase({
+  const reflection = await traceTurnPhase({
     tracer: input.options.tracer,
     clock: input.options.clock,
     turnId: input.turnId,
@@ -941,6 +941,7 @@ export async function runPostGenerationPhase(input: {
     referencedEpisodeIds: [...(deliberation.referencedEpisodeIds ?? [])],
     intents: actionResult.intents,
     toolCalls: [...actionResult.tool_calls],
+    reflectionRetiredGoalIds: [...(reflection?.effects.retiredGoalIds ?? [])],
     ...(actionEmission.kind === "message" ? { agentMessageId: persistedAgentEntry.id } : {}),
     ...(persistedEmission.outboundDelivery === undefined
       ? {}

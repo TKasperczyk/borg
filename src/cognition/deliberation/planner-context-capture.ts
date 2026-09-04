@@ -480,6 +480,9 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
             fleetBrake: {
               ...value.autonomySchedulerState.fleetBrake,
               window_outcomes: { ...value.autonomySchedulerState.fleetBrake.window_outcomes },
+              window_headway_reasons: cloneWakeOutcomeDetailTally(
+                value.autonomySchedulerState.fleetBrake.window_headway_reasons,
+              ),
               window_error_reasons: cloneWakeOutcomeDetailTally(
                 value.autonomySchedulerState.fleetBrake.window_error_reasons,
               ),

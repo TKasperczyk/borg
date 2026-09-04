@@ -121,6 +121,7 @@ export type ReflectionEffects = {
   createdOpenQuestionIds: OpenQuestionId[];
   updatedExecutiveSteps: ExecutiveStep[];
   updatedGoals: GoalRecord[];
+  retiredGoalIds: GoalId[];
   resolvedOpenQuestions: OpenQuestion[];
   updatedEpisodeStats: EpisodeStats[];
 };
@@ -204,7 +205,7 @@ const strictReflectionOutputSchema = z.object({
       }),
     )
     .describe(
-      `Goals advanced by this turn. Mark only if the turn took a concrete step toward the goal, not just discussed it. The evidence is appended to goal progress_notes; for Borg-owned goals, apply this voice guidance: ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE}`,
+      `Goals advanced by this turn. Mark only when the turn made concrete movement toward the goal -- a decision made, a question resolved, a step completed, or an artifact produced -- not when it merely deliberated about the goal. The evidence is appended to goal progress_notes; for Borg-owned goals, apply this voice guidance: ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE}`,
     )
     .default([]),
   procedural_outcomes: z
@@ -312,6 +313,7 @@ function emptyReflectionEffects(): ReflectionEffects {
     createdOpenQuestionIds: [],
     updatedExecutiveSteps: [],
     updatedGoals: [],
+    retiredGoalIds: [],
     resolvedOpenQuestions: [],
     updatedEpisodeStats: [],
   };
@@ -658,11 +660,9 @@ export class Reflector {
     const retiredGoalIds = new Set(
       reflectionOutput.retired_goals.map((retirement) => retirement.goal_id),
     );
-    const advancedGoals = isAutonomousTurn
-      ? []
-      : reflectionOutput.advanced_goals.filter(
-          (advancedGoal) => !retiredGoalIds.has(advancedGoal.goal_id as GoalRecord["id"]),
-        );
+    const advancedGoals = reflectionOutput.advanced_goals.filter(
+      (advancedGoal) => !retiredGoalIds.has(advancedGoal.goal_id as GoalRecord["id"]),
+    );
 
     for (const advancedGoal of advancedGoals) {
       const goal = activeGoalsById.get(advancedGoal.goal_id as GoalRecord["id"]);
@@ -689,7 +689,8 @@ export class Reflector {
       }
 
       const result =
-        reflectionOrigin === "user" && isProgressOnlyGoalPatch(patch)
+        (reflectionOrigin === "user" || reflectionOrigin === "autonomous") &&
+        isProgressOnlyGoalPatch(patch)
           ? this.options.identityService.updateGoalProgressFromReflection(
               goal.id,
               patch,
@@ -1632,6 +1633,7 @@ export class Reflector {
           { expectedVersion: snapshotGoal.record_version },
         );
         effects.updatedGoals.push(current);
+        effects.retiredGoalIds.push(snapshotGoal.id);
         this.emitGoalRetirementAttempt(context, {
           goalId: retirement.goal_id,
           disposition: retirement.disposition,

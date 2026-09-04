@@ -93,4 +93,14 @@ export const autonomyMigrations = [
       `);
     },
   },
+  {
+    id: 5,
+    name: "autonomy_wakes_selected_goal",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE autonomy_wakes
+        ADD COLUMN selected_goal_id TEXT;
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

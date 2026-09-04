@@ -7,14 +7,14 @@ import {
   SessionBusyError,
   findInErrorCauseChain,
 } from "../util/errors.js";
-import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
+import { DEFAULT_SESSION_ID, goalIdHelpers, type GoalId, type SessionId } from "../util/ids.js";
 import type { ToolDispatcher } from "../tools/dispatcher.js";
 import { classifySuppressionReason } from "../cognition/generation/suppression-outcome.js";
 import type { TurnOrchestrator, TurnResult } from "../cognition/index.js";
 import { memoryDisclosurePayloadFields } from "../memory/common/disclosure-serializers.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
-import type { GoalsRepository } from "../memory/self/index.js";
+import { goalStatusSchema, type GoalsRepository, type GoalStatus } from "../memory/self/index.js";
 import { selfPrivateMemoryDisclosureLabel } from "../memory/common/disclosure-label.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../tools/internal/outbound-post-name.js";
 
@@ -64,7 +64,8 @@ type FleetAdmissionDecision = {
   metadata: FleetBrakeMetadata | null;
 };
 type GoalWakeOutcome = {
-  headway: boolean;
+  goalAttributedHeadway: boolean;
+  bases: string[];
   concern: ReturnType<typeof goalConcernPayload>;
 };
 type ScannedDueEvent = { source: AutonomyWakeSource; event: DueEvent };
@@ -81,6 +82,7 @@ type GoalWakePresentation = {
   priority: number;
   target_at: number | null;
   last_progress_ts: number | null;
+  status: GoalStatus | null;
   reason: unknown;
   disclosure: string;
   disclosure_label: Record<string, unknown>;
@@ -104,7 +106,7 @@ const WAKE_PRUNE_SAFETY_BUFFER_MS = 7 * 24 * 60 * 60 * 1_000;
 // latency-sensitive, and the dispatcher's 5s default is too tight for that
 // search under load, which made prep fail and the trigger retry-loop. Live/
 // reactive tool calls keep the 5s default; only prep gets this longer bound.
-const AUTONOMY_PREP_TOOL_TIMEOUT_MS = 30_000;
+const DEFAULT_AUTONOMY_PREP_TOOL_TIMEOUT_MS = 30_000;
 
 export type AutonomySchedulerObserver = {
   onTick?(result: TickResult): void | Promise<void>;
@@ -118,6 +120,7 @@ export type AutonomySchedulerStopOptions = {
 export type AutonomySchedulerOptions = {
   enabled: boolean;
   intervalMs: number;
+  prepToolTimeoutMs?: number;
   maxWakesPerWindow: number;
   goalWakeBatchMax?: number;
   budgetWindowMs: number;
@@ -281,6 +284,7 @@ function goalWakePresentation(event: DueEvent): GoalWakePresentation | null {
     priority,
     target_at: targetAt,
     last_progress_ts: lastProgressTs,
+    status: concern.status,
     reason: event.payload.reason,
     disclosure,
     disclosure_label: disclosureLabel,
@@ -310,6 +314,7 @@ function isDeadlineGoalWake(event: DueEvent): boolean {
 export function goalConcernPayload(event: DueEvent): {
   goalId: string;
   lastProgressTs: number | null;
+  status: GoalStatus | null;
 } | null {
   if (event.sourceType !== "trigger") {
     return null;
@@ -319,6 +324,8 @@ export function goalConcernPayload(event: DueEvent): {
 
   if (event.sourceName === "goal_followup_due") {
     const lastProgressTs = payload.last_progress_ts;
+    const selectedGoal = isRecord(payload.selected_goal) ? payload.selected_goal : null;
+    const parsedStatus = goalStatusSchema.safeParse(selectedGoal?.status);
 
     if (
       typeof payload.goal_id !== "string" ||
@@ -330,6 +337,7 @@ export function goalConcernPayload(event: DueEvent): {
     return {
       goalId: payload.goal_id,
       lastProgressTs,
+      status: parsedStatus.success ? parsedStatus.data : null,
     };
   }
 
@@ -343,6 +351,7 @@ export function goalConcernPayload(event: DueEvent): {
   }
 
   const lastProgressTs = payload.selected_goal.last_progress_ts;
+  const parsedStatus = goalStatusSchema.safeParse(payload.selected_goal.status);
 
   if (lastProgressTs !== null && typeof lastProgressTs !== "number") {
     return null;
@@ -351,7 +360,19 @@ export function goalConcernPayload(event: DueEvent): {
   return {
     goalId: payload.selected_goal_id,
     lastProgressTs,
+    status: parsedStatus.success ? parsedStatus.data : null,
   };
+}
+
+function selectedGoalIdForWake(event: DueEvent): GoalId | null {
+  if (event.sourceName !== "goal_followup_due" && event.sourceName !== "executive_focus_due") {
+    return null;
+  }
+
+  const selectedGoalId = event.payload.selected_goal_id;
+  return typeof selectedGoalId === "string" && goalIdHelpers.is(selectedGoalId)
+    ? selectedGoalId
+    : null;
 }
 
 function outboundPostEmitted(call: TurnResult["toolCalls"][number]): boolean {
@@ -436,14 +457,52 @@ function firstUndeliveredOutboundPostState(turnResult: TurnResult): string | nul
   return null;
 }
 
-const HEADWAY_EMISSION_KIND_SET: ReadonlySet<string> = new Set(HEADWAY_EMISSION_KINDS);
+const HEADWAY_EMISSION_DETAIL_BY_KIND = {
+  message: "emitted message",
+  continue_thought: "continue_thought",
+} as const satisfies Record<(typeof HEADWAY_EMISSION_KINDS)[number], string>;
+
+export function turnEmissionHeadwayBases(turnResult: TurnResult): string[] {
+  const bases: string[] = [];
+  const emissionKind = turnResult.emission?.kind;
+  const headwayEmissionKind = HEADWAY_EMISSION_KINDS.find((kind) => kind === emissionKind);
+
+  if (headwayEmissionKind !== undefined) {
+    bases.push(HEADWAY_EMISSION_DETAIL_BY_KIND[headwayEmissionKind]);
+  }
+
+  if (deliveredOutboundPost(turnResult)) {
+    bases.push("delivered outbound post");
+  }
+
+  return bases;
+}
 
 export function turnEmittedHeadway(turnResult: TurnResult): boolean {
-  const emissionKind = turnResult.emission?.kind;
+  return turnEmissionHeadwayBases(turnResult).length > 0;
+}
 
+function goalRetiredByTurnTool(turnResult: TurnResult, goalId: string): boolean {
+  return turnResult.toolCalls.some((call) => {
+    if (
+      call.name !== "tool.goals.retire" ||
+      !call.ok ||
+      !isRecord(call.input) ||
+      call.input.goal_id !== goalId ||
+      !isRecord(call.output) ||
+      call.output.status !== "applied" ||
+      !isRecord(call.output.goal)
+    ) {
+      return false;
+    }
+
+    return call.output.goal.id === goalId && call.output.goal.status === "abandoned";
+  });
+}
+
+function goalRetiredByTurnReflection(turnResult: TurnResult, goalId: string): boolean {
   return (
-    (emissionKind !== undefined && HEADWAY_EMISSION_KIND_SET.has(emissionKind)) ||
-    deliveredOutboundPost(turnResult)
+    turnResult.reflectionRetiredGoalIds?.some((retiredGoalId) => retiredGoalId === goalId) ?? false
   );
 }
 
@@ -518,6 +577,7 @@ export class AutonomyScheduler {
   private readonly sessionId: SessionId;
   private readonly setIntervalFn: typeof setInterval;
   private readonly clearIntervalFn: typeof clearInterval;
+  private readonly prepToolTimeoutMs: number;
   private readonly fleetBrakeOptions: FleetBrakeOptions;
   private readonly respectGoalFollowupStaleBackoff: boolean;
   private readonly retryBackoff = new Map<string, RetryBackoffState>();
@@ -540,6 +600,7 @@ export class AutonomyScheduler {
     this.sessionId = options.sessionId ?? DEFAULT_SESSION_ID;
     this.setIntervalFn = options.setIntervalFn ?? setInterval;
     this.clearIntervalFn = options.clearIntervalFn ?? clearInterval;
+    this.prepToolTimeoutMs = options.prepToolTimeoutMs ?? DEFAULT_AUTONOMY_PREP_TOOL_TIMEOUT_MS;
     this.fleetBrakeOptions = options.fleetBrake ?? { ...DEFAULT_FLEET_BRAKE_OPTIONS };
     this.respectGoalFollowupStaleBackoff = options.respectGoalFollowupStaleBackoff ?? true;
   }
@@ -922,6 +983,12 @@ export class AutonomyScheduler {
           error: this.options.wakeRepository.countSince(budgetCutoff, { outcome: "error" }),
           busy: this.options.wakeRepository.countSince(budgetCutoff, { outcome: "busy" }),
         },
+        // Same rows as window_outcomes.headway, one level down. Each detail is
+        // the ordered structural basis recorded when the turn completed.
+        window_headway_reasons: this.options.wakeRepository.summarizeOutcomeDetailsSince(
+          budgetCutoff,
+          "headway",
+        ),
         // Same rows as window_outcomes.error, one level down. The scheduler
         // formats the failure that ends a wake and writes it to the stream; it
         // used to drop it before this table, leaving `error=N` as a count whose
@@ -1109,6 +1176,7 @@ export class AutonomyScheduler {
             session_id: this.sessionId,
             wake_source_type: dueEvent.sourceType,
             source_category: sourceCategory,
+            selected_goal_id: selectedGoalIdForWake(dueEvent),
           });
 
           const preparedEvent = await this.prepareEvent(dueEvent);
@@ -1252,6 +1320,7 @@ export class AutonomyScheduler {
           const decisionSummary = summarizeAutonomousDecision(turnResult);
           let perGoalOutcomes: Array<{ event: DueEvent; outcome: GoalWakeOutcome }>;
           let wakeHeadway: boolean;
+          let wakeHeadwayBases: string[];
 
           try {
             perGoalOutcomes =
@@ -1262,19 +1331,19 @@ export class AutonomyScheduler {
                       outcome: this.evaluateGoalWakeOutcome(preparedEvent.event, turnResult),
                     },
                   ]
-                : wakeBatch.goalGroups.map((group, index) => {
+                : wakeBatch.goalGroups.map((group) => {
                     const event = this.goalOutcomeEvent(group);
 
                     return {
                       event,
-                      outcome: this.evaluateGoalWakeOutcome(event, turnResult, {
-                        allowTurnLevelHeadway: index === 0,
-                      }),
+                      outcome: this.evaluateGoalWakeOutcome(event, turnResult),
                     };
                   });
-            wakeHeadway =
-              turnEmittedHeadway(turnResult) ||
-              perGoalOutcomes.some(({ outcome }) => outcome.headway);
+            wakeHeadwayBases = [
+              ...turnEmissionHeadwayBases(turnResult),
+              ...perGoalOutcomes.flatMap(({ outcome }) => outcome.bases),
+            ];
+            wakeHeadway = wakeHeadwayBases.length > 0;
             const silentOutcome = wakeHeadway ? null : silentWakeOutcome(turnResult);
             // A completed turn's structural outcome is authoritative. Persist
             // fleet headway before any stream/latch/introspection bookkeeping
@@ -1291,7 +1360,7 @@ export class AutonomyScheduler {
             this.options.wakeRepository.recordOutcome(
               wakeRecord.id,
               wakeHeadway ? "headway" : "silent",
-              silentOutcome?.detail ?? null,
+              wakeHeadway ? wakeHeadwayBases.join("; ") : (silentOutcome?.detail ?? null),
             );
           } catch (error) {
             firedEvents += 1;
@@ -1411,21 +1480,16 @@ export class AutonomyScheduler {
     }
   }
 
-  private evaluateGoalWakeOutcome(
-    event: DueEvent,
-    turnResult: TurnResult,
-    options: { allowTurnLevelHeadway?: boolean } = {},
-  ): GoalWakeOutcome {
+  private evaluateGoalWakeOutcome(event: DueEvent, turnResult: TurnResult): GoalWakeOutcome {
     const parsedConcern = goalConcernPayload(event);
     const concern =
       event.sourceName === "goal_followup_due" && !this.respectGoalFollowupStaleBackoff
         ? null
         : parsedConcern;
-    const emittedHeadway = turnEmittedHeadway(turnResult);
-
-    if (concern === null || (options.allowTurnLevelHeadway !== false && emittedHeadway)) {
+    if (concern === null) {
       return {
-        headway: emittedHeadway,
+        goalAttributedHeadway: false,
+        bases: [],
         concern,
       };
     }
@@ -1438,10 +1502,23 @@ export class AutonomyScheduler {
       before: concern.lastProgressTs,
       after: currentLastProgressTs,
     });
-    const closedDuringTurn = currentGoal !== null && currentGoal.status !== "active";
+    const statusChangedToClosed =
+      concern.status !== null &&
+      concern.status === "active" &&
+      currentGoal !== null &&
+      currentGoal.status !== concern.status;
+    const closedByTurn =
+      statusChangedToClosed &&
+      (goalRetiredByTurnTool(turnResult, concern.goalId) ||
+        goalRetiredByTurnReflection(turnResult, concern.goalId));
+    const bases = [
+      ...(progressedDuringTurn ? [`progress recorded on ${concern.goalId}`] : []),
+      ...(closedByTurn ? [`goal ${concern.goalId} retired by this turn`] : []),
+    ];
 
     return {
-      headway: progressedDuringTurn || closedDuringTurn,
+      goalAttributedHeadway: bases.length > 0,
+      bases,
       concern,
     };
   }
@@ -1458,7 +1535,7 @@ export class AutonomyScheduler {
 
     const processName = getExecutiveFocusGoalStaleBackoffProcessName(concern.goalId);
 
-    if (outcome.headway) {
+    if (outcome.goalAttributedHeadway) {
       this.options.watermarkRepository.reset(processName, this.sessionId);
       return;
     }
@@ -1901,7 +1978,7 @@ export class AutonomyScheduler {
           origin: "autonomous",
           sessionId: this.sessionId,
           provenance,
-          timeoutMs: AUTONOMY_PREP_TOOL_TIMEOUT_MS,
+          timeoutMs: this.prepToolTimeoutMs,
         });
 
         if (!result.ok) {
@@ -1939,7 +2016,7 @@ export class AutonomyScheduler {
           origin: "autonomous",
           sessionId: this.sessionId,
           provenance,
-          timeoutMs: AUTONOMY_PREP_TOOL_TIMEOUT_MS,
+          timeoutMs: this.prepToolTimeoutMs,
         });
 
         if (!result.ok) {
@@ -1973,7 +2050,7 @@ export class AutonomyScheduler {
           origin: "autonomous",
           sessionId: this.sessionId,
           provenance,
-          timeoutMs: AUTONOMY_PREP_TOOL_TIMEOUT_MS,
+          timeoutMs: this.prepToolTimeoutMs,
         });
 
         if (!result.ok) {

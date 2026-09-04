@@ -24,6 +24,7 @@ describe("TurnReflectionCoordinator", () => {
           createdOpenQuestionIds: [],
           updatedExecutiveSteps: [],
           updatedGoals: [],
+          retiredGoalIds: [],
           resolvedOpenQuestions: [],
           updatedEpisodeStats: [],
         },
@@ -112,6 +113,7 @@ describe("TurnReflectionCoordinator", () => {
       createdOpenQuestionIds: [],
       updatedExecutiveSteps: [],
       updatedGoals: [],
+      retiredGoalIds: [],
       resolvedOpenQuestions: [],
       updatedEpisodeStats: [],
     });

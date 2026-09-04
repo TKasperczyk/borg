@@ -701,6 +701,7 @@ const configBaseSchema = z.object({
       // deployments once their records have matured.
       enabled: z.boolean().default(true),
       intervalMs: z.number().int().positive().default(60_000),
+      prepToolTimeoutMs: z.number().int().positive().default(30_000),
       maxWakesPerWindow: z.number().int().positive().default(6),
       goalWakeBatchMax: z.number().int().positive().default(5),
       budgetWindowMs: z.number().int().positive().default(86_400_000),
@@ -1872,6 +1873,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["autonomy", "intervalMs"],
     readOptionalEnvNumber(env, "BORG_AUTONOMY_INTERVAL_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "prepToolTimeoutMs"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_PREP_TOOL_TIMEOUT_MS"),
   );
   setConfigOverride(
     overrides,
