@@ -11,17 +11,20 @@ import type { MoodRepository } from "../memory/affective/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
 import type {
   BorgRole,
+  CommitmentRecord,
   CommitmentRepository,
   EntityRepository,
 } from "../memory/commitments/index.js";
 import type { CreatorDirectiveRepository } from "../memory/creator-directives/index.js";
-import type { Provenance } from "../memory/common/index.js";
+import type { MemoryDisclosureLabelMetadata, Provenance } from "../memory/common/index.js";
 import type { EpisodicRepository, ExtractFromStreamResult } from "../memory/episodic/index.js";
-import type { IdentityService } from "../memory/identity/index.js";
+import type { IdentityService, IdentityUpdateResult } from "../memory/identity/index.js";
 import type { SkillRepository, SkillSelector } from "../memory/procedural/index.js";
 import type { RelationalSlotRepository } from "../memory/relational-slots/index.js";
 import type {
   AutobiographicalRepository,
+  GoalRecord,
+  GoalTreeNode,
   GoalsRepository,
   GrowthMarkersRepository,
   OpenQuestionsRepository,
@@ -76,6 +79,18 @@ import type {
   BorgEpisodeGetOptions,
   BorgEpisodeSearchOptions,
 } from "./types.js";
+
+export type BorgDisclosurePayloadFields = {
+  disclosure: string;
+  disclosure_label: MemoryDisclosureLabelMetadata;
+};
+
+export type BorgGoalWithDisclosure = GoalRecord & BorgDisclosurePayloadFields;
+export type BorgGoalTreeWithDisclosure = Omit<GoalTreeNode, "children"> &
+  BorgDisclosurePayloadFields & {
+    children: BorgGoalTreeWithDisclosure[];
+  };
+export type BorgCommitmentWithDisclosure = CommitmentRecord & BorgDisclosurePayloadFields;
 
 export type BorgStreamFacade = {
   append: (input: StreamEntryInput, options?: { session?: SessionId }) => Promise<StreamEntry>;
@@ -141,20 +156,18 @@ export type BorgSelfFacade = {
     ) => ReturnType<ValuesRepository["listContradictionEvents"]>;
   };
   goals: {
-    get: (...args: Parameters<GoalsRepository["get"]>) => ReturnType<GoalsRepository["get"]>;
-    list: (...args: Parameters<GoalsRepository["list"]>) => ReturnType<GoalsRepository["list"]>;
-    add: (
-      ...args: Parameters<IdentityService["addGoal"]>
-    ) => ReturnType<IdentityService["addGoal"]>;
+    get: (...args: Parameters<GoalsRepository["get"]>) => BorgGoalWithDisclosure | null;
+    list: (...args: Parameters<GoalsRepository["list"]>) => BorgGoalTreeWithDisclosure[];
+    add: (...args: Parameters<IdentityService["addGoal"]>) => BorgGoalWithDisclosure;
     update: (
       ...args: Parameters<IdentityService["updateGoal"]>
-    ) => ReturnType<IdentityService["updateGoal"]>;
+    ) => IdentityUpdateResult<BorgGoalWithDisclosure>;
     updateStatus: (
       ...args: Parameters<IdentityService["updateGoalStatus"]>
-    ) => ReturnType<IdentityService["updateGoalStatus"]>;
+    ) => IdentityUpdateResult<BorgGoalWithDisclosure>;
     updateProgress: (
       ...args: Parameters<IdentityService["updateGoalProgress"]>
-    ) => ReturnType<IdentityService["updateGoalProgress"]>;
+    ) => IdentityUpdateResult<BorgGoalWithDisclosure>;
   };
   traits: {
     get: (...args: Parameters<TraitsRepository["get"]>) => ReturnType<TraitsRepository["get"]>;
@@ -408,19 +421,17 @@ export type BorgCommitmentsFacade = {
     about?: string | null;
     provenance: Provenance;
     expiresAt?: number | null;
-  }) => ReturnType<CommitmentRepository["add"]>;
-  get: (
-    ...args: Parameters<CommitmentRepository["get"]>
-  ) => ReturnType<CommitmentRepository["get"]>;
+  }) => BorgCommitmentWithDisclosure;
+  get: (...args: Parameters<CommitmentRepository["get"]>) => BorgCommitmentWithDisclosure | null;
   revoke: (
     ...args: Parameters<CommitmentRepository["revoke"]>
-  ) => ReturnType<CommitmentRepository["revoke"]>;
+  ) => BorgCommitmentWithDisclosure | null;
   list: (options?: {
     activeOnly?: boolean;
     audience?: string | null;
     audienceEntityId?: EntityId | null;
     aboutEntity?: string | null;
-  }) => ReturnType<CommitmentRepository["list"]>;
+  }) => BorgCommitmentWithDisclosure[];
   countActive: () => ReturnType<CommitmentRepository["countActive"]>;
   countActiveByKind: () => ReturnType<CommitmentRepository["countActiveByKind"]>;
   countActiveByEnforcementClass: () => ReturnType<
@@ -462,16 +473,16 @@ export type BorgIdentityFacade = {
   ) => ReturnType<IdentityService["updateValue"]>;
   updateGoal: (
     ...args: Parameters<IdentityService["updateGoal"]>
-  ) => ReturnType<IdentityService["updateGoal"]>;
+  ) => IdentityUpdateResult<BorgGoalWithDisclosure>;
   updateTrait: (
     ...args: Parameters<IdentityService["updateTrait"]>
   ) => ReturnType<IdentityService["updateTrait"]>;
   addCommitment: (
     ...args: Parameters<IdentityService["addCommitment"]>
-  ) => ReturnType<IdentityService["addCommitment"]>;
+  ) => BorgCommitmentWithDisclosure;
   updateCommitment: (
     ...args: Parameters<IdentityService["updateCommitment"]>
-  ) => ReturnType<IdentityService["updateCommitment"]>;
+  ) => IdentityUpdateResult<BorgCommitmentWithDisclosure>;
   updatePeriod: (
     ...args: Parameters<IdentityService["updatePeriod"]>
   ) => ReturnType<IdentityService["updatePeriod"]>;
