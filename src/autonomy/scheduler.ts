@@ -1034,6 +1034,15 @@ export class AutonomyScheduler {
           budgetCutoff,
           "silent",
         ),
+        // Silence positioned the same way, and the reading it protects is about
+        // the entity rather than the provider: fifteen scattered silences and
+        // fifteen consecutive ones are the same count and a different fact, and
+        // only the second has the shape of a disposition. The count cannot
+        // separate them and the ordering that can is already in the table.
+        window_silent_span: this.options.wakeRepository.describeOutcomeSpanSince(
+          budgetCutoff,
+          "silent",
+        ),
       },
       sources,
     };

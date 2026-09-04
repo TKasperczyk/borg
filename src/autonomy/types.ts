@@ -292,7 +292,7 @@ export type AutonomySchedulerFleetBrakeDescription = {
   window_error_reasons: AutonomyWakeOutcomeDetailTally;
   /**
    * Where those same errored rows sit in the window's order. Carried for errors
-   * and not for the other buckets because this is the bucket whose count invites
+   * and not for every bucket because this is the bucket whose count invites
    * a rate reading, and a rate over a window that clips a longer run is a slice
    * of that run rather than a property of anything the window contains.
    */
@@ -311,6 +311,16 @@ export type AutonomySchedulerFleetBrakeDescription = {
    * without recomputing the ending.
    */
   window_silent_reasons: AutonomyWakeOutcomeDetailTally;
+  /**
+   * Where those same silent rows sit in the window's order, read exactly like
+   * `window_error_span`. Carried for the same reason and one more: `silent` is
+   * the bucket whose count invites a reading about the entity rather than about
+   * the machine, and scattered silences and consecutive ones are the same number
+   * and a different fact -- only the second has the shape of a disposition. The
+   * count alone cannot separate them, and the ordering that would is already in
+   * the table.
+   */
+  window_silent_span: AutonomyWakeOutcomeSpan | null;
 };
 
 export type AutonomySchedulerDescription = {

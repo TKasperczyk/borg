@@ -308,6 +308,7 @@ function makeSchedulerStateWithSources(): NonNullable<
       window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
       window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
       window_error_span: null,
+      window_silent_span: null,
       window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
     },
     budget: {
@@ -2745,6 +2746,7 @@ describe("buildBaseSystemPrompt", () => {
                 window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_span: null,
+                window_silent_span: null,
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
               budget: {
@@ -2906,6 +2908,7 @@ describe("buildBaseSystemPrompt", () => {
                 window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_span: null,
+                window_silent_span: null,
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
               budget: {
@@ -2998,6 +3001,7 @@ describe("buildBaseSystemPrompt", () => {
                   window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                   window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                   window_error_span: null,
+                  window_silent_span: null,
                   window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
                   ...brake,
                 },
@@ -3257,6 +3261,7 @@ describe("buildBaseSystemPrompt", () => {
                 window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_span: null,
+                window_silent_span: null,
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
               budget: {
@@ -3326,6 +3331,7 @@ describe("buildBaseSystemPrompt", () => {
                 window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_span: null,
+                window_silent_span: null,
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
               budget: {
@@ -3456,6 +3462,7 @@ describe("buildBaseSystemPrompt", () => {
                 window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_span: null,
+                window_silent_span: null,
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
               budget: {
@@ -3574,6 +3581,7 @@ describe("buildBaseSystemPrompt", () => {
               window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_error_span: null,
+              window_silent_span: null,
               window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
             budget: {
@@ -3675,6 +3683,7 @@ describe("buildBaseSystemPrompt", () => {
               },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_error_span: null,
+              window_silent_span: null,
               window_silent_reasons: { total: 2, without_detail: 2, reasons: [] },
             },
             budget: {
@@ -3760,6 +3769,7 @@ describe("buildBaseSystemPrompt", () => {
               window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_error_span: null,
+              window_silent_span: null,
               window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
             budget: {
@@ -3846,6 +3856,7 @@ describe("buildBaseSystemPrompt", () => {
                   window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                   window_error_reasons: windowErrorReasons,
                   window_error_span: windowErrorSpan,
+                  window_silent_span: null,
                   window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
                 },
                 budget: {
@@ -4029,6 +4040,9 @@ describe("buildBaseSystemPrompt", () => {
       windowSilentReasons: NonNullable<
         NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
       >["fleetBrake"]["window_silent_reasons"],
+      windowSilentSpan: NonNullable<
+        NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
+      >["fleetBrake"]["window_silent_span"] = null,
     ) =>
       extractBlock(
         buildBaseSystemPrompt(
@@ -4068,6 +4082,7 @@ describe("buildBaseSystemPrompt", () => {
                   window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                   window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                   window_error_span: null,
+                  window_silent_span: windowSilentSpan,
                   window_silent_reasons: windowSilentReasons,
                 },
                 budget: {
@@ -4138,6 +4153,66 @@ describe("buildBaseSystemPrompt", () => {
     });
 
     expect(partial).toContain("The endings above account for 2 of 5; the rest is 3 with no");
+
+    // The same count scattered and consecutive are a different fact, and here
+    // the difference is a reading about the entity rather than the provider:
+    // only a run has the shape of a chosen quiet. A run clipped by the window
+    // edge is the case that misleads hardest, so it is stated.
+    const clipped = buildPrompt(
+      {
+        total: 3,
+        without_detail: 0,
+        reasons: [
+          {
+            detail: "deliberate-silence: finalizer_no_output",
+            count: 3,
+            triggers: [{ trigger: "executive_focus_due", count: 3 }],
+          },
+        ],
+      },
+      { other_outcomes_between: 0, extends_before_window: true },
+    );
+
+    expect(clipped).toContain(
+      "Where those silent wakes sit: No wake that ended any other way falls between the first and last of them, so inside this window they are one unbroken run",
+    );
+    expect(clipped).toContain(
+      "the wake immediately before the first of them was also silent, and that wake is outside this window -- the stretch started earlier, so reading these as a run of chosen quiet reads a slice of a longer one",
+    );
+
+    const scattered = buildPrompt(
+      {
+        total: 3,
+        without_detail: 0,
+        reasons: [
+          {
+            detail: "deliberate-silence: finalizer_no_output",
+            count: 3,
+            triggers: [{ trigger: "executive_focus_due", count: 3 }],
+          },
+        ],
+      },
+      { other_outcomes_between: 7, extends_before_window: false },
+    );
+
+    expect(scattered).toContain(
+      "7 wake(s) that ended some other way fall between the first and last of them, so inside this window the silences are interleaved rather than one stretch",
+    );
+    expect(scattered).toContain(
+      "the wake immediately before the first of them was not silent, so the stretch does begin inside this window",
+    );
+
+    // Rows with no recorded ending are the ones whose positioning carries the
+    // most, since nothing else about them is available.
+    const bareWithSpan = buildPrompt(
+      { total: 4, without_detail: 4, reasons: [] },
+      { other_outcomes_between: 0, extends_before_window: null },
+    );
+
+    expect(bareWithSpan).toContain("none of them carrying a recorded ending");
+    expect(bareWithSpan).toContain(
+      "no earlier wake is retained, so whether the silences start at the window edge or merely become visible there is not answerable from here",
+    );
 
     expect(buildPrompt({ total: 0, without_detail: 0, reasons: [] })).toContain(
       "Silent wakes in that window: none, so there is no silence to attribute.",

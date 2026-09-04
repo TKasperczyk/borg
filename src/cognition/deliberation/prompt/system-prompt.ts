@@ -2118,7 +2118,12 @@ export function summarizeAutonomySchedulerState(
   // the way out, and a guard that blocked one are one number even though only
   // the first two advance empty_streak. The split below is the same rows as
   // silent=N and carries the structural class that selected that disposition.
-  lines.push(...renderWakeSilentReasonLines(brake.window_silent_reasons));
+  // The span line after it answers a question the count cannot: the same number
+  // of silences scattered across the window and consecutive within it are a
+  // different fact, and only the second has the shape of a chosen quiet.
+  lines.push(
+    ...renderWakeSilentReasonLines(brake.window_silent_reasons, brake.window_silent_span),
+  );
   // The only prospective field the scheduler produces, and the last one that
   // stopped at the evidence boundary. Everything above is retrospective or about
   // the loop's own health: what has fired, what the window has spent, how far
@@ -2233,31 +2238,63 @@ function renderWakeReasonLine(reason: AutonomyWakeOutcomeDetailTally["reasons"][
 }
 
 /**
- * Where the errored rows sit among the window's other wakes. Kept to what the
- * rows state -- how many non-errors fall inside the span, and whether the run
- * predates the window -- with the reading left open: an unbroken run and a
- * scatter support different conclusions about whether a trigger's share of the
- * failures is a property of the trigger, and which one applies is the entity's
- * call, not a verdict this block should reach for it.
+ * Where one outcome's rows sit among the window's other wakes. Kept to what the
+ * rows state -- how many rows that ended otherwise fall inside the span, and
+ * whether the run predates the window -- with the reading left open: an unbroken
+ * run and a scatter support different conclusions, and which one applies is the
+ * entity's call, not a verdict this block should reach for it.
+ *
+ * Rendered for `error` because that is the bucket whose count invites a rate
+ * reading, and for `silent` because that is the bucket whose count invites a
+ * reading about the entity: a scatter of closures and a consecutive stretch of
+ * them are the same number and a different fact, and only the second has the
+ * shape of a disposition.
  */
-function renderWakeErrorSpanLine(span: AutonomyWakeOutcomeSpan | null): string[] {
+const WAKE_SPAN_BUCKETS = {
+  error: {
+    label: "errored wakes",
+    interleaved: "the failures are interleaved rather than one run",
+    edgeUnknown:
+      "no earlier wake is retained, so whether the failures start at the window edge or merely become visible there is not answerable from here",
+    extendsBefore:
+      "the wake immediately before the first of them also errored, and that wake is outside this window -- the run started earlier, so any rate taken over this window is a slice of it and the trigger mix of that slice is whatever was firing when the edge fell",
+    beginsInside:
+      "the wake immediately before the first of them did not error, so the run does begin inside this window",
+  },
+  silent: {
+    label: "silent wakes",
+    interleaved: "the silences are interleaved rather than one stretch",
+    edgeUnknown:
+      "no earlier wake is retained, so whether the silences start at the window edge or merely become visible there is not answerable from here",
+    extendsBefore:
+      "the wake immediately before the first of them was also silent, and that wake is outside this window -- the stretch started earlier, so reading these as a run of chosen quiet reads a slice of a longer one, and the endings mixed into the part outside the window are not shown here",
+    beginsInside:
+      "the wake immediately before the first of them was not silent, so the stretch does begin inside this window",
+  },
+} as const;
+
+function renderWakeOutcomeSpanLine(
+  span: AutonomyWakeOutcomeSpan | null,
+  bucket: keyof typeof WAKE_SPAN_BUCKETS,
+): string[] {
   if (span === null) {
     return [];
   }
 
+  const copy = WAKE_SPAN_BUCKETS[bucket];
   const between =
     span.other_outcomes_between === 0
       ? "No wake that ended any other way falls between the first and last of them, so inside this window they are one unbroken run"
-      : `${span.other_outcomes_between} wake(s) that ended some other way fall between the first and last of them, so inside this window the failures are interleaved rather than one run`;
+      : `${span.other_outcomes_between} wake(s) that ended some other way fall between the first and last of them, so inside this window ${copy.interleaved}`;
 
   const before =
     span.extends_before_window === null
-      ? "no earlier wake is retained, so whether the failures start at the window edge or merely become visible there is not answerable from here"
+      ? copy.edgeUnknown
       : span.extends_before_window
-        ? "the wake immediately before the first of them also errored, and that wake is outside this window -- the run started earlier, so any rate taken over this window is a slice of it and the trigger mix of that slice is whatever was firing when the edge fell"
-        : "the wake immediately before the first of them did not error, so the run does begin inside this window";
+        ? copy.extendsBefore
+        : copy.beginsInside;
 
-  return [`Where those errored wakes sit: ${between}; ${before}.`];
+  return [`Where those ${copy.label} sit: ${between}; ${before}.`];
 }
 
 function renderWakeHeadwayReasonLines(
@@ -2307,7 +2344,7 @@ function renderWakeErrorReasonLines(
   if (tally.reasons.length === 0) {
     return [
       `Errored wakes in that window: ${tally.total}, none of them carrying a recorded failure (rows written before the scheduler kept one). The count is real; why is unavailable from here, and their absence of a reason is not evidence that they share one.`,
-      ...renderWakeErrorSpanLine(span),
+      ...renderWakeOutcomeSpanLine(span, "error"),
     ];
   }
 
@@ -2331,7 +2368,7 @@ function renderWakeErrorReasonLines(
     remainder.length === 0
       ? `The reasons above account for all ${tally.total}.`
       : `The reasons above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
-    ...renderWakeErrorSpanLine(span),
+    ...renderWakeOutcomeSpanLine(span, "error"),
   ];
 }
 
@@ -2347,6 +2384,7 @@ const WAKE_SILENT_OUTCOME_CLASSES =
 
 function renderWakeSilentReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_silent_reasons"],
+  span: AutonomySchedulerFleetBrakeDescription["window_silent_span"],
 ): string[] {
   if (tally.total === 0) {
     return ["Silent wakes in that window: none, so there is no silence to attribute."];
@@ -2355,6 +2393,7 @@ function renderWakeSilentReasonLines(
   if (tally.reasons.length === 0) {
     return [
       `Silent wakes in that window: ${tally.total}, none of them carrying a recorded ending (rows written before the scheduler kept one). The count is real; whether they were closures you chose, failed emissions or guard blocks is unavailable from here, and their shared absence of a reason is not evidence that they share an ending.`,
+      ...renderWakeOutcomeSpanLine(span, "silent"),
     ];
   }
 
@@ -2378,6 +2417,7 @@ function renderWakeSilentReasonLines(
     remainder.length === 0
       ? `The endings above account for all ${tally.total}.`
       : `The endings above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
+    ...renderWakeOutcomeSpanLine(span, "silent"),
   ];
 }
 
