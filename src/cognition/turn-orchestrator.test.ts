@@ -795,6 +795,7 @@ function createGoalPromotionResponse(
   promotions: Array<{
     description: string;
     priority?: number;
+    counterparty_entity_id?: string | null;
     terminal_condition: string | null;
     target_at?: string | null;
     reason?: string;
@@ -824,6 +825,7 @@ function createGoalPromotionResponse(
             classification: "durable_borg_goal",
             description: promotion.description,
             priority: promotion.priority ?? 8,
+            counterparty_entity_id: promotion.counterparty_entity_id ?? null,
             terminal_condition: promotion.terminal_condition,
             target_at: promotion.target_at ?? null,
             reason: promotion.reason ?? "The user asked Borg to carry this as an ongoing goal.",

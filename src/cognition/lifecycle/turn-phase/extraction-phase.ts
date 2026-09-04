@@ -110,6 +110,7 @@ export async function runExtractionPhase(input: {
   sessionAudienceRole: SessionAudienceRole;
   participantRoster: ParticipantRoster | null;
   persistedUserEntryId?: StreamEntry["id"];
+  sourceUserEntries?: readonly StreamEntry[];
   sourceUserEntryIds?: readonly StreamEntryId[];
   senderAttribution?: readonly CurrentTurnUserInputSenderAttribution[];
   distinctSenderCount?: number;
@@ -206,14 +207,16 @@ export async function runExtractionPhase(input: {
             isUserTurn: input.isUserTurn,
             userMessage: input.turnInput.userMessage,
             persistedUserEntryId: input.persistedUserEntryId,
+            sourceUserEntries: input.sourceUserEntries,
             sourceUserEntryIds: input.sourceUserEntryIds,
+            senderAttribution: input.senderAttribution,
             recentHistory: input.recentHistory,
             audienceEntityId: input.audienceEntityId,
-            committedByEntityId: input.groupSpeakerEntityId,
+            committedByEntityId: actionSpeaker.entityId,
             currentSenderEntityId: authoritySenderEntityId,
             currentSenderBorgRole: authoritySenderBorgRole,
             sessionAudienceRole: input.sessionAudienceRole,
-            speakerDisplayName: input.groupSpeakerDisplayName,
+            speakerDisplayName: actionSpeaker.displayName,
             participantRoster: input.participantRoster,
             crossAudienceTargeting: {
               allowed: crossAudienceAllowed,
@@ -257,9 +260,11 @@ export async function runExtractionPhase(input: {
             isUserTurn: input.isUserTurn,
             userMessage: input.turnInput.userMessage,
             recentHistory: input.recentHistory,
+            sourceUserEntries: input.sourceUserEntries,
+            senderAttribution: input.senderAttribution,
             audienceEntityId: input.audienceEntityId,
-            ownerEntityId: input.groupSpeakerEntityId,
-            speakerDisplayName: input.groupSpeakerDisplayName,
+            speakerEntityId: actionSpeaker.entityId,
+            speakerDisplayName: actionSpeaker.displayName,
             temporalCue: input.perception.temporalCue,
             activeGoals: activeGoalsForPromotion,
             persistedUserEntryId: input.persistedUserEntryId,

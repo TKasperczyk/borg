@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createWorkingMemory, type WorkingMemory } from "../../../memory/working/index.js";
+import type { StreamEntry } from "../../../stream/index.js";
 import { createEntityId, createSessionId, createStreamEntryId } from "../../../util/ids.js";
 import type { SessionId } from "../../../util/ids.js";
 
@@ -13,7 +14,9 @@ function firstMockCallInput(mock: { mock: { calls: unknown[][] } }): unknown {
 function baseExtractionPhaseInput(input: {
   sessionId: SessionId;
   workingMemory: WorkingMemory;
-  extractActionState: Parameters<typeof runExtractionPhase>[0]["options"]["turnActionStateService"]["extract"];
+  extractActionState: Parameters<
+    typeof runExtractionPhase
+  >[0]["options"]["turnActionStateService"]["extract"];
 }): Parameters<typeof runExtractionPhase>[0] {
   return {
     options: {
@@ -253,19 +256,30 @@ describe("runExtractionPhase", () => {
     const extractActionState = vi.fn(async () => []);
     const senderId = createEntityId();
     const entryId = createStreamEntryId();
+    const sourceEntry = {
+      id: entryId,
+      timestamp: 900,
+      kind: "user_msg",
+      content: "message",
+      turn_status: "active",
+      sender_entity_id: senderId,
+      reply_target_entity_id: null,
+      session_id: sessionId,
+      compressed: false,
+    } satisfies StreamEntry;
+    const phaseInput = baseExtractionPhaseInput({ sessionId, workingMemory, extractActionState });
 
     await runExtractionPhase({
-      ...baseExtractionPhaseInput({ sessionId, workingMemory, extractActionState }),
+      ...phaseInput,
       // No group speaker: a one-to-one audience has none, and the sender is
       // only recoverable from the turn's own entries.
       groupSpeakerEntityId: null,
       groupSpeakerDisplayName: null,
       currentSenderEntityId: senderId,
       currentSenderDisplayName: "Peer",
+      sourceUserEntries: [sourceEntry],
       sourceUserEntryIds: [entryId],
-      senderAttribution: [
-        { entryId, senderEntityId: senderId, senderDisplayName: "Peer" },
-      ],
+      senderAttribution: [{ entryId, senderEntityId: senderId, senderDisplayName: "Peer" }],
       distinctSenderCount: 1,
     });
 
@@ -273,6 +287,22 @@ describe("runExtractionPhase", () => {
       expect.objectContaining({
         speakerEntityId: senderId,
         speakerDisplayName: "Peer",
+      }),
+    );
+    expect(phaseInput.options.turnGoalPromotionService.extractAndPersist).toHaveBeenCalledWith(
+      expect.objectContaining({
+        speakerEntityId: senderId,
+        speakerDisplayName: "Peer",
+        sourceUserEntries: [sourceEntry],
+        senderAttribution: [{ entryId, senderEntityId: senderId, senderDisplayName: "Peer" }],
+      }),
+    );
+    expect(phaseInput.options.correctivePreferenceTurnService.extractAndApply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        committedByEntityId: senderId,
+        speakerDisplayName: "Peer",
+        sourceUserEntries: [sourceEntry],
+        senderAttribution: [{ entryId, senderEntityId: senderId, senderDisplayName: "Peer" }],
       }),
     );
   });
@@ -283,9 +313,10 @@ describe("runExtractionPhase", () => {
     const extractActionState = vi.fn(async () => []);
     const firstEntryId = createStreamEntryId();
     const secondEntryId = createStreamEntryId();
+    const phaseInput = baseExtractionPhaseInput({ sessionId, workingMemory, extractActionState });
 
     await runExtractionPhase({
-      ...baseExtractionPhaseInput({ sessionId, workingMemory, extractActionState }),
+      ...phaseInput,
       groupSpeakerEntityId: null,
       groupSpeakerDisplayName: null,
       currentSenderEntityId: null,
@@ -301,6 +332,18 @@ describe("runExtractionPhase", () => {
     expect(extractActionState).toHaveBeenCalledWith(
       expect.objectContaining({
         speakerEntityId: null,
+        speakerDisplayName: null,
+      }),
+    );
+    expect(phaseInput.options.turnGoalPromotionService.extractAndPersist).toHaveBeenCalledWith(
+      expect.objectContaining({
+        speakerEntityId: null,
+        speakerDisplayName: null,
+      }),
+    );
+    expect(phaseInput.options.correctivePreferenceTurnService.extractAndApply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        committedByEntityId: null,
         speakerDisplayName: null,
       }),
     );

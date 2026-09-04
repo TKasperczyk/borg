@@ -1372,6 +1372,7 @@ export class TurnPhaseCoordinator {
           sessionAudienceRole,
           participantRoster,
           persistedUserEntryId,
+          sourceUserEntries,
           sourceUserEntryIds,
           senderAttribution: currentTurnUserInput.senderAttribution,
           distinctSenderCount: effectiveDistinctSenderCount,

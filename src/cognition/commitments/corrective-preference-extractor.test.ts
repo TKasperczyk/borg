@@ -3,10 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import type { StreamEntry } from "../../stream/index.js";
 import {
   createCommitmentId,
   createEntityId,
   createRelationalSlotId,
+  createSessionId,
   createStreamEntryId,
 } from "../../util/ids.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
@@ -138,6 +140,129 @@ describe("CorrectivePreferenceExtractor", () => {
     });
     expect(llm.requests[0]?.system).toBe(CORRECTIVE_PREFERENCE_SYSTEM_PROMPT);
     expect(llm.requests[0]?.tools?.some((tool) => tool.cache_control !== undefined)).toBe(false);
+  });
+
+  it("presents self identity, attributed history, and current structural addressing", async () => {
+    const selfEntityId = createEntityId();
+    const priorSenderEntityId = createEntityId();
+    const currentSenderEntityId = createEntityId();
+    const audienceEntityId = createEntityId();
+    const priorAgentEntryId = createStreamEntryId();
+    const priorUserEntryId = createStreamEntryId();
+    const currentEntryId = createStreamEntryId();
+    const currentEntry = {
+      id: currentEntryId,
+      timestamp: 1_700_000_000_300,
+      kind: "user_msg",
+      content: "Which design should you choose?",
+      turn_status: "active",
+      audience: "Operator room",
+      sender_entity_id: currentSenderEntityId,
+      reply_target_entity_id: selfEntityId,
+      session_id: createSessionId(),
+      compressed: false,
+    } satisfies StreamEntry;
+    const displayNames = new Map([
+      [priorSenderEntityId, "Prior participant"],
+      [currentSenderEntityId, "Operator"],
+    ]);
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          classification: "none",
+          reason: "The source asked Borg to choose rather than stating a directive.",
+        }),
+      ],
+    });
+    const extractor = new CorrectivePreferenceExtractor({ llmClient: llm, model: "haiku" });
+
+    await extractor.extract({
+      userMessage: "Which design should you choose?",
+      selfIdentity: {
+        id: selfEntityId,
+        canonical_name: "Borg",
+        aliases: ["Memory Keeper"],
+      },
+      currentUserStreamEntryId: currentEntryId,
+      currentUserStreamEntryIds: [currentEntryId],
+      currentMessageEntries: [currentEntry],
+      currentMessageSenderAttribution: [
+        {
+          entryId: currentEntryId,
+          senderEntityId: currentSenderEntityId,
+          senderDisplayName: "Operator",
+        },
+      ],
+      recentHistory: [
+        {
+          role: "assistant",
+          content: "I can choose after comparing the options.",
+          stream_entry_id: priorAgentEntryId,
+          sender_entity_id: null,
+          ts: 1_700_000_000_100,
+          kind: "agent_msg",
+        },
+        {
+          role: "user",
+          content: "A participant supplied context.",
+          stream_entry_id: priorUserEntryId,
+          sender_entity_id: priorSenderEntityId,
+          ts: 1_700_000_000_200,
+          kind: "user_msg",
+        },
+      ],
+      audienceEntityId,
+      speakerEntityId: currentSenderEntityId,
+      speakerDisplayName: "Operator",
+      senderDisplayNameById: (entityId) => displayNames.get(entityId) ?? null,
+      activeCommitments: [],
+    });
+
+    const payload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as any;
+    expect(payload.self_identity).toEqual({
+      entity_id: selfEntityId,
+      canonical_name: "Borg",
+      handles: ["Memory Keeper"],
+    });
+    expect(payload.recent_history).toEqual([
+      expect.objectContaining({
+        stream_entry_id: priorAgentEntryId,
+        sender_entity_id: selfEntityId,
+        sender_display_name: "Borg",
+        sender_is_self: true,
+      }),
+      expect.objectContaining({
+        stream_entry_id: priorUserEntryId,
+        sender_entity_id: priorSenderEntityId,
+        sender_display_name: "Prior participant",
+        sender_is_self: false,
+      }),
+    ]);
+    expect(payload.current_message_entries).toEqual([
+      expect.objectContaining({
+        stream_entry_id: currentEntryId,
+        sender_entity_id: currentSenderEntityId,
+        sender_display_name: "Operator",
+        sender_is_self: false,
+        audience_routing_label: "Operator room",
+        audience_entity_id: audienceEntityId,
+        reply_target_entity_id: selfEntityId,
+      }),
+    ]);
+    expect(payload.presented_entity_ids).toEqual(
+      expect.arrayContaining([
+        selfEntityId,
+        priorSenderEntityId,
+        currentSenderEntityId,
+        audienceEntityId,
+      ]),
+    );
+    expect(CORRECTIVE_PREFERENCE_SYSTEM_PROMPT).toContain(
+      "A corrective directive must be stated by an attributed current source message",
+    );
+    expect(CORRECTIVE_PREFERENCE_SYSTEM_PROMPT).toContain(
+      "A question posed to Borg, or a request for Borg to choose",
+    );
   });
 
   it("emits a high-confidence retire-only commitment result", async () => {
@@ -468,6 +593,10 @@ describe("CorrectivePreferenceExtractor", () => {
         activeCommitments: [],
       }),
     ).resolves.toBeNull();
+    const payload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
+      self_identity?: unknown;
+    };
+    expect(payload.self_identity).toBeNull();
   });
 
   it("returns slot negations separately from durable corrective preferences", async () => {

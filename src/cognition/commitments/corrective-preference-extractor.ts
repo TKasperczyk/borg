@@ -39,8 +39,14 @@ import {
   relationshipClaimSchema,
   type RelationshipClaim,
 } from "../../memory/common/relationship-claims.js";
+import type { StreamEntry } from "../../stream/index.js";
 import type { RecencyMessage } from "../recency/index.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
+import {
+  buildExtractorConversationContext,
+  type ExtractorSelfIdentity,
+} from "../extractor-conversation-context.js";
+import type { CurrentTurnUserInputSenderAttribution } from "../turn-input.js";
 import {
   normalizeCommitmentClassification,
   type ClassificationNormalizationResult,
@@ -253,12 +259,16 @@ export type CorrectivePreferenceExtractorOptions = {
 
 export type ExtractCorrectivePreferenceInput = {
   userMessage: string;
+  selfIdentity?: ExtractorSelfIdentity | null;
   currentUserStreamEntryId?: StreamEntryId | null;
   currentUserStreamEntryIds?: readonly StreamEntryId[];
+  currentMessageEntries?: readonly StreamEntry[];
+  currentMessageSenderAttribution?: readonly CurrentTurnUserInputSenderAttribution[];
   recentHistory: readonly RecencyMessage[];
   audienceEntityId: EntityId | null;
   speakerEntityId?: EntityId | null;
   speakerDisplayName?: string | null;
+  senderDisplayNameById?: (entityId: EntityId) => string | null | undefined;
   participantRoster?: ParticipantRoster | null;
   crossAudienceTargets?: readonly { entity_id: EntityId; label: string }[];
   activeCommitments: readonly {
@@ -453,20 +463,32 @@ function parseResponse(
 }
 
 function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInput): LLMMessage[] {
+  const currentMessageStreamEntryIds =
+    input.currentUserStreamEntryIds === undefined || input.currentUserStreamEntryIds.length === 0
+      ? input.currentUserStreamEntryId === null || input.currentUserStreamEntryId === undefined
+        ? []
+        : [input.currentUserStreamEntryId]
+      : [...input.currentUserStreamEntryIds];
+  const conversationContext = buildExtractorConversationContext({
+    selfIdentity: input.selfIdentity ?? null,
+    recentHistory: input.recentHistory,
+    currentMessageEntries: input.currentMessageEntries,
+    currentMessageStreamEntryIds,
+    currentMessageSenderAttribution: input.currentMessageSenderAttribution,
+    audienceEntityId: input.audienceEntityId,
+    speakerEntityId: input.speakerEntityId,
+    speakerDisplayName: input.speakerDisplayName,
+    senderDisplayNameById: input.senderDisplayNameById,
+  });
+
   return [
     {
       role: "user",
       content: JSON.stringify({
         current_user_message: input.userMessage,
         current_user_stream_entry_id: input.currentUserStreamEntryId ?? null,
-        current_user_stream_entry_ids: [...(input.currentUserStreamEntryIds ?? [])],
-        recent_history: input.recentHistory.slice(-8).map((message) => ({
-          role: message.role,
-          content: message.content,
-        })),
-        audience_entity_id: input.audienceEntityId,
-        speaker_entity_id: input.speakerEntityId ?? null,
-        speaker_display_name: input.speakerDisplayName ?? null,
+        current_user_stream_entry_ids: currentMessageStreamEntryIds,
+        ...conversationContext,
         participant_roster: renderParticipantRoster(input.participantRoster),
         cross_audience_targets: (input.crossAudienceTargets ?? []).map((target) => ({
           entity_id: target.entity_id,

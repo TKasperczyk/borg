@@ -7,6 +7,7 @@ import {
   type BorgRole,
   type CommitmentRecord,
   type CommitmentRepository,
+  type EntityRepository,
 } from "../../memory/commitments/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
 import { supersedeCommitment } from "../../memory/lifecycle-ops/index.js";
@@ -28,6 +29,7 @@ import {
 import type { TurnTracer } from "../../tracing/tracer.js";
 import { isCreatorInOperatorContext } from "../authority.js";
 import type { ParticipantRoster } from "../perception/index.js";
+import type { CurrentTurnUserInputSenderAttribution } from "../turn-input.js";
 import { checkRelationshipClaimGrounding } from "../../memory/common/relationship-claim-grounding.js";
 import type { RelationshipClaim } from "../../memory/common/relationship-claims.js";
 import {
@@ -47,6 +49,7 @@ export type CorrectivePreferenceTurnServiceOptions = {
   >;
   identityService: Pick<IdentityService, "addCommitment">;
   relationalSlotRepository: Pick<RelationalSlotRepository, "list" | "applyNegation">;
+  entityRepository?: Pick<EntityRepository, "get" | "getSelf">;
   workingMemoryStore: Pick<WorkingMemoryStore, "load" | "sanitizePendingActionsForRelationalSlot">;
   clock: Clock;
   tracer: TurnTracer;
@@ -63,6 +66,8 @@ export type ExtractCorrectivePreferenceForTurnInput = {
   userMessage: string;
   persistedUserEntryId?: StreamEntryId;
   sourceUserEntryIds?: readonly StreamEntryId[];
+  sourceUserEntries?: readonly StreamEntry[];
+  senderAttribution?: readonly CurrentTurnUserInputSenderAttribution[];
   recentHistory: ExtractCorrectivePreferenceInput["recentHistory"];
   audienceEntityId: EntityId | null;
   committedByEntityId?: EntityId | null;
@@ -636,12 +641,17 @@ export class CorrectivePreferenceTurnService {
       : [];
     const correctiveExtraction = await correctivePreferenceExtractor.extractWithSlotNegations({
       userMessage: input.userMessage,
+      selfIdentity: this.options.entityRepository?.getSelf() ?? null,
       currentUserStreamEntryId: input.persistedUserEntryId ?? null,
       currentUserStreamEntryIds: input.sourceUserEntryIds,
+      currentMessageEntries: input.sourceUserEntries,
+      currentMessageSenderAttribution: input.senderAttribution,
       recentHistory: input.recentHistory,
       audienceEntityId: input.audienceEntityId,
       speakerEntityId: input.committedByEntityId ?? null,
       speakerDisplayName: input.speakerDisplayName ?? null,
+      senderDisplayNameById: (entityId) =>
+        this.options.entityRepository?.get(entityId)?.canonical_name ?? null,
       participantRoster: input.participantRoster ?? null,
       crossAudienceTargets: crossAudienceCandidates,
       activeCommitments: activeCommitmentsForExtractor.map((commitment) => ({
@@ -871,9 +881,7 @@ export class CorrectivePreferenceTurnService {
                 supersededId: supersession.supersededId,
                 newId: added.id,
                 reason:
-                  superseded.status === "conflict"
-                    ? "supersede_failed"
-                    : "unknown_commitment_id",
+                  superseded.status === "conflict" ? "supersede_failed" : "unknown_commitment_id",
                 error: failure,
               });
               throw failure;

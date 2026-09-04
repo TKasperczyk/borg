@@ -277,6 +277,7 @@ export class TurnOrchestrator {
       model: options.config.anthropic.models.recallExpansion,
       commitmentRepository: options.commitmentRepository,
       identityService: options.identityService,
+      entityRepository: options.entityRepository,
       relationalSlotRepository: options.relationalSlotRepository,
       workingMemoryStore: options.workingMemoryStore,
       clock: this.clock,
@@ -301,6 +302,7 @@ export class TurnOrchestrator {
       goalsRepository: options.goalsRepository,
       executiveStepsRepository: options.executiveStepsRepository,
       embeddingClient: options.embeddingClient,
+      entityRepository: options.entityRepository,
       clock: this.clock,
       tracer: this.tracer,
     });

@@ -69,6 +69,7 @@ export {
 export {
   goalAudienceEntityIdSchema,
   goalIdSchema,
+  goalOwnerEntityIdSchema,
   goalPatchSchema,
   goalSchema,
   goalSourceStreamEntryIdSchema,
