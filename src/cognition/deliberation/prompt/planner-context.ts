@@ -148,8 +148,12 @@ const PLANNER_COMMITMENT_KIND_REMAINDER_MARKER = "membership_not_enumerated_by_k
 export const COMPACT_PLANNER_TARGET_TOKENS = 25_100;
 const PLANNER_LABEL_EXCERPT_CHARS = 320;
 const PLANNER_ATTRIBUTE_EXCERPT_CHARS = 240;
-const PLANNER_GOAL_TARGET_TOKENS = 5_000;
-const PLANNER_GOAL_INDEX_DESCRIPTION_CHARS = 96;
+export const PLANNER_GOAL_TARGET_TOKENS = 12_000;
+const PLANNER_GOAL_INDEX_DESCRIPTION_MIN_CHARS = 16;
+const PLANNER_GOAL_INDEX_DESCRIPTION_MAX_CHARS = 96;
+const PLANNER_GOAL_MEMBERSHIP_ORDER =
+  "global_executive_score_desc_then_priority_desc_created_at_asc_id_asc";
+const PLANNER_GOAL_MEMBERSHIP_BUDGET_MARKER = "goal_index_not_enumerated_budget";
 const PLANNER_GOAL_EXPANDED_FIELD_CHARS = 240;
 const PLANNER_RECENT_GROWTH_LIMIT = 5;
 const PLANNER_LIVED_EXPERIENCE_TARGET_TOKENS = 4_000;
@@ -435,12 +439,13 @@ function renderGoalIndexRows(
   goals: readonly SelfSnapshotGoal[],
   scoreById: ReadonlyMap<string, number>,
   nowMs: number | undefined,
+  descriptionExcerptBudget: number,
 ): RenderedPlannerRows {
   let truncationCount = 0;
   const rows = goals.map((goal) => {
-    const description = headTailPlannerExcerpt(
+    const description = compactPlannerLeanAttributeExcerpt(
       singleLinePlannerText(goal.description),
-      PLANNER_GOAL_INDEX_DESCRIPTION_CHARS,
+      descriptionExcerptBudget,
     );
     truncationCount += description.truncated ? 1 : 0;
     const score = scoreById.get(goal.id);
@@ -565,38 +570,119 @@ export function renderGoalDigest(context: DeliberationContext): RenderedPlannerS
       left.id.localeCompare(right.id)
     );
   });
-  const goalIndex = renderGoalIndexRows(goals, scoreById, nowMs);
-  const statusesPresent = [...new Set(goals.map((goal) => goal.status))].sort();
-  const expandedGoals = renderExpandedGoalRows(context, goals, scoreById, candidateById, nowMs);
-  const executiveNextSteps = renderExecutiveNextSteps(context, expandedGoals.goalIds, nowMs);
-  return section(
-    "goal_index",
-    [
-      `<borg_planner_goal_digest rows_total="${goals.length}" target_tokens="${PLANNER_GOAL_TARGET_TOKENS}" focus_threshold="${context.executiveFocus === undefined || context.executiveFocus === null ? "none" : context.executiveFocus.threshold.toFixed(4)}" progress_debt_stale_ms="${context.executiveFocus?.score_basis?.progress_debt_stale_ms ?? "none"}">`,
-      "  <interpretation>The one-line index is complete for the globally assembled self snapshot, and that snapshot is assembled by goal status rather than from every goal on record: statuses_present on goal_index lists the statuses this draw actually carries. A goal whose status is not listed there is absent from this page rather than omitted from it, so no count here is evidence about it in either direction. That element asserts nothing in its own name, because a name has nowhere to carry the scope a completeness claim would be true over: statuses_present carries that scope, and omitted_count reports only whether anything inside it was dropped. Status and ages are comparable across rows. Expanded rows are the highest global executive-score candidates, not an audience visibility filter.</interpretation>",
-      "  <score_basis>x = 0.35*sp + 0.30*sd + 0.20*sc + 0.15*sdebt, clamped to [0,1]. sel=true means top x at or above focus_threshold, or that an autonomy trigger named the goal outright, in which case x did not decide it. sp is priority over the highest active priority. sd is 0 without a target, ramps as ta nears, and pins at 1.00 once ta is past. sdebt is the age at pa (or ca where no progress note exists) divided by the staleness window printed as progress_debt_stale_ms on this tag, clamped to 1.00 once the age exceeds that window: it rises with the clock and falls only when a progress note is written, so a row already past the window reads 1.00 and stays there whatever its real age. sc is a cosine between the goal's stored vector and one embedding of this turn's context text - cognition input, perception entities, plus the autonomy payload on a triggered turn - recomputed from scratch each turn with nothing carried forward, so it tracks the wording in front of you and not accumulated attention. These are turn-selection scores. A figure inside an autonomy trigger payload is a different quantity on two axes, not one: its sc was embedded against that payload alone, and its sdebt was divided by that context's own progress_debt_stale_ms, which each scoring context carries separately and which need not equal the one on this tag. So sdebt is comparable only against other sdebt values from the same score_context, and the same goal can read one number here and another inside a trigger without either being stale.</score_basis>",
-      "  <field_legend>goal: i=id, s=status, ca=created_age, pa=last_progress_age, ta=target_rel, p=priority, x=global_executive_score, dc=disclosure_class, oa=origin_audience, pt=private_to, pub=public_to, d=description. goal_detail adds sel=selected, rv=record_version, cat=created_at, tc=terminal_condition, pn=progress_notes, sp/sd/sc/sdebt=score priority/deadline_pressure/context_fit/progress_debt, er=executive_reason, owner=owner_entity_id, audience=audience_entity_id. rv counts writes to the row rather than edits to one field, and is a count, not a time: goals carry no last-written stamp, so no attribute here reports when the row last changed. rv-1 exceeding the row's non-create identity events marks a write that left no audit event, which is what a direct repair looks like from here. That comparison's other term is not on this page: no attribute here counts a row's identity events, and no reader offered to me inside a turn returns them, so rv can raise the question and never settle it alone. Those events carry the whole prior row, so a pn entry a later write replaced survives in them, out of reach from this page rather than gone. pn is an append-ordered log, not a current note: oldest entry first, so pa dates its tail and never its head. It is also an excerpt and not the log - a head slice and a tail slice of one text column that on an established goal runs to thousands of characters - so a long log has no middle here at all, and an entry missing from pn is not evidence it was never written. Appending is a habit of the writers that reach this field rather than a property the field enforces: every write replaces the whole column, the turn reflector and the retire verb replace it with the old text plus one line, and the operator progress writer replaces it with the single note it was handed. So an entry can be rewritten or dropped by a write from outside a turn, nothing in the row marks that this happened, rv counts such a write exactly as it counts an append, and an autonomous turn appends no progress entry at all, so pa and sdebt cannot move on a goal only wakes have touched. The excerpt is sized by a character budget, printed as field_excerpt_budget_chars on top_global_candidates_expanded and covering d, tc, pn and er alike, and that budget is spent on the whole excerpt including the marker that announces the cut. So the rendered= figure inside the marker is the budget less the marker's own length and never reaches it, and because the marker carries three numbers whose digit widths differ between rows, two rows can print different rendered= values under one unchanged budget: rendered= cannot be read back as the budget. The budget is a fixed size rather than a share, so a longer log earns no more of this page than a short one and the fraction of it reaching you falls as it grows. The one-line index rows carry a d of their own, sized against a separate and smaller budget printed as description_excerpt_budget_chars on goal_index, so an index d and an expanded d are cut at different widths and their rendered= figures are not comparable. A budget printed on one container governs that container alone, so a number matching it elsewhere is a different budget that happens to agree. next_step: i=id, g=goal_id, sel=selected, k=kind, s=status, due=due_rel, attempt=last_attempt_age, dc/oa/pt/pub=disclosure label, d=description. The lane follows top_global_candidates_expanded membership and order: one top open step per expanded candidate that has one, doing before queued then by due date; sel=true marks the selected goal if present. executive_next_step_omitted_count at scope=expanded_candidates_top_open counts open steps beyond those per-goal tops. Steps of goals outside the expansion are not queried and remain uncounted. The omitted_count inside goal_index is a different quantity and is zero by construction: that index renders one row per goal in the snapshot and cannot drop one. The status draw that decides which goals reach the snapshot runs before that index, so its zero reports nothing about the goals that draw left out.</field_legend>",
-      `  <goal_index statuses_present="${escapeXmlAttribute(statusesPresent.length === 0 ? "none" : statusesPresent.join(","))}" description_excerpt_budget_chars="${PLANNER_GOAL_INDEX_DESCRIPTION_CHARS}">`,
-      ...goalIndex.rows.map((row) => `    ${row}`),
-      "    <omitted_count>0</omitted_count>",
-      "  </goal_index>",
-      `  <top_global_candidates_expanded limit="${PLANNER_GOAL_EXPANSION_LIMIT}" field_excerpt_budget_chars="${PLANNER_GOAL_EXPANDED_FIELD_CHARS}">`,
-      ...expandedGoals.rows.map((row) => `    ${row}`),
-      `    <omitted_count>${expandedGoals.omissionCount}</omitted_count>`,
-      "  </top_global_candidates_expanded>",
-      ...executiveNextSteps.rows.map((row) => `  ${row}`),
-      `  <executive_next_step_omitted_count scope="expanded_candidates_top_open">${executiveNextSteps.omissionCount}</executive_next_step_omitted_count>`,
-      "</borg_planner_goal_digest>",
-    ].join("\n"),
-    {
+  const renderAtBudget = (
+    descriptionExcerptBudget: number,
+    includedGoals: readonly SelfSnapshotGoal[] = goals,
+  ) => {
+    const indexOmissionCount = goals.length - includedGoals.length;
+    const goalIndex = renderGoalIndexRows(
+      includedGoals,
+      scoreById,
+      nowMs,
+      descriptionExcerptBudget,
+    );
+    const statusesPresent = [...new Set(includedGoals.map((goal) => goal.status))].sort();
+    const expandedGoals = renderExpandedGoalRows(
+      context,
+      includedGoals,
+      scoreById,
+      candidateById,
+      nowMs,
+    );
+    const executiveNextSteps = renderExecutiveNextSteps(context, expandedGoals.goalIds, nowMs);
+    const membershipBudgetAttribute =
+      indexOmissionCount === 0
+        ? ""
+        : ` ${PLANNER_GOAL_MEMBERSHIP_BUDGET_MARKER}="${indexOmissionCount}"`;
+
+    return {
+      text: [
+        `<borg_planner_goal_digest complete_membership="${indexOmissionCount === 0}" rows_total="${goals.length}" goal_index_rows_rendered="${includedGoals.length}" membership_order="${PLANNER_GOAL_MEMBERSHIP_ORDER}" target_tokens="${PLANNER_GOAL_TARGET_TOKENS}" focus_threshold="${context.executiveFocus === undefined || context.executiveFocus === null ? "none" : context.executiveFocus.threshold.toFixed(4)}" progress_debt_stale_ms="${context.executiveFocus?.score_basis?.progress_debt_stale_ms ?? "none"}"${membershipBudgetAttribute}>`,
+        `  <interpretation>Budgeted global goal snapshot. Membership fields say whether all rows_total index members appear and identify any exact ranked suffix omitted. The upstream snapshot is status-scoped; statuses_present names retained statuses, so absence may originate upstream or at this budget. Status and ages compare across rows. Expanded rows are the highest-scored retained members; disclosure never filters membership.</interpretation>`,
+        "  <score_basis>x = 0.35*sp + 0.30*sd + 0.20*sc + 0.15*sdebt, clamped to [0,1]. sel=true means top x at or above focus_threshold, or that an autonomy trigger named the goal outright, in which case x did not decide it. sp is priority over the highest active priority. sd is 0 without a target, ramps as ta nears, and pins at 1.00 once ta is past. sdebt is the age at pa (or ca where no progress note exists) divided by the staleness window printed as progress_debt_stale_ms on this tag, clamped to 1.00 once the age exceeds that window: it rises with the clock and falls only when a progress note is written, so a row already past the window reads 1.00 and stays there whatever its real age. sc is a cosine between the goal's stored vector and one embedding of this turn's context text - cognition input, perception entities, plus the autonomy payload on a triggered turn - recomputed from scratch each turn with nothing carried forward, so it tracks the wording in front of you and not accumulated attention. These are turn-selection scores. A figure inside an autonomy trigger payload is a different quantity on two axes, not one: its sc was embedded against that payload alone, and its sdebt was divided by that context's own progress_debt_stale_ms, which each scoring context carries separately and which need not equal the one on this tag. So sdebt is comparable only against other sdebt values from the same score_context, and the same goal can read one number here and another inside a trigger without either being stale.</score_basis>",
+        "  <field_legend>goal: i=id, s=status, ca=created_age, pa=last_progress_age, ta=target_rel, p=priority, x=global_executive_score, dc=disclosure_class, oa=origin_audience, pt=private_to, pub=public_to, d=description. goal_detail adds sel=selected, rv=record_version, cat=created_at, tc=terminal_condition, pn=progress_notes, sp/sd/sc/sdebt=score priority/deadline_pressure/context_fit/progress_debt, er=executive_reason, owner=owner_entity_id, audience=audience_entity_id. rv counts writes to the row rather than edits to one field, and is a count, not a time: goals carry no last-written stamp, so no attribute here reports when the row last changed. rv-1 exceeding the row's non-create identity events marks a write that left no audit event, which is what a direct repair looks like from here. That comparison's other term is not on this page: no attribute here counts a row's identity events, and no reader offered to me inside a turn returns them, so rv can raise the question and never settle it alone. Those events carry the whole prior row, so a pn entry a later write replaced survives in them, out of reach from this page rather than gone. pn is an append-ordered log, not a current note: oldest entry first, so pa dates its tail and never its head. It is also an excerpt and not the log - a head slice and a tail slice of one text column that on an established goal runs to thousands of characters - so a long log has no middle here at all, and an entry missing from pn is not evidence it was never written. Appending is a habit of the writers that reach this field rather than a property the field enforces: every write replaces the whole column, the turn reflector and the retire verb replace it with the old text plus one line, and the operator progress writer replaces it with the single note it was handed. So an entry can be rewritten or dropped by a write from outside a turn, nothing in the row marks that this happened, rv counts such a write exactly as it counts an append, and an autonomous turn appends no progress entry at all, so pa and sdebt cannot move on a goal only wakes have touched. The excerpt is sized by a character budget, printed as field_excerpt_budget_chars on top_global_candidates_expanded and covering d, tc, pn and er alike, and that budget is spent on the whole excerpt including the marker that announces the cut. So the rendered= figure inside the marker is the budget less the marker's own length and never reaches it, and because the marker carries three numbers whose digit widths differ between rows, two rows can print different rendered= values under one unchanged budget: rendered= cannot be read back as the budget. The budget is a fixed size rather than a share, so a longer log earns no more of this page than a short one and the fraction of it reaching you falls as it grows. The one-line index rows carry a d of their own, sized against a separate, smaller, dynamically selected budget printed as description_excerpt_budget_chars on goal_index. A cut there uses a mechanical head+tail [ELIDED] marker with no rendered= figure, so its width cannot be read or compared through the expanded row marker. A budget printed on one container governs that container alone, so a number matching it elsewhere is a different budget that happens to agree. next_step: i=id, g=goal_id, sel=selected, k=kind, s=status, due=due_rel, attempt=last_attempt_age, dc/oa/pt/pub=disclosure label, d=description. The lane follows top_global_candidates_expanded membership and order: one top open step per expanded candidate that has one, doing before queued then by due date; sel=true marks the selected goal if present. executive_next_step_omitted_count at scope=expanded_candidates_top_open counts open steps beyond those per-goal tops. Steps of goals outside the expansion are not queried and remain uncounted. membership_order declares global executive score descending, then priority descending, created_at ascending, and id ascending. target_tokens prices the whole block: prose, rows, steps, counts, and markers. complete_membership=true means every rows_total goal has an index row. Otherwise goal_index_not_enumerated_budget=N, the marker total=N, and goal_index omitted_count=N all name the exact rank-ordered suffix excluded by the whole-block token budget. The status draw that decides which goals reach the snapshot runs before this index, so these fields report nothing about goals that draw left out.</field_legend>",
+        `  <goal_index complete_membership="${indexOmissionCount === 0}" rows="${includedGoals.length}" statuses_present="${escapeXmlAttribute(statusesPresent.length === 0 ? "none" : statusesPresent.join(","))}" description_excerpt_budget_chars="${descriptionExcerptBudget}">`,
+        ...goalIndex.rows.map((row) => `    ${row}`),
+        ...(indexOmissionCount === 0
+          ? []
+          : [
+              `    <${PLANNER_GOAL_MEMBERSHIP_BUDGET_MARKER} total="${indexOmissionCount}" membership_order="${PLANNER_GOAL_MEMBERSHIP_ORDER}" />`,
+            ]),
+        `    <omitted_count>${indexOmissionCount}</omitted_count>`,
+        "  </goal_index>",
+        `  <top_global_candidates_expanded limit="${PLANNER_GOAL_EXPANSION_LIMIT}" field_excerpt_budget_chars="${PLANNER_GOAL_EXPANDED_FIELD_CHARS}">`,
+        ...expandedGoals.rows.map((row) => `    ${row}`),
+        `    <omitted_count>${expandedGoals.omissionCount}</omitted_count>`,
+        "  </top_global_candidates_expanded>",
+        ...executiveNextSteps.rows.map((row) => `  ${row}`),
+        `  <executive_next_step_omitted_count scope="expanded_candidates_top_open">${executiveNextSteps.omissionCount}</executive_next_step_omitted_count>`,
+        "</borg_planner_goal_digest>",
+      ].join("\n"),
       rowCount: goalIndex.rows.length + expandedGoals.rows.length + executiveNextSteps.rows.length,
       truncationCount:
         goalIndex.truncationCount +
         expandedGoals.truncationCount +
         executiveNextSteps.truncationCount,
-      omissionCount: expandedGoals.omissionCount + executiveNextSteps.omissionCount,
-    },
-  );
+      omissionCount:
+        indexOmissionCount + expandedGoals.omissionCount + executiveNextSteps.omissionCount,
+    };
+  };
+  const maximizeDescriptionExcerptBudget = (includedGoals: readonly SelfSnapshotGoal[]) => {
+    let low = PLANNER_GOAL_INDEX_DESCRIPTION_MIN_CHARS;
+    let high = PLANNER_GOAL_INDEX_DESCRIPTION_MAX_CHARS;
+    let best = renderAtBudget(low, includedGoals);
+
+    while (low <= high) {
+      const candidateBudget = Math.floor((low + high) / 2);
+      const candidate = renderAtBudget(candidateBudget, includedGoals);
+
+      if (estimatePromptTokens(candidate.text) <= PLANNER_GOAL_TARGET_TOKENS) {
+        best = candidate;
+        low = candidateBudget + 1;
+      } else {
+        high = candidateBudget - 1;
+      }
+    }
+
+    return best;
+  };
+  const maximum = renderAtBudget(PLANNER_GOAL_INDEX_DESCRIPTION_MAX_CHARS);
+  let rendered = maximum;
+
+  if (estimatePromptTokens(maximum.text) > PLANNER_GOAL_TARGET_TOKENS) {
+    const minimum = renderAtBudget(PLANNER_GOAL_INDEX_DESCRIPTION_MIN_CHARS);
+
+    if (estimatePromptTokens(minimum.text) <= PLANNER_GOAL_TARGET_TOKENS) {
+      rendered = maximizeDescriptionExcerptBudget(goals);
+    } else {
+      let low = 0;
+      let high = goals.length - 1;
+      let includedGoalCount = 0;
+
+      while (low <= high) {
+        const candidateCount = Math.floor((low + high) / 2);
+        const candidate = renderAtBudget(
+          PLANNER_GOAL_INDEX_DESCRIPTION_MIN_CHARS,
+          goals.slice(0, candidateCount),
+        );
+
+        if (estimatePromptTokens(candidate.text) <= PLANNER_GOAL_TARGET_TOKENS) {
+          includedGoalCount = candidateCount;
+          low = candidateCount + 1;
+        } else {
+          high = candidateCount - 1;
+        }
+      }
+
+      rendered = maximizeDescriptionExcerptBudget(goals.slice(0, includedGoalCount));
+    }
+  }
+
+  return section("goal_index", rendered.text, {
+    rowCount: rendered.rowCount,
+    truncationCount: rendered.truncationCount,
+    omissionCount: rendered.omissionCount,
+  });
 }
 
 function commitmentStatus(commitment: CommitmentRecord): string {
