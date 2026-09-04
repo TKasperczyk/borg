@@ -2340,10 +2340,6 @@ export class OpenQuestionsRepository {
         )
         .run(openQuestionId, sourceRunId, stampedAt);
 
-      const nextTicks = Math.max(plannedTicks, existing.unresolved_rumination_ticks + 1);
-      const question = this.markRuminated(openQuestionId, nextTicks, {
-        expectedVersion,
-      });
       const rumination =
         input.rumination === undefined || input.rumination === null
           ? null
@@ -2352,6 +2348,38 @@ export class OpenQuestionsRepository {
               open_question_id: openQuestionId,
               source_run_id: sourceRunId,
             });
+      let question: OpenQuestion;
+
+      if (rumination === null) {
+        const result = this.db
+          .prepare(
+            `
+              UPDATE open_questions
+              SET last_ruminated_at = ?, record_version = record_version + 1
+              WHERE id = ? AND status = 'open' AND record_version = ?
+            `,
+          )
+          .run(stampedAt, openQuestionId, expectedVersion);
+        assertIdentityCasUpdated({
+          result,
+          recordType: "open_question",
+          recordId: openQuestionId,
+          expectedVersion,
+        });
+        question = {
+          ...existing,
+          record_version: nextRecordVersion(expectedVersion),
+          last_ruminated_at: stampedAt,
+        };
+        this.scheduleQuestionVectorUpsert(question, "metadata_sync", {
+          skipIfMissing: true,
+        });
+      } else {
+        const nextTicks = Math.max(plannedTicks, existing.unresolved_rumination_ticks + 1);
+        question = this.markRuminated(openQuestionId, nextTicks, {
+          expectedVersion,
+        });
+      }
 
       return {
         question,

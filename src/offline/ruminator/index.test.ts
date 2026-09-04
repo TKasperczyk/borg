@@ -901,7 +901,7 @@ describe("RuminatorProcess", () => {
       expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
         status: "open",
         resolution_note: null,
-        unresolved_rumination_ticks: 1,
+        unresolved_rumination_ticks: 0,
         last_ruminated_at: clock.now(),
       });
     } finally {
@@ -1509,7 +1509,7 @@ describe("RuminatorProcess", () => {
       expect(harness.openQuestionsRepository.get(staleQuestion.id)?.status).toBe("abandoned");
       expect(harness.openQuestionsRepository.get(agingQuestion.id)?.urgency).toBe(0.45);
       expect(harness.openQuestionsRepository.get(agingQuestion.id)).toMatchObject({
-        unresolved_rumination_ticks: 1,
+        unresolved_rumination_ticks: 0,
         last_ruminated_at: harness.clock.now(),
       });
       expect(harness.identityEventRepository.list({ recordType: "open_question" })).toEqual(
@@ -1664,10 +1664,12 @@ describe("RuminatorProcess", () => {
       await process.plan(harness.createContext(), {});
       const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
 
-      // The count carried is the pre-pass value, not the one this pass would write, and the
+      // The count carried is the pre-note value, not the one this result would write, and the
       // threshold is interpolated from config rather than restated -- so a threshold change moves
       // the prompt with it instead of leaving a second copy of the number behind to drift.
       expect(prompt).toContain('"unresolved_rumination_ticks":3');
+      expect(prompt).toContain("counts the recorded rumination notes");
+      expect(prompt).not.toContain("counts the passes");
       expect(prompt).toContain("have reached 7");
       expect(prompt).not.toContain("have reached 4");
     } finally {
@@ -1775,7 +1777,100 @@ describe("RuminatorProcess", () => {
     }
   });
 
-  it("increments unresolved ticks on urgency bumps and resets them on resolution", async () => {
+  it("dismisses after four noted stamps but not four note-less stamps", async () => {
+    const noteLessText = "Which note-less visits should remain outside the dismissal count?";
+    const notedText = "Which recorded ruminations reached the dismissal count?";
+    const llm = new FakeLLMClient({ responses: [createDuplicateJudgmentResponse([])] });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [noteLessText, [1, 0, 0, 0]],
+          [notedText, [0, 1, 0, 0]],
+        ]),
+      ),
+      configOverrides: {
+        offline: {
+          ruminator: {
+            staleNoTractionTicks: 4,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const noteLess = harness.openQuestionsRepository.add({
+        question: noteLessText,
+        urgency: 0.4,
+        source: "reflection",
+        provenance: { kind: "manual" },
+      });
+      const noted = harness.openQuestionsRepository.add({
+        question: notedText,
+        urgency: 0.4,
+        source: "reflection",
+        provenance: { kind: "manual" },
+      });
+
+      for (let tick = 1; tick <= 4; tick += 1) {
+        const runId = createMaintenanceRunId();
+        harness.openQuestionsRepository.stampRuminationForRun({
+          open_question_id: noteLess.id,
+          source_run_id: runId,
+          next_unresolved_rumination_ticks: tick,
+          rumination: null,
+        });
+        harness.openQuestionsRepository.stampRuminationForRun({
+          open_question_id: noted.id,
+          source_run_id: runId,
+          next_unresolved_rumination_ticks: tick,
+          rumination: {
+            note: `Recorded rumination ${tick}.`,
+            source_process: "test",
+            provenance: { kind: "manual" },
+          },
+        });
+      }
+      await harness.openQuestionsRepository.waitForPendingEmbeddings();
+
+      expect(harness.openQuestionsRepository.get(noteLess.id)).toMatchObject({
+        unresolved_rumination_ticks: 0,
+        last_ruminated_at: harness.clock.now(),
+      });
+      expect(harness.openQuestionsRepository.get(noted.id)).toMatchObject({
+        unresolved_rumination_ticks: 4,
+        last_ruminated_at: harness.clock.now(),
+      });
+      expect(harness.openQuestionsRepository.listRecentRuminations(noted.id)).toHaveLength(4);
+
+      const ctx = harness.createContext();
+      const plan = await process.plan(ctx, {});
+
+      expect(plan.items).toEqual([
+        expect.objectContaining({
+          action: "abandon",
+          question_id: noted.id,
+          reason: "stale_no_traction",
+        }),
+      ]);
+      expect(
+        plan.items.some((item) => "question_id" in item && item.question_id === noteLess.id),
+      ).toBe(false);
+
+      await process.apply(ctx, plan);
+      expect(harness.openQuestionsRepository.get(noteLess.id)?.status).toBe("open");
+      expect(harness.openQuestionsRepository.get(noted.id)?.status).toBe("abandoned");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("keeps note-less urgency bumps out of unresolved ticks and resets on resolution", async () => {
     const clock = new ManualClock(8 * DAY_MS);
     const questionText = "Why does Atlas deploy fail?";
     const llm = new FakeLLMClient({
@@ -1814,14 +1909,14 @@ describe("RuminatorProcess", () => {
         provenance: { kind: "manual" },
       });
 
-      for (let tick = 1; tick <= 4; tick += 1) {
+      for (let pass = 1; pass <= 4; pass += 1) {
         const plan = await process.plan(harness.createContext(), {});
 
         expect(plan.items).toEqual([
           expect.objectContaining({
             action: "bump_urgency",
             question_id: question.id,
-            next_unresolved_rumination_ticks: tick,
+            next_unresolved_rumination_ticks: 1,
           }),
         ]);
 
@@ -1829,7 +1924,7 @@ describe("RuminatorProcess", () => {
 
         expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
           status: "open",
-          unresolved_rumination_ticks: tick,
+          unresolved_rumination_ticks: 0,
           last_ruminated_at: clock.now(),
         });
 
@@ -2898,7 +2993,7 @@ describe("RuminatorProcess", () => {
       const result = await process.apply(harness.createContext(), plan);
 
       expect(harness.openQuestionsRepository.get(firstQuestion.id)).toMatchObject({
-        unresolved_rumination_ticks: 1,
+        unresolved_rumination_ticks: 0,
         last_ruminated_at: harness.clock.now(),
       });
       expect(harness.openQuestionsRepository.get(secondQuestion.id)).toMatchObject({
