@@ -3,6 +3,7 @@ import {
   commitmentMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
 } from "../../memory/common/disclosure-serializers.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../../memory/common/index.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import type { Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
@@ -20,6 +21,7 @@ export type CommitmentRevokedPayload = {
 
 export type CommitmentRevokedConditionOptions = {
   commitmentRepository: CommitmentRepository;
+  sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   watermarkRepository: StreamWatermarkRepository;
   clock?: Clock;
   sessionId?: SessionId;
@@ -35,13 +37,19 @@ export function createCommitmentRevokedCondition(
     type: "condition",
     sourceCategory: "operational",
     async scan() {
-      return options.commitmentRepository
-        .list()
+      const rawCommitments = options.commitmentRepository.list();
+      const commitments = (
+        options.sourceStreamAudienceDisclosureResolver?.resolve({
+          commitments: rawCommitments,
+        }).commitments ?? rawCommitments
+      )
         .filter(
           (commitment): commitment is CommitmentRecord & { revoked_at: number } =>
             commitment.revoked_at !== null,
         )
-        .sort((left, right) => left.revoked_at - right.revoked_at)
+        .sort((left, right) => left.revoked_at - right.revoked_at);
+
+      return commitments
         .map<DueEvent<CommitmentRevokedPayload> | null>((commitment) => {
           const watermarkProcessName = `${WATERMARK_PREFIX}:${commitment.id}:${commitment.revoked_at}`;
 

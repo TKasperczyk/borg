@@ -210,6 +210,12 @@ async function assistantAuthoredCitedStreamEntryIds(
 }
 
 function summarizeSelfState(ctx: OfflineContext): string {
+  const rawGoals = ctx.goalsRepository.list({ status: "active" });
+  const rawCommitments = ctx.commitmentRepository.list({ activeOnly: true });
+  const resolvedDisclosure = ctx.sourceStreamAudienceDisclosureResolver?.resolve({
+    goalTrees: rawGoals,
+    commitments: rawCommitments,
+  }) ?? { goalTrees: rawGoals, commitments: rawCommitments };
   const values =
     ctx.valuesRepository
       .list()
@@ -222,8 +228,7 @@ function summarizeSelfState(ctx: OfflineContext): string {
       )
       .join(" | ") || "none";
   const goals =
-    ctx.goalsRepository
-      .list({ status: "active" })
+    resolvedDisclosure.goalTrees
       .map((goal) =>
         JSON.stringify({
           id: goal.id,
@@ -245,8 +250,7 @@ function summarizeSelfState(ctx: OfflineContext): string {
       )
       .join(" | ") || "none";
   const commitments =
-    ctx.commitmentRepository
-      .list({ activeOnly: true })
+    resolvedDisclosure.commitments
       .map((commitment) =>
         JSON.stringify({
           id: commitment.id,
@@ -278,6 +282,7 @@ async function buildPrompt(
   target: OverseerTarget,
   ctx: OfflineContext,
   sourceBundle: OverseerSourceBundle,
+  selfStateSummary: string,
 ): Promise<string> {
   const serializedTarget = await serializeDisclosureLabeledTargetPayload(ctx, target);
 
@@ -293,7 +298,7 @@ async function buildPrompt(
     "For semantic_edge temporal drift or identity inconsistency, provide suggested_valid_to and optional by_edge_id; only flag edges that should be reviewed for closure.",
     "For identity inconsistency, target a specific value, goal, trait, commitment, or autobiographical period by id and propose reinforce, contradict, or patch.",
     `Emit your result by calling the ${OVERSEER_TOOL_NAME} tool exactly once.`,
-    summarizeSelfState(ctx),
+    selfStateSummary,
     "Memory item:",
     JSON.stringify(serializedTarget),
     "Raw source entries:",
@@ -524,6 +529,7 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
       .filter((target) => target.created_at >= sinceTs)
       .sort((left, right) => right.created_at - left.created_at)
       .slice(0, ctx.config.offline.overseer.maxChecksPerRun);
+    const selfStateSummary = summarizeSelfState(ctx);
     let tokensUsed = 0;
     let budgetExhausted = false;
 
@@ -544,7 +550,7 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                   messages: [
                     {
                       role: "user",
-                      content: await buildPrompt(target, ctx, sourceBundle),
+                      content: await buildPrompt(target, ctx, sourceBundle, selfStateSummary),
                     },
                   ],
                   tools: [OVERSEER_TOOL],

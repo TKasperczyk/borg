@@ -23,10 +23,12 @@ export type CommitmentsListToolOptions = {
   listCommitments: (
     context: ToolInvocationContext,
   ) => CommitmentRecord[] | Promise<CommitmentRecord[]>;
-  disclosureLabelForCommitment?: (
-    commitment: CommitmentRecord,
+  disclosureLabelsForCommitments?: (
+    commitments: readonly CommitmentRecord[],
     context: ToolInvocationContext,
-  ) => MemoryDisclosureLabel | Promise<MemoryDisclosureLabel>;
+  ) =>
+    | ReadonlyMap<CommitmentRecord["id"], MemoryDisclosureLabel>
+    | Promise<ReadonlyMap<CommitmentRecord["id"], MemoryDisclosureLabel>>;
 };
 
 export function createCommitmentsListTool(
@@ -44,17 +46,15 @@ export function createCommitmentsListTool(
     outputSchema: commitmentsListOutputSchema,
     async invoke(_input, context) {
       const commitments = await options.listCommitments(context);
+      const disclosureLabels = await options.disclosureLabelsForCommitments?.(commitments, context);
 
       return {
-        commitments: await Promise.all(
-          commitments.map(async (commitment) => ({
-            ...commitment,
-            ...memoryDisclosurePayloadFields(
-              await (options.disclosureLabelForCommitment?.(commitment, context) ??
-                commitmentMemoryDisclosureLabel(commitment)),
-            ),
-          })),
-        ),
+        commitments: commitments.map((commitment) => ({
+          ...commitment,
+          ...memoryDisclosurePayloadFields(
+            disclosureLabels?.get(commitment.id) ?? commitmentMemoryDisclosureLabel(commitment),
+          ),
+        })),
       };
     },
   };

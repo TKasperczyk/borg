@@ -289,6 +289,16 @@ describe("CommitmentReconcilerProcess", () => {
       openOnly: true,
     });
     const refs = reviews[0]?.refs as CommitmentReconciliationReviewRefs;
+    const originAudienceIds = [
+      { commitment: first, audience: firstAudience },
+      { commitment: second, audience: secondAudience },
+    ]
+      .sort(
+        (left, right) =>
+          left.commitment.created_at - right.commitment.created_at ||
+          left.commitment.id.localeCompare(right.commitment.id),
+      )
+      .map(({ audience }) => audience);
     const sortedAudienceIds = [firstAudience, secondAudience].sort();
     const promptPayload = JSON.parse(
       String(llmClient.requests[0]?.messages[0]?.content ?? "{}"),
@@ -342,7 +352,7 @@ describe("CommitmentReconcilerProcess", () => {
       source_stream_entry_ids: expect.arrayContaining([firstEntryId, secondEntryId]),
       disclosure_label: {
         disclosureClass: "relationship_private",
-        originAudienceEntityIds: sortedAudienceIds,
+        originAudienceEntityIds: originAudienceIds,
         privateToEntityIds: sortedAudienceIds,
         publicToEntityIds: [],
       },

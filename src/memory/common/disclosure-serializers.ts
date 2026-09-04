@@ -167,13 +167,19 @@ async function resolveEpisodeSourceDisclosureLabel(
 
 export async function identityEventMemoryDisclosureLabel(
   event: IdentityEvent,
-  options: { episodicRepository?: Pick<EpisodicRepository, "getMany"> } = {},
+  options: {
+    episodicRepository?: Pick<EpisodicRepository, "getMany">;
+    commitmentDisclosureLabels?: readonly MemoryDisclosureLabel[];
+  } = {},
 ): Promise<MemoryDisclosureLabel> {
   const sources = parseIdentityEventDisclosureSources(event);
   const labels: MemoryDisclosureLabel[] = [
     ...sources.disclosureLabels,
     ...sources.episodeAccesses.map((access) => memoryDisclosureLabelFromEpisodeAccess(access)),
-    ...sources.commitmentAccesses.map((commitment) => commitmentMemoryDisclosureLabel(commitment)),
+    ...sources.commitmentAccesses.map(
+      (commitment, index) =>
+        options.commitmentDisclosureLabels?.[index] ?? commitmentMemoryDisclosureLabel(commitment),
+    ),
   ];
 
   if (sources.audienceEntityIds.length > 0) {

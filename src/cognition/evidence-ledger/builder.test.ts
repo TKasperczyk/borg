@@ -418,6 +418,9 @@ function attributionBuilder(input: {
   goals?: readonly GoalRecord[];
   entities?: readonly EntityRecord[];
   tracer?: TurnTracer;
+  sourceStreamAudienceDisclosureResolver?: ConstructorParameters<
+    typeof EvidenceLedgerBuilder
+  >[0]["sourceStreamAudienceDisclosureResolver"];
 }) {
   return new EvidenceLedgerBuilder({
     createStreamReader: (sessionId) => new StreamReader({ dataDir: input.tempDir, sessionId }),
@@ -436,11 +439,99 @@ function attributionBuilder(input: {
     currentSessionTranscriptTokenBudget: 50_000,
     entityRepository: entityRepository(input.entities ?? []),
     tracer: input.tracer,
+    sourceStreamAudienceDisclosureResolver: input.sourceStreamAudienceDisclosureResolver,
   });
 }
 
 describe("EvidenceLedgerBuilder", () => {
   const tempDirs: string[] = [];
+
+  it("resolves repository-backed commitment and goal collections once per build", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-ledger-disclosure-batch-"));
+    tempDirs.push(tempDir);
+    const scope = createEntityId();
+    const historicalOrigin = createEntityId();
+    const persisted = makeCommitment(createStreamEntryId());
+    persisted.restricted_audience = scope;
+    const temporary = {
+      ...makeCommitment(createStreamEntryId()),
+      provenance: { kind: "online" as const, process: "corrective-preference-extractor" },
+      restricted_audience: scope,
+    };
+    const goal = makeGoal(createStreamEntryId(), { audience_entity_id: scope });
+    const disclosureLabel = {
+      disclosureClass: "relationship_private" as const,
+      originAudienceEntityIds: [historicalOrigin],
+      privateToEntityIds: [scope],
+      publicToEntityIds: [],
+    };
+    const disclosureMetadata = {
+      disclosure_class: "relationship_private" as const,
+      origin_audience_entity_ids: [historicalOrigin],
+      private_to_entity_ids: [scope],
+      public_to_entity_ids: [],
+    };
+    const resolve = vi.fn(
+      (input: {
+        commitments?: readonly CommitmentRecord[];
+        goalTrees?: readonly GoalTreeNode[];
+      }) => ({
+        commitments: (input.commitments ?? []).map((commitment) => ({
+          ...commitment,
+          disclosure_label: disclosureMetadata,
+        })),
+        goals: [],
+        goalTrees: (input.goalTrees ?? []).map((tree) => ({
+          ...tree,
+          disclosure_label: disclosureMetadata,
+        })),
+        commitmentLabelsById: new Map([[persisted.id, disclosureLabel]]),
+        goalLabelsById: new Map([[goal.id, disclosureLabel]]),
+      }),
+    );
+    const builder = attributionBuilder({
+      tempDir,
+      commitments: [persisted],
+      goals: [goal],
+      entities: [makeEntity(scope, "Current room", "group")],
+      sourceStreamAudienceDisclosureResolver: { resolve } as never,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: scope,
+      currentUserMessage: "Show the current room memory.",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [persisted, temporary],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve.mock.calls[0]?.[0].commitments?.map((record) => record.id)).toEqual([
+      persisted.id,
+    ]);
+    expect(resolve.mock.calls[0]?.[0].goalTrees?.map((record) => record.id)).toEqual([goal.id]);
+    const groupEntries = ledger.sections.find(
+      (section) => section.id === "group_channel_memory",
+    )?.entries;
+    expect(
+      groupEntries?.find((entry) => entry.id === `group_commitment:${persisted.id}`),
+    ).toMatchObject({
+      state_metadata: {
+        disclosure_label: { origin_audience_entity_ids: [historicalOrigin] },
+      },
+    });
+    expect(groupEntries?.find((entry) => entry.id === `group_goal:${goal.id}`)).toMatchObject({
+      state_metadata: {
+        disclosure_label: { origin_audience_entity_ids: [historicalOrigin] },
+      },
+    });
+  });
 
   it("budgets ledger image attachments separately and renders citation types", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-ledger-images-"));
@@ -2445,7 +2536,7 @@ describe("EvidenceLedgerBuilder", () => {
         commitment_ids: [firstCommitmentId, secondCommitmentId],
         disclosure_label: expect.objectContaining({
           disclosure_class: "relationship_private",
-          origin_audience_entity_ids: sortedAudienceIds,
+          origin_audience_entity_ids: [alice, bob],
           private_to_entity_ids: sortedAudienceIds,
         }),
         disclosure_note:

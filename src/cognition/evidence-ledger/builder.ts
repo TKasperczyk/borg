@@ -41,6 +41,7 @@ import type { EvidenceItem } from "../../retrieval/index.js";
 import type { AttachmentId } from "../../util/ids.js";
 import { validateImageForFinalizerRender } from "../../attachments/index.js";
 import type { EvidenceLedger, EvidenceLedgerImageAttachment } from "./types.js";
+import { flattenGoalTree, type GoalTreeNode } from "../../memory/self/index.js";
 
 export type { EvidenceLedgerBuildInput, EvidenceLedgerBuilderOptions } from "./builder-types.js";
 export { summarizeEvidenceLedgerTrace } from "./trace-summary.js";
@@ -63,6 +64,53 @@ export class EvidenceLedgerBuilder {
   constructor(private readonly options: EvidenceLedgerBuilderOptions) {}
 
   async build(input: EvidenceLedgerBuildInput): Promise<EvidenceLedger> {
+    let applicableCommitments = [...input.applicableCommitments];
+    let commitmentRepository = this.options.commitmentRepository;
+    let goalsRepository = this.options.goalsRepository;
+    const disclosureResolver = this.options.sourceStreamAudienceDisclosureResolver;
+
+    if (disclosureResolver !== undefined) {
+      const listedCommitments = commitmentRepository?.list({ activeOnly: true }) ?? [];
+      const listedGoalTrees = (goalsRepository?.list({ status: "active" }) ?? []) as GoalTreeNode[];
+      const resolved = disclosureResolver.resolve({
+        // A corrective-preference candidate can be commitment-shaped and carry
+        // source ids before it is persisted. Resolve only repository-backed
+        // rows so that temporary value remains on the scope-derived fallback.
+        commitments: listedCommitments,
+        goalTrees: listedGoalTrees,
+      });
+      const resolvedCommitmentsById = new Map(
+        resolved.commitments.map((commitment) => [commitment.id, commitment]),
+      );
+      const resolvedGoalsById = new Map(
+        flattenGoalTree(resolved.goalTrees).map((goal) => [goal.id, goal]),
+      );
+      const decorateGoalTree = (goal: GoalTreeNode): GoalTreeNode => ({
+        ...(resolvedGoalsById.get(goal.id) ?? goal),
+        children: goal.children.map(decorateGoalTree),
+      });
+
+      applicableCommitments = applicableCommitments.map(
+        (commitment) => resolvedCommitmentsById.get(commitment.id) ?? commitment,
+      );
+      if (commitmentRepository !== undefined) {
+        const rawCommitmentRepository = commitmentRepository;
+        commitmentRepository = {
+          list: (options) =>
+            rawCommitmentRepository
+              .list(options)
+              .map((commitment) => resolvedCommitmentsById.get(commitment.id) ?? commitment),
+        };
+      }
+      if (goalsRepository !== undefined) {
+        const rawGoalsRepository = goalsRepository;
+        goalsRepository = {
+          list: (options) =>
+            (rawGoalsRepository.list(options) as GoalTreeNode[]).map(decorateGoalTree),
+        };
+      }
+    }
+
     const streamScan = scanRecentSessionStreamEntries(
       this.options.createStreamReader(input.sessionId),
     );
@@ -141,6 +189,7 @@ export class EvidenceLedgerBuilder {
     const context: BuilderSectionContext = {
       input: {
         ...input,
+        applicableCommitments,
         retrievedEvidence,
       },
       ...(input.nowMs === undefined ? {} : { nowMs: input.nowMs }),
@@ -159,8 +208,8 @@ export class EvidenceLedgerBuilder {
       repos: {
         relationalSlots: this.options.relationalSlotRepository,
         actions: this.options.actionRepository,
-        commitments: this.options.commitmentRepository,
-        goals: this.options.goalsRepository,
+        commitments: commitmentRepository,
+        goals: goalsRepository,
         openQuestions: this.options.openQuestionsRepository,
         entities: this.options.entityRepository,
       },

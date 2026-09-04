@@ -7,6 +7,8 @@ import {
 } from "../../memory/common/index.js";
 import { memoryDisclosureLabelMetadataSchema } from "../../memory/common/disclosure-label.js";
 import { goalIdSchema, goalStatusSchema, type GoalsRepository } from "../../memory/self/index.js";
+import type { GoalRecord } from "../../memory/self/index.js";
+import type { MemoryDisclosureLabel } from "../../memory/common/index.js";
 import type { ToolDefinition } from "../dispatcher.js";
 
 const MAX_GOAL_DESCRIPTION_CHARS = 160;
@@ -43,6 +45,7 @@ const goalsRetireOutputSchema = z.discriminatedUnion("status", [
 
 export type GoalsRetireToolOptions = {
   goalsRepository: Pick<GoalsRepository, "retire">;
+  disclosureLabelForGoal?: (goal: GoalRecord) => MemoryDisclosureLabel;
 };
 
 function truncateGoalDescription(description: string): string {
@@ -72,13 +75,15 @@ export function createGoalsRetireTool(
       });
 
       if (result.status === "applied") {
+        const disclosureLabel =
+          options.disclosureLabelForGoal?.(result.goal) ?? goalMemoryDisclosureLabel(result.goal);
         return {
           status: "applied",
           goal: {
             id: result.goal.id,
             description: truncateGoalDescription(result.goal.description),
             status: "abandoned",
-            ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(result.goal)),
+            ...memoryDisclosurePayloadFields(disclosureLabel),
           },
         };
       }
@@ -86,7 +91,8 @@ export function createGoalsRetireTool(
       const disclosureLabel =
         result.goal === null
           ? unknownMemoryDisclosureLabel()
-          : goalMemoryDisclosureLabel(result.goal);
+          : (options.disclosureLabelForGoal?.(result.goal) ??
+            goalMemoryDisclosureLabel(result.goal));
 
       return {
         status: "no_op",

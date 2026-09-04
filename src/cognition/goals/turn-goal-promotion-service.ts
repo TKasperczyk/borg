@@ -3,6 +3,7 @@ import type { LLMClient } from "../../llm/index.js";
 import type { ExecutiveStepsRepository } from "../../executive/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
 import type { GoalRecord, GoalsRepository } from "../../memory/self/index.js";
+import type { MemoryDisclosureLabelMetadata } from "../../memory/common/index.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import type { Clock } from "../../util/clock.js";
 import type {
@@ -54,7 +55,9 @@ export type ExtractTurnGoalPromotionsInput = {
   ownerEntityId?: EntityId | null;
   speakerDisplayName?: string | null;
   temporalCue: TemporalCue | null;
-  activeGoals: readonly GoalRecord[];
+  activeGoals: readonly (GoalRecord & {
+    disclosure_label?: MemoryDisclosureLabelMetadata;
+  })[];
   persistedUserEntryId?: StreamEntryId;
   sourceUserEntryIds?: readonly StreamEntryId[];
   onHookFailure: (hook: string, error: unknown, details?: Record<string, unknown>) => Promise<void>;
@@ -104,6 +107,7 @@ export class TurnGoalPromotionService {
         target_at: goal.target_at,
         audience_entity_id: goal.audience_entity_id,
         owner_entity_id: goal.owner_entity_id ?? null,
+        ...(goal.disclosure_label === undefined ? {} : { disclosure_label: goal.disclosure_label }),
       })),
     });
 

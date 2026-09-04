@@ -3,6 +3,7 @@ import {
   commitmentMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
 } from "../../memory/common/disclosure-serializers.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../../memory/common/index.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
@@ -23,6 +24,7 @@ type CommitmentExpiringPayload = {
 
 export type CommitmentExpiringTriggerOptions = {
   commitmentRepository: CommitmentRepository;
+  sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   watermarkRepository: StreamWatermarkRepository;
   lookaheadMs: number;
   clock?: Clock;
@@ -45,7 +47,7 @@ export function createCommitmentExpiringTrigger(
     sourceCategory: "operational",
     async scan() {
       const nowMs = clock.now();
-      const dueEvents = options.commitmentRepository
+      const rawDueEvents = options.commitmentRepository
         .listUnresolvedExpiringReadOnly({
           limit: NEXT_DUE_CANDIDATE_LIMIT,
         })
@@ -58,6 +60,10 @@ export function createCommitmentExpiringTrigger(
             (left.expires_at ?? Number.MAX_SAFE_INTEGER) -
               (right.expires_at ?? Number.MAX_SAFE_INTEGER) || right.priority - left.priority,
         );
+      const dueEvents =
+        options.sourceStreamAudienceDisclosureResolver?.resolve({
+          commitments: rawDueEvents,
+        }).commitments ?? rawDueEvents;
 
       return dueEvents
         .map<DueEvent<CommitmentExpiringPayload> | null>((commitment) => {

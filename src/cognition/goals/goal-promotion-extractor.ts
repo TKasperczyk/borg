@@ -19,6 +19,10 @@ import {
   goalMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
 } from "../../memory/common/disclosure-serializers.js";
+import type {
+  MemoryDisclosureLabel,
+  MemoryDisclosureLabelMetadata,
+} from "../../memory/common/index.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 
 const CONFIDENCE_THRESHOLD = 0.85;
@@ -351,7 +355,7 @@ export type ExtractGoalPromotionInput = {
   // "in a month") has no anchor and the model guesses the year.
   nowMs: number;
   temporalCue: unknown;
-  activeGoals: readonly Pick<
+  activeGoals: readonly (Pick<
     GoalRecord,
     | "id"
     | "description"
@@ -360,7 +364,9 @@ export type ExtractGoalPromotionInput = {
     | "target_at"
     | "audience_entity_id"
     | "owner_entity_id"
-  >[];
+  > & {
+    disclosure_label?: MemoryDisclosureLabel | MemoryDisclosureLabelMetadata | null;
+  })[];
 };
 
 type GoalPromotionParseResult = {

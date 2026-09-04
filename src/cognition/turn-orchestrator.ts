@@ -13,6 +13,7 @@ import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
 import { MoodRepository } from "../memory/affective/index.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../memory/common/index.js";
 import type {
   ActivityRepository,
   LivedExperienceDaySummaryRepository,
@@ -136,6 +137,7 @@ export type TurnOrchestratorOptions = {
   relationalSlotRepository: RelationalSlotRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
+  sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   creatorDirectiveRepository: CreatorDirectiveRepository;
   sharedStateRepository: SharedStateRepository;
   activityRepository?: ActivityRepository;
@@ -241,6 +243,7 @@ export class TurnOrchestrator {
     });
     const turnRetrievalCoordinator = new TurnRetrievalCoordinator({
       commitmentRepository: options.commitmentRepository,
+      sourceStreamAudienceDisclosureResolver: options.sourceStreamAudienceDisclosureResolver,
       entityRepository: options.entityRepository,
       reviewQueueRepository: options.reviewQueueRepository,
       moodRepository: options.moodRepository,
@@ -263,6 +266,7 @@ export class TurnOrchestrator {
       embeddingClient: options.embeddingClient,
       valuesRepository: options.valuesRepository,
       goalsRepository: options.goalsRepository,
+      sourceStreamAudienceDisclosureResolver: options.sourceStreamAudienceDisclosureResolver,
       traitsRepository: options.traitsRepository,
       autobiographicalRepository: options.autobiographicalRepository,
       growthMarkersRepository: options.growthMarkersRepository,
@@ -368,6 +372,7 @@ export class TurnOrchestrator {
       relationalSlotRepository: options.relationalSlotRepository,
       actionRepository: options.actionRepository,
       commitmentRepository: options.commitmentRepository,
+      sourceStreamAudienceDisclosureResolver: options.sourceStreamAudienceDisclosureResolver,
       creatorDirectiveRepository: options.creatorDirectiveRepository,
       sharedStateRepository: options.sharedStateRepository,
       activityRepository: options.activityRepository,

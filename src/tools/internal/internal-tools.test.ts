@@ -21,6 +21,7 @@ import {
   TestEmbeddingClient,
 } from "../../offline/test-support.js";
 import { StreamEntryIndexRepository, StreamWriter } from "../../stream/index.js";
+import { SourceStreamAudienceDisclosureResolver } from "../../memory/common/index.js";
 import {
   ToolDispatcher,
   createCommitmentsListTool,
@@ -96,6 +97,12 @@ function createHarnessToolDispatcher(
   return buildToolDispatcher({
     dataDir: harness.tempDir,
     entryIndex,
+    sourceStreamAudienceDisclosureResolver: new SourceStreamAudienceDisclosureResolver({
+      dataDir: harness.tempDir,
+      entryIndex,
+      sessionsRepository: { getMany: () => [] },
+      entityRepository: harness.entityRepository,
+    }),
     retrievalPipeline: harness.retrievalPipeline,
     episodicRepository: harness.episodicRepository,
     semanticNodeRepository: harness.semanticNodeRepository,

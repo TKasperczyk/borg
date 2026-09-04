@@ -1289,9 +1289,11 @@ export class CommitmentReconcilerProcess implements OfflineProcess<CommitmentRec
     const reviews: z.infer<typeof reviewPlanItemSchema>[] = [];
     const budget = opts.budget ?? ctx.config.offline.commitmentReconciler.budget;
     const maxGroupsPerRun = configuredMaxGroups(ctx, opts);
-    const activeCommitments = ctx.commitmentRepository.list({
-      activeOnly: true,
-    });
+    const rawActiveCommitments = ctx.commitmentRepository.list({ activeOnly: true });
+    const activeCommitments =
+      ctx.sourceStreamAudienceDisclosureResolver?.resolve({
+        commitments: rawActiveCommitments,
+      }).commitments ?? rawActiveCommitments;
     const groups = groupCommitments(activeCommitments);
     const initialCrossScopeGroups = groupCrossScopeCommitments(activeCommitments);
     const selectedGroups = groups.slice(0, maxGroupsPerRun);

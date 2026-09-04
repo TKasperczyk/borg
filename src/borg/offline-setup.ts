@@ -5,6 +5,7 @@ import type { TurnTracer } from "../tracing/tracer.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
+import type { SourceStreamAudienceDisclosureResolver } from "../memory/common/index.js";
 import type {
   ActivityRepository,
   LivedExperienceDaySummaryRepository,
@@ -77,6 +78,7 @@ export type BuildOfflineSetupOptions = {
   embeddingClient: EmbeddingClient;
   lazyLlmClient: LLMClient;
   entryIndex: StreamEntryIndexRepository;
+  sourceStreamAudienceDisclosureResolver: SourceStreamAudienceDisclosureResolver;
   episodicRepository: EpisodicRepository;
   semanticNodeRepository: SemanticNodeRepository;
   semanticEdgeRepository: SemanticEdgeRepository;
@@ -213,6 +215,7 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       config: options.config,
       clock: options.clock,
       entryIndex: options.entryIndex,
+      sourceStreamAudienceDisclosureResolver: options.sourceStreamAudienceDisclosureResolver,
       embeddingClient: options.embeddingClient,
       tracer: options.tracer,
       llm: {

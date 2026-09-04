@@ -111,6 +111,7 @@ describe("TurnGoalPromotionService", () => {
   it("rejects group-chat participant goals instead of persisting them as speaker-owned goals", async () => {
     const group = createEntityId();
     const alice = createEntityId();
+    const historicalOrigin = createEntityId();
     const userEntryId = createStreamEntryId();
     const addGoal = vi.fn();
     const llm = new FakeLLMClient({
@@ -142,7 +143,17 @@ describe("TurnGoalPromotionService", () => {
       ownerEntityId: alice,
       speakerDisplayName: "Alice",
       temporalCue: null,
-      activeGoals: [],
+      activeGoals: [
+        {
+          ...goalRecord({ audience_entity_id: group, owner_entity_id: alice }),
+          disclosure_label: {
+            disclosure_class: "relationship_private",
+            origin_audience_entity_ids: [historicalOrigin],
+            private_to_entity_ids: [group, alice],
+            public_to_entity_ids: [],
+          },
+        },
+      ],
       persistedUserEntryId: userEntryId,
       onHookFailure: vi.fn(),
     });
@@ -151,6 +162,9 @@ describe("TurnGoalPromotionService", () => {
     expect(addGoal).not.toHaveBeenCalled();
     expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
       `"speaker_entity_id":"${alice}"`,
+    );
+    expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
+      `"origin_audience_entity_ids":["${historicalOrigin}"]`,
     );
   });
 
