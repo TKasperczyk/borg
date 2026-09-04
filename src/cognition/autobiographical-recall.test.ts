@@ -393,6 +393,7 @@ describe("AutobiographicalRecallService", () => {
       counts: {
         rows_assembled: 2,
         self_decision: 1,
+        observed_social_event: 1,
       },
     });
     expect(section?.framing?.text).toContain(
@@ -415,9 +416,9 @@ describe("AutobiographicalRecallService", () => {
         }),
       ]),
     );
-    expect(renderSection(section!)).toContain(
-      'framing_counts: {"rows_assembled":2,"self_decision":1}',
-    );
+    expect(renderSection(section!)).toContain('framing_counts: {"rows_assembled":2,');
+    expect(renderSection(section!)).toContain('"self_decision":1');
+    expect(renderSection(section!)).toContain('"observed_social_event":1');
   });
 
   it("renders goal terminal conditions on the autobiographical surface", async () => {
@@ -1504,9 +1505,29 @@ describe("AutobiographicalRecallService", () => {
     const recallEntries =
       section?.entries.filter((entry) => typeof entry.state_metadata?.group_id === "string") ?? [];
 
-    // The count is over the assembled rows and is never reconciled; rendered_count is.
-    expect(section?.framing?.counts).toEqual({ rows_assembled: 3, self_decision: 3 });
+    // The kind count is over the assembled rows and is never reconciled; rendered_count is. The
+    // fold count is written by the dedupe stage itself, so the two reductions subtract from the
+    // population to the page: 3 assembled - 1 folded - 1 budget-omitted = 1 printed.
+    expect(section?.framing?.counts).toEqual({
+      rows_assembled: 3,
+      self_decision: 3,
+      folded_out_by_provenance: 1,
+    });
     expect(recallEntries).toHaveLength(1);
+
+    const omittedCount = compacted.traceSummary.omittedEntryCountsBySection.autobiographical_recall;
+
+    expect(omittedCount).toBe(1);
+    expect(
+      section?.entries.some(
+        (entry) => entry.id === "evidence_ledger_omitted:autobiographical_recall",
+      ),
+    ).toBe(true);
+    expect(
+      (section?.framing?.counts?.rows_assembled ?? 0) -
+        (section?.framing?.counts?.folded_out_by_provenance ?? 0) -
+        omittedCount,
+    ).toBe(recallEntries.length);
     expect(
       (recallEntries[0]?.state_metadata?.autobiographical_recall_cap as Record<string, unknown>)
         .source_group,
@@ -1514,20 +1535,23 @@ describe("AutobiographicalRecallService", () => {
 
     const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
 
-    expect(rendered).toContain('framing_counts: {"rows_assembled":3,"self_decision":3}');
+    expect(rendered).toContain(
+      'framing_counts: {"rows_assembled":3,"self_decision":3,"folded_out_by_provenance":1}',
+    );
     expect(rendered).toContain(
       "framing_counts_scope: rows_assembled is the population this section was assembled from",
     );
     expect(rendered).toContain(
-      "an omission row naming any other stage counts a different reduction",
+      "subtracting both from rows_assembled should leave the rows printed here",
     );
   });
 
-  it("prints the assembled population beside a kind count that spans none of the rendered rows", () => {
+  it("decomposes the assembled population by the kinds actually present", () => {
     const disclosureLabel = selfPrivateMemoryDisclosureLabel();
     const buckets = createSectionBuckets();
-    // Sol's page: ten rows across two groups, none of them self_decision. The kind figure is
-    // correct at zero and the section is at full strength; only the population separates the two.
+    // Sol's page: ten rows across two groups, none of them self_decision. Printing the population
+    // beside a single counted kind left every other kind counted nowhere, so the page's own rows
+    // were unlocatable in the object above them.
     const evidence: AutobiographicalRecallEvidenceItem[] = [
       ...Array.from({ length: 8 }, (_unused, index) => ({
         id: `stream_reflection:${index}`,
@@ -1576,9 +1600,24 @@ describe("AutobiographicalRecallService", () => {
     const section = finalSections(buckets).find((item) => item.id === "autobiographical_recall");
 
     expect(section?.entries).toHaveLength(10);
-    expect(section?.framing?.counts).toEqual({ rows_assembled: 10, self_decision: 0 });
+    expect(section?.framing?.counts).toEqual({
+      rows_assembled: 10,
+      stream_reflection: 8,
+      observed_presence: 2,
+    });
     expect(renderSection(section!)).toContain(
-      'framing_counts: {"rows_assembled":10,"self_decision":0}',
+      'framing_counts: {"rows_assembled":10,"stream_reflection":8,"observed_presence":2}',
+    );
+
+    // The kind keys are a decomposition of the population, so they close against it exactly; a
+    // kind absent from the object contributed zero, which the section framing says outright
+    // rather than leaving absence to be read as unmeasured.
+    const { rows_assembled: rowsAssembled, ...kinds } = section!.framing!.counts!;
+
+    expect(Object.values(kinds).reduce((total, value) => total + value, 0)).toBe(rowsAssembled);
+    expect(kinds.self_decision).toBeUndefined();
+    expect(section?.framing?.text).toContain(
+      "the framing counts here are the source kinds present in the assembly, one key per kind, so they sum to rows_assembled exactly",
     );
   });
 
@@ -1601,6 +1640,10 @@ describe("AutobiographicalRecallService", () => {
 
     expect(rendered).toContain('framing_counts: {"rows_assembled":10,"self_decision":0}');
     expect(rendered).toContain("need not sum to it, need not cover it");
+    // This section never went through dedupe, so the fold key is absent rather than zero, and the
+    // scope line has to say which of the two it is or the reader supplies the wrong one.
+    expect(rendered).not.toContain('folded_out_by_provenance":');
+    expect(rendered).toContain("carries no such key at all and its absence there is not a zero");
   });
 
   it("prints the framing-counts scope only where a count is printed", () => {

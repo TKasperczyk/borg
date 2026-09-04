@@ -347,6 +347,7 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
 
   const canonicalByRef = new Map<LedgerEntryRef, EvidenceLedgerEntry>();
   const droppedRefs = new Set<LedgerEntryRef>();
+  const droppedCountsBySectionIndex = new Map<number, number>();
   let dedupedEntryCount = 0;
 
   for (const group of groups.values()) {
@@ -380,14 +381,24 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
     for (const ref of group) {
       if (ref !== canonical && !isProvenanceDedupeProtected(ref)) {
         droppedRefs.add(ref);
+        droppedCountsBySectionIndex.set(
+          ref.sectionIndex,
+          (droppedCountsBySectionIndex.get(ref.sectionIndex) ?? 0) + 1,
+        );
         dedupedEntryCount += 1;
       }
     }
   }
 
-  const sections = ledger.sections.map((section, sectionIndex) => ({
-    ...section,
-    entries: section.entries.flatMap((entry, entryIndex) => {
+  // A section's framing counts are taken at assembly, upstream of this stage, and until now this
+  // stage was the one reduction that reported nothing anywhere: the budget cut announces itself as
+  // an evidence_ledger_omitted entry, and a fold left the shortfall between the population and the
+  // page unaccountable from the page. Writing the per-section drop count back onto the framing the
+  // section already carries closes that -- the two reductions subtract from rows_assembled to the
+  // rows printed, and a residue in that subtraction is a stage neither of them names. Zero is
+  // printed rather than omitted, so "nothing was folded" is a statement rather than an absence.
+  const sections = ledger.sections.map((section, sectionIndex) => {
+    const entries = section.entries.flatMap((entry, entryIndex) => {
       const ref = refs.find(
         (candidate) =>
           candidate.sectionIndex === sectionIndex && candidate.entryIndex === entryIndex,
@@ -398,8 +409,24 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
       }
 
       return [canonicalByRef.get(ref) ?? entry];
-    }),
-  }));
+    });
+
+    if (section.framing?.counts === undefined) {
+      return { ...section, entries };
+    }
+
+    return {
+      ...section,
+      framing: {
+        ...section.framing,
+        counts: {
+          ...section.framing.counts,
+          folded_out_by_provenance: droppedCountsBySectionIndex.get(sectionIndex) ?? 0,
+        },
+      },
+      entries,
+    };
+  });
 
   return {
     ledger: cloneLedgerWithSections(ledger, sections),
