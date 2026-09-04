@@ -14,6 +14,11 @@ export const MEMORY_DISCLOSURE_CLASSES = [
 
 export type MemoryDisclosureClass = (typeof MEMORY_DISCLOSURE_CLASSES)[number];
 
+/**
+ * Ordering contract (also for snake-case metadata): `originAudienceEntityIds` preserves
+ * chronological first-occurrence order; `privateToEntityIds` and `publicToEntityIds` are
+ * authorization sets, deduplicated and sorted lexically.
+ */
 export type MemoryDisclosureLabel = {
   readonly disclosureClass: MemoryDisclosureClass;
   readonly originAudienceEntityIds: EntityId[];
@@ -79,19 +84,23 @@ const memoryDisclosureEntityIdSchema = z
   })
   .transform((value) => value as EntityId);
 
-export const memoryDisclosureLabelSchema: z.ZodType<MemoryDisclosureLabel> = z.object({
-  disclosureClass: z.enum(MEMORY_DISCLOSURE_CLASSES),
-  originAudienceEntityIds: z.array(memoryDisclosureEntityIdSchema),
-  privateToEntityIds: z.array(memoryDisclosureEntityIdSchema),
-  publicToEntityIds: z.array(memoryDisclosureEntityIdSchema),
-});
+export const memoryDisclosureLabelSchema: z.ZodType<MemoryDisclosureLabel> = z
+  .object({
+    disclosureClass: z.enum(MEMORY_DISCLOSURE_CLASSES),
+    originAudienceEntityIds: z.array(memoryDisclosureEntityIdSchema),
+    privateToEntityIds: z.array(memoryDisclosureEntityIdSchema),
+    publicToEntityIds: z.array(memoryDisclosureEntityIdSchema),
+  })
+  .overwrite(normalizeMemoryDisclosureLabelOrdering);
 
-export const memoryDisclosureLabelMetadataSchema = z.object({
-  disclosure_class: z.enum(MEMORY_DISCLOSURE_CLASSES),
-  origin_audience_entity_ids: z.array(memoryDisclosureEntityIdSchema),
-  private_to_entity_ids: z.array(memoryDisclosureEntityIdSchema),
-  public_to_entity_ids: z.array(memoryDisclosureEntityIdSchema),
-});
+export const memoryDisclosureLabelMetadataSchema = z
+  .object({
+    disclosure_class: z.enum(MEMORY_DISCLOSURE_CLASSES),
+    origin_audience_entity_ids: z.array(memoryDisclosureEntityIdSchema),
+    private_to_entity_ids: z.array(memoryDisclosureEntityIdSchema),
+    public_to_entity_ids: z.array(memoryDisclosureEntityIdSchema),
+  })
+  .overwrite(normalizeMemoryDisclosureLabelMetadataOrdering);
 
 export type MemoryDisclosureLabelMetadata = {
   disclosure_class: MemoryDisclosureClass;
@@ -113,6 +122,32 @@ function uniqueEntityIds(entityIds: readonly EntityId[]): EntityId[] {
   return [...new Set(entityIds)];
 }
 
+function sortedAuthorizationEntityIds(entityIds: readonly EntityId[]): EntityId[] {
+  return uniqueEntityIds(entityIds).sort();
+}
+
+function normalizeMemoryDisclosureLabelOrdering(
+  label: MemoryDisclosureLabel,
+): MemoryDisclosureLabel {
+  return {
+    disclosureClass: label.disclosureClass,
+    originAudienceEntityIds: uniqueEntityIds(label.originAudienceEntityIds),
+    privateToEntityIds: sortedAuthorizationEntityIds(label.privateToEntityIds),
+    publicToEntityIds: sortedAuthorizationEntityIds(label.publicToEntityIds),
+  };
+}
+
+function normalizeMemoryDisclosureLabelMetadataOrdering(
+  metadata: MemoryDisclosureLabelMetadata,
+): MemoryDisclosureLabelMetadata {
+  return {
+    disclosure_class: metadata.disclosure_class,
+    origin_audience_entity_ids: uniqueEntityIds(metadata.origin_audience_entity_ids),
+    private_to_entity_ids: sortedAuthorizationEntityIds(metadata.private_to_entity_ids),
+    public_to_entity_ids: sortedAuthorizationEntityIds(metadata.public_to_entity_ids),
+  };
+}
+
 export function publicMemoryDisclosureLabel(): MemoryDisclosureLabel {
   return {
     disclosureClass: "public",
@@ -125,12 +160,12 @@ export function publicMemoryDisclosureLabel(): MemoryDisclosureLabel {
 export function unknownMemoryDisclosureLabel(
   originAudienceEntityIds: readonly EntityId[] = [],
 ): MemoryDisclosureLabel {
-  const uniqueIds = uniqueEntityIds(originAudienceEntityIds);
+  const originIds = uniqueEntityIds(originAudienceEntityIds);
 
   return {
     disclosureClass: "unknown",
-    originAudienceEntityIds: uniqueIds,
-    privateToEntityIds: uniqueIds,
+    originAudienceEntityIds: originIds,
+    privateToEntityIds: sortedAuthorizationEntityIds(originIds),
     publicToEntityIds: [],
   };
 }
@@ -138,18 +173,18 @@ export function unknownMemoryDisclosureLabel(
 export function relationshipPrivateMemoryDisclosureLabel(
   entityIds: readonly (EntityId | null | undefined)[],
 ): MemoryDisclosureLabel {
-  const uniqueIds = uniqueEntityIds(
+  const originIds = uniqueEntityIds(
     entityIds.filter((entityId): entityId is EntityId => entityId != null),
   );
 
-  if (uniqueIds.length === 0) {
+  if (originIds.length === 0) {
     return unknownMemoryDisclosureLabel();
   }
 
   return {
     disclosureClass: "relationship_private",
-    originAudienceEntityIds: uniqueIds,
-    privateToEntityIds: uniqueIds,
+    originAudienceEntityIds: originIds,
+    privateToEntityIds: sortedAuthorizationEntityIds(originIds),
     publicToEntityIds: [],
   };
 }
@@ -157,12 +192,12 @@ export function relationshipPrivateMemoryDisclosureLabel(
 export function selfPrivateMemoryDisclosureLabel(
   originAudienceEntityIds: readonly EntityId[] = [],
 ): MemoryDisclosureLabel {
-  const uniqueIds = uniqueEntityIds(originAudienceEntityIds);
+  const originIds = uniqueEntityIds(originAudienceEntityIds);
 
   return {
     disclosureClass: "self_private",
-    originAudienceEntityIds: uniqueIds,
-    privateToEntityIds: uniqueIds,
+    originAudienceEntityIds: originIds,
+    privateToEntityIds: sortedAuthorizationEntityIds(originIds),
     publicToEntityIds: [],
   };
 }
@@ -170,11 +205,13 @@ export function selfPrivateMemoryDisclosureLabel(
 export function memoryDisclosureLabelMetadata(
   label: MemoryDisclosureLabel,
 ): MemoryDisclosureLabelMetadata {
+  const normalized = normalizeMemoryDisclosureLabelOrdering(label);
+
   return {
-    disclosure_class: label.disclosureClass,
-    origin_audience_entity_ids: [...label.originAudienceEntityIds],
-    private_to_entity_ids: [...label.privateToEntityIds],
-    public_to_entity_ids: [...label.publicToEntityIds],
+    disclosure_class: normalized.disclosureClass,
+    origin_audience_entity_ids: [...normalized.originAudienceEntityIds],
+    private_to_entity_ids: [...normalized.privateToEntityIds],
+    public_to_entity_ids: [...normalized.publicToEntityIds],
   };
 }
 
@@ -187,9 +224,11 @@ function mergeEntityIds(
   labels: readonly MemoryDisclosureLabel[],
   key: MemoryDisclosureEntityIdListKey,
 ) {
-  const entityIds = [...new Set(labels.flatMap((label) => label[key]))];
+  const entityIds = labels.flatMap((label) => label[key]);
 
-  return key === "originAudienceEntityIds" ? entityIds : entityIds.sort();
+  return key === "originAudienceEntityIds"
+    ? uniqueEntityIds(entityIds)
+    : sortedAuthorizationEntityIds(entityIds);
 }
 
 export function combineMemoryDisclosureLabels(
@@ -228,12 +267,7 @@ export function memoryDisclosureLabelFromEpisodeAccess(
     return unknownMemoryDisclosureLabel();
   }
 
-  return {
-    disclosureClass: "relationship_private",
-    originAudienceEntityIds,
-    privateToEntityIds: originAudienceEntityIds,
-    publicToEntityIds: [],
-  };
+  return relationshipPrivateMemoryDisclosureLabel(originAudienceEntityIds);
 }
 
 type EpisodeAccessRecord<TEpisodeId extends string = string> = EpisodeAccessLike & {
@@ -302,10 +336,10 @@ export function memoryDisclosureLabelFromMetadata(value: unknown): MemoryDisclos
     return unknownMemoryDisclosureLabel();
   }
 
-  return {
+  return normalizeMemoryDisclosureLabelOrdering({
     disclosureClass: parsedMetadata.data.disclosure_class,
     originAudienceEntityIds: parsedMetadata.data.origin_audience_entity_ids,
     privateToEntityIds: parsedMetadata.data.private_to_entity_ids,
     publicToEntityIds: parsedMetadata.data.public_to_entity_ids,
-  };
+  });
 }

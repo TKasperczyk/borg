@@ -411,12 +411,14 @@ describe("human-mind memory invariants", () => {
       },
     );
     const recalled = result.episodes.find((item) => item.episode.id === episodes[0]?.id);
+    const authorizationAudienceIds = [aliceId, bobId].sort();
 
     expect(recalled).toBeDefined();
     expect(recalled?.disclosureLabel).toEqual({
       disclosureClass: "relationship_private",
+      // Origins keep extraction chronology; authorization IDs use lexical set order.
       originAudienceEntityIds: [aliceId, bobId],
-      privateToEntityIds: [aliceId, bobId],
+      privateToEntityIds: authorizationAudienceIds,
       publicToEntityIds: [],
     });
   });
