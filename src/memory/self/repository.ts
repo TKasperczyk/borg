@@ -5,6 +5,7 @@ export {
   type ValuesRepositoryOptions,
 } from "./values-repository.js";
 export {
+  GOAL_TURN_ROLLBACK_REASON,
   GoalsRepository,
   type GoalFollowupDueCandidate,
   type GoalFollowupDueCandidateOptions,

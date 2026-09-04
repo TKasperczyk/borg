@@ -70,6 +70,9 @@ export type GoalStatusUpdateOptions = IdentityCasOptions & {
   canonicalizedByArtifactEntryId?: SharedStateEntryId | null;
 };
 
+export const GOAL_TURN_ROLLBACK_REASON =
+  "turn rollback: reverted goal mutations from an aborted turn";
+
 export type GoalRetirementResult =
   | {
       status: "applied";
@@ -639,7 +642,8 @@ export class GoalsRepository {
     const parsed = goalSchema.parse(goal);
     const storedProvenance = toStoredProvenance(parsed.provenance);
 
-    this.runGoalWrite(() => {
+    return this.runGoalWrite(() => {
+      const current = this.get(parsed.id);
       this.db
         .prepare(
           `
@@ -674,9 +678,25 @@ export class GoalsRepository {
           storedProvenance.provenance_process,
           parsed.id,
         );
-    });
 
-    return parsed;
+      const restored = this.get(parsed.id);
+
+      if (current === null || restored === null) {
+        return parsed;
+      }
+
+      recordIdentityEvent(this.identityEventRepository, {
+        record_type: "goal",
+        record_id: restored.id,
+        action: "update",
+        old_value: current,
+        new_value: restored,
+        reason: GOAL_TURN_ROLLBACK_REASON,
+        provenance: restored.provenance,
+      });
+
+      return restored;
+    });
   }
 
   remove(goalId: GoalId, options: IdentityCasOptions = {}): boolean {
@@ -712,6 +732,16 @@ export class GoalsRepository {
         .prepare("UPDATE goals SET parent_goal_id = NULL WHERE parent_goal_id = ?")
         .run(goalId);
       void reparent;
+
+      recordIdentityEvent(this.identityEventRepository, {
+        record_type: "goal",
+        record_id: goalId,
+        action: "delete",
+        old_value: current,
+        new_value: null,
+        reason: GOAL_TURN_ROLLBACK_REASON,
+        provenance: current.provenance,
+      });
 
       return result.changes > 0;
     });

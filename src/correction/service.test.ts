@@ -15,6 +15,7 @@ import {
 } from "../offline/test-support.js";
 import { FixedClock } from "../util/clock.js";
 import { createEntityId } from "../util/ids.js";
+import { GOAL_TURN_ROLLBACK_REASON } from "../memory/self/index.js";
 import { CorrectionService, type CorrectionServiceOptions } from "./service.js";
 
 class TestEmbeddingClient implements EmbeddingClient {
@@ -782,6 +783,47 @@ describe("correction service", () => {
           abandoned_reason: null,
         }),
       );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("keeps the repository delete and correction forget audit events for goals", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_750),
+    });
+
+    try {
+      const correction = createHarnessCorrectionService(harness);
+      const goal = harness.goalsRepository.add({
+        description: "Verify both intentional goal deletion audit layers",
+        priority: 6,
+        provenance: { kind: "manual" },
+      });
+
+      await expect(correction.forget(goal.id)).resolves.toMatchObject({
+        id: goal.id,
+        target_type: "goal",
+        archived: true,
+      });
+      expect(harness.goalsRepository.get(goal.id)).toBeNull();
+
+      const events = harness.identityEventRepository.list({
+        recordType: "goal",
+        recordId: goal.id,
+        limit: 10,
+      });
+      expect(events.map((event) => event.action)).toEqual(["forget", "delete", "create"]);
+      expect(events.find((event) => event.action === "delete")).toMatchObject({
+        old_value: goal,
+        new_value: null,
+        reason: GOAL_TURN_ROLLBACK_REASON,
+      });
+      expect(events.find((event) => event.action === "forget")).toMatchObject({
+        old_value: goal,
+        new_value: null,
+        reason: "forgotten manually",
+      });
     } finally {
       await harness.cleanup();
     }

@@ -42,6 +42,7 @@ export {
   type OpenQuestionsRepositoryOptions,
 } from "./open-questions.js";
 export {
+  GOAL_TURN_ROLLBACK_REASON,
   GoalsRepository,
   TraitsRepository,
   ValuesRepository,
