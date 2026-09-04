@@ -57,10 +57,13 @@ export {
   type OpenQuestionDuplicatePresentationRow,
 } from "./open-question-duplicates.js";
 export {
+  GOAL_TURN_ROLLBACK_REASON,
   GoalsRepository,
   TraitsRepository,
   ValuesRepository,
   type GoalListOptions,
+  type GoalRemovalAuditContext,
+  type GoalRemovalOptions,
   type GoalRetirementResult,
   type GoalStatusUpdateOptions,
   type GoalsRepositoryOptions,

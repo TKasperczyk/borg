@@ -787,6 +787,42 @@ describe("correction service", () => {
     }
   });
 
+  it("records correction goal deletion only as forget, without a false rollback event", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_750),
+    });
+
+    try {
+      const correction = createHarnessCorrectionService(harness);
+      const goal = harness.goalsRepository.add({
+        description: "Keep correction deletion audit semantics exact",
+        priority: 6,
+        provenance: { kind: "manual" },
+      });
+
+      await expect(correction.forget(goal.id)).resolves.toMatchObject({
+        id: goal.id,
+        target_type: "goal",
+        archived: true,
+      });
+      expect(harness.goalsRepository.get(goal.id)).toBeNull();
+
+      const events = harness.identityEventRepository.list({
+        recordType: "goal",
+        recordId: goal.id,
+        limit: 10,
+      });
+      expect(events.map((event) => event.action)).toEqual(["forget", "create"]);
+      expect(events.find((event) => event.action === "forget")).toMatchObject({
+        old_value: goal,
+        new_value: null,
+        reason: "forgotten manually",
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("uses the injected clock when synthesizing a missing remember-about-me entity", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(7_000),

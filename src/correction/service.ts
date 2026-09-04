@@ -558,6 +558,7 @@ export class CorrectionService {
 
         this.options.goalsRepository.remove(target.id, {
           expectedVersion: expectedRecordVersion(current),
+          auditContext: null,
         });
         this.options.identityEventRepository.record({
           record_type: "goal",

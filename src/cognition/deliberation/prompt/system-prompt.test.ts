@@ -304,7 +304,7 @@ function makeSchedulerStateWithSources(): NonNullable<
       error_paused_until: null,
       bypass_count: 0,
       freshness_bypass_cap: 3,
-      window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+      window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0, interrupted: 0 },
       window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
       window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
     },
@@ -2725,7 +2725,13 @@ describe("buildBaseSystemPrompt", () => {
                 error_paused_until: null,
                 bypass_count: 0,
                 freshness_bypass_cap: 3,
-                window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+                window_outcomes: {
+                  headway: 0,
+                  silent: 0,
+                  error: 0,
+                  busy: 0,
+                  interrupted: 0,
+                },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
@@ -2747,6 +2753,7 @@ describe("buildBaseSystemPrompt", () => {
                       silent: 1,
                       error: 0,
                       busy: 0,
+                      interrupted: 0,
                     },
                   },
                   {
@@ -2759,6 +2766,7 @@ describe("buildBaseSystemPrompt", () => {
                       silent: 0,
                       error: 1,
                       busy: 0,
+                      interrupted: 0,
                     },
                   },
                 ],
@@ -2778,18 +2786,18 @@ describe("buildBaseSystemPrompt", () => {
         "Wake budget: used=5 / limit=6 / window=1h rolling, covering wakes stamped at or after 2023-11-14T21:13:20.000Z",
       );
       expect(block).toContain(
-        "trigger_name=scheduled_reflection wake_count=4 in_flight=1(fired 2023-11-14T21:28:20.000Z) outcome_counts(headway=2 silent=1 error=0 busy=0)",
+        "trigger_name=scheduled_reflection wake_count=4 in_flight=1(fired 2023-11-14T21:28:20.000Z) outcome_counts(headway=2 silent=1 error=0 busy=0 interrupted=0)",
       );
       // in_flight=0 prints bare: an empty stamp list has nothing to name, and a
       // count of zero cannot be mistaken for a row whose identity was withheld.
       expect(block).toContain(
-        "trigger_name=goal_followup_due wake_count=1 in_flight=0 outcome_counts(headway=0 silent=0 error=1 busy=0)",
+        "trigger_name=goal_followup_due wake_count=1 in_flight=0 outcome_counts(headway=0 silent=0 error=1 busy=0 interrupted=0)",
       );
       // A stamp leaving the list is the ambiguous case rather than a close: the
       // window's lower edge drops unresolved rows and resolved ones alike, so
       // the disappearance is named as undetermined instead of read as an outcome.
       expect(block).toContain(
-        "The stamps are the only cross-read identity this block carries -- one repeating across two reads is a single row not moving, one that changes is a different wake, one that disappears is either -- and the counts alone cannot support that comparison at any number of reads.",
+        "The stamps support cross-read identity: one repeating across two reads is one row still open, one that changes is a different wake, and one that disappears either closed or left the window.",
       );
       expect(block).toContain("Next budget slot frees: 2023-11-14T22:43:20.000Z (in 30m).");
       expect(block).toContain(
@@ -2876,7 +2884,13 @@ describe("buildBaseSystemPrompt", () => {
                 error_paused_until: null,
                 bypass_count: 0,
                 freshness_bypass_cap: 3,
-                window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+                window_outcomes: {
+                  headway: 0,
+                  silent: 0,
+                  error: 0,
+                  busy: 0,
+                  interrupted: 0,
+                },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
@@ -3121,7 +3135,13 @@ describe("buildBaseSystemPrompt", () => {
                 error_paused_until: null,
                 bypass_count: 0,
                 freshness_bypass_cap: 3,
-                window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+                window_outcomes: {
+                  headway: 0,
+                  silent: 0,
+                  error: 0,
+                  busy: 0,
+                  interrupted: 0,
+                },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
@@ -3149,15 +3169,10 @@ describe("buildBaseSystemPrompt", () => {
     expect(line).not.toContain("The loop was last armed");
   });
 
-  // in_flight is the one wake state with no terminal write of its own: the
-  // bookkeeping catch around recordOutcome returns without recording anything,
-  // so an orphaned row keeps a NULL outcome for its whole life and wake_count
-  // still equals in_flight plus the outcome_counts. The count alone is therefore
-  // identity-free -- an orphan and a healthy transient render as the same integer
-  // with the arithmetic closing either way -- and the fire stamps are what makes
-  // the two separable across reads. Note the row's life is bounded even though
-  // its outcome is not: the count is window-scoped, and the record itself is
-  // pruned a further WAKE_PRUNE_SAFETY_BUFFER_MS past the window.
+  // in_flight is the pre-terminal state between the fire stamp and its outcome.
+  // The count alone is identity-free, so fire stamps support comparison across
+  // reads; bookkeeping failures and process restarts now explicitly close rows
+  // as interrupted.
   it("names the in-flight rows by fire stamp, oldest first, and names what the cap dropped", () => {
     const block = extractBlock(
       buildBaseSystemPrompt(
@@ -3187,7 +3202,13 @@ describe("buildBaseSystemPrompt", () => {
                 error_paused_until: null,
                 bypass_count: 0,
                 freshness_bypass_cap: 3,
-                window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+                window_outcomes: {
+                  headway: 0,
+                  silent: 0,
+                  error: 0,
+                  busy: 0,
+                  interrupted: 0,
+                },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
@@ -3210,7 +3231,13 @@ describe("buildBaseSystemPrompt", () => {
                       NOW_MS - 60 * 60_000,
                       NOW_MS - 30 * 60_000,
                     ],
-                    outcome_counts: { headway: 0, silent: 0, error: 0, busy: 0 },
+                    outcome_counts: {
+                      headway: 0,
+                      silent: 0,
+                      error: 0,
+                      busy: 0,
+                      interrupted: 0,
+                    },
                   },
                 ],
                 next_budget_slot_frees_at: null,
@@ -3223,29 +3250,18 @@ describe("buildBaseSystemPrompt", () => {
       "borg_mechanism_evidence",
     );
 
-    // The three oldest print because a row whose outcome write was skipped only
-    // sinks further toward the head as newer wakes resolve past it. The residue
-    // is named rather than truncated away, so the printed list is never readable
-    // as the whole population.
+    // The three oldest print and the residue is named, so the printed list is
+    // never readable as the whole population.
     expect(block).toContain(
-      "trigger_name=goal_followup_due wake_count=5 in_flight=5(fired 2023-11-14T18:13:20.000Z, 2023-11-14T19:13:20.000Z, 2023-11-14T20:13:20.000Z, 2 newer not listed) outcome_counts(headway=0 silent=0 error=0 busy=0)",
+      "trigger_name=goal_followup_due wake_count=5 in_flight=5(fired 2023-11-14T18:13:20.000Z, 2023-11-14T19:13:20.000Z, 2023-11-14T20:13:20.000Z, 2 newer not listed) outcome_counts(headway=0 silent=0 error=0 busy=0 interrupted=0)",
     );
     expect(block).toContain(
-      "Nothing resolves that state: no timeout writes a late outcome, so a row whose outcome write was skipped stays unrecorded for as long as it exists.",
+      "A normal completion records headway, silent, error, or busy; a post-turn bookkeeping failure records interrupted, and startup reconciliation records any NULL row left by a prior process as interrupted.",
     );
-    // The count is taken over the rolling budget window, so an unresolved row
-    // leaves in_flight by ageing out rather than by closing, and the block stops
-    // reporting it at that point. Without this, the block's own rule made a
-    // return to 0 read as "the stuck row resolved" -- the one thing that cannot
-    // have happened to it. Three rows in the live store have carried a NULL
-    // outcome past the window on exactly that reading.
     expect(block).toContain(
-      "an unresolved row leaves it by ageing past that window's lower edge, and no field on this block reports the row once it is out. in_flight falling back to 0 is therefore consistent with a row from an earlier read still being unresolved, and is not evidence that it closed.",
+      "A non-zero in_flight count can therefore be a healthy turn currently running.",
     );
-    // Pinned as a negative: the retracted wording said the row stays in_flight
-    // permanently, which is false against a window-scoped count and is what made
-    // the zero read as a resolution.
-    expect(block).not.toContain("stays in_flight permanently");
+    expect(block).not.toContain("Nothing resolves that state");
   });
 
   // observedAt is NOW_MS - 29_000, so the render clock is 29s past the scheduler read. Each case
@@ -3314,7 +3330,13 @@ describe("buildBaseSystemPrompt", () => {
                 error_paused_until: null,
                 bypass_count: 0,
                 freshness_bypass_cap: 3,
-                window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+                window_outcomes: {
+                  headway: 0,
+                  silent: 0,
+                  error: 0,
+                  busy: 0,
+                  interrupted: 0,
+                },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
@@ -3424,7 +3446,13 @@ describe("buildBaseSystemPrompt", () => {
               error_paused_until: null,
               bypass_count: 0,
               freshness_bypass_cap: 3,
-              window_outcomes: { headway: 0, silent: 5, error: 0, busy: 0 },
+              window_outcomes: {
+                headway: 0,
+                silent: 5,
+                error: 0,
+                busy: 0,
+                interrupted: 0,
+              },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
@@ -3484,7 +3512,13 @@ describe("buildBaseSystemPrompt", () => {
               error_paused_until: null,
               bypass_count: 0,
               freshness_bypass_cap: 3,
-              window_outcomes: { headway: 4, silent: 2, error: 0, busy: 0 },
+              window_outcomes: {
+                headway: 4,
+                silent: 2,
+                error: 0,
+                busy: 0,
+                interrupted: 0,
+              },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_silent_reasons: { total: 2, without_detail: 2, reasons: [] },
             },
@@ -3550,7 +3584,13 @@ describe("buildBaseSystemPrompt", () => {
               error_paused_until: null,
               bypass_count: 0,
               freshness_bypass_cap: 3,
-              window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+              window_outcomes: {
+                headway: 0,
+                silent: 0,
+                error: 0,
+                busy: 0,
+                interrupted: 0,
+              },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
@@ -3567,7 +3607,13 @@ describe("buildBaseSystemPrompt", () => {
                   wake_count: 12,
                   in_flight: 0,
                   in_flight_started_at: [],
-                  outcome_counts: { headway: 4, silent: 8, error: 0, busy: 0 },
+                  outcome_counts: {
+                    headway: 4,
+                    silent: 8,
+                    error: 0,
+                    busy: 0,
+                    interrupted: 0,
+                  },
                 },
               ],
               next_budget_slot_frees_at: NOW_MS + 30 * 60_000,
@@ -3624,6 +3670,7 @@ describe("buildBaseSystemPrompt", () => {
                     silent: 0,
                     error: windowErrorReasons.total,
                     busy: 0,
+                    interrupted: 0,
                   },
                   window_error_reasons: windowErrorReasons,
                   window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
@@ -3742,6 +3789,7 @@ describe("buildBaseSystemPrompt", () => {
                     silent: windowSilentReasons.total,
                     error: 0,
                     busy: 0,
+                    interrupted: 0,
                   },
                   window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
                   window_silent_reasons: windowSilentReasons,

@@ -70,6 +70,18 @@ export type GoalStatusUpdateOptions = IdentityCasOptions & {
   canonicalizedByArtifactEntryId?: SharedStateEntryId | null;
 };
 
+export type GoalRemovalAuditContext = {
+  reason: string;
+  provenance: Provenance;
+};
+
+export type GoalRemovalOptions = IdentityCasOptions & {
+  auditContext: GoalRemovalAuditContext | null;
+};
+
+export const GOAL_TURN_ROLLBACK_REASON =
+  "turn rollback: reverted goal mutations from an aborted turn";
+
 export type GoalRetirementResult =
   | {
       status: "applied";
@@ -639,7 +651,8 @@ export class GoalsRepository {
     const parsed = goalSchema.parse(goal);
     const storedProvenance = toStoredProvenance(parsed.provenance);
 
-    this.runGoalWrite(() => {
+    return this.runGoalWrite(() => {
+      const current = this.get(parsed.id);
       this.db
         .prepare(
           `
@@ -674,12 +687,28 @@ export class GoalsRepository {
           storedProvenance.provenance_process,
           parsed.id,
         );
-    });
 
-    return parsed;
+      const restored = this.get(parsed.id);
+
+      if (current === null || restored === null) {
+        return parsed;
+      }
+
+      recordIdentityEvent(this.identityEventRepository, {
+        record_type: "goal",
+        record_id: restored.id,
+        action: "update",
+        old_value: current,
+        new_value: restored,
+        reason: GOAL_TURN_ROLLBACK_REASON,
+        provenance: restored.provenance,
+      });
+
+      return restored;
+    });
   }
 
-  remove(goalId: GoalId, options: IdentityCasOptions = {}): boolean {
+  remove(goalId: GoalId, options: GoalRemovalOptions): boolean {
     const current = this.get(goalId);
 
     if (current === null) {
@@ -696,6 +725,16 @@ export class GoalsRepository {
     }
 
     const expectedVersion = expectedRecordVersion(current, options);
+    const auditContext =
+      options.auditContext === null
+        ? null
+        : {
+            reason: options.auditContext.reason,
+            provenance: requireProvenance(
+              options.auditContext.provenance,
+              "Goal removal audit context",
+            ),
+          };
 
     return this.runGoalWrite(() => {
       const result = this.db
@@ -712,6 +751,18 @@ export class GoalsRepository {
         .prepare("UPDATE goals SET parent_goal_id = NULL WHERE parent_goal_id = ?")
         .run(goalId);
       void reparent;
+
+      if (auditContext !== null) {
+        recordIdentityEvent(this.identityEventRepository, {
+          record_type: "goal",
+          record_id: goalId,
+          action: "delete",
+          old_value: current,
+          new_value: null,
+          reason: auditContext.reason,
+          provenance: auditContext.provenance,
+        });
+      }
 
       return result.changes > 0;
     });

@@ -25,9 +25,11 @@ import {
 } from "./test-helpers.js";
 import { DemoMessageConnector } from "../../outbound/index.js";
 import {
-  createEpisodeFixture,
-  createSemanticNodeFixture,
-} from "../../offline/test-support.js";
+  AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+  AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS,
+  type AutonomyWakesRepository,
+} from "../../autonomy/index.js";
+import { createEpisodeFixture, createSemanticNodeFixture } from "../../offline/test-support.js";
 import { resolveMemoryDisclosureLabelForEpisodeIds } from "../../retrieval/index.js";
 import { createBorgFacades } from "../facade.js";
 import type { BorgDependencies } from "../types.js";
@@ -35,6 +37,12 @@ import type { BorgDependencies } from "../types.js";
 type DisclosureBatchingInternals = {
   deps: {
     episodicRepository: EpisodicRepository;
+  };
+};
+
+type AutonomyWakeInternals = {
+  deps: {
+    autonomyWakesRepository: AutonomyWakesRepository;
   };
 };
 
@@ -693,9 +701,7 @@ describe("Borg", () => {
         ],
       }),
     );
-    const getMany = vi.fn(
-      async (_episodeIds: readonly ReturnType<typeof createEpisodeId>[]) => [],
-    );
+    const getMany = vi.fn(async (_episodeIds: readonly ReturnType<typeof createEpisodeId>[]) => []);
     const facades = createBorgFacades({
       actionRepository: {},
       episodicRepository: { getMany },
@@ -986,6 +992,61 @@ describe("Borg", () => {
       expect(reopened.self.autobiographical.listPeriods({ limit: 10 })).toHaveLength(0);
     } finally {
       await reopened.close();
+    }
+  });
+
+  it("reconciles only an aged orphaned autonomy wake when composing repositories", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_000);
+    const openOptions = {
+      dataDir: tempDir,
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    };
+    const borg = await Borg.open(openOptions);
+    const wakes = borgInternals<AutonomyWakeInternals>(borg).deps.autonomyWakesRepository;
+    const orphan = wakes.record({
+      trigger_name: "scheduled_wake",
+      wake_source_type: "trigger",
+      source_category: "contemplative",
+    });
+    await borg.close();
+
+    const immediateReopen = await Borg.open(openOptions);
+
+    try {
+      const immediateWakes =
+        borgInternals<AutonomyWakeInternals>(immediateReopen).deps.autonomyWakesRepository;
+      expect(immediateWakes.listSince(0, 10)).toContainEqual(
+        expect.objectContaining({
+          id: orphan.id,
+          outcome: null,
+          outcome_detail: null,
+        }),
+      );
+    } finally {
+      await immediateReopen.close();
+    }
+
+    clock.advance(AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS + 1);
+    const agedReopen = await Borg.open(openOptions);
+
+    try {
+      const reopenedWakes =
+        borgInternals<AutonomyWakeInternals>(agedReopen).deps.autonomyWakesRepository;
+      expect(reopenedWakes.listSince(0, 10)).toContainEqual(
+        expect.objectContaining({
+          id: orphan.id,
+          outcome: "interrupted",
+          outcome_detail: AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+        }),
+      );
+      expect(reopenedWakes.interruptOrphanedWakesAtStartup()).toBe(0);
+    } finally {
+      await agedReopen.close();
     }
   });
 

@@ -12,6 +12,8 @@ import { autonomyMigrations } from "./migrations.js";
 import { AUTONOMY_CONDITION_NAMES, AUTONOMY_WAKE_SOURCE_NAMES } from "./types.js";
 import {
   AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH,
+  AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+  AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS,
   AutonomyWakesRepository,
 } from "./wakes-repository.js";
 
@@ -94,6 +96,70 @@ describe("AutonomyWakesRepository", () => {
           expect.objectContaining({ id: legacyNullWake.id, outcome: null }),
         ]),
       );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reconciles only old orphaned wakes and never overwrites a terminal outcome", () => {
+    const clock = new ManualClock(1_000);
+    const db = openDatabase(":memory:", { migrations: autonomyMigrations });
+    const repository = new AutonomyWakesRepository({ db, clock });
+
+    try {
+      const firstOrphan = repository.record({
+        trigger_name: "goal_followup_due",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+      });
+      const secondOrphan = repository.record({
+        trigger_name: "scheduled_reflection",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+        source_category: "contemplative",
+      });
+      clock.advance(AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS + 1);
+      const recentInFlight = repository.record({
+        trigger_name: "goal_followup_due",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+      });
+      const completed = repository.record({
+        trigger_name: "scheduled_wake",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+        source_category: "contemplative",
+      });
+      repository.recordOutcome(completed.id, "headway");
+
+      expect(repository.interruptOrphanedWakesAtStartup()).toBe(2);
+      expect(repository.interruptOrphanedWakesAtStartup()).toBe(0);
+      repository.recordOutcome(completed.id, "interrupted", "must not replace headway");
+
+      const wakes = repository.listSince(0, 10);
+      expect(
+        wakes.filter((wake) => wake.id === firstOrphan.id || wake.id === secondOrphan.id),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            outcome: "interrupted",
+            outcome_detail: AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+          }),
+          expect.objectContaining({
+            outcome: "interrupted",
+            outcome_detail: AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+          }),
+        ]),
+      );
+      expect(wakes.find((wake) => wake.id === completed.id)).toMatchObject({
+        outcome: "headway",
+        outcome_detail: null,
+      });
+      expect(wakes.find((wake) => wake.id === recentInFlight.id)).toMatchObject({
+        outcome: null,
+        outcome_detail: null,
+      });
+      expect(repository.countSince(0, { outcome: "interrupted" })).toBe(2);
     } finally {
       db.close();
     }
@@ -230,6 +296,59 @@ describe("AutonomyWakesRepository", () => {
           outcome: null,
         }),
       ]);
+    } finally {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rebuilds the outcome CHECK without changing existing outcome details", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-autonomy-interrupted-migration-"));
+    const dbPath = join(tempDir, "borg.db");
+    let db = openDatabase(dbPath, { migrations: autonomyMigrations.slice(0, 4) });
+
+    try {
+      db.prepare(
+        `
+          INSERT INTO autonomy_wakes (
+            id, ts, trigger_name, condition_name, session_id, wake_source_type, source_category,
+            outcome, outcome_detail
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      ).run(
+        "autonomy_wake_aaaaaaaaaaaaaaaa",
+        1_000,
+        "goal_followup_due",
+        null,
+        DEFAULT_SESSION_ID,
+        "trigger",
+        "operational",
+        "error",
+        "provider unavailable",
+      );
+      db.close();
+
+      db = openDatabase(dbPath, { migrations: autonomyMigrations });
+      const repository = new AutonomyWakesRepository({ db, clock: new ManualClock(2_000) });
+      const preserved = repository.listSince(0, 10)[0];
+
+      expect(preserved).toMatchObject({
+        outcome: "error",
+        outcome_detail: "provider unavailable",
+      });
+      const next = repository.record({
+        trigger_name: "scheduled_reflection",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+        source_category: "contemplative",
+      });
+      expect(() =>
+        repository.recordOutcome(next.id, "interrupted", "bookkeeping failed"),
+      ).not.toThrow();
+      expect(repository.listSince(0, 10).find((wake) => wake.id === next.id)).toMatchObject({
+        outcome: "interrupted",
+        outcome_detail: "bookkeeping failed",
+      });
     } finally {
       db.close();
       rmSync(tempDir, { recursive: true, force: true });

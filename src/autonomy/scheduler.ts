@@ -838,6 +838,7 @@ export class AutonomyScheduler {
             silent: 0,
             error: 0,
             busy: 0,
+            interrupted: 0,
           },
         };
         wakeGroups.set(wake.trigger_name, group);
@@ -921,6 +922,9 @@ export class AutonomyScheduler {
           silent: this.options.wakeRepository.countSince(budgetCutoff, { outcome: "silent" }),
           error: this.options.wakeRepository.countSince(budgetCutoff, { outcome: "error" }),
           busy: this.options.wakeRepository.countSince(budgetCutoff, { outcome: "busy" }),
+          interrupted: this.options.wakeRepository.countSince(budgetCutoff, {
+            outcome: "interrupted",
+          }),
         },
         // Same rows as window_outcomes.error, one level down. The scheduler
         // formats the failure that ends a wake and writes it to the stream; it
@@ -1294,6 +1298,19 @@ export class AutonomyScheduler {
               silentOutcome?.detail ?? null,
             );
           } catch (error) {
+            const outcomeSummary = `Autonomous turn completed; bookkeeping failed: ${formatError(error)}`;
+            let interruptedOutcomeError: unknown;
+
+            try {
+              this.options.wakeRepository.recordOutcome(
+                wakeRecord.id,
+                "interrupted",
+                outcomeSummary,
+              );
+            } catch (recordError) {
+              interruptedOutcomeError = recordError;
+            }
+
             firedEvents += 1;
             bookkeepingErrorCount += 1;
             this.scheduleBatchRetryBackoff(wakeBatch);
@@ -1301,12 +1318,17 @@ export class AutonomyScheduler {
             eventResults.push(
               ...this.eventResultsForBatch(wakeBatch, {
                 status: "bookkeeping_error",
-                outcomeSummary: `Autonomous turn completed; bookkeeping failed: ${formatError(error)}`,
+                outcomeSummary,
                 turnResultId: turnResult.agentMessageId ?? null,
                 error: formatError(bookkeepingError),
               }),
             );
             await this.notifyError(bookkeepingError);
+            if (interruptedOutcomeError !== undefined) {
+              await this.notifyError(
+                new AutonomyBookkeepingError(dueEvent, interruptedOutcomeError),
+              );
+            }
             continue;
           }
 

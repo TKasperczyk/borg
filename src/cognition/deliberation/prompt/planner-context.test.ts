@@ -11,6 +11,7 @@ import {
   createCommitmentId,
   createCreatorDirectiveId,
   createEntityId,
+  createExecutiveStepId,
   createGoalId,
   createRelationalSlotId,
   createSessionId,
@@ -25,6 +26,7 @@ import {
   buildCompactPlannerSystemPrompt,
   COMPACT_PLANNER_TARGET_TOKENS,
   headTailPlannerExcerpt,
+  PLANNER_GOAL_TARGET_TOKENS,
 } from "./planner-context.js";
 
 const NOW_MS = Date.UTC(2026, 7, 13, 0, 0, 0);
@@ -960,8 +962,9 @@ describe("compact planner context", () => {
     // rendered on the page it describes, may quote that page's value.
     const openingAttributes = (planner: ReturnType<typeof build>) => {
       const opening =
-        taggedBlock(allSystemText(planner), "borg_planner_lived_experience_digest").split("\n")[0] ??
-        "";
+        taggedBlock(allSystemText(planner), "borg_planner_lived_experience_digest").split(
+          "\n",
+        )[0] ?? "";
       return new Map<string, string>(
         [...opening.matchAll(/([a-z_]+)="([^"]*)"/g)].map((match) => [
           match[1] as string,
@@ -1116,7 +1119,131 @@ describe("compact planner context", () => {
     expect(planner.traceSummary.totalEstimatedTokens).toBeGreaterThan(0);
   });
 
-  it("reports the statuses the index actually carries and asserts no coverage in an element name", () => {
+  it("keeps complete goal membership for a 98-goal snapshot inside the whole-block target", () => {
+    const goals = Array.from({ length: 98 }, (_, index) =>
+      goal(`GOAL_${index}_${"d".repeat(512)}`, {
+        priority: 98 - index,
+        created_at: NOW_MS - (98 - index) * 1_000,
+        terminal_condition: `TERMINAL_${index}_${"t".repeat(512)}`,
+        progress_notes: `PROGRESS_${index}_${"p".repeat(512)}`,
+      }),
+    );
+    const candidates = goals.map((candidate, index) => ({
+      goal_id: candidate.id,
+      goal: candidate,
+      score: 98 - index,
+      components: { priority: 1, deadline_pressure: 1, context_fit: 1, progress_debt: 1 },
+      reason: `REASON_${index}_${"r".repeat(512)}`,
+    }));
+    const topOpenSteps = goals.slice(0, 4).map((candidate, index) => ({
+      id: createExecutiveStepId(),
+      goal_id: candidate.id,
+      description: `STEP_${index}_${"s".repeat(512)}`,
+      status: "queued" as const,
+      kind: "think" as const,
+      due_at: null,
+      last_attempt_ts: null,
+      created_at: NOW_MS,
+      updated_at: NOW_MS,
+      provenance: { kind: "manual" as const },
+    }));
+    const planner = build(
+      context({
+        selfSnapshot: { values: [], goals, traits: [] },
+        executiveFocus: {
+          selected_goal: goals[0]!,
+          selected_score: candidates[0]!,
+          next_step: topOpenSteps[0]!,
+          candidate_steps: {
+            top_open_steps: topOpenSteps,
+            omitted_open_step_count: 94,
+          },
+          candidates,
+          threshold: 0,
+          score_basis: {
+            score_context: "turn_selection" as const,
+            deadline_lookahead_ms: 1,
+            progress_debt_stale_ms: 1,
+          },
+        },
+      }),
+    );
+    const block = taggedBlock(allSystemText(planner), "borg_planner_goal_digest");
+    const indexBlock = taggedBlock(block, "goal_index");
+
+    expect(block).toContain(
+      `<borg_planner_goal_digest complete_membership="true" rows_total="98" goal_index_rows_rendered="98" membership_order="global_executive_score_desc_then_priority_desc_created_at_asc_id_asc" target_tokens="${PLANNER_GOAL_TARGET_TOKENS}"`,
+    );
+    expect(indexBlock.match(/<goal /g)).toHaveLength(98);
+    expect(indexBlock).toContain("<omitted_count>0</omitted_count>");
+    expect(block.match(/<next_step /g)).toHaveLength(4);
+    expect(block).not.toContain(' goal_index_not_enumerated_budget="');
+    expect(indexBlock).not.toContain("<goal_index_not_enumerated_budget ");
+    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(
+      PLANNER_GOAL_TARGET_TOKENS,
+    );
+  });
+
+  it("drops only a ranked goal-index suffix and includes that remainder in trace omissions", () => {
+    const goals = Array.from({ length: 300 }, (_, index) =>
+      goal(`GOAL_${index}_${"&".repeat(1_000)}`, {
+        priority: 300 - index,
+        created_at: NOW_MS - (300 - index) * 1_000,
+        terminal_condition: "&".repeat(1_000),
+        progress_notes: "&".repeat(1_000),
+      }),
+    );
+    const candidates = goals.map((candidate, index) => ({
+      goal_id: candidate.id,
+      goal: candidate,
+      score: 300 - index,
+      components: { priority: 1, deadline_pressure: 1, context_fit: 1, progress_debt: 1 },
+      reason: "&".repeat(1_000),
+    }));
+    const planner = build(
+      context({
+        selfSnapshot: { values: [], goals, traits: [] },
+        executiveFocus: {
+          selected_goal: goals[0]!,
+          selected_score: candidates[0]!,
+          candidates,
+          threshold: 0,
+          score_basis: {
+            score_context: "turn_selection" as const,
+            deadline_lookahead_ms: 1,
+            progress_debt_stale_ms: 1,
+          },
+        },
+      }),
+    );
+    const block = taggedBlock(allSystemText(planner), "borg_planner_goal_digest");
+    const indexBlock = taggedBlock(block, "goal_index");
+    const renderedIds = [...indexBlock.matchAll(/<goal i="([^"]+)"/g)].map((match) => match[1]);
+    const omittedIndexCount = goals.length - renderedIds.length;
+    const expandedBlock = taggedBlock(block, "top_global_candidates_expanded");
+    const expandedOmissionCount = Number(
+      /<omitted_count>(\d+)<\/omitted_count>/.exec(expandedBlock)?.[1],
+    );
+
+    expect(renderedIds.length).toBeGreaterThanOrEqual(4);
+    expect(renderedIds.length).toBeLessThan(goals.length);
+    expect(renderedIds).toEqual(goals.slice(0, renderedIds.length).map((entry) => entry.id));
+    expect(block).toContain('complete_membership="false"');
+    expect(block).toContain(`goal_index_not_enumerated_budget="${omittedIndexCount}"`);
+    expect(indexBlock).toContain(
+      `<goal_index_not_enumerated_budget total="${omittedIndexCount}" membership_order="global_executive_score_desc_then_priority_desc_created_at_asc_id_asc" />`,
+    );
+    expect(indexBlock).toContain(`<omitted_count>${omittedIndexCount}</omitted_count>`);
+    expect(planner.traceSummary.sections.goal_index).toMatchObject({
+      rowCount: renderedIds.length + 4,
+      omissionCount: omittedIndexCount + expandedOmissionCount,
+    });
+    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(
+      PLANNER_GOAL_TARGET_TOKENS,
+    );
+  });
+
+  it("reports retained statuses and scopes complete membership to the supplied snapshot", () => {
     const mixed = build(
       context({
         selfSnapshot: {
@@ -1128,30 +1255,18 @@ describe("compact planner context", () => {
     );
     const mixedText = allSystemText(mixed);
 
-    // Derived from the drawn rows, never a literal: the attribute has to widen when the draw does.
-    expect(mixedText).toContain(
-      '<goal_index statuses_present="active,done" description_excerpt_budget_chars=',
+    const mixedBlock = taggedBlock(mixedText, "borg_planner_goal_digest");
+    expect(mixedBlock).toContain(
+      '<borg_planner_goal_digest complete_membership="true" rows_total="3" goal_index_rows_rendered="3"',
     );
     expect(mixedText).toContain(
-      "A goal whose status is not listed there is absent from this page rather than omitted from it",
+      '<goal_index complete_membership="true" rows="3" statuses_present="active,done" description_excerpt_budget_chars=',
     );
     expect(mixedText).toContain(
-      "That element asserts nothing in its own name, because a name has nowhere to carry the scope a completeness claim would be true over",
+      "The upstream snapshot is status-scoped; statuses_present names retained statuses",
     );
-
-    // A name has nowhere to carry the scope such a claim is true over, so no element name on this
-    // page may assert coverage at all -- statuses_present and omitted_count carry it instead. This
-    // pins the property rather than the one name that broke it, so a future rename cannot restore
-    // the claim under a different word.
-    const digestElementNames = [
-      ...taggedBlock(mixedText, "borg_planner_goal_digest").matchAll(/<\/?([a-z_]+)[\s>]/g),
-    ].map((match) => match[1] ?? "");
-    expect(digestElementNames.length).toBeGreaterThan(0);
-    expect(
-      digestElementNames.filter(
-        (name) => name.includes("complete") || name.includes("all_") || name.includes("full"),
-      ),
-    ).toEqual([]);
+    expect(mixedBlock).not.toContain(' goal_index_not_enumerated_budget="');
+    expect(mixedBlock).not.toContain("<goal_index_not_enumerated_budget ");
 
     const singleStatus = build(
       context({
@@ -1160,13 +1275,13 @@ describe("compact planner context", () => {
     );
 
     expect(allSystemText(singleStatus)).toContain(
-      '<goal_index statuses_present="active" description_excerpt_budget_chars=',
+      '<goal_index complete_membership="true" rows="1" statuses_present="active" description_excerpt_budget_chars=',
     );
 
     const empty = build(context({ selfSnapshot: { values: [], goals: [], traits: [] } }));
 
     expect(allSystemText(empty)).toContain(
-      '<goal_index statuses_present="none" description_excerpt_budget_chars=',
+      '<goal_index complete_membership="true" rows="0" statuses_present="none" description_excerpt_budget_chars=',
     );
   });
 
@@ -1350,7 +1465,7 @@ describe("compact planner context", () => {
       ),
     );
 
-    const containerBudget = (open: string, close: string, attribute: string) => {
+    const detailedContainerBudget = (open: string, close: string, attribute: string) => {
       const section = text.slice(text.indexOf(open), text.indexOf(close));
       expect(section).not.toBe("");
       const budget = Number(new RegExp(`${attribute}="(\\d+)"`).exec(section)?.[1]);
@@ -1365,12 +1480,14 @@ describe("compact planner context", () => {
       return { budget, rendered };
     };
 
-    const index = containerBudget(
-      "<goal_index",
-      "</goal_index>",
-      "description_excerpt_budget_chars",
-    );
-    const expanded = containerBudget(
+    const indexSection = text.slice(text.indexOf("<goal_index"), text.indexOf("</goal_index>"));
+    const indexBudget = Number(/description_excerpt_budget_chars="(\d+)"/.exec(indexSection)?.[1]);
+    const indexExcerpt = /\sd="([^"]*)"/.exec(indexSection)?.[1];
+    expect(indexExcerpt).toBeDefined();
+    expect(indexExcerpt).toContain("[ELIDED]");
+    expect(indexExcerpt).toHaveLength(indexBudget);
+
+    const expanded = detailedContainerBudget(
       "<top_global_candidates_expanded",
       "</top_global_candidates_expanded>",
       "field_excerpt_budget_chars",
@@ -1378,10 +1495,10 @@ describe("compact planner context", () => {
 
     // Two containers, one description, two widths -- which is the whole reason the
     // legend says a budget governs the container that prints it and nothing else.
-    expect(index.budget).not.toBe(expanded.budget);
-    expect(index.rendered).not.toBe(expanded.rendered);
+    expect(indexBudget).not.toBe(expanded.budget);
+    expect(indexExcerpt!.length - "[ELIDED]".length).not.toBe(expanded.rendered);
     expect(text).toContain(
-      "The one-line index rows carry a d of their own, sized against a separate and smaller budget",
+      "The one-line index rows carry a d of their own, sized against a separate, smaller, dynamically selected budget",
     );
     expect(text).toContain("A budget printed on one container governs that container alone");
     expect(text).toContain(
@@ -1473,9 +1590,7 @@ describe("compact planner context", () => {
 
     expect(text.match(/<goal /g)).toHaveLength(goals.length);
     expect(text).toContain("<omitted_count>0</omitted_count>");
-    expect(text).toContain(
-      "that index renders one row per goal in the snapshot and cannot drop one",
-    );
+    expect(text).toContain("complete_membership=true means every rows_total goal has an index row");
   });
 
   it("reports source-ledger rows excluded by the compact ledger and carries omission guidance", () => {
@@ -1841,7 +1956,9 @@ describe("compact planner context", () => {
       }),
     );
 
-    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(5_000);
+    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(
+      PLANNER_GOAL_TARGET_TOKENS,
+    );
     expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(8_000);
     expect(planner.traceSummary.sections.lived_experience?.estimatedTokens).toBeLessThanOrEqual(
       4_000,
@@ -1911,19 +2028,12 @@ describe("compact planner context", () => {
     );
     expect(authorityRows).toHaveLength(100);
     expect(Math.max(...authorityRows.map((row) => row.length))).toBeLessThanOrEqual(250);
-    // The index still omits nothing at this high-water mark, so the legend's fixed cost is paid by
-    // the overall envelope rather than by dropped goal rows. The ceiling tracks that fixed cost:
-    // naming pn's replace-whole-column write semantics raised it from 9,440 to 9,596, naming the
-    // excerpt budget the marker is charged against raised it from 9,596 to 9,784, and printing the
-    // index rows' own description budget -- so the two d columns on this page can no longer be read
-    // against one width -- raised it from 9,784 to 9,927. Saying that the container asserts nothing
-    // in its own name cost 196 characters net of the shorter tag, 9,927 to 9,976; the ceiling moves
-    // to 9,990 rather than to the measurement, so the next clause has to be argued against a number.
-    // Saying that a replaced pn entry survives on the write's identity event cost 3 net, 9,976 to
-    // 9,979, because it was paid for: the representative high-water surface was 15 tokens under the
-    // compaction target, so the container-budget generalization was compressed to fund it. The
-    // ceiling holds at 9,990 and the funding, not the ceiling, is what the next clause has to find.
-    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(9_990);
+    const goalBlock = taggedBlock(allSystemText(planner), "borg_planner_goal_digest");
+    expect(goalBlock).toContain('complete_membership="true"');
+    expect(goalBlock).toContain("<omitted_count>0</omitted_count>");
+    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(
+      PLANNER_GOAL_TARGET_TOKENS,
+    );
     expect(planner.traceSummary.sections.commitments?.estimatedTokens).toBeLessThanOrEqual(8_000);
     expect(planner.traceSummary.sections.authority_and_directives?.estimatedTokens).toBeGreaterThan(
       4_000,

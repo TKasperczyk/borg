@@ -29,7 +29,13 @@ export type AutonomyWakeSourceName = (typeof AUTONOMY_WAKE_SOURCE_NAMES)[number]
 export type AutonomyWakeSourceType = "trigger" | "condition";
 export type AutonomyWakeSourceCategory = "contemplative" | "operational";
 
-export const AUTONOMY_WAKE_OUTCOMES = ["headway", "silent", "error", "busy"] as const;
+export const AUTONOMY_WAKE_OUTCOMES = [
+  "headway",
+  "silent",
+  "error",
+  "busy",
+  "interrupted",
+] as const;
 export type AutonomyWakeOutcome = (typeof AUTONOMY_WAKE_OUTCOMES)[number];
 
 /**
@@ -142,20 +148,16 @@ export type AutonomySchedulerWakeGroupDescription = {
   /**
    * Fire stamps of the rows counted by `in_flight`, oldest first.
    *
-   * `in_flight` alone is identity-free: an outcome write that never lands (the
-   * bookkeeping catch around recordOutcome returns without recording one) leaves
-   * its row's outcome NULL for the row's whole life, and an orphaned row and a
-   * healthy transient both render as the same integer, with the block's
-   * arithmetic closing either way. Carrying the stamps makes the two separable
-   * across reads -- a stamp that repeats is one row not moving; a stamp that
-   * changes is a new wake -- which is a comparison the count cannot support at
-   * any number of reads.
+   * `in_flight` alone is identity-free: a healthy transient and a wake whose
+   * terminal write has not yet landed both render as the same integer. The
+   * bookkeeping catch records the latter as `interrupted`, and startup
+   * reconciliation closes any NULL row left by a prior process. Carrying the
+   * stamps still makes open rows separable across reads -- a stamp that repeats
+   * is one row not moving; a stamp that changes is a new wake.
    *
-   * The stamps are also the only guard against reading a return to zero as a
-   * resolution. This count is taken over the rolling budget window, so an
-   * unresolved row leaves it by ageing past the window's lower edge rather than
-   * by closing, and nothing downstream reports the row after that. Resolution is
-   * the one thing that cannot have happened to it.
+   * This count is taken over the rolling budget window, so an open row can leave
+   * it by ageing past the window's lower edge before its terminal outcome lands.
+   * A disappearing stamp therefore means either closure or window expiry.
    */
   in_flight_started_at: number[];
   outcome_counts: Record<AutonomyWakeOutcome, number>;
@@ -235,8 +237,8 @@ export type AutonomySchedulerFleetBrakeDescription = {
    * Outcome tally over the *budget* window, across both source categories.
    * A different population from `empty_streak` above: it is time-bounded where
    * the streak is not, counts contemplative wakes where the streak ignores
-   * them, and counts errors where the streak passes over them. It does not
-   * feed the streak and cannot be differenced into one.
+   * them, and counts errors and interruptions where the streak passes over them.
+   * It does not feed the streak and cannot be differenced into one.
    */
   window_outcomes: Record<AutonomyWakeOutcome, number>;
   /**

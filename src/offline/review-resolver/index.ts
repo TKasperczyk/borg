@@ -106,10 +106,19 @@ const reviewResolverVerdictValueSchema = z.enum([
   "needs_manual",
 ]);
 
+export const REVIEW_RESOLVER_REASON_SENTINEL = "(no reason supplied by model)";
+const reviewResolverAuditReasonSchema = z
+  .string()
+  .min(1)
+  .max(4_000)
+  .describe("Optional audit rationale for the model's verdict; it never controls disposition.")
+  .optional()
+  .default(REVIEW_RESOLVER_REASON_SENTINEL);
+
 const reviewResolverVerdictSchema = z
   .object({
     verdict: reviewResolverVerdictValueSchema,
-    reason: z.string().min(1).max(4_000),
+    reason: reviewResolverAuditReasonSchema,
     cited_stream_ids: z.array(streamEntryIdSchema).default([]),
     support_basis: z
       .enum([
@@ -130,14 +139,14 @@ export type ReviewResolverVerdict = z.infer<typeof reviewResolverVerdictSchema>;
 const vectorDuplicateReviewResolverVerdictSchema = z
   .object({
     verdict: reviewResolverVerdictValueSchema,
-    reason: z.string().min(1).max(4_000),
+    reason: reviewResolverAuditReasonSchema,
   })
   .strip();
 
 const identityReviewResolverVerdictSchema = z
   .object({
     verdict: reviewResolverVerdictValueSchema,
-    reason: z.string().min(1).max(4_000),
+    reason: reviewResolverAuditReasonSchema,
   })
   .strip();
 
@@ -151,7 +160,7 @@ const newInsightReviewResolverVerdictSchema = z
   .object({
     verdict: z.enum(["accept", "dismiss", "needs_manual"]),
     confidence: z.enum(["high", "medium", "low"]),
-    reason: z.string().min(1).max(4_000),
+    reason: reviewResolverAuditReasonSchema,
   })
   .strict();
 
@@ -161,7 +170,7 @@ const semanticPairReviewResolverVerdictSchema = z
   .object({
     verdict: z.enum(["keep_both", "supersede", "invalidate", "dismiss", "needs_manual"]),
     winner_node_id: z.string().min(1).optional(),
-    reason: z.string().min(1).max(4_000),
+    reason: reviewResolverAuditReasonSchema,
     confidence: z.enum(["high", "medium", "low"]),
   })
   .strict();
@@ -736,10 +745,16 @@ function newInsightPromptPayload(input: {
         needs_manual:
           "Use only for genuine ambiguity or broken context that prevents a responsible decision. Bias toward accept or dismiss when the evidence supports a clear disposition.",
       },
+      output_fields: {
+        verdict: "One allowed decision from allowed_decisions.",
+        confidence: "The model's confidence in that decision: high, medium, or low.",
+        reason:
+          "Optional audit rationale for the output verdict. This field is recorded for audit and never controls the disposition.",
+      },
       review: {
         id: input.item.id,
         kind: input.item.kind,
-        reason: input.item.reason,
+        queue_reason: input.item.reason,
         created_at: input.item.created_at,
         ...sourceDisclosureFields,
       },

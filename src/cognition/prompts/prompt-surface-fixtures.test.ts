@@ -31,7 +31,10 @@ import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name
 import { OWN_RECORDS_PAGE_END_CLAIM } from "../../tools/internal/own-records-page-end-claim.js";
 import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
 import { formatTurnPlanForPrompt } from "../deliberation/prompt/plan-rendering.js";
-import { buildCompactPlannerSystemPrompt } from "../deliberation/prompt/planner-context.js";
+import {
+  buildCompactPlannerSystemPrompt,
+  PLANNER_GOAL_TARGET_TOKENS,
+} from "../deliberation/prompt/planner-context.js";
 import { summarizeRetrievedEvidence } from "../deliberation/prompt/retrieval.js";
 import {
   buildBaseSystemPrompt,
@@ -143,7 +146,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
     error_paused_until: null,
     bypass_count: 0,
     freshness_bypass_cap: 3,
-    window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0 },
+    window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0, interrupted: 0 },
     window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
     window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
   },
@@ -165,6 +168,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
           silent: 2,
           error: 0,
           busy: 0,
+          interrupted: 0,
         },
       },
       {
@@ -177,6 +181,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
           silent: 0,
           error: 1,
           busy: 0,
+          interrupted: 0,
         },
       },
     ],
@@ -1334,6 +1339,12 @@ describe("prompt surface fixtures", () => {
 
     expect(compactSystem).toContain("Harness scheduler state");
     expect(compactTurnState).toContain('<autonomy_scheduler_state source="harness_mechanism">');
+    expect(compactSystem).toContain(
+      `<borg_planner_goal_digest complete_membership="true" rows_total="0" goal_index_rows_rendered="0" membership_order="global_executive_score_desc_then_priority_desc_created_at_asc_id_asc" target_tokens="${PLANNER_GOAL_TARGET_TOKENS}"`,
+    );
+    expect(compact.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(
+      PLANNER_GOAL_TARGET_TOKENS,
+    );
     expectFixture(COMPACT_PLANNER_FIXTURE_NAME, compactSystem);
   });
 

@@ -9,11 +9,12 @@ import type {
   RelationalSlot,
   RelationalSlotRepository,
 } from "../../memory/relational-slots/index.js";
-import type {
-  GoalRecord,
-  GoalsRepository,
-  OpenQuestion,
-  OpenQuestionsRepository,
+import {
+  GOAL_TURN_ROLLBACK_REASON,
+  type GoalRecord,
+  type GoalsRepository,
+  type OpenQuestion,
+  type OpenQuestionsRepository,
 } from "../../memory/self/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../../memory/working/index.js";
 import type {
@@ -204,7 +205,13 @@ export class TurnLifecycleTracker {
       "remove_goal",
       this.createdGoalIds,
       (goalId) => goalId,
-      (goalId) => this.options.goalsRepository.remove(goalId),
+      (goalId) =>
+        this.options.goalsRepository.remove(goalId, {
+          auditContext: {
+            reason: GOAL_TURN_ROLLBACK_REASON,
+            provenance: { kind: "system" },
+          },
+        }),
     );
 
     await this.bestEffort(

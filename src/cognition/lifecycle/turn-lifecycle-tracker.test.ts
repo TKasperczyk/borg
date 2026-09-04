@@ -3,12 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
 import { TurnLifecycleTracker } from "./turn-lifecycle-tracker.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
+import { GOAL_TURN_ROLLBACK_REASON, type GoalRemovalOptions } from "../../memory/self/index.js";
 import {
   createActionId,
   createExecutiveStepId,
+  createGoalId,
   createSessionId,
   type ActionId,
   type ExecutiveStepId,
+  type GoalId,
 } from "../../util/ids.js";
 
 function makeTracker(input: {
@@ -16,6 +19,7 @@ function makeTracker(input: {
   saveWorkingMemory?: (workingMemory: WorkingMemory) => WorkingMemory;
   deleteAction?: (id: ActionId) => Promise<boolean>;
   deleteStep?: (id: ExecutiveStepId) => boolean;
+  removeGoal?: (id: GoalId, options: GoalRemovalOptions) => boolean;
 }) {
   return new TurnLifecycleTracker({
     workingMemoryStore: {
@@ -30,7 +34,7 @@ function makeTracker(input: {
       restore: vi.fn(),
     },
     goalsRepository: {
-      remove: vi.fn(),
+      remove: input.removeGoal ?? vi.fn(() => true),
       restore: vi.fn(),
     },
     openQuestionsRepository: {
@@ -48,6 +52,22 @@ function makeTracker(input: {
 }
 
 describe("TurnLifecycleTracker", () => {
+  it("supplies explicit rollback audit context when removing a turn-created goal", async () => {
+    const goalId = createGoalId();
+    const removeGoal = vi.fn<(id: GoalId, options: GoalRemovalOptions) => boolean>(() => true);
+    const tracker = makeTracker({ removeGoal });
+    tracker.trackCreatedGoalIds([goalId]);
+
+    await tracker.cleanupAbortedTurnState({ turnId: "turn_goal_rollback" });
+
+    expect(removeGoal).toHaveBeenCalledWith(goalId, {
+      auditContext: {
+        reason: GOAL_TURN_ROLLBACK_REASON,
+        provenance: { kind: "system" },
+      },
+    });
+  });
+
   it("traces incomplete abort cleanup without throwing away best-effort rollback", async () => {
     const events: Array<{ event: TurnTraceEventName; data: TurnTraceData }> = [];
     const tracer: TurnTracer = {

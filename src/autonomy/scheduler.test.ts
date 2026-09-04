@@ -669,6 +669,7 @@ describe("AutonomyScheduler", () => {
       const harness = await createOfflineTestHarness({ clock });
       cleanup = harness.cleanup;
       const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
       const actionAvailabilityKey = "outbound_action_surface_v1:atomic-batch";
       const goals = Array.from({ length: 3 }, (_, index) =>
         harness.goalsRepository.add({
@@ -713,6 +714,7 @@ describe("AutonomyScheduler", () => {
 
       const scheduler = createScheduler({
         db: harness.db,
+        wakeRepository,
         enabled: true,
         intervalMs: 1_000,
         maxWakesPerWindow: 6,
@@ -766,6 +768,10 @@ describe("AutonomyScheduler", () => {
       expect(writePosition).toBe(failurePosition);
       expect(failed).toMatchObject({ firedEvents: 1, bookkeepingErrorCount: 1 });
       expect(failed.events.every((event) => event.status === "bookkeeping_error")).toBe(true);
+      expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
+        outcome: "headway",
+        outcome_detail: null,
+      });
       for (const [index, goal] of goals.entries()) {
         const processName = getExecutiveFocusGoalStaleBackoffProcessName(goal.id);
         expect(watermarkRepository.get(processName, DEFAULT_SESSION_ID)).toEqual(
@@ -2311,6 +2317,10 @@ describe("AutonomyScheduler", () => {
       db: harness.db,
       clock,
     });
+    const wakeRepository = new AutonomyWakesRepository({
+      db: harness.db,
+      clock,
+    });
     const throwingWatermarkRepository = {
       set: vi.fn(() => {
         throw new Error("watermark unavailable");
@@ -2318,6 +2328,7 @@ describe("AutonomyScheduler", () => {
     } as unknown as StreamWatermarkRepository;
     const scheduler = createScheduler({
       db: harness.db,
+      wakeRepository,
       enabled: true,
       intervalMs: 1_000,
       maxWakesPerWindow: 6,
@@ -2374,6 +2385,109 @@ describe("AutonomyScheduler", () => {
         limit: 10,
       }),
     ).toEqual([]);
+    expect(wakeRepository.listSince(0, 1)[0]?.outcome).not.toBe("interrupted");
+    expect(wakeRepository.listSince(0, 1)[0]?.outcome).not.toBeNull();
+  });
+
+  it("preserves the original bookkeeping failure when recording interrupted also fails", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
+    const originalError = new Error("primary terminal outcome write failed");
+    const interruptionError = new Error("interrupted outcome write failed");
+    vi.spyOn(wakeRepository, "recordOutcome")
+      .mockImplementationOnce(() => {
+        throw originalError;
+      })
+      .mockImplementationOnce(() => {
+        throw interruptionError;
+      });
+    const onError = vi.fn();
+    const scheduler = createScheduler({
+      db: harness.db,
+      wakeRepository,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+      watermarkRepository,
+      turnOrchestrator: {
+        run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+      },
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        clock,
+      }),
+      sources: [createTestDueSource("double-outcome-write-failure")],
+    });
+    scheduler.setObserver({ onError });
+
+    const result = await scheduler.tick();
+
+    expect(result).toMatchObject({
+      firedEvents: 1,
+      bookkeepingErrorCount: 1,
+      events: [
+        expect.objectContaining({
+          status: "bookkeeping_error",
+          outcomeSummary: expect.stringContaining(originalError.message),
+        }),
+      ],
+    });
+    expect(onError).toHaveBeenCalledTimes(2);
+    expect(onError.mock.calls[0]?.[0]).toMatchObject({ cause: originalError });
+    expect(onError.mock.calls[1]?.[0]).toMatchObject({ cause: interruptionError });
+  });
+
+  it("records interrupted when completed-turn outcome bookkeeping fails", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
+    const originalRecordOutcome = wakeRepository.recordOutcome.bind(wakeRepository);
+    const originalError = new Error("terminal outcome write failed");
+    vi.spyOn(wakeRepository, "recordOutcome")
+      .mockImplementationOnce(() => {
+        throw originalError;
+      })
+      .mockImplementation(originalRecordOutcome);
+    const scheduler = createScheduler({
+      db: harness.db,
+      wakeRepository,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+      watermarkRepository,
+      turnOrchestrator: {
+        run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+      },
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        clock,
+      }),
+      sources: [createTestDueSource("interrupted-outcome")],
+    });
+
+    const result = await scheduler.tick();
+
+    expect(result.events[0]).toMatchObject({
+      status: "bookkeeping_error",
+      outcomeSummary: expect.stringContaining(originalError.message),
+    });
+    expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
+      outcome: "interrupted",
+      outcome_detail: expect.stringContaining(originalError.message),
+    });
   });
 
   it("does not record self decisions for budget skips, preparation errors, busy skips, or turn errors", async () => {
@@ -3326,6 +3440,7 @@ describe("AutonomyScheduler", () => {
           silent: 7,
           error: 0,
           busy: 0,
+          interrupted: 0,
         },
       },
     });
@@ -4280,6 +4395,7 @@ describe("AutonomyScheduler", () => {
               silent: 1,
               error: 0,
               busy: 0,
+              interrupted: 0,
             },
           },
           {
@@ -4296,6 +4412,7 @@ describe("AutonomyScheduler", () => {
               silent: 0,
               error: 1,
               busy: 1,
+              interrupted: 0,
             },
           },
         ],
@@ -4765,6 +4882,7 @@ describe("AutonomyScheduler", () => {
       silent: 0,
       error: 0,
       busy: 0,
+      interrupted: 0,
     });
 
     resolveTurn?.({
