@@ -1412,6 +1412,7 @@ describe("RuminatorProcess", () => {
           errors: [],
           tokens_used: 0,
           budget_exhausted: false,
+          tension_scaffolding_drops: [],
         }),
       ).rejects.toThrow(IdentityCasMismatchError);
       expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
@@ -1832,6 +1833,7 @@ describe("RuminatorProcess", () => {
         errors: [],
         tokens_used: 0,
         budget_exhausted: false,
+        tension_scaffolding_drops: [],
       };
 
       await expect(process.apply(harness.createContext(), plan)).resolves.toMatchObject({
