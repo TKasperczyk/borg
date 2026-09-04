@@ -63,9 +63,11 @@ import {
   type ExecutiveStepId,
   type GoalId,
   type OpenQuestionId,
+  type ScheduledWakeId,
   type SessionId,
   type SkillId,
   type StreamEntryId,
+  scheduledWakeIdHelpers,
 } from "../../util/ids.js";
 import { IdentityCasMismatchError, LLMError } from "../../util/errors.js";
 import { z } from "zod";
@@ -114,8 +116,9 @@ export type ReflectionContext = {
   // (user_msg + agent_msg). Used as evidence for trait demonstrations
   // since the episode hasn't been extracted yet at reflection time.
   currentTurnStreamEntryIds?: readonly StreamEntryId[];
-  // Machine handles written by this turn, distinct from inbound stream
-  // evidence that may also appear in currentTurnStreamEntryIds.
+  // Records written by the turn's terminal emission. They remain available
+  // as reflection evidence, but the emission itself is not a distinct act
+  // that can substantiate autonomous goal progress.
   currentTurnProducedStreamEntryIds?: readonly StreamEntryId[];
   currentTurnJournalEntryIds?: readonly number[];
 };
@@ -139,7 +142,9 @@ export type ReflectionResult = {
 const SURFACED_TTL_TURNS = 4;
 const REFLECTION_TOOL_NAME = "EmitTurnReflection";
 const JOURNAL_APPEND_TOOL_NAME = "tool.journal.append";
+const OPEN_QUESTION_CREATE_TOOL_NAME = "tool.openQuestions.create";
 const OPEN_QUESTION_RESOLVE_TOOL_NAME = "tool.openQuestions.resolve";
+const SCHEDULED_WAKE_CREATE_TOOL_NAME = "tool.scheduledWakes.create";
 const DEFAULT_REFLECTION_MAX_TOKENS = 768;
 const REFLECTION_GOAL_PROGRESS_NOTES_CHAR_BUDGET = 1_200;
 // Candidate labels can grow quickly; established traits are the stable vocabulary,
@@ -180,6 +185,13 @@ const resolvedOpenQuestionSchema = z.object({
   evidence_stream_entry_ids: z.array(streamEntryIdSchema).default([]),
 });
 
+const scheduledWakeIdSchema = z
+  .string()
+  .refine((value) => scheduledWakeIdHelpers.is(value), {
+    message: "Invalid scheduled wake id",
+  })
+  .transform((value) => value as ScheduledWakeId);
+
 const advancedGoalArtifactReferenceSchema = z
   .discriminatedUnion("kind", [
     z.object({
@@ -187,8 +199,16 @@ const advancedGoalArtifactReferenceSchema = z
       id: z.number().int().positive(),
     }),
     z.object({
+      kind: z.literal("created_open_question"),
+      id: openQuestionIdSchema,
+    }),
+    z.object({
       kind: z.literal("resolved_open_question"),
       id: openQuestionIdSchema,
+    }),
+    z.object({
+      kind: z.literal("scheduled_wake"),
+      id: scheduledWakeIdSchema,
     }),
     z.object({
       kind: z.literal("executive_step_outcome"),
@@ -203,13 +223,21 @@ const advancedGoalArtifactReferenceSchema = z
       id: streamEntryIdSchema,
     }),
   ])
-  .describe("The artifact this turn produced that constitutes the movement.");
+  .describe(
+    "The artifact this turn produced through an act distinct from its terminal emission that constitutes the movement.",
+  );
 
 type AdvancedGoalArtifactReference = z.infer<typeof advancedGoalArtifactReferenceSchema>;
 
 const journalAppendArtifactOutputSchema = z.object({
   journalEntry: z.object({
     id: z.number().int().positive(),
+  }),
+});
+
+const createdOpenQuestionArtifactOutputSchema = z.object({
+  openQuestion: z.object({
+    id: openQuestionIdSchema,
   }),
 });
 
@@ -227,6 +255,12 @@ const deliveredOutboundPostArtifactOutputSchema = z.object({
       state: z.literal("delivered"),
       agent_message_id: streamEntryIdSchema,
     }),
+  }),
+});
+
+const scheduledWakeArtifactOutputSchema = z.object({
+  scheduledWake: z.object({
+    id: scheduledWakeIdSchema,
   }),
 });
 
@@ -384,16 +418,7 @@ function currentTurnArtifactReferences(
   >,
   effects?: Pick<ReflectionEffects, "resolvedOpenQuestions" | "updatedExecutiveSteps">,
 ): AdvancedGoalArtifactReference[] {
-  const references: AdvancedGoalArtifactReference[] = [
-    ...(context.currentTurnJournalEntryIds ?? []).map((id) => ({
-      kind: "journal_entry" as const,
-      id,
-    })),
-    ...(context.currentTurnProducedStreamEntryIds ?? []).map((id) => ({
-      kind: "stream_entry" as const,
-      id,
-    })),
-  ];
+  const references: AdvancedGoalArtifactReference[] = [];
 
   for (const toolCall of context.actionResult.tool_calls) {
     if (!toolCall.ok) {
@@ -409,6 +434,15 @@ function currentTurnArtifactReferences(
           id: parsed.data.journalEntry.id,
         });
       }
+    } else if (toolCall.name === OPEN_QUESTION_CREATE_TOOL_NAME) {
+      const parsed = createdOpenQuestionArtifactOutputSchema.safeParse(toolCall.output);
+
+      if (parsed.success) {
+        references.push({
+          kind: "created_open_question",
+          id: parsed.data.openQuestion.id,
+        });
+      }
     } else if (toolCall.name === OPEN_QUESTION_RESOLVE_TOOL_NAME) {
       const parsed = resolvedOpenQuestionArtifactOutputSchema.safeParse(toolCall.output);
 
@@ -416,6 +450,15 @@ function currentTurnArtifactReferences(
         references.push({
           kind: "resolved_open_question",
           id: parsed.data.openQuestion.id,
+        });
+      }
+    } else if (toolCall.name === SCHEDULED_WAKE_CREATE_TOOL_NAME) {
+      const parsed = scheduledWakeArtifactOutputSchema.safeParse(toolCall.output);
+
+      if (parsed.success) {
+        references.push({
+          kind: "scheduled_wake",
+          id: parsed.data.scheduledWake.id,
         });
       }
     } else if (toolCall.name === OUTBOUND_POST_TOOL_NAME) {
@@ -443,7 +486,20 @@ function currentTurnArtifactReferences(
     );
   }
 
-  return references;
+  const emissionJournalEntryIds = new Set(context.currentTurnJournalEntryIds ?? []);
+  const emissionStreamEntryIds = new Set(context.currentTurnProducedStreamEntryIds ?? []);
+
+  return references.filter((reference) => {
+    if (reference.kind === "journal_entry") {
+      return !emissionJournalEntryIds.has(reference.id);
+    }
+
+    if (reference.kind === "delivered_outbound_post" || reference.kind === "stream_entry") {
+      return !emissionStreamEntryIds.has(reference.id);
+    }
+
+    return true;
+  });
 }
 
 function includesArtifactReference(
@@ -822,7 +878,7 @@ export class Reflector {
         await this.appendReflectorInternalEvent(streamWriter, {
           hook: "reflector_advanced_goal_dropped",
           goal_id: advancedGoal.goal_id,
-          reason: "no this-turn artifact reference",
+          reason: "no this-turn artifact distinct from the emission",
           ...(advancedGoal.artifact_reference === undefined
             ? {}
             : { artifact_reference: advancedGoal.artifact_reference }),
