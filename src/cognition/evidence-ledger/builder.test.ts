@@ -2531,6 +2531,101 @@ describe("EvidenceLedgerBuilder", () => {
     expect(rendered).toContain(`private_to_entity_ids":["${alice}"]`);
   });
 
+  it("merges retrieved open-question metadata into the lifecycle row before omission accounting", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const question: OpenQuestion = {
+      ...makeOpenQuestion(createEpisodeId()),
+      unresolved_rumination_ticks: 3,
+      last_ruminated_at: NOW_MS - 60_000,
+    };
+    const evidence: EvidenceItem = {
+      id: `evidence_open_question_${question.id}_followup`,
+      source: "open_question",
+      text: question.question,
+      provenance: {
+        openQuestionId: question.id,
+      },
+      recallIntentId: "intent-open-question-followup",
+      matchedTerms: ["callback attribution"],
+      score: 0.81,
+      scoreBreakdown: {
+        salience: 0.7,
+      },
+      partial_source_visibility: true,
+      source_visibility_fraction: 0.5,
+    };
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+      openQuestionStaleNoTractionTicks: 6,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      nowMs: NOW_MS,
+      audienceEntityId: null,
+      currentUserMessage: "What remains unresolved?",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [evidence],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [question],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const assembledEntries =
+      ledger.sections.find((section) => section.id === "open_questions")?.entries ?? [];
+    const retrievedEntry = assembledEntries.find(
+      (entry) => entry.id === `retrieved_evidence:${evidence.id}`,
+    );
+
+    expect(retrievedEntry?.state_metadata).toMatchObject({
+      open_question_id: question.id,
+    });
+    expect(assembledEntries).toHaveLength(2);
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+      sectionOptions: {
+        open_questions: {
+          maxEntries: 1,
+          maxTokens: 2_500,
+        },
+      },
+    });
+    const entries =
+      compacted.ledger.sections.find((section) => section.id === "open_questions")?.entries ?? [];
+    const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: `open_question:${question.id}`,
+      value: "deliberator",
+      via_retrieval: true,
+      state_metadata: expect.objectContaining({
+        open_question_id: question.id,
+        retrieval_sources: ["open_question"],
+        unresolved_rumination_ticks: 3,
+        last_ruminated_at: new Date(NOW_MS - 60_000).toISOString(),
+        dismissal_threshold_ticks: 6,
+      }),
+    });
+    expect(entries[0]?.state).toContain("open");
+    expect(entries[0]?.state).toContain("score=0.81");
+    expect(entries[0]?.state).toContain("intent=intent-open-question-followup");
+    expect(entries[0]?.state).toContain("terms=callback attribution");
+    expect(entries[0]?.state).toContain("partial_sources=true");
+    expect(entries[0]?.state).toContain("visible_fraction=0.50");
+    expect(rendered).not.toContain(`id=retrieved_evidence:${evidence.id}`);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
+    expect(compacted.traceSummary.omittedEntryCountsBySection.open_questions).toBe(0);
+  });
+
   it("renders relational slots scoped and ordered by active participant", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

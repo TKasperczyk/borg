@@ -191,6 +191,83 @@ function compareCanonicalRefs(left: LedgerEntryRef, right: LedgerEntryRef): numb
   );
 }
 
+type RetrievedOpenQuestionMerge = {
+  canonical: LedgerEntryRef;
+  openQuestionId: string;
+};
+
+// Retrieval and lifecycle assembly intentionally contribute different facts about one question.
+// Their shared machine handle makes this a merge even when both rows land in open_questions, where
+// ordinary provenance groups remain independent.
+function retrievedOpenQuestionId(ref: LedgerEntryRef): string | null {
+  return ref.entry.via_retrieval === true
+    ? metadataString(ref.entry.state_metadata?.["open_question_id"])
+    : null;
+}
+
+function retrievedOpenQuestionMerge(
+  group: readonly LedgerEntryRef[],
+): RetrievedOpenQuestionMerge | null {
+  for (const canonical of group) {
+    const openQuestionId = suffixAfterPrefix(canonical.entry.id, "open_question:");
+
+    if (openQuestionId === null) {
+      continue;
+    }
+
+    if (
+      group.length > 1 &&
+      group.every((ref) => ref === canonical || retrievedOpenQuestionId(ref) === openQuestionId)
+    ) {
+      return { canonical, openQuestionId };
+    }
+  }
+
+  return null;
+}
+
+function mergeRetrievedOpenQuestionEntries(
+  group: readonly LedgerEntryRef[],
+  merge: RetrievedOpenQuestionMerge,
+): EvidenceLedgerEntry {
+  const retrievedRefs = group.filter((ref) => ref !== merge.canonical);
+  const retrievedFields = retrievedRefs.reduce<Partial<EvidenceLedgerEntry>>(
+    (fields, ref) => ({ ...fields, ...ref.entry }),
+    {},
+  );
+  const states = [merge.canonical, ...retrievedRefs]
+    .map((ref) => ref.entry.state)
+    .filter((state): state is string => state !== undefined && state.length > 0);
+  const retrievalSources = [
+    ...new Set(
+      retrievedRefs
+        .map((ref) => ref.entry.value)
+        .filter((value): value is string => value !== undefined && value.length > 0),
+    ),
+  ];
+  const stateMetadata = Object.assign(
+    {},
+    ...retrievedRefs.map((ref) => ref.entry.state_metadata ?? {}),
+    merge.canonical.entry.state_metadata ?? {},
+    {
+      open_question_id: merge.openQuestionId,
+      ...(retrievalSources.length === 0 ? {} : { retrieval_sources: retrievalSources }),
+    },
+  ) as Record<string, unknown>;
+  const citations = [
+    ...new Set([...group.flatMap((ref) => ref.entry.citations ?? []), ...citationHandles(group)]),
+  ];
+
+  return {
+    ...retrievedFields,
+    ...merge.canonical.entry,
+    ...(states.length === 0 ? {} : { state: [...new Set(states)].join(" ") }),
+    state_metadata: stateMetadata,
+    citations,
+    via_retrieval: true,
+  };
+}
+
 export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
   ledger: EvidenceLedger;
   dedupedEntryCount: number;
@@ -274,20 +351,31 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
 
   for (const group of groups.values()) {
     const sectionIds = new Set(group.map((ref) => ref.sectionId));
+    const openQuestionMerge = retrievedOpenQuestionMerge(group);
 
-    if (group.length <= 1 || sectionIds.size <= 1) {
+    if (group.length <= 1 || (sectionIds.size <= 1 && openQuestionMerge === null)) {
       continue;
     }
 
-    const protectedRefs = group.filter(isProvenanceDedupeProtected);
-    const canonical = [...(protectedRefs.length > 0 ? protectedRefs : group)].sort(
-      compareCanonicalRefs,
-    )[0]!;
-    const citations = citationHandles(group);
-    canonicalByRef.set(canonical, {
-      ...canonical.entry,
-      citations: [...new Set([...(canonical.entry.citations ?? []), ...citations])],
-    });
+    const canonical =
+      openQuestionMerge?.canonical ??
+      (() => {
+        const protectedRefs = group.filter(isProvenanceDedupeProtected);
+        return [...(protectedRefs.length > 0 ? protectedRefs : group)].sort(
+          compareCanonicalRefs,
+        )[0]!;
+      })();
+    canonicalByRef.set(
+      canonical,
+      openQuestionMerge === null
+        ? {
+            ...canonical.entry,
+            citations: [
+              ...new Set([...(canonical.entry.citations ?? []), ...citationHandles(group)]),
+            ],
+          }
+        : mergeRetrievedOpenQuestionEntries(group, openQuestionMerge),
+    );
 
     for (const ref of group) {
       if (ref !== canonical && !isProvenanceDedupeProtected(ref)) {
