@@ -4901,6 +4901,30 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).not.toContain("0.90");
   });
 
+  // The trajectory legend bound each row to "the text that arrived that turn" -- the exact
+  // binding `workingStateMoodProvenance` retracted for the same quantity, left standing on
+  // the block a reader reaches for a history of that field. Two blocks disagreeing about
+  // one quantity's input is worse than either being silent, so pin both directions here:
+  // the retired string as an absence, the recency clause and the trigger= scope as content.
+  it("scopes trajectory rows to the classifier's full input, not the arrived text alone", () => {
+    const block = extractBlock(
+      buildBaseSystemPrompt(
+        makeContext({
+          affectiveTrajectory: [makeMoodHistoryEntry(1, 2, -0.3, 0.4, "user expressed frustration")],
+        }),
+        PROMPT_OPTIONS,
+      ),
+      "borg_affective_trajectory",
+    );
+
+    expect(block).not.toContain("raw classifier reading of the text that arrived that turn");
+    expect(block).toContain("The reading is not a function of that turn's arrived text alone");
+    expect(block).toContain("up to the last ten recency strings for the session");
+    expect(block).toContain(
+      "trigger= is a 120-character head slice of the arrived message and names no part of the recency half",
+    );
+  });
+
   it("omits affective trajectory when history is empty or undefined", () => {
     const emptyPrompt = buildBaseSystemPrompt(
       makeContext({

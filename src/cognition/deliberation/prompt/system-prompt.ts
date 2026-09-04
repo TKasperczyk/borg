@@ -2944,8 +2944,24 @@ function summarizeAffectiveTrajectory(
   // made the header's implied comparison look like a discriminator when it decides nothing.
   // What the series does decide is one-sided and worth naming: a row exists only where the
   // classifier ran, so an absent turn is an autonomous turn or a dead classifier.
+  //
+  // The row's input window is the same one `workingStateMoodProvenance` names, and this
+  // legend used to deny it -- "one turn's raw classifier reading of the text that arrived
+  // that turn" is the exact binding that clause retracted next door, left standing on the
+  // block a reader would actually reach for a history of the field. The value stored is
+  // `input.valence` from `perception.affectiveSignal` (turn-reflection-coordinator.ts ->
+  // mood.ts), and that signal is `analyze(text, recentHistory)` with
+  // `recent_history: recentHistory.slice(-10)` -- so the row is a reading over the arrived
+  // text plus up to ten recency strings, self-turns included. Two blocks disagreeing about
+  // what one quantity was computed from is worse than either being silent; keep them in step.
+  //
+  // `trigger` is not that input under another name. Reflection stores
+  // `input.userMessage.slice(0, 120)`, a head slice of the arrived message only, so it names
+  // the start of one half of what was scored and nothing of the other. Rendering it beside
+  // valence/arousal without saying so invites reading the row as a function of the quoted
+  // string, which is the stronger form of the same error.
   return [
-    "Affective trajectory (newest first). Each row is one turn's raw classifier reading of the text that arrived that turn, written after the reply: the newest row is the last scored turn, never this one. Rows exist only for undegraded user turns -- a turn missing here was autonomous or had a dead classifier, never a turn that felt nothing. Working state's mood= is not a member of this series (this turn's own raw reading on an undegraded user turn, a carried-forward blend otherwise), so comparing it against the newest row settles neither.",
+    "Affective trajectory (newest first). Each row is one turn's raw classifier reading, written after the reply: the newest row is the last scored turn, never this one. The reading is not a function of that turn's arrived text alone -- the classifier is handed that text plus up to the last ten recency strings for the session, prior turns rendered as role and content and including mine, so a row can differ from its neighbour where the arrived texts did not; trigger= is a 120-character head slice of the arrived message and names no part of the recency half. Rows exist only for undegraded user turns -- a turn missing here was autonomous or had a dead classifier, never a turn that felt nothing. Working state's mood= is not a member of this series (this turn's own raw reading on an undegraded user turn, a carried-forward blend otherwise), so comparing it against the newest row settles neither.",
     ...entries.slice(0, 5).map((entry) => {
       const triggerText =
         entry.trigger_reason === null ? "" : compactPromptText(entry.trigger_reason, 120);
