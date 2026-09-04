@@ -1307,6 +1307,7 @@ export class TurnPhaseCoordinator {
           audienceEntityId,
           audienceEntity,
           currentSenderBorgRole: creatorContext.currentSenderBorgRole,
+          currentSenderDisplayName: creatorContext.currentSenderDisplayName,
           operatorOnlyDirectivesAllowed: authorityAllowedForSingleSender,
           audienceProfile,
           sessionAudienceRole,

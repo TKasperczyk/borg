@@ -583,6 +583,28 @@ describe("config", () => {
     ).toThrow();
   });
 
+  it("loads the recall planner variant count from the environment and defaults it to three", () => {
+    const overrideDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const defaultDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(overrideDir, defaultDir);
+
+    expect(
+      loadConfig({
+        dataDir: overrideDir,
+        env: { BORG_RETRIEVAL_RECALL_EXPANSION_SEMANTIC_VARIANT_COUNT: "7" },
+      }).retrieval.recallExpansionSemanticVariantCount,
+    ).toBe(7);
+    expect(
+      loadConfig({ dataDir: defaultDir, env: {} }).retrieval.recallExpansionSemanticVariantCount,
+    ).toBe(3);
+    expect(() =>
+      configSchema.parse({ retrieval: { recallExpansionSemanticVariantCount: 0 } }),
+    ).toThrow();
+    expect(() =>
+      configSchema.parse({ retrieval: { recallExpansionSemanticVariantCount: 9 } }),
+    ).toThrow();
+  });
+
   it("loads the lexical fusion flag from the environment and defaults it off", () => {
     const enabledDir = mkdtempSync(join(tmpdir(), "borg-"));
     const defaultDir = mkdtempSync(join(tmpdir(), "borg-"));

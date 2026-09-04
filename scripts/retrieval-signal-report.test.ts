@@ -2,10 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { buildReport } from "./retrieval-signal-report.js";
 
-function intent(
-  kind: string,
-  candidates: { id: string; score: number; sim: number }[],
-): string {
+function intent(kind: string, candidates: { id: string; score: number; sim: number }[]): string {
   return JSON.stringify({
     event: "retrieval.intent_candidates",
     intent_kind: kind,
@@ -42,7 +39,7 @@ describe("retrieval signal report", () => {
 
   it("calls a wide-separation corpus similarity-forward", () => {
     const lines = Array.from({ length: 5 }, (_, i) =>
-      intent("topic", [
+      intent("semantic_query", [
         { id: `a${i}`, score: 0.9, sim: 0.9 },
         { id: `b${i}`, score: 0.5, sim: 0.6 },
         { id: `c${i}`, score: 0.4, sim: 0.3 },
@@ -58,7 +55,7 @@ describe("retrieval signal report", () => {
 
   it("warns against a similarity-forward weight on a narrow corpus", () => {
     const lines = Array.from({ length: 5 }, (_, i) =>
-      intent("relationship", [
+      intent("semantic_query", [
         { id: `a${i}`, score: 0.9, sim: 0.601 },
         { id: `b${i}`, score: 0.5, sim: 0.6 },
         { id: `c${i}`, score: 0.4, sim: 0.599 },

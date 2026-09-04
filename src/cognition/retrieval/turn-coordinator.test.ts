@@ -48,8 +48,8 @@ const PROMPT_OPTIONS = {
 };
 
 function recallExpansion(input: {
-  facets?: Array<{
-    kind: "topic" | "relationship" | "commitment" | "open_question";
+  typed_queries?: Array<{
+    kind: "commitment" | "open_question";
     query: string;
     priority: number;
   }>;
@@ -63,10 +63,16 @@ function recallExpansion(input: {
     tool_calls: [
       {
         id: "toolu_recall_expansion",
-        name: "EmitRecallExpansion",
+        name: "EmitRecallQueryPlan",
         input: {
-          facets: input.facets ?? [],
+          resolved_query: "Resolved recall query",
+          semantic_variants: [
+            { strategy: "verbatim_preserving", query: "Resolved recall query" },
+            { strategy: "memory_owner_voice", query: "I remember the resolved subject" },
+            { strategy: "aspect_focused", query: "The distinguishing resolved aspect" },
+          ],
           named_terms: input.named_terms ?? [],
+          typed_queries: input.typed_queries ?? [],
         },
       },
     ],
@@ -442,15 +448,22 @@ describe("TurnRetrievalCoordinator", () => {
       untilTs: 20_000,
     };
 
+    const recentMessages = [
+      { role: "user" as const, content: "Earlier Atlas question" },
+      { role: "user" as const, content: "A second adjacent user turn" },
+    ];
+    const currentVenue = { type: "groupChat" as const, name: "AI Ninjas" };
     const result = await coordinator.coordinate({
       turnId: "turn-1",
       userMessage: "Solve Atlas",
-      recentMessages: [],
+      recentMessages,
       cognitionInput: "Solve Atlas",
       inputAudience: "alice",
       isSelfAudience: false,
       ...makeContexts({ audienceEntityId }),
       audienceEntity,
+      currentSenderName: "Alice Sender",
+      currentVenue,
       audienceProfile: makeAudienceProfile(),
       perception: {
         ...makePerception("problem_solving"),
@@ -518,6 +531,16 @@ describe("TurnRetrievalCoordinator", () => {
         sessionId: DEFAULT_SESSION_ID,
         audienceTerms: ["Alice", "Al", "alice"],
         entityTerms: ["Atlas", "Bob"],
+        recallQueryPlannerContext: {
+          contextTurns: recentMessages,
+          identity: {
+            memoryOwnerName: "Sol",
+            currentSenderName: "Alice Sender",
+            currentAudienceName: "Alice",
+            currentVenue,
+            entityTerms: ["Atlas", "Bob"],
+          },
+        },
         goalDescriptions: ["Ship the sprint"],
         moodState: currentMood,
         scoringFeatures,
@@ -544,12 +567,35 @@ describe("TurnRetrievalCoordinator", () => {
         scoringFeatures,
         strictTimeRange: false,
         traceTurnId: "turn-1",
+        recallQueryPlannerContext: {
+          contextTurns: recentMessages,
+          identity: {
+            memoryOwnerName: "Sol",
+            currentSenderName: "Alice Sender",
+            currentAudienceName: "Alice",
+            currentVenue,
+            entityTerms: ["Atlas", "Bob"],
+          },
+        },
       }),
     );
     const cognitionCalls = recallEpisodesForCognition.mock.calls as unknown[][];
     expect(cognitionCalls).toHaveLength(2);
     for (const call of cognitionCalls) {
-      expect(call[1]).not.toHaveProperty("recallQueryReformulationContext");
+      expect(call[1]).toEqual(
+        expect.objectContaining({
+          recallQueryPlannerContext: {
+            contextTurns: recentMessages,
+            identity: {
+              memoryOwnerName: "Sol",
+              currentSenderName: "Alice Sender",
+              currentAudienceName: "Alice",
+              currentVenue,
+              entityTerms: ["Atlas", "Bob"],
+            },
+          },
+        }),
+      );
     }
   });
 
@@ -816,7 +862,7 @@ describe("TurnRetrievalCoordinator", () => {
     const llm = new FakeLLMClient({
       responses: [
         recallExpansion({
-          facets: [{ kind: "commitment", query: commitmentQuery, priority: 1 }],
+          typed_queries: [{ kind: "commitment", query: commitmentQuery, priority: 1 }],
         }),
       ],
     });
@@ -1189,12 +1235,19 @@ describe("TurnRetrievalCoordinator", () => {
       suppressionSet: SuppressionSet.fromEntries([], 1),
     });
 
-    expect(getSelf).not.toHaveBeenCalled();
+    expect(getSelf).toHaveBeenCalledTimes(1);
     expect(recallEpisodesForCognition).toHaveBeenCalledWith(
       "Reflect privately",
       expect.objectContaining({
         audienceTerms: [],
         rankingAudienceEntityId: null,
+        recallQueryPlannerContext: {
+          contextTurns: [],
+          identity: {
+            memoryOwnerName: "Sol",
+            entityTerms: ["Atlas", "Bob"],
+          },
+        },
       }),
     );
 
@@ -1270,8 +1323,12 @@ describe("TurnRetrievalCoordinator", () => {
       unknown
     >;
 
-    expect(getSelf).not.toHaveBeenCalled();
+    expect(getSelf).toHaveBeenCalledTimes(1);
     expect(retrievalOptions).toHaveProperty("rankingAudienceEntityId", bobEntityId);
+    expect(retrievalOptions).toHaveProperty(
+      "recallQueryPlannerContext.identity.memoryOwnerName",
+      "Sol",
+    );
     expect(retrievalOptions).not.toHaveProperty("semanticAudienceEntityId");
     expect(retrievalOptions).not.toHaveProperty("audienceEntityId");
     expect(retrievalOptions).not.toHaveProperty("crossAudience");

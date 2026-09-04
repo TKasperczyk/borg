@@ -43,6 +43,7 @@ import { deriveProceduralContext } from "../procedural/context-derivation.js";
 import type { PerceptionResult } from "../types.js";
 import { correctionMemoryDisclosureLabel } from "../../memory/common/disclosure-serializers.js";
 import type { SourceStreamAudienceDisclosureResolver } from "../../memory/common/index.js";
+import type { StreamConversation } from "../../stream/index.js";
 
 function buildSkillSelectionQuery(userMessage: string, entities: readonly string[]): string {
   return [userMessage, ...entities]
@@ -127,6 +128,8 @@ export type TurnRetrievalCoordinatorInput = {
   recallContext: CognitionRecallContext;
   disclosureContext: DisclosureContext;
   audienceEntity: EntityRecord | null;
+  currentSenderName?: string;
+  currentVenue?: StreamConversation;
   audienceProfile: SocialProfile | null;
   perception: PerceptionResult;
   workingMemory: WorkingMemory;
@@ -275,6 +278,7 @@ export class TurnRetrievalCoordinator {
     });
     const activeValues = input.activeValues ?? selectActiveScoringValues(input.selfSnapshot.values);
     const goalSelection = selectGoalDescriptions(input.selfSnapshot.goals, input.executiveFocus);
+    const memoryOwner = this.options.entityRepository.getSelf();
     const attentionWeights = computeWeights(input.perception.mode, {
       currentGoals: input.selfSnapshot.goals,
       hasActiveValues: activeValues.length > 0,
@@ -310,6 +314,20 @@ export class TurnRetrievalCoordinator {
               ...(input.inputAudience === undefined ? [] : [input.inputAudience]),
             ],
       entityTerms: input.perception.entities,
+      recallQueryPlannerContext: {
+        contextTurns: input.recentMessages,
+        identity: {
+          ...(memoryOwner === null ? {} : { memoryOwnerName: memoryOwner.canonical_name }),
+          ...(input.currentSenderName === undefined
+            ? {}
+            : { currentSenderName: input.currentSenderName }),
+          ...(input.audienceEntity === null
+            ? {}
+            : { currentAudienceName: input.audienceEntity.canonical_name }),
+          ...(input.currentVenue === undefined ? {} : { currentVenue: input.currentVenue }),
+          entityTerms: input.perception.entities,
+        },
+      },
       ...(input.currentTurnAttachmentIds === undefined ||
       input.currentTurnAttachmentIds.length === 0
         ? {}

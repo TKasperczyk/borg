@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createMemoryHandler,
-  memoryRecallQueryReformulationEnabledFromEnv,
+  memoryRecallSemanticVariantCountFromEnv,
   type MemoryHandlerOptions,
   type MemoryPool,
 } from "./memory-handler.js";
@@ -69,6 +69,7 @@ type Recorder = {
   tenants: string[];
   exclusives: Array<boolean | undefined>;
   lastRecallLimit?: number;
+  lastRecallQuery?: string;
   lastRecallTraceTurnId?: string;
   lastListOptions?: {
     limit?: number;
@@ -566,7 +567,7 @@ function stubBorg(rec: Recorder): Borg {
         return { ran: true, processedEntries: 2 };
       },
       search: async (
-        _query: string,
+        query: string,
         opts: {
           limit?: number;
           traceTurnId?: string;
@@ -575,6 +576,7 @@ function stubBorg(rec: Recorder): Borg {
           recordRetrieval?: boolean;
         },
       ) => {
+        rec.lastRecallQuery = query;
         rec.lastRecallLimit = opts.limit;
         rec.lastRecallTraceTurnId = opts.traceTurnId;
         rec.lastRecallOptions = { ...opts };
@@ -595,7 +597,7 @@ function stubBorg(rec: Recorder): Borg {
         }));
       },
       searchWithTimeRangeFallback: async (
-        _query: string,
+        query: string,
         opts: {
           limit?: number;
           traceTurnId?: string;
@@ -605,6 +607,7 @@ function stubBorg(rec: Recorder): Borg {
           recordRetrieval?: boolean;
         },
       ) => {
+        rec.lastRecallQuery = query;
         rec.lastRecallLimit = opts.limit;
         rec.lastRecallTraceTurnId = opts.traceTurnId;
         rec.lastRecallOptions = { ...opts };
@@ -825,28 +828,23 @@ async function requestRaw(
 }
 
 describe("memory sidecar handler", () => {
-  it("parses the exact recall query reformulation opt-in flag", () => {
-    expect(memoryRecallQueryReformulationEnabledFromEnv({})).toBe(false);
+  it("parses the bounded sidecar recall semantic variant count", () => {
+    expect(memoryRecallSemanticVariantCountFromEnv({})).toBe(1);
     expect(
-      memoryRecallQueryReformulationEnabledFromEnv({
-        BORG_MEMORY_RECALL_REFORMULATION_ENABLED: "0",
+      memoryRecallSemanticVariantCountFromEnv({
+        BORG_MEMORY_RECALL_SEMANTIC_VARIANT_COUNT: " 3 ",
       }),
-    ).toBe(false);
-    expect(
-      memoryRecallQueryReformulationEnabledFromEnv({
-        BORG_MEMORY_RECALL_REFORMULATION_ENABLED: "true",
+    ).toBe(3);
+    expect(() =>
+      memoryRecallSemanticVariantCountFromEnv({
+        BORG_MEMORY_RECALL_SEMANTIC_VARIANT_COUNT: "0",
       }),
-    ).toBe(false);
-    expect(
-      memoryRecallQueryReformulationEnabledFromEnv({
-        BORG_MEMORY_RECALL_REFORMULATION_ENABLED: " 1 ",
+    ).toThrow();
+    expect(() =>
+      memoryRecallSemanticVariantCountFromEnv({
+        BORG_MEMORY_RECALL_SEMANTIC_VARIANT_COUNT: "9",
       }),
-    ).toBe(true);
-    expect(
-      memoryRecallQueryReformulationEnabledFromEnv({
-        BORG_MEMORY_RECALL_REFORMULATION_ENABLED: "1",
-      }),
-    ).toBe(true);
+    ).toThrow();
   });
 
   it("serves /healthz without auth", async () => {
@@ -1558,15 +1556,21 @@ describe("memory sidecar handler", () => {
     expect(rec.lastRecallLimit).toBe(50);
     expect(rec.lastRecallTraceTurnId).toBeUndefined();
     expect(rec.lastRecallOptions).not.toHaveProperty("recordRetrieval");
-    expect(rec.lastRecallOptions).not.toHaveProperty("recallQueryReformulationContext");
+    expect(rec.lastRecallOptions).toMatchObject({
+      semanticVariantCount: 1,
+      recallQueryPlannerContext: {
+        identity: { memoryOwnerName: "team-agent" },
+      },
+    });
     expect(rec.retrievalRecords).toEqual([]);
   });
 
-  it("passes only the configured memory owner to reformulated legacy recall", async () => {
+  it("passes only the memory owner and configured N to legacy recall planning", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool, TOKEN, {
-      recallQueryReformulation: { memoryOwnerName: "Atlas Memory" },
+      recallSemanticVariantCount: 3,
     });
+    rec.entities[0]!.canonical_name = "Atlas Memory";
 
     const response = await post(
       base,
@@ -1577,8 +1581,11 @@ describe("memory sidecar handler", () => {
 
     expect(response.status).toBe(200);
     await response.json();
-    expect(rec.lastRecallOptions?.recallQueryReformulationContext).toEqual({
-      memoryOwnerName: "Atlas Memory",
+    expect(rec.lastRecallOptions).toMatchObject({
+      semanticVariantCount: 3,
+      recallQueryPlannerContext: {
+        identity: { memoryOwnerName: "Atlas Memory" },
+      },
     });
   });
 
@@ -1617,7 +1624,7 @@ describe("memory sidecar handler", () => {
       top_raw_score: null,
       episodes: [],
     });
-    expect(entityAccesses).toEqual([]);
+    expect(entityAccesses).toEqual(["getSelf"]);
   });
 
   it("keeps recall response unchanged while passing a trace turn id when tracing is enabled", async () => {
@@ -1720,6 +1727,7 @@ describe("memory sidecar handler", () => {
       listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(_tenantId, fn) {
         return fn({
+          entities: { getSelf: () => null },
           episodic: {
             // Never settles: the shape of a wedged provider call.
             search: () => new Promise(() => {}),
@@ -1751,6 +1759,7 @@ describe("memory sidecar handler", () => {
       listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
       async withTenant(_tenantId, fn) {
         return fn({
+          entities: { getSelf: () => null },
           episodic: {
             search: async () => {
               throw new EmbeddingError("Embedding call stalled: 2 attempt(s) exceeded 1000ms each");
@@ -1892,7 +1901,8 @@ describe("memory sidecar handler", () => {
     tracer.emit("recall_expansion.completed", {
       turnId: "turn_trace_3",
       intent_count: 1,
-      reformulated_query: "I described the remembered exchange",
+      resolved_query: "I described the remembered exchange",
+      semantic_variants: [{ strategy: "combined", query: "I described the remembered exchange" }],
     });
     const since = traceRegistry.query("acme", 0).events[0]!.ts;
     const { pool, rec } = recordingPool();
@@ -1911,7 +1921,7 @@ describe("memory sidecar handler", () => {
         expect.objectContaining({
           turnId: "turn_trace_3",
           event: "recall_expansion.completed",
-          reformulated_query: "I described the remembered exchange",
+          resolved_query: "I described the remembered exchange",
         }),
       ],
       nextSince: expect.any(Number),
@@ -2064,7 +2074,7 @@ describe("memory sidecar handler", () => {
     expect(inspectBody.episode.created_at).toBe(1);
     expect(inspectBody.episode.participants).toEqual(rawParticipants);
     expect(rec.entityListCalls).toBe(0);
-    expect(rec.selfEntityGetCalls).toBe(3);
+    expect(rec.selfEntityGetCalls).toBe(4);
     expect(rec.entityGetIds).toEqual([
       participantEntityId,
       unresolvedEntityId,
@@ -3313,6 +3323,99 @@ describe("memory sidecar handler", () => {
     expect(rec.appendManyCalls).toEqual([]);
   });
 
+  it("validates structured focus/context requests while retaining query-only compatibility", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const identity = {
+      tenant: "acme",
+      session: "structured-context",
+      sender: { external_id: "alice", display_name: "Alice" },
+      conversation: { type: "personal", name: "Alice" },
+      sections: ["episodes"],
+    };
+
+    const focusOnly = await post(
+      base,
+      "/memory/context",
+      { ...identity, focus: "What happened?", context_turns: [] },
+      TOKEN,
+    );
+    expect(focusOnly.status).toBe(200);
+    await focusOnly.json();
+    expect(rec.lastRecallQuery).toBe("What happened?");
+
+    expect(
+      (
+        await post(
+          base,
+          "/memory/context",
+          {
+            ...identity,
+            query: "legacy",
+            context_turns: [{ role: "user", text: "missing focus" }],
+          },
+          TOKEN,
+        )
+      ).status,
+    ).toBe(400);
+    expect((await post(base, "/memory/context", identity, TOKEN)).status).toBe(400);
+    expect(
+      (
+        await post(
+          base,
+          "/memory/context",
+          {
+            ...identity,
+            focus: "bounded",
+            context_turns: Array.from({ length: 4 }, () => ({ role: "user", text: "turn" })),
+          },
+          TOKEN,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await post(
+          base,
+          "/memory/context",
+          { ...identity, focus: "bounded", semanticVariantCount: 2 },
+          TOKEN,
+        )
+      ).status,
+    ).toBe(400);
+  });
+
+  it("treats a query-only role-prefixed legacy blob as opaque planner FOCUS", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const legacyQuery = [
+      "user: I described the chat and reviewer roles.",
+      "assistant: You compared their permissions.",
+      "user: Which one did Jacek ask about?",
+    ].join("\n");
+
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "legacy-role-prefixed-query",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: { type: "personal", name: "Alice" },
+        query: legacyQuery,
+        sections: ["episodes"],
+      },
+      TOKEN,
+    );
+
+    expect(response.status).toBe(200);
+    await response.json();
+    expect(rec.lastRecallQuery).toBe(legacyQuery);
+    expect(rec.lastRecallOptions?.recallQueryPlannerContext).toMatchObject({
+      contextTurns: [],
+    });
+  });
+
   it("assembles personal context from only the person and observed group audiences", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool, TOKEN, {
@@ -3528,14 +3631,29 @@ describe("memory sidecar handler", () => {
     expect(rec.lastRecallOptions).toMatchObject({
       entityTerms: ["Jacek", "team-agent"],
       recencyPrior: { weight: 0.15, halfLifeHours: 36 },
+      semanticVariantCount: 1,
+      recallQueryPlannerContext: {
+        contextTurns: [],
+        identity: {
+          memoryOwnerName: "team-agent",
+          currentSenderName: "Alice",
+          currentAudienceName: "Alice",
+          currentVenue: { type: "personal", name: "Alice" },
+          entityTerms: ["Jacek", "team-agent"],
+        },
+        ownerRecentActivity: [],
+      },
     });
-    expect(rec.lastRecallOptions).not.toHaveProperty("recallQueryReformulationContext");
 
     const oldShape = await post(base, "/memory/context", request, TOKEN);
     expect(oldShape.status).toBe(200);
     await oldShape.json();
     expect(rec.lastRecallOptions).not.toHaveProperty("entityTerms");
-    expect(rec.lastRecallOptions).not.toHaveProperty("recallQueryReformulationContext");
+    expect(rec.lastRecallOptions?.recallQueryPlannerContext).toMatchObject({
+      contextTurns: [],
+      identity: { memoryOwnerName: "team-agent" },
+      ownerRecentActivity: [],
+    });
 
     const overLimit = await post(
       base,
@@ -3546,10 +3664,10 @@ describe("memory sidecar handler", () => {
     expect(overLimit.status).toBe(400);
   });
 
-  it("passes all resolved context handles to enabled context reformulation", async () => {
+  it("uses structured FOCUS and CONTEXT and passes all resolved planner handles", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool, TOKEN, {
-      recallQueryReformulation: { memoryOwnerName: "team-agent" },
+      recallSemanticVariantCount: 3,
     });
 
     const response = await post(
@@ -3564,7 +3682,12 @@ describe("memory sidecar handler", () => {
           name: "AI Ninjas",
           external_id: "ai-ninjas",
         },
-        query: "O które role pytał Jacek?",
+        query: "user: legacy blob\nassistant: legacy answer",
+        focus: "O które role pytał Jacek?",
+        context_turns: [
+          { role: "user", text: "Opisałem role chat i reviewer." },
+          { role: "assistant", text: "Na grupie AI Ninjas." },
+        ],
         entity_terms: ["Jacek", "AI Ninjas"],
         sections: ["episodes"],
       },
@@ -3573,12 +3696,23 @@ describe("memory sidecar handler", () => {
 
     expect(response.status).toBe(200);
     await response.json();
-    expect(rec.lastRecallOptions?.recallQueryReformulationContext).toEqual({
-      memoryOwnerName: "team-agent",
-      currentSenderName: "Jacek Nowak",
-      currentAudienceName: "AI Ninjas",
-      conversation: { type: "groupChat", name: "AI Ninjas" },
-      entityTerms: ["Jacek", "AI Ninjas"],
+    expect(rec.lastRecallQuery).toBe("O które role pytał Jacek?");
+    expect(rec.lastRecallOptions).toMatchObject({
+      semanticVariantCount: 3,
+      recallQueryPlannerContext: {
+        contextTurns: [
+          { role: "user", content: "Opisałem role chat i reviewer." },
+          { role: "assistant", content: "Na grupie AI Ninjas." },
+        ],
+        identity: {
+          memoryOwnerName: "team-agent",
+          currentSenderName: "Jacek Nowak",
+          currentAudienceName: "AI Ninjas",
+          currentVenue: { type: "groupChat", name: "AI Ninjas" },
+          entityTerms: ["Jacek", "AI Ninjas"],
+        },
+        ownerRecentActivity: [],
+      },
     });
   });
 
@@ -4026,6 +4160,77 @@ describe("memory sidecar handler", () => {
     }
   });
 
+  it("feeds only hydrated owner-authored activity to episode planning without serializing it", async () => {
+    const { pool, rec } = recordingPool();
+    const replySourceId = parseStreamEntryId("strm_ownerreplysource");
+    const userSourceId = parseStreamEntryId("strm_usercontactsrc01");
+    const replySession = parseSessionId("sess_owneractivity001");
+    const userSession = parseSessionId("sess_useractivity0001");
+    const groupAudience = createEntityId();
+    rec.visibleActivityEvents = [
+      {
+        kind: "borg_replied",
+        occurredAt: 9_000,
+        sessionId: replySession,
+        audienceEntityId: groupAudience,
+        conversationKind: "thread",
+        conversationName: "AI Ninjas",
+        participantLabel: "Jacek",
+        sourceStreamEntryIds: [replySourceId],
+      },
+      {
+        kind: "user_contact",
+        occurredAt: 8_000,
+        sessionId: userSession,
+        audienceEntityId: groupAudience,
+        conversationKind: "dm",
+        conversationName: "Alice",
+        participantLabel: "Alice",
+        sourceStreamEntryIds: [userSourceId],
+      },
+    ];
+    rec.indexedStreamEntries.set(replySourceId, {
+      session_id: replySession,
+      kind: "agent_msg",
+      content: "Porównałem role chat i reviewer w team-agent.",
+    } as StreamEntry);
+    rec.indexedStreamEntries.set(userSourceId, {
+      session_id: userSession,
+      kind: "user_msg",
+      content: "User-authored text must not orient the owner-voice variant.",
+    } as StreamEntry);
+    const base = await start(pool);
+
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "activity-planner-context",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: { type: "personal", name: "Alice" },
+        focus: "O które role chodziło?",
+        sections: ["episodes"],
+      },
+      TOKEN,
+    );
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(payload).not.toHaveProperty("recent_activity");
+    expect(rec.lastVisibleActivityInput).toBeDefined();
+    expect(rec.lastRecallOptions?.recallQueryPlannerContext).toMatchObject({
+      ownerRecentActivity: [
+        {
+          excerpt: "Porównałem role chat i reviewer w team-agent.",
+          occurredAt: 9_000,
+          venue: { type: "groupChat", name: "AI Ninjas" },
+          counterpartyName: "Jacek",
+        },
+      ],
+    });
+  });
+
   it("keeps recent activity and logs a redacted warning when excerpt hydration fails", async () => {
     const { pool, rec } = recordingPool();
     const sourceId = parseStreamEntryId("strm_activitysource01");
@@ -4035,7 +4240,7 @@ describe("memory sidecar handler", () => {
     });
     rec.visibleActivityEvents = [
       {
-        kind: "user_contact",
+        kind: "borg_replied",
         occurredAt: Date.now() - 60_000,
         sessionId: parseSessionId("sess_activitysource01"),
         audienceEntityId: createEntityId(),
@@ -4058,7 +4263,8 @@ describe("memory sidecar handler", () => {
           session: "activity-context",
           sender: { external_id: "alice", display_name: "Alice" },
           conversation: { type: "personal", name: "Alice" },
-          sections: ["recent_activity"],
+          query: "activity context",
+          sections: ["episodes", "recent_activity"],
         },
         TOKEN,
       );
@@ -4069,6 +4275,9 @@ describe("memory sidecar handler", () => {
       expect(response.status).toBe(200);
       expect(payload.recent_activity).toHaveLength(1);
       expect(payload.recent_activity[0]).not.toHaveProperty("excerpt");
+      expect(rec.lastRecallOptions?.recallQueryPlannerContext).toMatchObject({
+        ownerRecentActivity: [],
+      });
       expect(rec.streamHydrateCalls).toEqual([{ ids: [sourceId], budgetMs: 50, activeOnly: true }]);
       expect(consoleWarn).toHaveBeenCalledWith(
         "memory-sidecar: recent-activity excerpt hydration failed",
@@ -4165,6 +4374,9 @@ describe("memory sidecar handler", () => {
     expect(rec.lastRecallOptions).toMatchObject({
       audienceEntityId: currentGroup,
       visibleAudienceEntityIds: [currentGroup],
+    });
+    expect(rec.lastVisibleActivityInput).toMatchObject({
+      audienceEntityIds: [currentGroup],
     });
   });
 
@@ -5688,8 +5900,13 @@ describe("memory sidecar handler", () => {
         tool_calls: [
           {
             id: "toolu_memory_context_expansion",
-            name: "EmitRecallExpansion",
-            input: { facets: [], named_terms: [] },
+            name: "EmitRecallQueryPlan",
+            input: {
+              resolved_query: "q",
+              semantic_variants: [{ strategy: "combined", query: "q" }],
+              named_terms: [],
+              typed_queries: [],
+            },
           },
         ],
       };

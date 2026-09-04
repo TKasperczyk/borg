@@ -34,7 +34,7 @@ import { join } from "node:path";
 // Lanes that carry a vector_score. The others (known_term, time, recent, ...)
 // score similarity 0 by construction, so no semantic reweighting can move them
 // -- including them would dilute every statistic below.
-const SEMANTIC_LANES = new Set(["raw_text", "topic", "relationship"]);
+const SEMANTIC_LANES = new Set(["raw_text", "semantic_query"]);
 
 // Below this within-query top1..top3 similarity gap, the ordering among the
 // leaders is closer to noise than to signal.
@@ -174,7 +174,11 @@ export function buildReport(lines: readonly string[]): SignalReport {
 
   const n = events.length;
   const pct = (x: number, d: number) => (d === 0 ? 0 : (100 * x) / d);
-  const median = (xs: number[]) => quantile([...xs].sort((x, y) => x - y), 0.5);
+  const median = (xs: number[]) =>
+    quantile(
+      [...xs].sort((x, y) => x - y),
+      0.5,
+    );
   const sortedSims = [...sims].sort((x, y) => x - y);
   const gapMedian = median(gaps);
   const maxTopOne = [...topOne.values()].reduce((m, v) => Math.max(m, v), 0);

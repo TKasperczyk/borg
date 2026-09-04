@@ -16,10 +16,8 @@ import type { MemoryDisclosureLabel } from "./recall-context.js";
 
 export const RECALL_INTENT_KINDS = [
   "raw_text",
-  "reformulated_query",
+  "semantic_query",
   "known_term",
-  "topic",
-  "relationship",
   "time",
   "recent",
   "commitment",
@@ -30,7 +28,6 @@ export type RecallIntentKind = (typeof RECALL_INTENT_KINDS)[number];
 
 export type RecallIntentSource =
   | "raw-user-message"
-  | "llm-reformulation"
   | "llm-expansion"
   | "perception-entities"
   | "audience-aliases"

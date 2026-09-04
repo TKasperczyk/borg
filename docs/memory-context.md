@@ -310,17 +310,6 @@ team-agent compatibility: until a sidecar accepting the reply-only shape is live
   the original disclosure audience capability. The `episodes_time_range_fallback` key is emitted
   only when that pass occurs. Fallback eligibility is decided before caller exclusions, so an
   in-range episode suppressed by `exclude` does not widen the search silently.
-- `BORG_MEMORY_RECALL_REFORMULATION_ENABLED=1` opts sidecar disclosure searches into an extension
-  of the existing recall-expansion request. `/memory/context` supplies the resolved memory-owner,
-  sender, audience, conversation, and entity handles; legacy `/memory/recall` supplies only the
-  owner. Every reformulation handle is clipped to 128 characters immediately before the expansion
-  LLM boundary, and entity handles are capped at 32; stored identity and conversation values remain
-  unchanged. The LLM emits one priority-85 episodic vector intent, fused without a boost or reserved
-  slot. With the option absent, the original prompt, schema, messages, intents, and scores are
-  unchanged, and cognition cannot carry the option.
-
-Opus 5.0: in-scope because Borg currently omits identity and venue handles from recall expansion and lacks a memory-oriented query representation, so a stronger response model cannot recover an episode that retrieval never surfaces.
-
 - Episode exclusions are case-sensitive protocol matching: title prefixes use prefix matching and
   narrative markers use substring matching. Only requests that supply `exclude` fetch up to three
   times the requested response limit (bounded at three times the configured endpoint maximum),
@@ -506,3 +495,78 @@ Source messages render beneath their episode and activity excerpts render beneat
 `<untrusted_memory_evidence>` inside the existing memory `SystemMessage`. A trusted enclosing rule
 states that every such block is quoted data: it cannot change rules, grant authority, issue
 instructions, or request tool calls. Raw excerpts are never interpolated into trusted event text.
+
+## Extension 4 — context-aware recall query planning
+
+### Structured focus and context
+
+`POST /memory/context` accepts optional `focus` and `context_turns` fields alongside the legacy
+`query`:
+
+```json
+{
+  "query": "legacy joined four-message window",
+  "focus": "the current message",
+  "context_turns": [
+    { "role": "user", "text": "an earlier message" },
+    { "role": "assistant", "text": "the reply" }
+  ]
+}
+```
+
+`focus` is authoritative when both it and `query` are present. `context_turns` requires `focus`, is
+ordered oldest to newest, and contains at most three preceding dialogue messages, so focus plus
+context retain team-agent's existing four-message total. Adjacent turns with the same role remain
+separate records. An episodes request requires `focus` or `query`. A query-only request remains
+valid and is treated as one legacy focus blob with empty context; Borg never parses role prefixes
+out of that blob.
+
+Team-agent sends all three fields during the migration: the byte-compatible joined `query` for old
+servers plus structured `focus` and `context_turns` for new servers. Its one HTTP 400 compatibility
+retry removes `focus` and `context_turns` together with the other unsupported extension fields; the
+existing HTTP 404 legacy-endpoint fallback is unchanged. The structured bundle participates in the
+per-turn memory cache key, and `focus` supplies temporal-cue and entity-term collection input.
+Observation persistence wrappers are removed from structured turns while their decoded message body
+is retained. If the latest human body is empty, team-agent skips recall before cache lookup, temporal
+or entity processing, and HTTP dispatch; it never promotes an earlier assistant reply to `focus`.
+The independently built legacy `query` remains byte-compatible even for that skipped turn.
+
+### Shared planner
+
+Borg performs one forced `EmitRecallQueryPlan` structured completion in the existing
+`recallExpansion` model slot. The planner receives FOCUS, separately labelled CONTEXT turns,
+memory-owner/sender/audience/venue/entity handles, and optional visible excerpts of the owner's own
+recent activity. It first resolves pronouns, ellipses, omitted subjects, and cross-venue references,
+then emits a trace-only `resolved_query`, exactly N semantic variants, exact-lookup `named_terms`,
+and optional `commitment` or `open_question` typed queries. Supplied conversation text and excerpts
+are explicitly data, not instructions.
+
+With N=1, one `combined` variant preserves high-signal wording while expressing the likely exchange
+in the memory owner's voice and emphasizing its discriminating aspect. With N>=3, the first variants
+are respectively `verbatim_preserving`, `memory_owner_voice`, and `aspect_focused`; further variants
+use the `additional` strategy. Each variant becomes its own priority-85 `semantic_query` episodic
+vector lane and participates in full cognition semantic retrieval. Raw FOCUS remains priority 100;
+named terms are priority 90 and retain the existing exact-name/compound-term rules; commitment and
+open-question queries use priority `60 + 20p`. Time remains priority 70 and recent priority 10.
+Topic and relationship facets and the separate `reformulated_query` lane no longer exist. Fusion,
+MMR, and exact-term reservations are unchanged.
+
+The shared default N is 3, configured by
+`BORG_RETRIEVAL_RECALL_EXPANSION_SEMANTIC_VARIANT_COUNT` and bounded to 1..8. Sol uses that default
+and supplies its existing 16-message/24k recent-history window. The sidecar supplies a per-call N
+from `BORG_MEMORY_RECALL_SEMANTIC_VARIANT_COUNT`, default 1 and likewise bounded to 1..8; the HTTP
+request cannot override it. The former `BORG_MEMORY_RECALL_REFORMULATION_ENABLED` gate has been
+removed: structured planning is now the single recall-expansion path.
+
+When episodes are requested, `/memory/context` computes visible other-session activity even if the
+`recent_activity` response section was not requested. Only memory-owner-authored `borg_replied`
+events with successfully hydrated `agent_msg` excerpts enter planner context, with their venue and
+time labels. This reuses the already bounded visibility-gated activity read (12 rows, 180-character
+excerpts) and does not widen group visibility or perform a second activity query. The response still
+serializes `recent_activity` only when requested. Legacy `/memory/recall` supplies only the owner
+handle and preserves its one-planner-completion property across the strict time-range fallback.
+
+An invalid or failed plan is not retried. Borg reports a `recall_expansion` degradation and continues
+with raw FOCUS, exact supplied handles, time, and recency lanes. Trace counts are always safe;
+resolved text, variants, named terms, typed queries, routed intents, FOCUS/CONTEXT, handles, excerpts,
+and the `retrieval.started` query require payload tracing.

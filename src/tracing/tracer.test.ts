@@ -125,7 +125,6 @@ describe("TurnTracer", () => {
       normalizedPayload: { normalized: true },
       original_response: "before",
       rewritten_response: "after",
-      dropped_facets: [{ query: "hidden", priority: 1 }],
       description: "candidate text",
       candidate_description: "goal candidate text",
       description_excerpt: "action excerpt",
@@ -215,12 +214,18 @@ describe("TurnTracer", () => {
     const payload: TurnTraceData = {
       turnId: "turn_callback",
       clipped: false,
-      facet_count: 1,
+      requested_variant_count: 1,
+      returned_variant_count: 1,
       named_term_count: 1,
-      facets: [{ kind: "topic", query: "Atlas rollback", priority: 0.9 }],
+      resolved_query: "I discussed the Atlas rollback",
+      semantic_variants: [{ strategy: "combined", query: "Atlas rollback" }],
       named_terms: ["Atlas"],
-      reformulated_query: "I discussed the Atlas rollback",
-      recall_intents: [{ kind: "topic", query: "Atlas rollback", priority: 78 }],
+      typed_queries: [{ kind: "open_question", query: "Atlas rollback", priority: 0.9 }],
+      recall_intents: [{ kind: "semantic_query", query: "Atlas rollback", priority: 85 }],
+      focus: "What about that rollback?",
+      context_turns: [{ role: "user", content: "We discussed Atlas." }],
+      identity_handles: { memory_owner_name: "Sol" },
+      owner_recent_activity: [{ excerpt: "Atlas rollback" }],
       matched_terms_by_candidate: [{ episode_id: "ep_1", matched_terms: ["Atlas"] }],
     };
 
@@ -233,22 +238,33 @@ describe("TurnTracer", () => {
       turnId: "turn_callback",
       event: "recall_expansion.completed",
       clipped: false,
-      facet_count: 1,
+      requested_variant_count: 1,
+      returned_variant_count: 1,
       named_term_count: 1,
     });
-    expect(strippedEntries[0]).not.toHaveProperty("facets");
+    expect(strippedEntries[0]).not.toHaveProperty("resolved_query");
+    expect(strippedEntries[0]).not.toHaveProperty("semantic_variants");
     expect(strippedEntries[0]).not.toHaveProperty("named_terms");
-    expect(strippedEntries[0]).not.toHaveProperty("reformulated_query");
+    expect(strippedEntries[0]).not.toHaveProperty("typed_queries");
     expect(strippedEntries[0]).not.toHaveProperty("recall_intents");
+    expect(strippedEntries[0]).not.toHaveProperty("focus");
+    expect(strippedEntries[0]).not.toHaveProperty("context_turns");
+    expect(strippedEntries[0]).not.toHaveProperty("identity_handles");
+    expect(strippedEntries[0]).not.toHaveProperty("owner_recent_activity");
     expect(strippedEntries[0]).not.toHaveProperty("matched_terms_by_candidate");
 
     expect(fullEntries[0]).toMatchObject({
       ts: 1_002,
       event: "recall_expansion.completed",
-      facets: [{ kind: "topic", query: "Atlas rollback", priority: 0.9 }],
+      resolved_query: "I discussed the Atlas rollback",
+      semantic_variants: [{ strategy: "combined", query: "Atlas rollback" }],
       named_terms: ["Atlas"],
-      reformulated_query: "I discussed the Atlas rollback",
-      recall_intents: [{ kind: "topic", query: "Atlas rollback", priority: 78 }],
+      typed_queries: [{ kind: "open_question", query: "Atlas rollback", priority: 0.9 }],
+      recall_intents: [{ kind: "semantic_query", query: "Atlas rollback", priority: 85 }],
+      focus: "What about that rollback?",
+      context_turns: [{ role: "user", content: "We discussed Atlas." }],
+      identity_handles: { memory_owner_name: "Sol" },
+      owner_recent_activity: [{ excerpt: "Atlas rollback" }],
       matched_terms_by_candidate: [{ episode_id: "ep_1", matched_terms: ["Atlas"] }],
     });
     expect(typeof fullEntries[0]?.wallMs).toBe("number");

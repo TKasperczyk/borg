@@ -9,7 +9,8 @@
 //        sender.operator? and conversation.external_id? enrich sessions/audience/activity;
 //        absent assistant records an observation; absent user records a reply-only turn;
 //        incomplete identity keeps legacy append behavior
-//   POST /memory/context { tenant, session, sender, conversation, query?, limit?, sections?,
+//   POST /memory/context { tenant, session, sender, conversation, query?, focus?, context_turns?,
+//                          limit?, sections?,
 //                          participants?, entity_terms?, time_range?, exclude?, venue_since?,
 //                          venue_limit? }
 //                                                            -> audience-scoped turn context
@@ -81,9 +82,12 @@ import {
 import type { EpisodeRecencyPrior, RetrievedEpisode } from "../retrieval/index.js";
 import type { RetrievalDegradation } from "../retrieval/pipeline.js";
 import {
-  clipRecallQueryReformulationContext,
-  MAX_RECALL_QUERY_REFORMULATION_ENTITY_TERMS,
-  MAX_RECALL_QUERY_REFORMULATION_HANDLE_CHARS,
+  MAX_RECALL_EXPANSION_SEMANTIC_VARIANTS,
+  MAX_RECALL_QUERY_ACTIVITY_ROWS,
+  MAX_RECALL_QUERY_CONTEXT_TURN_CHARS,
+  MAX_RECALL_QUERY_ENTITY_TERMS,
+  MAX_RECALL_QUERY_HANDLE_CHARS,
+  MIN_RECALL_EXPANSION_SEMANTIC_VARIANTS,
 } from "../retrieval/recall-expansion.js";
 import {
   isNarrativeStreamEntry,
@@ -92,7 +96,7 @@ import {
 } from "../stream/index.js";
 import { sessionIdSchema, streamEntryIdSchema } from "../util/id-schemas.js";
 import { dedupePreservingOrder } from "../util/collections.js";
-import { EmbeddingError } from "../util/errors.js";
+import { ConfigError, EmbeddingError } from "../util/errors.js";
 import {
   createStreamEntryId,
   parseAuditId,
@@ -164,9 +168,7 @@ export type MemoryHandlerOptions = {
   recentActivityLimit?: number;
   activityExcerptHydrationBudgetMs?: number;
   recencyPrior?: EpisodeRecencyPrior;
-  recallQueryReformulation?: {
-    memoryOwnerName: string;
-  };
+  recallSemanticVariantCount?: number;
   traceRegistry?: MemoryTraceRegistry;
   maintenanceCoordinator?: Pick<
     MemoryMaintenanceCoordinator,
@@ -183,14 +185,14 @@ const DEFAULT_RECALL_DEADLINE_MS = 5000;
 export const DEFAULT_RECENT_ACTIVITY_WINDOW_MS = 24 * 60 * 60_000;
 export const DEFAULT_RECENT_ACTIVITY_LIMIT = 12;
 export const DEFAULT_ACTIVITY_EXCERPT_HYDRATION_BUDGET_MS = 50;
-export const MEMORY_RECALL_QUERY_REFORMULATION_ENABLED_ENV =
-  "BORG_MEMORY_RECALL_REFORMULATION_ENABLED";
+export const MEMORY_RECALL_SEMANTIC_VARIANT_COUNT_ENV = "BORG_MEMORY_RECALL_SEMANTIC_VARIANT_COUNT";
 const RECENT_ACTIVITY_EXCERPT_HYDRATION_FAILURE_REASON = "recent_activity_excerpt_hydration_failed";
 const DEFAULT_VENUE_RECENT_LIMIT = 12;
 const MAX_VENUE_RECENT_LIMIT = 50;
 const MAX_CONTEXT_PARTICIPANTS = 32;
-const MAX_CONTEXT_ENTITY_TERMS = MAX_RECALL_QUERY_REFORMULATION_ENTITY_TERMS;
-const MAX_CONTEXT_ENTITY_TERM_CHARS = MAX_RECALL_QUERY_REFORMULATION_HANDLE_CHARS;
+const MAX_CONTEXT_ENTITY_TERMS = MAX_RECALL_QUERY_ENTITY_TERMS;
+const MAX_CONTEXT_ENTITY_TERM_CHARS = MAX_RECALL_QUERY_HANDLE_CHARS;
+const MAX_CONTEXT_TURNS = 3;
 const EPISODE_OVERFETCH_MULTIPLIER = 3;
 const OBSERVATION_MAX_PAST_AGE_MS = 5 * 60_000;
 const OBSERVATION_MAX_FUTURE_SKEW_MS = 60_000;
@@ -198,10 +200,26 @@ const DEFAULT_EPISODE_LIST_LIMIT = 20;
 const MAX_EPISODE_LIST_LIMIT = 100;
 const MAX_COMMITMENT_RESPONSE_ITEMS = 100;
 
-export function memoryRecallQueryReformulationEnabledFromEnv(
+export function memoryRecallSemanticVariantCountFromEnv(
   env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  return env[MEMORY_RECALL_QUERY_REFORMULATION_ENABLED_ENV]?.trim() === "1";
+): number {
+  const raw = env[MEMORY_RECALL_SEMANTIC_VARIANT_COUNT_ENV]?.trim();
+  if (raw === undefined || raw === "") {
+    return 1;
+  }
+
+  const count = Number(raw);
+  if (
+    !Number.isInteger(count) ||
+    count < MIN_RECALL_EXPANSION_SEMANTIC_VARIANTS ||
+    count > MAX_RECALL_EXPANSION_SEMANTIC_VARIANTS
+  ) {
+    throw new ConfigError(
+      `${MEMORY_RECALL_SEMANTIC_VARIANT_COUNT_ENV} must be an integer between ${MIN_RECALL_EXPANSION_SEMANTIC_VARIANTS} and ${MAX_RECALL_EXPANSION_SEMANTIC_VARIANTS}`,
+    );
+  }
+
+  return count;
 }
 
 class RecallDeadlineExceeded extends Error {
@@ -251,6 +269,13 @@ const contextSenderSchema = z
   })
   .strict();
 
+const contextTurnSchema = z
+  .object({
+    role: z.enum(["user", "assistant"]),
+    text: z.string().trim().min(1).max(MAX_RECALL_QUERY_CONTEXT_TURN_CHARS),
+  })
+  .strict();
+
 const epochMillisecondsSchema = z.number().int().nonnegative();
 const episodeTimeRangeSchema = z
   .object({
@@ -297,6 +322,8 @@ const memoryContextBodySchema = z
       .max(MAX_CONTEXT_ENTITY_TERMS)
       .optional(),
     query: z.string().trim().min(1).optional(),
+    focus: z.string().trim().min(1).optional(),
+    context_turns: z.array(contextTurnSchema).max(MAX_CONTEXT_TURNS).optional(),
     limit: z.number().finite().optional(),
     sections: z.array(memoryContextSectionSchema).min(1).optional(),
     time_range: episodeTimeRangeSchema.optional(),
@@ -317,11 +344,19 @@ const memoryContextBodySchema = z
       });
     }
 
-    if (episodesRequested && !value.query) {
+    if (value.context_turns !== undefined && value.focus === undefined) {
       ctx.addIssue({
         code: "custom",
-        path: ["query"],
-        message: "query is required when episodes are requested",
+        path: ["context_turns"],
+        message: "context_turns requires focus",
+      });
+    }
+
+    if (episodesRequested && !value.focus && !value.query) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["focus"],
+        message: "focus or query is required when episodes are requested",
       });
     }
 
@@ -1202,7 +1237,10 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
   );
   const recentActivityLimit = Math.max(
     1,
-    Math.floor(options.recentActivityLimit ?? DEFAULT_RECENT_ACTIVITY_LIMIT),
+    Math.min(
+      MAX_RECALL_QUERY_ACTIVITY_ROWS,
+      Math.floor(options.recentActivityLimit ?? DEFAULT_RECENT_ACTIVITY_LIMIT),
+    ),
   );
   const activityExcerptHydrationBudgetMs = Math.max(
     0,
@@ -1211,7 +1249,13 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
     ),
   );
   const recencyPrior = options.recencyPrior;
-  const recallQueryReformulation = options.recallQueryReformulation;
+  const recallSemanticVariantCount = Math.max(
+    MIN_RECALL_EXPANSION_SEMANTIC_VARIANTS,
+    Math.min(
+      MAX_RECALL_EXPANSION_SEMANTIC_VARIANTS,
+      Math.floor(options.recallSemanticVariantCount ?? 1),
+    ),
+  );
   let recallTraceSequence = 0;
 
   const nextRecallTraceTurnId = (tenant: string): string => {
@@ -2153,6 +2197,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         }
 
         const requestedSections = new Set(parsed.data.sections ?? DEFAULT_MEMORY_CONTEXT_SECTIONS);
+        const recallFocus = parsed.data.focus ?? parsed.data.query ?? "";
         const episodeLimit = Math.max(
           1,
           Math.min(
@@ -2230,14 +2275,15 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             identity.audienceEntity.id,
             ...observedGroupAudienceEntityIds,
           ]);
-          const recentActivityEvents = requestedSections.has("recent_activity")
-            ? borg.activity.listRecentVisibleOtherSessionEvents({
-                currentSessionId: session,
-                audienceEntityIds: visibleAudienceEntityIds,
-                sinceMs: nowMs - recentActivityWindowMs,
-                limit: recentActivityLimit,
-              })
-            : [];
+          const recentActivityEvents =
+            requestedSections.has("episodes") || requestedSections.has("recent_activity")
+              ? borg.activity.listRecentVisibleOtherSessionEvents({
+                  currentSessionId: session,
+                  audienceEntityIds: visibleAudienceEntityIds,
+                  sinceMs: nowMs - recentActivityWindowMs,
+                  limit: recentActivityLimit,
+                })
+              : [];
           const recentActivitySourceIds = recentActivityEvents.flatMap(
             (event) => event.sourceStreamEntryIds,
           );
@@ -2261,6 +2307,25 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           const recentActivity = recentActivityEvents.map((event) =>
             projectRecentActivity(event, nowMs, recentActivitySourceEntries),
           );
+          const plannerOwnerActivity = recentActivityEvents.flatMap((event, index) => {
+            const projected = recentActivity[index];
+            if (
+              event.kind !== "borg_replied" ||
+              projected === undefined ||
+              projected.excerpt === undefined
+            ) {
+              return [];
+            }
+
+            return [
+              {
+                excerpt: projected.excerpt,
+                occurredAt: event.occurredAt,
+                venue: projected.conversation,
+                counterpartyName: event.participantLabel,
+              },
+            ];
+          });
           const commitments = requestedSections.has("commitments")
             ? borg.commitments
                 .list({
@@ -2319,6 +2384,8 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           return {
             visibleAudienceEntityIds,
             recentActivity,
+            plannerOwnerActivity,
+            memoryOwnerName: borg.entities.getSelf()?.canonical_name,
             commitments,
             directives,
             venueRecent,
@@ -2346,24 +2413,30 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                   ...(parsed.data.entity_terms === undefined
                     ? {}
                     : { entityTerms: parsed.data.entity_terms }),
-                  ...(recallQueryReformulation === undefined
-                    ? {}
-                    : {
-                        recallQueryReformulationContext: clipRecallQueryReformulationContext({
-                          memoryOwnerName: recallQueryReformulation.memoryOwnerName,
-                          currentSenderName: parsed.data.sender.display_name,
-                          currentAudienceName: identity.audienceEntity.canonical_name,
-                          conversation: identity.conversation,
-                          ...(parsed.data.entity_terms === undefined
-                            ? {}
-                            : { entityTerms: parsed.data.entity_terms }),
-                        }),
-                      }),
+                  semanticVariantCount: recallSemanticVariantCount,
+                  recallQueryPlannerContext: {
+                    contextTurns: (parsed.data.context_turns ?? []).map((turn) => ({
+                      role: turn.role,
+                      content: turn.text,
+                    })),
+                    identity: {
+                      ...(context.memoryOwnerName === undefined
+                        ? {}
+                        : { memoryOwnerName: context.memoryOwnerName }),
+                      currentSenderName: parsed.data.sender.display_name,
+                      currentAudienceName: identity.audienceEntity.canonical_name,
+                      currentVenue: identity.conversation,
+                      ...(parsed.data.entity_terms === undefined
+                        ? {}
+                        : { entityTerms: parsed.data.entity_terms }),
+                    },
+                    ownerRecentActivity: context.plannerOwnerActivity,
+                  },
                   ...(recencyPrior === undefined ? {} : { recencyPrior }),
                   ...(deferEpisodeRetrievalAccounting ? { recordRetrieval: false } : {}),
                   ...(traceTurnId === undefined ? {} : { traceTurnId }),
                 };
-                const recalled = await borg.episodic.search(parsed.data.query!, {
+                const recalled = await borg.episodic.search(recallFocus, {
                   ...recallOptions,
                   ...(parsed.data.time_range === undefined
                     ? {}
@@ -3097,16 +3170,16 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       try {
         hits = await raceRecallDeadline(
           pool.withTenant(tenant, async (borg) => {
+            const memoryOwner = borg.entities.getSelf();
             const recallOptions = {
               limit: searchLimit,
               onDegraded: (degradation: RetrievalDegradation) => degradations.push(degradation),
-              ...(recallQueryReformulation === undefined
-                ? {}
-                : {
-                    recallQueryReformulationContext: clipRecallQueryReformulationContext({
-                      memoryOwnerName: recallQueryReformulation.memoryOwnerName,
-                    }),
-                  }),
+              semanticVariantCount: recallSemanticVariantCount,
+              recallQueryPlannerContext: {
+                identity: {
+                  ...(memoryOwner === null ? {} : { memoryOwnerName: memoryOwner.canonical_name }),
+                },
+              },
               ...(recencyPrior === undefined ? {} : { recencyPrior }),
               ...(deferRetrievalAccounting ? { recordRetrieval: false } : {}),
               ...(traceTurnId === undefined ? {} : { traceTurnId }),

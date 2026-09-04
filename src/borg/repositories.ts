@@ -532,6 +532,7 @@ export async function buildBorgRepositories(
     llmClient: options.llmClient,
     recallExpansionModel: config.anthropic.models.recallExpansion,
     recallExpansionTimeoutMs: config.retrieval.recallExpansionTimeoutMs,
+    recallExpansionSemanticVariantCount: config.retrieval.recallExpansionSemanticVariantCount,
     episodicRepository,
     semanticNodeRepository,
     semanticEdgeRepository,
