@@ -20,6 +20,7 @@ import {
   openQuestionDuplicatePresentationRow,
   type OpenQuestion,
   type OpenQuestionRumination,
+  type OpenQuestionRuminationInput,
 } from "../../memory/self/index.js";
 import { expectedRecordVersion } from "../../memory/common/cas.js";
 import { resolveOpenQuestionThroughIdentityService } from "../../memory/lifecycle-ops/index.js";
@@ -37,7 +38,13 @@ import {
   memoryDisclosureLabelFromEpisodeAccess,
   selfPrivateMemoryDisclosureLabel,
 } from "../../memory/common/disclosure-label.js";
-import { createGrowthMarkerId, DEFAULT_SESSION_ID } from "../../util/ids.js";
+import {
+  createGrowthMarkerId,
+  DEFAULT_SESSION_ID,
+  maintenanceRunIdHelpers,
+  parseMaintenanceRunId,
+  type MaintenanceRunId,
+} from "../../util/ids.js";
 import { BudgetExceededError, IdentityCasMismatchError, StorageError } from "../../util/errors.js";
 import { clamp } from "../../util/math.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
@@ -61,7 +68,6 @@ const OPEN_QUESTION_ACTIVE_ACTION_STATES = ["considering", "committed_to_do", "s
 const RECENT_RUMINATIONS_PER_QUESTION = 3;
 const CONNECTED_OPEN_QUESTION_CANDIDATE_LIMIT = 8;
 const RUMINATOR_DUPLICATE_CANDIDATES_PER_QUESTION = 12;
-const RUMINATOR_DUPLICATE_CANDIDATE_MIN_SIMILARITY = 0.2;
 
 export const RUMINATOR_SYSTEM_PROMPT = [
   "I return to my open questions with time to think.",
@@ -397,6 +403,13 @@ export const RUMINATOR_DUPLICATE_TOOL = {
 } satisfies LLMToolDefinition;
 type RuminatorDuplicateJudgment = z.infer<typeof ruminatorDuplicateJudgmentSchema>;
 
+const maintenanceRunIdSchema = z
+  .string()
+  .refine((value) => maintenanceRunIdHelpers.is(value), {
+    message: "Invalid maintenance run id",
+  })
+  .transform((value) => parseMaintenanceRunId(value));
+
 const serializableGrowthMarkerSchema = growthMarkerSchema.extend({
   evidence_episode_ids: z.array(episodeIdSchema).min(1),
 });
@@ -462,17 +475,20 @@ export const ruminatorPlanSchema = z.object({
   tokens_used: z.number().int().nonnegative(),
   budget_exhausted: z.boolean().default(false),
   planned_at: z.number().finite().default(0),
+  rumination_run_id: maintenanceRunIdSchema.nullable().default(null),
   scheduling: z
     .object({
       due_question_ids: z.array(openQuestionIdSchema).default([]),
       selected_question_ids: z.array(openQuestionIdSchema).default([]),
       visited_question_ids: z.array(openQuestionIdSchema).default([]),
+      model_called_question_ids: z.array(openQuestionIdSchema).default([]),
       budget_cut_question_ids: z.array(openQuestionIdSchema).default([]),
     })
     .default({
       due_question_ids: [],
       selected_question_ids: [],
       visited_question_ids: [],
+      model_called_question_ids: [],
       budget_cut_question_ids: [],
     }),
   tension_scaffolding_drops: z
@@ -494,33 +510,6 @@ type RuminatorReversal = {
   previous_duplicate?: OpenQuestion;
   marker_id?: z.infer<typeof growthMarkerIdSchema>;
 };
-
-// Re-materialise a previously-deleted open question from a captured snapshot.
-// Used both to reverse a merge and to roll back a duplicate we optimistically
-// removed when folding it into a primary failed. add() re-inserts the row (its
-// dedupe_key is free again post-delete); restore() then reinstates full state.
-function reinsertOpenQuestion(
-  repository: OfflineContext["openQuestionsRepository"],
-  question: OpenQuestion,
-): void {
-  if (repository.get(question.id) === null) {
-    repository.add({
-      id: question.id,
-      question: question.question,
-      urgency: question.urgency,
-      related_episode_ids: question.related_episode_ids,
-      related_semantic_node_ids: question.related_semantic_node_ids,
-      goal_id: question.goal_id,
-      audience_entity_id: question.audience_entity_id,
-      provenance: question.provenance,
-      source: question.source,
-      created_at: question.created_at,
-      last_touched: question.last_touched,
-    });
-  }
-
-  repository.restore(question);
-}
 
 function renderRecentRuminationNotes(ruminations: readonly OpenQuestionRumination[]): string {
   if (ruminations.length === 0) {
@@ -861,7 +850,6 @@ async function collectDuplicateCandidatePairs(
     try {
       candidates = await ctx.openQuestionsRepository.searchSimilar(question, {
         limit: RUMINATOR_DUPLICATE_CANDIDATES_PER_QUESTION,
-        minSimilarity: RUMINATOR_DUPLICATE_CANDIDATE_MIN_SIMILARITY,
       });
     } catch (error) {
       onSearchFailure(error);
@@ -943,6 +931,7 @@ async function judgeDuplicateCandidatePairs(
       },
       toolName: RUMINATOR_DUPLICATE_TOOL_NAME,
       parse: (input) => ruminatorDuplicateResponseSchema.parse(input).duplicate_judgments,
+      maxAttempts: 1,
     })
   ).parsed;
 }
@@ -1373,7 +1362,7 @@ function dueOpenQuestions(input: {
       );
       const overdueRatio = elapsedMs / (periodDays * DAY_MS);
       const hasNewEvidence =
-        question.last_ruminated_at !== null && question.last_touched > question.last_ruminated_at;
+        question.last_touched > (question.last_ruminated_at ?? question.created_at);
 
       return overdueRatio >= 1 || hasNewEvidence ? [{ question, overdueRatio }] : [];
     })
@@ -1392,7 +1381,7 @@ function ruminationSchedulingNotes(
 ): string[] {
   const cutIds = scheduling.budget_cut_question_ids;
   const notes = [
-    `rumination scheduler: due=${scheduling.due_question_ids.length}; selected=${scheduling.selected_question_ids.length}; visited=${scheduling.visited_question_ids.length}; budget_cut=${cutIds.length}; budget_cut_question_ids=${cutIds.length === 0 ? "none" : cutIds.join(",")}`,
+    `rumination scheduler: due=${scheduling.due_question_ids.length}; selected=${scheduling.selected_question_ids.length}; visited=${scheduling.visited_question_ids.length}; model_calls=${scheduling.model_called_question_ids.length}; budget_cut=${cutIds.length}; budget_cut_question_ids=${cutIds.length === 0 ? "none" : cutIds.join(",")}`,
   ];
 
   if (stampCasConflictIds.length > 0) {
@@ -1409,55 +1398,46 @@ function ruminationSchedulingNotes(
 function markRuminatedWithCasRetry(input: {
   ctx: OfflineContext;
   expected: OpenQuestion;
+  runId: MaintenanceRunId;
   nextUnresolvedRuminationTicks: number;
+  rumination: Omit<OpenQuestionRuminationInput, "open_question_id" | "source_run_id"> | null;
   logger: Pick<Console, "warn">;
   onConflict: (questionId: OpenQuestion["id"]) => void;
-}): OpenQuestion | null {
+}): ReturnType<OfflineContext["openQuestionsRepository"]["stampRuminationForRun"]> | null {
   let expected = input.expected;
-  let nextTicks = input.nextUnresolvedRuminationTicks;
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const current = input.ctx.openQuestionsRepository.get(expected.id);
-
-    if (current === null || current.status !== "open") {
-      return current;
-    }
-
-    if (expectedRecordVersion(current) !== expectedRecordVersion(expected)) {
-      input.onConflict(expected.id);
-      input.logger.warn("Ruminator re-read open question after stamp CAS conflict", {
-        run_id: input.ctx.runId,
-        open_question_id: expected.id,
-        expected_version: expectedRecordVersion(expected),
-        actual_version: expectedRecordVersion(current),
-      });
-
-      expected = current;
-      nextTicks = Math.max(nextTicks, current.unresolved_rumination_ticks + 1);
-    }
-
     try {
-      return input.ctx.openQuestionsRepository.markRuminated(expected.id, nextTicks, {
-        expectedVersion: expectedRecordVersion(expected),
-      });
+      return input.ctx.openQuestionsRepository.stampRuminationForRun(
+        {
+          open_question_id: expected.id,
+          source_run_id: input.runId,
+          next_unresolved_rumination_ticks: input.nextUnresolvedRuminationTicks,
+          rumination: input.rumination,
+        },
+        {
+          expectedVersion: expectedRecordVersion(expected),
+        },
+      );
     } catch (error) {
       if (!(error instanceof IdentityCasMismatchError) || attempt === 1) {
         throw error;
       }
 
       input.onConflict(expected.id);
-      input.logger.warn("Ruminator stamp raced after re-read; retrying", {
+      const latest = input.ctx.openQuestionsRepository.get(expected.id);
+      input.logger.warn("Ruminator re-read open question after stamp CAS conflict", {
         run_id: input.ctx.runId,
         open_question_id: expected.id,
+        expected_version: expectedRecordVersion(expected),
+        actual_version: latest === null ? null : expectedRecordVersion(latest),
       });
-      const latest = input.ctx.openQuestionsRepository.get(expected.id);
 
       if (latest === null || latest.status !== "open") {
-        return latest;
+        return null;
       }
 
       expected = latest;
-      nextTicks = Math.max(nextTicks, latest.unresolved_rumination_ticks + 1);
     }
   }
 
@@ -1506,7 +1486,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       }
 
       if (parsed.previous_duplicate !== undefined) {
-        reinsertOpenQuestion(this.options.openQuestionsRepository, parsed.previous_duplicate);
+        this.options.openQuestionsRepository.restore(parsed.previous_duplicate);
       }
     });
     this.options.registry.register(this.name, "add_growth_marker", async ({ reversal }) => {
@@ -1540,7 +1520,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
     const mergeParticipantIds = new Set<OpenQuestion["id"]>();
     const staleDismissedIds = new Set<OpenQuestion["id"]>();
     const attemptedQuestionIds = new Set<OpenQuestion["id"]>();
-    const visitedQuestionIds = new Set<OpenQuestion["id"]>();
+    const modelCalledQuestionIds = new Set<OpenQuestion["id"]>();
     const tensionScaffoldingDrops: RuminatorPlan["tension_scaffolding_drops"] = [];
     let selectedQuestions: OpenQuestion[] = [];
     let duplicateMergesInstalled = false;
@@ -1567,16 +1547,19 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       errors.push(offlineProcessError(this.name, error));
     }
 
-    const installDuplicateMerges = (judgments: readonly RuminatorDuplicateJudgment[]) => {
+    const finalizeDuplicateMerges = (judgments: readonly RuminatorDuplicateJudgment[] | null) => {
       if (duplicateMergesInstalled) {
         return;
       }
 
-      const duplicateMerges = planDuplicateMerges(
-        duplicateCandidatePairs,
-        judgments,
-        ctx.config.offline.ruminator.duplicateSimilarityThreshold,
-      );
+      const duplicateMerges =
+        judgments === null
+          ? []
+          : planDuplicateMerges(
+              duplicateCandidatePairs,
+              judgments,
+              ctx.config.offline.ruminator.duplicateSimilarityThreshold,
+            );
       items.push(...duplicateMerges);
 
       for (const item of duplicateMerges) {
@@ -1598,11 +1581,18 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
         const llmClient = wrapClient(ctx.llm.background);
 
         try {
-          installDuplicateMerges(
+          finalizeDuplicateMerges(
             await judgeDuplicateCandidatePairs(ctx, llmClient, duplicateCandidatePairs),
           );
         } catch (error) {
-          installDuplicateMerges([]);
+          finalizeDuplicateMerges(null);
+          (this.options.logger ?? console).warn(
+            "Ruminator duplicate judgment failed open without backstop merges",
+            {
+              run_id: ctx.runId,
+              error,
+            },
+          );
 
           if (error instanceof BudgetExceededError) {
             throw error;
@@ -1660,7 +1650,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
                 });
               },
               () => {
-                visitedQuestionIds.add(question.id);
+                modelCalledQuestionIds.add(question.id);
               },
             );
 
@@ -1715,13 +1705,13 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       errors.push(offlineProcessError(this.name, error));
     }
 
-    installDuplicateMerges([]);
+    finalizeDuplicateMerges(null);
 
     const actionQuestionIds = new Set(
       items.flatMap((item) => ("question_id" in item ? [item.question_id] : [])),
     );
 
-    for (const questionId of visitedQuestionIds) {
+    for (const questionId of attemptedQuestionIds) {
       if (actionQuestionIds.has(questionId)) {
         continue;
       }
@@ -1756,10 +1746,12 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       tokens_used: tokensUsed,
       budget_exhausted: budgetExhausted,
       planned_at: plannedAt,
+      rumination_run_id: ctx.runId,
       scheduling: {
         due_question_ids: dueQuestions.map(({ question }) => question.id),
         selected_question_ids: selectedQuestions.map((question) => question.id),
-        visited_question_ids: [...visitedQuestionIds],
+        visited_question_ids: [...attemptedQuestionIds],
+        model_called_question_ids: [...modelCalledQuestionIds],
         budget_cut_question_ids: budgetCutQuestionIds,
       },
       tension_scaffolding_drops: tensionScaffoldingDrops,
@@ -1785,6 +1777,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
 
   async apply(ctx: OfflineContext, rawPlan: RuminatorPlan): Promise<OfflineResult> {
     const plan = ruminatorPlanSchema.parse(rawPlan);
+    const stampRunId = plan.rumination_run_id ?? ctx.runId;
     const changes: OfflineChange[] = [];
     const dropQuestionIds = new Set(
       plan.tension_scaffolding_drops.map((drop) => drop.open_question_id),
@@ -1798,40 +1791,40 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
 
     for (const item of plan.items) {
       if (item.action === "mark_unresolved") {
-        const current = ctx.openQuestionsRepository.get(item.question_id);
-        const shouldRecordRumination =
-          current !== null &&
-          current.status === "open" &&
-          current.unresolved_rumination_ticks < item.next_unresolved_rumination_ticks;
-        markRuminatedWithCasRetry({
+        const connectedOpenQuestionIds =
+          item.rumination_note === null
+            ? []
+            : validateConnectedOpenQuestionIds(
+                ctx,
+                item.question_id,
+                item.connected_open_question_ids,
+              );
+        const stamp = markRuminatedWithCasRetry({
           ctx,
           expected: item.previous,
+          runId: stampRunId,
           nextUnresolvedRuminationTicks: item.next_unresolved_rumination_ticks,
+          rumination:
+            item.rumination_note === null
+              ? null
+              : {
+                  note: item.rumination_note,
+                  tensions: item.tensions,
+                  connected_open_question_ids: connectedOpenQuestionIds,
+                  evidence_episode_ids: item.evidence_episode_ids,
+                  evidence_stream_entry_ids: item.evidence_stream_entry_ids,
+                  source_process: this.name,
+                  source_turn_id: null,
+                  provenance: processProvenance,
+                },
           logger: this.options.logger ?? console,
           onConflict: (questionId) => {
             stampCasConflictIds.push(questionId);
           },
         });
-        if (shouldRecordRumination && item.rumination_note !== null) {
-          const connectedOpenQuestionIds = validateConnectedOpenQuestionIds(
-            ctx,
-            item.question_id,
-            item.connected_open_question_ids,
-          );
-          const rumination = ctx.openQuestionsRepository.recordRumination({
-            open_question_id: item.question_id,
-            note: item.rumination_note,
-            tensions: item.tensions,
-            connected_open_question_ids: connectedOpenQuestionIds,
-            evidence_episode_ids: item.evidence_episode_ids,
-            evidence_stream_entry_ids: item.evidence_stream_entry_ids,
-            source_process: this.name,
-            source_run_id: ctx.runId,
-            source_turn_id: null,
-            provenance: processProvenance,
-          });
+        if (stamp?.rumination !== null && stamp?.rumination !== undefined) {
           if (dropQuestionIds.has(item.question_id)) {
-            droppedFromRuminationIds.push(rumination.id);
+            droppedFromRuminationIds.push(stamp.rumination.id);
           }
         }
         continue;
@@ -1996,68 +1989,60 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
         }
 
         if (duplicate !== null && duplicate.status === "open") {
-          // Remove the duplicate BEFORE folding its evidence into the primary.
-          // The fold recomputes the primary's dedupe_key from the merged id set;
-          // if the duplicate still existed, that recomputed key could collide
-          // with the duplicate's own key (a UNIQUE violation on
-          // open_questions.dedupe_key that previously aborted the whole run).
-          // Deleting first frees the key. If the subsequent fold fails anyway
-          // (e.g. the merged key collides with a third question), we restore the
-          // duplicate so the merge stays all-or-nothing.
-          await ctx.openQuestionsRepository.delete(duplicate.id, {
-            expectedVersion: expectedRecordVersion(duplicate),
-          });
+          const mergeResult = ctx.identityService.mergeOpenQuestionDuplicate(
+            primary.id,
+            duplicate.id,
+            {
+              urgency: Math.max(primary.urgency, duplicate.urgency),
+              goal_id: primary.goal_id ?? duplicate.goal_id,
+              related_episode_ids: mergeQuestionIds(
+                primary.related_episode_ids,
+                primary.resolution_evidence_episode_ids,
+                duplicate.related_episode_ids,
+                duplicate.resolution_evidence_episode_ids,
+                openQuestionProvenanceEpisodeIds(duplicate),
+              ),
+              related_semantic_node_ids: mergeSemanticNodeIds(
+                primary.related_semantic_node_ids,
+                duplicate.related_semantic_node_ids,
+              ),
+              resolution_evidence_episode_ids: mergeQuestionIds(
+                primary.resolution_evidence_episode_ids,
+                duplicate.resolution_evidence_episode_ids,
+              ),
+              resolution_evidence_stream_entry_ids: mergeQuestionStreamIds(
+                primary.resolution_evidence_stream_entry_ids,
+                duplicate.resolution_evidence_stream_entry_ids,
+                openQuestionProvenanceStreamEntryIds(duplicate),
+              ),
+              disclosure_label: combineMemoryDisclosureLabels([
+                openQuestionMemoryDisclosureLabel(primary),
+                openQuestionMemoryDisclosureLabel(duplicate),
+              ]),
+            },
+            `Merged into open question ${primary.id}.`,
+            processProvenance,
+            {
+              throughReview: true,
+              reason: "open_question_duplicate_merge",
+              preserveRecordProvenance: true,
+            },
+          );
 
-          try {
-            ctx.identityService.updateOpenQuestion(
-              primary.id,
-              {
-                urgency: Math.max(primary.urgency, duplicate.urgency),
-                goal_id: primary.goal_id ?? duplicate.goal_id,
-                related_episode_ids: mergeQuestionIds(
-                  primary.related_episode_ids,
-                  primary.resolution_evidence_episode_ids,
-                  duplicate.related_episode_ids,
-                  duplicate.resolution_evidence_episode_ids,
-                  openQuestionProvenanceEpisodeIds(duplicate),
-                ),
-                related_semantic_node_ids: mergeSemanticNodeIds(
-                  primary.related_semantic_node_ids,
-                  duplicate.related_semantic_node_ids,
-                ),
-                resolution_evidence_episode_ids: mergeQuestionIds(
-                  primary.resolution_evidence_episode_ids,
-                  duplicate.resolution_evidence_episode_ids,
-                ),
-                resolution_evidence_stream_entry_ids: mergeQuestionStreamIds(
-                  primary.resolution_evidence_stream_entry_ids,
-                  duplicate.resolution_evidence_stream_entry_ids,
-                  openQuestionProvenanceStreamEntryIds(duplicate),
-                ),
-                disclosure_label: combineMemoryDisclosureLabels([
-                  openQuestionMemoryDisclosureLabel(primary),
-                  openQuestionMemoryDisclosureLabel(duplicate),
-                ]),
-              },
-              processProvenance,
-              {
-                throughReview: true,
-                reason: "open_question_duplicate_merge",
-                preserveRecordProvenance: true,
-              },
-            );
-          } catch (error) {
-            reinsertOpenQuestion(ctx.openQuestionsRepository, duplicate);
-            throw error;
+          if (mergeResult.status !== "applied") {
+            throw new StorageError("Open question duplicate merge unexpectedly required review", {
+              code: "RUMINATOR_PLAN_INVALID",
+            });
           }
 
           if (ctx.tracer?.enabled === true) {
             ctx.tracer.emit("open_question_resolution.transitioned", {
               turnId: ctx.runId,
               kept_oq_id: primary.id,
-              deleted_oq_id: duplicate.id,
+              abandoned_oq_id: duplicate.id,
               similarity_score: item.similarity,
               evidence_folded_count: countOpenQuestionEvidenceHandles(duplicate),
+              reparented_references: mergeResult.record.reparented,
             });
           }
         }
@@ -2114,7 +2099,9 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
           ...current,
           record_version: markExpectedVersion,
         },
+        runId: stampRunId,
         nextUnresolvedRuminationTicks: item.next_unresolved_rumination_ticks,
+        rumination: null,
         logger: this.options.logger ?? console,
         onConflict: (questionId) => {
           stampCasConflictIds.push(questionId);

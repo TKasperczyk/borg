@@ -8,13 +8,17 @@ import { FixedClock, ManualClock } from "../../util/clock.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import {
   createActionId,
+  createEntityId,
+  createMaintenanceRunId,
   DEFAULT_SESSION_ID,
   createEpisodeId,
   createOpenQuestionId,
   createSemanticNodeId,
+  createSharedStateEntryId,
   createStreamEntryId,
 } from "../../util/ids.js";
 import { SELF_RECALL_SCOPE, type RetrievedEpisode } from "../../retrieval/index.js";
+import { makeActionRecord } from "../../test-support/factories/memory.js";
 
 import {
   createEpisodeFixture,
@@ -121,11 +125,14 @@ function createDuplicateJudgmentResponse(
     question_id: string;
     duplicate_of_open_question_id: string;
   }>,
+  usage: { input_tokens: number; output_tokens: number } = {
+    input_tokens: 50,
+    output_tokens: 40,
+  },
 ) {
   return {
     text: "",
-    input_tokens: 50,
-    output_tokens: 40,
+    ...usage,
     stop_reason: "tool_use" as const,
     tool_calls: [
       {
@@ -449,6 +456,7 @@ describe("RuminatorProcess", () => {
   it("persists still-open deliberations and renders recent rumination history", async () => {
     const clock = new FixedClock(3_000_000);
     const questionText = "What still explains the Atlas rollout tension?";
+    const connectedQuestionText = "Is rollout ownership still unresolved?";
     const tracer = new CaptureTracer();
     const invalidConnectedOpenQuestionId = createOpenQuestionId();
     const llm = new FakeLLMClient();
@@ -456,7 +464,12 @@ describe("RuminatorProcess", () => {
       llmClient: llm,
       clock,
       tracer,
-      embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [questionText, [1, 0, 0, 0]],
+          [connectedQuestionText, [0, 1, 0, 0]],
+        ]),
+      ),
     });
     const process = new RuminatorProcess({
       openQuestionsRepository: harness.openQuestionsRepository,
@@ -486,13 +499,15 @@ describe("RuminatorProcess", () => {
         provenance: { kind: "manual" },
       });
       const connected = harness.openQuestionsRepository.add({
-        question: "Is rollout ownership still unresolved?",
+        question: connectedQuestionText,
         urgency: 0.5,
         source: "reflection",
         created_at: 1_100_000,
         last_touched: 2_500_000,
         provenance: { kind: "manual" },
       });
+      await harness.openQuestionsRepository.waitForPendingEmbeddings();
+      llm.pushResponse(createDuplicateJudgmentResponse([]));
       llm.pushResponse(
         createStillOpenRuminatorResponse({
           reasoning:
@@ -514,9 +529,9 @@ describe("RuminatorProcess", () => {
       });
 
       const plan = await process.plan(harness.createContext(), {});
-      const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+      const prompt = String(llm.requests[1]?.messages[0]?.content ?? "");
 
-      expect(llm.requests[0]?.system).toBe(RUMINATOR_SYSTEM_PROMPT);
+      expect(llm.requests[1]?.system).toBe(RUMINATOR_SYSTEM_PROMPT);
       expect(prompt).toContain("Connected open-question candidates:");
       expect(prompt).toContain(connected.id);
       expect(prompt).toContain("Is rollout ownership still unresolved?");
@@ -557,7 +572,7 @@ describe("RuminatorProcess", () => {
       expect(ruminations[0]).toMatchObject({
         connected_open_question_ids: [connected.id],
         source_process: "ruminator",
-        source_run_id: applyContext.runId,
+        source_run_id: plan.rumination_run_id,
         source_turn_id: null,
         provenance: { kind: "offline", process: "ruminator" },
       });
@@ -1349,6 +1364,7 @@ describe("RuminatorProcess", () => {
     const lowText = "Which long-idle low-urgency uncertainty remains open?";
     const highText = "Which recently-idle high-urgency uncertainty remains open?";
     const touchedText = "Which newly touched uncertainty needs another look?";
+    const neverRuminatedTouchedText = "Which never-ruminated question received new evidence?";
     const futureText = "Which new uncertainty is not due yet?";
     const harness = await createOfflineTestHarnessBase({
       clock,
@@ -1357,6 +1373,7 @@ describe("RuminatorProcess", () => {
           [lowText, [1, 0, 0, 0]],
           [highText, [0, 1, 0, 0]],
           [touchedText, [0, 0, 1, 0]],
+          [neverRuminatedTouchedText, [0.5, 0.5, 0.5, 0.5]],
           [futureText, [0, 0, 0, 1]],
         ]),
       ),
@@ -1406,20 +1423,40 @@ describe("RuminatorProcess", () => {
       harness.openQuestionsRepository.markRuminated(touched.id, 1);
       clock.advance(1);
       harness.openQuestionsRepository.touch(touched.id);
+      const neverRuminatedTouched = harness.openQuestionsRepository.add({
+        question: neverRuminatedTouchedText,
+        urgency: 0.4,
+        source: "reflection",
+        created_at: clock.now() - 1,
+        last_touched: clock.now(),
+        provenance: { kind: "manual" },
+      });
       await harness.openQuestionsRepository.waitForPendingEmbeddings();
 
       const firstPlan = await process.plan(harness.createContext(), {});
 
-      expect(firstPlan.scheduling.due_question_ids).toEqual([low.id, high.id, touched.id]);
+      expect(firstPlan.scheduling.due_question_ids).toEqual([
+        low.id,
+        high.id,
+        touched.id,
+        neverRuminatedTouched.id,
+      ]);
       expect(firstPlan.scheduling.selected_question_ids).toEqual([low.id, high.id]);
-      expect(firstPlan.scheduling.visited_question_ids).toEqual([]);
+      expect(firstPlan.scheduling.visited_question_ids).toEqual([low.id, high.id]);
+      expect(firstPlan.scheduling.model_called_question_ids).toEqual([]);
       expect(firstPlan.scheduling.due_question_ids).not.toContain(future.id);
       await process.apply(harness.createContext(), firstPlan);
 
       const secondPlan = await process.plan(harness.createContext(), {});
 
-      expect(secondPlan.scheduling.due_question_ids).toEqual([touched.id]);
-      expect(secondPlan.scheduling.selected_question_ids).toEqual([touched.id]);
+      expect(secondPlan.scheduling.due_question_ids).toEqual([
+        touched.id,
+        neverRuminatedTouched.id,
+      ]);
+      expect(secondPlan.scheduling.selected_question_ids).toEqual([
+        touched.id,
+        neverRuminatedTouched.id,
+      ]);
     } finally {
       await harness.cleanup();
     }
@@ -1467,7 +1504,6 @@ describe("RuminatorProcess", () => {
           }),
         ]),
       );
-
       await process.apply(harness.createContext(), plan);
 
       expect(harness.openQuestionsRepository.get(staleQuestion.id)?.status).toBe("abandoned");
@@ -1527,17 +1563,19 @@ describe("RuminatorProcess", () => {
       harness.openQuestionsRepository.bumpUrgency(question.id, 0.1, {
         expectedVersion: expectedRecordVersion(question),
       });
+      const ruminationRunId = createMaintenanceRunId();
 
       const savedPlan = ruminatorPlanSchema.parse({
         process: "ruminator",
+        rumination_run_id: ruminationRunId,
         items: [
           {
             action: "mark_unresolved",
             question_id: question.id,
             previous: previousWithoutVersion,
             next_unresolved_rumination_ticks: 1,
-            rumination_note: null,
-            tensions: [],
+            rumination_note: "The stale plan still reached this uncertainty once.",
+            tensions: ["The stored version changed before apply."],
             connected_open_question_ids: [],
             evidence_episode_ids: [],
             evidence_stream_entry_ids: [],
@@ -1549,11 +1587,18 @@ describe("RuminatorProcess", () => {
         tension_scaffolding_drops: [],
       });
       const result = await process.apply(harness.createContext(), savedPlan);
+      await process.apply(harness.createContext(), savedPlan);
 
       expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
         unresolved_rumination_ticks: 1,
         last_ruminated_at: harness.clock.now(),
       });
+      expect(harness.openQuestionsRepository.listRecentRuminations(question.id)).toEqual([
+        expect.objectContaining({
+          note: "The stale plan still reached this uncertainty once.",
+          source_run_id: ruminationRunId,
+        }),
+      ]);
       expect(result.notes).toEqual(
         expect.arrayContaining([expect.stringContaining(`open_question_ids=${question.id}`)]),
       );
@@ -1830,6 +1875,7 @@ describe("RuminatorProcess", () => {
 
   it("merges near-duplicate open questions that share entity scope", async () => {
     const tracer = new CaptureTracer();
+    const llm = new FakeLLMClient({ responses: [createDuplicateJudgmentResponse([])] });
     const sharedNodeId = createSemanticNodeId();
     const firstEpisodeId = createEpisodeId();
     const secondEpisodeId = createEpisodeId();
@@ -1838,6 +1884,7 @@ describe("RuminatorProcess", () => {
     const secondQuestion = "Does the Madrid prep question still belong with trip practice?";
     const harness = await createOfflineTestHarness({
       tracer,
+      llmClient: llm,
       embeddingClient: new TestEmbeddingClient(
         new Map([
           [firstQuestion, [1, 0, 0, 0]],
@@ -1894,10 +1941,14 @@ describe("RuminatorProcess", () => {
           }),
         ]),
       );
+      expect(llm.requests).toHaveLength(1);
 
       await process.apply(harness.createContext(), plan);
 
-      expect(harness.openQuestionsRepository.get(newer.id)).toBeNull();
+      expect(harness.openQuestionsRepository.get(newer.id)).toMatchObject({
+        status: "abandoned",
+        abandoned_reason: `Merged into open question ${older.id}.`,
+      });
       expect(harness.openQuestionsRepository.get(older.id)).toMatchObject({
         status: "open",
         urgency: 0.8,
@@ -1910,7 +1961,7 @@ describe("RuminatorProcess", () => {
         event: "open_question_resolution.transitioned",
         data: expect.objectContaining({
           kept_oq_id: older.id,
-          deleted_oq_id: newer.id,
+          abandoned_oq_id: newer.id,
           similarity_score: 1,
           evidence_folded_count: 3,
         }),
@@ -1925,7 +1976,8 @@ describe("RuminatorProcess", () => {
     // folded id-set. When that recomputed key matched the duplicate's own key,
     // updating the primary while the duplicate still existed raised a UNIQUE
     // violation on open_questions.dedupe_key and aborted the whole ruminator run.
-    // The duplicate must be removed first so the fold can claim the key.
+    // The duplicate must release its active dedupe key before the fold claims it,
+    // while the abandoned row remains as the merge audit trail.
     const harness = await createOfflineTestHarness({});
     const process = new RuminatorProcess({
       openQuestionsRepository: harness.openQuestionsRepository,
@@ -1984,7 +2036,10 @@ describe("RuminatorProcess", () => {
         errors: [],
       });
 
-      expect(harness.openQuestionsRepository.get(duplicate.id)).toBeNull();
+      expect(harness.openQuestionsRepository.get(duplicate.id)).toMatchObject({
+        status: "abandoned",
+        abandoned_reason: `Merged into open question ${primary.id}.`,
+      });
       expect(harness.openQuestionsRepository.get(primary.id)).toMatchObject({
         status: "open",
         urgency: 0.8,
@@ -1995,12 +2050,241 @@ describe("RuminatorProcess", () => {
     }
   });
 
+  it("retains merged rows and reparents every mutable open-question reference", async () => {
+    const harness = await createOfflineTestHarness({});
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const primary = harness.openQuestionsRepository.add({
+        question: "Which durable merge reference should remain primary?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: { kind: "manual" },
+        created_at: 1_000,
+        last_touched: 1_000,
+      });
+      const duplicate = harness.openQuestionsRepository.add({
+        question: "Which durable merge reference is the duplicate?",
+        urgency: 0.7,
+        source: "reflection",
+        provenance: { kind: "manual" },
+        created_at: 2_000,
+        last_touched: 2_000,
+      });
+      const rumination = harness.openQuestionsRepository.recordRumination({
+        open_question_id: duplicate.id,
+        note: "Durable thought from the duplicate.",
+        connected_open_question_ids: [primary.id],
+        source_process: "test",
+        provenance: { kind: "manual" },
+      });
+      harness.openQuestionsRepository.recordRumination({
+        open_question_id: primary.id,
+        note: "Primary thought connected to the duplicate.",
+        connected_open_question_ids: [duplicate.id],
+        source_process: "test",
+        provenance: { kind: "manual" },
+      });
+      const priorStampRunId = createMaintenanceRunId();
+      harness.openQuestionsRepository.stampRuminationForRun({
+        open_question_id: duplicate.id,
+        source_run_id: priorStampRunId,
+        next_unresolved_rumination_ticks: 1,
+      });
+      const action = makeActionRecord({ open_question_id: duplicate.id });
+      harness.actionRepository.add(action);
+
+      const audienceId = createEntityId();
+      const sharedStateEntryId = createSharedStateEntryId();
+      const sharedStateStreamId = createStreamEntryId();
+      harness.db
+        .prepare(
+          `
+            INSERT INTO shared_state_artifacts (
+              audience_entity_id, record_version, created_at, updated_at,
+              last_compiled_at, last_compiled_stream_entry_id
+            ) VALUES (?, 1, 1, 1, NULL, NULL)
+          `,
+        )
+        .run(audienceId);
+      harness.db
+        .prepare(
+          `
+            INSERT INTO shared_state_entries (
+              id, audience_entity_id, state_key, kind, text, owner_entity_id,
+              provenance_stream_entry_ids, last_updated_stream_entry_ids,
+              created_at, last_updated_at, superseded_by_id, rank, canonicalizes,
+              last_updated_turn_global
+            ) VALUES (?, ?, ?, 'live', ?, NULL, ?, ?, 1, 1, NULL, 0, ?, NULL)
+          `,
+        )
+        .run(
+          sharedStateEntryId,
+          audienceId,
+          "merge.reference",
+          "The open question is tracked here.",
+          JSON.stringify([sharedStateStreamId]),
+          JSON.stringify([sharedStateStreamId]),
+          JSON.stringify({
+            goal_ids: [],
+            commitment_ids: [],
+            action_ids: [],
+            open_question_ids: [primary.id, duplicate.id],
+          }),
+        );
+      const reviewResult = harness.db
+        .prepare(
+          `
+            INSERT INTO review_queue (kind, refs, reason, created_at, resolved_at, resolution)
+            VALUES ('correction', ?, 'Merge reference fixture.', 1, NULL, NULL)
+          `,
+        )
+        .run(
+          JSON.stringify({
+            target_type: "open_question",
+            target_id: duplicate.id,
+            patch: {},
+          }),
+        );
+      harness.recallStateRepository.save({
+        scopeKey: "ruminator-merge-reference",
+        activeHandles: [
+          {
+            handle: { source: "open_question", openQuestionId: duplicate.id },
+            firstSeenTurn: 1,
+            lastSeenTurn: 1,
+            lastRenderedTurn: null,
+            expiresAfterTurn: 3,
+            reinforcementCount: 1,
+          },
+        ],
+        suppressedHandles: { [`open_question:${duplicate.id}`]: 4 },
+        lastRefreshTurn: 1,
+        updatedAt: 1,
+        ttlTurns: 6,
+      });
+      const duplicateWatermark = `autonomy:open-question-dormant:${duplicate.id}:2000`;
+      harness.db
+        .prepare(
+          `
+            INSERT INTO stream_watermarks (
+              process_name, session_id, last_ts, last_entry_id, updated_at, metadata_json
+            ) VALUES (?, ?, 1, ?, 1, ?)
+          `,
+        )
+        .run(
+          duplicateWatermark,
+          DEFAULT_SESSION_ID,
+          createStreamEntryId(),
+          JSON.stringify({ open_question_id: duplicate.id }),
+        );
+
+      const plan = ruminatorPlanSchema.parse({
+        process: "ruminator",
+        items: [
+          {
+            action: "merge_duplicate",
+            primary_question_id: primary.id,
+            duplicate_question_id: duplicate.id,
+            previous_primary: primary,
+            previous_duplicate: duplicate,
+            similarity: 0.8,
+          },
+        ],
+        errors: [],
+        tokens_used: 0,
+      });
+
+      await process.apply(harness.createContext(), plan);
+
+      expect(harness.openQuestionsRepository.get(duplicate.id)).toMatchObject({
+        status: "abandoned",
+        abandoned_reason: `Merged into open question ${primary.id}.`,
+      });
+      expect(harness.openQuestionsRepository.listRecentRuminations(primary.id)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: rumination.id, open_question_id: primary.id }),
+        ]),
+      );
+      expect(harness.openQuestionsRepository.listRecentRuminations(duplicate.id)).toEqual([]);
+      expect(harness.actionRepository.get(action.id)?.open_question_id).toBe(primary.id);
+
+      const sharedStateRow = harness.db
+        .prepare("SELECT canonicalizes FROM shared_state_entries WHERE id = ?")
+        .get(sharedStateEntryId) as { canonicalizes: string };
+      expect(JSON.parse(sharedStateRow.canonicalizes)).toMatchObject({
+        open_question_ids: [primary.id],
+      });
+      const reviewRow = harness.db
+        .prepare("SELECT refs FROM review_queue WHERE id = ?")
+        .get(reviewResult.lastInsertRowid) as { refs: string };
+      expect(JSON.parse(reviewRow.refs)).toMatchObject({ target_id: primary.id });
+      expect(harness.recallStateRepository.load("ruminator-merge-reference")).toMatchObject({
+        activeHandles: [
+          expect.objectContaining({
+            handle: { source: "open_question", openQuestionId: primary.id },
+          }),
+        ],
+        suppressedHandles: { [`open_question:${primary.id}`]: 4 },
+      });
+      const currentReferences = harness.db
+        .prepare(
+          `
+            SELECT
+              (SELECT COUNT(*) FROM open_question_ruminations
+                WHERE open_question_id = ? OR instr(connected_open_question_ids, ?) > 0) AS ruminations,
+              (SELECT COUNT(*) FROM open_question_rumination_stamps
+                WHERE open_question_id = ?) AS stamps,
+              (SELECT COUNT(*) FROM action_records WHERE open_question_id = ?) AS actions,
+              (SELECT COUNT(*) FROM shared_state_entries WHERE instr(canonicalizes, ?) > 0) AS shared_state,
+              (SELECT COUNT(*) FROM review_queue WHERE instr(refs, ?) > 0) AS reviews,
+              (SELECT COUNT(*) FROM recall_state WHERE instr(state_json, ?) > 0) AS recall,
+              (SELECT COUNT(*) FROM stream_watermarks
+                WHERE instr(process_name, ?) > 0 OR instr(COALESCE(metadata_json, ''), ?) > 0) AS watermarks
+          `,
+        )
+        .get(
+          duplicate.id,
+          duplicate.id,
+          duplicate.id,
+          duplicate.id,
+          duplicate.id,
+          duplicate.id,
+          duplicate.id,
+          duplicate.id,
+          duplicate.id,
+        );
+      expect(currentReferences).toEqual({
+        ruminations: 0,
+        stamps: 0,
+        actions: 0,
+        shared_state: 0,
+        reviews: 0,
+        recall: 0,
+        watermarks: 0,
+      });
+      expect(
+        harness.db
+          .prepare("SELECT process_name FROM stream_watermarks WHERE instr(process_name, ?) > 0")
+          .get(primary.id),
+      ).toBeDefined();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("merges near-duplicate open questions when both lack semantic-node handles", async () => {
     const tracer = new CaptureTracer();
+    const llm = new FakeLLMClient({ responses: [createDuplicateJudgmentResponse([])] });
     const firstQuestion = "Should the trip prep checklist stay open?";
     const secondQuestion = "Is the trip prep checklist still relevant?";
     const harness = await createOfflineTestHarness({
       tracer,
+      llmClient: llm,
       embeddingClient: new TestEmbeddingClient(
         new Map([
           [firstQuestion, [1, 0, 0, 0]],
@@ -2069,8 +2353,8 @@ describe("RuminatorProcess", () => {
       embeddingClient: new TestEmbeddingClient(
         new Map([
           [scopedQuestion, [1, 0, 0, 0]],
-          [unscopedQuestion, [0.8, 0.6, 0, 0]],
-          [thirdQuestion, [0.8, -0.6, 0, 0]],
+          [unscopedQuestion, [0.1, 0.994987, 0, 0]],
+          [thirdQuestion, [-0.1, 0.994987, 0, 0]],
         ]),
       ),
       configOverrides: {
@@ -2134,7 +2418,7 @@ describe("RuminatorProcess", () => {
         expect.objectContaining({
           primary_question_id: scoped.id,
           duplicate_question_id: unscoped.id,
-          similarity: expect.closeTo(0.8),
+          similarity: expect.closeTo(0.1),
         }),
       ]);
       expect(llm.requests).toHaveLength(1);
@@ -2153,13 +2437,84 @@ describe("RuminatorProcess", () => {
     }
   });
 
+  it("installs no cosine backstop merge when duplicate judgment output is malformed", async () => {
+    const firstText = "Which malformed duplicate verdict should fail open?";
+    const secondText = "Does this malformed duplicate verdict fail open safely?";
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_malformed_duplicates",
+              name: RUMINATOR_DUPLICATE_TOOL.name,
+              input: { duplicate_judgments: "not-an-array" },
+            },
+          ],
+        },
+      ],
+    });
+    const warn = vi.fn();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [firstText, [1, 0, 0, 0]],
+          [secondText, [1, 0, 0, 0]],
+        ]),
+      ),
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+      logger: { warn },
+    });
+
+    try {
+      harness.openQuestionsRepository.add({
+        question: firstText,
+        urgency: 0.6,
+        source: "reflection",
+        provenance: { kind: "manual" },
+        created_at: 1_000,
+        last_touched: 1_000,
+      });
+      harness.openQuestionsRepository.add({
+        question: secondText,
+        urgency: 0.5,
+        source: "reflection",
+        provenance: { kind: "manual" },
+        created_at: 2_000,
+        last_touched: 2_000,
+      });
+      await harness.openQuestionsRepository.waitForPendingEmbeddings();
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      expect(plan.items.some((item) => item.action === "merge_duplicate")).toBe(false);
+      expect(llm.requests).toHaveLength(1);
+      expect(warn).toHaveBeenCalledWith(
+        "Ruminator duplicate judgment failed open without backstop merges",
+        expect.objectContaining({ error: expect.any(Error) }),
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("does not stale-dismiss a merge primary in the same plan", async () => {
     const tracer = new CaptureTracer();
+    const llm = new FakeLLMClient({ responses: [createDuplicateJudgmentResponse([])] });
     const sharedNodeId = createSemanticNodeId();
     const primaryQuestion = "Should the long-running Madrid practice question stay open?";
     const duplicateQuestion = "Is the Madrid practice question still on the docket?";
     const harness = await createOfflineTestHarness({
       tracer,
+      llmClient: llm,
       embeddingClient: new TestEmbeddingClient(
         new Map([
           [primaryQuestion, [1, 0, 0, 0]],
@@ -2459,6 +2814,7 @@ describe("RuminatorProcess", () => {
   it("halts on budget exhaustion without making further LLM calls", async () => {
     const llm = new FakeLLMClient({
       responses: [
+        createDuplicateJudgmentResponse([], { input_tokens: 1, output_tokens: 1 }),
         {
           ...createRuminatorResponse({
             resolution_note: "First answer",
@@ -2531,11 +2887,12 @@ describe("RuminatorProcess", () => {
       });
 
       expect(plan.budget_exhausted).toBe(true);
-      expect(llm.requests).toHaveLength(1);
+      expect(llm.requests).toHaveLength(2);
       expect(plan.scheduling).toMatchObject({
         due_question_ids: [firstQuestion.id, secondQuestion.id],
         selected_question_ids: [firstQuestion.id, secondQuestion.id],
         visited_question_ids: [firstQuestion.id],
+        model_called_question_ids: [firstQuestion.id],
         budget_cut_question_ids: [secondQuestion.id],
       });
       const result = await process.apply(harness.createContext(), plan);
@@ -2550,7 +2907,7 @@ describe("RuminatorProcess", () => {
       });
       expect(result.notes).toEqual(
         expect.arrayContaining([
-          expect.stringContaining("due=2; selected=2; visited=1; budget_cut=1"),
+          expect.stringContaining("due=2; selected=2; visited=1; model_calls=1; budget_cut=1"),
           expect.stringContaining(secondQuestion.id),
         ]),
       );

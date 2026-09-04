@@ -402,4 +402,21 @@ export const selfMigrations = [
       }
     },
   },
+  {
+    id: 8,
+    name: "open_question_rumination_run_stamps",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS open_question_rumination_stamps (
+          open_question_id TEXT NOT NULL,
+          source_run_id TEXT NOT NULL,
+          stamped_at INTEGER NOT NULL,
+          PRIMARY KEY (open_question_id, source_run_id),
+          FOREIGN KEY (open_question_id) REFERENCES open_questions(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_open_question_rumination_stamps_run
+          ON open_question_rumination_stamps (source_run_id, open_question_id);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];
