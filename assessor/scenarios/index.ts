@@ -7,12 +7,14 @@ import { moodPersistenceScenario } from "./mood-persistence.js";
 import { multiSessionContinuityScenario } from "./multi-session-continuity.js";
 import { openQuestionCreationScenario } from "./open-question-creation.js";
 import { recallScenario } from "./recall.js";
+import { recallResolutionScenario } from "./recall-resolution.js";
 import { toolUseCorrectnessScenario } from "./tool-use-correctness.js";
 import { failingMockFixtureScenario } from "./failing-mock-fixture.js";
 import type { Scenario } from "../types.js";
 
 export const SCENARIOS: readonly Scenario[] = [
   recallScenario,
+  recallResolutionScenario,
   commitmentRespectScenario,
   contradictionHandlingScenario,
   goalProgressTrackingScenario,

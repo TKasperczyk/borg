@@ -5,9 +5,10 @@ import { runScenarios } from "../runner.js";
 import { getScenario, SCENARIOS } from "./index.js";
 
 describe("assessor scenarios", () => {
-  it("registers the ten shipped scenarios", () => {
+  it("registers the eleven shipped scenarios", () => {
     expect(SCENARIOS.map((scenario) => scenario.name)).toEqual([
       "recall",
+      "recall-resolution",
       "commitment-respect",
       "contradiction-handling",
       "goal-progress-tracking",
@@ -36,8 +37,8 @@ describe("assessor scenarios", () => {
     });
     const markdown = formatAssessorReport(report);
 
-    expect(report.results).toHaveLength(10);
-    expect(markdown).toContain("Scenarios: 10");
+    expect(report.results).toHaveLength(11);
+    expect(markdown).toContain("Scenarios: 11");
     expect(markdown.length).toBeGreaterThan(1_000);
   });
 });

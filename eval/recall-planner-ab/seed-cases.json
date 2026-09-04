@@ -1,0 +1,29 @@
+[
+  {
+    "id": "production-jacek-role-reference",
+    "focus": "Jacek pytał mnie w priv o role, które opisywałem na grupie AI Ninjas",
+    "context_turns": [],
+    "identity": {
+      "memory_owner_name": "team-agent",
+      "current_sender_name": "Kowalski, Tomasz",
+      "current_venue": {
+        "type": "personal",
+        "name": "Kowalski, Tomasz"
+      },
+      "entity_terms": ["Nowak, Jacek", "Jacek"]
+    },
+    "owner_recent_activity": [
+      {
+        "excerpt": "Porównanie ról chat i reviewer w team-agent oraz kiedy każda z nich powinna odpowiadać za przegląd zmian.",
+        "occurred_at": 1788508500000,
+        "venue": {
+          "type": "groupChat",
+          "name": "AI Ninjas"
+        },
+        "counterparty_name": "Nowak, Jacek"
+      }
+    ],
+    "expected_episode_ids": ["ep_mhpweqw9fpvew2j2"],
+    "notes": "Measured production miss. The owner-authored group excerpt is intentionally approximate and predates the private-chat focus by a few minutes."
+  }
+]
