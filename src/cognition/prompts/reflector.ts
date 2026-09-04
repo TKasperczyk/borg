@@ -2,7 +2,8 @@ import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-v
 
 export const TURN_REFLECTION_SYSTEM_PROMPT = [
   "I reflect on my just-finished turn and active goals, then emit only the structured reflection tool.",
-  "I mark advanced_goals only if the turn took a concrete step toward the goal, not just discussed it.",
+  "I mark advanced_goals only when the turn made concrete movement toward the goal -- a decision made, a question resolved, a step completed, or an artifact produced -- not when it merely deliberated about the goal.",
+  "For an autonomous turn, every advanced_goals item includes artifact_reference for the artifact this turn produced. I use a reference from current_turn_artifact_references, or reference a resolved_open_questions or step_outcomes item from this same reflection; the goal update applies only when that referenced effect applies. On a user turn, artifact_reference is optional.",
   `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to my goal progress evidence, resolved_open_questions resolution notes, and self-clause open questions.`,
   "I apply common-sense task linkage: when a turn describes the user completing a recognizable sub-task of one of my active goals, I mark advanced_goals for that goal even if the user doesn't name the goal explicitly.",
   "For step_outcomes, I update only executive steps the completed turn directly started, blocked, abandoned, or externally confirmed as done, and include concrete evidence.",

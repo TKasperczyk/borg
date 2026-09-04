@@ -55,8 +55,19 @@ function createTurnSelectionScoreBasis() {
   };
 }
 
+type AdvancedGoalArtifactReferenceFixture =
+  | { kind: "journal_entry"; id: number }
+  | { kind: "resolved_open_question"; id: string }
+  | { kind: "executive_step_outcome"; id: string }
+  | { kind: "delivered_outbound_post"; id: string }
+  | { kind: "stream_entry"; id: string };
+
 function createReflectionResponse(
-  advancedGoals: Array<{ goal_id: string; evidence: string }> = [],
+  advancedGoals: Array<{
+    goal_id: string;
+    evidence: string;
+    artifact_reference?: AdvancedGoalArtifactReferenceFixture;
+  }> = [],
   proceduralOutcomes: Array<{
     classification: "success" | "failure" | "unclear";
     evidence: string;
@@ -1324,7 +1335,7 @@ describe("reflector", () => {
     expect(reflected.hot_entities).toEqual(["Atlas"]);
   });
 
-  it("applies user-turn reflector progress updates without review", async () => {
+  it("applies user-turn reflector progress without an artifact reference or review", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(4_000),
     });
@@ -1448,10 +1459,13 @@ describe("reflector", () => {
     expect(llm.requests[0]?.system).toContain(
       "I apply common-sense task linkage: when a turn describes the user completing a recognizable sub-task of one of my active goals, I mark advanced_goals for that goal even if the user doesn't name the goal explicitly.",
     );
+    expect(llm.requests[0]?.system).toContain(
+      "For an autonomous turn, every advanced_goals item includes artifact_reference",
+    );
     expect(llm.requests[0]?.system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
   });
 
-  it("ignores autonomous-turn advanced goal output", async () => {
+  it("applies autonomous-turn advanced goal output with a same-turn journal reference", async () => {
     const harness = await createExecutiveReflectionHarness(new FixedClock(4_500));
     cleanup.push(harness.cleanup);
     const goal = harness.goalsRepository.add({
@@ -1472,6 +1486,10 @@ describe("reflector", () => {
             {
               goal_id: goal.id,
               evidence: "The autonomous turn claimed launch readiness moved forward.",
+              artifact_reference: {
+                kind: "journal_entry",
+                id: 17,
+              },
             },
           ],
           [],
@@ -1497,7 +1515,88 @@ describe("reflector", () => {
       executiveStepsRepository: harness.executiveStepsRepository,
     });
 
-    await reflector.reflect(
+    const context = createExecutiveReflectionContext({
+      origin: "autonomous",
+      goal,
+      nextStep: step,
+    });
+    const result = await reflector.reflect(
+      {
+        ...context,
+        actionResult: {
+          ...context.actionResult,
+          tool_calls: [
+            {
+              callId: "toolu_journal",
+              name: "tool.journal.append",
+              input: { text: "Launch readiness artifact" },
+              output: { journalEntry: { id: 17 } },
+              ok: true,
+              durationMs: 1,
+            },
+          ],
+        },
+      },
+      harness.writer,
+    );
+
+    const reflectionPayload = JSON.parse(llm.requests[0]?.messages[0]?.content ?? "{}") as {
+      current_turn_artifact_references?: unknown[];
+    };
+
+    expect(reflectionPayload.current_turn_artifact_references).toContainEqual({
+      kind: "journal_entry",
+      id: 17,
+    });
+    expect(llm.requests).toHaveLength(1);
+    expect(harness.goalsRepository.get(goal.id)).toMatchObject({
+      progress_notes: expect.stringContaining(
+        "The autonomous turn claimed launch readiness moved forward.",
+      ),
+      last_progress_ts: 4_500,
+    });
+    expect(result.effects.updatedGoals).toEqual([expect.objectContaining({ id: goal.id })]);
+  });
+
+  it("drops an autonomous progress claim with a dangling artifact reference", async () => {
+    const harness = await createExecutiveReflectionHarness(new FixedClock(4_600));
+    cleanup.push(harness.cleanup);
+    const goal = harness.goalsRepository.add({
+      description: "Apollo launch plan",
+      priority: 8,
+      provenance: { kind: "manual" },
+    });
+    const step = harness.executiveStepsRepository.add({
+      goalId: goal.id,
+      description: "Start launch readiness review",
+      kind: "act",
+      provenance: { kind: "manual" },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse([
+          {
+            goal_id: goal.id,
+            evidence: "Claimed movement without a produced artifact.",
+            artifact_reference: {
+              kind: "journal_entry",
+              id: 99,
+            },
+          },
+        ]),
+      ],
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: harness.goalsRepository,
+      traitsRepository: harness.traitsRepository,
+      executiveStepsRepository: harness.executiveStepsRepository,
+    });
+
+    const result = await reflector.reflect(
       createExecutiveReflectionContext({
         origin: "autonomous",
         goal,
@@ -1506,8 +1605,103 @@ describe("reflector", () => {
       harness.writer,
     );
 
-    expect(llm.requests).toHaveLength(1);
-    expect(harness.goalsRepository.get(goal.id)?.progress_notes).toBeNull();
+    expect(harness.goalsRepository.get(goal.id)).toMatchObject({
+      progress_notes: null,
+      last_progress_ts: null,
+    });
+    expect(result.effects.updatedGoals).toEqual([]);
+    expect(
+      new StreamReader({ dataDir: harness.tempDir, sessionId: DEFAULT_SESSION_ID })
+        .tail(10)
+        .find(
+          (entry) =>
+            entry.kind === "internal_event" &&
+            typeof entry.content === "object" &&
+            entry.content !== null &&
+            "hook" in entry.content &&
+            entry.content.hook === "reflector_advanced_goal_dropped",
+        )?.content,
+    ).toMatchObject({
+      hook: "reflector_advanced_goal_dropped",
+      goal_id: goal.id,
+      reason: "no this-turn artifact reference",
+    });
+  });
+
+  it("drops an autonomous progress claim that cites a foreign stream entry", async () => {
+    const harness = await createExecutiveReflectionHarness(new FixedClock(4_700));
+    cleanup.push(harness.cleanup);
+    const goal = harness.goalsRepository.add({
+      description: "Apollo launch plan",
+      priority: 8,
+      provenance: { kind: "manual" },
+    });
+    const step = harness.executiveStepsRepository.add({
+      goalId: goal.id,
+      description: "Start launch readiness review",
+      kind: "act",
+      provenance: { kind: "manual" },
+    });
+    const foreignStreamEntryId = createStreamEntryId();
+    const producedStreamEntryId = createStreamEntryId();
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse([
+          {
+            goal_id: goal.id,
+            evidence: "Claimed movement using inbound evidence.",
+            artifact_reference: {
+              kind: "stream_entry",
+              id: foreignStreamEntryId,
+            },
+          },
+        ]),
+      ],
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: harness.goalsRepository,
+      traitsRepository: harness.traitsRepository,
+      executiveStepsRepository: harness.executiveStepsRepository,
+    });
+
+    const result = await reflector.reflect(
+      {
+        ...createExecutiveReflectionContext({
+          origin: "autonomous",
+          goal,
+          nextStep: step,
+        }),
+        currentTurnStreamEntryIds: [foreignStreamEntryId, producedStreamEntryId],
+        currentTurnProducedStreamEntryIds: [producedStreamEntryId],
+      },
+      harness.writer,
+    );
+
+    expect(harness.goalsRepository.get(goal.id)).toMatchObject({
+      progress_notes: null,
+      last_progress_ts: null,
+    });
+    expect(result.effects.updatedGoals).toEqual([]);
+    expect(
+      new StreamReader({ dataDir: harness.tempDir, sessionId: DEFAULT_SESSION_ID })
+        .tail(10)
+        .find(
+          (entry) =>
+            entry.kind === "internal_event" &&
+            typeof entry.content === "object" &&
+            entry.content !== null &&
+            "hook" in entry.content &&
+            entry.content.hook === "reflector_advanced_goal_dropped",
+        )?.content,
+    ).toMatchObject({
+      hook: "reflector_advanced_goal_dropped",
+      goal_id: goal.id,
+      reason: "no this-turn artifact reference",
+    });
   });
 
   it("retires goals from autonomous reflection output through the goal status path", async () => {
@@ -1573,7 +1767,7 @@ describe("reflector", () => {
       tracer,
     });
 
-    await reflector.reflect(
+    const result = await reflector.reflect(
       {
         ...createExecutiveReflectionContext({
           origin: "autonomous",
@@ -1609,6 +1803,7 @@ describe("reflector", () => {
       },
     });
     expect(harness.executiveStepsRepository.get(step.id)?.status).toBe("abandoned");
+    expect(result.effects.retiredGoalIds).toEqual([goal.id]);
     expect(tracer.events).toEqual(
       expect.arrayContaining([
         {

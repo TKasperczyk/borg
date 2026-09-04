@@ -109,7 +109,7 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
               embeddingClient: options.embeddingClient,
               threshold: options.config.executive.goalFocusThreshold,
               deadlineLookaheadMs: options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
-              staleMs: options.config.autonomy.executiveFocus.stalenessSec * 1_000,
+              staleMs: options.config.autonomy.triggers.goalFollowupDue.staleMs,
               tracer: options.tracer,
             },
             goalStaleBackoffActionAvailabilityKey,
@@ -128,6 +128,7 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
             watermarkRepository: options.streamWatermarkRepository,
             threshold: options.config.executive.goalFocusThreshold,
             stalenessMs: options.config.autonomy.executiveFocus.stalenessSec * 1_000,
+            progressDebtStaleMs: options.config.autonomy.triggers.goalFollowupDue.staleMs,
             dueLeadMs: options.config.autonomy.executiveFocus.dueLeadSec * 1_000,
             wakeCooldownMs: options.config.autonomy.executiveFocus.wakeCooldownSec * 1_000,
             wakeCooldownBackoffMultiplier:
@@ -211,6 +212,7 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
   return new AutonomyScheduler({
     enabled: options.config.autonomy.enabled,
     intervalMs: options.config.autonomy.intervalMs,
+    prepToolTimeoutMs: options.config.autonomy.prepToolTimeoutMs,
     maxWakesPerWindow: options.config.autonomy.maxWakesPerWindow,
     goalWakeBatchMax: options.config.autonomy.goalWakeBatchMax,
     budgetWindowMs: options.config.autonomy.budgetWindowMs,

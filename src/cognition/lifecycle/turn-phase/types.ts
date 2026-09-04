@@ -70,7 +70,7 @@ import type {
 } from "../../../stream/index.js";
 import type { ToolDispatcher } from "../../../tools/dispatcher.js";
 import type { Clock } from "../../../util/clock.js";
-import type { EntityId, SessionId } from "../../../util/ids.js";
+import type { EntityId, GoalId, SessionId } from "../../../util/ids.js";
 import type { TurnLifecycleTracker } from "../turn-lifecycle-tracker.js";
 import type { AutonomySchedulerDescription } from "../../../autonomy/index.js";
 
@@ -107,6 +107,7 @@ export type TurnPhaseResult = {
   referencedEpisodeIds: string[];
   intents: IntentRecord[];
   toolCalls: ToolLoopCallRecord[];
+  reflectionRetiredGoalIds?: GoalId[];
   agentMessageId?: string;
   outboundDelivery?: OutboundDeliveryReceipt;
   terminalOutcome?: TurnTerminalOutcome;

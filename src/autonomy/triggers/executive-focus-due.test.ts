@@ -78,6 +78,7 @@ describe("executive focus due trigger", () => {
       watermarkRepository: harness.watermarkRepository,
       threshold: 0.45,
       stalenessMs: 86_400_000,
+      progressDebtStaleMs: 1_209_600_000,
       dueLeadMs: 0,
       wakeCooldownMs: 3_600_000,
       wakeCooldownBackoffMultiplier: 2,
@@ -371,7 +372,7 @@ describe("executive focus due trigger", () => {
       score_basis: {
         score_context: "wake_time_trigger_selection",
         deadline_lookahead_ms: 604_800_000,
-        progress_debt_stale_ms: 86_400_000,
+        progress_debt_stale_ms: 1_209_600_000,
       },
     });
     expect(events[0]?.payload).not.toHaveProperty("score_basis");
@@ -497,7 +498,7 @@ describe("executive focus due trigger", () => {
       description: "Write the executive followup tests",
       priority: 10,
       provenance: { kind: "manual" },
-      createdAt: harness.clock.now() - 90_000_000,
+      createdAt: harness.clock.now() - 15 * 24 * 60 * 60 * 1_000,
     });
     const trigger = createTrigger(harness, {
       stalenessMs: 86_400_000,
@@ -509,6 +510,7 @@ describe("executive focus due trigger", () => {
     expect(events[0]?.payload).toMatchObject({
       reason: "goal_stale",
       selected_goal_id: goal.id,
+      selected_goal: { status: "active" },
     });
     expect(events[0]?.stateTs).toBe(goal.created_at);
     expect(events[0]?.payload.selected_score.components.progress_debt).toBe(1);
@@ -609,6 +611,7 @@ describe("executive focus due trigger", () => {
       });
       const trigger = createTrigger(harness, {
         stalenessMs: 1_000,
+        progressDebtStaleMs: 1_000,
         wakeCooldownMs: 1_000,
       });
       const { scheduler } = createScheduler({
@@ -711,6 +714,7 @@ describe("executive focus due trigger", () => {
     });
     const trigger = createTrigger(harness, {
       stalenessMs: 1_000,
+      progressDebtStaleMs: 1_000,
       wakeCooldownMs: 1_000,
       wakeCooldownBackoffMultiplier: 2,
       wakeCooldownMaxMs: 60_000,
@@ -749,6 +753,7 @@ describe("executive focus due trigger", () => {
     });
     const trigger = createTrigger(harness, {
       stalenessMs: 1_000,
+      progressDebtStaleMs: 1_000,
       wakeCooldownMs: 1_000,
       wakeCooldownBackoffMultiplier: 10,
       wakeCooldownMaxMs: 2_500,
@@ -769,7 +774,7 @@ describe("executive focus due trigger", () => {
     expect(await trigger.scan()).toHaveLength(1);
   });
 
-  it("resets stale-goal empty wake backoff on continued train-of-thought emission", async () => {
+  it("keeps stale-goal empty wake backoff on continued train-of-thought emission", async () => {
     const harness = await createHarness(5_000_000);
     const goal = harness.goalsRepository.add({
       description: "Continue private reasoning about a stale goal",
@@ -779,6 +784,7 @@ describe("executive focus due trigger", () => {
     });
     const trigger = createTrigger(harness, {
       stalenessMs: 1_000,
+      progressDebtStaleMs: 1_000,
       wakeCooldownMs: 1_000,
       wakeCooldownBackoffMultiplier: 2,
       wakeCooldownMaxMs: 60_000,
@@ -797,15 +803,13 @@ describe("executive focus due trigger", () => {
 
     harness.clock.advance(2_000);
     expect((await scheduler.tick()).firedEvents).toBe(1);
-    expect(
-      harness.watermarkRepository.get(goalBackoffProcessName(goal.id), DEFAULT_SESSION_ID),
-    ).toBeNull();
+    expect(getEmptyCount(harness, goal.id)).toBe(2);
 
-    harness.clock.advance(1_000);
+    harness.clock.advance(4_000);
     expect(await trigger.scan()).toHaveLength(1);
   });
 
-  it("resets stale-goal empty wake backoff on successful outbound post emission", async () => {
+  it("keeps stale-goal empty wake backoff on successful outbound post emission", async () => {
     const harness = await createHarness(5_000_000);
     const goal = harness.goalsRepository.add({
       description: "Send an authorized outbound followup",
@@ -815,6 +819,7 @@ describe("executive focus due trigger", () => {
     });
     const trigger = createTrigger(harness, {
       stalenessMs: 1_000,
+      progressDebtStaleMs: 1_000,
       wakeCooldownMs: 1_000,
       wakeCooldownBackoffMultiplier: 2,
       wakeCooldownMaxMs: 60_000,
@@ -833,11 +838,9 @@ describe("executive focus due trigger", () => {
 
     harness.clock.advance(2_000);
     expect((await scheduler.tick()).firedEvents).toBe(1);
-    expect(
-      harness.watermarkRepository.get(goalBackoffProcessName(goal.id), DEFAULT_SESSION_ID),
-    ).toBeNull();
+    expect(getEmptyCount(harness, goal.id)).toBe(2);
 
-    harness.clock.advance(1_000);
+    harness.clock.advance(4_000);
     expect(await trigger.scan()).toHaveLength(1);
   });
 
@@ -851,6 +854,7 @@ describe("executive focus due trigger", () => {
     });
     const trigger = createTrigger(harness, {
       stalenessMs: 1_000,
+      progressDebtStaleMs: 1_000,
       wakeCooldownMs: 1_000,
       wakeCooldownBackoffMultiplier: 2,
       wakeCooldownMaxMs: 60_000,
@@ -882,6 +886,7 @@ describe("executive focus due trigger", () => {
     });
     const trigger = createTrigger(harness, {
       stalenessMs: 1_000,
+      progressDebtStaleMs: 1_000,
       wakeCooldownMs: 1_000,
       wakeCooldownBackoffMultiplier: 2,
       wakeCooldownMaxMs: 60_000,
@@ -930,6 +935,7 @@ describe("executive focus due trigger", () => {
     });
     const trigger = createTrigger(harness, {
       stalenessMs: 1_000,
+      progressDebtStaleMs: 1_000,
       wakeCooldownMs: 1_000,
       wakeCooldownBackoffMultiplier: 4,
       wakeCooldownMaxMs: 60_000,
@@ -960,6 +966,7 @@ describe("executive focus due trigger", () => {
     });
     const trigger = createTrigger(harness, {
       stalenessMs: 1_000,
+      progressDebtStaleMs: 1_000,
       wakeCooldownMs: 1_000,
       wakeCooldownBackoffMultiplier: 2,
       wakeCooldownMaxMs: 60_000,
@@ -989,6 +996,7 @@ describe("executive focus due trigger", () => {
     });
     const trigger = createTrigger(harness, {
       stalenessMs: 1_000,
+      progressDebtStaleMs: 1_000,
       wakeCooldownMs: 1_000,
       wakeCooldownBackoffMultiplier: 2,
       wakeCooldownMaxMs: 60_000,
@@ -1019,6 +1027,7 @@ describe("executive focus due trigger", () => {
     const actionAvailabilityKey = "outbound_action_surface_v1:test";
     const trigger = createTrigger(harness, {
       stalenessMs: 1_000,
+      progressDebtStaleMs: 1_000,
       wakeCooldownMs: 1_000,
       wakeCooldownBackoffMultiplier: 2,
       wakeCooldownMaxMs: 60_000,
@@ -1061,6 +1070,7 @@ describe("executive focus due trigger", () => {
     });
     const trigger = createTrigger(harness, {
       stalenessMs: 1_000,
+      progressDebtStaleMs: 1_000,
       wakeCooldownMs: 1_000,
       wakeCooldownBackoffMultiplier: 4,
       wakeCooldownMaxMs: 60_000,

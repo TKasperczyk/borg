@@ -149,4 +149,26 @@ export const autonomyMigrations = [
       `);
     },
   },
+  {
+    id: 6,
+    name: "autonomy_wakes_selected_goal",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE autonomy_wakes
+        ADD COLUMN selected_goal_id TEXT;
+      `);
+    },
+  },
+  {
+    id: 7,
+    name: "autonomy_wakes_headway_bases",
+    up: (db) => {
+      // Nullable with no backfill: older rows have only their legacy display
+      // detail, which cannot be losslessly reconstructed into structural bases.
+      db.exec(`
+        ALTER TABLE autonomy_wakes
+        ADD COLUMN headway_bases_json TEXT;
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

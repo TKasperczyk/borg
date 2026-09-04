@@ -694,11 +694,10 @@ export class IdentityService {
       };
     }
 
-    if (
-      options.origin !== "user" ||
-      !isOnlineReflectorProvenance(provenance) ||
-      !isProgressOnlyGoalPatch(parsedPatch)
-    ) {
+    // User and autonomous turn reflectors share this narrow structural lane:
+    // online-reflector provenance plus a progress-only patch. Any broader patch
+    // still follows updateGoal's normal guard, audit, and review behavior.
+    if (!isOnlineReflectorProvenance(provenance) || !isProgressOnlyGoalPatch(parsedPatch)) {
       return this.updateGoal(goalId, parsedPatch, provenance, options);
     }
 

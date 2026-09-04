@@ -82,6 +82,7 @@ type ActionArchiveScanResult = {
 type PersistedMessageEmission = {
   entry: StreamEntry;
   outboundDelivery?: OutboundDeliveryReceipt;
+  journalEntryId?: number;
 };
 
 function currentTurnSharedStateEntries(input: {
@@ -238,7 +239,10 @@ async function persistContinueThoughtEmission(input: {
     audience: input.turnInput.audience,
   });
 
-  return { entry };
+  return {
+    entry,
+    journalEntryId: stored.id,
+  };
 }
 
 function advanceChatResponseWatermark(input: {
@@ -831,7 +835,7 @@ export async function runPostGenerationPhase(input: {
     });
   }
 
-  await traceTurnPhase({
+  const reflection = await traceTurnPhase({
     tracer: input.options.tracer,
     clock: input.options.clock,
     turnId: input.turnId,
@@ -867,6 +871,8 @@ export async function runPostGenerationPhase(input: {
         sourceUserEntryIds: input.sourceUserEntryIds,
         persistedPerceptionEntry: input.persistedPerceptionEntry,
         persistedAgentEntry,
+        currentTurnJournalEntryIds:
+          persistedEmission.journalEntryId === undefined ? [] : [persistedEmission.journalEntryId],
         isUserTurn: input.isUserTurn,
         frameAnomaly: input.currentTurnFrameAnomaly,
         streamWriter: input.streamWriter,
@@ -941,6 +947,7 @@ export async function runPostGenerationPhase(input: {
     referencedEpisodeIds: [...(deliberation.referencedEpisodeIds ?? [])],
     intents: actionResult.intents,
     toolCalls: [...actionResult.tool_calls],
+    reflectionRetiredGoalIds: [...(reflection?.effects.retiredGoalIds ?? [])],
     ...(actionEmission.kind === "message" ? { agentMessageId: persistedAgentEntry.id } : {}),
     ...(persistedEmission.outboundDelivery === undefined
       ? {}

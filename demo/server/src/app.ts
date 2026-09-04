@@ -1770,9 +1770,7 @@ function persistedEntryExcerpt(
   return conciseText(stringContent(entry.display_content) ?? stringContent(entry.content));
 }
 
-function isAutonomousActionEntry(
-  entry: SerializedStreamEntry,
-): entry is AutonomousActionEntry {
+function isAutonomousActionEntry(entry: SerializedStreamEntry): entry is AutonomousActionEntry {
   return (
     entry.kind === "internal_event" &&
     isRecord(entry.content) &&
@@ -1814,7 +1812,9 @@ function activityRecentEntries(borg: Borg): SerializedStreamEntry[] {
   const seen = new Set<string>();
 
   for (const session of sessions) {
-    for (const entry of borg.stream.tail(ACTIVITY_SESSION_TAIL_LIMIT, { session: session.session_id })) {
+    for (const entry of borg.stream.tail(ACTIVITY_SESSION_TAIL_LIMIT, {
+      session: session.session_id,
+    })) {
       if (seen.has(entry.id)) {
         continue;
       }
@@ -1859,7 +1859,9 @@ function autonomousTriggersByTerminalEntryId(
         continue;
       }
 
-      const trigger = autonomousActionTrigger(entry) ?? (pendingWake === null ? null : autonomousWakeSourceName(pendingWake));
+      const trigger =
+        autonomousActionTrigger(entry) ??
+        (pendingWake === null ? null : autonomousWakeSourceName(pendingWake));
       if (typeof entry.content.turn_result_id === "string" && trigger !== null) {
         byTerminalEntryId.set(entry.content.turn_result_id, trigger);
       } else if (pendingWake !== null && pendingTerminal !== null && trigger !== null) {
@@ -1915,7 +1917,6 @@ function activityTurnRows(entries: readonly SerializedStreamEntry[]): ActivityTu
       bucket.push(entry);
       bySessionTurnId.set(key, bucket);
     }
-
   }
 
   const rows: ActivityTurnRow[] = [];
@@ -2005,12 +2006,16 @@ function journalRowsForDay(
   return journalEntries.filter((entry) => localDayString(entry.created_at) === day);
 }
 
-function activityDigest(rows: readonly ActivityRow[], journalEntries: readonly JournalEntryForActivity[]) {
+function activityDigest(
+  rows: readonly ActivityRow[],
+  journalEntries: readonly JournalEntryForActivity[],
+) {
   return {
     turns: rows.filter((row) => row.kind === "turn").length,
     autonomous_wakes: rows.filter((row) => row.origin === "autonomous").length,
     emissions: rows.filter((row) => row.kind === "turn" && row.outcome === "emitted").length,
-    silences: rows.filter((row) => row.kind === "turn" && row.outcome === "deliberate-silence").length,
+    silences: rows.filter((row) => row.kind === "turn" && row.outcome === "deliberate-silence")
+      .length,
     observations: rows.filter((row) => row.kind === "turn" && row.outcome === "observed").length,
     suppressions: rows.filter(
       (row) =>
@@ -2066,9 +2071,14 @@ function mapAutonomyWake(borg: Borg, wake: AutonomyWakeRecord) {
     trigger_name: wake.trigger_name,
     condition_name: wake.condition_name,
     session_id: wake.session_id,
-    session_label: wake.session_id === null ? null : borg.sessions.get(wake.session_id)?.label ?? null,
+    session_label:
+      wake.session_id === null ? null : (borg.sessions.get(wake.session_id)?.label ?? null),
     wake_source_type: wake.wake_source_type,
     source_category: wake.source_category,
+    selected_goal_id: wake.selected_goal_id,
+    outcome: wake.outcome,
+    outcome_detail: wake.outcome_detail,
+    headway_bases: wake.headway_bases,
   };
 }
 

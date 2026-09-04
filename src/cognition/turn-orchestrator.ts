@@ -54,7 +54,7 @@ import {
 import type { ToolDispatcher } from "../tools/dispatcher.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { SessionBusyError } from "../util/errors.js";
-import { DEFAULT_SESSION_ID, type EntityId, type SessionId } from "../util/ids.js";
+import { DEFAULT_SESSION_ID, type EntityId, type GoalId, type SessionId } from "../util/ids.js";
 import type { ToolLoopCallRecord } from "./turn-action/index.js";
 import { TurnActionCoordinator } from "./turn-action/turn-action-coordinator.js";
 import { TurnActionStateService } from "./actions/turn-action-state-service.js";
@@ -113,6 +113,7 @@ export type TurnResult = {
   referencedEpisodeIds: string[];
   intents: IntentRecord[];
   toolCalls: ToolLoopCallRecord[];
+  reflectionRetiredGoalIds?: GoalId[];
   agentMessageId?: string;
   outboundDelivery?: OutboundDeliveryReceipt;
 };

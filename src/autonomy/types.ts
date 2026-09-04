@@ -242,6 +242,12 @@ export type AutonomySchedulerFleetBrakeDescription = {
    */
   window_outcomes: Record<AutonomyWakeOutcome, number>;
   /**
+   * The `headway` entry of `window_outcomes`, split by the structural basis the
+   * scheduler recorded for the same rows. A row may name more than one basis;
+   * the joined detail remains one tally key rather than being reinterpreted.
+   */
+  window_headway_reasons: AutonomyWakeOutcomeDetailTally;
+  /**
    * The `error` entry of `window_outcomes` above, split by the failure the
    * scheduler recorded -- same rows, same window, same categories, one level of
    * detail further down. `total` repeats that count so the split can be checked
