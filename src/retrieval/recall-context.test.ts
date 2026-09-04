@@ -60,7 +60,7 @@ describe("memory disclosure labels", () => {
     });
   });
 
-  it("combines disclosure entity ids in sorted order", () => {
+  it("preserves disclosure origin order while sorting authorization ids", () => {
     expect(
       combineMemoryDisclosureLabels([
         relationshipPrivateMemoryDisclosureLabel([bob]),
@@ -68,7 +68,9 @@ describe("memory disclosure labels", () => {
       ]),
     ).toMatchObject({
       disclosureClass: "relationship_private",
-      originAudienceEntityIds: [alice, bob],
+      // Origins preserve canonical source chronology; only permission sets use
+      // lexical ordering for stable equality and persistence.
+      originAudienceEntityIds: [bob, alice],
       privateToEntityIds: [alice, bob],
       publicToEntityIds: [],
     });

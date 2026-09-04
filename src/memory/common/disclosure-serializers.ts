@@ -44,13 +44,19 @@ type DisclosureMetadataCarrier = {
 function disclosureLabelFromCarrier(
   carrier: DisclosureMetadataCarrier,
 ): MemoryDisclosureLabel | null {
-  if (carrier.disclosure_label === null || carrier.disclosure_label === undefined) {
+  const attachedLabel = carrier.disclosure_label;
+
+  if (attachedLabel === null || attachedLabel === undefined) {
     return null;
   }
 
-  return (
-    memoryDisclosureLabelFromMetadata(carrier.disclosure_label) ?? unknownMemoryDisclosureLabel()
-  );
+  // Repository records have already schema-parsed camel-case labels. Preserve
+  // that typed value verbatim; only serialized metadata needs normalization.
+  // Reparsing an internal label here could silently replace its stored policy
+  // with `unknown`, which is especially wrong when the audience column is null.
+  return "disclosureClass" in attachedLabel
+    ? attachedLabel
+    : (memoryDisclosureLabelFromMetadata(attachedLabel) ?? unknownMemoryDisclosureLabel());
 }
 
 export function commitmentScopeMemoryDisclosureLabel(

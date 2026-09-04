@@ -4685,7 +4685,11 @@ describe("deliberator", () => {
       expect(system).toContain(
         "exploring values clarity (candidate, conf 0.50) (from ep_aaaaaaaaaaaaaaaa)",
       );
-      expect(system).toContain("goals Ship Sprint 6 (manual)");
+      // Goal attribution now renders the resolved counterparty field before
+      // the same compact provenance suffix.
+      expect(system).toContain(
+        "goals Ship Sprint 6 counterparty_entity_id=none (participant the responsibility runs toward; not owner or audience) (manual) disclosure_class=self_private",
+      );
       expect(system).toContain("<borg_held_preferences>");
       expect(system).toContain("Traits I express: engaged:0.80 (conf 0.82, offline: reflector)");
       expect(system).toContain("Current period: 2026-Q2 (offline: self-narrator)");
