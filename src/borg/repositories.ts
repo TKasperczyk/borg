@@ -159,6 +159,7 @@ export async function buildBorgRepositories(
     db: sqlite,
     clock,
   });
+  autonomyWakesRepository.interruptOrphanedWakesAtStartup();
   const scheduledWakesRepository = new ScheduledWakesRepository({
     db: sqlite,
     clock,

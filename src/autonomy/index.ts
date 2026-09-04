@@ -65,6 +65,7 @@ export {
   type OpenQuestionUrgencyBumpConditionOptions,
 } from "./conditions/index.js";
 export {
+  AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
   AutonomyWakesRepository,
   type AutonomyWakeRecord,
   type AutonomyWakeRecordInput,

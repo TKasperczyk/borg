@@ -1772,9 +1772,8 @@ function summarizeDiscourseControl(
 // A window's in_flight rows are bounded by the budget limit, so the list is
 // short, but it is not bounded to one. Cap the print and name what the cap
 // dropped rather than truncating silently. Oldest first is the ordering the
-// description declares and the one that matters: a row whose outcome write was
-// skipped never moves, so it only sinks further to the head as newer wakes
-// resolve past it, and the head of this list is where a stuck row lives.
+// description declares and the one that matters when comparing an active row
+// across consecutive scheduler reads.
 const IN_FLIGHT_STAMP_PRINT_LIMIT = 3;
 
 function formatInFlightStamps(startedAt: readonly number[]): string {
@@ -1869,13 +1868,13 @@ export function summarizeAutonomySchedulerState(
       "Wakes in current window by trigger_name:",
       ...budget.wakes_in_current_window_by_trigger.map(
         (group) =>
-          `- trigger_name=${group.trigger_name} wake_count=${group.wake_count} in_flight=${group.in_flight}${formatInFlightStamps(group.in_flight_started_at)} outcome_counts(headway=${group.outcome_counts.headway} silent=${group.outcome_counts.silent} error=${group.outcome_counts.error} busy=${group.outcome_counts.busy})`,
+          `- trigger_name=${group.trigger_name} wake_count=${group.wake_count} in_flight=${group.in_flight}${formatInFlightStamps(group.in_flight_started_at)} outcome_counts(headway=${group.outcome_counts.headway} silent=${group.outcome_counts.silent} error=${group.outcome_counts.error} busy=${group.outcome_counts.busy} interrupted=${group.outcome_counts.interrupted})`,
       ),
       // Rendered whenever the section renders, including on every read where
       // in_flight is 0 everywhere: a rule that appeared only alongside a
       // non-zero count would make the zero read as "no such state exists"
       // rather than as "none right now".
-      "in_flight counts rows written when the wake fired whose outcome was never recorded, stamped with when each fired. Nothing resolves that state: no timeout writes a late outcome, so a row whose outcome write was skipped stays unrecorded for as long as it exists. It does not stay in this count, though -- in_flight is taken over the rolling window named above, so an unresolved row leaves it by ageing past that window's lower edge, and no field on this block reports the row once it is out. in_flight falling back to 0 is therefore consistent with a row from an earlier read still being unresolved, and is not evidence that it closed. wake_count still equals in_flight plus the outcome_counts, so the arithmetic closing here is not evidence the row is live. The stamps are the only cross-read identity this block carries -- one repeating across two reads is a single row not moving, one that changes is a different wake, one that disappears is either -- and the counts alone cannot support that comparison at any number of reads.",
+      "in_flight counts rows written when the wake fired whose terminal outcome has not yet been recorded, stamped with when each fired. A normal completion records headway, silent, error, or busy; a post-turn bookkeeping failure records interrupted, and startup reconciliation records any NULL row left by a prior process as interrupted. A non-zero in_flight count can therefore be a healthy turn currently running. It is taken over the rolling window named above, so a live row can also leave this display by ageing past the lower edge before it closes. The stamps support cross-read identity: one repeating across two reads is one row still open, one that changes is a different wake, and one that disappears either closed or left the window.",
     );
   }
 
@@ -2055,7 +2054,7 @@ export function summarizeAutonomySchedulerState(
       brake.window_outcomes.headway
     } silent=${brake.window_outcomes.silent} error=${brake.window_outcomes.error} busy=${
       brake.window_outcomes.busy
-    }. This is a different population from empty_streak -- time-bounded where the streak is not, contemplative wakes included where the streak ignores them, errors counted where the streak passes over them -- so no arithmetic over these four numbers yields the streak, and non-headway totals here are not the distance to the brake.`,
+    } interrupted=${brake.window_outcomes.interrupted}. This is a different population from empty_streak -- time-bounded where the streak is not, contemplative wakes included where the streak ignores them, errors and interruptions counted where the streak passes over them -- so no arithmetic over these five numbers yields the streak, and non-headway totals here are not the distance to the brake.`,
   );
   // headway is printed on this line and on every wakes-by-trigger group above,
   // and its predicate was named nowhere on the page. An undefined term over a

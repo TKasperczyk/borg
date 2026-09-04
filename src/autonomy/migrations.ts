@@ -93,4 +93,60 @@ export const autonomyMigrations = [
       `);
     },
   },
+  {
+    id: 5,
+    name: "autonomy_wakes_interrupted_outcome",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE autonomy_wakes__next (
+          id TEXT PRIMARY KEY,
+          ts INTEGER NOT NULL,
+          trigger_name TEXT NOT NULL CHECK (
+            trigger_name IN (
+              'commitment_expiring',
+              'open_question_dormant',
+              'scheduled_reflection',
+              'scheduled_wake',
+              'goal_followup_due',
+              'executive_focus_due',
+              'commitment_revoked',
+              'mood_valence_drop',
+              'open_question_urgency_bump'
+            )
+          ),
+          condition_name TEXT CHECK (
+            condition_name IS NULL OR condition_name IN (
+              'commitment_revoked',
+              'mood_valence_drop',
+              'open_question_urgency_bump'
+            )
+          ),
+          session_id TEXT,
+          wake_source_type TEXT NOT NULL CHECK (wake_source_type IN ('trigger', 'condition')),
+          source_category TEXT NOT NULL DEFAULT 'operational' CHECK (
+            source_category IN ('contemplative', 'operational')
+          ),
+          outcome TEXT CHECK (
+            outcome IS NULL OR outcome IN ('headway', 'silent', 'error', 'busy', 'interrupted')
+          ),
+          outcome_detail TEXT
+        );
+
+        INSERT INTO autonomy_wakes__next (
+          id, ts, trigger_name, condition_name, session_id, wake_source_type, source_category,
+          outcome, outcome_detail
+        )
+        SELECT
+          id, ts, trigger_name, condition_name, session_id, wake_source_type, source_category,
+          outcome, outcome_detail
+        FROM autonomy_wakes;
+
+        DROP TABLE autonomy_wakes;
+        ALTER TABLE autonomy_wakes__next RENAME TO autonomy_wakes;
+
+        CREATE INDEX idx_autonomy_wakes_ts
+          ON autonomy_wakes (ts);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];
