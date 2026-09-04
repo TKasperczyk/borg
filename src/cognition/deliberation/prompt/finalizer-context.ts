@@ -423,14 +423,19 @@ function renderLedgerOnlyCommitmentRecord(entry: EvidenceLedgerEntry): {
 // only when membership or durable commitment content changes; update time and scheduled-expiry
 // state are deliberately outside its cache prefix.
 //
-// rows_total here is NOT a union across two scopes: both arms come from the same array.
+// The tag used to carry rows_total, canonical_rows, and ledger_only_rows; fcd95cb6 removed
+// them as counts the rows themselves already carry. Nothing replaced them, so complete="true"
+// now stands with no denominator beside it while the sibling terminal blocks still print one,
+// and a reader wanting this block's count has to count rows.
+//
+// The invariant those attributes documented still holds and is worth keeping written down:
 // evidenceLedger.audienceStanding.commitmentEntries is a straight 1:1 map of the very
 // applicableCommitments this render already walks (buildCommitmentEntries in
 // evidence-ledger/audience-standing.ts), so every ledger entry matches a canonical row
-// by id and ledgerOnlyRendered is empty by construction. ledger_only_rows is a
-// divergence check on two inputs that are currently one, not a second population's
-// contribution -- reading 0 there says nothing about what an audience-scoped standing
-// ledger would add, because nothing in this path can add anything.
+// by id and ledgerOnlyRendered is empty by construction. That zero was never a second
+// population's contribution -- it said nothing about what an audience-scoped standing ledger
+// would add, because nothing in this path can add anything -- and it is no longer printed,
+// so it can no longer be misread in either direction.
 function renderCommitments(context: DeliberationContext): RenderedTerminalSection {
   const commitments = context.applicableCommitments ?? [];
   const ledgerEntries = context.evidenceLedger?.audienceStanding?.commitmentEntries ?? [];
@@ -455,7 +460,7 @@ function renderCommitments(context: DeliberationContext): RenderedTerminalSectio
     [
       `<borg_terminal_commitments complete="true" advisory_excerpt_budget_chars="${TERMINAL_ADVISORY_COMMITMENT_EXCERPT_CHARS}">`,
       "  <interpretation>One row per commitment: canonical records first, then any standing-ledger record that matched none of them by id. Both arms are built from the same complete active-commitment draw and membership is unchanged. Critical directives are exact. A long advisory directive is a visibly annotated mechanical head+tail cut carrying both included and total source-character counts, never a clean-looking summary. Entity scope and disclosure are exact provenance and handling constraints, never audience-dependent recall selection. Updated time, optional scheduled expiry, mutable standing state, retrieval scope, and resolved labels are carried by the turn-local overlay keyed by id.</interpretation>",
-      '  <field_legend>Canonical rows omit canonical_record; only a ledger-only fallback carries canonical_record=false. A ledger_value or ledger_text exactly equal to family or directive is omitted; a divergent projection retains its exact value, and a present projection with no value or text prints "missing" explicitly. ledger_state duplicates status plus disclosure and is omitted while disclosure remains on every row; a structurally divergent state is retained exactly. Active rows omit expired_at and revoked_at because their absence follows membership; a future expires_at, when present, is exact in the ID-keyed overlay, as are updated_at and the retrieval-derived persistence_class. Relative ages follow the terminal pass contract. directive_exact, directive_excerpt_shape, directive_included_chars, and directive_total_chars state whether the directive is complete and, when cut, exactly how much source text is present. advisory_excerpt_budget_chars is the whole width a cut advisory directive is rendered into, including its head+tail marker. directive_exact reports elision only, not byte-fidelity of the XML-encoded attribute. On a critical row directive_exact is true by construction, directive_excerpt_shape is full, and directive_included_chars equals directive_total_chars.</field_legend>',
+      '  <field_legend>Canonical rows omit canonical_record; only a ledger-only fallback carries canonical_record=false. A ledger_value or ledger_text exactly equal to family or directive is omitted; a divergent projection retains its exact value, and a present projection with no value or text prints "missing" explicitly. ledger_state duplicates status plus disclosure and is omitted while disclosure remains on every row; a structurally divergent state is retained exactly. Active rows omit expired_at and revoked_at because their absence follows membership; a future expires_at, when present, is exact in the ID-keyed overlay, as are updated_at and the retrieval-derived persistence_class. Relative ages follow the terminal pass contract. directive_exact, directive_excerpt_shape, directive_included_chars, and directive_total_chars state whether the directive is complete and, when cut, exactly how much source text is present. advisory_excerpt_budget_chars is the whole width a cut advisory directive is rendered into, including its head+tail marker. directive_exact reports elision only, not byte-fidelity of the XML-encoded attribute. On a critical row directive_exact is true by construction, directive_excerpt_shape is full, and directive_included_chars equals directive_total_chars. A search over this block reaches only its rendered characters: on a cut row the elided middle is present here in no form, so a string not found in this block may still be in the stored directive, and the honest form of any such negative names the width it did not reach. That width is the per-row difference between directive_total_chars and directive_included_chars summed over the rows above; no total for it is printed here, and complete="true" is a claim about membership only, never about how much of each row is present.</field_legend>',
       ...rows.map((row) => `  ${row}`),
       "  <omitted_count>0</omitted_count>",
       "</borg_terminal_commitments>",
