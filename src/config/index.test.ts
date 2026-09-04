@@ -58,6 +58,7 @@ describe("config", () => {
     expect(config.affective.llmEnabled).toBe(true);
     expect(config.episodic.salienceGateEnabled).toBe(true);
     expect(config.offline.curator.episodeDecayIntervalMs).toBe(24 * 60 * 60 * 1_000);
+    expect(config.offline.curator.traitDecayIntervalMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.offline.curator.episodeSalienceHalfLifeDays).toBe(30);
     expect(config.offline.curator.episodeHeatHalfLifeDays).toBe(7);
     expect(config.offline.curator.traitHalfLifeDays).toBe(30);
@@ -693,6 +694,18 @@ describe("config", () => {
         },
       }),
     ).toThrow(/minimum revisit period/);
+  });
+
+  it("loads the trait decay interval from the environment", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    expect(
+      loadConfig({
+        dataDir: tempDir,
+        env: { BORG_OFFLINE_CURATOR_TRAIT_DECAY_INTERVAL_MS: "43200000" },
+      }).offline.curator.traitDecayIntervalMs,
+    ).toBe(12 * 60 * 60 * 1_000);
   });
 
   it("accepts deprecated llm fallback env aliases", () => {

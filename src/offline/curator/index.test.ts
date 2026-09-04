@@ -510,6 +510,54 @@ describe("curator process", () => {
     expect(late.changes.map((change) => change.action)).toContain("decay");
   });
 
+  it("skips repeat trait decay until the decay interval has elapsed", async () => {
+    const lastDecayedAt = 100 * DAY_MS;
+    const earlyHarness = await createOfflineTestHarness({
+      clock: new FixedClock(lastDecayedAt + HOUR_MS),
+    });
+    const lateHarness = await createOfflineTestHarness({
+      clock: new FixedClock(lastDecayedAt + 25 * HOUR_MS),
+    });
+    cleanup.push(earlyHarness.cleanup, lateHarness.cleanup);
+
+    for (const harness of [earlyHarness, lateHarness]) {
+      const trait = harness.traitsRepository.reinforce({
+        label: "interval-gated",
+        delta: 0.8,
+        provenance: { kind: "manual" },
+        timestamp: lastDecayedAt - 10 * DAY_MS,
+      });
+      harness.traitsRepository.decay(30 * 24, lastDecayedAt, {
+        traitIds: [trait.id],
+      });
+    }
+
+    const earlyProcess = new CuratorProcess({
+      episodicRepository: earlyHarness.episodicRepository,
+      traitsRepository: earlyHarness.traitsRepository,
+      moodRepository: earlyHarness.moodRepository,
+      socialRepository: earlyHarness.socialRepository,
+      registry: earlyHarness.registry,
+    });
+    const lateProcess = new CuratorProcess({
+      episodicRepository: lateHarness.episodicRepository,
+      traitsRepository: lateHarness.traitsRepository,
+      moodRepository: lateHarness.moodRepository,
+      socialRepository: lateHarness.socialRepository,
+      registry: lateHarness.registry,
+    });
+
+    const early = await earlyProcess.run(earlyHarness.createContext(), {
+      dryRun: true,
+    });
+    const late = await lateProcess.run(lateHarness.createContext(), {
+      dryRun: true,
+    });
+
+    expect(early.changes.map((change) => change.action)).not.toContain("decay_trait");
+    expect(late.changes.map((change) => change.action)).toContain("decay_trait");
+  });
+
   it("prunes retrieval log rows older than the retention window", async () => {
     const nowMs = 100 * DAY_MS;
     const retentionDays = 30;
