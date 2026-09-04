@@ -20,6 +20,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Install ripgrep (the heuristics guard shells out to rg)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
       - run: npm ci
       - name: Typecheck (all five tsconfigs)
         run: npm run typecheck
