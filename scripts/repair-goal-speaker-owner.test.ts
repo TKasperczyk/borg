@@ -63,6 +63,8 @@ describe("goal speaker-owner repair", () => {
     ).toThrow("Unknown argument");
   });
 
+  // Opens a real Borg instance and runs migrations twice; the default 15s test
+  // timeout is not enough once the full suite is running these in parallel.
   it("clears only matching creation owners without later owner assignments", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-goal-speaker-owner-repair-"));
     tempDirs.push(tempDir);
@@ -241,5 +243,5 @@ describe("goal speaker-owner repair", () => {
     await inspection.close();
 
     expect(planGoalSpeakerOwnerRepair({ dataDir: tempDir }).counts.selected).toBe(0);
-  });
+  }, 30_000);
 });
