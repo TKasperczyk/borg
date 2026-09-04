@@ -138,9 +138,12 @@ const PLANNER_COMMITMENT_DISCLOSURE_REMAINDER_MARKER =
   "membership_not_enumerated_by_disclosure_class";
 const PLANNER_COMMITMENT_KIND_REMAINDER_MARKER = "membership_not_enumerated_by_kind";
 // The first production compact call measured provider input at 1.63x the
-// chars/4 estimate. A 25K estimated envelope therefore targets about 40K real
+// chars/4 estimate. A 25.1K estimated envelope therefore targets about 41K real
 // provider tokens while retaining honest overflow telemetry for critical text.
-export const COMPACT_PLANNER_TARGET_TOKENS = 25_000;
+// Commit 7638cc5a left 55 residual estimated tokens above the former 25K ceiling;
+// all three trusted-guidance boundaries remain necessary because untrusted data
+// is rendered between each consecutive pair.
+export const COMPACT_PLANNER_TARGET_TOKENS = 25_100;
 const PLANNER_LABEL_EXCERPT_CHARS = 320;
 const PLANNER_ATTRIBUTE_EXCERPT_CHARS = 240;
 const PLANNER_GOAL_TARGET_TOKENS = 5_000;
