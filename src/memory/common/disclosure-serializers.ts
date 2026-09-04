@@ -1,10 +1,7 @@
 import type { ImagePerceptionRecord } from "../../attachments/index.js";
 import type { CommitmentRecord } from "../commitments/index.js";
 import type { Episode, EpisodicRepository } from "../episodic/index.js";
-import {
-  parseIdentityEventDisclosureSources,
-  type IdentityEvent,
-} from "../identity/index.js";
+import { parseIdentityEventDisclosureSources, type IdentityEvent } from "../identity/index.js";
 import type { SharedStateEntry } from "../shared-state/index.js";
 import type { RelationalSlot } from "../relational-slots/index.js";
 import type { SemanticEdge, SemanticNode } from "../semantic/index.js";
@@ -22,6 +19,7 @@ import {
   selfPrivateMemoryDisclosureLabel,
   unknownMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
+  type MemoryDisclosureLabelMetadata,
 } from "./disclosure-label.js";
 import type { EntityId } from "../../util/ids.js";
 
@@ -39,13 +37,36 @@ export function commitmentDisclosureEntityIds(
   return uniqueDisclosureEntityIds([commitment.restricted_audience, commitment.made_to_entity]);
 }
 
-export function commitmentMemoryDisclosureLabel(
+type DisclosureMetadataCarrier = {
+  disclosure_label?: MemoryDisclosureLabel | MemoryDisclosureLabelMetadata | null;
+};
+
+function disclosureLabelFromCarrier(
+  carrier: DisclosureMetadataCarrier,
+): MemoryDisclosureLabel | null {
+  if (carrier.disclosure_label === null || carrier.disclosure_label === undefined) {
+    return null;
+  }
+
+  return (
+    memoryDisclosureLabelFromMetadata(carrier.disclosure_label) ?? unknownMemoryDisclosureLabel()
+  );
+}
+
+export function commitmentScopeMemoryDisclosureLabel(
   commitment: Pick<CommitmentRecord, "restricted_audience" | "made_to_entity">,
 ): MemoryDisclosureLabel {
   return relationshipPrivateMemoryDisclosureLabel(commitmentDisclosureEntityIds(commitment));
 }
 
-export function goalMemoryDisclosureLabel(
+export function commitmentMemoryDisclosureLabel(
+  commitment: Pick<CommitmentRecord, "restricted_audience" | "made_to_entity"> &
+    DisclosureMetadataCarrier,
+): MemoryDisclosureLabel {
+  return disclosureLabelFromCarrier(commitment) ?? commitmentScopeMemoryDisclosureLabel(commitment);
+}
+
+export function goalScopeMemoryDisclosureLabel(
   goal: Pick<GoalRecord, "owner_entity_id"> & { audience_entity_id?: EntityId | null },
 ): MemoryDisclosureLabel {
   const entityIds = uniqueDisclosureEntityIds([
@@ -58,13 +79,22 @@ export function goalMemoryDisclosureLabel(
     : relationshipPrivateMemoryDisclosureLabel(entityIds);
 }
 
+export function goalMemoryDisclosureLabel(
+  goal: Pick<GoalRecord, "owner_entity_id"> & {
+    audience_entity_id?: EntityId | null;
+  } & DisclosureMetadataCarrier,
+): MemoryDisclosureLabel {
+  return disclosureLabelFromCarrier(goal) ?? goalScopeMemoryDisclosureLabel(goal);
+}
+
 export function openQuestionMemoryDisclosureLabel(
   question: Pick<OpenQuestion, "audience_entity_id"> & {
-    disclosure_label?: MemoryDisclosureLabel | null;
+    disclosure_label?: MemoryDisclosureLabel | MemoryDisclosureLabelMetadata | null;
   },
 ): MemoryDisclosureLabel {
-  if (question.disclosure_label !== null && question.disclosure_label !== undefined) {
-    return question.disclosure_label;
+  const attachedLabel = disclosureLabelFromCarrier(question);
+  if (attachedLabel !== null) {
+    return attachedLabel;
   }
 
   const entityIds = uniqueDisclosureEntityIds([question.audience_entity_id]);
