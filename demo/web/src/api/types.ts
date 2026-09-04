@@ -235,6 +235,7 @@ export type AutonomyWakeRecord = {
   selected_goal_id: string | null;
   outcome: "headway" | "silent" | "error" | "busy" | null;
   outcome_detail: string | null;
+  headway_bases: string[] | null;
 };
 
 export type AutonomyStateResponse = {

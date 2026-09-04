@@ -1138,6 +1138,7 @@ export type BorgAutonomyWakeRecord = {
   selected_goal_id: GoalId | null;
   outcome: AutonomyWakeOutcome | null;
   outcome_detail: string | null;
+  headway_bases: string[] | null;
 };
 
 export type BorgAutonomyWakeRecordInput = {

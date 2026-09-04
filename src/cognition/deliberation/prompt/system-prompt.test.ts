@@ -3464,6 +3464,19 @@ describe("buildBaseSystemPrompt", () => {
   });
 
   it("names every route to headway and denies that a journal entry identifies the outcome", () => {
+    const batchedGoalIds = [
+      "goal_aaaaaaaaaaaaaaaa",
+      "goal_bbbbbbbbbbbbbbbb",
+      "goal_cccccccccccccccc",
+      "goal_dddddddddddddddd",
+      "goal_eeeeeeeeeeeeeeee",
+    ];
+    const batchedGoalDetail = batchedGoalIds
+      .flatMap((goalId) => [
+        `progress recorded on ${goalId}`,
+        `goal ${goalId} retired by this turn`,
+      ])
+      .join("; ");
     const prompt = buildBaseSystemPrompt(
       makeContext({
         turnOrigin: "user",
@@ -3499,8 +3512,7 @@ describe("buildBaseSystemPrompt", () => {
                   { detail: "emitted message", count: 2 },
                   { detail: "continue_thought", count: 1 },
                   {
-                    detail:
-                      "progress recorded on goal_aaaaaaaaaaaaaaaa; goal goal_aaaaaaaaaaaaaaaa retired by this turn",
+                    detail: batchedGoalDetail,
                     count: 1,
                   },
                 ],
@@ -3541,9 +3553,10 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("Why those wakes counted as headway, same rows as headway=4 above");
     expect(block).toContain("- 2x emitted message");
     expect(block).toContain("- 1x continue_thought");
-    expect(block).toContain(
-      "- 1x progress recorded on goal_aaaaaaaaaaaaaaaa; goal goal_aaaaaaaaaaaaaaaa retired by this turn",
-    );
+    expect(block).toContain(`- 1x ${batchedGoalDetail}`);
+    for (const goalId of batchedGoalIds) {
+      expect(block).toContain(goalId);
+    }
     // The inference the page previously left open: every headway route that
     // dominates this window also writes a journal entry, so the correlation is
     // perfect and self-confirming unless the page denies it outright.

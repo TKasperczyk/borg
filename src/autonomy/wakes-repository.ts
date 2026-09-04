@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { parseJsonArray } from "../storage/codecs.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { StorageError } from "../util/errors.js";
@@ -33,6 +34,7 @@ const autonomyWakeSourceCategorySchema = z.enum(["contemplative", "operational"]
 const autonomyWakeSourceNameSchema = z.enum(AUTONOMY_WAKE_SOURCE_NAMES);
 const autonomyConditionNameSchema = z.enum(AUTONOMY_CONDITION_NAMES);
 const autonomyWakeOutcomeSchema = z.enum(AUTONOMY_WAKE_OUTCOMES);
+const autonomyWakeHeadwayBasesSchema = z.array(z.string().min(1)).min(1);
 
 const autonomyWakeInputSchema = z.object({
   trigger_name: autonomyWakeSourceNameSchema,
@@ -76,6 +78,7 @@ const autonomyWakeRowSchema = z.object({
   source_category: autonomyWakeSourceCategorySchema,
   outcome: autonomyWakeOutcomeSchema.nullable(),
   outcome_detail: z.string().nullable(),
+  headway_bases: autonomyWakeHeadwayBasesSchema.nullable(),
   selected_goal_id: z
     .string()
     .refine((value) => goalIdHelpers.is(value), { message: "Invalid goal id" })
@@ -84,10 +87,10 @@ const autonomyWakeRowSchema = z.object({
 });
 
 /**
- * Upper bound on a stored `outcome_detail`. Failure details can arrive from an
- * arbitrary layer below the scheduler, so their length is not ours to predict;
- * the cap also applies uniformly to structural outcome bases. Truncation is
- * marked so a clipped detail is never read as the whole message.
+ * Upper bound on a non-structural `outcome_detail`. Failure details can arrive
+ * from an arbitrary layer below the scheduler, so their length is not ours to
+ * predict. Structural headway bases are stored separately and their joined
+ * display is never clipped mid-basis.
  */
 export const AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH = 300;
 
@@ -123,6 +126,11 @@ export type AutonomyWakeRecord = {
    * treat it as zero.
    */
   outcome_detail: string | null;
+  /**
+   * Ordered structural predicates that made this row headway. Null means the
+   * row is not headway or predates structural basis storage.
+   */
+  headway_bases: string[] | null;
   selected_goal_id: GoalId | null;
 };
 
@@ -141,6 +149,15 @@ export type AutonomyWakesRepositoryOptions = {
 };
 
 function mapWakeRow(row: Record<string, unknown>): AutonomyWakeRecord {
+  const headwayBases =
+    row.headway_bases_json === null || row.headway_bases_json === undefined
+      ? null
+      : typeof row.headway_bases_json === "string"
+        ? parseJsonArray<unknown>(row.headway_bases_json, "autonomy wake headway bases", {
+            errorCode: "AUTONOMY_WAKE_HEADWAY_BASES_INVALID",
+            errorMessage: (label) => `${label} failed validation`,
+          })
+        : row.headway_bases_json;
   const parsed = autonomyWakeRowSchema.safeParse({
     id: row.id,
     ts: Number(row.ts),
@@ -152,6 +169,7 @@ function mapWakeRow(row: Record<string, unknown>): AutonomyWakeRecord {
     source_category: row.source_category ?? "operational",
     outcome: row.outcome ?? null,
     outcome_detail: row.outcome_detail === undefined ? null : (row.outcome_detail ?? null),
+    headway_bases: headwayBases,
     selected_goal_id: row.selected_goal_id === undefined ? null : (row.selected_goal_id ?? null),
   });
 
@@ -188,6 +206,7 @@ export class AutonomyWakesRepository {
       source_category: parsed.source_category,
       outcome: null,
       outcome_detail: null,
+      headway_bases: null,
       selected_goal_id: parsed.selected_goal_id ?? null,
     };
 
@@ -249,7 +268,7 @@ export class AutonomyWakesRepository {
       .prepare(
         `
           SELECT id, ts, trigger_name, condition_name, session_id, wake_source_type, source_category,
-                 outcome, outcome_detail, selected_goal_id
+                 outcome, outcome_detail, headway_bases_json, selected_goal_id
           FROM autonomy_wakes
           WHERE ts >= ?
           ORDER BY ts DESC, id DESC
@@ -261,10 +280,31 @@ export class AutonomyWakesRepository {
     return rows.map((row) => mapWakeRow(row));
   }
 
-  recordOutcome(id: AutonomyWakeId, outcome: AutonomyWakeOutcome, detail?: string | null): void {
+  recordOutcome(
+    id: AutonomyWakeId,
+    outcome: AutonomyWakeOutcome,
+    detail?: string | null,
+    headwayBases?: readonly string[] | null,
+  ): void {
+    const storedHeadwayBases =
+      outcome === "headway" && headwayBases !== null && headwayBases !== undefined
+        ? autonomyWakeHeadwayBasesSchema.parse(headwayBases)
+        : null;
+    const storedDetail =
+      storedHeadwayBases === null ? clampOutcomeDetail(detail) : storedHeadwayBases.join("; ");
+
     this.db
-      .prepare("UPDATE autonomy_wakes SET outcome = ?, outcome_detail = ? WHERE id = ?")
-      .run(outcome, clampOutcomeDetail(detail), id);
+      .prepare(
+        `UPDATE autonomy_wakes
+         SET outcome = ?, outcome_detail = ?, headway_bases_json = ?
+         WHERE id = ?`,
+      )
+      .run(
+        outcome,
+        storedDetail,
+        storedHeadwayBases === null ? null : JSON.stringify(storedHeadwayBases),
+        id,
+      );
   }
 
   /**

@@ -63,10 +63,15 @@ type FleetAdmissionDecision = {
   bypassKind: "deadline" | "freshness" | null;
   metadata: FleetBrakeMetadata | null;
 };
+type GoalWakeSnapshot = {
+  goalId: string;
+  lastProgressTs: number | null;
+  status: GoalStatus | null;
+};
 type GoalWakeOutcome = {
   goalAttributedHeadway: boolean;
   bases: string[];
-  concern: ReturnType<typeof goalConcernPayload>;
+  backoffConcern: GoalWakeSnapshot | null;
 };
 type ScannedDueEvent = { source: AutonomyWakeSource; event: DueEvent };
 type ScannedDueEvents = {
@@ -311,11 +316,31 @@ function isDeadlineGoalWake(event: DueEvent): boolean {
   );
 }
 
-export function goalConcernPayload(event: DueEvent): {
-  goalId: string;
-  lastProgressTs: number | null;
-  status: GoalStatus | null;
-} | null {
+function executiveFocusGoalSnapshot(event: DueEvent): GoalWakeSnapshot | null {
+  if (
+    event.sourceType !== "trigger" ||
+    event.sourceName !== "executive_focus_due" ||
+    typeof event.payload.selected_goal_id !== "string" ||
+    !isRecord(event.payload.selected_goal)
+  ) {
+    return null;
+  }
+
+  const lastProgressTs = event.payload.selected_goal.last_progress_ts;
+  const parsedStatus = goalStatusSchema.safeParse(event.payload.selected_goal.status);
+
+  if (lastProgressTs !== null && typeof lastProgressTs !== "number") {
+    return null;
+  }
+
+  return {
+    goalId: event.payload.selected_goal_id,
+    lastProgressTs,
+    status: parsedStatus.success ? parsedStatus.data : null,
+  };
+}
+
+export function goalConcernPayload(event: DueEvent): GoalWakeSnapshot | null {
   if (event.sourceType !== "trigger") {
     return null;
   }
@@ -341,27 +366,15 @@ export function goalConcernPayload(event: DueEvent): {
     };
   }
 
-  if (
-    event.sourceName !== "executive_focus_due" ||
-    payload.reason !== "goal_stale" ||
-    typeof payload.selected_goal_id !== "string" ||
-    !isRecord(payload.selected_goal)
-  ) {
+  if (event.sourceName !== "executive_focus_due" || payload.reason !== "goal_stale") {
     return null;
   }
 
-  const lastProgressTs = payload.selected_goal.last_progress_ts;
-  const parsedStatus = goalStatusSchema.safeParse(payload.selected_goal.status);
+  return executiveFocusGoalSnapshot(event);
+}
 
-  if (lastProgressTs !== null && typeof lastProgressTs !== "number") {
-    return null;
-  }
-
-  return {
-    goalId: payload.selected_goal_id,
-    lastProgressTs,
-    status: parsedStatus.success ? parsedStatus.data : null,
-  };
+function namedGoalSnapshot(event: DueEvent): GoalWakeSnapshot | null {
+  return goalConcernPayload(event) ?? executiveFocusGoalSnapshot(event);
 }
 
 function selectedGoalIdForWake(event: DueEvent): GoalId | null {
@@ -1360,7 +1373,8 @@ export class AutonomyScheduler {
             this.options.wakeRepository.recordOutcome(
               wakeRecord.id,
               wakeHeadway ? "headway" : "silent",
-              wakeHeadway ? wakeHeadwayBases.join("; ") : (silentOutcome?.detail ?? null),
+              wakeHeadway ? null : (silentOutcome?.detail ?? null),
+              wakeHeadway ? wakeHeadwayBases : null,
             );
           } catch (error) {
             firedEvents += 1;
@@ -1481,50 +1495,53 @@ export class AutonomyScheduler {
   }
 
   private evaluateGoalWakeOutcome(event: DueEvent, turnResult: TurnResult): GoalWakeOutcome {
-    const parsedConcern = goalConcernPayload(event);
-    const concern =
+    const attributionSnapshot = namedGoalSnapshot(event);
+    const parsedBackoffConcern = goalConcernPayload(event);
+    const backoffConcern =
       event.sourceName === "goal_followup_due" && !this.respectGoalFollowupStaleBackoff
         ? null
-        : parsedConcern;
-    if (concern === null) {
+        : parsedBackoffConcern;
+    if (attributionSnapshot === null) {
       return {
         goalAttributedHeadway: false,
         bases: [],
-        concern,
+        backoffConcern,
       };
     }
 
     const currentGoal =
-      this.options.goalsRepository?.get(concern.goalId as Parameters<GoalsRepository["get"]>[0]) ??
-      null;
-    const currentLastProgressTs = currentGoal?.last_progress_ts ?? concern.lastProgressTs;
+      this.options.goalsRepository?.get(
+        attributionSnapshot.goalId as Parameters<GoalsRepository["get"]>[0],
+      ) ?? null;
+    const currentLastProgressTs =
+      currentGoal?.last_progress_ts ?? attributionSnapshot.lastProgressTs;
     const progressedDuringTurn = goalProgressAdvanced({
-      before: concern.lastProgressTs,
+      before: attributionSnapshot.lastProgressTs,
       after: currentLastProgressTs,
     });
     const statusChangedToClosed =
-      concern.status !== null &&
-      concern.status === "active" &&
+      attributionSnapshot.status !== null &&
+      attributionSnapshot.status === "active" &&
       currentGoal !== null &&
-      currentGoal.status !== concern.status;
+      currentGoal.status !== attributionSnapshot.status;
     const closedByTurn =
       statusChangedToClosed &&
-      (goalRetiredByTurnTool(turnResult, concern.goalId) ||
-        goalRetiredByTurnReflection(turnResult, concern.goalId));
+      (goalRetiredByTurnTool(turnResult, attributionSnapshot.goalId) ||
+        goalRetiredByTurnReflection(turnResult, attributionSnapshot.goalId));
     const bases = [
-      ...(progressedDuringTurn ? [`progress recorded on ${concern.goalId}`] : []),
-      ...(closedByTurn ? [`goal ${concern.goalId} retired by this turn`] : []),
+      ...(progressedDuringTurn ? [`progress recorded on ${attributionSnapshot.goalId}`] : []),
+      ...(closedByTurn ? [`goal ${attributionSnapshot.goalId} retired by this turn`] : []),
     ];
 
     return {
       goalAttributedHeadway: bases.length > 0,
       bases,
-      concern,
+      backoffConcern,
     };
   }
 
   private applyPerGoalEmptyWakeBackoff(event: DueEvent, outcome: GoalWakeOutcome): void {
-    const concern = outcome.concern;
+    const concern = outcome.backoffConcern;
 
     if (
       concern === null ||

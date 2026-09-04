@@ -198,7 +198,51 @@ describe("AutonomyWakesRepository", () => {
     }
   });
 
-  it("applies additive outcome and selected-goal migrations over legacy wake rows", () => {
+  it("stores every basis in a maximum goal batch without clipping the joined detail", () => {
+    const clock = new ManualClock(1_000);
+    const db = openDatabase(":memory:", { migrations: autonomyMigrations });
+    const repository = new AutonomyWakesRepository({ db, clock });
+    const goalIds = [
+      "goal_aaaaaaaaaaaaaaaa",
+      "goal_bbbbbbbbbbbbbbbb",
+      "goal_cccccccccccccccc",
+      "goal_dddddddddddddddd",
+      "goal_eeeeeeeeeeeeeeee",
+    ];
+    const bases = goalIds.flatMap((goalId) => [
+      `progress recorded on ${goalId}`,
+      `goal ${goalId} retired by this turn`,
+    ]);
+
+    try {
+      const wake = repository.record({
+        trigger_name: "goal_followup_due",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+      });
+      repository.recordOutcome(wake.id, "headway", null, bases);
+
+      const stored = repository.listSince(0, 1)[0];
+      const joinedBases = bases.join("; ");
+
+      expect(joinedBases.length).toBeGreaterThan(AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH);
+      expect(stored).toMatchObject({
+        outcome: "headway",
+        outcome_detail: joinedBases,
+        headway_bases: bases,
+      });
+      expect(repository.summarizeOutcomeDetailsSince(0, "headway").reasons).toEqual([
+        { detail: joinedBases, count: 1 },
+      ]);
+      for (const goalId of goalIds) {
+        expect(stored?.outcome_detail).toContain(goalId);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it("applies additive outcome, selected-goal, and headway-basis migrations over legacy rows", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-autonomy-migration-"));
     const dbPath = join(tempDir, "borg.db");
     let db = openDatabase(dbPath, {
@@ -231,11 +275,13 @@ describe("AutonomyWakesRepository", () => {
 
       expect(columns.map((column) => column.name)).toContain("outcome");
       expect(columns.map((column) => column.name)).toContain("selected_goal_id");
+      expect(columns.map((column) => column.name)).toContain("headway_bases_json");
       expect(repository.listSince(0, 10)).toEqual([
         expect.objectContaining({
           id: "autonomy_wake_aaaaaaaaaaaaaaaa",
           outcome: null,
           selected_goal_id: null,
+          headway_bases: null,
         }),
       ]);
     } finally {

@@ -31,7 +31,10 @@ import {
   type AutonomySchedulerOptions,
 } from "./scheduler.js";
 import type { AutonomyWakeSource } from "./types.js";
-import { AutonomyWakesRepository } from "./wakes-repository.js";
+import {
+  AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH,
+  AutonomyWakesRepository,
+} from "./wakes-repository.js";
 import {
   getExecutiveFocusGoalStaleBackoffProcessName,
   goalStaleBackoffState,
@@ -1472,6 +1475,199 @@ describe("AutonomyScheduler", () => {
       outcome_detail: "continue_thought",
     });
     expect(continuedThought.backoff).toMatchObject({ metadata: { empty_count: 3 } });
+  });
+
+  it.each([
+    { mutation: "progress" },
+    { mutation: "tool_closure" },
+    { mutation: "reflection_closure" },
+  ] as const)(
+    "attributes $mutation headway to the named goal on an executive step_due wake",
+    async ({ mutation }) => {
+      const clock = new ManualClock(1_475_000);
+      const harness = await createOfflineTestHarness({ clock });
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
+      const goal = harness.goalsRepository.add({
+        description: "Complete the due executive step",
+        priority: 9,
+        provenance: { kind: "manual" },
+      });
+      const backoffProcessName = getExecutiveFocusGoalStaleBackoffProcessName(goal.id);
+      watermarkRepository.set(backoffProcessName, DEFAULT_SESSION_ID, {
+        lastTs: 500,
+        lastEntryId: "stale-lane-backoff",
+        metadata: { empty_count: 2 },
+      });
+      const source = createPersistentDueSource({
+        watermarkRepository,
+        sourceName: "executive_focus_due",
+        eventIds: [`step:${mutation}`],
+        payload: () => ({
+          reason: "step_due",
+          selected_goal_id: goal.id,
+          selected_goal: {
+            status: "active",
+            last_progress_ts: null,
+          },
+        }),
+      });
+      const turnRunner = {
+        run: vi.fn(async () => {
+          if (mutation === "progress") {
+            harness.goalsRepository.updateProgress(goal.id, "Completed a concrete step", {
+              kind: "manual",
+            });
+          } else if (mutation === "tool_closure") {
+            harness.goalsRepository.retire(goal.id, "Completed by the autonomous turn", {
+              kind: "manual",
+            });
+          } else {
+            harness.goalsRepository.updateStatus(goal.id, "abandoned", { kind: "manual" });
+          }
+
+          return createStructuralTurnResult({
+            emissionKind: "suppressed",
+            ...(mutation === "tool_closure" ? { retiredGoalToolId: goal.id } : {}),
+            ...(mutation === "reflection_closure" ? { reflectionRetiredGoalIds: [goal.id] } : {}),
+          });
+        }),
+      };
+      const scheduler = createScheduler({
+        db: harness.db,
+        wakeRepository,
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerWindow: 6,
+        clock,
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        watermarkRepository,
+        goalsRepository: harness.goalsRepository,
+        turnOrchestrator: turnRunner,
+        toolDispatcher: new ToolDispatcher({
+          createStreamWriter: (sessionId) =>
+            new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+          clock,
+        }),
+        sources: [source],
+      });
+
+      try {
+        await scheduler.tick();
+        const progressBasis = `progress recorded on ${goal.id}`;
+        const closureBasis = `goal ${goal.id} retired by this turn`;
+        const expectedBases =
+          mutation === "progress"
+            ? [progressBasis]
+            : mutation === "tool_closure"
+              ? [progressBasis, closureBasis]
+              : [closureBasis];
+
+        expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
+          trigger_name: "executive_focus_due",
+          selected_goal_id: goal.id,
+          outcome: "headway",
+          outcome_detail: expectedBases.join("; "),
+          headway_bases: expectedBases,
+        });
+        // step_due is attributed to its goal, but remains outside the stale-lane
+        // empty-wake dampener exactly as it was before attribution was added.
+        expect(watermarkRepository.get(backoffProcessName, DEFAULT_SESSION_ID)).toMatchObject({
+          lastTs: 500,
+          lastEntryId: "stale-lane-backoff",
+          metadata: { empty_count: 2 },
+        });
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
+
+  it("preserves every goal id in the structural detail for a maximum goal batch", async () => {
+    const clock = new ManualClock(1_490_000);
+    const harness = await createOfflineTestHarness({ clock });
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
+    const goals = Array.from({ length: 5 }, (_, index) =>
+      harness.goalsRepository.add({
+        description: `Maximum batch goal ${index + 1}`,
+        priority: 10 - index,
+        provenance: { kind: "manual" },
+      }),
+    );
+    const source = createBatchedGoalDueSource({
+      watermarkRepository,
+      sourceName: "goal_followup_due",
+      goals: goals.map((goal, index) => ({
+        eventId: `maximum-batch-${index}`,
+        goalId: goal.id,
+        description: goal.description,
+        priority: goal.priority,
+        targetAt: null,
+        lastProgressTs: null,
+        reason: "stale",
+        rank: index,
+      })),
+    });
+    const turnRunner = {
+      run: vi.fn(async () => {
+        for (const goal of goals) {
+          harness.goalsRepository.updateProgress(goal.id, "Produced a concrete batch result", {
+            kind: "manual",
+          });
+          harness.goalsRepository.updateStatus(goal.id, "abandoned", { kind: "manual" });
+        }
+
+        return createStructuralTurnResult({
+          emissionKind: "suppressed",
+          reflectionRetiredGoalIds: goals.map((goal) => goal.id),
+        });
+      }),
+    };
+    const scheduler = createScheduler({
+      db: harness.db,
+      wakeRepository,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 6,
+      goalWakeBatchMax: 5,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+      watermarkRepository,
+      goalsRepository: harness.goalsRepository,
+      turnOrchestrator: turnRunner,
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        clock,
+      }),
+      sources: [source],
+    });
+
+    try {
+      await scheduler.tick();
+      const wake = wakeRepository.listSince(0, 1)[0];
+      const renderedDetail = (await scheduler.describe()).fleet_brake.window_headway_reasons
+        .reasons[0]?.detail;
+
+      expect(wake?.headway_bases).toHaveLength(10);
+      expect(wake?.outcome_detail?.length).toBeGreaterThan(AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH);
+      expect(wake?.outcome_detail).toBe(wake?.headway_bases?.join("; "));
+      expect(renderedDetail).toBe(wake?.outcome_detail);
+      for (const goal of goals) {
+        expect(wake?.headway_bases).toEqual(
+          expect.arrayContaining([
+            `progress recorded on ${goal.id}`,
+            `goal ${goal.id} retired by this turn`,
+          ]),
+        );
+        expect(renderedDetail).toContain(goal.id);
+      }
+    } finally {
+      await harness.cleanup();
+    }
   });
 
   it("deduplicates the same goal across both lanes while preserving exact single-wake dormancy accounting", async () => {
