@@ -1522,6 +1522,90 @@ describe("semantic extractor", () => {
     expect(edgeRepository.listEdges()).toHaveLength(1);
   });
 
+  it("skips malformed node items and reports nodes beyond the retained cap", async () => {
+    const repositories = await createSemanticRepositories(cleanup);
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Semantic node tolerance");
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+    const nodes = Array.from({ length: 42 }, (_, index) => ({
+      kind: "concept",
+      label: `Candidate ${index}`,
+      description: `Candidate description ${index}.`,
+      domain: "test",
+      aliases: [],
+      observation_metadata:
+        index === 5
+          ? {
+              confidence: "0.7",
+            }
+          : null,
+      confidence: 0.7,
+      source_episode_ids: [episode.id],
+    }));
+    const extractor = new SemanticExtractor({
+      ...repositories,
+      episodicRepository: createEpisodeLookup([episode]),
+      embeddingClient: new SemanticEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [createSemanticToolResponse({ nodes, edges: [] })],
+      }),
+      model: "haiku",
+      tracer,
+      traceTurnId: "turn_node_tolerance",
+    });
+
+    const result = await extractor.extractFromEpisodes([episode]);
+    const storedNodes = await repositories.nodeRepository.list();
+
+    expect(result).toMatchObject({
+      insertedNodes: 39,
+      updatedNodes: 0,
+      skippedNodes: 3,
+      insertedEdges: 0,
+      skippedEdges: 0,
+    });
+    expect(storedNodes).toHaveLength(39);
+    expect(storedNodes.some((node) => node.label === "Candidate 5")).toBe(false);
+    expect(storedNodes.some((node) => node.label === "Candidate 40")).toBe(false);
+    expect(storedNodes.some((node) => node.label === "Candidate 41")).toBe(false);
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "semantic_insert.skipped",
+      expect.objectContaining({
+        turnId: "turn_node_tolerance",
+        kind: "node",
+        reason: "schema_invalid",
+        candidate_index: 5,
+      }),
+    );
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "semantic_insert.skipped",
+      expect.objectContaining({
+        turnId: "turn_node_tolerance",
+        kind: "node",
+        reason: "over_cap",
+        candidate_index: 40,
+      }),
+    );
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "semantic_extractor.degraded",
+      expect.objectContaining({
+        raw_node_count: 42,
+        retained_node_count: 40,
+        parsed_node_count: 39,
+        accepted_node_count: 39,
+        skipped_node_count: 3,
+        skipped_node_details: [
+          { candidate_index: 5, reason: "schema_invalid" },
+          { candidate_index: 40, reason: "over_cap" },
+          { candidate_index: 41, reason: "over_cap" },
+        ],
+      }),
+    );
+  });
+
   it("merges duplicate node and edge evidence across repeated cross-scope extraction", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({
