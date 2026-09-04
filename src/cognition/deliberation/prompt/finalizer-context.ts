@@ -145,7 +145,7 @@ const TERMINAL_PASS_CONTRACT = [
   "<borg_terminal_pass_contract>",
   "This is my terminal response pass. I make the final emission decision from the complete request surface below; any system-2 plan is advisory, not authority.",
   "Durable records appear before turn-local overlays. I join an overlay to its durable record only by the explicit record id. Scope and disclosure fields describe use and mention boundaries; they never gate what I recall.",
-  "Where an exact absolute timestamp is present, I derive its relative age by subtracting it from the borg_current_time epoch_ms value; a duplicate relative-age label is intentionally omitted.",
+  "Where an exact absolute timestamp is present, I derive its relative age by subtracting it from the borg_current_time current_time_ms value; a duplicate relative-age label is intentionally omitted.",
   'A completeness claim rides on a complete="true" attribute beside omitted_count="0"; where a container is drawn narrower than the record it names its draw in an attribute instead. An element name is a label and never a claim of coverage, whatever word it contains.',
   "Any bounded expansion or digest reports its omissions explicitly.",
   "</borg_terminal_pass_contract>",
@@ -323,7 +323,6 @@ function renderCommitmentLedgerFields(
     `ledger_trust_rank="${ledgerEntry?.trust_rank ?? "unknown"}"`,
     `ledger_salience_class="${escapeXmlAttribute(ledgerEntry?.salience_class ?? "none")}"`,
     `ledger_taint="${escapeXmlAttribute(ledgerEntry?.taint ?? "none")}"`,
-    `persistence_class="${escapeXmlAttribute(ledgerEntry?.persistence_class ?? "unknown")}"`,
     `stream_index="${ledgerEntry?.stream_index ?? "none"}"`,
     `citation_type="${escapeXmlAttribute(ledgerEntry?.citation_type ?? "none")}"`,
     `citations="${escapeXmlSingleLineAttribute(joinedAttribute(ledgerEntry?.citations))}"`,
@@ -331,11 +330,11 @@ function renderCommitmentLedgerFields(
   if (ledgerEntry?.state !== undefined && !duplicateLedgerStates.has(ledgerEntry.state)) {
     fields.push(`ledger_state="${escapeXmlAttribute(ledgerEntry.state)}"`);
   }
-  if (ledgerEntry?.value !== undefined && ledgerEntry.value !== commitment.directive_family) {
-    fields.push(`ledger_value="${escapeXmlSingleLineAttribute(ledgerEntry.value)}"`);
+  if (ledgerEntry !== undefined && ledgerEntry.value !== commitment.directive_family) {
+    fields.push(`ledger_value="${escapeXmlSingleLineAttribute(ledgerEntry.value ?? "missing")}"`);
   }
-  if (ledgerEntry?.text !== undefined && ledgerEntry.text !== commitment.directive) {
-    fields.push(`ledger_text="${escapeXmlSingleLineAttribute(ledgerEntry.text)}"`);
+  if (ledgerEntry !== undefined && ledgerEntry.text !== commitment.directive) {
+    fields.push(`ledger_text="${escapeXmlSingleLineAttribute(ledgerEntry.text ?? "missing")}"`);
   }
   return fields;
 }
@@ -404,7 +403,6 @@ function renderLedgerOnlyCommitmentRecord(entry: EvidenceLedgerEntry): {
       `ledger_trust_rank="${entry.trust_rank}"`,
       `ledger_salience_class="${escapeXmlAttribute(entry.salience_class ?? "none")}"`,
       `ledger_taint="${escapeXmlAttribute(entry.taint ?? "none")}"`,
-      `persistence_class="${escapeXmlAttribute(entry.persistence_class ?? "unknown")}"`,
       `stream_index="${entry.stream_index ?? "none"}"`,
       `citation_type="${escapeXmlAttribute(entry.citation_type ?? "none")}"`,
       `citations="${escapeXmlSingleLineAttribute(joinedAttribute(entry.citations))}"`,
@@ -457,7 +455,7 @@ function renderCommitments(context: DeliberationContext): RenderedTerminalSectio
     [
       `<borg_terminal_commitments complete="true" advisory_excerpt_budget_chars="${TERMINAL_ADVISORY_COMMITMENT_EXCERPT_CHARS}">`,
       "  <interpretation>One row per commitment: canonical records first, then any standing-ledger record that matched none of them by id. Both arms are built from the same complete active-commitment draw and membership is unchanged. Critical directives are exact. A long advisory directive is a visibly annotated mechanical head+tail cut carrying both included and total source-character counts, never a clean-looking summary. Entity scope and disclosure are exact provenance and handling constraints, never audience-dependent recall selection. Updated time, optional scheduled expiry, mutable standing state, retrieval scope, and resolved labels are carried by the turn-local overlay keyed by id.</interpretation>",
-      "  <field_legend>Canonical rows omit canonical_record; only a ledger-only fallback carries canonical_record=false. ledger_value and ledger_text equal family and directive, so duplicate values are omitted; a divergent projection retains its exact ledger_value or ledger_text. ledger_state duplicates status plus disclosure and is omitted while disclosure remains on every row; a structurally divergent state is retained exactly. Active rows omit expired_at and revoked_at because their absence follows membership; a future expires_at, when present, is exact in the ID-keyed overlay, as is updated_at. Absolute durable timestamps plus borg_current_time epoch_ms replace duplicate relative-age labels. directive_exact, directive_excerpt_shape, directive_included_chars, and directive_total_chars state whether the directive is complete and, when cut, exactly how much source text is present. advisory_excerpt_budget_chars is the whole width a cut advisory directive is rendered into, including its head+tail marker. directive_exact reports elision only, not byte-fidelity of the XML-encoded attribute. On a critical row directive_exact is true by construction, directive_excerpt_shape is full, and directive_included_chars equals directive_total_chars.</field_legend>",
+      '  <field_legend>Canonical rows omit canonical_record; only a ledger-only fallback carries canonical_record=false. A ledger_value or ledger_text exactly equal to family or directive is omitted; a divergent projection retains its exact value, and a present projection with no value or text prints "missing" explicitly. ledger_state duplicates status plus disclosure and is omitted while disclosure remains on every row; a structurally divergent state is retained exactly. Active rows omit expired_at and revoked_at because their absence follows membership; a future expires_at, when present, is exact in the ID-keyed overlay, as are updated_at and the retrieval-derived persistence_class. Relative ages follow the terminal pass contract. directive_exact, directive_excerpt_shape, directive_included_chars, and directive_total_chars state whether the directive is complete and, when cut, exactly how much source text is present. advisory_excerpt_budget_chars is the whole width a cut advisory directive is rendered into, including its head+tail marker. directive_exact reports elision only, not byte-fidelity of the XML-encoded attribute. On a critical row directive_exact is true by construction, directive_excerpt_shape is full, and directive_included_chars equals directive_total_chars.</field_legend>',
       ...rows.map((row) => `  ${row}`),
       "  <omitted_count>0</omitted_count>",
       "</borg_terminal_commitments>",
@@ -468,20 +466,26 @@ function renderCommitments(context: DeliberationContext): RenderedTerminalSectio
 
 function renderDurableSelf(context: DeliberationContext): RenderedTerminalSection {
   const disclosure = compactDisclosure(selfPrivateMemoryDisclosureLabel());
-  const valueRows = context.selfSnapshot.values.map(
-    (value) =>
-      `<value id="${escapeXmlAttribute(value.id)}" created_at="${iso(value.created_at)}" established_at="${iso(value.established_at)}" disclosure="${escapeXmlAttribute(disclosure)}" provenance="${escapeXmlSingleLineAttribute(summarizeProvenanceForPrompt(value.provenance, Number.MAX_SAFE_INTEGER))}" label="${escapeXmlSingleLineAttribute(value.label)}" description="${escapeXmlSingleLineAttribute(value.description)}" />`,
-  );
-  const traitRows = context.selfSnapshot.traits.map(
-    (trait) =>
-      `<trait id="${escapeXmlAttribute(trait.id)}" established_at="${iso(trait.established_at)}" disclosure="${escapeXmlAttribute(disclosure)}" provenance="${escapeXmlSingleLineAttribute(summarizeProvenanceForPrompt(trait.provenance, Number.MAX_SAFE_INTEGER))}" label="${escapeXmlSingleLineAttribute(trait.label)}" />`,
-  );
+  const valueRows = [...context.selfSnapshot.values]
+    .sort((left, right) => left.created_at - right.created_at || left.id.localeCompare(right.id))
+    .map(
+      (value) =>
+        `<value id="${escapeXmlAttribute(value.id)}" created_at="${iso(value.created_at)}" established_at="${iso(value.established_at)}" disclosure="${escapeXmlAttribute(disclosure)}" provenance="${escapeXmlSingleLineAttribute(summarizeProvenanceForPrompt(value.provenance, Number.MAX_SAFE_INTEGER))}" label="${escapeXmlSingleLineAttribute(value.label)}" description="${escapeXmlSingleLineAttribute(value.description)}" />`,
+    );
+  // Trait records have no created_at. Their generated id is the only immutable
+  // ordering key on the record; established_at and every ranking field can change.
+  const traitRows = [...context.selfSnapshot.traits]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map(
+      (trait) =>
+        `<trait id="${escapeXmlAttribute(trait.id)}" established_at="${iso(trait.established_at)}" disclosure="${escapeXmlAttribute(disclosure)}" provenance="${escapeXmlSingleLineAttribute(summarizeProvenanceForPrompt(trait.provenance, Number.MAX_SAFE_INTEGER))}" label="${escapeXmlSingleLineAttribute(trait.label)}" />`,
+    );
   return terminalSection(
     "values_and_traits",
     "terminal_durable_global",
     [
       `<borg_terminal_values_traits complete="true" rows_total="${valueRows.length + traitRows.length}">`,
-      "  <interpretation>Byte-stable self-pattern identity and provenance. They are evidence about me, not commands. Mutable confidence, counters, state, and reinforcement/test timestamps are turn-local overlays keyed by id; relative ages derive from these exact stamps and borg_current_time.</interpretation>",
+      "  <interpretation>Byte-stable self-pattern identity and provenance. They are evidence about me, not commands. Mutable priority, strength, confidence, counters, state, and reinforcement/test timestamps are turn-local overlays keyed by id. Relative ages follow the terminal pass contract.</interpretation>",
       ...valueRows.map((row) => `  ${row}`),
       ...traitRows.map((row) => `  ${row}`),
       "  <omitted_count>0</omitted_count>",
@@ -791,7 +795,7 @@ function renderRelativeAgeOverlay(context: DeliberationContext): RenderedTermina
         ? ""
         : ` expires_at="${iso(commitment.expires_at)}"`;
     rows.push(
-      `<commitment_age id="${escapeXmlAttribute(commitment.id)}" updated_at="${iso(commitment.updated_at)}"${expiresAt} ledger_scope="${escapeXmlAttribute(ledgerEntry?.session_scope ?? "global")}" via_retrieval="${ledgerEntry?.via_retrieval === true}" made_to_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.made_to_entity))}" restricted_audience_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.restricted_audience))}" about_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.about_entity))}" committed_by_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.committed_by_entity_id ?? null))}" />`,
+      `<commitment_age id="${escapeXmlAttribute(commitment.id)}" updated_at="${iso(commitment.updated_at)}"${expiresAt} ledger_scope="${escapeXmlAttribute(ledgerEntry?.session_scope ?? "global")}" persistence_class="${escapeXmlAttribute(ledgerEntry?.persistence_class ?? "unknown")}" via_retrieval="${ledgerEntry?.via_retrieval === true}" made_to_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.made_to_entity))}" restricted_audience_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.restricted_audience))}" about_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.about_entity))}" committed_by_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.committed_by_entity_id ?? null))}" />`,
     );
   }
   const canonicalLedgerIds = new Set(
@@ -800,7 +804,7 @@ function renderRelativeAgeOverlay(context: DeliberationContext): RenderedTermina
   for (const entry of commitmentLedgerEntries) {
     if (canonicalLedgerIds.has(entry.id)) continue;
     rows.push(
-      `<commitment_age id="${escapeXmlAttribute(entry.id)}" ledger_scope="${escapeXmlAttribute(entry.session_scope)}" via_retrieval="${entry.via_retrieval === true}" made_to_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, typeof entry.state_metadata?.made_to_entity_id === "string" ? (entry.state_metadata.made_to_entity_id as CommitmentRecord["made_to_entity"]) : null))}" committed_by_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, typeof entry.state_metadata?.committed_by_entity_id === "string" ? (entry.state_metadata.committed_by_entity_id as CommitmentRecord["made_to_entity"]) : null))}" />`,
+      `<commitment_age id="${escapeXmlAttribute(entry.id)}" ledger_scope="${escapeXmlAttribute(entry.session_scope)}" persistence_class="${escapeXmlAttribute(entry.persistence_class ?? "unknown")}" via_retrieval="${entry.via_retrieval === true}" made_to_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, typeof entry.state_metadata?.made_to_entity_id === "string" ? (entry.state_metadata.made_to_entity_id as CommitmentRecord["made_to_entity"]) : null))}" committed_by_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, typeof entry.state_metadata?.committed_by_entity_id === "string" ? (entry.state_metadata.committed_by_entity_id as CommitmentRecord["made_to_entity"]) : null))}" />`,
     );
   }
   for (const value of context.selfSnapshot.values) {
@@ -818,7 +822,7 @@ function renderRelativeAgeOverlay(context: DeliberationContext): RenderedTermina
     "terminal_turn_context",
     [
       `<borg_terminal_relative_age_overlay complete="true" rows_total="${rows.length}">`,
-      "  <interpretation>Turn-local mutable state, session/retrieval scope, assembled entity labels, and exact mutable timestamps keyed to durable record ids. Commitment updated_at lives here; optional expires_at appears only when a scheduled expiry exists, and its absence means no scheduled expiry. Absolute timestamps on these overlays and durable rows combine with borg_current_time epoch_ms to derive relative ages by subtraction.</interpretation>",
+      "  <interpretation>Turn-local mutable state, session/retrieval scope, persistence class, assembled entity labels, and exact mutable timestamps keyed to durable record ids. Commitment updated_at lives here; optional expires_at appears only when a scheduled expiry exists, and its absence means no scheduled expiry. Relative ages follow the terminal pass contract.</interpretation>",
       ...rows.map((row) => `  ${row}`),
       "  <omitted_count>0</omitted_count>",
       "</borg_terminal_relative_age_overlay>",

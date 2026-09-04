@@ -635,7 +635,11 @@ describe("compact terminal finalizer context", () => {
     for (const field of ["reinforced", "decayed", "established", "tested", "contradicted"]) {
       expect(traitOverlay).not.toContain(` ${field}="`);
     }
-    expect(overlay).toContain("combine with borg_current_time epoch_ms to derive relative ages");
+    expect(result.system[0]?.text).toContain(
+      "subtracting it from the borg_current_time current_time_ms value",
+    );
+    expect(text(result).match(/derive its relative age by subtracting it from/g)).toHaveLength(1);
+    expect(text(result)).not.toContain("epoch_ms");
   });
 
   it("folds standing-ledger commitment fields into the single complete index", () => {
@@ -786,13 +790,41 @@ describe("compact terminal finalizer context", () => {
     for (const field of [...legacyCanonicalSemanticFields, ...legacyStandingLedgerSemanticFields]) {
       expect(unionFields, `commitment union field ${field}`).toContain(field);
     }
-    expect(durableRow).toContain('persistence_class="assistant_self_report"');
+    expect(durableRow).not.toContain("persistence_class=");
+    expect(turnRow).toContain('persistence_class="assistant_self_report"');
     expect(durableRow).toContain('citations="entry:one,entry:two"');
     expect(durableRow).toContain('ledger_text="distinct ledger projection text"');
     expect(durableRow).toContain('ledger_value="distinct_ledger_family"');
     expect(durableRow).not.toContain("ledger_state=");
     expect(turnRow).not.toContain("ledger_state_metadata=");
     expect(turnRow).toContain('made_to_entity_label="Alice"');
+  });
+
+  it("marks missing fields on a present commitment ledger projection", () => {
+    const canonical = commitment("projection source exact");
+    const entry: EvidenceLedgerEntry = {
+      id: `commitment:${canonical.id}`,
+      source_type: "commitment",
+      session_scope: "global",
+      actor: "memory",
+      trust_rank: 80,
+    };
+    const result = build(
+      context({
+        applicableCommitments: [canonical],
+        evidenceLedger: {
+          ...ledger(),
+          audienceStanding: { ...ledger().audienceStanding!, commitmentEntries: [entry] },
+        },
+      }),
+    );
+    const durableRow = result.system[1]!.text.match(/<commitment id="[^"]+"[^>]*\/>/)?.[0];
+
+    expect(durableRow).toContain('ledger_value="missing"');
+    expect(durableRow).toContain('ledger_text="missing"');
+    expect(result.system[1]?.text).toContain(
+      'a present projection with no value or text prints "missing" explicitly',
+    );
   });
 
   it("keeps block 1 stable when only commitment update and scheduled-expiry stamps change", () => {
@@ -1050,11 +1082,88 @@ describe("compact terminal finalizer context", () => {
     expect(interpretation).toContain("a compressed day and not a quiet one");
   });
 
+  it("orders durable self rows by immutable keys instead of mutable ranking", () => {
+    const olderValue = {
+      id: "val_zzzzzzzzzzzzzzzz" as ReturnType<typeof createValueId>,
+      label: "older value",
+      description: "created first",
+      priority: 1,
+      created_at: NOW_MS - 20_000,
+      last_affirmed: NOW_MS - 1_000,
+      state: "established" as const,
+      established_at: NOW_MS - 19_000,
+      confidence: 0.9,
+      last_tested_at: null,
+      last_contradicted_at: null,
+      support_count: 1,
+      contradiction_count: 0,
+      evidence_episode_ids: [],
+      provenance: { kind: "manual" as const },
+    };
+    const newerValue = {
+      ...olderValue,
+      id: "val_aaaaaaaaaaaaaaaa" as ReturnType<typeof createValueId>,
+      label: "newer value",
+      description: "created second",
+      created_at: NOW_MS - 10_000,
+    };
+    const firstTrait = {
+      id: "trt_aaaaaaaaaaaaaaaa" as ReturnType<typeof createTraitId>,
+      label: "first trait",
+      strength: 0.1,
+      last_reinforced: NOW_MS - 1_000,
+      last_decayed: null,
+      state: "established" as const,
+      established_at: NOW_MS - 20_000,
+      confidence: 0.9,
+      last_tested_at: null,
+      last_contradicted_at: null,
+      support_count: 1,
+      contradiction_count: 0,
+      evidence_episode_ids: [],
+      provenance: { kind: "manual" as const },
+    };
+    const secondTrait = {
+      ...firstTrait,
+      id: "trt_zzzzzzzzzzzzzzzz" as ReturnType<typeof createTraitId>,
+      label: "second trait",
+      established_at: NOW_MS - 10_000,
+    };
+    const first = build(
+      context({
+        selfSnapshot: {
+          goals: [],
+          values: [{ ...newerValue, priority: 9 }, olderValue],
+          traits: [{ ...secondTrait, strength: 0.9 }, firstTrait],
+        },
+      }),
+    );
+    const second = build(
+      context({
+        selfSnapshot: {
+          goals: [],
+          values: [{ ...olderValue, priority: 9 }, newerValue],
+          traits: [{ ...firstTrait, strength: 0.9 }, secondTrait],
+        },
+      }),
+    );
+    const durable = first.system[1]!.text;
+
+    expect(first.system[1]?.text).toBe(second.system[1]?.text);
+    expect(first.system[3]?.text).not.toBe(second.system[3]?.text);
+    expect(durable.indexOf(olderValue.id)).toBeLessThan(durable.indexOf(newerValue.id));
+    expect(durable.indexOf(firstTrait.id)).toBeLessThan(durable.indexOf(secondTrait.id));
+  });
+
   it("keeps mutable self state and ledger scope out of the one-hour global block", () => {
     const valueId = createValueId();
     const traitId = createTraitId();
     const canonical = commitment("stable exact");
-    const makeContext = (confidence: number, scope: EvidenceLedgerEntry["session_scope"]) => {
+    const makeContext = (
+      confidence: number,
+      scope: EvidenceLedgerEntry["session_scope"],
+      persistenceClass: EvidenceLedgerEntry["persistence_class"],
+    ) => {
       const commitmentEntry: EvidenceLedgerEntry = {
         id: `commitment:${canonical.id}`,
         source_type: "commitment",
@@ -1062,6 +1171,7 @@ describe("compact terminal finalizer context", () => {
         actor: "memory",
         trust_rank: 80,
         text: canonical.directive,
+        ...(persistenceClass === undefined ? {} : { persistence_class: persistenceClass }),
       };
       return context({
         applicableCommitments: [canonical],
@@ -1114,8 +1224,8 @@ describe("compact terminal finalizer context", () => {
         },
       });
     };
-    const first = build(makeContext(0.9, "global"));
-    const second = build(makeContext(0.2, "current_session"));
+    const first = build(makeContext(0.9, "global", undefined));
+    const second = build(makeContext(0.2, "current_session", "assistant_self_report"));
     expect(first.system[1]?.text).toBe(second.system[1]?.text);
     expect(first.system[3]?.text).not.toBe(second.system[3]?.text);
     expect(first.system[1]?.text).not.toContain("ledger_scope=");
@@ -1127,7 +1237,10 @@ describe("compact terminal finalizer context", () => {
     expect(durableSelf).not.toContain("support_count=");
     expect(durableSelf).not.toContain("last_reinforced=");
     expect(durableSelf).not.toContain("last_tested_at=");
+    expect(first.system[1]?.text).not.toContain("persistence_class=");
     expect(first.system[3]?.text).toContain('ledger_scope="global"');
+    expect(first.system[3]?.text).toContain('persistence_class="unknown"');
+    expect(second.system[3]?.text).toContain('persistence_class="assistant_self_report"');
   });
 
   it("imposes evidence-ledger, secondary-retrieval, then S2-plan order on plan-first input", () => {

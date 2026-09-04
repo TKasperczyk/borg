@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { FakeLLMClient, createFakeStreamingResponse } from "../../llm/test-support/fake-client.js";
+import { createEpisodeFixture, createRetrievalScoreFixture } from "../../offline/test-support.js";
 import { StreamWriter } from "../../stream/index.js";
 import { ToolDispatcher, type ToolDefinition, type ToolOrigin } from "../../tools/index.js";
 import { FixedClock } from "../../util/clock.js";
@@ -16,6 +17,7 @@ import {
 } from "../prompts/prompt-surface-registry.js";
 import { resolveFinalizerNonTerminalTools } from "./autonomous-finalizer-tools.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
+import type { DeliberationContext } from "./types.js";
 import {
   FINALIZER_REGENERATION_PROMPT_BLOCK_IDS,
   runFinalizer,
@@ -63,6 +65,7 @@ async function runEmissionFinalizer(
     participationPolicy?: Parameters<typeof runFinalizer>[0]["participationPolicy"];
     turnOrigin?: Parameters<typeof runFinalizer>[0]["turnOrigin"];
     registeredTools?: readonly ToolDefinition[];
+    compactSurface?: Parameters<typeof runFinalizer>[0]["compactSurface"];
   } = {},
 ) {
   return runFinalizer({
@@ -111,6 +114,7 @@ async function runEmissionFinalizer(
       ? {}
       : { participationPolicy: options.participationPolicy }),
     ...(options.turnOrigin === undefined ? {} : { turnOrigin: options.turnOrigin }),
+    ...(options.compactSurface === undefined ? {} : { compactSurface: options.compactSurface }),
     ...(options.tracer === undefined ? {} : { tracer: options.tracer }),
     ...(options.turnId === undefined ? {} : { turnId: options.turnId }),
   });
@@ -437,6 +441,128 @@ describe("runFinalizer emission tools", () => {
     expect(activeSystem[1]?.text).toContain(
       'participation_policy="active" outbound_post="available" enabled_terminal_emissions="EmitAnswer,EmitObserve,EmitNoOutput,EmitSelfReport,EmitContinueThought"',
     );
+  });
+
+  it("keeps compact tools and blocks 0-2 stable across turn-local changes", async () => {
+    const firstNow = Date.UTC(2026, 7, 14, 12, 0, 0);
+    const secondNow = firstNow + 60_000;
+    const retrievedEpisode: DeliberationContext["retrievalResult"][number] = {
+      episode: createEpisodeFixture({
+        id: "ep_aaaaaaaaaaaaaaaa" as DeliberationContext["retrievalResult"][number]["episode"]["id"],
+        title: "Turn-local retrieval",
+        narrative: "This record appears only on the second build.",
+        created_at: firstNow - 10_000,
+        updated_at: firstNow - 10_000,
+      }),
+      score: 0.9,
+      rawScore: 0.9,
+      scoreBreakdown: createRetrievalScoreFixture({
+        similarity: 0.9,
+        decayedSalience: 0.3,
+        heat: 1,
+      }),
+      citationChain: [],
+    };
+    const compactContext = (
+      nowMs: number,
+      participationPolicy: "active" | "paused",
+      retrievalResult: DeliberationContext["retrievalResult"],
+      outboundAvailable: boolean,
+    ): DeliberationContext => ({
+      sessionId: DEFAULT_SESSION_ID,
+      nowMs,
+      turnOrigin: "autonomous",
+      participationPolicy,
+      userMessage: "Continue the autonomous reflection.",
+      perception: {
+        entities: [],
+        mode: "reflective",
+        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+        temporalCue: null,
+      },
+      retrievalResult,
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 3,
+        hot_entities: [],
+        pending_actions: [],
+        pending_social_attribution: null,
+        pending_trait_attribution: null,
+        suppressed: [],
+        mood: null,
+        pending_procedural_attempts: [],
+        discourse_state: { stop_until_substantive_content: null },
+        mode: "reflective",
+        updated_at: firstNow - 1_000,
+      },
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      autonomousFinalizerToolMenu: outboundAvailable
+        ? [{ name: OUTBOUND_POST_TOOL_NAME, menuSummary: "Post to an authorized target." }]
+        : [],
+    });
+    const pausedLlm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_compact_paused",
+              name: "EmitNoOutput",
+              input: {
+                reason: "Participation is paused.",
+                primary_no_output_reason: "other",
+                no_output_categories: [],
+              },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+    const activeLlm = createAnsweringLlm("toolu_compact_active");
+    const outboundTool = fakeTool(OUTBOUND_POST_TOOL_NAME, ["autonomous", "deliberator"]);
+
+    await runEmissionFinalizer(pausedLlm, tempDirs, {
+      turnOrigin: "autonomous",
+      participationPolicy: "paused",
+      allowedEmissions: ["EmitNoOutput"],
+      outboundToolAvailable: false,
+      registeredTools: [outboundTool],
+      finalizerSurfaceVariant: "compact",
+      compactSurface: {
+        context: compactContext(firstNow, "paused", [], false),
+        baseSystemPromptOptions: {
+          retrievalContextBudget: 10_000,
+          semanticContextBudget: 10_000,
+          nowMs: firstNow,
+        },
+      },
+    });
+    await runEmissionFinalizer(activeLlm, tempDirs, {
+      turnOrigin: "autonomous",
+      participationPolicy: "active",
+      outboundToolAvailable: true,
+      registeredTools: [outboundTool],
+      finalizerSurfaceVariant: "compact",
+      compactSurface: {
+        context: compactContext(secondNow, "active", [retrievedEpisode], true),
+        baseSystemPromptOptions: {
+          retrievalContextBudget: 10_000,
+          semanticContextBudget: 10_000,
+          nowMs: secondNow,
+        },
+      },
+    });
+
+    const pausedRequest = pausedLlm.requests[0]!;
+    const activeRequest = activeLlm.requests[0]!;
+    const pausedSystem = pausedRequest.system as readonly CapturedSystemBlock[];
+    const activeSystem = activeRequest.system as readonly CapturedSystemBlock[];
+    expect(JSON.stringify(pausedRequest.tools)).toBe(JSON.stringify(activeRequest.tools));
+    expect(JSON.stringify(pausedSystem.slice(0, 3))).toBe(JSON.stringify(activeSystem.slice(0, 3)));
+    expect(JSON.stringify(pausedSystem[3])).not.toBe(JSON.stringify(activeSystem[3]));
   });
 
   it("sends each tool once when the live-turn and interior menus overlap", () => {
