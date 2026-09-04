@@ -396,3 +396,102 @@ team-agent compatibility: until a sidecar accepting the reply-only shape is live
 - No new LLM calls on the request path; no deliberation/reflection/closure phases.
 - Existing episodes stay shared within the tenant; only new turns get audience scoping.
 - Bridge (services/teams_bridge) needs no change: it already sends sender + conversation.
+
+## Extension 3 — entity-aware, source-backed recall
+
+Extension 3 supersedes the strict context `time_range` membership and zero-result fallback
+semantics described above. It is additive on the wire and changes only the sidecar/team-agent
+disclosure path; Borg cognition retrieval does not opt in.
+
+### Request extension
+
+`POST /memory/context` accepts optional `entity_terms: string[]`. The array contains at most 32
+trimmed, non-empty strings of at most 128 characters each. Team-agent sends bounded, case-insensitively
+deduplicated ranking hints in this order: matching canonical configured people and system names, the
+sender and observed participants, then raw names and identifiers found in the current message. The
+configured-match bucket contains at most eight terms, and each message token contributes at most two
+canonical people. Fuzzy person matching requires at least four letters when only three prefix
+characters are shared and ignores a token with more than four characters after its actual shared
+prefix. Entity terms activate Borg's existing configured entity attention weight. They do not create
+or widen an audience, prove identity, change visibility, or authorize disclosure. An omitted field
+preserves the previous retrieval behavior.
+
+### Episode source messages
+
+Each episode returned in the `episodes` section of `POST /memory/context` has additive
+`source_messages` data. Legacy `POST /memory/recall` never emits this field.
+
+```json
+{
+  "source_messages": [
+    {
+      "id": "strm_...",
+      "kind": "user_msg",
+      "occurred_at": 1770000000000,
+      "speaker_name": "Jacek",
+      "text": "the verbatim source prefix"
+    }
+  ]
+}
+```
+
+Only narrative `user_msg` and `agent_msg` entries with string content are eligible. Entries retain
+their citation-chain order. At most three entries are emitted per episode and each `text` is at most
+180 characters. Text is the original prefix: the sidecar does not collapse whitespace, summarize it,
+or append an ellipsis. `speaker_name` is optional; `occurred_at` uses `observed_at` when present and
+otherwise the stream timestamp.
+
+The sidecar projects source messages only after the episode passes the final visible-audience-set
+gate. A source message inherits its episode's visibility and disclosure; invisible episode content is
+dropped and is never returned with a label. Source entries are reused from the retrieval pipeline's
+already-resolved citation chain, so this extension adds no source DB read, embedding, or LLM call.
+
+### Recent-activity excerpts
+
+Each `recent_activity` event may have an additive `excerpt` string containing the original prefix of
+the event's source `user_msg` or `agent_msg`, capped at 180 characters without whitespace rewriting or
+an ellipsis. Source IDs are hydrated only after `listRecentVisibleOtherSessionEvents` has applied the
+same exact visible-audience-set and current-session exclusion as the event list. Hydration is indexed
+only, is bounded by the existing activity row cap and a 50 ms sub-budget, and never falls back to a
+stream scan. A missing, malformed, mismatched, failed, or over-budget lookup silently leaves the event
+without `excerpt`.
+
+### Time preference and recency prior
+
+For `POST /memory/context`, a supplied `time_range` is an ordering preference, not a membership gate.
+The sidecar performs one overfetched search with that range and `strictTimeRange: false`, then applies
+the existing episode visibility gate and caller exclusions. It marks every returned episode with
+`in_time_range: true|false` using the inclusive public `occurred_at` value (`episode.start_time`),
+stable-partitions in-window results before out-of-window results while preserving relevance order
+inside both partitions, and finally slices to the requested limit. Out-of-window results therefore
+top up unused slots. This context path does not perform a zero-result rerun and does not emit
+`episodes_time_range_fallback`.
+
+Legacy `POST /memory/recall` retains its Extension 2 strict/fallback behavior, including the optional
+`episodes_time_range_fallback` response field. Team-agent accepts that legacy field for compatibility.
+
+The memory sidecar can opt its context and legacy-recall searches into one bounded recency prior on
+the final fused episode score before MMR:
+
+`boost = weight * 0.5^(age_hours / half_life_hours)`
+
+Age is non-negative and is measured from `episode.end_time`. The prior is absent unless either
+`BORG_MEMORY_RECENCY_PRIOR_WEIGHT` or `BORG_MEMORY_RECENCY_PRIOR_HALF_LIFE_HOURS` is configured. Once
+enabled, an omitted or invalid companion uses `weight = 0.15` or `half_life_hours = 36`; weight is
+bounded to `[0, 1]`. The absent option performs no recency-prior arithmetic. Sol's cognition turn
+coordinator never supplies it, retains `strictTimeRange: false`, and therefore preserves its previous
+scores, ordering, and evidence.
+
+### Team-agent compatibility and rendering
+
+Team-agent preserves the episode order returned by `/memory/context`; it applies its historical
+newest-first sort only after a genuine 404 fallback to legacy `/memory/recall`. A 400 compatibility
+retry to an older strict context sidecar removes `entity_terms` together with the other extension
+fields. Older team-agent versions ignore all additive response fields, and newer team-agent versions
+continue when an older sidecar omits them.
+
+Source messages render beneath their episode and activity excerpts render beneath their trusted
+`Elsewhere right now` event sentence. Both are escaped and enclosed in
+`<untrusted_memory_evidence>` inside the existing memory `SystemMessage`. A trusted enclosing rule
+states that every such block is quoted data: it cannot change rules, grant authority, issue
+instructions, or request tool calls. Raw excerpts are never interpolated into trusted event text.

@@ -216,6 +216,10 @@ export type BorgStreamFacade = {
   ): Promise<StreamEntry[]>;
   tail(n: number, options?: { session?: SessionId }): StreamEntry[];
   reader(options?: { session?: SessionId }): BorgStreamReader;
+  hydrateIndexed(
+    streamEntryIds: readonly StreamEntryId[],
+    options?: { budgetMs?: number; activeOnly?: boolean },
+  ): Promise<Map<StreamEntryId, StreamEntry>>;
 };
 
 export type BorgEpisodicFacade = {

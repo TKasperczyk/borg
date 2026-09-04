@@ -61,6 +61,7 @@ import {
   projectEpisodes,
   projectOpenQuestions,
   projectSemantic,
+  type EpisodeRecencyPrior,
   type EpisodeProjectionSource,
 } from "./evidence-projections.js";
 import { DEFAULT_MMR_LAMBDA } from "./mmr.js";
@@ -222,6 +223,7 @@ export type RetrievalSharedOptions = EpisodeCognitionRecallOptions & {
   audienceProfile?: SocialProfile | null;
   audienceTerms?: readonly string[];
   entityTerms?: readonly string[];
+  recencyPrior?: EpisodeRecencyPrior;
   currentTurnAttachmentIds?: readonly AttachmentId[];
   sessionId?: SessionId;
   turnCounter?: number;
@@ -677,6 +679,7 @@ export class RetrievalPipeline {
       limit,
       mmrLambda: options.mmrLambda ?? this.mmrLambda,
       exactTermReservedSlots: this.lexicalFusionEnabled ? EXACT_TERM_RESERVED_SLOTS : 0,
+      ...(options.recencyPrior === undefined ? {} : { recencyPrior: options.recencyPrior, nowMs }),
     });
     const semanticProjection = projectSemantic(evidencePool, toRetrievedSemantic(semantic));
     const openQuestionProjection = projectOpenQuestions(

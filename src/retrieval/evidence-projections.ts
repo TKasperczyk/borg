@@ -5,6 +5,7 @@ import type { SemanticNode } from "../memory/semantic/types.js";
 import type { StreamEntry } from "../stream/index.js";
 import { RetrievalError } from "../util/errors.js";
 import type { SemanticEdgeId, SemanticNodeId } from "../util/ids.js";
+import { halfLifeDecay } from "../util/math.js";
 
 import { applyMmr } from "./mmr.js";
 import type { EvidenceItem, EvidencePool } from "./recall-types.js";
@@ -27,6 +28,11 @@ export type EpisodeProjection = {
   selectedEvidence: EvidenceItem[];
 };
 
+export type EpisodeRecencyPrior = {
+  weight: number;
+  halfLifeHours: number;
+};
+
 type EpisodeProjectionCandidate = {
   evidence: EvidenceItem;
   source: EpisodeProjectionSource;
@@ -44,9 +50,11 @@ export function projectEpisodes(
     limit: number;
     mmrLambda: number;
     exactTermReservedSlots?: number;
+    recencyPrior?: EpisodeRecencyPrior;
+    nowMs?: number;
   },
 ): EpisodeProjection {
-  const candidates = dedupeEpisodeProjectionCandidates(
+  const deduplicatedCandidates = dedupeEpisodeProjectionCandidates(
     pool.items
       .filter((item) => item.source === "episode")
       .map((evidence) => {
@@ -70,6 +78,14 @@ export function projectEpisodes(
         };
       }),
   );
+  const candidates =
+    options.recencyPrior === undefined
+      ? deduplicatedCandidates
+      : applyEpisodeRecencyPrior(
+          deduplicatedCandidates,
+          options.recencyPrior,
+          options.nowMs ?? Date.now(),
+        );
 
   const selected = applyMmr(
     candidates.map((item) => ({
@@ -115,6 +131,37 @@ export function projectEpisodes(
     ),
     selectedEvidence: selected.map((item) => item.evidence),
   };
+}
+
+function applyEpisodeRecencyPrior(
+  candidates: readonly EpisodeProjectionCandidate[],
+  prior: EpisodeRecencyPrior,
+  nowMs: number,
+): EpisodeProjectionCandidate[] {
+  const weight = clamp(Number.isFinite(prior.weight) ? prior.weight : 0, 0, 1);
+  const halfLifeHours =
+    Number.isFinite(prior.halfLifeHours) && prior.halfLifeHours > 0
+      ? prior.halfLifeHours
+      : Number.POSITIVE_INFINITY;
+
+  return candidates.map((candidate) => {
+    const ageHours =
+      Math.max(0, nowMs - candidate.source.candidate.episode.end_time) / (60 * 60_000);
+    const boost = weight * halfLifeDecay(ageHours, halfLifeHours);
+    const rawScore = candidate.source.score.rawScore + boost;
+
+    return {
+      ...candidate,
+      source: {
+        ...candidate.source,
+        score: {
+          ...candidate.source.score,
+          score: rawScore,
+          rawScore,
+        },
+      },
+    };
+  });
 }
 
 export function projectSemantic(

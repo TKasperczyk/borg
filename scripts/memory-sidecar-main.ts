@@ -89,6 +89,24 @@ const recentActivityLimit =
   Number.isFinite(recentActivityLimitRaw) && recentActivityLimitRaw > 0
     ? Math.floor(recentActivityLimitRaw)
     : DEFAULT_RECENT_ACTIVITY_LIMIT;
+const recencyPriorWeightEnv = process.env.BORG_MEMORY_RECENCY_PRIOR_WEIGHT?.trim() || undefined;
+const recencyPriorHalfLifeEnv =
+  process.env.BORG_MEMORY_RECENCY_PRIOR_HALF_LIFE_HOURS?.trim() || undefined;
+const recencyPriorEnabled = Boolean(recencyPriorWeightEnv) || Boolean(recencyPriorHalfLifeEnv);
+const recencyPriorWeightRaw = Number(recencyPriorWeightEnv ?? 0.15);
+const recencyPriorHalfLifeRaw = Number(recencyPriorHalfLifeEnv ?? 36);
+const recencyPrior = recencyPriorEnabled
+  ? {
+      weight:
+        Number.isFinite(recencyPriorWeightRaw) && recencyPriorWeightRaw >= 0
+          ? Math.min(1, recencyPriorWeightRaw)
+          : 0.15,
+      halfLifeHours:
+        Number.isFinite(recencyPriorHalfLifeRaw) && recencyPriorHalfLifeRaw > 0
+          ? recencyPriorHalfLifeRaw
+          : 36,
+    }
+  : undefined;
 // Bound every provider call so a hung kratos can't pin a request + pool slot
 // (and block shutdown) indefinitely.
 const requestTimeoutMs = Number(process.env.BORG_MEMORY_LLM_TIMEOUT_MS ?? 120_000);
@@ -236,6 +254,7 @@ const server = createServer(
     recallDeadlineMs,
     recentActivityWindowMs,
     recentActivityLimit,
+    ...(recencyPrior === undefined ? {} : { recencyPrior }),
     ...(inboxWaiters === undefined ? {} : { inboxWaiters }),
     ...(traceRegistry === undefined ? {} : { traceRegistry }),
   }),

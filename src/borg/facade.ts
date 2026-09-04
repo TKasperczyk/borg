@@ -37,13 +37,14 @@ import {
   resolveMemoryDisclosureLabelsByEpisodeId,
   type MemoryDisclosureLabel,
 } from "../retrieval/index.js";
-import { StreamReader } from "../stream/index.js";
+import { hydrateStreamEntriesById, StreamReader } from "../stream/index.js";
 import { AttachmentError, StorageError } from "../util/errors.js";
 import {
   DEFAULT_SESSION_ID,
   createSemanticNodeId,
   type EntityId,
   type ImagePerceptionId,
+  type StreamEntryId,
 } from "../util/ids.js";
 import type { BorgFacades } from "./facade-types.js";
 import type {
@@ -597,6 +598,15 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           dataDir: deps.config.dataDir,
           sessionId: options.session ?? DEFAULT_SESSION_ID,
           entryIndex: deps.entryIndex,
+        }),
+      hydrateIndexed: (streamEntryIds: readonly StreamEntryId[], options = {}) =>
+        hydrateStreamEntriesById({
+          dataDir: deps.config.dataDir,
+          sessionId: DEFAULT_SESSION_ID,
+          streamEntryIds,
+          entryIndex: deps.entryIndex,
+          budgetMs: options.budgetMs,
+          activeOnly: options.activeOnly,
         }),
     },
     episodic: {

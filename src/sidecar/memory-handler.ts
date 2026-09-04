@@ -10,7 +10,8 @@
 //        absent assistant records an observation; absent user records a reply-only turn;
 //        incomplete identity keeps legacy append behavior
 //   POST /memory/context { tenant, session, sender, conversation, query?, limit?, sections?,
-//                          participants?, time_range?, exclude?, venue_since?, venue_limit? }
+//                          participants?, entity_terms?, time_range?, exclude?, venue_since?,
+//                          venue_limit? }
 //                                                            -> audience-scoped turn context
 //   POST /memory/recall      { tenant, query, limit?, time_range?, exclude? }
 //                                                            -> semantic episodic search
@@ -73,9 +74,17 @@ import {
   parseEpisodeParticipantEntityIdTerm,
   type Episode,
 } from "../memory/episodic/index.js";
+import {
+  clipRecalledEvidenceText,
+  MAX_RECALLED_SOURCE_MESSAGES_PER_EPISODE,
+} from "../retrieval/evidence-bounds.js";
+import type { EpisodeRecencyPrior, RetrievedEpisode } from "../retrieval/index.js";
 import type { RetrievalDegradation } from "../retrieval/pipeline.js";
-import type { RetrievedEpisode } from "../retrieval/index.js";
-import { type StreamEntry, type StreamEntryInput } from "../stream/index.js";
+import {
+  isNarrativeStreamEntry,
+  type StreamEntry,
+  type StreamEntryInput,
+} from "../stream/index.js";
 import { sessionIdSchema, streamEntryIdSchema } from "../util/id-schemas.js";
 import { dedupePreservingOrder } from "../util/collections.js";
 import { EmbeddingError } from "../util/errors.js";
@@ -90,6 +99,7 @@ import {
   type EntityId,
   type MaintenanceRunId,
   type SessionId,
+  type StreamEntryId,
 } from "../util/ids.js";
 import { formatRelativeAge } from "../util/relative-time.js";
 import type { MemoryMaintenanceCoordinator } from "./memory-maintenance.js";
@@ -147,6 +157,8 @@ export type MemoryHandlerOptions = {
   recallDeadlineMs?: number;
   recentActivityWindowMs?: number;
   recentActivityLimit?: number;
+  activityExcerptHydrationBudgetMs?: number;
+  recencyPrior?: EpisodeRecencyPrior;
   traceRegistry?: MemoryTraceRegistry;
   maintenanceCoordinator?: Pick<
     MemoryMaintenanceCoordinator,
@@ -162,9 +174,13 @@ const DEFAULT_MAX_RECALL_LIMIT = 50;
 const DEFAULT_RECALL_DEADLINE_MS = 5000;
 export const DEFAULT_RECENT_ACTIVITY_WINDOW_MS = 24 * 60 * 60_000;
 export const DEFAULT_RECENT_ACTIVITY_LIMIT = 12;
+export const DEFAULT_ACTIVITY_EXCERPT_HYDRATION_BUDGET_MS = 50;
+const RECENT_ACTIVITY_EXCERPT_HYDRATION_FAILURE_REASON = "recent_activity_excerpt_hydration_failed";
 const DEFAULT_VENUE_RECENT_LIMIT = 12;
 const MAX_VENUE_RECENT_LIMIT = 50;
 const MAX_CONTEXT_PARTICIPANTS = 32;
+const MAX_CONTEXT_ENTITY_TERMS = 32;
+const MAX_CONTEXT_ENTITY_TERM_CHARS = 128;
 const EPISODE_OVERFETCH_MULTIPLIER = 3;
 const OBSERVATION_MAX_PAST_AGE_MS = 5 * 60_000;
 const OBSERVATION_MAX_FUTURE_SKEW_MS = 60_000;
@@ -260,6 +276,10 @@ const memoryContextBodySchema = z
     sender: contextSenderSchema,
     conversation: contextConversationSchema,
     participants: z.array(contextSenderSchema).max(MAX_CONTEXT_PARTICIPANTS).optional(),
+    entity_terms: z
+      .array(z.string().trim().min(1).max(MAX_CONTEXT_ENTITY_TERM_CHARS))
+      .max(MAX_CONTEXT_ENTITY_TERMS)
+      .optional(),
     query: z.string().trim().min(1).optional(),
     limit: z.number().finite().optional(),
     sections: z.array(memoryContextSectionSchema).min(1).optional(),
@@ -759,7 +779,8 @@ function createPublicEpisodeMetadataProjector(
 }
 
 type EpisodeExclusions = z.infer<typeof episodeExclusionsSchema>;
-type SidecarEpisodeHit = Pick<RetrievedEpisode, "episode" | "score" | "rawScore">;
+type SidecarEpisodeHit = Pick<RetrievedEpisode, "episode" | "score" | "rawScore"> &
+  Partial<Pick<RetrievedEpisode, "citationChain">>;
 
 // These patterns are explicit protocol handles supplied by the caller. Matching them mechanically
 // does not interpret user-authored language or infer episode meaning.
@@ -778,6 +799,10 @@ function projectEpisodeHitsForResponse(
   hits: readonly SidecarEpisodeHit[],
   entities: Pick<Borg["entities"], "get" | "getSelf">,
   includeDisclosure: boolean,
+  options: {
+    includeSourceMessages?: boolean;
+    timeRange?: { start: number; end: number };
+  } = {},
 ): Array<Record<string, unknown>> {
   if (hits.length === 0) {
     return [];
@@ -804,6 +829,26 @@ function projectEpisodeHitsForResponse(
   }
 
   return hits.map((hit) => {
+    const sourceMessages = options.includeSourceMessages
+      ? (hit.citationChain ?? [])
+          .filter(isNarrativeStreamEntry)
+          .flatMap((entry) =>
+            typeof entry.content === "string" ? [{ entry, content: entry.content }] : [],
+          )
+          .slice(0, MAX_RECALLED_SOURCE_MESSAGES_PER_EPISODE)
+          .map(({ entry, content }) => {
+            const speaker =
+              entry.sender_entity_id === null ? null : entities.get(entry.sender_entity_id);
+
+            return {
+              id: entry.id,
+              kind: entry.kind,
+              occurred_at: entry.observed_at ?? entry.timestamp,
+              ...(speaker === null ? {} : { speaker_name: speaker.canonical_name }),
+              text: clipRecalledEvidenceText(content),
+            };
+          })
+      : undefined;
     const base = {
       id: hit.episode.id,
       title: hit.episode.title,
@@ -812,6 +857,14 @@ function projectEpisodeHitsForResponse(
       raw_score: hit.rawScore,
       location: hit.episode.location,
       ...projectMetadata(hit.episode),
+      ...(options.timeRange === undefined
+        ? {}
+        : {
+            in_time_range:
+              hit.episode.start_time >= options.timeRange.start &&
+              hit.episode.start_time <= options.timeRange.end,
+          }),
+      ...(sourceMessages === undefined ? {} : { source_messages: sourceMessages }),
     };
 
     if (!includeDisclosure) {
@@ -946,7 +999,11 @@ function isInvalidEpisodeCursorError(error: unknown): boolean {
   return errorCode(error) === "EPISODE_CURSOR_INVALID";
 }
 
-function projectRecentActivity(event: ActivityVisibleSessionEvent, nowMs: number) {
+function projectRecentActivity(
+  event: ActivityVisibleSessionEvent,
+  nowMs: number,
+  sourceEntries: ReadonlyMap<StreamEntryId, StreamEntry>,
+) {
   const relativeAge = formatRelativeAge(event.occurredAt, nowMs);
   const conversation =
     event.conversationKind === "dm"
@@ -964,6 +1021,19 @@ function projectRecentActivity(event: ActivityVisibleSessionEvent, nowMs: number
     event.kind === "user_contact"
       ? `${event.participantLabel} contacted the agent ${relativeAge} in ${location}.`
       : `The agent replied to ${event.participantLabel} ${relativeAge} in ${location}.`;
+  const expectedSourceKind = event.kind === "user_contact" ? "user_msg" : "agent_msg";
+  const sourceEntry = event.sourceStreamEntryIds
+    .map((entryId) => sourceEntries.get(entryId))
+    .find(
+      (entry) =>
+        entry?.session_id === event.sessionId &&
+        entry.kind === expectedSourceKind &&
+        typeof entry.content === "string",
+    );
+  const excerpt =
+    sourceEntry !== undefined && typeof sourceEntry.content === "string"
+      ? clipRecalledEvidenceText(sourceEntry.content)
+      : null;
 
   return {
     kind: event.kind,
@@ -974,6 +1044,7 @@ function projectRecentActivity(event: ActivityVisibleSessionEvent, nowMs: number
     conversation,
     participant_name: event.participantLabel,
     text,
+    ...(excerpt === null ? {} : { excerpt }),
   };
 }
 
@@ -1117,6 +1188,13 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
     1,
     Math.floor(options.recentActivityLimit ?? DEFAULT_RECENT_ACTIVITY_LIMIT),
   );
+  const activityExcerptHydrationBudgetMs = Math.max(
+    0,
+    Math.floor(
+      options.activityExcerptHydrationBudgetMs ?? DEFAULT_ACTIVITY_EXCERPT_HYDRATION_BUDGET_MS,
+    ),
+  );
+  const recencyPrior = options.recencyPrior;
   let recallTraceSequence = 0;
 
   const nextRecallTraceTurnId = (tenant: string): string => {
@@ -2065,7 +2143,8 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             Math.floor(parsed.data.limit === undefined ? 8 : parsed.data.limit),
           ),
         );
-        const deferEpisodeRetrievalAccounting = parsed.data.exclude !== undefined;
+        const deferEpisodeRetrievalAccounting =
+          parsed.data.exclude !== undefined || parsed.data.time_range !== undefined;
         const episodeSearchLimit = deferEpisodeRetrievalAccounting
           ? Math.min(
               maxRecallLimit * EPISODE_OVERFETCH_MULTIPLIER,
@@ -2134,16 +2213,37 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             identity.audienceEntity.id,
             ...observedGroupAudienceEntityIds,
           ]);
-          const recentActivity = requestedSections.has("recent_activity")
-            ? borg.activity
-                .listRecentVisibleOtherSessionEvents({
-                  currentSessionId: session,
-                  audienceEntityIds: visibleAudienceEntityIds,
-                  sinceMs: nowMs - recentActivityWindowMs,
-                  limit: recentActivityLimit,
-                })
-                .map((event) => projectRecentActivity(event, nowMs))
+          const recentActivityEvents = requestedSections.has("recent_activity")
+            ? borg.activity.listRecentVisibleOtherSessionEvents({
+                currentSessionId: session,
+                audienceEntityIds: visibleAudienceEntityIds,
+                sinceMs: nowMs - recentActivityWindowMs,
+                limit: recentActivityLimit,
+              })
             : [];
+          const recentActivitySourceIds = recentActivityEvents.flatMap(
+            (event) => event.sourceStreamEntryIds,
+          );
+          let recentActivitySourceEntries = new Map<StreamEntryId, StreamEntry>();
+          if (recentActivityEvents.length > 0) {
+            try {
+              recentActivitySourceEntries = await borg.stream.hydrateIndexed(
+                recentActivitySourceIds,
+                { budgetMs: activityExcerptHydrationBudgetMs, activeOnly: true },
+              );
+            } catch (error) {
+              // Excerpts are optional disclosure context; the event itself remains useful.
+              console.warn("memory-sidecar: recent-activity excerpt hydration failed", {
+                reason: RECENT_ACTIVITY_EXCERPT_HYDRATION_FAILURE_REASON,
+                tenant,
+                source_id_count: recentActivitySourceIds.length,
+                error_name: error instanceof Error ? error.name : typeof error,
+              });
+            }
+          }
+          const recentActivity = recentActivityEvents.map((event) =>
+            projectRecentActivity(event, nowMs, recentActivitySourceEntries),
+          );
           const commitments = requestedSections.has("commitments")
             ? borg.commitments
                 .list({
@@ -2213,7 +2313,6 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         let degraded = false;
         let degradedReason = "";
         let abstained = false;
-        let episodesTimeRangeFallback = false;
 
         if (requestedSections.has("episodes")) {
           const traceTurnId =
@@ -2227,29 +2326,47 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                   audienceEntityId: identity.audienceEntity.id,
                   visibleAudienceEntityIds: context.visibleAudienceEntityIds,
                   onDegraded: (degradation: RetrievalDegradation) => degradations.push(degradation),
+                  ...(parsed.data.entity_terms === undefined
+                    ? {}
+                    : { entityTerms: parsed.data.entity_terms }),
+                  ...(recencyPrior === undefined ? {} : { recencyPrior }),
                   ...(deferEpisodeRetrievalAccounting ? { recordRetrieval: false } : {}),
                   ...(traceTurnId === undefined ? {} : { traceTurnId }),
                 };
-                const recalledResult =
-                  parsed.data.time_range === undefined
-                    ? {
-                        episodes: await borg.episodic.search(parsed.data.query!, recallOptions),
-                        timeRangeFallback: false,
-                      }
-                    : await borg.episodic.searchWithTimeRangeFallback(parsed.data.query!, {
-                        ...recallOptions,
+                const recalled = await borg.episodic.search(parsed.data.query!, {
+                  ...recallOptions,
+                  ...(parsed.data.time_range === undefined
+                    ? {}
+                    : {
                         timeRange: parsed.data.time_range,
-                      });
-                const recalled = recalledResult.episodes;
+                        strictTimeRange: false,
+                      }),
+                });
                 const visible = recalled.filter((hit) =>
                   isEpisodeAccessVisibleToAnyAudience(
                     hit.episode,
                     context.visibleAudienceEntityIds,
                   ),
                 );
-                const included = visible
-                  .filter((hit) => !episodeMatchesExclusions(hit.episode, parsed.data.exclude))
-                  .slice(0, episodeLimit);
+                const eligible = visible.filter(
+                  (hit) => !episodeMatchesExclusions(hit.episode, parsed.data.exclude),
+                );
+                const ordered =
+                  parsed.data.time_range === undefined
+                    ? eligible
+                    : [
+                        ...eligible.filter(
+                          (hit) =>
+                            hit.episode.start_time >= parsed.data.time_range!.start &&
+                            hit.episode.start_time <= parsed.data.time_range!.end,
+                        ),
+                        ...eligible.filter(
+                          (hit) =>
+                            hit.episode.start_time < parsed.data.time_range!.start ||
+                            hit.episode.start_time > parsed.data.time_range!.end,
+                        ),
+                      ];
+                const included = ordered.slice(0, episodeLimit);
                 const topRawScore =
                   included.length === 0 ? null : Math.max(...included.map((hit) => hit.rawScore));
                 const shouldAbstain =
@@ -2263,17 +2380,20 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                 }
 
                 return {
-                  timeRangeFallback: recalledResult.timeRangeFallback,
                   hiddenEpisodeCount: recalled.length - visible.length,
                   topRawScore,
-                  episodes: projectEpisodeHitsForResponse(included, borg.entities, true),
+                  episodes: projectEpisodeHitsForResponse(included, borg.entities, true, {
+                    includeSourceMessages: true,
+                    ...(parsed.data.time_range === undefined
+                      ? {}
+                      : { timeRange: parsed.data.time_range }),
+                  }),
                 };
               }),
               recallDeadlineMs,
             );
 
             hiddenEpisodeCount = recallResult.hiddenEpisodeCount;
-            episodesTimeRangeFallback = recallResult.timeRangeFallback;
             if (
               recallAbstainThreshold > 0 &&
               (recallResult.topRawScore === null ||
@@ -2323,9 +2443,6 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         if (requestedSections.has("episodes")) {
           response.episodes = episodes;
           response.hidden_episode_count = hiddenEpisodeCount;
-          if (episodesTimeRangeFallback) {
-            response.episodes_time_range_fallback = true;
-          }
           if (abstained) {
             response.abstained = true;
             response.abstain_reason = "low_relevance";
@@ -2953,6 +3070,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             const recallOptions = {
               limit: searchLimit,
               onDegraded: (degradation: RetrievalDegradation) => degradations.push(degradation),
+              ...(recencyPrior === undefined ? {} : { recencyPrior }),
               ...(deferRetrievalAccounting ? { recordRetrieval: false } : {}),
               ...(traceTurnId === undefined ? {} : { traceTurnId }),
             };

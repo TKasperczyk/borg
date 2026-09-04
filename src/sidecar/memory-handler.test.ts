@@ -36,6 +36,7 @@ import type {
   ActivityVisibleSessionEvent,
 } from "../memory/activity/index.js";
 import { episodeParticipantEntityIdTerm, type Episode } from "../memory/episodic/index.js";
+import { QUARANTINED_USER_ENTRY_EVENT, StreamReader, type StreamEntry } from "../stream/index.js";
 import { EmbeddingError } from "../util/errors.js";
 import {
   createCommitmentId,
@@ -47,6 +48,7 @@ import {
   parseStreamEntryId,
   type EntityId,
   type SessionId,
+  type StreamEntryId,
 } from "../util/ids.js";
 
 const TOKEN = "secret-token";
@@ -81,6 +83,13 @@ type Recorder = {
     session?: string;
   }>;
   appendCalls: Array<{ input: unknown; session?: string }>;
+  indexedStreamEntries: Map<StreamEntryId, StreamEntry>;
+  streamHydrateCalls: Array<{
+    ids: readonly StreamEntryId[];
+    budgetMs?: number;
+    activeOnly?: boolean;
+  }>;
+  streamHydrationError?: Error;
   resolvedExternalSenders: unknown[];
   resolvedExternalEntities: unknown[];
   lookedUpExternalSenders: Array<{ source: string; externalId: string }>;
@@ -111,6 +120,7 @@ type Recorder = {
   recallOptionsCalls: Array<Record<string, unknown>>;
   retrievalRecords: Array<{ episodeId: Episode["id"]; score: number }>;
   recallEpisodes?: Episode[];
+  recallCitationChains: Map<Episode["id"], StreamEntry[]>;
   venueEpisodes: Episode[];
   lastVenueOptions?: unknown;
   recallError?: Error;
@@ -265,6 +275,25 @@ function stubBorg(rec: Recorder): Borg {
           session_id: options?.session ?? "sess_0000000000000000",
           compressed: false,
         }));
+      },
+      hydrateIndexed: async (
+        ids: readonly StreamEntryId[],
+        options?: { budgetMs?: number; activeOnly?: boolean },
+      ) => {
+        rec.streamHydrateCalls.push({
+          ids,
+          budgetMs: options?.budgetMs,
+          activeOnly: options?.activeOnly,
+        });
+        if (rec.streamHydrationError !== undefined) {
+          throw rec.streamHydrationError;
+        }
+        return new Map(
+          ids.flatMap((id) => {
+            const entry = rec.indexedStreamEntries.get(id);
+            return entry === undefined ? [] : [[id, entry] as const];
+          }),
+        );
       },
     },
     entities: {
@@ -561,6 +590,7 @@ function stubBorg(rec: Recorder): Borg {
           episode,
           score: 0.91,
           rawScore: 1.16 - index * 0.01,
+          citationChain: rec.recallCitationChains.get(episode.id) ?? [],
         }));
       },
       searchWithTimeRangeFallback: async (
@@ -590,6 +620,7 @@ function stubBorg(rec: Recorder): Borg {
           episode,
           score: 0.91,
           rawScore: 1.16 - index * 0.01,
+          citationChain: rec.recallCitationChains.get(episode.id) ?? [],
         }));
         const strict = recalled.filter(
           (hit) =>
@@ -660,6 +691,8 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     inspectIds: [],
     appendCalls: [],
     appendManyCalls: [],
+    indexedStreamEntries: new Map(),
+    streamHydrateCalls: [],
     resolvedExternalSenders: [],
     resolvedExternalEntities: [],
     lookedUpExternalSenders: [],
@@ -684,6 +717,7 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     visibleActivityEvents: [],
     recallOptionsCalls: [],
     retrievalRecords: [],
+    recallCitationChains: new Map(),
     venueEpisodes: [],
     creatorDirectives: [],
     directiveQueueInputs: [],
@@ -3412,6 +3446,551 @@ describe("memory sidecar handler", () => {
     expect(rec.exclusives).toEqual([true, undefined, undefined]);
   });
 
+  it("forwards bounded entity terms while preserving requests that omit them", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool, TOKEN, {
+      recencyPrior: { weight: 0.15, halfLifeHours: 36 },
+    });
+    const request = {
+      tenant: "acme",
+      session: "entity-context",
+      sender: { external_id: "alice", display_name: "Alice" },
+      conversation: { type: "personal", name: "Alice" },
+      query: "What did Jacek say about team-agent?",
+      sections: ["episodes"],
+    };
+
+    const withTerms = await post(
+      base,
+      "/memory/context",
+      { ...request, entity_terms: ["Jacek", "team-agent"] },
+      TOKEN,
+    );
+    expect(withTerms.status).toBe(200);
+    await withTerms.json();
+    expect(rec.lastRecallOptions).toMatchObject({
+      entityTerms: ["Jacek", "team-agent"],
+      recencyPrior: { weight: 0.15, halfLifeHours: 36 },
+    });
+
+    const oldShape = await post(base, "/memory/context", request, TOKEN);
+    expect(oldShape.status).toBe(200);
+    await oldShape.json();
+    expect(rec.lastRecallOptions).not.toHaveProperty("entityTerms");
+
+    const overLimit = await post(
+      base,
+      "/memory/context",
+      { ...request, entity_terms: Array.from({ length: 33 }, (_, index) => `term-${index}`) },
+      TOKEN,
+    );
+    expect(overLimit.status).toBe(400);
+  });
+
+  it("projects only visible episode source messages with shared count and text caps", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const alice = createEntityId();
+    const bob = createEntityId();
+    rec.externalEntityIds.set("team-agent.sender\u0000alice", alice);
+    rec.externalSenderIds.set("alice", alice);
+    rec.entities.push(
+      {
+        id: alice,
+        canonical_name: "Alice",
+        aliases: [],
+        kind: "person",
+        borg_role: null,
+        name_provenance: "transport_sender",
+        created_at: 1,
+      },
+      {
+        id: bob,
+        canonical_name: "Bob",
+        aliases: [],
+        kind: "person",
+        borg_role: null,
+        name_provenance: "transport_sender",
+        created_at: 1,
+      },
+    );
+    const visible = testEpisode("ep_sourcevisible001" as Episode["id"], {
+      audience_entity_id: alice,
+      origin_audience_entity_ids: [alice],
+      source_stream_ids: [parseStreamEntryId("strm_sourcevisible001")],
+    });
+    const hidden = testEpisode("ep_sourcehidden0001" as Episode["id"], {
+      audience_entity_id: bob,
+      origin_audience_entity_ids: [bob],
+      source_stream_ids: [parseStreamEntryId("strm_sourcehidden0001")],
+    });
+    const sourceEntry = (
+      id: string,
+      kind: StreamEntry["kind"],
+      content: unknown,
+      senderEntityId: EntityId | null = null,
+    ): StreamEntry => ({
+      id: parseStreamEntryId(id),
+      timestamp: 1_700_000_000_000,
+      kind,
+      content,
+      sender_entity_id: senderEntityId,
+      reply_target_entity_id: null,
+      session_id: parseSessionId("sess_sourcevisible001"),
+      compressed: false,
+    });
+    rec.recallEpisodes = [hidden, visible];
+    rec.recallCitationChains.set(visible.id, [
+      sourceEntry("strm_sourcevisible001", "user_msg", "x".repeat(181), alice),
+      sourceEntry("strm_sourcevisible002", "internal_event", "do not expose"),
+      sourceEntry("strm_sourcevisible003", "agent_msg", "Second message"),
+      sourceEntry("strm_sourcevisible004", "user_msg", "Third message", alice),
+      sourceEntry("strm_sourcevisible005", "agent_msg", "Fourth message"),
+    ]);
+    rec.recallCitationChains.set(hidden.id, [
+      sourceEntry("strm_sourcehidden0001", "user_msg", "Bob private source", bob),
+    ]);
+
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "source-context",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: { type: "personal", name: "Alice" },
+        query: "What was said?",
+        sections: ["episodes"],
+      },
+      TOKEN,
+    );
+    const payload = (await response.json()) as {
+      episodes: Array<{ id: string; source_messages?: Array<Record<string, unknown>> }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.episodes).toHaveLength(1);
+    expect(payload.episodes[0]?.id).toBe(visible.id);
+    expect(payload.episodes[0]?.source_messages).toEqual([
+      {
+        id: "strm_sourcevisible001",
+        kind: "user_msg",
+        occurred_at: 1_700_000_000_000,
+        speaker_name: "Alice",
+        text: "x".repeat(180),
+      },
+      {
+        id: "strm_sourcevisible003",
+        kind: "agent_msg",
+        occurred_at: 1_700_000_000_000,
+        text: "Second message",
+      },
+      {
+        id: "strm_sourcevisible004",
+        kind: "user_msg",
+        occurred_at: 1_700_000_000_000,
+        speaker_name: "Alice",
+        text: "Third message",
+      },
+    ]);
+    expect(JSON.stringify(payload)).not.toContain("Bob private source");
+
+    rec.recallEpisodes = [visible];
+    const legacyResponse = await post(
+      base,
+      "/memory/recall",
+      { tenant: "acme", query: "What was said?" },
+      TOKEN,
+    );
+    const legacyPayload = (await legacyResponse.json()) as {
+      episodes: Array<Record<string, unknown>>;
+    };
+    expect(legacyPayload.episodes[0]).not.toHaveProperty("source_messages");
+  });
+
+  it("hydrates only visible, active, session- and kind-matched activity sources within budget", async () => {
+    const root = mkdtempSync(join(tmpdir(), "borg-memory-activity-excerpts-http-"));
+    const pool = new BorgPool({
+      root,
+      openOptions: {
+        embeddingDimensions: 4,
+        embeddingClient: new FakeEmbeddingClient(4),
+        llmClient: new FakeLLMClient(),
+        liveExtraction: false,
+        liveCommitmentExtraction: false,
+      },
+      initializeBeing: (_tenantId, borg) => {
+        borg.entities.ensureSelf("Sol", { provenance: "config_default_user" });
+      },
+    });
+    let restoreIndexLookup: (() => void) | undefined;
+
+    try {
+      const base = await start(pool);
+      const turns = [
+        {
+          key: "alice-private",
+          session: "teams::personal::activity-alice",
+          user: "Alice private source",
+          assistant: "Alice private reply",
+          sender: { external_id: "alice", display_name: "Alice" },
+          conversation: { type: "personal" as const, name: "Alice" },
+        },
+        {
+          key: "shared-group",
+          session: "teams::group::activity-shared",
+          user: "Shared group source",
+          assistant: "Shared group reply",
+          sender: { external_id: "alice", display_name: "Alice" },
+          conversation: {
+            type: "groupChat" as const,
+            name: "AI Ninjas",
+            external_id: "activity-shared",
+          },
+        },
+        {
+          key: "bob-private",
+          session: "teams::personal::activity-bob",
+          user: "Bob private source",
+          assistant: "Bob private reply",
+          sender: { external_id: "bob", display_name: "Bob" },
+          conversation: { type: "personal" as const, name: "Bob" },
+        },
+      ] as const;
+      const appended = new Map<
+        (typeof turns)[number]["key"],
+        {
+          session: SessionId;
+          entries: Array<{ id: StreamEntryId; kind: StreamEntry["kind"] }>;
+        }
+      >();
+
+      for (const turn of turns) {
+        const response = await post(
+          base,
+          "/memory/append-turn",
+          {
+            tenant: "acme",
+            session: turn.session,
+            user: turn.user,
+            assistant: turn.assistant,
+            sender: turn.sender,
+            conversation: turn.conversation,
+          },
+          TOKEN,
+        );
+        const payload = (await response.json()) as {
+          session: SessionId;
+          entries: Array<{ id: StreamEntryId; kind: StreamEntry["kind"] }>;
+        };
+
+        expect(response.status).toBe(200);
+        appended.set(turn.key, payload);
+      }
+
+      const alicePrivate = appended.get("alice-private");
+      const sharedGroup = appended.get("shared-group");
+      const bobPrivate = appended.get("bob-private");
+      const sharedUser = sharedGroup?.entries.find((entry) => entry.kind === "user_msg");
+      const sharedReply = sharedGroup?.entries.find((entry) => entry.kind === "agent_msg");
+      const bobSourceIds = bobPrivate?.entries.map((entry) => entry.id);
+      const aliceSourceIds = alicePrivate?.entries.map((entry) => entry.id);
+
+      if (
+        alicePrivate === undefined ||
+        sharedGroup === undefined ||
+        bobPrivate === undefined ||
+        sharedUser === undefined ||
+        sharedReply === undefined ||
+        bobSourceIds === undefined ||
+        aliceSourceIds === undefined
+      ) {
+        throw new Error("expected complete activity excerpt fixture");
+      }
+
+      const lookupBatches: StreamEntryId[][] = [];
+      const fixture = await pool.withTenant("acme", async (borg) => {
+        const deps = (borg as unknown as { deps: BorgDependencies }).deps;
+        const groupEntityId = borg.entities.findByExternalId(
+          "team-agent.conversation",
+          "activity-shared",
+        );
+        const selfEntity = borg.entities.getSelf();
+
+        if (groupEntityId === null || selfEntity === null) {
+          throw new Error("expected shared-group and self identities");
+        }
+
+        const sharedReplyOccurredAt = deps.entryIndex
+          .lookupMany([sharedReply.id])
+          .get(sharedReply.id)?.timestamp;
+
+        if (sharedReplyOccurredAt === undefined) {
+          throw new Error("expected indexed shared-group reply");
+        }
+
+        const originalLookupMany = deps.entryIndex.lookupMany.bind(deps.entryIndex);
+        let advanceHydrationClock: (() => void) | undefined;
+        const lookupSpy = vi.spyOn(deps.entryIndex, "lookupMany").mockImplementation((ids) => {
+          lookupBatches.push([...ids] as StreamEntryId[]);
+          const records = originalLookupMany(ids);
+          advanceHydrationClock?.();
+          return records;
+        });
+        restoreIndexLookup = () => lookupSpy.mockRestore();
+        const foreignSessionId = parseSessionId("sess_foreignsource001");
+        const foreignReply = await borg.stream.append(
+          { kind: "agent_msg", content: "Foreign-session reply source" },
+          { session: foreignSessionId },
+        );
+        const wrongKindReplySource = await borg.stream.append(
+          { kind: "user_msg", content: "Same-session wrong-kind reply source" },
+          { session: sharedGroup.session },
+        );
+
+        return {
+          activityRepository: deps.activityRepository,
+          db: deps.sqlite,
+          entryIndex: deps.entryIndex,
+          foreignReply,
+          foreignSessionId,
+          groupEntityId,
+          sharedReplyOccurredAt,
+          selfEntityId: selfEntity.id,
+          wrongKindReplySource,
+          setAdvanceHydrationClock(callback: (() => void) | undefined) {
+            advanceHydrationClock = callback;
+          },
+        };
+      });
+
+      type ProjectedActivity = {
+        kind: "user_contact" | "borg_replied";
+        occurred_at: number;
+        session: SessionId;
+        excerpt?: string;
+      };
+      const loadRecentActivity = async (): Promise<ProjectedActivity[]> => {
+        const response = await post(
+          base,
+          "/memory/context",
+          {
+            tenant: "acme",
+            session: "teams::personal::activity-alice",
+            sender: { external_id: "alice", display_name: "Alice" },
+            conversation: { type: "personal", name: "Alice" },
+            sections: ["recent_activity"],
+          },
+          TOKEN,
+        );
+        const payload = (await response.json()) as { recent_activity: ProjectedActivity[] };
+
+        expect(response.status).toBe(200);
+        return payload.recent_activity;
+      };
+
+      lookupBatches.length = 0;
+      const visibleActivity = await loadRecentActivity();
+      const hydratedSourceIds = lookupBatches.flat();
+
+      expect(lookupBatches).toHaveLength(1);
+      expect(new Set(hydratedSourceIds)).toEqual(new Set([sharedUser.id, sharedReply.id]));
+      for (const hiddenSourceId of [...bobSourceIds, ...aliceSourceIds]) {
+        expect(hydratedSourceIds).not.toContain(hiddenSourceId);
+      }
+      expect(
+        visibleActivity.find(
+          (event) => event.kind === "user_contact" && event.session === sharedGroup.session,
+        )?.excerpt,
+      ).toBe("Shared group source");
+      expect(
+        visibleActivity.find(
+          (event) => event.kind === "borg_replied" && event.session === sharedGroup.session,
+        )?.excerpt,
+      ).toBe("Shared group reply");
+
+      const clockStart = Date.now();
+      let hydrationNow = clockStart;
+      const dateNow = vi.spyOn(Date, "now").mockImplementation(() => hydrationNow);
+      fixture.setAdvanceHydrationClock(() => {
+        hydrationNow += 51;
+      });
+      lookupBatches.length = 0;
+      let budgetExpiredActivity: ProjectedActivity[];
+
+      try {
+        budgetExpiredActivity = await loadRecentActivity();
+      } finally {
+        fixture.setAdvanceHydrationClock(undefined);
+        dateNow.mockRestore();
+      }
+
+      expect(lookupBatches).toHaveLength(1);
+      expect(budgetExpiredActivity).toHaveLength(visibleActivity.length);
+      expect(budgetExpiredActivity.every((event) => event.excerpt === undefined)).toBe(true);
+
+      await pool.withTenant(
+        "acme",
+        (borg) =>
+          borg.stream.append(
+            {
+              kind: "internal_event",
+              content: {
+                event: QUARANTINED_USER_ENTRY_EVENT,
+                source_stream_entry_id: sharedUser.id,
+                cited_stream_entry_ids: [sharedUser.id],
+              },
+            },
+            { session: sharedGroup.session },
+          ),
+        { exclusive: true },
+      );
+      expect(fixture.entryIndex.lookupMany([sharedUser.id]).get(sharedUser.id)?.active).toBe(false);
+
+      const afterQuarantine = await loadRecentActivity();
+      const quarantinedEvent = afterQuarantine.find(
+        (event) => event.kind === "user_contact" && event.session === sharedGroup.session,
+      );
+
+      expect(quarantinedEvent).toBeDefined();
+      expect(quarantinedEvent).not.toHaveProperty("excerpt");
+
+      const mismatchedOccurredAt = fixture.foreignReply.timestamp + 1_000;
+      fixture.activityRepository.record({
+        kind: "borg_replied",
+        occurredAt: mismatchedOccurredAt,
+        sessionId: sharedGroup.session,
+        speakerEntityId: fixture.selfEntityId,
+        actorEntityId: fixture.selfEntityId,
+        audienceEntityId: fixture.groupEntityId,
+        participantEntityIds: [fixture.selfEntityId, fixture.groupEntityId],
+        sourceStreamEntryIds: [fixture.foreignReply.id],
+      });
+
+      const withMismatchedSource = await loadRecentActivity();
+      const mismatchedEvent = withMismatchedSource.find(
+        (event) => event.kind === "borg_replied" && event.occurred_at === mismatchedOccurredAt,
+      );
+
+      expect(fixture.foreignReply.kind).toBe("agent_msg");
+      expect(fixture.foreignReply.session_id).toBe(fixture.foreignSessionId);
+      expect(mismatchedEvent).toBeDefined();
+      expect(mismatchedEvent).not.toHaveProperty("excerpt");
+
+      const wrongKindOccurredAt = fixture.wrongKindReplySource.timestamp + 2_000;
+      fixture.activityRepository.record({
+        kind: "borg_replied",
+        occurredAt: wrongKindOccurredAt,
+        sessionId: sharedGroup.session,
+        speakerEntityId: fixture.selfEntityId,
+        actorEntityId: fixture.selfEntityId,
+        audienceEntityId: fixture.groupEntityId,
+        participantEntityIds: [fixture.selfEntityId, fixture.groupEntityId],
+        sourceStreamEntryIds: [fixture.wrongKindReplySource.id],
+      });
+
+      const withWrongKindSource = await loadRecentActivity();
+      const wrongKindEvent = withWrongKindSource.find(
+        (event) => event.kind === "borg_replied" && event.occurred_at === wrongKindOccurredAt,
+      );
+
+      expect(fixture.wrongKindReplySource.kind).toBe("user_msg");
+      expect(fixture.wrongKindReplySource.session_id).toBe(sharedGroup.session);
+      expect(wrongKindEvent).toBeDefined();
+      expect(wrongKindEvent).not.toHaveProperty("excerpt");
+
+      const sharedReplyRemainsOnDisk = await pool.withTenant("acme", (borg) => {
+        const remainsOnDisk = borg.stream
+          .tail(20, { session: sharedGroup.session })
+          .some((entry) => entry.id === sharedReply.id);
+        fixture.db.prepare("DELETE FROM stream_entry_index WHERE entry_id = ?").run(sharedReply.id);
+        return remainsOnDisk;
+      });
+      const iterateSpy = vi.spyOn(StreamReader.prototype, "iterate");
+      let afterIndexMiss: ProjectedActivity[];
+
+      try {
+        afterIndexMiss = await loadRecentActivity();
+        expect(iterateSpy).not.toHaveBeenCalled();
+      } finally {
+        iterateSpy.mockRestore();
+      }
+
+      const indexMissEvent = afterIndexMiss.find(
+        (event) =>
+          event.kind === "borg_replied" && event.occurred_at === fixture.sharedReplyOccurredAt,
+      );
+
+      expect(sharedReplyRemainsOnDisk).toBe(true);
+      expect(indexMissEvent).toBeDefined();
+      expect(indexMissEvent).not.toHaveProperty("excerpt");
+    } finally {
+      restoreIndexLookup?.();
+      await pool.closeAll();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps recent activity and logs a redacted warning when excerpt hydration fails", async () => {
+    const { pool, rec } = recordingPool();
+    const sourceId = parseStreamEntryId("strm_activitysource01");
+    const privateFixtureText = "Alice private stream text must stay redacted";
+    const hydrationError = new Error(privateFixtureText, {
+      cause: new Error(`nested cause: ${privateFixtureText}`),
+    });
+    rec.visibleActivityEvents = [
+      {
+        kind: "user_contact",
+        occurredAt: Date.now() - 60_000,
+        sessionId: parseSessionId("sess_activitysource01"),
+        audienceEntityId: createEntityId(),
+        conversationKind: "thread",
+        conversationName: "AI Ninjas",
+        participantLabel: "Jacek",
+        sourceStreamEntryIds: [sourceId],
+      },
+    ];
+    rec.streamHydrationError = hydrationError;
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      const base = await start(pool);
+      const response = await post(
+        base,
+        "/memory/context",
+        {
+          tenant: "acme",
+          session: "activity-context",
+          sender: { external_id: "alice", display_name: "Alice" },
+          conversation: { type: "personal", name: "Alice" },
+          sections: ["recent_activity"],
+        },
+        TOKEN,
+      );
+      const payload = (await response.json()) as {
+        recent_activity: Array<Record<string, unknown>>;
+      };
+
+      expect(response.status).toBe(200);
+      expect(payload.recent_activity).toHaveLength(1);
+      expect(payload.recent_activity[0]).not.toHaveProperty("excerpt");
+      expect(rec.streamHydrateCalls).toEqual([{ ids: [sourceId], budgetMs: 50, activeOnly: true }]);
+      expect(consoleWarn).toHaveBeenCalledWith(
+        "memory-sidecar: recent-activity excerpt hydration failed",
+        {
+          reason: "recent_activity_excerpt_hydration_failed",
+          tenant: "acme",
+          source_id_count: 1,
+          error_name: "Error",
+        },
+      );
+      expect(consoleWarn.mock.calls.flat()).not.toContain(hydrationError);
+      expect(consoleWarn.mock.calls.flat().map(String).join(" ")).not.toContain(privateFixtureText);
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
   it("does not widen group context through the current speaker's other memberships", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
@@ -3494,7 +4073,7 @@ describe("memory sidecar handler", () => {
     });
   });
 
-  it("strictly scopes episode time ranges and marks an automatic unscoped fallback", async () => {
+  it("orders in-range context episodes first, tops up, and keeps legacy recall fallback", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
     const inRange = testEpisode("ep_timerangeinside1" as Episode["id"], {
@@ -3529,13 +4108,23 @@ describe("memory sidecar handler", () => {
     const strictPayload = (await strictResponse.json()) as Record<string, unknown>;
 
     expect(strictResponse.status).toBe(200);
-    expect((strictPayload.episodes as Array<{ id: string }>).map((episode) => episode.id)).toEqual([
-      inRange.id,
+    expect(
+      (
+        strictPayload.episodes as Array<{
+          id: string;
+          in_time_range: boolean;
+        }>
+      ).map((episode) => [episode.id, episode.in_time_range]),
+    ).toEqual([
+      [inRange.id, true],
+      [outside.id, false],
     ]);
     expect(strictPayload).not.toHaveProperty("episodes_time_range_fallback");
     expect(rec.lastRecallOptions).toMatchObject({
-      limit: 2,
+      limit: 6,
       timeRange: { start: 100, end: 200 },
+      strictTimeRange: false,
+      recordRetrieval: false,
     });
 
     rec.recallEpisodes = [outside];

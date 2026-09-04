@@ -8,13 +8,15 @@ import {
   renderMemoryDisclosureLabelForModel,
   type RetrievedEpisode,
 } from "../../retrieval/index.js";
+import {
+  MAX_RECALLED_EVIDENCE_TEXT_CHARS,
+  MAX_RECALLED_SOURCE_MESSAGES_PER_EPISODE,
+} from "../../retrieval/evidence-bounds.js";
 import type { ToolDefinition, ToolInvocationContext } from "../dispatcher.js";
 
 const DEFAULT_EPISODIC_SEARCH_LIMIT = 5;
 const MAX_EPISODIC_SEARCH_LIMIT = 5;
 const MAX_NARRATIVE_CHARS = 400;
-const MAX_CITATION_CONTENT_CHARS = 180;
-const MAX_CITATIONS_PER_EPISODE = 3;
 
 const episodicSearchInputSchema = z.object({
   query: z.string().min(1),
@@ -90,7 +92,7 @@ function summarizeCitationContent(content: unknown): string {
   const serialized = JSON.stringify(content ?? null);
   const text = typeof content === "string" ? content : (serialized ?? String(content));
 
-  return truncateText(text, MAX_CITATION_CONTENT_CHARS);
+  return truncateText(text, MAX_RECALLED_EVIDENCE_TEXT_CHARS);
 }
 
 export function createEpisodicSearchTool(
@@ -141,7 +143,7 @@ export function createEpisodicSearchTool(
               time_relevance: result.scoreBreakdown.timeRelevance,
             },
             citation_chain: result.citationChain
-              .slice(0, MAX_CITATIONS_PER_EPISODE)
+              .slice(0, MAX_RECALLED_SOURCE_MESSAGES_PER_EPISODE)
               .map((entry) => ({
                 id: entry.id,
                 kind: entry.kind,

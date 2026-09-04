@@ -123,6 +123,60 @@ describe("EvidencePool compatibility projections", () => {
     expect(questions.map((question) => question.id)).toEqual([keptQuestion.id]);
   });
 
+  it("keeps scores, order, and evidence unchanged when the recency prior is absent", () => {
+    const nowMs = 2_000_000_000_000;
+    const older = createEpisodeFixture({
+      id: "ep_recencyolder000" as EpisodeId,
+      title: "Older high score",
+      start_time: nowMs - 30 * 24 * 60 * 60_000,
+      end_time: nowMs - 30 * 24 * 60 * 60_000,
+    });
+    const recent = createEpisodeFixture({
+      id: "ep_recencyrecent00" as EpisodeId,
+      title: "Recent lower score",
+      start_time: nowMs,
+      end_time: nowMs,
+    });
+    const olderEvidence = evidence("evidence_episode_recency_older", "episode", {
+      episodeId: older.id,
+    });
+    const recentEvidence = evidence("evidence_episode_recency_recent", "episode", {
+      episodeId: recent.id,
+    });
+    const pool: EvidencePool = {
+      intents: [intent],
+      items: [olderEvidence, recentEvidence],
+    };
+    const sources = new Map<string, EpisodeProjectionSource>([
+      [olderEvidence.id, episodeSource(older, 0.8)],
+      [recentEvidence.id, episodeSource(recent, 0.7)],
+    ]);
+
+    const baseline = projectEpisodes(pool, sources, { limit: 2, mmrLambda: 1 });
+    const withPrior = projectEpisodes(pool, sources, {
+      limit: 2,
+      mmrLambda: 1,
+      recencyPrior: { weight: 0.15, halfLifeHours: 36 },
+      nowMs,
+    });
+
+    expect(
+      baseline.episodes.map((item) => ({
+        id: item.episode.id,
+        score: item.score,
+        rawScore: item.rawScore,
+        citationChain: item.citationChain,
+      })),
+    ).toEqual([
+      { id: older.id, score: 0.8, rawScore: 0.8, citationChain: [] },
+      { id: recent.id, score: 0.7, rawScore: 0.7, citationChain: [] },
+    ]);
+    expect(baseline.selectedEvidence).toEqual([olderEvidence, recentEvidence]);
+    expect(withPrior.episodes.map((item) => item.episode.id)).toEqual([recent.id, older.id]);
+    expect(withPrior.episodes[0]?.rawScore).toBeCloseTo(0.85);
+    expect(withPrior.selectedEvidence).toEqual([recentEvidence, olderEvidence]);
+  });
+
   it("throws when episode evidence is missing its hydrated projection source", () => {
     const episode = createEpisodeFixture({
       id: "ep_aaaaaaaaaaaaaaaa" as EpisodeId,
