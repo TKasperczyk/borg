@@ -2,7 +2,7 @@ import { transformToolNameForOAuth } from "../../llm/index.js";
 import type { ToolDefinition, ToolDispatcher } from "../../tools/dispatcher.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
 import { OWN_RECORDS_PAGE_END_CLAIM } from "../../tools/internal/own-records-page-end-claim.js";
-import type { TurnOrigin } from "../types.js";
+import { exposesOutboundTool, type TurnOrigin } from "../types.js";
 
 export const LIVE_TURN_READ_FINALIZER_TOOL_NAMES = [
   "tool.ownRecords.list",
@@ -57,16 +57,14 @@ function dedupeToolsByWireName(tools: readonly ToolDefinition[]): ToolDefinition
 export function resolveFinalizerNonTerminalTools(input: {
   dispatcher: ToolDispatcher;
   turnOrigin?: TurnOrigin;
-  outboundToolAvailable?: boolean;
 }): ToolDefinition[] {
-  const outboundTool =
-    input.outboundToolAvailable === true
-      ? input.dispatcher.getDefinition(OUTBOUND_POST_TOOL_NAME)
-      : null;
   const toolOrigin = input.turnOrigin === "autonomous" ? "autonomous" : "deliberator";
   const availableToolsByName = new Map(
     input.dispatcher.listTools(toolOrigin).map((tool) => [tool.name, tool]),
   );
+  const outboundTool = exposesOutboundTool(input.turnOrigin)
+    ? availableToolsByName.get(OUTBOUND_POST_TOOL_NAME)
+    : undefined;
   const liveTurnReadTools = LIVE_TURN_READ_FINALIZER_TOOL_NAMES.flatMap((name) => {
     const tool = availableToolsByName.get(name);
 
@@ -74,7 +72,7 @@ export function resolveFinalizerNonTerminalTools(input: {
   });
 
   if (input.turnOrigin !== "autonomous") {
-    return outboundTool === null ? liveTurnReadTools : [...liveTurnReadTools, outboundTool];
+    return outboundTool === undefined ? liveTurnReadTools : [...liveTurnReadTools, outboundTool];
   }
 
   const interiorTools = AUTONOMOUS_INTERIOR_FINALIZER_TOOL_NAMES.flatMap((name) => {
@@ -90,7 +88,7 @@ export function resolveFinalizerNonTerminalTools(input: {
   // still collide there even when they differ here.
   const tools = dedupeToolsByWireName([...liveTurnReadTools, ...interiorTools]);
 
-  return outboundTool === null ? tools : dedupeToolsByWireName([...tools, outboundTool]);
+  return outboundTool === undefined ? tools : dedupeToolsByWireName([...tools, outboundTool]);
 }
 
 export function buildFinalizerToolMenuItems(

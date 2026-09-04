@@ -132,6 +132,7 @@ function context(overrides: Partial<DeliberationContext> = {}): DeliberationCont
 }
 
 function build(inputContext: DeliberationContext, path: "system_1" | "system_2" = "system_2") {
+  const turnOrigin = inputContext.turnOrigin ?? "user";
   return buildCompactFinalizerSystemPrompt({
     context: inputContext,
     baseSystemPromptOptions: {
@@ -140,6 +141,18 @@ function build(inputContext: DeliberationContext, path: "system_1" | "system_2" 
       nowMs: NOW_MS,
     },
     staticHead: "STATIC FINALIZER PROTOCOL",
+    toolAvailability: {
+      turnOrigin,
+      participationPolicy: inputContext.participationPolicy ?? "active",
+      enabledTerminalEmissions:
+        turnOrigin === "autonomous"
+          ? ["EmitAnswer", "EmitObserve", "EmitNoOutput", "EmitSelfReport", "EmitContinueThought"]
+          : ["EmitAnswer", "EmitObserve", "EmitNoOutput", "EmitSelfReport"],
+      outboundPostAvailable:
+        inputContext.autonomousFinalizerToolMenu?.some(
+          (item) => item.name === OUTBOUND_POST_TOOL_NAME,
+        ) ?? false,
+    },
     path,
     additionalPromptSections: [
       {
@@ -187,6 +200,9 @@ describe("compact terminal finalizer context", () => {
 
     expect(withAction.system[3]?.cache_control?.ttl).toBe("5m");
     expect(withAction.system[3]?.text).toContain(
+      '<borg_finalizer_tool_availability turn_origin="autonomous" participation_policy="active" outbound_post="available"',
+    );
+    expect(withAction.system[3]?.text).toContain(
       '<borg_directed_outbound_instruction mode="action_available">',
     );
     expect(
@@ -204,6 +220,7 @@ describe("compact terminal finalizer context", () => {
       }),
     );
     expect(text(withoutAction)).not.toContain("borg_directed_outbound_instruction");
+    expect(withoutAction.system[3]?.text).toContain('outbound_post="unavailable"');
     expect(withAction.system.slice(0, 3)).toEqual(withoutAction.system.slice(0, 3));
   });
 
@@ -504,8 +521,9 @@ describe("compact terminal finalizer context", () => {
     expect(aliceSurface.system[1]?.text).toBe(bobSurface.system[1]?.text);
   });
 
-  it("emits turn-local age overlays for every durable record with relative-age fields", () => {
-    const commitments = [commitment("one"), commitment("two")];
+  it("keeps mutable exact stamps in overlays and derives rather than printing relative ages", () => {
+    const scheduledExpiry = NOW_MS + 6 * 60 * 60_000;
+    const commitments = [commitment("one", { expires_at: scheduledExpiry }), commitment("two")];
     const valueId = createValueId();
     const traitId = createTraitId();
     const ledgerOnlyCommitment: EvidenceLedgerEntry = {
@@ -520,90 +538,104 @@ describe("compact terminal finalizer context", () => {
         last_reinforced_at: new Date(NOW_MS - 3_000).toISOString(),
       },
     };
-    const rendered = text(
-      build(
-        context({
-          applicableCommitments: commitments,
-          evidenceLedger: {
-            ...ledger(),
-            audienceStanding: {
-              ...ledger().audienceStanding!,
-              commitmentEntries: [ledgerOnlyCommitment],
+    const result = build(
+      context({
+        applicableCommitments: commitments,
+        evidenceLedger: {
+          ...ledger(),
+          audienceStanding: {
+            ...ledger().audienceStanding!,
+            commitmentEntries: [ledgerOnlyCommitment],
+          },
+        },
+        selfSnapshot: {
+          goals: [],
+          values: [
+            {
+              id: valueId,
+              label: "care",
+              description: "care about exact grounding",
+              priority: 1,
+              created_at: NOW_MS - 5 * 60 * 60_000,
+              last_affirmed: NOW_MS - 60_000,
+              state: "established",
+              established_at: NOW_MS - 4 * 60 * 60_000,
+              confidence: 0.9,
+              last_tested_at: null,
+              last_contradicted_at: null,
+              support_count: 1,
+              contradiction_count: 0,
+              evidence_episode_ids: [],
+              provenance: { kind: "manual" },
             },
-          },
-          selfSnapshot: {
-            goals: [],
-            values: [
-              {
-                id: valueId,
-                label: "care",
-                description: "care about exact grounding",
-                priority: 1,
-                created_at: NOW_MS - 5 * 60 * 60_000,
-                last_affirmed: NOW_MS - 60_000,
-                state: "established",
-                established_at: NOW_MS - 4 * 60 * 60_000,
-                confidence: 0.9,
-                last_tested_at: null,
-                last_contradicted_at: null,
-                support_count: 1,
-                contradiction_count: 0,
-                evidence_episode_ids: [],
-                provenance: { kind: "manual" },
-              },
-            ],
-            traits: [
-              {
-                id: traitId,
-                label: "careful",
-                strength: 0.8,
-                last_reinforced: NOW_MS - 2 * 60_000,
-                last_decayed: null,
-                state: "established",
-                established_at: NOW_MS - 4 * 60 * 60_000,
-                confidence: 0.9,
-                last_tested_at: null,
-                last_contradicted_at: null,
-                support_count: 1,
-                contradiction_count: 0,
-                evidence_episode_ids: [],
-                provenance: { kind: "manual" },
-              },
-            ],
-          },
-        }),
-      ),
+          ],
+          traits: [
+            {
+              id: traitId,
+              label: "careful",
+              strength: 0.8,
+              last_reinforced: NOW_MS - 2 * 60_000,
+              last_decayed: null,
+              state: "established",
+              established_at: NOW_MS - 4 * 60 * 60_000,
+              confidence: 0.9,
+              last_tested_at: null,
+              last_contradicted_at: null,
+              support_count: 1,
+              contradiction_count: 0,
+              evidence_episode_ids: [],
+              provenance: { kind: "manual" },
+            },
+          ],
+        },
+      }),
     );
-    const expectedOverlayFields = new Map<string, readonly string[]>([
-      ...commitments.map(
-        (row) =>
-          [
-            `commitment:${row.id}`,
-            ["created", "updated", "reinforced", "expires", "expired", "revoked"],
-          ] as const,
-      ),
-      [`commitment:${ledgerOnlyCommitment.id}`, ["created", "reinforced"]] as const,
-      [
-        `value:${valueId}`,
-        ["created", "affirmed", "established", "tested", "contradicted"],
-      ] as const,
-      [
-        `trait:${traitId}`,
-        ["reinforced", "decayed", "established", "tested", "contradicted"],
-      ] as const,
-    ]);
-    const durableRows = [...rendered.matchAll(/<(commitment|value|trait) id="([^"]+)"[^>]*\/>/g)];
-    expect(durableRows).toHaveLength(expectedOverlayFields.size);
-    for (const match of durableRows) {
-      const tag = match[1]!;
-      const id = match[2]!;
-      const overlay = rendered.match(new RegExp(`<${tag}_age id="${id}"[^>]*\\/>`))?.[0];
-      expect(overlay, `turn overlay for ${tag}:${id}`).toBeDefined();
-      for (const field of expectedOverlayFields.get(`${tag}:${id}`) ?? []) {
-        expect(overlay, `${tag}:${id}.${field}`).toContain(`${field}="`);
+    const durable = result.system[1]!.text;
+    const overlay = result.system[3]!.text;
+    const commitmentBlock = durable.match(
+      /<borg_terminal_commitments[\s\S]*?<\/borg_terminal_commitments>/,
+    )?.[0];
+    expect(commitmentBlock).toBeDefined();
+    expect(commitmentBlock).not.toContain("updated_at=");
+    expect(commitmentBlock).not.toContain("expires_at=");
+    expect(commitmentBlock).not.toContain("expired_at=");
+    expect(commitmentBlock).not.toContain("revoked_at=");
+
+    const scheduledOverlay = overlay.match(
+      new RegExp(`<commitment_age id="${commitments[0]!.id}"[^>]*\\/>`),
+    )?.[0];
+    const unscheduledOverlay = overlay.match(
+      new RegExp(`<commitment_age id="${commitments[1]!.id}"[^>]*\\/>`),
+    )?.[0];
+    expect(scheduledOverlay).toContain(
+      `updated_at="${new Date(commitments[0]!.updated_at!).toISOString()}"`,
+    );
+    expect(scheduledOverlay).toContain(`expires_at="${new Date(scheduledExpiry).toISOString()}"`);
+    expect(unscheduledOverlay).not.toContain("expires_at=");
+
+    const ledgerOnlyOverlay = overlay.match(
+      new RegExp(`<commitment_age id="${ledgerOnlyCommitment.id}"[^>]*\\/>`),
+    )?.[0];
+    const valueOverlay = overlay.match(new RegExp(`<value_age id="${valueId}"[^>]*\\/>`))?.[0];
+    const traitOverlay = overlay.match(new RegExp(`<trait_age id="${traitId}"[^>]*\\/>`))?.[0];
+    expect(ledgerOnlyOverlay).toBeDefined();
+    expect(valueOverlay).toContain(`last_affirmed_at="${new Date(NOW_MS - 60_000).toISOString()}"`);
+    expect(traitOverlay).toContain(
+      `last_reinforced_at="${new Date(NOW_MS - 2 * 60_000).toISOString()}"`,
+    );
+    for (const row of [scheduledOverlay, unscheduledOverlay, ledgerOnlyOverlay]) {
+      expect(row).not.toContain("ledger_state_metadata=");
+      for (const field of ["created", "updated", "reinforced", "expires", "expired", "revoked"]) {
+        expect(row).not.toContain(` ${field}="`);
       }
     }
-    expect(rendered).toContain('created="4h ago"');
+    for (const field of ["created", "affirmed", "established", "tested", "contradicted"]) {
+      expect(valueOverlay).not.toContain(` ${field}="`);
+    }
+    for (const field of ["reinforced", "decayed", "established", "tested", "contradicted"]) {
+      expect(traitOverlay).not.toContain(` ${field}="`);
+    }
+    expect(overlay).toContain("combine with borg_current_time epoch_ms to derive relative ages");
   });
 
   it("folds standing-ledger commitment fields into the single complete index", () => {
@@ -719,6 +751,7 @@ describe("compact terminal finalizer context", () => {
       "enforcement_class",
       "critical_domain",
       "created_at",
+      "updated_at",
       "made_to_entity_id",
       "made_to_entity_label",
       "restricted_audience_id",
@@ -738,12 +771,10 @@ describe("compact terminal finalizer context", () => {
       "ledger_scope",
       "ledger_actor",
       "ledger_trust_rank",
-      "ledger_state",
       "ledger_salience_class",
       "ledger_taint",
       "ledger_value",
       "ledger_text",
-      "ledger_state_metadata",
       "persistence_class",
       "via_retrieval",
       "stream_index",
@@ -759,8 +790,65 @@ describe("compact terminal finalizer context", () => {
     expect(durableRow).toContain('citations="entry:one,entry:two"');
     expect(durableRow).toContain('ledger_text="distinct ledger projection text"');
     expect(durableRow).toContain('ledger_value="distinct_ledger_family"');
-    expect(turnRow).toContain('ledger_state_metadata="{&quot;disclosure_label&quot;:');
+    expect(durableRow).not.toContain("ledger_state=");
+    expect(turnRow).not.toContain("ledger_state_metadata=");
     expect(turnRow).toContain('made_to_entity_label="Alice"');
+  });
+
+  it("keeps block 1 stable when only commitment update and scheduled-expiry stamps change", () => {
+    const base = commitment("stable directive");
+    const matchingLedgerEntry: EvidenceLedgerEntry = {
+      id: `commitment:${base.id}`,
+      source_type: "commitment",
+      session_scope: "global",
+      actor: "memory",
+      trust_rank: 82,
+      text: base.directive,
+      value: base.directive_family,
+      state: "active",
+    };
+    const render = (updatedAt: number, expiresAt: number | null) =>
+      build(
+        context({
+          applicableCommitments: [{ ...base, updated_at: updatedAt, expires_at: expiresAt }],
+          evidenceLedger: {
+            ...ledger(),
+            audienceStanding: {
+              ...ledger().audienceStanding!,
+              commitmentEntries: [matchingLedgerEntry],
+            },
+          },
+        }),
+      );
+    const first = render(NOW_MS - 3_000, null);
+    const second = render(NOW_MS - 1_000, NOW_MS + 60_000);
+    const commitmentBlock = first.system[1]!.text.match(
+      /<borg_terminal_commitments[\s\S]*?<\/borg_terminal_commitments>/,
+    )?.[0];
+    const durableRow = first.system[1]!.text.match(/<commitment id="[^"]+"[^>]*\/>/)?.[0];
+
+    expect(first.system[1]?.text).toBe(second.system[1]?.text);
+    expect(first.system[3]?.text).not.toBe(second.system[3]?.text);
+    expect(commitmentBlock).not.toMatch(/\b(rows_total|canonical_rows|ledger_only_rows)=/);
+    expect(durableRow).toContain("disclosure=");
+    for (const field of [
+      "canonical_record",
+      "updated_at",
+      "expires_at",
+      "expired_at",
+      "revoked_at",
+      "ledger_state",
+      "ledger_value",
+      "ledger_text",
+    ]) {
+      expect(durableRow).not.toContain(`${field}=`);
+    }
+    expect(second.system[3]?.text).toContain(
+      `updated_at="${new Date(NOW_MS - 1_000).toISOString()}"`,
+    );
+    expect(second.system[3]?.text).toContain(
+      `expires_at="${new Date(NOW_MS + 60_000).toISOString()}"`,
+    );
   });
 
   it("combines canonical and ledger disclosure labels fail-closed", () => {
@@ -1051,6 +1139,12 @@ describe("compact terminal finalizer context", () => {
         nowMs: NOW_MS,
       },
       staticHead: "STATIC FINALIZER PROTOCOL",
+      toolAvailability: {
+        turnOrigin: "user",
+        participationPolicy: "active",
+        enabledTerminalEmissions: ["EmitAnswer", "EmitObserve", "EmitNoOutput", "EmitSelfReport"],
+        outboundPostAvailable: false,
+      },
       path: "system_2",
       additionalPromptSections: [
         { blockId: "borg_s2_plan", text: "<borg_s2_plan>PLAN</borg_s2_plan>" },

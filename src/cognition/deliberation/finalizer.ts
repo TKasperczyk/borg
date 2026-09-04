@@ -10,9 +10,9 @@ import type {
 import { willSendThinkingUnderAutoToolChoice } from "../../llm/index.js";
 import type { ToolDefinition, ToolDispatcher } from "../../tools/dispatcher.js";
 import type { BorgRole } from "../../memory/commitments/index.js";
-import type { SessionAudienceRole } from "../../sessions/index.js";
+import type { SessionAudienceRole, SessionParticipationPolicy } from "../../sessions/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
-import type { TurnOrigin } from "../types.js";
+import { exposesOutboundTool, type TurnOrigin } from "../types.js";
 import {
   emitTurnTokenFlushTrace,
   emitTurnTokenTrace,
@@ -43,9 +43,11 @@ import { resolveFinalizerNonTerminalTools } from "./autonomous-finalizer-tools.j
 import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
 import {
   buildCompactFinalizerSystemPrompt,
+  renderFinalizerToolAvailability,
   type FinalizerContextTraceSummary,
   type FinalizerResolvedSurfaceVariant,
   type FinalizerSurfaceVariant,
+  type FinalizerToolAvailabilityState,
 } from "./prompt/finalizer-context.js";
 import type { BuildBaseSystemPromptOptions } from "./prompt/system-prompt.js";
 import type { DeliberationContext } from "./types.js";
@@ -274,13 +276,10 @@ function formatEmissionToolList(names: readonly EmissionToolName[]): string {
 // of content -- and it was previously only implied by "available tools" framing plus one
 // aside, which let a thinking-mode turn (tool_choice:auto) occasionally answer in prose and
 // emit nothing. Naming the mechanism up front is the fix.
-function emissionContractPreamble(availableEmissionNames: readonly EmissionToolName[]): string {
-  const onePhrase =
-    availableEmissionNames.length === 1
-      ? `my only terminal emission tool, ${availableEmissionNames[0]}`
-      : `exactly one of ${formatEmissionToolList(availableEmissionNames)}`;
+function emissionContractPreamble(advertisedEmissionNames: readonly EmissionToolName[]): string {
   return [
-    `Every turn I take ends with one terminal emission tool call: I call ${onePhrase}, never zero and never more than one.`,
+    `The origin-static advertised terminal tools are ${formatEmissionToolList(advertisedEmissionNames)}. <borg_finalizer_tool_availability> names the enabled subset for this turn.`,
+    "Every turn I take ends with exactly one enabled terminal emission tool call, never zero and never more than one. An advertised tool whose live state is unavailable returns a clear tool error; an available tool executes normally.",
     "That single tool call is my entire output for the turn. Any text I write outside a terminal emission tool call -- even a complete, well-formed reply in plain prose -- is internal scratch that the harness never delivers to anyone. Whatever I want to say or decide, I put it inside the terminal tool; writing prose instead of calling one emits nothing at all.",
   ].join(" ");
 }
@@ -348,17 +347,13 @@ function buildEmissionToolInstructions(
   ].join("\n");
 }
 
-function buildEmissionFinalizerInstructions(
-  allowedEmissions: readonly EmissionToolName[] | undefined,
-  outboundToolAvailable: boolean,
-  turnOrigin?: TurnOrigin,
-): string {
+function buildEmissionFinalizerInstructions(turnOrigin?: TurnOrigin): string {
   return [
-    buildEmissionToolInstructions(resolveAvailableEmissionNames(allowedEmissions, turnOrigin)),
-    ...(outboundToolAvailable
+    buildEmissionToolInstructions(resolveAvailableEmissionNames(undefined, turnOrigin)),
+    ...(exposesOutboundTool(turnOrigin)
       ? [
           "",
-          "Non-terminal outbound tool: when a structurally authorized creator in an operator session asks me to send a message into another session, or when an autonomous turn has an authorized target listed in <reachable_threads>, I call tool.outbound.post first with the target_session_id and an instruction for the target-scoped composition turn. I wait for the tool result, then call exactly one terminal emission tool for the current turn. I do not expose tool names, session ids, or dispatch internals in visible text.",
+          "Non-terminal outbound tool: when <borg_finalizer_tool_availability> says outbound_post=available and a structurally authorized creator in an operator session asks me to send a message into another session, or an autonomous turn has an authorized target listed in <reachable_threads>, I may call tool.outbound.post first with the target_session_id and an instruction for the target-scoped composition turn. When the label says outbound_post=unavailable, I do not call it; if I do, the host returns a clear unavailable-tool error. I wait for any tool result, then call exactly one enabled terminal emission tool for the current turn. I do not expose tool names, session ids, or dispatch internals in visible text.",
         ]
       : []),
     "",
@@ -424,6 +419,7 @@ export type RunFinalizerOptions = {
   };
   allowedEmissions?: readonly EmissionToolName[];
   outboundToolAvailable?: boolean;
+  participationPolicy?: SessionParticipationPolicy;
   nonTerminalTools?: readonly ToolDefinition[];
   turnOrigin?: TurnOrigin;
   currentSenderBorgRole?: BorgRole | null;
@@ -516,18 +512,13 @@ function buildDynamicSystemPromptParts(options: RunFinalizerOptions): {
 function createFinalizerPromptSurfaceRenderContext(
   options: RunFinalizerOptions,
 ): PromptSurfaceRenderContext {
-  const outboundAvailableForPrompt =
-    options.nonTerminalTools?.some((tool) => tool.name === OUTBOUND_POST_TOOL_NAME) ?? false;
-
   return {
     renderBlock: (id) => {
       switch (id) {
         case "finalizer_emission_protocol":
-          return buildEmissionFinalizerInstructions(
-            options.allowedEmissions,
-            outboundAvailableForPrompt,
-            options.turnOrigin,
-          );
+          return buildEmissionFinalizerInstructions(options.turnOrigin);
+        case "borg_finalizer_tool_availability":
+          return renderFinalizerToolAvailability(finalizerToolAvailability(options));
         case "finalizer_cacheable_static_prefix":
           return options.cacheableSystemPrompt?.staticPrefix ?? null;
         case "finalizer_base_dynamic_prompt":
@@ -547,6 +538,23 @@ function createFinalizerPromptSurfaceRenderContext(
           return null;
       }
     },
+  };
+}
+
+function finalizerToolAvailability(options: RunFinalizerOptions): FinalizerToolAvailabilityState {
+  return {
+    turnOrigin: options.turnOrigin ?? "user",
+    participationPolicy:
+      options.participationPolicy ??
+      options.compactSurface?.context.participationPolicy ??
+      "active",
+    enabledTerminalEmissions: resolveAvailableEmissionNames(
+      options.allowedEmissions,
+      options.turnOrigin,
+    ),
+    outboundPostAvailable:
+      options.outboundToolAvailable === true &&
+      options.nonTerminalTools?.some((tool) => tool.name === OUTBOUND_POST_TOOL_NAME) === true,
   };
 }
 
@@ -632,6 +640,7 @@ export function buildFinalizerSystemPrompt(options: RunFinalizerOptions): {
       context: options.compactSurface.context,
       baseSystemPromptOptions: options.compactSurface.baseSystemPromptOptions,
       staticHead: buildStaticSystemPrompt(options),
+      toolAvailability: finalizerToolAvailability(options),
       path: options.path,
       additionalPromptSections: stableAdditionalSections,
     });
@@ -1062,11 +1071,13 @@ function emitFinalizerContextTrace(
 export async function runFinalizer(options: RunFinalizerOptions): Promise<FinalizerResult> {
   const toolProvenance =
     options.userEntryId === undefined ? undefined : { user_entry_id: options.userEntryId };
-  const emissionTools = resolveAvailableEmissionTools(options.allowedEmissions, options.turnOrigin);
+  const emissionTools = resolveAvailableEmissionTools(undefined, options.turnOrigin);
+  const enabledEmissionNames = new Set(
+    resolveAvailableEmissionNames(options.allowedEmissions, options.turnOrigin),
+  );
   const nonTerminalTools = resolveFinalizerNonTerminalTools({
     dispatcher: options.dispatcher,
     turnOrigin: options.turnOrigin,
-    outboundToolAvailable: options.outboundToolAvailable,
   });
   const preparedPrompt = prepareFinalizerPrompt(options, nonTerminalTools);
   const renderedSystemPrompt = preparedPrompt.rendered;
@@ -1075,6 +1086,14 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
   emitFinalizerContextTrace(options, renderedSystemPrompt.traceSummary);
   const availableTools = [...emissionTools, ...nonTerminalTools];
   const terminalToolNames = emissionTools.map((tool) => tool.name);
+  const unavailableToolNames = availableTools
+    .filter(
+      (tool) =>
+        (terminalToolNames.includes(tool.name) &&
+          !enabledEmissionNames.has(tool.name as EmissionToolName)) ||
+        (tool.name === OUTBOUND_POST_TOOL_NAME && options.outboundToolAvailable !== true),
+    )
+    .map((tool) => tool.name);
   const effectiveThinking =
     options.finalizerAttempt === "regenerate" ? undefined : options.thinking;
   const effectiveEffort = options.finalizerAttempt === "regenerate" ? undefined : options.effort;
@@ -1120,6 +1139,7 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
       turnId: options.turnId,
       traceLabel: `${options.path}_finalizer`,
       terminalToolNames,
+      unavailableToolNames,
       stream: true,
       onTextDelta: (chunkText) => {
         tokenSequence += 1;

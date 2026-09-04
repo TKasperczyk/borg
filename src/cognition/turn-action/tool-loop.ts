@@ -96,6 +96,8 @@ export type ExecuteToolLoopOptions = {
   maxToolCallsPerIteration?: number;
   clock?: Pick<Clock, "now">;
   terminalToolNames?: readonly string[];
+  /** Advertised schemas that are structurally unavailable on this turn. */
+  unavailableToolNames?: readonly string[];
   stream?: boolean;
   onTextDelta?: LLMStreamTextHandler;
   tracer?: TurnTracer;
@@ -295,6 +297,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
   const messages = options.initialMessages.map((message) => cloneMessage(message));
   const anthropicTools = toAnthropicToolDefinitions(options.tools);
   const allowedToolNames = new Set(options.tools.map((tool) => tool.name));
+  const unavailableToolNames = new Set(options.unavailableToolNames ?? []);
   const terminalToolNames = new Set(options.terminalToolNames ?? []);
   const toolCallsMade: ToolLoopCallRecord[] = [];
   let iterations = 0;
@@ -436,7 +439,10 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
 
     const toolUseBlocks = response.messageBlocks.filter(isToolUseBlock);
     const terminalToolCalls = toolUseBlocks.filter(
-      (block) => allowedToolNames.has(block.name) && terminalToolNames.has(block.name),
+      (block) =>
+        allowedToolNames.has(block.name) &&
+        !unavailableToolNames.has(block.name) &&
+        terminalToolNames.has(block.name),
     );
 
     if (traceEnabled && options.turnId !== undefined) {
@@ -499,7 +505,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
         });
       }
 
-      if (!allowedToolNames.has(block.name)) {
+      if (!allowedToolNames.has(block.name) || unavailableToolNames.has(block.name)) {
         const skippedResult = await options.dispatcher.recordSkippedCall({
           callId: block.id,
           toolName: block.name,

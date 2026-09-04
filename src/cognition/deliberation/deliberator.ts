@@ -95,6 +95,7 @@ import {
   buildFinalizerToolMenuItems,
   resolveFinalizerNonTerminalTools,
 } from "./autonomous-finalizer-tools.js";
+import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
 
 export type {
   DeliberationContext,
@@ -297,6 +298,7 @@ function buildFinalizerCallOptions(
       ? {}
       : { allowedEmissions: context.allowedEmissions }),
     outboundToolAvailable: context.outboundToolAvailable,
+    participationPolicy: context.effectiveContext.participationPolicy ?? "active",
     turnOrigin: context.effectiveContext.turnOrigin,
     currentSenderBorgRole: context.effectiveContext.creatorContext?.currentSenderBorgRole ?? null,
     sessionAudienceRole: context.effectiveContext.creatorContext?.sessionAudienceRole,
@@ -916,15 +918,17 @@ export class Deliberator {
     const nonTerminalFinalizerTools = resolveFinalizerNonTerminalTools({
       dispatcher: this.options.toolDispatcher,
       turnOrigin: effectiveContext.turnOrigin,
-      outboundToolAvailable,
     });
+    const availableNonTerminalFinalizerTools = nonTerminalFinalizerTools.filter(
+      (tool) => tool.name !== OUTBOUND_POST_TOOL_NAME || outboundToolAvailable,
+    );
     effectiveContext = {
       ...effectiveContext,
       ...(effectiveContext.turnOrigin === "autonomous"
         ? {
             autonomousFinalizerToolMenu: buildFinalizerToolMenuItems([
               ...availableEmissionTools,
-              ...nonTerminalFinalizerTools,
+              ...availableNonTerminalFinalizerTools,
             ]),
           }
         : {}),
