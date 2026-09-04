@@ -702,6 +702,27 @@ describe("Recall Core", () => {
         focus: clippedFocus,
       }),
     );
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "retrieval.started",
+      expect.objectContaining({
+        turnId: "turn-oversized-recall-focus",
+        query_length: focus.length,
+        query: clippedFocus,
+      }),
+    );
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "retrieval.intent_candidates",
+      expect.objectContaining({
+        turnId: "turn-oversized-recall-focus",
+        intent_id: "recall_raw_text_0",
+        intent_kind: "raw_text",
+        intent_query: clippedFocus,
+      }),
+    );
+    expect(JSON.stringify(tracer.emit.mock.calls)).not.toContain(focus);
+    expect(
+      countingEmbedding.embed.mock.calls.filter(([embeddedText]) => embeddedText === focus),
+    ).toHaveLength(1);
     expect(result.recall_intents[0]).toEqual({
       id: "recall_raw_text_0",
       kind: "raw_text",

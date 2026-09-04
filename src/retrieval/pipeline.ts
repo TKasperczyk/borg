@@ -88,6 +88,7 @@ import {
 import {
   DEFAULT_RECALL_EXPANSION_SEMANTIC_VARIANT_COUNT,
   DEFAULT_RECALL_EXPANSION_MODEL,
+  MAX_RECALL_QUERY_FOCUS_CHARS,
   expandRecall,
   type RecallQueryPlan,
   type RecallQueryPlannerContext,
@@ -515,12 +516,14 @@ export class RetrievalPipeline {
     },
   ): Promise<{ episodes: RetrievedEpisode[]; timeRangeFallback: boolean }> {
     const expansion = await this.tryExpandRecall(query, options);
+    const intentQueryVectors: IntentQueryVectorMemo = new Map();
     const scoped = await this.searchWithContextInternal(
       query,
       { ...options, recordRetrieval: false },
       "disclosure",
       "episodes-only",
       expansion,
+      intentQueryVectors,
     );
     const strictEpisodes = scoped.episodes.filter(
       (result) =>
@@ -550,6 +553,7 @@ export class RetrievalPipeline {
       "disclosure",
       "episodes-only",
       expansion,
+      intentQueryVectors,
     );
 
     return { episodes: fallback.episodes, timeRangeFallback: true };
@@ -561,13 +565,16 @@ export class RetrievalPipeline {
     mode: RetrievalExecutionMode,
     projection: RetrievalProjection = "full",
     expansionOverride?: ExpansionOutcome,
+    intentQueryVectorsOverride?: IntentQueryVectorMemo,
   ): Promise<RetrievedContext> {
     if (this.tracer.enabled && options.traceTurnId !== undefined) {
       this.tracer.emit("retrieval.started", {
         turnId: options.traceTurnId,
         session_id: options.sessionId,
         query_length: query.length,
-        ...(this.tracer.includePayloads ? { query } : {}),
+        ...(this.tracer.includePayloads
+          ? { query: query.slice(0, MAX_RECALL_QUERY_FOCUS_CHARS) }
+          : {}),
         options: summarizeRetrievalOptions(options, this.tracer.includePayloads),
       });
     }
@@ -607,7 +614,7 @@ export class RetrievalPipeline {
     }
 
     const intents = await this.buildRecallIntents(query, options, expansionOverride);
-    const intentQueryVectors: IntentQueryVectorMemo = new Map();
+    const intentQueryVectors = intentQueryVectorsOverride ?? new Map();
     const episodeCandidates = await this.collectEpisodicEvidenceCandidates(
       intents,
       options,
@@ -1657,7 +1664,10 @@ export class RetrievalPipeline {
         })),
         ...(this.tracer.includePayloads
           ? {
-              intent_query: intent.query,
+              intent_query:
+                intent.kind === "raw_text"
+                  ? intent.query.slice(0, MAX_RECALL_QUERY_FOCUS_CHARS)
+                  : intent.query,
               matched_terms_by_candidate: candidates.map((candidate) => ({
                 episode_id: candidate.candidate.episode.id,
                 matched_terms: [...candidate.matchedTerms],

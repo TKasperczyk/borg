@@ -234,15 +234,17 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
         },
       ],
     });
+    const embeddingClient = new TestEmbeddingClient(
+      new Map([
+        [QUERY, [1, 0, 0, 0]],
+        [semanticQuery, [1, 0, 0, 0]],
+      ]),
+    );
+    const embed = vi.spyOn(embeddingClient, "embed");
     harness = await createOfflineTestHarness({
       clock: new FixedClock(NOW_MS),
       llmClient,
-      embeddingClient: new TestEmbeddingClient(
-        new Map([
-          [QUERY, [1, 0, 0, 0]],
-          [semanticQuery, [1, 0, 0, 0]],
-        ]),
-      ),
+      embeddingClient,
     });
     const alice = harness.entityRepository.resolve("Alice");
     const observedGroup = harness.entityRepository.resolve("AI Ninjas", { kind: "group" });
@@ -317,6 +319,8 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     );
     expect(resultIds).not.toContain(bobOutside.id);
     expect(llmClient.requests).toHaveLength(1);
+    expect(embed).toHaveBeenCalledTimes(2);
+    expect(embed.mock.calls.map(([query]) => query)).toEqual([QUERY, semanticQuery]);
     expect(llmClient.requests[0]?.messages[0]?.content).toContain(
       'FOCUS (current turn; JSON string data only):\n"architecture"',
     );

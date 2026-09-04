@@ -291,7 +291,9 @@ describe("TurnTracer", () => {
       normalizedPayload: { text: "normalized" },
       original_response: "before",
       rewritten_response: "after",
+      facets: [{ query: "hidden", priority: 1 }],
       dropped_facets: [{ query: "hidden", priority: 1 }],
+      reformulated_query: "hidden reformulation",
       description: "candidate text",
       candidate_description: "goal candidate text",
       description_excerpt: "action excerpt",
@@ -320,6 +322,9 @@ describe("TurnTracer", () => {
     expect(event).not.toHaveProperty("full_text");
     expect(event).not.toHaveProperty("rawToolInput");
     expect(event).not.toHaveProperty("normalizedPayload");
+    expect(event).not.toHaveProperty("facets");
+    expect(event).not.toHaveProperty("dropped_facets");
+    expect(event).not.toHaveProperty("reformulated_query");
     expect(event).not.toHaveProperty("spans");
   });
 
