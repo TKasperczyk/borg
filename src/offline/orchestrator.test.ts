@@ -270,6 +270,7 @@ describe("maintenance orchestrator", () => {
         },
       ],
       budget_exhausted: false,
+      notes: ["tension scaffolding dropped: 0"],
       candidate_stats: {
         proposed: 3,
         accepted: 2,
@@ -334,7 +335,7 @@ describe("maintenance orchestrator", () => {
         candidates_accepted: 2,
         candidates_rejected: 1,
         candidates_truncated: 1,
-        notes: ["candidate_cap_truncated:1"],
+        notes: ["tension scaffolding dropped: 0", "candidate_cap_truncated:1"],
         errors: 1,
       }),
     });
@@ -347,6 +348,14 @@ describe("maintenance orchestrator", () => {
         candidates_rejected: 2,
         errors: 2,
       }),
+    });
+    const dreamReport = new StreamReader({
+      dataDir: harness.tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+    }).tail(1)[0];
+
+    expect(dreamReport?.content).toMatchObject({
+      notes: ["overseer: tension scaffolding dropped: 0"],
     });
   });
 });

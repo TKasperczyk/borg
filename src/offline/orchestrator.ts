@@ -138,6 +138,10 @@ export class MaintenanceOrchestrator {
       accepted: input.result.changes.length,
       rejected: input.result.errors.length,
     };
+    const notes = [
+      ...(input.result.notes ?? []),
+      ...(stats.truncated === undefined ? [] : [`candidate_cap_truncated:${stats.truncated}`]),
+    ];
 
     input.context.tracer.emit("offline_process.completed", {
       turnId: input.context.runId,
@@ -150,8 +154,8 @@ export class MaintenanceOrchestrator {
         ? {}
         : {
             candidates_truncated: stats.truncated,
-            notes: [`candidate_cap_truncated:${stats.truncated}`],
           }),
+      ...(notes.length === 0 ? {} : { notes }),
       errors: input.result.errors.length,
       error_details: traceErrorDetails(input.result.errors),
       tokens_used: input.result.tokens_used,
@@ -287,6 +291,9 @@ export class MaintenanceOrchestrator {
       const budgetExhaustedProcesses = results
         .filter((result) => result.budget_exhausted)
         .map((result) => result.process);
+      const processNotes = results.flatMap((result) =>
+        (result.notes ?? []).map((note) => `${result.process}: ${note}`),
+      );
 
       await streamWriter.append({
         kind: "dream_report",
@@ -301,8 +308,8 @@ export class MaintenanceOrchestrator {
           budget_exhausted_processes: budgetExhaustedProcesses,
           notes:
             budgetExhaustedProcesses.length === 0
-              ? []
-              : [`Budget exhausted: ${budgetExhaustedProcesses.join(", ")}`],
+              ? processNotes
+              : [...processNotes, `Budget exhausted: ${budgetExhaustedProcesses.join(", ")}`],
         },
       });
 

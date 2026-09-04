@@ -114,9 +114,22 @@ function isTensionParameterName(name: string): boolean {
  */
 type ForeignParameterPolicy = "reject" | "drop";
 
+const TENSION_SCAFFOLDING_DROP_KINDS = [
+  "foreign_parameter_payload",
+  "wire_delimited_element",
+] as const;
+
+type TensionScaffoldingDrop = {
+  kind: (typeof TENSION_SCAFFOLDING_DROP_KINDS)[number];
+  parameter_name?: string;
+};
+
+type TensionScaffoldingDropObserver = (drop: TensionScaffoldingDrop) => void;
+
 function wrappedParameterPayloads(
   value: string,
   foreignParameterNames: ForeignParameterPolicy,
+  onDrop?: TensionScaffoldingDropObserver,
 ): Array<{ name: string; payload: string }> {
   const matches = [...value.matchAll(PARAMETER_OPEN_TAG_PATTERN)];
   const firstMatch = matches[0];
@@ -140,6 +153,7 @@ function wrappedParameterPayloads(
 
     if (!isTensionParameterName(name)) {
       if (foreignParameterNames === "drop") {
+        onDrop?.({ kind: "foreign_parameter_payload", parameter_name: name });
         return [];
       }
 
@@ -179,6 +193,7 @@ function jsonTensionArray(value: string): string[] | null {
 function unwrapParameterScaffolding(
   value: string,
   foreignParameterNames: ForeignParameterPolicy,
+  onDrop?: TensionScaffoldingDropObserver,
 ): string[] {
   const trimmed = value.trim();
 
@@ -203,7 +218,7 @@ function unwrapParameterScaffolding(
 
   const tensions: string[] = [];
 
-  for (const { payload } of wrappedParameterPayloads(trimmed, foreignParameterNames)) {
+  for (const { payload } of wrappedParameterPayloads(trimmed, foreignParameterNames, onDrop)) {
     if (payload.length === 0) {
       continue;
     }
@@ -218,7 +233,14 @@ function unwrapParameterScaffolding(
   }
 
   if (foreignParameterNames === "drop") {
-    return tensions.filter((tension) => !tension.includes(PARAMETER_WIRE_DELIMITER));
+    return tensions.filter((tension) => {
+      if (!tension.includes(PARAMETER_WIRE_DELIMITER)) {
+        return true;
+      }
+
+      onDrop?.({ kind: "wire_delimited_element" });
+      return false;
+    });
   }
 
   if (tensions.length === 0) {
@@ -250,13 +272,21 @@ export function unwrapTensionParameterScaffolding(value: string): string[] {
  * predicate as the rejecting variant, different cost when it fires.
  */
 export function unwrapTensionParameterScaffoldingForParse(value: string): string[] {
+  return unwrapTensionParameterScaffoldingForParseWithDrops(value);
+}
+
+function unwrapTensionParameterScaffoldingForParseWithDrops(
+  value: string,
+  onDrop?: TensionScaffoldingDropObserver,
+): string[] {
   if (!value.includes(PARAMETER_WIRE_DELIMITER)) {
     return unwrapParameterScaffolding(value, "reject");
   }
 
   try {
-    return unwrapParameterScaffolding(value, "drop");
+    return unwrapParameterScaffolding(value, "drop", onDrop);
   } catch {
+    onDrop?.({ kind: "wire_delimited_element" });
     return [];
   }
 }
@@ -279,21 +309,25 @@ const wireSafeRuminationTextSchema = z
 // and intermittently leaks tool-wire scaffolding into an array element as well.
 // Normalize the tool-call shape at parse time (tool-shape hygiene, not output
 // policing) so a shape slip does not discard an otherwise-valid rumination.
-const tolerantTensionsSchema = z.preprocess((value) => {
-  if (typeof value === "string") {
-    return unwrapTensionParameterScaffoldingForParse(value);
-  }
+function createTolerantTensionsSchema(onDrop?: TensionScaffoldingDropObserver) {
+  return z.preprocess((value) => {
+    if (typeof value === "string") {
+      return unwrapTensionParameterScaffoldingForParseWithDrops(value, onDrop);
+    }
 
-  if (Array.isArray(value)) {
-    return (value as readonly unknown[]).flatMap((element) =>
-      typeof element === "string" && element.includes(PARAMETER_WIRE_DELIMITER)
-        ? unwrapTensionParameterScaffoldingForParse(element)
-        : [element],
-    );
-  }
+    if (Array.isArray(value)) {
+      return (value as readonly unknown[]).flatMap((element) =>
+        typeof element === "string" && element.includes(PARAMETER_WIRE_DELIMITER)
+          ? unwrapTensionParameterScaffoldingForParseWithDrops(element, onDrop)
+          : [element],
+      );
+    }
 
-  return value;
-}, z.array(wireSafeTensionSchema));
+    return value;
+  }, z.array(wireSafeTensionSchema));
+}
+
+const tolerantTensionsSchema = createTolerantTensionsSchema();
 
 const ruminationResponseToolSchema = z.object({
   outcome: z.enum(["resolved", "still_open"]),
@@ -311,11 +345,13 @@ const ruminationResponseToolSchema = z.object({
 // Parse-time variant for tool-wire hygiene (the strict schema above is what the
 // model is shown). It accepts the known stray-string tensions shape while the
 // stored text fields reject a leading parameter delimiter.
-const ruminationResponseParseSchema = ruminationResponseToolSchema.extend({
-  resolution_note: wireSafeRuminationTextSchema.nullable().optional(),
-  reasoning: wireSafeRuminationTextSchema.nullable().optional(),
-  tensions: tolerantTensionsSchema.optional(),
-});
+function createRuminationResponseParseSchema(onDrop?: TensionScaffoldingDropObserver) {
+  return ruminationResponseToolSchema.extend({
+    resolution_note: wireSafeRuminationTextSchema.nullable().optional(),
+    reasoning: wireSafeRuminationTextSchema.nullable().optional(),
+    tensions: createTolerantTensionsSchema(onDrop).optional(),
+  });
+}
 const resolvedRuminationResponseSchema = z.object({
   outcome: z.literal("resolved"),
   resolution_note: wireSafeRuminationTextSchema,
@@ -402,6 +438,15 @@ export const ruminatorPlanSchema = z.object({
     .default([]),
   tokens_used: z.number().int().nonnegative(),
   budget_exhausted: z.boolean().default(false),
+  tension_scaffolding_drops: z
+    .array(
+      z.object({
+        open_question_id: openQuestionIdSchema,
+        kind: z.enum(TENSION_SCAFFOLDING_DROP_KINDS),
+        parameter_name: z.string().optional(),
+      }),
+    )
+    .default([]),
 });
 
 export type RuminatorPlan = z.infer<typeof ruminatorPlanSchema>;
@@ -547,8 +592,8 @@ function invalidResolutionResponse(error: unknown): unknown {
   return error;
 }
 
-function parseResolutionResponse(input: unknown) {
-  const parsed = ruminationResponseParseSchema.parse(input);
+function parseResolutionResponse(input: unknown, onDrop?: TensionScaffoldingDropObserver) {
+  const parsed = createRuminationResponseParseSchema(onDrop).parse(input);
 
   if (parsed.outcome === "resolved") {
     return resolvedRuminationResponseSchema.parse(parsed);
@@ -892,6 +937,7 @@ async function planResolution(
   maxQuestionsPerRun: number,
   allOpenQuestions: readonly OpenQuestion[],
   dryRun: boolean,
+  onTensionScaffoldingDrop: TensionScaffoldingDropObserver,
 ): Promise<RuminatorPlan["items"][number] | null> {
   const retrieval = await searchResolutionEvidence(ctx, question, maxQuestionsPerRun, dryRun);
   const freshEvidence = retrieval.episodes.filter(
@@ -1001,7 +1047,7 @@ async function planResolution(
           budget: "offline-ruminator",
         },
         toolName: RUMINATOR_TOOL_NAME,
-        parse: parseResolutionResponse,
+        parse: (input) => parseResolutionResponse(input, onTensionScaffoldingDrop),
       })
     ).parsed;
   } catch (error) {
@@ -1143,7 +1189,28 @@ export type RuminatorProcessOptions = {
   openQuestionsRepository: OfflineContext["openQuestionsRepository"];
   growthMarkersRepository: OfflineContext["growthMarkersRepository"];
   registry: ReverserRegistry;
+  logger?: Pick<Console, "warn">;
 };
+
+function tensionScaffoldingNotes(
+  drops: readonly RuminatorPlan["tension_scaffolding_drops"][number][],
+  ruminationIds: readonly number[] = [],
+): string[] {
+  if (drops.length === 0) {
+    return ["tension scaffolding dropped: 0"];
+  }
+
+  const openQuestionIds = [...new Set(drops.map((drop) => drop.open_question_id))].sort();
+  const storedRuminationIds = [...new Set(ruminationIds)].sort((left, right) => left - right);
+
+  return [
+    `tension scaffolding dropped: ${drops.length}; ${
+      storedRuminationIds.length === 0
+        ? "rumination_ids=not_recorded"
+        : `rumination_ids=${storedRuminationIds.join(",")}`
+    }; open_question_ids=${openQuestionIds.join(",")}`,
+  ];
+}
 
 export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
   readonly name = "ruminator" as const;
@@ -1221,6 +1288,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
     const duplicateQuestionIds = new Set<OpenQuestion["id"]>();
     const mergeParticipantIds = new Set<OpenQuestion["id"]>();
     const staleDismissedIds = new Set<OpenQuestion["id"]>();
+    const tensionScaffoldingDrops: RuminatorPlan["tension_scaffolding_drops"] = [];
     let tokensUsed = 0;
     let budgetExhausted = false;
 
@@ -1278,6 +1346,17 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
               maxQuestionsPerRun,
               allOpenQuestions,
               opts.dryRun === true,
+              (drop) => {
+                const recordedDrop = {
+                  open_question_id: question.id,
+                  ...drop,
+                };
+                tensionScaffoldingDrops.push(recordedDrop);
+                (this.options.logger ?? console).warn("Ruminator dropped tension scaffolding", {
+                  run_id: ctx.runId,
+                  ...recordedDrop,
+                });
+              },
             );
 
             if (resolution !== null) {
@@ -1337,6 +1416,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       errors,
       tokens_used: tokensUsed,
       budget_exhausted: budgetExhausted,
+      tension_scaffolding_drops: tensionScaffoldingDrops,
     });
   }
 
@@ -1350,12 +1430,17 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       tokens_used: parsed.tokens_used,
       errors: parsed.errors,
       budget_exhausted: parsed.budget_exhausted,
+      notes: tensionScaffoldingNotes(parsed.tension_scaffolding_drops),
     };
   }
 
   async apply(ctx: OfflineContext, rawPlan: RuminatorPlan): Promise<OfflineResult> {
     const plan = ruminatorPlanSchema.parse(rawPlan);
     const changes: OfflineChange[] = [];
+    const dropQuestionIds = new Set(
+      plan.tension_scaffolding_drops.map((drop) => drop.open_question_id),
+    );
+    const droppedFromRuminationIds: number[] = [];
     const processProvenance = {
       kind: "offline" as const,
       process: this.name,
@@ -1381,7 +1466,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
             item.question_id,
             item.connected_open_question_ids,
           );
-          ctx.openQuestionsRepository.recordRumination({
+          const rumination = ctx.openQuestionsRepository.recordRumination({
             open_question_id: item.question_id,
             note: item.rumination_note,
             tensions: item.tensions,
@@ -1393,6 +1478,9 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
             source_turn_id: null,
             provenance: processProvenance,
           });
+          if (dropQuestionIds.has(item.question_id)) {
+            droppedFromRuminationIds.push(rumination.id);
+          }
         }
         continue;
       }
@@ -1697,6 +1785,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       tokens_used: plan.tokens_used,
       errors: plan.errors,
       budget_exhausted: plan.budget_exhausted,
+      notes: tensionScaffoldingNotes(plan.tension_scaffolding_drops, droppedFromRuminationIds),
     };
   }
 

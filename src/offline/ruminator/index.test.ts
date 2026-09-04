@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
 import { computeWeights } from "../../cognition/attention/index.js";
@@ -537,6 +537,7 @@ describe("RuminatorProcess", () => {
     const clock = new FixedClock(3_000_000);
     const questionText = "What still explains the Atlas rollout tension?";
     const tensionText = "Timing is visible but ownership of the rollout is not.";
+    const warn = vi.fn();
     const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({
       llmClient: llm,
@@ -547,6 +548,7 @@ describe("RuminatorProcess", () => {
       openQuestionsRepository: harness.openQuestionsRepository,
       growthMarkersRepository: harness.growthMarkersRepository,
       registry: harness.registry,
+      logger: { warn },
     });
 
     try {
@@ -594,6 +596,7 @@ describe("RuminatorProcess", () => {
       const plan = await process.plan(context, {});
 
       expect(plan.errors).toEqual([]);
+      expect(plan.tension_scaffolding_drops).toEqual([]);
       expect(plan.items).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -603,7 +606,9 @@ describe("RuminatorProcess", () => {
           }),
         ]),
       );
-      await process.apply(context, plan);
+      const result = await process.apply(context, plan);
+      expect(result.notes).toEqual(["tension scaffolding dropped: 0"]);
+      expect(warn).not.toHaveBeenCalled();
       expect(
         harness.openQuestionsRepository.listRecentRuminations(question.id)[0]?.tensions,
       ).toEqual([tensionText]);
@@ -616,17 +621,33 @@ describe("RuminatorProcess", () => {
     {
       label: "an array element",
       tensions: ['<parameter name="growth_marker">null'],
+      expectedDrop: {
+        kind: "foreign_parameter_payload" as const,
+        parameter_name: "growth_marker",
+      },
     },
     {
       label: "the whole tensions value",
       tensions: '<parameter name="growth_marker">null</parameter>',
+      expectedDrop: {
+        kind: "foreign_parameter_payload" as const,
+        parameter_name: "growth_marker",
+      },
+    },
+    {
+      label: "a wire-delimited tension element",
+      tensions: '<parameter name="item">synthetic tension <parameter residue',
+      expectedDrop: {
+        kind: "wire_delimited_element" as const,
+      },
     },
   ])(
-    "keeps the rumination when foreign parameter scaffolding arrives as $label",
-    async ({ tensions }) => {
+    "keeps the rumination when discardable parameter scaffolding arrives as $label",
+    async ({ tensions, expectedDrop }) => {
       const clock = new FixedClock(3_000_000);
       const questionText = "What still explains the Atlas rollout tension?";
       const reasoningText = "The evidence narrows the tension but does not settle the question.";
+      const warn = vi.fn();
       const llm = new FakeLLMClient();
       const harness = await createOfflineTestHarness({
         llmClient: llm,
@@ -637,6 +658,7 @@ describe("RuminatorProcess", () => {
         openQuestionsRepository: harness.openQuestionsRepository,
         growthMarkersRepository: harness.growthMarkersRepository,
         registry: harness.registry,
+        logger: { warn },
       });
 
       try {
@@ -686,6 +708,12 @@ describe("RuminatorProcess", () => {
         const plan = await process.plan(context, {});
 
         expect(plan.errors).toEqual([]);
+        expect(plan.tension_scaffolding_drops).toEqual([
+          {
+            open_question_id: question.id,
+            ...expectedDrop,
+          },
+        ]);
         expect(plan.items).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
@@ -696,9 +724,18 @@ describe("RuminatorProcess", () => {
             }),
           ]),
         );
-        await process.apply(context, plan);
+        const result = await process.apply(context, plan);
+        expect(warn).toHaveBeenCalledOnce();
+        expect(warn).toHaveBeenCalledWith("Ruminator dropped tension scaffolding", {
+          run_id: context.runId,
+          open_question_id: question.id,
+          ...expectedDrop,
+        });
 
         const stored = harness.openQuestionsRepository.listRecentRuminations(question.id)[0];
+        expect(result.notes).toEqual([
+          `tension scaffolding dropped: 1; rumination_ids=${stored?.id}; open_question_ids=${question.id}`,
+        ]);
         expect(stored?.note).toBe(reasoningText);
         expect(stored?.tensions).toEqual([]);
         expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({

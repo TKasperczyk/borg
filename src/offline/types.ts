@@ -65,6 +65,7 @@ export type OfflineResult = {
   tokens_used: number;
   errors: OfflineProcessError[];
   budget_exhausted: boolean;
+  notes?: string[];
   candidate_stats?: {
     proposed: number;
     accepted: number;
