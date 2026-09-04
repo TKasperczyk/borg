@@ -27,7 +27,18 @@ const enabledTeamsInboxEnvSchema = z
   })
   .refine((value) => value.TEAMS_INBOX_MAX_SETTLE_MS >= value.TEAMS_INBOX_SETTLE_MS, {
     message: "TEAMS_INBOX_MAX_SETTLE_MS must be at least TEAMS_INBOX_SETTLE_MS",
-  });
+  })
+  // A batch retried after a runner timeout is at least timeout + max settle old
+  // when it is claimed again; a stale threshold below that age would seal it
+  // unanswered instead of handing it to team-agent.
+  .refine(
+    (value) =>
+      value.TEAMS_INBOX_STALE_MS > value.TEAM_AGENT_TIMEOUT_MS + value.TEAMS_INBOX_MAX_SETTLE_MS,
+    {
+      message:
+        "TEAMS_INBOX_STALE_MS must exceed TEAM_AGENT_TIMEOUT_MS plus TEAMS_INBOX_MAX_SETTLE_MS",
+    },
+  );
 
 export function teamsInboxConfigFromEnv(env: NodeJS.ProcessEnv): TeamsInboxConfig {
   if (env.TEAM_AGENT_BASE_URL === undefined || env.TEAM_AGENT_BASE_URL.trim() === "") {

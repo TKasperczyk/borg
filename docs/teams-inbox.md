@@ -1,13 +1,14 @@
 # Teams inbox: coalesced turns through borg's durable inbox
 
-Status: v1.7 contract, 2026-09-03. All OPEN points are settled; v1.3 added the implementers'
+Status: v1.8 contract, 2026-09-04. All OPEN points are settled; v1.3 added the implementers'
 clarifications (transport envelope, await tenant mapping, response union, terminal reclaim,
 recovery settings, delivery guarantees); v1.4 adds the review outcomes (seal-on-claim, stale
 batches, connector failures park, batch rendering order, atomic post-send bookkeeping); v1.5
 makes bridge intake refuse-proof after the first production burst; v1.6 adds the `generating`
 interim status so the bridge can show a typing indicator exactly while the agent composes, and
 resolves the classifier's praise contradiction; v1.7 makes the interim signal acknowledgement-aware
-(review found a re-await hot loop) and gives the generating state a bounded lifecycle.
+(review found a re-await hot loop) and gives the generating state a bounded lifecycle; v1.8
+ties the stale threshold to the runner timeout and records the production timeouts.
 Identical copies live in `team-agent/docs/teams-inbox.md` and `borg/docs/teams-inbox.md`;
 every amendment must land in both. Implementers report needed amendments; they do not edit
 this file.
@@ -220,8 +221,12 @@ runs no borg turns, autonomy or maintenance schedulers.
 Configuration (sidecar env): `TEAM_AGENT_BASE_URL` (in-cluster, e.g.
 `http://team-agent:8080`), `TEAM_AGENT_API_TOKEN` (sent as `Authorization: Bearer`),
 `TEAM_AGENT_TIMEOUT_MS` (120000), `TEAMS_INBOX_SETTLE_MS` (3000), `TEAMS_INBOX_MAX_SETTLE_MS`
-(15000), `TEAMS_INBOX_STALE_MS` (600000). The inbox settle values are separate from the
-generic stream-ingestion settle config. Session filter: `source_type === "teams_inbox"`.
+(15000), `TEAMS_INBOX_STALE_MS` (600000). `TEAMS_INBOX_STALE_MS` must exceed
+`TEAM_AGENT_TIMEOUT_MS` plus `TEAMS_INBOX_MAX_SETTLE_MS`, and the sidecar refuses to start
+otherwise: a batch retried after a runner timeout is at least that old when it is claimed
+again, and a lower threshold would seal it unanswered as stale. Production runs 600000 /
+900000 since 2026-09-04, after a code-exploring turn measured 399 s against the 120 s default.
+The inbox settle values are separate from the generic stream-ingestion settle config. Session filter: `source_type === "teams_inbox"`.
 The team-agent tenant id equals the sidecar tenant name (true today: `team-agent-ai`); the
 runner sends it as `model`.
 
@@ -370,7 +375,8 @@ Response unchanged: `{ "action": "reply" | "silent", "content"?: "...", "reason"
   `TEAMS_BRIDGE_OBSERVE_DEBOUNCE_SECONDS`, `TEAMS_BRIDGE_OBSERVE_TIMEOUT_SECONDS`,
   `TEAM_AGENT_TENANT`. `TEAMS_BRIDGE_OBSERVE_UNMENTIONED` remains the gate for forwarding
   unmentioned messages. New settings: `TEAMS_BRIDGE_WAIT_MS` (90000),
-  `TEAMS_BRIDGE_FOREGROUND_DEADLINE_SECONDS` (300),
+  `TEAMS_BRIDGE_FOREGROUND_DEADLINE_SECONDS` (300; production 600 since 2026-09-04 so the
+  foreground hold roughly matches the sidecar's 600 s runner timeout),
   `TEAMS_BRIDGE_RECOVERY_BACKOFF_MIN_SECONDS` (1), `TEAMS_BRIDGE_RECOVERY_BACKOFF_MAX_SECONDS`
   (60). Rolling the bridge back to the previous build pauses recovery of rows parked by this
   build until it is rolled forward again.

@@ -31,4 +31,25 @@ describe("teamsInboxConfigFromEnv", () => {
       teamsInboxConfigFromEnv({ TEAM_AGENT_BASE_URL: "http://team-agent:8080" }),
     ).toThrow("Invalid Team Agent inbox configuration");
   });
+
+  it("rejects a stale threshold that a batch retried after a runner timeout would reach", () => {
+    expect(() =>
+      teamsInboxConfigFromEnv({
+        TEAM_AGENT_BASE_URL: "http://team-agent:8080",
+        TEAM_AGENT_API_TOKEN: "secret",
+        TEAM_AGENT_TIMEOUT_MS: "600000",
+      }),
+    ).toThrow("Invalid Team Agent inbox configuration");
+  });
+
+  it("accepts a longer runner timeout once the stale threshold clears it", () => {
+    expect(
+      teamsInboxConfigFromEnv({
+        TEAM_AGENT_BASE_URL: "http://team-agent:8080",
+        TEAM_AGENT_API_TOKEN: "secret",
+        TEAM_AGENT_TIMEOUT_MS: "600000",
+        TEAMS_INBOX_STALE_MS: "900000",
+      }),
+    ).toMatchObject({ enabled: true, timeoutMs: 600_000, staleMs: 900_000 });
+  });
 });
