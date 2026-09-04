@@ -107,13 +107,26 @@ GPT Pro Extended is a strong reviewer but not infallible. Filter every recommend
 
 When you decline a recommendation, say why and offer the counter.
 
-## Test execution is manual by design
+## Automated test execution (CI + deploy gate)
 
-There is deliberately no CI vitest job and no git hook running the suite (Tom's
-explicit decision, 2026-08-26). Sessions run `pnpm typecheck` + `pnpm test` +
-`pnpm heuristics:guard` themselves before merging or deploying. Do not escalate
-the absence of an automatic test runner as a finding; it is a settled policy,
-not an oversight.
+Tom reversed the 2026-08-26 "manual only" decision on 2026-09-04. Two automatic
+runners exist now:
+
+1. GitHub Actions (`.github/workflows/ci.yml`) runs `npm run typecheck`,
+   `npm run heuristics:guard` and `npm test` on every push to `dev`/`main` and
+   on pull requests.
+2. The cclink host deploy gate (sol-connector, `cclink/deploy-gate.ts`) runs the
+   same three commands on the borg working tree before honoring a counterpart
+   `restart-requested` marker. A red gate refuses the restart, leaves the live
+   service on the previous build, and writes the failure summary to
+   `$CLAUDE_CONFIG_DIR/deploy-gate.log` for the next counterpart run to read
+   and fix.
+
+Sessions still run the full gate themselves (`pnpm typecheck` + `pnpm test` +
+`pnpm heuristics:guard`) before merging or deploying; the runners are a
+backstop that keeps a red tree from reaching the live service, not a
+substitute for gating your own work. Do not escalate the shape of the runners
+as a finding; propose changes to them in the thread like any other change.
 
 ---
 
