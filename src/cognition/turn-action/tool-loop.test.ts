@@ -746,6 +746,214 @@ describe("executeToolLoop", () => {
     });
   });
 
+  it("returns an error for an advertised but turn-unavailable terminal tool and allows recovery", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const dispatcher = createDispatcher(tempDir);
+    let blockedInvoked = false;
+    const blockedTerminal: ToolDefinition = {
+      name: "tool.test.blockedTerminal",
+      description: "Origin-static schema disabled by live policy.",
+      allowedOrigins: ["deliberator"],
+      writeScope: "read",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({}).strict(),
+      async invoke() {
+        blockedInvoked = true;
+        return {};
+      },
+    };
+    const enabledTerminal: ToolDefinition = {
+      ...blockedTerminal,
+      name: "tool.test.enabledTerminal",
+      async invoke() {
+        throw new Error("terminal tools are not dispatched");
+      },
+    };
+    dispatcher.register(blockedTerminal);
+    dispatcher.register(enabledTerminal);
+    const llm = new FakeLLMClient({
+      responses: [
+        [
+          {
+            type: "tool_use",
+            id: "toolu_blocked_terminal",
+            name: blockedTerminal.name,
+            input: {},
+          },
+        ],
+        [
+          {
+            type: "tool_use",
+            id: "toolu_enabled_terminal",
+            name: enabledTerminal.name,
+            input: {},
+          },
+        ],
+      ],
+    });
+
+    const result = await executeToolLoop({
+      llmClient: llm,
+      dispatcher,
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      systemPrompt: "be concise",
+      initialMessages: baseMessages(),
+      tools: [blockedTerminal, enabledTerminal],
+      terminalToolNames: [blockedTerminal.name, enabledTerminal.name],
+      unavailableToolNames: [blockedTerminal.name],
+      origin: "deliberator",
+      budget: "test",
+    });
+
+    expect(blockedInvoked).toBe(false);
+    expect(llm.converseRequests[0]?.tools?.map((tool) => tool.name)).toEqual([
+      blockedTerminal.name,
+      enabledTerminal.name,
+    ]);
+    expect(llm.converseRequests[1]?.messages.at(-1)).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_blocked_terminal",
+          content: `tool ${blockedTerminal.name} not available in this context`,
+          is_error: true,
+        },
+      ],
+    });
+    expect(result.stopReason).toBe("terminal_tool");
+    expect(result.terminalToolCalls.map((call) => call.name)).toEqual([enabledTerminal.name]);
+  });
+
+  it("rejects unavailable siblings before accepting an enabled terminal call", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const dispatcher = createDispatcher(tempDir);
+    const enabledTerminal: ToolDefinition = {
+      name: "tool.test.enabledTerminal",
+      description: "Enabled terminal emission.",
+      allowedOrigins: ["deliberator"],
+      writeScope: "read",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({}).strict(),
+      async invoke() {
+        throw new Error("terminal tools are not dispatched");
+      },
+    };
+    const unavailableTerminal: ToolDefinition = {
+      ...enabledTerminal,
+      name: "tool.test.unavailableTerminal",
+    };
+    const unavailableOutbound: ToolDefinition = {
+      ...enabledTerminal,
+      name: "tool.test.unavailableOutbound",
+    };
+    dispatcher.register(enabledTerminal);
+    dispatcher.register(unavailableTerminal);
+    dispatcher.register(unavailableOutbound);
+    const llm = new FakeLLMClient({
+      responses: [
+        [
+          {
+            type: "tool_use",
+            id: "toolu_enabled_too_early",
+            name: enabledTerminal.name,
+            input: {},
+          },
+          {
+            type: "tool_use",
+            id: "toolu_unavailable_terminal",
+            name: unavailableTerminal.name,
+            input: {},
+          },
+          {
+            type: "tool_use",
+            id: "toolu_unavailable_outbound",
+            name: unavailableOutbound.name,
+            input: {},
+          },
+        ],
+        [
+          {
+            type: "tool_use",
+            id: "toolu_enabled_retry",
+            name: enabledTerminal.name,
+            input: {},
+          },
+        ],
+      ],
+    });
+
+    const result = await executeToolLoop({
+      llmClient: llm,
+      dispatcher,
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      systemPrompt: "be concise",
+      initialMessages: baseMessages(),
+      tools: [enabledTerminal, unavailableTerminal, unavailableOutbound],
+      terminalToolNames: [enabledTerminal.name, unavailableTerminal.name],
+      unavailableToolNames: [unavailableTerminal.name, unavailableOutbound.name],
+      maxToolCallsPerIteration: 1,
+      origin: "deliberator",
+      budget: "test",
+    });
+
+    expect(result.stopReason).toBe("terminal_tool");
+    expect(result.terminalToolCalls.map((call) => call.id)).toEqual(["toolu_enabled_retry"]);
+    expect(llm.converseRequests).toHaveLength(2);
+    expect(llm.converseRequests[1]?.messages.at(-1)).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_enabled_too_early",
+          content:
+            "Terminal emission was not accepted because a sibling tool call was unavailable. Handle the tool error, then call exactly one enabled terminal emission tool again.",
+          is_error: true,
+        },
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_unavailable_terminal",
+          content: `tool ${unavailableTerminal.name} not available in this context`,
+          is_error: true,
+        },
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_unavailable_outbound",
+          content: `tool ${unavailableOutbound.name} not available in this context`,
+          is_error: true,
+        },
+      ],
+    });
+    const skippedCalls = new StreamReader({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+    })
+      .tail(6)
+      .filter((entry) => entry.kind === "tool_call")
+      .map((entry) => entry.content);
+    expect(skippedCalls).toMatchObject([
+      {
+        call_id: "toolu_enabled_too_early",
+        skipped: true,
+        skip_reason: "terminal_deferred_for_unavailable_sibling",
+      },
+      {
+        call_id: "toolu_unavailable_terminal",
+        skipped: true,
+        skip_reason: "tool_not_available_in_context",
+      },
+      {
+        call_id: "toolu_unavailable_outbound",
+        skipped: true,
+        skip_reason: "tool_not_available_in_context",
+      },
+    ]);
+  });
+
   it("returns an error tool result for invalid tool input and lets the model recover", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -1270,7 +1478,9 @@ describe("executeToolLoop", () => {
       responses: [
         () => {
           clock.advance(AUTONOMOUS_TOOL_LOOP_TOOL_ROUND_BUDGET_MS);
-          return [{ type: "tool_use" as const, id: "toolu_before_deadline", name: tool.name, input: {} }];
+          return [
+            { type: "tool_use" as const, id: "toolu_before_deadline", name: tool.name, input: {} },
+          ];
         },
         () => {
           clock.advance(

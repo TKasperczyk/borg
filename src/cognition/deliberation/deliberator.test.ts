@@ -877,7 +877,7 @@ describe("deliberator", () => {
     expect(systemBlocks[0]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
     expect(systemBlocks[1]?.cache_control).toEqual({ type: "ephemeral", ttl: "5m" });
     expect(finalizerInstructions).toContain(
-      "I call exactly one of EmitAnswer, EmitObserve, EmitNoOutput, and EmitSelfReport",
+      "The origin-static advertised terminal tools are EmitAnswer, EmitObserve, EmitNoOutput, and EmitSelfReport",
     );
     expect(finalizerInstructions).not.toContain("EmitContinueThought");
     expect(system).toContain("<borg_evidence_ledger>");
@@ -1973,7 +1973,7 @@ describe("deliberator", () => {
     expect(result.tool_calls).toEqual([]);
   });
 
-  it("filters finalizer emission tools to observation tools when participation is observing", async () => {
+  it("keeps origin-static schemas while gating observation tools when participation is observing", async () => {
     const llm = new FakeLLMClient({
       responses: [
         emitFinalizerToolResponse({
@@ -1992,13 +1992,16 @@ describe("deliberator", () => {
     );
 
     expect(llm.converseRequests[0]?.tools?.map((tool) => tool.name)).toEqual([
+      "EmitAnswer",
       "EmitObserve",
       "EmitNoOutput",
+      "EmitSelfReport",
     ]);
     const finalizerInstructions = finalizerInstructionPrefix(llm.converseRequests[0]?.system);
-    expect(finalizerInstructions).toContain("I call exactly one of EmitObserve and EmitNoOutput");
-    expect(finalizerInstructions).not.toContain("EmitAnswer");
-    expect(finalizerInstructions).not.toContain("EmitSelfReport");
+    expect(finalizerInstructions).toContain("The origin-static advertised terminal tools are");
+    expect(requestSystemText(llm.converseRequests[0]?.system)).toContain(
+      'participation_policy="observing" outbound_post="unavailable" enabled_terminal_emissions="EmitObserve,EmitNoOutput"',
+    );
     expect(result.emitted).toBe(false);
     expect(result.emission).toEqual({
       kind: "observed",
@@ -2006,7 +2009,7 @@ describe("deliberator", () => {
     });
   });
 
-  it("filters finalizer emission tools to no-output only when participation is paused", async () => {
+  it("keeps origin-static schemas while gating no-output participation when paused", async () => {
     const llm = new FakeLLMClient({
       responses: [
         emitFinalizerToolResponse({
@@ -2028,13 +2031,18 @@ describe("deliberator", () => {
       }),
     );
 
-    expect(llm.converseRequests[0]?.tools?.map((tool) => tool.name)).toEqual(["EmitNoOutput"]);
+    expect(llm.converseRequests[0]?.tools?.map((tool) => tool.name)).toEqual([
+      "EmitAnswer",
+      "EmitObserve",
+      "EmitNoOutput",
+      "EmitSelfReport",
+    ]);
     const finalizerInstructions = finalizerInstructionPrefix(llm.converseRequests[0]?.system);
-    expect(finalizerInstructions).toContain("my only terminal emission tool, EmitNoOutput");
-    expect(finalizerInstructions).not.toContain("EmitAnswer");
-    expect(finalizerInstructions).not.toContain("EmitObserve");
-    expect(finalizerInstructions).not.toContain("EmitSelfReport");
+    expect(finalizerInstructions).toContain("The origin-static advertised terminal tools are");
     const system = requestSystemText(llm.converseRequests[0]?.system);
+    expect(system).toContain(
+      'participation_policy="paused" outbound_post="unavailable" enabled_terminal_emissions="EmitNoOutput"',
+    );
     expect(system).toContain(
       "The operator has paused my participation in this conversation. My only available emission is EmitNoOutput.",
     );
@@ -2049,7 +2057,7 @@ describe("deliberator", () => {
     });
   });
 
-  it("filters finalizer emission tools to no-output only when participation is muted", async () => {
+  it("keeps origin-static schemas while gating no-output participation when muted", async () => {
     const llm = new FakeLLMClient({
       responses: [
         emitFinalizerToolResponse({
@@ -2071,12 +2079,17 @@ describe("deliberator", () => {
       }),
     );
 
-    expect(llm.converseRequests[0]?.tools?.map((tool) => tool.name)).toEqual(["EmitNoOutput"]);
+    expect(llm.converseRequests[0]?.tools?.map((tool) => tool.name)).toEqual([
+      "EmitAnswer",
+      "EmitObserve",
+      "EmitNoOutput",
+      "EmitSelfReport",
+    ]);
+    expect(requestSystemText(llm.converseRequests[0]?.system)).toContain(
+      'participation_policy="muted" outbound_post="unavailable" enabled_terminal_emissions="EmitNoOutput"',
+    );
     const finalizerInstructions = finalizerInstructionPrefix(llm.converseRequests[0]?.system);
-    expect(finalizerInstructions).toContain("my only terminal emission tool, EmitNoOutput");
-    expect(finalizerInstructions).not.toContain("EmitAnswer");
-    expect(finalizerInstructions).not.toContain("EmitObserve");
-    expect(finalizerInstructions).not.toContain("EmitSelfReport");
+    expect(finalizerInstructions).toContain("The origin-static advertised terminal tools are");
     const system = requestSystemText(llm.converseRequests[0]?.system);
     expect(system).toContain(
       "The operator has muted me in this conversation. My only available emission is EmitNoOutput.",

@@ -47,6 +47,7 @@
     "planner:ab-judge": "tsx scripts/planner-ab-judge.ts",
     "finalizer:ab-replay": "tsx scripts/finalizer-ab-replay.ts",
     "finalizer:ab-judge": "tsx scripts/finalizer-ab-judge.ts",
+    "finalizer:cache-report": "tsx scripts/finalizer-cache-report.ts",
     "retrieval:signal-report": "tsx scripts/retrieval-signal-report.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.eval.json && tsc --noEmit -p tsconfig.assessor.json && tsc --noEmit -p tsconfig.simulator.json && tsc --noEmit -p tsconfig.test.json",

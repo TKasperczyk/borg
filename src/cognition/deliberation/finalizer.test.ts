@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { FakeLLMClient, createFakeStreamingResponse } from "../../llm/test-support/fake-client.js";
+import { createEpisodeFixture, createRetrievalScoreFixture } from "../../offline/test-support.js";
 import { StreamWriter } from "../../stream/index.js";
 import { ToolDispatcher, type ToolDefinition, type ToolOrigin } from "../../tools/index.js";
 import { FixedClock } from "../../util/clock.js";
@@ -15,6 +16,8 @@ import {
   promptSurfaceBlocksForSurface,
 } from "../prompts/prompt-surface-registry.js";
 import { resolveFinalizerNonTerminalTools } from "./autonomous-finalizer-tools.js";
+import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
+import type { DeliberationContext } from "./types.js";
 import {
   FINALIZER_REGENERATION_PROMPT_BLOCK_IDS,
   runFinalizer,
@@ -58,8 +61,11 @@ async function runEmissionFinalizer(
     turnId?: string;
     structuralNoOutputFlags?: Parameters<typeof runFinalizer>[0]["structuralNoOutputFlags"];
     allowedEmissions?: Parameters<typeof runFinalizer>[0]["allowedEmissions"];
+    outboundToolAvailable?: boolean;
+    participationPolicy?: Parameters<typeof runFinalizer>[0]["participationPolicy"];
     turnOrigin?: Parameters<typeof runFinalizer>[0]["turnOrigin"];
     registeredTools?: readonly ToolDefinition[];
+    compactSurface?: Parameters<typeof runFinalizer>[0]["compactSurface"];
   } = {},
 ) {
   return runFinalizer({
@@ -101,7 +107,14 @@ async function runEmissionFinalizer(
     ...(options.allowedEmissions === undefined
       ? {}
       : { allowedEmissions: options.allowedEmissions }),
+    ...(options.outboundToolAvailable === undefined
+      ? {}
+      : { outboundToolAvailable: options.outboundToolAvailable }),
+    ...(options.participationPolicy === undefined
+      ? {}
+      : { participationPolicy: options.participationPolicy }),
     ...(options.turnOrigin === undefined ? {} : { turnOrigin: options.turnOrigin }),
+    ...(options.compactSurface === undefined ? {} : { compactSurface: options.compactSurface }),
     ...(options.tracer === undefined ? {} : { tracer: options.tracer }),
     ...(options.turnId === undefined ? {} : { turnId: options.turnId }),
   });
@@ -150,6 +163,9 @@ type CapturedSystemBlock = {
     ttl?: "5m" | "1h";
   };
 };
+
+const USER_ACTIVE_TOOL_AVAILABILITY =
+  '<borg_finalizer_tool_availability turn_origin="user" participation_policy="active" outbound_post="unavailable" enabled_terminal_emissions="EmitAnswer,EmitObserve,EmitNoOutput,EmitSelfReport" />';
 
 function createAnsweringLlm(toolUseId: string): FakeLLMClient {
   return new FakeLLMClient({
@@ -236,12 +252,13 @@ describe("runFinalizer emission tools", () => {
         type: "text",
         cache_control: { type: "ephemeral", ttl: "1h" },
         text: expect.stringContaining(
-          "I call exactly one of EmitAnswer, EmitObserve, EmitNoOutput, and EmitSelfReport",
+          "The origin-static advertised terminal tools are EmitAnswer, EmitObserve, EmitNoOutput, and EmitSelfReport",
         ),
       }),
       expect.objectContaining({
         type: "text",
-        text: "Base dynamic prompt.",
+        cache_control: { type: "ephemeral", ttl: "5m" },
+        text: ["Base dynamic prompt.", USER_ACTIVE_TOOL_AVAILABILITY].join("\n\n"),
       }),
     ]);
   });
@@ -367,6 +384,187 @@ describe("runFinalizer emission tools", () => {
     ]);
   });
 
+  it("keeps autonomous tool schemas and block 0 stable across live availability states", async () => {
+    const pausedLlm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_paused",
+              name: "EmitNoOutput",
+              input: {
+                reason: "Participation is paused.",
+                primary_no_output_reason: "other",
+                no_output_categories: [],
+              },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+    const activeLlm = createAnsweringLlm("toolu_active");
+    const outboundTool = fakeTool(OUTBOUND_POST_TOOL_NAME, ["autonomous", "deliberator"]);
+
+    await runEmissionFinalizer(pausedLlm, tempDirs, {
+      turnOrigin: "autonomous",
+      participationPolicy: "paused",
+      allowedEmissions: ["EmitNoOutput"],
+      outboundToolAvailable: false,
+      registeredTools: [outboundTool],
+    });
+    await runEmissionFinalizer(activeLlm, tempDirs, {
+      turnOrigin: "autonomous",
+      participationPolicy: "active",
+      outboundToolAvailable: true,
+      registeredTools: [outboundTool],
+    });
+
+    expect(pausedLlm.requests[0]?.tools).toEqual(activeLlm.requests[0]?.tools);
+    expect(pausedLlm.requests[0]?.tools?.map((tool) => tool.name)).toEqual([
+      "EmitAnswer",
+      "EmitObserve",
+      "EmitNoOutput",
+      "EmitSelfReport",
+      "EmitContinueThought",
+      OUTBOUND_POST_TOOL_NAME,
+    ]);
+    const pausedSystem = pausedLlm.requests[0]?.system as readonly CapturedSystemBlock[];
+    const activeSystem = activeLlm.requests[0]?.system as readonly CapturedSystemBlock[];
+    expect(pausedSystem[0]).toEqual(activeSystem[0]);
+    expect(pausedSystem[1]?.text).toContain(
+      'participation_policy="paused" outbound_post="unavailable" enabled_terminal_emissions="EmitNoOutput"',
+    );
+    expect(activeSystem[1]?.text).toContain(
+      'participation_policy="active" outbound_post="available" enabled_terminal_emissions="EmitAnswer,EmitObserve,EmitNoOutput,EmitSelfReport,EmitContinueThought"',
+    );
+  });
+
+  it("keeps compact tools and blocks 0-2 stable across turn-local changes", async () => {
+    const firstNow = Date.UTC(2026, 7, 14, 12, 0, 0);
+    const secondNow = firstNow + 60_000;
+    const retrievedEpisode: DeliberationContext["retrievalResult"][number] = {
+      episode: createEpisodeFixture({
+        id: "ep_aaaaaaaaaaaaaaaa" as DeliberationContext["retrievalResult"][number]["episode"]["id"],
+        title: "Turn-local retrieval",
+        narrative: "This record appears only on the second build.",
+        created_at: firstNow - 10_000,
+        updated_at: firstNow - 10_000,
+      }),
+      score: 0.9,
+      rawScore: 0.9,
+      scoreBreakdown: createRetrievalScoreFixture({
+        similarity: 0.9,
+        decayedSalience: 0.3,
+        heat: 1,
+      }),
+      citationChain: [],
+    };
+    const compactContext = (
+      nowMs: number,
+      participationPolicy: "active" | "paused",
+      retrievalResult: DeliberationContext["retrievalResult"],
+      outboundAvailable: boolean,
+    ): DeliberationContext => ({
+      sessionId: DEFAULT_SESSION_ID,
+      nowMs,
+      turnOrigin: "autonomous",
+      participationPolicy,
+      userMessage: "Continue the autonomous reflection.",
+      perception: {
+        entities: [],
+        mode: "reflective",
+        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+        temporalCue: null,
+      },
+      retrievalResult,
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 3,
+        hot_entities: [],
+        pending_actions: [],
+        pending_social_attribution: null,
+        pending_trait_attribution: null,
+        suppressed: [],
+        mood: null,
+        pending_procedural_attempts: [],
+        discourse_state: { stop_until_substantive_content: null },
+        mode: "reflective",
+        updated_at: firstNow - 1_000,
+      },
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      autonomousFinalizerToolMenu: outboundAvailable
+        ? [{ name: OUTBOUND_POST_TOOL_NAME, menuSummary: "Post to an authorized target." }]
+        : [],
+    });
+    const pausedLlm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_compact_paused",
+              name: "EmitNoOutput",
+              input: {
+                reason: "Participation is paused.",
+                primary_no_output_reason: "other",
+                no_output_categories: [],
+              },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+    const activeLlm = createAnsweringLlm("toolu_compact_active");
+    const outboundTool = fakeTool(OUTBOUND_POST_TOOL_NAME, ["autonomous", "deliberator"]);
+
+    await runEmissionFinalizer(pausedLlm, tempDirs, {
+      turnOrigin: "autonomous",
+      participationPolicy: "paused",
+      allowedEmissions: ["EmitNoOutput"],
+      outboundToolAvailable: false,
+      registeredTools: [outboundTool],
+      finalizerSurfaceVariant: "compact",
+      compactSurface: {
+        context: compactContext(firstNow, "paused", [], false),
+        baseSystemPromptOptions: {
+          retrievalContextBudget: 10_000,
+          semanticContextBudget: 10_000,
+          nowMs: firstNow,
+        },
+      },
+    });
+    await runEmissionFinalizer(activeLlm, tempDirs, {
+      turnOrigin: "autonomous",
+      participationPolicy: "active",
+      outboundToolAvailable: true,
+      registeredTools: [outboundTool],
+      finalizerSurfaceVariant: "compact",
+      compactSurface: {
+        context: compactContext(secondNow, "active", [retrievedEpisode], true),
+        baseSystemPromptOptions: {
+          retrievalContextBudget: 10_000,
+          semanticContextBudget: 10_000,
+          nowMs: secondNow,
+        },
+      },
+    });
+
+    const pausedRequest = pausedLlm.requests[0]!;
+    const activeRequest = activeLlm.requests[0]!;
+    const pausedSystem = pausedRequest.system as readonly CapturedSystemBlock[];
+    const activeSystem = activeRequest.system as readonly CapturedSystemBlock[];
+    expect(JSON.stringify(pausedRequest.tools)).toBe(JSON.stringify(activeRequest.tools));
+    expect(JSON.stringify(pausedSystem.slice(0, 3))).toBe(JSON.stringify(activeSystem.slice(0, 3)));
+    expect(JSON.stringify(pausedSystem[3])).not.toBe(JSON.stringify(activeSystem[3]));
+  });
+
   it("sends each tool once when the live-turn and interior menus overlap", () => {
     // tool.openQuestions.ruminations is listed in BOTH menus by design. Shipping it twice made
     // the API reject the whole request ("tools: Tool names must be unique."), which killed every
@@ -483,7 +681,7 @@ describe("runFinalizer emission tools", () => {
     );
   });
 
-  it("filters finalizer emission tools when allowed emissions are provided", async () => {
+  it("keeps emission schemas advertised while structurally gating observing participation", async () => {
     const llm = new FakeLLMClient({
       responses: [
         {
@@ -504,6 +702,7 @@ describe("runFinalizer emission tools", () => {
 
     const result = await runEmissionFinalizer(llm, tempDirs, {
       allowedEmissions: ["EmitObserve", "EmitNoOutput"],
+      participationPolicy: "observing",
     });
 
     expect(result.decision).toEqual({
@@ -511,16 +710,17 @@ describe("runFinalizer emission tools", () => {
       reason: "Operator set observing mode.",
     });
     expect(llm.requests[0]?.tools?.map((tool) => tool.name)).toEqual([
+      "EmitAnswer",
       "EmitObserve",
       "EmitNoOutput",
+      "EmitSelfReport",
     ]);
     const system = requestSystemText(llm.requests[0]?.system);
-    expect(system).toContain("I call exactly one of EmitObserve and EmitNoOutput");
-    expect(system).not.toContain("EmitAnswer");
-    expect(system).not.toContain("EmitSelfReport");
+    expect(system).toContain('enabled_terminal_emissions="EmitObserve,EmitNoOutput"');
+    expect(system).toContain("The origin-static advertised terminal tools are EmitAnswer");
   });
 
-  it("describes only EmitNoOutput when it is the only allowed emission", async () => {
+  it("keeps emission schemas advertised while structurally gating no-output participation", async () => {
     const llm = new FakeLLMClient({
       responses: [
         {
@@ -545,6 +745,7 @@ describe("runFinalizer emission tools", () => {
 
     const result = await runEmissionFinalizer(llm, tempDirs, {
       allowedEmissions: ["EmitNoOutput"],
+      participationPolicy: "paused",
     });
 
     expect(result.decision).toEqual({
@@ -553,16 +754,19 @@ describe("runFinalizer emission tools", () => {
       primary_no_output_reason: "other",
       no_output_categories: [],
     });
-    expect(llm.requests[0]?.tools?.map((tool) => tool.name)).toEqual(["EmitNoOutput"]);
+    expect(llm.requests[0]?.tools?.map((tool) => tool.name)).toEqual([
+      "EmitAnswer",
+      "EmitObserve",
+      "EmitNoOutput",
+      "EmitSelfReport",
+    ]);
     const system = requestSystemText(llm.requests[0]?.system);
-    expect(system).toContain("my only terminal emission tool, EmitNoOutput");
+    expect(system).toContain('enabled_terminal_emissions="EmitNoOutput"');
     expect(system).toContain(
       "Self-referential memory voice: when a prompt-visible structure identifies content as self-owned, I write self-referential content",
     );
     expect(system).toContain("persisted as decision_rationale");
-    expect(system).not.toContain("EmitAnswer");
-    expect(system).not.toContain("EmitObserve");
-    expect(system).not.toContain("EmitSelfReport");
+    expect(system).toContain("An advertised tool whose live state is unavailable");
   });
 
   it("emits ordered token chunks and a final flush while preserving the tool decision", async () => {
@@ -722,8 +926,12 @@ describe("runFinalizer emission tools", () => {
     const secondSystem = secondLlm.requests[0]?.system as readonly { text: string }[];
 
     expect(firstSystem[0]?.text).toBe(secondSystem[0]?.text);
-    expect(firstSystem[1]?.text).toBe("Dynamic context one.\n\nEvidence ledger one.");
-    expect(secondSystem[1]?.text).toBe("Dynamic context two.\n\nEvidence ledger two.");
+    expect(firstSystem[1]?.text).toBe(
+      ["Dynamic context one.", USER_ACTIVE_TOOL_AVAILABILITY, "Evidence ledger one."].join("\n\n"),
+    );
+    expect(secondSystem[1]?.text).toBe(
+      ["Dynamic context two.", USER_ACTIVE_TOOL_AVAILABILITY, "Evidence ledger two."].join("\n\n"),
+    );
   });
 
   it("keeps the default and explicit legacy finalizer block serialization byte-identical", async () => {
@@ -759,6 +967,7 @@ describe("runFinalizer emission tools", () => {
     };
     const legacyDynamicPrompt = [
       "Base dynamic prompt.",
+      USER_ACTIVE_TOOL_AVAILABILITY,
       ...stableSections.map((section) => section.text),
       regenerationSection.text,
     ].join("\n\n");
@@ -779,7 +988,11 @@ describe("runFinalizer emission tools", () => {
     expect(systemBlocks[0]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
     expect(systemBlocks[1]?.cache_control).toBeUndefined();
     expect(systemBlocks[1]?.text).toBe(
-      ["Base dynamic prompt.", ...stableSections.map((section) => section.text)].join("\n\n"),
+      [
+        "Base dynamic prompt.",
+        USER_ACTIVE_TOOL_AVAILABILITY,
+        ...stableSections.map((section) => section.text),
+      ].join("\n\n"),
     );
     expect(systemBlocks[1]?.text).not.toContain(regenerationSection.text);
     expect(systemBlocks[2]).toEqual({
@@ -805,6 +1018,7 @@ describe("runFinalizer emission tools", () => {
     ];
     const legacyDynamicPrompt = [
       "Base dynamic prompt.",
+      USER_ACTIVE_TOOL_AVAILABILITY,
       ...stableSections.map((section) => section.text),
     ].join("\n\n");
 
@@ -833,7 +1047,11 @@ describe("runFinalizer emission tools", () => {
       blockId: "borg_commitment_regeneration_instruction",
       text: "Regeneration fixture.",
     };
-    const legacyDynamicPrompt = ["Base dynamic prompt.", regenerationSection.text].join("\n\n");
+    const legacyDynamicPrompt = [
+      "Base dynamic prompt.",
+      USER_ACTIVE_TOOL_AVAILABILITY,
+      regenerationSection.text,
+    ].join("\n\n");
 
     await runEmissionFinalizer(llm, tempDirs, {
       additionalPromptSections: [regenerationSection],
