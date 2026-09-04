@@ -34,12 +34,17 @@ import {
 import {
   appendBoundedContextCapture,
   resolveContextCaptureStoragePath,
+  type ContextCaptureLogger,
 } from "./context-capture-storage.js";
+import {
+  DEFAULT_CONTEXT_CAPTURE_ROTATION_KEEP,
+  DEFAULT_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES,
+} from "./constants.js";
 
 export const PLANNER_CONTEXT_CAPTURE_SCHEMA_VERSION = 2 as const;
 export const PLANNER_CONTEXT_CAPTURE_RELATIVE_PATH = join("captures", "planner-contexts.jsonl");
 export const DEFAULT_PLANNER_CONTEXT_CAPTURE_MAX_RECORD_BYTES = 16 * 1024 * 1024;
-export const DEFAULT_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES = 512 * 1024 * 1024;
+export { DEFAULT_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES } from "./constants.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -792,6 +797,8 @@ export type PlannerContextCaptureOptions = {
   random?: () => number;
   maxRecordBytes?: number;
   maxFileBytes?: number;
+  rotationKeep?: number;
+  logger?: ContextCaptureLogger;
 };
 
 const plannerSurfaceFingerprintSchema = z
@@ -1203,6 +1210,8 @@ export class PlannerContextCapture {
   private readonly random: () => number;
   private readonly maxRecordBytes: number;
   private readonly maxFileBytes: number;
+  private readonly rotationKeep: number;
+  private readonly logger: ContextCaptureLogger;
   private readonly stats: PlannerContextCaptureStats = {
     captured: 0,
     oversizedSkipped: 0,
@@ -1217,6 +1226,8 @@ export class PlannerContextCapture {
     this.maxRecordBytes =
       options.maxRecordBytes ?? DEFAULT_PLANNER_CONTEXT_CAPTURE_MAX_RECORD_BYTES;
     this.maxFileBytes = options.maxFileBytes ?? DEFAULT_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES;
+    this.rotationKeep = options.rotationKeep ?? DEFAULT_CONTEXT_CAPTURE_ROTATION_KEEP;
+    this.logger = options.logger ?? console;
   }
 
   private resolvedStoragePath(): { path: string; captureDirectory: string } {
@@ -1267,14 +1278,15 @@ export class PlannerContextCapture {
         fileName: "planner-contexts.jsonl",
         record,
         maxFileBytes: this.maxFileBytes,
+        rotationKeep: this.rotationKeep,
+        rotationTimestampMs: this.clock.now(),
+        logger: this.logger,
       });
-      if (result.status === "file_full") {
-        this.stats.fileFullSkipped += 1;
-        this.emit(record, "skipped", { reason: "file_full", record_bytes: bytes });
-        return { status: "skipped", reason: "file_full", bytes };
-      }
       this.stats.captured += 1;
-      this.emit(record, "captured", { record_bytes: bytes });
+      this.emit(record, "captured", {
+        ...(result.status === "rotated" ? { reason: "rotated" } : {}),
+        record_bytes: bytes,
+      });
       return { status: "captured", path, bytes, record };
     } catch (error) {
       this.stats.failed += 1;

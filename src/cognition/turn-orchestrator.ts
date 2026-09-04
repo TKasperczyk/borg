@@ -325,6 +325,8 @@ export class TurnOrchestrator {
         : new PlannerContextCapture({
             dataDir: options.config.dataDir,
             sampleRate: options.config.deliberation.plannerContextCaptureSampleRate,
+            maxFileBytes: options.config.deliberation.plannerContextCaptureMaxFileBytes,
+            rotationKeep: options.config.deliberation.contextCaptureRotationKeep,
             clock: this.clock,
             tracer: this.tracer,
           });
@@ -334,6 +336,8 @@ export class TurnOrchestrator {
         : new FinalizerContextCapture({
             dataDir: options.config.dataDir,
             sampleRate: options.config.deliberation.finalizerContextCaptureSampleRate,
+            maxFileBytes: options.config.deliberation.finalizerContextCaptureMaxFileBytes,
+            rotationKeep: options.config.deliberation.contextCaptureRotationKeep,
             clock: this.clock,
             tracer: this.tracer,
             attachmentResolver: (attachmentId) =>

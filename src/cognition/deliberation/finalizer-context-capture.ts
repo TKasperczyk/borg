@@ -14,9 +14,14 @@ import {
   discardStagedContentAddressedCaptureSidecars,
   pendingNewContentAddressedCaptureSidecarBytes,
   stageContentAddressedCaptureSidecars,
+  type ContextCaptureLogger,
   type PendingContentAddressedCaptureSidecar,
   type StagedContentAddressedCaptureSidecar,
 } from "./context-capture-storage.js";
+import {
+  DEFAULT_CONTEXT_CAPTURE_ROTATION_KEEP,
+  DEFAULT_FINALIZER_CONTEXT_CAPTURE_MAX_FILE_BYTES,
+} from "./constants.js";
 import {
   FINALIZER_TOOL_TRANSCRIPT_MAX_BYTES,
   FinalizerToolTranscriptCollector,
@@ -44,7 +49,6 @@ const LEGACY_FINALIZER_CONTEXT_CAPTURE_SCHEMA_VERSION = 1 as const;
 // finalizer contexts; the previous 32 MB cap silently skipped every one
 // (trace: finalizer_context_capture.skipped record_oversized, 2026-08-15).
 const DEFAULT_FINALIZER_CONTEXT_CAPTURE_MAX_RECORD_BYTES = 96 * 1024 * 1024;
-const DEFAULT_FINALIZER_CONTEXT_CAPTURE_MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024;
 const DEFAULT_FINALIZER_CONTEXT_CAPTURE_MAX_SIDECAR_BYTES = 512 * 1024 * 1024;
 const FINALIZER_CAPTURE_FILE_NAME = "finalizer-contexts.jsonl";
 
@@ -143,7 +147,9 @@ export type FinalizerContextCaptureOptions = {
   random?: () => number;
   maxRecordBytes?: number;
   maxFileBytes?: number;
+  rotationKeep?: number;
   maxSidecarBytes?: number;
+  logger?: ContextCaptureLogger;
   attachmentResolver?: (attachmentId: AttachmentId) => {
     mediaType: string;
     bytes: Buffer | Uint8Array;
@@ -488,7 +494,9 @@ export class FinalizerContextCapture {
   private readonly random: () => number;
   private readonly maxRecordBytes: number;
   private readonly maxFileBytes: number;
+  private readonly rotationKeep: number;
   private readonly maxSidecarBytes: number;
+  private readonly logger: ContextCaptureLogger;
 
   constructor(private readonly options: FinalizerContextCaptureOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -497,8 +505,10 @@ export class FinalizerContextCapture {
     this.maxRecordBytes =
       options.maxRecordBytes ?? DEFAULT_FINALIZER_CONTEXT_CAPTURE_MAX_RECORD_BYTES;
     this.maxFileBytes = options.maxFileBytes ?? DEFAULT_FINALIZER_CONTEXT_CAPTURE_MAX_FILE_BYTES;
+    this.rotationKeep = options.rotationKeep ?? DEFAULT_CONTEXT_CAPTURE_ROTATION_KEEP;
     this.maxSidecarBytes =
       options.maxSidecarBytes ?? DEFAULT_FINALIZER_CONTEXT_CAPTURE_MAX_SIDECAR_BYTES;
+    this.logger = options.logger ?? console;
   }
 
   shouldCapture(): boolean {
@@ -593,20 +603,14 @@ export class FinalizerContextCapture {
         fileName: FINALIZER_CAPTURE_FILE_NAME,
         record,
         maxFileBytes: this.maxFileBytes,
+        rotationKeep: this.rotationKeep,
+        rotationTimestampMs: this.clock.now(),
+        logger: this.logger,
       });
-      if (result.status === "file_full") {
-        discardStagedContentAddressedCaptureSidecars(stagedSidecars);
-        stagedSidecars = [];
-        this.emit(input, "skipped", {
-          reason: "file_full",
-          record_bytes: bytes,
-          ...transcriptTraceDetails,
-        });
-        return { status: "skipped", reason: "file_full", bytes };
-      }
       commitStagedContentAddressedCaptureSidecars(stagedSidecars);
       stagedSidecars = [];
       this.emit(input, "captured", {
+        ...(result.status === "rotated" ? { reason: "rotated" } : {}),
         record_bytes: bytes,
         ...transcriptTraceDetails,
       });

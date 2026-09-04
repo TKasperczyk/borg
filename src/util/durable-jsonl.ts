@@ -10,6 +10,7 @@ import {
   mkdirSync,
   openSync,
   readSync,
+  renameSync,
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
@@ -32,12 +33,25 @@ export type DurableJsonlAppendResult =
       status: "file_full";
       bytes: number;
       repairedTailBytes: number;
+    }
+  | {
+      status: "rotated";
+      bytes: number;
+      startOffset: number;
+      repairedTailBytes: number;
+      rotatedPath: string;
     };
 
 export type DurableJsonlAppendOptions = {
   maxFileBytes?: number;
   /** Repair this owned directory to 0700 while the append lock is held. */
   privateDirectory?: string;
+  /**
+   * Resolve a non-existent destination for a full file. The callback runs
+   * while the append lock is held; the full file is renamed and the pending
+   * record is durably appended to a fresh file before that lock is released.
+   */
+  rotatedFilePath?: () => string;
 };
 
 function lastCompleteRecordOffset(fileDescriptor: number, size: number): number {
@@ -90,7 +104,7 @@ export async function appendDurableJsonl(
     }
 
     const existedBeforeOpen = existsSync(filePath);
-    const fileDescriptor = openSync(
+    let fileDescriptor: number | undefined = openSync(
       filePath,
       constants.O_APPEND | constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW,
       PRIVATE_FILE_MODE,
@@ -109,7 +123,51 @@ export async function appendDurableJsonl(
       }
 
       if (options.maxFileBytes !== undefined && startOffset + bytes > options.maxFileBytes) {
-        return { status: "file_full", bytes, repairedTailBytes };
+        if (options.rotatedFilePath === undefined) {
+          return { status: "file_full", bytes, repairedTailBytes };
+        }
+
+        // A single record cannot be split across files. If it is larger than
+        // the configured cap, keep it in the empty active file instead of
+        // producing an empty rotation and dropping the record.
+        if (startOffset > 0) {
+          const rotatedPath = options.rotatedFilePath();
+          if (dirname(rotatedPath) !== parent) {
+            throw new Error("Rotated JSONL file must stay in the active file directory");
+          }
+          if (existsSync(rotatedPath)) {
+            throw new Error(`Rotated JSONL destination already exists: ${rotatedPath}`);
+          }
+
+          closeSync(fileDescriptor);
+          fileDescriptor = undefined;
+          renameSync(filePath, rotatedPath);
+          syncDirectory(parent);
+
+          fileDescriptor = openSync(
+            filePath,
+            constants.O_APPEND | constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW,
+            PRIVATE_FILE_MODE,
+          );
+          fchmodSync(fileDescriptor, PRIVATE_FILE_MODE);
+          try {
+            writeFileSync(fileDescriptor, line);
+            fsyncSync(fileDescriptor);
+            syncDirectory(parent);
+          } catch (error) {
+            ftruncateSync(fileDescriptor, 0);
+            fsyncSync(fileDescriptor);
+            throw error;
+          }
+
+          return {
+            status: "rotated",
+            bytes,
+            startOffset: 0,
+            repairedTailBytes,
+            rotatedPath,
+          };
+        }
       }
 
       try {
@@ -126,7 +184,9 @@ export async function appendDurableJsonl(
 
       return { status: "appended", bytes, startOffset, repairedTailBytes };
     } finally {
-      closeSync(fileDescriptor);
+      if (fileDescriptor !== undefined) {
+        closeSync(fileDescriptor);
+      }
     }
   });
 }

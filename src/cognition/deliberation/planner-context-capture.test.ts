@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -11,9 +12,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { LLMCompleteResult } from "../../llm/index.js";
+import { FixedClock } from "../../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
   createCreatorDirectiveId,
@@ -41,11 +44,13 @@ import {
 } from "./planner-context-capture.js";
 import { replayPlannerContextCapture } from "./planner-ab-replay.js";
 import { createS2PlannerRequestSnapshot } from "./s2-planner.js";
+import { waitForContextCaptureMaintenance } from "./context-capture-storage.js";
 
 const NOW_MS = Date.UTC(2026, 7, 13, 20, 0, 0);
 const tempDirs: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
+  await waitForContextCaptureMaintenance();
   vi.restoreAllMocks();
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
@@ -378,32 +383,53 @@ describe("planner context capture", () => {
     expect(existsSync(plannerContextCapturePath(dataDir))).toBe(false);
   });
 
-  it("caps append-only file growth and counts records skipped at the cap", async () => {
+  it("rotates at the file cap and captures the triggering record", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "borg-planner-capture-cap-"));
     tempDirs.push(dataDir);
-    const captureRecord = record();
-    const lineBytes = Buffer.byteLength(`${JSON.stringify(captureRecord)}\n`);
+    const firstRecord = { ...record(), capture_id: "capture_a" };
+    const triggeringRecord = { ...record(), capture_id: "capture_b" };
+    const lineBytes = Buffer.byteLength(`${JSON.stringify(firstRecord)}\n`);
+    const emit = vi.fn();
+    const logger = { info: vi.fn(), error: vi.fn() };
     const capture = new PlannerContextCapture({
       dataDir,
       sampleRate: 1,
       maxRecordBytes: lineBytes,
       maxFileBytes: lineBytes,
+      clock: new FixedClock(NOW_MS),
+      tracer: { enabled: true, includePayloads: false, emit },
+      logger,
     });
 
-    await expect(capture.write(captureRecord)).resolves.toMatchObject({ status: "captured" });
-    await expect(capture.write(captureRecord)).resolves.toMatchObject({
-      status: "skipped",
-      reason: "file_full",
-    });
+    await expect(capture.write(firstRecord)).resolves.toMatchObject({ status: "captured" });
+    await expect(capture.write(triggeringRecord)).resolves.toMatchObject({ status: "captured" });
 
     const path = plannerContextCapturePath(dataDir);
+    await waitForContextCaptureMaintenance(path);
     expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(1);
+    expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({ capture_id: "capture_b" });
+    const [rotatedName] = readdirSync(join(dataDir, "captures")).filter((name) =>
+      name.startsWith("planner-contexts.jsonl.rotated-"),
+    );
+    expect(rotatedName).toBe("planner-contexts.jsonl.rotated-20260813T200000.000Z.gz");
+    expect(
+      JSON.parse(gunzipSync(readFileSync(join(dataDir, "captures", rotatedName!))).toString()),
+    ).toMatchObject({ capture_id: "capture_a" });
     expect(capture.snapshotStats()).toEqual({
-      captured: 1,
+      captured: 2,
       oversizedSkipped: 0,
-      fileFullSkipped: 1,
+      fileFullSkipped: 0,
       failed: 0,
     });
+    expect(emit).toHaveBeenCalledWith(
+      "deliberation.planner_context_capture.captured",
+      expect.objectContaining({ reason: "rotated" }),
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      "Rotated deliberation context capture",
+      expect.objectContaining({ capturePath: path }),
+    );
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
   it("repairs pre-existing capture directory and file permissions under umask 0022", async () => {

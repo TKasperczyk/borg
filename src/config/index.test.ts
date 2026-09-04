@@ -172,8 +172,11 @@ describe("config", () => {
     expect(config.deliberation.finalizerDynamicPromptCacheEnabled).toBe(true);
     expect(config.deliberation.finalizerSurfaceVariant).toBe("legacy");
     expect(config.deliberation.finalizerContextCaptureSampleRate).toBe(0);
+    expect(config.deliberation.finalizerContextCaptureMaxFileBytes).toBe(1024 * 1024 * 1024);
     expect(config.deliberation.plannerSurfaceVariant).toBe("compact");
     expect(config.deliberation.plannerContextCaptureSampleRate).toBe(0);
+    expect(config.deliberation.plannerContextCaptureMaxFileBytes).toBe(512 * 1024 * 1024);
+    expect(config.deliberation.contextCaptureRotationKeep).toBe(2);
     expect(config.commitments).toEqual({
       enforce: {
         regenerateBeforeSuppress: true,
@@ -431,6 +434,50 @@ describe("config", () => {
     });
 
     expect(config.deliberation.plannerContextCaptureSampleRate).toBe(0.75);
+  });
+
+  it("loads context capture rotation limits from config.json and lets env override them", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      deliberation: {
+        contextCaptureRotationKeep: 3,
+        plannerContextCaptureMaxFileBytes: 1_024,
+        finalizerContextCaptureMaxFileBytes: 2_048,
+      },
+    });
+
+    const fromFile = loadConfig({ dataDir: tempDir, env: {} });
+    expect(fromFile.deliberation).toMatchObject({
+      contextCaptureRotationKeep: 3,
+      plannerContextCaptureMaxFileBytes: 1_024,
+      finalizerContextCaptureMaxFileBytes: 2_048,
+    });
+
+    const fromEnv = loadConfig({
+      dataDir: tempDir,
+      env: {
+        BORG_DELIBERATION_CONTEXT_CAPTURE_ROTATION_KEEP: "4",
+        BORG_DELIBERATION_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES: "4096",
+        BORG_DELIBERATION_FINALIZER_CONTEXT_CAPTURE_MAX_FILE_BYTES: "8192",
+      },
+    });
+    expect(fromEnv.deliberation).toMatchObject({
+      contextCaptureRotationKeep: 4,
+      plannerContextCaptureMaxFileBytes: 4_096,
+      finalizerContextCaptureMaxFileBytes: 8_192,
+    });
+  });
+
+  it.each([
+    ["BORG_DELIBERATION_CONTEXT_CAPTURE_ROTATION_KEEP", "-1"],
+    ["BORG_DELIBERATION_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES", "0"],
+    ["BORG_DELIBERATION_FINALIZER_CONTEXT_CAPTURE_MAX_FILE_BYTES", "1.5"],
+  ])("rejects invalid context capture rotation override %s", (name, value) => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    expect(() => loadConfig({ dataDir: tempDir, env: { [name]: value } })).toThrow(ConfigError);
   });
 
   it.each(["-0.01", "1.01", "not-a-number"])(

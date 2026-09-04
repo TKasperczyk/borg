@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { gunzipSync } from "node:zlib";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -31,14 +32,18 @@ import {
   prepareFinalizerToolTranscript,
   type FinalizerToolTranscriptSnapshot,
 } from "./finalizer-tool-transcript.js";
-import { readContentAddressedCaptureSidecar } from "./context-capture-storage.js";
+import {
+  readContentAddressedCaptureSidecar,
+  waitForContextCaptureMaintenance,
+} from "./context-capture-storage.js";
 import { fingerprintCanonicalRequest } from "./request-fingerprint.js";
 import { replayFinalizerContextCapture } from "./finalizer-ab-replay.js";
 import type { DeliberationContext } from "./types.js";
 import { runFinalizer } from "./finalizer.js";
 
 const tempDirs: string[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await waitForContextCaptureMaintenance();
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -827,31 +832,47 @@ describe("finalizer context capture and replay", () => {
     expect(existsSync(join(dataDir, "captures", "finalizer-contexts.jsonl"))).toBe(false);
   });
 
-  it("stops appending when the capture file growth cap is reached", async () => {
+  it("rotates at the file cap and captures the triggering finalizer record", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "borg-finalizer-capture-"));
     tempDirs.push(dataDir);
+    const firstInput = { ...input(), captureId: "capture_a" };
+    const triggeringInput = { ...input(), captureId: "capture_b" };
+    const lineBytes = Buffer.byteLength(
+      `${JSON.stringify(buildFinalizerContextCaptureRecord(firstInput))}\n`,
+    );
+    const emit = vi.fn();
+    const logger = { info: vi.fn(), error: vi.fn() };
     const capture = new FinalizerContextCapture({
       dataDir,
       sampleRate: 1,
       maxRecordBytes: 32 * 1024 * 1024,
-      maxFileBytes: 1,
-      attachmentResolver: () => ({ mediaType: "image/png", bytes: Buffer.from("staged-image") }),
+      maxFileBytes: lineBytes,
+      clock: new FixedClock(1_000),
+      tracer: { enabled: true, includePayloads: false, emit },
+      logger,
     });
-    const result = await capture.capture({
-      ...input(),
-      liveRequest: {
-        ...input().liveRequest,
-        messages: [
-          {
-            role: "user",
-            content: [{ type: "image_ref", attachment_id: "att_bbbbbbbbbbbbbbbb" as never }],
-          },
-        ],
-      },
-    });
-    expect(result).toMatchObject({ status: "skipped", reason: "file_full" });
-    expect(statSync(join(dataDir, "captures", "finalizer-contexts.jsonl")).size).toBe(0);
-    expect(readdirSync(join(dataDir, "captures", "finalizer-images"))).toEqual([]);
+    await expect(capture.capture(firstInput)).resolves.toMatchObject({ status: "captured" });
+    await expect(capture.capture(triggeringInput)).resolves.toMatchObject({ status: "captured" });
+
+    const path = join(dataDir, "captures", "finalizer-contexts.jsonl");
+    await waitForContextCaptureMaintenance(path);
+    expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({ capture_id: "capture_b" });
+    const [rotatedName] = readdirSync(join(dataDir, "captures")).filter((name) =>
+      name.startsWith("finalizer-contexts.jsonl.rotated-"),
+    );
+    expect(rotatedName).toBe("finalizer-contexts.jsonl.rotated-19700101T000001.000Z.gz");
+    expect(
+      JSON.parse(gunzipSync(readFileSync(join(dataDir, "captures", rotatedName!))).toString()),
+    ).toMatchObject({ capture_id: "capture_a" });
+    expect(emit).toHaveBeenCalledWith(
+      "deliberation.finalizer_context_capture.captured",
+      expect.objectContaining({ reason: "rotated" }),
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      "Rotated deliberation context capture",
+      expect.objectContaining({ capturePath: path }),
+    );
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
   it("removes staged image and tool-transcript sidecars when the JSONL append fails", async () => {

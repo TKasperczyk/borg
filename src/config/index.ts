@@ -2,7 +2,12 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { DEFAULT_HOST_CAPABILITIES_SECTION } from "../cognition/prompts/host-capability-contracts.js";
-import { DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET } from "../cognition/deliberation/constants.js";
+import {
+  DEFAULT_CONTEXT_CAPTURE_ROTATION_KEEP,
+  DEFAULT_FINALIZER_CONTEXT_CAPTURE_MAX_FILE_BYTES,
+  DEFAULT_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES,
+  DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
+} from "../cognition/deliberation/constants.js";
 import {
   EVIDENCE_LEDGER_SECTION_DEFINITIONS,
   type EvidenceLedgerSectionId,
@@ -288,8 +293,23 @@ const deliberationConfigSchema = z
       .enum(["compact", "compact_conversational", "legacy"])
       .default("legacy"),
     finalizerContextCaptureSampleRate: z.number().min(0).max(1).default(0),
+    finalizerContextCaptureMaxFileBytes: z
+      .number()
+      .int()
+      .positive()
+      .default(DEFAULT_FINALIZER_CONTEXT_CAPTURE_MAX_FILE_BYTES),
     plannerSurfaceVariant: z.enum(["compact", "legacy"]).default("compact"),
     plannerContextCaptureSampleRate: z.number().min(0).max(1).default(0),
+    plannerContextCaptureMaxFileBytes: z
+      .number()
+      .int()
+      .positive()
+      .default(DEFAULT_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES),
+    contextCaptureRotationKeep: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(DEFAULT_CONTEXT_CAPTURE_ROTATION_KEEP),
   })
   .strict()
   .prefault({});
@@ -1289,6 +1309,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
+    ["deliberation", "finalizerContextCaptureMaxFileBytes"],
+    readOptionalEnvNumber(env, "BORG_DELIBERATION_FINALIZER_CONTEXT_CAPTURE_MAX_FILE_BYTES"),
+  );
+  setConfigOverride(
+    overrides,
     ["deliberation", "plannerSurfaceVariant"],
     readOptionalEnvString(env, "BORG_DELIBERATION_PLANNER_SURFACE_VARIANT"),
   );
@@ -1296,6 +1321,16 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["deliberation", "plannerContextCaptureSampleRate"],
     readOptionalEnvUnitInterval(env, "BORG_DELIBERATION_PLANNER_CONTEXT_CAPTURE_SAMPLE_RATE"),
+  );
+  setConfigOverride(
+    overrides,
+    ["deliberation", "plannerContextCaptureMaxFileBytes"],
+    readOptionalEnvNumber(env, "BORG_DELIBERATION_PLANNER_CONTEXT_CAPTURE_MAX_FILE_BYTES"),
+  );
+  setConfigOverride(
+    overrides,
+    ["deliberation", "contextCaptureRotationKeep"],
+    readOptionalEnvNumber(env, "BORG_DELIBERATION_CONTEXT_CAPTURE_ROTATION_KEEP"),
   );
   setConfigOverride(
     overrides,
