@@ -363,6 +363,7 @@ export type IdentityGoal = {
   last_progress_ts: number | null;
   created_at: number;
   target_at: number | null;
+  counterparty_entity_id: string | null;
   children?: IdentityGoal[];
 };
 

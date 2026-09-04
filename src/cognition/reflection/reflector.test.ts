@@ -2999,12 +2999,14 @@ describe("reflector", () => {
     });
     cleanup.push(harness.cleanup);
     const alice = createEntityId();
+    const counterparty = createEntityId();
     const overBudgetGoalSeed = harness.goalsRepository.add({
       description: "Track Alice's multilingual launch history",
       terminalCondition: "Alice's launch reaches a documented handoff",
       priority: 8,
       audienceEntityId: alice,
       ownerEntityId: alice,
+      counterpartyEntityId: counterparty,
       provenance: { kind: "manual" },
     });
     const underBudgetGoalSeed = harness.goalsRepository.add({
@@ -3061,6 +3063,7 @@ describe("reflector", () => {
         progress_notes?: string | null;
         audience_entity_id?: string | null;
         owner_entity_id?: string | null;
+        counterparty_entity_id?: string | null;
         disclosure?: string;
         disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
       }>;
@@ -3068,6 +3071,7 @@ describe("reflector", () => {
         selected_goal?: {
           goal_id?: string;
           progress_notes?: string | null;
+          counterparty_entity_id?: string | null;
           disclosure?: string;
           disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
         };
@@ -3088,12 +3092,14 @@ describe("reflector", () => {
       terminal_condition: overBudgetGoal.terminal_condition,
       audience_entity_id: alice,
       owner_entity_id: alice,
+      counterparty_entity_id: counterparty,
       disclosure_label: {
         disclosure_class: "relationship_private",
         private_to_entity_ids: [alice],
       },
     });
     expect(renderedOverBudgetGoal?.disclosure).toContain(`private-to=${alice}`);
+    expect(renderedOverBudgetGoal?.disclosure).not.toContain(counterparty);
     expect(renderedUnderBudgetGoal).toMatchObject({
       status: "active",
       progress_notes: underBudgetNotes,
@@ -3132,6 +3138,7 @@ describe("reflector", () => {
     expect(payload.executive_focus?.selected_goal).toMatchObject({
       goal_id: overBudgetGoal.id,
       progress_notes: renderedNotes,
+      counterparty_entity_id: counterparty,
       disclosure_label: {
         disclosure_class: "relationship_private",
         private_to_entity_ids: [alice],
@@ -3251,6 +3258,7 @@ describe("reflector", () => {
       terminalCondition: "Alice's private launch follow-up reaches a handoff decision",
       priority: 8,
       ownerEntityId: alice,
+      counterpartyEntityId: bob,
       provenance: { kind: "manual" },
     });
     const nextStep = {
@@ -3298,6 +3306,7 @@ describe("reflector", () => {
     const payload = JSON.parse(llm.requests[0]?.messages[0]?.content ?? "{}") as {
       active_goals?: Array<{
         terminal_condition?: string | null;
+        counterparty_entity_id?: string | null;
         disclosure?: string;
         disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
       }>;
@@ -3313,6 +3322,7 @@ describe("reflector", () => {
       executive_focus?: {
         selected_goal?: {
           terminal_condition?: string | null;
+          counterparty_entity_id?: string | null;
           disclosure?: string;
           disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
         };
@@ -3326,6 +3336,7 @@ describe("reflector", () => {
     expect(payload.active_goals?.[0]?.terminal_condition).toBe(
       "Alice's private launch follow-up reaches a handoff decision",
     );
+    expect(payload.active_goals?.[0]?.counterparty_entity_id).toBe(bob);
     expect(payload.active_goals?.[0]?.disclosure).toContain(
       "disclosure_class=relationship_private",
     );
@@ -3358,6 +3369,7 @@ describe("reflector", () => {
     expect(payload.executive_focus?.selected_goal?.terminal_condition).toBe(
       "Alice's private launch follow-up reaches a handoff decision",
     );
+    expect(payload.executive_focus?.selected_goal?.counterparty_entity_id).toBe(bob);
     expect(payload.executive_focus?.next_step?.disclosure_label).toMatchObject({
       disclosure_class: "relationship_private",
       private_to_entity_ids: [alice],

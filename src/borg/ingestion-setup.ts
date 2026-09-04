@@ -74,6 +74,7 @@ export function buildStreamIngestionCoordinator(
             model: options.config.anthropic.models.recallExpansion,
             commitmentRepository: options.commitmentRepository,
             identityService: options.identityService,
+            entityRepository: options.entityRepository,
             relationalSlotRepository: options.relationalSlotRepository,
             workingMemoryStore: options.workingMemoryStore,
             clock: options.clock,

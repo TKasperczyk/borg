@@ -63,6 +63,10 @@ export function mapGoalRow(row: Record<string, unknown>): GoalRecord {
       row.owner_entity_id === null || row.owner_entity_id === undefined
         ? null
         : String(row.owner_entity_id),
+    counterparty_entity_id:
+      row.counterparty_entity_id === null || row.counterparty_entity_id === undefined
+        ? null
+        : String(row.counterparty_entity_id),
     canonicalized_by_artifact_entry_id:
       row.canonicalized_by_artifact_entry_id === null ||
       row.canonicalized_by_artifact_entry_id === undefined

@@ -274,6 +274,7 @@ export type BorgGoalAddInput = {
   targetAt?: number | null;
   audienceEntityId?: EntityId | null;
   ownerEntityId?: EntityId | null;
+  counterpartyEntityId?: EntityId | null;
   sourceStreamEntryIds?: readonly StreamEntryId[];
 };
 

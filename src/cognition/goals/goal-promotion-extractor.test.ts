@@ -3,7 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
-import { createEntityId, createGoalId, createSessionId } from "../../util/ids.js";
+import type { StreamEntry } from "../../stream/index.js";
+import {
+  createEntityId,
+  createGoalId,
+  createSessionId,
+  createStreamEntryId,
+} from "../../util/ids.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { GOAL_PROMOTION_SYSTEM_PROMPT } from "../prompts/goal-extraction.js";
@@ -20,6 +26,7 @@ type PromotionInput = {
   description?: string;
   terminal_condition?: string | null;
   priority?: number;
+  counterparty_entity_id?: string | null;
   target_at?: string | null;
   reason?: string;
   confidence?: number;
@@ -46,6 +53,7 @@ function promotionPayload(promotion: PromotionInput, index: number): Record<stri
         ? `Goal ${index} reaches its stated completion condition`
         : null),
     priority: promotion.priority ?? 5,
+    counterparty_entity_id: promotion.counterparty_entity_id ?? null,
     target_at: promotion.target_at ?? null,
     reason: promotion.reason ?? "Borg has an ongoing role.",
     confidence: promotion.confidence ?? 0.9,
@@ -133,6 +141,7 @@ describe("GoalPromotionExtractor", () => {
         description: "Help the user track the refactor across sessions",
         terminal_condition: "Goal 0 reaches its stated completion condition",
         priority: 8,
+        counterparty_entity_id: null,
         target_at: null,
         reason: "The user asked Borg to track the refactor over time.",
         confidence: 0.9,
@@ -198,6 +207,191 @@ describe("GoalPromotionExtractor", () => {
     expect(promotionProperties.terminal_condition?.description).not.toContain(
       "genuinely open-ended",
     );
+    expect(promotionProperties.counterparty_entity_id?.description).toContain(
+      "presented_entity_ids",
+    );
+    expect(systemPrompt).toContain("responsibility carried to a completion condition");
+    expect(systemPrompt).toContain("A priority of 9 or 10 asserts");
+  });
+
+  it("presents self identity, attributed history, and current structural addressing", async () => {
+    const selfEntityId = createEntityId();
+    const aliceEntityId = createEntityId();
+    const bobEntityId = createEntityId();
+    const audienceEntityId = createEntityId();
+    const priorAgentEntryId = createStreamEntryId();
+    const priorUserEntryId = createStreamEntryId();
+    const currentEntryId = createStreamEntryId();
+    const sessionId = createSessionId();
+    const currentEntry = {
+      id: currentEntryId,
+      timestamp: 1_700_000_000_300,
+      kind: "user_msg",
+      content: "Which responsibility should continue?",
+      turn_status: "active",
+      audience: "Arena",
+      sender_entity_id: bobEntityId,
+      reply_target_entity_id: selfEntityId,
+      session_id: sessionId,
+      compressed: false,
+    } satisfies StreamEntry;
+    const displayNames = new Map([
+      [aliceEntityId, "Alice"],
+      [bobEntityId, "Bob"],
+    ]);
+    const llm = new FakeLLMClient({ responses: [goalPromotionResponse([])] });
+    const extractor = new GoalPromotionExtractor({ llmClient: llm, model: "haiku" });
+
+    await extractor.extract(
+      createExtractorInput({
+        selfIdentity: {
+          id: selfEntityId,
+          canonical_name: "Borg",
+          aliases: ["B", "Memory Keeper"],
+        },
+        recentHistory: [
+          {
+            role: "assistant",
+            content: "I can carry the responsibility.",
+            stream_entry_id: priorAgentEntryId,
+            sender_entity_id: null,
+            ts: 1_700_000_000_100,
+            kind: "agent_msg",
+          },
+          {
+            role: "user",
+            content: "Alice described the prior choice.",
+            stream_entry_id: priorUserEntryId,
+            sender_entity_id: aliceEntityId,
+            ts: 1_700_000_000_200,
+            kind: "user_msg",
+          },
+        ],
+        currentMessageEntries: [currentEntry],
+        currentMessageSenderAttribution: [
+          {
+            entryId: currentEntryId,
+            senderEntityId: bobEntityId,
+            senderDisplayName: "Bob",
+          },
+        ],
+        audienceEntityId,
+        speakerEntityId: bobEntityId,
+        speakerDisplayName: "Bob",
+        senderDisplayNameById: (entityId) => displayNames.get(entityId) ?? null,
+      }),
+    );
+
+    const payload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as any;
+    expect(payload.self_identity).toEqual({
+      entity_id: selfEntityId,
+      canonical_name: "Borg",
+      handles: ["B", "Memory Keeper"],
+    });
+    expect(payload.recent_history).toEqual([
+      expect.objectContaining({
+        stream_entry_id: priorAgentEntryId,
+        kind: "agent_msg",
+        sender_entity_id: selfEntityId,
+        sender_display_name: "Borg",
+        sender_is_self: true,
+      }),
+      expect.objectContaining({
+        stream_entry_id: priorUserEntryId,
+        kind: "user_msg",
+        sender_entity_id: aliceEntityId,
+        sender_display_name: "Alice",
+        sender_is_self: false,
+      }),
+    ]);
+    expect(payload.current_message_entries).toEqual([
+      expect.objectContaining({
+        stream_entry_id: currentEntryId,
+        sender_entity_id: bobEntityId,
+        sender_display_name: "Bob",
+        sender_is_self: false,
+        audience_routing_label: "Arena",
+        audience_entity_id: audienceEntityId,
+        reply_target_entity_id: selfEntityId,
+      }),
+    ]);
+    expect(payload.presented_entity_ids).toHaveLength(4);
+    expect(payload.presented_entity_ids).toEqual(
+      expect.arrayContaining([selfEntityId, aliceEntityId, bobEntityId, audienceEntityId]),
+    );
+  });
+
+  it("presents a complete active-goal priority distribution", async () => {
+    const llm = new FakeLLMClient({ responses: [goalPromotionResponse([])] });
+    const extractor = new GoalPromotionExtractor({ llmClient: llm, model: "haiku" });
+
+    await extractor.extract(
+      createExtractorInput({
+        activeGoals: [-1, 2, 5, 7, 9, 11].map((priority) => ({
+          id: createGoalId(),
+          description: `Goal at priority ${priority}`,
+          terminal_condition: null,
+          priority,
+          target_at: null,
+          audience_entity_id: null,
+          owner_entity_id: null,
+        })),
+      }),
+    );
+
+    const payload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as any;
+    expect(payload.active_goal_priority_distribution).toEqual({
+      below_0: 1,
+      "0_to_under_4": 1,
+      "4_to_under_7": 1,
+      "7_to_under_9": 1,
+      "9_to_10": 1,
+      above_10: 1,
+    });
+  });
+
+  it("accepts only counterparty ids from the presented manifest", async () => {
+    const { emit, tracer } = tracingHarness();
+    const presentedEntityId = createEntityId();
+    const unpresentedEntityId = createEntityId();
+    const llm = new FakeLLMClient({
+      responses: [
+        goalPromotionResponse(
+          [
+            {
+              description: "Carry the presented participant's review responsibility",
+              counterparty_entity_id: presentedEntityId,
+              confidence: 0.95,
+            },
+            {
+              description: "Carry a responsibility toward an unpresented participant",
+              counterparty_entity_id: unpresentedEntityId,
+              confidence: 0.96,
+            },
+          ],
+          { durableGoalBatch: "explicit_multiple" },
+        ),
+      ],
+    });
+    const extractor = new GoalPromotionExtractor({
+      llmClient: llm,
+      model: "haiku",
+      tracer,
+      turnId: "turn-counterparty-reference",
+    });
+
+    const result = await extractor.extract(
+      createExtractorInput({ audienceEntityId: presentedEntityId }),
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.counterparty_entity_id).toBe(presentedEntityId);
+    expect(emit).toHaveBeenCalledWith(
+      "extraction.goals.completed",
+      expect.objectContaining({
+        skipped_promotions: [{ candidate_index: 1, reason: "invalid_counterparty_entity_id" }],
+      }),
+    );
   });
 
   it("anchors the prompt with the current time so deadlines resolve to the right year", async () => {
@@ -214,9 +408,11 @@ describe("GoalPromotionExtractor", () => {
 
     const payload = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
       current_time?: { epoch_ms?: number; iso?: string };
+      self_identity?: unknown;
     };
     expect(payload.current_time?.epoch_ms).toBe(nowMs);
     expect(payload.current_time?.iso).toBe(new Date(nowMs).toISOString());
+    expect(payload.self_identity).toBeNull();
   });
 
   it("emits extractor completion traces with session scope", async () => {
@@ -554,6 +750,7 @@ describe("GoalPromotionExtractor", () => {
     const existingGoalId = createGoalId();
     const audience = createEntityId();
     const owner = createEntityId();
+    const counterparty = createEntityId();
     const llm = new FakeLLMClient({
       responses: [
         goalPromotionResponse([
@@ -582,6 +779,7 @@ describe("GoalPromotionExtractor", () => {
             target_at: null,
             audience_entity_id: audience,
             owner_entity_id: owner,
+            counterparty_entity_id: counterparty,
           },
         ],
       }),
@@ -597,6 +795,7 @@ describe("GoalPromotionExtractor", () => {
       active_goals?: Array<{
         audience_entity_id?: string | null;
         owner_entity_id?: string | null;
+        counterparty_entity_id?: string | null;
         terminal_condition?: string | null;
         disclosure?: string;
         disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
@@ -606,9 +805,11 @@ describe("GoalPromotionExtractor", () => {
 
     expect(activeGoal?.audience_entity_id).toBe(audience);
     expect(activeGoal?.owner_entity_id).toBe(owner);
+    expect(activeGoal?.counterparty_entity_id).toBe(counterparty);
     expect(activeGoal?.terminal_condition).toBe("The release checklist is settled");
     expect(activeGoal?.disclosure).toContain("disclosure_class=relationship_private");
     expect(activeGoal?.disclosure).toContain(`private-to=${audience},${owner}`);
+    expect(activeGoal?.disclosure).not.toContain(counterparty);
     expect(activeGoal?.disclosure_label).toMatchObject({
       disclosure_class: "relationship_private",
       private_to_entity_ids: [audience, owner],

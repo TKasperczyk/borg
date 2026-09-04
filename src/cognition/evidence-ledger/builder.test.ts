@@ -259,6 +259,7 @@ function makeGoal(
     target_at: null,
     audience_entity_id: null,
     owner_entity_id: null,
+    counterparty_entity_id: null,
     source_stream_entry_ids: [streamEntryId],
     provenance: {
       kind: "system",
@@ -2795,12 +2796,14 @@ describe("EvidenceLedgerBuilder", () => {
     const groupGoal = makeGoal(userEntry.id, {
       audience_entity_id: group,
       owner_entity_id: null,
+      counterparty_entity_id: bob,
       last_progress_ts: NOW_MS - 30 * 60_000,
       description: "Coordinate the Spain trip channel.",
     });
     const aliceGoal = makeGoal(userEntry.id, {
       audience_entity_id: group,
       owner_entity_id: alice,
+      counterparty_entity_id: group,
       last_progress_ts: NOW_MS - 45 * 60_000,
       description: "Alice will book the Alhambra visit.",
     });
@@ -3015,6 +3018,7 @@ describe("EvidenceLedgerBuilder", () => {
         last_progress_relative_age: "30m ago",
         owner_entity_id: null,
         audience_entity_id: group,
+        counterparty_entity_id: bob,
       }),
     );
     expect(groupText).not.toContain("book Alhambra");
@@ -3039,7 +3043,11 @@ describe("EvidenceLedgerBuilder", () => {
         last_progress_relative_age: "45m ago",
         owner_entity_id: alice,
         audience_entity_id: group,
+        counterparty_entity_id: group,
       }),
+    );
+    expect(rendered).toContain(
+      "counterparty_entity_id is the participant the responsibility runs toward, not an owner or an audience",
     );
     expect(rendered).toContain("book Alhambra");
     expect(rendered).toContain("actor: Alice");

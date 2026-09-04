@@ -1960,6 +1960,7 @@ describe("buildBaseSystemPrompt", () => {
 
   it("labels self-memory prompt blocks for executive focus, current period, and recent growth", () => {
     const goalAudienceId = createEntityId();
+    const counterpartyEntityId = createEntityId();
     const goal = {
       id: "goal_aaaaaaaaaaaaaaaa" as never,
       description: "Understand the continuity model",
@@ -1973,6 +1974,7 @@ describe("buildBaseSystemPrompt", () => {
       target_at: null,
       audience_entity_id: goalAudienceId,
       owner_entity_id: null,
+      counterparty_entity_id: counterpartyEntityId,
       source_stream_entry_ids: [createStreamEntryId()],
       provenance: { kind: "manual" },
     } as NonNullable<NonNullable<DeliberationContext["executiveFocus"]>["selected_goal"]>;
@@ -2062,7 +2064,13 @@ describe("buildBaseSystemPrompt", () => {
     const executiveBlock = extractBlock(prompt, "borg_executive_focus");
 
     expect(selfSnapshotBlock).toContain("Understand the continuity model");
+    expect(selfSnapshotBlock).toContain(`counterparty_entity_id=${counterpartyEntityId}`);
+    expect(selfSnapshotBlock).toContain(
+      "participant the responsibility runs toward; not owner or audience",
+    );
     expect(selfSnapshotBlock).toContain(`private-to=${goalAudienceId}`);
+    expect(selfSnapshotBlock).not.toContain(`private-to=${counterpartyEntityId}`);
+    expect(executiveBlock).toContain(`counterparty_entity_id=${counterpartyEntityId}`);
     expect(executiveBlock).toContain(
       `Focus identity: goal_id=${goal.id} label="Understand the continuity model"`,
     );

@@ -388,6 +388,7 @@ function buildRelationalEntries(context: BuilderSectionContext): EvidenceLedgerE
               : { last_progress_at: new Date(goal.last_progress_ts).toISOString() }),
             owner_entity_id: goal.owner_entity_id ?? null,
             audience_entity_id: goal.audience_entity_id,
+            counterparty_entity_id: goal.counterparty_entity_id ?? null,
             ...(context.nowMs === undefined
               ? {}
               : {

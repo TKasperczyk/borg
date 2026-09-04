@@ -389,6 +389,8 @@ describe("self repositories", () => {
         description: "Help Alice track italki options",
         priority: 9,
         audienceEntityId: alice,
+        ownerEntityId: null,
+        counterpartyEntityId: bob,
         sourceStreamEntryIds: [streamEntryId],
         provenance: {
           kind: "online",
@@ -404,6 +406,8 @@ describe("self repositories", () => {
 
       expect(goals.get(aliceGoal.id)).toMatchObject({
         audience_entity_id: alice,
+        owner_entity_id: null,
+        counterparty_entity_id: bob,
         source_stream_entry_ids: [streamEntryId],
       });
       expect(
@@ -424,6 +428,7 @@ describe("self repositories", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-self-goals-"));
     const dbPath = join(tempDir, "borg.db");
     const audienceEntityId = createEntityId();
+    const counterpartyEntityId = createEntityId();
 
     try {
       const firstDb = openDatabase(dbPath, {
@@ -438,6 +443,7 @@ describe("self repositories", () => {
         terminalCondition: "The italki shortlist reaches a selected tutor",
         priority: 8,
         audienceEntityId,
+        counterpartyEntityId,
         provenance: manualProvenance,
       });
       firstDb.close();
@@ -454,8 +460,10 @@ describe("self repositories", () => {
         expect(
           secondGoals
             .list({ status: "active", visibleToAudienceEntityId: audienceEntityId })
-            .map((item) => [item.id, item.terminal_condition]),
-        ).toEqual([[goal.id, "The italki shortlist reaches a selected tutor"]]);
+            .map((item) => [item.id, item.terminal_condition, item.counterparty_entity_id]),
+        ).toEqual([
+          [goal.id, "The italki shortlist reaches a selected tutor", counterpartyEntityId],
+        ]);
       } finally {
         secondDb.close();
       }
@@ -496,9 +504,13 @@ describe("self repositories", () => {
     };
     const terminalConditionMigration = selfMigrations.find((migration) => migration.id === 6);
     const streamProvenanceMigration = selfMigrations.find((migration) => migration.id === 7);
+    const counterpartyMigration = selfMigrations.find(
+      (migration) => migration.name === "goal_counterparty_entity_id",
+    );
 
     expect(terminalConditionMigration).toBeDefined();
     expect(streamProvenanceMigration).toBeDefined();
+    expect(counterpartyMigration).toBeDefined();
 
     try {
       const oldDb = openDatabase(dbPath, {
@@ -536,7 +548,12 @@ describe("self repositories", () => {
       oldDb.close();
 
       const migratedDb = openDatabase(dbPath, {
-        migrations: [oldGoalBaseline, terminalConditionMigration!, streamProvenanceMigration!],
+        migrations: [
+          oldGoalBaseline,
+          terminalConditionMigration!,
+          streamProvenanceMigration!,
+          counterpartyMigration!,
+        ],
       });
       const goals = new GoalsRepository({
         db: migratedDb,
@@ -547,10 +564,18 @@ describe("self repositories", () => {
         const columns = migratedDb.pragma("table_info(goals)") as Array<{ name: string }>;
         expect(columns.map((column) => column.name)).toContain("terminal_condition");
         expect(columns.map((column) => column.name)).toContain("provenance_stream_entry_ids");
+        expect(columns.map((column) => column.name)).toContain("counterparty_entity_id");
+        expect(() => counterpartyMigration!.up(migratedDb)).not.toThrow();
+        expect(
+          (migratedDb.pragma("table_info(goals)") as Array<{ name: string }>).filter(
+            (column) => column.name === "counterparty_entity_id",
+          ),
+        ).toHaveLength(1);
         expect(goals.get(goalId)).toEqual(
           expect.objectContaining({
             id: goalId,
             terminal_condition: null,
+            counterparty_entity_id: null,
           }),
         );
       } finally {

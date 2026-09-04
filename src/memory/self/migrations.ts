@@ -51,6 +51,7 @@ export const selfMigrations = [
           last_progress_ts INTEGER,
           audience_entity_id TEXT,
           owner_entity_id TEXT,
+          counterparty_entity_id TEXT,
           source_stream_entry_ids TEXT, canonicalized_by_artifact_entry_id TEXT NULL,
           FOREIGN KEY (parent_goal_id) REFERENCES goals(id) ON DELETE SET NULL
         );
@@ -417,6 +418,15 @@ export const selfMigrations = [
         CREATE INDEX IF NOT EXISTS idx_open_question_rumination_stamps_run
           ON open_question_rumination_stamps (source_run_id, open_question_id);
       `);
+    },
+  },
+  {
+    id: 9,
+    name: "goal_counterparty_entity_id",
+    up: (db) => {
+      if (!tableHasColumn(db, "goals", "counterparty_entity_id")) {
+        db.exec("ALTER TABLE goals ADD COLUMN counterparty_entity_id TEXT");
+      }
     },
   },
 ] as const satisfies readonly Migration[];

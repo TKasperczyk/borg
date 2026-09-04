@@ -678,6 +678,7 @@ function summarizeExecutiveFocusForReflection(focus: ExecutiveFocus | null | und
       description: focus.selected_goal.description,
       terminal_condition: focus.selected_goal.terminal_condition ?? null,
       progress_notes: renderGoalProgressNotesForReflection(focus.selected_goal.progress_notes),
+      counterparty_entity_id: focus.selected_goal.counterparty_entity_id ?? null,
       ...memoryDisclosurePayloadFields(selectedGoalDisclosureLabel),
     },
     next_step:
@@ -2095,6 +2096,7 @@ export class Reflector {
                     progress_notes: renderGoalProgressNotesForReflection(goal.progress_notes),
                     audience_entity_id: goal.audience_entity_id,
                     owner_entity_id: goal.owner_entity_id ?? null,
+                    counterparty_entity_id: goal.counterparty_entity_id ?? null,
                     ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
                   })),
                   executive_focus: executiveFocusForReflection,

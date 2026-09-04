@@ -264,6 +264,7 @@ function projectSelfSnapshot(snapshot: SelfSnapshot) {
       target_at: goal.target_at,
       audience_entity_id: goal.audience_entity_id,
       owner_entity_id: goal.owner_entity_id,
+      counterparty_entity_id: goal.counterparty_entity_id,
       ...(projectDisclosureLabel(goal.disclosure_label) === undefined
         ? {}
         : { disclosure_label: projectDisclosureLabel(goal.disclosure_label) }),

@@ -493,7 +493,12 @@ describe("compact terminal finalizer context", () => {
       commitment("alice", { restricted_audience: alice }),
       commitment("bob", { made_to_entity: bob }),
     ];
-    const goals = [goal("global", null), goal("alice", alice), goal("bob", bob)];
+    const counterparty = createEntityId();
+    const goals = [
+      goal("global", null),
+      { ...goal("alice", alice), counterparty_entity_id: counterparty },
+      goal("bob", bob),
+    ];
     const throwingRepository = {
       get: () => {
         throw new Error("compact terminal rendering must not read repositories");
@@ -517,6 +522,10 @@ describe("compact terminal finalizer context", () => {
     );
     expect(memberships(text(aliceSurface), /<goal i="([^"]+)"/g)).toEqual(
       memberships(text(bobSurface), /<goal i="([^"]+)"/g),
+    );
+    expect(text(aliceSurface)).toContain(`cp="${counterparty}"`);
+    expect(text(aliceSurface)).toContain(
+      "cp is the participant the responsibility runs toward, not an owner or audience",
     );
     expect(aliceSurface.system[1]?.text).toBe(bobSurface.system[1]?.text);
   });

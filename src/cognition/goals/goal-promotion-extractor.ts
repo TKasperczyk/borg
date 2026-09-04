@@ -9,8 +9,13 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import { goalIdSchema, type GoalRecord } from "../../memory/self/index.js";
-import type { EntityId, SessionId } from "../../util/ids.js";
+import {
+  goalCounterpartyEntityIdSchema,
+  goalIdSchema,
+  type GoalRecord,
+} from "../../memory/self/index.js";
+import type { StreamEntry } from "../../stream/index.js";
+import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import { GOAL_PROMOTION_SYSTEM_PROMPT } from "../prompts/goal-extraction.js";
@@ -20,6 +25,11 @@ import {
   memoryDisclosurePayloadFields,
 } from "../../memory/common/disclosure-serializers.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
+import {
+  buildExtractorConversationContext,
+  type ExtractorSelfIdentity,
+} from "../extractor-conversation-context.js";
+import type { CurrentTurnUserInputSenderAttribution } from "../turn-input.js";
 
 const CONFIDENCE_THRESHOLD = 0.85;
 const MAX_PROMOTIONS_PER_TURN = 3;
@@ -225,7 +235,12 @@ const goalPromotionSchema = z
       .min(0)
       .max(10)
       .describe(
-        "Relative priority from 0 to 10. Prefer moderate values unless urgency is explicit.",
+        "Relative priority from 0 to 10, calibrated against active_goal_priority_distribution and active_goals. A 9 or 10 asserts that this goal outranks nearly everything active.",
+      ),
+    counterparty_entity_id: goalCounterpartyEntityIdSchema
+      .nullable()
+      .describe(
+        "Entity toward whom this durable Borg responsibility runs, copied verbatim from presented_entity_ids. Use null when the responsibility has no counterparty or the classification is not durable_borg_goal. Never infer or invent an entity id.",
       ),
     target_at: isoDeadlineSchema(
       "Target completion date as an ISO-8601 calendar date (YYYY-MM-DD) or date-time with an explicit UTC offset, resolved against the supplied current_time. Null if no deadline.",
@@ -299,6 +314,7 @@ export type GoalPromotionCandidate = {
   description: string;
   terminal_condition: string | null;
   priority: number;
+  counterparty_entity_id: EntityId | null;
   target_at: number | null;
   reason: string;
   confidence: number;
@@ -315,6 +331,7 @@ export type GoalPromotionExtractorDegradedReason =
 export type GoalPromotionSkippedReason =
   | "missing_description"
   | "invalid_priority"
+  | "invalid_counterparty_entity_id"
   | "invalid_target_at"
   | "invalid_reason"
   | "invalid_confidence"
@@ -342,10 +359,15 @@ export type GoalPromotionExtractorOptions = {
 
 export type ExtractGoalPromotionInput = {
   userMessage: string;
+  selfIdentity?: ExtractorSelfIdentity | null;
   recentHistory: readonly RecencyMessage[];
+  currentMessageEntries?: readonly StreamEntry[];
+  currentMessageStreamEntryIds?: readonly StreamEntryId[];
+  currentMessageSenderAttribution?: readonly CurrentTurnUserInputSenderAttribution[];
   audienceEntityId: EntityId | null;
   speakerEntityId?: EntityId | null;
   speakerDisplayName?: string | null;
+  senderDisplayNameById?: (entityId: EntityId) => string | null | undefined;
   // Deadlines arrive as calendar dates, but the prompt must still carry the
   // current time: without it a relative or year-less date ("before August 14",
   // "in a month") has no anchor and the model guesses the year.
@@ -360,6 +382,7 @@ export type ExtractGoalPromotionInput = {
     | "target_at"
     | "audience_entity_id"
     | "owner_entity_id"
+    | "counterparty_entity_id"
   >[];
 };
 
@@ -429,6 +452,7 @@ function candidateFromPromotion(promotion: ParsedGoalPromotion): GoalPromotionCa
     description: promotion.description.trim(),
     terminal_condition: promotion.terminal_condition,
     priority: promotion.priority,
+    counterparty_entity_id: promotion.counterparty_entity_id,
     target_at: promotion.target_at,
     reason: promotion.reason.trim(),
     confidence: promotion.confidence,
@@ -538,6 +562,10 @@ function skippedReasonFromIssue(issue: {
     return "invalid_priority";
   }
 
+  if (field === "counterparty_entity_id") {
+    return "invalid_counterparty_entity_id";
+  }
+
   if (field === "target_at") {
     return "invalid_target_at";
   }
@@ -571,7 +599,10 @@ function skippedReasonFromError(error: z.ZodError): GoalPromotionSkippedReason {
   return skippedReasonFromIssue(duplicateIssue ?? error.issues[0] ?? { path: [] });
 }
 
-function parsePromotions(envelope: GoalPromotionEnvelopeInput): {
+function parsePromotions(
+  envelope: GoalPromotionEnvelopeInput,
+  presentedEntityIds: readonly EntityId[],
+): {
   promotions: ParsedGoalPromotionWithIndex[];
   skippedPromotions: GoalPromotionSkippedPromotion[];
   classificationCounts: Record<GoalPromotionClassificationCountKey, number>;
@@ -597,6 +628,17 @@ function parsePromotions(envelope: GoalPromotionEnvelopeInput): {
       continue;
     }
 
+    if (
+      parsed.data.counterparty_entity_id !== null &&
+      !presentedEntityIds.some((entityId) => entityId === parsed.data.counterparty_entity_id)
+    ) {
+      skippedPromotions.push({
+        candidate_index: candidateIndex,
+        reason: "invalid_counterparty_entity_id",
+      });
+      continue;
+    }
+
     incrementClassificationCount(classificationCounts, parsed.data.classification);
     promotions.push({
       candidateIndex,
@@ -611,14 +653,20 @@ function parsePromotions(envelope: GoalPromotionEnvelopeInput): {
   };
 }
 
-function parseResponse(input: unknown): GoalPromotionParseResult {
+function parseResponse(
+  input: unknown,
+  presentedEntityIds: readonly EntityId[],
+): GoalPromotionParseResult {
   const parsed = goalPromotionEnvelopeSchema.safeParse(input);
 
   if (!parsed.success) {
     throw parsed.error;
   }
 
-  const { promotions, skippedPromotions, classificationCounts } = parsePromotions(parsed.data);
+  const { promotions, skippedPromotions, classificationCounts } = parsePromotions(
+    parsed.data,
+    presentedEntityIds,
+  );
   const candidates = toCandidates({
     promotions,
     durableGoalBatch: parsed.data.durable_goal_batch,
@@ -635,7 +683,41 @@ function parseResponse(input: unknown): GoalPromotionParseResult {
   };
 }
 
-function buildGoalPromotionMessages(input: ExtractGoalPromotionInput): LLMMessage[] {
+function activeGoalPriorityDistribution(
+  activeGoals: ExtractGoalPromotionInput["activeGoals"],
+): Record<string, number> {
+  const counts = {
+    below_0: 0,
+    "0_to_under_4": 0,
+    "4_to_under_7": 0,
+    "7_to_under_9": 0,
+    "9_to_10": 0,
+    above_10: 0,
+  };
+
+  for (const goal of activeGoals) {
+    if (goal.priority < 0) {
+      counts.below_0 += 1;
+    } else if (goal.priority < 4) {
+      counts["0_to_under_4"] += 1;
+    } else if (goal.priority < 7) {
+      counts["4_to_under_7"] += 1;
+    } else if (goal.priority < 9) {
+      counts["7_to_under_9"] += 1;
+    } else if (goal.priority <= 10) {
+      counts["9_to_10"] += 1;
+    } else {
+      counts.above_10 += 1;
+    }
+  }
+
+  return counts;
+}
+
+function buildGoalPromotionMessages(
+  input: ExtractGoalPromotionInput,
+  conversationContext: ReturnType<typeof buildExtractorConversationContext>,
+): LLMMessage[] {
   return [
     {
       role: "user",
@@ -645,14 +727,9 @@ function buildGoalPromotionMessages(input: ExtractGoalPromotionInput): LLMMessag
           iso: new Date(input.nowMs).toISOString(),
         },
         current_user_message: input.userMessage,
-        recent_history: input.recentHistory.slice(-8).map((message) => ({
-          role: message.role,
-          content: message.content,
-        })),
-        audience_entity_id: input.audienceEntityId,
-        speaker_entity_id: input.speakerEntityId ?? null,
-        speaker_display_name: input.speakerDisplayName ?? null,
+        ...conversationContext,
         temporal_cue: input.temporalCue,
+        active_goal_priority_distribution: activeGoalPriorityDistribution(input.activeGoals),
         active_goals: input.activeGoals.map((goal) => ({
           id: goal.id,
           description: goal.description,
@@ -661,6 +738,7 @@ function buildGoalPromotionMessages(input: ExtractGoalPromotionInput): LLMMessag
           target_at: goal.target_at,
           audience_entity_id: goal.audience_entity_id,
           owner_entity_id: goal.owner_entity_id ?? null,
+          counterparty_entity_id: goal.counterparty_entity_id ?? null,
           ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
         })),
       }),
@@ -763,6 +841,7 @@ export class GoalPromotionExtractor {
   private async complete(input: {
     messages: readonly LLMMessage[];
     tools: readonly LLMToolDefinition[];
+    presentedEntityIds: readonly EntityId[];
   }): Promise<GoalPromotionParseResult> {
     return (
       await callStructuredTool({
@@ -777,7 +856,7 @@ export class GoalPromotionExtractor {
           budget: "goal-promotion-extractor",
         },
         toolName: GOAL_PROMOTION_TOOL_NAME,
-        parse: parseResponse,
+        parse: (toolInput) => parseResponse(toolInput, input.presentedEntityIds),
         trace: {
           tracer: this.options.tracer,
           turnId: this.options.turnId,
@@ -796,7 +875,18 @@ export class GoalPromotionExtractor {
       return this.degraded("llm_unavailable");
     }
 
-    const messages = buildGoalPromotionMessages(input);
+    const conversationContext = buildExtractorConversationContext({
+      selfIdentity: input.selfIdentity ?? null,
+      recentHistory: input.recentHistory,
+      currentMessageEntries: input.currentMessageEntries,
+      currentMessageStreamEntryIds: input.currentMessageStreamEntryIds,
+      currentMessageSenderAttribution: input.currentMessageSenderAttribution,
+      audienceEntityId: input.audienceEntityId,
+      speakerEntityId: input.speakerEntityId,
+      speakerDisplayName: input.speakerDisplayName,
+      senderDisplayNameById: input.senderDisplayNameById,
+    });
+    const messages = buildGoalPromotionMessages(input, conversationContext);
     const tools = [GOAL_PROMOTION_TOOL];
 
     let parseResult: GoalPromotionParseResult;
@@ -805,6 +895,7 @@ export class GoalPromotionExtractor {
       parseResult = await this.complete({
         messages,
         tools,
+        presentedEntityIds: conversationContext.presented_entity_ids,
       });
     } catch (error) {
       const reason = degradedReasonForParseError(error);

@@ -1133,6 +1133,7 @@ export class AutobiographicalRecallService {
         text: [
           `status=${goal.status}`,
           `priority=${goal.priority.toFixed(2)}`,
+          `counterparty_entity_id=${goal.counterparty_entity_id ?? "none"}`,
           `description=${sanitizePromptText(goal.description)}`,
           goal.terminal_condition === null
             ? null
@@ -1150,6 +1151,9 @@ export class AutobiographicalRecallService {
           goal_id: goal.id,
           status: goal.status,
           priority: goal.priority,
+          counterparty_entity_id: goal.counterparty_entity_id ?? null,
+          counterparty_semantics:
+            "participant the responsibility runs toward; not owner or audience",
         },
       });
     }

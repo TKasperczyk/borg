@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createWorkingMemory, type WorkingMemory } from "../../../memory/working/index.js";
+import type { StreamEntry } from "../../../stream/index.js";
 import { createEntityId, createSessionId, createStreamEntryId } from "../../../util/ids.js";
 import type { SessionId } from "../../../util/ids.js";
 
@@ -13,7 +14,9 @@ function firstMockCallInput(mock: { mock: { calls: unknown[][] } }): unknown {
 function baseExtractionPhaseInput(input: {
   sessionId: SessionId;
   workingMemory: WorkingMemory;
-  extractActionState: Parameters<typeof runExtractionPhase>[0]["options"]["turnActionStateService"]["extract"];
+  extractActionState: Parameters<
+    typeof runExtractionPhase
+  >[0]["options"]["turnActionStateService"]["extract"];
 }): Parameters<typeof runExtractionPhase>[0] {
   return {
     options: {
@@ -253,19 +256,30 @@ describe("runExtractionPhase", () => {
     const extractActionState = vi.fn(async () => []);
     const senderId = createEntityId();
     const entryId = createStreamEntryId();
+    const sourceEntry = {
+      id: entryId,
+      timestamp: 900,
+      kind: "user_msg",
+      content: "message",
+      turn_status: "active",
+      sender_entity_id: senderId,
+      reply_target_entity_id: null,
+      session_id: sessionId,
+      compressed: false,
+    } satisfies StreamEntry;
+    const phaseInput = baseExtractionPhaseInput({ sessionId, workingMemory, extractActionState });
 
     await runExtractionPhase({
-      ...baseExtractionPhaseInput({ sessionId, workingMemory, extractActionState }),
+      ...phaseInput,
       // No group speaker: a one-to-one audience has none, and the sender is
       // only recoverable from the turn's own entries.
       groupSpeakerEntityId: null,
       groupSpeakerDisplayName: null,
       currentSenderEntityId: senderId,
       currentSenderDisplayName: "Peer",
+      sourceUserEntries: [sourceEntry],
       sourceUserEntryIds: [entryId],
-      senderAttribution: [
-        { entryId, senderEntityId: senderId, senderDisplayName: "Peer" },
-      ],
+      senderAttribution: [{ entryId, senderEntityId: senderId, senderDisplayName: "Peer" }],
       distinctSenderCount: 1,
     });
 
@@ -273,6 +287,81 @@ describe("runExtractionPhase", () => {
       expect.objectContaining({
         speakerEntityId: senderId,
         speakerDisplayName: "Peer",
+      }),
+    );
+    expect(phaseInput.options.turnGoalPromotionService.extractAndPersist).toHaveBeenCalledWith(
+      expect.objectContaining({
+        speakerEntityId: senderId,
+        speakerDisplayName: "Peer",
+        sourceUserEntries: [sourceEntry],
+        senderAttribution: [{ entryId, senderEntityId: senderId, senderDisplayName: "Peer" }],
+      }),
+    );
+    expect(phaseInput.options.correctivePreferenceTurnService.extractAndApply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        committedByEntityId: senderId,
+        speakerDisplayName: "Peer",
+        sourceUserEntries: [sourceEntry],
+        senderAttribution: [{ entryId, senderEntityId: senderId, senderDisplayName: "Peer" }],
+      }),
+    );
+  });
+
+  it("passes a group speaker's attributed source entry to both durable extractors", async () => {
+    const sessionId = createSessionId();
+    const workingMemory = createWorkingMemory(sessionId, 1_000);
+    const extractActionState = vi.fn(async () => []);
+    const speakerId = createEntityId();
+    const audienceId = createEntityId();
+    const entryId = createStreamEntryId();
+    const sourceEntry = {
+      id: entryId,
+      timestamp: 910,
+      kind: "user_msg",
+      content: "group message",
+      turn_status: "active",
+      audience: "Group room",
+      sender_entity_id: speakerId,
+      reply_target_entity_id: null,
+      session_id: sessionId,
+      compressed: false,
+    } satisfies StreamEntry;
+    const senderAttribution = [
+      { entryId, senderEntityId: speakerId, senderDisplayName: "Group speaker" },
+    ];
+    const phaseInput = baseExtractionPhaseInput({ sessionId, workingMemory, extractActionState });
+
+    await runExtractionPhase({
+      ...phaseInput,
+      audienceEntityId: audienceId,
+      groupSpeakerEntityId: speakerId,
+      groupSpeakerDisplayName: "Group speaker",
+      currentSenderEntityId: speakerId,
+      currentSenderDisplayName: "Group speaker",
+      sourceUserEntries: [sourceEntry],
+      sourceUserEntryIds: [entryId],
+      senderAttribution,
+      distinctSenderCount: 1,
+    });
+
+    expect(phaseInput.options.turnGoalPromotionService.extractAndPersist).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audienceEntityId: audienceId,
+        speakerEntityId: speakerId,
+        speakerDisplayName: "Group speaker",
+        sourceUserEntries: [sourceEntry],
+        sourceUserEntryIds: [entryId],
+        senderAttribution,
+      }),
+    );
+    expect(phaseInput.options.correctivePreferenceTurnService.extractAndApply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audienceEntityId: audienceId,
+        committedByEntityId: speakerId,
+        speakerDisplayName: "Group speaker",
+        sourceUserEntries: [sourceEntry],
+        sourceUserEntryIds: [entryId],
+        senderAttribution,
       }),
     );
   });
@@ -283,18 +372,47 @@ describe("runExtractionPhase", () => {
     const extractActionState = vi.fn(async () => []);
     const firstEntryId = createStreamEntryId();
     const secondEntryId = createStreamEntryId();
+    const firstSenderId = createEntityId();
+    const secondSenderId = createEntityId();
+    const sourceUserEntries = [
+      {
+        id: firstEntryId,
+        timestamp: 920,
+        kind: "user_msg",
+        content: "first message",
+        turn_status: "active",
+        sender_entity_id: firstSenderId,
+        reply_target_entity_id: null,
+        session_id: sessionId,
+        compressed: false,
+      },
+      {
+        id: secondEntryId,
+        timestamp: 930,
+        kind: "user_msg",
+        content: "second message",
+        turn_status: "active",
+        sender_entity_id: secondSenderId,
+        reply_target_entity_id: null,
+        session_id: sessionId,
+        compressed: false,
+      },
+    ] satisfies StreamEntry[];
+    const senderAttribution = [
+      { entryId: firstEntryId, senderEntityId: firstSenderId, senderDisplayName: "One" },
+      { entryId: secondEntryId, senderEntityId: secondSenderId, senderDisplayName: "Two" },
+    ];
+    const phaseInput = baseExtractionPhaseInput({ sessionId, workingMemory, extractActionState });
 
     await runExtractionPhase({
-      ...baseExtractionPhaseInput({ sessionId, workingMemory, extractActionState }),
+      ...phaseInput,
       groupSpeakerEntityId: null,
       groupSpeakerDisplayName: null,
       currentSenderEntityId: null,
       currentSenderDisplayName: null,
+      sourceUserEntries,
       sourceUserEntryIds: [firstEntryId, secondEntryId],
-      senderAttribution: [
-        { entryId: firstEntryId, senderEntityId: createEntityId(), senderDisplayName: "One" },
-        { entryId: secondEntryId, senderEntityId: createEntityId(), senderDisplayName: "Two" },
-      ],
+      senderAttribution,
       distinctSenderCount: 2,
     });
 
@@ -302,6 +420,26 @@ describe("runExtractionPhase", () => {
       expect.objectContaining({
         speakerEntityId: null,
         speakerDisplayName: null,
+        sourceUserEntryIds: [firstEntryId, secondEntryId],
+        senderAttribution,
+      }),
+    );
+    expect(phaseInput.options.turnGoalPromotionService.extractAndPersist).toHaveBeenCalledWith(
+      expect.objectContaining({
+        speakerEntityId: null,
+        speakerDisplayName: null,
+        sourceUserEntries,
+        sourceUserEntryIds: [firstEntryId, secondEntryId],
+        senderAttribution,
+      }),
+    );
+    expect(phaseInput.options.correctivePreferenceTurnService.extractAndApply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        committedByEntityId: null,
+        speakerDisplayName: null,
+        sourceUserEntries,
+        sourceUserEntryIds: [firstEntryId, secondEntryId],
+        senderAttribution,
       }),
     );
   });

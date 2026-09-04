@@ -194,6 +194,7 @@ function renderActiveGoalPromptRow(goal: GoalRecord): string {
   return JSON.stringify({
     id: goal.id,
     description: goal.description,
+    counterparty_entity_id: goal.counterparty_entity_id ?? null,
     ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
   });
 }

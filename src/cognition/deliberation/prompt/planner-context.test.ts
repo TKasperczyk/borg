@@ -403,8 +403,10 @@ describe("compact planner context", () => {
 
   it("renders goal and commitment fields as lightweight single-line rows", () => {
     const alice = createEntityId();
+    const counterparty = createEntityId();
     const indexedGoal = goal("Keep the plan legible", {
       owner_entity_id: alice,
+      counterparty_entity_id: counterparty,
       record_version: 7,
     });
     const executiveFocus = {
@@ -445,11 +447,13 @@ describe("compact planner context", () => {
     expect(goalRow).toContain(`i="${indexedGoal.id}"`);
     expect(goalRow).toContain('s="active"');
     expect(goalRow).toContain('x="9.0000"');
+    expect(goalRow).toContain(`cp="${counterparty}"`);
     expect(goalRow).toContain('dc="relationship_private"');
     expect(goalRow).toContain(`oa="${alice}"`);
     expect(goalRow).toContain(`pt="${alice}"`);
     expect(goalRow).toContain('pub="none"');
     expect(detailRow).toContain('tc="Complete Keep the plan legible"');
+    expect(detailRow).toContain(`cp="${counterparty}"`);
     expect(detailRow).toContain('sp="5.0000"');
     expect(detailRow).not.toContain("\n");
     // The write counter is the only witness a goal row has: the table stores no
@@ -466,6 +470,9 @@ describe("compact planner context", () => {
     expect(commitmentRow).toContain('d="Keep the first line.&#10;Keep the second line."');
     expect(commitmentRow).not.toContain("\n");
     expect(rendered).toContain("i=id, s=status, ca=created_age");
+    expect(rendered).toContain(
+      "cp is the participant the responsibility runs toward, not an owner or audience",
+    );
     expect(rendered).toContain("ec=enforcement_class");
   });
 

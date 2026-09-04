@@ -744,6 +744,7 @@ function createCorrectivePreferenceResponse(input: {
     | "internal_tool_hygiene"
     | null;
   directive?: string | null;
+  directive_source_stream_entry_id?: string | null;
   directive_family?: string | null;
   closure_pressure_relevance?: "no_closure" | "neutral" | "closure_seeking" | null;
   priority?: number | null;
@@ -773,6 +774,7 @@ function createCorrectivePreferenceResponse(input: {
             (input.classification === "corrective_preference" ? "advisory" : null),
           critical_domain: input.critical_domain ?? null,
           directive: input.directive ?? null,
+          directive_source_stream_entry_id: input.directive_source_stream_entry_id ?? null,
           directive_family:
             input.directive_family ??
             (input.classification === "corrective_preference" ? "test_directive_family" : null),
@@ -795,6 +797,7 @@ function createGoalPromotionResponse(
   promotions: Array<{
     description: string;
     priority?: number;
+    counterparty_entity_id?: string | null;
     terminal_condition: string | null;
     target_at?: string | null;
     reason?: string;
@@ -824,6 +827,7 @@ function createGoalPromotionResponse(
             classification: "durable_borg_goal",
             description: promotion.description,
             priority: promotion.priority ?? 8,
+            counterparty_entity_id: promotion.counterparty_entity_id ?? null,
             terminal_condition: promotion.terminal_condition,
             target_at: promotion.target_at ?? null,
             reason: promotion.reason ?? "The user asked Borg to carry this as an ongoing goal.",
