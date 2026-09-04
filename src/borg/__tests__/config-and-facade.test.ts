@@ -26,6 +26,7 @@ import {
 import { DemoMessageConnector } from "../../outbound/index.js";
 import {
   AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+  AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS,
   type AutonomyWakesRepository,
 } from "../../autonomy/index.js";
 import { createEpisodeFixture, createSemanticNodeFixture } from "../../offline/test-support.js";
@@ -994,7 +995,7 @@ describe("Borg", () => {
     }
   });
 
-  it("reconciles an orphaned autonomy wake once when composing repositories", async () => {
+  it("reconciles only an aged orphaned autonomy wake when composing repositories", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_000);
@@ -1014,11 +1015,28 @@ describe("Borg", () => {
     });
     await borg.close();
 
-    const reopened = await Borg.open(openOptions);
+    const immediateReopen = await Borg.open(openOptions);
+
+    try {
+      const immediateWakes =
+        borgInternals<AutonomyWakeInternals>(immediateReopen).deps.autonomyWakesRepository;
+      expect(immediateWakes.listSince(0, 10)).toContainEqual(
+        expect.objectContaining({
+          id: orphan.id,
+          outcome: null,
+          outcome_detail: null,
+        }),
+      );
+    } finally {
+      await immediateReopen.close();
+    }
+
+    clock.advance(AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS + 1);
+    const agedReopen = await Borg.open(openOptions);
 
     try {
       const reopenedWakes =
-        borgInternals<AutonomyWakeInternals>(reopened).deps.autonomyWakesRepository;
+        borgInternals<AutonomyWakeInternals>(agedReopen).deps.autonomyWakesRepository;
       expect(reopenedWakes.listSince(0, 10)).toContainEqual(
         expect.objectContaining({
           id: orphan.id,
@@ -1028,7 +1046,7 @@ describe("Borg", () => {
       );
       expect(reopenedWakes.interruptOrphanedWakesAtStartup()).toBe(0);
     } finally {
-      await reopened.close();
+      await agedReopen.close();
     }
   });
 

@@ -15,7 +15,6 @@ import {
 } from "../offline/test-support.js";
 import { FixedClock } from "../util/clock.js";
 import { createEntityId } from "../util/ids.js";
-import { GOAL_TURN_ROLLBACK_REASON } from "../memory/self/index.js";
 import { CorrectionService, type CorrectionServiceOptions } from "./service.js";
 
 class TestEmbeddingClient implements EmbeddingClient {
@@ -788,7 +787,7 @@ describe("correction service", () => {
     }
   });
 
-  it("keeps the repository delete and correction forget audit events for goals", async () => {
+  it("records correction goal deletion only as forget, without a false rollback event", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(2_750),
     });
@@ -796,7 +795,7 @@ describe("correction service", () => {
     try {
       const correction = createHarnessCorrectionService(harness);
       const goal = harness.goalsRepository.add({
-        description: "Verify both intentional goal deletion audit layers",
+        description: "Keep correction deletion audit semantics exact",
         priority: 6,
         provenance: { kind: "manual" },
       });
@@ -813,12 +812,7 @@ describe("correction service", () => {
         recordId: goal.id,
         limit: 10,
       });
-      expect(events.map((event) => event.action)).toEqual(["forget", "delete", "create"]);
-      expect(events.find((event) => event.action === "delete")).toMatchObject({
-        old_value: goal,
-        new_value: null,
-        reason: GOAL_TURN_ROLLBACK_REASON,
-      });
+      expect(events.map((event) => event.action)).toEqual(["forget", "create"]);
       expect(events.find((event) => event.action === "forget")).toMatchObject({
         old_value: goal,
         new_value: null,

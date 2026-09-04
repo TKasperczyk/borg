@@ -175,6 +175,10 @@ describe("self repositories", () => {
       expect(() =>
         goals.remove(goal.id, {
           expectedVersion: expectedRecordVersion(goal),
+          auditContext: {
+            reason: "test goal removal",
+            provenance: manualProvenance,
+          },
         }),
       ).toThrow(IdentityCasMismatchError);
       expect(goals.get(goal.id)).not.toBeNull();
@@ -227,7 +231,14 @@ describe("self repositories", () => {
         record_version: changed.record_version,
         status: "active",
       });
-      expect(goals.remove(original.id)).toBe(true);
+      expect(
+        goals.remove(original.id, {
+          auditContext: {
+            reason: GOAL_TURN_ROLLBACK_REASON,
+            provenance: { kind: "system" },
+          },
+        }),
+      ).toBe(true);
 
       const events = identityEvents.list({ recordType: "goal", recordId: original.id, limit: 10 });
       expect(events.map((event) => event.action)).toEqual(["delete", "update", "update", "create"]);
@@ -236,6 +247,7 @@ describe("self repositories", () => {
         old_value: restored,
         new_value: null,
         reason: GOAL_TURN_ROLLBACK_REASON,
+        provenance: { kind: "system" },
       });
       expect(events[1]).toMatchObject({
         action: "update",
@@ -270,7 +282,14 @@ describe("self repositories", () => {
 
       expect(() => goals.restore(original)).toThrow("identity event unavailable");
       expect(goals.get(original.id)).toEqual(changed);
-      expect(() => goals.remove(original.id)).toThrow("identity event unavailable");
+      expect(() =>
+        goals.remove(original.id, {
+          auditContext: {
+            reason: GOAL_TURN_ROLLBACK_REASON,
+            provenance: { kind: "system" },
+          },
+        }),
+      ).toThrow("identity event unavailable");
       expect(goals.get(original.id)).toEqual(changed);
     } finally {
       db.close();

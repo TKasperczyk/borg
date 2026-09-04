@@ -300,14 +300,16 @@ function parseResponse(input: unknown): {
 
   const nodes: ExtractorNode[] = [];
   const skippedNodeDetails: SkippedNodeTraceDetail[] = [];
-  const retainedNodes = parsed.data.nodes.slice(0, MAX_EXTRACTOR_NODES);
+  const candidateNodesWithinCap = parsed.data.nodes.slice(0, MAX_EXTRACTOR_NODES);
+  const schemaInvalidNodeErrors: Array<{ candidateIndex: number; error: z.ZodError }> = [];
   let schemaInvalidNodeCount = 0;
 
-  for (const [candidateIndex, node] of retainedNodes.entries()) {
+  for (const [candidateIndex, node] of candidateNodesWithinCap.entries()) {
     const parsedNode = extractorNodeSchema.safeParse(node);
 
     if (!parsedNode.success) {
       schemaInvalidNodeCount += 1;
+      schemaInvalidNodeErrors.push({ candidateIndex, error: parsedNode.error });
       skippedNodeDetails.push({
         candidate_index: candidateIndex,
         reason: "schema_invalid",
@@ -318,9 +320,23 @@ function parseResponse(input: unknown): {
     nodes.push(parsedNode.data);
   }
 
-  const overCapNodeCount = parsed.data.nodes.length - retainedNodes.length;
+  if (parsed.data.nodes.length > 0 && nodes.length === 0) {
+    throw new LLMError("Semantic extractor returned no valid node candidates", {
+      cause: new z.ZodError(
+        schemaInvalidNodeErrors.flatMap(({ candidateIndex, error }) =>
+          error.issues.map((issue) => ({
+            ...issue,
+            path: ["nodes", candidateIndex, ...issue.path],
+          })),
+        ),
+      ),
+      code: "SEMANTIC_EXTRACTOR_INVALID",
+    });
+  }
+
+  const overCapNodeCount = parsed.data.nodes.length - candidateNodesWithinCap.length;
   for (
-    let candidateIndex = retainedNodes.length;
+    let candidateIndex = candidateNodesWithinCap.length;
     candidateIndex < parsed.data.nodes.length;
     candidateIndex += 1
   ) {
@@ -356,7 +372,7 @@ function parseResponse(input: unknown): {
     nodes,
     edges,
     rawNodeCount: parsed.data.nodes.length,
-    retainedNodeCount: retainedNodes.length,
+    retainedNodeCount: nodes.length,
     schemaInvalidNodeCount,
     overCapNodeCount,
     skippedNodeDetails,
@@ -645,6 +661,8 @@ export class SemanticExtractor {
     inputEpisodeCount: number;
     rawNodeCount: number;
     retainedNodeCount: number;
+    schemaInvalidNodeCount: number;
+    overCapNodeCount: number;
     parsedNodeCount: number;
     parsedEdgeCount: number;
     acceptedNodeCount: number;
@@ -661,6 +679,8 @@ export class SemanticExtractor {
       prompt_label: "semantic-extraction",
       raw_node_count: input.rawNodeCount,
       retained_node_count: input.retainedNodeCount,
+      schema_invalid_node_count: input.schemaInvalidNodeCount,
+      over_cap_node_count: input.overCapNodeCount,
       parsed_node_count: input.parsedNodeCount,
       parsed_edge_count: input.parsedEdgeCount,
       accepted_node_count: input.acceptedNodeCount,
@@ -673,6 +693,8 @@ export class SemanticExtractor {
     inputEpisodeCount: number;
     rawNodeCount: number;
     retainedNodeCount: number;
+    schemaInvalidNodeCount: number;
+    overCapNodeCount: number;
     parsedNodeCount: number;
     parsedEdgeCount: number;
     acceptedNodeCount: number;
@@ -692,6 +714,8 @@ export class SemanticExtractor {
       input_episode_count: input.inputEpisodeCount,
       raw_node_count: input.rawNodeCount,
       retained_node_count: input.retainedNodeCount,
+      schema_invalid_node_count: input.schemaInvalidNodeCount,
+      over_cap_node_count: input.overCapNodeCount,
       parsed_node_count: input.parsedNodeCount,
       parsed_edge_count: input.parsedEdgeCount,
       accepted_node_count: input.acceptedNodeCount,
@@ -1085,6 +1109,8 @@ export class SemanticExtractor {
           inputEpisodeCount: episodes.length,
           rawNodeCount: 0,
           retainedNodeCount: 0,
+          schemaInvalidNodeCount: 0,
+          overCapNodeCount: 0,
           parsedNodeCount: 0,
           parsedEdgeCount: 0,
           acceptedNodeCount: 0,
@@ -1098,6 +1124,8 @@ export class SemanticExtractor {
         inputEpisodeCount: episodes.length,
         rawNodeCount: 0,
         retainedNodeCount: 0,
+        schemaInvalidNodeCount: 0,
+        overCapNodeCount: 0,
         parsedNodeCount: 0,
         parsedEdgeCount: 0,
         acceptedNodeCount: 0,
@@ -1348,6 +1376,8 @@ export class SemanticExtractor {
         inputEpisodeCount: episodes.length,
         rawNodeCount: parsed.rawNodeCount,
         retainedNodeCount: parsed.retainedNodeCount,
+        schemaInvalidNodeCount: parsed.schemaInvalidNodeCount,
+        overCapNodeCount: parsed.overCapNodeCount,
         parsedNodeCount: parsed.nodes.length,
         parsedEdgeCount: parsed.rawEdgeCount,
         acceptedNodeCount: insertedNodes + updatedNodes,
@@ -1365,6 +1395,8 @@ export class SemanticExtractor {
         inputEpisodeCount: episodes.length,
         rawNodeCount: parsed.rawNodeCount,
         retainedNodeCount: parsed.retainedNodeCount,
+        schemaInvalidNodeCount: parsed.schemaInvalidNodeCount,
+        overCapNodeCount: parsed.overCapNodeCount,
         parsedNodeCount: parsed.nodes.length,
         parsedEdgeCount: parsed.rawEdgeCount,
         acceptedNodeCount: insertedNodes + updatedNodes,
@@ -1381,6 +1413,8 @@ export class SemanticExtractor {
       inputEpisodeCount: episodes.length,
       rawNodeCount: parsed.rawNodeCount,
       retainedNodeCount: parsed.retainedNodeCount,
+      schemaInvalidNodeCount: parsed.schemaInvalidNodeCount,
+      overCapNodeCount: parsed.overCapNodeCount,
       parsedNodeCount: parsed.nodes.length,
       parsedEdgeCount: parsed.rawEdgeCount,
       acceptedNodeCount: insertedNodes + updatedNodes,

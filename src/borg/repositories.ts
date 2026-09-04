@@ -159,6 +159,9 @@ export async function buildBorgRepositories(
     db: sqlite,
     clock,
   });
+  // Borg permits only one writer per data directory. At composition time, a
+  // NULL wake older than the repository grace window therefore cannot belong
+  // to another live process and is safe to reconcile as interrupted.
   autonomyWakesRepository.interruptOrphanedWakesAtStartup();
   const scheduledWakesRepository = new ScheduledWakesRepository({
     db: sqlite,

@@ -13,6 +13,7 @@ import { AUTONOMY_CONDITION_NAMES, AUTONOMY_WAKE_SOURCE_NAMES } from "./types.js
 import {
   AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH,
   AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+  AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS,
   AutonomyWakesRepository,
 } from "./wakes-repository.js";
 
@@ -100,7 +101,7 @@ describe("AutonomyWakesRepository", () => {
     }
   });
 
-  it("reconciles orphaned wakes once and never overwrites a terminal outcome", () => {
+  it("reconciles only old orphaned wakes and never overwrites a terminal outcome", () => {
     const clock = new ManualClock(1_000);
     const db = openDatabase(":memory:", { migrations: autonomyMigrations });
     const repository = new AutonomyWakesRepository({ db, clock });
@@ -116,6 +117,12 @@ describe("AutonomyWakesRepository", () => {
         session_id: DEFAULT_SESSION_ID,
         wake_source_type: "trigger",
         source_category: "contemplative",
+      });
+      clock.advance(AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS + 1);
+      const recentInFlight = repository.record({
+        trigger_name: "goal_followup_due",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
       });
       const completed = repository.record({
         trigger_name: "scheduled_wake",
@@ -146,6 +153,10 @@ describe("AutonomyWakesRepository", () => {
       );
       expect(wakes.find((wake) => wake.id === completed.id)).toMatchObject({
         outcome: "headway",
+        outcome_detail: null,
+      });
+      expect(wakes.find((wake) => wake.id === recentInFlight.id)).toMatchObject({
+        outcome: null,
         outcome_detail: null,
       });
       expect(repository.countSince(0, { outcome: "interrupted" })).toBe(2);

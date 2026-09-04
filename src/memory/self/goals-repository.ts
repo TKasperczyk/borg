@@ -70,6 +70,15 @@ export type GoalStatusUpdateOptions = IdentityCasOptions & {
   canonicalizedByArtifactEntryId?: SharedStateEntryId | null;
 };
 
+export type GoalRemovalAuditContext = {
+  reason: string;
+  provenance: Provenance;
+};
+
+export type GoalRemovalOptions = IdentityCasOptions & {
+  auditContext: GoalRemovalAuditContext | null;
+};
+
 export const GOAL_TURN_ROLLBACK_REASON =
   "turn rollback: reverted goal mutations from an aborted turn";
 
@@ -699,7 +708,7 @@ export class GoalsRepository {
     });
   }
 
-  remove(goalId: GoalId, options: IdentityCasOptions = {}): boolean {
+  remove(goalId: GoalId, options: GoalRemovalOptions): boolean {
     const current = this.get(goalId);
 
     if (current === null) {
@@ -716,6 +725,16 @@ export class GoalsRepository {
     }
 
     const expectedVersion = expectedRecordVersion(current, options);
+    const auditContext =
+      options.auditContext === null
+        ? null
+        : {
+            reason: options.auditContext.reason,
+            provenance: requireProvenance(
+              options.auditContext.provenance,
+              "Goal removal audit context",
+            ),
+          };
 
     return this.runGoalWrite(() => {
       const result = this.db
@@ -733,15 +752,17 @@ export class GoalsRepository {
         .run(goalId);
       void reparent;
 
-      recordIdentityEvent(this.identityEventRepository, {
-        record_type: "goal",
-        record_id: goalId,
-        action: "delete",
-        old_value: current,
-        new_value: null,
-        reason: GOAL_TURN_ROLLBACK_REASON,
-        provenance: current.provenance,
-      });
+      if (auditContext !== null) {
+        recordIdentityEvent(this.identityEventRepository, {
+          record_type: "goal",
+          record_id: goalId,
+          action: "delete",
+          old_value: current,
+          new_value: null,
+          reason: auditContext.reason,
+          provenance: auditContext.provenance,
+        });
+      }
 
       return result.changes > 0;
     });

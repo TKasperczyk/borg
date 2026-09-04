@@ -53,6 +53,8 @@ const statusDriftRowSchema = z
 export type GoalRollbackAuditRepairCandidate = {
   goalId: GoalId;
   createEvent: IdentityEvent;
+  latestSnapshotEvent: IdentityEvent;
+  eventCount: number;
 };
 
 export type GoalStatusDrift = {
@@ -144,13 +146,31 @@ function readRepairPlan(db: SqliteDatabase, dataDir: string): GoalRollbackAuditR
   const candidateIdRows = db
     .prepare(
       `
-        SELECT events.record_id
-        FROM identity_events AS events
-        LEFT JOIN goals ON goals.id = events.record_id
-        WHERE events.record_type = 'goal' AND goals.id IS NULL
-        GROUP BY events.record_id
-        HAVING COUNT(*) = 1 AND MIN(events.action) = 'create'
-        ORDER BY MIN(events.id) ASC
+        WITH ordered_goal_events AS (
+          SELECT
+            id,
+            record_id,
+            action,
+            ROW_NUMBER() OVER (PARTITION BY record_id ORDER BY ts ASC, id ASC) AS event_rank
+          FROM identity_events
+          WHERE record_type = 'goal'
+        ),
+        goal_event_chains AS (
+          SELECT
+            record_id,
+            MAX(CASE WHEN event_rank = 1 THEN id END) AS first_event_id,
+            MAX(CASE WHEN event_rank = 1 THEN action END) AS first_action,
+            SUM(CASE WHEN action IN ('delete', 'forget') THEN 1 ELSE 0 END) AS terminal_count
+          FROM ordered_goal_events
+          GROUP BY record_id
+        )
+        SELECT chains.record_id
+        FROM goal_event_chains AS chains
+        LEFT JOIN goals ON goals.id = chains.record_id
+        WHERE goals.id IS NULL
+          AND chains.first_action = 'create'
+          AND chains.terminal_count = 0
+        ORDER BY chains.first_event_id ASC
       `,
     )
     .all() as Record<string, unknown>[];
@@ -163,19 +183,32 @@ function readRepairPlan(db: SqliteDatabase, dataDir: string): GoalRollbackAuditR
     goalEventCount === 0
       ? []
       : new IdentityEventRepository({ db }).list({ recordType: "goal", limit: goalEventCount });
-  const eventByRecordId = new Map(goalEvents.map((event) => [event.record_id, event]));
+  const eventsByRecordId = new Map<string, IdentityEvent[]>();
+  for (const event of goalEvents) {
+    const events = eventsByRecordId.get(event.record_id) ?? [];
+    events.push(event);
+    eventsByRecordId.set(event.record_id, events);
+  }
   const candidates = candidateIds.map((goalId) => {
-    const createEvent = eventByRecordId.get(goalId);
+    const events = eventsByRecordId.get(goalId) ?? [];
+    const createEvent = events.at(-1);
+    const latestSnapshotEvent = events.find((event) => event.new_value !== null);
 
     if (
       createEvent === undefined ||
       createEvent.action !== "create" ||
-      createEvent.new_value === null
+      createEvent.new_value === null ||
+      latestSnapshotEvent === undefined
     ) {
-      throw new Error(`Stranded goal create event could not be validated: ${goalId}`);
+      throw new Error(`Stranded goal event chain could not be validated: ${goalId}`);
     }
 
-    return { goalId, createEvent };
+    return {
+      goalId,
+      createEvent,
+      latestSnapshotEvent,
+      eventCount: events.length,
+    };
   });
   const statusDriftRows = db
     .prepare(
@@ -254,18 +287,26 @@ function candidateStillStranded(
   const eventRows = db
     .prepare(
       `
-        SELECT id, action
+        SELECT id, action, new_value_json
         FROM identity_events
         WHERE record_type = 'goal' AND record_id = ?
-        ORDER BY id ASC
+        ORDER BY ts ASC, id ASC
       `,
     )
-    .all(candidate.goalId) as Array<{ id: number; action: string }>;
+    .all(candidate.goalId) as Array<{
+    id: number;
+    action: string;
+    new_value_json: string | null;
+  }>;
+  const firstEvent = eventRows[0];
+  const latestSnapshotEvent = eventRows.findLast((event) => event.new_value_json !== null);
 
   return (
-    eventRows.length === 1 &&
-    Number(eventRows[0]?.id) === candidate.createEvent.id &&
-    eventRows[0]?.action === "create"
+    eventRows.length === candidate.eventCount &&
+    Number(firstEvent?.id) === candidate.createEvent.id &&
+    firstEvent?.action === "create" &&
+    eventRows.every((event) => event.action !== "delete" && event.action !== "forget") &&
+    Number(latestSnapshotEvent?.id) === candidate.latestSnapshotEvent.id
   );
 }
 
@@ -294,7 +335,7 @@ export function applyGoalRollbackAuditRepairPlan(
           record_type: "goal",
           record_id: candidate.goalId,
           action: "delete",
-          old_value: candidate.createEvent.new_value,
+          old_value: candidate.latestSnapshotEvent.new_value,
           new_value: null,
           reason: GOAL_ROLLBACK_AUDIT_REPAIR_REASON,
           provenance: GOAL_ROLLBACK_AUDIT_REPAIR_PROVENANCE,
@@ -328,7 +369,7 @@ export function formatGoalRollbackAuditRepairReport(report: GoalRollbackAuditRep
         ? "backfilled"
         : "not_backfilled";
     lines.push(
-      `${action} goal=${candidate.goalId} create_identity_event=${candidate.createEvent.id}`,
+      `${action} goal=${candidate.goalId} create_identity_event=${candidate.createEvent.id} snapshot_identity_event=${candidate.latestSnapshotEvent.id} chain_events=${candidate.eventCount}`,
     );
   }
 

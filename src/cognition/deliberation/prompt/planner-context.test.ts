@@ -1152,7 +1152,7 @@ describe("compact planner context", () => {
         selfSnapshot: { values: [], goals, traits: [] },
         executiveFocus: {
           selected_goal: goals[0]!,
-          selected_score: 98,
+          selected_score: candidates[0]!,
           next_step: topOpenSteps[0]!,
           candidate_steps: {
             top_open_steps: topOpenSteps,
@@ -1205,7 +1205,7 @@ describe("compact planner context", () => {
         selfSnapshot: { values: [], goals, traits: [] },
         executiveFocus: {
           selected_goal: goals[0]!,
-          selected_score: 300,
+          selected_score: candidates[0]!,
           candidates,
           threshold: 0,
           score_basis: {

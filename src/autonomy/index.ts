@@ -66,6 +66,7 @@ export {
 } from "./conditions/index.js";
 export {
   AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+  AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS,
   AutonomyWakesRepository,
   type AutonomyWakeRecord,
   type AutonomyWakeRecordInput,

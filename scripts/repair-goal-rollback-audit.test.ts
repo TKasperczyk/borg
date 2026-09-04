@@ -76,6 +76,15 @@ describe("goal rollback audit repair", () => {
       priority: 8,
       provenance: { kind: "offline", process: "reflector" },
     });
+    const updatedOrphan = goals.add({
+      description: "Goal updated before its turn later aborted",
+      priority: 7.5,
+      provenance: { kind: "manual" },
+    });
+    goals.updateStatus(updatedOrphan.id, "done", {
+      kind: "system",
+    });
+    const updatedOrphanSnapshot = goals.get(updatedOrphan.id)!;
     const alreadyTerminal = goals.add({
       description: "Absent goal whose audit is already terminal",
       priority: 7,
@@ -96,9 +105,10 @@ describe("goal rollback audit repair", () => {
       priority: 4,
       provenance: { kind: "manual" },
     });
-    db.prepare("DELETE FROM goals WHERE id IN (?, ?, ?)").run(
+    db.prepare("DELETE FROM goals WHERE id IN (?, ?, ?, ?)").run(
       firstOrphan.id,
       secondOrphan.id,
+      updatedOrphan.id,
       alreadyTerminal.id,
     );
     identityEvents.record({
@@ -118,7 +128,17 @@ describe("goal rollback audit repair", () => {
     expect(plan.candidates.map((candidate) => candidate.goalId)).toEqual([
       firstOrphan.id,
       secondOrphan.id,
+      updatedOrphan.id,
     ]);
+    expect(
+      plan.candidates.find((candidate) => candidate.goalId === updatedOrphan.id),
+    ).toMatchObject({
+      eventCount: 2,
+      latestSnapshotEvent: {
+        action: "update",
+        new_value: updatedOrphanSnapshot,
+      },
+    });
     expect(plan.statusDrifts).toHaveLength(2);
     expect(plan.statusDrifts).toEqual(
       expect.arrayContaining([
@@ -145,7 +165,7 @@ describe("goal rollback audit repair", () => {
     ).resolves.toBe(0);
     expect(readFileSync(databasePath)).toEqual(beforeDryRun);
     expect(dryRunStdout.read()).toContain("mode=dry-run");
-    expect(dryRunStdout.read()).toContain("stranded_create_candidates=2");
+    expect(dryRunStdout.read()).toContain("stranded_create_candidates=3");
     expect(dryRunStdout.read()).toContain("status_drift_goals=2");
     expect(dryRunStdout.read()).toContain(`status_drift goal=${firstDrift.id}`);
     expect(dryRunStdout.read()).toContain("no_change=true");
@@ -158,20 +178,24 @@ describe("goal rollback audit repair", () => {
       }),
     ).resolves.toBe(0);
     expect(applyStdout.read()).toContain("mode=apply");
-    expect(applyStdout.read()).toContain("backfilled_total=2");
+    expect(applyStdout.read()).toContain("backfilled_total=3");
     expect(applyStdout.read()).toContain("status_drift_goals=2");
 
     const inspectionDb = openDatabase(databasePath);
     const inspectionEvents = new IdentityEventRepository({ db: inspectionDb });
     try {
-      for (const orphan of [firstOrphan, secondOrphan]) {
+      for (const [orphan, expectedSnapshot] of [
+        [firstOrphan, firstOrphan],
+        [secondOrphan, secondOrphan],
+        [updatedOrphan, updatedOrphanSnapshot],
+      ] as const) {
         const repairEvents = inspectionEvents
           .list({ recordType: "goal", recordId: orphan.id, limit: 10 })
           .filter((event) => event.reason === GOAL_ROLLBACK_AUDIT_REPAIR_REASON);
         expect(repairEvents).toHaveLength(1);
         expect(repairEvents[0]).toMatchObject({
           action: "delete",
-          old_value: orphan,
+          old_value: expectedSnapshot,
           new_value: null,
           provenance: GOAL_ROLLBACK_AUDIT_REPAIR_PROVENANCE,
         });

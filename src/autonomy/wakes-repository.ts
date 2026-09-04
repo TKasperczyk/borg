@@ -77,6 +77,7 @@ const autonomyWakeRowSchema = z.object({
  * whole message.
  */
 export const AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH = 300;
+export const AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS = 60 * 60 * 1_000;
 export const AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL =
   "Wake was still in flight when Borg started; recorded as interrupted.";
 
@@ -254,15 +255,16 @@ export class AutonomyWakesRepository {
   }
 
   interruptOrphanedWakesAtStartup(): number {
+    const orphanedBefore = this.clock.now() - AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS;
     const result = this.db
       .prepare(
         `
           UPDATE autonomy_wakes
           SET outcome = 'interrupted', outcome_detail = ?
-          WHERE outcome IS NULL
+          WHERE outcome IS NULL AND ts < ?
         `,
       )
-      .run(AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL);
+      .run(AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL, orphanedBefore);
 
     return result.changes;
   }

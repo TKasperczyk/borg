@@ -10,6 +10,8 @@ export {
   type GoalFollowupDueCandidate,
   type GoalFollowupDueCandidateOptions,
   type GoalListOptions,
+  type GoalRemovalAuditContext,
+  type GoalRemovalOptions,
   type GoalRetirementResult,
   type GoalStatusUpdateOptions,
   type GoalsRepositoryOptions,
