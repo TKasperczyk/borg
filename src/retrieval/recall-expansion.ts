@@ -268,7 +268,7 @@ Retrieval lanes:
 - semantic_variants are each embedded independently for episodic vector recall. Phrase each as natural prose describing what the remembered exchange itself would be about, not as a request to search memory and not as a bag of keywords.
 - named_terms drive exact lookup. Emit exact names, aliases, people, projects, products, commands, files, flags, identifiers, and other concrete labels present in or safely resolved from the supplied data. For a compound named phrase, include the complete phrase and its significant constituent words. Emit proper nouns standalone. Never emit a generic single word.
 - typed_queries are only for commitment or open_question retrieval. Emit one only when the resolved focus genuinely calls for that lane. Do not emit topic or relationship queries; semantic variants cover those aspects.
-- temporal_cue steers a time lane and the ordering of results. When the resolved focus refers to a time or period (yesterday, last week, two months ago, in July, on the 3rd, this morning), emit absolute ISO-8601 instants computed from NOW in its time zone: since is the start of the period, until is its end or null when open-ended, label is the period in the language of FOCUS. Write both instants with the UTC offset that NOW's time zone has (for example 2026-09-04T00:00:00+02:00), so that day boundaries fall on local midnight rather than UTC midnight. Emit null when FOCUS carries no time reference or NOW is absent. Never infer a time from the topic alone.
+- temporal_cue is decided on every plan: an object or null, never skipped. It steers a time lane and the ordering of results. When the resolved focus refers to a time or period, including relative words such as dzisiaj, dziś, wczoraj, przedwczoraj, jutro, rano, po południu, wieczorem, w tym tygodniu, w zeszłym tygodniu, w zeszłym miesiącu, N dni temu, w lipcu, today, yesterday, this morning, last week, two months ago, in July, on the 3rd, emit absolute ISO-8601 instants computed from NOW in its time zone: since is the start of the period, until is its end or null when open-ended, label is the period in the language of FOCUS. Write both instants with the UTC offset that NOW's time zone has (for example 2026-09-04T00:00:00+02:00), so that day boundaries fall on local midnight rather than UTC midnight. Emit null when FOCUS carries no time reference or NOW is absent. Never infer a time from the topic alone.
 
 Semantic variant strategy:
 - Emit exactly N semantic_variants.
@@ -389,10 +389,19 @@ export function resolveRecallTemporalCue(
 }
 
 function buildRecallQueryPlanTool(semanticVariantCount: number): LLMToolDefinition {
+  // The parser tolerates an omitted temporal_cue (older fixtures and fakes), but the model is
+  // asked to decide it on every plan: listing it as required makes "null" an explicit answer
+  // instead of a field it may skip, which is where the "wczoraj" misses came from.
+  const inputSchema = toToolInputSchema(recallQueryPlanSchema(semanticVariantCount)) as {
+    required?: string[];
+    [key: string]: unknown;
+  };
+  const required = new Set(inputSchema.required ?? []);
+  required.add("temporal_cue");
   return {
     name: RECALL_EXPANSION_TOOL_NAME,
     description: "Emit a resolved, structured retrieval query plan. This is not a user answer.",
-    inputSchema: toToolInputSchema(recallQueryPlanSchema(semanticVariantCount)),
+    inputSchema: { ...inputSchema, required: [...required] } as LLMToolDefinition["inputSchema"],
   };
 }
 

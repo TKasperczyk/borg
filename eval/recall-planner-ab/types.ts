@@ -33,6 +33,12 @@ export type RecallPlannerCase = {
     counterparty_name?: string;
   }>;
   expected_episode_ids: string[];
+  /**
+   * Optional pinned clock for the run, as an ISO-8601 instant with an explicit offset. The
+   * planner reads NOW from the pipeline clock, so a case that says "yesterday" only stays
+   * reproducible (and planner-cacheable across runs) when its clock is fixed here.
+   */
+  now?: string;
   notes?: string;
 };
 

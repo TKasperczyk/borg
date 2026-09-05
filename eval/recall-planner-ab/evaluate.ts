@@ -6,7 +6,9 @@ import { RetrievalPipeline, type RetrievedEpisode } from "../../src/retrieval/in
 import type { RetrievalDegradation } from "../../src/retrieval/pipeline.js";
 import type { RecallQueryPlan } from "../../src/retrieval/recall-expansion.js";
 import { CallbackTracer, type CallbackTraceEntry } from "../../src/tracing/tracer.js";
+import { FixedClock } from "../../src/util/clock.js";
 import type { EntityId } from "../../src/util/ids.js";
+import { parseIsoInstant } from "../../src/util/iso-instant.js";
 
 import { JsonlValueCache, VectorCache } from "../embedding-ab/cache.js";
 import {
@@ -65,6 +67,8 @@ export type RecallPlannerAbOptions = {
   variantCounts: number[];
   baseline: boolean;
   embeddingModel?: string;
+  plannerTimeZone?: string;
+  plannerTimeoutMs?: number;
   judgeRequested: boolean;
   judgeModel?: string;
   generateCases: number;
@@ -334,6 +338,8 @@ async function runCaseConfiguration(input: {
   embeddingClient: ScratchCachingEmbeddingClient;
   plannerClient: ScratchPlannerLlmClient;
   plannerModel: string;
+  plannerTimeZone?: string;
+  plannerTimeoutMs?: number;
   traceTurnId: string;
 }): Promise<RecallPlannerCaseRun> {
   const traceEvents: CallbackTraceEntry[] = [];
@@ -348,11 +354,17 @@ async function runCaseConfiguration(input: {
   const gatewayStart = input.embeddingClient.gatewayCalls.length;
   const plannerStart = input.plannerClient.calls.length;
   const isBaseline = input.configuration.mode === "baseline_raw_focus_only";
+  const pinnedNowMs = parseIsoInstant(input.item.now, { requireOffset: true });
   const pipeline = new RetrievalPipeline({
     embeddingClient: input.embeddingClient,
+    ...(pinnedNowMs === undefined ? {} : { clock: new FixedClock(pinnedNowMs) }),
     ...(isBaseline ? {} : { llmClient: input.plannerClient }),
     recallExpansionModel: input.plannerModel,
-    recallExpansionTimeoutMs: input.bank.config.retrieval.recallExpansionTimeoutMs,
+    recallExpansionTimeoutMs:
+      input.plannerTimeoutMs ?? input.bank.config.retrieval.recallExpansionTimeoutMs,
+    recallPlannerTimeZone:
+      input.plannerTimeZone ?? input.bank.config.retrieval.recallPlannerTimeZone,
+    plannerCueTimeWeight: input.bank.config.retrieval.attentionWeights.time,
     ...(input.configuration.semantic_variant_count === null
       ? {}
       : { recallExpansionSemanticVariantCount: input.configuration.semantic_variant_count }),
@@ -780,6 +792,12 @@ export async function runRecallPlannerAbEvaluation(
             embeddingClient,
             plannerClient,
             plannerModel,
+            ...(options.plannerTimeZone === undefined
+              ? {}
+              : { plannerTimeZone: options.plannerTimeZone }),
+            ...(options.plannerTimeoutMs === undefined
+              ? {}
+              : { plannerTimeoutMs: options.plannerTimeoutMs }),
             traceTurnId: `recall_planner_ab:${sequence}:${item.id}:${configuration.id}`,
           }),
         );

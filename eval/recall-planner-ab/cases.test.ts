@@ -26,6 +26,18 @@ describe("recall planner case parsing", () => {
     expect(parseRecallPlannerCases([validCase()])).toEqual([validCase()]);
   });
 
+  it("accepts a pinned clock with an explicit offset and rejects one without", () => {
+    const pinned = { ...validCase(), now: "2026-09-05T12:00:00+02:00" };
+    expect(parseRecallPlannerCases([pinned])).toEqual([pinned]);
+
+    expect(() => parseRecallPlannerCases([{ ...validCase(), now: "2026-09-05T12:00:00" }])).toThrow(
+      /explicit offset/,
+    );
+    expect(() => parseRecallPlannerCases([{ ...validCase(), now: "yesterday" }])).toThrow(
+      /explicit offset/,
+    );
+  });
+
   it("rejects duplicate case IDs", () => {
     expect(() => parseRecallPlannerCases([validCase(), validCase()])).toThrow(
       /Duplicate recall-planner case id/,

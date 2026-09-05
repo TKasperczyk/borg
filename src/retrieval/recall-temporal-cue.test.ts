@@ -76,6 +76,22 @@ describe("resolveRecallTemporalCue", () => {
 });
 
 describe("expandRecall temporal cue", () => {
+  it("lists temporal_cue as a required tool field while still accepting plans that omit it", async () => {
+    const llmClient = new FakeLLMClient({ responses: [planResponse(undefined)] });
+    const plan = await expandRecall({
+      llmClient,
+      model: "test-recall-expansion",
+      focus: "Co wczoraj?",
+      semanticVariantCount: 1,
+      nowMs: NOW,
+    });
+    expect(plan.temporalCue).toBeNull();
+    const request = llmClient.requests[0] as unknown as {
+      tools: ReadonlyArray<{ inputSchema: { required?: string[] } }>;
+    };
+    expect(request.tools[0]!.inputSchema.required).toContain("temporal_cue");
+  });
+
   it("renders NOW in the configured zone and resolves the emitted cue", async () => {
     const llmClient = new FakeLLMClient({
       responses: [

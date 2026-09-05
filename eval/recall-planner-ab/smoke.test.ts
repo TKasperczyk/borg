@@ -28,6 +28,10 @@ import type { RecallPlannerAbResults, RecallPlannerCase } from "./types.js";
 import { main } from "./cli.js";
 
 const TARGET_ID = "ep_aaaaaaaaaaaaaaaa";
+// Pinned so the planner prompt's NOW section is identical across the cold and warm runs below;
+// with the wall clock every repeat would miss the planner cache.
+const SMOKE_NOW = "2026-03-02T10:00:00+01:00";
+const SMOKE_NOW_MS = Date.parse(SMOKE_NOW);
 const DISTRACTOR_ID = "ep_bbbbbbbbbbbbbbbb";
 
 type JsonObject = Record<string, unknown>;
@@ -234,8 +238,7 @@ function episode(input: {
   };
 }
 
-async function createTinyBank(bankDir: string): Promise<void> {
-  const now = Date.now();
+async function createTinyBank(bankDir: string, now: number): Promise<void> {
   const store = new LanceDbStore({ uri: join(bankDir, "lancedb") });
   const db = openDatabase(join(bankDir, "borg.db"), {
     migrations: composeMigrations(
@@ -326,6 +329,7 @@ function smokeCase(): RecallPlannerCase {
     },
     owner_recent_activity: [],
     expected_episode_ids: [TARGET_ID],
+    now: SMOKE_NOW,
   };
 }
 
@@ -345,7 +349,7 @@ describe("recall planner A/B smoke", () => {
     const outDir = join(root, "out");
     const casesPath = join(root, "cases.json");
     cleanup.push(() => rmSync(root, { recursive: true, force: true }));
-    await createTinyBank(bankDir);
+    await createTinyBank(bankDir, SMOKE_NOW_MS);
     writeFileSync(casesPath, `${JSON.stringify([smokeCase()], null, 2)}\n`, { mode: 0o600 });
     const gateway = await startFakeGateway();
     cleanup.push(() => gateway.close());

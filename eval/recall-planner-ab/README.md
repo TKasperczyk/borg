@@ -83,13 +83,17 @@ The `--cases` file is a non-empty JSON array:
       }
     ],
     "expected_episode_ids": ["ep_aaaaaaaaaaaaaaaa"],
+    "now": "2026-09-05T12:00:00+02:00",
     "notes": "Optional operator note."
   }
 ]
 ```
 
 Conversation types are `personal`, `groupChat`, and `channel`; `occurred_at` is epoch
-milliseconds. Expected IDs absent from the active/effectively-visible corpus remain explicit
+milliseconds. `now` is optional and pins the pipeline clock for that case as an ISO-8601 instant
+with an explicit offset; the planner reads NOW from that clock, so a case phrased around "yesterday"
+is only reproducible (and planner-cacheable across runs) when it is pinned. Without it the wall
+clock is used, as in production. Expected IDs absent from the active/effectively-visible corpus remain explicit
 misses. For disclosure parity, the evaluator resolves already-supplied audience and activity-venue
 names through Borg's entity repository. Unresolved handles are recorded per run rather than silently
 granting cross-audience access.

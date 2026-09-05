@@ -41,7 +41,8 @@
       "entity_terms": ["Kowal, Marcin", "Marcin", "Team Wiki Home"]
     },
     "expected_episode_ids": ["ep_jtbulqz836f7e2ri"],
-    "notes": "Temporal cue case (Extension 5): 'wczoraj' must become a temporal_cue for the previous local day; relative to a 2026-09-05 run clock. Expected episode 2026-09-04 13:16 CEST."
+    "now": "2026-09-05T12:00:00+02:00",
+    "notes": "Temporal cue case (Extension 5): 'wczoraj' must become a temporal_cue for the previous local day; relative to the pinned 2026-09-05 12:00 CEST clock. Expected episode 2026-09-04 13:16 CEST."
   },
   {
     "id": "temporal-yesterday-afternoon-avatar",
@@ -58,6 +59,7 @@
       "entity_terms": ["Team Agent", "Jira", "Confluence"]
     },
     "expected_episode_ids": ["ep_2dt7sedvb6so7s39", "ep_0egnyaj31m0nrj4q", "ep_c3sdl0husnbz09vw"],
+    "now": "2026-09-05T12:00:00+02:00",
     "notes": "Temporal cue case (Extension 5): 'wczoraj po południu' should yield an afternoon window on the previous local day; three near-duplicate episodes at 2026-09-04 15:16 CEST are all acceptable."
   }
 ]

@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { episodeIdSchema } from "../../src/memory/episodic/index.js";
 import { streamConversationSchema } from "../../src/stream/index.js";
+import { parseIsoInstant } from "../../src/util/iso-instant.js";
 
 import type { RecallPlannerCase } from "./types.js";
 
@@ -42,6 +43,12 @@ export const recallPlannerCaseSchema: z.ZodType<RecallPlannerCase> = z
     identity: identitySchema,
     owner_recent_activity: z.array(recentActivitySchema),
     expected_episode_ids: z.array(episodeIdSchema).min(1),
+    now: z
+      .string()
+      .refine((value) => parseIsoInstant(value, { requireOffset: true }) !== undefined, {
+        message: "now must be an ISO-8601 instant with an explicit offset (Z or ±hh:mm)",
+      })
+      .optional(),
     notes: z.string().min(1).optional(),
   })
   .strict();

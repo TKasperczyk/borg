@@ -22,6 +22,8 @@ type CliArgs =
       outDir: string;
       variantCounts: number[];
       embeddingModel?: string;
+      plannerTimeZone?: string;
+      plannerTimeoutMs?: number;
       judgeRequested: boolean;
       judgeModel?: string;
       baseline: boolean;
@@ -34,6 +36,8 @@ export function usage(): string {
     "",
     "Options:",
     "  --embedding-model <id>      Embedding model (default: copied bank config)",
+    "  --planner-time-zone <iana>  Zone the planner resolves relative time in (default: bank config)",
+    "  --planner-timeout-ms <n>    Planner deadline in ms (default: bank config)",
     "  --judge-model [id]          Judge top-5 relevance; omit id to auto-select a strong model",
     "  --baseline                  Also run raw FOCUS-blob-only retrieval with no LLM expansion",
     "  --generate-cases <n>        Generate and evaluate N additional referential Polish cases",
@@ -89,6 +93,8 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
   let outDir: string | undefined;
   let variantCounts: number[] | undefined;
   let embeddingModel: string | undefined;
+  let plannerTimeZone: string | undefined;
+  let plannerTimeoutMs: number | undefined;
   let judgeRequested = false;
   let judgeModel: string | undefined;
   let baseline = false;
@@ -116,6 +122,19 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     }
     if (argument === "--variant-counts") {
       variantCounts = parseVariantCounts(requiredValue(argv, index, argument));
+      index += 1;
+      continue;
+    }
+    if (argument === "--planner-time-zone") {
+      plannerTimeZone = requiredValue(argv, index, argument);
+      index += 1;
+      continue;
+    }
+    if (argument === "--planner-timeout-ms") {
+      plannerTimeoutMs = Number(requiredValue(argv, index, argument));
+      if (!Number.isInteger(plannerTimeoutMs) || plannerTimeoutMs < 0) {
+        throw new Error("--planner-timeout-ms must be a non-negative integer");
+      }
       index += 1;
       continue;
     }
@@ -165,6 +184,8 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     outDir: resolve(outDir),
     variantCounts,
     ...(embeddingModel === undefined ? {} : { embeddingModel }),
+    ...(plannerTimeZone === undefined ? {} : { plannerTimeZone }),
+    ...(plannerTimeoutMs === undefined ? {} : { plannerTimeoutMs }),
     judgeRequested,
     ...(judgeModel === undefined ? {} : { judgeModel }),
     baseline,
@@ -201,6 +222,8 @@ export async function main(
     variantCounts: args.variantCounts,
     baseline: args.baseline,
     ...(args.embeddingModel === undefined ? {} : { embeddingModel: args.embeddingModel }),
+    ...(args.plannerTimeZone === undefined ? {} : { plannerTimeZone: args.plannerTimeZone }),
+    ...(args.plannerTimeoutMs === undefined ? {} : { plannerTimeoutMs: args.plannerTimeoutMs }),
     judgeRequested: args.judgeRequested,
     ...(args.judgeModel === undefined ? {} : { judgeModel: args.judgeModel }),
     generateCases: args.generateCases,
