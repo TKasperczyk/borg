@@ -201,10 +201,10 @@ retry after HTTP 400 removes this field once.
 - `POST /v1/chat/observe` records unmentioned group/channel messages into the shared thread history
   and into borg (observation append), then decides whether to chip in (Layer 2). Only groupChat and
   channel conversation types are accepted.
-- Temporal cues in the user's latest message ("dzisiaj", "dziś", "dzisiejsz*", "wczoraj", "przed
-  chwilą", "chwilę temu", "rano", "po południu", "wieczorem", "w tym tygodniu", "today",
-  "yesterday", "this morning", "earlier today", "just now", "this week") are detected
-  deterministically and mapped to a time_range in the tenant timezone. No model call.
+- Temporal cues in the user's latest message ("wczoraj", "w tym tygodniu", "in July", "two months
+  ago", ...) are no longer parsed by team-agent. Since Extension 5 the recall planner resolves them
+  from FOCUS and NOW in the sidecar's configured zone and emits the temporal cue itself; team-agent
+  sends no `time_range` (the field stays accepted for other clients and still takes precedence).
 
 team-agent compatibility: until a sidecar accepting the reply-only shape is live, team-agent treats an HTTP 400 on it as a one-log compatibility skip and never retries it as a full turn; a 400 caused by `participants` is retried once without the field.
 

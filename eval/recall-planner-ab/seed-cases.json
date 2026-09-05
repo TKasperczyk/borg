@@ -23,8 +23,8 @@
         "counterparty_name": "Nowak, Jacek"
       }
     ],
-    "expected_episode_ids": ["ep_mhpweqw9fpvew2j2"],
-    "notes": "Measured production miss. The owner-authored group excerpt is intentionally approximate and predates the private-chat focus by a few minutes."
+    "expected_episode_ids": ["ep_mhpweqw9fpvew2j2", "ep_wzdhd2isd9bg2i9l"],
+    "notes": "Measured production miss. The owner-authored group excerpt is intentionally approximate and predates the private-chat focus by a few minutes. 2026-09-05: the two raw roles episodes were consolidated into version ep_wzdhd2isd9bg2i9l (family cfam_x5590ffripgcp703); retrieval surfaces the version, so it counts as a hit too."
   },
   {
     "id": "temporal-yesterday-ai-ninjas-home-subpage",
