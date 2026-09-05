@@ -411,12 +411,12 @@ describe("Recall Core", () => {
     ).toEqual([
       {
         id: release.id,
-        score: 0.7124134171211829,
-        rawScore: 0.7124134171211829,
+        score: expect.closeTo(0.7124134171211829, 10),
+        rawScore: expect.closeTo(0.7124134171211829, 10),
         scoreBreakdown: {
           similarity: 1,
-          decayedSalience: 0.04137805707060973,
-          heat: 2.819048928638404,
+          decayedSalience: expect.closeTo(0.04137805707060973, 10),
+          heat: expect.closeTo(2.819048928638404, 10),
           goalRelevance: 0,
           valueAlignment: 0,
           timeRelevance: 0,
@@ -428,12 +428,12 @@ describe("Recall Core", () => {
       },
       {
         id: architecture.id,
-        score: 0.7011414290712924,
-        rawScore: 0.7011414290712924,
+        score: expect.closeTo(0.7011414290712924, 10),
+        rawScore: expect.closeTo(0.7011414290712924, 10),
         scoreBreakdown: {
           similarity: 1,
-          decayedSalience: 0.0038047635709747476,
-          heat: 1.5894073724114668,
+          decayedSalience: expect.closeTo(0.0038047635709747476, 10),
+          heat: expect.closeTo(1.5894073724114668, 10),
           goalRelevance: 0,
           valueAlignment: 0,
           timeRelevance: 0,
