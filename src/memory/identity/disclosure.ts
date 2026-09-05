@@ -1,5 +1,6 @@
 import { legacyCommitmentSchema, type CommitmentRecord } from "../commitments/index.js";
 import {
+  isMemoryDisclosureLabelVisibleToAnyAudience,
   memoryDisclosureLabelFromMetadata,
   type MemoryDisclosureLabel,
 } from "../common/disclosure-label.js";
@@ -346,16 +347,10 @@ function isDisclosureLabelVisible(
   label: MemoryDisclosureLabel,
   audienceEntityId: EntityId | null,
 ): boolean {
-  if (label.disclosureClass === "public") {
-    return true;
-  }
-  if (label.disclosureClass === "unknown") {
-    return false;
-  }
-  if (audienceEntityId === null) {
-    return false;
-  }
-  return label.privateToEntityIds.includes(audienceEntityId);
+  return isMemoryDisclosureLabelVisibleToAnyAudience(
+    label,
+    audienceEntityId === null ? [] : [audienceEntityId],
+  );
 }
 
 function isIdentityEventValueVisible(

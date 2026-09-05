@@ -1394,6 +1394,7 @@ describe("Recall Core", () => {
     };
 
     const plannerTracer = createTracer();
+    const onPlannerRecallPlan = vi.fn();
     await buildPipeline(plannerTracer).searchEpisodesForDisclosure(MAYA_TURN, {
       limit: 3,
       traceTurnId: "turn-planner-cue",
@@ -1401,6 +1402,16 @@ describe("Recall Core", () => {
       crossAudience: true,
       recencyPrior: { weight: 0.15, halfLifeHours: 36 },
       attentionWeights: zeroTimeWeights,
+      onRecallPlan: onPlannerRecallPlan,
+    });
+    expect(onPlannerRecallPlan).toHaveBeenCalledTimes(1);
+    expect(onPlannerRecallPlan).toHaveBeenCalledWith({
+      temporalCue: {
+        sinceTs: NOW_MS - 2 * 24 * 60 * 60_000,
+        untilTs: NOW_MS - 24 * 60 * 60_000,
+        label: "przedwczoraj",
+      },
+      temporalCueSource: "planner",
     });
     expect(plannerTracer.emit).toHaveBeenCalledWith(
       "retrieval.intent_candidates",
@@ -1420,6 +1431,7 @@ describe("Recall Core", () => {
     );
 
     const callerTracer = createTracer();
+    const onCallerRecallPlan = vi.fn();
     await buildPipeline(callerTracer).searchEpisodesForDisclosure(MAYA_TURN, {
       limit: 3,
       traceTurnId: "turn-caller-cue",
@@ -1427,6 +1439,11 @@ describe("Recall Core", () => {
       crossAudience: true,
       temporalCue: { sinceTs: NOW_MS - 3 * 24 * 60 * 60_000, label: "ostatnie dni" },
       attentionWeights: { ...zeroTimeWeights, time: 0.2 },
+      onRecallPlan: onCallerRecallPlan,
+    });
+    expect(onCallerRecallPlan).toHaveBeenCalledWith({
+      temporalCue: { sinceTs: NOW_MS - 3 * 24 * 60 * 60_000, label: "ostatnie dni" },
+      temporalCueSource: "caller",
     });
     expect(callerTracer.emit).toHaveBeenCalledWith(
       "retrieval.intent_candidates",
@@ -1442,6 +1459,7 @@ describe("Recall Core", () => {
     );
 
     const noCueTracer = createTracer();
+    const onNoCueRecallPlan = vi.fn();
     await new RetrievalPipeline({
       embeddingClient: harness.embeddingClient,
       llmClient: new FakeLLMClient({
@@ -1457,7 +1475,9 @@ describe("Recall Core", () => {
       semanticVariantCount: 1,
       crossAudience: true,
       recencyPrior: { weight: 0.15, halfLifeHours: 36 },
+      onRecallPlan: onNoCueRecallPlan,
     });
+    expect(onNoCueRecallPlan).toHaveBeenCalledWith({ temporalCue: null, temporalCueSource: null });
     expect(noCueTracer.emit).not.toHaveBeenCalledWith(
       "retrieval.intent_candidates",
       expect.objectContaining({ turnId: "turn-no-cue", intent_id: "recall_time_0" }),

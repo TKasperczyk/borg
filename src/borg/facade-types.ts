@@ -91,6 +91,11 @@ import type {
   BorgEpisodeGetOptions,
   BorgEpisodeSearchOptions,
 } from "./types.js";
+import type { AutobiographicalRecallCaps } from "./public-facade.js";
+import type {
+  AutobiographicalRecallInput,
+  AutobiographicalRecallResult,
+} from "../cognition/autobiographical-recall.js";
 import type { LivedExperienceDaySummary } from "../memory/activity/lived-experience-day-summary.js";
 
 export type BorgDisclosurePayloadFields = {
@@ -223,6 +228,14 @@ export type BorgSelfFacade = {
     ) => ReturnType<TraitsRepository["listContradictionEvents"]>;
   };
   autobiographical: {
+    // What the memory owner did, decided, said, and observed in a period, assembled by the same
+    // service Sol's evidence ledger reads. Gated like Sol: a temporal cue, a self audience, an
+    // operator session, or a reflective turn opens it; otherwise null. Rows carry disclosure
+    // labels and the caller filters them for its audience.
+    recall: (
+      input: AutobiographicalRecallInput,
+      options?: AutobiographicalRecallCaps,
+    ) => Promise<AutobiographicalRecallResult | null>;
     currentPeriod: () => ReturnType<AutobiographicalRepository["currentPeriod"]>;
     listPeriods: (
       ...args: Parameters<AutobiographicalRepository["listPeriods"]>

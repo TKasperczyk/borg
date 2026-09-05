@@ -146,6 +146,11 @@ import type {
   ValueId,
 } from "../util/ids.js";
 import type { BorgDreamOptions, BorgEpisodeGetOptions, BorgEpisodeSearchOptions } from "./types.js";
+import type {
+  AutobiographicalRecallInput,
+  AutobiographicalRecallResult,
+  AutobiographicalRecallServiceOptions,
+} from "../cognition/autobiographical-recall.js";
 import type { LivedExperienceDaySummary } from "../memory/activity/lived-experience-day-summary.js";
 
 export type BorgIdentityUpdateOptions = {
@@ -361,6 +366,12 @@ export type BorgAutobiographicalPeriodListOptions = {
   limit?: number;
 };
 
+// Row budgets an interactive caller may tighten below Sol's defaults.
+export type AutobiographicalRecallCaps = Pick<
+  AutobiographicalRecallServiceOptions,
+  "sourceCap" | "sessionCap" | "totalCap"
+>;
+
 export type BorgAutobiographicalUpsertPeriod = {
   (input: BorgAutobiographicalPeriodInput & { id?: undefined }): AutobiographicalPeriod;
   (
@@ -492,6 +503,14 @@ export type BorgSelfFacade = {
     listContradictionEvents(traitId: TraitId): BorgTraitContradictionEvent[];
   };
   autobiographical: {
+    // What the memory owner did, decided, said, and observed in a period, assembled by the same
+    // service Sol's evidence ledger reads. Gated like Sol: a temporal cue, a self audience, an
+    // operator session, or a reflective turn opens it; otherwise null. Rows carry disclosure
+    // labels and the caller filters them for its audience.
+    recall(
+      input: AutobiographicalRecallInput,
+      options?: AutobiographicalRecallCaps,
+    ): Promise<AutobiographicalRecallResult | null>;
     currentPeriod(): AutobiographicalPeriod | null;
     listPeriods(options?: BorgAutobiographicalPeriodListOptions): AutobiographicalPeriod[];
     upsertPeriod: BorgAutobiographicalUpsertPeriod;

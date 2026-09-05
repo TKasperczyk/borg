@@ -11,6 +11,7 @@ export {
   memoryDisclosureLabelMetadataSchema,
   memoryDisclosureLabelSchema,
   publicMemoryDisclosureLabel,
+  isMemoryDisclosureLabelVisibleToAnyAudience,
   relationshipPrivateMemoryDisclosureLabel,
   renderMemoryDisclosureLabelFieldsForModel,
   renderMemoryDisclosureLabelForModel,

@@ -210,8 +210,17 @@ export type RetrievalDegradation = {
   reason: string;
 };
 
+// The time reference a retrieval pass acted on, reported once the plan is decided: the caller's
+// own cue, the planner's cue when the caller had none, or nothing. A caller without perception of
+// its own (the memory sidecar) uses it to apply the same period to what it does next.
+export type RecallPlanOutcome = {
+  temporalCue: TemporalCue | null;
+  temporalCueSource: "caller" | "planner" | null;
+};
+
 export type RetrievalSharedOptions = EpisodeCognitionRecallOptions & {
   onDegraded?: (degradation: RetrievalDegradation) => void;
+  onRecallPlan?: (plan: RecallPlanOutcome) => void;
   rankingAudienceEntityId?: EntityId | null;
   mmrLambda?: number;
   scoreWeights?: ScoreWeights;
@@ -1449,6 +1458,9 @@ export class RetrievalPipeline {
     const plannerCueWins =
       options.timeRange === undefined && callerCue === null && expansion.temporalCue !== null;
     const effectiveCue = callerCue ?? expansion.temporalCue;
+    // The cue this pass acts on. Under an explicit range the planner's cue is ignored, so only the
+    // caller's own cue counts there.
+    const actedCue = options.timeRange !== undefined ? callerCue : effectiveCue;
     const timeIntentRange = resolveTimeSignals({
       ...options,
       temporalCue: effectiveCue,
@@ -1456,7 +1468,7 @@ export class RetrievalPipeline {
     if (timeIntentRange !== null) {
       // Label and source follow the signal that supplied the bounds: an explicit range or the
       // caller's cue is "temporal-cue"; only a planner-only cue is attributed to the planner.
-      const labelCue = options.timeRange !== undefined ? callerCue : effectiveCue;
+      const labelCue = actedCue;
       intents.push({
         id: "recall_time_0",
         kind: "time",
@@ -1468,6 +1480,10 @@ export class RetrievalPipeline {
         source: plannerCueWins ? "llm-expansion" : "temporal-cue",
       });
     }
+    options.onRecallPlan?.({
+      temporalCue: actedCue,
+      temporalCueSource: actedCue === null ? null : callerCue !== null ? "caller" : "planner",
+    });
 
     intents.push({
       id: "recall_recent_0",

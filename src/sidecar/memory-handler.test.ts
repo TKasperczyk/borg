@@ -16,6 +16,9 @@ import {
 } from "./memory-handler.js";
 import { MemoryTraceRegistry } from "./memory-trace.js";
 import type { Borg } from "../borg.js";
+import type { AutobiographicalRecallEvidenceItem } from "../cognition/autobiographical-recall.js";
+import type { TemporalCue } from "../contracts/cognitive-contracts.js";
+import type { RecallPlanOutcome } from "../retrieval/pipeline.js";
 import { BorgPool } from "../borg/pool.js";
 import type { BorgDependencies } from "../borg/types.js";
 import { FakeEmbeddingClient } from "../embeddings/index.js";
@@ -132,6 +135,11 @@ type Recorder = {
     };
   }>;
   livedExperienceListInputs: unknown[];
+  plannerTemporalCue?: TemporalCue;
+  autobiographicalRecallInputs: unknown[];
+  autobiographicalRecallOptions: unknown[];
+  autobiographicalEvidence: AutobiographicalRecallEvidenceItem[];
+  autobiographicalError?: Error;
   lastRecallOptions?: Record<string, unknown>;
   recallOptionsCalls: Array<Record<string, unknown>>;
   retrievalRecords: Array<{ episodeId: Episode["id"]; score: number }>;
@@ -527,6 +535,27 @@ function stubBorg(rec: Recorder): Borg {
           );
         },
       },
+      autobiographical: {
+        recall: async (input: { temporalCue: TemporalCue | null }, options?: unknown) => {
+          rec.autobiographicalRecallInputs.push(input);
+          rec.autobiographicalRecallOptions.push(options);
+          if (rec.autobiographicalError !== undefined) {
+            throw rec.autobiographicalError;
+          }
+          if (input.temporalCue === null) {
+            return null;
+          }
+          return {
+            window: {
+              startMs: input.temporalCue.sinceTs ?? 0,
+              endMs: input.temporalCue.untilTs ?? 0,
+              label: input.temporalCue.label ?? "cue",
+              source: "perception_temporal_cue" as const,
+            },
+            evidence: rec.autobiographicalEvidence,
+          };
+        },
+      },
     },
     creatorDirectives: {
       queue: (input: CreatorDirectiveQueueInput) => {
@@ -605,6 +634,7 @@ function stubBorg(rec: Recorder): Borg {
           audienceEntityId?: EntityId | null;
           visibleAudienceEntityIds?: readonly EntityId[];
           recordRetrieval?: boolean;
+          onRecallPlan?: (plan: RecallPlanOutcome) => void;
         },
       ) => {
         rec.lastRecallQuery = query;
@@ -612,6 +642,10 @@ function stubBorg(rec: Recorder): Borg {
         rec.lastRecallTraceTurnId = opts.traceTurnId;
         rec.lastRecallOptions = { ...opts };
         rec.recallOptionsCalls.push({ ...opts });
+        opts.onRecallPlan?.({
+          temporalCue: rec.plannerTemporalCue ?? null,
+          temporalCueSource: rec.plannerTemporalCue === undefined ? null : "planner",
+        });
         if (rec.recallError !== undefined) {
           throw rec.recallError;
         }
@@ -753,6 +787,9 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     visibleActivityInputs: [],
     livedExperienceDaySummaries: [],
     livedExperienceListInputs: [],
+    autobiographicalRecallInputs: [],
+    autobiographicalRecallOptions: [],
+    autobiographicalEvidence: [],
     recallOptionsCalls: [],
     retrievalRecords: [],
     recallCitationChains: new Map(),
@@ -4673,6 +4710,201 @@ describe("memory sidecar handler", () => {
     expect(
       (fallbackPayload.episodes as Array<{ id: string }>).map((episode) => episode.id),
     ).toEqual([outside.id]);
+  });
+
+  it("prefers episodes inside the planner's cue when no time_range was sent and reports the owner's record for that period", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const inRange = testEpisode("ep_cueinsiderange01" as Episode["id"], {
+      title: "Yesterday in range",
+      start_time: 150,
+      end_time: 160,
+      shared: true,
+    });
+    const outside = testEpisode("ep_cueoutsiderange1" as Episode["id"], {
+      title: "Older",
+      start_time: 50,
+      end_time: 60,
+      shared: true,
+    });
+    rec.recallEpisodes = [outside, inRange];
+    rec.plannerTemporalCue = { sinceTs: 100, untilTs: 200, label: "wczoraj" };
+    const publicRow: AutobiographicalRecallEvidenceItem = {
+      id: "observed_social_event:evt_public",
+      kind: "observed_social_event",
+      groupId: "observed_social_events",
+      groupLabel: "Observed social events",
+      occurredAt: 160,
+      relativeAge: "1 day ago",
+      score: 0.7,
+      text: "event=meeting participants=Marcin summary=Agreed the subpage",
+      disclosureLabel: {
+        disclosureClass: "public",
+        originAudienceEntityIds: [],
+        privateToEntityIds: [],
+        publicToEntityIds: [],
+      },
+      sourceStreamEntryIds: [],
+      sourceEpisodeIds: [inRange.id],
+      metadata: {},
+    };
+    // Episodes are already served by the episodes section (with the request's exclusions), and
+    // open questions carry labels combined across sources; both kinds must not appear here even
+    // when their label would pass.
+    const episodeRow: AutobiographicalRecallEvidenceItem = {
+      ...publicRow,
+      id: "episode:ep_cueinsiderange01",
+      kind: "episode",
+      groupId: "episodes",
+      groupLabel: "Recent episodic memory",
+      text: "title=OUTCOME rollup narrative=excluded elsewhere tags=none",
+    };
+    const openQuestionRow: AutobiographicalRecallEvidenceItem = {
+      ...publicRow,
+      id: "open_question:oq_1",
+      kind: "open_question",
+      groupId: "open_questions",
+      groupLabel: "Open questions considered",
+      text: "question=combined from two private sessions",
+    };
+    const someoneElsesRow: AutobiographicalRecallEvidenceItem = {
+      ...publicRow,
+      id: "activity:evt_private",
+      kind: "activity",
+      groupId: "activity:teams/participant",
+      groupLabel: "Session activity: teams/participant",
+      text: "activity_kind=user_contact participant=Bob",
+      disclosureLabel: {
+        disclosureClass: "self_private",
+        originAudienceEntityIds: ["ent_someoneelse0001" as EntityId],
+        privateToEntityIds: ["ent_someoneelse0001" as EntityId],
+        publicToEntityIds: [],
+      },
+      sourceEpisodeIds: [],
+      metadata: {},
+    };
+    rec.autobiographicalEvidence = [publicRow, someoneElsesRow, episodeRow, openQuestionRow];
+
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "personal-planner-cue",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: { type: "personal", name: "Alice" },
+        focus: "Co wczoraj ustaliliśmy?",
+        limit: 2,
+        sections: ["episodes", "autobiographical"],
+      },
+      TOKEN,
+    );
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(rec.lastRecallOptions).not.toHaveProperty("timeRange");
+    expect(
+      (payload.episodes as Array<{ id: string; in_time_range: boolean }>).map((episode) => [
+        episode.id,
+        episode.in_time_range,
+      ]),
+    ).toEqual([
+      [inRange.id, true],
+      [outside.id, false],
+    ]);
+    expect(rec.autobiographicalRecallInputs).toEqual([
+      expect.objectContaining({
+        temporalCue: { sinceTs: 100, untilTs: 200, label: "wczoraj" },
+        isSelfAudience: false,
+        sessionAudienceRole: "participant",
+      }),
+    ]);
+    expect(rec.autobiographicalRecallOptions).toEqual([{ sessionCap: 8, totalCap: 24 }]);
+    // A planner-driven recall overfetches and defers accounting like an explicit range does.
+    expect(rec.lastRecallOptions).toMatchObject({ limit: 6, recordRetrieval: false });
+    expect(payload.autobiographical).toEqual({
+      window: { since: 100, until: 200, label: "wczoraj", source: "planner_temporal_cue" },
+      evidence: [
+        expect.objectContaining({
+          id: publicRow.id,
+          kind: "observed_social_event",
+          group: "Observed social events",
+          occurred_at: 160,
+          relative_age: "1 day ago",
+          text: publicRow.text,
+          source_episode_ids: [inRange.id],
+          disclosure: expect.objectContaining({ class: "public" }),
+        }),
+      ],
+      hidden_count: 1,
+      truncated_count: 0,
+    });
+    expect(payload.degraded).toBe(false);
+  });
+
+  it("returns a null autobiographical section without a cue, degrades softly when the recall fails, and rejects it without episodes", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    rec.recallEpisodes = [testEpisode("ep_nocueepisode0001" as Episode["id"], { shared: true })];
+
+    const noCue = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "personal-no-cue",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: { type: "personal", name: "Alice" },
+        focus: "Jaki był plan?",
+        sections: ["episodes", "autobiographical"],
+      },
+      TOKEN,
+    );
+    const noCuePayload = (await noCue.json()) as Record<string, unknown>;
+    expect(noCue.status).toBe(200);
+    expect(noCuePayload.autobiographical).toBeNull();
+    expect(rec.autobiographicalRecallInputs).toEqual([]);
+    expect(
+      (noCuePayload.episodes as Array<{ in_time_range?: boolean }>).map(
+        (episode) => episode.in_time_range,
+      ),
+    ).toEqual([undefined]);
+
+    rec.plannerTemporalCue = { sinceTs: 100, untilTs: 200, label: "wczoraj" };
+    rec.autobiographicalError = new Error("stream scan stalled");
+    const failed = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "personal-failed-cue",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: { type: "personal", name: "Alice" },
+        focus: "Co wczoraj?",
+        sections: ["episodes", "autobiographical"],
+      },
+      TOKEN,
+    );
+    const failedPayload = (await failed.json()) as Record<string, unknown>;
+    expect(failed.status).toBe(200);
+    expect(failedPayload.autobiographical).toBeNull();
+    expect((failedPayload.episodes as unknown[]).length).toBe(1);
+    expect(failedPayload.degraded).toBe(true);
+    expect(failedPayload.degraded_reason).toContain("autobiographical_recall: stream scan stalled");
+
+    const rejected = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "personal-rejected",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: { type: "personal", name: "Alice" },
+        sections: ["audience", "autobiographical"],
+      },
+      TOKEN,
+    );
+    expect(rejected.status).toBe(400);
   });
 
   it("applies episode exclusions before the requested limit on recall and context", async () => {

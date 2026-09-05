@@ -69,7 +69,15 @@ import {
   type CreatorDirectiveApplicable,
   type CreatorDirectiveQueueInput,
 } from "../memory/creator-directives/index.js";
-import { memoryDisclosureLabelFromEpisodeAccess } from "../memory/common/index.js";
+import type {
+  AutobiographicalRecallResult,
+  AutobiographicalRecallSourceKind,
+} from "../cognition/autobiographical-recall.js";
+import type { TemporalCue } from "../contracts/cognitive-contracts.js";
+import {
+  isMemoryDisclosureLabelVisibleToAnyAudience,
+  memoryDisclosureLabelFromEpisodeAccess,
+} from "../memory/common/index.js";
 import {
   isEpisodeAccessVisibleToAnyAudience,
   parseEpisodeParticipantEntityIdTerm,
@@ -80,7 +88,7 @@ import {
   MAX_RECALLED_SOURCE_MESSAGES_PER_EPISODE,
 } from "../retrieval/evidence-bounds.js";
 import type { EpisodeRecencyPrior, RetrievedEpisode } from "../retrieval/index.js";
-import type { RetrievalDegradation } from "../retrieval/pipeline.js";
+import type { RecallPlanOutcome, RetrievalDegradation } from "../retrieval/pipeline.js";
 import {
   MAX_RECALL_EXPANSION_SEMANTIC_VARIANTS,
   MAX_RECALL_QUERY_ACTIVITY_ROWS,
@@ -194,6 +202,29 @@ export const MEMORY_RECALL_SEMANTIC_VARIANT_COUNT_ENV = "BORG_MEMORY_RECALL_SEMA
 const RECENT_ACTIVITY_EXCERPT_HYDRATION_FAILURE_REASON = "recent_activity_excerpt_hydration_failed";
 const DEFAULT_VENUE_RECENT_LIMIT = 12;
 const MAX_VENUE_RECENT_LIMIT = 50;
+// Rows of the owner's own record returned for a cued period. The service ranks up to 48; a prompt
+// block only needs the top of that.
+const MAX_AUTOBIOGRAPHICAL_ROWS = 12;
+// The service scans other sessions' streams for the owner's reflections and reaches; the sidecar
+// bounds that scan below Sol's defaults because it runs inside an interactive request.
+const AUTOBIOGRAPHICAL_SESSION_CAP = 8;
+const AUTOBIOGRAPHICAL_TOTAL_CAP = 24;
+// The second pass only gets what the episodes pass left of the request deadline; below this floor
+// it is skipped rather than started, so the whole request still fits one recall deadline.
+const MIN_AUTOBIOGRAPHICAL_BUDGET_MS = 500;
+// Kinds whose disclosure label comes from exactly one source record, so "one visible audience is
+// among the entities it is private to" is the whole story. Open questions, goals, actions and
+// autobiographical periods carry labels combined across several sources (one visible source would
+// admit text derived from another private one), and episodes are already served by the `episodes`
+// section with the request's exclusions applied; both are omitted here.
+const SIDECAR_AUTOBIOGRAPHICAL_KINDS: ReadonlySet<AutobiographicalRecallSourceKind> = new Set([
+  "activity",
+  "observed_social_event",
+  "stream_reflection",
+  "silence_decision",
+  "outbound_attempt",
+  "observed_presence",
+]);
 const MAX_CONTEXT_PARTICIPANTS = 32;
 const MAX_CONTEXT_ENTITY_TERMS = MAX_RECALL_QUERY_ENTITY_TERMS;
 const MAX_CONTEXT_ENTITY_TERM_CHARS = MAX_RECALL_QUERY_HANDLE_CHARS;
@@ -306,6 +337,7 @@ const memoryContextSectionSchema = z.enum([
   "commitments",
   "directives",
   "venue_recent",
+  "autobiographical",
 ]);
 const DEFAULT_MEMORY_CONTEXT_SECTIONS = [
   "audience",
@@ -340,6 +372,15 @@ const memoryContextBodySchema = z
   .superRefine((value, ctx) => {
     const episodesRequested = value.sections === undefined || value.sections.includes("episodes");
     const venueRecentRequested = value.sections?.includes("venue_recent") === true;
+    const autobiographicalRequested = value.sections?.includes("autobiographical") === true;
+
+    if (autobiographicalRequested && !episodesRequested) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["sections"],
+        message: "autobiographical requires episodes (its period comes from the recall plan)",
+      });
+    }
 
     if (value.conversation.type !== "personal" && value.conversation.external_id === undefined) {
       ctx.addIssue({
@@ -854,6 +895,61 @@ function createPublicEpisodeMetadataProjector(
 type EpisodeExclusions = z.infer<typeof episodeExclusionsSchema>;
 type SidecarEpisodeHit = Pick<RetrievedEpisode, "episode" | "score" | "rawScore"> &
   Partial<Pick<RetrievedEpisode, "citationChain">>;
+
+// The period a planner cue names, in the same shape as an explicit time_range, so the response can
+// prefer in-period episodes and flag them whichever way the period arrived. Open ends fall back to
+// the beginning of time and to now.
+function temporalCueRange(
+  cue: TemporalCue | null,
+  nowMs: number,
+): { start: number; end: number } | undefined {
+  if (cue === null || (cue.sinceTs === undefined && cue.untilTs === undefined)) {
+    return undefined;
+  }
+  const start = cue.sinceTs ?? 0;
+  const end = cue.untilTs ?? nowMs;
+  return start <= end ? { start, end } : undefined;
+}
+
+function projectAutobiographicalRecallForResponse(
+  recall: AutobiographicalRecallResult,
+  visibleAudienceEntityIds: readonly EntityId[],
+): Record<string, unknown> {
+  const eligible = recall.evidence.filter((item) => SIDECAR_AUTOBIOGRAPHICAL_KINDS.has(item.kind));
+  const visible = eligible.filter((item) =>
+    isMemoryDisclosureLabelVisibleToAnyAudience(item.disclosureLabel, visibleAudienceEntityIds),
+  );
+  const included = visible.slice(0, MAX_AUTOBIOGRAPHICAL_ROWS);
+  return {
+    window: {
+      since: recall.window.startMs,
+      until: recall.window.endMs,
+      label: recall.window.label,
+      // The service names its cue source after Sol's perception; here the cue is the planner's.
+      source:
+        recall.window.source === "perception_temporal_cue"
+          ? "planner_temporal_cue"
+          : recall.window.source,
+    },
+    evidence: included.map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      group: item.groupLabel,
+      occurred_at: item.occurredAt,
+      relative_age: item.relativeAge,
+      text: item.text,
+      source_episode_ids: [...item.sourceEpisodeIds],
+      disclosure: {
+        class: item.disclosureLabel.disclosureClass,
+        origin_audience_entity_ids: [...item.disclosureLabel.originAudienceEntityIds],
+        private_to_entity_ids: [...item.disclosureLabel.privateToEntityIds],
+        public_to_entity_ids: [...item.disclosureLabel.publicToEntityIds],
+      },
+    })),
+    hidden_count: eligible.length - visible.length,
+    truncated_count: visible.length - included.length,
+  };
+}
 
 // These patterns are explicit protocol handles supplied by the caller. Matching them mechanically
 // does not interpret user-authored language or infer episode meaning.
@@ -2261,8 +2357,13 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             Math.floor(parsed.data.limit === undefined ? 8 : parsed.data.limit),
           ),
         );
+        // Overfetch and account after selection whenever the response may be reordered or filtered
+        // after retrieval: exclusions, an explicit range, or a planner-driven recall (focus) whose
+        // cue can promote in-period episodes that a plain limit would already have cut.
         const deferEpisodeRetrievalAccounting =
-          parsed.data.exclude !== undefined || parsed.data.time_range !== undefined;
+          parsed.data.exclude !== undefined ||
+          parsed.data.time_range !== undefined ||
+          parsed.data.focus !== undefined;
         const episodeSearchLimit = deferEpisodeRetrievalAccounting
           ? Math.min(
               maxRecallLimit * EPISODE_OVERFETCH_MULTIPLIER,
@@ -2489,6 +2590,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         let degraded = false;
         let degradedReason = "";
         let abstained = false;
+        let plannerTemporalCue: TemporalCue | null = null;
 
         if (requestedSections.has("episodes")) {
           const traceTurnId =
@@ -2497,11 +2599,15 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           try {
             const recallResult = await raceRecallDeadline(
               pool.withTenant(tenant, async (borg) => {
+                let recallPlan: RecallPlanOutcome | null = null;
                 const recallOptions = {
                   limit: episodeSearchLimit,
                   audienceEntityId: identity.audienceEntity.id,
                   visibleAudienceEntityIds: context.visibleAudienceEntityIds,
                   onDegraded: (degradation: RetrievalDegradation) => degradations.push(degradation),
+                  onRecallPlan: (plan: RecallPlanOutcome) => {
+                    recallPlan = plan;
+                  },
                   ...(parsed.data.entity_terms === undefined
                     ? {}
                     : { entityTerms: parsed.data.entity_terms }),
@@ -2547,19 +2653,24 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                 const eligible = visible.filter(
                   (hit) => !episodeMatchesExclusions(hit.episode, parsed.data.exclude),
                 );
+                // The period to prefer: an explicit time_range, else the cue the planner resolved
+                // from FOCUS, which is the range a caller with its own parser used to send.
+                const actedCue: TemporalCue | null =
+                  (recallPlan as RecallPlanOutcome | null)?.temporalCue ?? null;
+                const preferredRange = parsed.data.time_range ?? temporalCueRange(actedCue, nowMs);
                 const ordered =
-                  parsed.data.time_range === undefined
+                  preferredRange === undefined
                     ? eligible
                     : [
                         ...eligible.filter(
                           (hit) =>
-                            hit.episode.start_time >= parsed.data.time_range!.start &&
-                            hit.episode.start_time <= parsed.data.time_range!.end,
+                            hit.episode.start_time >= preferredRange.start &&
+                            hit.episode.start_time <= preferredRange.end,
                         ),
                         ...eligible.filter(
                           (hit) =>
-                            hit.episode.start_time < parsed.data.time_range!.start ||
-                            hit.episode.start_time > parsed.data.time_range!.end,
+                            hit.episode.start_time < preferredRange.start ||
+                            hit.episode.start_time > preferredRange.end,
                         ),
                       ];
                 const included = ordered.slice(0, episodeLimit);
@@ -2578,11 +2689,10 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                 return {
                   hiddenEpisodeCount: recalled.length - visible.length,
                   topRawScore,
+                  plannerTemporalCue: parsed.data.time_range === undefined ? actedCue : null,
                   episodes: projectEpisodeHitsForResponse(included, borg.entities, true, {
                     includeSourceMessages: true,
-                    ...(parsed.data.time_range === undefined
-                      ? {}
-                      : { timeRange: parsed.data.time_range }),
+                    ...(preferredRange === undefined ? {} : { timeRange: preferredRange }),
                   }),
                 };
               }),
@@ -2590,6 +2700,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             );
 
             hiddenEpisodeCount = recallResult.hiddenEpisodeCount;
+            plannerTemporalCue = recallResult.plannerTemporalCue;
             if (
               recallAbstainThreshold > 0 &&
               (recallResult.topRawScore === null ||
@@ -2619,6 +2730,55 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
               .join("; ");
             degradedReason =
               degradedReason.length === 0 ? pipelineReason : `${degradedReason}; ${pipelineReason}`;
+          }
+        }
+
+        // The owner's own record for the cued period. A second, deadline-bounded pass so a slow
+        // scan of other sessions' streams can only cost this section, never the episodes.
+        let autobiographical: Record<string, unknown> | null = null;
+        if (requestedSections.has("autobiographical") && plannerTemporalCue !== null) {
+          const cue = plannerTemporalCue;
+          const remainingMs = recallDeadlineMs - (Date.now() - nowMs);
+          const noteDegradation = (reason: string): void => {
+            degraded = true;
+            degradedReason = degradedReason.length === 0 ? reason : `${degradedReason}; ${reason}`;
+          };
+          if (remainingMs < MIN_AUTOBIOGRAPHICAL_BUDGET_MS) {
+            noteDegradation("autobiographical_recall: no deadline budget left after episodes");
+          } else {
+            try {
+              autobiographical = await raceRecallDeadline(
+                pool.withTenant(tenant, async (borg) => {
+                  const recall = await borg.self.autobiographical.recall(
+                    {
+                      sessionId: session,
+                      temporalCue: cue,
+                      // Teams audiences are never the owner and the gate here is the cue alone: an
+                      // operator role would open it on every turn, which is not what a period ask
+                      // is.
+                      isSelfAudience: false,
+                      sessionAudienceRole: "participant",
+                      perceptionMode: "problem_solving",
+                    },
+                    {
+                      sessionCap: AUTOBIOGRAPHICAL_SESSION_CAP,
+                      totalCap: AUTOBIOGRAPHICAL_TOTAL_CAP,
+                    },
+                  );
+                  return recall === null
+                    ? null
+                    : projectAutobiographicalRecallForResponse(
+                        recall,
+                        context.visibleAudienceEntityIds,
+                      );
+                }),
+                remainingMs,
+              );
+            } catch (error) {
+              noteDegradation(
+                `autobiographical_recall: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
           }
         }
 
@@ -2655,6 +2815,9 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         }
         if (requestedSections.has("venue_recent")) {
           response.venue_recent = context.venueRecent;
+        }
+        if (requestedSections.has("autobiographical")) {
+          response.autobiographical = autobiographical;
         }
 
         send(res, 200, response);

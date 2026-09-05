@@ -5,6 +5,7 @@ import {
   SemanticExtractor,
   createUserStreamEntryRelationshipEvidenceTrustValidator,
 } from "../memory/semantic/index.js";
+import { AutobiographicalRecallService } from "../cognition/autobiographical-recall.js";
 import { buildParticipantRosterFromRepositories } from "../cognition/perception/index.js";
 import { resolveEpisodeSourceParticipants } from "../cognition/participants.js";
 import {
@@ -799,6 +800,27 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           deps.traitsRepository.listContradictionEvents(...args),
       },
       autobiographical: {
+        recall: (input, options = {}) =>
+          new AutobiographicalRecallService({
+            ...options,
+            clock: deps.clock,
+            activityRepository: deps.activityRepository,
+            selfDecisionRepository: deps.selfDecisionRepository,
+            observedEventRepository: deps.observedEventRepository,
+            episodicRepository: deps.episodicRepository,
+            actionRepository: deps.actionRepository,
+            goalsRepository: deps.goalsRepository,
+            sourceStreamAudienceDisclosureResolver: deps.sourceStreamAudienceDisclosureResolver,
+            openQuestionsRepository: deps.openQuestionsRepository,
+            autobiographicalRepository: deps.autobiographicalRepository,
+            sessionsRepository: deps.sessionsRepository,
+            createStreamReader: (sessionId) =>
+              new StreamReader({
+                dataDir: deps.config.dataDir,
+                sessionId,
+                entryIndex: deps.entryIndex,
+              }),
+          }).recall(input),
         currentPeriod: () => deps.autobiographicalRepository.currentPeriod(),
         listPeriods: (...args) => deps.autobiographicalRepository.listPeriods(...args),
         upsertPeriod: upsertAutobiographicalPeriod,

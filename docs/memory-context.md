@@ -526,7 +526,8 @@ Team-agent sends all three fields during the migration: the byte-compatible join
 servers plus structured `focus` and `context_turns` for new servers. Its one HTTP 400 compatibility
 retry removes `focus` and `context_turns` together with the other unsupported extension fields; the
 existing HTTP 404 legacy-endpoint fallback is unchanged. The structured bundle participates in the
-per-turn memory cache key, and `focus` supplies temporal-cue and entity-term collection input.
+per-turn memory cache key, and `focus` supplies the entity-term collection input (time references
+in it are resolved by the sidecar's planner, Extension 5, not by the client).
 Observation persistence wrappers are removed from structured turns while their decoded message body
 is retained. If the latest human body is empty, team-agent skips recall before cache lookup, temporal
 or entity processing, and HTTP dispatch; it never promotes an earlier assistant reply to `focus`.
@@ -610,3 +611,48 @@ An invalid or failed plan is not retried. Borg reports a `recall_expansion` degr
 with raw FOCUS, exact supplied handles, time, and recency lanes. Trace counts are always safe;
 resolved text, variants, named terms, typed queries, routed intents, FOCUS/CONTEXT, handles, excerpts,
 and the `retrieval.started` query require payload tracing.
+
+### Extension 6 (2026-09-05): the period's own record, and the planner cue as the preferred range
+
+`POST /memory/context` accepts a seventh section, `autobiographical`, which requires `episodes` in
+the same request because its period is the cue the recall planner resolved from FOCUS during that
+episodes recall (Extension 5). The retrieval pipeline reports the cue it acted on through an
+`onRecallPlan` callback (`{ temporalCue, temporalCueSource: "caller" | "planner" | null }`, once per
+retrieval pass); the sidecar uses it in two ways:
+
+- **Preferred range parity.** When the request carries no `time_range`, episodes whose start falls
+  inside the planner's cue are ordered first and flagged `in_time_range: true`, exactly as an explicit
+  `time_range` did. This keeps a caller that stops sending `time_range` (team-agent, Extension 5) on
+  the same footing as before: the cue is now the range.
+- **`autobiographical`**: the memory owner's own record for the cued period, assembled by the same
+  `AutobiographicalRecallService` Sol's evidence ledger reads, through `borg.self.autobiographical.recall`
+  (session cap 8, total cap 24 here, below Sol's defaults). The gate is the cue alone: Teams audiences
+  are never the owner and an operator role is not used to open it, so a turn without a time reference
+  gets `autobiographical: null` and costs nothing. Only kinds whose disclosure label comes from exactly
+  one source record are returned: `activity`, `observed_social_event`, `stream_reflection`,
+  `silence_decision`, `outbound_attempt`, `observed_presence`. Episodes are omitted because the
+  `episodes` section already carries them with the request's exclusions applied; open questions, goals,
+  actions and autobiographical periods are omitted because their labels are combined across several
+  sources, so one visible source would admit text derived from another private one. The remaining rows
+  are filtered for the requesting audience with the record's disclosure label (public always, unknown
+  never, otherwise only when one of the visible audience entities is among the entities the row is
+  private to), capped at 12, and returned as
+  `{ window: { since, until, label, source: "planner_temporal_cue" }, evidence: [ { id, kind, group,
+  occurred_at, relative_age, text, source_episode_ids, disclosure } ], hidden_count, truncated_count }`
+  (`hidden_count` counts rows of the returned kinds the audience may not see).
+  The recall runs as a second pass after the episodes recall with only what the episodes pass left of
+  the one recall deadline (default 5 s, so the whole request still fits the client's timeout); with less
+  than 500 ms left it is skipped. A skip or failure there sets `degraded` with reason prefix
+  `autobiographical_recall:` and leaves the episodes intact; the scan itself is not cancelled on
+  timeout, which is why the caps above are tight. Older sidecars reject the section name with 400;
+  team-agent's existing 400 fallback re-sends the previous shape.
+- **Planner-driven recalls overfetch.** A request with `focus` now overfetches and defers retrieval
+  accounting like one with `exclude` or `time_range`, so an in-period episode that a lane found below the
+  requested limit can still be promoted by the cue.
+
+Measured limit worth knowing (2026-09-05, production bank): the pipeline's `time` lane lists in-window
+episodes by `updated_at` descending with a budget of `max(2 × limit, 8)`, so on a day with 98 episodes
+a topical "wczoraj" episode outside the newest twenty is never fetched by any lane, under an explicit
+`time_range` and under a planner cue alike. Making that lane topical (window filter plus similarity to
+the resolved query) is the next retrieval change; the ordering parity above cannot surface an episode
+no lane fetched.
