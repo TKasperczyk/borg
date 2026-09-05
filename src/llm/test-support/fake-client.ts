@@ -623,12 +623,12 @@ function isRecallExpansionResponse(response: FakeLLMResponse | undefined): boole
   }
 
   if ("tool_calls" in response) {
-    return response.tool_calls.some((toolCall) => toolCall.name === "EmitRecallExpansion");
+    return response.tool_calls.some((toolCall) => toolCall.name === "EmitRecallQueryPlan");
   }
 
   if ("messageBlocks" in response) {
     return response.messageBlocks.some(
-      (block) => block.type === "tool_use" && block.name === "EmitRecallExpansion",
+      (block) => block.type === "tool_use" && block.name === "EmitRecallQueryPlan",
     );
   }
 

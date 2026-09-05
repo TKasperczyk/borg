@@ -159,6 +159,293 @@ describe("episodic extractor", () => {
     };
   }
 
+  it("uses transport conversation context for venue and stamps the self participant handle", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const selfEntity = harness.entityRepository.ensureSelf("Memory Borg");
+    const conversation = { type: "groupChat" as const, name: "AI Ninjas" };
+    const user = await harness.writer.append({
+      kind: "user_msg",
+      content: "Let's settle the release plan.",
+      conversation,
+    });
+    harness.clock.advance(10);
+    const agent = await harness.writer.append({
+      kind: "agent_msg",
+      content: "I confirmed the release plan.",
+      conversation,
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse([
+          {
+            title: "Release plan confirmed",
+            narrative:
+              'The release plan was settled in the "AI Ninjas" group chat. I confirmed the plan.',
+            source_stream_ids: [user.id, agent.id],
+            participants: ["Memory Borg"],
+            location: "",
+            tags: ["release"],
+            confidence: 0.9,
+            significance: 0.7,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      clock: harness.clock,
+    });
+
+    const result = await extractor.extractFromStream();
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const [episode] = await harness.repo.listAll();
+
+    expect(result).toEqual({ inserted: 1, updated: 0, skipped: 0 });
+    expect(prompt.split('"conversation":{"type":"groupChat","name":"AI Ninjas"}').length - 1).toBe(
+      2,
+    );
+    expect(prompt).toContain(
+      "Stream entry conversation fields are authoritative transport venue context",
+    );
+    expect(prompt).toContain("never invent a venue name");
+    expect(episode?.narrative).toContain('the "AI Ninjas" group chat');
+    expect(episode?.location).toBe("AI Ninjas");
+    expect(episode?.participants).toEqual([
+      "Memory Borg",
+      episodeParticipantEntityIdTerm(selfEntity.id),
+    ]);
+  });
+
+  it("uses a plain label for an unnamed group chat", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const user = await harness.writer.append({
+      kind: "user_msg",
+      content: "Please remember the group release decision.",
+      conversation: { type: "groupChat", name: "" },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse([
+          {
+            title: "Group release decision",
+            narrative: "The release decision was made in a group chat whose name was not supplied.",
+            source_stream_ids: [user.id],
+            participants: ["team"],
+            location: null,
+            tags: ["release"],
+            confidence: 0.9,
+            significance: 0.7,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      clock: harness.clock,
+    });
+
+    await extractor.extractFromStream();
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const [episode] = await harness.repo.listAll();
+
+    expect(prompt).toContain('"conversation":{"type":"groupChat","name":""}');
+    expect(prompt).toContain("never invent a venue name");
+    expect(episode?.location).toBe("group chat");
+    expect(episode?.narrative).toContain("whose name was not supplied");
+  });
+
+  it("does not derive a location from a personal conversation", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const user = await harness.writer.append({
+      kind: "user_msg",
+      content: "Please remember the private release decision.",
+      conversation: { type: "personal", name: "Alice" },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse([
+          {
+            title: "Private release decision",
+            narrative: "The release decision was made privately.",
+            source_stream_ids: [user.id],
+            participants: ["Alice"],
+            location: null,
+            tags: ["release"],
+            confidence: 0.9,
+            significance: 0.7,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      clock: harness.clock,
+    });
+
+    await extractor.extractFromStream();
+    const [episode] = await harness.repo.listAll();
+
+    expect(episode?.location).toBeNull();
+  });
+
+  it("does not overwrite a model-supplied location", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const user = await harness.writer.append({
+      kind: "user_msg",
+      content: "Please remember the release decision from the office.",
+      conversation: { type: "channel", name: "Release Operations" },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse([
+          {
+            title: "Office release decision",
+            narrative: "The release decision was made in the Warsaw office.",
+            source_stream_ids: [user.id],
+            participants: ["team"],
+            location: "Warsaw office",
+            tags: ["release"],
+            confidence: 0.9,
+            significance: 0.7,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      clock: harness.clock,
+    });
+
+    await extractor.extractFromStream();
+    const [episode] = await harness.repo.listAll();
+
+    expect(episode?.location).toBe("Warsaw office");
+  });
+
+  it("prefers the most common non-empty conversation name across mixed sources", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const firstNamed = await harness.writer.append({
+      kind: "user_msg",
+      content: "Start the release discussion.",
+      conversation: { type: "groupChat", name: "AI Ninjas" },
+    });
+    const competingName = await harness.writer.append({
+      kind: "agent_msg",
+      content: "I recorded the first decision.",
+      conversation: { type: "channel", name: "Release Operations" },
+    });
+    const secondNamed = await harness.writer.append({
+      kind: "user_msg",
+      content: "Record the final decision too.",
+      conversation: { type: "groupChat", name: "AI Ninjas" },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse([
+          {
+            title: "Mixed venue release decision",
+            narrative: "The release discussion produced two decisions.",
+            source_stream_ids: [firstNamed.id, competingName.id, secondNamed.id],
+            participants: ["team"],
+            location: null,
+            tags: ["release"],
+            confidence: 0.9,
+            significance: 0.7,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      clock: harness.clock,
+    });
+
+    await extractor.extractFromStream();
+    const [episode] = await harness.repo.listAll();
+
+    expect(episode?.location).toBe("AI Ninjas");
+  });
+
+  it("uses the most common conversation type when mixed sources have no names", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const groupChat = await harness.writer.append({
+      kind: "user_msg",
+      content: "Start the release discussion.",
+      conversation: { type: "groupChat", name: "" },
+    });
+    const firstChannel = await harness.writer.append({
+      kind: "agent_msg",
+      content: "I recorded the first decision.",
+      conversation: { type: "channel", name: "" },
+    });
+    const secondChannel = await harness.writer.append({
+      kind: "user_msg",
+      content: "Record the final decision too.",
+      conversation: { type: "channel", name: "" },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse([
+          {
+            title: "Mixed venue release decision",
+            narrative: "The release discussion produced two decisions.",
+            source_stream_ids: [groupChat.id, firstChannel.id, secondChannel.id],
+            participants: ["team"],
+            location: null,
+            tags: ["release"],
+            confidence: 0.9,
+            significance: 0.7,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      clock: harness.clock,
+    });
+
+    await extractor.extractFromStream();
+    const [episode] = await harness.repo.listAll();
+
+    expect(episode?.location).toBe("channel");
+  });
+
   it("keeps repeated similar episodes on different days as distinct episodes", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const clock = new ManualClock(1_000);
@@ -465,6 +752,7 @@ describe("episodic extractor", () => {
     expect(prompt).toContain("multiple substantive threads");
     expect(prompt).toContain("not only the headline topic");
     expect(prompt).toContain("prioritize coverage over length");
+    expect(prompt).not.toContain("authoritative transport venue context");
     expect(prompt).toContain(
       `You are entity ${selfEntityId} (self); messages with kind "agent_msg" are your own.`,
     );
@@ -1261,6 +1549,108 @@ describe("episodic extractor", () => {
     });
   });
 
+  it("ingests a delayed observation after the stream watermark and uses its observed time", async () => {
+    const clock = new ManualClock(100);
+    const harness = await createRelationalExtractorHarness(clock);
+    const first = await harness.writer.append({
+      kind: "user_msg",
+      content: "The first durable observation.",
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse([
+          {
+            title: "First observation",
+            narrative: "The first durable observation was recorded.",
+            source_stream_ids: [first.id],
+            participants: ["team"],
+            tags: ["observation"],
+            confidence: 0.9,
+            significance: 0.6,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "qwen3",
+      entityRepository: harness.entityRepository,
+      salienceGateEnabled: false,
+      clock,
+    });
+    const watermarkDb = openDatabase(":memory:", {
+      migrations: streamWatermarkMigrations,
+    });
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: watermarkDb,
+      clock,
+    });
+    const coordinator = new StreamIngestionCoordinator({
+      extractor,
+      watermarkRepository,
+      dataDir: harness.tempDir,
+      minEntriesThreshold: 1,
+    });
+
+    cleanup.push(async () => {
+      watermarkDb.close();
+    });
+
+    await expect(coordinator.ingest(DEFAULT_SESSION_ID)).resolves.toMatchObject({
+      ran: true,
+      processedEntries: 1,
+    });
+    expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+      lastTs: first.timestamp,
+      lastEntryId: first.id,
+    });
+
+    clock.advance(100);
+    const delayed = await harness.writer.append({
+      kind: "user_msg",
+      content: "A delayed but still durable observation.",
+      observed_at: 50,
+    });
+    llm.pushResponse(
+      createEpisodeToolResponse([
+        {
+          title: "Delayed observation",
+          narrative: "A delayed durable observation was recorded.",
+          source_stream_ids: [delayed.id],
+          participants: ["team"],
+          tags: ["observation"],
+          confidence: 0.9,
+          significance: 0.6,
+        },
+      ]),
+    );
+
+    expect(delayed.timestamp).toBe(200);
+    expect(delayed.observed_at).toBe(50);
+    await expect(coordinator.ingest(DEFAULT_SESSION_ID)).resolves.toMatchObject({
+      ran: true,
+      processedEntries: 1,
+    });
+
+    const episodes = await harness.repo.listAll();
+    const delayedEpisode = episodes.find((episode) =>
+      episode.source_stream_ids.includes(delayed.id),
+    );
+
+    expect(delayedEpisode).toMatchObject({
+      start_time: 50,
+      end_time: 50,
+    });
+    expect(llm.requests).toHaveLength(2);
+    expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+      lastTs: delayed.timestamp,
+      lastEntryId: delayed.id,
+    });
+  });
+
   it("uses sender display names in episode rosters and binds self.name per sender", async () => {
     const harness = await createRelationalExtractorHarness();
     const alice = harness.entityRepository.resolve("Alice Nowak", {
@@ -1626,6 +2016,60 @@ describe("episodic extractor", () => {
     expect(
       harness.relationalSlotRepository.findBySubjectAndKey(selfAudience!, "dog.name"),
     ).toBeNull();
+  });
+
+  it("uses an existing entity id audience as a stable handle and renders its canonical label", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const groupAudience = harness.entityRepository.resolveExternal({
+      source: "team-agent.conversation",
+      externalId: "group-42",
+      canonicalName: "AI Ninjas",
+      kind: "group",
+      provenance: "transport_audience_label",
+    });
+    const user = await harness.writer.append({
+      kind: "user_msg",
+      content: "Remember the release decision.",
+      audience: groupAudience,
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse([
+          {
+            title: "Group release decision",
+            narrative: "The group settled the release decision.",
+            source_stream_ids: [user.id],
+            participants: ["AI Ninjas"],
+            tags: ["release"],
+            confidence: 0.9,
+            significance: 0.8,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      clock: harness.clock,
+    });
+
+    await extractor.extractFromStream();
+
+    const [episode] = await harness.repo.listAll();
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(episode?.audience_entity_id).toBe(groupAudience);
+    expect(episode?.origin_audience_entity_ids).toEqual([groupAudience]);
+    expect(prompt).toContain("(audience routing label) AI Ninjas");
+    expect(prompt).not.toContain(`(audience routing label) ${groupAudience}`);
+    expect(
+      harness.entityRepository.list().some((entity) => entity.canonical_name === groupAudience),
+    ).toBe(false);
   });
 
   it("converges relational slots for default user and current-sender subject refs under one audience", async () => {

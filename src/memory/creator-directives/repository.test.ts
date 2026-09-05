@@ -723,6 +723,20 @@ describe("CreatorDirectiveRepository", () => {
         render_mode: "content",
         reason: "operator_only",
       });
+
+      const tenantOperatorApplicable = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: alice,
+          trustedTenantOperator: true,
+          sessionRole: "operator",
+        }),
+      );
+      expect(tenantOperatorApplicable[directive.id]).toMatchObject({
+        disclosure: {
+          render_mode: "content",
+          reason: "operator_only",
+        },
+      });
     } finally {
       db.close();
     }
@@ -990,6 +1004,63 @@ describe("CreatorDirectiveRepository", () => {
           reason: "public",
         },
         render_mode: "content",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("uses a room audience for allow-list authorization while exclusions inspect everyone present", () => {
+    const { db, repository } = createRepository();
+    const group = createEntityId();
+    const alice = createEntityId();
+
+    try {
+      const groupAllowed = repository.queue(
+        queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "allow_list",
+            allowed_entity_ids: [group],
+          }),
+        }),
+      );
+      const groupExcluded = repository.queue(
+        queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "all_except",
+            excluded_entity_ids: [group],
+          }),
+        }),
+      );
+      const groupAllowedButAliceExcluded = repository.queue(
+        queueInput({
+          disclosurePolicy: disclosurePolicy({
+            content_scope: "allow_list",
+            allowed_entity_ids: [group],
+            excluded_entity_ids: [alice],
+          }),
+        }),
+      );
+      const applicable = applicableById(
+        repository.listApplicable({
+          currentAudienceEntityId: group,
+          participantEntityIds: [alice, group],
+          allowListAudienceEntityIds: [group],
+          sessionRole: "participant",
+        }),
+      );
+
+      expect(applicable[groupAllowed.id]).toMatchObject({
+        activation: { active: true, reason: "same_as_disclosure" },
+        disclosure: { render_mode: "content", reason: "explicit_allow" },
+      });
+      expect(applicable[groupExcluded.id]).toMatchObject({
+        activation: { active: false, reason: "same_as_disclosure_omitted" },
+        disclosure: { render_mode: "omit", reason: "group_contains_excluded_entity" },
+      });
+      expect(applicable[groupAllowedButAliceExcluded.id]).toMatchObject({
+        activation: { active: false, reason: "same_as_disclosure_omitted" },
+        disclosure: { render_mode: "omit", reason: "group_contains_excluded_entity" },
       });
     } finally {
       db.close();

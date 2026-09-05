@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import type { ToolLoopResultObservation, ToolLoopResultObserver } from "../turn-action/index.js";
-import { assertJsonValue, type JsonValue } from "../../util/json-value.js";
+import { assertJsonValue, jsonValueSchema, type JsonValue } from "../../util/json-value.js";
 import {
   createContentAddressedCaptureSidecar,
   type PendingContentAddressedCaptureSidecar,
@@ -23,14 +23,6 @@ const canonicalFingerprintSchema = z
     canonicalSha256: sha256Schema,
   })
   .strict();
-const jsonValueSchema = z.custom<JsonValue>((value) => {
-  try {
-    assertJsonValue(value);
-    return true;
-  } catch {
-    return false;
-  }
-});
 const transcriptResultSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(true), output: jsonValueSchema }).strict(),
   z.object({ ok: z.literal(false), error: z.string() }).strict(),

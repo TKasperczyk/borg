@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import type { ConversationKind } from "../../sessions/types.js";
 import {
   activityEventIdHelpers,
   entityIdHelpers,
@@ -66,3 +67,29 @@ export const activityEventSchema = z
 export type ActivityEventKind = z.infer<typeof activityEventKindSchema>;
 export type ActivityEventStatus = z.infer<typeof activityEventStatusSchema>;
 export type ActivityEvent = z.infer<typeof activityEventSchema>;
+
+export type ActivityEventRecordInput = {
+  id?: ActivityEventId;
+  kind: ActivityEventKind;
+  occurredAt: number;
+  sessionId: SessionId;
+  turnId?: string | null;
+  speakerEntityId?: EntityId | null;
+  actorEntityId?: EntityId | null;
+  audienceEntityId?: EntityId | null;
+  participantEntityIds?: readonly EntityId[];
+  sourceStreamEntryIds: readonly StreamEntryId[];
+  status?: ActivityEventStatus;
+  now?: number;
+};
+
+export type ActivityVisibleSessionEvent = {
+  kind: "user_contact" | "borg_replied";
+  occurredAt: number;
+  sessionId: SessionId;
+  audienceEntityId: EntityId;
+  conversationKind: ConversationKind;
+  conversationName: string;
+  participantLabel: string;
+  sourceStreamEntryIds: readonly StreamEntryId[];
+};

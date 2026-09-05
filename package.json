@@ -37,6 +37,7 @@
     "dev:server": "npm --prefix demo/server run dev",
     "dev:web": "npm --prefix demo/web run dev",
     "eval": "tsx eval/runner.ts",
+    "embedding:ab": "tsx eval/embedding-ab/cli.ts",
     "simulate": "tsx simulator/cli.ts",
     "build:server": "npm --prefix demo/server run build",
     "build:web": "npm --prefix demo/web run build",

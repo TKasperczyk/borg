@@ -202,6 +202,23 @@ export function selfPrivateMemoryDisclosureLabel(
   };
 }
 
+// Whether a labelled record may be read by any of the given audiences: public always, unknown never
+// (there is no provenance to justify it), and every other class only when one of the audiences is
+// among the entities the record is private to.
+export function isMemoryDisclosureLabelVisibleToAnyAudience(
+  label: MemoryDisclosureLabel,
+  audienceEntityIds: readonly EntityId[],
+): boolean {
+  if (label.disclosureClass === "public") {
+    return true;
+  }
+  if (label.disclosureClass === "unknown") {
+    return false;
+  }
+  const audiences = new Set(audienceEntityIds);
+  return label.privateToEntityIds.some((entityId) => audiences.has(entityId));
+}
+
 export function memoryDisclosureLabelMetadata(
   label: MemoryDisclosureLabel,
 ): MemoryDisclosureLabelMetadata {

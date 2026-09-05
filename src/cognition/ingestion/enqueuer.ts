@@ -14,7 +14,9 @@ import type {
   SessionsRepository,
 } from "../../sessions/index.js";
 import type {
+  StreamConversation,
   StreamEntry,
+  StreamEntryMetadata,
   StreamEntryIndexRecord,
   StreamEntryIndexRepository,
   StreamSourceMessageKey,
@@ -35,6 +37,9 @@ export type BorgEnqueueMessageInput = {
   senderEntityId: EntityId;
   sourceMessageKey: StreamSourceMessageKey;
   arrivedAt?: number;
+  observedAt?: number;
+  conversation?: StreamConversation;
+  metadata?: StreamEntryMetadata;
   audience?: string;
   audienceEntityId?: EntityId | null;
   attachments?: readonly TurnInputAttachment[];
@@ -113,6 +118,9 @@ export class MessageEnqueuer {
             streamWriter: writer,
             userMessage: input.userMessage,
             sourceMessageKey,
+            observedAt: input.observedAt,
+            conversation: input.conversation,
+            metadata: input.metadata,
             activityOccurredAt: arrivedAt,
             activityStatus: ENQUEUED_USER_CONTACT_ACTIVITY_STATUS,
             audience: input.audience,
@@ -227,7 +235,8 @@ export class MessageEnqueuer {
             attachments: context.attachments,
             streamWriter: writer,
             parentEntry: this.parentEntryFromDuplicateRecord(context),
-            audienceEntityId: context.input.audienceEntityId ?? context.session.audience_entity_id ?? null,
+            audienceEntityId:
+              context.input.audienceEntityId ?? context.session.audience_entity_id ?? null,
           });
         } finally {
           writer.close();
@@ -303,6 +312,11 @@ export class MessageEnqueuer {
       sender_entity_id: context.record.sender_entity_id ?? context.input.senderEntityId,
       reply_target_entity_id: null,
       source_message_key: context.input.sourceMessageKey,
+      ...(context.input.observedAt === undefined ? {} : { observed_at: context.input.observedAt }),
+      ...(context.input.conversation === undefined
+        ? {}
+        : { conversation: context.input.conversation }),
+      ...(context.input.metadata === undefined ? {} : { metadata: context.input.metadata }),
       session_id: context.record.session_id,
       compressed: false,
     };

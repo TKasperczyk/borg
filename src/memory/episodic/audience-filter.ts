@@ -64,6 +64,22 @@ export function isEpisodeAccessVisible(
   return normalized.origin_audience_entity_ids.includes(audienceEntityId);
 }
 
+export function isEpisodeAccessVisibleToAnyAudience(
+  input: EpisodeAccessLike,
+  audienceEntityIds: readonly EntityId[],
+): boolean {
+  const normalized = normalizeEpisodeAccess(input);
+
+  if (normalized.shared) {
+    return true;
+  }
+
+  const visibleAudienceEntityIds = new Set(audienceEntityIds);
+  return normalized.origin_audience_entity_ids.some((entityId) =>
+    visibleAudienceEntityIds.has(entityId),
+  );
+}
+
 function isPrivateToDifferentAudience(
   input: EpisodeAccessLike,
   audienceEntityId: EntityId | null | undefined,

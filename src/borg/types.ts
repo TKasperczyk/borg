@@ -12,7 +12,10 @@ import type {
   ImagePerceptionRepository,
 } from "../attachments/index.js";
 import type {
+  BacklogTerminalService,
+  ChatResponseCatchUpLease,
   ChatResponseCatchUpWorker,
+  ChatResponseCatchUpRunner,
   ChatResponseWatermarkCoordinator,
   MessageEnqueuer,
   StreamIngestionCoordinator,
@@ -87,6 +90,8 @@ import type {
   RetrievalPipeline,
 } from "../retrieval/index.js";
 import type { SessionsRepository } from "../sessions/index.js";
+import type { BorgActivityFacade } from "./public-facade.js";
+import type { SessionRecord } from "../sessions/index.js";
 import type { LanceDbStore } from "../storage/lancedb/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import type { StreamEntry, StreamEntryIndexRepository, StreamWriter } from "../stream/index.js";
@@ -154,6 +159,7 @@ export type BorgDependencies = {
   maintenanceScheduler: MaintenanceScheduler;
   streamIngestionCoordinator?: StreamIngestionCoordinator;
   chatResponseWatermarkCoordinator: ChatResponseWatermarkCoordinator;
+  backlogTerminalService: BacklogTerminalService;
   chatResponseCatchUpWorker: ChatResponseCatchUpWorker;
   messageEnqueuer: MessageEnqueuer;
   auditLog: AuditLog;
@@ -194,6 +200,21 @@ export type BorgOpenOptions = {
   liveCommitmentExtraction?: boolean;
   /** Per-user-entry token accounting cap for live commitment extraction. */
   liveCommitmentExtractionBudget?: number | null;
+  inbox?: {
+    runner?:
+      | ChatResponseCatchUpRunner
+      | ((context: {
+          terminal: BacklogTerminalService;
+          entityRepository: Pick<EntityRepository, "get" | "getSelf">;
+          sessions: Pick<SessionsRepository, "get">;
+          activity: Pick<BorgActivityFacade, "projectRepliedTurn">;
+        }) => ChatResponseCatchUpRunner);
+    sessionPredicate?: (session: SessionRecord | null) => boolean;
+    acquireLease?: () => ChatResponseCatchUpLease;
+    onTerminalCommitted?: (terminalEntry: StreamEntry) => void;
+    settleMs?: number;
+    maxSettleMs?: number;
+  };
 };
 
 export type BorgDreamOptions = {

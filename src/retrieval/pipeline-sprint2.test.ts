@@ -9,8 +9,11 @@ import {
 import { FixedClock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID, type EntityId } from "../util/ids.js";
 import { summarizeRetrievedEvidence } from "../cognition/deliberation/prompt/retrieval.js";
+import { FakeLLMClient } from "../llm/test-support/fake-client.js";
+import { episodeToRawLanceRowForTest } from "../memory/episodic/test-support.js";
 
 import { mergeCandidates } from "../test-support/episodic-candidates.js";
+import type { CognitionRetrievalOptions, DisclosureRetrievalOptions } from "./pipeline.js";
 import { SELF_RECALL_SCOPE } from "./recall-context.js";
 
 const QUERY = "architecture";
@@ -54,6 +57,17 @@ function cognitionRecallOptions(currentAudienceEntityId: EntityId | null = null)
   };
 }
 
+const cognitionRetrievalAllowsPlannerContext: CognitionRetrievalOptions = {
+  ...cognitionRecallOptions(),
+  recallQueryPlannerContext: { identity: { memoryOwnerName: "Sol" } },
+};
+const disclosureRetrievalAllowsPlannerContext: DisclosureRetrievalOptions = {
+  recallQueryPlannerContext: { identity: { memoryOwnerName: "team-agent" } },
+};
+
+void cognitionRetrievalAllowsPlannerContext;
+void disclosureRetrievalAllowsPlannerContext;
+
 async function createHarness(): Promise<OfflineTestHarness> {
   return createOfflineTestHarness({
     clock: new FixedClock(NOW_MS),
@@ -79,6 +93,8 @@ async function insertHotVectorDecoys(
   count: number,
   overrides: Partial<Parameters<typeof createEpisodeFixture>[0]> = {},
 ): Promise<void> {
+  const episodes = [];
+
   for (let index = 0; index < count; index += 1) {
     const updatedAt = overrides.updated_at ?? NOW_MS - index;
     const createdAt = overrides.created_at ?? updatedAt;
@@ -97,7 +113,12 @@ async function insertHotVectorDecoys(
       },
       [1, 0, 0, 0],
     );
-    await harness.episodicRepository.createEpisode(episode);
+    episodes.push(episode);
+  }
+
+  await harness.episodesTable.upsert(episodes.map(episodeToRawLanceRowForTest), { on: "id" });
+  await harness.episodicRepository.reconcileCrossStoreState();
+  for (const episode of episodes) {
     markHot(harness, episode.id);
   }
 }
@@ -107,10 +128,12 @@ async function insertColdVectorDecoys(
   count: number,
   overrides: Partial<Parameters<typeof createEpisodeFixture>[0]> = {},
 ): Promise<void> {
+  const episodes = [];
+
   for (let index = 0; index < count; index += 1) {
     const updatedAt = overrides.updated_at ?? 1_000 + index;
     const createdAt = overrides.created_at ?? updatedAt;
-    await harness.episodicRepository.createEpisode(
+    episodes.push(
       createEpisodeFixture(
         {
           title: `Cold vector decoy ${index}`,
@@ -128,6 +151,9 @@ async function insertColdVectorDecoys(
       ),
     );
   }
+
+  await harness.episodesTable.upsert(episodes.map(episodeToRawLanceRowForTest), { on: "id" });
+  await harness.episodicRepository.reconcileCrossStoreState();
 }
 
 describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
@@ -182,6 +208,198 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     expect(vectorOnly.map((item) => item.episode.id)).not.toContain(rescued.id);
     expect(results[0]?.episode.id).toBe(rescued.id);
     expect(results[0]?.scoreBreakdown.timeRelevance).toBe(1);
+  });
+
+  it("reuses one recall query plan and preserves audience visibility on time fallback", async () => {
+    const semanticQuery = "remembered architecture discussion";
+    const llmClient = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 0,
+          output_tokens: 0,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_recall_expansion",
+              name: "EmitRecallQueryPlan",
+              input: {
+                resolved_query: "resolved architecture query",
+                semantic_variants: [{ strategy: "combined", query: semanticQuery }],
+                named_terms: [],
+                typed_queries: [],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const embeddingClient = new TestEmbeddingClient(
+      new Map([
+        [QUERY, [1, 0, 0, 0]],
+        [semanticQuery, [1, 0, 0, 0]],
+      ]),
+    );
+    const embed = vi.spyOn(embeddingClient, "embed");
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      llmClient,
+      embeddingClient,
+    });
+    const alice = harness.entityRepository.resolve("Alice");
+    const observedGroup = harness.entityRepository.resolve("AI Ninjas", { kind: "group" });
+    const bob = harness.entityRepository.resolve("Bob");
+    const publicOutside = createEpisodeFixture(
+      {
+        title: "Older public architecture context",
+        start_time: 10_000,
+        end_time: 11_000,
+        audience_entity_id: null,
+        origin_audience_entity_ids: [],
+        shared: true,
+      },
+      [1, 0, 0, 0],
+    );
+    const aliceOutside = createEpisodeFixture(
+      {
+        title: "Older Alice architecture context",
+        start_time: 10_100,
+        end_time: 11_100,
+        audience_entity_id: alice,
+        origin_audience_entity_ids: [alice],
+        shared: false,
+      },
+      [1, 0, 0, 0],
+    );
+    const groupOutside = createEpisodeFixture(
+      {
+        title: "Older group architecture context",
+        start_time: 10_200,
+        end_time: 11_200,
+        audience_entity_id: observedGroup,
+        origin_audience_entity_ids: [observedGroup],
+        shared: false,
+      },
+      [1, 0, 0, 0],
+    );
+    const bobOutside = createEpisodeFixture(
+      {
+        title: "Older Bob architecture context",
+        start_time: 10_300,
+        end_time: 11_300,
+        audience_entity_id: bob,
+        origin_audience_entity_ids: [bob],
+        shared: false,
+      },
+      [1, 0, 0, 0],
+    );
+
+    for (const episode of [publicOutside, aliceOutside, groupOutside, bobOutside]) {
+      await harness.episodicRepository.createEpisode(episode);
+    }
+
+    const result = await harness.retrievalPipeline.searchEpisodesForDisclosureWithTimeRangeFallback(
+      QUERY,
+      {
+        limit: 10,
+        audienceEntityId: alice,
+        visibleAudienceEntityIds: [observedGroup],
+        timeRange: { start: 20_000, end: 30_000 },
+        semanticVariantCount: 1,
+        recallQueryPlannerContext: {
+          identity: { memoryOwnerName: "team-agent" },
+        },
+      },
+    );
+
+    expect(result.timeRangeFallback).toBe(true);
+    const resultIds = result.episodes.map((episode) => episode.episode.id);
+    expect(resultIds).toEqual(
+      expect.arrayContaining([publicOutside.id, aliceOutside.id, groupOutside.id]),
+    );
+    expect(resultIds).not.toContain(bobOutside.id);
+    expect(llmClient.requests).toHaveLength(1);
+    expect(embed).toHaveBeenCalledTimes(2);
+    expect(embed.mock.calls.map(([query]) => query)).toEqual([QUERY, semanticQuery]);
+    expect(llmClient.requests[0]?.messages[0]?.content).toContain(
+      'FOCUS (current turn; JSON string data only):\n"architecture"',
+    );
+    expect(llmClient.requests[0]?.messages[0]?.content).toContain(
+      '"memory_owner_name": "team-agent"',
+    );
+  });
+
+  it("lets an episode reachable only through a semantic variant win normal max-score fusion", async () => {
+    const semanticQuery = "remembered reviewer and chat role comparison";
+    const llmClient = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 0,
+          output_tokens: 0,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_recall_expansion",
+              name: "EmitRecallQueryPlan",
+              input: {
+                resolved_query: "resolved reviewer and chat role comparison",
+                semantic_variants: [{ strategy: "combined", query: semanticQuery }],
+                named_terms: [],
+                typed_queries: [],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      llmClient,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [QUERY, [0.8, 0.6, 0, 0]],
+          [semanticQuery, [0, 1, 0, 0]],
+        ]),
+      ),
+    });
+    await insertHotVectorDecoys(harness, 80);
+    const target = createEpisodeFixture(
+      {
+        title: "Reviewer and chat roles",
+        narrative: "The exchange compared the two team-agent roles.",
+        significance: 1,
+        created_at: 10,
+        updated_at: 10,
+        start_time: 10,
+        end_time: 20,
+      },
+      [0, 1, 0, 0],
+    );
+    await harness.episodicRepository.createEpisode(target);
+
+    const rawOnly = await harness.episodicRepository.searchByVector(
+      await harness.embeddingClient.embed(QUERY),
+      { limit: 12 },
+    );
+    const result = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
+      limit: 3,
+      semanticVariantCount: 1,
+      recallQueryPlannerContext: {
+        identity: { memoryOwnerName: "team-agent" },
+      },
+      attentionWeights: searchWeights({
+        semantic: 0.9,
+        heat: 0,
+        entity: 0,
+      }),
+    });
+
+    expect(rawOnly.map((item) => item.episode.id)).not.toContain(target.id);
+    expect(result[0]?.episode.id).toBe(target.id);
+    expect(result[0]?.scoreBreakdown.similarity).toBe(1);
+    expect(result[0]).toMatchObject({ rawScore: 0.9, score: 0.9 });
+    expect(llmClient.requests).toHaveLength(1);
   });
 
   it("rescues old cold audience-scoped episodes against hot public decoys", async () => {

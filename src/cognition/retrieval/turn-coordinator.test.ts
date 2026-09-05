@@ -48,8 +48,8 @@ const PROMPT_OPTIONS = {
 };
 
 function recallExpansion(input: {
-  facets?: Array<{
-    kind: "topic" | "relationship" | "commitment" | "open_question";
+  typed_queries?: Array<{
+    kind: "commitment" | "open_question";
     query: string;
     priority: number;
   }>;
@@ -63,10 +63,16 @@ function recallExpansion(input: {
     tool_calls: [
       {
         id: "toolu_recall_expansion",
-        name: "EmitRecallExpansion",
+        name: "EmitRecallQueryPlan",
         input: {
-          facets: input.facets ?? [],
+          resolved_query: "Resolved recall query",
+          semantic_variants: [
+            { strategy: "verbatim_preserving", query: "Resolved recall query" },
+            { strategy: "memory_owner_voice", query: "I remember the resolved subject" },
+            { strategy: "aspect_focused", query: "The distinguishing resolved aspect" },
+          ],
           named_terms: input.named_terms ?? [],
+          typed_queries: input.typed_queries ?? [],
         },
       },
     ],
@@ -392,6 +398,56 @@ describe("TurnRetrievalCoordinator", () => {
         },
       ],
     });
+    const listDaySummaries = vi.fn(() => [
+      {
+        utc_day: "2026-09-03",
+        day_start_ms: 1_000,
+        gist: "Quiet day of tidying the sprint board.",
+        salience: 0.3,
+        disclosure_label: {
+          disclosureClass: "public",
+          originAudienceEntityIds: [],
+          privateToEntityIds: [],
+          publicToEntityIds: [],
+        },
+      },
+      {
+        utc_day: "2026-09-04",
+        day_start_ms: 1_500,
+        gist: "Compared the chat and reviewer roles with Bob in the Atlas channel.",
+        salience: 0.8,
+        disclosure_label: {
+          disclosureClass: "public",
+          originAudienceEntityIds: [],
+          privateToEntityIds: [],
+          publicToEntityIds: [],
+        },
+      },
+    ]);
+    const expectedLivedExperience = [
+      {
+        day: "2026-09-04",
+        gist: "Compared the chat and reviewer roles with Bob in the Atlas channel.",
+        salience: 0.8,
+        disclosure: {
+          class: "public",
+          origin_audience_entity_ids: [],
+          private_to_entity_ids: [],
+          public_to_entity_ids: [],
+        },
+      },
+      {
+        day: "2026-09-03",
+        gist: "Quiet day of tidying the sprint board.",
+        salience: 0.3,
+        disclosure: {
+          class: "public",
+          origin_audience_entity_ids: [],
+          private_to_entity_ids: [],
+          public_to_entity_ids: [],
+        },
+      },
+    ];
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable,
@@ -400,6 +456,7 @@ describe("TurnRetrievalCoordinator", () => {
       entityRepository: {
         getSelf: vi.fn(() => makeSelfEntity()),
       },
+      livedExperienceDaySummaryRepository: { listForWindow: listDaySummaries as never },
       reviewQueueRepository: {
         list: vi.fn(() => pendingCorrections),
       },
@@ -442,15 +499,22 @@ describe("TurnRetrievalCoordinator", () => {
       untilTs: 20_000,
     };
 
+    const recentMessages = [
+      { role: "user" as const, content: "Earlier Atlas question" },
+      { role: "user" as const, content: "A second adjacent user turn" },
+    ];
+    const currentVenue = { type: "groupChat" as const, name: "AI Ninjas" };
     const result = await coordinator.coordinate({
       turnId: "turn-1",
       userMessage: "Solve Atlas",
-      recentMessages: [],
+      recentMessages,
       cognitionInput: "Solve Atlas",
       inputAudience: "alice",
       isSelfAudience: false,
       ...makeContexts({ audienceEntityId }),
       audienceEntity,
+      currentSenderName: "Alice Sender",
+      currentVenue,
       audienceProfile: makeAudienceProfile(),
       perception: {
         ...makePerception("problem_solving"),
@@ -501,6 +565,9 @@ describe("TurnRetrievalCoordinator", () => {
       k: 5,
       proceduralContext: result.proceduralContext,
     });
+    expect(listDaySummaries).toHaveBeenCalledWith(
+      expect.objectContaining({ toMs: 2_000, fromMs: 2_000 - 7 * 24 * 60 * 60_000, limit: 7 }),
+    );
     expect(recallEpisodesForCognition).toHaveBeenCalledWith(
       "Solve Atlas",
       expect.objectContaining({
@@ -518,6 +585,17 @@ describe("TurnRetrievalCoordinator", () => {
         sessionId: DEFAULT_SESSION_ID,
         audienceTerms: ["Alice", "Al", "alice"],
         entityTerms: ["Atlas", "Bob"],
+        recallQueryPlannerContext: {
+          contextTurns: recentMessages,
+          ownerLivedExperience: expectedLivedExperience,
+          identity: {
+            memoryOwnerName: "Sol",
+            currentSenderName: "Alice Sender",
+            currentAudienceName: "Alice",
+            currentVenue,
+            entityTerms: ["Atlas", "Bob"],
+          },
+        },
         goalDescriptions: ["Ship the sprint"],
         moodState: currentMood,
         scoringFeatures,
@@ -544,8 +622,38 @@ describe("TurnRetrievalCoordinator", () => {
         scoringFeatures,
         strictTimeRange: false,
         traceTurnId: "turn-1",
+        recallQueryPlannerContext: {
+          contextTurns: recentMessages,
+          ownerLivedExperience: expectedLivedExperience,
+          identity: {
+            memoryOwnerName: "Sol",
+            currentSenderName: "Alice Sender",
+            currentAudienceName: "Alice",
+            currentVenue,
+            entityTerms: ["Atlas", "Bob"],
+          },
+        },
       }),
     );
+    const cognitionCalls = recallEpisodesForCognition.mock.calls as unknown[][];
+    expect(cognitionCalls).toHaveLength(2);
+    for (const call of cognitionCalls) {
+      expect(call[1]).toEqual(
+        expect.objectContaining({
+          recallQueryPlannerContext: {
+            contextTurns: recentMessages,
+            ownerLivedExperience: expectedLivedExperience,
+            identity: {
+              memoryOwnerName: "Sol",
+              currentSenderName: "Alice Sender",
+              currentAudienceName: "Alice",
+              currentVenue,
+              entityTerms: ["Atlas", "Bob"],
+            },
+          },
+        }),
+      );
+    }
   });
 
   it("recalls Alice-scoped pending corrections during a Bob turn with disclosure labels", async () => {
@@ -813,7 +921,7 @@ describe("TurnRetrievalCoordinator", () => {
     const llm = new FakeLLMClient({
       responses: [
         recallExpansion({
-          facets: [{ kind: "commitment", query: commitmentQuery, priority: 1 }],
+          typed_queries: [{ kind: "commitment", query: commitmentQuery, priority: 1 }],
         }),
       ],
     });
@@ -1186,12 +1294,19 @@ describe("TurnRetrievalCoordinator", () => {
       suppressionSet: SuppressionSet.fromEntries([], 1),
     });
 
-    expect(getSelf).not.toHaveBeenCalled();
+    expect(getSelf).toHaveBeenCalledTimes(1);
     expect(recallEpisodesForCognition).toHaveBeenCalledWith(
       "Reflect privately",
       expect.objectContaining({
         audienceTerms: [],
         rankingAudienceEntityId: null,
+        recallQueryPlannerContext: {
+          contextTurns: [],
+          identity: {
+            memoryOwnerName: "Sol",
+            entityTerms: ["Atlas", "Bob"],
+          },
+        },
       }),
     );
 
@@ -1267,8 +1382,12 @@ describe("TurnRetrievalCoordinator", () => {
       unknown
     >;
 
-    expect(getSelf).not.toHaveBeenCalled();
+    expect(getSelf).toHaveBeenCalledTimes(1);
     expect(retrievalOptions).toHaveProperty("rankingAudienceEntityId", bobEntityId);
+    expect(retrievalOptions).toHaveProperty(
+      "recallQueryPlannerContext.identity.memoryOwnerName",
+      "Sol",
+    );
     expect(retrievalOptions).not.toHaveProperty("semanticAudienceEntityId");
     expect(retrievalOptions).not.toHaveProperty("audienceEntityId");
     expect(retrievalOptions).not.toHaveProperty("crossAudience");

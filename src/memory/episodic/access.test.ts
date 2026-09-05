@@ -50,6 +50,18 @@ describe("resolveViewerCapability", () => {
     });
   });
 
+  it("combines the current audience with a disclosure-only visible audience set", () => {
+    expect(
+      resolveViewerCapability({
+        audienceEntityId: SELF,
+        visibleAudienceEntityIds: [OTHER, OTHER],
+      }),
+    ).toEqual({
+      kind: "audience_set",
+      audienceEntityIds: [OTHER, SELF],
+    });
+  });
+
   it("produces unrestricted ONLY for an explicit crossAudience=true", () => {
     expect(resolveViewerCapability({ crossAudience: true })).toEqual({ kind: "unrestricted" });
   });
@@ -100,6 +112,24 @@ describe("isEpisodeVisibleToCapability", () => {
     expect(isEpisodeVisibleToCapability(PRIVATE_SELF, cap)).toBe(true);
     expect(isEpisodeVisibleToCapability(PRIVATE_OTHER, cap)).toBe(true);
     expect(isEpisodeVisibleToCapability(PRIVATE_SELF_AND_OTHER, cap)).toBe(true);
+  });
+
+  it("audience-set arm: sees public and intersecting origins but not other private origins", () => {
+    const cap: ViewerCapability = {
+      kind: "audience_set",
+      audienceEntityIds: [SELF],
+    };
+
+    expect(isEpisodeVisibleToCapability(PUBLIC, cap)).toBe(true);
+    expect(isEpisodeVisibleToCapability(PRIVATE_SELF, cap)).toBe(true);
+    expect(isEpisodeVisibleToCapability(PRIVATE_SELF_AND_OTHER, cap)).toBe(true);
+    expect(isEpisodeVisibleToCapability(PRIVATE_OTHER, cap)).toBe(false);
+    expect(
+      isEpisodeVisibleToCapability(PRIVATE_OTHER, {
+        kind: "audience_set",
+        audienceEntityIds: [],
+      }),
+    ).toBe(false);
   });
 
   it("throws (fail-closed) on an unknown capability kind rather than admitting the episode", () => {

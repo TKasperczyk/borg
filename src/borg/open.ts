@@ -13,6 +13,7 @@ import {
   ChatResponseBacklogPrefixBuilder,
   ChatResponseCatchUpWorker,
   ChatResponseWatermarkCoordinator,
+  BacklogTerminalService,
   MessageEnqueuer,
   type ChatResponseCatchUpWorkerConfig,
 } from "../cognition/ingestion/index.js";
@@ -50,6 +51,7 @@ import { buildToolDispatcher } from "./tools-setup.js";
 import { buildTurnOrchestrator } from "./turn-setup.js";
 import type { BorgDependencies, BorgOpenOptions } from "./types.js";
 import type { SessionId } from "../util/ids.js";
+import { createActivityFacade } from "./facade.js";
 
 const CHAT_RESPONSE_CATCH_UP_BACKOFF_CONFIG = {
   backoffBaseMs: 1_000,
@@ -280,6 +282,22 @@ export async function openBorgDependencies(
         entryIndex: repositories.entryIndex,
         attachmentRepository,
       });
+    const backlogTerminalService = new BacklogTerminalService({
+      dataDir: config.dataDir,
+      entryIndex: repositories.entryIndex,
+      createStreamReader: (sessionId) =>
+        new StreamReader({
+          dataDir: config.dataDir,
+          sessionId,
+          entryIndex: repositories.entryIndex,
+        }),
+      createStreamWriter: repositories.createStreamWriter,
+      coordinator: chatResponseWatermarkCoordinator,
+      ...(streamIngestionCoordinator === undefined ? {} : { streamIngestionCoordinator }),
+      ...(options.inbox?.onTerminalCommitted === undefined
+        ? {}
+        : { onTerminalCommitted: options.inbox.onTerminalCommitted }),
+    });
     const messageEnqueuer = new MessageEnqueuer({
       sessionsRepository: repositories.sessionsRepository,
       entityRepository: repositories.entityRepository,
@@ -417,16 +435,52 @@ export async function openBorgDependencies(
           entryIndex: repositories.entryIndex,
         }),
     });
+    const configuredRunner = options.inbox?.runner;
+    const catchUpRunner =
+      typeof configuredRunner === "function"
+        ? configuredRunner({
+            terminal: backlogTerminalService,
+            entityRepository: repositories.entityRepository,
+            sessions: repositories.sessionsRepository,
+            activity: createActivityFacade({
+              sqlite,
+              activityRepository: repositories.activityRepository,
+              sessionsRepository: repositories.sessionsRepository,
+            }),
+          })
+        : configuredRunner;
     catchUpWorker = new ChatResponseCatchUpWorker({
       coordinator: chatResponseWatermarkCoordinator,
       prefixBuilder: chatResponseBacklogPrefixBuilder,
       entryIndex: repositories.entryIndex,
       repairSessionStreamEntryIndex,
-      turnOrchestrator,
+      ...(catchUpRunner === undefined ? { turnOrchestrator } : { runner: catchUpRunner }),
+      ...(options.inbox?.sessionPredicate === undefined
+        ? {}
+        : {
+            sessionPredicate: (sessionId: SessionId) =>
+              options.inbox!.sessionPredicate!(repositories.sessionsRepository.get(sessionId)),
+          }),
+      ...(options.inbox?.acquireLease === undefined
+        ? {}
+        : { acquireLease: options.inbox.acquireLease }),
+      ...(options.inbox?.onTerminalCommitted === undefined
+        ? {}
+        : {
+            onReconcileAdvance: ({ sessionId, advancedThrough }) => {
+              const result = backlogTerminalService.findTerminalCoveringEntry({
+                sessionId,
+                entryId: advancedThrough.entryId,
+              });
+              if (result.status === "found") {
+                options.inbox!.onTerminalCommitted!(result.terminalEntry);
+              }
+            },
+          }),
       clock,
       config: {
-        quietWindowMs: config.streamIngestion.settle.settleMs,
-        maxWaitMs: config.streamIngestion.settle.maxSettleMs,
+        quietWindowMs: options.inbox?.settleMs ?? config.streamIngestion.settle.settleMs,
+        maxWaitMs: options.inbox?.maxSettleMs ?? config.streamIngestion.settle.maxSettleMs,
         ...CHAT_RESPONSE_CATCH_UP_BACKOFF_CONFIG,
       },
     });
@@ -523,6 +577,7 @@ export async function openBorgDependencies(
       maintenanceScheduler,
       streamIngestionCoordinator,
       chatResponseWatermarkCoordinator,
+      backlogTerminalService,
       chatResponseCatchUpWorker: catchUpWorker,
       messageEnqueuer,
       auditLog: offline.auditLog,

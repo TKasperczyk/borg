@@ -400,6 +400,10 @@ const configBaseSchema = z.object({
       // (2000) plus a double-stalled query embedding (2x1000) plus local
       // retrieval work still fits the memory client's hard 5s recall budget.
       recallExpansionTimeoutMs: z.number().int().min(0).default(2000),
+      recallExpansionSemanticVariantCount: z.number().int().min(1).max(8).default(3),
+      // IANA zone the recall planner resolves relative time references in ("yesterday", "in
+      // July"); the audience's calendar, not the pod's.
+      recallPlannerTimeZone: z.string().min(1).default("UTC"),
       // Live-turn attention weights. Deployment-tunable on purpose: `semantic`
       // is fused against a RAW cosine similarity, whose spread is a property of
       // the corpus rather than of the code. A corpus whose episodes are
@@ -1295,6 +1299,16 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["retrieval", "recallExpansionTimeoutMs"],
     readOptionalEnvNumber(env, "BORG_RETRIEVAL_RECALL_EXPANSION_TIMEOUT_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["retrieval", "recallExpansionSemanticVariantCount"],
+    readOptionalEnvNumber(env, "BORG_RETRIEVAL_RECALL_EXPANSION_SEMANTIC_VARIANT_COUNT"),
+  );
+  setConfigOverride(
+    overrides,
+    ["retrieval", "recallPlannerTimeZone"],
+    readOptionalEnvString(env, "BORG_RETRIEVAL_RECALL_PLANNER_TIME_ZONE"),
   );
   setConfigOverride(
     overrides,
@@ -2273,6 +2287,8 @@ export function redactConfig(config: Config): Config {
     retrieval: {
       semanticOverfetchMultiplier: config.retrieval.semanticOverfetchMultiplier,
       recallExpansionTimeoutMs: config.retrieval.recallExpansionTimeoutMs,
+      recallPlannerTimeZone: config.retrieval.recallPlannerTimeZone,
+      recallExpansionSemanticVariantCount: config.retrieval.recallExpansionSemanticVariantCount,
       attentionWeights: {
         ...config.retrieval.attentionWeights,
       },

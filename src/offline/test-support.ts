@@ -104,7 +104,7 @@ import {
   streamEntryIndexMigrations,
   streamWatermarkMigrations,
 } from "../stream/index.js";
-import { LanceDbStore } from "../storage/lancedb/index.js";
+import { LanceDbStore, type LanceDbTable } from "../storage/lancedb/index.js";
 import { composeMigrations, openDatabase } from "../storage/sqlite/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import { FixedClock, type Clock } from "../util/clock.js";
@@ -514,6 +514,7 @@ export type OfflineTestHarness = {
   db: SqliteDatabase;
   embeddingClient: EmbeddingClient;
   llmClient: LLMClient;
+  episodesTable: LanceDbTable;
   episodicRepository: EpisodicRepository;
   semanticNodeRepository: SemanticNodeRepository;
   semanticEdgeRepository: SemanticEdgeRepository;
@@ -840,6 +841,7 @@ export async function createOfflineTestHarness(
     embeddingClient,
     llmClient,
     recallExpansionModel: config.anthropic.models.recallExpansion,
+    recallExpansionSemanticVariantCount: config.retrieval.recallExpansionSemanticVariantCount,
     episodicRepository,
     semanticNodeRepository,
     semanticEdgeRepository,
@@ -889,6 +891,7 @@ export async function createOfflineTestHarness(
     db,
     embeddingClient,
     llmClient,
+    episodesTable,
     episodicRepository,
     semanticNodeRepository,
     semanticEdgeRepository,

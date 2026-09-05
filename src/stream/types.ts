@@ -1,12 +1,8 @@
 import { z } from "zod";
 
 import { sessionIdSchema, streamEntryIdSchema } from "../util/id-schemas.js";
-import {
-  DEFAULT_SESSION_ID,
-  entityIdHelpers,
-  type EntityId,
-  type SessionId,
-} from "../util/ids.js";
+import { DEFAULT_SESSION_ID, entityIdHelpers, type EntityId, type SessionId } from "../util/ids.js";
+import { jsonValueSchema, type JsonValue } from "../util/json-value.js";
 
 export { sessionIdSchema, streamEntryIdSchema };
 
@@ -26,10 +22,15 @@ export const STREAM_ENTRY_KINDS = [
 
 export const NARRATIVE_STREAM_ENTRY_KINDS = ["user_msg", "agent_msg"] as const;
 export const STREAM_ENTRY_PERSISTENCE_CLASSES = ["assistant_self_report"] as const;
+export const STREAM_CONVERSATION_TYPES = ["personal", "groupChat", "channel"] as const;
 
 export const streamEntryKindSchema = z.enum(STREAM_ENTRY_KINDS);
 export const streamEntryPersistenceClassSchema = z.enum(STREAM_ENTRY_PERSISTENCE_CLASSES);
 export const streamTurnStatusSchema = z.enum(["active", "aborted"]);
+export const streamConversationSchema = z.object({
+  type: z.enum(STREAM_CONVERSATION_TYPES),
+  name: z.string().transform((value) => value.trim()),
+});
 
 export const streamCursorSchema = z.object({
   ts: z.number().finite(),
@@ -64,6 +65,7 @@ export const streamEntryEntityIdSchema = z
 export const streamEntrySchema = z.object({
   id: streamEntryIdSchema,
   timestamp: z.number().finite(),
+  observed_at: z.number().int().nonnegative().optional(),
   entry_index: z.number().int().nonnegative().optional(),
   kind: streamEntryKindSchema,
   content: z.unknown(),
@@ -72,6 +74,8 @@ export const streamEntrySchema = z.object({
   token_estimate: z.number().int().nonnegative().optional(),
   tool_calls: z.array(z.unknown()).optional(),
   audience: z.string().min(1).optional(),
+  conversation: streamConversationSchema.optional(),
+  metadata: z.record(z.string(), jsonValueSchema).optional(),
   sender_entity_id: streamEntryEntityIdSchema.nullable().default(null),
   reply_target_entity_id: streamEntryEntityIdSchema.nullable().default(null),
   source_message_key: streamSourceMessageKeySchema.optional(),
@@ -95,6 +99,8 @@ export const streamEntryInputSchema = streamEntrySchema
 
 export type StreamEntryKind = z.infer<typeof streamEntryKindSchema>;
 export type StreamEntryPersistenceClass = z.infer<typeof streamEntryPersistenceClassSchema>;
+export type StreamConversation = z.infer<typeof streamConversationSchema>;
+export type StreamEntryMetadata = Record<string, JsonValue>;
 export type NarrativeStreamEntryKind = (typeof NARRATIVE_STREAM_ENTRY_KINDS)[number];
 export type StreamTurnStatus = z.infer<typeof streamTurnStatusSchema>;
 export type StreamEntry = Omit<z.infer<typeof streamEntrySchema>, "turn_status"> & {

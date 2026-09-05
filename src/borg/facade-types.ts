@@ -9,6 +9,7 @@ import type {
 import type { CorrectionService } from "../correction/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
+import type { ActivityRepository } from "../memory/activity/index.js";
 import type {
   BorgRole,
   CommitmentRecord,
@@ -51,7 +52,17 @@ import type { SocialRepository } from "../memory/social/index.js";
 import type { LanceDbOptimizeStorageResult } from "../storage/lancedb/index.js";
 import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../memory/working/index.js";
-import type { ChatResponseCatchUpWorker, IngestionResult } from "../cognition/ingestion/index.js";
+import type {
+  AppendBacklogTerminalInput,
+  InboxReplyActivityReconcileInput,
+  InboxReplyActivityReconcileResult,
+  AppendBacklogTerminalResult,
+  ChatResponseCatchUpWorker,
+  FindTerminalCoveringEntryResult,
+  IngestionResult,
+  SealPendingBacklogInput,
+  SealStaleBacklogInput,
+} from "../cognition/ingestion/index.js";
 import type { MemoryDisclosureLabel } from "../retrieval/index.js";
 import type { PromptKey } from "../cognition/prompts/registry.js";
 import type { OfflineProcessName } from "../offline/index.js";
@@ -72,6 +83,7 @@ import type {
   EpisodeId,
   MaintenanceRunId,
   SessionId,
+  StreamEntryId,
 } from "../util/ids.js";
 import type {
   BorgDependencies,
@@ -79,6 +91,12 @@ import type {
   BorgEpisodeGetOptions,
   BorgEpisodeSearchOptions,
 } from "./types.js";
+import type { AutobiographicalRecallCaps } from "./public-facade.js";
+import type {
+  AutobiographicalRecallInput,
+  AutobiographicalRecallResult,
+} from "../cognition/autobiographical-recall.js";
+import type { LivedExperienceDaySummary } from "../memory/activity/lived-experience-day-summary.js";
 
 export type BorgDisclosurePayloadFields = {
   disclosure: string;
@@ -100,12 +118,21 @@ export type BorgStreamFacade = {
   ) => Promise<StreamEntry[]>;
   tail: (n: number, options?: { session?: SessionId }) => StreamEntry[];
   reader: (options?: { session?: SessionId }) => StreamReader;
+  hydrateIndexed: (
+    streamEntryIds: readonly StreamEntryId[],
+    options?: { budgetMs?: number; activeOnly?: boolean },
+  ) => Promise<Map<StreamEntryId, StreamEntry>>;
 };
 
 export type BorgEpisodicFacade = {
   get: (id: EpisodeId, options?: BorgEpisodeGetOptions) => Promise<RetrievedEpisode | null>;
   inspect: (id: EpisodeId) => ReturnType<EpisodicRepository["get"]>;
   search: (query: string, options?: BorgEpisodeSearchOptions) => Promise<RetrievedEpisode[]>;
+  searchWithTimeRangeFallback: (
+    query: string,
+    options: BorgEpisodeSearchOptions & { timeRange: { start: number; end: number } },
+  ) => Promise<{ episodes: RetrievedEpisode[]; timeRangeFallback: boolean }>;
+  recordRetrieval: (episodeId: EpisodeId, score: number) => void;
   extract: (options?: {
     sinceTs?: number;
     sinceCursor?: StreamCursor;
@@ -116,6 +143,9 @@ export type BorgEpisodicFacade = {
   ingest: (options?: { session?: SessionId }) => Promise<IngestionResult>;
   list: (...args: Parameters<EpisodicRepository["list"]>) => ReturnType<EpisodicRepository["list"]>;
   listAll: () => ReturnType<EpisodicRepository["listAll"]>;
+  listRecentForSession: (
+    ...args: Parameters<EpisodicRepository["listRecentForSessionForDisclosure"]>
+  ) => ReturnType<EpisodicRepository["listRecentForSessionForDisclosure"]>;
   getStats: (
     ...args: Parameters<EpisodicRepository["getStats"]>
   ) => ReturnType<EpisodicRepository["getStats"]>;
@@ -136,6 +166,15 @@ type BorgAutobiographicalUpsertPeriod = {
 };
 
 export type BorgSelfFacade = {
+  // The memory owner's own closed-day summaries (offline day summarizer), newest first, limited
+  // after ordering.
+  livedExperience: {
+    listDaySummaries(options: {
+      fromMs: number;
+      toMs: number;
+      limit?: number;
+    }): LivedExperienceDaySummary[];
+  };
   values: {
     get: (...args: Parameters<ValuesRepository["get"]>) => ReturnType<ValuesRepository["get"]>;
     list: (...args: Parameters<ValuesRepository["list"]>) => ReturnType<ValuesRepository["list"]>;
@@ -189,6 +228,14 @@ export type BorgSelfFacade = {
     ) => ReturnType<TraitsRepository["listContradictionEvents"]>;
   };
   autobiographical: {
+    // What the memory owner did, decided, said, and observed in a period, assembled by the same
+    // service Sol's evidence ledger reads. Gated like Sol: a temporal cue, a self audience, an
+    // operator session, or a reflective turn opens it; otherwise null. Rows carry disclosure
+    // labels and the caller filters them for its audience.
+    recall: (
+      input: AutobiographicalRecallInput,
+      options?: AutobiographicalRecallCaps,
+    ) => Promise<AutobiographicalRecallResult | null>;
     currentPeriod: () => ReturnType<AutobiographicalRepository["currentPeriod"]>;
     listPeriods: (
       ...args: Parameters<AutobiographicalRepository["listPeriods"]>
@@ -443,6 +490,44 @@ export type BorgCommitmentsFacade = {
   countCanonicalized: () => ReturnType<CommitmentRepository["countCanonicalized"]>;
 };
 
+export type BorgActivityFacade = Pick<
+  ActivityRepository,
+  "record" | "listObservedGroupAudienceEntityIdsForSpeaker" | "listRecentVisibleOtherSessionEvents"
+> & {
+  projectObservedTurn(input: BorgActivityObservedTurnProjectionInput): {
+    userContact: ReturnType<ActivityRepository["record"]>;
+    session: SessionRecord;
+  };
+  projectRepliedTurn(input: BorgActivityRepliedTurnProjectionInput): {
+    borgReplied: ReturnType<ActivityRepository["record"]>;
+    session: SessionRecord;
+  };
+  projectCompletedTurn(input: BorgActivityCompletedTurnProjectionInput): {
+    userContact: ReturnType<ActivityRepository["record"]>;
+    borgReplied: ReturnType<ActivityRepository["record"]>;
+    session: SessionRecord;
+  };
+};
+
+export type BorgActivityObservedTurnProjectionInput = {
+  session: SessionEnsureInput;
+  userContact: Parameters<ActivityRepository["record"]>[0];
+  touch: SessionTouchUpdate;
+};
+
+export type BorgActivityRepliedTurnProjectionInput = {
+  session: SessionEnsureInput;
+  borgReplied: Parameters<ActivityRepository["record"]>[0];
+  touch: SessionTouchUpdate;
+};
+
+export type BorgActivityCompletedTurnProjectionInput = {
+  session: SessionEnsureInput;
+  userContact: Parameters<ActivityRepository["record"]>[0];
+  borgReplied: Parameters<ActivityRepository["record"]>[0];
+  touch: SessionTouchUpdate;
+};
+
 export type BorgCreatorDirectivesFacade = {
   queue: (
     ...args: Parameters<CreatorDirectiveRepository["queue"]>
@@ -572,6 +657,16 @@ export type BorgMaintenanceFacade = {
 
 export type BorgInboxFacade = {
   catchUp: ChatResponseCatchUpWorker;
+  appendBacklogTerminal(input: AppendBacklogTerminalInput): Promise<AppendBacklogTerminalResult>;
+  sealPendingBacklog(input: SealPendingBacklogInput): Promise<AppendBacklogTerminalResult | null>;
+  sealStaleBacklog(input: SealStaleBacklogInput): Promise<AppendBacklogTerminalResult | null>;
+  findTerminalCoveringEntry(input: {
+    sessionId: SessionId;
+    entryId: StreamEntryId;
+  }): FindTerminalCoveringEntryResult;
+  reconcileReplyActivity(
+    input: InboxReplyActivityReconcileInput,
+  ): InboxReplyActivityReconcileResult;
 };
 
 export type BorgWorkmemFacade = {
@@ -638,6 +733,7 @@ export type BorgFacades = {
   semantic: BorgSemanticFacade;
   relationalSlots: BorgRelationalSlotsFacade;
   commitments: BorgCommitmentsFacade;
+  activity: BorgActivityFacade;
   creatorDirectives: BorgCreatorDirectivesFacade;
   identity: BorgIdentityFacade;
   correction: BorgCorrectionFacade;

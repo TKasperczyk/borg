@@ -162,6 +162,7 @@ export const TRACE_EVENT_TAXONOMY = {
     "review_queue.completed",
   ],
   ingestion: [
+    "sidecar.append_projection.degraded",
     "corrective_preference.ingestion.completed",
     "corrective_preference.ingestion.retry_scheduled",
     "corrective_preference.ingestion.dead_lettered",

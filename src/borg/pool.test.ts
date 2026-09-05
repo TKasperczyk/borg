@@ -113,6 +113,21 @@ describe("BorgPool", () => {
     expect(pool.size()).toBe(1);
   });
 
+  it("applies the narrow per-tenant open-options factory", async () => {
+    const factory = vi.fn((tenantId: string) => ({
+      inbox: {
+        sessionPredicate: () => tenantId === "alpha",
+      },
+    }));
+    const { pool } = makePool({ openOptionsForTenant: factory });
+
+    await pool.withTenant("alpha", append("alpha"));
+    await pool.withTenant("beta", append("beta"));
+
+    expect(factory).toHaveBeenCalledWith("alpha");
+    expect(factory).toHaveBeenCalledWith("beta");
+  });
+
   it("treats the post-open self initializer as idempotent provisioning, including dry-run opens", async () => {
     let initializerCalls = 0;
     const { pool } = makePool({
@@ -246,6 +261,86 @@ describe("BorgPool", () => {
 
     release();
     expect(await alphaOp).toBe("alpha-done");
+  });
+
+  it("does not evict a tenant while its inbox drain is scheduled", async () => {
+    let pool!: BorgPool;
+    const made = makePool({
+      maxOpen: 1,
+      openOptionsForTenant: (tenantId) => ({
+        inbox: {
+          acquireLease: () => pool.acquireBackgroundLease(tenantId),
+          settleMs: 60_000,
+          maxSettleMs: 60_000,
+        },
+      }),
+    });
+    pool = made.pool;
+    const sessionId = createSessionId();
+
+    await pool.withTenant("alpha", async (borg) => {
+      borg.inbox.catchUp.start();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await borg.stream.append(
+        { kind: "user_msg", content: "scheduled background drain" },
+        { session: sessionId },
+      );
+    });
+    await pool.withTenant("beta", () => "beta");
+
+    expect(pool.has("alpha")).toBe(true);
+    expect(pool.has("beta")).toBe(true);
+    await pool.withTenant("alpha", (borg) => borg.inbox.catchUp.stop({ graceful: false }));
+  });
+
+  it("opens an unrelated tenant without waiting for an in-flight inbox drain", async () => {
+    let pool!: BorgPool;
+    let releaseRun: () => void = () => {};
+    const runGate = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    let signalRunStarted: () => void = () => {};
+    const runStarted = new Promise<void>((resolve) => {
+      signalRunStarted = resolve;
+    });
+    const made = makePool({
+      maxOpen: 1,
+      openOptionsForTenant: (tenantId) => ({
+        inbox: {
+          acquireLease: () => pool.acquireBackgroundLease(tenantId),
+          runner: ({ terminal }) => ({
+            run: async (input) => {
+              signalRunStarted();
+              await runGate;
+              await terminal.appendBacklogTerminal({
+                sessionId: input.sessionId,
+                sourceEntryIds: input.inboundBatch.entryIds,
+                terminal: { kind: "agent_observed", reason: "test complete" },
+              });
+            },
+          }),
+        },
+      }),
+    });
+    pool = made.pool;
+    const sessionId = createSessionId();
+    let drain!: ReturnType<Borg["inbox"]["catchUp"]["tick"]>;
+
+    await pool.withTenant("alpha", async (borg) => {
+      await borg.stream.append(
+        { kind: "user_msg", content: "held by background runner" },
+        { session: sessionId },
+      );
+      drain = borg.inbox.catchUp.tick(sessionId);
+      await runStarted;
+    });
+
+    await expect(pool.withTenant("beta", () => "beta")).resolves.toBe("beta");
+    expect(pool.has("alpha")).toBe(true);
+    expect(pool.has("beta")).toBe(true);
+
+    releaseRun();
+    await expect(drain).resolves.toMatchObject({ status: "drained" });
   });
 
   it("evict drains an in-flight op before closing (no use-after-close)", async () => {

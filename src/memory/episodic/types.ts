@@ -152,6 +152,9 @@ export type EpisodeSearchOptions = {
   // Disclosure/admin-only visibility controls. Cognition recall must use
   // EpisodeCognitionRecallOptions, which intentionally omits these audience gates.
   audienceEntityId?: EntityId | null;
+  // Disclosure-only union of audience origins admitted for this read. The current audience id is
+  // still supplied separately for social ranking and is automatically included in this set.
+  visibleAudienceEntityIds?: readonly EntityId[];
   // Explicit all-audiences read for admin/correction/export disclosure paths only.
   crossAudience?: boolean;
   timeRange?: {
@@ -167,7 +170,7 @@ export type EpisodeCognitionRecallOptions = Pick<
 
 export type EpisodeVisibilityOptions = Pick<
   EpisodeSearchOptions,
-  "audienceEntityId" | "crossAudience"
+  "audienceEntityId" | "visibleAudienceEntityIds" | "crossAudience"
 >;
 
 export type EpisodeSearchCandidate = {

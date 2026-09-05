@@ -1,0 +1,65 @@
+[
+  {
+    "id": "production-jacek-role-reference",
+    "focus": "Jacek pytał mnie w priv o role, które opisywałem na grupie AI Ninjas",
+    "context_turns": [],
+    "identity": {
+      "memory_owner_name": "team-agent",
+      "current_sender_name": "Kowalski, Tomasz",
+      "current_venue": {
+        "type": "personal",
+        "name": "Kowalski, Tomasz"
+      },
+      "entity_terms": ["Nowak, Jacek", "Jacek"]
+    },
+    "owner_recent_activity": [
+      {
+        "excerpt": "Porównanie ról chat i reviewer w team-agent oraz kiedy każda z nich powinna odpowiadać za przegląd zmian.",
+        "occurred_at": 1788508500000,
+        "venue": {
+          "type": "groupChat",
+          "name": "AI Ninjas"
+        },
+        "counterparty_name": "Nowak, Jacek"
+      }
+    ],
+    "expected_episode_ids": ["ep_mhpweqw9fpvew2j2", "ep_wzdhd2isd9bg2i9l"],
+    "notes": "Measured production miss. The owner-authored group excerpt is intentionally approximate and predates the private-chat focus by a few minutes. 2026-09-05: the two raw roles episodes were consolidated into version ep_wzdhd2isd9bg2i9l (family cfam_x5590ffripgcp703); retrieval surfaces the version, so it counts as a hit too."
+  },
+  {
+    "id": "temporal-yesterday-ai-ninjas-home-subpage",
+    "focus": "Co wczoraj ustaliliśmy z Marcinem w sprawie podstrony Team Wiki Home z prezentacjami?",
+    "context_turns": [],
+    "owner_recent_activity": [],
+    "identity": {
+      "memory_owner_name": "team-agent",
+      "current_sender_name": "Kowalski, Tomasz",
+      "current_venue": {
+        "type": "personal",
+        "name": "Kowalski, Tomasz"
+      },
+      "entity_terms": ["Kowal, Marcin", "Marcin", "Team Wiki Home"]
+    },
+    "expected_episode_ids": ["ep_jtbulqz836f7e2ri"],
+    "now": "2026-09-05T12:00:00+02:00",
+    "notes": "Temporal cue case (Extension 5): 'wczoraj' must become a temporal_cue for the previous local day; relative to the pinned 2026-09-05 12:00 CEST clock. Expected episode 2026-09-04 13:16 CEST."
+  },
+  {
+    "id": "temporal-yesterday-afternoon-avatar",
+    "focus": "Kiedy wczoraj po południu ustawiono avatara Team Agenta w Jirze i Confluence?",
+    "context_turns": [],
+    "owner_recent_activity": [],
+    "identity": {
+      "memory_owner_name": "team-agent",
+      "current_sender_name": "Kowalski, Tomasz",
+      "current_venue": {
+        "type": "personal",
+        "name": "Kowalski, Tomasz"
+      },
+      "entity_terms": ["Team Agent", "Jira", "Confluence"]
+    },
+    "expected_episode_ids": ["ep_2dt7sedvb6so7s39", "ep_0egnyaj31m0nrj4q", "ep_c3sdl0husnbz09vw"],
+    "now": "2026-09-05T12:00:00+02:00",
+    "notes": "Temporal cue case (Extension 5): 'wczoraj po południu' should yield an afternoon window on the previous local day; three near-duplicate episodes at 2026-09-04 15:16 CEST are all acceptable."
+  }
+]

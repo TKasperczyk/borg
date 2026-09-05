@@ -1,6 +1,8 @@
 import type { ActivityEventStatus, ActivityRepository } from "../../memory/activity/index.js";
 import type {
+  StreamConversation,
   StreamEntry,
+  StreamEntryMetadata,
   StreamSourceMessageKey,
   StreamTurnStatus,
   StreamWriter,
@@ -20,6 +22,9 @@ export type PersistUserMessageInput = {
   turnId?: string;
   turnStatus?: StreamTurnStatus;
   sourceMessageKey?: StreamSourceMessageKey;
+  observedAt?: number;
+  conversation?: StreamConversation;
+  metadata?: StreamEntryMetadata;
   activityOccurredAt?: number;
   activityStatus: ActivityEventStatus;
   audience?: string;
@@ -41,6 +46,9 @@ export async function persistUserMessage(
     ...(input.audience === undefined ? {} : { audience: input.audience }),
     ...(input.senderEntityId === undefined ? {} : { sender_entity_id: input.senderEntityId }),
     ...(input.sourceMessageKey === undefined ? {} : { source_message_key: input.sourceMessageKey }),
+    ...(input.observedAt === undefined ? {} : { observed_at: input.observedAt }),
+    ...(input.conversation === undefined ? {} : { conversation: input.conversation }),
+    ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
     ...(input.receiptPending === true ? { receipt_pending: true } : {}),
   });
   const speakerEntityId = input.speakerEntityId ?? input.senderEntityId ?? null;

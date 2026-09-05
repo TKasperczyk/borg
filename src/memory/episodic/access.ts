@@ -1,6 +1,7 @@
 import type { EntityId } from "../../util/ids.js";
 import {
   isEpisodeAccessVisible,
+  isEpisodeAccessVisibleToAnyAudience,
   normalizeEpisodeAccess,
   type EpisodeAccessLike,
 } from "./audience-filter.js";
@@ -24,16 +25,19 @@ export function isEpisodeVisibleToAudience(
 // Disclosure/admin-only viewer capabilities for audience-filtered episodic reads. Cognition
 // recall is global and must not route through this resolver; use EpisodeCognitionRecallOptions
 // / CognitionRecallSearchOptions for cognition paths. For explicit disclosure/export paths there
-// are exactly two ways to read:
-//   - audience: public/shared plus exact-origin audience matches
+// are three ways to read:
+//   - audience: public/shared plus one exact-origin audience match
+//   - audience_set: public/shared plus any exact-origin audience match in a caller-derived set
 //   - unrestricted: see everything (admin/correction/export read paths ONLY)
 export type ViewerCapability =
   | { readonly kind: "audience"; readonly audienceEntityId: EntityId | null }
+  | { readonly kind: "audience_set"; readonly audienceEntityIds: readonly EntityId[] }
   | { readonly kind: "unrestricted" };
 
 export type ViewerCapabilityOptions = {
   // Disclosure/admin option shape. These are intentionally not part of cognition recall.
   readonly audienceEntityId?: EntityId | null;
+  readonly visibleAudienceEntityIds?: readonly EntityId[];
   readonly crossAudience?: boolean;
 };
 
@@ -44,6 +48,20 @@ export type ViewerCapabilityOptions = {
 export function resolveViewerCapability(options: ViewerCapabilityOptions): ViewerCapability {
   if (options.crossAudience === true) {
     return { kind: "unrestricted" };
+  }
+
+  if (options.visibleAudienceEntityIds !== undefined) {
+    return {
+      kind: "audience_set",
+      audienceEntityIds: [
+        ...new Set([
+          ...options.visibleAudienceEntityIds,
+          ...(options.audienceEntityId === null || options.audienceEntityId === undefined
+            ? []
+            : [options.audienceEntityId]),
+        ]),
+      ],
+    };
   }
 
   return { kind: "audience", audienceEntityId: options.audienceEntityId ?? null };
@@ -60,6 +78,8 @@ export function isEpisodeVisibleToCapability(
       return true;
     case "audience":
       return isEpisodeAccessVisible(input, capability.audienceEntityId);
+    case "audience_set":
+      return isEpisodeAccessVisibleToAnyAudience(input, capability.audienceEntityIds);
     default: {
       const exhaustive: never = capability;
       throw new Error(`unhandled ViewerCapability kind: ${JSON.stringify(exhaustive)}`);

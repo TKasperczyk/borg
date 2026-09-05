@@ -22,6 +22,7 @@ import {
   StreamReader,
   StreamWriter,
   streamEntryIndexMigrations,
+  streamEntryInputSchema,
   type StreamEntry,
   type StreamEntryIndexRecord,
   type StreamEntryInput,
@@ -302,6 +303,43 @@ describe("MessageEnqueuer", () => {
       messageCountDelta: 1,
     });
     expect(harness.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("persists observedAt, conversation, and generic JSON metadata on the user entry", async () => {
+    const harness = makeHarness();
+    await harness.enqueuer.enqueueMessage({
+      session: {
+        session_id: harness.sessionId,
+        source_type: "demo",
+        source_external_id: "conversation-1",
+        label: "Demo",
+        audience_label: "Demo room",
+        conversation_kind: "thread",
+      },
+      userMessage: "hello",
+      senderEntityId: harness.senderEntityId,
+      sourceMessageKey: harness.sourceMessageKey,
+      observedAt: 1_234,
+      conversation: { type: "groupChat", name: "Room" },
+      metadata: {
+        flags: { mentioned: true, nested: ["value", 1, null] },
+      },
+    });
+
+    expect(harness.appended[0]).toMatchObject({
+      observed_at: 1_234,
+      conversation: { type: "groupChat", name: "Room" },
+      metadata: {
+        flags: { mentioned: true, nested: ["value", 1, null] },
+      },
+    });
+    expect(
+      streamEntryInputSchema.safeParse({
+        kind: "user_msg",
+        content: "bad metadata",
+        metadata: { value: new Date() },
+      }).success,
+    ).toBe(false);
   });
 
   it("keeps enqueue side effects when a committed append self-repairs the index", async () => {

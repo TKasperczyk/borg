@@ -5,6 +5,7 @@ import {
   SemanticExtractor,
   createUserStreamEntryRelationshipEvidenceTrustValidator,
 } from "../memory/semantic/index.js";
+import { AutobiographicalRecallService } from "../cognition/autobiographical-recall.js";
 import { buildParticipantRosterFromRepositories } from "../cognition/perception/index.js";
 import { resolveEpisodeSourceParticipants } from "../cognition/participants.js";
 import {
@@ -43,13 +44,14 @@ import {
   resolveMemoryDisclosureLabelsByEpisodeId,
   type MemoryDisclosureLabel,
 } from "../retrieval/index.js";
-import { StreamReader } from "../stream/index.js";
+import { hydrateStreamEntriesById, StreamReader } from "../stream/index.js";
 import { AttachmentError, StorageError } from "../util/errors.js";
 import {
   DEFAULT_SESSION_ID,
   createSemanticNodeId,
   type EntityId,
   type ImagePerceptionId,
+  type StreamEntryId,
 } from "../util/ids.js";
 import type { BorgFacades } from "./facade-types.js";
 import type {
@@ -72,6 +74,7 @@ import {
 import type { CommitmentRecord } from "../memory/commitments/index.js";
 import type { GoalRecord, GoalTreeNode } from "../memory/self/index.js";
 import type { IdentityUpdateResult } from "../memory/identity/index.js";
+import { reconcileInboxReplyActivity } from "../cognition/ingestion/index.js";
 
 function errorCode(error: unknown): unknown {
   return error !== null && typeof error === "object" && "code" in error
@@ -217,6 +220,95 @@ async function countPendingSemanticExtractionEpisodes(
 }
 
 type CreatorDirectivesFacadeDeps = Pick<BorgDependencies, "creatorDirectiveRepository">;
+
+export function createActivityFacade(
+  deps: Pick<BorgDependencies, "sqlite" | "activityRepository" | "sessionsRepository">,
+): BorgFacades["activity"] {
+  type ObservedTurnInput = Parameters<BorgFacades["activity"]["projectObservedTurn"]>[0];
+  type RepliedTurnInput = Parameters<BorgFacades["activity"]["projectRepliedTurn"]>[0];
+  type CompletedTurnInput = Parameters<BorgFacades["activity"]["projectCompletedTurn"]>[0];
+
+  const projectTurn = (input: ObservedTurnInput | RepliedTurnInput | CompletedTurnInput) => {
+    const project = deps.sqlite.transaction(() => {
+      const userContactAlreadyStored =
+        !("userContact" in input) ||
+        deps.activityRepository.getByKindAndSource(
+          input.userContact.kind,
+          input.userContact.sourceStreamEntryIds,
+        ) !== null;
+      const borgReplyAlreadyStored =
+        !("borgReplied" in input) ||
+        deps.activityRepository.getByKindAndSource(
+          input.borgReplied.kind,
+          input.borgReplied.sourceStreamEntryIds,
+        ) !== null;
+      const session = deps.sessionsRepository.ensure(input.session);
+      const userContact =
+        "userContact" in input ? deps.activityRepository.record(input.userContact) : undefined;
+      const borgReplied =
+        "borgReplied" in input ? deps.activityRepository.record(input.borgReplied) : undefined;
+      const touchedSession =
+        userContactAlreadyStored && borgReplyAlreadyStored
+          ? session
+          : deps.sessionsRepository.touch(input.session.session_id, input.touch);
+
+      if (touchedSession === null) {
+        throw new StorageError(`Session ${input.session.session_id} was not stored`, {
+          code: "SESSION_TURN_PROJECTION_FAILED",
+        });
+      }
+
+      return { userContact, borgReplied, session: touchedSession };
+    });
+
+    return project.immediate();
+  };
+
+  return {
+    record: (...args) => deps.activityRepository.record(...args),
+    projectObservedTurn: (input) => {
+      const projected = projectTurn(input);
+
+      if (projected.userContact === undefined) {
+        throw new StorageError("Observed turn projection did not store the user contact", {
+          code: "SESSION_TURN_PROJECTION_FAILED",
+        });
+      }
+
+      return { ...projected, userContact: projected.userContact };
+    },
+    projectRepliedTurn: (input) => {
+      const projected = projectTurn(input);
+
+      if (projected.borgReplied === undefined) {
+        throw new StorageError("Replied turn projection did not store the Borg reply", {
+          code: "SESSION_TURN_PROJECTION_FAILED",
+        });
+      }
+
+      return { ...projected, borgReplied: projected.borgReplied };
+    },
+    projectCompletedTurn: (input) => {
+      const projected = projectTurn(input);
+
+      if (projected.userContact === undefined || projected.borgReplied === undefined) {
+        throw new StorageError("Completed turn projection did not store both activity events", {
+          code: "SESSION_TURN_PROJECTION_FAILED",
+        });
+      }
+
+      return {
+        ...projected,
+        userContact: projected.userContact,
+        borgReplied: projected.borgReplied,
+      };
+    },
+    listObservedGroupAudienceEntityIdsForSpeaker: (...args) =>
+      deps.activityRepository.listObservedGroupAudienceEntityIdsForSpeaker(...args),
+    listRecentVisibleOtherSessionEvents: (...args) =>
+      deps.activityRepository.listRecentVisibleOtherSessionEvents(...args),
+  };
+}
 
 export function createCreatorDirectivesFacade(
   deps: CreatorDirectivesFacadeDeps,
@@ -586,11 +678,21 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           sessionId: options.session ?? DEFAULT_SESSION_ID,
           entryIndex: deps.entryIndex,
         }),
+      hydrateIndexed: (streamEntryIds: readonly StreamEntryId[], options = {}) =>
+        hydrateStreamEntriesById({
+          dataDir: deps.config.dataDir,
+          sessionId: DEFAULT_SESSION_ID,
+          streamEntryIds,
+          entryIndex: deps.entryIndex,
+          budgetMs: options.budgetMs,
+          activeOnly: options.activeOnly,
+        }),
     },
     episodic: {
       get: (id, options = {}) =>
         deps.retrievalPipeline.getEpisode(id, {
           audienceEntityId: resolveEpisodeAudienceEntityId(options),
+          visibleAudienceEntityIds: options.visibleAudienceEntityIds,
           crossAudience: options.crossAudience,
         }),
       inspect: (id) => deps.episodicRepository.get(id, { includeArchived: true }),
@@ -599,6 +701,13 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           query,
           resolveEpisodeSearchOptions(options),
         ),
+      searchWithTimeRangeFallback: (query, options) =>
+        deps.retrievalPipeline.searchEpisodesForDisclosureWithTimeRangeFallback(query, {
+          ...resolveEpisodeSearchOptions(options),
+          timeRange: options.timeRange,
+        }),
+      recordRetrieval: (episodeId, score) =>
+        deps.episodicRepository.recordRetrieval(episodeId, deps.clock.now(), score),
       extract: async (options = {}) => {
         const extractor = new EpisodicExtractor({
           dataDir: deps.config.dataDir,
@@ -628,9 +737,26 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         Promise.resolve({ ran: false, processedEntries: 0 }),
       list: (...args) => deps.episodicRepository.list(...args),
       listAll: () => deps.episodicRepository.listAll(),
+      listRecentForSession: (...args) =>
+        deps.episodicRepository.listRecentForSessionForDisclosure(...args),
       getStats: (...args) => deps.episodicRepository.getStats(...args),
     },
     self: {
+      livedExperience: {
+        // Newest first, limited after ordering: the repository orders ascending before LIMIT, which
+        // would hand a wide window its oldest days.
+        listDaySummaries: (options) => {
+          const self = deps.entityRepository.getSelf();
+          const { limit, ...window } = options;
+          const rows = deps.livedExperienceDaySummaryRepository
+            .listForWindow({
+              ...window,
+              ...(self === null ? {} : { selfEntityId: self.id }),
+            })
+            .sort((a, b) => b.day_start_ms - a.day_start_ms);
+          return limit === undefined ? rows : rows.slice(0, Math.max(0, Math.floor(limit)));
+        },
+      },
       values: {
         get: (...args) => deps.valuesRepository.get(...args),
         list: (...args) => deps.valuesRepository.list(...args),
@@ -674,6 +800,27 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           deps.traitsRepository.listContradictionEvents(...args),
       },
       autobiographical: {
+        recall: (input, options = {}) =>
+          new AutobiographicalRecallService({
+            ...options,
+            clock: deps.clock,
+            activityRepository: deps.activityRepository,
+            selfDecisionRepository: deps.selfDecisionRepository,
+            observedEventRepository: deps.observedEventRepository,
+            episodicRepository: deps.episodicRepository,
+            actionRepository: deps.actionRepository,
+            goalsRepository: deps.goalsRepository,
+            sourceStreamAudienceDisclosureResolver: deps.sourceStreamAudienceDisclosureResolver,
+            openQuestionsRepository: deps.openQuestionsRepository,
+            autobiographicalRepository: deps.autobiographicalRepository,
+            sessionsRepository: deps.sessionsRepository,
+            createStreamReader: (sessionId) =>
+              new StreamReader({
+                dataDir: deps.config.dataDir,
+                sessionId,
+                entryIndex: deps.entryIndex,
+              }),
+          }).recall(input),
         currentPeriod: () => deps.autobiographicalRepository.currentPeriod(),
         listPeriods: (...args) => deps.autobiographicalRepository.listPeriods(...args),
         upsertPeriod: upsertAutobiographicalPeriod,
@@ -992,6 +1139,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       countExpired: () => deps.commitmentRepository.countExpired(),
       countCanonicalized: () => deps.commitmentRepository.countCanonicalized(),
     },
+    activity: createActivityFacade(deps),
     creatorDirectives: createCreatorDirectivesFacade(deps),
     identity: {
       updateValue: (...args) => deps.identityService.updateValue(...args),
@@ -1124,6 +1272,23 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     },
     inbox: {
       catchUp: deps.chatResponseCatchUpWorker,
+      appendBacklogTerminal: (input) => deps.backlogTerminalService.appendBacklogTerminal(input),
+      sealPendingBacklog: (input) => deps.backlogTerminalService.sealPendingBacklog(input),
+      sealStaleBacklog: (input) => deps.backlogTerminalService.sealStaleBacklog(input),
+      findTerminalCoveringEntry: (input) =>
+        deps.backlogTerminalService.findTerminalCoveringEntry(input),
+      reconcileReplyActivity: (input) =>
+        reconcileInboxReplyActivity(
+          {
+            entryIndex: deps.entryIndex,
+            sessionsRepository: deps.sessionsRepository,
+            entityRepository: deps.entityRepository,
+            activityRepository: deps.activityRepository,
+            projectRepliedTurn: (projection) =>
+              createActivityFacade(deps).projectRepliedTurn(projection),
+          },
+          input,
+        ),
     },
     workmem: {
       load: (sessionId = DEFAULT_SESSION_ID) => deps.workingMemoryStore.load(sessionId),

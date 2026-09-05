@@ -16,9 +16,8 @@ import type { MemoryDisclosureLabel } from "./recall-context.js";
 
 export const RECALL_INTENT_KINDS = [
   "raw_text",
+  "semantic_query",
   "known_term",
-  "topic",
-  "relationship",
   "time",
   "recent",
   "commitment",

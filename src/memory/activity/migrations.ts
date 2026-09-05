@@ -64,4 +64,16 @@ export const activityMigrations = [
       `);
     },
   },
+  {
+    id: 3,
+    name: "activity_audience_observation_indexes",
+    up: (db) => {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_activity_events_speaker_audience
+          ON activity_events(speaker_entity_id, status, kind, audience_entity_id);
+        CREATE INDEX IF NOT EXISTS idx_activity_events_audience_recent
+          ON activity_events(audience_entity_id, status, occurred_at DESC);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

@@ -31,7 +31,11 @@ import {
 import type { TurnResult } from "../turn-orchestrator.js";
 
 import type { BacklogPrefixResult } from "./backlog-prefix.js";
-import { ChatResponseCatchUpWorker, type ChatResponseCatchUpWorkerConfig } from "./index.js";
+import {
+  ChatResponseCatchUpWorker,
+  TurnOrchestratorChatResponseCatchUpRunner,
+  type ChatResponseCatchUpWorkerConfig,
+} from "./index.js";
 
 const DEFAULT_CONFIG: ChatResponseCatchUpWorkerConfig = {
   quietWindowMs: 10,
@@ -147,17 +151,36 @@ function createHarness(
     build?: () => Promise<BacklogPrefixResult>;
     run?: (input: unknown) => Promise<TurnResult>;
     backfill?: (sessionId: SessionId) => Promise<{ inserted: number }>;
+    sessionPredicate?: (sessionId: SessionId) => boolean;
+    stampAfterRun?: boolean;
+    customRunner?: (input: unknown) => Promise<void>;
+    watermarkAfterRun?: (input: unknown, runCount: number) => StreamCursor | null;
+    onReconcileAdvance?: (event: { sessionId: SessionId; advancedThrough: StreamCursor }) => void;
+    acquireLease?: () => { release(): void };
+    reconcileAdvance?: StreamCursor;
   } = {},
 ) {
   const clock = new ManualClock(0);
   const prefixQueue = [...(options.prefixes ?? [])];
   const pendingSessionIds = [...(options.pendingSessionIds ?? [])];
+  let durableWatermark: StreamCursor | null = null;
+  let reconcileAdvance = options.reconcileAdvance ?? null;
   const coordinator = {
-    reconcile: vi.fn(() => ({
-      watermark: null,
-      advancedThrough: null,
-      appliedStamps: 0,
-    })),
+    reconcile: vi.fn(() => {
+      const advancedThrough = reconcileAdvance;
+      if (advancedThrough !== null) {
+        durableWatermark = advancedThrough;
+        reconcileAdvance = null;
+      }
+      return {
+        watermark: durableWatermark,
+        advancedThrough,
+        appliedStamps: advancedThrough === null ? 0 : 1,
+      };
+    }),
+    compareCursors: vi.fn((_sessionId: SessionId, left: StreamCursor, right: StreamCursor) =>
+      left.entryId === right.entryId && left.ts === right.ts ? 0 : -1,
+    ),
   };
   const prefixBuilder = {
     build: vi.fn(options.build ?? (async () => prefixQueue.shift() ?? emptyPrefix())),
@@ -166,15 +189,49 @@ function createHarness(
     listSessionIdsWithPendingResponseBacklog: vi.fn(() => pendingSessionIds),
   };
   const repairSessionStreamEntryIndex = vi.fn(options.backfill ?? (async () => ({ inserted: 0 })));
+  const underlyingRun = options.run ?? (async () => turnResult());
+  let completedRuns = 0;
   const turnOrchestrator = {
-    run: vi.fn(options.run ?? (async () => turnResult())),
+    run: vi.fn(async (input: unknown) => {
+      const result = await underlyingRun(input);
+      if (options.stampAfterRun !== false) {
+        completedRuns += 1;
+        durableWatermark =
+          options.watermarkAfterRun?.(input, completedRuns) ??
+          (input as { inboundBatch: { throughCursorInclusive: StreamCursor } }).inboundBatch
+            .throughCursorInclusive;
+      }
+      return result;
+    }),
   };
+  const customRunner =
+    options.customRunner === undefined
+      ? undefined
+      : {
+          run: vi.fn(async (input: unknown) => {
+            await options.customRunner!(input);
+            if (options.stampAfterRun !== false) {
+              completedRuns += 1;
+              durableWatermark =
+                options.watermarkAfterRun?.(input, completedRuns) ??
+                (input as { inboundBatch: { throughCursorInclusive: StreamCursor } }).inboundBatch
+                  .throughCursorInclusive;
+            }
+          }),
+        };
   const worker = new ChatResponseCatchUpWorker({
     coordinator,
     prefixBuilder,
     entryIndex,
     repairSessionStreamEntryIndex,
-    turnOrchestrator,
+    ...(customRunner === undefined ? { turnOrchestrator } : { runner: customRunner }),
+    ...(options.sessionPredicate === undefined
+      ? {}
+      : { sessionPredicate: options.sessionPredicate }),
+    ...(options.onReconcileAdvance === undefined
+      ? {}
+      : { onReconcileAdvance: options.onReconcileAdvance }),
+    ...(options.acquireLease === undefined ? {} : { acquireLease: options.acquireLease }),
     clock,
     setTimeoutFn: (callback, delayMs) => setTimeout(callback, delayMs),
     clearTimeoutFn: (handle) => clearTimeout(handle),
@@ -191,6 +248,7 @@ function createHarness(
     entryIndex,
     repairSessionStreamEntryIndex,
     turnOrchestrator,
+    customRunner,
     worker,
   };
 }
@@ -397,7 +455,7 @@ describe("ChatResponseCatchUpWorker", () => {
     await flushAsync();
     await advance(harness.clock, 0);
 
-    expect(harness.coordinator.reconcile).toHaveBeenCalledTimes(2);
+    expect(harness.coordinator.reconcile).toHaveBeenCalledTimes(4);
     expect(harness.prefixBuilder.build).toHaveBeenCalledTimes(2);
     expect(harness.turnOrchestrator.run).toHaveBeenCalledTimes(2);
   });
@@ -720,5 +778,160 @@ describe("ChatResponseCatchUpWorker", () => {
     await advance(harness.clock, 1);
 
     expect(harness.turnOrchestrator.run).toHaveBeenCalledTimes(2);
+  });
+
+  it("applies the session predicate at startup, append, pending notification, and drain", async () => {
+    const startupSession = createSessionId();
+    const predicate = vi.fn(() => false);
+    const startup = createHarness({
+      pendingSessionIds: [startupSession],
+      sessionPredicate: predicate,
+    });
+    startup.worker.start();
+    await flushAsync();
+    expect(predicate).toHaveBeenCalledWith(startupSession);
+    expect(startup.coordinator.reconcile).not.toHaveBeenCalled();
+
+    startup.worker.onAppend([entry({ sessionId: DEFAULT_SESSION_ID })]);
+    startup.worker.onPendingSession(DEFAULT_SESSION_ID, 0);
+    await advance(startup.clock, DEFAULT_CONFIG.maxWaitMs);
+    expect(predicate).toHaveBeenCalledWith(DEFAULT_SESSION_ID);
+    expect(startup.prefixBuilder.build).not.toHaveBeenCalled();
+
+    let accepted = true;
+    const beforeDrain = createHarness({
+      prefixes: [prefix()],
+      sessionPredicate: () => accepted,
+    });
+    beforeDrain.worker.start();
+    await flushAsync();
+    beforeDrain.worker.onPendingSession(DEFAULT_SESSION_ID, 0);
+    accepted = false;
+    await expect(beforeDrain.worker.tick(DEFAULT_SESSION_ID)).resolves.toMatchObject({
+      status: "empty",
+      drained: 0,
+    });
+    expect(beforeDrain.prefixBuilder.build).not.toHaveBeenCalled();
+  });
+
+  it("treats a runner return without a covering durable stamp as an error", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const harness = createHarness({ prefixes: [prefix()], stampAfterRun: false });
+
+    await expect(harness.worker.tick(DEFAULT_SESSION_ID)).resolves.toMatchObject({
+      status: "error",
+      drained: 0,
+      hasMore: true,
+      error: expect.stringContaining("did not durably cover"),
+    });
+    expect(harness.turnOrchestrator.run).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a short watermark advance as partial progress and immediately re-drains", async () => {
+    const first = prefix({ count: 3 });
+    const second = prefix({ count: 2 });
+    const run = vi.fn(async (_input: unknown) => undefined);
+    const harness = createHarness({
+      config: { quietWindowMs: 0 },
+      prefixes: [first, second],
+      customRunner: run,
+      watermarkAfterRun: (input, runCount) =>
+        runCount === 1
+          ? cursor(first.entryIds[0]!, first.throughCursorInclusive!.ts)
+          : (input as { inboundBatch: { throughCursorInclusive: StreamCursor } }).inboundBatch
+              .throughCursorInclusive,
+    });
+
+    harness.worker.start();
+    await flushAsync();
+    harness.worker.onPendingSession(DEFAULT_SESSION_ID, 0);
+    await advance(harness.clock, 0);
+    await runPendingTimers();
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run.mock.calls[0]?.[0]).toMatchObject({
+      inboundBatch: { entryIds: first.entryIds },
+    });
+    expect(run.mock.calls[1]?.[0]).toMatchObject({
+      inboundBatch: { entryIds: second.entryIds },
+    });
+  });
+
+  it("notifies when reconciliation discovers and advances a durable stamp", async () => {
+    const advancedThrough = cursor(createStreamEntryId(), 10);
+    const onReconcileAdvance = vi.fn();
+    const harness = createHarness({
+      prefixes: [emptyPrefix()],
+      reconcileAdvance: advancedThrough,
+      onReconcileAdvance,
+    });
+
+    await expect(harness.worker.tick(DEFAULT_SESSION_ID)).resolves.toMatchObject({
+      status: "empty",
+    });
+    expect(onReconcileAdvance).toHaveBeenCalledWith({
+      sessionId: DEFAULT_SESSION_ID,
+      advancedThrough,
+    });
+  });
+
+  it("holds a background lease while a drain is scheduled", async () => {
+    const release = vi.fn();
+    const acquireLease = vi.fn(() => ({ release }));
+    const harness = createHarness({ acquireLease });
+
+    harness.worker.start();
+    await flushAsync();
+    acquireLease.mockClear();
+    release.mockClear();
+    harness.worker.onPendingSession(DEFAULT_SESSION_ID, 0);
+
+    expect(acquireLease).toHaveBeenCalledTimes(1);
+    expect(release).not.toHaveBeenCalled();
+    await harness.worker.stop({ graceful: false });
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the default adapter's TurnOrchestrator invocation unchanged", async () => {
+    const run = vi.fn(async () => turnResult());
+    const adapter = new TurnOrchestratorChatResponseCatchUpRunner({ run });
+    const batch = prefix();
+
+    await adapter.run({
+      sessionId: DEFAULT_SESSION_ID,
+      inboundBatch: {
+        kind: "stream_backlog",
+        entryIds: batch.entryIds,
+        throughCursorInclusive: batch.throughCursorInclusive!,
+      },
+    });
+
+    expect(run).toHaveBeenCalledWith({
+      sessionId: DEFAULT_SESSION_ID,
+      origin: "user",
+      lockMode: "try",
+      inboundBatch: {
+        kind: "stream_backlog",
+        entryIds: batch.entryIds,
+        throughCursorInclusive: batch.throughCursorInclusive,
+      },
+    });
+  });
+
+  it("uses a supplied runner instead of the default turn adapter", async () => {
+    const run = vi.fn(async () => undefined);
+    const harness = createHarness({ prefixes: [prefix()], customRunner: run });
+
+    await expect(harness.worker.tick(DEFAULT_SESSION_ID)).resolves.toMatchObject({
+      status: "drained",
+      drained: 1,
+    });
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: DEFAULT_SESSION_ID,
+        inboundBatch: expect.objectContaining({ kind: "stream_backlog" }),
+      }),
+    );
+    expect(harness.turnOrchestrator.run).not.toHaveBeenCalled();
   });
 });

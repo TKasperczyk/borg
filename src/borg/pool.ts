@@ -41,6 +41,10 @@ export type BorgPoolOptions = {
   // such as FakeLLMClient holds one mutable response queue and must NOT be shared
   // across tenants in tests. Schedulers are never started regardless.
   openOptions?: Omit<BorgOpenOptions, "dataDir" | "tracerPath">;
+  // Narrow per-tenant hook for options that must bind to the tenant's open
+  // Borg (for example an inbox runner factory). Returned values override the
+  // shared openOptions for that tenant only.
+  openOptionsForTenant?: (tenantId: string) => Pick<BorgOpenOptions, "inbox"> | undefined;
   // Soft cap on simultaneously-open beings. Beyond this, least-recently-used
   // beings with no in-flight operation are closed. The bound can be temporarily
   // exceeded when every other being is in use (we never force-close in-flight
@@ -63,6 +67,10 @@ export type BorgPoolOptions = {
 
 type Deferred = { readonly promise: Promise<void>; readonly resolve: () => void };
 
+export type BorgPoolBackgroundLease = {
+  release(): void;
+};
+
 class BorgPoolInitializerCloseError extends AggregateError {}
 
 function deferred(): Deferred {
@@ -77,6 +85,7 @@ type PoolEntry = {
   readonly tenantId: string;
   readonly promise: Promise<Borg>;
   inUse: number;
+  backgroundLeases: number;
   // Monotonic LRU stamp. Recency means LAST-COMPLETION by design (stamped on both
   // acquire and release), so a being that just finished a long op ranks as hot.
   lastUsed: number;
@@ -96,6 +105,7 @@ export class BorgPool {
   private readonly root: string;
   private readonly openOptions: Omit<BorgOpenOptions, "dataDir" | "tracerPath">;
   private readonly maxOpen: number | undefined;
+  private readonly openOptionsForTenant: BorgPoolOptions["openOptionsForTenant"];
   private readonly tenantIdPattern: RegExp;
   private readonly tracerPathFor: ((tenantId: string) => string | undefined) | undefined;
   private readonly tracerFor: ((tenantId: string) => TurnTracer | undefined) | undefined;
@@ -127,6 +137,7 @@ export class BorgPool {
     this.root = options.root;
     this.openOptions = options.openOptions ?? {};
     this.maxOpen = options.maxOpen;
+    this.openOptionsForTenant = options.openOptionsForTenant;
     this.tenantIdPattern = options.tenantIdPattern ?? DEFAULT_TENANT_ID_PATTERN;
     this.tracerPathFor = options.tracerPathFor;
     this.tracerFor = options.tracerFor;
@@ -181,6 +192,55 @@ export class BorgPool {
         }
       }
     }
+  }
+
+  /**
+   * Keep an already-open tenant from being selected for automatic LRU eviction
+   * while work owned by that Borg runs outside a withTenant callback. The lease
+   * grants no Borg access and is deliberately non-exclusive.
+   */
+  acquireBackgroundLease(tenantId: string): BorgPoolBackgroundLease {
+    const validated = this.validateTenantId(tenantId);
+    if (this.closing) {
+      throw new Error("BorgPool is shutting down; cannot acquire a background lease");
+    }
+    const entry = this.entries.get(validated);
+    if (
+      entry === undefined ||
+      entry.closeRequested ||
+      entry.closeFailed === true ||
+      entry.closing !== undefined
+    ) {
+      throw new Error(`BorgPool: no leasable being is open for "${validated}"`);
+    }
+
+    entry.backgroundLeases += 1;
+    entry.lastUsed = this.seq += 1;
+    let released = false;
+    return {
+      release: () => {
+        if (released) {
+          return;
+        }
+        released = true;
+        entry.backgroundLeases = Math.max(0, entry.backgroundLeases - 1);
+        entry.lastUsed = this.seq += 1;
+        if (
+          entry.backgroundLeases === 0 &&
+          entry.inUse === 0 &&
+          !entry.closeRequested &&
+          entry.closing === undefined &&
+          this.entries.get(validated) === entry
+        ) {
+          void this.enforceMaxOpen(validated).catch((error: unknown) => {
+            console.error(
+              `BorgPool: failed to reconcile maxOpen after releasing "${validated}"`,
+              error,
+            );
+          });
+        }
+      },
+    };
   }
 
   // Serialize an exclusive (write) callback after any prior exclusive callback for
@@ -324,6 +384,7 @@ export class BorgPool {
     const entry: PoolEntry = {
       tenantId: validated,
       inUse: 0,
+      backgroundLeases: 0,
       lastUsed: (this.seq += 1),
       closeRequested: false,
       // Cache the in-flight promise so concurrent acquires share one open. On a
@@ -345,14 +406,18 @@ export class BorgPool {
   }
 
   private async openBeing(tenantId: string): Promise<Borg> {
+    const openOptions = {
+      ...this.openOptions,
+      ...this.openOptionsForTenant?.(tenantId),
+    };
     const tracerPath = this.tracerPathFor?.(tenantId);
-    const tracer = this.tracerForTenant(tenantId);
+    const tracer = this.tracerForTenant(tenantId, openOptions);
     // With no explicit per-tenant tracer path, strip ambient BORG_TRACE so an
     // operator's debug env var doesn't commingle every tenant's trace content
     // into one shared file.
-    const env = tracerPath === undefined ? this.tenantSafeEnv() : this.openOptions.env;
+    const env = tracerPath === undefined ? this.tenantSafeEnv(openOptions) : openOptions.env;
     const borg = await Borg.open({
-      ...this.openOptions,
+      ...openOptions,
       ...(env === undefined ? {} : { env }),
       ...(tracer === undefined ? {} : { tracer }),
       dataDir: join(this.root, tenantId),
@@ -375,24 +440,29 @@ export class BorgPool {
     }
   }
 
-  private tracerForTenant(tenantId: string): TurnTracer | undefined {
+  private tracerForTenant(
+    tenantId: string,
+    openOptions: Omit<BorgOpenOptions, "dataDir" | "tracerPath">,
+  ): TurnTracer | undefined {
     const tenantTracer = this.tracerFor?.(tenantId);
 
     if (tenantTracer === undefined) {
-      return this.openOptions.tracer;
+      return openOptions.tracer;
     }
 
-    if (this.openOptions.tracer === undefined) {
+    if (openOptions.tracer === undefined) {
       return tenantTracer;
     }
 
-    return compositeTracer([this.openOptions.tracer, tenantTracer]);
+    return compositeTracer([openOptions.tracer, tenantTracer]);
   }
 
-  private tenantSafeEnv(): NodeJS.ProcessEnv | undefined {
-    const base = this.openOptions.env ?? process.env;
+  private tenantSafeEnv(
+    openOptions: Omit<BorgOpenOptions, "dataDir" | "tracerPath">,
+  ): NodeJS.ProcessEnv | undefined {
+    const base = openOptions.env ?? process.env;
     if (base.BORG_TRACE === undefined && base.BORG_TRACE_PROMPTS === undefined) {
-      return this.openOptions.env; // nothing to strip; preserve caller's choice
+      return openOptions.env; // nothing to strip; preserve caller's choice
     }
     const clone: NodeJS.ProcessEnv = { ...base };
     delete clone.BORG_TRACE;
@@ -443,6 +513,7 @@ export class BorgPool {
       if (
         entry.tenantId === exclude ||
         entry.inUse > 0 ||
+        entry.backgroundLeases > 0 ||
         entry.closeRequested ||
         entry.closeFailed === true ||
         entry.closing !== undefined

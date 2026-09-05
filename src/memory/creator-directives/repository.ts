@@ -227,7 +227,8 @@ function isCreatorOperator(
 ): boolean {
   return (
     options.sessionRole === "operator" &&
-    (options.currentSenderBorgRole === "creator" ||
+    (options.trustedTenantOperator === true ||
+      options.currentSenderBorgRole === "creator" ||
       options.currentAudienceEntityId === directive.created_by_entity_id)
   );
 }
@@ -309,11 +310,55 @@ function effectiveRecipientEntityIds(
   return uniqueIds(participantEntityIds);
 }
 
+function effectiveAllowListAudienceEntityIds(
+  options: CreatorDirectiveApplicableOptions,
+): readonly EntityId[] {
+  return options.allowListAudienceEntityIds === undefined
+    ? effectiveRecipientEntityIds(options)
+    : uniqueIds(options.allowListAudienceEntityIds);
+}
+
 function evaluateApplicableDisclosureRenderMode(
   directive: CreatorDirective,
   options: CreatorDirectiveApplicableOptions,
 ): CreatorDirectiveDisclosureEvaluation {
   const recipientEntityIds = effectiveRecipientEntityIds(options);
+
+  if (
+    directive.disclosure_policy.content_scope === "allow_list" &&
+    options.allowListAudienceEntityIds !== undefined
+  ) {
+    const exclusionReason = excludedRecipientReason(
+      directive.disclosure_policy.excluded_entity_ids,
+      recipientEntityIds,
+    );
+
+    if (exclusionReason !== null) {
+      return boundaryOrOmit(
+        directive,
+        exclusionReason === "group_contains_excluded_entity"
+          ? "group_contains_excluded_entity"
+          : "explicit_exclude_boundary",
+        exclusionReason === "group_contains_excluded_entity"
+          ? "group_contains_excluded_entity"
+          : "unauthorized_omit",
+      );
+    }
+
+    if (
+      directive.disclosure_policy.subject_may_know === false &&
+      directive.subject_entity_id !== null &&
+      recipientEntityIds.includes(directive.subject_entity_id)
+    ) {
+      return boundaryOrOmit(directive, "subject_may_not_know", "subject_may_not_know");
+    }
+
+    return effectiveAllowListAudienceEntityIds(options).some((audienceEntityId) =>
+      hasEntity(directive.disclosure_policy.allowed_entity_ids, audienceEntityId),
+    )
+      ? { render_mode: "content", reason: "explicit_allow" }
+      : { render_mode: "omit", reason: "unauthorized_omit" };
+  }
 
   if (recipientEntityIds.length <= 1) {
     return evaluateDisclosureRenderMode(directive, options, recipientEntityIds[0] ?? null);

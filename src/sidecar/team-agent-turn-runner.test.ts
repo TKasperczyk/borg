@@ -1,0 +1,816 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import {
+  BacklogTerminalService,
+  ChatResponseBacklogPrefixBuilder,
+  ChatResponseCatchUpWorker,
+  ChatResponseWatermarkCoordinator,
+} from "../cognition/ingestion/index.js";
+import { composeMigrations, openDatabase } from "../storage/sqlite/index.js";
+import {
+  StreamEntryIndexRepository,
+  StreamReader,
+  StreamWatermarkRepository,
+  StreamWriter,
+  streamEntryIndexMigrations,
+  streamWatermarkMigrations,
+  type StreamEntry,
+} from "../stream/index.js";
+import { FixedClock, ManualClock } from "../util/clock.js";
+import {
+  createEntityId,
+  createSessionId,
+  createStreamEntryId,
+  type SessionId,
+} from "../util/ids.js";
+import { ResponseWaiterRegistry } from "./response-waiter-registry.js";
+import type { SessionRecord } from "../sessions/index.js";
+import { TeamAgentTurnRunner, type TeamAgentTurnRunnerOptions } from "./team-agent-turn-runner.js";
+
+const cleanups: Array<() => void> = [];
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  while (cleanups.length > 0) {
+    cleanups.pop()?.();
+  }
+});
+
+function harness(
+  fetchResponse: () => Promise<Response>,
+  options: Pick<TeamAgentTurnRunnerOptions, "onGenerating"> = {},
+  fixture: { senderIsAudience?: boolean; sessionRecord?: Partial<SessionRecord> | null } = {},
+) {
+  const sessionId = createSessionId();
+  const sourceId = createStreamEntryId();
+  const selfId = createEntityId();
+  const audienceId = createEntityId();
+  const senderId = fixture.senderIsAudience ? audienceId : createEntityId();
+  const sessionRecord: SessionRecord | null =
+    fixture.sessionRecord === null
+      ? null
+      : {
+          session_id: sessionId,
+          source_type: "teams_inbox",
+          source_external_id: "conversation",
+          source_url: null,
+          label: "Room",
+          audience_label: "Room",
+          audience_entity_id: audienceId,
+          conversation_kind: "channel",
+          created_at: 900,
+          last_activity_at: 900,
+          last_turn_id: null,
+          message_count: 1,
+          status: "active",
+          privacy_level: "payload_on",
+          participation_policy: "active",
+          audience_role: "participant",
+          ...fixture.sessionRecord,
+        };
+  const projectRepliedTurn = vi.fn((_input: unknown) => ({}) as never);
+  const sourceEntry: StreamEntry = {
+    id: sourceId,
+    session_id: sessionId,
+    entry_index: 0,
+    timestamp: 900,
+    observed_at: 900,
+    kind: "user_msg",
+    content: "hello",
+    sender_entity_id: senderId,
+    reply_target_entity_id: null,
+    compressed: false,
+    conversation: { type: "groupChat", name: "Room" },
+    source_message_key: {
+      source_type: "teams_inbox",
+      source_external_id: "conversation",
+      external_message_id: "message",
+    },
+    metadata: {
+      teams_inbox: {
+        thread_id: "thread",
+        sender: { external_id: "sender", display_name: "Sender", bot: false },
+        mentioned: true,
+        quotes_bot: false,
+      },
+    },
+  };
+  const appendBacklogTerminal = vi.fn(
+    async (input: {
+      terminal: { kind: "agent_msg"; content: string } | { kind: "agent_observed"; reason: string };
+    }) => {
+      const terminalId = createStreamEntryId();
+      const terminalEntry = {
+        id: terminalId,
+        session_id: sessionId,
+        timestamp: 1_000,
+        kind: input.terminal.kind,
+        content:
+          input.terminal.kind === "agent_msg"
+            ? input.terminal.content
+            : { reason: input.terminal.reason },
+        sender_entity_id: null,
+        reply_target_entity_id: null,
+        compressed: false,
+        response_to: {
+          kind: "stream_backlog",
+          from_cursor_exclusive: null,
+          through_cursor_inclusive: { ts: sourceEntry.timestamp, entryId: sourceId },
+          source_entry_ids: [sourceId],
+          count: 1,
+        },
+      } satisfies StreamEntry;
+      return {
+        terminalEntry,
+        responseTo: terminalEntry.response_to,
+        sourceEntries: [sourceEntry],
+      };
+    },
+  );
+  const terminal = {
+    findTerminalCoveringEntry: vi.fn(() => ({ status: "pending" as const })),
+    hydrateBacklogBatch: vi.fn(async () => ({ sourceEntries: [sourceEntry], records: [] })),
+    sealStaleBacklog: vi.fn(async () => null),
+    sealBacklogPrefix: vi.fn(async () => null),
+    appendBacklogTerminal,
+  } as unknown as BacklogTerminalService;
+  const fetchFn = vi.fn(fetchResponse) as unknown as typeof fetch;
+  const runner = new TeamAgentTurnRunner({
+    tenant: "tenant",
+    baseUrl: "http://team-agent:8080",
+    apiToken: "secret",
+    timeoutMs: 1_000,
+    staleMs: 600,
+    terminal,
+    entityRepository: {
+      get: () => ({ canonical_name: "Sender" }) as never,
+      getSelf: () => ({ id: selfId }) as never,
+    },
+    sessions: { get: () => sessionRecord },
+    activity: { projectRepliedTurn },
+    clock: new FixedClock(1_000),
+    ...options,
+    fetchFn,
+  });
+  const input = {
+    sessionId,
+    inboundBatch: {
+      kind: "stream_backlog" as const,
+      entryIds: [sourceId],
+      throughCursorInclusive: { ts: sourceEntry.timestamp, entryId: sourceId },
+    },
+  };
+  return {
+    runner,
+    input,
+    sourceEntry,
+    terminal,
+    appendBacklogTerminal,
+    fetchFn,
+    projectRepliedTurn,
+    ids: { sessionId, sourceId, senderId, selfId, audienceId },
+  };
+}
+
+function openRealHarness(input: {
+  fetchFn: typeof fetch;
+  clock?: ManualClock;
+  staleMs?: number;
+  onGenerating?: TeamAgentTurnRunnerOptions["onGenerating"];
+  onTerminalCommitted?: (entry: StreamEntry) => void;
+  onReconcileAdvance?: (event: {
+    sessionId: SessionId;
+    advancedThrough: { ts: number; entryId: ReturnType<typeof createStreamEntryId> };
+  }) => void;
+}) {
+  const dataDir = mkdtempSync(join(tmpdir(), "borg-team-agent-runner-"));
+  const db = openDatabase(join(dataDir, "borg.db"), {
+    migrations: composeMigrations(streamEntryIndexMigrations, streamWatermarkMigrations),
+  });
+  cleanups.push(() => {
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+  const clock = input.clock ?? new ManualClock(1_000);
+  const entryIndex = new StreamEntryIndexRepository({ db, dataDir });
+  const coordinator = new ChatResponseWatermarkCoordinator({
+    watermarkRepository: new StreamWatermarkRepository({ db, clock }),
+    entryIndex,
+    logger: { warn() {} },
+  });
+  const writer = (sessionId: SessionId) =>
+    new StreamWriter({ dataDir, sessionId, entryIndex, clock });
+  const ingest = vi.fn(async () => ({ ran: true, processedEntries: 0 }));
+  const terminal = new BacklogTerminalService({
+    dataDir,
+    entryIndex,
+    createStreamReader: (sessionId) => new StreamReader({ dataDir, sessionId, entryIndex }),
+    createStreamWriter: writer,
+    coordinator,
+    streamIngestionCoordinator: { ingest } as never,
+    ...(input.onTerminalCommitted === undefined
+      ? {}
+      : { onTerminalCommitted: input.onTerminalCommitted }),
+  });
+  const runner = new TeamAgentTurnRunner({
+    tenant: "tenant",
+    baseUrl: "http://team-agent:8080",
+    apiToken: "secret",
+    timeoutMs: 1_000,
+    staleMs: input.staleMs ?? 600,
+    terminal,
+    entityRepository: {
+      get: () => ({ canonical_name: "Sender" }) as never,
+      getSelf: () => null,
+    },
+    sessions: { get: () => null },
+    activity: { projectRepliedTurn: vi.fn(() => ({}) as never) },
+    clock,
+    ...(input.onGenerating === undefined ? {} : { onGenerating: input.onGenerating }),
+    fetchFn: input.fetchFn,
+  });
+  const worker = new ChatResponseCatchUpWorker({
+    coordinator,
+    prefixBuilder: new ChatResponseBacklogPrefixBuilder({
+      entryIndex,
+      createStreamReader: (sessionId) => new StreamReader({ dataDir, sessionId, entryIndex }),
+    }),
+    entryIndex,
+    repairSessionStreamEntryIndex: async () => ({ inserted: 0 }),
+    runner,
+    ...(input.onReconcileAdvance === undefined
+      ? {}
+      : { onReconcileAdvance: input.onReconcileAdvance }),
+    clock,
+    config: {
+      quietWindowMs: 0,
+      maxWaitMs: 1,
+      backoffBaseMs: 1,
+      maxBackoffMs: 10,
+    },
+  });
+
+  const appendInbox = async (sessionId: SessionId, observedAt: number, content: string) => {
+    const streamWriter = writer(sessionId);
+    try {
+      return await streamWriter.append({
+        kind: "user_msg",
+        content,
+        observed_at: observedAt,
+        sender_entity_id: createEntityId(),
+        conversation: { type: "groupChat", name: "Room" },
+        source_message_key: {
+          source_type: "teams_inbox",
+          source_external_id: "conversation",
+          external_message_id: createStreamEntryId(),
+        },
+        metadata: {
+          teams_inbox: {
+            thread_id: "thread",
+            sender: { external_id: "sender", display_name: "Sender", bot: false },
+            mentioned: true,
+            quotes_bot: false,
+          },
+        },
+      });
+    } finally {
+      streamWriter.close();
+    }
+  };
+
+  return {
+    dataDir,
+    clock,
+    entryIndex,
+    coordinator,
+    ingest,
+    terminal,
+    worker,
+    appendInbox,
+  };
+}
+
+describe("TeamAgentTurnRunner", () => {
+  it("signals a full-turn batch before starting the Team Agent request", async () => {
+    const events: string[] = [];
+    const onGenerating = vi.fn(() => events.push("generating"));
+    const h = harness(
+      async () => {
+        events.push("fetch");
+        return new Response(JSON.stringify({ action: "reply", content: "answer" }), {
+          status: 200,
+        });
+      },
+      { onGenerating },
+    );
+
+    await h.runner.run(h.input);
+
+    expect(onGenerating).toHaveBeenCalledWith({
+      sessionId: h.input.sessionId,
+      entryIds: h.input.inboundBatch.entryIds,
+    });
+    expect(events).toEqual(["generating", "fetch"]);
+  });
+
+  it("does not signal a classifier batch", async () => {
+    const onGenerating = vi.fn();
+    const h = harness(
+      async () =>
+        new Response(JSON.stringify({ action: "silent", reason: "not selected" }), {
+          status: 200,
+        }),
+      { onGenerating },
+    );
+    h.sourceEntry.metadata = {
+      teams_inbox: {
+        thread_id: "thread",
+        sender: { external_id: "sender", display_name: "Sender", bot: false },
+        mentioned: false,
+        quotes_bot: false,
+      },
+    };
+
+    await h.runner.run(h.input);
+
+    expect(onGenerating).not.toHaveBeenCalled();
+  });
+
+  it("keeps the real terminal path and registry lifecycle intact when progress signalling throws", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const clock = new ManualClock(1_000);
+    const waiters = new ResponseWaiterRegistry({ clock, generatingTtlMs: 1_010 });
+    const events: string[] = [];
+    let requestBody: unknown;
+    let signalFetchStarted: () => void = () => {};
+    const fetchStarted = new Promise<void>((resolve) => {
+      signalFetchStarted = resolve;
+    });
+    let resolveFetch: (response: Response) => void = () => {};
+    const deferredFetch = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchFn = vi.fn(async (_url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as unknown;
+      events.push("fetch");
+      signalFetchStarted();
+      return deferredFetch;
+    }) as unknown as typeof fetch;
+    let real!: ReturnType<typeof openRealHarness>;
+    real = openRealHarness({
+      fetchFn,
+      clock,
+      onGenerating: ({ sessionId, entryIds }) => {
+        events.push("generating");
+        waiters.markGenerating({ tenant: "tenant", sessionId, entryIds });
+        throw new Error("progress unavailable");
+      },
+      onTerminalCommitted: (entry) => {
+        expect(real.entryIndex.lookup(entry.id)).not.toBeNull();
+        events.push("terminal-committed");
+        waiters.resolveTerminal("tenant", entry);
+      },
+    });
+    const sessionId = createSessionId();
+    const source = await real.appendInbox(sessionId, 900, "hello");
+    const progressWaiter = waiters.register({
+      tenant: "tenant",
+      sessionId,
+      entryId: source.id,
+      timeoutMs: 1_000,
+    });
+
+    const drain = real.worker.tick(sessionId);
+    await fetchStarted;
+    await expect(progressWaiter.promise).resolves.toEqual({ status: "generating" });
+    const terminalWaiter = waiters.register({
+      tenant: "tenant",
+      sessionId,
+      entryId: source.id,
+      timeoutMs: 1_000,
+      seenGenerating: true,
+    });
+    expect(waiters.size()).toBe(1);
+    expect(events).toEqual(["generating", "fetch"]);
+    expect(requestBody).toEqual({
+      model: "tenant",
+      source: "inbox",
+      thread_id: "thread",
+      sidecar_session_id: sessionId,
+      conversation: { type: "groupChat", name: "Room", external_id: "conversation" },
+      messages: [
+        {
+          entry_id: source.id,
+          text: "hello",
+          sender: { external_id: "sender", display_name: "Sender", bot: false },
+          observed_at: new Date(900).toISOString(),
+          mentioned: true,
+          quotes_bot: false,
+        },
+      ],
+    });
+
+    resolveFetch(
+      new Response(JSON.stringify({ action: "reply", content: "answer" }), { status: 200 }),
+    );
+    await expect(drain).resolves.toMatchObject({ status: "drained", drained: 1 });
+    const answered = await terminalWaiter.promise;
+    expect(answered).toMatchObject({ status: "answered", reply: "answer" });
+    if (answered.status !== "answered") {
+      throw new Error("expected an answered waiter result");
+    }
+    expect(events).toEqual(["generating", "fetch", "terminal-committed"]);
+    expect(
+      real.terminal.findTerminalCoveringEntry({ sessionId, entryId: source.id }),
+    ).toMatchObject({
+      status: "found",
+      terminalEntry: {
+        id: answered.terminal_id,
+        kind: "agent_msg",
+        content: "answer",
+        response_to: {
+          kind: "stream_backlog",
+          from_cursor_exclusive: null,
+          through_cursor_inclusive: { ts: source.timestamp, entryId: source.id },
+          source_entry_ids: [source.id],
+          count: 1,
+        },
+      },
+    });
+  });
+
+  it("retries the same real prefix, resolves only after commit, ingests exactly, and stops cleanly", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const waiters = new ResponseWaiterRegistry();
+    const events: string[] = [];
+    const requests: Array<{ messages: Array<{ entry_id: string }> }> = [];
+    let fetchCount = 0;
+    let signalSecondFetch: () => void = () => {};
+    const secondFetchStarted = new Promise<void>((resolve) => {
+      signalSecondFetch = resolve;
+    });
+    let resolveSecondFetch: (response: Response) => void = () => {};
+    const secondFetch = new Promise<Response>((resolve) => {
+      resolveSecondFetch = resolve;
+    });
+    const fetchFn = vi.fn(async (_url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      fetchCount += 1;
+      requests.push(JSON.parse(String(init?.body)) as (typeof requests)[number]);
+      if (fetchCount === 1) {
+        throw new Error("transport crash");
+      }
+      signalSecondFetch();
+      return secondFetch;
+    }) as unknown as typeof fetch;
+    let real!: ReturnType<typeof openRealHarness>;
+    real = openRealHarness({
+      fetchFn,
+      onTerminalCommitted: (entry) => {
+        expect(real.entryIndex.lookup(entry.id)).not.toBeNull();
+        events.push("durable-commit");
+        waiters.resolveTerminal("tenant", entry);
+      },
+    });
+    const sessionId = createSessionId();
+    const source = await real.appendInbox(sessionId, 900, "hello");
+
+    await expect(real.worker.tick(sessionId)).resolves.toMatchObject({ status: "error" });
+    const waiter = waiters.register({
+      tenant: "tenant",
+      sessionId,
+      entryId: source.id,
+      timeoutMs: 1_000,
+    });
+    let waiterSettled = false;
+    void waiter.promise.then(() => {
+      waiterSettled = true;
+      events.push("waiter-resolved");
+    });
+    const secondDrain = real.worker.tick(sessionId);
+    await secondFetchStarted;
+    const stop = real.worker.stop();
+    let stopSettled = false;
+    void stop.then(() => {
+      stopSettled = true;
+    });
+    await Promise.resolve();
+
+    expect(waiterSettled).toBe(false);
+    expect(stopSettled).toBe(false);
+    expect(requests.map((request) => request.messages.map((message) => message.entry_id))).toEqual([
+      [source.id],
+      [source.id],
+    ]);
+
+    resolveSecondFetch(
+      new Response(JSON.stringify({ action: "reply", content: "answer" }), { status: 200 }),
+    );
+    await expect(secondDrain).resolves.toMatchObject({ status: "drained", drained: 1 });
+    await stop;
+    const answered = await waiter.promise;
+    expect(answered).toMatchObject({ status: "answered", reply: "answer" });
+    if (answered.status !== "answered") {
+      throw new Error("expected an answered waiter result");
+    }
+    expect(events).toEqual(["durable-commit", "waiter-resolved"]);
+    expect(real.ingest).toHaveBeenCalledWith(sessionId, {
+      answeredWindow: {
+        responseTo: {
+          kind: "stream_backlog",
+          from_cursor_exclusive: null,
+          through_cursor_inclusive: { ts: source.timestamp, entryId: source.id },
+          source_entry_ids: [source.id],
+          count: 1,
+        },
+        terminalCursor: {
+          ts: real.entryIndex.lookup(answered.terminal_id)!.timestamp,
+          entryId: answered.terminal_id,
+        },
+      },
+    });
+
+    await expect(real.worker.tick(sessionId)).resolves.toMatchObject({ status: "empty" });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("resolves waiters when real reconciliation discovers a previously committed stamp", async () => {
+    const waiters = new ResponseWaiterRegistry();
+    let real!: ReturnType<typeof openRealHarness>;
+    const onReconcileAdvance = vi.fn(
+      (event: {
+        sessionId: SessionId;
+        advancedThrough: { ts: number; entryId: ReturnType<typeof createStreamEntryId> };
+      }) => {
+        const found = real.terminal.findTerminalCoveringEntry({
+          sessionId: event.sessionId,
+          entryId: event.advancedThrough.entryId,
+        });
+        if (found.status === "found") {
+          waiters.resolveTerminal("tenant", found.terminalEntry);
+        }
+      },
+    );
+    real = openRealHarness({
+      fetchFn: vi.fn() as unknown as typeof fetch,
+      onReconcileAdvance,
+    });
+    const sessionId = createSessionId();
+    const source = await real.appendInbox(sessionId, 900, "already answered");
+    const writer = new StreamWriter({
+      dataDir: real.dataDir,
+      sessionId,
+      entryIndex: real.entryIndex,
+      clock: real.clock,
+    });
+    try {
+      await writer.append({
+        kind: "agent_observed",
+        content: { reason: "committed before crash" },
+        response_to: {
+          kind: "stream_backlog",
+          from_cursor_exclusive: null,
+          through_cursor_inclusive: { ts: source.timestamp, entryId: source.id },
+          source_entry_ids: [source.id],
+          count: 1,
+        },
+      });
+    } finally {
+      writer.close();
+    }
+    const waiter = waiters.register({
+      tenant: "tenant",
+      sessionId,
+      entryId: source.id,
+      timeoutMs: 1_000,
+    });
+
+    await expect(real.worker.tick(sessionId)).resolves.toMatchObject({ status: "empty" });
+    await expect(waiter.promise).resolves.toMatchObject({ status: "observed" });
+    expect(onReconcileAdvance).toHaveBeenCalledWith({
+      sessionId,
+      advancedThrough: { ts: source.timestamp, entryId: source.id },
+    });
+  });
+
+  it("turns a silent response into an observed terminal", async () => {
+    const h = harness(
+      async () =>
+        new Response(JSON.stringify({ action: "silent", reason: "not addressed" }), {
+          status: 200,
+        }),
+    );
+    await h.runner.run(h.input);
+    expect(h.appendBacklogTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminal: { kind: "agent_observed", reason: "not addressed" },
+      }),
+    );
+  });
+
+  it("seals a prefix with any legacy entry instead of repeatedly rejecting its metadata", async () => {
+    const h = harness(
+      async () =>
+        new Response(JSON.stringify({ action: "reply", content: "unused" }), { status: 200 }),
+    );
+    delete h.sourceEntry.metadata;
+
+    await h.runner.run(h.input);
+
+    expect(h.terminal.sealBacklogPrefix).toHaveBeenCalledWith({
+      sessionId: h.input.sessionId,
+      sourceEntryIds: h.input.inboundBatch.entryIds,
+      reason: "Legacy inbox backlog sealed because transport metadata is unavailable",
+    });
+    expect(h.fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("sends a real mixed stale/fresh/stale prefix to Team Agent whole", async () => {
+    const fetchFn = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ action: "reply", content: "mixed answer" }), {
+          status: 200,
+        }),
+    ) as unknown as typeof fetch;
+    const real = openRealHarness({
+      fetchFn,
+      clock: new ManualClock(1_000),
+      staleMs: 500,
+    });
+    const sealStale = vi.spyOn(real.terminal, "sealStaleBacklog");
+    const sessionId = createSessionId();
+    const staleFirst = await real.appendInbox(sessionId, 100, "stale first");
+    const fresh = await real.appendInbox(sessionId, 900, "fresh middle");
+    const staleLast = await real.appendInbox(sessionId, 100, "stale last");
+
+    await expect(real.worker.tick(sessionId)).resolves.toMatchObject({
+      status: "drained",
+      drained: 3,
+    });
+
+    const request = JSON.parse(
+      String((fetchFn as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]?.body),
+    );
+    expect(request.messages.map((message: { entry_id: string }) => message.entry_id)).toEqual([
+      staleFirst.id,
+      fresh.id,
+      staleLast.id,
+    ]);
+    expect(sealStale).not.toHaveBeenCalled();
+    expect(real.coordinator.getWatermark(sessionId)).toEqual({
+      ts: staleLast.timestamp,
+      entryId: staleLast.id,
+    });
+  });
+
+  it("records the owner's reply as a borg_replied activity on the inbox session", async () => {
+    const { runner, input, appendBacklogTerminal, projectRepliedTurn, ids } = harness(async () =>
+      Response.json({ action: "reply", content: "Porównałem role chat i reviewer." }),
+    );
+
+    await runner.run(input);
+
+    expect(appendBacklogTerminal).toHaveBeenCalledTimes(1);
+    const appended = await appendBacklogTerminal.mock.results[0]!.value;
+    expect(projectRepliedTurn).toHaveBeenCalledTimes(1);
+    expect(projectRepliedTurn).toHaveBeenCalledWith({
+      session: expect.objectContaining({
+        session_id: ids.sessionId,
+        source_type: "teams_inbox",
+        audience_entity_id: ids.audienceId,
+        conversation_kind: "channel",
+      }),
+      borgReplied: {
+        kind: "borg_replied",
+        occurredAt: appended.terminalEntry.timestamp,
+        sessionId: ids.sessionId,
+        speakerEntityId: ids.selfId,
+        actorEntityId: ids.selfId,
+        audienceEntityId: ids.audienceId,
+        participantEntityIds: [ids.selfId, ids.senderId, ids.audienceId],
+        sourceStreamEntryIds: [appended.terminalEntry.id],
+      },
+      touch: { at: appended.terminalEntry.timestamp, messageCountDelta: 1 },
+    });
+    const projected = projectRepliedTurn.mock.calls[0]![0] as { session: Record<string, unknown> };
+    expect(projected.session).not.toHaveProperty("message_count");
+    expect(projected.session).not.toHaveProperty("participation_policy");
+  });
+
+  it("dedupes the participant list when the DM sender is the audience", async () => {
+    const { runner, input, projectRepliedTurn, ids } = harness(
+      async () => Response.json({ action: "reply", content: "hi" }),
+      {},
+      { senderIsAudience: true },
+    );
+
+    await runner.run(input);
+
+    expect(projectRepliedTurn).toHaveBeenCalledTimes(1);
+    const projected = projectRepliedTurn.mock.calls[0]![0] as {
+      borgReplied: { participantEntityIds: unknown[] };
+    };
+    expect(projected.borgReplied.participantEntityIds).toEqual([ids.selfId, ids.audienceId]);
+  });
+
+  it("warns and records nothing when the session has no audience or an unensurable record", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const noAudience = harness(
+      async () => Response.json({ action: "reply", content: "hi" }),
+      {},
+      { sessionRecord: { audience_entity_id: null } },
+    );
+    await noAudience.runner.run(noAudience.input);
+    expect(noAudience.appendBacklogTerminal).toHaveBeenCalledTimes(1);
+    expect(noAudience.projectRepliedTurn).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenLastCalledWith("memory-sidecar: inbox reply activity not recorded", {
+      tenant: "tenant",
+      reason: "audience_missing",
+    });
+
+    const emptyLabel = harness(
+      async () => Response.json({ action: "reply", content: "hi" }),
+      {},
+      { sessionRecord: { label: "" } },
+    );
+    await emptyLabel.runner.run(emptyLabel.input);
+    expect(emptyLabel.projectRepliedTurn).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenLastCalledWith("memory-sidecar: inbox reply activity not recorded", {
+      tenant: "tenant",
+      reason: "session_record_incomplete",
+    });
+
+    const missing = harness(
+      async () => Response.json({ action: "reply", content: "hi" }),
+      {},
+      { sessionRecord: null },
+    );
+    await missing.runner.run(missing.input);
+    expect(missing.projectRepliedTurn).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenLastCalledWith("memory-sidecar: inbox reply activity not recorded", {
+      tenant: "tenant",
+      reason: "session_missing",
+    });
+  });
+
+  it("records no activity for a silent response", async () => {
+    const { runner, input, appendBacklogTerminal, projectRepliedTurn } = harness(async () =>
+      Response.json({ action: "silent", reason: "nothing to add" }),
+    );
+
+    await runner.run(input);
+
+    expect(appendBacklogTerminal).toHaveBeenCalledTimes(1);
+    expect(projectRepliedTurn).not.toHaveBeenCalled();
+  });
+
+  it("keeps the committed reply terminal when activity projection fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { runner, input, appendBacklogTerminal, projectRepliedTurn } = harness(async () =>
+      Response.json({ action: "reply", content: "hi" }),
+    );
+    projectRepliedTurn.mockImplementation(() => {
+      throw new Error("Porównałem role chat i reviewer w team-agent.");
+    });
+
+    await expect(runner.run(input)).resolves.toBeUndefined();
+
+    expect(appendBacklogTerminal).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("memory-sidecar: inbox reply activity not recorded", {
+      tenant: "tenant",
+      reason: "projection_failed",
+      error_name: "Error",
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("Porównałem");
+  });
+
+  it("seals a 4xx response as observed", async () => {
+    const h = harness(async () => new Response("bad request", { status: 422 }));
+    await h.runner.run(h.input);
+    expect(h.appendBacklogTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminal: {
+          kind: "agent_observed",
+          reason: "Team Agent rejected inbox batch with HTTP 422",
+        },
+      }),
+    );
+  });
+
+  it("throws on 5xx without stamping", async () => {
+    const h = harness(async () => new Response("failed", { status: 503 }));
+    await expect(h.runner.run(h.input)).rejects.toThrow("HTTP 503");
+    expect(h.appendBacklogTerminal).not.toHaveBeenCalled();
+  });
+
+  it("throws on a malformed 2xx response without stamping", async () => {
+    const h = harness(
+      async () => new Response(JSON.stringify({ action: "reply" }), { status: 200 }),
+    );
+    await expect(h.runner.run(h.input)).rejects.toThrow("invalid 2xx response");
+    expect(h.appendBacklogTerminal).not.toHaveBeenCalled();
+  });
+});

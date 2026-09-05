@@ -6,7 +6,9 @@ import type {
 } from "../attachments/index.js";
 import type {
   StreamCursor,
+  StreamConversation,
   StreamEntry,
+  StreamEntryMetadata,
   StreamResponseTo,
   StreamSourceMessageKey,
 } from "../stream/index.js";
@@ -32,6 +34,9 @@ export type HydratedInboundMessage = {
   sender_entity_id?: EntityId | null;
   audience?: string;
   source_message_key?: StreamSourceMessageKey;
+  observed_at?: number;
+  conversation?: StreamConversation;
+  metadata?: StreamEntryMetadata;
   attachments?: readonly HydratedInboundAttachment[];
 };
 

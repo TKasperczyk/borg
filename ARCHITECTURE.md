@@ -123,10 +123,12 @@ entry point. The HTTP memory sidecar (entry points:
 `src/sidecar/memory-handler.ts`, `scripts/memory-sidecar-main.ts`) is a
 long-lived `node:http` server exposing per-tenant long-term memory as a sibling
 surface over the same Borg substrate. It provides `POST /memory/remember`,
-`POST /memory/append-turn`, `POST /memory/recall`, and unauthenticated
-`GET /healthz`. Authenticated routes use a constant-time `x-borg-token` header
-check, not an `Authorization: Bearer` parser. The handler enforces a 64KB body
-cap and caps recall limits at 50. Sidecar configuration is process-env based:
+`POST /memory/append-turn`, `POST /memory/enqueue`,
+`POST /memory/await-response`, `POST /memory/inbox-progress`, `POST /memory/recall`,
+and unauthenticated `GET /healthz`. Authenticated routes use a constant-time
+`x-borg-token` header check, not an `Authorization: Bearer` parser. The handler
+enforces a 64KB body cap and caps recall limits at 50. Sidecar configuration is
+process-env based:
 `BORG_MEMORY_TOKEN`, `BORG_MEMORY_HOST`, `BORG_MEMORY_PORT`,
 `BORG_MEMORY_MAX_OPEN`, and `BORG_DATA_ROOT`; tenant routing goes through
 `BorgPool`.
@@ -142,7 +144,12 @@ evicts least-recently-used idle beings under `maxOpen`, serializes same-tenant
 exclusive writes through a per-tenant write chain, and exposes `shutdown()` as
 a barrier that rejects new work before draining and closing open beings. A close
 failure fails closed by refusing to reopen that data directory in-process.
-Pooled beings never start schedulers.
+Pooled beings never start schedulers. A narrow per-tenant open-options factory
+can bind host integrations to the Borg being opened without handing a
+bare pooled reference back to those integrations. Background integrations can
+hold a non-exclusive pool lease while work is scheduled or running outside a
+`withTenant()` callback; leased beings are not candidates for automatic LRU
+eviction.
 
 The LLM client is a composition-root dependency. `AnthropicLLMClient` remains
 the default, while `OpenAICompatibleLLMClient` (`src/llm/openai-compatible.ts`)
@@ -748,6 +755,17 @@ drains concurrently with itself. A quiet-window timer with a maximum wait lets a
 burst of messages settle before a turn opens, so messages that arrive together
 are answered together rather than one turn each.
 
+Hosts may supply a catch-up runner and session predicate through `Borg.open`.
+The predicate is checked at startup, on append or pending notification, and
+again immediately before a drain. The default runner is an adapter over the
+normal turn orchestrator. Every runner, custom or default, succeeds only when a
+post-run reconciliation proves the durable response watermark covers the
+worker-supplied prefix; returning without a terminal stamp is retried as a
+failure. If reconciliation advances but stops short of that prefix, the advance
+is partial progress and the remainder is drained immediately. Inbox
+quiet/max-wait values are independent options from episodic stream-ingestion
+settling.
+
 When the worker drains a session it does not open one turn per message. It builds
 a bounded, oldest-first, contiguous prefix of the unanswered backlog and
 coalesces it into a single turn whose input is an inbound batch rather than a
@@ -769,6 +787,16 @@ redelivered or crash-replayed batch is recognized as already answered instead of
 answered twice. When the turn emits, it stamps the answered entries with a
 `response_to` record of the cursor span and source entries it covered, which is
 how the next reconciliation knows the prefix is closed.
+
+Hydration, duplicate-stamp rejection, contiguous-prefix validation and
+`response_to` construction live in one shared backlog-terminal service (entry
+point: `src/cognition/ingestion/backlog-terminal.ts`). Turn post-generation and
+host runners use that same implementation. The inbox facade can append a live
+`agent_msg` or conventional `agent_observed` terminal, find a terminal covering
+an inbound entry, seal a whole pending prefix during a transport transition, or
+seal the maximal stale prefix in one uncapped observed stamp. Live terminals
+trigger exact answered-window ingestion; transition and stale seals use ordinary
+catch-up ingestion, and stale seals stop before receipt-pending or fresh entries.
 
 This durable reply gate is distinct from the best-effort episodic catch-up that
 runs inside every turn. To keep the two from fighting, catch-up episodic
@@ -799,6 +827,30 @@ catch-up worker, advance a responded-through watermark, wait on a quiet-window
 timer, or run the reconcile-before-generate gate. `Borg.enqueueMessage()` plus
 the catch-up worker remains the primary path for response-generating
 transports; sidecar append-turn is completed-turn memory ingest.
+
+When `TEAM_AGENT_BASE_URL` is configured, the sidecar also exposes the durable
+Team Agent inbox routes. `/memory/enqueue` claims a session as `teams_inbox` and
+commits sender, conversation, observation time and transport metadata through
+`Borg.enqueueMessage()` under the tenant's exclusive write chain. On the first
+claim it first seals legacy append-turn backlog through the current tail; the
+runner likewise seals any supplied prefix containing an entry without the inbox
+transport envelope. A prefix is stale only when every entry in it is stale, so a
+mixed stale/fresh batch is sent to Team Agent whole.
+`/memory/await-response` is a read-only long poll using scan-register-scan and
+an in-process many-waiter registry. Waiters resolve from the durable terminal
+commit even if later watermark or ingestion work fails, and reconciliation of a
+previously committed stamp supplies the same notification. Scheduled and
+in-flight drains and registered waiters hold non-exclusive pool leases. Existing
+inbox ownership is sticky across `/memory/context` and `/memory/append-turn`
+refreshes. `/memory/inbox-progress` publishes the in-memory `generating` interim
+state without changing the Stream or response watermark. A re-await carrying
+`seen_generating: true` skips that remembered interim state and waits for a
+terminal or timeout; terminal tombstones reject late progress, and progress
+state expires after the Team Agent request bound. Full-turn runner batches
+publish it immediately before the Team Agent request, while classifier batches
+leave signalling to Team Agent.
+Without `TEAM_AGENT_BASE_URL`, no inbox workers start and these inbox routes
+return 503 while all pre-existing sidecar behavior remains unchanged.
 
 ## A Single Turn End To End
 

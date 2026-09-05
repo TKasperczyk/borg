@@ -76,8 +76,13 @@ import {
   type CognitionRecallContext,
   type DisclosureContext,
 } from "../../../retrieval/index.js";
-import type { IndexedEntryFacts, StreamEntry } from "../../../stream/index.js";
-import { filterActiveStreamEntries, loadSessionStreamEntries } from "../../../stream/index.js";
+import {
+  filterActiveStreamEntries,
+  loadSessionStreamEntries,
+  type IndexedEntryFacts,
+  type StreamConversation,
+  type StreamEntry,
+} from "../../../stream/index.js";
 import type {
   ActionId,
   AttachmentId,
@@ -690,6 +695,7 @@ export async function runRetrievalPhase(input: {
   audienceEntityId: EntityId | null;
   audienceEntity: ReturnType<TurnPhaseCoordinatorOptions["entityRepository"]["get"]> | null;
   currentSenderBorgRole?: BorgRole | null;
+  currentSenderDisplayName?: string | null;
   operatorOnlyDirectivesAllowed?: boolean;
   audienceProfile: ReturnType<TurnPhaseCoordinatorOptions["socialRepository"]["getProfile"]>;
   sessionAudienceRole?: SessionAudienceRole;
@@ -756,6 +762,9 @@ export async function runRetrievalPhase(input: {
   const activeScoringValues = selfContext.activeScoringValues;
   const retrievalScoringFeatures = selfContext.retrievalScoringFeatures;
   const executiveFocusWithStep = selfContext.executiveFocus;
+  const currentVenue: StreamConversation | undefined =
+    input.persistedUserEntry?.conversation ??
+    input.currentUserEntries?.find((entry) => entry.conversation !== undefined)?.conversation;
 
   const retrievalContext = await input.options.turnRetrievalCoordinator.coordinate({
     turnId: input.turnId,
@@ -770,6 +779,10 @@ export async function runRetrievalPhase(input: {
     recallContext,
     disclosureContext,
     audienceEntity: input.audienceEntity,
+    ...(input.currentSenderDisplayName === null || input.currentSenderDisplayName === undefined
+      ? {}
+      : { currentSenderName: input.currentSenderDisplayName }),
+    ...(currentVenue === undefined ? {} : { currentVenue }),
     audienceProfile: input.audienceProfile,
     perception: input.perception,
     workingMemory: input.workingMemory,

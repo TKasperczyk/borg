@@ -79,7 +79,9 @@ function cursorFromThroughColumns(record: StreamEntryIndexRecord): StreamCursor 
   return { ts, entryId };
 }
 
-function parsedSourceEntryIds(record: StreamEntryIndexRecord): readonly StreamEntryId[] | null {
+export function parsedSourceEntryIds(
+  record: StreamEntryIndexRecord,
+): readonly StreamEntryId[] | null {
   if (record.response_to_source_entry_ids === null) {
     return null;
   }

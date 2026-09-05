@@ -12,6 +12,11 @@ import type {
 } from "../autonomy/types.js";
 import type { MoodHistoryEntry, MoodState } from "../memory/affective/types.js";
 import type {
+  ActivityEvent,
+  ActivityEventRecordInput,
+  ActivityVisibleSessionEvent,
+} from "../memory/activity/types.js";
+import type {
   ActionActor,
   ActionRecord,
   ActionRecordPatch,
@@ -92,7 +97,11 @@ import type { MemoryDisclosureLabelMetadata } from "../memory/common/disclosure-
 import type { SocialProfile } from "../memory/social/types.js";
 import type { WorkingMemory } from "../memory/working/types.js";
 import type { PromptKey } from "../cognition/prompts/registry.js";
-import type { IngestionResult } from "../cognition/ingestion/index.js";
+import type {
+  InboxReplyActivityReconcileInput,
+  InboxReplyActivityReconcileResult,
+  IngestionResult,
+} from "../cognition/ingestion/index.js";
 import type { MaintenancePlan } from "../offline/plan-file.js";
 import type { OrchestratorResult } from "../offline/types.js";
 import type {
@@ -137,6 +146,12 @@ import type {
   ValueId,
 } from "../util/ids.js";
 import type { BorgDreamOptions, BorgEpisodeGetOptions, BorgEpisodeSearchOptions } from "./types.js";
+import type {
+  AutobiographicalRecallInput,
+  AutobiographicalRecallResult,
+  AutobiographicalRecallServiceOptions,
+} from "../cognition/autobiographical-recall.js";
+import type { LivedExperienceDaySummary } from "../memory/activity/lived-experience-day-summary.js";
 
 export type BorgIdentityUpdateOptions = {
   throughReview?: boolean;
@@ -225,12 +240,21 @@ export type BorgStreamFacade = {
   ): Promise<StreamEntry[]>;
   tail(n: number, options?: { session?: SessionId }): StreamEntry[];
   reader(options?: { session?: SessionId }): BorgStreamReader;
+  hydrateIndexed(
+    streamEntryIds: readonly StreamEntryId[],
+    options?: { budgetMs?: number; activeOnly?: boolean },
+  ): Promise<Map<StreamEntryId, StreamEntry>>;
 };
 
 export type BorgEpisodicFacade = {
   get(id: EpisodeId, options?: BorgEpisodeGetOptions): Promise<BorgRetrievedEpisode | null>;
   inspect(id: Episode["id"]): Promise<Episode | null>;
   search(query: string, options?: BorgEpisodeSearchOptions): Promise<BorgRetrievedEpisode[]>;
+  searchWithTimeRangeFallback(
+    query: string,
+    options: BorgEpisodeSearchOptions & { timeRange: { start: number; end: number } },
+  ): Promise<{ episodes: BorgRetrievedEpisode[]; timeRangeFallback: boolean }>;
+  recordRetrieval(episodeId: Episode["id"], score: number): void;
   extract(options?: {
     sinceTs?: number;
     sinceCursor?: StreamCursor;
@@ -241,6 +265,14 @@ export type BorgEpisodicFacade = {
   ingest(options?: { session?: SessionId }): Promise<IngestionResult>;
   list(options?: EpisodeListOptions): Promise<EpisodeListResult>;
   listAll(): Promise<Episode[]>;
+  listRecentForSession(options: {
+    sessionId: SessionId;
+    sinceMs: number;
+    limit?: number;
+    audienceEntityId?: EntityId | null;
+    visibleAudienceEntityIds?: readonly EntityId[];
+    crossAudience?: boolean;
+  }): Promise<EpisodeSearchCandidate[]>;
   getStats(id: Episode["id"]): EpisodeStats | null;
 };
 
@@ -334,6 +366,12 @@ export type BorgAutobiographicalPeriodListOptions = {
   limit?: number;
 };
 
+// Row budgets an interactive caller may tighten below Sol's defaults.
+export type AutobiographicalRecallCaps = Pick<
+  AutobiographicalRecallServiceOptions,
+  "sourceCap" | "sessionCap" | "totalCap"
+>;
+
 export type BorgAutobiographicalUpsertPeriod = {
   (input: BorgAutobiographicalPeriodInput & { id?: undefined }): AutobiographicalPeriod;
   (
@@ -396,6 +434,15 @@ export type BorgOpenQuestionResolutionInput = {
 };
 
 export type BorgSelfFacade = {
+  // The memory owner's own closed-day summaries (offline day summarizer), newest first, limited
+  // after ordering.
+  livedExperience: {
+    listDaySummaries(options: {
+      fromMs: number;
+      toMs: number;
+      limit?: number;
+    }): LivedExperienceDaySummary[];
+  };
   values: {
     get(valueId: ValueId): ValueRecord | null;
     list(): ValueRecord[];
@@ -456,6 +503,14 @@ export type BorgSelfFacade = {
     listContradictionEvents(traitId: TraitId): BorgTraitContradictionEvent[];
   };
   autobiographical: {
+    // What the memory owner did, decided, said, and observed in a period, assembled by the same
+    // service Sol's evidence ledger reads. Gated like Sol: a temporal cue, a self audience, an
+    // operator session, or a reflective turn opens it; otherwise null. Rows carry disclosure
+    // labels and the caller filters them for its audience.
+    recall(
+      input: AutobiographicalRecallInput,
+      options?: AutobiographicalRecallCaps,
+    ): Promise<AutobiographicalRecallResult | null>;
     currentPeriod(): AutobiographicalPeriod | null;
     listPeriods(options?: BorgAutobiographicalPeriodListOptions): AutobiographicalPeriod[];
     upsertPeriod: BorgAutobiographicalUpsertPeriod;
@@ -815,6 +870,50 @@ export type BorgCommitmentsFacade = {
   countRevoked(): number;
   countExpired(): number;
   countCanonicalized(): number;
+};
+
+export type BorgActivityFacade = {
+  record(input: ActivityEventRecordInput): ActivityEvent;
+  projectObservedTurn(input: BorgActivityObservedTurnProjectionInput): {
+    userContact: ActivityEvent;
+    session: SessionRecord;
+  };
+  projectRepliedTurn(input: BorgActivityRepliedTurnProjectionInput): {
+    borgReplied: ActivityEvent;
+    session: SessionRecord;
+  };
+  projectCompletedTurn(input: BorgActivityCompletedTurnProjectionInput): {
+    userContact: ActivityEvent;
+    borgReplied: ActivityEvent;
+    session: SessionRecord;
+  };
+  listObservedGroupAudienceEntityIdsForSpeaker(speakerEntityId: EntityId): EntityId[];
+  listRecentVisibleOtherSessionEvents(input: {
+    currentSessionId: SessionId;
+    audienceEntityIds: readonly EntityId[];
+    sinceMs: number;
+    limit: number;
+    kinds?: readonly ActivityVisibleSessionEvent["kind"][];
+  }): ActivityVisibleSessionEvent[];
+};
+
+export type BorgActivityObservedTurnProjectionInput = {
+  session: SessionEnsureInput;
+  userContact: ActivityEventRecordInput;
+  touch: SessionTouchUpdate;
+};
+
+export type BorgActivityRepliedTurnProjectionInput = {
+  session: SessionEnsureInput;
+  borgReplied: ActivityEventRecordInput;
+  touch: SessionTouchUpdate;
+};
+
+export type BorgActivityCompletedTurnProjectionInput = {
+  session: SessionEnsureInput;
+  userContact: ActivityEventRecordInput;
+  borgReplied: ActivityEventRecordInput;
+  touch: SessionTouchUpdate;
 };
 
 export type BorgCreatorDirectivesFacade = {
@@ -1264,8 +1363,55 @@ export type BorgInboxCatchUpController = {
   tick(sessionId: SessionId): Promise<BorgInboxCatchUpDrainResult>;
 };
 
+export type BorgAppendBacklogTerminalInput = {
+  sessionId: SessionId;
+  sourceEntryIds: readonly StreamEntryId[];
+  terminal: { kind: "agent_msg"; content: string } | { kind: "agent_observed"; reason: string };
+  audience?: string;
+  turnId?: string;
+};
+
+export type BorgAppendBacklogTerminalResult = {
+  terminalEntry: StreamEntry;
+  responseTo: NonNullable<StreamEntry["response_to"]>;
+  sourceEntries: readonly StreamEntry[];
+};
+
+export type BorgFindTerminalCoveringEntryResult =
+  | { status: "unknown_entry" }
+  | { status: "session_mismatch" }
+  | { status: "pending" }
+  | {
+      status: "found";
+      terminalEntry: StreamEntry;
+      responseTo: NonNullable<StreamEntry["response_to"]>;
+    };
+
 export type BorgInboxFacade = {
   catchUp: BorgInboxCatchUpController;
+  appendBacklogTerminal(
+    input: BorgAppendBacklogTerminalInput,
+  ): Promise<BorgAppendBacklogTerminalResult>;
+  sealPendingBacklog(input: {
+    sessionId: SessionId;
+    reason?: string;
+    audience?: string;
+    turnId?: string;
+  }): Promise<BorgAppendBacklogTerminalResult | null>;
+  sealStaleBacklog(input: {
+    sessionId: SessionId;
+    staleBefore: number;
+    reason?: string;
+    audience?: string;
+    turnId?: string;
+  }): Promise<BorgAppendBacklogTerminalResult | null>;
+  findTerminalCoveringEntry(input: {
+    sessionId: SessionId;
+    entryId: StreamEntryId;
+  }): BorgFindTerminalCoveringEntryResult;
+  reconcileReplyActivity(
+    input: InboxReplyActivityReconcileInput,
+  ): InboxReplyActivityReconcileResult;
 };
 
 export type BorgWorkmemFacade = {
@@ -1332,6 +1478,7 @@ export type BorgFacades = {
   semantic: BorgSemanticFacade;
   relationalSlots: BorgRelationalSlotsFacade;
   commitments: BorgCommitmentsFacade;
+  activity: BorgActivityFacade;
   creatorDirectives: BorgCreatorDirectivesFacade;
   identity: BorgIdentityFacade;
   correction: BorgCorrectionFacade;

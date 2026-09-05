@@ -16,6 +16,10 @@ export type HydrateStreamEntriesByIdInput = {
   entryIndex?: Pick<StreamEntryIndexRepository, "lookupMany">;
   createStreamReader?: (sessionId: SessionId) => StreamReader;
   fallbackSessionIds?: readonly SessionId[];
+  budgetMs?: number;
+  // Active state is an index fact. Requiring it also disables the reader fallback,
+  // which cannot establish whether a stream-only entry has been quarantined.
+  activeOnly?: boolean;
 };
 
 export function readStreamEntryAtOffset(input: {
@@ -88,11 +92,14 @@ export function readStreamEntryAtOffset(input: {
 export async function hydrateStreamEntriesById(
   input: HydrateStreamEntriesByIdInput,
 ): Promise<Map<StreamEntryId, StreamEntry>> {
+  const deadlineAt =
+    input.budgetMs === undefined ? null : Date.now() + Math.max(0, Math.floor(input.budgetMs));
+  const hasBudget = () => deadlineAt === null || Date.now() < deadlineAt;
   const uniqueIds = [...new Set(input.streamEntryIds)];
   const pendingIds = new Set<StreamEntryId>(uniqueIds);
   const entries = new Map<StreamEntryId, StreamEntry>();
 
-  if (pendingIds.size === 0) {
+  if (pendingIds.size === 0 || !hasBudget()) {
     return entries;
   }
 
@@ -100,9 +107,17 @@ export async function hydrateStreamEntriesById(
     const indexedEntries = input.entryIndex.lookupMany([...pendingIds]);
 
     for (const streamEntryId of [...pendingIds]) {
+      if (!hasBudget()) {
+        return entries;
+      }
       const record = indexedEntries.get(streamEntryId);
 
       if (record === undefined) {
+        continue;
+      }
+
+      if (input.activeOnly === true && !record.active) {
+        pendingIds.delete(streamEntryId);
         continue;
       }
 
@@ -111,6 +126,10 @@ export async function hydrateStreamEntriesById(
         sessionId: record.session_id,
         byteOffset: record.byte_offset,
       });
+
+      if (!hasBudget()) {
+        return entries;
+      }
 
       if (entry?.id !== streamEntryId) {
         continue;
@@ -121,6 +140,10 @@ export async function hydrateStreamEntriesById(
     }
   }
 
+  if (input.activeOnly === true) {
+    return entries;
+  }
+
   if (pendingIds.size === 0 || input.createStreamReader === undefined) {
     return entries;
   }
@@ -129,6 +152,9 @@ export async function hydrateStreamEntriesById(
 
   for (const sessionId of fallbackSessionIds) {
     for await (const entry of input.createStreamReader(sessionId).iterate()) {
+      if (!hasBudget()) {
+        return entries;
+      }
       if (!pendingIds.has(entry.id)) {
         continue;
       }

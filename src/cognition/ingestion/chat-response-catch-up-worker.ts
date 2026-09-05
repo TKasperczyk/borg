@@ -1,10 +1,10 @@
 /*
  * v1 delivery contract: Inbound is durable (committed before ack). Reply generation is replay-safe (cursor-stamped response_to + reconcile-before-generate; at-least-once). External delivery is NOT auto-retried by borg (no durable outbox in v1). Accepted D1 loss window: a crash after the stamped terminal append but before the transport delivers leaves the reply recorded-but-possibly-undelivered, not retried. Dedup is per source_message_key via the single-writer daemon's in-process serialization; cross-process concurrent writers are out of v1 scope.
  */
-import type { StreamEntry, StreamEntryIndexRepository } from "../../stream/index.js";
+import type { StreamCursor, StreamEntry, StreamEntryIndexRepository } from "../../stream/index.js";
 import type { Clock } from "../../util/clock.js";
-import { describeError, SessionBusyError } from "../../util/errors.js";
-import type { SessionId } from "../../util/ids.js";
+import { CognitionError, describeError, SessionBusyError } from "../../util/errors.js";
+import type { SessionId, StreamEntryId } from "../../util/ids.js";
 import type { TurnOrchestrator } from "../turn-orchestrator.js";
 
 import type { ChatResponseBacklogPrefixBuilder } from "./backlog-prefix.js";
@@ -19,6 +19,7 @@ type SessionState = {
   timer: TimeoutHandle | null;
   backoffMs: number | null;
   repairOnly: boolean;
+  lease: ChatResponseCatchUpLease | null;
 };
 
 type ScheduleReason = "append" | "startup" | "in_flight_settled" | "has_more" | "retry";
@@ -38,12 +39,51 @@ export type DrainResult = {
   error?: string;
 };
 
+export type ChatResponseCatchUpRunInput = {
+  sessionId: SessionId;
+  inboundBatch: {
+    kind: "stream_backlog";
+    entryIds: readonly StreamEntryId[];
+    throughCursorInclusive: StreamCursor;
+  };
+};
+
+export type ChatResponseCatchUpRunner = {
+  run(input: ChatResponseCatchUpRunInput): Promise<void>;
+};
+
+export type ChatResponseCatchUpLease = {
+  release(): void;
+};
+
+export type ChatResponseReconcileAdvance = {
+  sessionId: SessionId;
+  advancedThrough: StreamCursor;
+};
+
+export class TurnOrchestratorChatResponseCatchUpRunner implements ChatResponseCatchUpRunner {
+  constructor(private readonly turnOrchestrator: Pick<TurnOrchestrator, "run">) {}
+
+  async run(input: ChatResponseCatchUpRunInput): Promise<void> {
+    await this.turnOrchestrator.run({
+      sessionId: input.sessionId,
+      origin: "user",
+      lockMode: "try",
+      inboundBatch: input.inboundBatch,
+    });
+  }
+}
+
 export type ChatResponseCatchUpWorkerOptions = {
-  coordinator: Pick<ChatResponseWatermarkCoordinator, "reconcile">;
+  coordinator: Pick<ChatResponseWatermarkCoordinator, "reconcile" | "compareCursors">;
   prefixBuilder: Pick<ChatResponseBacklogPrefixBuilder, "build">;
   entryIndex: Pick<StreamEntryIndexRepository, "listSessionIdsWithPendingResponseBacklog">;
   repairSessionStreamEntryIndex: (sessionId: SessionId) => Promise<unknown>;
-  turnOrchestrator: Pick<TurnOrchestrator, "run">;
+  runner?: ChatResponseCatchUpRunner;
+  turnOrchestrator?: Pick<TurnOrchestrator, "run">;
+  sessionPredicate?: (sessionId: SessionId) => boolean;
+  acquireLease?: () => ChatResponseCatchUpLease;
+  onReconcileAdvance?: (event: ChatResponseReconcileAdvance) => void;
   clock: Clock;
   setTimeoutFn?: SetTimeoutFn;
   clearTimeoutFn?: ClearTimeoutFn;
@@ -80,12 +120,23 @@ export class ChatResponseCatchUpWorker {
   private started = false;
   private stopping = false;
   private startupScan: Promise<void> | null = null;
+  private startupLease: ChatResponseCatchUpLease | null = null;
+  private readonly runner: ChatResponseCatchUpRunner;
 
   constructor(private readonly options: ChatResponseCatchUpWorkerOptions) {
     this.clock = options.clock;
     this.setTimeoutFn =
       options.setTimeoutFn ?? ((callback, delayMs) => setTimeout(callback, delayMs));
     this.clearTimeoutFn = options.clearTimeoutFn ?? ((handle) => clearTimeout(handle));
+    if (options.runner !== undefined) {
+      this.runner = options.runner;
+    } else if (options.turnOrchestrator !== undefined) {
+      this.runner = new TurnOrchestratorChatResponseCatchUpRunner(options.turnOrchestrator);
+    } else {
+      throw new CognitionError("Chat response catch-up worker requires a runner", {
+        code: "CHAT_RESPONSE_RUNNER_REQUIRED",
+      });
+    }
   }
 
   start(): void {
@@ -95,12 +146,18 @@ export class ChatResponseCatchUpWorker {
 
     this.stopping = false;
     this.started = true;
+    const startupLease = this.acquireBackgroundLease();
+    this.startupLease = startupLease;
     this.startupScan = this.runStartupScan()
       .catch((error) => {
         this.logError("startup scan failed", error);
       })
       .finally(() => {
         this.startupScan = null;
+        startupLease?.release();
+        if (this.startupLease === startupLease) {
+          this.startupLease = null;
+        }
       });
   }
 
@@ -108,11 +165,12 @@ export class ChatResponseCatchUpWorker {
     this.started = false;
     this.stopping = true;
 
-    for (const state of this.sessionStates.values()) {
+    for (const [sessionId, state] of this.sessionStates) {
       if (state.timer !== null) {
         this.clearTimeoutFn(state.timer);
         state.timer = null;
       }
+      this.releaseSessionLeaseIfIdle(sessionId);
     }
 
     if (options.graceful === false) {
@@ -145,13 +203,20 @@ export class ChatResponseCatchUpWorker {
       if (!isQueuedUserMessage(entry)) {
         continue;
       }
+      if (!this.acceptsSession(entry.session_id)) {
+        continue;
+      }
 
-      this.onPendingSession(entry.session_id, entry.timestamp);
+      this.markPending(entry.session_id, entry.timestamp);
+      this.schedule(entry.session_id, "append");
     }
   }
 
   onPendingSession(sessionId: SessionId, pendingAt: number): void {
     if (!this.started || this.stopping) {
+      return;
+    }
+    if (!this.acceptsSession(sessionId)) {
       return;
     }
 
@@ -170,9 +235,12 @@ export class ChatResponseCatchUpWorker {
       if (!this.started || this.stopping) {
         return;
       }
+      if (!this.acceptsSession(sessionId)) {
+        continue;
+      }
 
       try {
-        const { watermark } = this.options.coordinator.reconcile(sessionId);
+        const { watermark } = this.reconcile(sessionId);
         const prefix = await this.options.prefixBuilder.build({
           sessionId,
           fromCursorExclusive: watermark,
@@ -211,11 +279,13 @@ export class ChatResponseCatchUpWorker {
       state.timer = null;
     }
 
+    this.ensureSessionLease(state);
     const delayMs = this.delayFor(state, reason);
     state.timer = this.setTimeoutFn(() => {
       state.timer = null;
 
       if (!this.started || this.stopping) {
+        this.releaseSessionLeaseIfIdle(sessionId);
         return;
       }
 
@@ -231,6 +301,16 @@ export class ChatResponseCatchUpWorker {
     state.repairOnly = false;
 
     try {
+      if (!this.acceptsSession(sessionId)) {
+        state.backoffMs = null;
+        return {
+          sessionId,
+          status: "empty",
+          drained: 0,
+          hasMore: false,
+        };
+      }
+
       if (repairOnly) {
         await this.options.repairSessionStreamEntryIndex(sessionId);
         state.backoffMs = null;
@@ -244,7 +324,7 @@ export class ChatResponseCatchUpWorker {
         };
       }
 
-      const { watermark } = this.options.coordinator.reconcile(sessionId);
+      const { watermark } = this.reconcile(sessionId);
       const prefix = await this.options.prefixBuilder.build({
         sessionId,
         fromCursorExclusive: watermark,
@@ -265,10 +345,8 @@ export class ChatResponseCatchUpWorker {
         throw new Error("Chat response catch-up prefix included entries without a through cursor");
       }
 
-      await this.options.turnOrchestrator.run({
+      await this.runner.run({
         sessionId,
-        origin: "user",
-        lockMode: "try",
         inboundBatch: {
           kind: "stream_backlog",
           entryIds: prefix.entryIds,
@@ -276,7 +354,33 @@ export class ChatResponseCatchUpWorker {
         },
       });
 
+      const reconciled = this.reconcile(sessionId).watermark;
+      const coversSuppliedPrefix =
+        reconciled !== null &&
+        this.options.coordinator.compareCursors(
+          sessionId,
+          reconciled,
+          prefix.throughCursorInclusive,
+        ) >= 0;
+      if (!coversSuppliedPrefix && !this.watermarkAdvanced(sessionId, watermark, reconciled)) {
+        throw new CognitionError("Chat response runner did not durably cover its supplied prefix", {
+          code: "CHAT_RESPONSE_RUNNER_PREFIX_NOT_COVERED",
+        });
+      }
+
       state.backoffMs = null;
+
+      if (!coversSuppliedPrefix) {
+        this.markPending(sessionId, this.clock.now());
+        const coveredEntryIndex =
+          reconciled === null ? -1 : prefix.entryIds.indexOf(reconciled.entryId);
+        return {
+          sessionId,
+          status: "drained",
+          drained: coveredEntryIndex + 1,
+          hasMore: true,
+        };
+      }
 
       if (prefix.hasMore) {
         this.markPending(sessionId, this.clock.now());
@@ -307,6 +411,7 @@ export class ChatResponseCatchUpWorker {
     let result: DrainResult | undefined;
     let promise: Promise<DrainResult>;
 
+    this.ensureSessionLease(this.ensureSessionState(sessionId));
     promise = this.drain(sessionId)
       .then((drainResult) => {
         result = drainResult;
@@ -317,27 +422,31 @@ export class ChatResponseCatchUpWorker {
           this.inFlight.delete(sessionId);
         }
 
-        if (!this.started || this.stopping) {
-          return;
+        try {
+          if (!this.started || this.stopping) {
+            return;
+          }
+
+          const state = this.sessionStates.get(sessionId);
+
+          if (state === undefined || state.oldestPendingAt === null) {
+            return;
+          }
+
+          if (result?.status === "busy" || result?.status === "error") {
+            this.schedule(sessionId, "retry");
+            return;
+          }
+
+          if (result?.hasMore === true) {
+            this.schedule(sessionId, "has_more");
+            return;
+          }
+
+          this.schedule(sessionId, "in_flight_settled");
+        } finally {
+          this.releaseSessionLeaseIfIdle(sessionId);
         }
-
-        const state = this.sessionStates.get(sessionId);
-
-        if (state === undefined || state.oldestPendingAt === null) {
-          return;
-        }
-
-        if (result?.status === "busy" || result?.status === "error") {
-          this.schedule(sessionId, "retry");
-          return;
-        }
-
-        if (result?.hasMore === true) {
-          this.schedule(sessionId, "has_more");
-          return;
-        }
-
-        this.schedule(sessionId, "in_flight_settled");
       });
 
     this.inFlight.set(sessionId, promise);
@@ -454,6 +563,7 @@ export class ChatResponseCatchUpWorker {
         timer: null,
         backoffMs: null,
         repairOnly: false,
+        lease: null,
       };
       this.sessionStates.set(sessionId, state);
     }
@@ -489,7 +599,59 @@ export class ChatResponseCatchUpWorker {
     state.backoffMs = Math.min(next, this.options.config.maxBackoffMs);
   }
 
+  private reconcile(sessionId: SessionId) {
+    const result = this.options.coordinator.reconcile(sessionId);
+    if (result.advancedThrough !== null) {
+      try {
+        this.options.onReconcileAdvance?.({
+          sessionId,
+          advancedThrough: result.advancedThrough,
+        });
+      } catch (error) {
+        this.logError(`reconcile observer failed for session ${sessionId}`, error);
+      }
+    }
+    return result;
+  }
+
+  private watermarkAdvanced(
+    sessionId: SessionId,
+    before: StreamCursor | null,
+    after: StreamCursor | null,
+  ): boolean {
+    if (after === null) {
+      return false;
+    }
+    return before === null || this.options.coordinator.compareCursors(sessionId, after, before) > 0;
+  }
+
+  private acquireBackgroundLease(): ChatResponseCatchUpLease | null {
+    try {
+      return this.options.acquireLease?.() ?? null;
+    } catch (error) {
+      this.logError("failed to acquire background lease", error);
+      return null;
+    }
+  }
+
+  private ensureSessionLease(state: SessionState): void {
+    state.lease ??= this.acquireBackgroundLease();
+  }
+
+  private releaseSessionLeaseIfIdle(sessionId: SessionId): void {
+    const state = this.sessionStates.get(sessionId);
+    if (state === undefined || state.timer !== null || this.inFlight.has(sessionId)) {
+      return;
+    }
+    state.lease?.release();
+    state.lease = null;
+  }
+
   private logError(message: string, error: unknown): void {
     console.error(`Chat response catch-up worker ${message}: ${describeError(error)}`);
+  }
+
+  private acceptsSession(sessionId: SessionId): boolean {
+    return this.options.sessionPredicate?.(sessionId) ?? true;
   }
 }

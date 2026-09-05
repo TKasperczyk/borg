@@ -364,10 +364,16 @@ function createRecallExpansionResponse() {
     tool_calls: [
       {
         id: "toolu_recall_expansion",
-        name: "EmitRecallExpansion",
+        name: "EmitRecallQueryPlan",
         input: {
-          facets: [],
+          resolved_query: "Recall the current focus",
+          semantic_variants: [
+            { strategy: "verbatim_preserving", query: "Recall the current focus" },
+            { strategy: "memory_owner_voice", query: "I remember the current focus" },
+            { strategy: "aspect_focused", query: "The current focus's key aspect" },
+          ],
           named_terms: [],
+          typed_queries: [],
         },
       },
     ],

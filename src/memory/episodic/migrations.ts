@@ -167,4 +167,18 @@ export const episodicMigrations = [
       `);
     },
   },
+  {
+    id: 4,
+    name: "episode_source_stream_ids",
+    up: (db) => {
+      if (!tableHasColumn(db, "episode_index", "source_stream_ids")) {
+        db.exec(`
+          ALTER TABLE episode_index
+          ADD COLUMN source_stream_ids TEXT NOT NULL DEFAULT '[]';
+        `);
+      }
+
+      db.exec("DELETE FROM episode_index_metadata WHERE key = 'lance_backfilled_at'");
+    },
+  },
 ] as const satisfies readonly Migration[];

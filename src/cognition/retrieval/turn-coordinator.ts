@@ -43,6 +43,8 @@ import { deriveProceduralContext } from "../procedural/context-derivation.js";
 import type { PerceptionResult } from "../types.js";
 import { correctionMemoryDisclosureLabel } from "../../memory/common/disclosure-serializers.js";
 import type { SourceStreamAudienceDisclosureResolver } from "../../memory/common/index.js";
+import type { StreamConversation } from "../../stream/index.js";
+import type { LivedExperienceDaySummaryRepository } from "../../memory/activity/lived-experience-day-summary.js";
 
 function buildSkillSelectionQuery(userMessage: string, entities: readonly string[]): string {
   return [userMessage, ...entities]
@@ -113,9 +115,14 @@ export type TurnRetrievalCoordinatorOptions = {
   moodRepository: Pick<MoodRepository, "current" | "history">;
   retrievalPipeline: Pick<RetrievalPipeline, "recallEpisodesForCognition">;
   skillSelector: Pick<SkillSelector, "select">;
+  // Optional: the owner's closed-day summaries reach the recall planner as OWNER_LIVED_EXPERIENCE.
+  livedExperienceDaySummaryRepository?: Pick<LivedExperienceDaySummaryRepository, "listForWindow">;
   clock: Clock;
   tracer?: TurnTracer;
 };
+
+const PLANNER_LIVED_EXPERIENCE_WINDOW_MS = 7 * 24 * 60 * 60_000;
+const PLANNER_LIVED_EXPERIENCE_LIMIT = 7;
 
 export type TurnRetrievalCoordinatorInput = {
   turnId: string;
@@ -127,6 +134,8 @@ export type TurnRetrievalCoordinatorInput = {
   recallContext: CognitionRecallContext;
   disclosureContext: DisclosureContext;
   audienceEntity: EntityRecord | null;
+  currentSenderName?: string;
+  currentVenue?: StreamConversation;
   audienceProfile: SocialProfile | null;
   perception: PerceptionResult;
   workingMemory: WorkingMemory;
@@ -275,6 +284,30 @@ export class TurnRetrievalCoordinator {
     });
     const activeValues = input.activeValues ?? selectActiveScoringValues(input.selfSnapshot.values);
     const goalSelection = selectGoalDescriptions(input.selfSnapshot.goals, input.executiveFocus);
+    const memoryOwner = this.options.entityRepository.getSelf();
+    const nowMsForPlanner = this.options.clock.now();
+    const ownerLivedExperience =
+      this.options.livedExperienceDaySummaryRepository === undefined
+        ? undefined
+        : this.options.livedExperienceDaySummaryRepository
+            .listForWindow({
+              fromMs: nowMsForPlanner - PLANNER_LIVED_EXPERIENCE_WINDOW_MS,
+              toMs: nowMsForPlanner,
+              limit: PLANNER_LIVED_EXPERIENCE_LIMIT,
+              ...(memoryOwner === null ? {} : { selfEntityId: memoryOwner.id }),
+            })
+            .sort((a, b) => b.day_start_ms - a.day_start_ms)
+            .map((summary) => ({
+              day: summary.utc_day,
+              gist: summary.gist,
+              salience: summary.salience,
+              disclosure: {
+                class: summary.disclosure_label.disclosureClass,
+                origin_audience_entity_ids: [...summary.disclosure_label.originAudienceEntityIds],
+                private_to_entity_ids: [...summary.disclosure_label.privateToEntityIds],
+                public_to_entity_ids: [...summary.disclosure_label.publicToEntityIds],
+              },
+            }));
     const attentionWeights = computeWeights(input.perception.mode, {
       currentGoals: input.selfSnapshot.goals,
       hasActiveValues: activeValues.length > 0,
@@ -310,6 +343,21 @@ export class TurnRetrievalCoordinator {
               ...(input.inputAudience === undefined ? [] : [input.inputAudience]),
             ],
       entityTerms: input.perception.entities,
+      recallQueryPlannerContext: {
+        contextTurns: input.recentMessages,
+        ...(ownerLivedExperience === undefined ? {} : { ownerLivedExperience }),
+        identity: {
+          ...(memoryOwner === null ? {} : { memoryOwnerName: memoryOwner.canonical_name }),
+          ...(input.currentSenderName === undefined
+            ? {}
+            : { currentSenderName: input.currentSenderName }),
+          ...(input.audienceEntity === null
+            ? {}
+            : { currentAudienceName: input.audienceEntity.canonical_name }),
+          ...(input.currentVenue === undefined ? {} : { currentVenue: input.currentVenue }),
+          entityTerms: input.perception.entities,
+        },
+      },
       ...(input.currentTurnAttachmentIds === undefined ||
       input.currentTurnAttachmentIds.length === 0
         ? {}

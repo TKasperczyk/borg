@@ -20,7 +20,12 @@ import {
   loadConfig,
   type OpenAIChatCompletionsClient,
 } from "../src/index.js";
-import { createMemoryHandler } from "../src/sidecar/memory-handler.js";
+import {
+  createMemoryHandler,
+  DEFAULT_RECENT_ACTIVITY_LIMIT,
+  DEFAULT_RECENT_ACTIVITY_WINDOW_MS,
+  memoryRecallSemanticVariantCountFromEnv,
+} from "../src/sidecar/memory-handler.js";
 import {
   memoryCommitmentExtractionBudgetFromEnv,
   memoryCommitmentExtractionEnabledFromEnv,
@@ -37,6 +42,10 @@ import {
   memoryTraceEnabledFromEnv,
   memoryTraceMaxTenantsFromEnv,
 } from "../src/sidecar/memory-trace.js";
+import { ResponseWaiterRegistry } from "../src/sidecar/response-waiter-registry.js";
+import { TeamAgentTurnRunner } from "../src/sidecar/team-agent-turn-runner.js";
+import { teamsInboxConfigFromEnv } from "../src/sidecar/teams-inbox-config.js";
+import { SystemClock } from "../src/util/clock.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -67,6 +76,39 @@ const recallAbstainThreshold = Number.isFinite(recallAbstainThresholdRaw)
 // caller's recall timeout (team-agent: memory.recall_timeout, 6s on prod).
 const recallDeadlineMsRaw = Number(process.env.BORG_RECALL_DEADLINE_MS ?? 5000);
 const recallDeadlineMs = Number.isFinite(recallDeadlineMsRaw) ? recallDeadlineMsRaw : 5000;
+const recentActivityWindowMsRaw = Number(
+  process.env.BORG_MEMORY_RECENT_ACTIVITY_WINDOW_MS ?? DEFAULT_RECENT_ACTIVITY_WINDOW_MS,
+);
+const recentActivityWindowMs =
+  Number.isFinite(recentActivityWindowMsRaw) && recentActivityWindowMsRaw >= 0
+    ? Math.floor(recentActivityWindowMsRaw)
+    : DEFAULT_RECENT_ACTIVITY_WINDOW_MS;
+const recentActivityLimitRaw = Number(
+  process.env.BORG_MEMORY_RECENT_ACTIVITY_LIMIT ?? DEFAULT_RECENT_ACTIVITY_LIMIT,
+);
+const recentActivityLimit =
+  Number.isFinite(recentActivityLimitRaw) && recentActivityLimitRaw > 0
+    ? Math.floor(recentActivityLimitRaw)
+    : DEFAULT_RECENT_ACTIVITY_LIMIT;
+const recencyPriorWeightEnv = process.env.BORG_MEMORY_RECENCY_PRIOR_WEIGHT?.trim() || undefined;
+const recencyPriorHalfLifeEnv =
+  process.env.BORG_MEMORY_RECENCY_PRIOR_HALF_LIFE_HOURS?.trim() || undefined;
+const recencyPriorEnabled = Boolean(recencyPriorWeightEnv) || Boolean(recencyPriorHalfLifeEnv);
+const recencyPriorWeightRaw = Number(recencyPriorWeightEnv ?? 0.15);
+const recencyPriorHalfLifeRaw = Number(recencyPriorHalfLifeEnv ?? 36);
+const recencyPrior = recencyPriorEnabled
+  ? {
+      weight:
+        Number.isFinite(recencyPriorWeightRaw) && recencyPriorWeightRaw >= 0
+          ? Math.min(1, recencyPriorWeightRaw)
+          : 0.15,
+      halfLifeHours:
+        Number.isFinite(recencyPriorHalfLifeRaw) && recencyPriorHalfLifeRaw > 0
+          ? recencyPriorHalfLifeRaw
+          : 36,
+    }
+  : undefined;
+const recallSemanticVariantCount = memoryRecallSemanticVariantCountFromEnv(process.env);
 // Bound every provider call so a hung kratos can't pin a request + pool slot
 // (and block shutdown) indefinitely.
 const requestTimeoutMs = Number(process.env.BORG_MEMORY_LLM_TIMEOUT_MS ?? 120_000);
@@ -133,21 +175,68 @@ const traceRegistry = memoryTraceEnabledFromEnv(process.env)
 // pass it to BorgPool: each being must load <root>/<tenant>/config.json itself.
 const sidecarConfig = loadConfig({ env: process.env, dataDir: root });
 const selfName = memorySelfNameFromEnv(process.env);
+const teamsInboxConfig = teamsInboxConfigFromEnv(process.env);
+const sidecarClock = new SystemClock();
+let pool!: BorgPool;
+const inboxWaiters = teamsInboxConfig.enabled
+  ? new ResponseWaiterRegistry({
+      acquireTenantLease: (tenantId) => pool.acquireBackgroundLease(tenantId),
+      clock: sidecarClock,
+      generatingTtlMs: teamsInboxConfig.timeoutMs + 10_000,
+    })
+  : undefined;
 
-const pool = new BorgPool({
+pool = new BorgPool({
   root,
   maxOpen,
   openOptions: {
     embeddingDimensions: embeddingDims,
     embeddingClient,
     llmClient,
+    clock: sidecarClock,
     liveCommitmentExtraction: memoryCommitmentExtractionEnabledFromEnv(process.env),
     liveCommitmentExtractionBudget: memoryCommitmentExtractionBudgetFromEnv(process.env),
   },
+  ...(teamsInboxConfig.enabled
+    ? {
+        openOptionsForTenant: (tenantId: string) => ({
+          inbox: {
+            runner: ({ terminal, entityRepository, sessions, activity }) =>
+              new TeamAgentTurnRunner({
+                tenant: tenantId,
+                baseUrl: teamsInboxConfig.baseUrl,
+                apiToken: teamsInboxConfig.apiToken,
+                timeoutMs: teamsInboxConfig.timeoutMs,
+                staleMs: teamsInboxConfig.staleMs,
+                terminal,
+                entityRepository,
+                sessions,
+                activity,
+                clock: sidecarClock,
+                onGenerating: ({ sessionId, entryIds }) =>
+                  inboxWaiters!.markGenerating({
+                    tenant: tenantId,
+                    sessionId,
+                    entryIds,
+                  }),
+              }),
+            sessionPredicate: (session) => session?.source_type === "teams_inbox",
+            acquireLease: () => pool.acquireBackgroundLease(tenantId),
+            onTerminalCommitted: (terminalEntry) =>
+              inboxWaiters!.resolveTerminal(tenantId, terminalEntry),
+            settleMs: teamsInboxConfig.settleMs,
+            maxSettleMs: teamsInboxConfig.maxSettleMs,
+          },
+        }),
+      }
+    : {}),
   initializeBeing: (_tenantId, borg) => {
     // This is idempotent tenant provisioning performed by the pool lifecycle,
     // not a dream mutation. It intentionally also runs before a dry-run dream.
     borg.entities.ensureSelf(selfName, { provenance: "config_default_user" });
+    if (teamsInboxConfig.enabled) {
+      borg.inbox.catchUp.start();
+    }
   },
   ...(traceRegistry === undefined
     ? {}
@@ -167,6 +256,11 @@ const server = createServer(
     maintenanceCoordinator,
     recallAbstainThreshold,
     recallDeadlineMs,
+    recentActivityWindowMs,
+    recentActivityLimit,
+    recallSemanticVariantCount,
+    ...(recencyPrior === undefined ? {} : { recencyPrior }),
+    ...(inboxWaiters === undefined ? {} : { inboxWaiters }),
     ...(traceRegistry === undefined ? {} : { traceRegistry }),
   }),
 );
@@ -189,7 +283,10 @@ async function shutdown(signal: string): Promise<void> {
   console.log(`memory-sidecar: ${signal} received, draining in-flight requests...`);
   const result = await drainMemorySidecar({
     timeoutMs: shutdownTimeoutMs,
-    beginShutdown: () => maintenanceCoordinator.beginShutdown(),
+    beginShutdown: () => {
+      inboxWaiters?.shutdown();
+      return maintenanceCoordinator.beginShutdown();
+    },
     forceFinalizeMaintenance: () => maintenanceCoordinator.forceFinalizeAborted(),
     onAbandoned: (runIds) => {
       if (runIds.length > 0) {
