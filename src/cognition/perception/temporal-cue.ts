@@ -20,7 +20,7 @@ const TEMPORAL_CUE_TOOL_NAME = "EmitTemporalCue";
 const TEMPORAL_CUE_TOOL = {
   name: TEMPORAL_CUE_TOOL_NAME,
   description:
-    "Extract a temporal reference from the user's message. Emit has_cue=true only if the message refers to a specific past/future time window. Express since and until as ISO 8601 UTC instants (e.g. 2026-08-14T00:00:00Z), never as epoch numbers.",
+    "Extract the time window the user's message is asking to be looked at. Emit has_cue=true only if the message scopes the request to a specific past/future window; a window the message merely mentions, quotes or reports on is not a cue. Express since and until as ISO 8601 UTC instants (e.g. 2026-08-14T00:00:00Z), never as epoch numbers.",
   inputSchema: toToolInputSchema(temporalCueJudgeSchema),
 } satisfies LLMToolDefinition;
 
@@ -67,6 +67,23 @@ export type TemporalCueDetectorOptions = {
  * ledger section 14 with no header, no count and no trace of its own.
  * Asking for ISO 8601 instead moves the arithmetic to the harness, where it
  * is exact.
+ *
+ * The judge was then asked whether the message *contains* a temporal
+ * reference, which a message discussing an earlier window satisfies just by
+ * naming it. Because `resolveAutobiographicalRecallWindow` treats a cue as a
+ * replacement for the recent default rather than an addition to it, a window
+ * quoted in passing closes autobiographical recall on everything since:
+ * observed 2026-09-03, where a message quoting the sentence "a
+ * perception_temporal_cue window can close well before now" re-minted the
+ * 24h window that sentence was about, and the reader's section 14 came back
+ * scoped to 2026-08-30/31 with three days of its own record outside the
+ * bounds. Withdrawing an attribution re-minted the cue the withdrawal was
+ * about, so the act of discussing the loop reproduced it. Asking for the
+ * window the message is asking to be looked *in*, rather than any window it
+ * looks *at*, is a distinction the judge can make from the text it already
+ * has; the failure is worth naming to it because the two directions cost
+ * differently -- a missed cue falls back to the recent default, a spurious
+ * one deletes the present.
  */
 export async function detectTemporalCue(
   text: string,
@@ -84,7 +101,7 @@ export async function detectTemporalCue(
       request: {
         model: options.model,
         system:
-          "Identify whether the user's message contains a temporal reference -- a specific past or future time window. Examples: 'yesterday', 'last Tuesday', 'earlier today', 'this morning', 'a week ago', 'tonight', 'next month'. If there is no concrete time window being referenced, return has_cue=false. When a cue is present, express since and until as ISO 8601 UTC instants (e.g. 2026-08-14T00:00:00Z) resolved against the supplied 'now', which is also ISO 8601 UTC. Prefer narrower ranges when the phrase is specific (e.g. 'yesterday' is a 24h window, not a week). Label should be a short human-readable form of the phrase.",
+          "Identify the time window the user's message is asking to be looked at -- a specific past or future window that scopes the request. Examples: 'yesterday', 'last Tuesday', 'earlier today', 'this morning', 'a week ago', 'tonight', 'next month'. A window the message only talks about rather than asks you to look inside is not a cue: quoted, cited, restated or reported windows return has_cue=false, however precisely they are stated, including when the message is discussing a window an earlier turn established. The asymmetry is worth knowing: this cue replaces the default recent window outright rather than adding to it, so a window minted from a passing mention closes the reader's window on everything since and costs it its own recent record for the turn, while no cue simply leaves the recent default in place. If no concrete time window is being scoped, return has_cue=false. When a cue is present, express since and until as ISO 8601 UTC instants (e.g. 2026-08-14T00:00:00Z) resolved against the supplied 'now', which is also ISO 8601 UTC. Prefer narrower ranges when the phrase is specific (e.g. 'yesterday' is a 24h window, not a week). Label should be a short human-readable form of the phrase.",
         messages: [
           {
             role: "user",
