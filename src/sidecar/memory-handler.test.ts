@@ -119,6 +119,19 @@ type Recorder = {
   visibleActivityEvents: ActivityVisibleSessionEvent[];
   lastVisibleActivityInput?: unknown;
   visibleActivityInputs: unknown[];
+  livedExperienceDaySummaries: Array<{
+    utc_day: string;
+    day_start_ms: number;
+    gist: string;
+    salience: number;
+    disclosure_label: {
+      disclosureClass: string;
+      originAudienceEntityIds: string[];
+      privateToEntityIds: string[];
+      publicToEntityIds: string[];
+    };
+  }>;
+  livedExperienceListInputs: unknown[];
   lastRecallOptions?: Record<string, unknown>;
   recallOptionsCalls: Array<Record<string, unknown>>;
   retrievalRecords: Array<{ episodeId: Episode["id"]; score: number }>;
@@ -505,6 +518,16 @@ function stubBorg(rec: Recorder): Borg {
           .slice(0, limit);
       },
     },
+    self: {
+      livedExperience: {
+        listDaySummaries: (input: unknown) => {
+          rec.livedExperienceListInputs.push(input);
+          return [...rec.livedExperienceDaySummaries].sort(
+            (a, b) => b.day_start_ms - a.day_start_ms,
+          );
+        },
+      },
+    },
     creatorDirectives: {
       queue: (input: CreatorDirectiveQueueInput) => {
         rec.directiveQueueInputs.push(input);
@@ -728,6 +751,8 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     observedGroupAudienceIds: [],
     visibleActivityEvents: [],
     visibleActivityInputs: [],
+    livedExperienceDaySummaries: [],
+    livedExperienceListInputs: [],
     recallOptionsCalls: [],
     retrievalRecords: [],
     recallCitationChains: new Map(),
@@ -4238,6 +4263,86 @@ describe("memory sidecar handler", () => {
         },
       ],
     });
+  });
+
+  it("hands the planner the owner's day summaries, newest first, when episodes are requested", async () => {
+    const { pool, rec } = recordingPool();
+    const selfPrivate = {
+      disclosureClass: "self_private",
+      originAudienceEntityIds: [],
+      privateToEntityIds: ["ent_self"],
+      publicToEntityIds: [],
+    };
+    rec.livedExperienceDaySummaries = [
+      {
+        utc_day: "2026-09-03",
+        day_start_ms: 1_000,
+        gist: "Spokojny dzień.",
+        salience: 0.2,
+        disclosure_label: selfPrivate,
+      },
+      {
+        utc_day: "2026-09-04",
+        day_start_ms: 2_000,
+        gist: "Porównałem role chat i reviewer w AI Ninjas.",
+        salience: 0.9,
+        disclosure_label: selfPrivate,
+      },
+    ];
+    const base = await start(pool);
+
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "lived-experience-planner",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: { type: "personal", name: "Alice" },
+        focus: "O które role chodziło?",
+        sections: ["episodes"],
+      },
+      TOKEN,
+    );
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("lived_experience");
+    expect(rec.livedExperienceListInputs).toHaveLength(1);
+    expect(rec.livedExperienceListInputs[0]).toMatchObject({ limit: 7 });
+    const listInput = rec.livedExperienceListInputs[0] as { fromMs: number; toMs: number };
+    expect(listInput.toMs - listInput.fromMs).toBe(7 * 24 * 60 * 60_000);
+    expect(rec.lastRecallOptions?.recallQueryPlannerContext).toMatchObject({
+      ownerLivedExperience: [
+        {
+          day: "2026-09-04",
+          gist: "Porównałem role chat i reviewer w AI Ninjas.",
+          salience: 0.9,
+          disclosure: {
+            class: "self_private",
+            origin_audience_entity_ids: [],
+            private_to_entity_ids: ["ent_self"],
+            public_to_entity_ids: [],
+          },
+        },
+        { day: "2026-09-03", gist: "Spokojny dzień.", salience: 0.2 },
+      ],
+    });
+
+    const activityOnly = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "lived-experience-planner",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: { type: "personal", name: "Alice" },
+        sections: ["recent_activity"],
+      },
+      TOKEN,
+    );
+    expect(activityOnly.status).toBe(200);
+    await activityOnly.json();
+    expect(rec.livedExperienceListInputs).toHaveLength(1);
   });
 
   it("still hands the planner owner replies when the newest visible rows are all user contacts", async () => {

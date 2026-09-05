@@ -185,6 +185,10 @@ const DEFAULT_MAX_RECALL_LIMIT = 50;
 const DEFAULT_RECALL_DEADLINE_MS = 5000;
 export const DEFAULT_RECENT_ACTIVITY_WINDOW_MS = 24 * 60 * 60_000;
 export const DEFAULT_RECENT_ACTIVITY_LIMIT = 12;
+// The planner also sees the owner's closed-day summaries (lived-experience spine) for the last
+// week, so references to earlier days resolve even when the 24 h activity window has moved on.
+export const PLANNER_LIVED_EXPERIENCE_WINDOW_MS = 7 * 24 * 60 * 60_000;
+export const PLANNER_LIVED_EXPERIENCE_LIMIT = 7;
 export const DEFAULT_ACTIVITY_EXCERPT_HYDRATION_BUDGET_MS = 50;
 export const MEMORY_RECALL_SEMANTIC_VARIANT_COUNT_ENV = "BORG_MEMORY_RECALL_SEMANTIC_VARIANT_COUNT";
 const RECENT_ACTIVITY_EXCERPT_HYDRATION_FAILURE_REASON = "recent_activity_excerpt_hydration_failed";
@@ -2446,10 +2450,33 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             true,
           );
 
+          const plannerOwnerLivedExperience = requestedSections.has("episodes")
+            ? borg.self.livedExperience
+                .listDaySummaries({
+                  fromMs: nowMs - PLANNER_LIVED_EXPERIENCE_WINDOW_MS,
+                  toMs: nowMs,
+                  limit: PLANNER_LIVED_EXPERIENCE_LIMIT,
+                })
+                .map((summary) => ({
+                  day: summary.utc_day,
+                  gist: summary.gist,
+                  salience: summary.salience,
+                  disclosure: {
+                    class: summary.disclosure_label.disclosureClass,
+                    origin_audience_entity_ids: [
+                      ...summary.disclosure_label.originAudienceEntityIds,
+                    ],
+                    private_to_entity_ids: [...summary.disclosure_label.privateToEntityIds],
+                    public_to_entity_ids: [...summary.disclosure_label.publicToEntityIds],
+                  },
+                }))
+            : [];
+
           return {
             visibleAudienceEntityIds,
             recentActivity,
             plannerOwnerActivity,
+            plannerOwnerLivedExperience,
             memoryOwnerName: borg.entities.getSelf()?.canonical_name,
             commitments,
             directives,
@@ -2496,6 +2523,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                         : { entityTerms: parsed.data.entity_terms }),
                     },
                     ownerRecentActivity: context.plannerOwnerActivity,
+                    ownerLivedExperience: context.plannerOwnerLivedExperience,
                   },
                   ...(recencyPrior === undefined ? {} : { recencyPrior }),
                   ...(deferEpisodeRetrievalAccounting ? { recordRetrieval: false } : {}),

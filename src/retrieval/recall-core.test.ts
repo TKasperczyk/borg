@@ -790,6 +790,8 @@ describe("Recall Core", () => {
       semantic_variants: semanticVariants(MAYA_TURN),
       named_terms: namedTerms,
       typed_queries: [],
+      temporal_cue: null,
+      temporalCue: null,
     });
 
     const rejectedClient = new FakeLLMClient({
@@ -1336,6 +1338,133 @@ describe("Recall Core", () => {
         turnId: "turn-recall-expansion-timeout",
         subsystem: "recall_expansion",
       }),
+    );
+  });
+
+  it("uses the planner's temporal cue for the time lane only when the caller had none, and stands the recency prior down", async () => {
+    const plannerCuePlan = (): LLMCompleteResult => ({
+      text: "",
+      input_tokens: 0,
+      output_tokens: 0,
+      stop_reason: "tool_use",
+      tool_calls: [
+        {
+          id: "toolu_recall_expansion",
+          name: "EmitRecallQueryPlan",
+          input: {
+            resolved_query: MAYA_TURN,
+            semantic_variants: [{ strategy: "combined", query: MAYA_TURN }],
+            named_terms: ["Maya"],
+            typed_queries: [],
+            temporal_cue: {
+              since: new Date(NOW_MS - 2 * 24 * 60 * 60_000).toISOString(),
+              until: new Date(NOW_MS - 24 * 60 * 60_000).toISOString(),
+              label: "przedwczoraj",
+            },
+          },
+        },
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createEmbeddingClient(),
+    });
+    await insertMayaAndDesignReview(harness);
+    const buildPipeline = (tracer: ReturnType<typeof createTracer>) =>
+      new RetrievalPipeline({
+        embeddingClient: harness!.embeddingClient,
+        llmClient: new FakeLLMClient({ responses: [plannerCuePlan(), plannerCuePlan()] }),
+        episodicRepository: harness!.episodicRepository,
+        dataDir: harness!.tempDir,
+        clock: harness!.clock,
+        recallPlannerTimeZone: "Europe/Warsaw",
+        plannerCueTimeWeight: 0.2,
+        tracer,
+      });
+    const zeroTimeWeights = {
+      semantic: 0.65,
+      goal_relevance: 0,
+      value_alignment: 0,
+      mood: 0,
+      time: 0,
+      social: 0.15,
+      entity: 0.2,
+      heat: 0.15,
+      suppression_penalty: 0.5,
+    };
+
+    const plannerTracer = createTracer();
+    await buildPipeline(plannerTracer).searchEpisodesForDisclosure(MAYA_TURN, {
+      limit: 3,
+      traceTurnId: "turn-planner-cue",
+      semanticVariantCount: 1,
+      crossAudience: true,
+      recencyPrior: { weight: 0.15, halfLifeHours: 36 },
+      attentionWeights: zeroTimeWeights,
+    });
+    expect(plannerTracer.emit).toHaveBeenCalledWith(
+      "retrieval.intent_candidates",
+      expect.objectContaining({
+        turnId: "turn-planner-cue",
+        intent_id: "recall_time_0",
+        intent_source: "llm-expansion",
+      }),
+    );
+    expect(plannerTracer.emit).toHaveBeenCalledWith(
+      "retrieval.completed",
+      expect.objectContaining({
+        turnId: "turn-planner-cue",
+        recency_prior_applied: false,
+        planner_time_weight_applied: true,
+      }),
+    );
+
+    const callerTracer = createTracer();
+    await buildPipeline(callerTracer).searchEpisodesForDisclosure(MAYA_TURN, {
+      limit: 3,
+      traceTurnId: "turn-caller-cue",
+      semanticVariantCount: 1,
+      crossAudience: true,
+      temporalCue: { sinceTs: NOW_MS - 3 * 24 * 60 * 60_000, label: "ostatnie dni" },
+      attentionWeights: { ...zeroTimeWeights, time: 0.2 },
+    });
+    expect(callerTracer.emit).toHaveBeenCalledWith(
+      "retrieval.intent_candidates",
+      expect.objectContaining({
+        turnId: "turn-caller-cue",
+        intent_id: "recall_time_0",
+        intent_source: "temporal-cue",
+      }),
+    );
+    expect(callerTracer.emit).toHaveBeenCalledWith(
+      "retrieval.completed",
+      expect.objectContaining({ turnId: "turn-caller-cue", planner_time_weight_applied: false }),
+    );
+
+    const noCueTracer = createTracer();
+    await new RetrievalPipeline({
+      embeddingClient: harness.embeddingClient,
+      llmClient: new FakeLLMClient({
+        responses: [recallExpansion({ semantic_query: MAYA_TURN, variant_count: 1 })],
+      }),
+      episodicRepository: harness.episodicRepository,
+      dataDir: harness.tempDir,
+      clock: harness.clock,
+      tracer: noCueTracer,
+    }).searchEpisodesForDisclosure(MAYA_TURN, {
+      limit: 3,
+      traceTurnId: "turn-no-cue",
+      semanticVariantCount: 1,
+      crossAudience: true,
+      recencyPrior: { weight: 0.15, halfLifeHours: 36 },
+    });
+    expect(noCueTracer.emit).not.toHaveBeenCalledWith(
+      "retrieval.intent_candidates",
+      expect.objectContaining({ turnId: "turn-no-cue", intent_id: "recall_time_0" }),
+    );
+    expect(noCueTracer.emit).toHaveBeenCalledWith(
+      "retrieval.completed",
+      expect.objectContaining({ turnId: "turn-no-cue", recency_prior_applied: true }),
     );
   });
 

@@ -741,6 +741,21 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       getStats: (...args) => deps.episodicRepository.getStats(...args),
     },
     self: {
+      livedExperience: {
+        // Newest first, limited after ordering: the repository orders ascending before LIMIT, which
+        // would hand a wide window its oldest days.
+        listDaySummaries: (options) => {
+          const self = deps.entityRepository.getSelf();
+          const { limit, ...window } = options;
+          const rows = deps.livedExperienceDaySummaryRepository
+            .listForWindow({
+              ...window,
+              ...(self === null ? {} : { selfEntityId: self.id }),
+            })
+            .sort((a, b) => b.day_start_ms - a.day_start_ms);
+          return limit === undefined ? rows : rows.slice(0, Math.max(0, Math.floor(limit)));
+        },
+      },
       values: {
         get: (...args) => deps.valuesRepository.get(...args),
         list: (...args) => deps.valuesRepository.list(...args),

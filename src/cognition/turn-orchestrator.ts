@@ -250,6 +250,9 @@ export class TurnOrchestrator {
       moodRepository: options.moodRepository,
       retrievalPipeline: options.retrievalPipeline,
       skillSelector: options.skillSelector,
+      ...(options.livedExperienceDaySummaryRepository === undefined
+        ? {}
+        : { livedExperienceDaySummaryRepository: options.livedExperienceDaySummaryRepository }),
       clock: this.clock,
       tracer: this.tracer,
     });

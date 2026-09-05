@@ -160,6 +160,12 @@ export type RetrievalPipelineOptions = {
   // Hard cap for the recall-expansion LLM call; on timeout recall proceeds
   // without expansion via the existing degraded path. Unset or 0 disables it.
   recallExpansionTimeoutMs?: number;
+  // IANA zone the recall planner resolves relative time references in (default UTC).
+  recallPlannerTimeZone?: string;
+  // Time attention weight applied when the planner's cue is the only time signal. Callers fix
+  // attentionWeights.time before the planner runs (zero without a cue), so the pipeline restores the
+  // configured weight for a planner-only cue; an explicit non-zero caller weight is kept.
+  plannerCueTimeWeight?: number;
   episodicRepository: EpisodicRepository;
   dataDir: string;
   entryIndex?: StreamEntryIndexRepository;
@@ -306,6 +312,8 @@ export type RetrievalGetEpisodeOptions = {
 type ExpansionOutcome = {
   plannerIntents: RecallIntent[];
   namedTerms: string[];
+  // Planner-resolved time reference; used only when the caller supplied no temporal cue.
+  temporalCue: TemporalCue | null;
 };
 
 type IntentQueryVectorMemo = Map<string, Promise<Float32Array>>;
@@ -546,7 +554,9 @@ export class RetrievalPipeline {
       return { episodes: strictEpisodes, timeRangeFallback: false };
     }
 
-    const { timeRange: _timeRange, ...unscopedOptions } = options;
+    // The unscoped fallback drops the range but keeps the asker's time signal in mind: the recency
+    // prior stays suppressed instead of re-tilting the fallback toward this week.
+    const { timeRange: _timeRange, recencyPrior: _recencyPrior, ...unscopedOptions } = options;
     const fallback = await this.searchWithContextInternal(
       query,
       { ...unscopedOptions, strictTimeRange: false },
@@ -614,6 +624,23 @@ export class RetrievalPipeline {
     }
 
     const intents = await this.buildRecallIntents(query, options, expansionOverride);
+    const timeSignalPresent =
+      options.timeRange !== undefined || intents.some((intent) => intent.kind === "time");
+    const plannerTimeWeightApplied =
+      intents.some((intent) => intent.kind === "time" && intent.source === "llm-expansion") &&
+      options.attentionWeights !== undefined &&
+      options.attentionWeights.time === 0 &&
+      this.options.plannerCueTimeWeight !== undefined &&
+      this.options.plannerCueTimeWeight > 0;
+    if (plannerTimeWeightApplied) {
+      options = {
+        ...options,
+        attentionWeights: {
+          ...options.attentionWeights!,
+          time: this.options.plannerCueTimeWeight!,
+        },
+      };
+    }
     const intentQueryVectors = intentQueryVectorsOverride ?? new Map();
     const episodeCandidates = await this.collectEpisodicEvidenceCandidates(
       intents,
@@ -703,7 +730,11 @@ export class RetrievalPipeline {
       limit,
       mmrLambda: options.mmrLambda ?? this.mmrLambda,
       exactTermReservedSlots: this.lexicalFusionEnabled ? EXACT_TERM_RESERVED_SLOTS : 0,
-      ...(options.recencyPrior === undefined ? {} : { recencyPrior: options.recencyPrior, nowMs }),
+      // A time signal (caller or planner cue, or an explicit range) says the asker is pointing at a
+      // period; a "newer is better" prior would only fight that ordering.
+      ...(options.recencyPrior === undefined || timeSignalPresent
+        ? {}
+        : { recencyPrior: options.recencyPrior, nowMs }),
     });
     const semanticProjection = projectSemantic(evidencePool, toRetrievedSemantic(semantic));
     const openQuestionProjection = projectOpenQuestions(
@@ -752,6 +783,8 @@ export class RetrievalPipeline {
 
     if (this.tracer.enabled && options.traceTurnId !== undefined) {
       this.tracer.emit("retrieval.completed", {
+        recency_prior_applied: options.recencyPrior !== undefined && !timeSignalPresent,
+        planner_time_weight_applied: plannerTimeWeightApplied,
         turnId: options.traceTurnId,
         session_id: options.sessionId,
         episodeCount: context.episodes.length,
@@ -1410,18 +1443,29 @@ export class RetrievalPipeline {
       });
     }
 
-    const timeIntentRange = resolveTimeSignals(options).scoringRange;
-
+    // A caller-supplied cue (Sol's perception) wins; the planner's cue fills in when the caller
+    // had none, which is the sidecar's case.
+    const callerCue = options.temporalCue ?? null;
+    const plannerCueWins =
+      options.timeRange === undefined && callerCue === null && expansion.temporalCue !== null;
+    const effectiveCue = callerCue ?? expansion.temporalCue;
+    const timeIntentRange = resolveTimeSignals({
+      ...options,
+      temporalCue: effectiveCue,
+    }).scoringRange;
     if (timeIntentRange !== null) {
+      // Label and source follow the signal that supplied the bounds: an explicit range or the
+      // caller's cue is "temporal-cue"; only a planner-only cue is attributed to the planner.
+      const labelCue = options.timeRange !== undefined ? callerCue : effectiveCue;
       intents.push({
         id: "recall_time_0",
         kind: "time",
-        query: options.temporalCue?.label ?? "time range",
+        query: labelCue?.label ?? "time range",
         terms: [],
         timeRange: timeIntentRange,
         strictTime: options.strictTimeRange === true,
         priority: 70,
-        source: "temporal-cue",
+        source: plannerCueWins ? "llm-expansion" : "temporal-cue",
       });
     }
 
@@ -1445,6 +1489,7 @@ export class RetrievalPipeline {
       return {
         plannerIntents: [],
         namedTerms: [],
+        temporalCue: null,
       };
     }
 
@@ -1459,6 +1504,10 @@ export class RetrievalPipeline {
             this.options.recallExpansionSemanticVariantCount ??
             DEFAULT_RECALL_EXPANSION_SEMANTIC_VARIANT_COUNT,
           ...(options.recallQueryPlannerContext ?? {}),
+          nowMs: this.clock.now(),
+          ...(this.options.recallPlannerTimeZone === undefined
+            ? {}
+            : { timeZone: this.options.recallPlannerTimeZone }),
           timeoutMs: this.options.recallExpansionTimeoutMs,
           tracer: this.tracer,
           turnId: options.traceTurnId,
@@ -1489,6 +1538,7 @@ export class RetrievalPipeline {
 
       return {
         plannerIntents: [...semanticIntents, ...typedIntents],
+        temporalCue: expansion.temporalCue,
         namedTerms,
       };
     } catch (error) {
@@ -1500,6 +1550,7 @@ export class RetrievalPipeline {
       return {
         plannerIntents: [],
         namedTerms: [],
+        temporalCue: null,
       };
     }
   }

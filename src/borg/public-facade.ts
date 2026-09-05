@@ -146,6 +146,7 @@ import type {
   ValueId,
 } from "../util/ids.js";
 import type { BorgDreamOptions, BorgEpisodeGetOptions, BorgEpisodeSearchOptions } from "./types.js";
+import type { LivedExperienceDaySummary } from "../memory/activity/lived-experience-day-summary.js";
 
 export type BorgIdentityUpdateOptions = {
   throughReview?: boolean;
@@ -422,6 +423,15 @@ export type BorgOpenQuestionResolutionInput = {
 };
 
 export type BorgSelfFacade = {
+  // The memory owner's own closed-day summaries (offline day summarizer), newest first, limited
+  // after ordering.
+  livedExperience: {
+    listDaySummaries(options: {
+      fromMs: number;
+      toMs: number;
+      limit?: number;
+    }): LivedExperienceDaySummary[];
+  };
   values: {
     get(valueId: ValueId): ValueRecord | null;
     list(): ValueRecord[];

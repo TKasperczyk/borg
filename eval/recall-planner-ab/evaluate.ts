@@ -160,11 +160,20 @@ function plannerOutputFromTrace(events: readonly CallbackTraceEntry[]): RecallQu
     return null;
   }
 
+  // The trace carries the parsed cue (sinceTs/untilTs/label) under temporal_cue; the raw draft is
+  // not traced, so the report shows the cue Borg actually used.
+  const temporalCue =
+    event.temporal_cue !== null && typeof event.temporal_cue === "object"
+      ? (event.temporal_cue as RecallQueryPlan["temporalCue"])
+      : null;
+
   return {
     resolved_query: event.resolved_query,
     semantic_variants: event.semantic_variants as RecallQueryPlan["semantic_variants"],
     named_terms: event.named_terms.filter((term): term is string => typeof term === "string"),
     typed_queries: event.typed_queries as RecallQueryPlan["typed_queries"],
+    temporal_cue: null,
+    temporalCue,
   };
 }
 

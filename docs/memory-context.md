@@ -569,6 +569,43 @@ excerpts (180 characters) enter planner context, with their venue and time label
 one excerpt hydration pass with the owner rows hydrated first, and neither widens group visibility. Legacy `/memory/recall` supplies only the owner
 handle and preserves its one-planner-completion property across the strict time-range fallback.
 
+### Extension 5 (2026-09-05): planner temporal cue, owner lived experience, recency prior stand-down
+
+The recall planner now receives two more data sections and emits one more field:
+
+- `NOW`: the current instant (ISO-8601) together with the configured IANA zone and the same instant
+  spelled out in that zone (`retrieval.recallPlannerTimeZone`, env
+  `BORG_RETRIEVAL_RECALL_PLANNER_TIME_ZONE`, default `UTC`; production sidecar: `Europe/Warsaw`).
+  Both callers pass the pipeline clock; Sol's perception cue is unaffected.
+- `OWNER_LIVED_EXPERIENCE`: the memory owner's own closed-day summaries from the offline
+  lived-experience day summarizer, newest first, at most 7 rows from the last 7 days, gists clipped to
+  400 characters, each row carrying the summary's disclosure label (class and origin/private/public
+  entity ids) so private material is never read without knowing it is private. The sidecar reads them
+  through `borg.self.livedExperience.listDaySummaries` (newest first, limited after ordering) whenever
+  episodes are requested; Sol reads them in its retrieval coordinator when the repository is wired.
+  The planner uses them exactly like `OWNER_RECENT_ACTIVITY`, so a reference to what the owner did or
+  said on an earlier day resolves after the 24-hour activity window has moved on.
+- `temporal_cue` (output): when the resolved focus refers to a time or period, absolute ISO-8601
+  `since`/`until` instants computed from `NOW` plus the period's label in the language of FOCUS;
+  `null` otherwise. Borg keeps the cue only when NOW was supplied, every endpoint the model wrote is
+  an ISO instant with an explicit offset, and the pair is not inverted; one malformed endpoint rejects
+  the whole cue. An explicit `time_range` or a caller-supplied cue (Sol's perception) always wins; the
+  planner's cue fills in when the caller had neither, which is the sidecar's case. It feeds the
+  existing `time` lane (soft ordering, never a strict filter), appears in `retrieval.intent_candidates`
+  with `intent_source` `llm-expansion`, and restores the configured `attentionWeights.time` for that
+  retrieval when the caller had zeroed it for lack of a cue (`retrieval.completed` reports
+  `planner_time_weight_applied`). Trace counts add `lived_experience_row_count`, `now_present` and
+  `temporal_cue_present`; the payload adds `owner_lived_experience` and `temporal_cue`.
+
+Whenever a time signal is present, a caller or planner cue or an explicit `time_range`, the sidecar's
+recency prior is not applied for that retrieval, so a question about a period is not tilted toward
+this week; the unscoped fallback pass after a strict `time_range` miss keeps it suppressed as well.
+`retrieval.completed` reports `recency_prior_applied`.
+
+Consequence for clients: team-agent no longer needs its own temporal parser; `time_range` stays
+accepted for compatibility and still takes precedence over the planner's cue, but the intended path
+is to send the raw FOCUS and let the planner resolve the period.
+
 An invalid or failed plan is not retried. Borg reports a `recall_expansion` degradation and continues
 with raw FOCUS, exact supplied handles, time, and recency lanes. Trace counts are always safe;
 resolved text, variants, named terms, typed queries, routed intents, FOCUS/CONTEXT, handles, excerpts,

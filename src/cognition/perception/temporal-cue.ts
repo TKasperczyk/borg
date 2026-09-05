@@ -9,6 +9,7 @@ import {
 } from "../../llm/index.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import type { TemporalCue } from "../types.js";
+import { parseIsoInstant } from "../../util/iso-instant.js";
 
 const temporalCueJudgeSchema = z.object({
   has_cue: z.boolean(),
@@ -29,14 +30,6 @@ const TEMPORAL_CUE_TOOL = {
  * string does not parse. This is format parsing, not a judgment about whether
  * the window the model chose is a good one.
  */
-function parseIsoInstant(value: string | null | undefined): number | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
 
 export type TemporalCueDetectorOptions = {
   llmClient?: LLMClient;

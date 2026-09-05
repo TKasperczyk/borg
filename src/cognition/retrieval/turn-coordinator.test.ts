@@ -398,6 +398,56 @@ describe("TurnRetrievalCoordinator", () => {
         },
       ],
     });
+    const listDaySummaries = vi.fn(() => [
+      {
+        utc_day: "2026-09-03",
+        day_start_ms: 1_000,
+        gist: "Quiet day of tidying the sprint board.",
+        salience: 0.3,
+        disclosure_label: {
+          disclosureClass: "public",
+          originAudienceEntityIds: [],
+          privateToEntityIds: [],
+          publicToEntityIds: [],
+        },
+      },
+      {
+        utc_day: "2026-09-04",
+        day_start_ms: 1_500,
+        gist: "Compared the chat and reviewer roles with Bob in the Atlas channel.",
+        salience: 0.8,
+        disclosure_label: {
+          disclosureClass: "public",
+          originAudienceEntityIds: [],
+          privateToEntityIds: [],
+          publicToEntityIds: [],
+        },
+      },
+    ]);
+    const expectedLivedExperience = [
+      {
+        day: "2026-09-04",
+        gist: "Compared the chat and reviewer roles with Bob in the Atlas channel.",
+        salience: 0.8,
+        disclosure: {
+          class: "public",
+          origin_audience_entity_ids: [],
+          private_to_entity_ids: [],
+          public_to_entity_ids: [],
+        },
+      },
+      {
+        day: "2026-09-03",
+        gist: "Quiet day of tidying the sprint board.",
+        salience: 0.3,
+        disclosure: {
+          class: "public",
+          origin_audience_entity_ids: [],
+          private_to_entity_ids: [],
+          public_to_entity_ids: [],
+        },
+      },
+    ];
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable,
@@ -406,6 +456,7 @@ describe("TurnRetrievalCoordinator", () => {
       entityRepository: {
         getSelf: vi.fn(() => makeSelfEntity()),
       },
+      livedExperienceDaySummaryRepository: { listForWindow: listDaySummaries as never },
       reviewQueueRepository: {
         list: vi.fn(() => pendingCorrections),
       },
@@ -514,6 +565,9 @@ describe("TurnRetrievalCoordinator", () => {
       k: 5,
       proceduralContext: result.proceduralContext,
     });
+    expect(listDaySummaries).toHaveBeenCalledWith(
+      expect.objectContaining({ toMs: 2_000, fromMs: 2_000 - 7 * 24 * 60 * 60_000, limit: 7 }),
+    );
     expect(recallEpisodesForCognition).toHaveBeenCalledWith(
       "Solve Atlas",
       expect.objectContaining({
@@ -533,6 +587,7 @@ describe("TurnRetrievalCoordinator", () => {
         entityTerms: ["Atlas", "Bob"],
         recallQueryPlannerContext: {
           contextTurns: recentMessages,
+          ownerLivedExperience: expectedLivedExperience,
           identity: {
             memoryOwnerName: "Sol",
             currentSenderName: "Alice Sender",
@@ -569,6 +624,7 @@ describe("TurnRetrievalCoordinator", () => {
         traceTurnId: "turn-1",
         recallQueryPlannerContext: {
           contextTurns: recentMessages,
+          ownerLivedExperience: expectedLivedExperience,
           identity: {
             memoryOwnerName: "Sol",
             currentSenderName: "Alice Sender",
@@ -586,6 +642,7 @@ describe("TurnRetrievalCoordinator", () => {
         expect.objectContaining({
           recallQueryPlannerContext: {
             contextTurns: recentMessages,
+            ownerLivedExperience: expectedLivedExperience,
             identity: {
               memoryOwnerName: "Sol",
               currentSenderName: "Alice Sender",
