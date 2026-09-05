@@ -126,6 +126,7 @@ import {
   type SidecarConversation,
   type TeamAgentIdentity,
 } from "./team-agent-identity.js";
+import { MAX_INBOX_REPLY_ACTIVITY_RECONCILE_LIMIT } from "../cognition/ingestion/index.js";
 
 // Mirror of BorgPool's DEFAULT_TENANT_ID_PATTERN so the handler returns a clean
 // 400 for a malformed tenant id at the boundary, rather than relying on (and
@@ -419,6 +420,23 @@ const memoryInboxProgressBodySchema = z
     phase: z.literal("generating"),
   })
   .strict();
+
+const inboxReplyActivityReconcileBodySchema = z
+  .object({
+    tenant: z.string().trim().regex(TENANT_ID_RE),
+    dry_run: z.boolean().default(true),
+    since: z.iso.datetime({ offset: true }).optional(),
+    until: z.iso.datetime({ offset: true }).optional(),
+    limit: z.number().int().positive().max(MAX_INBOX_REPLY_ACTIVITY_RECONCILE_LIMIT).optional(),
+  })
+  .strict()
+  .refine(
+    (body) =>
+      body.since === undefined ||
+      body.until === undefined ||
+      Date.parse(body.since) <= Date.parse(body.until),
+    { message: "since must not be later than until" },
+  );
 
 const directiveAdminBodySchema = z
   .object({
@@ -1274,6 +1292,40 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
 
     if (!tokenMatches(req.headers["x-borg-token"], token)) {
       send(res, 401, { error: "unauthorized" });
+      return;
+    }
+
+    if (method === "POST" && rawPath === "/memory/maintenance/inbox-reply-activity") {
+      // Repairs inbox sessions whose reply terminals never got a borg_replied activity event
+      // (inbox path before 2026-09-05, or a crash between terminal commit and projection).
+      // dry_run defaults to true; only an explicit false writes.
+      const body = await readJsonObjectBody(req, res, maxBodyBytes);
+      if (body === null) {
+        return;
+      }
+      const parsed = inboxReplyActivityReconcileBodySchema.safeParse(body);
+      if (!parsed.success) {
+        send(res, 400, { error: "invalid inbox reply activity reconcile body" });
+        return;
+      }
+      const input = parsed.data;
+      try {
+        const result = await pool.withTenant(
+          input.tenant,
+          (borg) =>
+            borg.inbox.reconcileReplyActivity({
+              dryRun: input.dry_run,
+              ...(input.limit === undefined ? {} : { limit: input.limit }),
+              ...(input.since === undefined ? {} : { sinceMs: Date.parse(input.since) }),
+              ...(input.until === undefined ? {} : { untilMs: Date.parse(input.until) }),
+            }),
+          { exclusive: true },
+        );
+        send(res, 200, { ok: true, tenant: input.tenant, ...result });
+      } catch (error) {
+        console.error(`memory-sidecar: ${rawPath} failed for tenant "${input.tenant}"`, error);
+        send(res, 503, { error: "tenant unavailable" });
+      }
       return;
     }
 

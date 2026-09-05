@@ -73,6 +73,7 @@ import {
 import type { CommitmentRecord } from "../memory/commitments/index.js";
 import type { GoalRecord, GoalTreeNode } from "../memory/self/index.js";
 import type { IdentityUpdateResult } from "../memory/identity/index.js";
+import { reconcileInboxReplyActivity } from "../cognition/ingestion/index.js";
 
 function errorCode(error: unknown): unknown {
   return error !== null && typeof error === "object" && "code" in error
@@ -1239,6 +1240,18 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       sealStaleBacklog: (input) => deps.backlogTerminalService.sealStaleBacklog(input),
       findTerminalCoveringEntry: (input) =>
         deps.backlogTerminalService.findTerminalCoveringEntry(input),
+      reconcileReplyActivity: (input) =>
+        reconcileInboxReplyActivity(
+          {
+            entryIndex: deps.entryIndex,
+            sessionsRepository: deps.sessionsRepository,
+            entityRepository: deps.entityRepository,
+            activityRepository: deps.activityRepository,
+            projectRepliedTurn: (projection) =>
+              createActivityFacade(deps).projectRepliedTurn(projection),
+          },
+          input,
+        ),
     },
     workmem: {
       load: (sessionId = DEFAULT_SESSION_ID) => deps.workingMemoryStore.load(sessionId),

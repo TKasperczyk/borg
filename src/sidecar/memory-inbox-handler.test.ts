@@ -68,6 +68,7 @@ function makeHarness() {
   const findTerminalCoveringEntry = vi.fn(
     (input: Parameters<Borg["inbox"]["findTerminalCoveringEntry"]>[0]) => lookup(input),
   );
+  const reconcileReplyActivity = vi.fn(() => ({ dry_run: false, inserted: 2 }));
   const borg = {
     entities: {
       resolveExternal: (input: { kind: string }) => (input.kind === "group" ? groupId : senderId),
@@ -78,6 +79,7 @@ function makeHarness() {
     inbox: {
       sealPendingBacklog,
       findTerminalCoveringEntry,
+      reconcileReplyActivity,
     },
   } as unknown as Borg;
   const exclusives: Array<boolean | undefined> = [];
@@ -97,6 +99,7 @@ function makeHarness() {
     enqueueMessage,
     sealPendingBacklog,
     findTerminalCoveringEntry,
+    reconcileReplyActivity,
     exclusives,
     sessionId,
     entryId,
@@ -171,6 +174,200 @@ describe("memory inbox routes", () => {
     expect(harness.sealPendingBacklog.mock.invocationCallOrder[0]).toBeLessThan(
       harness.enqueueMessage.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it("runs the inbox reply activity reconcile under the exclusive chain and validates its body", async () => {
+    const harness = makeHarness();
+    const base = await start(harness);
+
+    const bad = await post(base, "/memory/maintenance/inbox-reply-activity", {
+      tenant: "tenant",
+      dry_run: "yes",
+    });
+    expect(bad.status).toBe(400);
+    const vague = await post(base, "/memory/maintenance/inbox-reply-activity", {
+      tenant: "tenant",
+      since: "yesterday",
+    });
+    expect(vague.status).toBe(400);
+    const reversed = await post(base, "/memory/maintenance/inbox-reply-activity", {
+      tenant: "tenant",
+      since: "2026-09-04T00:00:00Z",
+      until: "2026-09-03T00:00:00Z",
+    });
+    expect(reversed.status).toBe(400);
+    expect(harness.reconcileReplyActivity).not.toHaveBeenCalled();
+
+    const explicit = await post(base, "/memory/maintenance/inbox-reply-activity", {
+      tenant: "tenant",
+      dry_run: false,
+      since: "2026-09-03T21:00:00Z",
+      limit: 10,
+    });
+    expect(explicit.status).toBe(200);
+    await expect(explicit.json()).resolves.toEqual({
+      ok: true,
+      tenant: "tenant",
+      dry_run: false,
+      inserted: 2,
+    });
+    expect(harness.reconcileReplyActivity).toHaveBeenCalledWith({
+      dryRun: false,
+      limit: 10,
+      sinceMs: Date.parse("2026-09-03T21:00:00Z"),
+    });
+    expect(harness.exclusives).toEqual([true]);
+
+    const defaults = await post(base, "/memory/maintenance/inbox-reply-activity", {
+      tenant: "tenant",
+    });
+    expect(defaults.status).toBe(200);
+    expect(harness.reconcileReplyActivity).toHaveBeenLastCalledWith({ dryRun: true });
+  });
+
+  it("backfills borg_replied activity for inbox reply terminals that never got one", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "borg-inbox-reconcile-"));
+    tempDirs.push(dataDir);
+    const clock = new ManualClock(Date.parse("2026-09-04T09:43:00.000Z"));
+    const borg = await Borg.open({
+      dataDir,
+      embeddingDimensions: 4,
+      embeddingClient: new FakeEmbeddingClient(4),
+      llmClient: new FakeLLMClient(),
+      liveExtraction: false,
+      clock,
+    });
+    borgs.push(borg);
+    borg.entities.ensureSelf("team-agent", { provenance: "config_default_user" });
+    const sender = borg.entities.resolveExternal({
+      source: "team-agent.sender",
+      externalId: "jacek",
+      canonicalName: "Nowak, Jacek",
+      kind: "person",
+      provenance: "transport_sender",
+    });
+    const room = borg.entities.resolveExternal({
+      source: "team-agent.conversation",
+      externalId: "ai-ninjas",
+      canonicalName: "AI Ninjas",
+      kind: "group",
+      provenance: "transport_audience_label",
+    });
+    const sessionId = createSessionId();
+    borg.sessions.ensure({
+      session_id: sessionId,
+      source_type: "teams_inbox",
+      source_external_id: "ai-ninjas",
+      label: "AI Ninjas",
+      audience_label: "AI Ninjas",
+      audience_entity_id: room,
+      conversation_kind: "channel",
+      audience_role: "participant",
+      status: "active",
+    });
+    const question = await borg.stream.append(
+      {
+        kind: "user_msg",
+        content: "Jakie są role chat i reviewer?",
+        observed_at: clock.now() - 1_000,
+        sender_entity_id: sender,
+        audience: "AI Ninjas",
+        conversation: { type: "groupChat", name: "AI Ninjas" },
+      },
+      { session: sessionId },
+    );
+    const appended = await borg.inbox.appendBacklogTerminal({
+      sessionId,
+      sourceEntryIds: [question.id],
+      terminal: { kind: "agent_msg", content: "Porównałem role chat i reviewer w team-agent." },
+    });
+    // An unstamped agent_msg (legacy append-turn shape) is not an inbox reply terminal.
+    await borg.stream.append(
+      { kind: "agent_msg", content: "legacy unstamped reply" },
+      { session: sessionId },
+    );
+    const followUp = await borg.stream.append(
+      {
+        kind: "user_msg",
+        content: "A kiedy reviewer powinien odpowiadać?",
+        observed_at: clock.now() + 1_000,
+        sender_entity_id: sender,
+        audience: "AI Ninjas",
+        conversation: { type: "groupChat", name: "AI Ninjas" },
+      },
+      { session: sessionId },
+    );
+    const appendedLater = await borg.inbox.appendBacklogTerminal({
+      sessionId,
+      sourceEntryIds: [followUp.id],
+      terminal: { kind: "agent_msg", content: "Reviewer odpowiada za przegląd zmian." },
+    });
+    const visibleReplies = () =>
+      borg.activity.listRecentVisibleOtherSessionEvents({
+        currentSessionId: createSessionId(),
+        audienceEntityIds: [room],
+        sinceMs: 0,
+        limit: 10,
+        kinds: ["borg_replied"],
+      });
+    expect(visibleReplies()).toEqual([]);
+
+    const dry = borg.inbox.reconcileReplyActivity({ dryRun: true });
+    expect(dry).toMatchObject({
+      dry_run: true,
+      sessions_scanned: 1,
+      sessions_truncated: false,
+      terminals_scanned: 2,
+      already_recorded: 0,
+      inserted: 2,
+      truncated: false,
+      complete: true,
+      failed_terminal_ids: [],
+    });
+    expect(visibleReplies()).toEqual([]);
+
+    const first = borg.inbox.reconcileReplyActivity({ dryRun: false, limit: 1 });
+    expect(first).toMatchObject({
+      dry_run: false,
+      terminals_scanned: 2,
+      inserted: 1,
+      truncated: true,
+      complete: false,
+    });
+    expect(visibleReplies()).toEqual([
+      expect.objectContaining({
+        kind: "borg_replied",
+        occurredAt: appended.terminalEntry.timestamp,
+        sessionId,
+        audienceEntityId: room,
+        sourceStreamEntryIds: [appended.terminalEntry.id],
+      }),
+    ]);
+
+    const rest = borg.inbox.reconcileReplyActivity({ dryRun: false });
+    expect(rest).toMatchObject({
+      terminals_scanned: 2,
+      already_recorded: 1,
+      inserted: 1,
+      truncated: false,
+      complete: true,
+    });
+    expect(
+      visibleReplies()
+        .map((event) => event.sourceStreamEntryIds[0])
+        .sort(),
+    ).toEqual([appended.terminalEntry.id, appendedLater.terminalEntry.id].sort());
+
+    const again = borg.inbox.reconcileReplyActivity({ dryRun: false });
+    expect(again).toMatchObject({ terminals_scanned: 2, already_recorded: 2, inserted: 0 });
+    expect(visibleReplies()).toHaveLength(2);
+    expect(borg.sessions.get(sessionId)?.message_count).toBe(2);
+    expect(
+      borg.inbox.reconcileReplyActivity({
+        dryRun: true,
+        sinceMs: appendedLater.terminalEntry.timestamp + 1,
+      }),
+    ).toMatchObject({ terminals_scanned: 0, inserted: 0 });
   });
 
   it("seals legacy append-turn history on claim before the real worker sends the fresh message", async () => {

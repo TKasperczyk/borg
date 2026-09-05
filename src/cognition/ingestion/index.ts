@@ -53,3 +53,13 @@ export {
   type PreTurnCatchUpOptions,
   type StreamIngestionCoordinatorOptions,
 } from "./coordinator.js";
+export {
+  DEFAULT_INBOX_REPLY_ACTIVITY_RECONCILE_LIMIT,
+  INBOX_REPLY_ACTIVITY_RECONCILE_FAILED_ID_CAP,
+  INBOX_REPLY_ACTIVITY_RECONCILE_SCAN_CAP,
+  MAX_INBOX_REPLY_ACTIVITY_RECONCILE_LIMIT,
+  reconcileInboxReplyActivity,
+  type InboxReplyActivityReconcileDependencies,
+  type InboxReplyActivityReconcileInput,
+  type InboxReplyActivityReconcileResult,
+} from "./inbox-reply-activity-reconcile.js";

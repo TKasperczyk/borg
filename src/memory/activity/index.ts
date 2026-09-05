@@ -50,3 +50,11 @@ export {
   type ActivityEventStatus,
   type ActivityVisibleSessionEvent,
 } from "./types.js";
+export {
+  buildInboxReplyActivityProjection,
+  isEnsurableSessionRecord,
+  sessionEnsureInputFromRecord,
+  type InboxReplyActivityProjection,
+  type InboxReplyActivityProjectionInput,
+  type InboxReplyActivitySkipReason,
+} from "./inbox-reply-projection.js";

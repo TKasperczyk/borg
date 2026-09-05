@@ -97,7 +97,11 @@ import type { MemoryDisclosureLabelMetadata } from "../memory/common/disclosure-
 import type { SocialProfile } from "../memory/social/types.js";
 import type { WorkingMemory } from "../memory/working/types.js";
 import type { PromptKey } from "../cognition/prompts/registry.js";
-import type { IngestionResult } from "../cognition/ingestion/index.js";
+import type {
+  InboxReplyActivityReconcileInput,
+  InboxReplyActivityReconcileResult,
+  IngestionResult,
+} from "../cognition/ingestion/index.js";
 import type { MaintenancePlan } from "../offline/plan-file.js";
 import type { OrchestratorResult } from "../offline/types.js";
 import type {
@@ -1376,6 +1380,9 @@ export type BorgInboxFacade = {
     sessionId: SessionId;
     entryId: StreamEntryId;
   }): BorgFindTerminalCoveringEntryResult;
+  reconcileReplyActivity(
+    input: InboxReplyActivityReconcileInput,
+  ): InboxReplyActivityReconcileResult;
 };
 
 export type BorgWorkmemFacade = {

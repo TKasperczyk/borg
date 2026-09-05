@@ -54,6 +54,8 @@ import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.
 import type { WorkingMemory, WorkingMemoryStore } from "../memory/working/index.js";
 import type {
   AppendBacklogTerminalInput,
+  InboxReplyActivityReconcileInput,
+  InboxReplyActivityReconcileResult,
   AppendBacklogTerminalResult,
   ChatResponseCatchUpWorker,
   FindTerminalCoveringEntryResult,
@@ -639,6 +641,9 @@ export type BorgInboxFacade = {
     sessionId: SessionId;
     entryId: StreamEntryId;
   }): FindTerminalCoveringEntryResult;
+  reconcileReplyActivity(
+    input: InboxReplyActivityReconcileInput,
+  ): InboxReplyActivityReconcileResult;
 };
 
 export type BorgWorkmemFacade = {

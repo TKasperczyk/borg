@@ -48,6 +48,18 @@ as `/memory/append-turn`'s reply-only mode does; an `agent_observed` terminal re
 missing session, self entity or audience, or a projection error, leaves the committed terminal
 intact and logs a redacted warning. Until 2026-09-05 the inbox path skipped this projection, so
 Teams replies never reached `recent_activity` or the recall planner's owner rows.
+Terminals written before that fix are repaired by `POST /memory/maintenance/inbox-reply-activity`
+(`{ tenant, dry_run?: true, since?: ISO-8601, until?: ISO-8601, limit?: <=5000 }`, token-protected,
+runs under the tenant's exclusive chain, so it is bounded: at most 1000 sessions per pass, a scan
+cap of 20000 terminals, and `limit` inserts). It scans `teams_inbox` sessions for active
+`agent_msg` terminals stamped `response_to.kind = "stream_backlog"` in the window (unstamped
+legacy entries are ignored), counts those already carrying a `borg_replied` event, and projects the
+missing ones with the same builder the live runner uses, reconstructing the batch senders in stamp
+order; `dry_run` (the default) only counts. The response reports `sessions_scanned`,
+`sessions_truncated`, `terminals_scanned`, `inactive_skipped`, `already_recorded`, `inserted`,
+per-reason `skipped` counts (including `malformed_stamp` and `projection_failed`), up to 50
+`failed_terminal_ids`, `truncated`, and `complete`. Re-running is safe: kind + source dedupe makes
+every insert idempotent, and a partial pass is simply run again.
 ```
 
 Nothing in the cluster ever calls the bridge: direct egress has no DNS and the corporate
