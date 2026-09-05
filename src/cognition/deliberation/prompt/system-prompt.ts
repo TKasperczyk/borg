@@ -2181,15 +2181,29 @@ function renderWakeSourceLines(
     // times, two later once, and earlier never. The previous wording here said
     // the read is always strictly earlier, which is the same overclaim the old
     // "equal means already due" copy made, pointed the other way.
-    // A difference between two floored stamps is the whole traversal between
-    // their rows, not the cost of the two rows themselves: rows that publish no
-    // stamp (a null, or a genuinely future one) still sit in that span and still
-    // spend time in it. The prose said "rows that publish no stamp of their
-    // own", which names the null and excludes the future stamp by its own
-    // wording -- a genuinely future stamp IS a stamp. On the live list the row
-    // between scheduled_reflection and goal_followup_due is scheduled_wake,
-    // whose stamp is days out, so the one case the sentence left out is the one
-    // sitting in the middle of the span a reader is most likely to measure.
+    // A difference between two floored stamps covers the earlier row's own scan
+    // as well as the whole traversal between the rows: clock.now() is the first
+    // statement of every nextDueAt body, so a row's cost is charged to the gap
+    // after its own stamp, and rows that publish no stamp (a null, or a
+    // genuinely future one) still sit in that span and still spend time in it.
+    // Two wordings have been wrong here. "rows that publish no stamp of their
+    // own" names the null and excludes the future stamp by its own wording -- a
+    // genuinely future stamp IS a stamp -- and on the live list the row between
+    // scheduled_reflection and goal_followup_due is scheduled_wake, whose stamp
+    // is days out, so the case that wording left out is the one sitting in the
+    // middle of the span a reader is most likely to measure. "the scan cost of
+    // everything between their rows" then omitted the term that dominates it.
+    // On a live page for 2026-09-03: open_question_dormant and
+    // scheduled_reflection are adjacent and 13ms apart, while the 1ms from
+    // scheduled_reflection to goal_followup_due spans scheduled_wake. The 13ms
+    // is open_question_dormant's own scan -- ten thousand open questions listed
+    // and a watermark lookup each -- charged to the gap after its stamp, which
+    // the sentence had no slot for. The consequence -- an adjacent pair sitting
+    // further apart than a pair with rows between them, which reads as
+    // backwards until the earlier row's own cost is in the accounting -- is
+    // left to the reader rather than spelled out: naming the term costs 15 of
+    // the 19 characters under the section's width ceiling, and spelling out
+    // what follows from it costs another 200. The ceiling is not raised for it.
     // (2) A stamp is eligibility, and three refusal paths sit between it and a
     // wake -- all three already on this block, none of them consulted here.
     // (3) A null is not a prediction of quiet: the reasons a source declines to
@@ -2197,7 +2211,7 @@ function renderWakeSourceLines(
     // The third is the one that matters most, because it is the reading that
     // costs nothing to make and cannot be checked against a wake that never
     // comes for some other reason.
-    `next_due_at is that source's own earliest eligibility, floored the way next_tick_at is -- but to a clock the trigger reads inside its own call, as the scan reaches its row in the order printed, not to the read stamp above. So an already-due source prints a stamp at or after that read and never before it -- equal to it when the scan reaches its row inside the same millisecond, later when it does not -- and two already-due sources print two different stamps whose difference is the scan cost of everything between their rows, including rows whose own stamp is null or genuinely future, rather than which of them is due first. How long a floored source had already been due is not recoverable from this block. Eligibility is not a fire: the tick still has to run, the budget still has to have room under the ceiling for that source's category, and the fleet brake still has to not be holding, and all three refuse independently of the stamp. next_due_at=none does not mean nothing is due from that source. It means the source published no stamp, and it covers several states that are not the same: nothing eligible; the source declining to compute one because its candidate set was larger than the bounded scan it will do for a read-only field; and a trigger deciding part of what it fires on inside the scan, from scoring rather than from schedule data, which a field read before the scan cannot predict at all. A none is therefore consistent with that source firing on the very next tick. Conditions publish no stamp by construction -- they are detected from state when the tick scans -- so their absence here is the field not existing rather than nothing being due. registered says the source was built into this scheduler, not that it is otherwise unblocked.${
+    `next_due_at is that source's own earliest eligibility, floored the way next_tick_at is -- but to a clock the trigger reads inside its own call, as the scan reaches its row in the order printed, not to the read stamp above. So an already-due source prints a stamp at or after that read and never before it -- equal to it when the scan reaches its row inside the same millisecond, later when it does not -- and two already-due sources print two different stamps whose difference is the earlier row's own scan plus everything between their rows, including rows whose own stamp is null or genuinely future, rather than which of them is due first. How long a floored source had already been due is not recoverable from this block. Eligibility is not a fire: the tick still has to run, the budget still has to have room under the ceiling for that source's category, and the fleet brake still has to not be holding, and all three refuse independently of the stamp. next_due_at=none does not mean nothing is due from that source. It means the source published no stamp, and it covers several states that are not the same: nothing eligible; the source declining to compute one because its candidate set was larger than the bounded scan it will do for a read-only field; and a trigger deciding part of what it fires on inside the scan, from scoring rather than from schedule data, which a field read before the scan cannot predict at all. A none is therefore consistent with that source firing on the very next tick. Conditions publish no stamp by construction -- they are detected from state when the tick scans -- so their absence here is the field not existing rather than nothing being due. registered says the source was built into this scheduler, not that it is otherwise unblocked.${
       observationLagMs === 0
         ? ""
         : ` The parenthesised countdowns are measured from the current_time_ms at the top of this prompt, ${observationLagMs}ms after the read, so like the other countdowns here they read shorter than the wait as of the read.`

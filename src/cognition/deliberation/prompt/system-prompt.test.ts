@@ -3112,12 +3112,19 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain(
       "prints a stamp at or after that read and never before it -- equal to it when the scan reaches its row inside the same millisecond, later when it does not",
     );
-    // The span between two floored stamps is everything the loop did between
-    // them, which on the live list includes a trigger whose stamp is genuinely
-    // future and therefore not comparable to either.
+    // The span between two floored stamps is the earlier row's own scan plus
+    // everything the loop did between them, which on the live list includes a
+    // trigger whose stamp is genuinely future and therefore not comparable to
+    // either. The earlier row's term is the one that dominates: its read is the
+    // first statement of its own call, so its whole scan is charged after its
+    // stamp.
     expect(block).toContain(
-      "the scan cost of everything between their rows, including rows whose own stamp is null or genuinely future, rather than which of them is due first",
+      "the earlier row's own scan plus everything between their rows, including rows whose own stamp is null or genuinely future, rather than which of them is due first",
     );
+    // The wording that carried the traversal but not the row emitting it,
+    // pinned because it makes an adjacent 13ms gap and a 1ms gap spanning a
+    // third row read as contradictory.
+    expect(block).not.toContain("the scan cost of everything between their rows");
     // The narrower wording this replaced, pinned because it read as an
     // enumeration and left out the case that actually sits in the span: a row
     // publishing a genuinely future stamp is publishing a stamp, so "rows that
