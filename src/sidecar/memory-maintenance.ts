@@ -320,6 +320,7 @@ function sidecarProcessBudgets(config: Config): MemoryMaintenanceConfig["process
     "review-resolver": config.offline.reviewResolver.budget,
     ruminator: config.offline.ruminator.budget,
     "self-narrator": config.offline.selfNarrator.budget,
+    "lived-experience-day-summarizer": config.offline.livedExperienceDaySummarizer.budget,
     "procedural-synthesizer": config.offline.proceduralSynthesizer.budget,
     "belief-reviser": null,
     "creator-directive-reconciler": config.offline.creatorDirectiveReconciler.budget,
