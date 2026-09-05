@@ -640,11 +640,14 @@ retrieval pass); the sidecar uses it in two ways:
   `{ window: { since, until, label, source: "planner_temporal_cue" }, evidence: [ { id, kind, group,
   occurred_at, relative_age, text, source_episode_ids, disclosure } ], hidden_count, truncated_count }`
   (`hidden_count` counts rows of the returned kinds the audience may not see).
-  The recall runs as a second pass after the episodes recall with only what the episodes pass left of
-  the one recall deadline (default 5 s, so the whole request still fits the client's timeout); with less
-  than 500 ms left it is skipped. A skip or failure there sets `degraded` with reason prefix
-  `autobiographical_recall:` and leaves the episodes intact; the scan itself is not cancelled on
-  timeout, which is why the caps above are tight. Older sidecars reject the section name with 400;
+  The recall runs as a second pass after the episodes recall with a budget of at most 1.5 s and never
+  more than what the episodes pass left of the one recall deadline (default 5 s) minus 700 ms of
+  headroom, because the interactive client's own timeout sits at that deadline and a second pass that
+  ran it out would lose the episodes too; with less than 500 ms available it is skipped. A skip or
+  failure there sets `degraded` with reason prefix `autobiographical_recall:` and leaves the episodes
+  intact; the scan itself is not cancelled on timeout, which is why the caps above are tight. Measured
+  on 2026-09-05 in production the episodes pass alone took 3.5-5.3 s, so this section is frequently
+  skipped until that pass gets faster. Older sidecars reject the section name with 400;
   team-agent's existing 400 fallback re-sends the previous shape.
 - **Planner-driven recalls overfetch.** A request with `focus` now overfetches and defers retrieval
   accounting like one with `exclude` or `time_range`, so an in-period episode that a lane found below the

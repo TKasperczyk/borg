@@ -209,9 +209,14 @@ const MAX_AUTOBIOGRAPHICAL_ROWS = 12;
 // bounds that scan below Sol's defaults because it runs inside an interactive request.
 const AUTOBIOGRAPHICAL_SESSION_CAP = 8;
 const AUTOBIOGRAPHICAL_TOTAL_CAP = 24;
-// The second pass only gets what the episodes pass left of the request deadline; below this floor
-// it is skipped rather than started, so the whole request still fits one recall deadline.
+// The second pass only gets what the episodes pass left of the request deadline, minus headroom for
+// the rest of the handler, and never more than a short cap: the interactive client's own timeout
+// sits at the recall deadline, so a second pass that ran the deadline out would lose the episodes
+// too. Below the floor it is skipped rather than started. Measured 2026-09-05 in production: the
+// episodes pass alone takes 3.5-5.3 s of a 5 s deadline, so this pass often has little or no room.
 const MIN_AUTOBIOGRAPHICAL_BUDGET_MS = 500;
+const MAX_AUTOBIOGRAPHICAL_BUDGET_MS = 1500;
+const AUTOBIOGRAPHICAL_HEADROOM_MS = 700;
 // Kinds whose disclosure label comes from exactly one source record, so "one visible audience is
 // among the entities it is private to" is the whole story. Open questions, goals, actions and
 // autobiographical periods carry labels combined across several sources (one visible source would
@@ -2738,7 +2743,10 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         let autobiographical: Record<string, unknown> | null = null;
         if (requestedSections.has("autobiographical") && plannerTemporalCue !== null) {
           const cue = plannerTemporalCue;
-          const remainingMs = recallDeadlineMs - (Date.now() - nowMs);
+          const remainingMs = Math.min(
+            MAX_AUTOBIOGRAPHICAL_BUDGET_MS,
+            recallDeadlineMs - (Date.now() - nowMs) - AUTOBIOGRAPHICAL_HEADROOM_MS,
+          );
           const noteDegradation = (reason: string): void => {
             degraded = true;
             degradedReason = degradedReason.length === 0 ? reason : `${degradedReason}; ${reason}`;

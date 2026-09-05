@@ -149,6 +149,7 @@ type Recorder = {
   lastVenueOptions?: unknown;
   recallError?: Error;
   recallPromise?: Promise<never>;
+  recallDelayMs?: number;
   creatorDirectives: CreatorDirective[];
   directiveQueueInputs: unknown[];
   directiveQueueError?: Error;
@@ -651,6 +652,9 @@ function stubBorg(rec: Recorder): Borg {
         }
         if (rec.recallPromise !== undefined) {
           return rec.recallPromise;
+        }
+        if (rec.recallDelayMs !== undefined) {
+          await new Promise((resolve) => setTimeout(resolve, rec.recallDelayMs));
         }
         return (
           rec.recallEpisodes ?? [testEpisode("ep_1" as Episode["id"], rec.episodeOverrides)]
@@ -4840,6 +4844,39 @@ describe("memory sidecar handler", () => {
       truncated_count: 0,
     });
     expect(payload.degraded).toBe(false);
+  });
+
+  it("skips the owner's record when the episodes pass leaves no deadline budget, keeping the episodes", async () => {
+    const { pool, rec } = recordingPool();
+    // Any deadline under the 700 ms headroom plus the 500 ms floor leaves nothing for a second pass.
+    const base = await start(pool, TOKEN, { recallDeadlineMs: 400 });
+    rec.recallEpisodes = [testEpisode("ep_budgetepisode001" as Episode["id"], { shared: true })];
+    rec.recallDelayMs = 5;
+    rec.plannerTemporalCue = { sinceTs: 100, untilTs: 200, label: "wczoraj" };
+
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "personal-no-budget",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: { type: "personal", name: "Alice" },
+        focus: "Co wczoraj?",
+        sections: ["episodes", "autobiographical"],
+      },
+      TOKEN,
+    );
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect((payload.episodes as unknown[]).length).toBe(1);
+    expect(payload.autobiographical).toBeNull();
+    expect(rec.autobiographicalRecallInputs).toEqual([]);
+    expect(payload.degraded).toBe(true);
+    expect(payload.degraded_reason).toContain(
+      "autobiographical_recall: no deadline budget left after episodes",
+    );
   });
 
   it("returns a null autobiographical section without a cue, degrades softly when the recall fails, and rejects it without episodes", async () => {
