@@ -51,6 +51,7 @@ import { buildToolDispatcher } from "./tools-setup.js";
 import { buildTurnOrchestrator } from "./turn-setup.js";
 import type { BorgDependencies, BorgOpenOptions } from "./types.js";
 import type { SessionId } from "../util/ids.js";
+import { createActivityFacade } from "./facade.js";
 
 const CHAT_RESPONSE_CATCH_UP_BACKOFF_CONFIG = {
   backoffBaseMs: 1_000,
@@ -440,6 +441,12 @@ export async function openBorgDependencies(
         ? configuredRunner({
             terminal: backlogTerminalService,
             entityRepository: repositories.entityRepository,
+            sessions: repositories.sessionsRepository,
+            activity: createActivityFacade({
+              sqlite,
+              activityRepository: repositories.activityRepository,
+              sessionsRepository: repositories.sessionsRepository,
+            }),
           })
         : configuredRunner;
     catchUpWorker = new ChatResponseCatchUpWorker({

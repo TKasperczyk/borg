@@ -90,6 +90,7 @@ import type {
   RetrievalPipeline,
 } from "../retrieval/index.js";
 import type { SessionsRepository } from "../sessions/index.js";
+import type { BorgActivityFacade } from "./public-facade.js";
 import type { SessionRecord } from "../sessions/index.js";
 import type { LanceDbStore } from "../storage/lancedb/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
@@ -204,7 +205,9 @@ export type BorgOpenOptions = {
       | ChatResponseCatchUpRunner
       | ((context: {
           terminal: BacklogTerminalService;
-          entityRepository: Pick<EntityRepository, "get">;
+          entityRepository: Pick<EntityRepository, "get" | "getSelf">;
+          sessions: Pick<SessionsRepository, "get">;
+          activity: Pick<BorgActivityFacade, "projectRepliedTurn">;
         }) => ChatResponseCatchUpRunner);
     sessionPredicate?: (session: SessionRecord | null) => boolean;
     acquireLease?: () => ChatResponseCatchUpLease;

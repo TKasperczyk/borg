@@ -28,6 +28,7 @@ import {
   type SessionId,
 } from "../util/ids.js";
 import { ResponseWaiterRegistry } from "./response-waiter-registry.js";
+import type { SessionRecord } from "../sessions/index.js";
 import { TeamAgentTurnRunner, type TeamAgentTurnRunnerOptions } from "./team-agent-turn-runner.js";
 
 const cleanups: Array<() => void> = [];
@@ -42,10 +43,36 @@ afterEach(() => {
 function harness(
   fetchResponse: () => Promise<Response>,
   options: Pick<TeamAgentTurnRunnerOptions, "onGenerating"> = {},
+  fixture: { senderIsAudience?: boolean; sessionRecord?: Partial<SessionRecord> | null } = {},
 ) {
   const sessionId = createSessionId();
   const sourceId = createStreamEntryId();
-  const senderId = createEntityId();
+  const selfId = createEntityId();
+  const audienceId = createEntityId();
+  const senderId = fixture.senderIsAudience ? audienceId : createEntityId();
+  const sessionRecord: SessionRecord | null =
+    fixture.sessionRecord === null
+      ? null
+      : {
+          session_id: sessionId,
+          source_type: "teams_inbox",
+          source_external_id: "conversation",
+          source_url: null,
+          label: "Room",
+          audience_label: "Room",
+          audience_entity_id: audienceId,
+          conversation_kind: "channel",
+          created_at: 900,
+          last_activity_at: 900,
+          last_turn_id: null,
+          message_count: 1,
+          status: "active",
+          privacy_level: "payload_on",
+          participation_policy: "active",
+          audience_role: "participant",
+          ...fixture.sessionRecord,
+        };
+  const projectRepliedTurn = vi.fn((_input: unknown) => ({}) as never);
   const sourceEntry: StreamEntry = {
     id: sourceId,
     session_id: sessionId,
@@ -121,7 +148,10 @@ function harness(
     terminal,
     entityRepository: {
       get: () => ({ canonical_name: "Sender" }) as never,
+      getSelf: () => ({ id: selfId }) as never,
     },
+    sessions: { get: () => sessionRecord },
+    activity: { projectRepliedTurn },
     clock: new FixedClock(1_000),
     ...options,
     fetchFn,
@@ -134,7 +164,16 @@ function harness(
       throughCursorInclusive: { ts: sourceEntry.timestamp, entryId: sourceId },
     },
   };
-  return { runner, input, sourceEntry, terminal, appendBacklogTerminal, fetchFn };
+  return {
+    runner,
+    input,
+    sourceEntry,
+    terminal,
+    appendBacklogTerminal,
+    fetchFn,
+    projectRepliedTurn,
+    ids: { sessionId, sourceId, senderId, selfId, audienceId },
+  };
 }
 
 function openRealHarness(input: {
@@ -186,7 +225,10 @@ function openRealHarness(input: {
     terminal,
     entityRepository: {
       get: () => ({ canonical_name: "Sender" }) as never,
+      getSelf: () => null,
     },
+    sessions: { get: () => null },
+    activity: { projectRepliedTurn: vi.fn(() => ({}) as never) },
     clock,
     ...(input.onGenerating === undefined ? {} : { onGenerating: input.onGenerating }),
     fetchFn: input.fetchFn,
@@ -622,6 +664,127 @@ describe("TeamAgentTurnRunner", () => {
       ts: staleLast.timestamp,
       entryId: staleLast.id,
     });
+  });
+
+  it("records the owner's reply as a borg_replied activity on the inbox session", async () => {
+    const { runner, input, appendBacklogTerminal, projectRepliedTurn, ids } = harness(async () =>
+      Response.json({ action: "reply", content: "Porównałem role chat i reviewer." }),
+    );
+
+    await runner.run(input);
+
+    expect(appendBacklogTerminal).toHaveBeenCalledTimes(1);
+    const appended = await appendBacklogTerminal.mock.results[0]!.value;
+    expect(projectRepliedTurn).toHaveBeenCalledTimes(1);
+    expect(projectRepliedTurn).toHaveBeenCalledWith({
+      session: expect.objectContaining({
+        session_id: ids.sessionId,
+        source_type: "teams_inbox",
+        audience_entity_id: ids.audienceId,
+        conversation_kind: "channel",
+      }),
+      borgReplied: {
+        kind: "borg_replied",
+        occurredAt: appended.terminalEntry.timestamp,
+        sessionId: ids.sessionId,
+        speakerEntityId: ids.selfId,
+        actorEntityId: ids.selfId,
+        audienceEntityId: ids.audienceId,
+        participantEntityIds: [ids.selfId, ids.senderId, ids.audienceId],
+        sourceStreamEntryIds: [appended.terminalEntry.id],
+      },
+      touch: { at: appended.terminalEntry.timestamp, messageCountDelta: 1 },
+    });
+    const projected = projectRepliedTurn.mock.calls[0]![0] as { session: Record<string, unknown> };
+    expect(projected.session).not.toHaveProperty("message_count");
+    expect(projected.session).not.toHaveProperty("participation_policy");
+  });
+
+  it("dedupes the participant list when the DM sender is the audience", async () => {
+    const { runner, input, projectRepliedTurn, ids } = harness(
+      async () => Response.json({ action: "reply", content: "hi" }),
+      {},
+      { senderIsAudience: true },
+    );
+
+    await runner.run(input);
+
+    expect(projectRepliedTurn).toHaveBeenCalledTimes(1);
+    const projected = projectRepliedTurn.mock.calls[0]![0] as {
+      borgReplied: { participantEntityIds: unknown[] };
+    };
+    expect(projected.borgReplied.participantEntityIds).toEqual([ids.selfId, ids.audienceId]);
+  });
+
+  it("warns and records nothing when the session has no audience or an unensurable record", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const noAudience = harness(
+      async () => Response.json({ action: "reply", content: "hi" }),
+      {},
+      { sessionRecord: { audience_entity_id: null } },
+    );
+    await noAudience.runner.run(noAudience.input);
+    expect(noAudience.appendBacklogTerminal).toHaveBeenCalledTimes(1);
+    expect(noAudience.projectRepliedTurn).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenLastCalledWith("memory-sidecar: inbox reply activity not recorded", {
+      tenant: "tenant",
+      reason: "audience_missing",
+    });
+
+    const emptyLabel = harness(
+      async () => Response.json({ action: "reply", content: "hi" }),
+      {},
+      { sessionRecord: { label: "" } },
+    );
+    await emptyLabel.runner.run(emptyLabel.input);
+    expect(emptyLabel.projectRepliedTurn).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenLastCalledWith("memory-sidecar: inbox reply activity not recorded", {
+      tenant: "tenant",
+      reason: "session_record_incomplete",
+    });
+
+    const missing = harness(
+      async () => Response.json({ action: "reply", content: "hi" }),
+      {},
+      { sessionRecord: null },
+    );
+    await missing.runner.run(missing.input);
+    expect(missing.projectRepliedTurn).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenLastCalledWith("memory-sidecar: inbox reply activity not recorded", {
+      tenant: "tenant",
+      reason: "session_missing",
+    });
+  });
+
+  it("records no activity for a silent response", async () => {
+    const { runner, input, appendBacklogTerminal, projectRepliedTurn } = harness(async () =>
+      Response.json({ action: "silent", reason: "nothing to add" }),
+    );
+
+    await runner.run(input);
+
+    expect(appendBacklogTerminal).toHaveBeenCalledTimes(1);
+    expect(projectRepliedTurn).not.toHaveBeenCalled();
+  });
+
+  it("keeps the committed reply terminal when activity projection fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { runner, input, appendBacklogTerminal, projectRepliedTurn } = harness(async () =>
+      Response.json({ action: "reply", content: "hi" }),
+    );
+    projectRepliedTurn.mockImplementation(() => {
+      throw new Error("Porównałem role chat i reviewer w team-agent.");
+    });
+
+    await expect(runner.run(input)).resolves.toBeUndefined();
+
+    expect(appendBacklogTerminal).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("memory-sidecar: inbox reply activity not recorded", {
+      tenant: "tenant",
+      reason: "projection_failed",
+      error_name: "Error",
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("Porównałem");
   });
 
   it("seals a 4xx response as observed", async () => {

@@ -1,12 +1,17 @@
 import { z } from "zod";
 
 import type {
+  AppendBacklogTerminalResult,
   BacklogTerminalService,
   ChatResponseCatchUpRunInput,
   ChatResponseCatchUpRunner,
 } from "../cognition/ingestion/index.js";
+import type { BorgActivityFacade } from "../borg/public-facade.js";
 import type { EntityRepository } from "../memory/commitments/index.js";
+import type { SessionEnsureInput, SessionRecord, SessionsRepository } from "../sessions/index.js";
 import type { Clock } from "../util/clock.js";
+import { dedupePreservingOrder } from "../util/collections.js";
+import type { EntityId } from "../util/ids.js";
 import { jsonValueSchema } from "../util/json-value.js";
 
 export const teamsInboxTransportMetadataSchema = z
@@ -54,7 +59,9 @@ export type TeamAgentTurnRunnerOptions = {
   timeoutMs: number;
   staleMs: number;
   terminal: BacklogTerminalService;
-  entityRepository: Pick<EntityRepository, "get">;
+  entityRepository: Pick<EntityRepository, "get" | "getSelf">;
+  sessions: Pick<SessionsRepository, "get">;
+  activity: Pick<BorgActivityFacade, "projectRepliedTurn">;
   clock: Clock;
   onGenerating?: (input: {
     sessionId: ChatResponseCatchUpRunInput["sessionId"];
@@ -213,10 +220,113 @@ export class TeamAgentTurnRunner implements ChatResponseCatchUpRunner {
             kind: "agent_observed",
             reason: parsed.data.reason ?? "Team Agent stayed silent",
           } as const);
-    await this.options.terminal.appendBacklogTerminal({
+    const appended = await this.options.terminal.appendBacklogTerminal({
       sessionId: input.sessionId,
       sourceEntryIds: input.inboundBatch.entryIds,
       terminal,
     });
+    if (terminal.kind === "agent_msg") {
+      this.projectReplyActivity(input.sessionId, appended);
+    }
   }
+
+  // The inbox path bypasses /memory/append-turn, which is where the sidecar otherwise records
+  // the memory owner's own reply as a borg_replied activity event. Without this projection the
+  // owner's Teams replies never reached recent_activity or the recall planner's owner rows.
+  private projectReplyActivity(
+    sessionId: ChatResponseCatchUpRunInput["sessionId"],
+    appended: AppendBacklogTerminalResult,
+  ): void {
+    const warn = (reason: string, error?: unknown) =>
+      console.warn("memory-sidecar: inbox reply activity not recorded", {
+        tenant: this.options.tenant,
+        reason,
+        ...(error === undefined
+          ? {}
+          : { error_name: error instanceof Error ? error.name : typeof error }),
+      });
+    try {
+      const session = this.options.sessions.get(sessionId);
+      const self = this.options.entityRepository.getSelf();
+      if (session === null) {
+        warn("session_missing");
+        return;
+      }
+      if (self === null) {
+        warn("self_missing");
+        return;
+      }
+      const audienceEntityId = session.audience_entity_id ?? null;
+      if (audienceEntityId === null) {
+        warn("audience_missing");
+        return;
+      }
+      if (!isEnsurableSessionRecord(session)) {
+        warn("session_record_incomplete");
+        return;
+      }
+      const senderEntityIds = appended.sourceEntries.flatMap((entry) =>
+        entry.sender_entity_id === null || entry.sender_entity_id === undefined
+          ? []
+          : [entry.sender_entity_id as EntityId],
+      );
+      this.options.activity.projectRepliedTurn({
+        session: sessionEnsureInputFromRecord(session),
+        borgReplied: {
+          kind: "borg_replied",
+          occurredAt: appended.terminalEntry.timestamp,
+          sessionId: appended.terminalEntry.session_id,
+          speakerEntityId: self.id,
+          actorEntityId: self.id,
+          audienceEntityId,
+          participantEntityIds: dedupePreservingOrder([
+            self.id,
+            ...senderEntityIds,
+            audienceEntityId,
+          ]),
+          sourceStreamEntryIds: [appended.terminalEntry.id],
+        },
+        touch: { at: appended.terminalEntry.timestamp, messageCountDelta: 1 },
+      });
+    } catch (error) {
+      warn("projection_failed", error);
+    }
+  }
+}
+
+// sessionEnsureInputSchema requires non-empty strings where a stored record may still hold
+// legacy empty values; such a record is left alone instead of failing inside the projection.
+function isEnsurableSessionRecord(record: SessionRecord): boolean {
+  return (
+    record.label.length > 0 &&
+    record.audience_label.length > 0 &&
+    (record.source_external_id === null ||
+      record.source_external_id === undefined ||
+      record.source_external_id.length > 0) &&
+    (record.source_url === null ||
+      record.source_url === undefined ||
+      record.source_url.length > 0) &&
+    (record.last_turn_id === null ||
+      record.last_turn_id === undefined ||
+      record.last_turn_id.length > 0)
+  );
+}
+
+function sessionEnsureInputFromRecord(record: SessionRecord): SessionEnsureInput {
+  return {
+    session_id: record.session_id,
+    source_type: record.source_type,
+    source_external_id: record.source_external_id,
+    source_url: record.source_url,
+    label: record.label,
+    audience_label: record.audience_label,
+    audience_entity_id: record.audience_entity_id,
+    conversation_kind: record.conversation_kind,
+    created_at: record.created_at,
+    last_activity_at: record.last_activity_at,
+    last_turn_id: record.last_turn_id,
+    status: record.status,
+    privacy_level: record.privacy_level,
+    audience_role: record.audience_role,
+  };
 }

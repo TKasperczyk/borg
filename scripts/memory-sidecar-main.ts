@@ -201,7 +201,7 @@ pool = new BorgPool({
     ? {
         openOptionsForTenant: (tenantId: string) => ({
           inbox: {
-            runner: ({ terminal, entityRepository }) =>
+            runner: ({ terminal, entityRepository, sessions, activity }) =>
               new TeamAgentTurnRunner({
                 tenant: tenantId,
                 baseUrl: teamsInboxConfig.baseUrl,
@@ -210,6 +210,8 @@ pool = new BorgPool({
                 staleMs: teamsInboxConfig.staleMs,
                 terminal,
                 entityRepository,
+                sessions,
+                activity,
                 clock: sidecarClock,
                 onGenerating: ({ sessionId, entryIds }) =>
                   inboxWaiters!.markGenerating({

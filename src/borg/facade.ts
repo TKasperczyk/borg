@@ -219,7 +219,9 @@ async function countPendingSemanticExtractionEpisodes(
 
 type CreatorDirectivesFacadeDeps = Pick<BorgDependencies, "creatorDirectiveRepository">;
 
-function createActivityFacade(deps: BorgDependencies): BorgFacades["activity"] {
+export function createActivityFacade(
+  deps: Pick<BorgDependencies, "sqlite" | "activityRepository" | "sessionsRepository">,
+): BorgFacades["activity"] {
   type ObservedTurnInput = Parameters<BorgFacades["activity"]["projectObservedTurn"]>[0];
   type RepliedTurnInput = Parameters<BorgFacades["activity"]["projectRepliedTurn"]>[0];
   type CompletedTurnInput = Parameters<BorgFacades["activity"]["projectCompletedTurn"]>[0];

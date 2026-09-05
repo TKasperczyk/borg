@@ -194,7 +194,7 @@ describe("memory inbox routes", () => {
       liveExtraction: false,
       clock,
       inbox: {
-        runner: ({ terminal, entityRepository }) =>
+        runner: ({ terminal, entityRepository, sessions, activity }) =>
           new TeamAgentTurnRunner({
             tenant: "tenant",
             baseUrl: "http://team-agent:8080",
@@ -203,6 +203,8 @@ describe("memory inbox routes", () => {
             staleMs: 60_000,
             terminal,
             entityRepository,
+            sessions,
+            activity,
             clock,
             fetchFn,
           }),

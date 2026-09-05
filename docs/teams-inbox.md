@@ -1,6 +1,6 @@
 # Teams inbox: coalesced turns through borg's durable inbox
 
-Status: v1.8 contract, 2026-09-04. All OPEN points are settled; v1.3 added the implementers'
+Status: v1.9 contract, 2026-09-05 (v1.9: an `agent_msg` terminal records the owner's `borg_replied` activity). All OPEN points are settled; v1.3 added the implementers'
 clarifications (transport envelope, await tenant mapping, response union, terminal reclaim,
 recovery settings, delivery guarantees); v1.4 adds the review outcomes (seal-on-claim, stale
 batches, connector failures park, batch rendering order, atomic post-send bookkeeping); v1.5
@@ -41,6 +41,13 @@ sidecar worker: quiet 3 s / max 15 s, per session, startup scan, backoff   [borg
       -> append terminal: agent_msg (reply) | agent_observed (silent), stamped response_to
       -> borg.episodic.ingest({session}); resolve waiters
 team-agent returns the terminal to the bridge; the bridge posts it once and completes.
+An `agent_msg` terminal also records the memory owner's reply as a `borg_replied` activity event
+(speaker and actor = the self entity, audience = the session's audience entity, participants =
+self + the batch senders + audience, source = the terminal entry) and touches the session, exactly
+as `/memory/append-turn`'s reply-only mode does; an `agent_observed` terminal records nothing. A
+missing session, self entity or audience, or a projection error, leaves the committed terminal
+intact and logs a redacted warning. Until 2026-09-05 the inbox path skipped this projection, so
+Teams replies never reached `recent_activity` or the recall planner's owner rows.
 ```
 
 Nothing in the cluster ever calls the bridge: direct egress has no DNS and the corporate
