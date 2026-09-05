@@ -2275,20 +2275,37 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             identity.audienceEntity.id,
             ...observedGroupAudienceEntityIds,
           ]);
-          const recentActivityEvents =
-            requestedSections.has("episodes") || requestedSections.has("recent_activity")
-              ? borg.activity.listRecentVisibleOtherSessionEvents({
-                  currentSessionId: session,
-                  audienceEntityIds: visibleAudienceEntityIds,
-                  sinceMs: nowMs - recentActivityWindowMs,
-                  limit: recentActivityLimit,
-                })
-              : [];
-          const recentActivitySourceIds = recentActivityEvents.flatMap(
-            (event) => event.sourceStreamEntryIds,
+          const recentActivityEvents = requestedSections.has("recent_activity")
+            ? borg.activity.listRecentVisibleOtherSessionEvents({
+                currentSessionId: session,
+                audienceEntityIds: visibleAudienceEntityIds,
+                sinceMs: nowMs - recentActivityWindowMs,
+                limit: recentActivityLimit,
+              })
+            : [];
+          // Planner context reads the memory owner's own recent replies elsewhere through an
+          // owner-only pass of the same visibility-gated query. Deriving them from the shared
+          // response list starved the planner on busy group days: the 12 newest visible rows
+          // were all user_contact messages, so zero owner rows reached the planner.
+          const plannerOwnerActivityEvents = requestedSections.has("episodes")
+            ? borg.activity.listRecentVisibleOtherSessionEvents({
+                currentSessionId: session,
+                audienceEntityIds: visibleAudienceEntityIds,
+                sinceMs: nowMs - recentActivityWindowMs,
+                limit: recentActivityLimit,
+                kinds: ["borg_replied"],
+              })
+            : [];
+          // One hydration pass for both lists. Owner rows go first: indexed hydration keeps input
+          // order and stops at its budget, so under pressure the response excerpts degrade before
+          // the planner loses its owner rows again.
+          const recentActivitySourceIds = dedupePreservingOrder(
+            [...plannerOwnerActivityEvents, ...recentActivityEvents].flatMap(
+              (event) => event.sourceStreamEntryIds,
+            ),
           );
           let recentActivitySourceEntries = new Map<StreamEntryId, StreamEntry>();
-          if (recentActivityEvents.length > 0) {
+          if (recentActivitySourceIds.length > 0) {
             try {
               recentActivitySourceEntries = await borg.stream.hydrateIndexed(
                 recentActivitySourceIds,
@@ -2307,13 +2324,9 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           const recentActivity = recentActivityEvents.map((event) =>
             projectRecentActivity(event, nowMs, recentActivitySourceEntries),
           );
-          const plannerOwnerActivity = recentActivityEvents.flatMap((event, index) => {
-            const projected = recentActivity[index];
-            if (
-              event.kind !== "borg_replied" ||
-              projected === undefined ||
-              projected.excerpt === undefined
-            ) {
+          const plannerOwnerActivity = plannerOwnerActivityEvents.flatMap((event) => {
+            const projected = projectRecentActivity(event, nowMs, recentActivitySourceEntries);
+            if (event.kind !== "borg_replied" || projected.excerpt === undefined) {
               return [];
             }
 

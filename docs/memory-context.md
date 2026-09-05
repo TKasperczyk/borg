@@ -452,9 +452,10 @@ Each `recent_activity` event may have an additive `excerpt` string containing th
 the event's source `user_msg` or `agent_msg`, capped at 180 characters without whitespace rewriting or
 an ellipsis. Source IDs are hydrated only after `listRecentVisibleOtherSessionEvents` has applied the
 same exact visible-audience-set and current-session exclusion as the event list. Hydration is indexed
-only, is bounded by the existing activity row cap and a 50 ms sub-budget, and never falls back to a
-stream scan. A missing, malformed, mismatched, failed, or over-budget lookup silently leaves the event
-without `excerpt`.
+only, runs once per request over the union of the capped event lists (the planner's owner-only rows
+first, then the `recent_activity` rows, so at most two row caps of source IDs) under one 50 ms
+sub-budget, and never falls back to a stream scan. A missing, malformed, mismatched, failed, or
+over-budget lookup silently leaves the event without `excerpt`.
 
 ### Time preference and recency prior
 
@@ -558,12 +559,14 @@ from `BORG_MEMORY_RECALL_SEMANTIC_VARIANT_COUNT`, default 1 and likewise bounded
 request cannot override it. The former `BORG_MEMORY_RECALL_REFORMULATION_ENABLED` gate has been
 removed: structured planning is now the single recall-expansion path.
 
-When episodes are requested, `/memory/context` computes visible other-session activity even if the
-`recent_activity` response section was not requested. Only memory-owner-authored `borg_replied`
-events with successfully hydrated `agent_msg` excerpts enter planner context, with their venue and
-time labels. This reuses the already bounded visibility-gated activity read (12 rows, 180-character
-excerpts) and does not widen group visibility or perform a second activity query. The response still
-serializes `recent_activity` only when requested. Legacy `/memory/recall` supplies only the owner
+When episodes are requested, `/memory/context` performs an owner-only pass of the visibility-gated
+activity read (same visible audience set, window and 12-row bound as `recent_activity`) restricted to
+memory-owner-authored `borg_replied` events, whether or not the `recent_activity` response section was
+requested; the shared `recent_activity` read runs only when that section is requested. Deriving
+planner rows from the shared list starved the planner on busy group days, because the 12 newest
+visible rows were all `user_contact` messages. Only owner rows with successfully hydrated `agent_msg`
+excerpts (180 characters) enter planner context, with their venue and time labels. Both reads share
+one excerpt hydration pass with the owner rows hydrated first, and neither widens group visibility. Legacy `/memory/recall` supplies only the owner
 handle and preserves its one-planner-completion property across the strict time-range fallback.
 
 An invalid or failed plan is not retried. Borg reports a `recall_expansion` degradation and continues

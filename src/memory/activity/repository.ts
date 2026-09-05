@@ -443,6 +443,7 @@ export class ActivityRepository {
     audienceEntityIds: readonly EntityId[];
     sinceMs: number;
     limit: number;
+    kinds?: readonly ActivityVisibleSessionEvent["kind"][];
   }): ActivityVisibleSessionEvent[] {
     const audienceEntityIds = uniqueEntityIds(input.audienceEntityIds);
 
@@ -450,6 +451,16 @@ export class ActivityRepository {
       return [];
     }
 
+    const kinds: ActivityVisibleSessionEvent["kind"][] =
+      input.kinds === undefined
+        ? ["user_contact", "borg_replied"]
+        : dedupePreservingOrder(input.kinds);
+
+    if (kinds.length === 0) {
+      return [];
+    }
+
+    const kindPlaceholders = kinds.map(() => "?").join(", ");
     const audiencePlaceholders = audienceEntityIds.map(() => "?").join(", ");
     const rows = this.db
       .prepare(
@@ -477,7 +488,7 @@ export class ActivityRepository {
             AND s.status = 'active'
             AND e.session_id <> ?
             AND e.occurred_at >= ?
-            AND e.kind IN ('user_contact', 'borg_replied')
+            AND e.kind IN (${kindPlaceholders})
             AND e.audience_entity_id IN (${audiencePlaceholders})
           ORDER BY e.occurred_at DESC, e.id ASC
           LIMIT ?
@@ -486,6 +497,7 @@ export class ActivityRepository {
       .all(
         input.currentSessionId,
         input.sinceMs,
+        ...kinds,
         ...audienceEntityIds,
         Math.max(1, Math.floor(input.limit)),
       ) as Record<string, unknown>[];

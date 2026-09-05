@@ -118,6 +118,7 @@ type Recorder = {
   observedGroupAudienceIds: EntityId[];
   visibleActivityEvents: ActivityVisibleSessionEvent[];
   lastVisibleActivityInput?: unknown;
+  visibleActivityInputs: unknown[];
   lastRecallOptions?: Record<string, unknown>;
   recallOptionsCalls: Array<Record<string, unknown>>;
   retrievalRecords: Array<{ episodeId: Episode["id"]; score: number }>;
@@ -494,7 +495,14 @@ function stubBorg(rec: Recorder): Borg {
       listObservedGroupAudienceEntityIdsForSpeaker: () => [...rec.observedGroupAudienceIds],
       listRecentVisibleOtherSessionEvents: (input: unknown) => {
         rec.lastVisibleActivityInput = input;
-        return [...rec.visibleActivityEvents];
+        rec.visibleActivityInputs.push(input);
+        const { kinds, limit } = input as {
+          kinds?: readonly ActivityVisibleSessionEvent["kind"][];
+          limit: number;
+        };
+        return rec.visibleActivityEvents
+          .filter((event) => kinds === undefined || kinds.includes(event.kind))
+          .slice(0, limit);
       },
     },
     creatorDirectives: {
@@ -719,6 +727,7 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     activityReplyProjectionInputs: [],
     observedGroupAudienceIds: [],
     visibleActivityEvents: [],
+    visibleActivityInputs: [],
     recallOptionsCalls: [],
     retrievalRecords: [],
     recallCitationChains: new Map(),
@@ -4229,6 +4238,112 @@ describe("memory sidecar handler", () => {
         },
       ],
     });
+  });
+
+  it("still hands the planner owner replies when the newest visible rows are all user contacts", async () => {
+    const { pool, rec } = recordingPool();
+    const groupAudience = createEntityId();
+    const replySession = parseSessionId("sess_activityreplyx02");
+    const replySourceId = parseStreamEntryId("strm_activityreplyx02");
+    const chatter: ActivityVisibleSessionEvent[] = Array.from({ length: 12 }, (_, index) => {
+      const sourceId = parseStreamEntryId(`strm_activitychat${String(index).padStart(4, "0")}`);
+      rec.indexedStreamEntries.set(sourceId, {
+        session_id: replySession,
+        kind: "user_msg",
+        content: `Group chatter ${index}`,
+      } as StreamEntry);
+      return {
+        kind: "user_contact",
+        occurredAt: 20_000 - index,
+        sessionId: replySession,
+        audienceEntityId: groupAudience,
+        conversationKind: "channel",
+        conversationName: "AI Ninjas",
+        participantLabel: `Member ${index}`,
+        sourceStreamEntryIds: [sourceId],
+      };
+    });
+    rec.observedGroupAudienceIds = [groupAudience];
+    rec.visibleActivityEvents = [
+      ...chatter,
+      {
+        kind: "borg_replied",
+        occurredAt: 9_000,
+        sessionId: replySession,
+        audienceEntityId: groupAudience,
+        conversationKind: "channel",
+        conversationName: "AI Ninjas",
+        participantLabel: "AI Ninjas",
+        sourceStreamEntryIds: [replySourceId],
+      },
+    ];
+    rec.indexedStreamEntries.set(replySourceId, {
+      session_id: replySession,
+      kind: "agent_msg",
+      content: "Porównałem role chat i reviewer w team-agent.",
+    } as StreamEntry);
+    const base = await start(pool);
+
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "activity-planner-starved",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: { type: "personal", name: "Alice" },
+        focus: "O które role chodziło?",
+        sections: ["episodes", "recent_activity"],
+      },
+      TOKEN,
+    );
+    const payload = (await response.json()) as {
+      recent_activity: Array<{ kind: string }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.recent_activity).toHaveLength(12);
+    expect(payload.recent_activity.every((event) => event.kind === "user_contact")).toBe(true);
+    expect(rec.visibleActivityInputs).toHaveLength(2);
+    const [responseRead, ownerRead] = rec.visibleActivityInputs as Array<Record<string, unknown>>;
+    expect(responseRead).not.toHaveProperty("kinds");
+    expect(ownerRead).toMatchObject({ kinds: ["borg_replied"] });
+    const { kinds: _ownerKinds, ...ownerReadRest } = ownerRead ?? {};
+    expect(ownerReadRest).toEqual(responseRead);
+    expect(ownerRead).toMatchObject({ limit: 12 });
+    expect(rec.streamHydrateCalls).toHaveLength(1);
+    expect(rec.streamHydrateCalls[0]?.ids[0]).toBe(replySourceId);
+    expect(rec.streamHydrateCalls[0]?.ids).toHaveLength(13);
+    expect(rec.lastRecallOptions?.recallQueryPlannerContext).toMatchObject({
+      ownerRecentActivity: [
+        {
+          excerpt: "Porównałem role chat i reviewer w team-agent.",
+          occurredAt: 9_000,
+          venue: { type: "channel", name: "AI Ninjas" },
+          counterpartyName: "AI Ninjas",
+        },
+      ],
+    });
+
+    const episodesOnly = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "activity-planner-starved",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: { type: "personal", name: "Alice" },
+        focus: "O które role chodziło?",
+        sections: ["episodes"],
+      },
+      TOKEN,
+    );
+    expect(episodesOnly.status).toBe(200);
+    await episodesOnly.json();
+    expect(rec.visibleActivityInputs).toHaveLength(3);
+    expect(rec.visibleActivityInputs[2]).toMatchObject({ kinds: ["borg_replied"] });
+    expect(rec.streamHydrateCalls).toHaveLength(2);
+    expect(rec.streamHydrateCalls[1]?.ids).toEqual([replySourceId]);
   });
 
   it("keeps recent activity and logs a redacted warning when excerpt hydration fails", async () => {

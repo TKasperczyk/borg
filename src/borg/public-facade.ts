@@ -860,6 +860,7 @@ export type BorgActivityFacade = {
     audienceEntityIds: readonly EntityId[];
     sinceMs: number;
     limit: number;
+    kinds?: readonly ActivityVisibleSessionEvent["kind"][];
   }): ActivityVisibleSessionEvent[];
 };
 

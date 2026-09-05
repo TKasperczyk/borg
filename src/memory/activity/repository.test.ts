@@ -257,6 +257,31 @@ describe("ActivityRepository", () => {
         participantLabel: "Alice",
       }),
     ]);
+    expect(
+      repository.listRecentVisibleOtherSessionEvents({
+        currentSessionId,
+        audienceEntityIds: [alice, group],
+        sinceMs: 1_500,
+        limit: 12,
+        kinds: ["borg_replied"],
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        kind: "borg_replied",
+        occurredAt: 4_000,
+        sessionId: groupSessionId,
+        audienceEntityId: group,
+      }),
+    ]);
+    expect(
+      repository.listRecentVisibleOtherSessionEvents({
+        currentSessionId,
+        audienceEntityIds: [alice, group],
+        sinceMs: 1_500,
+        limit: 12,
+        kinds: [],
+      }),
+    ).toEqual([]);
 
     db.close();
   });
