@@ -310,5 +310,8 @@ describe("audience-scoping migration", () => {
     expect(secondApplyOpenBorg).not.toHaveBeenCalled();
     expect(secondApplyStdout.read()).toContain("total commitments=0 goals=0 rows=0");
     expect(secondApplyStdout.read()).toContain("applied_total commitments=0 goals=0 rows=0");
-  });
+    // Seeds a real data dir and runs the migration twice; ~9s alone, but past the
+    // 15s default when the full suite is running it under parallel load. Same
+    // allowance the sibling scripts/repair-*.test.ts migrations already take.
+  }, 30_000);
 });
