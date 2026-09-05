@@ -147,7 +147,7 @@ export function openQuestionStateMetadata(
         ? {}
         : {
             unresolved_rumination_ticks_note:
-              "Offline passes that ended with this question still open; the count on its own does not close it, because that dismissal also requires no episode created after the question citing it and no active action against it. Zero on another row means the loop has never selected that question, not that it is fresh.",
+              "Recorded rumination notes from offline passes that ended with this question still open; a pass that recorded no note stamps the schedule without advancing this count. The count on its own does not close it, because that dismissal also requires no episode created after the question citing it and no active action against it. Zero on another row means no note has been recorded against that question, not that it is fresh.",
           }),
     };
   }
@@ -157,7 +157,7 @@ export function openQuestionStateMetadata(
   // a null there as "never ruminated" is reading the write's own echo. The rumination notes are the
   // durable record: they are append-only and status-blind, so they outlive the row's closure.
   const closedRuminationNote =
-    "The rumination counter and last-ruminated stamp were zeroed and nulled by the write that closed this question, so they are not shown here: on a closed row they would describe the closure, not whether the loop ever worked the question. Absence of a stamp is therefore not evidence of absence of rumination. The passes themselves persist as rumination notes, which are append-only and survive the question closing; tool.openQuestions.ruminations reads them.";
+    "The rumination counter and last-ruminated stamp were zeroed and nulled by the write that closed this question, so they are not shown here: on a closed row they would describe the closure, not whether the loop ever worked the question. Absence of a stamp is therefore not evidence of absence of rumination. The passes that recorded one persist as rumination notes, which are append-only and survive the question closing; tool.openQuestions.ruminations reads them.";
 
   if (question.status === "resolved") {
     return {
