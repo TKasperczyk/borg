@@ -1469,6 +1469,112 @@ describe("reflector", () => {
     expect(llm.requests[0]?.system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
   });
 
+  it("keeps both notes when one reflection advances the same goal twice", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(4_000),
+    });
+    cleanup.push(harness.cleanup);
+
+    const goal = harness.goalsRepository.add({
+      description: "stabilize atlas release",
+      priority: 5,
+      provenance: {
+        kind: "episodes",
+        episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+      },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse([
+          { goal_id: goal.id, evidence: "Updated the deployment checklist." },
+          { goal_id: goal.id, evidence: "Named the rollback owner." },
+        ]),
+      ],
+    });
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      identityService: harness.identityService,
+      reviewQueueRepository: harness.reviewQueueRepository,
+    });
+
+    await reflector.reflect(
+      {
+        userMessage: "We need to stabilize the Atlas release",
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          hot_entities: ["Atlas"],
+          pending_actions: [],
+          pending_social_attribution: null,
+          pending_trait_attribution: null,
+          mood: null,
+          pending_procedural_attempts: [],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
+          suppressed: [],
+          mode: "problem_solving",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: harness.valuesRepository.list(),
+          goals: [goal],
+          traits: harness.traitsRepository.list(),
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "To stabilize the Atlas release, update the deployment checklist.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [],
+          referencedEpisodeIds: null,
+          intents: [],
+          thoughtsPersisted: true,
+        },
+        actionResult: {
+          response: "To stabilize the Atlas release, update the deployment checklist.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 1,
+            hot_entities: ["Atlas"],
+            pending_actions: [],
+            pending_social_attribution: null,
+            pending_trait_attribution: null,
+            mood: null,
+            pending_procedural_attempts: [],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
+            suppressed: [],
+            mode: "problem_solving",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [],
+        retrievalConfidence: createRetrievalConfidence(),
+        suppressionSet: new SuppressionSet(),
+      },
+      harness.streamWriter,
+    );
+
+    // The second write composes against stored notes, so it follows the first
+    // note instead of replacing it.
+    const notes = harness.goalsRepository.get(goal.id)?.progress_notes ?? "";
+    expect(notes).toContain("Updated the deployment checklist.");
+    expect(notes).toContain("Named the rollback owner.");
+    expect(notes.split("\n")).toHaveLength(2);
+  });
+
   it("applies autonomous progress citing a distinct tool journal entry", async () => {
     const harness = await createExecutiveReflectionHarness(new FixedClock(4_500));
     cleanup.push(harness.cleanup);

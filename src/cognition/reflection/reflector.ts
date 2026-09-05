@@ -900,9 +900,16 @@ export class Reflector {
         continue;
       }
 
+      // advanced_goals can name the same goal more than once in a single
+      // reflection output. The base for the appended note therefore has to come
+      // from storage rather than the pre-loop snapshot: composing every note
+      // against the same snapshot makes each write a full replacement, so the
+      // later note overwrites the earlier one instead of following it.
+      const stored = this.options.goalsRepository.get(goal.id);
+      const progressNotesBase = stored === null ? goal.progress_notes : stored.progress_notes;
       const evidence = advancedGoal.evidence.trim();
       const note = `[${this.clock.now()}] ${evidence}`;
-      const nextProgress = goal.progress_notes === null ? note : `${goal.progress_notes}\n${note}`;
+      const nextProgress = progressNotesBase === null ? note : `${progressNotesBase}\n${note}`;
       const patch = {
         progress_notes: nextProgress,
         last_progress_ts: this.clock.now(),
