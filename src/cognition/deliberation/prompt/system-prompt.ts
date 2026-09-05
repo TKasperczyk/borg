@@ -57,6 +57,8 @@ import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session
 import {
   HEADWAY_EMISSION_KINDS,
   type AutonomySchedulerFleetBrakeDescription,
+  type AutonomyWakeOutcomeDetailTally,
+  type AutonomyWakeOutcomeSpan,
 } from "../../../autonomy/index.js";
 import { AUTONOMY_SCHEDULER_DESCRIPTION_DROPPED_FIELDS } from "../../mechanism-evidence.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
@@ -2012,12 +2014,46 @@ export function summarizeAutonomySchedulerState(
         ).toISOString()} (${countdownFromHeader(brake.error_paused_until)})`,
   ].filter((gate): gate is string => gate !== null);
 
+  // "not currently holding" was true in two states this line rendered identically, and they are
+  // not equivalent -- they are a different number of failures apart from a refusal. A gate stamp
+  // is null only while its streak is below threshold (fleet-brake.ts: both
+  // fleetBrakeCooldownUntilMs and fleetBrakeErrorPausedUntilMs return null on that branch), so
+  // null means the streak has not reached the trigger at all. A stamp in the past means the
+  // streak IS at or over threshold and the pause it opened -- anchored on the streak's last
+  // failure, widened by the streak -- has merely elapsed: the next failure re-anchors at that
+  // failure's stamp with the exponent already accumulated, so the brake is one event from
+  // holding rather than `threshold` events. The resting clause names which, because the phrase
+  // alone cannot, and a reader can otherwise carry one reading across a window where the other
+  // was true.
+  const restingGate = (
+    label: string,
+    until: number | null,
+    streak: number,
+    threshold: number,
+  ): string =>
+    until === null
+      ? `no ${label} is set, the streak behind it standing at ${streak}/${threshold}`
+      : `the ${label} it opened ran out ${new Date(until).toISOString()} (${formatRelativeAge(
+          until,
+          renderNowMs,
+        )}) with the streak behind it still at ${streak}/${threshold}, so the next one re-anchors that pause rather than starting the streak over`;
+
   lines.push(
     `Fleet brake (a second refusal path, independent of the budget above): ${
       brake.enabled ? "enabled" : "disabled"
     }, ${
       brakeGates.length === 0
-        ? "not currently holding"
+        ? `not currently holding -- ${restingGate(
+            "empty-streak cooldown",
+            brake.cooldown_until,
+            brake.empty_streak,
+            brake.empty_streak_threshold,
+          )}; ${restingGate(
+            "error-streak pause",
+            brake.error_paused_until,
+            brake.error_streak,
+            brake.error_streak_threshold,
+          )}. Not holding is two states, not one: a streak below its threshold, and a threshold already crossed whose pause has expired`
         : `holding -- ${brakeGates.join("; ")}, so wakes are refused even with budget headroom`
     }.`,
   );
@@ -2076,13 +2112,18 @@ export function summarizeAutonomySchedulerState(
   // route to this page. The split below is the same rows as error=N -- total is
   // restated so it can be checked, and undetailed rows are named rather than
   // left as an unexplained shortfall in the reason counts.
-  lines.push(...renderWakeErrorReasonLines(brake.window_error_reasons));
+  lines.push(...renderWakeErrorReasonLines(brake.window_error_reasons, brake.window_error_span));
   // silent=N has the same defect as error=N and a worse consequence: it is the
   // complement of headway, so a closure you chose, an emission that failed on
   // the way out, and a guard that blocked one are one number even though only
   // the first two advance empty_streak. The split below is the same rows as
   // silent=N and carries the structural class that selected that disposition.
-  lines.push(...renderWakeSilentReasonLines(brake.window_silent_reasons));
+  // The span line after it answers a question the count cannot: the same number
+  // of silences scattered across the window and consecutive within it are a
+  // different fact, and only the second has the shape of a chosen quiet.
+  lines.push(
+    ...renderWakeSilentReasonLines(brake.window_silent_reasons, brake.window_silent_span),
+  );
   // The only prospective field the scheduler produces, and the last one that
   // stopped at the evidence boundary. Everything above is retrospective or about
   // the loop's own health: what has fired, what the window has spent, how far
@@ -2171,6 +2212,91 @@ function renderWakeSourceLines(
  */
 const WAKE_REASON_RENDER_LIMIT = 5;
 
+/**
+ * The trigger split for one detail, rendered on the detail's own line. The
+ * window's wakes are tallied by trigger further up this block, so two splits of
+ * the same rows print without a join and their shapes can agree by coincidence.
+ * This is that join, read off the row rather than composed across the block.
+ */
+function renderWakeReasonTriggerClause(
+  triggers: AutonomyWakeOutcomeDetailTally["reasons"][number]["triggers"],
+): string {
+  if (triggers.length === 0) {
+    return "";
+  }
+
+  return ` [${triggers
+    .map(
+      (entry) =>
+        `${entry.trigger.length === 0 ? "trigger unrecorded" : entry.trigger} ${entry.count}`,
+    )
+    .join(", ")}]`;
+}
+
+function renderWakeReasonLine(reason: AutonomyWakeOutcomeDetailTally["reasons"][number]): string {
+  return `- ${reason.count}x ${reason.detail}${renderWakeReasonTriggerClause(reason.triggers)}`;
+}
+
+/**
+ * Where one outcome's rows sit among the window's other wakes. Kept to what the
+ * rows state -- how many rows that ended otherwise fall inside the span, and
+ * whether the run predates the window -- with the reading left open: an unbroken
+ * run and a scatter support different conclusions, and which one applies is the
+ * entity's call, not a verdict this block should reach for it.
+ *
+ * Rendered for `error` because that is the bucket whose count invites a rate
+ * reading, and for `silent` because that is the bucket whose count invites a
+ * reading about the entity: a scatter of closures and a consecutive stretch of
+ * them are the same number and a different fact, and only the second has the
+ * shape of a disposition.
+ */
+const WAKE_SPAN_BUCKETS = {
+  error: {
+    label: "errored wakes",
+    interleaved: "the failures are interleaved rather than one run",
+    edgeUnknown:
+      "no earlier wake is retained, so whether the failures start at the window edge or merely become visible there is not answerable from here",
+    extendsBefore:
+      "the wake immediately before the first of them also errored, and that wake is outside this window -- the run started earlier, so any rate taken over this window is a slice of it and the trigger mix of that slice is whatever was firing when the edge fell",
+    beginsInside:
+      "the wake immediately before the first of them did not error, so the run does begin inside this window",
+  },
+  silent: {
+    label: "silent wakes",
+    interleaved: "the silences are interleaved rather than one stretch",
+    edgeUnknown:
+      "no earlier wake is retained, so whether the silences start at the window edge or merely become visible there is not answerable from here",
+    extendsBefore:
+      "the wake immediately before the first of them was also silent, and that wake is outside this window -- the stretch started earlier, so reading these as a run of chosen quiet reads a slice of a longer one, and the endings mixed into the part outside the window are not shown here",
+    beginsInside:
+      "the wake immediately before the first of them was not silent, so the stretch does begin inside this window",
+  },
+} as const;
+
+function renderWakeOutcomeSpanLine(
+  span: AutonomyWakeOutcomeSpan | null,
+  bucket: keyof typeof WAKE_SPAN_BUCKETS,
+): string[] {
+  if (span === null) {
+    return [];
+  }
+
+  const copy = WAKE_SPAN_BUCKETS[bucket];
+  const between =
+    span.other_outcomes_between === 0
+      ? "No wake that ended any other way falls between the first and last of them, so inside this window they are one unbroken run"
+      : `${span.other_outcomes_between} wake(s) that ended some other way fall between the first and last of them, so inside this window ${copy.interleaved}`;
+
+  const before =
+    span.extends_before_window === null
+      ? copy.edgeUnknown
+      : span.extends_before_window
+        ? copy.extendsBefore
+        : copy.beginsInside;
+
+  return [`Where those ${copy.label} sit: ${between}; ${before}.`];
+}
+
 function renderWakeHeadwayReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_headway_reasons"],
 ): string[] {
@@ -2199,8 +2325,8 @@ function renderWakeHeadwayReasonLines(
   ].filter((clause): clause is string => clause !== null);
 
   return [
-    `Why those wakes counted as headway, same rows as headway=${tally.total} above. A row with several structural bases lists them in accounting order:`,
-    ...shown.map((reason) => `- ${reason.count}x ${reason.detail}`),
+    `Why those wakes counted as headway, same rows as headway=${tally.total} above. A row with several structural bases lists them in accounting order; the bracket after each is that basis's own split by trigger, joined on the row rather than composed against the by-trigger tally above:`,
+    ...shown.map(renderWakeReasonLine),
     remainder.length === 0
       ? `The bases above account for all ${tally.total}.`
       : `The bases above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
@@ -2209,6 +2335,7 @@ function renderWakeHeadwayReasonLines(
 
 function renderWakeErrorReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_error_reasons"],
+  span: AutonomySchedulerFleetBrakeDescription["window_error_span"],
 ): string[] {
   if (tally.total === 0) {
     return ["Errored wakes in that window: none, so there is no failure to attribute."];
@@ -2217,6 +2344,7 @@ function renderWakeErrorReasonLines(
   if (tally.reasons.length === 0) {
     return [
       `Errored wakes in that window: ${tally.total}, none of them carrying a recorded failure (rows written before the scheduler kept one). The count is real; why is unavailable from here, and their absence of a reason is not evidence that they share one.`,
+      ...renderWakeOutcomeSpanLine(span, "error"),
     ];
   }
 
@@ -2235,11 +2363,12 @@ function renderWakeErrorReasonLines(
   ].filter((clause): clause is string => clause !== null);
 
   return [
-    `Why those errored wakes failed, same rows as error=${tally.total} above:`,
-    ...shown.map((reason) => `- ${reason.count}x ${reason.detail}`),
+    `Why those errored wakes failed, same rows as error=${tally.total} above. The bracket after each reason is that reason's own split by trigger, joined on the row -- the by-trigger tally further up splits the same wakes a second way, and two splits agreeing in shape is not a correspondence unless something joins them:`,
+    ...shown.map(renderWakeReasonLine),
     remainder.length === 0
       ? `The reasons above account for all ${tally.total}.`
       : `The reasons above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
+    ...renderWakeOutcomeSpanLine(span, "error"),
   ];
 }
 
@@ -2255,6 +2384,7 @@ const WAKE_SILENT_OUTCOME_CLASSES =
 
 function renderWakeSilentReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_silent_reasons"],
+  span: AutonomySchedulerFleetBrakeDescription["window_silent_span"],
 ): string[] {
   if (tally.total === 0) {
     return ["Silent wakes in that window: none, so there is no silence to attribute."];
@@ -2263,6 +2393,7 @@ function renderWakeSilentReasonLines(
   if (tally.reasons.length === 0) {
     return [
       `Silent wakes in that window: ${tally.total}, none of them carrying a recorded ending (rows written before the scheduler kept one). The count is real; whether they were closures you chose, failed emissions or guard blocks is unavailable from here, and their shared absence of a reason is not evidence that they share an ending.`,
+      ...renderWakeOutcomeSpanLine(span, "silent"),
     ];
   }
 
@@ -2281,11 +2412,12 @@ function renderWakeSilentReasonLines(
   ].filter((clause): clause is string => clause !== null);
 
   return [
-    `How those silent wakes ended, same rows as silent=${tally.total} above. The classes that can appear are ${WAKE_SILENT_OUTCOME_CLASSES}. On an operational wake every class except guard-blocked advances empty_streak; guard-blocked leaves it unchanged because the harness withheld produced output:`,
-    ...shown.map((reason) => `- ${reason.count}x ${reason.detail}`),
+    `How those silent wakes ended, same rows as silent=${tally.total} above, each with its own split by trigger in brackets. The classes that can appear are ${WAKE_SILENT_OUTCOME_CLASSES}. On an operational wake every class except guard-blocked advances empty_streak; guard-blocked leaves it unchanged because the harness withheld produced output:`,
+    ...shown.map(renderWakeReasonLine),
     remainder.length === 0
       ? `The endings above account for all ${tally.total}.`
       : `The endings above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
+    ...renderWakeOutcomeSpanLine(span, "silent"),
   ];
 }
 
@@ -2944,8 +3076,24 @@ function summarizeAffectiveTrajectory(
   // made the header's implied comparison look like a discriminator when it decides nothing.
   // What the series does decide is one-sided and worth naming: a row exists only where the
   // classifier ran, so an absent turn is an autonomous turn or a dead classifier.
+  //
+  // The row's input window is the same one `workingStateMoodProvenance` names, and this
+  // legend used to deny it -- "one turn's raw classifier reading of the text that arrived
+  // that turn" is the exact binding that clause retracted next door, left standing on the
+  // block a reader would actually reach for a history of the field. The value stored is
+  // `input.valence` from `perception.affectiveSignal` (turn-reflection-coordinator.ts ->
+  // mood.ts), and that signal is `analyze(text, recentHistory)` with
+  // `recent_history: recentHistory.slice(-10)` -- so the row is a reading over the arrived
+  // text plus up to ten recency strings, self-turns included. Two blocks disagreeing about
+  // what one quantity was computed from is worse than either being silent; keep them in step.
+  //
+  // `trigger` is not that input under another name. Reflection stores
+  // `input.userMessage.slice(0, 120)`, a head slice of the arrived message only, so it names
+  // the start of one half of what was scored and nothing of the other. Rendering it beside
+  // valence/arousal without saying so invites reading the row as a function of the quoted
+  // string, which is the stronger form of the same error.
   return [
-    "Affective trajectory (newest first). Each row is one turn's raw classifier reading of the text that arrived that turn, written after the reply: the newest row is the last scored turn, never this one. Rows exist only for undegraded user turns -- a turn missing here was autonomous or had a dead classifier, never a turn that felt nothing. Working state's mood= is not a member of this series (this turn's own raw reading on an undegraded user turn, a carried-forward blend otherwise), so comparing it against the newest row settles neither.",
+    "Affective trajectory (newest first). Each row is one turn's raw classifier reading, written after the reply: the newest row is the last scored turn, never this one. The reading is not a function of that turn's arrived text alone -- the classifier is handed that text plus up to the last ten recency strings for the session, prior turns rendered as role and content and including mine, so a row can differ from its neighbour where the arrived texts did not; trigger= is a 120-character head slice of the arrived message and names no part of the recency half. Rows exist only for undegraded user turns -- a turn missing here was autonomous or had a dead classifier, never a turn that felt nothing. Working state's mood= is not a member of this series (this turn's own raw reading on an undegraded user turn, a carried-forward blend otherwise), so comparing it against the newest row settles neither.",
     ...entries.slice(0, 5).map((entry) => {
       const triggerText =
         entry.trigger_reason === null ? "" : compactPromptText(entry.trigger_reason, 120);

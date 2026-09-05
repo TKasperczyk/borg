@@ -58,6 +58,7 @@ describe("config", () => {
     expect(config.affective.llmEnabled).toBe(true);
     expect(config.episodic.salienceGateEnabled).toBe(true);
     expect(config.offline.curator.episodeDecayIntervalMs).toBe(24 * 60 * 60 * 1_000);
+    expect(config.offline.curator.traitDecayIntervalMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.offline.curator.episodeSalienceHalfLifeDays).toBe(30);
     expect(config.offline.curator.episodeHeatHalfLifeDays).toBe(7);
     expect(config.offline.curator.traitHalfLifeDays).toBe(30);
@@ -715,6 +716,51 @@ describe("config", () => {
         },
       }),
     ).toThrow(/minimum revisit period/);
+  });
+
+  it("loads ruminator duplicate-judgment bounds from defaults and environment", () => {
+    const defaultDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const overrideDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(defaultDir, overrideDir);
+
+    expect(loadConfig({ dataDir: defaultDir, env: {} }).offline.ruminator).toMatchObject({
+      duplicateJudgmentMaxPairs: 24,
+      duplicateJudgmentMinRemainingBudgetFraction: 0.25,
+    });
+    expect(
+      loadConfig({
+        dataDir: overrideDir,
+        env: {
+          BORG_OFFLINE_RUMINATOR_DUPLICATE_JUDGMENT_MAX_PAIRS: "7",
+          BORG_OFFLINE_RUMINATOR_DUPLICATE_JUDGMENT_MIN_REMAINING_BUDGET_FRACTION: "0.4",
+        },
+      }).offline.ruminator,
+    ).toMatchObject({
+      duplicateJudgmentMaxPairs: 7,
+      duplicateJudgmentMinRemainingBudgetFraction: 0.4,
+    });
+  });
+
+  it.each([
+    ["BORG_OFFLINE_RUMINATOR_DUPLICATE_JUDGMENT_MAX_PAIRS", "0"],
+    ["BORG_OFFLINE_RUMINATOR_DUPLICATE_JUDGMENT_MIN_REMAINING_BUDGET_FRACTION", "1.1"],
+  ])("rejects an invalid ruminator duplicate-judgment bound %s=%s", (name, value) => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    expect(() => loadConfig({ dataDir: tempDir, env: { [name]: value } })).toThrow(ConfigError);
+  });
+
+  it("loads the trait decay interval from the environment", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    expect(
+      loadConfig({
+        dataDir: tempDir,
+        env: { BORG_OFFLINE_CURATOR_TRAIT_DECAY_INTERVAL_MS: "43200000" },
+      }).offline.curator.traitDecayIntervalMs,
+    ).toBe(12 * 60 * 60 * 1_000);
   });
 
   it("accepts deprecated llm fallback env aliases", () => {

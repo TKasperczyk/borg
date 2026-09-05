@@ -450,7 +450,13 @@ function projectSelectedSkill(value: DeliberationContext["selectedSkill"]) {
 function cloneWakeOutcomeDetailTally(
   tally: AutonomyWakeOutcomeDetailTally,
 ): AutonomyWakeOutcomeDetailTally {
-  return { ...tally, reasons: tally.reasons.map((reason) => ({ ...reason })) };
+  return {
+    ...tally,
+    reasons: tally.reasons.map((reason) => ({
+      ...reason,
+      triggers: reason.triggers.map((trigger) => ({ ...trigger })),
+    })),
+  };
 }
 
 function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismEvidence"]) {

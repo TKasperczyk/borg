@@ -476,6 +476,9 @@ describe("compact planner context", () => {
     expect(rendered).toContain(
       "cp is the participant the responsibility runs toward, not an owner or audience",
     );
+    expect(rendered).toContain(
+      "absent means no counterparty recorded: either none was named, or the row was written before the field existed (compare cat with 2026-09-04T16:32Z)",
+    );
     expect(rendered).toContain("ec=enforcement_class");
   });
 

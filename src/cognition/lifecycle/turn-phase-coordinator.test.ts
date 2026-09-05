@@ -128,6 +128,52 @@ describe("cognitionInputForTurnInput", () => {
     expect(input).not.toContain("written and never read back");
   });
 
+  it("scopes the named read to the thinking lane and refuses the sending inference", () => {
+    const input = cognitionInputForTurnInput({
+      userMessage: "",
+      autonomyTrigger: {
+        source_name: "scheduled_reflection",
+        source_type: "trigger",
+        event_id: "scheduled-reflection:1000",
+        sort_ts: 1_000,
+        payload: {
+          prior_self_thought: {
+            text: "Continue from the private question about continuity.",
+            updated_at: 1_700_000_000_000,
+          },
+        },
+      },
+    });
+
+    // The caveat names two lanes (already done, already sent) and the remedy covers one.
+    // tool.ownRecords.list holds thoughts and journal only, and no read tool on any turn
+    // reads outbound posts, so an empty browse must not be readable as "I did not send".
+    expect(input).toContain("That read covers the thinking lane only.");
+    expect(input).toContain("no read tool on this turn reaches my outbound posts");
+    expect(input).toContain("is not evidence that I did not");
+  });
+
+  it("keeps the send-lane boundary on every anchored wake, not one trigger kind", () => {
+    for (const sourceName of ["executive_focus_due", "open_question_dormant", "idle_check"]) {
+      const input = cognitionInputForTurnInput({
+        userMessage: "",
+        autonomyTrigger: {
+          source_name: sourceName,
+          source_type: "trigger",
+          event_id: `${sourceName}:1000`,
+          sort_ts: 1_000,
+          payload: {
+            prior_self_thought: {
+              text: "Continue from the private question about continuity.",
+            },
+          },
+        },
+      });
+
+      expect(input).toContain("no read tool on this turn reaches my outbound posts");
+    }
+  });
+
   it("names the anchor's age as unknown when the producer omitted the stamp", () => {
     const input = cognitionInputForTurnInput({
       userMessage: "",

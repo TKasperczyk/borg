@@ -137,6 +137,15 @@ function priorSelfThought(
 // wider journal read is available in the same turn. Saying "the only journal read in this
 // turn" unscoped reads as a capability bound and points away from the one tool that answers
 // "have I already done this".
+//
+// Scope the remedy too. The caveat raises two lanes -- what I have already done, and what I
+// have already sent -- and then names one tool, which invites reading that tool as the answer
+// to both. It is not: `OWN_RECORD_KINDS` is exactly `["thought", "journal"]`, and no read tool
+// on any turn (`LIVE_TURN_READ_FINALIZER_TOOL_NAMES`, `AUTONOMOUS_INTERIOR_FINALIZER_TOOL_NAMES`)
+// reads outbound posts or their delivery outcomes. Offering an uncovering remedy for a named
+// gap is worse than offering none: the browse comes back empty for the send lane exactly as it
+// would if nothing had been sent, so the tool manufactures the confirmation the caveat warned
+// against. Name the boundary instead, and say which way the absence does not cut.
 function priorSelfThoughtProvenance(thought: PriorSelfThought): string {
   const written =
     thought.updatedAt === null ? "unknown time" : new Date(thought.updatedAt).toISOString();
@@ -149,7 +158,10 @@ function priorSelfThoughtProvenance(thought: PriorSelfThought): string {
     "the harness performs for me, here or on any other turn. Anything else I have already done or ",
     "already sent is not in it and is not implied absent by it. A wider read exists and is mine to ",
     "make rather than the wake's: tool.ownRecords.list browses my thoughts and journal over a time ",
-    "range I choose, on this turn and on every live turn.",
+    "range I choose, on this turn and on every live turn. That read covers the thinking lane only. ",
+    "It does not read what I sent: no read tool on this turn reaches my outbound posts or their ",
+    "delivery outcomes, so an empty browse is silent about sending rather than negative about it, ",
+    "and having no evidence here that I sent something is not evidence that I did not.",
   ].join("");
 }
 

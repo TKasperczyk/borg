@@ -69,8 +69,18 @@ function annotateEpochFields(value: unknown): unknown {
 // degrades to stale, not to absent, and nothing on the event marks which. Key on
 // the payload key, never on what the events say, and render for an empty array
 // too: absence is exactly where the reading is most tempting.
+//
+// The list is also fetched as the newest ten globally, and the stream it draws
+// from is bursty: the curator's trait-decay sweep appends one event per stale
+// trait at a single timestamp, tens at a time, several times a day, and batch
+// repairs do the same. A ten-row window over a stream that arrives in bursts of
+// that size is nearly always a slice of one burst, so it reads as a survey of
+// recent identity activity while being a fragment of a single write. Do not fix
+// that by filtering event kinds out of the draw -- what is written is what
+// happened, and hiding routine writes would make the window lie in the other
+// direction. Say what the window is instead; the note below does.
 const RECENT_IDENTITY_EVENTS_DOMAIN_NOTE =
-  "note on recent_identity_events: this is the log of writes that went through my audited identity path, not every write a record received. Several writers change a record and bump its record_version without appending an event here, so the newest event for a record is not a witness to that record's current state: it reports its own values with the same confidence whether or not something wrote the record afterwards, degrading to stale rather than to absent, and no field on the event says which it is. Each event carries the record_version that write produced, so that number against the record's current version elsewhere is the only check available from here. The list is also the most recent events globally rather than per record, so a record's absence from it is not evidence that the record did not change.";
+  "note on recent_identity_events: this is the log of writes that went through my audited identity path, not every write a record received. Several writers change a record and bump its record_version without appending an event here, so the newest event for a record is not a witness to that record's current state: it reports its own values with the same confidence whether or not something wrote the record afterwards, degrading to stale rather than to absent, and no field on the event says which it is. Each event carries the record_version that write produced, so that number against the record's current version elsewhere is the only check available from here. The list is also the most recent events globally rather than per record, so a record's absence from it is not evidence that the record did not change. This stream arrives in bursts rather than one write at a time: a maintenance sweep or a repair pass appends one event per record it touched, tens of them under a single timestamp, and the routine sweeps far outnumber the writes I would narrate. So these are the newest events, not a sample of recent identity activity, and they are usually a slice of one burst whose own size is not shown here. Equal timestamps across them mean I am looking at one write, not at a period of time.";
 
 function carriesRecentIdentityEvents(payload: Record<string, unknown>): boolean {
   return Array.isArray(payload.recent_identity_events);

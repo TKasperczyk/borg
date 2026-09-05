@@ -58,6 +58,8 @@ describe("goal rollback audit repair", () => {
     );
   });
 
+  // Opens a real Borg instance and runs migrations twice; the default 15s test
+  // timeout is not enough once the full suite is running these in parallel.
   it("backfills only stranded creates and reports status drift without changing it", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-goal-rollback-audit-repair-"));
     tempDirs.push(tempDir);
@@ -221,5 +223,5 @@ describe("goal rollback audit repair", () => {
     const secondPlan = planGoalRollbackAuditRepair({ dataDir: tempDir });
     expect(secondPlan.candidates).toEqual([]);
     expect(secondPlan.statusDrifts).toHaveLength(2);
-  });
+  }, 30_000);
 });

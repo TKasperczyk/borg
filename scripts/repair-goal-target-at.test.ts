@@ -88,6 +88,8 @@ describe("goal target_at repair", () => {
     ).toThrow("Invalid goal id");
   });
 
+  // Opens a real Borg instance and runs migrations twice; the default 15s test
+  // timeout is not enough once the full suite is running these in parallel.
   it("refuses missing goals, clears selected deadlines through identity, and is idempotent", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-goal-target-at-repair-"));
     tempDirs.push(tempDir);
@@ -227,5 +229,5 @@ describe("goal target_at repair", () => {
     expect(secondApplyOpenBorg).not.toHaveBeenCalled();
     expect(secondApplyStdout.read()).toContain("selected=0 skipped=3 refused=0");
     expect(secondApplyStdout.read()).toContain("applied_total=0");
-  });
+  }, 30_000);
 });

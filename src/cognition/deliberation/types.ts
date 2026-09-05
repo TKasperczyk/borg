@@ -205,6 +205,16 @@ export type SelfSnapshot = {
   goals: SelfSnapshotGoal[];
   traits: TraitRecord[];
   /**
+   * Stored row counts, read from the values/traits stores by their own
+   * COUNT statements rather than from the draws above. A renderer that wants
+   * to claim it printed every value and trait has to check that claim against
+   * a number the draw did not produce; when these are absent the claim is
+   * unmeasured rather than true. Optional because synthetic snapshots (tests,
+   * fixtures, replays) have no store behind them.
+   */
+  valuesStoredTotal?: number;
+  traitsStoredTotal?: number;
+  /**
    * The being's current autobiographical period (label + narrative). Phase
    * F wires this into the deliberator prompt so the being has a glimpse of
    * its own arc rather than values/goals/traits alone. Null when no period

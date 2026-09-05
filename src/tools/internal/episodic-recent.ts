@@ -33,7 +33,7 @@ const episodicRecentOutputSchema = z.object({
       created_at: z.number().finite(),
       updated_at: z.number().finite(),
       disclosure: z.string().min(1),
-      disclosure_label: memoryDisclosureLabelMetadataSchema.extend({
+      disclosure_label: memoryDisclosureLabelMetadataSchema.safeExtend({
         disclosure_class: z.enum(MEMORY_DISCLOSURE_CLASSES),
       }),
     }),

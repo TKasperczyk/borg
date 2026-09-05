@@ -152,12 +152,20 @@ export function openQuestionStateMetadata(
     };
   }
 
+  // Closing a question zeroes unresolved_rumination_ticks and nulls last_ruminated_at in the same
+  // write, so on a closed row those two fields record the closure rather than the work, and reading
+  // a null there as "never ruminated" is reading the write's own echo. The rumination notes are the
+  // durable record: they are append-only and status-blind, so they outlive the row's closure.
+  const closedRuminationNote =
+    "The rumination counter and last-ruminated stamp were zeroed and nulled by the write that closed this question, so they are not shown here: on a closed row they would describe the closure, not whether the loop ever worked the question. Absence of a stamp is therefore not evidence of absence of rumination. The passes themselves persist as rumination notes, which are append-only and survive the question closing; tool.openQuestions.ruminations reads them.";
+
   if (question.status === "resolved") {
     return {
       resolution_note: question.resolution_note,
       resolved_at: question.resolved_at,
       resolution_evidence_episode_ids: question.resolution_evidence_episode_ids,
       resolution_evidence_stream_entry_ids: question.resolution_evidence_stream_entry_ids,
+      rumination_record_note: closedRuminationNote,
     };
   }
 
@@ -165,6 +173,7 @@ export function openQuestionStateMetadata(
     return {
       abandoned_reason: question.abandoned_reason,
       abandoned_at: question.abandoned_at,
+      rumination_record_note: closedRuminationNote,
     };
   }
 

@@ -181,19 +181,23 @@ describe("AutonomyWakesRepository", () => {
     const repository = new AutonomyWakesRepository({ db, clock });
 
     try {
-      const recordErrored = (detail?: string | null) => {
+      const recordErrored = (
+        detail?: string | null,
+        trigger: "goal_followup_due" | "scheduled_reflection" = "goal_followup_due",
+      ) => {
         clock.advance(1);
         const wake = repository.record({
-          trigger_name: "goal_followup_due",
+          trigger_name: trigger,
           session_id: DEFAULT_SESSION_ID,
           wake_source_type: "trigger",
+          source_category: trigger === "scheduled_reflection" ? "contemplative" : "operational",
         });
         repository.recordOutcome(wake.id, "error", detail);
         return wake;
       };
 
       recordErrored("LLMError: Failed to complete Anthropic request");
-      recordErrored("LLMError: Failed to complete Anthropic request");
+      recordErrored("LLMError: Failed to complete Anthropic request", "scheduled_reflection");
       recordErrored("Anthropic connection failed after 3 attempts");
       // A pre-detail row: the outcome landed, the reason never did.
       recordErrored(null);
@@ -213,9 +217,24 @@ describe("AutonomyWakesRepository", () => {
       expect(tally.total).toBe(repository.countSince(0, { outcome: "error" }));
       expect(tally.total).toBe(4);
       expect(tally.without_detail).toBe(1);
+      // Each reason carries its own trigger split. A detail spread over two
+      // triggers arrives from the GROUP BY as two rows and is folded back to one
+      // reason, so the count above it stays the detail's count and the render cap
+      // still cuts the smallest details rather than the least divided ones.
       expect(tally.reasons).toEqual([
-        { detail: "LLMError: Failed to complete Anthropic request", count: 2 },
-        { detail: "Anthropic connection failed after 3 attempts", count: 1 },
+        {
+          detail: "LLMError: Failed to complete Anthropic request",
+          count: 2,
+          triggers: [
+            { trigger: "goal_followup_due", count: 1 },
+            { trigger: "scheduled_reflection", count: 1 },
+          ],
+        },
+        {
+          detail: "Anthropic connection failed after 3 attempts",
+          count: 1,
+          triggers: [{ trigger: "goal_followup_due", count: 1 }],
+        },
       ]);
       // reasons + without_detail always reconciles to total.
       expect(
@@ -229,6 +248,63 @@ describe("AutonomyWakesRepository", () => {
       });
       // The window edge applies to the tally exactly as it does to the counts.
       expect(repository.summarizeOutcomeDetailsSince(1_003, "error").total).toBe(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("positions an outcome's rows against the window's other wakes and the wake before them", () => {
+    const clock = new ManualClock(1_000);
+    const db = openDatabase(":memory:", { migrations: autonomyMigrations });
+    const repository = new AutonomyWakesRepository({ db, clock });
+
+    try {
+      const recordWake = (outcome: "error" | "headway") => {
+        clock.advance(1);
+        const wake = repository.record({
+          trigger_name: "goal_followup_due",
+          session_id: DEFAULT_SESSION_ID,
+          wake_source_type: "trigger",
+        });
+        repository.recordOutcome(wake.id, outcome);
+        return wake;
+      };
+
+      // ts 1001..1004: an unbroken run. ts 1005: the success that ends it.
+      recordWake("error");
+      recordWake("error");
+      recordWake("error");
+      recordWake("error");
+      recordWake("headway");
+
+      // Over the whole table the run is unbroken and nothing precedes it, so the
+      // "did this start earlier" question has no evidence rather than a no.
+      expect(repository.describeOutcomeSpanSince(0, "error")).toEqual({
+        other_outcomes_between: 0,
+        extends_before_window: null,
+      });
+
+      // A window whose edge falls inside the run sees only its tail. The count
+      // inside the window cannot tell that apart from a run that began there --
+      // the predecessor read is what does, and it deliberately ignores the edge.
+      expect(repository.describeOutcomeSpanSince(1_003, "error")).toEqual({
+        other_outcomes_between: 0,
+        extends_before_window: true,
+      });
+
+      // ts 1006 error, 1007 headway, 1008 error: now the bucket is interleaved,
+      // and the wake before its first row is the success at 1005.
+      recordWake("error");
+      recordWake("headway");
+      recordWake("error");
+
+      expect(repository.describeOutcomeSpanSince(1_006, "error")).toEqual({
+        other_outcomes_between: 1,
+        extends_before_window: false,
+      });
+
+      // An empty bucket has no position to report.
+      expect(repository.describeOutcomeSpanSince(0, "busy")).toBeNull();
     } finally {
       db.close();
     }
@@ -302,7 +378,11 @@ describe("AutonomyWakesRepository", () => {
         headway_bases: bases,
       });
       expect(repository.summarizeOutcomeDetailsSince(0, "headway").reasons).toEqual([
-        { detail: joinedBases, count: 1 },
+        {
+          detail: joinedBases,
+          count: 1,
+          triggers: [{ trigger: "goal_followup_due", count: 1 }],
+        },
       ]);
       for (const goalId of goalIds) {
         expect(stored?.outcome_detail).toContain(goalId);

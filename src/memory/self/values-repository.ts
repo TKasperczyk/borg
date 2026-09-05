@@ -274,6 +274,18 @@ export class ValuesRepository {
     ).map((row) => mapValueRow(row));
   }
 
+  /**
+   * Stored row count, read by its own statement rather than from `list()`.
+   * See TraitsRepository.count: the point is that a completeness claim about a
+   * rendered draw is checked against a number the draw did not produce.
+   */
+  count(): number {
+    const row = this.db.prepare('SELECT COUNT(*) AS n FROM "values"').get() as
+      | { n: number }
+      | undefined;
+    return row === undefined ? 0 : Number(row.n);
+  }
+
   affirm(valueId: ValueId, timestamp = this.clock.now(), options: IdentityCasOptions = {}): void {
     const current = this.get(valueId);
 

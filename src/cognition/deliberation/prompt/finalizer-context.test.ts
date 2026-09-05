@@ -678,20 +678,19 @@ describe("compact terminal finalizer context", () => {
       value: "participant_family",
       trust_rank: 79,
     };
-    const rendered = text(
-      build(
-        context({
-          applicableCommitments: [canonical],
-          evidenceLedger: {
-            ...ledger(),
-            audienceStanding: {
-              ...ledger().audienceStanding!,
-              commitmentEntries: [canonicalEntry, participantEntry],
-            },
+    const result = build(
+      context({
+        applicableCommitments: [canonical],
+        evidenceLedger: {
+          ...ledger(),
+          audienceStanding: {
+            ...ledger().audienceStanding!,
+            commitmentEntries: [canonicalEntry, participantEntry],
           },
-        }),
-      ),
+        },
+      }),
     );
+    const rendered = text(result);
     expect(rendered.match(/<commitment id=/g)).toHaveLength(2);
     expect(rendered).toContain(`ledger_ref="commitment:${canonical.id}"`);
     expect(rendered).toContain('ledger_trust_rank="82"');
@@ -699,6 +698,9 @@ describe("compact terminal finalizer context", () => {
     expect(rendered).toContain('directive="participant directive exact"');
     expect(rendered).toContain(
       '<commitment_age id="participant_commitment:ent_fixture:com_fixture"',
+    );
+    expect(result.system[3]?.text).toContain(
+      'commitment_rows_total="2" commitment_canonical_rows="1" commitment_ledger_only_rows="1"',
     );
   });
 
@@ -799,11 +801,26 @@ describe("compact terminal finalizer context", () => {
     for (const field of [...legacyCanonicalSemanticFields, ...legacyStandingLedgerSemanticFields]) {
       expect(unionFields, `commitment union field ${field}`).toContain(field);
     }
-    expect(durableRow).not.toContain("persistence_class=");
+    for (const field of [
+      "ledger_actor",
+      "ledger_trust_rank",
+      "ledger_salience_class",
+      "ledger_taint",
+      "ledger_value",
+      "ledger_text",
+      "persistence_class",
+      "stream_index",
+      "citation_type",
+      "citations",
+      "resolved_disclosure",
+    ]) {
+      expect(durableRow).not.toContain(`${field}=`);
+      expect(turnRow).toContain(`${field}=`);
+    }
     expect(turnRow).toContain('persistence_class="assistant_self_report"');
-    expect(durableRow).toContain('citations="entry:one,entry:two"');
-    expect(durableRow).toContain('ledger_text="distinct ledger projection text"');
-    expect(durableRow).toContain('ledger_value="distinct_ledger_family"');
+    expect(turnRow).toContain('citations="entry:one,entry:two"');
+    expect(turnRow).toContain('ledger_text="distinct ledger projection text"');
+    expect(turnRow).toContain('ledger_value="distinct_ledger_family"');
     expect(durableRow).not.toContain("ledger_state=");
     expect(turnRow).not.toContain("ledger_state_metadata=");
     expect(turnRow).toContain('made_to_entity_label="Alice"');
@@ -828,15 +845,18 @@ describe("compact terminal finalizer context", () => {
       }),
     );
     const durableRow = result.system[1]!.text.match(/<commitment id="[^"]+"[^>]*\/>/)?.[0];
+    const turnRow = result.system[3]!.text.match(/<commitment_age id="[^"]+"[^>]*\/>/)?.[0];
 
-    expect(durableRow).toContain('ledger_value="missing"');
-    expect(durableRow).toContain('ledger_text="missing"');
+    expect(durableRow).not.toContain("ledger_value=");
+    expect(durableRow).not.toContain("ledger_text=");
+    expect(turnRow).toContain('ledger_value="missing"');
+    expect(turnRow).toContain('ledger_text="missing"');
     expect(result.system[1]?.text).toContain(
       'a present projection with no value or text prints "missing" explicitly',
     );
   });
 
-  it("keeps block 1 stable when only commitment update and scheduled-expiry stamps change", () => {
+  it("keeps blocks 0-2 stable when commitment stamps and ledger projections change", () => {
     const base = commitment("stable directive");
     const matchingLedgerEntry: EvidenceLedgerEntry = {
       id: `commitment:${base.id}`,
@@ -847,8 +867,27 @@ describe("compact terminal finalizer context", () => {
       text: base.directive,
       value: base.directive_family,
       state: "active",
+      salience_class: "borg_current_turn_action",
+      taint: "none",
+      persistence_class: "assistant_self_report",
+      via_retrieval: false,
+      stream_index: 17,
+      citation_type: "parent_user_message",
+      citations: ["entry:first"],
+      state_metadata: {
+        disclosure_label: {
+          disclosure_class: "public",
+          origin_audience_entity_ids: [],
+          private_to_entity_ids: [],
+          public_to_entity_ids: [],
+        },
+      },
     };
-    const render = (updatedAt: number, expiresAt: number | null) =>
+    const render = (
+      updatedAt: number,
+      expiresAt: number | null,
+      ledgerOverrides: Partial<EvidenceLedgerEntry>,
+    ) =>
       build(
         context({
           applicableCommitments: [{ ...base, updated_at: updatedAt, expires_at: expiresAt }],
@@ -856,22 +895,51 @@ describe("compact terminal finalizer context", () => {
             ...ledger(),
             audienceStanding: {
               ...ledger().audienceStanding!,
-              commitmentEntries: [matchingLedgerEntry],
+              commitmentEntries: [{ ...matchingLedgerEntry, ...ledgerOverrides }],
             },
           },
         }),
       );
-    const first = render(NOW_MS - 3_000, null);
-    const second = render(NOW_MS - 1_000, NOW_MS + 60_000);
+    const first = render(NOW_MS - 3_000, null, {});
+    const second = render(NOW_MS - 1_000, NOW_MS + 60_000, {
+      session_scope: "current_session",
+      actor: "assistant",
+      trust_rank: 30,
+      text: "turn-derived alternate projection",
+      value: "turn-derived-family",
+      state: "contested",
+      salience_class: "completed_recent",
+      taint: "contested",
+      persistence_class: undefined,
+      via_retrieval: true,
+      stream_index: 29,
+      citation_type: "generated_perception_text",
+      citations: ["entry:second", "entry:third"],
+      state_metadata: undefined,
+    });
     const commitmentBlock = first.system[1]!.text.match(
       /<borg_terminal_commitments[\s\S]*?<\/borg_terminal_commitments>/,
     )?.[0];
     const durableRow = first.system[1]!.text.match(/<commitment id="[^"]+"[^>]*\/>/)?.[0];
+    const secondTurnRow = second.system[3]!.text.match(/<commitment_age id="[^"]+"[^>]*\/>/)?.[0];
 
-    expect(first.system[1]?.text).toBe(second.system[1]?.text);
+    expect(JSON.stringify(first.system.slice(0, 3))).toBe(
+      JSON.stringify(second.system.slice(0, 3)),
+    );
     expect(first.system[3]?.text).not.toBe(second.system[3]?.text);
     expect(commitmentBlock).not.toMatch(/\b(rows_total|canonical_rows|ledger_only_rows)=/);
+    expect(first.system[3]?.text).toContain(
+      '<borg_terminal_relative_age_overlay complete="true" rows_total="1" commitment_rows_total="1" commitment_canonical_rows="1" commitment_ledger_only_rows="0">',
+    );
+    expect(first.system[0]?.text).toContain(
+      "The commitment membership denominator is commitment_rows_total in the turn-local relative-age overlay.",
+    );
+    expect(commitmentBlock).toContain(
+      "Those counts live in turn block 3 rather than this cacheable block 1",
+    );
     expect(durableRow).toContain("disclosure=");
+    expect(durableRow).toContain(`ledger_ref="commitment:${base.id}"`);
+    expect(durableRow).toContain('ledger_source_type="commitment"');
     for (const field of [
       "canonical_record",
       "updated_at",
@@ -881,6 +949,17 @@ describe("compact terminal finalizer context", () => {
       "ledger_state",
       "ledger_value",
       "ledger_text",
+      "ledger_actor",
+      "ledger_trust_rank",
+      "ledger_salience_class",
+      "ledger_taint",
+      "ledger_scope",
+      "persistence_class",
+      "via_retrieval",
+      "stream_index",
+      "citation_type",
+      "citations",
+      "resolved_disclosure",
     ]) {
       expect(durableRow).not.toContain(`${field}=`);
     }
@@ -890,9 +969,20 @@ describe("compact terminal finalizer context", () => {
     expect(second.system[3]?.text).toContain(
       `expires_at="${new Date(NOW_MS + 60_000).toISOString()}"`,
     );
+    expect(secondTurnRow).toContain('ledger_actor="assistant"');
+    expect(secondTurnRow).toContain('ledger_trust_rank="30"');
+    expect(secondTurnRow).toContain('ledger_salience_class="completed_recent"');
+    expect(secondTurnRow).toContain('ledger_taint="contested"');
+    expect(secondTurnRow).toContain('stream_index="29"');
+    expect(secondTurnRow).toContain('citation_type="generated_perception_text"');
+    expect(secondTurnRow).toContain('citations="entry:second,entry:third"');
+    expect(secondTurnRow).toContain('ledger_state="contested"');
+    expect(secondTurnRow).toContain('ledger_value="turn-derived-family"');
+    expect(secondTurnRow).toContain('ledger_text="turn-derived alternate projection"');
+    expect(secondTurnRow).toContain("resolved_disclosure=");
   });
 
-  it("combines canonical and ledger disclosure labels fail-closed", () => {
+  it("keeps canonical disclosure durable and resolves ledger disclosure fail-closed in block 3", () => {
     const alice = createEntityId();
     const canonical = commitment("private", { restricted_audience: alice });
     const entry: EvidenceLedgerEntry = {
@@ -914,7 +1004,12 @@ describe("compact terminal finalizer context", () => {
         },
       }),
     );
-    expect(result.system[1]?.text).toContain("disclosure_class=unknown");
+    const durableRow = result.system[1]!.text.match(/<commitment id="[^"]+"[^>]*\/>/)?.[0];
+    const turnRow = result.system[3]!.text.match(/<commitment_age id="[^"]+"[^>]*\/>/)?.[0];
+    expect(durableRow).not.toContain("disclosure_class=unknown");
+    expect(durableRow).not.toContain("resolved_disclosure=");
+    expect(turnRow).toContain('resolved_disclosure="');
+    expect(turnRow).toContain("disclosure_class=unknown");
   });
 
   it("keeps complete relational, social, observed-event, and cross-session membership indexes", () => {
@@ -1089,6 +1184,17 @@ describe("compact terminal finalizer context", () => {
     // present only as a day row is compressed rather than quiet.
     expect(interpretation).toContain("no budget shared between them");
     expect(interpretation).toContain("a compressed day and not a quiet one");
+    // "No shared budget" invites the reading that each lane carries its own limit.
+    // Two of them carry the same one, so their counts matching is a single number
+    // seen twice rather than two lanes agreeing -- and a self-decision's stamp is
+    // the end of its turn, not the moment its trigger fired, so the obvious join
+    // against wake times lands on the following wake instead of failing.
+    expect(interpretation).toContain(
+      "the event lane and the self-decision lane are handed one configured cap value rather than two",
+    );
+    expect(interpretation).toContain(
+      "stamped when its decision was recorded at the end of its turn, not when its trigger fired",
+    );
   });
 
   it("orders durable self rows by immutable keys instead of mutable ranking", () => {
@@ -1162,6 +1268,35 @@ describe("compact terminal finalizer context", () => {
     expect(first.system[3]?.text).not.toBe(second.system[3]?.text);
     expect(durable.indexOf(olderValue.id)).toBeLessThan(durable.indexOf(newerValue.id));
     expect(durable.indexOf(firstTrait.id)).toBeLessThan(durable.indexOf(secondTrait.id));
+
+    // The coverage claim is checked against counts the stores report by their own
+    // statements, so it cannot stay true for a reason that has stopped holding.
+    const durableSelf = (text: string) =>
+      text.match(/<borg_terminal_values_traits[\s\S]*?<\/borg_terminal_values_traits>/)?.[0] ?? "";
+    const rendered = {
+      goals: [],
+      values: [olderValue, newerValue],
+      traits: [firstTrait, secondTrait],
+    };
+
+    const unmeasured = durableSelf(build(context({ selfSnapshot: rendered })).system[1]!.text);
+    expect(unmeasured).toContain('complete="unmeasured"');
+    expect(unmeasured).not.toContain("<omitted_count>");
+
+    const agreeing = durableSelf(
+      build(context({ selfSnapshot: { ...rendered, valuesStoredTotal: 2, traitsStoredTotal: 2 } }))
+        .system[1]!.text,
+    );
+    expect(agreeing).toContain('complete="true"');
+    expect(agreeing).toContain("<omitted_count>0</omitted_count>");
+
+    const narrowed = durableSelf(
+      build(context({ selfSnapshot: { ...rendered, valuesStoredTotal: 5, traitsStoredTotal: 3 } }))
+        .system[1]!.text,
+    );
+    expect(narrowed).toContain('complete="false"');
+    expect(narrowed).toContain("<omitted_count>4</omitted_count>");
+    expect(narrowed).toContain('rows_total="4"');
   });
 
   it("keeps mutable self state and ledger scope out of the one-hour global block", () => {

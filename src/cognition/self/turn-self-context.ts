@@ -37,10 +37,10 @@ import { PLANNER_GOAL_EXPANSION_LIMIT } from "../deliberation/constants.js";
 
 export type TurnSelfContextOptions = {
   embeddingClient: EmbeddingClient;
-  valuesRepository: Pick<ValuesRepository, "list">;
+  valuesRepository: Pick<ValuesRepository, "list"> & Partial<Pick<ValuesRepository, "count">>;
   goalsRepository: Pick<GoalsRepository, "list">;
   sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
-  traitsRepository: Pick<TraitsRepository, "list">;
+  traitsRepository: Pick<TraitsRepository, "list"> & Partial<Pick<TraitsRepository, "count">>;
   autobiographicalRepository?: Pick<AutobiographicalRepository, "currentPeriod">;
   growthMarkersRepository?: Pick<GrowthMarkersRepository, "list">;
   executiveStepsRepository: Pick<ExecutiveStepsRepository, "topOpenForGoals">;
@@ -173,6 +173,11 @@ export class TurnSelfContextBuilder {
       rawGoals;
     const values = this.options.valuesRepository.list();
     const traits = this.options.traitsRepository.list();
+    // Counted by their own statements, not by measuring the draws above, so a
+    // renderer can check "I printed all of them" against a number the draw did
+    // not produce.
+    const valuesStoredTotal = this.options.valuesRepository.count?.();
+    const traitsStoredTotal = this.options.traitsRepository.count?.();
     const currentPeriod = this.options.autobiographicalRepository?.currentPeriod() ?? null;
     const recentGrowthMarkers = this.options.growthMarkersRepository?.list({ limit: 3 }) ?? [];
 
@@ -180,6 +185,8 @@ export class TurnSelfContextBuilder {
       values,
       goals,
       traits,
+      valuesStoredTotal,
+      traitsStoredTotal,
       currentPeriod,
       recentGrowthMarkers,
     };

@@ -744,7 +744,8 @@ describe("TurnRetrievalCoordinator", () => {
     };
     const aliceEntryId = createStreamEntryId();
     const bobEntryId = createStreamEntryId();
-    const sortedAudienceIds = [audienceEntityId, bobEntityId].sort();
+    const originAudienceIds = [audienceEntityId, bobEntityId];
+    const authorizationAudienceIds = [...originAudienceIds].sort();
     const pendingCommitmentReview: OpenCommitmentReconciliationStatus = {
       review_id: 21,
       reason: "Cross-scope commitment conflict requires review.",
@@ -754,8 +755,9 @@ describe("TurnRetrievalCoordinator", () => {
       source_stream_entry_ids: [aliceEntryId, bobEntryId],
       disclosureLabel: {
         disclosureClass: "relationship_private",
-        originAudienceEntityIds: sortedAudienceIds,
-        privateToEntityIds: sortedAudienceIds,
+        // Origins keep source chronology; authorization IDs use lexical set order.
+        originAudienceEntityIds: originAudienceIds,
+        privateToEntityIds: authorizationAudienceIds,
         publicToEntityIds: [],
       },
       members: [
@@ -827,8 +829,8 @@ describe("TurnRetrievalCoordinator", () => {
         source_stream_entry_ids: [aliceEntryId, bobEntryId],
         disclosure_label: {
           disclosureClass: "relationship_private",
-          originAudienceEntityIds: sortedAudienceIds,
-          privateToEntityIds: sortedAudienceIds,
+          originAudienceEntityIds: originAudienceIds,
+          privateToEntityIds: authorizationAudienceIds,
           publicToEntityIds: [],
         },
       },

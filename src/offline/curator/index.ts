@@ -439,10 +439,15 @@ function buildSocialItems(ctx: OfflineContext): CuratorPlan["items"] {
 function buildTraitDecayItems(ctx: OfflineContext): CuratorPlan["items"] {
   const nowMs = ctx.clock.now();
   const staleThreshold = nowMs - 7 * DAY_MS;
+  const decayIntervalMs = ctx.config.offline.curator.traitDecayIntervalMs;
 
   return ctx.traitsRepository
     .list()
     .filter((trait) => {
+      if (trait.last_decayed !== null && nowMs - trait.last_decayed < decayIntervalMs) {
+        return false;
+      }
+
       const lastTouched = Math.max(trait.last_reinforced, trait.last_decayed ?? 0);
       return trait.last_reinforced <= staleThreshold && lastTouched < nowMs;
     })

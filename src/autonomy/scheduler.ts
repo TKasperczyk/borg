@@ -1015,12 +1015,31 @@ export class AutonomyScheduler {
           budgetCutoff,
           "error",
         ),
+        // Same rows again, positioned rather than counted. `error=N` over a
+        // window supports a rate reading, and a rate is only a property of the
+        // window if the failures are actually inside it: a run that started
+        // before the cutoff contributes whichever of its tail the edge happens to
+        // admit, and the trigger mix of that tail is a fact about what was firing
+        // during the run, not about which triggers fail.
+        window_error_span: this.options.wakeRepository.describeOutcomeSpanSince(
+          budgetCutoff,
+          "error",
+        ),
         // Same rows as window_outcomes.silent, one level down. `silent` is the
         // complement of headway, so a closure the entity chose, an emission that
         // failed, and a guard that blocked one are one number here even though
         // only the first two advance empty_streak. The detail is the same
         // structural classification that selected the streak disposition.
         window_silent_reasons: this.options.wakeRepository.summarizeOutcomeDetailsSince(
+          budgetCutoff,
+          "silent",
+        ),
+        // Silence positioned the same way, and the reading it protects is about
+        // the entity rather than the provider: fifteen scattered silences and
+        // fifteen consecutive ones are the same count and a different fact, and
+        // only the second has the shape of a disposition. The count cannot
+        // separate them and the ordering that can is already in the table.
+        window_silent_span: this.options.wakeRepository.describeOutcomeSpanSince(
           budgetCutoff,
           "silent",
         ),

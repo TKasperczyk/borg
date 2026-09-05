@@ -875,6 +875,20 @@ export class TraitsRepository {
     ).map((row) => mapTraitRow(row));
   }
 
+  /**
+   * Stored row count, read by its own statement rather than from `list()`.
+   * A caller that renders `list()` and claims to have rendered every trait can
+   * only check that claim against a count it did not derive from the same draw;
+   * if `list()` ever grows a filter, the two disagree instead of agreeing
+   * silently.
+   */
+  count(): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM traits").get() as
+      | { n: number }
+      | undefined;
+    return row === undefined ? 0 : Number(row.n);
+  }
+
   listReinforcementEvents(traitId: TraitId): TraitReinforcementEvent[] {
     return (
       this.db

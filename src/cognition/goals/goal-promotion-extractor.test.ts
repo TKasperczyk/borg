@@ -752,6 +752,8 @@ describe("GoalPromotionExtractor", () => {
     const owner = createEntityId();
     const counterparty = createEntityId();
     const historicalOrigin = createEntityId();
+    // Origins keep source chronology; authorization IDs use lexical set order.
+    const authorizationEntityIds = [audience, owner].sort();
     const llm = new FakeLLMClient({
       responses: [
         goalPromotionResponse([
@@ -784,7 +786,7 @@ describe("GoalPromotionExtractor", () => {
             disclosure_label: {
               disclosure_class: "relationship_private",
               origin_audience_entity_ids: [historicalOrigin],
-              private_to_entity_ids: [audience, owner],
+              private_to_entity_ids: authorizationEntityIds,
               public_to_entity_ids: [],
             },
           },
@@ -820,12 +822,12 @@ describe("GoalPromotionExtractor", () => {
     expect(activeGoal?.terminal_condition).toBe("The release checklist is settled");
     expect(activeGoal?.disclosure).toContain("disclosure_class=relationship_private");
     expect(activeGoal?.disclosure).toContain(`origin_audience=${historicalOrigin}`);
-    expect(activeGoal?.disclosure).toContain(`private-to=${audience},${owner}`);
+    expect(activeGoal?.disclosure).toContain(`private-to=${authorizationEntityIds.join(",")}`);
     expect(activeGoal?.disclosure).not.toContain(counterparty);
     expect(activeGoal?.disclosure_label).toMatchObject({
       disclosure_class: "relationship_private",
       origin_audience_entity_ids: [historicalOrigin],
-      private_to_entity_ids: [audience, owner],
+      private_to_entity_ids: authorizationEntityIds,
     });
   });
 

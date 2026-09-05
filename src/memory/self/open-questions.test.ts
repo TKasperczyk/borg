@@ -7,10 +7,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
-import { FixedClock } from "../../util/clock.js";
+import { FixedClock, ManualClock } from "../../util/clock.js";
 import { IdentityCasMismatchError, ProvenanceError } from "../../util/errors.js";
 import {
   createEntityId,
+  createMaintenanceRunId,
   createSharedStateEntryId,
   createEpisodeId,
   createSemanticNodeId,
@@ -418,6 +419,116 @@ describe("OpenQuestionsRepository", () => {
         record_version: concurrent.record_version,
         unresolved_rumination_ticks: 0,
       });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("stamps reached runs but only increments ticks when it records a note", () => {
+    const clock = new ManualClock(10_000);
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock,
+    });
+
+    try {
+      const question = repository.add({
+        question: "Which stamped rumination produced a durable note?",
+        urgency: 0.4,
+        source: "ruminator",
+        provenance: manualProvenance,
+      });
+      const noteLessRunId = createMaintenanceRunId();
+      clock.advance(1_000);
+
+      const noteLess = repository.stampRuminationForRun({
+        open_question_id: question.id,
+        source_run_id: noteLessRunId,
+        next_unresolved_rumination_ticks: 1,
+        rumination: null,
+      });
+
+      expect(noteLess).toMatchObject({
+        stamped: true,
+        rumination: null,
+        question: {
+          unresolved_rumination_ticks: 0,
+          last_ruminated_at: 11_000,
+        },
+      });
+      expect(
+        db
+          .prepare(
+            `
+              SELECT stamped_at
+              FROM open_question_rumination_stamps
+              WHERE open_question_id = ? AND source_run_id = ?
+            `,
+          )
+          .get(question.id, noteLessRunId),
+      ).toEqual({ stamped_at: 11_000 });
+
+      const notedRunId = createMaintenanceRunId();
+      clock.advance(1_000);
+      const noted = repository.stampRuminationForRun({
+        open_question_id: question.id,
+        source_run_id: notedRunId,
+        next_unresolved_rumination_ticks: 1,
+        rumination: {
+          note: "This run produced a durable rumination note.",
+          source_process: "test",
+          provenance: manualProvenance,
+        },
+      });
+
+      expect(noted).toMatchObject({
+        stamped: true,
+        rumination: {
+          note: "This run produced a durable rumination note.",
+          source_run_id: notedRunId,
+        },
+        question: {
+          unresolved_rumination_ticks: 1,
+          last_ruminated_at: 12_000,
+        },
+      });
+
+      clock.advance(1_000);
+      const replay = repository.stampRuminationForRun({
+        open_question_id: question.id,
+        source_run_id: notedRunId,
+        next_unresolved_rumination_ticks: 2,
+        rumination: {
+          note: "This replay must not produce a second note.",
+          source_process: "test",
+          provenance: manualProvenance,
+        },
+      });
+
+      expect(replay).toMatchObject({
+        stamped: false,
+        rumination: null,
+        question: {
+          unresolved_rumination_ticks: 1,
+          last_ruminated_at: 12_000,
+        },
+      });
+      expect(repository.listRecentRuminations(question.id)).toEqual([
+        expect.objectContaining({
+          note: "This run produced a durable rumination note.",
+          source_run_id: notedRunId,
+        }),
+      ]);
+      expect(
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM open_question_rumination_stamps WHERE open_question_id = ?",
+          )
+          .get(question.id),
+      ).toEqual({ count: 2 });
     } finally {
       db.close();
     }

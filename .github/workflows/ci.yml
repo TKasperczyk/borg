@@ -20,9 +20,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Enable pnpm for child-process tests
+        run: |
+          corepack enable pnpm
+          corepack install --global pnpm@10.28.0
       - name: Install ripgrep (the heuristics guard shells out to rg)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
       - run: npm ci
+      - run: npm --prefix demo/server ci
       - name: Typecheck (all five tsconfigs)
         run: npm run typecheck
       - name: Heuristics guard

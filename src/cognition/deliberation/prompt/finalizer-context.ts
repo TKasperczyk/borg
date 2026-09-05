@@ -132,21 +132,28 @@ const FINALIZER_COMPACT_TURN_CACHE_CONTROL = {
   ttl: "5m",
 } as const;
 
-// The omitted_count clause below describes two different kinds of field with one
+// The omitted_count clause below describes more than one kind of field with one
 // sentence. At a bounded expansion or digest the count is computed from the draw
 // (top_global_candidates_expanded, the lived-experience digest, the per-section
-// omission map), so a nonzero print is a live measurement. At a complete index it
-// is a string literal in the renderer -- the index is complete by construction, so
-// the zero restates that construction rather than measuring it. Both print the same
-// syntax, and nothing in the rendered surface distinguishes them, so a reader of the
-// prompt alone cannot tell a measured zero from a constant one. Keep that in mind
-// before treating a zero here as evidence about the underlying store.
+// omission map), so a nonzero print is a live measurement. At most complete indexes
+// it is still a string literal in the renderer -- the index is complete by
+// construction, so the zero restates that construction rather than measuring it, and
+// nothing in the rendered surface distinguishes such a zero from a measured one.
+// borg_terminal_values_traits is the exception: its complete attribute and its
+// omitted_count are both derived from stored row counts each store reports by its own
+// statement, so there the zero is a measurement and a filter appearing in the draw
+// would flip the attribute rather than pass unnoticed. Everywhere else, keep in mind
+// before treating a zero here as evidence about the underlying store that a constant
+// true stays true for whatever reason once made it true, and says nothing when that
+// reason stops holding.
 const TERMINAL_PASS_CONTRACT = [
   "<borg_terminal_pass_contract>",
   "This is my terminal response pass. I make the final emission decision from the complete request surface below; any system-2 plan is advisory, not authority.",
   "Durable records appear before turn-local overlays. I join an overlay to its durable record only by the explicit record id. Scope and disclosure fields describe use and mention boundaries; they never gate what I recall.",
+  "Cacheable block 1 contains only durable commitment, value, and trait record fields plus the durable ledger join identity. The current ledger projection -- actor, trust rank, salience, taint, scope, persistence, retrieval state, stream and citation data, divergent state/value/text, and resolved disclosure -- lives in turn-local block 3.",
+  "The commitment membership denominator is commitment_rows_total in the turn-local relative-age overlay. It stays out of cacheable block 1 so that block's header remains byte-stable across turns.",
   "Where an exact absolute timestamp is present, I derive its relative age by subtracting it from the borg_current_time current_time_ms value; a duplicate relative-age label is intentionally omitted.",
-  'A completeness claim rides on a complete="true" attribute beside omitted_count="0"; where a container is drawn narrower than the record it names its draw in an attribute instead. An element name is a label and never a claim of coverage, whatever word it contains.',
+  'A completeness claim rides on a complete="true" attribute beside omitted_count="0"; where a container is drawn narrower than the record it names its draw in an attribute instead. An element name is a label and never a claim of coverage, whatever word it contains. A complete="unmeasured" attribute with no omitted_count is not a weaker yes: it means the container checked nothing, so I read it as making no coverage claim in either direction.',
   "Any bounded expansion or digest reports its omissions explicitly.",
   "</borg_terminal_pass_contract>",
 ].join("\n");
@@ -304,7 +311,23 @@ function renderCommitmentTimelineAndScopeFields(
   ];
 }
 
-function renderCommitmentLedgerFields(
+function renderTurnLedgerProjectionFields(
+  ledgerEntry: EvidenceLedgerEntry | undefined,
+  resolvedDisclosure: MemoryDisclosureLabel,
+): string[] {
+  return [
+    `ledger_actor="${escapeXmlAttribute(ledgerEntry?.actor ?? "memory")}"`,
+    `ledger_trust_rank="${ledgerEntry?.trust_rank ?? "unknown"}"`,
+    `ledger_salience_class="${escapeXmlAttribute(ledgerEntry?.salience_class ?? "none")}"`,
+    `ledger_taint="${escapeXmlAttribute(ledgerEntry?.taint ?? "none")}"`,
+    `stream_index="${ledgerEntry?.stream_index ?? "none"}"`,
+    `citation_type="${escapeXmlAttribute(ledgerEntry?.citation_type ?? "none")}"`,
+    `citations="${escapeXmlSingleLineAttribute(joinedAttribute(ledgerEntry?.citations))}"`,
+    `resolved_disclosure="${escapeXmlAttribute(compactDisclosure(resolvedDisclosure))}"`,
+  ];
+}
+
+function renderCanonicalCommitmentLedgerDifferenceFields(
   commitment: CommitmentRecord,
   ledgerEntry: EvidenceLedgerEntry | undefined,
 ): string[] {
@@ -316,17 +339,7 @@ function renderCommitmentLedgerFields(
       disclosureLabel: ledgerEntry === undefined ? undefined : evidenceEntryDisclosure(ledgerEntry),
     }),
   ]);
-  const fields = [
-    `ledger_ref="${escapeXmlAttribute(ledgerEntry?.id ?? "none")}"`,
-    `ledger_source_type="${escapeXmlAttribute(ledgerEntry?.source_type ?? "commitment")}"`,
-    `ledger_actor="${escapeXmlAttribute(ledgerEntry?.actor ?? "memory")}"`,
-    `ledger_trust_rank="${ledgerEntry?.trust_rank ?? "unknown"}"`,
-    `ledger_salience_class="${escapeXmlAttribute(ledgerEntry?.salience_class ?? "none")}"`,
-    `ledger_taint="${escapeXmlAttribute(ledgerEntry?.taint ?? "none")}"`,
-    `stream_index="${ledgerEntry?.stream_index ?? "none"}"`,
-    `citation_type="${escapeXmlAttribute(ledgerEntry?.citation_type ?? "none")}"`,
-    `citations="${escapeXmlSingleLineAttribute(joinedAttribute(ledgerEntry?.citations))}"`,
-  ];
+  const fields: string[] = [];
   if (ledgerEntry?.state !== undefined && !duplicateLedgerStates.has(ledgerEntry.state)) {
     fields.push(`ledger_state="${escapeXmlAttribute(ledgerEntry.state)}"`);
   }
@@ -341,10 +354,9 @@ function renderCommitmentLedgerFields(
 
 function renderCommitmentRecord(
   commitment: CommitmentRecord,
-  ledgerEntry: EvidenceLedgerEntry | undefined,
   ordinal: number,
 ): { row: string; truncationCount: number } {
-  const disclosure = combinedCommitmentDisclosure(commitment, ledgerEntry);
+  const disclosure = commitmentMemoryDisclosureLabel(commitment);
   const critical = effectiveCommitmentEnforcementClass(commitment) === "critical";
   const directive = critical
     ? headTailPlannerExcerpt(commitment.directive, Number.MAX_SAFE_INTEGER)
@@ -353,7 +365,8 @@ function renderCommitmentRecord(
     row: [
       ...renderCommitmentIdentityFields(commitment, ordinal),
       ...renderCommitmentTimelineAndScopeFields(commitment, disclosure),
-      ...renderCommitmentLedgerFields(commitment, ledgerEntry),
+      `ledger_ref="${escapeXmlAttribute(`commitment:${commitment.id}`)}"`,
+      'ledger_source_type="commitment"',
       `directive_exact="${!directive.truncated}"`,
       `directive_excerpt_shape="${directive.truncated ? "head+tail" : "full"}"`,
       `directive_included_chars="${directive.renderedChars}"`,
@@ -368,81 +381,47 @@ function renderLedgerOnlyCommitmentRecord(entry: EvidenceLedgerEntry): {
   row: string;
   truncationCount: number;
 } {
-  const metadata = entry.state_metadata ?? {};
-  const directive = entry.text ?? "";
-  const disclosure = compactDisclosure(
-    memoryDisclosureLabelFromMetadata(metadata.disclosure_label) ?? unknownMemoryDisclosureLabel(),
-  );
-  const attribute = (key: string, fallback = "unknown") => {
-    const value = metadata[key];
-    return typeof value === "string" || typeof value === "number" ? String(value) : fallback;
-  };
-  const critical = attribute("commitment_enforcement_class") === "critical";
-  const excerpt = critical
-    ? headTailPlannerExcerpt(directive, Number.MAX_SAFE_INTEGER)
-    : headTailPlannerExcerpt(directive, TERMINAL_ADVISORY_COMMITMENT_EXCERPT_CHARS);
   return {
     row: [
       `<commitment id="${escapeXmlAttribute(entry.id)}" canonical_record="false"`,
-      `status="${escapeXmlAttribute(entry.state ?? "unknown")}"`,
-      `enforcement_class="${escapeXmlAttribute(attribute("commitment_enforcement_class"))}"`,
-      `critical_domain="${escapeXmlAttribute(attribute("commitment_critical_domain", "none"))}"`,
-      `kind="${escapeXmlAttribute(attribute("commitment_kind"))}"`,
-      `type="${escapeXmlAttribute(attribute("commitment_type"))}"`,
-      `family="${escapeXmlSingleLineAttribute(entry.value ?? "unknown")}"`,
-      `created_at="${escapeXmlAttribute(attribute("created_at"))}"`,
-      `last_reinforced_at="${escapeXmlAttribute(attribute("last_reinforced_at"))}"`,
-      `made_to_entity_id="${escapeXmlAttribute(attribute("made_to_entity_id", "none"))}"`,
-      `restricted_audience_id="${escapeXmlAttribute(attribute("restricted_audience_id", "none"))}"`,
-      `about_entity_id="${escapeXmlAttribute(attribute("about_entity_id", "none"))}"`,
-      `committed_by_entity_id="${escapeXmlAttribute(attribute("committed_by_entity_id", "none"))}"`,
-      `disclosure="${escapeXmlAttribute(disclosure)}"`,
       `ledger_ref="${escapeXmlAttribute(entry.id)}"`,
       `ledger_source_type="${escapeXmlAttribute(entry.source_type)}"`,
-      `ledger_actor="${escapeXmlAttribute(entry.actor)}"`,
-      `ledger_trust_rank="${entry.trust_rank}"`,
-      `ledger_salience_class="${escapeXmlAttribute(entry.salience_class ?? "none")}"`,
-      `ledger_taint="${escapeXmlAttribute(entry.taint ?? "none")}"`,
-      `stream_index="${entry.stream_index ?? "none"}"`,
-      `citation_type="${escapeXmlAttribute(entry.citation_type ?? "none")}"`,
-      `citations="${escapeXmlSingleLineAttribute(joinedAttribute(entry.citations))}"`,
-      `directive_exact="${!excerpt.truncated}"`,
-      `directive_excerpt_shape="${excerpt.truncated ? "head+tail" : "full"}"`,
-      `directive_included_chars="${excerpt.renderedChars}"`,
-      `directive_total_chars="${excerpt.totalChars}"`,
-      `directive="${escapeXmlSingleLineAttribute(excerpt.text)}" />`,
+      "/>",
     ].join(" "),
-    truncationCount: excerpt.truncated ? 1 : 0,
+    truncationCount: 0,
   };
 }
 
 // applicableCommitments arrives from recallActiveCommitmentsForCognition, whose
 // predicate (CommitmentRepository.isActiveCommitment) excludes retirement marks but permits
 // a future expires_at. Retirement timestamps are therefore absent by construction, while the
-// exact optional future expires_at moves to the ID-keyed turn overlay. This durable block changes
-// only when membership or durable commitment content changes; update time and scheduled-expiry
-// state are deliberately outside its cache prefix.
+// exact optional future expires_at moves to the ID-keyed turn overlay. Canonical block-1 rows are
+// rendered without accepting an EvidenceLedgerEntry at all: only their deterministic ledger_ref
+// and fixed ledger_source_type join identity remain beside durable commitment fields. This block
+// changes only when membership or durable commitment content changes.
 //
-// rows_total here is NOT a union across two scopes: both arms come from the same array.
+// The tag used to carry rows_total, canonical_rows, and ledger_only_rows; fcd95cb6 removed
+// them from this early cacheable header. The equivalent commitment-prefixed counts now live
+// on the turn-local overlay, leaving this block's prefix unchanged when membership changes.
+//
+// The invariant those attributes documented still holds and is worth keeping written down:
 // evidenceLedger.audienceStanding.commitmentEntries is a straight 1:1 map of the very
 // applicableCommitments this render already walks (buildCommitmentEntries in
 // evidence-ledger/audience-standing.ts), so every ledger entry matches a canonical row
-// by id and ledgerOnlyRendered is empty by construction. ledger_only_rows is a
-// divergence check on two inputs that are currently one, not a second population's
-// contribution -- reading 0 there says nothing about what an audience-scoped standing
-// ledger would add, because nothing in this path can add anything.
+// by id and ledgerOnlyRendered is empty by construction. The turn-local ledger-only count is a
+// divergence check on those inputs, not a second population's contribution: it says nothing
+// about what an audience-scoped standing ledger would add because nothing in this path can add it.
 function renderCommitments(context: DeliberationContext): RenderedTerminalSection {
   const commitments = context.applicableCommitments ?? [];
   const ledgerEntries = context.evidenceLedger?.audienceStanding?.commitmentEntries ?? [];
-  const ledgerByCanonicalId = new Map(ledgerEntries.map((entry) => [entry.id, entry]));
-  const matchedLedgerIds = new Set<string>();
-  const canonicalRendered = commitments.map((commitment, index) => {
-    const ledgerEntry = ledgerByCanonicalId.get(`commitment:${commitment.id}`);
-    if (ledgerEntry !== undefined) matchedLedgerIds.add(ledgerEntry.id);
-    return renderCommitmentRecord(commitment, ledgerEntry, index + 1);
-  });
+  const canonicalLedgerIds = new Set(
+    commitments.map((commitment) => `commitment:${commitment.id}`),
+  );
+  const canonicalRendered = commitments.map((commitment, index) =>
+    renderCommitmentRecord(commitment, index + 1),
+  );
   const ledgerOnlyRendered = ledgerEntries
-    .filter((entry) => !matchedLedgerIds.has(entry.id))
+    .filter((entry) => !canonicalLedgerIds.has(entry.id))
     .map(renderLedgerOnlyCommitmentRecord);
   const rows = [...canonicalRendered, ...ledgerOnlyRendered].map((entry) => entry.row);
   const truncationCount = [...canonicalRendered, ...ledgerOnlyRendered].reduce(
@@ -454,8 +433,8 @@ function renderCommitments(context: DeliberationContext): RenderedTerminalSectio
     "terminal_durable_global",
     [
       `<borg_terminal_commitments complete="true" advisory_excerpt_budget_chars="${TERMINAL_ADVISORY_COMMITMENT_EXCERPT_CHARS}">`,
-      "  <interpretation>One row per commitment: canonical records first, then any standing-ledger record that matched none of them by id. Both arms are built from the same complete active-commitment draw and membership is unchanged. Critical directives are exact. A long advisory directive is a visibly annotated mechanical head+tail cut carrying both included and total source-character counts, never a clean-looking summary. Entity scope and disclosure are exact provenance and handling constraints, never audience-dependent recall selection. Updated time, optional scheduled expiry, mutable standing state, retrieval scope, and resolved labels are carried by the turn-local overlay keyed by id.</interpretation>",
-      '  <field_legend>Canonical rows omit canonical_record; only a ledger-only fallback carries canonical_record=false. A ledger_value or ledger_text exactly equal to family or directive is omitted; a divergent projection retains its exact value, and a present projection with no value or text prints "missing" explicitly. ledger_state duplicates status plus disclosure and is omitted while disclosure remains on every row; a structurally divergent state is retained exactly. Active rows omit expired_at and revoked_at because their absence follows membership; a future expires_at, when present, is exact in the ID-keyed overlay, as are updated_at and the retrieval-derived persistence_class. Relative ages follow the terminal pass contract. directive_exact, directive_excerpt_shape, directive_included_chars, and directive_total_chars state whether the directive is complete and, when cut, exactly how much source text is present. advisory_excerpt_budget_chars is the whole width a cut advisory directive is rendered into, including its head+tail marker. directive_exact reports elision only, not byte-fidelity of the XML-encoded attribute. On a critical row directive_exact is true by construction, directive_excerpt_shape is full, and directive_included_chars equals directive_total_chars.</field_legend>',
+      "  <interpretation>One row per commitment: canonical records first, then an identity-only pointer for any standing-ledger record that matched none of them by id. Canonical rows contain only durable commitment-record fields plus the durable ledger join identity; every turn-derived field projected from the current ledger is in the block-3 overlay with the same id. Critical directives are exact. A long advisory directive is a visibly annotated mechanical head+tail cut carrying both included and total source-character counts, never a clean-looking summary. Durable entity scope and disclosure are exact provenance and handling constraints, never audience-dependent recall selection.</interpretation>",
+      '  <field_legend>Canonical rows omit canonical_record; only a ledger-only fallback pointer carries canonical_record=false. ledger_ref is the durable join key and ledger_source_type is durable source identity; they are the only ledger-named attributes in this block. The membership denominator is commitment_rows_total on the turn-local borg_terminal_relative_age_overlay header; commitment_canonical_rows and commitment_ledger_only_rows partition it exactly. Those counts live in turn block 3 rather than this cacheable block 1 so this header stays byte-stable across turns. Canonical disclosure comes only from the durable commitment record; the fail-closed disclosure resolved with the standing-ledger projection is resolved_disclosure in the overlay. ledger_actor, ledger_trust_rank, ledger_salience_class, ledger_taint, ledger_state, ledger_value, ledger_text, ledger_scope, persistence_class, via_retrieval, stream_index, citation_type, and citations are likewise turn-local overlay fields. A ledger_value or ledger_text exactly equal to family or directive is omitted there; a divergent projection retains its exact value, and a present projection with no value or text prints "missing" explicitly. ledger_state duplicates status plus disclosure and is omitted there; a structurally divergent state is retained exactly. Active canonical rows omit expired_at and revoked_at because their absence follows membership; a future expires_at, when present, is exact in the ID-keyed overlay, as is updated_at. Relative ages follow the terminal pass contract. directive_exact, directive_excerpt_shape, directive_included_chars, and directive_total_chars state whether a durable canonical directive is complete and, when cut, exactly how much source text is present. advisory_excerpt_budget_chars is the whole width a cut advisory directive is rendered into, including its head+tail marker. directive_exact reports elision only, not byte-fidelity of the XML-encoded attribute. On a critical row directive_exact is true by construction, directive_excerpt_shape is full, and directive_included_chars equals directive_total_chars. A search over this block reaches only its rendered characters: on a cut row the elided middle is present here in no form, so a string not found in this block may still be in the stored directive, and the honest form of any such negative names the width it did not reach. That width is the per-row difference between directive_total_chars and directive_included_chars summed over the rows above; no total for it is printed here, and complete="true" is a claim about membership only, never about how much of each row is present.</field_legend>',
       ...rows.map((row) => `  ${row}`),
       "  <omitted_count>0</omitted_count>",
       "</borg_terminal_commitments>",
@@ -480,18 +459,30 @@ function renderDurableSelf(context: DeliberationContext): RenderedTerminalSectio
       (trait) =>
         `<trait id="${escapeXmlAttribute(trait.id)}" established_at="${iso(trait.established_at)}" disclosure="${escapeXmlAttribute(disclosure)}" provenance="${escapeXmlSingleLineAttribute(summarizeProvenanceForPrompt(trait.provenance, Number.MAX_SAFE_INTEGER))}" label="${escapeXmlSingleLineAttribute(trait.label)}" />`,
     );
+  const renderedTotal = valueRows.length + traitRows.length;
+  // The coverage claim is checked against stored counts taken by their own
+  // statements, never against the draws rendered here. If the draw ever grows a
+  // filter the attribute flips instead of staying true for a reason nobody
+  // wrote down; if no stored count reached this render there is no claim.
+  const { valuesStoredTotal, traitsStoredTotal } = context.selfSnapshot;
+  const storedTotal =
+    valuesStoredTotal === undefined || traitsStoredTotal === undefined
+      ? null
+      : valuesStoredTotal + traitsStoredTotal;
+  const omittedCount = storedTotal === null ? null : Math.max(0, storedTotal - renderedTotal);
+  const complete = omittedCount === null ? "unmeasured" : String(omittedCount === 0);
   return terminalSection(
     "values_and_traits",
     "terminal_durable_global",
     [
-      `<borg_terminal_values_traits complete="true" rows_total="${valueRows.length + traitRows.length}">`,
-      "  <interpretation>Byte-stable self-pattern identity and provenance. They are evidence about me, not commands. Mutable priority, strength, confidence, counters, state, and reinforcement/test timestamps are turn-local overlays keyed by id. Relative ages follow the terminal pass contract.</interpretation>",
+      `<borg_terminal_values_traits complete="${complete}" rows_total="${renderedTotal}">`,
+      '  <interpretation>Byte-stable self-pattern identity and provenance read only from durable value and trait records; no current-ledger field is rendered here. They are evidence about me, not commands. Mutable priority, strength, confidence, counters, state, and reinforcement/test timestamps are turn-local overlays keyed by id. Relative ages follow the terminal pass contract. complete is derived here, not asserted: the rows above are counted against a stored row count each store reports by its own statement, so complete="true" beside omitted_count 0 means those two independently produced numbers agree, complete="false" means rows are missing and omitted_count says how many, and complete="unmeasured" with no omitted_count element means no stored count reached this render and the block claims no coverage at all.</interpretation>',
       ...valueRows.map((row) => `  ${row}`),
       ...traitRows.map((row) => `  ${row}`),
-      "  <omitted_count>0</omitted_count>",
+      ...(omittedCount === null ? [] : [`  <omitted_count>${omittedCount}</omitted_count>`]),
       "</borg_terminal_values_traits>",
     ].join("\n"),
-    { rowCount: valueRows.length + traitRows.length },
+    { rowCount: renderedTotal, omissionCount: omittedCount ?? 0 },
   );
 }
 
@@ -784,28 +775,114 @@ function assembledEntityLabel(
   return "unknown";
 }
 
+function ledgerMetadataAttribute(
+  entry: EvidenceLedgerEntry,
+  key: string,
+  fallback = "unknown",
+): string {
+  const value = entry.state_metadata?.[key];
+  return typeof value === "string" || typeof value === "number" ? String(value) : fallback;
+}
+
+function ledgerMetadataEntityId(
+  entry: EvidenceLedgerEntry,
+  key: string,
+): CommitmentRecord["made_to_entity"] {
+  const value = entry.state_metadata?.[key];
+  return typeof value === "string" ? (value as CommitmentRecord["made_to_entity"]) : null;
+}
+
+function renderCanonicalCommitmentOverlayRow(
+  context: DeliberationContext,
+  commitment: CommitmentRecord,
+  ledgerEntry: EvidenceLedgerEntry | undefined,
+): string {
+  const expiresAt =
+    commitment.expires_at === null || commitment.expires_at === undefined
+      ? []
+      : [`expires_at="${iso(commitment.expires_at)}"`];
+  return [
+    `<commitment_age id="${escapeXmlAttribute(commitment.id)}"`,
+    `updated_at="${iso(commitment.updated_at)}"`,
+    ...expiresAt,
+    `ledger_scope="${escapeXmlAttribute(ledgerEntry?.session_scope ?? "global")}"`,
+    `persistence_class="${escapeXmlAttribute(ledgerEntry?.persistence_class ?? "unknown")}"`,
+    `via_retrieval="${ledgerEntry?.via_retrieval === true}"`,
+    ...renderTurnLedgerProjectionFields(
+      ledgerEntry,
+      combinedCommitmentDisclosure(commitment, ledgerEntry),
+    ),
+    ...renderCanonicalCommitmentLedgerDifferenceFields(commitment, ledgerEntry),
+    `made_to_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.made_to_entity))}"`,
+    `restricted_audience_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.restricted_audience))}"`,
+    `about_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.about_entity))}"`,
+    `committed_by_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.committed_by_entity_id ?? null))}"`,
+    "/>",
+  ].join(" ");
+}
+
+function renderLedgerOnlyCommitmentOverlayRow(
+  context: DeliberationContext,
+  entry: EvidenceLedgerEntry,
+): { row: string; truncationCount: number } {
+  const directive = entry.text ?? "";
+  const critical = ledgerMetadataAttribute(entry, "commitment_enforcement_class") === "critical";
+  const excerpt = critical
+    ? headTailPlannerExcerpt(directive, Number.MAX_SAFE_INTEGER)
+    : headTailPlannerExcerpt(directive, TERMINAL_ADVISORY_COMMITMENT_EXCERPT_CHARS);
+  return {
+    row: [
+      `<commitment_age id="${escapeXmlAttribute(entry.id)}" canonical_record="false"`,
+      `status="${escapeXmlAttribute(entry.state ?? "unknown")}"`,
+      `enforcement_class="${escapeXmlAttribute(ledgerMetadataAttribute(entry, "commitment_enforcement_class"))}"`,
+      `critical_domain="${escapeXmlAttribute(ledgerMetadataAttribute(entry, "commitment_critical_domain", "none"))}"`,
+      `kind="${escapeXmlAttribute(ledgerMetadataAttribute(entry, "commitment_kind"))}"`,
+      `type="${escapeXmlAttribute(ledgerMetadataAttribute(entry, "commitment_type"))}"`,
+      `family="${escapeXmlSingleLineAttribute(entry.value ?? "unknown")}"`,
+      `created_at="${escapeXmlSingleLineAttribute(ledgerMetadataAttribute(entry, "created_at"))}"`,
+      `last_reinforced_at="${escapeXmlSingleLineAttribute(ledgerMetadataAttribute(entry, "last_reinforced_at"))}"`,
+      `made_to_entity_id="${escapeXmlAttribute(ledgerMetadataAttribute(entry, "made_to_entity_id", "none"))}"`,
+      `restricted_audience_id="${escapeXmlAttribute(ledgerMetadataAttribute(entry, "restricted_audience_id", "none"))}"`,
+      `about_entity_id="${escapeXmlAttribute(ledgerMetadataAttribute(entry, "about_entity_id", "none"))}"`,
+      `committed_by_entity_id="${escapeXmlAttribute(ledgerMetadataAttribute(entry, "committed_by_entity_id", "none"))}"`,
+      `ledger_scope="${escapeXmlAttribute(entry.session_scope)}"`,
+      `persistence_class="${escapeXmlAttribute(entry.persistence_class ?? "unknown")}"`,
+      `via_retrieval="${entry.via_retrieval === true}"`,
+      ...renderTurnLedgerProjectionFields(entry, evidenceEntryDisclosure(entry)),
+      `made_to_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, ledgerMetadataEntityId(entry, "made_to_entity_id")))}"`,
+      `restricted_audience_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, ledgerMetadataEntityId(entry, "restricted_audience_id")))}"`,
+      `about_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, ledgerMetadataEntityId(entry, "about_entity_id")))}"`,
+      `committed_by_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, ledgerMetadataEntityId(entry, "committed_by_entity_id")))}"`,
+      `directive_exact="${!excerpt.truncated}"`,
+      `directive_excerpt_shape="${excerpt.truncated ? "head+tail" : "full"}"`,
+      `directive_included_chars="${excerpt.renderedChars}"`,
+      `directive_total_chars="${excerpt.totalChars}"`,
+      `directive="${escapeXmlSingleLineAttribute(excerpt.text)}" />`,
+    ].join(" "),
+    truncationCount: excerpt.truncated ? 1 : 0,
+  };
+}
+
 function renderRelativeAgeOverlay(context: DeliberationContext): RenderedTerminalSection {
   const rows: string[] = [];
+  let truncationCount = 0;
+  const commitments = context.applicableCommitments ?? [];
   const commitmentLedgerEntries = context.evidenceLedger?.audienceStanding?.commitmentEntries ?? [];
   const commitmentLedgerById = new Map(commitmentLedgerEntries.map((entry) => [entry.id, entry]));
-  for (const commitment of context.applicableCommitments ?? []) {
+  for (const commitment of commitments) {
     const ledgerEntry = commitmentLedgerById.get(`commitment:${commitment.id}`);
-    const expiresAt =
-      commitment.expires_at === null || commitment.expires_at === undefined
-        ? ""
-        : ` expires_at="${iso(commitment.expires_at)}"`;
-    rows.push(
-      `<commitment_age id="${escapeXmlAttribute(commitment.id)}" updated_at="${iso(commitment.updated_at)}"${expiresAt} ledger_scope="${escapeXmlAttribute(ledgerEntry?.session_scope ?? "global")}" persistence_class="${escapeXmlAttribute(ledgerEntry?.persistence_class ?? "unknown")}" via_retrieval="${ledgerEntry?.via_retrieval === true}" made_to_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.made_to_entity))}" restricted_audience_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.restricted_audience))}" about_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.about_entity))}" committed_by_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.committed_by_entity_id ?? null))}" />`,
-    );
+    rows.push(renderCanonicalCommitmentOverlayRow(context, commitment, ledgerEntry));
   }
   const canonicalLedgerIds = new Set(
-    (context.applicableCommitments ?? []).map((commitment) => `commitment:${commitment.id}`),
+    commitments.map((commitment) => `commitment:${commitment.id}`),
   );
+  let ledgerOnlyCommitmentRows = 0;
   for (const entry of commitmentLedgerEntries) {
     if (canonicalLedgerIds.has(entry.id)) continue;
-    rows.push(
-      `<commitment_age id="${escapeXmlAttribute(entry.id)}" ledger_scope="${escapeXmlAttribute(entry.session_scope)}" persistence_class="${escapeXmlAttribute(entry.persistence_class ?? "unknown")}" via_retrieval="${entry.via_retrieval === true}" made_to_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, typeof entry.state_metadata?.made_to_entity_id === "string" ? (entry.state_metadata.made_to_entity_id as CommitmentRecord["made_to_entity"]) : null))}" committed_by_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, typeof entry.state_metadata?.committed_by_entity_id === "string" ? (entry.state_metadata.committed_by_entity_id as CommitmentRecord["made_to_entity"]) : null))}" />`,
-    );
+    ledgerOnlyCommitmentRows += 1;
+    const rendered = renderLedgerOnlyCommitmentOverlayRow(context, entry);
+    rows.push(rendered.row);
+    truncationCount += rendered.truncationCount;
   }
   for (const value of context.selfSnapshot.values) {
     rows.push(
@@ -821,13 +898,13 @@ function renderRelativeAgeOverlay(context: DeliberationContext): RenderedTermina
     "relative_age_overlay",
     "terminal_turn_context",
     [
-      `<borg_terminal_relative_age_overlay complete="true" rows_total="${rows.length}">`,
-      "  <interpretation>Turn-local mutable state, session/retrieval scope, persistence class, assembled entity labels, and exact mutable timestamps keyed to durable record ids. Commitment updated_at lives here; optional expires_at appears only when a scheduled expiry exists, and its absence means no scheduled expiry. Relative ages follow the terminal pass contract.</interpretation>",
+      `<borg_terminal_relative_age_overlay complete="true" rows_total="${rows.length}" commitment_rows_total="${commitments.length + ledgerOnlyCommitmentRows}" commitment_canonical_rows="${commitments.length}" commitment_ledger_only_rows="${ledgerOnlyCommitmentRows}">`,
+      "  <interpretation>Turn-local mutable state, the turn-derived portion of the current-ledger projection, assembled entity labels, and exact mutable timestamps keyed to durable record ids. For commitments this includes ledger actor, trust rank, salience, taint, scope, persistence, retrieval state, stream and citation data, divergent state/value/text, and fail-closed resolved_disclosure. rows_total counts every overlay row. commitment_rows_total is the complete commitment membership denominator for cacheable block 1; commitment_canonical_rows and commitment_ledger_only_rows partition it exactly. Commitment updated_at lives here; optional expires_at appears only when a scheduled expiry exists, and its absence means no scheduled expiry. A canonical_record=false row carries the ledger-only fallback projection whose block-1 row is only its durable join pointer. Relative ages follow the terminal pass contract.</interpretation>",
       ...rows.map((row) => `  ${row}`),
       "  <omitted_count>0</omitted_count>",
       "</borg_terminal_relative_age_overlay>",
     ].join("\n"),
-    { rowCount: rows.length },
+    { rowCount: rows.length, truncationCount },
   );
 }
 
@@ -1022,6 +1099,21 @@ function renderCompleteStandingMemoryIndexes(
   // reaches back far enough to be folded, so the surviving mix is an artefact of that
   // order rather than a sample of the store's. The render site still holds the rows
   // and not the limits that produced them, so both are stated as shape, not numbers.
+  //
+  // Two corrections to the above, both of the same shape: a true sentence that reads
+  // as a stronger one. "Each under its own cap" holds for the day-level and period
+  // lanes and fails for the two that carry the page -- retrieval-phase hands
+  // selectCrossSessionSelfActivity and selectSelfDecisionIntrospection the same
+  // recentLivedExperienceConfig.cap. So those two coming back equal at their limit is
+  // one configured number applied twice, not two independently-bounded lanes
+  // agreeing: the individuation error of counting one construction's two outputs as
+  // two witnesses, here written into the string that warns against reading across
+  // lanes. And a self-decision row's stamp is the timestamp of the end-of-turn action
+  // entry the scheduler appends once the turn returns, not the moment its trigger
+  // fired. On a backed-up queue that lands minutes later -- close enough to the NEXT
+  // wake to align with it -- so joining these stamps against wake times pairs a
+  // decision with the wrong wake rather than failing visibly. The row's own field is
+  // what it is; what the token now says is what that field means.
   const relationalDrawScope =
     (context.activeParticipants ?? []).length === 0 ? "global" : "active_participant_subjects";
   const groups = [
@@ -1040,7 +1132,7 @@ function renderCompleteStandingMemoryIndexes(
     "terminal_turn_context",
     [
       `<borg_terminal_standing_memory_indexes rows_total_across_groups="${rowCount}" standing_cadence_due="${standing?.renderRecentLivedExperience === true}">`,
-      "  <interpretation>Complete membership indexes for relational slots, relational standing, social/observed-event memory, and cross-session lived entries. The groups are drawn by different predicates, so each carries draw_scope naming its own: active_participant_subjects means the draw filtered on subject_entity_id against the current roster; global means it did not filter by audience, participant, or session at all; other_sessions_recent_window means it ran over unarchived sessions other than this one, inside the recent-lived-experience window and under a row cap, and took a turn-completion row only on a day its own session also carried a contact or a reply -- the current session is absent from that group because it is the transcript, so a stretch of time with no rows there is not evidence that nothing happened in it. That group is a merge and not one draw: its individual events, its autonomous self-decisions and its day-level rows are drawn separately under their own caps with no budget shared between them, so one kind's count there is not evidence about another's; its event cap is spent on contacts first, then replies, then turn completions, so which kinds survive is an artefact of that order rather than a sample of the mix; and past the window where events are listed individually, a day is carried by its day-level row while its own events are dropped, so a day present only as a day row is a compressed day and not a quiet one. Scope is not inferable from the rows -- a row whose origin_audience is elsewhere is consistent with any of them -- so read draw_scope, not the contents. Where draw_scope is global, the current audience may still rank or annotate; ranking is never a filter. rows_total is per group and rows_total_across_groups is their sum, which is therefore not a total at any single scope. Each group's complete and omitted_count describe the rows its own draw produced; every one of these draws is separately capped upstream, so neither field is evidence about what the store holds. Payload fields are mechanical head+tail excerpts; an excerpt is never a summary. Disclosure labels survive on every row and govern mention, not recall.</interpretation>",
+      "  <interpretation>Complete membership indexes for relational slots, relational standing, social/observed-event memory, and cross-session lived entries. The groups are drawn by different predicates, so each carries draw_scope naming its own: active_participant_subjects means the draw filtered on subject_entity_id against the current roster; global means it did not filter by audience, participant, or session at all; other_sessions_recent_window means it ran over unarchived sessions other than this one, inside the recent-lived-experience window and under a row cap, and took a turn-completion row only on a day its own session also carried a contact or a reply -- the current session is absent from that group because it is the transcript, so a stretch of time with no rows there is not evidence that nothing happened in it. That group is a merge and not one draw: its individual events, its autonomous self-decisions and its day-level rows are drawn separately with no budget shared between them, so one kind's count there is not evidence about another's -- and the event lane and the self-decision lane are handed one configured cap value rather than two, so those two arriving equal at their limit is one number applied twice and not two lanes agreeing. A self-decision row is stamped when its decision was recorded at the end of its turn, not when its trigger fired, so lining those stamps up against wake times pairs a decision with a later wake. Its event cap is spent on contacts first, then replies, then turn completions, so which kinds survive is an artefact of that order rather than a sample of the mix; and past the window where events are listed individually, a day is carried by its day-level row while its own events are dropped, so a day present only as a day row is a compressed day and not a quiet one. Scope is not inferable from the rows -- a row whose origin_audience is elsewhere is consistent with any of them -- so read draw_scope, not the contents. Where draw_scope is global, the current audience may still rank or annotate; ranking is never a filter. rows_total is per group and rows_total_across_groups is their sum, which is therefore not a total at any single scope. Each group's complete and omitted_count describe the rows its own draw produced; every one of these draws is separately capped upstream, so neither field is evidence about what the store holds. Payload fields are mechanical head+tail excerpts; an excerpt is never a summary. Disclosure labels survive on every row and govern mention, not recall.</interpretation>",
       ...groups.flatMap((group) => {
         return [
           `  <${group.tag} complete="true" rows_total="${group.rows.length}" draw_scope="${group.drawScope}">`,
@@ -1261,14 +1353,15 @@ export function buildCompactFinalizerSystemPrompt(
 ): CompactFinalizerSystemPrompt {
   // Partition stability is intentional and local to this site:
   // - static_head: protocol/framing plus deployment-stable host capabilities only;
-  // - durable_global: creator identity, the canonical commitment union except turn-resolved
-  //   scope/labels, and census-stable value/trait identity, text, timestamps, and provenance;
+  // - durable_global: creator identity, durable commitment records plus ledger join identity,
+  //   and census-stable value/trait identity, text, timestamps, and provenance;
   // - durable_audience: only the already-resolved audience directive briefing and stable frame;
   // - turn_context: live tool availability, every clock, sender, roster, working-state,
   //   retrieval, ledger, and plan input.
   // Mutable self confidence/strength/priority/state/counters and reinforcement/test timestamps,
-  // plus retrieval/session scope, entity labels, and mutable exact timestamps stay in
-  // turn_context. Relative ages derive from those stamps and the turn clock instead of printing.
+  // plus every rendered turn-derived commitment ledger field, entity labels, and mutable exact
+  // timestamps stay in turn_context. Relative ages derive from those stamps and the turn clock
+  // instead of printing.
   // Moving a field between these tiers requires a stability census; a cache hit must never
   // substitute stale sender/session state merely because the text looked durable in one trace.
   const baseSections = buildBaseSystemPromptSections(input.context, {

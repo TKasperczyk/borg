@@ -122,6 +122,8 @@ describe("TurnGoalPromotionService", () => {
     const alice = createEntityId();
     const historicalOrigin = createEntityId();
     const userEntryId = createStreamEntryId();
+    // Origins keep source chronology; authorization IDs use lexical set order.
+    const authorizationEntityIds = [group, alice].sort();
     const addGoal = vi.fn();
     const llm = new FakeLLMClient({
       responses: [
@@ -158,7 +160,7 @@ describe("TurnGoalPromotionService", () => {
           disclosure_label: {
             disclosure_class: "relationship_private",
             origin_audience_entity_ids: [historicalOrigin],
-            private_to_entity_ids: [group, alice],
+            private_to_entity_ids: authorizationEntityIds,
             public_to_entity_ids: [],
           },
         },

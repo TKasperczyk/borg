@@ -14,7 +14,7 @@ import { SELF_DECISION_LABEL_SCOPE_FRAMING, type EvidenceLedgerSourceType } from
 
 const AUTOBIOGRAPHICAL_RECALL_FRAMING =
   "Autobiographical recall entries are past evidence for me to re-examine during this turn. I treat recalled self_decision rows as historical decisions and rationales, not standing verdicts; I revise them when current evidence warrants. " +
-  `${SELF_DECISION_LABEL_SCOPE_FRAMING} This section does carry reaches, separately, as outbound_attempt rows, so a label and an attempt from one turn appear here as two different rows. Those rows compete for recency-ordered slots shared with my thoughts and silence decisions rather than holding a reserved budget of their own, so an attempt missing from this section may simply have been outranked by later stream entries, and its absence here is not evidence that no reach was made. My window here is resolved from a temporal reference in this turn's inbound text, including one the text only mentions rather than asks about, so a perception_temporal_cue window can close well before now, and evidence outside window_start_ms/window_end_ms is absent by that scope rather than missing from the store.`;
+  `${SELF_DECISION_LABEL_SCOPE_FRAMING} This section does carry reaches, separately, as outbound_attempt rows, so a label and an attempt from one turn appear here as two different rows. Those rows compete for recency-ordered slots shared with my thoughts and silence decisions rather than holding a reserved budget of their own, so an attempt missing from this section may simply have been outranked by later stream entries, and its absence here is not evidence that no reach was made. My window here is resolved from a temporal reference in this turn's inbound text, including one the text only mentions rather than asks about, so a perception_temporal_cue window can close well before now, and evidence outside window_start_ms/window_end_ms is absent by that scope rather than missing from the store. Apart from the reduction figures, the framing counts here are the source kinds present in the assembly, one key per kind, so they sum to rows_assembled exactly and a kind this object does not name contributed no rows to it.`;
 
 function sourceTypeForAutobiographicalItem(
   item: AutobiographicalRecallEvidenceItem,
@@ -47,14 +47,26 @@ export function addAutobiographicalRecallSection(context: BuilderSectionContext)
     return;
   }
 
+  // This section assembles twelve kinds. Printing the population beside a single counted kind
+  // fixed the missing denominator and left the complementary misread standing: with only
+  // self_decision named, every other kind is counted nowhere, so a page of five goal rows under
+  // `{"rows_assembled":48,"self_decision":10}` invites reading ten against seven printed rows as
+  // if the two figures described the same set. One key per kind present makes the object a
+  // decomposition of its own population -- the kinds sum to rows_assembled by construction, so
+  // the page's own kinds are locatable in it and a kind absent from the object contributed zero
+  // rather than going unmeasured. Built from the rows rather than from a fixed key list, so a
+  // kind added to the union appears here without this call site being revisited.
+  const kindCounts: Record<string, number> = {};
+
+  for (const item of recall.evidence) {
+    kindCounts[item.kind] = (kindCounts[item.kind] ?? 0) + 1;
+  }
+
   setSectionFraming(context.buckets, "autobiographical_recall", {
     text: AUTOBIOGRAPHICAL_RECALL_FRAMING,
     counts: {
-      // This section assembles twelve kinds and counts one of them, so the population has to
-      // travel with the figure: without it a self_decision count of zero above a page of
-      // reflections and presences reads as a section that lost its rows.
       rows_assembled: recall.evidence.length,
-      self_decision: recall.evidence.filter((item) => item.kind === "self_decision").length,
+      ...kindCounts,
     },
   });
 
