@@ -35,6 +35,7 @@ import {
   ChatResponseCatchUpWorker,
   TurnOrchestratorChatResponseCatchUpRunner,
   type ChatResponseCatchUpWorkerConfig,
+  type ChatResponseCatchUpWorkerOptions,
 } from "./index.js";
 
 const DEFAULT_CONFIG: ChatResponseCatchUpWorkerConfig = {
@@ -158,6 +159,7 @@ function createHarness(
     onReconcileAdvance?: (event: { sessionId: SessionId; advancedThrough: StreamCursor }) => void;
     acquireLease?: () => { release(): void };
     reconcileAdvance?: StreamCursor;
+    taskEvents?: ChatResponseCatchUpWorkerOptions["taskEvents"];
   } = {},
 ) {
   const clock = new ManualClock(0);
@@ -220,6 +222,7 @@ function createHarness(
           }),
         };
   const worker = new ChatResponseCatchUpWorker({
+    taskEvents: options.taskEvents,
     coordinator,
     prefixBuilder,
     entryIndex,
@@ -281,6 +284,202 @@ describe("ChatResponseCatchUpWorker", () => {
     while (tempDirs.length > 0) {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
+  });
+
+  function taskLane(run?: () => Promise<void>, count = 1) {
+    const taskEntry = entry({ kind: "internal_event" });
+    const event = {
+      schema_version: 1 as const,
+      event_id: "e",
+      task_id: "t",
+      task_version: 1,
+      kind: "task_completed" as const,
+      occurred_at: "2020-01-01T00:00:00Z",
+      outcome: { status: "succeeded" as const, summary: "done" },
+      origin: { source_entry_ids: [] },
+    };
+    taskEntry.metadata = { task_event: event };
+    const events = Array.from({ length: count }, (_, index) => {
+      const currentEvent = { ...event, event_id: `e${index}` };
+      const currentEntry = index === 0 ? taskEntry : entry({ kind: "internal_event" });
+      currentEntry.metadata = { task_event: currentEvent };
+      return { entry: currentEntry, event: currentEvent };
+    });
+    let answered = 0;
+    const terminal = entry({ kind: "agent_msg" });
+    return {
+      taskEntry,
+      service: {
+        listSessionIds: () => [],
+        listUnanswered: () => events.slice(answered),
+        findTerminal: (_sessionId: SessionId, taskEvent: { entry: StreamEntry }) =>
+          events.slice(0, answered).some((item) => item.entry.id === taskEvent.entry.id)
+            ? terminal
+            : null,
+      },
+      runner: {
+        reconcile: vi.fn(async () => {}),
+        run: vi.fn(async () => {
+          await run?.();
+          answered += 1;
+        }),
+      },
+    };
+  }
+
+  it("uses one in-flight gate for user and task turns and leaves the user watermark unchanged by a task", async () => {
+    const hold = deferred();
+    const lane = taskLane();
+    const batch = prefix({ count: 2 });
+    const h = createHarness({
+      prefixes: [batch, emptyPrefix()],
+      taskEvents: lane,
+      run: async () => {
+        await hold.promise;
+        return turnResult();
+      },
+    });
+    const userDrain = h.worker.tick(DEFAULT_SESSION_ID);
+    await flushAsync();
+    expect(h.worker.tick(DEFAULT_SESSION_ID)).toBe(userDrain);
+    expect(lane.runner.run).not.toHaveBeenCalled();
+    hold.resolve();
+    expect((await userDrain).drained).toBe(2);
+    const watermark = h.coordinator.reconcile().watermark;
+    expect((await h.worker.tick(DEFAULT_SESSION_ID)).drained).toBe(1);
+    expect(lane.runner.run).toHaveBeenCalledTimes(1);
+    expect(h.coordinator.reconcile().watermark).toEqual(watermark);
+    expect(h.turnOrchestrator.run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inboundBatch: expect.objectContaining({ entryIds: batch.entryIds }),
+      }),
+    );
+  });
+
+  it("coalesces user arrivals during a task turn and runs them after the shared gate releases", async () => {
+    const hold = deferred();
+    const lane = taskLane(() => hold.promise);
+    const batch = prefix({ count: 2 });
+    const h = createHarness({ prefixes: [emptyPrefix(), batch], taskEvents: lane });
+    h.worker.start();
+    await flushAsync();
+    h.worker.onAppend([lane.taskEntry]);
+    await advance(h.clock, 10);
+    expect(lane.runner.run).toHaveBeenCalledTimes(1);
+    h.worker.onAppend([entry()]);
+    await advance(h.clock, 5);
+    h.worker.onAppend([entry()]);
+    expect(h.turnOrchestrator.run).not.toHaveBeenCalled();
+    hold.resolve();
+    await flushAsync();
+    await advance(h.clock, 10);
+    expect(h.turnOrchestrator.run).toHaveBeenCalledTimes(1);
+    expect(h.turnOrchestrator.run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inboundBatch: expect.objectContaining({ entryIds: batch.entryIds }),
+      }),
+    );
+    await h.worker.stop();
+  });
+
+  it("does not extend a settling user batch when a task event arrives", async () => {
+    const lane = taskLane();
+    const h = createHarness({ prefixes: [prefix(), emptyPrefix()], taskEvents: lane });
+    h.worker.start();
+    await flushAsync();
+    h.worker.onAppend([entry()]);
+    await advance(h.clock, 8);
+    h.worker.onAppend([lane.taskEntry]);
+    await advance(h.clock, 2);
+    expect(h.turnOrchestrator.run).toHaveBeenCalledTimes(1);
+    await h.worker.stop();
+  });
+
+  it("retries task errors using the worker backoff", async () => {
+    let attempts = 0;
+    const lane = taskLane(async () => {
+      if (++attempts === 1) throw new Error("retry");
+    });
+    const h = createHarness({ taskEvents: lane });
+    h.worker.start();
+    await flushAsync();
+    h.worker.onAppend([lane.taskEntry]);
+    await advance(h.clock, 10);
+    expect(lane.runner.run).toHaveBeenCalledTimes(1);
+    await advance(h.clock, 24);
+    expect(lane.runner.run).toHaveBeenCalledTimes(1);
+    await advance(h.clock, 1);
+    expect(lane.runner.run).toHaveBeenCalledTimes(2);
+    expect(h.turnOrchestrator.run).not.toHaveBeenCalled();
+    await h.worker.stop();
+  });
+
+  it("selects pending user work before a failing task-terminal ingestion repair", async () => {
+    const lane = taskLane();
+    lane.runner.reconcile.mockRejectedValue(new Error("task ingestion unavailable"));
+    const batch = prefix();
+    const h = createHarness({ prefixes: [batch, emptyPrefix()], taskEvents: lane });
+    expect(await h.worker.tick(DEFAULT_SESSION_ID)).toMatchObject({
+      status: "drained",
+      drained: 1,
+    });
+    expect(h.turnOrchestrator.run).toHaveBeenCalledTimes(1);
+    expect(lane.runner.reconcile).not.toHaveBeenCalled();
+    expect(await h.worker.tick(DEFAULT_SESSION_ID)).toMatchObject({ status: "error" });
+    expect(lane.runner.reconcile).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps task repair backoff separate while newly pending users observe their quiet window", async () => {
+    const lane = taskLane();
+    lane.runner.reconcile.mockRejectedValue(new Error("task ingestion unavailable"));
+    const h = createHarness({ prefixes: [emptyPrefix(), prefix()], taskEvents: lane });
+    h.worker.start();
+    await flushAsync();
+    h.worker.onAppend([lane.taskEntry]);
+    await advance(h.clock, 10);
+    expect(lane.runner.reconcile).toHaveBeenCalledTimes(1);
+    h.worker.onAppend([entry({ timestamp: h.clock.now() })]);
+    await advance(h.clock, 9);
+    expect(h.turnOrchestrator.run).not.toHaveBeenCalled();
+    await advance(h.clock, 1);
+    expect(h.turnOrchestrator.run).toHaveBeenCalledTimes(1);
+    await advance(h.clock, 14);
+    expect(lane.runner.reconcile).toHaveBeenCalledTimes(1);
+    await advance(h.clock, 1);
+    expect(lane.runner.reconcile).toHaveBeenCalledTimes(2);
+    await h.worker.stop();
+  });
+
+  it("observes user quiet windows between multiple task continuations", async () => {
+    const holds = [deferred(), deferred()];
+    let taskRuns = 0;
+    const lane = taskLane(async () => {
+      await holds[taskRuns++]?.promise;
+    }, 3);
+    const h = createHarness({
+      prefixes: [emptyPrefix(), prefix(), emptyPrefix(), prefix()],
+      taskEvents: lane,
+    });
+    h.worker.start();
+    await flushAsync();
+    h.worker.onAppend([lane.taskEntry]);
+    await advance(h.clock, 10);
+    expect(lane.runner.run).toHaveBeenCalledTimes(1);
+    for (let index = 0; index < 2; index += 1) {
+      h.worker.onAppend([entry({ timestamp: h.clock.now() })]);
+      await advance(h.clock, 5);
+      h.worker.onAppend([entry({ timestamp: h.clock.now() })]);
+      holds[index]!.resolve();
+      await flushAsync();
+      await advance(h.clock, 9);
+      expect(h.turnOrchestrator.run).toHaveBeenCalledTimes(index);
+      expect(lane.runner.run).toHaveBeenCalledTimes(index + 1);
+      await advance(h.clock, 1);
+      expect(h.turnOrchestrator.run).toHaveBeenCalledTimes(index + 1);
+      await advance(h.clock, 1);
+      expect(lane.runner.run).toHaveBeenCalledTimes(index + 2);
+    }
+    await h.worker.stop();
   });
 
   it("wakes only daemon-enqueued user messages without turn ids", async () => {

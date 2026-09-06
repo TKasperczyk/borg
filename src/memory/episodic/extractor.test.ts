@@ -106,7 +106,10 @@ describe("episodic extractor", () => {
     }
   });
 
-  async function createRelationalExtractorHarness(clock = new ManualClock(1_000)) {
+  async function createRelationalExtractorHarness(
+    clock = new ManualClock(1_000),
+    taskEventsEnabled = false,
+  ) {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -140,6 +143,7 @@ describe("episodic extractor", () => {
     const writer = new StreamWriter({
       dataDir: tempDir,
       clock,
+      taskEventsEnabled,
     });
 
     cleanup.push(async () => {
@@ -158,6 +162,58 @@ describe("episodic extractor", () => {
       writer,
     };
   }
+
+  it.each(["invalid_metadata", "event_id", "task_id", "task_version", "audience"])(
+    "excludes task extraction context when %s does not validate against the terminal",
+    async (mismatch) => {
+      const h = await createRelationalExtractorHarness(new ManualClock(1_000), true);
+      const event = {
+        schema_version: 1,
+        event_id: "event",
+        task_id: "task",
+        task_version: 1,
+        kind: "task_completed",
+        occurred_at: "2026-09-06T12:00:00Z",
+        outcome: { status: "succeeded", summary: "Private outcome available only in metadata" },
+        origin: { source_entry_ids: [] },
+      };
+      const source = await h.writer.append({
+        kind: "internal_event",
+        content: "Task completed",
+        audience: "Origin room",
+        metadata: {
+          task_event: mismatch === "invalid_metadata" ? { ...event, schema_version: 999 } : event,
+        },
+      });
+      const terminal = await h.writer.append({
+        kind: "agent_msg",
+        content: "Done.",
+        audience: mismatch === "audience" ? "Another room" : "Origin room",
+        response_to: {
+          kind: "task_event",
+          event_id: mismatch === "event_id" ? "other" : event.event_id,
+          event_entry_id: source.id,
+          task_id: mismatch === "task_id" ? "other" : event.task_id,
+          task_version: mismatch === "task_version" ? 2 : event.task_version,
+        },
+      });
+      const llm = new FakeLLMClient({ responses: [createEpisodeToolResponse([])] });
+      const extractor = new EpisodicExtractor({
+        dataDir: h.tempDir,
+        episodicRepository: h.repo,
+        embeddingClient: new TitleEmbeddingClient(),
+        llmClient: llm,
+        model: "claude-haiku",
+        entityRepository: h.entityRepository,
+        clock: h.clock,
+      });
+      await extractor.extractFromStream({ entryIds: [source.id, terminal.id] });
+      const prompt = String(llm.requests[0]!.messages[0]!.content);
+      expect(prompt).toContain("Done.");
+      expect(prompt).not.toContain(event.outcome.summary);
+      expect(prompt).not.toContain("task_event_context");
+    },
+  );
 
   it("uses transport conversation context for venue and stamps the self participant handle", async () => {
     const harness = await createRelationalExtractorHarness();

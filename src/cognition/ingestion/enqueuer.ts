@@ -24,7 +24,8 @@ import type {
 } from "../../stream/index.js";
 import { streamSourceMessageKeySchema } from "../../stream/index.js";
 import type { Clock } from "../../util/clock.js";
-import { CognitionError, StreamError } from "../../util/errors.js";
+import { CognitionError } from "../../util/errors.js";
+import { repairPoisonedSessionBeforeDedup } from "./repair-before-dedup.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import {
   ENQUEUED_USER_CONTACT_ACTIVITY_STATUS,
@@ -93,7 +94,10 @@ export class MessageEnqueuer {
 
     return this.runForSession(session.session_id, async () => {
       if (this.options.entryIndex.isPoisoned(session.session_id)) {
-        await this.repairPoisonedSessionBeforeDedup(session.session_id);
+        await repairPoisonedSessionBeforeDedup(
+          session.session_id,
+          this.options.repairSessionStreamEntryIndex,
+        );
       }
 
       const duplicate = this.options.entryIndex.lookupBySourceMessageKey(sourceMessageKey);
@@ -189,17 +193,6 @@ export class MessageEnqueuer {
       if (this.sessionTails.get(sessionId) === stored) {
         this.sessionTails.delete(sessionId);
       }
-    }
-  }
-
-  private async repairPoisonedSessionBeforeDedup(sessionId: SessionId): Promise<void> {
-    try {
-      await this.options.repairSessionStreamEntryIndex(sessionId);
-    } catch (error) {
-      throw new StreamError(`Stream entry index is poisoned for committed session ${sessionId}`, {
-        cause: error,
-        code: "STREAM_INDEX_POISONED",
-      });
     }
   }
 

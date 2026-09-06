@@ -11,7 +11,7 @@ import {
   type SessionId,
   type StreamEntry,
   type StreamIterateOptions,
-  streamEntrySchema,
+  streamEntryReadSchema,
 } from "./types.js";
 
 type LoggerLike = Pick<Console, "error">;
@@ -88,7 +88,7 @@ export class StreamReader {
 
     try {
       const raw = JSON.parse(line) as unknown;
-      const parsed = streamEntrySchema.safeParse(raw);
+      const parsed = streamEntryReadSchema.safeParse(raw);
 
       if (!parsed.success) {
         this.logger.error(`Skipping invalid stream line in ${this.streamPath}`);

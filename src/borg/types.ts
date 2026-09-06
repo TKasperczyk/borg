@@ -1,4 +1,9 @@
 // Shared public and internal Borg composition types used by the facade and setup modules.
+import type { AgentDeliveryRepository } from "../cognition/ingestion/agent-deliveries.js";
+import type {
+  TaskEventService,
+  TaskEventCatchUpRunner,
+} from "../cognition/ingestion/task-events.js";
 
 import type {
   AutonomyScheduler,
@@ -160,6 +165,8 @@ export type BorgDependencies = {
   streamIngestionCoordinator?: StreamIngestionCoordinator;
   chatResponseWatermarkCoordinator: ChatResponseWatermarkCoordinator;
   backlogTerminalService: BacklogTerminalService;
+  taskEventService: TaskEventService;
+  agentDeliveries: AgentDeliveryRepository;
   chatResponseCatchUpWorker: ChatResponseCatchUpWorker;
   messageEnqueuer: MessageEnqueuer;
   auditLog: AuditLog;
@@ -201,6 +208,18 @@ export type BorgOpenOptions = {
   /** Per-user-entry token accounting cap for live commitment extraction. */
   liveCommitmentExtractionBudget?: number | null;
   inbox?: {
+    /** Opt in only after the reader-compatibility deployment. Defaults to false. */
+    taskEventsEnabled?: boolean;
+    taskEventRunner?: (context: {
+      terminal: BacklogTerminalService;
+      taskEvents: TaskEventService;
+      deliveries: AgentDeliveryRepository;
+      entityRepository: Pick<EntityRepository, "get" | "getSelf">;
+      sessions: Pick<SessionsRepository, "get">;
+      activity: Pick<BorgActivityFacade, "projectRepliedTurn">;
+      tracer: TurnTracer;
+    }) => TaskEventCatchUpRunner;
+    onDeliveryAvailable?: (sessionId: SessionId) => void;
     runner?:
       | ChatResponseCatchUpRunner
       | ((context: {

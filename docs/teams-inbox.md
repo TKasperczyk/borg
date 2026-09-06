@@ -98,7 +98,7 @@ Teams arrival order; the long await runs outside the FIFO so waits overlap and j
   without the envelope as a legacy remnant and seals it as observed with a note, never as a
   repeated failure.
 - Source message key: `{ source_type: "teams_inbox", source_external_id: <Teams conversation
-  external_id>, external_message_id: <Teams activity id> }`, matching the session's own
+external_id>, external_message_id: <Teams activity id> }`, matching the session's own
   source fields as the enqueuer requires. Redelivery by Teams or a bridge retry yields
   `status: "duplicate"` and must not enqueue again.
 - `observed_at` is persisted as the entry's top-level `observed_at` (epoch ms), via a new
@@ -133,8 +133,17 @@ entries alone.
 {
   "tenant": "team-agent-ai",
   "session": "team-agent-ai::shared::groupChat::19_d93...",
-  "conversation": { "external_id": "19:d93...@thread.v2", "type": "groupChat", "name": "AI Ninjas" },
-  "sender": { "external_id": "4ea458f9-...", "display_name": "Kowalski, Tomasz", "bot": false, "operator": false },
+  "conversation": {
+    "external_id": "19:d93...@thread.v2",
+    "type": "groupChat",
+    "name": "AI Ninjas"
+  },
+  "sender": {
+    "external_id": "4ea458f9-...",
+    "display_name": "Kowalski, Tomasz",
+    "bot": false,
+    "operator": false
+  },
   "text": "Zrozumiał Pan?",
   "external_message_id": "1788450205707",
   "observed_at": "2026-09-03T15:43:25.707Z",
@@ -151,7 +160,12 @@ Errors: 400 validation, 401 auth, 503 tenant unavailable.
 ### POST /memory/await-response
 
 ```json
-{ "tenant": "team-agent-ai", "sidecar_session_id": "sess_...", "entry_id": "...", "timeout_ms": 90000 }
+{
+  "tenant": "team-agent-ai",
+  "sidecar_session_id": "sess_...",
+  "entry_id": "...",
+  "timeout_ms": 90000
+}
 ```
 
 Response is a discriminated union:
@@ -186,7 +200,12 @@ least 10 minutes absorbs a late progress call), and expired unconditionally afte
 ### POST /memory/inbox-progress
 
 ```json
-{ "tenant": "team-agent-ai", "sidecar_session_id": "sess_...", "entry_ids": ["..."], "phase": "generating" }
+{
+  "tenant": "team-agent-ai",
+  "sidecar_session_id": "sess_...",
+  "entry_ids": ["..."],
+  "phase": "generating"
+}
 ```
 
 Marks the covered entries as generating and wakes their waiters with `{ "status": "generating" }`.
@@ -251,7 +270,7 @@ runner sends it as `model`.
 
 ## team-agent endpoints
 
-### POST /v1/teams/enqueue  (bridge -> team-agent; existing Bearer auth and Teams headers)
+### POST /v1/teams/enqueue (bridge -> team-agent; existing Bearer auth and Teams headers)
 
 ```json
 {
@@ -280,7 +299,7 @@ no terminal claim.
 
 The legacy `TEAM_AGENT_TENANT` pin is retired; the bridge sends no `model`.
 
-### POST /v1/teams/await  (bridge -> team-agent; same auth)
+### POST /v1/teams/await (bridge -> team-agent; same auth)
 
 ```json
 { "sidecar_session_id": "sess_...", "entry_id": "...", "wait_ms": 90000 }
@@ -291,7 +310,7 @@ through. `wait_ms` default 90000, cap 120000. The HTTP client read timeout on bo
 carries no tenant: team-agent durably records `sidecar_session_id -> tenant` at enqueue and
 re-applies the caller's Bearer tenant scope on await; an unknown id is 404.
 
-### POST /v1/chat/observe  (runner -> team-agent; existing Bearer auth, tenant from `model`)
+### POST /v1/chat/observe (runner -> team-agent; existing Bearer auth, tenant from `model`)
 
 Extends the existing batch-shaped body: `source: "inbox"`, `thread_id`, `sidecar_session_id`,
 `conversation {external_id, type, name}`, and per message `entry_id`, `mentioned`,
@@ -400,9 +419,234 @@ Response unchanged: `{ "action": "reply" | "silent", "content"?: "...", "reason"
   (60). Rolling the bridge back to the previous build pauses recovery of rows parked by this
   build until it is rolled forward again.
 
+## Extension: agent task events and deliveries
+
+Phase B adds a separate lane for deferred task results. A task accepted during a Teams turn
+finishes outside that turn, reports its outcome to borg, and produces a normal durable reply in
+the originating inbox session. Delivery remains pull-based: team-agent claims the reply and
+arranges delivery through the bridge. Borg never calls the bridge. This extension is implemented
+in borg; the consumer changes and matching documentation must land separately in team-agent.
+
+The task-event lane is **disabled by default**, independently of the existing user inbox.
+Enable it with `TEAMS_INBOX_TASK_EVENTS_ENABLED=true` in the sidecar, or
+`Borg.open({ inbox: { taskEventsEnabled: true, taskEventRunner: ... } })` in a library host.
+A runner factory alone does not enable it. When disabled, event enqueue returns 503, startup
+does not drain task events, and stream writers reject `task_event` terminal stamps. Delivery
+claim/ack remain available for already-created deliveries.
+
+**The first deploy of this version must run with the lane disabled.** Upgrade every Borg
+reader before enabling task terminal writes. From this version onward, `StreamReader`, indexed
+reads and index backfill retain entries with an unknown response stamp kind: the stamp is
+preserved as read-only `opaque_response_to`, with no interpreted `response_to`. Known malformed
+stamps remain invalid, and writers remain strict. The existing `stream_backlog` schema and
+watermark semantics are unchanged; the SQLite migrations are additive and need no index rebuild.
+
+After the lane has written terminals, rolling back to a **pre-task_event Borg makes its older
+readers skip those entire terminals**, because they reject the unfamiliar stamp kind. The
+new tolerant reader cannot change old binaries. Disabling the lane stops new writes but does
+not make existing task terminals readable by those old versions. Use a version with tolerant
+readers for rollback after enabling the lane.
+
+All three routes require the existing `x-borg-token`, take `tenant` in the body, and use that
+tenant's exclusive chain for stream/SQLite operations. A long poll releases the chain while
+waiting. Validation errors are 400, authentication failures 401, and an unavailable tenant or
+disabled Teams inbox is 503.
+
+### POST /memory/agent-events
+
+```json
+{
+  "tenant": "team-agent-ai",
+  "sidecar_session_id": "sess_...",
+  "event_id": "event-123",
+  "task_id": "task-456",
+  "task_version": 1,
+  "kind": "task_completed",
+  "occurred_at": "2026-09-06T12:30:00+02:00",
+  "outcome": {
+    "status": "succeeded",
+    "summary": "The report is ready.",
+    "artifacts": [{ "label": "Report", "url": "https://example.com/report" }]
+  },
+  "origin": { "source_entry_ids": ["strm_..."] }
+}
+```
+
+`kind` is `task_completed` or `task_failed`; outcome `status` is `succeeded`, `failed`,
+`timed_out`, or `cancelled`. `task_version` must be an integer. `occurred_at` must include a
+UTC designator or offset. The summary is a string of at most 8000 characters; `artifacts` and
+an outcome `error` string are optional. These envelopes and response stamps are Zod-validated.
+
+Returns `200 { "status": "enqueued" | "duplicate", "entry_id": "strm_..." }`. The session
+must already exist with `source_type: "teams_inbox"`; otherwise 404. The route appends one
+`internal_event`, with a short plain-text content line and
+`metadata.task_event = { schema_version: 1, event_id, task_id, task_version, kind,
+occurred_at, outcome, origin }`. `(tenant, sidecar_session_id, event_id)` is the idempotency
+key: repeat submissions return the original entry id, preserve its original payload, and
+append nothing. Both new and duplicate submissions notify the session's task-event lane.
+A poisoned stream index is repaired before checking for duplicates. If repair is unavailable,
+the request fails without another append; a retry returns the original committed event after
+repair succeeds.
+
+### Task-event runner and terminal
+
+`TeamAgentTaskEventRunner` shares `ChatResponseCatchUpWorker`'s per-session in-flight gate,
+tenant lifetime lease and startup scan with the user-turn runner. Task retry state and timers
+are independent of user settling and retry state. Pending user work is selected before task
+terminal repair, so a failing task ingestion or delivery repair does not block user messages.
+User backlog batches retain priority and coalescing. Neither task notifications nor continuation
+after a task can shorten or reset a settling user batch's quiet window. Events drain individually
+in stream append order, oldest first;
+their reported `occurred_at` does not reorder them or subject them to the user's stale policy.
+They never enter the user prefix builder and never advance the chat-response watermark.
+
+For one unanswered event, the runner calls `POST <TEAM_AGENT_BASE_URL>/v1/chat/task-result`
+with the existing `TEAM_AGENT_API_TOKEN` Bearer authentication and `TEAM_AGENT_TIMEOUT_MS`:
+
+```json
+{
+  "model": "team-agent-ai",
+  "sidecar_session_id": "sess_...",
+  "conversation": {
+    "external_id": "19:origin@thread.v2",
+    "type": "channel",
+    "name": "Origin room"
+  },
+  "event": {
+    "event_id": "event-123",
+    "event_entry_id": "strm_...",
+    "task_id": "task-456",
+    "task_version": 1,
+    "kind": "task_completed",
+    "occurred_at": "2026-09-06T12:30:00+02:00",
+    "outcome": { "status": "succeeded", "summary": "The report is ready." }
+  },
+  "requester": { "external_id": "requester-id", "display_name": "Requester" }
+}
+```
+
+Conversation identity comes from the stored session (`dm` maps to `personal`, `thread` to
+`groupChat`). Requester identity comes only from the original source entries' Teams sender
+envelopes in that same session. Missing provenance, bots, or multiple different senders yield
+`requester: null`; no identity is inferred from the task summary or the latest user turn.
+
+The expected response is exactly `200 { "action": "reply", "content": "..." }`, with
+non-whitespace content. Transport errors, non-200 responses outside 4xx, malformed JSON,
+and invalid or empty replies retry through the worker. Every 4xx, including 429, instead
+commits the deterministic fallback `Task <task_id> finished: <summary>`.
+
+The result is an `agent_msg` with this stamp, answering exactly one event:
+
+```json
+"response_to": {
+  "kind": "task_event",
+  "event_id": "event-123",
+  "event_entry_id": "strm_...",
+  "task_id": "task-456",
+  "task_version": 1
+}
+```
+
+The existing `stream_backlog` stamp remains unchanged. Task replies use the same ingestion
+coordinator's explicit answered-window mechanism with exactly the event entry and terminal.
+A separate durable ingestion receipt per task terminal leaves the user ingestion cursor
+untouched, including when those entries straddle a user turn. The runner then uses
+`buildInboxReplyActivityProjection`: speaker and actor are self, audience is the session's
+audience entity, participants are self + audience, and the source is the terminal. Projection
+failures log a redacted warning; the maintenance inbox-reply-activity route also repairs task
+terminals. Finally the runner creates an idempotent delivery row for the terminal.
+
+With live extraction enabled, the episodic extractor receives the validated task metadata,
+including event id and outcome summary, as context attached to its matching terminal. Both
+are labelled with the session audience. The LLM interprets the result, and derived episodes
+carry both source entry ids with the normal reply audience/disclosure restrictions. Unrelated
+unanswered user entries are excluded from this exact window; mismatched or invalid task
+metadata is not supplied as extraction context.
+
+On reopening a tenant, startup scans include sessions with internal events even when there is
+no user backlog. A stamped event is never generated again. A terminal missing its delivery row
+is reconciled through ingestion, activity projection, and delivery creation. Delivery rows
+and ingestion receipts survive restart. The consumer should persist task-result response
+receipts keyed by `(tenant, sidecar_session_id, event_id)` to cover a sidecar crash after the
+HTTP response but before the terminal append, as observe receipts do for user turns.
+
+### POST /memory/agent-deliveries/claim
+
+```json
+{
+  "tenant": "team-agent-ai",
+  "sidecar_session_ids": ["sess_..."],
+  "wait_ms": 60000,
+  "lease_ms": 120000
+}
+```
+
+At most 200 session ids; an empty list returns immediately. `wait_ms` defaults to 0 and is
+bounded to 0–60000. `lease_ms` is a positive integer, default 120000. Returns:
+
+```json
+{
+  "deliveries": [
+    {
+      "delivery_id": "delivery_...",
+      "claim_generation": 1,
+      "sidecar_session_id": "sess_...",
+      "terminal_entry_id": "strm_...",
+      "task_id": "task-456",
+      "content": "The report is ready.",
+      "created_at": "2026-09-06T10:30:05.000Z"
+    }
+  ]
+}
+```
+
+All currently pending rows for the listed sessions are leased atomically, in creation order;
+two claimers cannot receive the same unexpired lease. `attempts` increments on each claim.
+That monotonically increasing value is returned as `claim_generation`; consumers must send
+the generation from that claim with its acknowledgement.
+Expired leases become pending on the next claim. Without an available row, scan/register/scan
+closes the notification race and waits until delivery creation, retryable failure, lease expiry,
+or the deadline. A deadline or shutdown returns `{ "deliveries": [] }`. Disconnects remove
+waiters; each waiter holds a tenant lifetime lease while it is registered. Unknown sessions
+simply have no deliveries. Rows are stored in the tenant's own SQLite bank, uniquely keyed by
+`(sidecar_session_id, terminal_entry_id)`, with state `pending | leased | sent | failed`.
+
+### POST /memory/agent-deliveries/ack
+
+```json
+{
+  "tenant": "team-agent-ai",
+  "delivery_id": "delivery_...",
+  "claim_generation": 1,
+  "outcome": "sent",
+  "teams_message_id": "teams-message-id"
+}
+```
+
+`outcome` is `sent`, `failed_retryable`, or `failed_permanent`; `teams_message_id` and `error`
+are optional strings. `claim_generation` is a required positive integer from the claim response.
+Success is **HTTP 200 with JSON `{ "status": "acknowledged" }`**; the bridge may treat any 2xx
+as success. Unknown delivery ids or never-issued generations in this tenant return 404.
+For the current unexpired lease, a retryable failure releases the lease, records the error,
+and wakes claimers; permanent failures become `failed`, and successful delivery becomes `sent`.
+
+An acknowledgement receipt is stored durably per `(delivery_id, claim_generation)`. Repeating
+that acknowledgement returns the same success without changing state or waking claimers,
+even after restart or if the payload conflicts with the first ack. A stale generation or
+expired lease is acknowledged as a no-op. It cannot release or complete a newer consumer's
+lease. Sent and permanently failed rows remain terminal.
+
+The protocol provides at-least-once delivery. A crash after Teams accepts a message but before
+the ack can still duplicate it on reclaim. Claimers must finish and ack within their lease;
+generation checks protect Borg's lease state but cannot undo an external Teams send by a stale
+consumer. The consumer owns protection against duplicate external sends. There is no bridge
+callback or push route.
+
 ## Rollout order
 
 1. borg (sidecar): routes and runner ship inert; no session has `source_type: "teams_inbox"`
    until something enqueues.
 2. team-agent: new endpoints unused until the bridge switches.
-3. bridge: switch. Rollback is a redeploy of the previous zip.
+3. bridge: switch. Bridge rollback is a redeploy of the previous zip. For the task-event
+   extension, first deploy Borg with the lane disabled and follow the reader compatibility
+   restrictions above before enabling it or rolling Borg back.

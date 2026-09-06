@@ -80,11 +80,12 @@ describe("stream entry index", () => {
       const indexes = upgradedDb.prepare("PRAGMA index_list('stream_entry_index')").all();
 
       expect(upgradedDb.listAppliedMigrations().map((migration) => migration.id)).toEqual([
-        1, 2, 3,
+        1, 2, 3, 4,
       ]);
       expect(indexes).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ name: "idx_stream_entry_kind_active_time" }),
+          expect.objectContaining({ name: "idx_stream_entry_response_lane" }),
         ]),
       );
       expect(upgradedIndex.lookup(thought.id)).toMatchObject({
@@ -94,6 +95,59 @@ describe("stream entry index", () => {
       });
     } finally {
       upgradedDb.close();
+    }
+  });
+
+  it("indexes and backfills task stamps without introducing user backlog stamp fields", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "borg-task-stamp-"));
+    tempDirs.push(dataDir);
+    const db = openDatabase(join(dataDir, "borg.db"), { migrations: streamEntryIndexMigrations });
+    const entryIndex = new StreamEntryIndexRepository({ db, dataDir });
+    const writer = new StreamWriter({
+      dataDir,
+      clock: new ManualClock(100),
+      entryIndex,
+      taskEventsEnabled: true,
+    });
+    try {
+      const event = await writer.append({ kind: "internal_event", content: "Task completed" });
+      const responseTo = {
+        kind: "task_event" as const,
+        event_id: "event",
+        event_entry_id: event.id,
+        task_id: "task",
+        task_version: 1,
+      };
+      const terminal = await writer.append({
+        kind: "agent_msg",
+        content: "Result",
+        response_to: responseTo,
+      });
+      expect(entryIndex.listSessionIdsWithTaskEvents()).toEqual([DEFAULT_SESSION_ID]);
+      expect(entryIndex.lookupSessionTaskEventResponseStamps(DEFAULT_SESSION_ID)).toEqual([
+        expect.objectContaining({
+          entry_id: terminal.id,
+          response_to_kind: "task_event",
+          response_to_from_cursor_ts: null,
+          response_to_through_cursor_ts: null,
+          response_to_source_entry_ids: null,
+          response_to_count: null,
+        }),
+      ]);
+      expect(
+        entryIndex.lookupSessionStreamBacklogResponseStamps({
+          sessionId: DEFAULT_SESSION_ID,
+          terminalKinds: ["agent_msg"],
+        }),
+      ).toEqual([]);
+      db.prepare("UPDATE stream_entry_index SET response_to_kind = NULL WHERE entry_id = ?").run(
+        terminal.id,
+      );
+      await entryIndex.backfillSession(DEFAULT_SESSION_ID);
+      expect(entryIndex.lookupSessionTaskEventResponseStamps(DEFAULT_SESSION_ID)).toHaveLength(1);
+    } finally {
+      writer.close();
+      db.close();
     }
   });
 

@@ -202,6 +202,72 @@ describe("StreamIngestionCoordinator", () => {
     }
   }
 
+  it("ingests exactly a task event and terminal across a user cursor, with a durable independent receipt", async () => {
+    const dataDir = createTempDir();
+    const { repo, close } = openRepo();
+    const writer = new StreamWriter({
+      dataDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new ManualClock(100),
+      taskEventsEnabled: true,
+    });
+    try {
+      const event = await writer.append({ kind: "internal_event", content: "Task completed" });
+      const user = await writer.append({ kind: "user_msg", content: "An unrelated user message" });
+      repo.set("episodic-extractor", DEFAULT_SESSION_ID, {
+        lastTs: user.timestamp,
+        lastEntryId: user.id,
+      });
+      const responseTo = {
+        kind: "task_event" as const,
+        event_id: "event",
+        event_entry_id: event.id,
+        task_id: "task",
+        task_version: 1,
+      };
+      const terminal = await writer.append({
+        kind: "agent_msg",
+        content: "Task result",
+        response_to: responseTo,
+      });
+      const calls: ExtractCall[] = [];
+      const process = vi.fn(
+        async (_input: {
+          sessionId: typeof DEFAULT_SESSION_ID;
+          entries: readonly StreamEntry[];
+        }) => {},
+      );
+      const options = {
+        extractor: createFakeExtractor(calls),
+        watermarkRepository: repo,
+        dataDir,
+        entryProcessor: { process },
+      };
+      const window = {
+        responseTo,
+        terminalCursor: { ts: terminal.timestamp, entryId: terminal.id },
+      };
+      const result = await new StreamIngestionCoordinator(options).ingest(DEFAULT_SESSION_ID, {
+        answeredWindow: window,
+      });
+      expect(result).toMatchObject({ ran: true, processedEntries: 2 });
+      expect(calls).toEqual([{ session: DEFAULT_SESSION_ID, entryIds: [event.id, terminal.id] }]);
+      expect(process.mock.calls[0]![0]).toMatchObject({
+        entries: [{ id: event.id }, { id: terminal.id }],
+      });
+      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)?.lastEntryId).toBe(user.id);
+      expect(repo.get("chat-response", DEFAULT_SESSION_ID)).toBeNull();
+      const replay = await new StreamIngestionCoordinator(options).ingest(DEFAULT_SESSION_ID, {
+        answeredWindow: window,
+      });
+      expect(replay).toMatchObject({ ran: false, processedEntries: 0 });
+      expect(calls).toHaveLength(1);
+    } finally {
+      writer.close();
+      close();
+    }
+  });
+
   it("no-ops when there are fewer new entries than the threshold", async () => {
     const dataDir = createTempDir();
     await seedStream(dataDir, [{ kind: "user_msg", content: "hi", ts: 100 }]);

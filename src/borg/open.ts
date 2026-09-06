@@ -1,4 +1,6 @@
 // Borg.open composition root: orders storage, repositories, tools, offline work, turns, and autonomy.
+import { AgentDeliveryRepository } from "../cognition/ingestion/agent-deliveries.js";
+import { TaskEventService } from "../cognition/ingestion/task-events.js";
 
 import { SystemClock } from "../util/clock.js";
 import {
@@ -150,6 +152,8 @@ export async function openBorgDependencies(
       attachmentRepository,
       entryIndex,
       onStreamAppend,
+      taskEventsEnabled:
+        options.inbox?.taskEventsEnabled === true && options.inbox.taskEventRunner !== undefined,
     });
     const imagePerceptionService = new ImagePerceptionService({
       repository: repositories.imagePerceptionRepository,
@@ -297,6 +301,17 @@ export async function openBorgDependencies(
       ...(options.inbox?.onTerminalCommitted === undefined
         ? {}
         : { onTerminalCommitted: options.inbox.onTerminalCommitted }),
+    });
+    const taskEventService = new TaskEventService({
+      dataDir: config.dataDir,
+      entryIndex: repositories.entryIndex,
+      repairSessionStreamEntryIndex,
+      createStreamWriter: repositories.createStreamWriter,
+    });
+    const agentDeliveries = new AgentDeliveryRepository({
+      db: sqlite,
+      clock,
+      onAvailable: options.inbox?.onDeliveryAvailable,
     });
     const messageEnqueuer = new MessageEnqueuer({
       sessionsRepository: repositories.sessionsRepository,
@@ -449,7 +464,28 @@ export async function openBorgDependencies(
             }),
           })
         : configuredRunner;
+    const taskEventRunner =
+      options.inbox?.taskEventsEnabled === true
+        ? options.inbox.taskEventRunner?.({
+            terminal: backlogTerminalService,
+            taskEvents: taskEventService,
+            deliveries: agentDeliveries,
+            entityRepository: repositories.entityRepository,
+            sessions: repositories.sessionsRepository,
+            activity: createActivityFacade({
+              sqlite,
+              activityRepository: repositories.activityRepository,
+              sessionsRepository: repositories.sessionsRepository,
+            }),
+            tracer,
+          })
+        : undefined;
     catchUpWorker = new ChatResponseCatchUpWorker({
+      ...(taskEventRunner === undefined
+        ? {}
+        : {
+            taskEvents: { service: taskEventService, runner: taskEventRunner },
+          }),
       coordinator: chatResponseWatermarkCoordinator,
       prefixBuilder: chatResponseBacklogPrefixBuilder,
       entryIndex: repositories.entryIndex,
@@ -578,6 +614,8 @@ export async function openBorgDependencies(
       streamIngestionCoordinator,
       chatResponseWatermarkCoordinator,
       backlogTerminalService,
+      taskEventService,
+      agentDeliveries,
       chatResponseCatchUpWorker: catchUpWorker,
       messageEnqueuer,
       auditLog: offline.auditLog,

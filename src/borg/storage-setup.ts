@@ -1,3 +1,4 @@
+import { agentDeliveryMigrations } from "../cognition/ingestion/agent-deliveries.js";
 // Opens Borg's configured storage engines and LanceDB tables.
 
 import { join } from "node:path";
@@ -270,6 +271,7 @@ export function createMigrations(): Migration[] {
     observedEventMigrations,
     trainOfThoughtMigrations,
     promptSurfaceHistoryMigrations,
+    agentDeliveryMigrations,
   );
 }
 

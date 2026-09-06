@@ -8,7 +8,7 @@ import {
   StreamWriter,
   type StreamEntryIndexRepository,
 } from "../../stream/index.js";
-import type { StreamCursor, StreamEntry, StreamResponseTo } from "../../stream/index.js";
+import type { StreamCursor, StreamEntry, StreamBacklogResponseTo } from "../../stream/index.js";
 import type { SessionId, StreamEntryId } from "../../util/ids.js";
 import {
   Borg,
@@ -188,7 +188,7 @@ function cursorFor(entry: Pick<StreamEntry, "id" | "timestamp">): StreamCursor {
 function responseToFor(
   entries: readonly Pick<StreamEntry, "id" | "timestamp">[],
   fromCursorExclusive: StreamCursor | null = null,
-): StreamResponseTo {
+): StreamBacklogResponseTo {
   const last = entries[entries.length - 1];
 
   if (last === undefined) {
@@ -980,7 +980,9 @@ describe("async ingest Borg E2E crash and duplicate matrix", () => {
         source_entry_ids: [queuedUser.id],
         count: 1,
       });
-      expect(stampedTerminal?.response_to?.source_entry_ids).not.toContain(normalUser.id);
+      expect(
+        (stampedTerminal?.response_to as StreamBacklogResponseTo)?.source_entry_ids,
+      ).not.toContain(normalUser.id);
       expect(finalizerRequests(llm)).toHaveLength(2);
     } finally {
       await borg.close().catch(() => undefined);
@@ -1141,7 +1143,7 @@ describe("async ingest Borg E2E crash and duplicate matrix", () => {
       expect(terminalsAfterReconcile[0]?.id).toBe(stamped[0]?.id);
       expect(
         reopenedInternal.deps.chatResponseWatermarkCoordinator.getWatermark(session.session_id),
-      ).toEqual((stamped[0]?.response_to as StreamResponseTo).through_cursor_inclusive);
+      ).toEqual((stamped[0]?.response_to as StreamBacklogResponseTo).through_cursor_inclusive);
       expect(finalizerRequests(retryLlm)).toHaveLength(0);
     } finally {
       await borg.close().catch(() => undefined);
@@ -1409,7 +1411,7 @@ describe("async ingest Borg E2E crash and duplicate matrix", () => {
       expect(new Set(entryIndexes).size).toBe(entryIndexes.length);
       expect(
         internal.deps.chatResponseWatermarkCoordinator.getWatermark(session.session_id),
-      ).toEqual((durableTerminal.response_to as StreamResponseTo).through_cursor_inclusive);
+      ).toEqual((durableTerminal.response_to as StreamBacklogResponseTo).through_cursor_inclusive);
       expect(finalizerRequests(llm)).toHaveLength(1);
     } finally {
       await borg.close().catch(() => undefined);

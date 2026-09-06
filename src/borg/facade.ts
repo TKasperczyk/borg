@@ -45,7 +45,7 @@ import {
   type MemoryDisclosureLabel,
 } from "../retrieval/index.js";
 import { hydrateStreamEntriesById, StreamReader } from "../stream/index.js";
-import { AttachmentError, StorageError } from "../util/errors.js";
+import { AttachmentError, CognitionError, StorageError } from "../util/errors.js";
 import {
   DEFAULT_SESSION_ID,
   createSemanticNodeId,
@@ -1271,6 +1271,30 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       countPendingSemanticExtractionEpisodes: () => countPendingSemanticExtractionEpisodes(deps),
     },
     inbox: {
+      enqueueTaskEvent: async ({ sessionId, event }) => {
+        if (!deps.chatResponseCatchUpWorker.isTaskEventEnabled()) {
+          throw new CognitionError("Task-event lane is disabled", {
+            code: "TASK_EVENT_LANE_DISABLED",
+          });
+        }
+        const session = deps.sessionsRepository.get(sessionId);
+        if (session?.source_type !== "teams_inbox") return null;
+        const result = await deps.taskEventService.enqueue({
+          sessionId,
+          event,
+          audience: session.audience_entity_id ?? session.audience_label,
+        });
+        // Also wake duplicates: a previous request may have committed just before a restart.
+        deps.chatResponseCatchUpWorker.onPendingTaskSession(sessionId, deps.clock.now());
+        return result;
+      },
+      listUnansweredTaskEvents: (sessionId) => deps.taskEventService.listUnanswered(sessionId),
+      findTaskEventTerminal: (sessionId, event) =>
+        deps.taskEventService.findTerminal(sessionId, event),
+      deliveries: {
+        claim: (input) => deps.agentDeliveries.claim(input),
+        ack: (input) => deps.agentDeliveries.ack(input),
+      },
       catchUp: deps.chatResponseCatchUpWorker,
       appendBacklogTerminal: (input) => deps.backlogTerminalService.appendBacklogTerminal(input),
       sealPendingBacklog: (input) => deps.backlogTerminalService.sealPendingBacklog(input),

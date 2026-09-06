@@ -6,6 +6,7 @@ export type TeamsInboxConfig =
   | { enabled: false }
   | {
       enabled: true;
+      taskEventsEnabled: boolean;
       baseUrl: string;
       apiToken: string;
       timeoutMs: number;
@@ -20,6 +21,7 @@ const enabledTeamsInboxEnvSchema = z
       .url()
       .refine((value) => value.startsWith("http://") || value.startsWith("https://")),
     TEAM_AGENT_API_TOKEN: z.string().trim().min(1),
+    TEAMS_INBOX_TASK_EVENTS_ENABLED: z.enum(["true", "false"]).default("false"),
     TEAM_AGENT_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
     TEAMS_INBOX_SETTLE_MS: z.coerce.number().int().nonnegative().default(3_000),
     TEAMS_INBOX_MAX_SETTLE_MS: z.coerce.number().int().positive().default(15_000),
@@ -48,6 +50,7 @@ export function teamsInboxConfigFromEnv(env: NodeJS.ProcessEnv): TeamsInboxConfi
   const parsed = enabledTeamsInboxEnvSchema.safeParse({
     TEAM_AGENT_BASE_URL: env.TEAM_AGENT_BASE_URL,
     TEAM_AGENT_API_TOKEN: env.TEAM_AGENT_API_TOKEN,
+    TEAMS_INBOX_TASK_EVENTS_ENABLED: env.TEAMS_INBOX_TASK_EVENTS_ENABLED,
     TEAM_AGENT_TIMEOUT_MS: env.TEAM_AGENT_TIMEOUT_MS ?? 120_000,
     TEAMS_INBOX_SETTLE_MS: env.TEAMS_INBOX_SETTLE_MS ?? 3_000,
     TEAMS_INBOX_MAX_SETTLE_MS: env.TEAMS_INBOX_MAX_SETTLE_MS ?? 15_000,
@@ -59,6 +62,7 @@ export function teamsInboxConfigFromEnv(env: NodeJS.ProcessEnv): TeamsInboxConfi
 
   return {
     enabled: true,
+    taskEventsEnabled: parsed.data.TEAMS_INBOX_TASK_EVENTS_ENABLED === "true",
     baseUrl: parsed.data.TEAM_AGENT_BASE_URL,
     apiToken: parsed.data.TEAM_AGENT_API_TOKEN,
     timeoutMs: parsed.data.TEAM_AGENT_TIMEOUT_MS,

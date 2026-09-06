@@ -17,6 +17,7 @@ describe("teamsInboxConfigFromEnv", () => {
       }),
     ).toEqual({
       enabled: true,
+      taskEventsEnabled: false,
       baseUrl: "http://team-agent:8080",
       apiToken: "secret",
       timeoutMs: 120_000,
@@ -24,6 +25,19 @@ describe("teamsInboxConfigFromEnv", () => {
       maxSettleMs: 20,
       staleMs: 600_000,
     });
+  });
+
+  it("enables task events only with an explicit true flag", () => {
+    const env = { TEAM_AGENT_BASE_URL: "http://team-agent:8080", TEAM_AGENT_API_TOKEN: "secret" };
+    expect(
+      teamsInboxConfigFromEnv({ ...env, TEAMS_INBOX_TASK_EVENTS_ENABLED: "true" }),
+    ).toMatchObject({ enabled: true, taskEventsEnabled: true });
+    expect(
+      teamsInboxConfigFromEnv({ ...env, TEAMS_INBOX_TASK_EVENTS_ENABLED: "false" }),
+    ).toMatchObject({ enabled: true, taskEventsEnabled: false });
+    expect(() =>
+      teamsInboxConfigFromEnv({ ...env, TEAMS_INBOX_TASK_EVENTS_ENABLED: "yes" }),
+    ).toThrow("Invalid Team Agent inbox configuration");
   });
 
   it("rejects an enabled configuration without a token", () => {

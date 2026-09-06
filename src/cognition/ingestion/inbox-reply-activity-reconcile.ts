@@ -13,7 +13,7 @@ import { parsedSourceEntryIds } from "./chat-response-watermark.js";
 // Idempotent repair for Teams inbox sessions whose agent_msg reply terminals never received a
 // borg_replied activity event (the inbox path skipped the projection before 2026-09-05, and a
 // crash between the terminal commit and the projection leaves the same gap). Only terminals
-// stamped response_to.kind = "stream_backlog" are inbox replies; unstamped agent_msg entries are
+// stamped response_to.kind = "stream_backlog" or "task_event" are inbox replies; unstamped agent_msg entries are
 // left alone. Kind + source dedupe in the activity repository makes re-running safe; dry runs
 // count without writing. The pass runs under the tenant's exclusive lease, so it is bounded by an
 // insert limit and a scan cap and reports whether it completed.
@@ -54,7 +54,9 @@ export type InboxReplyActivityReconcileResult = {
 export type InboxReplyActivityReconcileDependencies = {
   entryIndex: Pick<
     StreamEntryIndexRepository,
-    "lookupSessionStreamBacklogResponseStamps" | "lookupMany"
+    | "lookupSessionStreamBacklogResponseStamps"
+    | "lookupSessionTaskEventResponseStamps"
+    | "lookupMany"
   >;
   sessionsRepository: Pick<SessionsRepository, "list">;
   entityRepository: Pick<EntityRepository, "getSelf">;
@@ -107,12 +109,13 @@ export function reconcileInboxReplyActivity(
 
   scan: for (const session of sessions) {
     result.sessions_scanned += 1;
-    const terminals = deps.entryIndex
-      .lookupSessionStreamBacklogResponseStamps({
+    const terminals = [
+      ...deps.entryIndex.lookupSessionStreamBacklogResponseStamps({
         sessionId: session.session_id,
         terminalKinds: ["agent_msg"],
-      })
-      .sort((a, b) => a.timestamp - b.timestamp);
+      }),
+      ...deps.entryIndex.lookupSessionTaskEventResponseStamps(session.session_id),
+    ].sort((a, b) => a.timestamp - b.timestamp);
 
     for (const terminal of terminals) {
       if (input.sinceMs !== undefined && terminal.timestamp < input.sinceMs) {
@@ -140,7 +143,10 @@ export function reconcileInboxReplyActivity(
         result.truncated = true;
         break scan;
       }
-      const senderEntityIds = senderEntityIdsInStampOrder(deps.entryIndex, terminal);
+      const senderEntityIds =
+        terminal.response_to_kind === "task_event"
+          ? []
+          : senderEntityIdsInStampOrder(deps.entryIndex, terminal);
       if (senderEntityIds === null) {
         result.skipped.malformed_stamp += 1;
         continue;

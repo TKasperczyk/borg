@@ -1373,7 +1373,7 @@ export type BorgAppendBacklogTerminalInput = {
 
 export type BorgAppendBacklogTerminalResult = {
   terminalEntry: StreamEntry;
-  responseTo: NonNullable<StreamEntry["response_to"]>;
+  responseTo: Extract<NonNullable<StreamEntry["response_to"]>, { kind: "stream_backlog" }>;
   sourceEntries: readonly StreamEntry[];
 };
 
@@ -1384,10 +1384,25 @@ export type BorgFindTerminalCoveringEntryResult =
   | {
       status: "found";
       terminalEntry: StreamEntry;
-      responseTo: NonNullable<StreamEntry["response_to"]>;
+      responseTo: Extract<NonNullable<StreamEntry["response_to"]>, { kind: "stream_backlog" }>;
     };
 
 export type BorgInboxFacade = {
+  enqueueTaskEvent(input: {
+    sessionId: SessionId;
+    event: import("../stream/types.js").TaskEvent;
+  }): Promise<{ status: "enqueued" | "duplicate"; entry_id: StreamEntryId } | null>;
+  listUnansweredTaskEvents(
+    sessionId: SessionId,
+  ): import("../cognition/ingestion/task-events.js").StoredTaskEvent[];
+  findTaskEventTerminal(
+    sessionId: SessionId,
+    event: import("../cognition/ingestion/task-events.js").StoredTaskEvent,
+  ): StreamEntry | null;
+  deliveries: Pick<
+    import("../cognition/ingestion/agent-deliveries.js").AgentDeliveryRepository,
+    "claim" | "ack"
+  >;
   catchUp: BorgInboxCatchUpController;
   appendBacklogTerminal(
     input: BorgAppendBacklogTerminalInput,

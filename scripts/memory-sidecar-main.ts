@@ -45,6 +45,8 @@ import {
 import { ResponseWaiterRegistry } from "../src/sidecar/response-waiter-registry.js";
 import { TeamAgentTurnRunner } from "../src/sidecar/team-agent-turn-runner.js";
 import { teamsInboxConfigFromEnv } from "../src/sidecar/teams-inbox-config.js";
+import { DeliveryWaiterRegistry } from "../src/sidecar/delivery-waiter-registry.js";
+import { TeamAgentTaskEventRunner } from "../src/sidecar/team-agent-task-event-runner.js";
 import { SystemClock } from "../src/util/clock.js";
 
 function requireEnv(name: string): string {
@@ -186,6 +188,12 @@ const inboxWaiters = teamsInboxConfig.enabled
     })
   : undefined;
 
+const deliveryWaiters = teamsInboxConfig.enabled
+  ? new DeliveryWaiterRegistry({
+      acquireTenantLease: (tenantId) => pool.acquireBackgroundLease(tenantId),
+    })
+  : undefined;
+
 pool = new BorgPool({
   root,
   maxOpen,
@@ -201,6 +209,16 @@ pool = new BorgPool({
     ? {
         openOptionsForTenant: (tenantId: string) => ({
           inbox: {
+            taskEventsEnabled: teamsInboxConfig.taskEventsEnabled,
+            taskEventRunner: (context) =>
+              new TeamAgentTaskEventRunner({
+                ...context,
+                tenant: tenantId,
+                baseUrl: teamsInboxConfig.baseUrl,
+                apiToken: teamsInboxConfig.apiToken,
+                timeoutMs: teamsInboxConfig.timeoutMs,
+              }),
+            onDeliveryAvailable: (sessionId) => deliveryWaiters!.notify(tenantId, sessionId),
             runner: ({ terminal, entityRepository, sessions, activity }) =>
               new TeamAgentTurnRunner({
                 tenant: tenantId,
@@ -261,6 +279,7 @@ const server = createServer(
     recallSemanticVariantCount,
     ...(recencyPrior === undefined ? {} : { recencyPrior }),
     ...(inboxWaiters === undefined ? {} : { inboxWaiters }),
+    ...(deliveryWaiters === undefined ? {} : { deliveryWaiters }),
     ...(traceRegistry === undefined ? {} : { traceRegistry }),
   }),
 );
@@ -285,6 +304,7 @@ async function shutdown(signal: string): Promise<void> {
     timeoutMs: shutdownTimeoutMs,
     beginShutdown: () => {
       inboxWaiters?.shutdown();
+      deliveryWaiters?.shutdown();
       return maintenanceCoordinator.beginShutdown();
     },
     forceFinalizeMaintenance: () => maintenanceCoordinator.forceFinalizeAborted(),

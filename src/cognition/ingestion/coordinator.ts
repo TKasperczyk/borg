@@ -4,6 +4,8 @@ import {
   type StreamCursor,
   type StreamEntry,
   type StreamResponseTo,
+  type StreamBacklogResponseTo,
+  type TaskEventResponseTo,
   type StreamWatermarkRepository,
 } from "../../stream/index.js";
 import { BorgError, CognitionError } from "../../util/errors.js";
@@ -100,6 +102,7 @@ export type AnsweredStreamWindow = {
   responseTo: StreamResponseTo;
   terminalCursor: StreamCursor;
 };
+type AnsweredBacklogWindow = AnsweredStreamWindow & { responseTo: StreamBacklogResponseTo };
 
 export type IngestOptions = {
   /**
@@ -213,6 +216,16 @@ function sameCursor(left: StreamCursor | null, right: StreamCursor | null): bool
 }
 
 function sameResponseTo(left: StreamResponseTo, right: StreamResponseTo): boolean {
+  if (left.kind === "task_event" || right.kind === "task_event") {
+    return (
+      left.kind === "task_event" &&
+      right.kind === "task_event" &&
+      left.event_entry_id === right.event_entry_id &&
+      left.event_id === right.event_id &&
+      left.task_id === right.task_id &&
+      left.task_version === right.task_version
+    );
+  }
   return (
     left.kind === right.kind &&
     sameCursor(left.from_cursor_exclusive, right.from_cursor_exclusive) &&
@@ -905,7 +918,7 @@ export class StreamIngestionCoordinator {
 
   private async readAnsweredWindowEntries(
     sessionId: SessionId,
-    answeredWindow: AnsweredStreamWindow,
+    answeredWindow: AnsweredBacklogWindow,
     maxEntries?: number,
   ): Promise<AnsweredWindowReadResult> {
     const resumeOptions = this.resolveResumeOptions(sessionId);
@@ -995,7 +1008,7 @@ export class StreamIngestionCoordinator {
   }
 
   private answeredWindowEntryIds(input: {
-    answeredWindow: AnsweredStreamWindow;
+    answeredWindow: AnsweredBacklogWindow;
     entriesThroughTerminal: readonly StreamEntry[];
     includeUnwatermarkedPrefix: boolean;
   }): StreamEntryId[] {
@@ -1035,7 +1048,7 @@ export class StreamIngestionCoordinator {
 
   private async ingestAnsweredWindow(
     sessionId: SessionId,
-    answeredWindow: AnsweredStreamWindow,
+    answeredWindow: AnsweredBacklogWindow,
     maxEntries?: number,
   ): Promise<IngestionResult> {
     const windowEntries = await this.readAnsweredWindowEntries(
@@ -1140,14 +1153,56 @@ export class StreamIngestionCoordinator {
     }
   }
 
+  private async ingestTaskEventWindow(
+    sessionId: SessionId,
+    responseTo: TaskEventResponseTo,
+    terminalCursor: StreamCursor,
+  ): Promise<IngestionResult> {
+    // A task result may straddle the user ingestion cursor. Its receipt must never
+    // advance that cursor past an unanswered user message or skip an older event.
+    const receipt = `episodic-task-event:${terminalCursor.entryId}`;
+    if (this.options.watermarkRepository.get(receipt, sessionId) !== null) {
+      return { ran: false, processedEntries: 0 };
+    }
+    const entryIds = [responseTo.event_entry_id, terminalCursor.entryId];
+    const entries = await this.readEntriesById(sessionId, entryIds);
+    const terminal = entries.find((entry) => entry.id === terminalCursor.entryId);
+    const event = entries.find((entry) => entry.id === responseTo.event_entry_id);
+    if (
+      event?.kind !== "internal_event" ||
+      terminal?.kind !== "agent_msg" ||
+      terminal.timestamp !== terminalCursor.ts ||
+      terminal.response_to === undefined ||
+      !sameResponseTo(terminal.response_to, responseTo)
+    ) {
+      throw new CognitionError("Task ingestion window mismatches the stream", {
+        code: "TASK_EVENT_INGESTION_WINDOW_INVALID",
+      });
+    }
+    const extractionResult = await this.options.extractor.extractFromStream({
+      session: sessionId,
+      entryIds,
+    });
+    await this.options.entryProcessor?.process({ sessionId, entries: [event, terminal] });
+    this.options.watermarkRepository.set(receipt, sessionId, {
+      lastTs: terminalCursor.ts,
+      lastEntryId: terminalCursor.entryId,
+    });
+    return { ran: true, processedEntries: 2, extractionResult };
+  }
+
   private async ingestInternal(
     sessionId: SessionId,
     ingestOptions: IngestOptions,
   ): Promise<IngestionResult> {
     if (ingestOptions.answeredWindow !== undefined) {
+      const { responseTo, terminalCursor } = ingestOptions.answeredWindow;
+      if (responseTo.kind === "task_event") {
+        return this.ingestTaskEventWindow(sessionId, responseTo, terminalCursor);
+      }
       return this.ingestAnsweredWindow(
         sessionId,
-        ingestOptions.answeredWindow,
+        { responseTo, terminalCursor },
         ingestOptions.maxEntries,
       );
     }

@@ -135,6 +135,9 @@ import {
   type TeamAgentIdentity,
 } from "./team-agent-identity.js";
 import { MAX_INBOX_REPLY_ACTIVITY_RECONCILE_LIMIT } from "../cognition/ingestion/index.js";
+import { taskEventSchema } from "../stream/types.js";
+import { agentDeliveryAckSchema } from "../cognition/ingestion/agent-deliveries.js";
+import type { DeliveryWaiterRegistry } from "./delivery-waiter-registry.js";
 
 // Mirror of BorgPool's DEFAULT_TENANT_ID_PATTERN so the handler returns a clean
 // 400 for a malformed tenant id at the boundary, rather than relying on (and
@@ -184,6 +187,7 @@ export type MemoryHandlerOptions = {
     "cancelReservation" | "getStatus" | "hasReservation" | "startReserved" | "tryReserve"
   >;
   inboxWaiters?: ResponseWaiterRegistry;
+  deliveryWaiters?: DeliveryWaiterRegistry;
 };
 
 type RequestHandler = (req: IncomingMessage, res: ServerResponse) => void;
@@ -459,6 +463,29 @@ const memoryAwaitResponseBodySchema = z
     entry_id: streamEntryIdSchema,
     timeout_ms: z.number().int().min(0).max(120_000).optional().default(90_000),
     seen_generating: z.boolean().optional().default(false),
+  })
+  .strict();
+
+const memoryAgentEventBodySchema = taskEventSchema
+  .omit({ schema_version: true })
+  .extend({
+    tenant: z.string().trim().regex(TENANT_ID_RE),
+    sidecar_session_id: sessionIdSchema,
+  })
+  .strict();
+
+const memoryDeliveryClaimBodySchema = z
+  .object({
+    tenant: z.string().trim().regex(TENANT_ID_RE),
+    sidecar_session_ids: z.array(sessionIdSchema).max(200),
+    wait_ms: z.number().int().min(0).max(60_000).default(0),
+    lease_ms: z.number().int().positive().default(120_000),
+  })
+  .strict();
+
+const memoryDeliveryAckBodySchema = agentDeliveryAckSchema
+  .extend({
+    tenant: z.string().trim().regex(TENANT_ID_RE),
   })
   .strict();
 
@@ -1349,7 +1376,8 @@ function scheduleIngestion(pool: MemoryPool, tenant: string, session: SessionId)
 }
 
 export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandler {
-  const { pool, token, traceRegistry, maintenanceCoordinator, inboxWaiters } = options;
+  const { pool, token, traceRegistry, maintenanceCoordinator, inboxWaiters, deliveryWaiters } =
+    options;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const maxRecallLimit = options.maxRecallLimit ?? DEFAULT_MAX_RECALL_LIMIT;
   const recallAbstainThreshold = options.recallAbstainThreshold ?? 0;
@@ -1397,6 +1425,148 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
 
     if (!tokenMatches(req.headers["x-borg-token"], token)) {
       send(res, 401, { error: "unauthorized" });
+      return;
+    }
+
+    if (
+      method === "POST" &&
+      (rawPath === "/memory/agent-events" ||
+        rawPath === "/memory/agent-deliveries/claim" ||
+        rawPath === "/memory/agent-deliveries/ack")
+    ) {
+      if (inboxWaiters === undefined || deliveryWaiters === undefined) {
+        send(res, 503, { error: "teams inbox unavailable" });
+        return;
+      }
+      const body = await readJsonObjectBody(req, res, maxBodyBytes);
+      if (body === null) return;
+      if (rawPath === "/memory/agent-events") {
+        const parsed = memoryAgentEventBodySchema.safeParse(body);
+        if (!parsed.success) {
+          send(res, 400, { error: "invalid agent event body" });
+          return;
+        }
+        const { tenant, sidecar_session_id, ...event } = parsed.data;
+        try {
+          const result = await pool.withTenant(
+            tenant,
+            (borg) =>
+              borg.inbox.enqueueTaskEvent({
+                sessionId: sidecar_session_id,
+                event: { schema_version: 1, ...event },
+              }),
+            { exclusive: true },
+          );
+          if (result === null) send(res, 404, { error: "Teams inbox session not found" });
+          else send(res, 200, result);
+        } catch (error) {
+          console.error(`memory-sidecar: ${rawPath} failed for tenant "${tenant}"`, error);
+          send(res, 503, { error: "tenant unavailable" });
+        }
+        return;
+      }
+      if (rawPath === "/memory/agent-deliveries/ack") {
+        const parsed = memoryDeliveryAckBodySchema.safeParse(body);
+        if (!parsed.success) {
+          send(res, 400, { error: "invalid agent delivery ack body" });
+          return;
+        }
+        const { tenant, ...ack } = parsed.data;
+        try {
+          const status = await pool.withTenant(tenant, (borg) => borg.inbox.deliveries.ack(ack), {
+            exclusive: true,
+          });
+          if (status === null) send(res, 404, { error: "delivery not found" });
+          else send(res, 200, { status });
+        } catch (error) {
+          console.error(`memory-sidecar: ${rawPath} failed for tenant "${tenant}"`, error);
+          send(res, 503, { error: "tenant unavailable" });
+        }
+        return;
+      }
+      const parsed = memoryDeliveryClaimBodySchema.safeParse(body);
+      if (!parsed.success) {
+        send(res, 400, { error: "invalid agent delivery claim body" });
+        return;
+      }
+      const input = parsed.data;
+      const deadline = Date.now() + input.wait_ms;
+      let cancelWaiter: (() => void) | undefined;
+      let disconnected = req.aborted || res.destroyed;
+      const disconnect = () => {
+        disconnected = true;
+        cancelWaiter?.();
+      };
+      req.once("aborted", disconnect);
+      res.once("close", disconnect);
+      const scan = () =>
+        pool.withTenant(
+          input.tenant,
+          (borg) =>
+            disconnected
+              ? { deliveries: [], nextLeaseUntil: null }
+              : borg.inbox.deliveries.claim({
+                  sessionIds: input.sidecar_session_ids,
+                  leaseMs: input.lease_ms,
+                }),
+          { exclusive: true },
+        );
+      try {
+        while (!disconnected) {
+          const first = await scan();
+          if (disconnected) return;
+          if (
+            first.deliveries.length > 0 ||
+            Date.now() >= deadline ||
+            input.sidecar_session_ids.length === 0
+          ) {
+            send(res, 200, { deliveries: first.deliveries });
+            return;
+          }
+          // Scan/register/scan closes the append race. Expired leases wake a poll
+          // even if no new delivery is created during its wait.
+          const waiter = deliveryWaiters.register({
+            tenant: input.tenant,
+            sessionIds: input.sidecar_session_ids,
+            timeoutMs: Math.max(
+              0,
+              Math.min(deadline, first.nextLeaseUntil ?? deadline) - Date.now(),
+            ),
+          });
+          cancelWaiter = waiter.cancel;
+          if (disconnected) {
+            waiter.cancel();
+            return;
+          }
+          const second = await scan();
+          if (disconnected) return;
+          if (second.deliveries.length > 0) {
+            send(res, 200, { deliveries: second.deliveries });
+            return;
+          }
+          if (
+            second.nextLeaseUntil !== null &&
+            second.nextLeaseUntil < (first.nextLeaseUntil ?? deadline)
+          ) {
+            waiter.cancel();
+            cancelWaiter = undefined;
+            continue;
+          }
+          const wake = await waiter.promise;
+          cancelWaiter = undefined;
+          if (wake === "closed") {
+            if (!disconnected) send(res, 200, { deliveries: [] });
+            return;
+          }
+        }
+      } catch (error) {
+        console.error(`memory-sidecar: ${rawPath} failed for tenant "${input.tenant}"`, error);
+        if (!disconnected) send(res, 503, { error: "tenant unavailable" });
+      } finally {
+        cancelWaiter?.();
+        req.off("aborted", disconnect);
+        res.off("close", disconnect);
+      }
       return;
     }
 

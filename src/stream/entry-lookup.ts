@@ -2,7 +2,7 @@ import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 
 import type { StreamEntryIndexRepository } from "./entry-index.js";
 import { getSessionStreamPath } from "./path.js";
-import { streamEntrySchema, type SessionId, type StreamEntry } from "./types.js";
+import { streamEntryReadSchema, type SessionId, type StreamEntry } from "./types.js";
 import type { StreamReader } from "./stream-reader.js";
 import type { StreamEntryId } from "../util/ids.js";
 
@@ -82,7 +82,7 @@ export function readStreamEntryAtOffset(input: {
 
   try {
     const raw = JSON.parse(line) as unknown;
-    const parsed = streamEntrySchema.safeParse(raw);
+    const parsed = streamEntryReadSchema.safeParse(raw);
     return parsed.success ? parsed.data : null;
   } catch {
     return null;

@@ -39,6 +39,7 @@ export type StreamWriterOptions = {
   entryIndex?: StreamEntryIndexRepository;
   repairSession?: (sessionId: SessionId) => Promise<unknown>;
   onAppend?: (entries: readonly StreamEntry[]) => void;
+  taskEventsEnabled?: boolean;
 };
 
 export class StreamWriter {
@@ -51,6 +52,7 @@ export class StreamWriter {
   private readonly entryIndex?: StreamEntryIndexRepository;
   private readonly repairSession?: (sessionId: SessionId) => Promise<unknown>;
   private readonly onAppend?: (entries: readonly StreamEntry[]) => void;
+  private readonly taskEventsEnabled: boolean;
   private closed = false;
 
   constructor(options: StreamWriterOptions) {
@@ -67,6 +69,7 @@ export class StreamWriter {
         ? undefined
         : async (sessionId) => this.entryIndex?.backfillSession(sessionId));
     this.onAppend = options.onAppend;
+    this.taskEventsEnabled = options.taskEventsEnabled === true;
   }
 
   private ensureOpen(): void {
@@ -81,6 +84,11 @@ export class StreamWriter {
     if (!parsedInput.success) {
       throw new StreamError("Invalid stream entry payload", {
         cause: parsedInput.error,
+      });
+    }
+    if (parsedInput.data.response_to?.kind === "task_event" && !this.taskEventsEnabled) {
+      throw new StreamError("Task-event response stamps require an enabled task-event lane", {
+        code: "TASK_EVENT_LANE_DISABLED",
       });
     }
 

@@ -655,7 +655,10 @@ export type BorgMaintenanceFacade = {
   };
 };
 
-export type BorgInboxFacade = {
+export type BorgInboxFacade = Pick<
+  import("./public-facade.js").BorgInboxFacade,
+  "enqueueTaskEvent" | "listUnansweredTaskEvents" | "findTaskEventTerminal" | "deliveries"
+> & {
   catchUp: ChatResponseCatchUpWorker;
   appendBacklogTerminal(input: AppendBacklogTerminalInput): Promise<AppendBacklogTerminalResult>;
   sealPendingBacklog(input: SealPendingBacklogInput): Promise<AppendBacklogTerminalResult | null>;
