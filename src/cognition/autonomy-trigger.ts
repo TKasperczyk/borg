@@ -1,4 +1,8 @@
 import type { ExecutiveGoalScoreBasis } from "../executive/index.js";
+import { IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS } from "../memory/identity/index.js";
+import { headTailTextExcerpt } from "../util/text-excerpt.js";
+
+export const AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS = 32_000;
 
 export type AutonomyTriggerContext = {
   source_name: string;
@@ -86,6 +90,52 @@ function carriesRecentIdentityEvents(payload: Record<string, unknown>): boolean 
   return Array.isArray(payload.recent_identity_events);
 }
 
+function carriesTruncatedIdentityEventChange(payload: Record<string, unknown>): boolean {
+  if (!Array.isArray(payload.recent_identity_events)) {
+    return false;
+  }
+
+  return payload.recent_identity_events.some((event) => {
+    if (event === null || typeof event !== "object" || Array.isArray(event)) {
+      return false;
+    }
+
+    const change = (event as Record<string, unknown>).change;
+    return (
+      change !== null &&
+      typeof change === "object" &&
+      !Array.isArray(change) &&
+      (change as Record<string, unknown>).excerpt_exact === false
+    );
+  });
+}
+
+const AUTONOMY_TRIGGER_EXCERPT_NOTICE =
+  `excerpt_notice: borg_autonomy_trigger content is mechanically bounded to ${AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS} chars; ` +
+  `each recent identity event's old-to-new change excerpt is bounded to ${IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS} chars. ` +
+  "Head+tail excerpts are not summaries, and omitted characters remain available in the source records.";
+
+function boundAutonomyTriggerContext(value: string, nestedExcerptWasTruncated: boolean): string {
+  if (!nestedExcerptWasTruncated && value.length <= AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
+    return value;
+  }
+
+  if (
+    value.length + 1 + AUTONOMY_TRIGGER_EXCERPT_NOTICE.length <=
+    AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS
+  ) {
+    return `${value}\n${AUTONOMY_TRIGGER_EXCERPT_NOTICE}`;
+  }
+
+  const sourceBudget = Math.max(
+    0,
+    AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS - AUTONOMY_TRIGGER_EXCERPT_NOTICE.length - 2,
+  );
+  const excerpt = headTailTextExcerpt(value, sourceBudget);
+
+  return `${excerpt.head}\n${AUTONOMY_TRIGGER_EXCERPT_NOTICE}\n${excerpt.tail}`;
+}
+
 // A dormant-question wake's event id is the question paired with the same stamp
 // its sort_ts reports, and that pair is what the scheduler latches -- so the
 // event is one-shot per dormancy, and an old sort_ts means the question has
@@ -112,7 +162,7 @@ export function formatAutonomyTriggerContext(context: AutonomyTriggerContext): s
     ? new Date(context.sort_ts).toISOString()
     : String(context.sort_ts);
 
-  return [
+  const rendered = [
     "Autonomous wake context:",
     `source_name: ${context.source_name}`,
     `source_type: ${context.source_type}`,
@@ -127,4 +177,9 @@ export function formatAutonomyTriggerContext(context: AutonomyTriggerContext): s
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
+
+  return boundAutonomyTriggerContext(
+    rendered,
+    carriesTruncatedIdentityEventChange(context.payload),
+  );
 }

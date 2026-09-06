@@ -3681,7 +3681,7 @@ describe("AutonomyScheduler", () => {
     expect(turnRunner.run).toHaveBeenCalledTimes(2);
   });
 
-  it("leaves trigger watermarks untouched when an autonomous turn throws", async () => {
+  it("leaves an aborted watermark unlatched while trigger backoff spans new due windows", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({
       clock,
@@ -3736,16 +3736,137 @@ describe("AutonomyScheduler", () => {
     expect(result.events[0]?.status).toBe("error");
     expect(watermarkRepository.get("autonomy:scheduled-reflection", DEFAULT_SESSION_ID)).toBeNull();
 
+    clock.advance(10_000);
     const secondResult = await scheduler.tick();
     expect(secondResult.errorCount).toBe(0);
     expect(secondResult.events).toEqual([]);
     expect(turnRunner.run).toHaveBeenCalledTimes(1);
+    expect(watermarkRepository.get("autonomy:scheduled-reflection", DEFAULT_SESSION_ID)).toBeNull();
+
+    clock.advance(19_999);
+    const thirdResult = await scheduler.tick();
+    expect(thirdResult.events).toEqual([]);
+    expect(turnRunner.run).toHaveBeenCalledTimes(1);
+
+    clock.advance(1);
+    const fourthResult = await scheduler.tick();
+    expect(fourthResult.errorCount).toBe(1);
+    expect(fourthResult.events[0]).toMatchObject({
+      id: "scheduled-reflection:1030000",
+      status: "error",
+    });
+    expect(turnRunner.run).toHaveBeenCalledTimes(2);
+    expect(watermarkRepository.get("autonomy:scheduled-reflection", DEFAULT_SESSION_ID)).toBeNull();
+  });
+
+  it("backs off a failing trigger across event ids, admits healthy work, and resets on success", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    const failingWatermarkProcessName = "autonomy:test:trigger-error-backoff";
+    const failingSource: AutonomyWakeSource = {
+      name: "goal_followup_due",
+      type: "trigger",
+      sourceCategory: "operational",
+      async scan() {
+        if (watermarkRepository.get(failingWatermarkProcessName, DEFAULT_SESSION_ID) !== null) {
+          return [];
+        }
+
+        return [
+          {
+            id: `changing-error-event:${clock.now()}`,
+            sourceName: "goal_followup_due",
+            sourceType: "trigger",
+            watermarkProcessName: failingWatermarkProcessName,
+            sortTs: 1,
+            payload: {},
+          },
+        ];
+      },
+      buildTurn() {
+        return {
+          audience: "self",
+          stakes: "low",
+          userMessage: "Retry changing trigger event.",
+        };
+      },
+    };
+    const healthySource = createPersistentDueSource({
+      watermarkRepository,
+      eventIds: ["healthy-during-trigger-backoff"],
+      sourceName: "scheduled_wake",
+      sourceCategory: "contemplative",
+      sortTs: () => 2,
+    });
+    const successfulTurn = createStructuralTurnResult({ emissionKind: "suppressed" });
+    const turnRunner = {
+      run: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("first changing-id failure"))
+        .mockResolvedValueOnce(successfulTurn)
+        .mockRejectedValueOnce(new Error("second changing-id failure"))
+        .mockResolvedValueOnce(successfulTurn)
+        .mockRejectedValueOnce(new Error("failure after success"))
+        .mockResolvedValue(successfulTurn),
+    };
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 20,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+      watermarkRepository,
+      turnOrchestrator: turnRunner,
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        clock,
+      }),
+      sources: [failingSource, healthySource],
+    });
+
+    const first = await scheduler.tick();
+    expect(first.events.map((event) => [event.sourceName, event.status])).toEqual([
+      ["goal_followup_due", "error"],
+      ["scheduled_wake", "fired"],
+    ]);
+    expect(turnRunner.run).toHaveBeenCalledTimes(2);
+
+    clock.advance(10_000);
+    expect((await scheduler.tick()).events).toEqual([]);
+    expect(turnRunner.run).toHaveBeenCalledTimes(2);
+
+    clock.advance(20_000);
+    const secondFailure = await scheduler.tick();
+    expect(secondFailure.events[0]).toMatchObject({
+      id: "changing-error-event:1030000",
+      status: "error",
+    });
+    expect(turnRunner.run).toHaveBeenCalledTimes(3);
 
     clock.advance(30_000);
-    const thirdResult = await scheduler.tick();
-    expect(thirdResult.errorCount).toBe(1);
-    expect(thirdResult.events[0]?.status).toBe("error");
-    expect(turnRunner.run).toHaveBeenCalledTimes(2);
+    expect((await scheduler.tick()).events).toEqual([]);
+    expect(turnRunner.run).toHaveBeenCalledTimes(3);
+
+    clock.advance(30_000);
+    expect((await scheduler.tick()).firedEvents).toBe(1);
+    expect(turnRunner.run).toHaveBeenCalledTimes(4);
+
+    watermarkRepository.reset(failingWatermarkProcessName, DEFAULT_SESSION_ID);
+    expect((await scheduler.tick()).errorCount).toBe(1);
+    expect(turnRunner.run).toHaveBeenCalledTimes(5);
+
+    clock.advance(29_999);
+    expect((await scheduler.tick()).events).toEqual([]);
+    expect(turnRunner.run).toHaveBeenCalledTimes(5);
+
+    clock.advance(1);
+    expect((await scheduler.tick()).firedEvents).toBe(1);
+    expect(turnRunner.run).toHaveBeenCalledTimes(6);
   });
 
   it("engages the fleet cooldown after five operational silences and escalates durably", async () => {
@@ -4223,11 +4344,16 @@ describe("AutonomyScheduler", () => {
         .mockRejectedValueOnce(new LLMError("outage-3"))
         .mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
     };
-    const operationalSource = createPersistentDueSource({
-      watermarkRepository,
-      eventIds: ["error-1", "error-2", "error-3"],
-      sortTs: (_eventId, index) => index + 1,
-    });
+    const operationalSources = (
+      ["goal_followup_due", "executive_focus_due", "commitment_revoked"] as const
+    ).map((sourceName, index) =>
+      createPersistentDueSource({
+        watermarkRepository,
+        eventIds: [`error-${index + 1}`],
+        sourceName,
+        sortTs: () => index + 1,
+      }),
+    );
     const reflectionSource = createPersistentDueSource({
       watermarkRepository,
       eventIds: ["reflection-after-errors"],
@@ -4252,7 +4378,7 @@ describe("AutonomyScheduler", () => {
       watermarkRepository,
       turnOrchestrator: turnRunner,
       toolDispatcher: dispatcher,
-      sources: [operationalSource, reflectionSource],
+      sources: [...operationalSources, reflectionSource],
     });
 
     const first = await scheduler.tick();
