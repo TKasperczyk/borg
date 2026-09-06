@@ -60,6 +60,7 @@ function openCorrectionBorg(tempDir: string, llm = new FakeLLMClient()) {
           extraction: "haiku",
           recallExpansion: "haiku",
           correctivePreference: "sonnet",
+          sharedStateCompiler: "sonnet",
           creatorDirective: "sonnet",
           imagePerception: "haiku",
         },

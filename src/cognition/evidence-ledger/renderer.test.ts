@@ -467,11 +467,12 @@ describe("buildSharedStateArtifactPromptSummary", () => {
         invalidated: 0,
         tentative: 0,
       },
-      summaryTokenBudget: 2_000,
+      // Leave room for each selected row's explicit kind in both summary views.
+      summaryTokenBudget: 2_200,
     });
 
     expect(summary).not.toBeNull();
-    expect(estimatePromptTokens(JSON.stringify(summary))).toBeLessThanOrEqual(2_000);
+    expect(estimatePromptTokens(JSON.stringify(summary))).toBeLessThanOrEqual(2_200);
     expect(summary?.active_entries.locked.length).toBeLessThanOrEqual(100);
     expect(summary?.active_entries.live).toHaveLength(3);
     expect(summary?.omitted_counts_by_kind.locked).toBeGreaterThan(100);

@@ -2999,7 +2999,7 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
     }
   });
 
-  it("uses the global turn counter for shared-state action canonicalization", async () => {
+  it.each(["pre_answer", "post_response"] as const)("uses compiler model in %s", async (pass) => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-retrieval-phase-"));
     cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
     const db = openDatabase(join(tempDir, "borg.db"), {
@@ -3132,6 +3132,14 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
     const options = {
       config: {
         ...DEFAULT_CONFIG,
+        anthropic: {
+          ...DEFAULT_CONFIG.anthropic,
+          models: {
+            ...DEFAULT_CONFIG.anthropic.models,
+            recallExpansion: "test-recall-model",
+            sharedStateCompiler: "test-shared-state-compiler-model",
+          },
+        },
         dataDir: tempDir,
         generation: {
           ...DEFAULT_CONFIG.generation,
@@ -3184,6 +3192,7 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
 
     await compileSharedStateArtifactForEvidenceLedger({
       options,
+      compilePass: pass,
       input: {
         sessionId: DEFAULT_SESSION_ID,
         turnId: "turn-global-canonicalization",
@@ -3248,6 +3257,7 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
       },
       promptVisibleLedger: "Action candidate: Follow up with the clinic.",
     });
+    expect(llmClient.requests[0]?.model).toBe("test-shared-state-compiler-model");
     const requestPayload = JSON.parse(
       String(llmClient.requests[0]?.messages[0]?.content ?? "{}"),
     ) as {
