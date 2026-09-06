@@ -15,6 +15,8 @@ import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { operatorAttentionPromptRow } from "../../memory/operator-attention/disclosure.js";
+import { unknownMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import type { LLMCompleteResult } from "../../llm/index.js";
 import { FixedClock } from "../../util/clock.js";
 import {
@@ -172,6 +174,21 @@ describe("planner context capture", () => {
   it("round-trips the rendering closure through JSON with byte-identical paired surfaces", () => {
     const repositoryGet = vi.fn();
     const reRetrieve = vi.fn();
+    const attentionRows = [
+      operatorAttentionPromptRow({
+        record_key: "cclink:capture",
+        filed_at: NOW_MS,
+        filer_entity_id: createEntityId(),
+        subject: "Capture subject",
+      }),
+      operatorAttentionPromptRow({
+        record_key: "cclink:unknown",
+        filed_at: NOW_MS - 1,
+        filer_entity_id: createEntityId(),
+        subject: null,
+        disclosure_label: unknownMemoryDisclosureLabel(),
+      }),
+    ];
     const input = renderInput(
       context({
         entityRepository: {
@@ -182,6 +199,10 @@ describe("planner context capture", () => {
           recentSuppressions: [],
           recentRegenerations: [],
           autonomySchedulerState: {
+            operatorAttentionIndex: {
+              total: 125,
+              records: attentionRows,
+            },
             observedAt: NOW_MS,
             enabled: true,
             tickInFlight: false,
@@ -272,6 +293,19 @@ describe("planner context capture", () => {
     );
     expect(plannerSurfaceText(replayPair.compact.rendered.system)).toContain("in_flight=1");
     expect(replayPair.legacy.rendered.system).toContain("Harness scheduler state");
+    expect(replayPair.legacy.rendered.system).toContain("Operator attention records: total=125");
+    expect(plannerSurfaceText(replayPair.compact.rendered.system)).toContain("Capture subject");
+    const capturedRows =
+      parsed.render_input.compactContext.turnMechanismEvidence?.autonomySchedulerState
+        ?.operatorAttentionIndex?.records;
+    expect(capturedRows).toEqual(attentionRows);
+    expect(capturedRows?.[0]?.disclosure_label).not.toBe(attentionRows[0]?.disclosure_label);
+    const replayRows = plannerSurfaceText(replayPair.compact.rendered.system)
+      .split("\n")
+      .filter((line) => line.includes("| subject="));
+    expect(replayRows).toHaveLength(2);
+    expect(replayRows[0]).toContain("disclosure_class=operator_private");
+    expect(replayRows[1]).toContain("disclosure_class=unknown");
     expect(replayPair.compact.fingerprint).toEqual(livePair.compact.fingerprint);
     expect(replayPair.legacy.fingerprint).toEqual(livePair.legacy.fingerprint);
     expect(parsed.expected_surfaces).toEqual({

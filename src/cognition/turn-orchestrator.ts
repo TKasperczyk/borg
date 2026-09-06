@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
+import type { OperatorAttentionRepository } from "../memory/operator-attention/index.js";
 import type {
   AttachmentRepository,
   AttachmentService,
@@ -194,6 +195,7 @@ export type TurnOrchestratorOptions = {
   chatResponseWatermarkCoordinator?: ChatResponseWatermarkCoordinator;
   outboundDelivery?: Pick<OutboundDelivery, "deliver">;
   autonomousOutboundPolicy?: Pick<AutonomousOutboundPolicy, "promptContext">;
+  operatorAttentionRepository?: Pick<OperatorAttentionRepository, "snapshot">;
   autonomySchedulerStateProvider?: () => Promise<AutonomySchedulerDescription | null>;
   outboundSourceTypes?: readonly SessionSourceType[];
   affectiveSignalDetector?: typeof detectAffectiveSignal;
@@ -415,6 +417,7 @@ export class TurnOrchestrator {
       chatResponseWatermarkCoordinator: options.chatResponseWatermarkCoordinator,
       outboundDelivery: options.outboundDelivery,
       autonomousOutboundPolicy: options.autonomousOutboundPolicy,
+      operatorAttentionRepository: options.operatorAttentionRepository,
       autonomySchedulerStateProvider: options.autonomySchedulerStateProvider,
       outboundSourceTypes: options.outboundSourceTypes,
       llmFactory: createObservedLlmClient,

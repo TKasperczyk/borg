@@ -1,3 +1,4 @@
+import type { OperatorAttentionIndex } from "../memory/operator-attention/types.js";
 import type {
   AgentSuppressedStreamContent,
   FinalizerInvalidToolDiagnostic,
@@ -109,6 +110,8 @@ export type AutonomySchedulerMechanismEvidence = {
   scheduledTickAt: number | null;
   /** Optional only for historical captures and direct harness fixtures. */
   windowWakes?: AutonomySchedulerDescription["window_wakes"];
+  /** Filing metadata only; independent of wake admission and outcome. */
+  operatorAttentionIndex?: OperatorAttentionIndex;
   budget: AutonomySchedulerBudgetDescription;
   fleetBrake: AutonomySchedulerFleetBrakeDescription;
   sources: AutonomySchedulerDescription["sources"];

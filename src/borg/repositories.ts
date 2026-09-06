@@ -1,5 +1,6 @@
 // Builds Borg's repository graph and the cross-repository services that sit on top of it.
 
+import { OperatorAttentionRepository } from "../memory/operator-attention/index.js";
 import { AutonomyWakesRepository, ScheduledWakesRepository } from "../autonomy/index.js";
 import type { AttachmentRepository } from "../attachments/index.js";
 import { ImagePerceptionRepository } from "../attachments/index.js";
@@ -109,6 +110,7 @@ export type BorgRepositorySetup = Pick<
   | "commitmentRepository"
   | "creatorDirectiveRepository"
   | "sharedStateRepository"
+  | "operatorAttentionRepository"
   | "activityRepository"
   | "livedExperienceDaySummaryRepository"
   | "selfDecisionRepository"
@@ -157,6 +159,7 @@ export async function buildBorgRepositories(
   options: BuildBorgRepositoriesOptions,
 ): Promise<BorgRepositorySetup> {
   const { config, sqlite, clock, embeddingClient } = options;
+  const operatorAttentionRepository = new OperatorAttentionRepository({ db: sqlite });
   const autonomyWakesRepository = new AutonomyWakesRepository({
     db: sqlite,
     clock,
@@ -620,6 +623,7 @@ export async function buildBorgRepositories(
     commitmentRepository,
     creatorDirectiveRepository,
     sharedStateRepository,
+    operatorAttentionRepository,
     activityRepository,
     livedExperienceDaySummaryRepository,
     selfDecisionRepository,

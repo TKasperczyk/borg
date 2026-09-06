@@ -676,3 +676,13 @@ export {
   type StoredAttachmentRecord,
   type TurnInputAttachment,
 } from "./attachments/index.js";
+
+export {
+  operatorAttentionRecordSchema,
+  OPERATOR_ATTENTION_RECENT_LIMIT,
+  OPERATOR_ATTENTION_SUBJECT_MAX_CHARS,
+  type BorgOperatorAttentionFacade,
+  type OperatorAttentionRecord,
+  type OperatorAttentionIndex,
+  type OperatorAttentionIndexRow,
+} from "./memory/operator-attention/types.js";

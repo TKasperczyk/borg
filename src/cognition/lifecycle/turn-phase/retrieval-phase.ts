@@ -854,6 +854,24 @@ export async function runRetrievalPhase(input: {
       }
     }
   }
+  if (
+    autonomySchedulerState !== undefined &&
+    input.options.operatorAttentionRepository !== undefined
+  ) {
+    try {
+      autonomySchedulerState.operatorAttentionIndex =
+        input.options.operatorAttentionRepository.snapshot();
+    } catch (error) {
+      input.options.tracer.emit("retrieval.degraded", {
+        turnId: input.turnId,
+        component: "operator_attention_index",
+        reason: "attention_index_unavailable",
+        ...(input.options.tracer.includePayloads
+          ? { error: error instanceof Error ? error.message : String(error) }
+          : {}),
+      });
+    }
+  }
   const turnMechanismEvidence = await hydrateTurnMechanismEvidence({
     dataDir: input.options.config.dataDir,
     sessionId: input.sessionId,
