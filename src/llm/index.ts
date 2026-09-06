@@ -913,7 +913,7 @@ const SSE_MESSAGE_EVENT_GAP_TIMEOUT_MS = 180_000;
 const OAUTH_FETCH_HEADERS_TIMEOUT_MS = 120_000;
 const OAUTH_UNARY_BODY_TIMEOUT_MS = 120_000;
 const LLM_UNARY_CALL_TIMEOUT_MS = 6 * 60_000;
-const LLM_STREAMING_CALL_TIMEOUT_MS = 12 * 60_000;
+export const LLM_STREAMING_CALL_TIMEOUT_MS = 12 * 60_000;
 const ANTHROPIC_CONNECTION_MAX_RETRIES = 2;
 // Mid-call stalls (watchdog-killed streams, fetch-layer deadlines) are usually
 // transient upstream degradation; one fresh attempt rescues most of them.
@@ -2449,7 +2449,7 @@ export class AnthropicLLMClient implements LLMClient {
   }
 
   private async createConversation(options: LLMConverseOptions): Promise<LLMConverseResult> {
-    const callTimeoutMs = this.unaryCallTimeoutMs();
+    const callTimeoutMs = options.timeoutMs ?? this.unaryCallTimeoutMs();
     const response = await this.createRawMessage(
       options,
       toAnthropicContentBlockMessages(options.messages, {

@@ -7,7 +7,10 @@ import type {
   LLMConverseOptions,
   LLMSystemBlock,
 } from "../../llm/index.js";
-import { willSendThinkingUnderAutoToolChoice } from "../../llm/index.js";
+import {
+  LLM_STREAMING_CALL_TIMEOUT_MS,
+  willSendThinkingUnderAutoToolChoice,
+} from "../../llm/index.js";
 import type { ToolDefinition, ToolDispatcher } from "../../tools/dispatcher.js";
 import type { BorgRole } from "../../memory/commitments/index.js";
 import type { SessionAudienceRole, SessionParticipationPolicy } from "../../sessions/index.js";
@@ -1122,6 +1125,8 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
       sessionAudienceRole: options.sessionAudienceRole,
       provenance: toolProvenance,
       maxTokens: options.maxTokens,
+      // Buffered delivery keeps the finalizer's existing streaming deadline.
+      timeoutMs: LLM_STREAMING_CALL_TIMEOUT_MS,
       ...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
       ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
       // Emission-tool protocol: the answer lives in the terminal tool input, so any

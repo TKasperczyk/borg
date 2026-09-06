@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
+import { AnthropicLLMClient, type LLMClient } from "../../llm/index.js";
 import { FakeLLMClient, createFakeStreamingResponse } from "../../llm/test-support/fake-client.js";
 import { createEpisodeFixture, createRetrievalScoreFixture } from "../../offline/test-support.js";
 import { StreamWriter } from "../../stream/index.js";
@@ -50,7 +51,7 @@ function createDispatcher(
 }
 
 async function runEmissionFinalizer(
-  llm: FakeLLMClient,
+  llm: LLMClient,
   tempDirs: string[],
   options: {
     cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
@@ -208,6 +209,7 @@ describe("runFinalizer emission tools", () => {
   const tempDirs: string[] = [];
 
   afterEach(() => {
+    vi.useRealTimers();
     while (tempDirs.length > 0) {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
@@ -837,6 +839,46 @@ describe("runFinalizer emission tools", () => {
       phase: "final",
       full_text: "Final answer.",
     });
+  });
+
+  it("keeps the same effective 720-second finalizer deadline across transports", async () => {
+    vi.useFakeTimers();
+    const signals: AbortSignal[] = [];
+    const rejections = (["unary", "streaming"] as const).map((finalizerTransport) => {
+      const client = new AnthropicLLMClient({
+        client: {
+          messages: {
+            create: async (_params, options) => {
+              signals.push(options!.signal!);
+              return await new Promise(() => undefined);
+            },
+            stream: (_params, options) => {
+              signals.push(options!.signal!);
+              return {
+                async *[Symbol.asyncIterator]() {
+                  await new Promise(() => undefined);
+                },
+                finalMessage: vi.fn(),
+              };
+            },
+          },
+        },
+      });
+      return expect(runEmissionFinalizer(client, tempDirs, { finalizerTransport })).rejects
+        .toMatchObject({
+          code: "LLM_CALL_TIMED_OUT",
+          message: `Anthropic ${finalizerTransport} LLM call timed out after 720000ms`,
+        });
+    });
+
+    await vi.advanceTimersByTimeAsync(360_001);
+    expect(signals).toHaveLength(2);
+    expect(signals.map((signal) => signal.aborted)).toEqual([false, false]);
+    await vi.advanceTimersByTimeAsync(359_998);
+    expect(signals.map((signal) => signal.aborted)).toEqual([false, false]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(signals.map((signal) => signal.aborted)).toEqual([true, true]);
+    await Promise.all(rejections);
   });
 
   it("uses unary transport and emits the accepted tool text as one final chunk", async () => {
