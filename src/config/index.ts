@@ -289,6 +289,7 @@ const deliberationConfigSchema = z
       .positive()
       .default(DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET),
     finalizerDynamicPromptCacheEnabled: z.boolean().default(true),
+    finalizerTransport: z.enum(["unary", "streaming"]).default("unary"),
     finalizerSurfaceVariant: z
       .enum(["compact", "compact_conversational", "legacy"])
       .default("legacy"),
@@ -1327,6 +1328,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
       env,
       "BORG_DELIBERATION_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET",
     ),
+  );
+  setConfigOverride(
+    overrides,
+    ["deliberation", "finalizerTransport"],
+    readOptionalEnvString(env, "BORG_DELIBERATION_FINALIZER_TRANSPORT"),
   );
   setConfigOverride(
     overrides,

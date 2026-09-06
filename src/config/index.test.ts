@@ -172,6 +172,7 @@ describe("config", () => {
       DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET,
     );
     expect(config.deliberation.finalizerDynamicPromptCacheEnabled).toBe(true);
+    expect(config.deliberation.finalizerTransport).toBe("unary");
     expect(config.deliberation.finalizerSurfaceVariant).toBe("legacy");
     expect(config.deliberation.finalizerContextCaptureSampleRate).toBe(0);
     expect(config.deliberation.finalizerContextCaptureMaxFileBytes).toBe(1024 * 1024 * 1024);
@@ -279,6 +280,25 @@ describe("config", () => {
     });
 
     expect(config.deliberation.finalizerDynamicPromptCacheEnabled).toBe(false);
+  });
+
+  it("lets the finalizer transport environment override take precedence", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      deliberation: {
+        finalizerTransport: "unary",
+      },
+    });
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {
+        BORG_DELIBERATION_FINALIZER_TRANSPORT: "streaming",
+      },
+    });
+
+    expect(config.deliberation.finalizerTransport).toBe("streaming");
   });
 
   it("honors the plan-requested verification membership budget environment override", () => {

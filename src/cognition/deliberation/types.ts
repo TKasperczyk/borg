@@ -368,6 +368,8 @@ export type CognitionThinkingConfig = {
   budget_tokens: number;
 };
 
+export type FinalizerTransport = "unary" | "streaming";
+
 export type DeliberationResult = {
   path: "system_1" | "system_2";
   response: string;
@@ -396,6 +398,7 @@ export type DeliberatorOptions = {
   hostCapabilities?: string;
   promptBlocks?: Partial<Record<PromptKey, string>>;
   finalizerDynamicPromptCacheEnabled?: boolean;
+  finalizerTransport?: FinalizerTransport;
   finalizerSurfaceVariant?: "compact" | "compact_conversational" | "legacy";
   planRequestedVerificationMembershipTokenBudget?: number;
   finalizerContextCapture?: FinalizerContextCapture;

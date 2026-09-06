@@ -4608,7 +4608,7 @@ describe("demo server", () => {
     });
   });
 
-  it("broadcasts token frames between finalizer phase start and completion", async () => {
+  it("broadcasts the buffered unary finalizer text between phase start and completion", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);
     const llm = new FakeLLMClient({
@@ -4641,6 +4641,7 @@ describe("demo server", () => {
         (frame.data as { phase?: unknown } | undefined)?.phase === "final",
     );
     const tokenFrame = frames.findIndex((frame) => frame.type === "turn:token");
+    const flushFrame = frames.findIndex((frame) => frame.type === "turn:token:flush");
     const finalComplete = frames.findIndex(
       (frame) =>
         frame.type === "turn:phase:completed" &&
@@ -4649,12 +4650,18 @@ describe("demo server", () => {
 
     expect(finalStart).toBeGreaterThanOrEqual(0);
     expect(tokenFrame).toBeGreaterThan(finalStart);
-    expect(finalComplete).toBeGreaterThan(tokenFrame);
+    expect(flushFrame).toBeGreaterThan(tokenFrame);
+    expect(finalComplete).toBeGreaterThan(flushFrame);
     expect(frames[tokenFrame]).toMatchObject({
       type: "turn:token",
       phase: "final",
-      chunk_text: "ws ",
+      chunk_text: "ws token ok",
       sequence: 1,
+    });
+    expect(frames[flushFrame]).toMatchObject({
+      type: "turn:token:flush",
+      phase: "final",
+      full_text: "ws token ok",
     });
   });
 

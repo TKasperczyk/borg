@@ -56,6 +56,7 @@ async function runEmissionFinalizer(
     cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
     additionalPromptSections?: Parameters<typeof runFinalizer>[0]["additionalPromptSections"];
     finalizerDynamicPromptCacheEnabled?: boolean;
+    finalizerTransport?: Parameters<typeof runFinalizer>[0]["finalizerTransport"];
     finalizerSurfaceVariant?: Parameters<typeof runFinalizer>[0]["finalizerSurfaceVariant"];
     tracer?: Parameters<typeof runFinalizer>[0]["tracer"];
     turnId?: string;
@@ -98,6 +99,9 @@ async function runEmissionFinalizer(
     ...(options.finalizerDynamicPromptCacheEnabled === undefined
       ? {}
       : { finalizerDynamicPromptCacheEnabled: options.finalizerDynamicPromptCacheEnabled }),
+    ...(options.finalizerTransport === undefined
+      ? {}
+      : { finalizerTransport: options.finalizerTransport }),
     ...(options.finalizerSurfaceVariant === undefined
       ? {}
       : { finalizerSurfaceVariant: options.finalizerSurfaceVariant }),
@@ -796,10 +800,12 @@ describe("runFinalizer emission tools", () => {
         }),
       ],
     });
+    const streamConverse = vi.spyOn(llm, "streamConverse");
 
     const result = await runEmissionFinalizer(llm, tempDirs, {
       tracer,
       turnId: "turn-final-stream",
+      finalizerTransport: "streaming",
     });
 
     expect(result.decision).toEqual({
@@ -807,6 +813,7 @@ describe("runFinalizer emission tools", () => {
       text: "Final answer.",
       source: "tool",
     });
+    expect(streamConverse).toHaveBeenCalledOnce();
     expect(tracer.emit).toHaveBeenCalledWith("turn.token", {
       turnId: "turn-final-stream",
       turn_id: "turn-final-stream",
@@ -829,6 +836,71 @@ describe("runFinalizer emission tools", () => {
       session_id: DEFAULT_SESSION_ID,
       phase: "final",
       full_text: "Final answer.",
+    });
+  });
+
+  it("uses unary transport and emits the accepted tool text as one final chunk", async () => {
+    const tracer = {
+      enabled: true,
+      includePayloads: true,
+      emit: vi.fn(),
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        createFakeStreamingResponse(["must not stream"], {
+          messageBlocks: [
+            {
+              type: "text",
+              text: "Loose prose is not delivered.",
+            },
+            {
+              type: "tool_use",
+              id: "toolu_answer_unary",
+              name: "EmitAnswer",
+              input: { text: "Unary final answer." },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 3,
+          stop_reason: "tool_use",
+        }),
+      ],
+    });
+    const converse = vi.spyOn(llm, "converse");
+    const streamConverse = vi.spyOn(llm, "streamConverse");
+
+    const result = await runEmissionFinalizer(llm, tempDirs, {
+      tracer,
+      turnId: "turn-final-unary",
+      finalizerTransport: "unary",
+    });
+
+    expect(converse).toHaveBeenCalledOnce();
+    expect(streamConverse).not.toHaveBeenCalled();
+    expect(result.decision).toEqual({
+      kind: "answer",
+      text: "Unary final answer.",
+      source: "tool",
+    });
+    expect(tracer.emit.mock.calls.filter(([event]) => event === "turn.token")).toEqual([
+      [
+        "turn.token",
+        {
+          turnId: "turn-final-unary",
+          turn_id: "turn-final-unary",
+          session_id: DEFAULT_SESSION_ID,
+          phase: "final",
+          chunk_text: "Unary final answer.",
+          sequence: 1,
+        },
+      ],
+    ]);
+    expect(tracer.emit).toHaveBeenCalledWith("turn.token.flush", {
+      turnId: "turn-final-unary",
+      turn_id: "turn-final-unary",
+      session_id: DEFAULT_SESSION_ID,
+      phase: "final",
+      full_text: "Unary final answer.",
     });
   });
 
