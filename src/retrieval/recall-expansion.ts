@@ -287,7 +287,7 @@ Rules:
 - Emit at most 16 named_terms and at most 4 typed_queries.
 - Output only by calling EmitRecallQueryPlan exactly once.`;
 
-function recallQueryPlanSchema(semanticVariantCount: number) {
+function recallQueryPlanToolSchema(semanticVariantCount: number) {
   return z
     .object({
       resolved_query: z
@@ -321,6 +321,20 @@ function recallQueryPlanSchema(semanticVariantCount: number) {
         .describe("Absolute time reference resolved against NOW, or null when FOCUS has none."),
     })
     .strict();
+}
+
+function recallQueryPlanSchema(semanticVariantCount: number) {
+  const toolSchema = recallQueryPlanToolSchema(semanticVariantCount);
+
+  // Keep the model's requested shape strict while accepting omitted empty lanes and excess
+  // named terms. Validate every term before clipping so malformed entries still reject the plan.
+  return toolSchema.extend({
+    named_terms: z
+      .array(toolSchema.shape.named_terms.element)
+      .default([])
+      .transform((terms) => terms.slice(0, MAX_RECALL_QUERY_NAMED_TERMS)),
+    typed_queries: toolSchema.shape.typed_queries.default([]),
+  });
 }
 
 // NOW as the model sees it: the instant plus the same instant spelled out in the configured zone,
@@ -392,7 +406,7 @@ function buildRecallQueryPlanTool(semanticVariantCount: number): LLMToolDefiniti
   // The parser tolerates an omitted temporal_cue (older fixtures and fakes), but the model is
   // asked to decide it on every plan: listing it as required makes "null" an explicit answer
   // instead of a field it may skip, which is where the "wczoraj" misses came from.
-  const inputSchema = toToolInputSchema(recallQueryPlanSchema(semanticVariantCount)) as {
+  const inputSchema = toToolInputSchema(recallQueryPlanToolSchema(semanticVariantCount)) as {
     required?: string[];
     [key: string]: unknown;
   };
