@@ -107,11 +107,20 @@ function changedTopLevelFields(
   });
 }
 
-function identityEventChangeSource(event: IdentityEvent): {
-  format: "top_level_fields_old_to_new" | "whole_value_old_to_new";
-  changedFields: string[] | null;
-  value: unknown;
-} {
+type ChangedValue = { present: boolean; value?: unknown };
+type FieldChange = { old: ChangedValue; new: ChangedValue };
+
+function identityEventChangeSource(event: IdentityEvent):
+  | {
+      format: "top_level_fields_old_to_new";
+      changedFields: string[];
+      value: { changed_fields: string[]; field_changes: Record<string, FieldChange> };
+    }
+  | {
+      format: "whole_value_old_to_new";
+      changedFields: null;
+      value: FieldChange;
+    } {
   const oldValue = event.old_value;
   const newValue = event.new_value;
 
@@ -158,22 +167,93 @@ function identityEventChangeSource(event: IdentityEvent): {
   };
 }
 
+function excerptChangedValue(change: ChangedValue, maxChars: number): unknown {
+  if (!change.present) {
+    return change;
+  }
+  const excerpt = headTailTextExcerpt(jsonText(change.value), maxChars);
+  if (excerpt.exact) {
+    return change;
+  }
+  const bounded = {
+    present: true,
+    value_excerpt: {
+      head: excerpt.head,
+      tail: excerpt.tail,
+      source_chars: excerpt.totalChars,
+    },
+  };
+  // Keep short scalars whole: marking a cut must actually save space after
+  // accounting for the excerpt's structural metadata and JSON escaping.
+  return jsonText(bounded).length < jsonText(change).length ? bounded : change;
+}
+
+function excerptFieldChange(change: FieldChange, maxChars: number): unknown {
+  return {
+    old: excerptChangedValue(change.old, maxChars),
+    new: excerptChangedValue(change.new, maxChars),
+  };
+}
+
 function identityEventChangeExcerpt(event: IdentityEvent) {
   const source = identityEventChangeSource(event);
   const sourceText = jsonText(source.value);
-  const excerpt = headTailTextExcerpt(
-    sourceText,
-    IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS,
-  );
+  let bounded = sourceText;
+
+  if (sourceText.length > IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS) {
+    const selectedFields = [...(source.changedFields ?? [])];
+    const render = (maxChars: number): string =>
+      jsonText(
+        source.format === "whole_value_old_to_new"
+          ? excerptFieldChange(source.value, maxChars)
+          : {
+              changed_fields: selectedFields,
+              field_changes: Object.fromEntries(
+                selectedFields.map((field) => [
+                  field,
+                  excerptFieldChange(source.value.field_changes[field]!, maxChars),
+                ]),
+              ),
+              ...(selectedFields.length < source.changedFields.length
+                ? { omitted_fields: source.changedFields.length - selectedFields.length }
+                : {}),
+            },
+      );
+
+    // Keep field names, presence, old/new structure, and short comparisons
+    // before allocating room to large values. If even that exceeds the cap,
+    // count whole trailing omissions; the outer changed_fields stays complete.
+    bounded = render(0);
+    while (
+      bounded.length > IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS &&
+      selectedFields.length > 0
+    ) {
+      selectedFields.pop();
+      bounded = render(0);
+    }
+
+    let low = 0;
+    let high = IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS;
+    while (low <= high) {
+      const candidateBudget = Math.floor((low + high) / 2);
+      const candidate = render(candidateBudget);
+      if (candidate.length <= IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS) {
+        bounded = candidate;
+        low = candidateBudget + 1;
+      } else {
+        high = candidateBudget - 1;
+      }
+    }
+  }
 
   return {
     format: source.format,
     changed_fields: source.changedFields,
-    excerpt_head: excerpt.head,
-    excerpt_tail: excerpt.exact ? null : excerpt.tail,
-    excerpt_exact: excerpt.exact,
-    excerpt_chars: excerpt.renderedChars,
-    source_chars: excerpt.totalChars,
+    excerpt_head: bounded,
+    excerpt_tail: null,
+    excerpt_exact: bounded === sourceText,
+    excerpt_chars: bounded.length,
+    source_chars: sourceText.length,
   };
 }
 
