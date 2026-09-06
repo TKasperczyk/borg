@@ -35,3 +35,12 @@ export const artifactReferenceSchema = z.discriminatedUnion("kind", [
 ]);
 
 export type ArtifactReference = z.infer<typeof artifactReferenceSchema>;
+
+export const deliveredOutboundPostArtifactOutputSchema = z.object({
+  outbound: z.object({
+    delivery_outcome: z.object({
+      state: z.literal("delivered"),
+      agent_message_id: streamEntryIdSchema,
+    }),
+  }),
+});

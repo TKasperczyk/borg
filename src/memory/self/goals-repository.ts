@@ -20,7 +20,18 @@ import {
   type IdentityCasOptions,
 } from "../common/cas.js";
 import { type IdentityEventRepository } from "../identity/repository.js";
-import { artifactReferenceExists } from "../common/artifact-reference-validation.js";
+import {
+  artifactReferenceExists,
+  artifactReferenceDisclosureLabel,
+} from "../common/artifact-reference-validation.js";
+import {
+  combineMemoryDisclosureLabels,
+  memoryDisclosureLabelFromMetadata,
+  memoryDisclosureLabelMetadata,
+  relationshipPrivateMemoryDisclosureLabel,
+  unknownMemoryDisclosureLabel,
+} from "../common/disclosure-label.js";
+import { goalMemoryDisclosureLabel } from "../common/disclosure-serializers.js";
 import {
   currentGoalBlock,
   goalBlockInputSchema,
@@ -45,6 +56,7 @@ import {
 
 export type GoalsRepositoryOptions = {
   db: SqliteDatabase;
+  dataDir?: string;
   clock?: Clock;
   identityEventRepository?: IdentityEventRepository;
   executiveStepsRepository?: Pick<ExecutiveStepsRepository, "abandonOpenStepsForGoal">;
@@ -70,7 +82,7 @@ export type GoalFollowupDueCandidateOptions = {
 
 const GOAL_SELECT_COLUMNS = `
   id, record_version, description, terminal_condition, priority, parent_goal_id, status,
-  progress_notes, last_progress_ts, created_at, target_at, block_history_json, audience_entity_id, owner_entity_id,
+  progress_notes, last_progress_ts, created_at, target_at, target_assigned_at, block_history_json, audience_entity_id, owner_entity_id,
   counterparty_entity_id, source_stream_entry_ids, canonicalized_by_artifact_entry_id, provenance_kind,
   provenance_episode_ids, provenance_stream_entry_ids, provenance_process
 `;
@@ -236,6 +248,7 @@ export class GoalsRepository {
         progressNotes === null || progressNotes.trim().length === 0 ? null : createdAt,
       created_at: createdAt,
       target_at: input.targetAt ?? null,
+      target_assigned_at: input.targetAt == null ? null : createdAt,
       audience_entity_id: input.audienceEntityId ?? null,
       owner_entity_id: input.ownerEntityId ?? null,
       counterparty_entity_id:
@@ -256,10 +269,10 @@ export class GoalsRepository {
           `
             INSERT INTO goals (
               id, description, terminal_condition, priority, parent_goal_id, status, progress_notes,
-              last_progress_ts, created_at, target_at, audience_entity_id, owner_entity_id,
+              last_progress_ts, created_at, target_at, target_assigned_at, audience_entity_id, owner_entity_id,
               counterparty_entity_id, source_stream_entry_ids, canonicalized_by_artifact_entry_id, provenance_kind,
               provenance_episode_ids, provenance_stream_entry_ids, provenance_process
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
         .run(
@@ -273,6 +286,7 @@ export class GoalsRepository {
           goal.last_progress_ts,
           goal.created_at,
           goal.target_at,
+          goal.target_assigned_at,
           goal.audience_entity_id,
           goal.owner_entity_id,
           goal.counterparty_entity_id,
@@ -377,7 +391,7 @@ export class GoalsRepository {
                 FROM json_each(block_history_json) WHERE json_extract(value, '$.unblocked_at') IS NOT NULL
               ), 0) AS scheduling_progress_anchor,
               target_at + COALESCE((
-                SELECT SUM(MAX(0, json_extract(value, '$.unblocked_at') - json_extract(value, '$.blocked_at')))
+                SELECT SUM(MAX(0, json_extract(value, '$.unblocked_at') - MAX(target_assigned_at, json_extract(value, '$.blocked_at'))))
                 FROM json_each(block_history_json) WHERE json_extract(value, '$.unblocked_at') IS NOT NULL
               ), 0) AS scheduling_target_at
             FROM goals WHERE status = 'active'
@@ -478,7 +492,7 @@ export class GoalsRepository {
       const nowMs = this.clock.now();
       if (
         parsed.attempt_evidence !== undefined &&
-        !artifactReferenceExists(this.db, parsed.attempt_evidence, nowMs)
+        !artifactReferenceExists(this.db, parsed.attempt_evidence, nowMs, this.options.dataDir)
       ) {
         throw new StorageError(
           "Attempt evidence must name an existing artifact from this or an earlier turn",
@@ -492,6 +506,24 @@ export class GoalsRepository {
           ...(goal.block_history ?? []),
           {
             ...parsed,
+            disclosure_label: memoryDisclosureLabelMetadata(
+              combineMemoryDisclosureLabels([
+                goalMemoryDisclosureLabel(goal),
+                // An attempt artifact is not a complete source declaration for
+                // the free-text rationale. Preserve known sources and fail closed
+                // for its unrecorded sources, instead of inheriting goal ownership.
+                unknownMemoryDisclosureLabel(),
+                ...(blocker.kind === "goal"
+                  ? [goalMemoryDisclosureLabel(this.get(blocker.goal_id)!)]
+                  : []),
+                ...(blocker.kind === "entity"
+                  ? [relationshipPrivateMemoryDisclosureLabel([blocker.entity_id])]
+                  : []),
+                ...(parsed.attempt_evidence === undefined
+                  ? []
+                  : [artifactReferenceDisclosureLabel(this.db, parsed.attempt_evidence)]),
+              ]),
+            ),
             blocked_at: nowMs,
             unblocked_at: null,
             unblock_reason: null,
@@ -521,8 +553,16 @@ export class GoalsRepository {
         block.unblocked_at === null
           ? {
               ...block,
-              unblocked_at: Math.max(block.blocked_at, effectiveAt),
+              unblocked_at: Math.max(block.blocked_at ?? effectiveAt, effectiveAt),
               unblock_reason: parsedReason,
+              disclosure_label: memoryDisclosureLabelMetadata(
+                combineMemoryDisclosureLabels([
+                  memoryDisclosureLabelFromMetadata(block.disclosure_label) ??
+                    unknownMemoryDisclosureLabel(),
+                  goalMemoryDisclosureLabel(goal),
+                  unknownMemoryDisclosureLabel(),
+                ]),
+              ),
             }
           : block,
       );
@@ -578,7 +618,7 @@ export class GoalsRepository {
         for (const row of rows) {
           const goal = mapGoalRow(row);
           const block = currentGoalBlock(goal);
-          if (block === null) continue; // Historical unnamed blocks are repaired by the identity migration.
+          if (block === null || block.blocked_at === null) continue; // Legacy unknown blocks need an explicit manual release.
           const blocker = block.blocker;
           const nowMs = this.clock.now();
           if (blocker.kind === "until" && nowMs >= blocker.until) {
@@ -589,6 +629,8 @@ export class GoalsRepository {
               blocker.until,
             );
           } else if (blocker.kind === "goal") {
+            // Only a terminal status releases the dependency. Becoming blocked
+            // leaves the blocker unfinished and does not resolve this wait.
             const dependency = this.get(blocker.goal_id);
             if (dependency?.status === "done" || dependency?.status === "abandoned") {
               const event =
@@ -814,6 +856,12 @@ export class GoalsRepository {
     const next = goalSchema.parse({
       ...current,
       ...parsedPatch,
+      target_assigned_at:
+        parsedPatch.target_at !== undefined && parsedPatch.target_at !== current.target_at
+          ? parsedPatch.target_at === null
+            ? null
+            : this.clock.now()
+          : (current.target_assigned_at ?? null),
       record_version: nextRecordVersion(expectedVersion),
       progress_notes: nextProgressNotes,
       last_progress_ts: nextLastProgressTs,
@@ -827,7 +875,7 @@ export class GoalsRepository {
           `
             UPDATE goals
             SET description = ?, terminal_condition = ?, priority = ?, parent_goal_id = ?,
-                status = ?, progress_notes = ?, last_progress_ts = ?, target_at = ?,
+                status = ?, progress_notes = ?, last_progress_ts = ?, target_at = ?, target_assigned_at = ?,
                 audience_entity_id = ?, owner_entity_id = ?, counterparty_entity_id = ?,
                 source_stream_entry_ids = ?,
                 canonicalized_by_artifact_entry_id = ?,
@@ -846,6 +894,7 @@ export class GoalsRepository {
           next.progress_notes,
           next.last_progress_ts,
           next.target_at,
+          next.target_assigned_at,
           next.audience_entity_id,
           next.owner_entity_id,
           next.counterparty_entity_id,
@@ -902,7 +951,7 @@ export class GoalsRepository {
             UPDATE goals
             SET description = ?, terminal_condition = ?, priority = ?, parent_goal_id = ?,
                 status = ?, progress_notes = ?, last_progress_ts = ?, created_at = ?,
-                target_at = ?, audience_entity_id = ?, owner_entity_id = ?,
+                target_at = ?, target_assigned_at = ?, audience_entity_id = ?, owner_entity_id = ?,
                 counterparty_entity_id = ?, source_stream_entry_ids = ?,
                 canonicalized_by_artifact_entry_id = ?, provenance_kind = ?, provenance_episode_ids = ?,
                 provenance_stream_entry_ids = ?, provenance_process = ?
@@ -919,6 +968,7 @@ export class GoalsRepository {
           parsed.last_progress_ts,
           parsed.created_at,
           parsed.target_at,
+          parsed.target_assigned_at ?? null,
           parsed.audience_entity_id,
           parsed.owner_entity_id,
           parsed.counterparty_entity_id ?? null,

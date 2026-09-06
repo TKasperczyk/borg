@@ -1,4 +1,7 @@
-import { artifactReferenceSchema } from "../../memory/common/artifact-reference.js";
+import {
+  artifactReferenceSchema,
+  deliveredOutboundPostArtifactOutputSchema,
+} from "../../memory/common/artifact-reference.js";
 import { goalBlockStateFields } from "../../memory/self/goal-blocks.js";
 import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
 import {
@@ -217,15 +220,6 @@ const resolvedOpenQuestionArtifactOutputSchema = z.object({
   openQuestion: z.object({
     id: openQuestionIdSchema,
     status: z.literal("resolved"),
-  }),
-});
-
-const deliveredOutboundPostArtifactOutputSchema = z.object({
-  outbound: z.object({
-    delivery_outcome: z.object({
-      state: z.literal("delivered"),
-      agent_message_id: streamEntryIdSchema,
-    }),
   }),
 });
 

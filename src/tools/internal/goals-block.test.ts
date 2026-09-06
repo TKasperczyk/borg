@@ -7,7 +7,14 @@ import { createMigrations } from "../../borg/storage-setup.js";
 import { selectExecutiveFocus, ExecutiveStepsRepository } from "../../executive/index.js";
 import { EntityRepository } from "../../memory/commitments/index.js";
 import { IdentityEventRepository } from "../../memory/identity/index.js";
-import { GoalsRepository, currentGoalBlock, goalSchedulingTimes } from "../../memory/self/index.js";
+import {
+  GoalsRepository,
+  OpenQuestionsRepository,
+  currentGoalBlock,
+  goalSchedulingTimes,
+  goalBlockStateFields,
+} from "../../memory/self/index.js";
+import { relationshipPrivateMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import { TrainOfThoughtRepository } from "../../memory/train-of-thought/index.js";
 import { listUnfinishedGoalsForCognition } from "../../cognition/self/active-goals.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
@@ -44,6 +51,7 @@ function harness() {
   const steps = new ExecutiveStepsRepository({ db, clock });
   const goals = new GoalsRepository({
     db,
+    dataDir,
     clock,
     identityEventRepository: events,
     executiveStepsRepository: steps,
@@ -148,7 +156,7 @@ describe("named goal blocks", () => {
   });
 
   it.each(["done", "abandoned", "retired"] as const)(
-    "unblocks when the blocker goal becomes %s, with the event basis",
+    "unblocks only when the blocker goal reaches terminal status %s, with the event basis",
     (status) => {
       const h = harness();
       const dependency = h.add();
@@ -180,7 +188,7 @@ describe("named goal blocks", () => {
     },
   );
 
-  it("does not unblock when the blocker goal itself becomes blocked", () => {
+  it("keeps the dependency blocked because blocked is not a terminal status", () => {
     const h = harness();
     const dependency = h.add();
     const goal = h.add();
@@ -294,6 +302,135 @@ describe("named goal blocks", () => {
     expect(h.events.list({ recordId: goal.id })[0]?.reason).toContain(
       `inbound stream entry ${arrival.id}`,
     );
+  });
+
+  it("persists each rationale's conservative source labels instead of inheriting the goal owner's label", async () => {
+    const h = harness();
+    const owner = h.entities.resolve("Alice");
+    const sourceOwner = h.entities.resolve("ボブ");
+    const question = new OpenQuestionsRepository({ db: h.db, clock: h.clock }).add({
+      question: "私的な試行記録",
+      urgency: 0.5,
+      audience_entity_id: sourceOwner,
+      disclosure_label: relationshipPrivateMemoryDisclosureLabel([sourceOwner]),
+      source: "reflection",
+      provenance,
+    });
+    const goal = h.goals.add({
+      description: "Follow up",
+      ownerEntityId: owner,
+      priority: 1,
+      provenance,
+    });
+    const tool = createGoalsBlockTool({ goalsRepository: h.goals });
+    const result = await tool.invoke(
+      {
+        goal_id: goal.id,
+        ...declaration,
+        blocker: { kind: "until", until: 9_000 },
+        attempt_evidence: { kind: "created_open_question", id: question.id },
+      },
+      { sessionId: DEFAULT_SESSION_ID, origin: "autonomous" },
+    );
+    const label = result.goal.block_history![0]!.disclosure_label;
+    expect(label).toMatchObject({
+      disclosure_class: "unknown",
+      private_to_entity_ids: expect.arrayContaining([owner, sourceOwner]),
+      public_to_entity_ids: [],
+    });
+    const stored = JSON.parse(
+      (
+        h.db.prepare("SELECT block_history_json FROM goals WHERE id = ?").get(goal.id) as {
+          block_history_json: string;
+        }
+      ).block_history_json,
+    );
+    expect(stored[0].disclosure_label).toEqual(label);
+    const reopened = new GoalsRepository({
+      db: h.db,
+      clock: h.clock,
+      identityEventRepository: h.events,
+    });
+    expect(goalBlockStateFields(reopened.get(goal.id)!).block?.disclosure_label).toEqual(label);
+    const unblocked = reopened.unblock(goal.id, "Autre raison privée", provenance);
+    expect(unblocked.block_history![0]!.disclosure_label).toEqual(label);
+    expect(listUnfinishedGoalsForCognition(reopened).map((row) => row.id)).toContain(goal.id);
+  });
+
+  it("pauses only the portion of a block after the current deadline's assignment in both TS and SQL", () => {
+    const h = harness();
+    const goal = h.add();
+    h.goals.block(
+      goal.id,
+      { ...declaration, blocker: { kind: "until", until: 5_000 } },
+      provenance,
+    );
+    h.clock.advance(4_000);
+    h.goals.reconcileBlocks();
+    const assignedLater = h.goals.update(goal.id, { target_at: 7_000 }, provenance);
+    expect(assignedLater.target_assigned_at).toBe(5_000);
+    expect(goalSchedulingTimes(assignedLater).targetAt).toBe(7_000);
+    const dueAt = () =>
+      h.goals.listActiveFollowupDueCandidatesReadOnly({
+        lookaheadMs: 0,
+        staleMs: 100_000,
+        limit: 5,
+      })[0]?.due_at;
+    expect(dueAt()).toBe(7_001);
+    h.clock.advance(1_000);
+    h.goals.block(
+      goal.id,
+      { ...declaration, blocker: { kind: "until", until: 8_000 } },
+      provenance,
+    );
+    h.clock.advance(1_000);
+    h.goals.update(goal.id, { target_at: 9_000 }, provenance);
+    h.clock.advance(1_000);
+    h.goals.reconcileBlocks();
+    expect(goalSchedulingTimes(h.goals.get(goal.id)!).targetAt).toBe(10_000);
+    expect(dueAt()).toBe(10_001);
+  });
+
+  it("requires a recorded delivered outcome for delivered_outbound_post while keeping generic message evidence", async () => {
+    const h = harness();
+    const message = await h.writer.append({
+      kind: "agent_msg",
+      content: "composed before transport",
+    });
+    const input = {
+      ...declaration,
+      blocker: { kind: "until" as const, until: 9_000 },
+      attempt_evidence: { kind: "delivered_outbound_post" as const, id: message.id },
+    };
+    const goal = h.add();
+    expect(() => h.goals.block(goal.id, input, provenance)).toThrow();
+    for (const state of ["transport_failed", "not_transportable"]) {
+      await h.writer.append({
+        kind: "tool_result",
+        content: {
+          ok: true,
+          output: { outbound: { delivery_outcome: { state, agent_message_id: message.id } } },
+        },
+      });
+      expect(() => h.goals.block(goal.id, input, provenance)).toThrow();
+    }
+    const delivered = {
+      ok: true,
+      output: {
+        outbound: { delivery_outcome: { state: "delivered", agent_message_id: message.id } },
+      },
+    };
+    await h.writer.append({ kind: "tool_result", turn_status: "aborted", content: delivered });
+    expect(() => h.goals.block(goal.id, input, provenance)).toThrow();
+    expect(
+      h.goals.block(
+        h.add().id,
+        { ...input, attempt_evidence: { kind: "stream_entry", id: message.id } },
+        provenance,
+      ).status,
+    ).toBe("blocked");
+    await h.writer.append({ kind: "tool_result", content: delivered });
+    expect(h.goals.block(goal.id, input, provenance).status).toBe("blocked");
   });
 
   it("commits the transition and audit atomically, and manual unblock requires a reason", async () => {

@@ -361,10 +361,11 @@ export type GoalBlocker =
   | { kind: "entity"; entity_id: string }
   | { kind: "until"; until: number };
 export type GoalBlockRecord = {
-  blocker: GoalBlocker;
-  attempt_status: "attempted_unavailable";
+  blocker: GoalBlocker | { kind: "legacy_unknown" };
+  attempt_status: "attempted_unavailable" | "not_recorded";
   reason: string;
-  blocked_at: number;
+  blocked_at: number | null;
+  disclosure_label?: DisclosureLabel;
   unblocked_at: number | null;
   unblock_reason: string | null;
   attempt_evidence?: { kind: string; id: string | number };

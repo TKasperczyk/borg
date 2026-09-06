@@ -669,6 +669,29 @@ describe("Mind page", () => {
     expect(await screen.findByText("BUMP / BLOCK")).toBeTruthy();
   });
 
+  it("renders legacy blocks without inventing an entity, attempt or start time", async () => {
+    const legacy = identity();
+    legacy.goals[0] = {
+      ...legacy.goals[0]!,
+      status: "blocked",
+      block_history: [{
+        blocker: { kind: "legacy_unknown" },
+        attempt_status: "not_recorded",
+        blocked_at: null,
+        reason: "legacy, blocker not recorded",
+        unblocked_at: null,
+        unblock_reason: null,
+      }],
+    };
+    renderMind("/mind", { identityOverride: legacy });
+
+    fireEvent.click(await screen.findByText("Block history (1)"));
+    expect(screen.getByText(/Legacy: blocker not recorded/).textContent).toContain(
+      "attempt not recorded · since not recorded",
+    );
+    expect(screen.queryByText(/Entity undefined|1970-01-01/)).toBeNull();
+  });
+
   it("renders one graph inspector action per row and navigates to the graph detail route", async () => {
     renderMind("/mind/inspect/graph");
 

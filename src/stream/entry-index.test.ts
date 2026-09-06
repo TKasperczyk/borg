@@ -80,7 +80,7 @@ describe("stream entry index", () => {
       const indexes = upgradedDb.prepare("PRAGMA index_list('stream_entry_index')").all();
 
       expect(upgradedDb.listAppliedMigrations().map((migration) => migration.id)).toEqual([
-        1, 2, 3, 4,
+        1, 2, 3, 4, 5,
       ]);
       expect(indexes).toEqual(
         expect.arrayContaining([

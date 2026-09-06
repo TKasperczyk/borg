@@ -5,7 +5,7 @@ import { tableExists, tableHasColumn } from "../storage/sqlite/migrations-utils.
 import { StorageError } from "../util/errors.js";
 import { streamEntryIdHelpers, type EntityId, type StreamEntryId } from "../util/ids.js";
 import { serializeJsonValue } from "../util/json-value.js";
-import type { AnsweredWindowEvidence } from "./answered-window.js";
+import { ANSWERED_WINDOW_TERMINAL_KINDS, type AnsweredWindowEvidence } from "./answered-window.js";
 
 import { getSessionStreamPath } from "./path.js";
 import {
@@ -27,6 +27,9 @@ type LoggerLike = Pick<Console, "error" | "warn">;
 
 const FORWARD_SCAN_CHUNK_SIZE_BYTES = 64 * 1024;
 const NEWLINE_BYTE = 0x0a;
+const ANSWERED_WINDOW_TERMINAL_KINDS_SQL = ANSWERED_WINDOW_TERMINAL_KINDS.map(
+  (kind) => `'${kind}'`,
+).join(", ");
 
 export const streamEntryIndexMigrations: Migration[] = [
   {
@@ -138,6 +141,19 @@ export const streamEntryIndexMigrations: Migration[] = [
         ON stream_entry_index(session_id, byte_offset DESC)
         WHERE response_to_kind = 'stream_backlog' AND active = 1 AND receipt_pending = 0
           AND kind IN ('agent_msg', 'agent_suppressed', 'internal_event');
+      `);
+    },
+  },
+  {
+    id: 5,
+    name: "stream_entry_observed_answered_edges",
+    up: (db) => {
+      db.exec(`
+        DROP INDEX idx_stream_entry_latest_answered_edge;
+        CREATE INDEX idx_stream_entry_latest_answered_edge
+        ON stream_entry_index(session_id, byte_offset DESC)
+        WHERE response_to_kind = 'stream_backlog' AND active = 1 AND receipt_pending = 0
+          AND kind IN (${ANSWERED_WINDOW_TERMINAL_KINDS_SQL});
       `);
     },
   },
@@ -1064,7 +1080,7 @@ export class StreamEntryIndexRepository {
       .prepare(
         `SELECT * FROM stream_entry_index
       WHERE session_id = ? AND response_to_kind = 'stream_backlog'
-        AND kind IN ('agent_msg', 'agent_suppressed', 'internal_event')
+        AND kind IN (${ANSWERED_WINDOW_TERMINAL_KINDS_SQL})
         AND active = 1 AND receipt_pending = 0 AND timestamp <= ?
       ORDER BY byte_offset DESC LIMIT 1`,
       )

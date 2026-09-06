@@ -1772,6 +1772,12 @@ it("pins blocked goal labels and visible unblock history", () => {
         blocker: { kind: "entity", entity_id: CREATOR_ID },
         attempt_status: "attempted_unavailable",
         reason: "試しました。返答を待っています。",
+        disclosure_label: {
+          disclosure_class: "unknown",
+          origin_audience_entity_ids: [],
+          private_to_entity_ids: [],
+          public_to_entity_ids: [],
+        },
         blocked_at: NOW_MS - 10_000,
         unblocked_at: null,
         unblock_reason: null,

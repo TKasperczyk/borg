@@ -380,6 +380,63 @@ describe("cli", () => {
       progress_notes: "Almost there",
     });
 
+    for (const flags of [
+      ["--attempted-unavailable", "--reason", "待ち"],
+      [
+        "--attempted-unavailable",
+        "--reason",
+        "待ち",
+        "--until",
+        "8000000000000",
+        "--blocker-goal",
+        goal.id,
+      ],
+      ["--reason", "待ち", "--until", "8000000000000"],
+      ["--attempted-unavailable", "--until", "8000000000000"],
+    ]) {
+      expect(
+        await runCli(["node", "borg", "goal", "block", goal.id, ...flags], {
+          stdout: createOutputBuffer().stream,
+          stderr: createOutputBuffer().stream,
+          dataDir: tempDir,
+        }),
+      ).toBe(1);
+    }
+    const blockOut = createOutputBuffer();
+    expect(
+      await runCli(
+        [
+          "node",
+          "borg",
+          "goal",
+          "block",
+          goal.id,
+          "--attempted-unavailable",
+          "--reason",
+          "試行後、時間待ち",
+          "--until",
+          "8000000000000",
+        ],
+        {
+          stdout: blockOut.stream,
+          stderr: createOutputBuffer().stream,
+          dataDir: tempDir,
+        },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(blockOut.read())).toMatchObject({
+      id: goal.id,
+      status: "blocked",
+      block_history: [
+        {
+          blocker: { kind: "until", until: 8_000_000_000_000 },
+          attempt_status: "attempted_unavailable",
+          reason: "試行後、時間待ち",
+          disclosure_label: { disclosure_class: "unknown" },
+        },
+      ],
+    });
+
     const valueAddOut = createOutputBuffer();
     expect(
       await runCli(

@@ -437,4 +437,11 @@ export const selfMigrations = [
       db.exec("CREATE INDEX idx_goals_blocked ON goals(id) WHERE status = 'blocked'");
     },
   },
+  {
+    id: 11,
+    name: "goal_deadline_assignment_basis",
+    up: (db) => {
+      db.exec("ALTER TABLE goals ADD COLUMN target_assigned_at INTEGER NULL");
+    },
+  },
 ] as const satisfies readonly Migration[];

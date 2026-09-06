@@ -30,7 +30,7 @@ function harness() {
   });
   async function respond(
     entries: StreamEntry[],
-    kind: "agent_msg" | "agent_suppressed" = "agent_msg",
+    kind: "agent_msg" | "agent_suppressed" | "agent_observed" | "internal_event" = "agent_msg",
   ) {
     const last = entries.at(-1)!;
     return writer.append({
@@ -69,7 +69,7 @@ describe("answered-window edge evidence", () => {
     expect(h.describe().outside.without_edge).toBe(1);
   });
 
-  it.each(["agent_msg", "agent_suppressed"] as const)(
+  it.each(["agent_msg", "agent_suppressed", "agent_observed", "internal_event"] as const)(
     "pins the %s terminal basis and renders exact none outside",
     async (kind) => {
       const h = harness();

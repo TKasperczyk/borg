@@ -3446,6 +3446,12 @@ describe("reflector", () => {
           blocker: { kind: "until" as const, until: harness.clock.now() },
           attempt_status: "attempted_unavailable" as const,
           reason: "試行後、時間待ち",
+          disclosure_label: {
+            disclosure_class: "unknown" as const,
+            origin_audience_entity_ids: [],
+            private_to_entity_ids: [],
+            public_to_entity_ids: [],
+          },
           blocked_at: harness.clock.now() - 60_000,
           unblocked_at: harness.clock.now(),
           unblock_reason: `until timestamp ${harness.clock.now()} passed`,

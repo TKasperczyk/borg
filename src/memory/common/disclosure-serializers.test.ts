@@ -4,10 +4,58 @@ import { parseIdentityEventDisclosureSources, type IdentityEvent } from "../iden
 import { createEntityId, createGoalId } from "../../util/ids.js";
 import {
   goalMemoryDisclosureLabel,
+  identityEventMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
 } from "./disclosure-serializers.js";
+import {
+  memoryDisclosureLabelMetadata,
+  relationshipPrivateMemoryDisclosureLabel,
+} from "./disclosure-label.js";
 
 describe("goal disclosure serialization", () => {
+  it.each([false, true])(
+    "preserves historical goal block snapshots and fails closed when their source label is missing (labeled=%s)",
+    async (labeled) => {
+      const owner = createEntityId();
+      const sourceOwner = createEntityId();
+      const event: IdentityEvent = {
+        id: 1,
+        record_type: "goal",
+        record_id: createGoalId(),
+        action: "block",
+        old_value: null,
+        new_value: {
+          owner_entity_id: owner,
+          block_history: [
+            {
+              blocker: { kind: "until", until: 5_000 },
+              blocked_at: 1_000,
+              reason: "Rationale from another participant's memory",
+              ...(labeled
+                ? {
+                    disclosure_label: memoryDisclosureLabelMetadata(
+                      relationshipPrivateMemoryDisclosureLabel([sourceOwner]),
+                    ),
+                  }
+                : {}),
+            },
+          ],
+        },
+        reason: null,
+        provenance: { kind: "online", process: "tool.goals.block" },
+        review_item_id: null,
+        overwrite_without_review: false,
+        ts: 1_000,
+      };
+      const original = structuredClone(event);
+      const label = await identityEventMemoryDisclosureLabel(event);
+      expect(label.disclosureClass).toBe(labeled ? "relationship_private" : "unknown");
+      expect(label.privateToEntityIds).toContain(owner);
+      if (labeled) expect(label.privateToEntityIds).toContain(sourceOwner);
+      expect(event).toEqual(original);
+    },
+  );
+
   it("does not authorize a private goal's counterparty as audience or origin", () => {
     const privateAudience = createEntityId();
     const thirdPartyCounterparty = createEntityId();

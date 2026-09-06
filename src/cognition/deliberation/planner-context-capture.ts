@@ -263,6 +263,9 @@ function projectSelfSnapshot(snapshot: SelfSnapshot) {
       last_progress_ts: goal.last_progress_ts,
       created_at: goal.created_at,
       target_at: goal.target_at,
+      ...(goal.target_assigned_at === undefined
+        ? {}
+        : { target_assigned_at: goal.target_assigned_at }),
       audience_entity_id: goal.audience_entity_id,
       owner_entity_id: goal.owner_entity_id,
       counterparty_entity_id: goal.counterparty_entity_id,

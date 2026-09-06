@@ -11,13 +11,17 @@ import {
   combineMemoryDisclosureLabels,
   selfPrivateMemoryDisclosureLabel,
   unknownMemoryDisclosureLabel,
+  memoryDisclosureLabelFromMetadata,
   type MemoryDisclosureLabel,
 } from "../../memory/common/disclosure-label.js";
 import {
   actionMemoryDisclosureLabel,
+  goalMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
 } from "../../memory/common/disclosure-serializers.js";
 import type { ActionRecord } from "../../memory/actions/index.js";
+import { flattenGoalTree, type GoalRecord } from "../../memory/self/index.js";
+import { goalBlockStateFields, type GoalBlockRecord } from "../../memory/self/goal-blocks.js";
 import {
   livedExperienceDaySummarySchema,
   type ActivityAutobiographicalSourceEvent,
@@ -41,7 +45,12 @@ import {
 import { streamEntryIdSchema } from "../../util/id-schemas.js";
 import { type JsonValue } from "../../util/json-value.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
-import { formatUtcDayBoundary, timestampFromUtcDayKey, utcDayStartMs } from "../../util/utc-day.js";
+import {
+  formatUtcDayBoundary,
+  timestampFromUtcDayKey,
+  utcDayStartMs,
+  utcDayKey,
+} from "../../util/utc-day.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
@@ -70,7 +79,7 @@ const livedExperienceDaySummaryToolSchema = z.object({
 export const LIVED_EXPERIENCE_DAY_SUMMARY_TOOL = {
   name: TOOL_NAME,
   description:
-    "Emit one first-person experiential summary for a closed UTC day from self-private decisions, counts, summarized episode evidence, and my own action records with outcomes.",
+    "Emit one first-person experiential summary for a closed UTC day from self-private decisions, counts, summarized episode evidence, my own action records with outcomes, and goal block intervals with transition bases.",
   inputSchema: toToolInputSchema(livedExperienceDaySummaryToolSchema),
 } satisfies LLMToolDefinition;
 
@@ -113,6 +122,31 @@ type DayCandidate = {
   selfDecisionDensity: SelfDecisionDailyDensityRow | null;
 };
 
+type DayGoalBlocks = {
+  goal: GoalRecord;
+  intervals: GoalBlockRecord[];
+};
+
+function goalBlocksForDay(
+  goals: readonly GoalRecord[],
+  startMs: number,
+  endMs: number,
+): DayGoalBlocks[] {
+  return goals.flatMap((goal) => {
+    const intervals = goalBlockStateFields(goal).block_history.filter((block) =>
+      block.blocked_at === null
+        ? // An undated legacy start cannot locate a past day's block. A known
+          // manual release can still supply that day's actual transition.
+          block.unblocked_at !== null &&
+          block.unblocked_at >= startMs &&
+          block.unblocked_at <= endMs
+        : block.blocked_at <= endMs &&
+          (block.unblocked_at === null || block.unblocked_at >= startMs),
+    );
+    return intervals.length === 0 ? [] : [{ goal, intervals }];
+  });
+}
+
 function uniqueValues<T>(values: readonly T[]): T[] {
   return [...new Set(values)];
 }
@@ -151,11 +185,19 @@ function dayWindow(dayKey: string): { dayStartMs: number; dayEndMs: number } {
   };
 }
 
-function densityCountsSnapshot(candidate: DayCandidate): JsonValue {
+function densityCountsSnapshot(
+  candidate: DayCandidate,
+  goalBlocks: readonly DayGoalBlocks[],
+): JsonValue {
   return {
     utc_day: candidate.utcDay,
     day_start_ms: candidate.dayStartMs,
     day_end_ms: candidate.dayEndMs,
+    goal_blocks: {
+      goal_count: goalBlocks.length,
+      interval_count: goalBlocks.reduce((sum, row) => sum + row.intervals.length, 0),
+      goal_ids: goalBlocks.map((row) => row.goal.id),
+    },
     activity: candidate.activityDensity
       ? {
           event_count: candidate.activityDensity.eventCount,
@@ -196,6 +238,7 @@ function densityCountsSnapshot(candidate: DayCandidate): JsonValue {
 function buildCandidateDays(input: {
   activityDensityRows: readonly ActivityGlobalDailyDensityRow[];
   selfDecisionDensityRows: readonly SelfDecisionDailyDensityRow[];
+  goalBlockDayKeys: readonly string[];
   existingSummaries: readonly LivedExperienceDaySummary[];
   currentOpenDayStartMs: number;
   maxDays: number;
@@ -206,6 +249,7 @@ function buildCandidateDays(input: {
   const dayKeys = uniqueValues([
     ...input.activityDensityRows.map((row) => row.dayKey),
     ...input.selfDecisionDensityRows.map((row) => row.dayKey),
+    ...input.goalBlockDayKeys,
   ]).sort();
   const candidates: DayCandidate[] = [];
 
@@ -238,6 +282,7 @@ function buildDayPrompt(input: {
   activityEvents: readonly ActivityAutobiographicalSourceEvent[];
   episodes: readonly Episode[];
   actionRecords: readonly ActionRecord[];
+  goalBlocks: readonly DayGoalBlocks[];
   countsSnapshot: JsonValue;
   maxSelfDecisionEvents: number;
   maxActivityEvents: number;
@@ -317,6 +362,16 @@ function buildDayPrompt(input: {
         ...memoryDisclosurePayloadFields(actionMemoryDisclosureLabel(record)),
       }),
     ),
+    "Goal block intervals overlapping this day, including blocks with no episode or action text. Each interval carries its own disclosure label and actual transition times and reasons; a null start is not recorded. Interpret transitions relative to the day boundaries, not the goal's current status. These are recalled state labels, never judgments about whether an attempt was adequate:",
+    ...input.goalBlocks.map(({ goal, intervals }) =>
+      JSON.stringify({
+        goal_id: goal.id,
+        description: goal.description,
+        source_stream_entry_ids: goal.source_stream_entry_ids ?? [],
+        block_intervals: intervals,
+        ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
+      }),
+    ),
   ].join("\n");
 }
 
@@ -360,6 +415,7 @@ async function combinedDisclosureLabel(input: {
   ctx: OfflineContext;
   activityEvents: readonly ActivityAutobiographicalSourceEvent[];
   actionRecords: readonly ActionRecord[];
+  goalBlocks: readonly DayGoalBlocks[];
   sourceEpisodeIds: readonly EpisodeId[];
 }): Promise<MemoryDisclosureLabel> {
   const originAudienceIds = uniqueValues(
@@ -369,6 +425,16 @@ async function combinedDisclosureLabel(input: {
     ].filter((entityId): entityId is EntityId => entityId !== null),
   );
   const labels: MemoryDisclosureLabel[] = [selfPrivateMemoryDisclosureLabel(originAudienceIds)];
+  for (const { goal, intervals } of input.goalBlocks) {
+    labels.push(goalMemoryDisclosureLabel(goal));
+    labels.push(
+      ...intervals.map(
+        (block) =>
+          memoryDisclosureLabelFromMetadata(block.disclosure_label) ??
+          unknownMemoryDisclosureLabel(),
+      ),
+    );
+  }
 
   if (input.sourceEpisodeIds.length > 0) {
     labels.push(
@@ -386,12 +452,22 @@ function candidateSourceStreamIds(input: {
   activityEvents: readonly ActivityAutobiographicalSourceEvent[];
   episodes: readonly Episode[];
   actionRecords: readonly ActionRecord[];
+  goalBlocks: readonly DayGoalBlocks[];
 }): StreamEntryId[] {
   return uniqueValues([
     ...input.selfDecisionEvents.flatMap((event) => event.sourceStreamEntryIds),
     ...input.activityEvents.flatMap((event) => event.sourceStreamEntryIds),
     ...sourceStreamEntryIdsFromEpisodes(input.episodes),
     ...input.actionRecords.flatMap((record) => record.provenance_stream_entry_ids),
+    ...input.goalBlocks.flatMap(({ goal, intervals }) => [
+      ...(goal.source_stream_entry_ids ?? []),
+      ...intervals.flatMap((block) =>
+        block.attempt_evidence?.kind === "stream_entry" ||
+        block.attempt_evidence?.kind === "delivered_outbound_post"
+          ? [block.attempt_evidence.id]
+          : [],
+      ),
+    ]),
   ]);
 }
 
@@ -491,9 +567,18 @@ export class LivedExperienceDaySummarizerProcess implements OfflineProcess<Lived
         untilMs,
         limit: Math.max(1, Math.floor(windowDays)) + 1,
       });
+    const rawGoals = flattenGoalTree(ctx.goalsRepository.list());
+    const goals =
+      ctx.sourceStreamAudienceDisclosureResolver?.resolve({ goals: rawGoals }).goals ?? rawGoals;
+    const goalBlocksByDay = new Map<string, DayGoalBlocks[]>();
+    for (let dayStartMs = sinceMs; dayStartMs < currentOpenDayStartMs; dayStartMs += DAY_MS) {
+      const rows = goalBlocksForDay(goals, dayStartMs, dayStartMs + DAY_MS - 1);
+      if (rows.length > 0) goalBlocksByDay.set(utcDayKey(dayStartMs), rows);
+    }
     const candidates = buildCandidateDays({
       activityDensityRows,
       selfDecisionDensityRows,
+      goalBlockDayKeys: [...goalBlocksByDay.keys()],
       existingSummaries,
       currentOpenDayStartMs,
       maxDays: Math.max(1, Math.floor(maxDaysPerRun)),
@@ -515,6 +600,7 @@ export class LivedExperienceDaySummarizerProcess implements OfflineProcess<Lived
 
         for (const candidate of candidates) {
           try {
+            const goalBlocks = goalBlocksByDay.get(candidate.utcDay) ?? [];
             const selfDecisionEvents = ctx.selfDecisionRepository.listAutonomousSelfPrivateForRange(
               {
                 sinceMs: candidate.dayStartMs,
@@ -546,14 +632,14 @@ export class LivedExperienceDaySummarizerProcess implements OfflineProcess<Lived
               createdUntilMs: candidate.dayEndMs,
               limit: config.maxActionRecordsPerDay,
             });
-            const countsSnapshot = densityCountsSnapshot(candidate);
+            const countsSnapshot = densityCountsSnapshot(candidate, goalBlocks);
             const response = (
               await callStructuredTool({
                 llmClient,
                 request: {
                   model: ctx.config.anthropic.models.background,
                   system: [
-                    "I consolidate my own closed-day lived experience from self-private decision summaries, structural activity counts, summarized episode evidence, and my own action records with outcomes.",
+                    "I consolidate my own closed-day lived experience from self-private decision summaries, structural activity counts, summarized episode evidence, my own action records with outcomes, and goal block intervals with transition bases.",
                     "I produce experiential narrative only. I do not judge output quality or decide whether any wake, silence, or decision was justified.",
                     SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
                   ].join("\n"),
@@ -566,6 +652,7 @@ export class LivedExperienceDaySummarizerProcess implements OfflineProcess<Lived
                         activityEvents,
                         episodes,
                         actionRecords,
+                        goalBlocks,
                         countsSnapshot,
                         maxSelfDecisionEvents: config.maxSelfDecisionEventsPerDay,
                         maxActivityEvents: config.maxActivityEventsPerDay,
@@ -590,6 +677,7 @@ export class LivedExperienceDaySummarizerProcess implements OfflineProcess<Lived
                 activityEvents,
                 episodes,
                 actionRecords,
+                goalBlocks,
               }),
             );
 
@@ -635,6 +723,7 @@ export class LivedExperienceDaySummarizerProcess implements OfflineProcess<Lived
               ctx,
               activityEvents,
               actionRecords,
+              goalBlocks,
               sourceEpisodeIds,
             });
             const previous = ctx.livedExperienceDaySummaryRepository.getByDay(

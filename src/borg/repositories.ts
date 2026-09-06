@@ -304,6 +304,7 @@ export async function buildBorgRepositories(
   });
   const goalsRepository = new GoalsRepository({
     db: sqlite,
+    dataDir: config.dataDir,
     clock,
     identityEventRepository,
     executiveStepsRepository,

@@ -1,5 +1,12 @@
 import type { SessionId, StreamCursor, StreamResponseTo } from "./types.js";
 
+export const ANSWERED_WINDOW_TERMINAL_KINDS = [
+  "agent_msg",
+  "agent_suppressed",
+  "agent_observed",
+  "internal_event",
+] as const;
+
 /**
  * An exact set, not the contiguous stream prefix ending at a response. The
  * source IDs are authoritative even when unanswered arrivals interleave with

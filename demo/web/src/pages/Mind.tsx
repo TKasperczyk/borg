@@ -856,8 +856,10 @@ function GoalRow({
                 ? `Until ${new Date(entry.blocker.until).toISOString()}`
                 : entry.blocker.kind === "goal"
                   ? `Goal ${entry.blocker.goal_id}`
-                  : `Entity ${entry.blocker.entity_id}`}
-              {` · attempted, unavailable since ${new Date(entry.blocked_at).toISOString()} · ${entry.reason}`}
+                  : entry.blocker.kind === "entity"
+                    ? `Entity ${entry.blocker.entity_id}`
+                    : "Legacy: blocker not recorded"}
+              {` · ${entry.attempt_status === "not_recorded" ? "attempt not recorded" : "attempted, unavailable"} · since ${entry.blocked_at === null ? "not recorded" : new Date(entry.blocked_at).toISOString()} · ${entry.reason}`}
               {entry.unblocked_at === null
                 ? " · blocked"
                 : ` · ended ${new Date(entry.unblocked_at).toISOString()}: ${entry.unblock_reason}`}

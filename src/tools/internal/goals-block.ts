@@ -8,6 +8,7 @@ import {
 import { memoryDisclosureLabelMetadataSchema } from "../../memory/common/disclosure-label.js";
 import {
   goalBlockInputSchema,
+  goalBlockStateFields,
   goalIdSchema,
   goalSchema,
   type GoalRecord,
@@ -37,7 +38,7 @@ function result(goal: GoalRecord, options: Options): z.infer<typeof outputSchema
       id: goal.id,
       description: goal.description,
       status: goal.status,
-      block_history: goal.block_history,
+      block_history: goalBlockStateFields(goal).block_history,
       ...memoryDisclosurePayloadFields(
         options.disclosureLabelForGoal?.(goal) ?? goalMemoryDisclosureLabel(goal),
       ),
@@ -51,7 +52,7 @@ export function createGoalsBlockTool(
   return {
     name: "tool.goals.block",
     description:
-      "Mark an active goal attempted_unavailable after an attempt, with my reason and exactly one named blocker: an existing goal, an existing entity, or an until timestamp in Unix milliseconds. Not attempted stays active. Optional attempt_evidence names an existing artifact from this or an earlier turn. Blocking pauses executive competition and scheduling pressure, preserves open steps and recall, and records its history. Structural completion of the blocker, a later inbound entry from the entity, or the timestamp passing reactivates it with an audited basis.",
+      "Only block goals I attempted and found unavailable; unattempted goals stay active. Declare attempted_unavailable with my reason and exactly one named blocker: another existing goal, an existing entity, or an until timestamp in Unix milliseconds. Optional attempt_evidence names an existing artifact from this or an earlier turn. Blocking pauses executive competition and scheduling pressure, preserves open steps and recall, and records its history and disclosure labels. A terminal status of the blocker goal (done or abandoned, including retirement), a later inbound entry from the entity, or the timestamp passing reactivates it with an audited basis. A blocker goal becoming blocked is not a terminal status.",
     menuSummary: "Block an attempted but unavailable goal with a named blocker and reason.",
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "write",

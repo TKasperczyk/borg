@@ -600,6 +600,7 @@ describe("self repositories", () => {
           streamProvenanceMigration!,
           counterpartyMigration!,
           selfMigrations.find((migration) => migration.name === "goal_named_block_history")!,
+          selfMigrations.find((migration) => migration.name === "goal_deadline_assignment_basis")!,
         ],
       });
       const goals = new GoalsRepository({
