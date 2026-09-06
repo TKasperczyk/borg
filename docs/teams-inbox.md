@@ -419,6 +419,80 @@ Response unchanged: `{ "action": "reply" | "silent", "content"?: "...", "reason"
   (60). Rolling the bridge back to the previous build pauses recovery of rows parked by this
   build until it is rolled forward again.
 
+- Phase B agent task deliveries are pulled by the bridge; nothing in the cluster calls
+  Azure. At enqueue, `conversation_registry` atomically stores the returned
+  `sidecar_session_id`, conversation/channel IDs, bot/tenant IDs when available, the
+  request's aliased conversation reference, and first/last-seen timestamps. Each
+  validated Activity refreshes an existing registration before lifecycle, local-duplicate,
+  or dropped-unmentioned returns, even if enqueue fails. Refreshes stay inside the ingress
+  FIFO; persisted receipt timestamps prevent an older enqueue retry or queued Activity
+  from overwriting a newer reference. The initial session mapping still comes from enqueue.
+  Registry rows survive at least `TEAMS_BRIDGE_DEDUP_RETENTION_SECONDS` after last seen,
+  and longer while pending Activities or deliveries still need them.
+- With delivery polling enabled, startup discovers `GET /v1/teams/capabilities` in the
+  background. Only `agent-task-v1: true` starts delivery work; an absent/false capability
+  or 404 quietly disables it until restart. Discovery failures back off without delaying
+  intake. One poll loop refreshes all registered sessions each sweep and calls
+  `POST /v1/teams/agent-deliveries/claim` in consecutive chunks of at most 200, sending
+  `sidecar_session_ids`, `wait_ms` (default/max 60000), and `lease_ms` (default 120000).
+  Empty chunks can hold the request for the full wait before the next chunk is polled.
+  Transient failures back off before the next claim, preserving progress through chunks.
+  All calls use the existing Bearer token and CA bundle, without redirects; the token
+  implies the tenant (one tenant per token). Claim read timeout is wait plus 10 seconds.
+- Before issuing an HTTP claim, durable `delivery_claims` rows pin its registered sessions.
+  Lost responses, persistence failures and interrupted requests keep pins across restart.
+  An uncertain request can still lease work during its poll wait; pins survive for wait
+  plus lease duration after failure or restart, and until a successful retry starts after
+  that interval. Earlier empty responses and elapsed time alone cannot release them.
+  Earlier uncertainty also survives changes to the lease setting. Cleanup cannot remove
+  those references even while there are no local pending deliveries.
+- Leased batches are persisted before posting in typed `pending_deliveries`: delivery,
+  session, terminal and task IDs, content, timestamps, active/parked state, attempts,
+  next-attempt time, final outcome and Teams message ID. Pending rows, acquisition of
+  available terminal claims and resolution of eligible HTTP claim pins share one SQLite
+  transaction, so a rollback leaves all three unchanged. A separate coordinator takes
+  due rows oldest-first with bounded concurrency across new and recovered deliveries;
+  it uses the existing backoff calculation and demotes leftover active rows on startup.
+  Excess leased work stays parked locally until capacity is available.
+- Agent deliveries reuse the existing `(sidecar_session_id, terminal_entry_id)` terminal
+  claim and post through `TeamsConnector.run_in_conversation` using the registry reference.
+  They never type or emit the generic failure reply. Before acking success, one transaction
+  records terminal sent-at, the Teams message ID (including quoted-bot detection), and the
+  pending row's final outcome. Redelivery or restart then retries only the ack. A different
+  owner of an unsent terminal parks and retries; it cannot post that terminal.
+- `POST /v1/teams/agent-deliveries/ack` sends `delivery_id`, `outcome`, and optional
+  `teams_message_id` or a content-free `error` code. Success acks `sent`; Connector failures
+  park with backoff and ack `failed_retryable`; missing/invalid references and Connector
+  403/404 record a permanent result and ack `failed_permanent` with a warning. A successful
+  final ack deletes the pending row; an ack failure keeps the final outcome for recovery.
+  Any HTTP 2xx is a successful ack, regardless of response body. Upstream normally answers
+  `200 {"status": "acknowledged"}`; this JSON shape is informational and is not required.
+  Terminal results retain the existing 30-day retention, extended while a pending delivery
+  needs them. The same unavoidable post-accepted/before-SQLite-receipt crash window as inbox
+  replies applies: Bot Connector has no idempotency key or transactional acknowledgement.
+- Outcome logs contain identifiers and outcomes, never message content. Shutdown stops the
+  poll and recovery coordinators, drains active sends within the existing shutdown budget,
+  then cancels and parks unfinished work before closing the shared HTTP clients.
+
+Delivery polling settings (defaults):
+
+```text
+TEAMS_BRIDGE_DELIVERY_POLLING=1
+TEAMS_BRIDGE_DELIVERY_POLL_WAIT_MS=60000
+TEAMS_BRIDGE_DELIVERY_LEASE_MS=120000
+TEAMS_BRIDGE_DELIVERY_MAX_IN_FLIGHT=4
+```
+
+Existing recovery/timeout settings also used by agent deliveries (defaults):
+
+```text
+TEAMS_BRIDGE_RECOVERY_BACKOFF_MIN_SECONDS=1
+TEAMS_BRIDGE_RECOVERY_BACKOFF_MAX_SECONDS=60
+TEAMS_BRIDGE_CONNECTOR_SEND_TIMEOUT_SECONDS=15
+TEAMS_BRIDGE_SHUTDOWN_DRAIN_SECONDS=30
+TEAMS_BRIDGE_DEDUP_RETENTION_SECONDS=604800
+```
+
 ## Extension: agent task events and deliveries
 
 Phase B adds a separate lane for deferred task results. A task accepted during a Teams turn
@@ -641,6 +715,188 @@ the ack can still duplicate it on reclaim. Claimers must finish and ack within t
 generation checks protect Borg's lease state but cannot undo an external Teams send by a stale
 consumer. The consumer owns protection against duplicate external sends. There is no bridge
 callback or push route.
+
+## Agent tasks (phase B)
+
+This section describes the team-agent implementation. Borg and the bridge are
+separate changes; team-agent never contacts the bridge. The completion path is
+`task_start -> Postgres worker -> outbox -> borg /memory/agent-events -> borg runner
+-> /v1/chat/task-result -> borg terminal/delivery queue -> bridge claim/ack`.
+
+### Tools and origin
+
+Ops chat exposes `task_start(spec: str, system: str | null = null)` and
+`task_status(task_id: str | null = null)`. They are absent from every autonomous
+role and from the existing read-only assistant mode. Personal, mentioned, quoted,
+and classifier-admitted inbox turns use the same tool surface. Silent batches and
+completion composition never execute tools.
+
+`task_start` commits one queued task and returns `{task_id, state: "queued"}`;
+it does not wait for OpenCode. A replay of the same runtime tool call returns
+the existing task id and its current state. The submission key hashes the saved
+thread id and LangGraph-injected tool call id and is unique within the tenant;
+the tool call id is absent from the model-visible argument schema. Distinct tool
+calls can submit several tasks in one turn. Tenant, requester, conversation, original thread,
+opaque sidecar session id and source entry ids come only from runtime contexts.
+The inbox origin is bound while `observe_chat` processes the batch and is cleared
+afterward. Legacy/console turns without an inbox origin cannot submit a task.
+The prompt requires the confirmed task id and says the result will be posted here.
+
+Specs are self-contained instructions (1–32000 characters). Repository/MR work
+can use a JSON string containing `task`, `repo`, `source_branch`, `target_branch`;
+those are forwarded to the existing OpenCode delegate, preserving its repository
+lock, branch/publication guards and cleanup. No identity, credential, agent or
+delivery override is accepted in this JSON form. `system` is the existing logical
+OpenCode system and is checked against the tenant's current assignment by the
+delegate. An MR without the required branch coordinates fails its existing guard.
+
+`task_status` only reads: the latest 20 tasks, or one UUID, scoped to the tenant
+and the same raw conversation id **and type**. A requester's personal chat may
+also see their own tasks from other conversations. Inaccessible and unknown ids
+both return an empty `tasks` list. Each result includes state, attempt, elapsed
+seconds, last heartbeat, summary, artifacts, error and delivery state.
+`delivery_state: sent` means the sidecar accepted the event; it is not confirmation
+that Teams received the eventual message. `not_ready` means no terminal event yet.
+
+### Persistence and loops
+
+`config_store.setup_config_store()` creates these tables under its existing
+transaction and startup advisory lock:
+
+- `agent_tasks`: immutable submission/origin coordinates, spec/system,
+  `queued|running|succeeded|failed|timed_out|cancelled`, transition version,
+  submission key, attempt and repository-deferral counts, next admission time,
+  owner/lease/heartbeat/deadline, result summary/artifacts/error,
+  creation/update timestamps. Conversation/origin fields are stored as columns;
+  source entry ids and artifacts are JSONB.
+- `agent_task_events`: UUID event id, task/version, `task_completed|task_failed`,
+  immutable JSONB payload, `pending|sent|failed` relay state, attempts, next due
+  time, creation and sent timestamps. `(task_id, task_version)` is unique.
+- `agent_task_replies`: first composed completion or fallback per
+  `(tenant_id, event_id)`, durable across replicas/restarts. Phase B retains task,
+  event and reply records indefinitely; it adds no retention or cancellation API.
+
+The lifespan starts worker and relay jobs with `_spawn_background_task` and cancels
+them on shutdown. Workers claim with `FOR UPDATE SKIP LOCKED`. An additional
+transaction advisory lock enforces `agent.task_concurrency` (default **2 per
+replica**, across all tenants and Gunicorn processes); hostname identifies the
+replica and a UUID identifies each process owner. Process-shared kernel file
+locks additionally reserve replica slots from before claim until the delegate
+thread exits, including after lease loss or during shutdown. Unlike a database
+lease, this admission survives a database outage while work drains, and process
+death releases it automatically. Gunicorn processes share the replica's temporary
+directory; the admission files are zero-byte locks and must not be unlinked while
+processes are running. Different replicas can claim
+different tasks concurrently. State writes are fenced by version, owner and a
+live lease. Heartbeats run every **30 s**, renewing a **90 s** lease. Each attempt
+has a **900 s** wall-clock deadline and its own OpenCode session scope, separate
+from the chat and all other attempts.
+
+The blocking delegate runs in an executor thread with copied runtime contexts.
+A stopped failed attempt may
+be requeued once (**at most two attempts**); only the final outcome emits an event.
+The delegate's host-produced repository-busy refusal instead defers admission
+for 5, 10, 20, … seconds, capped at 300 s, without consuming an execution attempt
+or emitting an event. The due time and deferral count survive restart.
+Timeouts are terminal and are not retried: the host requests session abort, ignores
+late success, and retains its concurrency slot until the Python thread exits.
+While the lease remains valid it is renewed during draining. The local stop flag
+is set synchronously before persistence; remote abort runs in a separate executor
+and shares the bounded, sanitized abort transport with interactive delegates.
+Unsuccessful abort HTTP statuses are reported without response bodies or credentials.
+HTTP request deadlines also cover repository preparation and shell calls.
+Remote abort is best-effort and cannot undo external effects. At startup and every
+30 s, expired running leases become failed with an explicit “OpenCode session was
+not resumed” error; live peer leases are preserved. Terminal state and outbox event
+commit atomically. Completed delegate outcomes stay in memory while fenced
+finalization retries with continuing heartbeats; persistence failures never rerun
+the completed delegate. Each finalization write is bounded to 5 s. This recovery
+requires a live process and lease; loss of either retains the reconciliation rule
+above. Execution retries do not guarantee exactly-once external effects.
+
+Task-store operations have a 5 s total budget, a 3 s connection timeout, a 4 s
+statement timeout and a 3 s lock timeout.
+
+The relay claims each due event for 60 s using a locked row and an incremented
+attempt fence, then performs the HTTP call outside the transaction, with a 30 s
+timeout. It uses the existing memory async POST helper, configured URL/CA and
+`x-borg-token`; credentials and transport/delegate error bodies are never logged
+by these loops. Failures retry after 1, 2, 4, … seconds, capped at 300 s, including
+after a restart. A late acknowledgement cannot overwrite a newer relay attempt.
+
+`POST /memory/agent-events` receives:
+
+```json
+{
+  "tenant": "acme",
+  "sidecar_session_id": "sess_...",
+  "event_id": "<uuid>",
+  "task_id": "<uuid>",
+  "task_version": 3,
+  "kind": "task_completed",
+  "occurred_at": "2026-09-06T12:00:00+00:00",
+  "outcome": {
+    "status": "succeeded",
+    "summary": "Completed the requested work.",
+    "artifacts": [{"label": "Report", "url": "https://example.org/report"}],
+    "error": null
+  },
+  "origin": {"source_entry_ids": ["entry-1"]}
+}
+```
+
+Summary is capped at 8000 characters and times include an offset. Non-success
+terminal states use `kind: task_failed`. A validated
+`200 {status: "enqueued"|"duplicate", entry_id}` marks the event sent; both statuses
+are success. Event id and payload remain identical on every relay retry.
+
+### Completion and delivery endpoints
+
+All three POST endpoints use the existing `/v1` Bearer authentication.
+
+1. **`POST /v1/chat/task-result`** — borg's runner sends
+   `{model, sidecar_session_id, conversation: {external_id,type,name},
+   event: {event_id,event_entry_id,task_id,task_version,kind,occurred_at,outcome},
+   requester: {external_id,display_name}|null}`. `model` is checked against the
+   token scope; the event is checked against the local ledger's task/version and
+   origin. The saved requester and thread work even when requester is null.
+   A cross-replica event lock serializes retries and the existing conversation
+   lock protects a tools-disabled chat graph invocation (recursion limit 4, no
+   playbook routing). One 45 s endpoint deadline covers registry refresh, locks,
+   ledger reads, composition and reply writes, reserving the final 5 s for fallback
+   persistence. A fixed runtime instruction requires
+   one outcome message, task id and artifact citations; event text is quoted
+   untrusted data. The response is `200 {action: "reply", content}`. Empty model
+   text and composition failures use deterministic non-empty fallback text built
+   from the saved event. Outcome replies are cached only after ledger origin
+   validation succeeds; all outcome text and event metadata used for composition
+   come from that ledger (the sidecar event entry id remains transport metadata).
+   The first validated reply/fallback is cached without expiry; a retry returns
+   the same content. Before validation succeeds, availability failures return a
+   neutral non-empty message without claiming an outcome or writing a cache entry.
+   After validation, a database outage still returns the saved outcome's fallback,
+   or completed composition, but cannot guarantee durable caching. Authentication,
+   malformed requests and mismatched/unknown events
+   retain 4xx errors. Borg alone appends the canonical message; no append-turn
+   call or direct Teams post is made here.
+2. **`POST /v1/teams/agent-deliveries/claim`** — accepts
+   `{sidecar_session_ids, wait_ms?: 60000, lease_ms?: 120000}`. `wait_ms` must be
+   between 0 and 60000. Proxies `/memory/agent-deliveries/claim`, with a ten-second
+   client timeout margin, returning `{deliveries: [{delivery_id,
+   sidecar_session_id,terminal_entry_id,task_id,content,created_at}]}` unchanged.
+3. **`POST /v1/teams/agent-deliveries/ack`** — accepts
+   `{delivery_id, outcome: "sent"|"failed_retryable"|"failed_permanent",
+   teams_message_id?, error?}` and proxies `/memory/agent-deliveries/ack`.
+   The sidecar's acknowledgement object is passed through unchanged.
+
+Claim and ack require a single authorized enabled tenant in the Bearer scope
+(or the existing single-tenant configuration). A multi-tenant token is ambiguous
+and receives 400; neither body accepts `tenant` or `model`. Sidecar errors retain
+the existing sanitized proxy status handling.
+
+**`GET /v1/teams/capabilities`** uses the same Bearer authentication and returns
+`{"agent-task-v1": true}`. Deploy borg's phase B routes/runner before enabling
+bridge claim/ack polling. End-to-end delivery requires that separate rollout.
 
 ## Rollout order
 
