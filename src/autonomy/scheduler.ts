@@ -1326,7 +1326,7 @@ export class AutonomyScheduler {
               this.scheduleBatchTriggerErrorBackoff(wakeBatch);
             }
             const executionCounts =
-              turnExecutionMetricsFromError(error) ?? ZERO_TURN_EXECUTION_COUNTS;
+              turnExecutionMetricsFromError(error) ?? (busy ? ZERO_TURN_EXECUTION_COUNTS : undefined);
             const outcomeSummary = busy
               ? "Skipped autonomous turn because the session was busy."
               : `Autonomous turn failed: ${formatError(error)}`;

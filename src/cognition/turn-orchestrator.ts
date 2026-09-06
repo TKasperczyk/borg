@@ -567,46 +567,50 @@ export class TurnOrchestrator {
 
     try {
       try {
-        const result = await turnExecutionMetricsStorage.run(
-          executionMetrics,
-          async () =>
-            await this.turnPhaseCoordinator.run({
-              input: phaseInput,
-              globalTurnCounter,
-              sessionId,
-              turnId,
-              streamWriter,
-              lifecycleTracker,
-            }),
-        );
-        lifecycleTracker.commitTurnState();
-        terminalOutcome =
-          result.terminalOutcome ??
-          (result.path === "suppressed" ? "suppressed_action" : "reflected");
-        return {
-          ...result,
-          ...snapshotTurnExecutionMetrics(executionMetrics),
-        };
-      } catch (error) {
-        associateTurnExecutionMetricsWithError(error, executionMetrics);
-        const rollbackFailures = await lifecycleTracker.cleanupAbortedTurnState({
-          turnId,
-          sessionId,
-        });
-        await this.appendFailureEvent(streamWriter, error, sessionId, turnId, rollbackFailures);
-        terminalOutcome = "aborted";
-        throw error;
+        try {
+          const result = await turnExecutionMetricsStorage.run(
+            executionMetrics,
+            async () =>
+              await this.turnPhaseCoordinator.run({
+                input: phaseInput,
+                globalTurnCounter,
+                sessionId,
+                turnId,
+                streamWriter,
+                lifecycleTracker,
+              }),
+          );
+          lifecycleTracker.commitTurnState();
+          terminalOutcome =
+            result.terminalOutcome ??
+            (result.path === "suppressed" ? "suppressed_action" : "reflected");
+          return {
+            ...result,
+            ...snapshotTurnExecutionMetrics(executionMetrics),
+          };
+        } catch (error) {
+          const rollbackFailures = await lifecycleTracker.cleanupAbortedTurnState({
+            turnId,
+            sessionId,
+          });
+          await this.appendFailureEvent(streamWriter, error, sessionId, turnId, rollbackFailures);
+          terminalOutcome = "aborted";
+          throw error;
+        } finally {
+          this.emitTerminalTurn({
+            turnId,
+            sessionId,
+            outcome: terminalOutcome,
+            startedWallMs: terminalStartedWallMs,
+          });
+        }
       } finally {
-        this.emitTerminalTurn({
-          turnId,
-          sessionId,
-          outcome: terminalOutcome,
-          startedWallMs: terminalStartedWallMs,
-        });
+        streamWriter.close();
+        await lease.release();
       }
-    } finally {
-      streamWriter.close();
-      await lease.release();
+    } catch (error) {
+      associateTurnExecutionMetricsWithError(error, executionMetrics);
+      throw error;
     }
   }
 }

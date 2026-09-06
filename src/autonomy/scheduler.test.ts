@@ -17,6 +17,7 @@ import { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import { selectSelfDecisionIntrospection } from "../memory/self-decisions/projection.js";
 import { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
 import type { TurnResult } from "../cognition/index.js";
+import { associateTurnExecutionMetricsWithError } from "../cognition/turn-execution-metrics.js";
 
 import {
   createCommitmentExpiringTrigger,
@@ -2857,7 +2858,42 @@ describe("AutonomyScheduler", () => {
     expect(onError.mock.calls[1]?.[0]).toMatchObject({ cause: interruptionError });
   });
 
-  it("records interrupted when completed-turn outcome bookkeeping fails", async () => {
+  it.each([true, false])(
+    "preserves error execution counts or null when recorded=%s",
+    async (recorded) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      cleanup = harness.cleanup;
+      const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
+      const failure = new Error("Turn failed at its outer rejection boundary");
+      if (recorded) {
+        associateTurnExecutionMetricsWithError(failure, { finalizer_rounds: 2, stall_retries: 3 });
+      }
+      const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const scheduler = createScheduler({
+        db: harness.db,
+        wakeRepository,
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerWindow: 6,
+        clock,
+        createStreamWriter,
+        watermarkRepository: new StreamWatermarkRepository({ db: harness.db, clock }),
+        turnOrchestrator: { run: vi.fn().mockRejectedValue(failure) },
+        toolDispatcher: new ToolDispatcher({ createStreamWriter, clock }),
+        sources: [createTestDueSource("error-execution-counts")],
+      });
+      expect(await scheduler.tick()).toMatchObject({ errorCount: 1 });
+      expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
+        outcome: "error",
+        finalizer_rounds: recorded ? 2 : null,
+        stall_retries: recorded ? 3 : null,
+      });
+    },
+  );
+
+  it("records interrupted with executed counts when completed-turn outcome bookkeeping fails", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({ clock });
     cleanup = harness.cleanup;
@@ -2881,7 +2917,15 @@ describe("AutonomyScheduler", () => {
         new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
       watermarkRepository,
       turnOrchestrator: {
-        run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+        run: vi
+          .fn()
+          .mockResolvedValue(
+            createStructuralTurnResult({
+              emissionKind: "suppressed",
+              finalizerRounds: 2,
+              stallRetries: 3,
+            }),
+          ),
       },
       toolDispatcher: new ToolDispatcher({
         createStreamWriter: (sessionId) =>
@@ -2900,6 +2944,8 @@ describe("AutonomyScheduler", () => {
     expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
       outcome: "interrupted",
       outcome_detail: expect.stringContaining(originalError.message),
+      finalizer_rounds: 2,
+      stall_retries: 3,
     });
   });
 

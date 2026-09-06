@@ -62,6 +62,7 @@ import {
 import { CognitionError, SessionBusyError } from "../util/errors.js";
 import type { SessionLock } from "./session-lock.js";
 import type { IntentRecord } from "./types.js";
+import { turnExecutionMetricsFromError } from "./turn-execution-metrics.js";
 
 type TraceEvent = {
   event: string;
@@ -3267,6 +3268,58 @@ describe("TurnOrchestrator evidence ledger", () => {
       await borg.close();
     }
   });
+
+  it.each(["terminal tracing", "lease release"])(
+    "associates executed counts with a rejection from %s",
+    async (failurePoint) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-terminal-metrics-"));
+      tempDirs.push(tempDir);
+      const failure = new Error(`${failurePoint} failed`);
+      const llm = new FakeLLMClient({ responses: ledgerTurnResponses("Completed answer.") });
+      const converse = llm.converse.bind(llm);
+      vi.spyOn(llm, "converse").mockImplementation((options) => {
+        options.onTransportRetry?.({ attempt: 2, kind: "stall", retry_transport: "unary" });
+        options.onTransportRetry?.({ attempt: 3, kind: "stall", retry_transport: "unary" });
+        return converse(options);
+      });
+      const borg = await openTestBorg(tempDir, llm, new ManualClock(1_800_000_180_000), undefined, {
+        tracerPath: join(tempDir, "trace.jsonl"),
+      });
+      const deps = (borg as unknown as { deps: BorgDependencies }).deps;
+      if (failurePoint === "terminal tracing") {
+        const emit = deps.tracer.emit.bind(deps.tracer);
+        vi.spyOn(deps.tracer, "emit").mockImplementation((event, data) => {
+          if (event === "turn.terminal") throw failure;
+          emit(event, data);
+        });
+      } else {
+        const lock = getSessionLock(borg);
+        const acquire = lock.acquire.bind(lock);
+        vi.spyOn(lock, "acquire").mockImplementation(async (...args) => {
+          const lease = await acquire(...args);
+          return lease === null
+            ? null
+            : {
+                async release() {
+                  await lease.release();
+                  throw failure;
+                },
+              };
+        });
+      }
+      try {
+        await expect(borg.turn({ userMessage: "Continue our work.", stakes: "low" })).rejects.toBe(
+          failure,
+        );
+        expect(turnExecutionMetricsFromError(failure)).toEqual({
+          finalizer_rounds: 1,
+          stall_retries: 2,
+        });
+      } finally {
+        await borg.close();
+      }
+    },
+  );
 
   it("does not include the evidence ledger prompt block when the flag is disabled", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));

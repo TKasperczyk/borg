@@ -154,10 +154,14 @@ describe("AutonomyWakesRepository", () => {
           expect.objectContaining({
             outcome: "interrupted",
             outcome_detail: AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+            finalizer_rounds: null,
+            stall_retries: null,
           }),
           expect.objectContaining({
             outcome: "interrupted",
             outcome_detail: AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+            finalizer_rounds: null,
+            stall_retries: null,
           }),
         ]),
       );
