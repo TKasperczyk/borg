@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
+import {
+  applyDraftFrame,
+  EMPTY_DRAFT_STATE,
+} from "../../../demo/web/src/pages/chat/draft.js";
 import { AnthropicLLMClient, type LLMClient } from "../../llm/index.js";
 import { FakeLLMClient, createFakeStreamingResponse } from "../../llm/test-support/fake-client.js";
 import { createEpisodeFixture, createRetrievalScoreFixture } from "../../offline/test-support.js";
@@ -58,6 +62,7 @@ async function runEmissionFinalizer(
     additionalPromptSections?: Parameters<typeof runFinalizer>[0]["additionalPromptSections"];
     finalizerDynamicPromptCacheEnabled?: boolean;
     finalizerTransport?: Parameters<typeof runFinalizer>[0]["finalizerTransport"];
+    finalizerAttempt?: Parameters<typeof runFinalizer>[0]["finalizerAttempt"];
     finalizerSurfaceVariant?: Parameters<typeof runFinalizer>[0]["finalizerSurfaceVariant"];
     tracer?: Parameters<typeof runFinalizer>[0]["tracer"];
     turnId?: string;
@@ -94,6 +99,7 @@ async function runEmissionFinalizer(
     userEntryId: undefined,
     maxTokens: 256,
     path: "system_1",
+    ...(options.finalizerAttempt === undefined ? {} : { finalizerAttempt: options.finalizerAttempt }),
     ...(options.additionalPromptSections === undefined
       ? {}
       : { additionalPromptSections: options.additionalPromptSections }),
@@ -945,6 +951,54 @@ describe("runFinalizer emission tools", () => {
       full_text: "Unary final answer.",
     });
   });
+
+  it.each(["EmitNoOutput", "EmitObserve"])(
+    "clears the chat consumer's prior answer when unary regeneration selects %s",
+    async (name) => {
+      const tracer = { enabled: true, includePayloads: true, emit: vi.fn() };
+      const llm = createAnsweringLlm("toolu_initial_answer");
+      llm.pushResponse({
+        messageBlocks: [{ type: "tool_use", id: "toolu_silent", name, input: { reason: "Wait." } }],
+        input_tokens: 4,
+        output_tokens: 2,
+        stop_reason: "tool_use",
+      });
+      const options = { tracer, turnId: "turn-regenerated", finalizerTransport: "unary" as const };
+      await runEmissionFinalizer(llm, tempDirs, options);
+      await runEmissionFinalizer(llm, tempDirs, { ...options, finalizerAttempt: "regenerate" });
+
+      let draft = EMPTY_DRAFT_STATE;
+      for (const [event, data] of tracer.emit.mock.calls) {
+        if (event === "turn.token" || event === "turn.token.flush") {
+          draft = applyDraftFrame(draft, {
+            ...data,
+            type: event === "turn.token" ? "turn:token" : "turn:token:flush",
+            ts: 0,
+          });
+        }
+      }
+      expect(tracer.emit.mock.calls.filter(([event]) => event === "turn.token.flush")).toEqual([
+        ["turn.token.flush", expect.objectContaining({ full_text: "Answer." })],
+        ["turn.token.flush", expect.objectContaining({ full_text: "" })],
+      ]);
+      expect(draft.current?.text).toBe("");
+      draft = applyDraftFrame(draft, {
+        type: "turn:terminal",
+        ts: 0,
+        event: "turn.terminal",
+        data: {
+          turnId: options.turnId,
+          turn_id: options.turnId,
+          session_id: DEFAULT_SESSION_ID,
+          outcome: "suppressed_action",
+          ts: 0,
+          duration_ms: 0,
+        },
+      });
+      expect(draft.current).toBeNull();
+      expect(draft.withheldByTurn[options.turnId]).toBe("");
+    },
+  );
 
   it("accepts an optional entity reply target on EmitAnswer", async () => {
     const targetEntityId = createEntityId();

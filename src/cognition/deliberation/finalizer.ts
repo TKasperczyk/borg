@@ -1224,7 +1224,7 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
       sequence: tokenSequence,
     });
   }
-  if (tokenSequence > 0) {
+  if (finalizerTransport === "unary" || tokenSequence > 0) {
     emitTurnTokenFlushTrace({
       tracer: options.tracer,
       turnId: options.turnId,
