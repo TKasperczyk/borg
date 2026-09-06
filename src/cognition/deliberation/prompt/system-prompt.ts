@@ -1,5 +1,6 @@
 // Assembles the base deliberation system prompt from memory, state, and guidance sections.
 import { summarizeProvenanceForPrompt, type Provenance } from "../../../memory/common/index.js";
+import { operatorAttentionPromptRow } from "../../../memory/operator-attention/disclosure.js";
 import type { ActionRecord } from "../../../memory/actions/index.js";
 import type { ExecutiveFocus, ExecutiveGoalScoreBasis } from "../../../executive/index.js";
 import {
@@ -1928,10 +1929,10 @@ export function summarizeAutonomySchedulerState(
     lines.push(
       `Operator attention records: total=${attention.total}; latest ${attention.records.length} shown, newest first.`,
       "Filing metadata only: existence, date, filer, subject. Bodies remain with the operator; a filing is not a decision or an instruction. These records do not gate action. Treat this index as private to you and the operator; disclose contextually.",
-      ...attention.records.map(
-        (record) =>
-          `- ${new Date(record.filed_at).toISOString()} | filer=${record.filer_entity_id} | subject=${record.subject === null ? "subject unavailable" : escapeXmlText(JSON.stringify(record.subject))}`,
-      ),
+      ...attention.records.map((record) => {
+        const row = operatorAttentionPromptRow(record);
+        return `- ${new Date(row.filed_at).toISOString()} | filer=${row.filer_entity_id} | subject=${row.subject === null ? "subject unavailable" : escapeXmlText(JSON.stringify(row.subject))} | disclosure: ${escapeXmlText(renderMemoryDisclosureLabelForModel(row.disclosure_label))}`;
+      }),
     );
   }
 

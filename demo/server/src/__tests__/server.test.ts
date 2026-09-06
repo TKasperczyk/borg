@@ -1104,7 +1104,20 @@ describe("demo server", () => {
       subject: null,
     });
     expect(await resent.json()).toEqual({ inserted: false });
-    expect(borg.operatorAttention.snapshot()).toEqual({ total: 1, records: [record] });
+    expect(borg.operatorAttention.snapshot()).toEqual({
+      total: 1,
+      records: [
+        {
+          ...record,
+          disclosure_label: {
+            disclosureClass: "operator_private",
+            originAudienceEntityIds: [record.filer_entity_id],
+            privateToEntityIds: [],
+            publicToEntityIds: [],
+          },
+        },
+      ],
+    });
     const legacy = await requestJson(app, "/api/operator-attention", "POST", {
       ...record,
       record_key: "cclink:legacy",

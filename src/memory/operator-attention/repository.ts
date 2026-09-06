@@ -1,5 +1,6 @@
 import type { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { StorageError } from "../../util/errors.js";
+import { operatorAttentionPromptRow } from "./disclosure.js";
 import {
   OPERATOR_ATTENTION_RECENT_LIMIT,
   operatorAttentionRecordSchema,
@@ -48,7 +49,7 @@ export class OperatorAttentionRepository {
             cause: parsed.error,
           });
         }
-        return parsed.data;
+        return operatorAttentionPromptRow(parsed.data);
       });
     return { total, records };
   }

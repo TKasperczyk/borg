@@ -30,7 +30,13 @@ describe("operator attention index", () => {
       expect(repository.snapshot()).toEqual({ total: 0, records: [] });
       expect(repository.record(filing)).toEqual({ inserted: true });
       expect(repository.record({ ...filing, subject: null })).toEqual({ inserted: false });
-      expect(repository.snapshot().records).toEqual([filing]);
+      const label = {
+        disclosureClass: "operator_private",
+        originAudienceEntityIds: [filer],
+        privateToEntityIds: [],
+        publicToEntityIds: [],
+      };
+      expect(repository.snapshot().records).toEqual([{ ...filing, disclosure_label: label }]);
       for (let i = 0; i < 124; i += 1) {
         repository.record({
           ...filing,
@@ -44,6 +50,7 @@ describe("operator attention index", () => {
       const snapshot = new OperatorAttentionRepository({ db }).snapshot();
       expect(snapshot.total).toBe(125);
       expect(snapshot.records).toHaveLength(OPERATOR_ATTENTION_RECENT_LIMIT);
+      for (const row of snapshot.records) expect(row.disclosure_label).toEqual(label);
       expect(snapshot.records[0]).toMatchObject({
         record_key: "legacy:123",
         filed_at: 2_123,

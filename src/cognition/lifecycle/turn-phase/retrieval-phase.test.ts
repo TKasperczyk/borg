@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { operatorAttentionPromptRow } from "../../../memory/operator-attention/disclosure.js";
 import { DEFAULT_CONFIG } from "../../../config/index.js";
 import { FakeLLMClient } from "../../../llm/test-support/fake-client.js";
 import { sharedStateMigrations } from "../../../memory/shared-state/index.js";
@@ -247,12 +248,12 @@ describe("autonomy scheduler mechanism-evidence provider", () => {
       const index = {
         total: 1,
         records: [
-          {
+          operatorAttentionPromptRow({
             record_key: "attention",
             filed_at: 1_000,
             filer_entity_id: createEntityId(),
             subject: null,
-          },
+          }),
         ],
       };
       options.operatorAttentionRepository = {

@@ -1,8 +1,11 @@
 # Operator attention index
 
-An external counterpart can file an operator attention record. Borg retains only
-the filing envelope; the operator-facing body stays in the connector's JSONL log.
-The index is presentation only and has no effect on wake admission or action policy.
+Borg stores filing metadata only. Operator-facing bodies stay in the connector's
+`operator-attention.jsonl`. The index is presentation only and does not gate action.
+The autonomous mechanism-evidence prompt shows the total count and latest 20 rows,
+with date, filer, subject (or `subject unavailable`), and each row's disclosure label.
+
+## API contract
 
 `POST /api/operator-attention` accepts exactly:
 
@@ -15,173 +18,68 @@ The index is presentation only and has no effect on wake admission or action pol
 }
 ```
 
-- `record_key`: stable opaque key, 1–200 characters. The connector creates it once
-  per consumed marker and persists it in `operator-attention.jsonl` for resends.
+- `record_key`: stable opaque key, 1–200 characters, persisted by the connector for replay.
 - `filed_at`: Unix milliseconds, UTC.
-- `filer_entity_id`: the counterpart's provisioned Borg entity ID, not the entity
-  the filing is about and not the human operator's ID.
-- `subject`: one line, at most 240 characters (UTF-16 code units), or `null` when
-  unavailable. Unknown fields, including `body` and `reason`, are rejected.
+- `filer_entity_id`: the counterpart's provisioned Borg entity ID.
+- `subject`: one line, at most 240 UTF-16 code units, or `null`. Body and unknown fields are rejected.
 
-The response is HTTP 200 with `{ "inserted": true }` for a new key or
-`{ "inserted": false }` for a duplicate. First filing wins: resends do not modify
-the existing date, filer, or subject. Validation errors return HTTP 400. The route
-uses the demo API's existing CORS, request/reset gate, and error handling. This
-checkout has no application-level HTTP authentication middleware.
+HTTP 200 returns `{ "inserted": true }` for a new key or `{ "inserted": false }`
+for a duplicate. First filing wins; replay does not change an accepted row. Invalid
+payloads return HTTP 400. The route uses the demo API's CORS, request/reset gate,
+and error handling. This API has no application-level authentication middleware.
 
-The facade is `borg.operatorAttention.record(envelope)` and
-`borg.operatorAttention.snapshot()`. SQLite stores only the four envelope columns
-in `operator_attention_records`; its migration is appended as a new migration band.
-The mechanism-evidence prompt, beside the wake-window rows, renders the total and
-the latest 20 records ordered by filing date, newest first, with the record key as
-a deterministic tie-breaker. Legacy rows render `subject unavailable`. Subjects
-are quoted and XML-escaped for the enclosing prompt. The index is labeled private
-to the entity and operator, with contextual disclosure guidance.
+`borg.operatorAttention.record(envelope)` writes metadata;
+`borg.operatorAttention.snapshot()` returns the total and latest rows. Every returned
+row carries `disclosure_label` in the existing `MemoryDisclosureLabel` shape, using
+`operator_private`, `originAudienceEntityIds: [filer_entity_id]`, and empty
+`privateToEntityIds` / `publicToEntityIds` (recipient authorization is unknown).
+The filer is not assumed to be an operator. These labels permit global internal
+cognition; disclosure remains the model's judgment given audience/authority context.
+Capture/replay retains labels, and combining with an unknown label stays `unknown`.
 
-## Backfill
+## Configuration and marker protocol
 
-Use the counterpart's provisioned entity ID as the fallback filer for historical
-rows, which have only `ts` and `reason`. Dry-run performs no HTTP calls or writes
-and prints the exact envelopes to review:
+The connector sends attention metadata over HTTP to `BORG_API_BASE`, defaulting to
+`http://127.0.0.1:${PORT:-7740}` when embedded in the demo process. Its other Borg
+operations use the in-process handle. Filing and operator notification happen before
+the five-second HTTP reporting attempt. Failures are logged; replay uses the local
+JSONL record. A failed local append does not create an index entry.
 
-```sh
-choom -n 800 -- pnpm exec tsx scripts/backfill-operator-attention.ts \
-  --file /path/to/operator-attention.jsonl \
-  --filer-entity-id ent_aaaaaaaaaaaaaaaa
-```
-
-To import those envelopes through a running Borg API, add both:
-
-```sh
---apply --borg-url http://127.0.0.1:7740
-```
-
-The source is opened read-only. All rows are validated before any HTTP write.
-Borg storage is never opened directly by this script. Subjects are always `null`
-on import, even if a newer source row contains a subject; no historical subject is
-inferred from the body. A row's stored `record_key` and `filer_entity_id` are reused
-when present. Legacy keys are `cclink:legacy:<sha256>` derived only from filer ID,
-timestamp, and the zero-based occurrence among rows with that filer/timestamp in
-file order. Copied or renamed files and repeat runs retain the same keys; rows
-sharing a timestamp remain distinct. An append preserves earlier keys. HTTP
-failures stop the import with a nonzero exit; rerunning safely skips accepted keys.
-
-## Connector integration
-
-The `sol-connector` checkout uses an in-process Borg handle for its existing
-operations. Attention reporting uses its new `BorgHttpClient`, targeting
-`BORG_API_BASE`, defaulting to `http://127.0.0.1:${PORT:-7740}` for the embedding
-demo process. It writes the local JSONL record and notifies the operator before
-making the HTTP request. Reporting has a five-second timeout; failures are logged
-and do not undo filing. There is no automatic resend queue. The local record key
-supports explicit replay, including the existence-only backfill above.
-
-New markers have a subject on the first line and the body below. The connector
-retains the existing flattened `reason` representation and 64 KiB marker cap for
-operator storage. A single content line, with or without a trailing newline, is treated as a legacy
-body with no subject. A failed local append still logs the operator notification, but does not
-report an index record for a filing that was not persisted.
-
-## Counterpart instruction added
-
-The filing paragraph in `sol-connector/src/config.ts` now includes this exact text:
-
-> ALSO write $CLAUDE_CONFIG_DIR/operator-attention as a tool action. The first line must be a short, one-line subject (at most 240 characters); put the operator-facing body on the lines below. Sol receives only the filing's existence, date, your provisioned counterpart entity id as filer, and that subject. The body stays in the connector's operator log and is never sent to Borg. Write the subject for this limited visibility; do not copy the body into it.
-
-## Changed files
-
-Borg:
+The exact first-line sentinel is `CCLINK_OPERATOR_ATTENTION_V1`:
 
 ```text
-demo/server/src/__tests__/server.test.ts
-demo/server/src/app.ts
-docs/operator-attention.md
-scripts/backfill-operator-attention.test.ts
-scripts/backfill-operator-attention.ts
-src/borg.ts
-src/borg/facade-types.ts
-src/borg/facade.ts
-src/borg/open.ts
-src/borg/public-facade.ts
-src/borg/repositories.ts
-src/borg/storage-setup.ts
-src/borg/turn-setup.ts
-src/borg/types.ts
-src/cognition/deliberation/planner-context-capture.test.ts
-src/cognition/deliberation/planner-context-capture.ts
-src/cognition/deliberation/prompt/system-prompt.test.ts
-src/cognition/deliberation/prompt/system-prompt.ts
-src/cognition/lifecycle/turn-phase/retrieval-phase.test.ts
-src/cognition/lifecycle/turn-phase/retrieval-phase.ts
-src/cognition/lifecycle/turn-phase/types.ts
-src/cognition/mechanism-evidence.ts
-src/cognition/turn-orchestrator.ts
-src/index.ts
-src/memory/operator-attention/index.ts
-src/memory/operator-attention/migrations.ts
-src/memory/operator-attention/repository.test.ts
-src/memory/operator-attention/repository.ts
-src/memory/operator-attention/types.ts
+CCLINK_OPERATOR_ATTENTION_V1
+A one-line subject
+Operator-facing body, which may span multiple lines.
 ```
 
-sol-connector:
+Only that complete versioned header enables subject extraction. Unversioned markers,
+including multiline bodies, remain body-only with `subject: null`. LF and CRLF are
+accepted. Subject clipping preserves code-point boundaries within 240 UTF-16 code
+units. The existing flattened local `reason` representation and 64 KiB marker cap
+remain in place.
 
-```text
-.env.example
-README.md
-src/borg-client.test.ts
-src/borg-client.ts
-src/cclink/runtime.test.ts
-src/cclink/runtime.ts
-src/config.ts
-```
+The counterpart's filing instruction is:
 
-## Verification (2026-09-06)
+> ALSO write $CLAUDE_CONFIG_DIR/operator-attention as a tool action. Use this exact marker format: first line CCLINK_OPERATOR_ATTENTION_V1, second line a short, one-line subject (at most 240 UTF-16 code units), and the operator-facing body starting on the third line. Unversioned markers are treated as body-only filings with no subject. Sol receives only the filing's existence, date, your provisioned counterpart entity id as filer, and that subject. The body stays in the connector's operator log and is never sent to Borg. Write the subject for this limited visibility; do not copy the body into it.
 
-No dependency installation, live API writes, live-tree source edits, or writes
-under `.borg-data` / `.sol-state` were performed. Backfill was exercised with
-synthetic temporary input and mocked apply requests; it was not applied to the
-existing operator log. The provided Borg dependency symlinks were created before
-checks. The connector's pre-existing `node_modules` symlink was left untouched.
-Vitest used two workers, disabled caching, and loaded config through the runner
-so it would not write caches/config bundles into symlinked live dependencies.
+## Backfill and replay
 
-Final results:
-
-| Scope | Command | Result |
-| --- | --- | --- |
-| Borg | `choom -n 800 -- pnpm typecheck` | Passed all five root-script tsconfigs |
-| Connector | `choom -n 800 -- pnpm typecheck` | Passed |
-| Demo API | `choom -n 800 -- pnpm exec tsc --noEmit -p demo/server/tsconfig.dev.json` | Passed |
-| Backfill | `choom -n 800 -- pnpm exec tsc --noEmit --strict --skipLibCheck --target ES2023 --module ESNext --moduleResolution Bundler scripts/backfill-operator-attention.ts scripts/backfill-operator-attention.test.ts` | Passed |
-| Borg | `choom -n 800 -- pnpm heuristics:guard` | Passed |
-| Borg targeted tests | Command below | 269 passed in 6 files |
-| Connector targeted tests | Command below | 50 passed, 4 excluded, in 5 files |
-| Backfill CLI | `choom -n 800 -- pnpm exec tsx scripts/backfill-operator-attention.ts --file <temporary fixture> --filer-entity-id ent_aaaaaaaaaaaaaaaa` (under a temporary-fixture wrapper) | Passed: dry-run default, two distinct metadata-only records, source unchanged |
-| Both repos | `git diff --check` | Passed |
-
-Borg test command:
+Dry-run performs no HTTP calls or writes and prints the exact envelopes to review:
 
 ```sh
-choom -n 800 -- pnpm exec vitest run   src/memory/operator-attention/repository.test.ts   scripts/backfill-operator-attention.test.ts   src/cognition/deliberation/prompt/system-prompt.test.ts   src/cognition/deliberation/planner-context-capture.test.ts   src/cognition/lifecycle/turn-phase/retrieval-phase.test.ts   demo/server/src/__tests__/server.test.ts   --maxWorkers=2 --no-cache --configLoader=runner
+choom -n 800 -- pnpm exec tsx scripts/backfill-operator-attention.ts --file /path/to/operator-attention.jsonl --filer-entity-id ent_aaaaaaaaaaaaaaaa
 ```
 
-Connector test command:
+To submit through a running Borg API, add `--apply --borg-url http://127.0.0.1:7740`.
+The source is read-only; all envelopes are validated before any HTTP write. The
+script never opens Borg storage directly. Stored subjects are forwarded when present;
+missing/null subjects stay null. A subject is never inferred from `reason` or body,
+and neither body field enters the payload.
 
-```sh
-choom -n 800 -- pnpm exec vitest run   src/borg-client.test.ts src/cclink/runtime.test.ts   src/cclink/provision.test.ts src/cclink/thread.test.ts src/plugin.test.ts   --maxWorkers=2 --no-cache --configLoader=runner   --testNamePattern='^(?!.*(?:moves the legacy in-repository DB|refuses a failed deploy gate|refuses a deploy gate)).*$'
-```
-
-The four excluded cases test legacy state migration and deploy gates and create
-directories named `.sol-state`. They were excluded to honor the write restriction;
-the attention, client, provisioning, prompt/thread, plugin, and remaining runtime
-cases all ran. These were targeted suites, not full repository test runs.
-
-Initial typechecks caught missing attention composition connections and a test
-tracer fixture field; both were corrected. The supplemental demo check also
-exposed a pre-existing missing `lived-experience-day-summarizer` description in
-`app.ts`; the single missing map entry was added so the API typecheck passes.
-Changed Borg TypeScript files and the new client files were formatted with
-`pnpm exec prettier --write`; connector runtime formatting was restricted to the
-changed attention sections. Heavy commands, including formatting, ran under
-`choom -n 800`.
+Stored keys, dates, and filers are preserved. `--filer-entity-id` supplies the known
+counterpart ID for old records lacking it. Legacy keys are `cclink:legacy:<sha256>`,
+derived only from filer ID, timestamp, and the occurrence among rows with that
+filer/timestamp in file order. Copying, renaming, or appending to the source preserves
+prior keys; identical timestamps remain distinct. HTTP failures stop the import with
+a nonzero exit. Rerun the same command to retry; accepted keys are not duplicated.

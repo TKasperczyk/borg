@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { operatorAttentionPromptRow } from "../../../memory/operator-attention/disclosure.js";
+import { unknownMemoryDisclosureLabel } from "../../../memory/common/disclosure-label.js";
 import { HEADWAY_EMISSION_KINDS } from "../../../autonomy/index.js";
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { CommitmentRecord } from "../../../memory/commitments/index.js";
@@ -2827,8 +2829,19 @@ describe("buildBaseSystemPrompt", () => {
     schedulerState.operatorAttentionIndex = {
       total: 125,
       records: [
-        { record_key: "new", filed_at: NOW_MS, filer_entity_id: filer, subject: "件名 <handoff>" },
-        { record_key: "old", filed_at: NOW_MS - 1_000, filer_entity_id: filer, subject: null },
+        operatorAttentionPromptRow({
+          record_key: "new",
+          filed_at: NOW_MS,
+          filer_entity_id: filer,
+          subject: "件名 <handoff>",
+        }),
+        operatorAttentionPromptRow({
+          record_key: "old",
+          filed_at: NOW_MS - 1_000,
+          filer_entity_id: filer,
+          subject: null,
+          disclosure_label: unknownMemoryDisclosureLabel(),
+        }),
       ],
     };
     const render = () =>
@@ -2856,6 +2869,14 @@ describe("buildBaseSystemPrompt", () => {
     );
     expect(block).toContain("Wake rows in that current window, newest first: none.");
     expect(block).toContain("These records do not gate action.");
+    const attentionRows = block.split("\n").filter((line) => line.includes("| subject="));
+    expect(attentionRows).toHaveLength(2);
+    expect(attentionRows[0]).toContain("disclosure_class=operator_private");
+    expect(attentionRows[1]).toContain("disclosure_class=unknown");
+    for (const row of attentionRows) {
+      expect(row).toContain(`origin_audience=${filer} private-to=unknown`);
+      expect(row).toContain("I can use this internally");
+    }
     schedulerState.operatorAttentionIndex = { total: 0, records: [] };
     expect(render()).toContain("Operator attention records: total=0; latest 0 shown");
   });

@@ -23,7 +23,7 @@ function fixture(lines: unknown[]) {
 }
 
 describe("attention backfill", () => {
-  it("defaults to a read-only dry-run, invents no subject, and keys equal timestamps distinctly", async () => {
+  it("defaults to read-only dry-run, preserves stored subjects, and keys equal timestamps distinctly", async () => {
     const filer = createEntityId();
     const actualFiler = createEntityId();
     const path = fixture([
@@ -33,7 +33,7 @@ describe("attention backfill", () => {
         ts: 2_000,
         record_key: "cclink:stored-key",
         filer_entity_id: actualFiler,
-        subject: "do not import",
+        subject: "Stored subject",
         reason: "body",
       },
     ]);
@@ -43,21 +43,29 @@ describe("attention backfill", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(readFileSync(path, "utf8")).toBe(before);
     expect(result.records).toEqual(readOperatorAttentionBackfill(path, filer));
-    expect(result.records.map((record) => record.subject)).toEqual([null, null, null]);
+    expect(result.records.map((record) => record.subject)).toEqual([null, null, "Stored subject"]);
     expect(new Set(result.records.map((record) => record.record_key)).size).toBe(3);
     expect(result.records[2]).toMatchObject({
       record_key: "cclink:stored-key",
       filer_entity_id: actualFiler,
     });
     expect(JSON.stringify(result)).not.toContain("private");
-    expect(JSON.stringify(result)).not.toContain("do not import");
+    expect(result.records[2]).toMatchObject({ filed_at: 2_000, subject: "Stored subject" });
     // Keys are based on filing metadata, never on body contents.
     writeFileSync(path, before.replace("private historical body", "changed local body"));
     expect(readOperatorAttentionBackfill(path, filer)).toEqual(result.records);
   });
 
   it("applies only envelopes and can be resent without duplicate records", async () => {
-    const path = fixture([{ ts: 1_000, reason: "SECRET" }]);
+    const filer = createEntityId();
+    const stored = {
+      ts: 1_000,
+      record_key: "cclink:failed-report",
+      filer_entity_id: filer,
+      subject: "Stored subject",
+      reason: "SECRET",
+    };
+    const path = fixture([stored]);
     const seen = new Set<string>();
     const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
       const record = JSON.parse(String(init?.body));
@@ -68,6 +76,12 @@ describe("attention backfill", () => {
         "subject",
       ]);
       expect(init?.body).not.toContain("SECRET");
+      expect(record).toEqual({
+        record_key: stored.record_key,
+        filed_at: stored.ts,
+        filer_entity_id: filer,
+        subject: stored.subject,
+      });
       const inserted = !seen.has(record.record_key);
       seen.add(record.record_key);
       return Response.json({ inserted });

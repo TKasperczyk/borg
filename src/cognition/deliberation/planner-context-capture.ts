@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
+import { operatorAttentionPromptRow } from "../../memory/operator-attention/disclosure.js";
 
 import type { AutonomyWakeOutcomeDetailTally } from "../../autonomy/types.js";
 import type { LLMCompleteOptions, LLMMessage, LLMSystemBlock } from "../../llm/index.js";
@@ -495,7 +496,7 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
                   operatorAttentionIndex: {
                     total: value.autonomySchedulerState.operatorAttentionIndex.total,
                     records: value.autonomySchedulerState.operatorAttentionIndex.records.map(
-                      (record) => ({ ...record }),
+                      operatorAttentionPromptRow,
                     ),
                   },
                 }),

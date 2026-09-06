@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { entityIdHelpers, type EntityId } from "../../util/ids.js";
+import type { MemoryDisclosureLabel } from "../common/disclosure-label.js";
 
 export const OPERATOR_ATTENTION_SUBJECT_MAX_CHARS = 240;
 export const OPERATOR_ATTENTION_RECENT_LIMIT = 20;
@@ -26,9 +27,13 @@ export const operatorAttentionRecordSchema = z.strictObject({
 
 export type OperatorAttentionRecord = z.infer<typeof operatorAttentionRecordSchema>;
 
+export type OperatorAttentionIndexRow = OperatorAttentionRecord & {
+  disclosure_label: MemoryDisclosureLabel;
+};
+
 export type OperatorAttentionIndex = {
   total: number;
-  records: OperatorAttentionRecord[];
+  records: OperatorAttentionIndexRow[];
 };
 
 export type BorgOperatorAttentionFacade = {

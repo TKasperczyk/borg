@@ -684,4 +684,5 @@ export {
   type BorgOperatorAttentionFacade,
   type OperatorAttentionRecord,
   type OperatorAttentionIndex,
+  type OperatorAttentionIndexRow,
 } from "./memory/operator-attention/types.js";

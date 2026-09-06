@@ -12,10 +12,11 @@ import {
   type OperatorAttentionRecord,
 } from "../src/memory/operator-attention/types.js";
 
-const legacyEnvelopeSchema = z.object({
+const storedEnvelopeSchema = z.object({
   ts: operatorAttentionRecordSchema.shape.filed_at,
   record_key: operatorAttentionRecordSchema.shape.record_key.optional(),
   filer_entity_id: operatorAttentionRecordSchema.shape.filer_entity_id.optional(),
+  subject: operatorAttentionRecordSchema.shape.subject.optional(),
 });
 
 export function readOperatorAttentionBackfill(
@@ -25,13 +26,13 @@ export function readOperatorAttentionBackfill(
   const fallbackFiler = operatorAttentionRecordSchema.shape.filer_entity_id.parse(filerEntityId);
   const occurrences = new Map<string, number>();
   const records: OperatorAttentionRecord[] = [];
-  // JSONL delimiters and envelope fields are protocol structure. Never inspect
-  // reason/body/subject: even modern rows are imported as existence only.
+  // JSONL delimiters and envelope fields are protocol structure. Forward stored
+  // subjects, but never inspect reason/body to infer one or include them in a payload.
   for (const [lineIndex, line] of readFileSync(path, "utf8").split("\n").entries()) {
     if (line.trim() === "") continue;
-    let envelope: z.infer<typeof legacyEnvelopeSchema>;
+    let envelope: z.infer<typeof storedEnvelopeSchema>;
     try {
-      envelope = legacyEnvelopeSchema.parse(JSON.parse(line));
+      envelope = storedEnvelopeSchema.parse(JSON.parse(line));
     } catch {
       // Do not echo a malformed line (or a JSON parser error containing its body).
       throw new Error(`Invalid attention envelope on line ${lineIndex + 1}`);
@@ -50,7 +51,7 @@ export function readOperatorAttentionBackfill(
         record_key: recordKey,
         filed_at: envelope.ts,
         filer_entity_id: filer,
-        subject: null,
+        subject: envelope.subject ?? null,
       }),
     );
   }
