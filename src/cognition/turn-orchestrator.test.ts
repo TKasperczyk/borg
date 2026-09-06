@@ -134,6 +134,7 @@ async function openTestBorg(
           background: "test-background",
           extraction: "test-extraction",
           recallExpansion: "test-recall",
+          correctivePreference: "test-corrective-preference",
           ...configOverrides.anthropic?.models,
         },
       },
@@ -6849,6 +6850,16 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(budgets).toContain("corrective-preference-extractor");
       expect(budgets).toContain("action-state-extractor");
       expect(budgets).toContain("goal-promotion-extractor");
+      expect(llm.requests).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            budget: "corrective-preference-extractor",
+            model: "test-corrective-preference",
+          }),
+          expect.objectContaining({ budget: "action-state-extractor", model: "test-recall" }),
+          expect.objectContaining({ budget: "goal-promotion-extractor", model: "test-recall" }),
+        ]),
+      );
       expect(extractSpy).toHaveBeenCalled();
       expect(anomalyEvent).toBeUndefined();
       expect(quarantineEvent).toBeUndefined();

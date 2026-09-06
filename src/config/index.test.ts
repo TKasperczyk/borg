@@ -38,6 +38,7 @@ describe("config", () => {
       background: "claude-opus-5",
       extraction: "claude-opus-5",
       recallExpansion: "claude-haiku-4-5-20251001",
+      correctivePreference: "claude-sonnet-5",
       creatorDirective: "claude-sonnet-4-6",
       imagePerception: "claude-haiku-4-5-20251001",
     });
@@ -954,6 +955,7 @@ describe("config", () => {
         models: {
           cognition: "file-cognition",
           recallExpansion: "file-recall",
+          correctivePreference: "file-corrective-preference",
         },
       },
       offline: {
@@ -1057,6 +1059,7 @@ describe("config", () => {
         BORG_MAINTENANCE_BUSY_RETRY_BASE_MS: "2345",
         BORG_MAINTENANCE_BUSY_RETRY_MAX_MS: "3456",
         BORG_MODEL_RECALL_EXPANSION: "env-recall",
+        BORG_MODEL_CORRECTIVE_PREFERENCE: "env-corrective-preference",
         BORG_ANTHROPIC_OAUTH_SSE_INACTIVITY_TIMEOUT_MS: "111",
         BORG_ANTHROPIC_OAUTH_SSE_FIRST_MESSAGE_EVENT_TIMEOUT_MS: "222",
         BORG_ANTHROPIC_OAUTH_SSE_MESSAGE_EVENT_GAP_TIMEOUT_MS: "333",
@@ -1076,6 +1079,7 @@ describe("config", () => {
     expect(config.anthropic.apiKey).toBe("secret");
     expect(config.anthropic.models.cognition).toBe("file-cognition");
     expect(config.anthropic.models.recallExpansion).toBe("env-recall");
+    expect(config.anthropic.models.correctivePreference).toBe("env-corrective-preference");
     expect(config.anthropic.oauthSseInactivityTimeoutMs).toBe(111);
     expect(config.anthropic.oauthSseFirstMessageEventTimeoutMs).toBe(222);
     expect(config.anthropic.oauthSseMessageEventGapTimeoutMs).toBe(333);
@@ -1207,9 +1211,23 @@ describe("config", () => {
       background: "claude-opus-5",
       extraction: "claude-opus-5",
       recallExpansion: "claude-haiku-4-5-20251001",
+      correctivePreference: "claude-sonnet-5",
       creatorDirective: "claude-sonnet-4-6",
       imagePerception: "claude-haiku-4-5-20251001",
     });
+  });
+
+  it("defaults corrective preferences to Sonnet independently of recall expansion overrides", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: { BORG_MODEL_RECALL_EXPANSION: "custom-recall" },
+    });
+
+    expect(config.anthropic.models.correctivePreference).toBe("claude-sonnet-5");
+    expect(config.anthropic.models.recallExpansion).toBe("custom-recall");
   });
 
   it("requires an api key when anthropic auth mode is api-key", () => {

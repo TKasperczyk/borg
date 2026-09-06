@@ -298,7 +298,7 @@ export class TurnOrchestrator {
       goalFollowupStaleMs: options.config.autonomy.triggers.goalFollowupDue.staleMs,
     });
     const correctivePreferenceTurnService = new CorrectivePreferenceTurnService({
-      model: options.config.anthropic.models.recallExpansion,
+      model: options.config.anthropic.models.correctivePreference,
       commitmentRepository: options.commitmentRepository,
       sourceStreamAudienceDisclosureResolver: options.sourceStreamAudienceDisclosureResolver,
       identityService: options.identityService,

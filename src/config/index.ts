@@ -344,6 +344,8 @@ const anthropicModelsConfigSchema = z
     background: z.string().min(1).default("claude-opus-5"),
     extraction: z.string().min(1).default("claude-opus-5"),
     recallExpansion: z.string().min(1).default("claude-haiku-4-5-20251001"),
+    // Corrective preferences need careful interpretation of participant restrictions.
+    correctivePreference: z.string().min(1).default("claude-sonnet-5"),
     creatorDirective: z.string().min(1).default("claude-sonnet-4-6"),
     imagePerception: z.string().min(1).default("claude-haiku-4-5-20251001"),
   })
@@ -1195,6 +1197,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["anthropic", "models", "recallExpansion"],
     readOptionalEnvString(env, "BORG_MODEL_RECALL_EXPANSION"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "models", "correctivePreference"],
+    readOptionalEnvString(env, "BORG_MODEL_CORRECTIVE_PREFERENCE"),
   );
   setConfigOverride(
     overrides,
