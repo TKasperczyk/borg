@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { CommitmentRecord } from "../../../memory/commitments/index.js";
+import type { GoalRecord } from "../../../memory/self/index.js";
+import type { RelationalSlot } from "../../../memory/relational-slots/index.js";
 import {
   DEFAULT_SESSION_ID,
   createCommitmentId,
@@ -14,6 +16,8 @@ import {
   createValueId,
 } from "../../../util/ids.js";
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../../evidence-ledger/index.js";
+import { buildAudienceStandingLedgerContext } from "../../evidence-ledger/audience-standing.js";
+import type { BuilderSectionContext } from "../../evidence-ledger/builder-context.js";
 import type { DeliberationContext, SelfSnapshotGoal } from "../types.js";
 import {
   buildCompactFinalizerSystemPrompt,
@@ -139,7 +143,7 @@ function build(inputContext: DeliberationContext, path: "system_1" | "system_2" 
     baseSystemPromptOptions: {
       retrievalContextBudget: 10_000,
       semanticContextBudget: 10_000,
-      nowMs: NOW_MS,
+      nowMs: inputContext.nowMs,
     },
     staticHead: "STATIC FINALIZER PROTOCOL",
     toolAvailability: {
@@ -316,6 +320,8 @@ describe("compact terminal finalizer context", () => {
     // Scope annotations can change even when the draw returned the same rows.
     next.activeParticipants = [{ entityId: createEntityId(), displayName: "新", role: "audience" }];
     const second = build(next);
+    expect(first.system[4]?.text).toContain(`current_time_ms=${NOW_MS}`);
+    expect(second.system[4]?.text).toContain(`current_time_ms=${NOW_MS + 60_000}`);
     expect(second.system.slice(0, 4)).toEqual(first.system.slice(0, 4));
     expect(second.system[4]).not.toEqual(first.system[4]);
     const slow = second.system
@@ -335,6 +341,187 @@ describe("compact terminal finalizer context", () => {
     expect(build(next).system[3]).not.toEqual(second.system[3]);
   });
 
+  it("fixes slow excerpts before freshly assembled clock and speaker metadata", () => {
+    const alice = createEntityId();
+    const bob = createEntityId();
+    const participantCommitment = commitment('Keep the exact directive: 原文 & "text".', {
+      committed_by_entity_id: alice,
+      made_to_entity: alice,
+      created_at: NOW_MS - 9_000,
+      last_reinforced_at: NOW_MS - 9_000,
+    });
+    const participantGoal: GoalRecord = {
+      ...goal("A stored goal: 文本 stays the same.", alice),
+      owner_entity_id: alice,
+      created_at: NOW_MS - 9_000,
+      last_progress_ts: NOW_MS - 9_000,
+    };
+    const slots: RelationalSlot[] = [alice, bob].map((subject) => ({
+      id: createRelationalSlotId(),
+      subject_entity_id: subject,
+      slot_key: "stored-key",
+      value: "stored-value",
+      state: "established",
+      evidence_stream_entry_ids: [],
+      contradicted_by_stream_entry_ids: [],
+      alternate_values: [],
+      created_at: NOW_MS - 9_000,
+      updated_at: NOW_MS - 9_000,
+    }));
+    const stored = structuredClone({ slots, participantCommitment, participantGoal });
+    const assemble = (nowMs: number, speaker: typeof alice, aliceName = "Alice") => {
+      const participants = [alice, bob]
+        .map((entityId) => ({
+          entityId,
+          displayName: entityId === alice ? aliceName : "Bob",
+          role: entityId === speaker ? ("speaker" as const) : ("participant" as const),
+        }))
+        .sort((left, right) => Number(right.role === "speaker") - Number(left.role === "speaker"));
+      const inputContext = context({ nowMs, activeParticipants: participants });
+      const assembled = buildAudienceStandingLedgerContext({
+        nowMs,
+        input: {
+          sessionId: inputContext.sessionId,
+          audienceEntityId: null,
+          currentUserMessage: inputContext.userMessage,
+          workingMemory: inputContext.workingMemory,
+          applicableCommitments: [],
+          retrievedEvidence: [],
+          retrievedEpisodes: [],
+          openQuestions: [],
+          pendingCorrections: [],
+          activeParticipants: participants,
+        },
+        resolver: {
+          currentSessionId: inputContext.sessionId,
+          streamEntriesById: new Map(),
+          streamOrderById: new Map(),
+          episodeScopesById: new Map(),
+          episodeSourceStreamIdsById: new Map(),
+        },
+        repos: {
+          relationalSlots: {
+            list: (options = {}) =>
+              slots.filter(
+                (slot) =>
+                  options.subjectEntityId === undefined ||
+                  slot.subject_entity_id === options.subjectEntityId,
+              ),
+          },
+          commitments: { list: () => [participantCommitment] },
+          goals: { list: () => [{ ...participantGoal, children: [] }] },
+          actions: { list: () => [] },
+          openQuestions: undefined,
+          entities: undefined,
+        },
+        buckets: new Map(),
+        options: {},
+        streamEntries: [],
+        // The standing assembler does not consult transcript compaction.
+        transcript: {} as BuilderSectionContext["transcript"],
+      });
+      inputContext.evidenceLedger = { ...ledger(), audienceStanding: assembled };
+      return {
+        context: inputContext,
+        entries: assembled.relationalEntries,
+        result: build(inputContext),
+      };
+    };
+    const first = assemble(NOW_MS, alice);
+    const advanced = assemble(NOW_MS + 3_000, alice);
+    const changed = assemble(NOW_MS + 3_000, bob, "Alice with a much longer displayed name");
+    const goalEntry = (entries: EvidenceLedgerEntry[]) =>
+      entries.find((entry) => entry.id === `participant_goal:${alice}:${participantGoal.id}`)!;
+    const firstMetadata = JSON.stringify(goalEntry(first.entries).state_metadata);
+    const laterMetadata = JSON.stringify(goalEntry(advanced.entries).state_metadata);
+    expect(firstMetadata.length).toBeGreaterThan(320);
+    expect(firstMetadata.length).not.toBe(laterMetadata.length);
+    expect(headTailPlannerExcerpt(firstMetadata, 320).text).not.toBe(
+      headTailPlannerExcerpt(laterMetadata, 320).text,
+    );
+    expect(goalEntry(advanced.entries).state_metadata?.created_relative_age).toBe("~12s ago");
+    expect(goalEntry(changed.entries).state_metadata?.subject_role).toBe("participant");
+    expect(first.entries.map((entry) => entry.id)).not.toEqual(
+      changed.entries.map((entry) => entry.id),
+    );
+    for (const rendered of [advanced.result, changed.result]) {
+      expect(rendered.system.slice(2, 4)).toEqual(first.result.system.slice(2, 4));
+      expect(rendered.system[4]).not.toEqual(first.result.system[4]);
+      expect(rendered.system[4]?.text).toContain(`current_time_ms=${NOW_MS + 3_000}`);
+      expect(rendered.system[2]?.text).not.toMatch(
+        /subject_role|subject_display_name|relative_age/,
+      );
+      const slowRows = [...rendered.system[2]!.text.matchAll(/<relational_standing_row[^>]*\/>/g)];
+      const fastRows = [
+        ...rendered.system[4]!.text.matchAll(/<relational_standing_turn_row[^>]*\/>/g),
+      ];
+      expect(slowRows).toHaveLength(first.entries.length);
+      expect(fastRows).toHaveLength(first.entries.length);
+      for (const row of [...slowRows, ...fastRows])
+        expect(row[0]).toContain('disclosure="disclosure_class=relationship_private');
+    }
+    expect(first.result.system[4]?.text).toContain(`current_time_ms=${NOW_MS}`);
+    expect(changed.result.system[4]?.text).toContain("Alice with a much longer displayed name");
+    expect(changed.result.system[4]?.text).toContain("~12s ago");
+    expect({ slots, participantCommitment, participantGoal }).toEqual(stored);
+    participantGoal.description = "The stored goal has changed.";
+    expect(assemble(NOW_MS + 3_000, bob).result.system[2]).not.toEqual(changed.result.system[2]);
+  });
+
+  it("keeps assembled commitment entity labels in disclosed fast rows for canonical and fallback records", () => {
+    const entityId = createEntityId();
+    const canonical = commitment("Exact directive.", {
+      made_to_entity: entityId,
+      restricted_audience: entityId,
+      about_entity: entityId,
+      committed_by_entity_id: entityId,
+    });
+    const fallback: EvidenceLedgerEntry = {
+      id: "commitment:fallback",
+      source_type: "commitment",
+      session_scope: "global",
+      actor: "memory",
+      trust_rank: 70,
+      text: "Fallback exact directive.",
+      state_metadata: {
+        made_to_entity_id: entityId,
+        restricted_audience_id: entityId,
+        about_entity_id: entityId,
+        committed_by_entity_id: entityId,
+      },
+    };
+    const initial = context({
+      applicableCommitments: [canonical],
+      commitmentEntityLabels: {},
+      activeParticipants: [{ entityId, role: "speaker", displayName: "First label" }],
+      evidenceLedger: {
+        ...ledger(),
+        audienceStanding: { ...ledger().audienceStanding!, commitmentEntries: [fallback] },
+      },
+    });
+    const first = build(initial);
+    const second = build({
+      ...initial,
+      nowMs: NOW_MS + 3_000,
+      activeParticipants: [{ entityId, role: "participant", displayName: "Changed label" }],
+    });
+    expect(second.system.slice(0, 4)).toEqual(first.system.slice(0, 4));
+    expect(second.system[4]).not.toEqual(first.system[4]);
+    expect(second.system[3]?.text).not.toContain("_entity_label=");
+    for (const id of [canonical.id, fallback.id]) {
+      const row = second.system[4]!.text.match(
+        new RegExp(`<commitment_entity_labels id="${id}"[^>]*>`),
+      )![0];
+      expect(row).toContain('made_to_entity_label="Changed label"');
+      expect(row).toContain('restricted_audience_label="Changed label"');
+      expect(row).toContain('about_entity_label="Changed label"');
+      expect(row).toContain('committed_by_entity_label="Changed label"');
+      expect(row).toContain(
+        id === canonical.id ? "disclosure_class=relationship_private" : "disclosure_class=unknown",
+      );
+    }
+  });
+
   it("hoists shared structural attributes and preserves every row's state, payload and fail-closed label", () => {
     const alice = createEntityId();
     const row = (id: string, trust: number, privateTo?: typeof alice): EvidenceLedgerEntry => ({
@@ -344,6 +531,7 @@ describe("compact terminal finalizer context", () => {
       actor: "memory",
       trust_rank: trust,
       state: id,
+      taint: id === "second" ? "contested" : "none",
       text: '原文 & "exact"',
       value: id,
       state_metadata:
@@ -367,10 +555,19 @@ describe("compact terminal finalizer context", () => {
             audienceStanding: { ...ledger().audienceStanding!, relationalEntries: rows },
           },
         }),
-      ).system[2]!.text;
-    const rendered = render(entries);
+      );
+    const result = render(entries);
+    const rendered = result.system[2]!.text;
+    const turnHeader = result.system[4]!.text.match(
+      /<relational_standing_metadata[^>]*>\s*(<interpretation[^>]*>)/,
+    )![1]!;
+    expect(turnHeader).toContain('scope="global"');
+    expect(turnHeader).not.toContain("trust_rank=");
+    expect(turnHeader).not.toContain("disclosure=");
     const header = rendered.match(/<interpretation[^>]*>/)![0];
-    expect(header).toContain('source_type="relational_slot" scope="global" actor="memory"');
+    expect(header).toContain('source_type="relational_slot" actor="memory"');
+    expect(header).not.toContain("scope=");
+    expect(header).not.toContain("taint=");
     expect(header).not.toContain("trust_rank=");
     expect(header).not.toContain("disclosure=");
     const rows = [...rendered.matchAll(/<relational_standing_row[^>]*\/>/g)].map(
@@ -380,17 +577,27 @@ describe("compact terminal finalizer context", () => {
     for (const [index, entry] of entries.entries()) {
       expect(rows[index]).toContain(`id="${entry.id}"`);
       expect(rows[index]).toContain(`state="${entry.state}"`);
-      expect(rows[index]).toContain(`trust_rank="${entry.trust_rank}"`);
+      expect(rows[index]).toContain(`taint="${entry.taint}"`);
+      expect(rows[index]).not.toContain("trust_rank=");
+      const fastRow = result.system[4]!.text.match(
+        new RegExp(`<relational_standing_turn_row id="${entry.id}"[^>]*>`),
+      )![0];
+      expect(fastRow).toContain(`trust_rank="${entry.trust_rank}"`);
+      expect(fastRow).not.toContain("scope=");
+      expect(fastRow.match(/disclosure="[^"]*"/)![0]).toBe(
+        rows[index]!.match(/disclosure="[^"]*"/)![0],
+      );
       expect(rows[index]).toContain('text="原文 &amp; &quot;exact&quot;"');
       expect(rows[index]).not.toContain("source_type=");
       expect(rows[index]).toContain(
         index === 1 ? "disclosure_class=unknown" : `origin_audience=${alice} private-to=${alice}`,
       );
     }
-    const sharedTrust = render(entries.map((entry) => ({ ...entry, trust_rank: 70 })));
-    expect(sharedTrust.match(/<interpretation[^>]*>/)![0]).toContain('trust_rank="70"');
-    expect(sharedTrust.match(/<relational_standing_row[^>]*\/>/)![0]).not.toContain("trust_rank=");
-    expect(render([])).not.toContain("<relational_standing_row");
+    const sharedTaint = render(entries.map((entry) => ({ ...entry, taint: "none" }))).system[2]!
+      .text;
+    expect(sharedTaint.match(/<interpretation[^>]*>/)![0]).toContain('taint="none"');
+    expect(sharedTaint.match(/<relational_standing_row[^>]*\/>/)![0]).not.toContain("taint=");
+    expect(render([]).system[2]!.text).not.toContain("<relational_standing_row");
   });
 
   it("keeps critical directives exact and visibly annotates advisory head-tail cuts", () => {
@@ -897,7 +1104,8 @@ describe("compact terminal finalizer context", () => {
       new Set([...row.matchAll(/\s([a-z_]+)=/g)].map((match) => match[1]));
     const durableFields = attributes(durableRow!);
     const turnFields = attributes(turnRow!);
-    const unionFields = new Set([...durableFields, ...turnFields]);
+    const labelRow = result.system[4]!.text.match(/<commitment_entity_labels[^>]*\/>/)![0];
+    const unionFields = new Set([...durableFields, ...turnFields, ...attributes(labelRow)]);
     const legacyCanonicalSemanticFields = [
       "id",
       "ordinal",
@@ -966,7 +1174,7 @@ describe("compact terminal finalizer context", () => {
     expect(turnRow).toContain('ledger_value="distinct_ledger_family"');
     expect(durableRow).not.toContain("ledger_state=");
     expect(turnRow).not.toContain("ledger_state_metadata=");
-    expect(turnRow).toContain('made_to_entity_label="Alice"');
+    expect(labelRow).toContain('made_to_entity_label="Alice"');
   });
 
   it("marks missing fields on a present commitment ledger projection", () => {
@@ -1273,7 +1481,7 @@ describe("compact terminal finalizer context", () => {
       '<relational_slots complete="true" rows_total="0" draw_scope="active_participant_subjects">',
     );
     expect(turn).toContain(
-      '<relational_standing_metadata rows_total="0" draw_scope="active_participant_subjects" />',
+      '<relational_standing_metadata rows_total="0" draw_scope="active_participant_subjects">',
     );
     // A roster constrains the relational lists; it does not constrain these two.
     expect(turn).toContain('<social_standing complete="true" rows_total="1" draw_scope="global">');

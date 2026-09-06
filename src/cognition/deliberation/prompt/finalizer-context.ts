@@ -785,7 +785,6 @@ function ledgerMetadataEntityId(
 }
 
 function renderCanonicalCommitmentOverlayRow(
-  context: DeliberationContext,
   commitment: CommitmentRecord,
   ledgerEntry: EvidenceLedgerEntry | undefined,
 ): string {
@@ -805,18 +804,14 @@ function renderCanonicalCommitmentOverlayRow(
       combinedCommitmentDisclosure(commitment, ledgerEntry),
     ),
     ...renderCanonicalCommitmentLedgerDifferenceFields(commitment, ledgerEntry),
-    `made_to_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.made_to_entity))}"`,
-    `restricted_audience_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.restricted_audience))}"`,
-    `about_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.about_entity))}"`,
-    `committed_by_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, commitment.committed_by_entity_id ?? null))}"`,
     "/>",
   ].join(" ");
 }
 
-function renderLedgerOnlyCommitmentOverlayRow(
-  context: DeliberationContext,
-  entry: EvidenceLedgerEntry,
-): { row: string; truncationCount: number } {
+function renderLedgerOnlyCommitmentOverlayRow(entry: EvidenceLedgerEntry): {
+  row: string;
+  truncationCount: number;
+} {
   const directive = entry.text ?? "";
   const critical = ledgerMetadataAttribute(entry, "commitment_enforcement_class") === "critical";
   const excerpt = critical
@@ -841,10 +836,6 @@ function renderLedgerOnlyCommitmentOverlayRow(
       `persistence_class="${escapeXmlAttribute(entry.persistence_class ?? "unknown")}"`,
       `via_retrieval="${entry.via_retrieval === true}"`,
       ...renderTurnLedgerProjectionFields(entry, evidenceEntryDisclosure(entry)),
-      `made_to_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, ledgerMetadataEntityId(entry, "made_to_entity_id")))}"`,
-      `restricted_audience_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, ledgerMetadataEntityId(entry, "restricted_audience_id")))}"`,
-      `about_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, ledgerMetadataEntityId(entry, "about_entity_id")))}"`,
-      `committed_by_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, ledgerMetadataEntityId(entry, "committed_by_entity_id")))}"`,
       `directive_exact="${!excerpt.truncated}"`,
       `directive_excerpt_shape="${excerpt.truncated ? "head+tail" : "full"}"`,
       `directive_included_chars="${excerpt.renderedChars}"`,
@@ -855,15 +846,44 @@ function renderLedgerOnlyCommitmentOverlayRow(
   };
 }
 
+function renderCommitmentEntityLabelRow(
+  context: DeliberationContext,
+  id: string,
+  entities: Pick<
+    CommitmentRecord,
+    "made_to_entity" | "restricted_audience" | "about_entity" | "committed_by_entity_id"
+  >,
+  disclosure: MemoryDisclosureLabel,
+): string {
+  return [
+    `<commitment_entity_labels id="${escapeXmlAttribute(id)}"`,
+    `disclosure="${escapeXmlSingleLineAttribute(compactDisclosure(disclosure))}"`,
+    `made_to_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, entities.made_to_entity))}"`,
+    `restricted_audience_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, entities.restricted_audience))}"`,
+    `about_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, entities.about_entity))}"`,
+    `committed_by_entity_label="${escapeXmlSingleLineAttribute(assembledEntityLabel(context, entities.committed_by_entity_id ?? null))}"`,
+    "/>",
+  ].join(" ");
+}
+
 function renderRelativeAgeOverlay(context: DeliberationContext): RenderedTerminalSection[] {
   const rows: string[] = [];
+  const entityLabelRows: string[] = [];
   let truncationCount = 0;
   const commitments = context.applicableCommitments ?? [];
   const commitmentLedgerEntries = context.evidenceLedger?.audienceStanding?.commitmentEntries ?? [];
   const commitmentLedgerById = new Map(commitmentLedgerEntries.map((entry) => [entry.id, entry]));
   for (const commitment of commitments) {
     const ledgerEntry = commitmentLedgerById.get(`commitment:${commitment.id}`);
-    rows.push(renderCanonicalCommitmentOverlayRow(context, commitment, ledgerEntry));
+    rows.push(renderCanonicalCommitmentOverlayRow(commitment, ledgerEntry));
+    entityLabelRows.push(
+      renderCommitmentEntityLabelRow(
+        context,
+        commitment.id,
+        commitment,
+        combinedCommitmentDisclosure(commitment, ledgerEntry),
+      ),
+    );
   }
   const canonicalLedgerIds = new Set(
     commitments.map((commitment) => `commitment:${commitment.id}`),
@@ -872,8 +892,21 @@ function renderRelativeAgeOverlay(context: DeliberationContext): RenderedTermina
   for (const entry of commitmentLedgerEntries) {
     if (canonicalLedgerIds.has(entry.id)) continue;
     ledgerOnlyCommitmentRows += 1;
-    const rendered = renderLedgerOnlyCommitmentOverlayRow(context, entry);
+    const rendered = renderLedgerOnlyCommitmentOverlayRow(entry);
     rows.push(rendered.row);
+    entityLabelRows.push(
+      renderCommitmentEntityLabelRow(
+        context,
+        entry.id,
+        {
+          made_to_entity: ledgerMetadataEntityId(entry, "made_to_entity_id"),
+          restricted_audience: ledgerMetadataEntityId(entry, "restricted_audience_id"),
+          about_entity: ledgerMetadataEntityId(entry, "about_entity_id"),
+          committed_by_entity_id: ledgerMetadataEntityId(entry, "committed_by_entity_id"),
+        },
+        evidenceEntryDisclosure(entry),
+      ),
+    );
     truncationCount += rendered.truncationCount;
   }
   for (const value of context.selfSnapshot.values) {
@@ -892,7 +925,7 @@ function renderRelativeAgeOverlay(context: DeliberationContext): RenderedTermina
       "terminal_slow_overlay",
       [
         '<borg_terminal_relative_age_overlay complete="true">',
-        "  <interpretation>Turn-local mutable state, the turn-derived portion of the current-ledger projection, assembled entity labels, and exact mutable timestamps keyed to durable record ids. For commitments this includes ledger actor, trust rank, salience, taint, scope, persistence, retrieval state, stream and citation data, divergent state/value/text, and fail-closed resolved_disclosure. The fast borg_terminal_relative_age_overlay_state carries record_version, support_count and contradiction_count in value_age_counters and trait_age_counters joined by id. Its header carries the membership counts: rows_total counts every overlay row. commitment_rows_total is the complete commitment membership denominator for the durable-global tier; commitment_canonical_rows and commitment_ledger_only_rows partition it exactly. Commitment updated_at lives here; optional expires_at appears only when a scheduled expiry exists, and its absence means no scheduled expiry. A canonical_record=false row carries the ledger-only fallback projection whose durable-global row is only its durable join pointer. Relative ages follow the terminal pass contract.</interpretation>",
+        "  <interpretation>Turn-local mutable state, the turn-derived portion of the current-ledger projection and exact mutable timestamps keyed to durable record ids. For commitments this includes ledger actor, trust rank, salience, taint, scope, persistence, retrieval state, stream and citation data, divergent state/value/text, and fail-closed resolved_disclosure. The fast borg_terminal_relative_age_overlay_state carries assembled entity labels in commitment_entity_labels joined by commitment id, with the same resolved disclosure label. It carries record_version, support_count and contradiction_count in value_age_counters and trait_age_counters joined by id. Its header carries the membership counts: rows_total counts every overlay row. commitment_rows_total is the complete commitment membership denominator for the durable-global tier; commitment_canonical_rows and commitment_ledger_only_rows partition it exactly. Commitment updated_at lives here; optional expires_at appears only when a scheduled expiry exists, and its absence means no scheduled expiry. A canonical_record=false row carries the ledger-only fallback projection whose durable-global row is only its durable join pointer. Relative ages follow the terminal pass contract.</interpretation>",
         ...rows.map((row) => `  ${row}`),
         "  <omitted_count>0</omitted_count>",
         "</borg_terminal_relative_age_overlay>",
@@ -904,6 +937,7 @@ function renderRelativeAgeOverlay(context: DeliberationContext): RenderedTermina
       "terminal_fast_turn",
       [
         `<borg_terminal_relative_age_overlay_state rows_total="${rows.length}" commitment_rows_total="${commitments.length + ledgerOnlyCommitmentRows}" commitment_canonical_rows="${commitments.length}" commitment_ledger_only_rows="${ledgerOnlyCommitmentRows}">`,
+        ...entityLabelRows.map((row) => `  ${row}`),
         ...context.selfSnapshot.values.map(
           (value) =>
             `  <value_age_counters id="${escapeXmlAttribute(value.id)}" record_version="${value.record_version ?? "unknown"}" support_count="${value.support_count}" contradiction_count="${value.contradiction_count}" />`,
@@ -1003,23 +1037,67 @@ function ledgerIndexStructuralAttributes(entry: EvidenceLedgerEntry) {
 
 type LedgerIndexSharedAttributes = Partial<ReturnType<typeof ledgerIndexStructuralAttributes>>;
 
+// These fields describe the current ledger projection, not the stored record.
+// Even trust_rank can change when a source leaves the scope resolver's window.
+const RELATIONAL_STANDING_TURN_ATTRIBUTES = new Set<keyof LedgerIndexSharedAttributes>([
+  "scope",
+  "trust_rank",
+  "salience_class",
+  "persistence_class",
+  "via_retrieval",
+  "stream_index",
+  "citation_type",
+  "citations",
+]);
+
+// Exact machine-generated metadata keys from audience-standing.ts and disclosure
+// assembly. Strip them before JSON serialization/excerpting, so neither their
+// contents nor the head+tail source-length marker can invalidate the slow tier.
+const RELATIONAL_STANDING_TURN_METADATA = new Set([
+  "subject_entity_id",
+  "subject_display_name",
+  "subject_role",
+  "current_audience_entity_id",
+  "created_relative_age",
+  "last_reinforced_relative_age",
+  "last_progress_relative_age",
+]);
+
+type TerminalLedgerIndexEntry = EvidenceLedgerEntry & { valueInFastContext?: boolean };
+
+function partitionRelationalStandingMetadata(entry: EvidenceLedgerEntry) {
+  const fields = Object.entries(entry.state_metadata ?? {});
+  const stored = Object.fromEntries(
+    fields.filter(([key]) => !RELATIONAL_STANDING_TURN_METADATA.has(key)),
+  );
+  return {
+    stored: Object.keys(stored).length === 0 ? undefined : stored,
+    turn: Object.fromEntries(fields.filter(([key]) => RELATIONAL_STANDING_TURN_METADATA.has(key))),
+  };
+}
+
 function relationalStandingSharedAttributes(
   entries: readonly EvidenceLedgerEntry[],
+  attributeTier: "stored" | "turn",
 ): LedgerIndexSharedAttributes {
   const fields = entries.map(ledgerIndexStructuralAttributes);
   if (fields.length === 0) return {};
   // Exact equality of already-known structural fields, never language matching.
   return Object.fromEntries(
-    Object.entries(fields[0]!).filter(([key, value]) =>
-      fields.every((row) => row[key as keyof typeof row] === value),
+    Object.entries(fields[0]!).filter(
+      ([key, value]) =>
+        RELATIONAL_STANDING_TURN_ATTRIBUTES.has(key as keyof LedgerIndexSharedAttributes) ===
+          (attributeTier === "turn") &&
+        fields.every((row) => row[key as keyof typeof row] === value),
     ),
   );
 }
 
 function renderCompleteLedgerIndexRows(
-  entries: readonly EvidenceLedgerEntry[],
+  entries: readonly TerminalLedgerIndexEntry[],
   rowTag: string,
   shared: LedgerIndexSharedAttributes = {},
+  turnAttributes: ReadonlySet<keyof LedgerIndexSharedAttributes> = new Set(),
 ): TerminalIndexRows {
   let truncationCount = 0;
   const rows = entries.map((entry) => {
@@ -1032,7 +1110,9 @@ function renderCompleteLedgerIndexRows(
     truncationCount += [text, value, metadata].filter((field) => field.truncated).length;
     const fields = ledgerIndexStructuralAttributes(entry);
     const attribute = (key: keyof typeof fields): string[] =>
-      shared[key] === undefined ? [`${key}="${escapeXmlSingleLineAttribute(fields[key])}"`] : [];
+      shared[key] === undefined && !turnAttributes.has(key)
+        ? [`${key}="${escapeXmlSingleLineAttribute(fields[key])}"`]
+        : [];
     return [
       `<${rowTag} id="${escapeXmlAttribute(entry.id)}"`,
       ...attribute("source_type"),
@@ -1049,8 +1129,34 @@ function renderCompleteLedgerIndexRows(
       ...attribute("citations"),
       `disclosure="${escapeXmlSingleLineAttribute(compactDisclosure(evidenceEntryDisclosure(entry)))}"`,
       `text="${escapeXmlSingleLineAttribute(text.text)}"`,
-      `value="${escapeXmlSingleLineAttribute(value.text)}"`,
+      ...(entry.valueInFastContext ? [] : [`value="${escapeXmlSingleLineAttribute(value.text)}"`]),
       `state_metadata="${escapeXmlSingleLineAttribute(metadata.text)}" />`,
+    ].join(" ");
+  });
+  return { rows, truncationCount };
+}
+
+function renderRelationalStandingTurnRows(
+  entries: readonly EvidenceLedgerEntry[],
+  shared: LedgerIndexSharedAttributes,
+): TerminalIndexRows {
+  let truncationCount = 0;
+  const rows = entries.map((entry, index) => {
+    const fields = ledgerIndexStructuralAttributes(entry);
+    const metadata = partitionRelationalStandingMetadata(entry).turn;
+    const value =
+      entry.source_type === "relational_slot"
+        ? null
+        : boundedIndexAttribute(entry.value ?? "", TERMINAL_STANDING_INDEX_FIELD_CHARS);
+    if (value?.truncated) truncationCount += 1;
+    return [
+      `<relational_standing_turn_row id="${escapeXmlAttribute(entry.id)}" ordinal="${index + 1}"`,
+      `disclosure="${escapeXmlSingleLineAttribute(compactDisclosure(evidenceEntryDisclosure(entry)))}"`,
+      ...[...RELATIONAL_STANDING_TURN_ATTRIBUTES]
+        .filter((key) => shared[key] === undefined)
+        .map((key) => `${key}="${escapeXmlSingleLineAttribute(fields[key])}"`),
+      ...(value === null ? [] : [`value="${escapeXmlSingleLineAttribute(value.text)}"`]),
+      `state_metadata="${escapeXmlSingleLineAttribute(JSON.stringify(metadata))}" />`,
     ].join(" ");
   });
   return { rows, truncationCount };
@@ -1094,12 +1200,26 @@ function renderCompleteStandingMemoryIndexes(
   const standing = context.evidenceLedger?.audienceStanding;
   const relationalSlots = renderCompleteRelationalSlotRows(context);
   const relationalEntries = standing?.relationalEntries ?? [];
-  const shared = relationalStandingSharedAttributes(relationalEntries);
+  const stableEntries: TerminalLedgerIndexEntry[] = relationalEntries
+    .map((entry) => ({
+      ...entry,
+      state_metadata: partitionRelationalStandingMetadata(entry).stored,
+      // Participant goal/commitment values embed the current display name. Move
+      // them intact; never try to recover a stored family by parsing that text.
+      value: entry.source_type === "relational_slot" ? entry.value : undefined,
+      valueInFastContext: entry.source_type !== "relational_slot",
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const shared = relationalStandingSharedAttributes(stableEntries, "stored");
   const relationalStanding = renderCompleteLedgerIndexRows(
-    relationalEntries,
+    stableEntries,
     "relational_standing_row",
     shared,
+    RELATIONAL_STANDING_TURN_ATTRIBUTES,
   );
+  // Slow excerpts above are fixed before any clock/roster projection is rendered.
+  const turnShared = relationalStandingSharedAttributes(relationalEntries, "turn");
+  const relationalTurn = renderRelationalStandingTurnRows(relationalEntries, turnShared);
   const socialStanding = renderCompleteLedgerIndexRows(
     standing?.observedEventIntrospectionEntries ?? [],
     "social_standing_row",
@@ -1188,7 +1308,7 @@ function renderCompleteStandingMemoryIndexes(
           .map(([key, value]) => `${key}="${escapeXmlSingleLineAttribute(value)}"`)
           .join(
             " ",
-          )}>Every relational_standing_row inherits exactly the structural attributes on this interpretation header. Attributes that differ across rows remain on each row. IDs, states, payloads, disclosure labels and origin audiences are row-local. The fast standing-memory index carries this group's rows_total and draw_scope in relational_standing_metadata, plus the interpretation of all standing groups.</interpretation>`,
+          )}>Every relational_standing_row inherits exactly the structural attributes on this interpretation header. Attributes that differ across rows remain on each row. Slow rows contain stored record state and are ordered by id. They retain row-local states, stored text and metadata, disclosure labels and origin audiences. The fast standing-memory index carries relational_standing_turn_row joined by id: ordinal preserves the current ledger order; scope, trust rank and other ledger projection attributes, subject identity/display name/role, relative ages and current audience metadata live there. Participant goal/commitment value is a display-name projection and lives there intact; relational-slot value remains here. Join the two state_metadata objects by id; fast metadata and value never contribute to slow excerpt lengths. The fast index also carries this group's rows_total and draw_scope in relational_standing_metadata and the interpretation of all standing groups.</interpretation>`,
         ...relationalStanding.rows.map((row) => `    ${row}`),
         "    <omitted_count>0</omitted_count>",
         "  </relational_standing>",
@@ -1205,7 +1325,14 @@ function renderCompleteStandingMemoryIndexes(
       [
         `<borg_terminal_standing_memory_indexes rows_total_across_groups="${rowCount + relationalStanding.rows.length}" standing_cadence_due="${standing?.renderRecentLivedExperience === true}">`,
         "  <interpretation>Complete membership indexes for relational slots, relational standing, social/observed-event memory, and cross-session lived entries. The groups are drawn by different predicates, so each carries draw_scope naming its own: active_participant_subjects means the draw filtered on subject_entity_id against the current roster; global means it did not filter by audience, participant, or session at all; other_sessions_recent_window means it ran over unarchived sessions other than this one, inside the recent-lived-experience window and under a row cap, and took a turn-completion row only on a day its own session also carried a contact or a reply -- the current session is absent from that group because it is the transcript, so a stretch of time with no rows there is not evidence that nothing happened in it. That group is a merge and not one draw: its individual events, its autonomous self-decisions and its day-level rows are drawn separately with no budget shared between them, so one kind's count there is not evidence about another's -- and the event lane and the self-decision lane are handed one configured cap value rather than two, so those two arriving equal at their limit is one number applied twice and not two lanes agreeing. A self-decision row is stamped when its decision was recorded at the end of its turn, not when its trigger fired, so lining those stamps up against wake times pairs a decision with a later wake. Its event cap is spent on contacts first, then replies, then turn completions, so which kinds survive is an artefact of that order rather than a sample of the mix; and past the window where events are listed individually, a day is carried by its day-level row while its own events are dropped, so a day present only as a day row is a compressed day and not a quiet one. Scope is not inferable from the rows -- a row whose origin_audience is elsewhere is consistent with any of them -- so read draw_scope, not the contents. Where draw_scope is global, the current audience may still rank or annotate; ranking is never a filter. rows_total is per group and rows_total_across_groups is their sum, which is therefore not a total at any single scope. Each group's complete and omitted_count describe the rows its own draw produced; every one of these draws is separately capped upstream, so neither field is evidence about what the store holds. Payload fields are mechanical head+tail excerpts; an excerpt is never a summary. Disclosure labels survive on every row and govern mention, not recall.</interpretation>",
-        `  <relational_standing_metadata rows_total="${relationalStanding.rows.length}" draw_scope="${relationalDrawScope}" />`,
+        `  <relational_standing_metadata rows_total="${relationalStanding.rows.length}" draw_scope="${relationalDrawScope}">`,
+        `    <interpretation ${Object.entries(turnShared)
+          .map(([key, value]) => `${key}="${escapeXmlSingleLineAttribute(value)}"`)
+          .join(
+            " ",
+          )}>Every relational_standing_turn_row inherits exactly the structural attributes on this interpretation header. Attributes that differ across rows remain on each row. Join each row to its slow relational_standing_row by id; disclosure labels remain on both rows.</interpretation>`,
+        ...relationalTurn.rows.map((row) => `    ${row}`),
+        "  </relational_standing_metadata>",
         ...groups.flatMap((group) => {
           return [
             `  <${group.tag} complete="true" rows_total="${group.rows.length}" draw_scope="${group.drawScope}">`,
@@ -1221,6 +1348,7 @@ function renderCompleteStandingMemoryIndexes(
         rowCount,
         truncationCount:
           relationalSlots.truncationCount +
+          relationalTurn.truncationCount +
           socialStanding.truncationCount +
           crossSession.truncationCount,
       },
