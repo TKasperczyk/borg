@@ -1141,7 +1141,10 @@ export class AutonomyScheduler {
 
     try {
       const scanResult = await this.scanDueEvents();
-      const scannedDueEvents = this.orderDueEventsForRecoveryProbe(scanResult.events, nowMs);
+      const scannedDueEvents = this.orderDueEventsForAdmission(
+        this.orderDueEventsForRecoveryProbe(scanResult.events, nowMs),
+        this.clock.now(),
+      );
       const dueEventKeys = new Set(scannedDueEvents.map(({ event }) => backoffKey(event)));
 
       for (const key of this.retryBackoff.keys()) {
@@ -1943,6 +1946,35 @@ export class AutonomyScheduler {
 
     this.activeTick = promise;
     return promise;
+  }
+
+  private orderDueEventsForAdmission(
+    events: ScannedDueEvents["events"],
+    nowMs: number,
+  ): ScannedDueEvents["events"] {
+    const scheduledWakes: Array<{ candidate: ScannedDueEvent; fireAt: number }> = [];
+    const remainingEvents: ScannedDueEvent[] = [];
+
+    // Due self-scheduled times get first admission on every tick. Preserve the
+    // existing order for equal fire times and all other sources; the normal
+    // backoff, fleet brake, and budget checks still decide whether a wake runs.
+    for (const candidate of events) {
+      const fireAt = candidate.event.payload.fire_at;
+
+      if (
+        candidate.event.sourceName === "scheduled_wake" &&
+        typeof fireAt === "number" &&
+        Number.isFinite(fireAt) &&
+        fireAt <= nowMs
+      ) {
+        scheduledWakes.push({ candidate, fireAt });
+      } else {
+        remainingEvents.push(candidate);
+      }
+    }
+
+    scheduledWakes.sort((left, right) => left.fireAt - right.fireAt);
+    return [...scheduledWakes.map(({ candidate }) => candidate), ...remainingEvents];
   }
 
   private orderDueEventsForRecoveryProbe(

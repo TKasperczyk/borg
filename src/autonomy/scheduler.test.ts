@@ -23,7 +23,9 @@ import {
   createCommitmentExpiringTrigger,
   createGoalFollowupDueTrigger,
   createScheduledReflectionTrigger,
+  createScheduledWakeTrigger,
 } from "./index.js";
+import { ScheduledWakesRepository } from "./scheduled-wakes-repository.js";
 import {
   AutonomyScheduler,
   goalConcernPayload,
@@ -3278,6 +3280,253 @@ describe("AutonomyScheduler", () => {
     ]);
     expect(turnRunner.run).toHaveBeenCalledTimes(2);
   });
+
+  it.each([false, true])(
+    "admits a due scheduled wake into the first freed slot with fleet brake enabled=%s",
+    async (fleetBrakeEnabled) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      cleanup = harness.cleanup;
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
+      const scheduledWakesRepository = new ScheduledWakesRepository({ db: harness.db, clock });
+      const wake = scheduledWakesRepository.schedule({ delaySeconds: 1, note: "check in" });
+      wakeRepository.record({
+        trigger_name: "goal_followup_due",
+        wake_source_type: "trigger",
+        source_category: "operational",
+      });
+      clock.advance(1_000);
+      // The rolling window is full, and reflection already spent the reservation.
+      wakeRepository.record({
+        trigger_name: "scheduled_reflection",
+        wake_source_type: "trigger",
+        source_category: "contemplative",
+      });
+      const turnRunner = {
+        run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+      };
+      const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const scheduler = createScheduler({
+        db: harness.db,
+        wakeRepository,
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerWindow: 2,
+        budgetWindowMs: 60_000,
+        reservedContemplativeWakesPerWindow: 1,
+        fleetBrake: { ...TEST_FLEET_BRAKE, enabled: fleetBrakeEnabled },
+        clock,
+        createStreamWriter,
+        watermarkRepository,
+        turnOrchestrator: turnRunner,
+        toolDispatcher: new ToolDispatcher({ createStreamWriter, clock }),
+        sources: [
+          createPersistentDueSource({
+            watermarkRepository,
+            eventIds: ["operational-event"],
+            sortTs: () => 1,
+          }),
+          createScheduledWakeTrigger({ scheduledWakesRepository, watermarkRepository, clock }),
+        ],
+      });
+
+      await expect(scheduler.tick()).resolves.toMatchObject({ firedEvents: 0, budgetSkipped: 2 });
+      clock.advance(59_000);
+      // Wakes at the cutoff still count; priority cannot bypass the full cap.
+      await expect(scheduler.tick()).resolves.toMatchObject({ firedEvents: 0, budgetSkipped: 2 });
+      expect(scheduledWakesRepository.get(wake.id)?.status).toBe("pending");
+      expect(turnRunner.run).not.toHaveBeenCalled();
+
+      clock.advance(1);
+      const cutoff = clock.now() - 60_000;
+      expect(wakeRepository.countSince(cutoff)).toBe(1);
+      expect(wakeRepository.countSince(cutoff, { sourceCategory: "contemplative" })).toBe(1);
+      const result = await scheduler.tick();
+
+      expect(result).toMatchObject({ firedEvents: 1, budgetSkipped: 1, errorCount: 0 });
+      expect(result.events.map((event) => [event.id, event.status])).toEqual([
+        [wake.id, "fired"],
+        ["operational-event", "budget_skipped"],
+      ]);
+      expect(scheduledWakesRepository.get(wake.id)?.status).toBe("fired");
+      expect(wakeRepository.countSince(cutoff)).toBe(2);
+      expect(turnRunner.run).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          autonomyTrigger: expect.objectContaining({ event_id: wake.id }),
+        }),
+      );
+    },
+  );
+
+  it.each([false, true])(
+    "admits scheduled wakes oldest fire_at first ahead of all other sources with recovery=%s",
+    async (recovering) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      cleanup = harness.cleanup;
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      if (recovering) {
+        setFleetBrakeState(watermarkRepository, clock, {
+          error_streak: TEST_FLEET_BRAKE.errorStreakThreshold,
+          last_error_ts: clock.now() - TEST_FLEET_BRAKE.errorBasePauseMs,
+        });
+      }
+      const turnRunner = {
+        run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+      };
+      const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const dispatcher = new ToolDispatcher({ createStreamWriter, clock });
+      dispatcher.register(
+        createIdentityEventsListForCognitionTool({
+          listEvents: (options) => harness.identityService.listEvents(options),
+        }),
+      );
+      const latestFireAt = clock.now() + 1_000;
+      const scheduledSource = createPersistentDueSource({
+        watermarkRepository,
+        eventIds: ["a-newer-wake", "z-older-wake"],
+        sourceName: "scheduled_wake",
+        sourceCategory: "contemplative",
+        // Admission must use fire_at even when scan/sortTs order disagrees.
+        sortTs: (_id, index) => 10 + index,
+        payload: (_id, index) => ({ fire_at: latestFireAt - index * 2_000 }),
+      });
+      const scheduler = createScheduler({
+        db: harness.db,
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerWindow: 2,
+        fleetBrake: TEST_FLEET_BRAKE,
+        clock,
+        createStreamWriter,
+        watermarkRepository,
+        turnOrchestrator: turnRunner,
+        toolDispatcher: dispatcher,
+        sources: [
+          createPersistentDueSource({
+            watermarkRepository,
+            eventIds: ["operational-event"],
+            sortTs: () => 1,
+          }),
+          createPersistentDueSource({
+            watermarkRepository,
+            eventIds: ["reflection-event"],
+            sourceName: "scheduled_reflection",
+            sourceCategory: "contemplative",
+            sortTs: () => 2,
+          }),
+          {
+            ...scheduledSource,
+            async scan() {
+              // The newer wake becomes due while source scans are in flight.
+              clock.advance(1_000);
+              return scheduledSource.scan();
+            },
+          },
+        ],
+      });
+
+      const result = await scheduler.tick();
+
+      expect(result).toMatchObject({ firedEvents: 2, budgetSkipped: 2, errorCount: 0 });
+      expect(result.events.map((event) => [event.id, event.status])).toEqual([
+        ["z-older-wake", "fired"],
+        ["a-newer-wake", "fired"],
+        ...(recovering
+          ? [
+              ["reflection-event", "budget_skipped"],
+              ["operational-event", "budget_skipped"],
+            ]
+          : [
+              ["operational-event", "budget_skipped"],
+              ["reflection-event", "budget_skipped"],
+            ]),
+      ]);
+      expect(turnRunner.run).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([false, true])(
+    "preserves existing admission order when no scheduled wake is due with recovery=%s",
+    async (recovering) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      cleanup = harness.cleanup;
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const scheduledWakesRepository = new ScheduledWakesRepository({ db: harness.db, clock });
+      const futureWake = scheduledWakesRepository.schedule({ delaySeconds: 60, note: "later" });
+      if (recovering) {
+        setFleetBrakeState(watermarkRepository, clock, {
+          error_streak: TEST_FLEET_BRAKE.errorStreakThreshold,
+          last_error_ts: clock.now() - TEST_FLEET_BRAKE.errorBasePauseMs,
+        });
+      }
+      const turnRunner = {
+        run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+      };
+      const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const dispatcher = new ToolDispatcher({ createStreamWriter, clock });
+      dispatcher.register(
+        createIdentityEventsListForCognitionTool({
+          listEvents: (options) => harness.identityService.listEvents(options),
+        }),
+      );
+      const scheduler = createScheduler({
+        db: harness.db,
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerWindow: 1,
+        fleetBrake: TEST_FLEET_BRAKE,
+        clock,
+        createStreamWriter,
+        watermarkRepository,
+        turnOrchestrator: turnRunner,
+        toolDispatcher: dispatcher,
+        sources: [
+          createScheduledWakeTrigger({ scheduledWakesRepository, watermarkRepository, clock }),
+          createPersistentDueSource({
+            watermarkRepository,
+            eventIds: ["reflection-event"],
+            sourceName: "scheduled_reflection",
+            sourceCategory: "contemplative",
+            sortTs: () => 15,
+          }),
+          createPersistentDueSource({
+            watermarkRepository,
+            eventIds: ["z-earlier", "b-tied", "a-tied", "c-later"],
+            sortTs: (_id, index) => [5, 10, 10, 20][index]!,
+          }),
+        ],
+      });
+
+      const result = await scheduler.tick();
+
+      expect(result).toMatchObject({ firedEvents: 1, budgetSkipped: 4, errorCount: 0 });
+      expect(result.events.map((event) => [event.id, event.status])).toEqual(
+        recovering
+          ? [
+              ["reflection-event", "fired"],
+              ["z-earlier", "budget_skipped"],
+              ["a-tied", "budget_skipped"],
+              ["b-tied", "budget_skipped"],
+              ["c-later", "budget_skipped"],
+            ]
+          : [
+              ["z-earlier", "fired"],
+              ["a-tied", "budget_skipped"],
+              ["b-tied", "budget_skipped"],
+              ["reflection-event", "budget_skipped"],
+              ["c-later", "budget_skipped"],
+            ],
+      );
+      expect(scheduledWakesRepository.get(futureWake.id)?.status).toBe("pending");
+      expect(turnRunner.run).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("checks persisted wake history when a fresh scheduler enforces budget", async () => {
     const clock = new ManualClock(1_000_000);
