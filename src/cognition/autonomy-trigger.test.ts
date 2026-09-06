@@ -77,53 +77,77 @@ describe("formatAutonomyTriggerContext epoch annotation", () => {
     expect(absent).not.toContain("not every write a record received");
   });
 
-  it("bounds oversized identity changes and the complete autonomy-trigger context", async () => {
-    const tool = createIdentityEventsListForCognitionTool({
-      listEvents: () =>
-        Array.from({ length: 10 }, (_, index) => ({
-          id: index + 1,
-          record_type: "goal" as const,
-          record_id: `goal_${String(index).padStart(16, "a")}`,
-          action: "update",
-          old_value: {
-            progress_notes: `OLD_${index}_${"o".repeat(110_000)}`,
-            record_version: index + 1,
-          },
-          new_value: {
-            progress_notes: `${"n".repeat(115_000)}_NEW_${index}`,
-            record_version: index + 2,
-          },
-          reason: "Scheduled identity maintenance.",
-          provenance: { kind: "offline" as const, process: "test-reflector" },
-          review_item_id: null,
-          overwrite_without_review: false,
-          ts: 1_787_050_000_000 + index,
-        })),
-    });
-    const output = await tool.invoke(
-      { limit: 10 },
-      { sessionId: DEFAULT_SESSION_ID, origin: "autonomous" },
-    );
-    const rendered = formatAutonomyTriggerContext({
-      ...BASE,
-      source_name: "scheduled_reflection",
-      payload: {
-        interval_ms: 14_400_000,
-        recent_identity_events: output.events,
-        oversized_structural_tail: "z".repeat(100_000),
-      },
-    });
+  it.each([false, true])(
+    "preserves selected event metadata under pressure (oversized metadata=%s)",
+    async (oversizedMetadata) => {
+      const tool = createIdentityEventsListForCognitionTool({
+        listEvents: () =>
+          Array.from({ length: 10 }, (_, index) => ({
+            id: index + 1,
+            record_type: "goal" as const,
+            record_id: `goal_${String(index).padStart(16, "a")}`,
+            action: "update",
+            old_value: {
+              progress_notes: `OLD_${index}_${"o".repeat(110_000)}`,
+              record_version: index + 1,
+            },
+            new_value: {
+              progress_notes: `${"n".repeat(115_000)}_NEW_${index}`,
+              record_version: index + 2,
+            },
+            reason: oversizedMetadata
+              ? `Reason ${index}: ${"r".repeat(6_000)}`
+              : `Scheduled identity maintenance ${index}.`,
+            provenance: { kind: "offline" as const, process: "test-reflector" },
+            review_item_id: null,
+            overwrite_without_review: false,
+            ts: 1_787_050_000_000 + index,
+          })),
+      });
+      const output = await tool.invoke(
+        { limit: 10 },
+        { sessionId: DEFAULT_SESSION_ID, origin: "autonomous" },
+      );
+      const rendered = formatAutonomyTriggerContext({
+        ...BASE,
+        source_name: "scheduled_reflection",
+        payload: {
+          interval_ms: 14_400_000,
+          recent_identity_events: output.events,
+          prior_self_thought: { text: "thought".repeat(2_000), updated_at: BASE.sort_ts },
+          oversized_structural_tail: "z".repeat(100_000),
+        },
+      });
 
-    expect(rendered.length).toBe(AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS);
-    expect(rendered.match(/excerpt_notice:/g)).toHaveLength(1);
-    expect(rendered).toContain("mechanically bounded to 32000 chars");
-    expect(rendered).toContain("old-to-new change excerpt is bounded to 1500 chars");
-    expect(rendered).toContain('"record_type": "goal"');
-    expect(rendered).toContain('"excerpt_exact": false');
-    expect(rendered).toContain("not every write a record received");
-    expect(rendered).not.toContain("o".repeat(10_000));
-    expect(rendered).not.toContain("n".repeat(10_000));
-  });
+      expect(rendered.length).toBeLessThanOrEqual(AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS);
+      expect(rendered.match(/excerpt_notice:/g)).toHaveLength(1);
+      expect(rendered).toContain("mechanically bounded to 32000 chars");
+      expect(rendered).toContain("old-to-new change excerpt is bounded to 1500 chars");
+      expect(rendered).toContain('"record_type": "goal"');
+      expect(rendered).toContain('"excerpt_exact": false');
+      expect(rendered).toContain("not every write a record received");
+      expect(rendered).not.toContain("o".repeat(10_000));
+      expect(rendered).not.toContain("n".repeat(10_000));
+
+      const payloadStart = rendered.indexOf("payload:\n") + "payload:\n".length;
+      const payloadEnd = rendered.indexOf("\nnote on recent_identity_events:");
+      const payload = JSON.parse(rendered.slice(payloadStart, payloadEnd));
+      const selected = payload.recent_identity_events as typeof output.events;
+      if (oversizedMetadata) {
+        expect(selected.length).toBeGreaterThan(0);
+        expect(selected.length).toBeLessThan(output.events.length);
+      } else {
+        expect(selected).toHaveLength(output.events.length);
+      }
+      expect(rendered).toContain(
+        `recent_identity_events_omitted: ${output.events.length - selected.length}`,
+      );
+      for (const [index, event] of selected.entries()) {
+        const { change: _change, ...metadata } = output.events[index]!;
+        expect(event).toMatchObject(metadata);
+      }
+    },
+  );
 
   it("names what an old sort_ts on a dormant-question wake does and does not mean", () => {
     const rendered = formatAutonomyTriggerContext({

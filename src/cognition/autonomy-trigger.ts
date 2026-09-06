@@ -115,25 +115,137 @@ const AUTONOMY_TRIGGER_EXCERPT_NOTICE =
   `each recent identity event's old-to-new change excerpt is bounded to ${IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS} chars. ` +
   "Head+tail excerpts are not summaries, and omitted characters remain available in the source records.";
 
-function boundAutonomyTriggerContext(value: string, nestedExcerptWasTruncated: boolean): string {
-  if (!nestedExcerptWasTruncated && value.length <= AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
+function excerptPayloadText(value: unknown, maxChars: number): unknown {
+  if (typeof value === "string") {
+    const marker = "[ELIDED]";
+    if (value.length <= Math.max(marker.length, maxChars)) {
+      return value;
+    }
+    const excerpt = headTailTextExcerpt(value, Math.max(0, maxChars - marker.length));
+    return `${excerpt.head}${marker}${excerpt.tail}`;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => excerptPayloadText(entry, maxChars));
+  }
+
+  if (value === null || typeof value !== "object") {
     return value;
   }
 
-  if (
-    value.length + 1 + AUTONOMY_TRIGGER_EXCERPT_NOTICE.length <=
-    AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS
-  ) {
-    return `${value}\n${AUTONOMY_TRIGGER_EXCERPT_NOTICE}`;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [
+      key,
+      key === "disclosure" || key === "disclosure_label"
+        ? entry
+        : excerptPayloadText(entry, maxChars),
+    ]),
+  );
+}
+
+function excerptIdentityEvent(event: unknown, maxChars: number): unknown {
+  if (event === null || typeof event !== "object" || Array.isArray(event)) {
+    return event;
+  }
+  const row = event as Record<string, unknown>;
+  const change = row.change;
+  if (change === null || typeof change !== "object" || Array.isArray(change)) {
+    return event;
+  }
+  const source = change as Record<string, unknown>;
+  if (typeof source.excerpt_head !== "string") {
+    return event;
+  }
+  const text =
+    source.excerpt_head + (typeof source.excerpt_tail === "string" ? source.excerpt_tail : "");
+  const excerpt = headTailTextExcerpt(text, maxChars);
+  if (excerpt.exact) {
+    return event;
+  }
+  return {
+    ...row,
+    change: {
+      ...source,
+      excerpt_head: excerpt.head,
+      excerpt_tail: excerpt.tail,
+      excerpt_exact: false,
+      excerpt_chars: excerpt.renderedChars,
+    },
+  };
+}
+
+function boundAutonomyTriggerContext(context: AutonomyTriggerContext): string {
+  const rendered = renderAutonomyTriggerContext(context);
+  const nestedExcerptWasTruncated = carriesTruncatedIdentityEventChange(context.payload);
+  if (!nestedExcerptWasTruncated && rendered.length <= AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
+    return rendered;
   }
 
-  const sourceBudget = Math.max(
-    0,
-    AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS - AUTONOMY_TRIGGER_EXCERPT_NOTICE.length - 2,
-  );
-  const excerpt = headTailTextExcerpt(value, sourceBudget);
+  const events = context.payload.recent_identity_events;
+  let eventCount = Array.isArray(events) ? events.length : 0;
+  let omittedPayloadFields = 0;
+  const retainedPayload = { ...context.payload };
+  const render = (maxChars: number): string => {
+    const payload = Object.fromEntries(
+      Object.entries(retainedPayload).map(([key, value]) => [
+        key,
+        key === "recent_identity_events" && Array.isArray(events)
+          ? events.slice(0, eventCount).map((event) => excerptIdentityEvent(event, maxChars))
+          : key === "disclosure" || key === "disclosure_label"
+            ? value
+            : excerptPayloadText(value, maxChars),
+      ]),
+    );
+    const notice = [
+      AUTONOMY_TRIGGER_EXCERPT_NOTICE,
+      Array.isArray(events)
+        ? `recent_identity_events_omitted: ${events.length - eventCount}.`
+        : null,
+      omittedPayloadFields > 0 ? `payload_fields_omitted: ${omittedPayloadFields}.` : null,
+    ]
+      .filter((part) => part !== null)
+      .join(" ");
+    return `${renderAutonomyTriggerContext({ ...context, payload })}\n${notice}`;
+  };
 
-  return `${excerpt.head}\n${AUTONOMY_TRIGGER_EXCERPT_NOTICE}\n${excerpt.tail}`;
+  const uncut = render(Number.POSITIVE_INFINITY);
+  if (uncut.length <= AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
+    return uncut;
+  }
+
+  // Reserve every selected event's metadata before spending any room on text.
+  // If metadata alone exceeds the cap, exclude an explicitly counted suffix.
+  let bounded = render(0);
+  while (bounded.length > AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS && eventCount > 0) {
+    eventCount -= 1;
+    bounded = render(0);
+  }
+  // Other payloads can also contain more structure than the cap permits (for
+  // example, a large array). Omit whole trailing fields, never serialized bytes.
+  const otherFields = Object.keys(retainedPayload).filter(
+    (key) => key !== "recent_identity_events",
+  );
+  while (bounded.length > AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS && otherFields.length > 0) {
+    delete retainedPayload[otherFields.pop()!];
+    omittedPayloadFields += 1;
+    bounded = render(0);
+  }
+
+  // Price the final serialization, including JSON escapes, calendar siblings,
+  // domain notes, and the notice. Short values use only the room they need.
+  let low = 0;
+  let high = AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS;
+  while (low <= high) {
+    const candidateBudget = Math.floor((low + high) / 2);
+    const candidate = render(candidateBudget);
+    if (candidate.length <= AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
+      bounded = candidate;
+      low = candidateBudget + 1;
+    } else {
+      high = candidateBudget - 1;
+    }
+  }
+  return bounded;
 }
 
 // A dormant-question wake's event id is the question paired with the same stamp
@@ -151,7 +263,7 @@ function carriesOpenQuestionDormancy(payload: Record<string, unknown>): boolean 
   return typeof payload.open_question_id === "string" && typeof payload.last_touched === "number";
 }
 
-export function formatAutonomyTriggerContext(context: AutonomyTriggerContext): string {
+function renderAutonomyTriggerContext(context: AutonomyTriggerContext): string {
   const secondaryDueGoals = context.payload.secondary_due_goals;
   const hasGoalBatch = Array.isArray(secondaryDueGoals) && secondaryDueGoals.length > 0;
   const { secondary_due_goals: _secondaryDueGoals, ...primaryPayload } = context.payload;
@@ -162,7 +274,7 @@ export function formatAutonomyTriggerContext(context: AutonomyTriggerContext): s
     ? new Date(context.sort_ts).toISOString()
     : String(context.sort_ts);
 
-  const rendered = [
+  return [
     "Autonomous wake context:",
     `source_name: ${context.source_name}`,
     `source_type: ${context.source_type}`,
@@ -177,9 +289,8 @@ export function formatAutonomyTriggerContext(context: AutonomyTriggerContext): s
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
+}
 
-  return boundAutonomyTriggerContext(
-    rendered,
-    carriesTruncatedIdentityEventChange(context.payload),
-  );
+export function formatAutonomyTriggerContext(context: AutonomyTriggerContext): string {
+  return boundAutonomyTriggerContext(context);
 }
