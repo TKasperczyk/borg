@@ -6,6 +6,7 @@ import { OpenAICompatibleEmbeddingClient, type EmbeddingClient } from "../embedd
 import { AnthropicLLMClient, type LLMClient } from "../llm/index.js";
 import type { Clock } from "../util/clock.js";
 import type { AttachmentService } from "../attachments/index.js";
+import { observeTurnLlmClient } from "../cognition/turn-execution-metrics.js";
 
 export function createEmbeddingClient(config: Config): EmbeddingClient {
   const inner = new OpenAICompatibleEmbeddingClient({
@@ -30,7 +31,8 @@ export function createLlmFactory(
   attachmentService?: AttachmentService,
 ): () => LLMClient {
   if (llmClient !== undefined) {
-    return () => llmClient;
+    const observed = observeTurnLlmClient(llmClient);
+    return () => observed;
   }
 
   let cached: LLMClient | undefined;
@@ -55,7 +57,7 @@ export function createLlmFactory(
             attachmentResolver: (attachmentId) => attachmentService.fetchImageForLlm(attachmentId),
           }),
     });
-    return cached;
+    return observeTurnLlmClient(cached);
   };
 }
 

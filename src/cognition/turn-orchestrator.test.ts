@@ -3232,6 +3232,42 @@ describe("TurnOrchestrator evidence ledger", () => {
     ];
   }
 
+  it("counts recall-expansion stall retries on the shared client in the owning turn", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-recall-metrics-"));
+    tempDirs.push(tempDir);
+    const llm = new FakeLLMClient({
+      responses: [...ledgerTurnResponses("First answer."), ...ledgerTurnResponses("Next answer.")],
+    });
+    const complete = llm.complete.bind(llm);
+    let recallCalls = 0;
+    vi.spyOn(llm, "complete").mockImplementation((options) => {
+      if (options.budget === "recall-expansion") {
+        recallCalls += 1;
+        if (recallCalls === 1) {
+          options.onTransportRetry?.({
+            attempt: 2,
+            kind: "stall",
+            code: "LLM_STREAM_STALLED",
+            retry_transport: "unary",
+          });
+        }
+        return Promise.resolve(createRecallExpansionResponse());
+      }
+      return complete(options);
+    });
+    const borg = await openTestBorg(tempDir, llm, new ManualClock(1_800_000_180_000));
+    try {
+      const first = await borg.turn({ userMessage: "Recall our current focus.", stakes: "low" });
+      expect(recallCalls).toBe(1);
+      expect(first).toMatchObject({ finalizer_rounds: 1, stall_retries: 1 });
+      const next = await borg.turn({ userMessage: "Continue with that focus.", stakes: "low" });
+      expect(recallCalls).toBe(2);
+      expect(next).toMatchObject({ finalizer_rounds: 1, stall_retries: 0 });
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("does not include the evidence ledger prompt block when the flag is disabled", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

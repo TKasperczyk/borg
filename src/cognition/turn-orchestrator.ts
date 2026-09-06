@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { AsyncLocalStorage } from "node:async_hooks";
 import { performance } from "node:perf_hooks";
 
 import type {
@@ -100,7 +99,7 @@ import {
   createTurnExecutionMetrics,
   observeTurnLlmClient,
   snapshotTurnExecutionMetrics,
-  type TurnExecutionMetrics,
+  turnExecutionMetricsStorage,
 } from "./turn-execution-metrics.js";
 
 export type TurnResult = {
@@ -215,7 +214,6 @@ export class TurnOrchestrator {
   private readonly tracer: TurnTracer;
   private readonly selfContextBuilder: TurnSelfContextBuilder;
   private readonly turnPhaseCoordinator: TurnPhaseCoordinator;
-  private readonly executionMetricsStorage = new AsyncLocalStorage<TurnExecutionMetrics>();
 
   constructor(private readonly options: TurnOrchestratorOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -226,11 +224,7 @@ export class TurnOrchestrator {
       new SessionLock({
         dataDir: options.config.dataDir,
       });
-    const createObservedLlmClient = () => {
-      const client = options.llmFactory();
-      const metrics = this.executionMetricsStorage.getStore();
-      return metrics === undefined ? client : observeTurnLlmClient(client, metrics);
-    };
+    const createObservedLlmClient = () => observeTurnLlmClient(options.llmFactory());
     const createStreamReader =
       options.createStreamReader ??
       ((sessionId: SessionId) =>
@@ -573,7 +567,7 @@ export class TurnOrchestrator {
 
     try {
       try {
-        const result = await this.executionMetricsStorage.run(
+        const result = await turnExecutionMetricsStorage.run(
           executionMetrics,
           async () =>
             await this.turnPhaseCoordinator.run({
