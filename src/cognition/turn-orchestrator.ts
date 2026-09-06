@@ -570,8 +570,8 @@ export class TurnOrchestrator {
         try {
           const result = await turnExecutionMetricsStorage.run(
             executionMetrics,
-            async () =>
-              await this.turnPhaseCoordinator.run({
+            () =>
+              this.turnPhaseCoordinator.run({
                 input: phaseInput,
                 globalTurnCounter,
                 sessionId,

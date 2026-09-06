@@ -63,6 +63,7 @@ import { CognitionError, SessionBusyError } from "../util/errors.js";
 import type { SessionLock } from "./session-lock.js";
 import type { IntentRecord } from "./types.js";
 import { turnExecutionMetricsFromError } from "./turn-execution-metrics.js";
+import { TurnPhaseCoordinator } from "./lifecycle/turn-phase-coordinator.js";
 
 type TraceEvent = {
   event: string;
@@ -3320,6 +3321,57 @@ describe("TurnOrchestrator evidence ledger", () => {
       }
     },
   );
+
+  it("emits turn.terminal before a concurrent trace after the coordinator resolves", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-terminal-order-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const borg = await openTestBorg(
+      tempDir,
+      new FakeLLMClient(),
+      new ManualClock(1_800_000_180_000),
+      undefined,
+      {
+        tracerPath: tracePath,
+      },
+    );
+    const deps = (borg as unknown as { deps: BorgDependencies }).deps;
+    const coordinator = vi
+      .spyOn(TurnPhaseCoordinator.prototype, "run")
+      .mockImplementation(({ turnId }) => {
+        // The concurrent producer has one more continuation to run. An extra
+        // async wrapper must not let it overtake the already completed turn.
+        queueMicrotask(() =>
+          queueMicrotask(() => {
+            deps.tracer.emit("llm_call.completed", { turnId: "concurrent-turn" });
+          }),
+        );
+        return Promise.resolve({
+          turn_id: turnId,
+          mode: "idle",
+          path: "suppressed",
+          response: "",
+          emitted: false,
+          emission: { kind: "suppressed", reason: "finalizer_no_output" },
+          thoughts: [],
+          usage: { input_tokens: 0, output_tokens: 0, stop_reason: null },
+          retrievedEpisodeIds: [],
+          referencedEpisodeIds: [],
+          intents: [],
+          toolCalls: [],
+        });
+      });
+    try {
+      await borg.turn({ userMessage: "Continue our work.", stakes: "low" });
+      const events = readTraceEvents(tracePath).filter(
+        (event) => event.event === "turn.terminal" || event.turnId === "concurrent-turn",
+      );
+      expect(events.map((event) => event.event)).toEqual(["turn.terminal", "llm_call.completed"]);
+    } finally {
+      coordinator.mockRestore();
+      await borg.close();
+    }
+  });
 
   it("does not include the evidence ledger prompt block when the flag is disabled", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
