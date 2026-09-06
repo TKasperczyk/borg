@@ -140,15 +140,14 @@ const compactSystem = [
   },
   {
     type: "text" as const,
-    text: "compact-slow-standing",
+    text: "compact-slow-standing-and-overlay",
     cache_control: { type: "ephemeral" as const, ttl: "5m" as const },
   },
   {
     type: "text" as const,
-    text: "compact-slow-overlay",
+    text: "compact-fast-turn",
     cache_control: { type: "ephemeral" as const, ttl: "5m" as const },
   },
-  { type: "text" as const, text: "compact-fast-turn" },
 ];
 
 function input() {
@@ -312,7 +311,7 @@ describe("finalizer context capture and replay", () => {
     expect(parsed.surfaces.legacy.system).toEqual(legacySystem);
     expect(parsed.surfaces.compact.system).toEqual(compactSystem);
     expect(parsed.surfaces.compact.fingerprint).toMatchObject({
-      systemBlockCount: 5,
+      systemBlockCount: 4,
       cacheBreakpointCount: 4,
     });
     expect(parsed.configured_surface_variant).toBe("legacy");

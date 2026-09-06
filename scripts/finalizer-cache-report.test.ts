@@ -137,10 +137,12 @@ describe("finalizer cache report", () => {
     const directory = mkdtempSync(join(tmpdir(), "borg-finalizer-cache-report-"));
     tempDirectories.push(directory);
     const path = join(directory, "finalizer-contexts.jsonl");
+    const slow =
+      "<borg_standing>\nstored rows\n</borg_standing>\n\n<borg_overlay>\nstored state\n</borg_overlay>";
     const records = [
-      { ...capture("a1", "user", ["stable", "one"]), session_id: "a" },
+      { ...capture("a1", "user", ["stable", "audience", slow, "one"]), session_id: "a" },
       { ...capture("b1", "user", ["different", "two"]), session_id: "b" },
-      { ...capture("a2", "user", ["stable", "three"]), session_id: "a" },
+      { ...capture("a2", "user", ["stable", "audience", slow, "three"]), session_id: "a" },
     ];
     writeFileSync(path, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
     const reports: FinalizerCachePairReport[] = [];
@@ -150,5 +152,12 @@ describe("finalizer cache report", () => {
     expect(summary).toEqual({ autonomousCaptures: 0, consecutivePairs: 1 });
     expect(reports[0]).toMatchObject({ previous_capture_id: "a1", current_capture_id: "a2" });
     expect(reports[0]?.blocks[0]?.common_prefix_bytes).toBe(Buffer.byteLength("stable"));
+    expect(reports[0]?.blocks).toHaveLength(4);
+    expect(reports[0]?.blocks[2]?.common_prefix_bytes).toBe(Buffer.byteLength(slow));
+    expect(reports[0]?.sections).toEqual([
+      expect.objectContaining({ block_index: 2, tag: "borg_standing", byte_stable: true }),
+      expect.objectContaining({ block_index: 2, tag: "borg_overlay", byte_stable: true }),
+    ]);
+    expect(reports[0]?.blocks[3]?.common_prefix_bytes).toBe(0);
   });
 });

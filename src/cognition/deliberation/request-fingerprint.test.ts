@@ -5,22 +5,29 @@ import { fingerprintPlannerSurface } from "./planner-context-capture.js";
 import type { LLMSystemBlock } from "../../llm/index.js";
 
 describe("fingerprintCanonicalValue", () => {
-  it("counts cache markers independently of blocks and fingerprints the uncached tail", () => {
-    const system: LLMSystemBlock[] = ["global", "audience", "standing", "overlay", "fast"].map(
+  it("fingerprints all four cached tiers including the fast tail and its TTL", () => {
+    const system: LLMSystemBlock[] = ["global", "audience", "standing and overlay", "fast"].map(
       (text, index) => ({
         type: "text",
         text,
-        ...(index === 4
-          ? {}
-          : { cache_control: { type: "ephemeral", ttl: index < 2 ? "1h" : "5m" } }),
+        cache_control: { type: "ephemeral", ttl: index < 2 ? "1h" : "5m" },
       }),
     );
     const fingerprint = fingerprintSystemSurface(system);
-    expect(fingerprint).toMatchObject({ systemBlockCount: 5, cacheBreakpointCount: 4 });
+    expect(fingerprint).toMatchObject({ systemBlockCount: 4, cacheBreakpointCount: 4 });
     expect(fingerprintPlannerSurface({ system })).toEqual(fingerprint);
-    const changed = [...system.slice(0, 4), { type: "text" as const, text: "next turn" }];
+    const changed = [...system.slice(0, 3), { ...system[3]!, text: "next turn" }];
     expect(fingerprintSystemSurface(changed).systemSha256).not.toBe(fingerprint.systemSha256);
     expect(fingerprintSystemSurface(changed).transportSha256).not.toBe(fingerprint.transportSha256);
+    const unmarked = [...system.slice(0, 3), { type: "text" as const, text: "fast" }];
+    expect(fingerprintSystemSurface(unmarked)).toMatchObject({
+      systemSha256: fingerprint.systemSha256,
+      systemBlockCount: 4,
+      cacheBreakpointCount: 3,
+    });
+    expect(fingerprintSystemSurface(unmarked).transportSha256).not.toBe(
+      fingerprint.transportSha256,
+    );
   });
   it("normalizes object key order recursively", () => {
     expect(fingerprintCanonicalValue({ outer: { second: 2, first: 1 }, tail: true })).toEqual(

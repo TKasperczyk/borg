@@ -1,63 +1,80 @@
-Finalizer cache tiers, 2026-09-06 — reviewed follow-up
+Finalizer cache tiers, 2026-09-06 — full-turn caching and compact projections
 
 Opus 5.0: in-scope because cache boundaries, excerpt inputs and repeated structural attributes are harness presentation concerns.
 
-The compact finalizer sends five system blocks with exactly four cache breakpoints. Static framing shares the durable-global 1h breakpoint. Audience context retains its 1h breakpoint. The slow tier has two 5m breakpoints, standing first and relative-age overlay second, so an overlay change can reuse the standing prefix. Fast turn context and regeneration instructions follow the last breakpoint without cache control.
+The compact finalizer now emits exactly four system blocks, each with `cache_control.type="ephemeral"`. The breakpoint/TTL sequence is:
 
-The review of `913fbdff` found that relational standing excerpts still depended on assembled relative ages, subject roles and participant names. Even an age hidden in the elided middle changed the excerpt's source-length marker. Commitment entity labels also fell back to current participant/sender/audience context inside the slow overlay. The old test changed `context.nowMs` while a higher-precedence prompt option pinned the rendered clock; it did not establish clock stability. Replaying frozen ledger entries alone also cannot detect reassembly dependencies.
+| System block | Trace tier | Contents | TTL |
+| --- | --- | --- | --- |
+| 0 | terminal_durable_global | Static framing + durable global | 1h |
+| 1 | terminal_durable_audience | Durable audience | 1h |
+| 2 | terminal_slow_turn | Standing memory + relative-age overlay | 5m |
+| 3 (last) | terminal_fast_turn | Fast turn context, including any regeneration suffix | 5m |
 
-Relational metadata is now partitioned before serialization and excerpting. Slow rows contain stored state and use ID order. Fast `relational_standing_turn_row` records join by ID and retain original ledger order as `ordinal`, clock-relative ages, assembled subject identity/name/role, current audience metadata, participant-name value projections, and ledger projection attributes. Shared structural attributes are hoisted separately into each tier's interpretation header only when every row has the exact same value. Fast projection fields cannot affect slow excerpt lengths. No row membership or upstream selection changes.
+The earlier five-block design spent both 5m markers on separate slow sections and left fast text uncached. The corrected fourth marker covers the full fast tier, allowing later finalizer rounds with an unchanged system prompt to reuse it. Standing and overlay share the third marker. A stored-state or ledger-projection change in either invalidates the combined slow prefix. Every tier is freshly rendered; caching never substitutes stale rows. Regeneration suffix bytes are appended verbatim inside the last block, and block/section/total telemetry includes them.
 
-All four assembled commitment entity labels now live in fast `commitment_entity_labels` rows joined to canonical or ledger-only overlay rows by commitment ID. Each carries the same fail-closed resolved disclosure as its overlay row. Relational slow and fast rows likewise retain identical, complete disclosure labels; private labels and origin audiences are never hoisted. Stored text keeps its existing excerpt budget, and critical canonical directives remain exact. Fast metadata carries the moved fields in full.
+Fast projections use one line per record ID with tab-separated JSON cells. Column names and meanings appear once per table; a bare `-` distinguishes absent fields from explicit JSON `null`. Cells are XML-escaped as text, so names containing tabs, newlines, quotes or tag-like text cannot change table structure. Shared ledger attributes still appear once in the group header. The tables cover relational turn fields, commitment entity labels and self-record counters. Clock/roster fields are partitioned before slow excerpts are computed, and slow relational rows retain stable ID order; fast ordinal preserves the original ledger order.
 
-Chars below are JavaScript string lengths from frozen user capture `df50268b-8001-4c6c-a827-16678d0c104f`. The first comparison is the previous same-input replay at `913fbdff`; the second is the reviewed fix at `615849d3`.
+Rows containing names, values or additional source/audience handles retain complete disclosure cells: `[disclosure_class, origin_audience, private-to, public-to]`, including every audience ID and fail-closed unknown labels. Only projections containing the record ID plus numeric/enumerated fields omit a duplicate disclosure cell and join the labeled slow row. The heuristics guard passes without changes or exemptions. Membership, stored rows, exact directives and excerpt budgets are unchanged.
 
-| Tier | Cache | Before review fix | After review fix |
-| --- | --- | ---: | ---: |
-| Static + durable global | 1h | 284,228 | 284,228 |
-| Durable audience | 1h | 59,798 | 59,798 |
-| Slow standing | 5m | 219,067 | 204,646 |
-| Slow overlay | 5m | 116,563 | 89,580 |
-| Fast turn | Uncached | 382,860 | 541,414 |
+Measurements use the same six frozen capture inputs as the prior report. The selected same-session pair is A = `eb377199-01c5-413e-9850-460fd1728e8b`, B = `2ee890e6-93d5-4eee-9436-4aaea8f101ec`. Chars are JavaScript string lengths. Before is `8ccab397` (renderer `615849d3`); after is this correction.
 
-The original four-block baseline (`719fbeca`) was static 26,610, durable global 257,527, durable audience 59,798 and turn 741,625 chars. Its two stable global blocks were merged and the turn block split as above.
+| Tier | Before A | Before B | After A | After B |
+| --- | ---: | ---: | ---: | ---: |
+| Static + global | 284,715 | 284,715 | 284,715 | 284,715 |
+| Audience | 126,913 | 126,913 | 126,913 | 126,913 |
+| Slow | 33,712 standing + 89,553 overlay | 33,712 standing + 89,553 overlay | 123,302 combined | 123,302 combined |
+| Fast | 805,855 uncached | 852,296 uncached | 767,446 cached | 813,887 cached |
+| Total including block separators | 1,340,756 | 1,387,197 | 1,302,382 | 1,348,823 |
 
-The review fix reduces the two slow blocks from 335,630 to 294,226 chars, down 41,404. Total system text including separators grows from 1,062,524 to 1,179,674 chars, up 117,150: ID-keyed projections repeat required disclosure labels and expose the moved metadata in full. The uncached tail grows by 158,554 chars. This fixes cache invalidation rather than reducing total input size. Actual token counts, cache hits and latency require a subsequent live run; these are renderer measurements.
+The original pre-change four-block renderer (`719fbeca`) produced static 27,097, global 257,527, audience 126,913 and turn 890,781 / 937,222 chars on A / B. Both the original renderer and `913fbdff` were re-rendered for this report to make the baseline explicit:
 
-Measurement used the first six records frozen from the read-only `demo/server/.borg-data/demo/captures/finalizer-contexts.jsonl`. The archived surfaces predate the baseline renderer and are not byte-for-byte reproductions of its output. Replays use the captured projected context, evidence ledger, static head and captured additional sections, retrieval/semantic budgets fixed at 32,000/32,768, and each captured clock. No live model call or SQLite access was required. Private source captures and measurement helpers were temporary worktree artifacts and are not committed.
+| Total comparison | A | B |
+| --- | ---: | ---: |
+| Original pre-change (`719fbeca`) | 1,302,324 | 1,348,765 |
+| Initial split (`913fbdff`) | 1,298,439 | 1,344,880 |
+| After this correction | 1,302,382 | 1,348,823 |
+| Delta vs original | +58 (+0.0045%) | +58 (+0.0043%) |
+| Delta vs initial split | +3,943 (+0.304%) | +3,943 (+0.293%) |
 
-The existing cache report with `--same-session` found two consecutive pairs within those six captures. For `eb377199-01c5-413e-9850-460fd1728e8b` → `2ee890e6-93d5-4eee-9436-4aaea8f101ec`, after the fix:
+Both captures meet the requested +2% limit against either baseline. Total text falls by 38,374 chars per prompt versus the reviewed five-block version. The separate user capture `df50268b-8001-4c6c-a827-16678d0c104f`, which previously showed +117,150 chars versus `913fbdff`, now totals 1,093,159: +30,635 (+2.88%) versus that initial split, or +7,593 (+0.70%) versus the original four-block renderer. The +2% target is met on the requested pair; that separate capture remains above +2% of the initial split.
 
-| Tier | Previous chars | Current chars | Common UTF-8 prefix bytes | Byte-stable |
-| --- | ---: | ---: | ---: | --- |
-| Static + durable global | 284,715 | 284,715 | 285,520 (entire block) | Yes |
-| Durable audience | 126,913 | 126,913 | 127,026 (entire block) | Yes |
-| Slow standing | 33,712 | 33,712 | 33,735 (entire block) | Yes |
-| Slow overlay | 89,553 | 89,553 | 89,553 (entire block) | Yes |
-| Fast turn | 805,855 | 852,296 | 270 | No |
+The existing capture stability report with `--same-session` found two pairs. For A → B:
 
-All four cached blocks, and therefore the cumulative prefixes through both slow breakpoints, are identical in this pair. In the second pair (`2ee890e6-93d5-4eee-9436-4aaea8f101ec` → `eca5f48a-f315-4147-add3-b4b19e209572`), standing remains identical at 33,712 chars, but overlay changes from 89,553 to 89,560 chars with 47,184 common bytes. One commitment's `ledger_scope` and `ledger_trust_rank` changed. Those projection fields remain in the slow overlay and still invalidate that breakpoint; they do not invalidate the preceding standing breakpoint. Exact record timestamps and state also remain there and must reflect actual changes.
+| Emitted block | Common UTF-8 prefix bytes | Byte-stable |
+| --- | ---: | --- |
+| Static + global | 285,520 (entire block) | Yes |
+| Audience | 127,026 (entire block) | Yes |
+| Combined slow | 123,325 (entire block) | Yes |
+| Fast | 270 | No |
 
-A mechanical capture audit checked all 322 relational rows across six inputs against their slow and fast ID sets, original order, states, metadata partition and identical disclosure labels. All 1,026 commitment-label rows matched their overlay IDs and resolved disclosures. Every replay retained five blocks and four cache markers. The new regression test calls the production standing assembler afresh for unchanged stored slots, goals and commitments, advances time by three seconds across an age-length boundary, and changes the speaker, roster order and display name. It asserts changed rendered `current_time_ms`, changed source metadata/excerpts, byte-identical slow blocks and differing fast blocks. A separate test covers non-null commitment entity references with missing label-map entries, including canonical and fail-closed ledger-only rows.
+The cumulative prefix through breakpoint 3 is identical. The production-assembly regression also advances the actual rendered clock by three seconds across an age-length boundary, changes speaker, display name and roster order, and verifies an identical combined slow block with a differing fast block. A separate fallback-label test uses non-null commitment entity references. Five successive mocked autonomous requests with the same turn context have identical four-block system content and retain the final 5m marker. Fingerprint tests detect both fast-content changes and removal of its marker; finalizer capture/replay round-trips all four blocks. A/B neutralization includes the new tier/table names and retains historical names.
 
-Files changed in this follow-up:
+The second captured pair, B → `eca5f48a-f315-4147-add3-b4b19e209572`, has stable standing rows but changed commitment ledger scope/trust. Its combined slow block changes from 123,302 to 123,309 chars, with 80,956 common UTF-8 bytes. This correctly invalidates the combined slow breakpoint; the first two tiers remain identical. This is the accepted tradeoff for retaining a fast-tier breakpoint.
 
-- `src/cognition/deliberation/prompt/finalizer-context.ts`: partition before excerpts; stable row order; disclosed fast projections and entity labels; shared attributes retained per tier.
-- `src/cognition/deliberation/prompt/finalizer-context.test.ts`: real clock propagation, production-assembled standing regression, entity-label fallback and disclosure/attribute coverage.
-- `src/cognition/prompts/__fixtures__/prompt-surface/finalizer-system-blocks-s2-compact.txt`: updated compact surface fixture.
-- `docs/finalizer-cache-tiers.md`: corrected stability claims and updated measurements without host-specific paths.
+An independent mechanical audit compared all six before/after renders. All 1,540 slow rows were unchanged, including state, payload and labels. All 322 relational projections preserved moved fields and original order; 102 ID/numeric/enum-only rows omitted duplicate labels, while all content-bearing projections retained their full labels. All 1,026 commitment-label rows and 192 self-counter rows round-tripped exactly by ID. Trace row totals matched on every capture. No membership or upstream selection changed.
 
-Tier bookkeeping in `finalizer.ts`, request fingerprints, planner/finalizer captures and A/B tooling remains on the five-block/four-marker layout. Their tests are included below.
+Replays use read-only `demo/server/.borg-data/demo/captures/finalizer-contexts.jsonl`, freezing the first six records into the worktree. Archived surfaces predate the baseline renderer, so comparisons re-render identical projected context, evidence ledger, static head and additional sections with retrieval/semantic budgets 32,000/32,768 and each captured clock. They measure presentation and request shape, not live token usage, cache hits or latency. No live LLM or SQLite access was used. Temporary private captures and historical renderer copies were removed before commit.
 
-Commands and results (existing dependency symlinks; no install):
+Files changed:
+
+- `src/cognition/deliberation/prompt/finalizer-context.ts`: four cached tiers and compact disclosed projection tables.
+- `src/cognition/deliberation/finalizer.ts`: cached regeneration suffix and accurate tier/total telemetry.
+- `src/cognition/deliberation/finalizer-ab-judge.ts`: neutralization for the combined tier and table names.
+- Context, finalizer, fingerprint, finalizer capture/replay and cache-report tests; compact prompt-surface fixture.
+- `docs/finalizer-cache-tiers.md`: current layout, measurements and validation.
+
+`request-fingerprint.ts` already fingerprints actual content and cache controls; planner-context capture delegates to it. Both remain schema-compatible with historical layouts, with their tests included in validation.
+
+Commands and final results (existing dependency symlinks; no install):
 
 - `choom -n 800 -- env TSX_DISABLE_CACHE=1 pnpm typecheck`: passed all five root-script tsconfigs.
-- `choom -n 800 -- env TSX_DISABLE_CACHE=1 pnpm heuristics:guard`: passed, including same-object disclosure-label checks.
-- `choom -n 800 -- env TSX_DISABLE_CACHE=1 pnpm vitest run src/cognition/deliberation/prompt/finalizer-context.test.ts src/cognition/deliberation/finalizer.test.ts src/cognition/deliberation/finalizer-context-capture.test.ts src/cognition/deliberation/request-fingerprint.test.ts src/cognition/deliberation/planner-context-capture.test.ts src/cognition/deliberation/finalizer-ab-judge.test.ts scripts/finalizer-cache-report.test.ts scripts/finalizer-ab-judge.test.ts src/cognition/prompts/prompt-surface-fixtures.test.ts src/cognition/evidence-ledger/builder.test.ts --maxWorkers=2 --cache=false --configLoader=runner`: 10 files, 201 tests passed.
+- `choom -n 800 -- env TSX_DISABLE_CACHE=1 pnpm heuristics:guard`: passed unchanged, including disclosure-label checks.
+- `choom -n 800 -- env TSX_DISABLE_CACHE=1 pnpm vitest run src/cognition/deliberation/prompt/finalizer-context.test.ts src/cognition/deliberation/finalizer.test.ts src/cognition/deliberation/finalizer-context-capture.test.ts src/cognition/deliberation/request-fingerprint.test.ts src/cognition/deliberation/planner-context-capture.test.ts src/cognition/deliberation/finalizer-ab-judge.test.ts scripts/finalizer-cache-report.test.ts scripts/finalizer-ab-judge.test.ts src/cognition/prompts/prompt-surface-fixtures.test.ts src/cognition/evidence-ledger/builder.test.ts --maxWorkers=2 --cache=false --configLoader=runner`: 10 files, 202 tests passed.
 - Fixture update: `choom -n 800 -- env TSX_DISABLE_CACHE=1 UPDATE_PROMPT_SURFACE_FIXTURES=1 pnpm vitest run src/cognition/prompts/prompt-surface-fixtures.test.ts --maxWorkers=2 --cache=false --configLoader=runner -t 'pins compact finalizer cache tiers'`: one selected test passed.
-- `choom -n 800 -- env TSX_DISABLE_CACHE=1 pnpm exec tsx .finalizer-cache-review/measure.ts`: six captured inputs rendered; per-tier sizes and byte comparisons recorded.
-- `choom -n 800 -- env TSX_DISABLE_CACHE=1 pnpm --silent finalizer:cache-report .finalizer-cache-review/after.jsonl --same-session`: passed, two same-session pairs reported.
-- `choom -n 800 -- python3 .finalizer-cache-review/audit.py`: all 322 relational rows and 1,026 commitment-label joins passed the checks above.
+- `choom -n 800 -- env TSX_DISABLE_CACHE=1 pnpm exec tsx .finalizer-cache-revision/measure.ts original`, repeated with `split`, `before` and `after`: six identical captured inputs rendered on each version.
+- `choom -n 800 -- env TSX_DISABLE_CACHE=1 pnpm --silent finalizer:cache-report .finalizer-cache-revision/after.jsonl --same-session`: passed; two same-session pairs.
+- `choom -n 800 -- python3 .finalizer-cache-revision/audit.py`: all row/label/field comparisons passed; four markers in the required TTL order.
 - Prettier on changed TypeScript files and `git diff --check`: passed.
 
-Every Vitest invocation in this follow-up used `--configLoader=runner` as well as `--cache=false`, avoiding the shared-cache config-loader write encountered during the original commit. No live source, dependency or data files were changed during this fix.
+Every Vitest run used `--maxWorkers=2 --cache=false --configLoader=runner`; TSX caching was disabled. No live source, dependency or data files were changed.

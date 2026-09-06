@@ -646,14 +646,43 @@ export function buildFinalizerSystemPrompt(options: RunFinalizerOptions): {
       path: options.path,
       additionalPromptSections: stableAdditionalSections,
     });
+    if (dynamicPrompt.regeneration === null) return compact;
+
+    // Keep the fourth marker on the final system block, including regeneration.
+    // Preserve the suffix's exact boundary bytes and include it in tier telemetry.
+    const system = compact.system.map((block, index) =>
+      index === compact.system.length - 1
+        ? { ...block, text: block.text + dynamicPrompt.regeneration }
+        : block,
+    );
+    const fastText = system[system.length - 1]!.text;
+    const totalText = system.map((block) => block.text).join("\n\n");
     return {
-      system: [
-        ...compact.system,
-        ...(dynamicPrompt.regeneration === null
-          ? []
-          : [{ type: "text" as const, text: dynamicPrompt.regeneration }]),
-      ],
-      traceSummary: compact.traceSummary,
+      system,
+      traceSummary: {
+        ...compact.traceSummary,
+        sections: {
+          ...compact.traceSummary.sections,
+          regeneration: {
+            chars: dynamicPrompt.regeneration.length,
+            estimatedTokens: estimatePromptTokens(dynamicPrompt.regeneration),
+            rowCount: 0,
+            truncationCount: 0,
+            omissionCount: 0,
+            cacheTier: "terminal_fast_turn",
+          },
+        },
+        blocks: {
+          ...compact.traceSummary.blocks,
+          terminal_fast_turn: {
+            chars: fastText.length,
+            estimatedTokens: estimatePromptTokens(fastText),
+            ttl: "5m",
+          },
+        },
+        totalChars: totalText.length,
+        totalEstimatedTokens: estimatePromptTokens(totalText),
+      },
     };
   }
 
