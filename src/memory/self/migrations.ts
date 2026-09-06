@@ -429,4 +429,12 @@ export const selfMigrations = [
       }
     },
   },
+  {
+    id: 10,
+    name: "goal_named_block_history",
+    up: (db) => {
+      db.exec("ALTER TABLE goals ADD COLUMN block_history_json TEXT NOT NULL DEFAULT '[]'");
+      db.exec("CREATE INDEX idx_goals_blocked ON goals(id) WHERE status = 'blocked'");
+    },
+  },
 ] as const satisfies readonly Migration[];

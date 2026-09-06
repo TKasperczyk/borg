@@ -4280,7 +4280,7 @@ describe("buildBaseSystemPrompt", () => {
     );
   });
 
-  it("omits mechanism evidence when scheduler and turn-mechanism state are absent", () => {
+  it("labels edge evidence as unavailable when scheduler and turn-mechanism state are absent", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({
         turnMechanismEvidence: {
@@ -4291,7 +4291,7 @@ describe("buildBaseSystemPrompt", () => {
       { ...PROMPT_OPTIONS, nowMs: NOW_MS },
     );
 
-    expect(prompt).not.toContain("<borg_mechanism_evidence>");
+    expect(prompt).toContain("Answered-window edge: evidence unavailable on this capture");
   });
 
   it("renders closure-loop finalizer guidance in trusted discourse control", () => {

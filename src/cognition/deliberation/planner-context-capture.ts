@@ -258,6 +258,7 @@ function projectSelfSnapshot(snapshot: SelfSnapshot) {
       terminal_condition: goal.terminal_condition,
       priority: goal.priority,
       status: goal.status,
+      ...(goal.block_history === undefined ? {} : { block_history: goal.block_history }),
       progress_notes: goal.progress_notes,
       last_progress_ts: goal.last_progress_ts,
       created_at: goal.created_at,
@@ -464,6 +465,7 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
     return undefined;
   }
   return {
+    ...(value.answeredWindow === undefined ? {} : { answeredWindow: value.answeredWindow }),
     recentSuppressions: value.recentSuppressions.map((entry) => ({
       turnId: entry.turnId,
       reason: entry.reason,

@@ -45,6 +45,7 @@ export function mapGoalRow(row: Record<string, unknown>): GoalRecord {
         ? null
         : String(row.parent_goal_id),
     status: row.status,
+    block_history: row.block_history_json == null ? [] : JSON.parse(String(row.block_history_json)),
     progress_notes:
       row.progress_notes === null || row.progress_notes === undefined
         ? null

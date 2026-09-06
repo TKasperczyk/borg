@@ -195,6 +195,12 @@ export type BorgSelfFacade = {
     ) => ReturnType<ValuesRepository["listContradictionEvents"]>;
   };
   goals: {
+    block: (...args: Parameters<GoalsRepository["block"]>) => BorgGoalWithDisclosure;
+    unblock: (
+      goalId: Parameters<GoalsRepository["unblock"]>[0],
+      reason: string,
+      provenance: Parameters<GoalsRepository["unblock"]>[2],
+    ) => BorgGoalWithDisclosure;
     get: (...args: Parameters<GoalsRepository["get"]>) => BorgGoalWithDisclosure | null;
     list: (...args: Parameters<GoalsRepository["list"]>) => BorgGoalTreeWithDisclosure[];
     add: (...args: Parameters<IdentityService["addGoal"]>) => BorgGoalWithDisclosure;

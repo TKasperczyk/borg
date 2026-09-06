@@ -599,6 +599,7 @@ describe("self repositories", () => {
           terminalConditionMigration!,
           streamProvenanceMigration!,
           counterpartyMigration!,
+          selfMigrations.find((migration) => migration.name === "goal_named_block_history")!,
         ],
       });
       const goals = new GoalsRepository({

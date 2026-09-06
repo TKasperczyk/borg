@@ -198,6 +198,8 @@ export type AutonomySchedulerWakeGroupDescription = {
 };
 
 export type AutonomySchedulerWakeDescription = {
+  /** Current read for the wake's recorded session, never a reconstructed wake-time snapshot. */
+  answered_window?: import("../stream/answered-window.js").AnsweredWindowEvidence | null;
   ts: number;
   trigger_name: AutonomyWakeSourceName;
   outcome: AutonomyWakeOutcome | null;

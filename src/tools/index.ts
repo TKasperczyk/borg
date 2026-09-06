@@ -14,6 +14,8 @@ export {
   createEpisodicRecentTool,
   createEpisodicSearchTool,
   createGoalsRetireTool,
+  createGoalsBlockTool,
+  createGoalsUnblockTool,
   createIdentityEventsListForCognitionTool,
   createJournalAppendTool,
   createOpenQuestionsCreateTool,

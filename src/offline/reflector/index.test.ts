@@ -352,7 +352,7 @@ describe("reflector process", () => {
     expect(String(result.changes[0]?.targets.cluster)).toContain("deploy+部署");
   });
 
-  it("labels active goals in the model-facing reflection prompt", async () => {
+  it("labels unfinished goals in the model-facing reflection prompt", async () => {
     const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({
       llmClient: llm,
@@ -409,7 +409,9 @@ describe("reflector process", () => {
     await process.plan(harness.createContext());
 
     const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
-    const activeGoalsLine = prompt.split("\n").find((line) => line.startsWith("Active goals: "));
+    const activeGoalsLine = prompt
+      .split("\n")
+      .find((line) => line.startsWith("Unfinished goals (including blocked): "));
 
     // Hedge preservation lands in the preamble, i.e. the full prompt, not the
     // goals line (prod 2026-08-27: an insight asserted a declined hypothesis as fact).

@@ -855,6 +855,7 @@ export async function runRetrievalPhase(input: {
     }
   }
   const turnMechanismEvidence = await hydrateTurnMechanismEvidence({
+    nowMs: input.options.clock.now(),
     dataDir: input.options.config.dataDir,
     sessionId: input.sessionId,
     workingMemory: input.workingMemory,

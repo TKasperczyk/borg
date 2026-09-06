@@ -485,6 +485,7 @@ export async function openBorgDependencies(
       },
     });
     const autonomyScheduler = buildAutonomyScheduler({
+      entryIndex: repositories.entryIndex,
       config,
       commitmentRepository: repositories.commitmentRepository,
       sourceStreamAudienceDisclosureResolver: repositories.sourceStreamAudienceDisclosureResolver,

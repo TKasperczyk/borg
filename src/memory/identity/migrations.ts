@@ -1,4 +1,7 @@
 import type { Migration } from "../../storage/sqlite/index.js";
+import { tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
+import { mapGoalRow } from "../self/shared/sql-mapping.js";
+import { IdentityEventRepository } from "./repository.js";
 
 export const identityMigrations = [
   {
@@ -36,6 +39,38 @@ export const identityMigrations = [
         CREATE INDEX idx_identity_events_ts
           ON identity_events (ts DESC, id DESC);
       `);
+    },
+  },
+  {
+    id: 2,
+    name: "repair_unnamed_goal_blocks",
+    up: (db) => {
+      if (!tableHasColumn(db, "goals", "block_history_json")) return;
+      const events = new IdentityEventRepository({ db });
+      const rows = db
+        .prepare("SELECT * FROM goals WHERE status = 'blocked' AND block_history_json = '[]'")
+        .all() as Record<string, unknown>[];
+      for (const row of rows) {
+        const oldGoal = mapGoalRow(row);
+        const next = {
+          ...oldGoal,
+          status: "active" as const,
+          record_version: (oldGoal.record_version ?? 1) + 1,
+        };
+        db.prepare(
+          "UPDATE goals SET status = 'active', record_version = record_version + 1 WHERE id = ?",
+        ).run(oldGoal.id);
+        events.record({
+          record_type: "goal",
+          record_id: oldGoal.id,
+          action: "unblock",
+          old_value: oldGoal,
+          new_value: next,
+          reason:
+            "repair_unnamed_goal_blocks migration: legacy blocked row has no named blocker or block time; reactivated without inventing either",
+          provenance: { kind: "system" },
+        });
+      }
     },
   },
 ] as const satisfies readonly Migration[];

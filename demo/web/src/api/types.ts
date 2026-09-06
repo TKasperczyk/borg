@@ -356,7 +356,21 @@ export type IdentityValue = {
   contradiction_count: number;
 };
 
+export type GoalBlocker =
+  | { kind: "goal"; goal_id: string }
+  | { kind: "entity"; entity_id: string }
+  | { kind: "until"; until: number };
+export type GoalBlockRecord = {
+  blocker: GoalBlocker;
+  attempt_status: "attempted_unavailable";
+  reason: string;
+  blocked_at: number;
+  unblocked_at: number | null;
+  unblock_reason: string | null;
+  attempt_evidence?: { kind: string; id: string | number };
+};
 export type IdentityGoal = {
+  block_history?: GoalBlockRecord[];
   id: string;
   description: string;
   priority: number;
@@ -442,7 +456,7 @@ export type IdentityResponse = {
 
 export type GoalPatchBody =
   | { action: "complete"; note?: string }
-  | { action: "block"; note?: string }
+  | { action: "block"; note: string; blocker: GoalBlocker; attempt_status: "attempted_unavailable" }
   | { action: "progress"; note?: string; progress?: number };
 
 export type IdentityValueCreateBody = {

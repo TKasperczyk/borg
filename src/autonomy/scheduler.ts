@@ -137,6 +137,11 @@ export type AutonomySchedulerStopOptions = {
 };
 
 export type AutonomySchedulerOptions = {
+  beforeTick?: () => void;
+  describeAnsweredWindow?: (
+    sessionId: SessionId,
+    observedAt: number,
+  ) => import("../stream/answered-window.js").AnsweredWindowEvidence;
   enabled: boolean;
   intervalMs: number;
   prepToolTimeoutMs?: number;
@@ -880,6 +885,19 @@ export class AutonomyScheduler {
 
   async describe(): Promise<AutonomySchedulerDescription> {
     const nowMs = this.clock.now();
+    const answeredBySession = new Map<
+      SessionId,
+      import("../stream/answered-window.js").AnsweredWindowEvidence
+    >();
+    const answeredWindowForSession = (sessionId: SessionId | null) => {
+      if (sessionId === null || this.options.describeAnsweredWindow === undefined) return null;
+      let evidence = answeredBySession.get(sessionId);
+      if (evidence === undefined) {
+        evidence = this.options.describeAnsweredWindow(sessionId, nowMs);
+        answeredBySession.set(sessionId, evidence);
+      }
+      return evidence;
+    };
     const budgetCutoff = nowMs - this.options.budgetWindowMs;
     const registeredSources = new Map(this.options.sources.map((source) => [source.name, source]));
     const sources: AutonomySchedulerSourceDescription[] = [];
@@ -977,6 +995,9 @@ export class AutonomyScheduler {
       next_tick_at: scheduledTickAt === null ? null : Math.max(scheduledTickAt, nowMs),
       scheduled_tick_at: scheduledTickAt,
       window_wakes: currentWindowWakes.map((wake) => ({
+        ...(this.options.describeAnsweredWindow === undefined
+          ? {}
+          : { answered_window: answeredWindowForSession(wake.session_id) }),
         ts: wake.ts,
         trigger_name: wake.trigger_name,
         outcome: wake.outcome,
@@ -1095,6 +1116,7 @@ export class AutonomyScheduler {
   }
 
   private async tickOnce(): Promise<TickResult> {
+    this.options.beforeTick?.();
     const nowMs = this.clock.now();
     this.lastTickTs = nowMs;
     const scannedSources = this.options.sources.map((source) => source.name);
@@ -1625,6 +1647,7 @@ export class AutonomyScheduler {
 
     if (
       concern === null ||
+      this.options.goalsRepository?.get(concern.goalId as GoalId)?.status === "blocked" ||
       (event.sourceName === "goal_followup_due" && !this.respectGoalFollowupStaleBackoff)
     ) {
       return;

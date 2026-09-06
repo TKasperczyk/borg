@@ -17,7 +17,7 @@ import type {
 } from "../../util/ids.js";
 import type { ExtractCorrectivePreferenceInput } from "../commitments/corrective-preference-extractor.js";
 import type { CurrentTurnUserInputSenderAttribution } from "../turn-input.js";
-import { listActiveGoalsForCognition } from "../self/active-goals.js";
+import { listUnfinishedGoalsForCognition } from "../self/active-goals.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import type { TemporalCue } from "../types.js";
 import {
@@ -120,6 +120,8 @@ export class TurnGoalPromotionService {
       temporalCue: input.temporalCue,
       activeGoals: input.activeGoals.map((goal) => ({
         id: goal.id,
+        status: goal.status,
+        block_history: goal.block_history,
         description: goal.description,
         terminal_condition: goal.terminal_condition ?? null,
         priority: goal.priority,
@@ -172,7 +174,7 @@ export class TurnGoalPromotionService {
       goalIds: [],
       executiveStepIds: [],
     };
-    const activeGoals = this.listActiveGoals({
+    const activeGoals = this.listUnfinishedGoals({
       turnId: input.turnId,
       sessionId: input.sessionId,
     });
@@ -340,10 +342,10 @@ export class TurnGoalPromotionService {
     return persisted;
   }
 
-  private listActiveGoals(input: { turnId: string; sessionId?: SessionId }): GoalRecord[] {
+  private listUnfinishedGoals(input: { turnId: string; sessionId?: SessionId }): GoalRecord[] {
     try {
-      return listActiveGoalsForCognition(this.options.goalsRepository).filter(
-        (goal) => goal.status === "active",
+      return listUnfinishedGoalsForCognition(this.options.goalsRepository).filter(
+        (goal) => goal.status === "active" || goal.status === "blocked",
       );
     } catch (error) {
       this.emitDedupDegraded({
