@@ -1822,7 +1822,7 @@ function renderWakeWindowRows(
       ? "Wake rows in that current window, newest first: none."
       : "Wake rows in that current window, newest first:",
     ...rows,
-    "Wake row legend: at=fired_at, tr=trigger_name, o=outcome (in_flight means no terminal outcome is recorded yet), hb=ordered headway bases, fr=finalizer rounds, sr=transport stall retries. hb absent means no structural headway bases were recorded. On a terminal row, fr or sr absent means the row predates the field; an in_flight row has not reached outcome recording, and a startup-interrupted row may have ended before those counts could be written.",
+    "Wake row legend: at=fired_at, tr=trigger_name, o=outcome (in_flight means no terminal outcome is recorded yet), hb=ordered headway bases, fr=finalizer rounds, sr=transport stall retries. hb absent means no structural headway bases were recorded. fr or sr absent means not recorded or unknown. Causes include older rows, callers that omit counts, in_flight rows awaiting outcome recording, and interrupted recording (including startup-interrupted rows).",
     `Wake execution totals over those ${wakes.length} row(s): fr=${finalizerRounds.reduce(
       (sum, count) => sum + count,
       0,

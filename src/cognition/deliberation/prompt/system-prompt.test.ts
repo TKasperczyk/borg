@@ -2866,7 +2866,9 @@ describe("buildBaseSystemPrompt", () => {
     expect(rows[1]).not.toContain(" fr=");
     expect(rows[1]).not.toContain(" sr=");
     expect(block).toContain("fr=finalizer rounds, sr=transport stall retries");
-    expect(block).toContain("fr or sr absent means the row predates the field");
+    expect(block).toContain("fr or sr absent means not recorded or unknown");
+    expect(block).toContain("older rows, callers that omit counts");
+    expect(block).toContain("interrupted recording (including startup-interrupted rows)");
     expect(block).toContain(
       "Wake execution totals over those 2 row(s): fr=3 from 1/2 rows with fr recorded; sr=2 from 1/2 rows with sr recorded. Absent values are excluded, not counted as zero.",
     );
