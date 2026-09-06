@@ -772,37 +772,89 @@ describe("Recall Core", () => {
     );
   });
 
-  it("accepts sixteen recall expansion named terms and rejects more than sixteen", async () => {
-    const namedTerms = Array.from({ length: 16 }, (_, index) => `Term ${index + 1}`);
-    const acceptedClient = new FakeLLMClient({
-      responses: [recallExpansion({ named_terms: namedTerms })],
-    });
+  it.each([16, 17, 25])(
+    "keeps the first sixteen recall expansion named terms from %i terms",
+    async (count) => {
+      const namedTerms = Array.from({ length: count }, (_, index) => `Term ${index + 1}`);
+      const llmClient = new FakeLLMClient({
+        responses: [recallExpansion({ named_terms: namedTerms })],
+      });
+
+      await expect(
+        expandRecall({
+          llmClient,
+          model: "test-recall-expansion",
+          focus: "Remember these entity-rich project references.",
+          semanticVariantCount: 3,
+        }),
+      ).resolves.toEqual({
+        resolved_query: MAYA_TURN,
+        semantic_variants: semanticVariants(MAYA_TURN),
+        named_terms: namedTerms.slice(0, 16),
+        typed_queries: [],
+        temporal_cue: null,
+        temporalCue: null,
+      });
+    },
+  );
+
+  it.each([
+    { named_terms: ["Maya"] },
+    { typed_queries: [{ kind: "commitment", query: "design review", priority: 1 }] },
+    {},
+  ])("defaults omitted recall arrays to [] for %j", async (fields) => {
+    const response = recallExpansion({});
+    response.tool_calls![0]!.input = {
+      resolved_query: MAYA_TURN,
+      semantic_variants: semanticVariants(MAYA_TURN),
+      ...fields,
+    };
+    const llmClient = new FakeLLMClient({ responses: [response] });
 
     await expect(
       expandRecall({
-        llmClient: acceptedClient,
+        llmClient,
         model: "test-recall-expansion",
-        focus: "Remember these entity-rich project references.",
+        focus: MAYA_TURN,
         semanticVariantCount: 3,
       }),
     ).resolves.toEqual({
       resolved_query: MAYA_TURN,
       semantic_variants: semanticVariants(MAYA_TURN),
-      named_terms: namedTerms,
+      named_terms: [],
       typed_queries: [],
+      ...fields,
       temporal_cue: null,
       temporalCue: null,
     });
+  });
 
-    const rejectedClient = new FakeLLMClient({
-      responses: [recallExpansion({ named_terms: [...namedTerms, "Term 17"] })],
-    });
+  it.each([
+    { named_terms: null },
+    { typed_queries: null },
+    { named_terms: "Maya" },
+    { typed_queries: {} },
+    { named_terms: [""] },
+    { named_terms: [...Array.from({ length: 16 }, (_, index) => `Term ${index + 1}`), 17] },
+    { typed_queries: [{ kind: "topic", query: "design review", priority: 1 }] },
+    {
+      typed_queries: Array.from({ length: 5 }, () => ({
+        kind: "commitment",
+        query: "design review",
+        priority: 1,
+      })),
+    },
+    { unexpected_field: [] },
+  ])("still rejects malformed recall plan fields: %j", async (fields) => {
+    const response = recallExpansion({});
+    const toolCall = response.tool_calls![0]!;
+    toolCall.input = { ...(toolCall.input as Record<string, unknown>), ...fields };
 
     await expect(
       expandRecall({
-        llmClient: rejectedClient,
+        llmClient: new FakeLLMClient({ responses: [response] }),
         model: "test-recall-expansion",
-        focus: "Remember these entity-rich project references.",
+        focus: MAYA_TURN,
         semanticVariantCount: 3,
       }),
     ).rejects.toThrow();
@@ -1071,7 +1123,7 @@ describe("Recall Core", () => {
     const llmClient = new FakeLLMClient({
       responses: [
         recallExpansion({
-          named_terms: Array.from({ length: 17 }, (_, index) => `Term ${index + 1}`),
+          semantic_variants: [],
         }),
       ],
     });
