@@ -132,4 +132,23 @@ describe("finalizer cache report", () => {
       }),
     );
   });
+
+  it("compares user turns within their sessions without crossing intervening sessions", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "borg-finalizer-cache-report-"));
+    tempDirectories.push(directory);
+    const path = join(directory, "finalizer-contexts.jsonl");
+    const records = [
+      { ...capture("a1", "user", ["stable", "one"]), session_id: "a" },
+      { ...capture("b1", "user", ["different", "two"]), session_id: "b" },
+      { ...capture("a2", "user", ["stable", "three"]), session_id: "a" },
+    ];
+    writeFileSync(path, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+    const reports: FinalizerCachePairReport[] = [];
+    const summary = await analyzeFinalizerCaptureFile(path, (report) => reports.push(report), {
+      sameSession: true,
+    });
+    expect(summary).toEqual({ autonomousCaptures: 0, consecutivePairs: 1 });
+    expect(reports[0]).toMatchObject({ previous_capture_id: "a1", current_capture_id: "a2" });
+    expect(reports[0]?.blocks[0]?.common_prefix_bytes).toBe(Buffer.byteLength("stable"));
+  });
 });

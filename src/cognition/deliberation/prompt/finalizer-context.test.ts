@@ -17,6 +17,7 @@ import type { EvidenceLedger, EvidenceLedgerEntry } from "../../evidence-ledger/
 import type { DeliberationContext, SelfSnapshotGoal } from "../types.js";
 import {
   buildCompactFinalizerSystemPrompt,
+  COMPACT_FINALIZER_CACHE_TIERS,
   COMPACT_FINALIZER_VERIFICATION_RETRIEVAL_BLOCK_ID,
   CROSS_SESSION_ENTRIES_DRAW_SCOPE,
 } from "./finalizer-context.js";
@@ -169,7 +170,7 @@ function text(result: ReturnType<typeof build>): string {
 }
 
 describe("compact terminal finalizer context", () => {
-  it("keeps autonomous outbound availability in the 5m turn-context tier", () => {
+  it("keeps autonomous outbound availability after the last cache breakpoint", () => {
     const outboundContext = {
       maxPostsPerWindow: 3,
       maxPostsPerTargetPerWindow: 1,
@@ -198,16 +199,16 @@ describe("compact terminal finalizer context", () => {
       }),
     );
 
-    expect(withAction.system[3]?.cache_control?.ttl).toBe("5m");
-    expect(withAction.system[3]?.text).toContain(
+    expect(withAction.system[4]?.cache_control).toBeUndefined();
+    expect(withAction.system[4]?.text).toContain(
       '<borg_finalizer_tool_availability turn_origin="autonomous" participation_policy="active" outbound_post="available"',
     );
-    expect(withAction.system[3]?.text).toContain(
+    expect(withAction.system[4]?.text).toContain(
       '<borg_directed_outbound_instruction mode="action_available">',
     );
     expect(
       withAction.system
-        .slice(0, 3)
+        .slice(0, 4)
         .map((block) => block.text)
         .join("\n"),
     ).not.toContain("borg_directed_outbound_instruction");
@@ -220,18 +221,19 @@ describe("compact terminal finalizer context", () => {
       }),
     );
     expect(text(withoutAction)).not.toContain("borg_directed_outbound_instruction");
-    expect(withoutAction.system[3]?.text).toContain('outbound_post="unavailable"');
-    expect(withAction.system.slice(0, 3)).toEqual(withoutAction.system.slice(0, 3));
+    expect(withoutAction.system[4]?.text).toContain('outbound_post="unavailable"');
+    expect(withAction.system.slice(0, 4)).toEqual(withoutAction.system.slice(0, 4));
   });
 
-  it("renders the four cache tiers in order with exactly four breakpoints", () => {
+  it("renders five blocks in order with exactly four breakpoints", () => {
     const result = build(context());
-    expect(result.system).toHaveLength(4);
+    expect(result.system).toHaveLength(5);
     expect(result.system.map((block) => block.cache_control?.ttl)).toEqual([
       "1h",
       "1h",
-      "1h",
       "5m",
+      "5m",
+      undefined,
     ]);
     expect(result.system[0]?.text).toContain("<borg_terminal_pass_contract>");
     // The contract used to say a complete index reports complete="true", which made an element
@@ -244,10 +246,151 @@ describe("compact terminal finalizer context", () => {
       "An element name is a label and never a claim of coverage, whatever word it contains.",
     );
     expect(result.system[0]?.text).not.toContain("A complete index reports");
-    expect(result.system[1]?.text).toContain("<borg_terminal_commitments");
-    expect(result.system[2]?.text).toContain("<borg_terminal_audience_durable");
+    expect(result.system[0]?.text).toContain("<borg_terminal_commitments");
+    expect(result.system[1]?.text).toContain("<borg_terminal_audience_durable");
     expect(result.system[3]?.text).toContain("<borg_terminal_relative_age_overlay");
-    expect(result.traceSummary.blocks.terminal_turn_context.ttl).toBe("5m");
+    expect(result.traceSummary.blocks.terminal_fast_turn?.ttl).toBeNull();
+    expect(result.system[2]?.text).toContain("<borg_terminal_slow_standing_memory_indexes>");
+    expect(result.system[4]?.text).toContain("<borg_working_state>");
+    for (const [index, { tier, ttl }] of COMPACT_FINALIZER_CACHE_TIERS.entries()) {
+      expect(result.traceSummary.blocks[tier]).toMatchObject({
+        chars: result.system[index]!.text.length,
+        ttl,
+      });
+    }
+    expect(result.traceSummary.totalChars).toBe(text(result).length);
+  });
+
+  it("keeps both slow tiers byte-stable when only turn context and counters change", () => {
+    const baseline = context();
+    const relational: EvidenceLedgerEntry = {
+      id: "relational:stable",
+      source_type: "relational_slot",
+      session_scope: "global",
+      actor: "memory",
+      trust_rank: 70,
+      state: "established",
+      text: "保持原文。 Zachowaj treść.",
+    };
+    const withStanding = context({
+      applicableCommitments: [commitment("Keep this exact directive.")],
+      selfSnapshot: {
+        ...baseline.selfSnapshot,
+        traits: [
+          {
+            id: createTraitId(),
+            label: "Curiosity",
+            state: "established",
+            strength: 0.8,
+            confidence: 0.9,
+            established_at: NOW_MS - 10000,
+            last_reinforced: NOW_MS - 5000,
+            last_decayed: null,
+            last_tested_at: null,
+            last_contradicted_at: null,
+            support_count: 3,
+            contradiction_count: 0,
+            evidence_episode_ids: [],
+            provenance: { kind: "manual" },
+            record_version: 1,
+          },
+        ],
+      },
+      evidenceLedger: {
+        ...ledger(),
+        audienceStanding: { ...ledger().audienceStanding!, relationalEntries: [relational] },
+      },
+    });
+    const first = build(withStanding);
+    const next = structuredClone(withStanding);
+    next.nowMs = NOW_MS + 60_000;
+    next.workingMemory.turn_counter += 1;
+    next.workingMemory.updated_at = next.nowMs;
+    next.selfSnapshot.traits[0]!.record_version = 2;
+    next.selfSnapshot.traits[0]!.support_count = 4;
+    next.evidenceLedger!.estimatedTokens += 100;
+    next.evidenceLedger!.audienceStanding!.renderRecentLivedExperience = false;
+    next.evidenceLedger!.audienceStanding!.recentLivedExperienceEntries = [
+      { ...relational, id: "cross:new", source_type: "system_metadata" },
+    ];
+    // Scope annotations can change even when the draw returned the same rows.
+    next.activeParticipants = [{ entityId: createEntityId(), displayName: "新", role: "audience" }];
+    const second = build(next);
+    expect(second.system.slice(0, 4)).toEqual(first.system.slice(0, 4));
+    expect(second.system[4]).not.toEqual(first.system[4]);
+    const slow = second.system
+      .slice(2, 4)
+      .map((block) => block.text)
+      .join("\n\n");
+    expect(slow).not.toMatch(
+      /(?:rows_total|estimated_tokens|record_version|support_count|standing_cadence_due|draw_scope)=/,
+    );
+    expect(second.system[4]?.text).toContain('record_version="2" support_count="4"');
+    expect(second.system[4]?.text).toContain('draw_scope="active_participant_subjects"');
+    next.evidenceLedger!.audienceStanding!.relationalEntries = [
+      { ...relational, state: "contested" },
+    ];
+    expect(build(next).system[2]).not.toEqual(second.system[2]);
+    next.applicableCommitments![0]!.updated_at = NOW_MS;
+    expect(build(next).system[3]).not.toEqual(second.system[3]);
+  });
+
+  it("hoists shared structural attributes and preserves every row's state, payload and fail-closed label", () => {
+    const alice = createEntityId();
+    const row = (id: string, trust: number, privateTo?: typeof alice): EvidenceLedgerEntry => ({
+      id,
+      source_type: "relational_slot",
+      session_scope: "global",
+      actor: "memory",
+      trust_rank: trust,
+      state: id,
+      text: '原文 & "exact"',
+      value: id,
+      state_metadata:
+        privateTo === undefined
+          ? undefined
+          : {
+              disclosure_label: {
+                disclosure_class: "relationship_private",
+                origin_audience_entity_ids: [privateTo],
+                private_to_entity_ids: [privateTo],
+                public_to_entity_ids: [],
+              },
+            },
+    });
+    const entries = [row("first", 70, alice), row("second", 60), row("third", 70, alice)];
+    const render = (rows: EvidenceLedgerEntry[]) =>
+      build(
+        context({
+          evidenceLedger: {
+            ...ledger(),
+            audienceStanding: { ...ledger().audienceStanding!, relationalEntries: rows },
+          },
+        }),
+      ).system[2]!.text;
+    const rendered = render(entries);
+    const header = rendered.match(/<interpretation[^>]*>/)![0];
+    expect(header).toContain('source_type="relational_slot" scope="global" actor="memory"');
+    expect(header).not.toContain("trust_rank=");
+    expect(header).not.toContain("disclosure=");
+    const rows = [...rendered.matchAll(/<relational_standing_row[^>]*\/>/g)].map(
+      (match) => match[0],
+    );
+    expect(rows).toHaveLength(entries.length);
+    for (const [index, entry] of entries.entries()) {
+      expect(rows[index]).toContain(`id="${entry.id}"`);
+      expect(rows[index]).toContain(`state="${entry.state}"`);
+      expect(rows[index]).toContain(`trust_rank="${entry.trust_rank}"`);
+      expect(rows[index]).toContain('text="原文 &amp; &quot;exact&quot;"');
+      expect(rows[index]).not.toContain("source_type=");
+      expect(rows[index]).toContain(
+        index === 1 ? "disclosure_class=unknown" : `origin_audience=${alice} private-to=${alice}`,
+      );
+    }
+    const sharedTrust = render(entries.map((entry) => ({ ...entry, trust_rank: 70 })));
+    expect(sharedTrust.match(/<interpretation[^>]*>/)![0]).toContain('trust_rank="70"');
+    expect(sharedTrust.match(/<relational_standing_row[^>]*\/>/)![0]).not.toContain("trust_rank=");
+    expect(render([])).not.toContain("<relational_standing_row");
   });
 
   it("keeps critical directives exact and visibly annotates advisory head-tail cuts", () => {
@@ -527,7 +670,7 @@ describe("compact terminal finalizer context", () => {
     expect(text(aliceSurface)).toContain(
       "cp is the participant the responsibility runs toward, not an owner or audience",
     );
-    expect(aliceSurface.system[1]?.text).toBe(bobSurface.system[1]?.text);
+    expect(aliceSurface.system[0]?.text).toBe(bobSurface.system[0]?.text);
   });
 
   it("keeps mutable exact stamps in overlays and derives rather than printing relative ages", () => {
@@ -599,7 +742,7 @@ describe("compact terminal finalizer context", () => {
         },
       }),
     );
-    const durable = result.system[1]!.text;
+    const durable = result.system[0]!.text;
     const overlay = result.system[3]!.text;
     const commitmentBlock = durable.match(
       /<borg_terminal_commitments[\s\S]*?<\/borg_terminal_commitments>/,
@@ -699,7 +842,7 @@ describe("compact terminal finalizer context", () => {
     expect(rendered).toContain(
       '<commitment_age id="participant_commitment:ent_fixture:com_fixture"',
     );
-    expect(result.system[3]?.text).toContain(
+    expect(result.system[4]?.text).toContain(
       'commitment_rows_total="2" commitment_canonical_rows="1" commitment_ledger_only_rows="1"',
     );
   });
@@ -746,7 +889,7 @@ describe("compact terminal finalizer context", () => {
         },
       }),
     );
-    const durableRow = result.system[1]!.text.match(/<commitment id="[^"]+"[^>]*\/>/)?.[0];
+    const durableRow = result.system[0]!.text.match(/<commitment id="[^"]+"[^>]*\/>/)?.[0];
     const turnRow = result.system[3]!.text.match(/<commitment_age id="[^"]+"[^>]*\/>/)?.[0];
     expect(durableRow).toBeDefined();
     expect(turnRow).toBeDefined();
@@ -844,14 +987,14 @@ describe("compact terminal finalizer context", () => {
         },
       }),
     );
-    const durableRow = result.system[1]!.text.match(/<commitment id="[^"]+"[^>]*\/>/)?.[0];
+    const durableRow = result.system[0]!.text.match(/<commitment id="[^"]+"[^>]*\/>/)?.[0];
     const turnRow = result.system[3]!.text.match(/<commitment_age id="[^"]+"[^>]*\/>/)?.[0];
 
     expect(durableRow).not.toContain("ledger_value=");
     expect(durableRow).not.toContain("ledger_text=");
     expect(turnRow).toContain('ledger_value="missing"');
     expect(turnRow).toContain('ledger_text="missing"');
-    expect(result.system[1]?.text).toContain(
+    expect(result.system[0]?.text).toContain(
       'a present projection with no value or text prints "missing" explicitly',
     );
   });
@@ -917,25 +1060,25 @@ describe("compact terminal finalizer context", () => {
       citations: ["entry:second", "entry:third"],
       state_metadata: undefined,
     });
-    const commitmentBlock = first.system[1]!.text.match(
+    const commitmentBlock = first.system[0]!.text.match(
       /<borg_terminal_commitments[\s\S]*?<\/borg_terminal_commitments>/,
     )?.[0];
-    const durableRow = first.system[1]!.text.match(/<commitment id="[^"]+"[^>]*\/>/)?.[0];
+    const durableRow = first.system[0]!.text.match(/<commitment id="[^"]+"[^>]*\/>/)?.[0];
     const secondTurnRow = second.system[3]!.text.match(/<commitment_age id="[^"]+"[^>]*\/>/)?.[0];
 
-    expect(JSON.stringify(first.system.slice(0, 3))).toBe(
-      JSON.stringify(second.system.slice(0, 3)),
+    expect(JSON.stringify(first.system.slice(0, 2))).toBe(
+      JSON.stringify(second.system.slice(0, 2)),
     );
     expect(first.system[3]?.text).not.toBe(second.system[3]?.text);
     expect(commitmentBlock).not.toMatch(/\b(rows_total|canonical_rows|ledger_only_rows)=/);
-    expect(first.system[3]?.text).toContain(
-      '<borg_terminal_relative_age_overlay complete="true" rows_total="1" commitment_rows_total="1" commitment_canonical_rows="1" commitment_ledger_only_rows="0">',
+    expect(first.system[4]?.text).toContain(
+      '<borg_terminal_relative_age_overlay_state rows_total="1" commitment_rows_total="1" commitment_canonical_rows="1" commitment_ledger_only_rows="0">',
     );
     expect(first.system[0]?.text).toContain(
-      "The commitment membership denominator is commitment_rows_total in the turn-local relative-age overlay.",
+      "The commitment membership denominator is commitment_rows_total in the fast turn-context overlay header.",
     );
     expect(commitmentBlock).toContain(
-      "Those counts live in turn block 3 rather than this cacheable block 1",
+      "Those counts live in the fast turn context rather than the durable-global tier",
     );
     expect(durableRow).toContain("disclosure=");
     expect(durableRow).toContain(`ledger_ref="commitment:${base.id}"`);
@@ -982,7 +1125,7 @@ describe("compact terminal finalizer context", () => {
     expect(secondTurnRow).toContain("resolved_disclosure=");
   });
 
-  it("keeps canonical disclosure durable and resolves ledger disclosure fail-closed in block 3", () => {
+  it("keeps canonical disclosure durable and resolves ledger disclosure fail-closed in the slow overlay", () => {
     const alice = createEntityId();
     const canonical = commitment("private", { restricted_audience: alice });
     const entry: EvidenceLedgerEntry = {
@@ -1004,7 +1147,7 @@ describe("compact terminal finalizer context", () => {
         },
       }),
     );
-    const durableRow = result.system[1]!.text.match(/<commitment id="[^"]+"[^>]*\/>/)?.[0];
+    const durableRow = result.system[0]!.text.match(/<commitment id="[^"]+"[^>]*\/>/)?.[0];
     const turnRow = result.system[3]!.text.match(/<commitment_age id="[^"]+"[^>]*\/>/)?.[0];
     expect(durableRow).not.toContain("disclosure_class=unknown");
     expect(durableRow).not.toContain("resolved_disclosure=");
@@ -1065,7 +1208,7 @@ describe("compact terminal finalizer context", () => {
         },
       }),
     );
-    const turn = result.system[3]!.text;
+    const turn = text(result);
     expect(turn).toContain(`<relational_slot_row id="${relationalSlotId}"`);
     expect(turn).toContain('<relational_standing_row id="relational-ledger"');
     expect(turn).toContain('<social_standing_row id="observed-event"');
@@ -1085,7 +1228,7 @@ describe("compact terminal finalizer context", () => {
     // The observed-event and cross-session draws never filter by audience: they are
     // global lists that the current participants rank, so draw_scope must not claim
     // otherwise. With no roster the two relational draws are unfiltered as well.
-    for (const tag of ["relational_slots", "relational_standing", "social_standing"]) {
+    for (const tag of ["relational_slots", "social_standing"]) {
       expect(turn).toContain(`<${tag} complete="true" rows_total="1" draw_scope="global">`);
     }
     // The cross-session draw is unfiltered by audience and filtered by session: it
@@ -1122,12 +1265,15 @@ describe("compact terminal finalizer context", () => {
           },
         },
       }),
-    ).system[3]!.text;
+    )
+      .system.slice(2)
+      .map((block) => block.text)
+      .join("\n\n");
     expect(turn).toContain(
       '<relational_slots complete="true" rows_total="0" draw_scope="active_participant_subjects">',
     );
     expect(turn).toContain(
-      '<relational_standing complete="true" rows_total="0" draw_scope="active_participant_subjects">',
+      '<relational_standing_metadata rows_total="0" draw_scope="active_participant_subjects" />',
     );
     // A roster constrains the relational lists; it does not constrain these two.
     expect(turn).toContain('<social_standing complete="true" rows_total="1" draw_scope="global">');
@@ -1137,7 +1283,10 @@ describe("compact terminal finalizer context", () => {
   });
 
   it("names the cross-session draw's own predicate instead of claiming it took everything", () => {
-    const turn = build(context({ evidenceLedger: ledger() })).system[3]!.text;
+    const turn = build(context({ evidenceLedger: ledger() }))
+      .system.slice(2)
+      .map((block) => block.text)
+      .join("\n\n");
     const scope = turn.match(/<cross_session_entries[^>]*draw_scope="([^"]+)"/)?.[1];
     // The lane filters e.session_id <> currentSessionId, so whatever token it carries,
     // it can never be the one this block defines as filtering by nothing.
@@ -1168,7 +1317,10 @@ describe("compact terminal finalizer context", () => {
       trust_rank: 70,
       text: `lived entry ${index}`,
     }));
-    const turn = build(context({ evidenceLedger: ledger(mixed) })).system[3]!.text;
+    const turn = build(context({ evidenceLedger: ledger(mixed) }))
+      .system.slice(2)
+      .map((block) => block.text)
+      .join("\n\n");
     expect(turn).toContain(
       `<cross_session_entries complete="true" rows_total="9" draw_scope="${CROSS_SESSION_ENTRIES_DRAW_SCOPE}">`,
     );
@@ -1262,9 +1414,9 @@ describe("compact terminal finalizer context", () => {
         },
       }),
     );
-    const durable = first.system[1]!.text;
+    const durable = first.system[0]!.text;
 
-    expect(first.system[1]?.text).toBe(second.system[1]?.text);
+    expect(first.system[0]?.text).toBe(second.system[0]?.text);
     expect(first.system[3]?.text).not.toBe(second.system[3]?.text);
     expect(durable.indexOf(olderValue.id)).toBeLessThan(durable.indexOf(newerValue.id));
     expect(durable.indexOf(firstTrait.id)).toBeLessThan(durable.indexOf(secondTrait.id));
@@ -1279,20 +1431,20 @@ describe("compact terminal finalizer context", () => {
       traits: [firstTrait, secondTrait],
     };
 
-    const unmeasured = durableSelf(build(context({ selfSnapshot: rendered })).system[1]!.text);
+    const unmeasured = durableSelf(build(context({ selfSnapshot: rendered })).system[0]!.text);
     expect(unmeasured).toContain('complete="unmeasured"');
     expect(unmeasured).not.toContain("<omitted_count>");
 
     const agreeing = durableSelf(
       build(context({ selfSnapshot: { ...rendered, valuesStoredTotal: 2, traitsStoredTotal: 2 } }))
-        .system[1]!.text,
+        .system[0]!.text,
     );
     expect(agreeing).toContain('complete="true"');
     expect(agreeing).toContain("<omitted_count>0</omitted_count>");
 
     const narrowed = durableSelf(
       build(context({ selfSnapshot: { ...rendered, valuesStoredTotal: 5, traitsStoredTotal: 3 } }))
-        .system[1]!.text,
+        .system[0]!.text,
     );
     expect(narrowed).toContain('complete="false"');
     expect(narrowed).toContain("<omitted_count>4</omitted_count>");
@@ -1370,10 +1522,10 @@ describe("compact terminal finalizer context", () => {
     };
     const first = build(makeContext(0.9, "global", undefined));
     const second = build(makeContext(0.2, "current_session", "assistant_self_report"));
-    expect(first.system[1]?.text).toBe(second.system[1]?.text);
+    expect(first.system[0]?.text).toBe(second.system[0]?.text);
     expect(first.system[3]?.text).not.toBe(second.system[3]?.text);
-    expect(first.system[1]?.text).not.toContain("ledger_scope=");
-    const durableSelf = first.system[1]?.text.match(
+    expect(first.system[0]?.text).not.toContain("ledger_scope=");
+    const durableSelf = first.system[0]?.text.match(
       /<borg_terminal_values_traits[\s\S]*?<\/borg_terminal_values_traits>/,
     )?.[0];
     expect(durableSelf).toBeDefined();
@@ -1381,7 +1533,7 @@ describe("compact terminal finalizer context", () => {
     expect(durableSelf).not.toContain("support_count=");
     expect(durableSelf).not.toContain("last_reinforced=");
     expect(durableSelf).not.toContain("last_tested_at=");
-    expect(first.system[1]?.text).not.toContain("persistence_class=");
+    expect(first.system[0]?.text).not.toContain("persistence_class=");
     expect(first.system[3]?.text).toContain('ledger_scope="global"');
     expect(first.system[3]?.text).toContain('persistence_class="unknown"');
     expect(second.system[3]?.text).toContain('persistence_class="assistant_self_report"');
@@ -1415,7 +1567,7 @@ describe("compact terminal finalizer context", () => {
         },
       ],
     });
-    const turn = result.system[3]!.text;
+    const turn = text(result);
     expect(turn.indexOf("<borg_evidence_ledger>")).toBeLessThan(
       turn.indexOf("<borg_additional_retrieval>"),
     );
@@ -1620,10 +1772,10 @@ describe("compact terminal finalizer context", () => {
         { blockId: "borg_commitment_regeneration_instruction", text: regeneration },
       ],
     });
-    expect(rendered.system).toHaveLength(5);
+    expect(rendered.system).toHaveLength(6);
     expect(rendered.system.slice(0, 4).every((block) => block.cache_control !== undefined)).toBe(
       true,
     );
-    expect(rendered.system[4]).toEqual({ type: "text", text: `\n\n${regeneration}` });
+    expect(rendered.system[5]).toEqual({ type: "text", text: `\n\n${regeneration}` });
   });
 });

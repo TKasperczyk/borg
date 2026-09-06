@@ -42,7 +42,7 @@ import {
   buildBaseSystemPrompt,
   buildCacheableBaseSystemPromptParts,
 } from "../deliberation/prompt/system-prompt.js";
-import { runFinalizer } from "../deliberation/finalizer.js";
+import { buildFinalizerSystemPrompt, runFinalizer } from "../deliberation/finalizer.js";
 import { runS2Planner, type TurnPlan } from "../deliberation/s2-planner.js";
 import type { DeliberationContext } from "../deliberation/types.js";
 import { buildCompactPlannerLedgerPrompt, renderEvidenceLedger } from "../evidence-ledger/index.js";
@@ -1356,6 +1356,56 @@ describe("prompt surface fixtures", () => {
     });
 
     expectFixture("finalizer-system-blocks-s2.txt", systemBlocksToFixture(llm.requests[0]?.system));
+  });
+
+  it("pins compact finalizer cache tiers with S2 extras", () => {
+    const evidenceLedger: EvidenceLedger = {
+      ...makeEvidenceLedger(),
+      audienceStanding: {
+        commitmentEntries: [],
+        relationalEntries: ["ledger:relational:first", "ledger:relational:second"].map((id) => ({
+          id,
+          source_type: "relational_slot",
+          session_scope: "global",
+          actor: "memory",
+          trust_rank: 70,
+          state: "established",
+          text: "Shared project collaboration.",
+          state_metadata: {
+            disclosure_label: {
+              disclosure_class: "relationship_private",
+              origin_audience_entity_ids: [MEMBER_ID],
+              private_to_entity_ids: [MEMBER_ID],
+              public_to_entity_ids: [],
+            },
+          },
+        })),
+        observedEventIntrospectionEntries: [],
+        recentLivedExperienceEntries: [],
+        renderRecentLivedExperience: false,
+      },
+    };
+    const context = makeContext({ evidenceLedger });
+    const cacheable = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
+    const result = buildFinalizerSystemPrompt({
+      llmClient: new FakeLLMClient(),
+      dispatcher: createDispatcher(tempDirs),
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      baseSystemPrompt: buildBaseSystemPrompt(context, PROMPT_OPTIONS),
+      cacheableSystemPrompt: cacheable,
+      initialMessages: [],
+      userEntryId: USER_ENTRY_ID,
+      maxTokens: 256,
+      path: "system_2",
+      finalizerSurfaceVariant: "compact",
+      compactSurface: { context, baseSystemPromptOptions: PROMPT_OPTIONS },
+      additionalPromptSections: [
+        { blockId: "borg_s2_plan", text: formatTurnPlanForPrompt(fixturePlan())! },
+        { blockId: "borg_evidence_ledger", text: renderEvidenceLedger(evidenceLedger)! },
+      ],
+    });
+    expectFixture("finalizer-system-blocks-s2-compact.txt", systemBlocksToFixture(result.system));
   });
 
   it("pins S2 planner system prompt", async () => {

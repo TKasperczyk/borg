@@ -573,8 +573,15 @@ describe("runFinalizer emission tools", () => {
     const pausedSystem = pausedRequest.system as readonly CapturedSystemBlock[];
     const activeSystem = activeRequest.system as readonly CapturedSystemBlock[];
     expect(JSON.stringify(pausedRequest.tools)).toBe(JSON.stringify(activeRequest.tools));
-    expect(JSON.stringify(pausedSystem.slice(0, 3))).toBe(JSON.stringify(activeSystem.slice(0, 3)));
-    expect(JSON.stringify(pausedSystem[3])).not.toBe(JSON.stringify(activeSystem[3]));
+    expect(JSON.stringify(pausedSystem.slice(0, 4))).toBe(JSON.stringify(activeSystem.slice(0, 4)));
+    expect(JSON.stringify(pausedSystem[4])).not.toBe(JSON.stringify(activeSystem[4]));
+    expect(activeSystem.map((block) => block.cache_control?.ttl)).toEqual([
+      "1h",
+      "1h",
+      "5m",
+      "5m",
+      undefined,
+    ]);
   });
 
   it("sends each tool once when the live-turn and interior menus overlap", () => {

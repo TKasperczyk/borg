@@ -606,14 +606,12 @@ function legacyFinalizerTraceSummary(
       terminal_static_head: {
         chars: staticText.length,
         estimatedTokens: estimatePromptTokens(staticText),
-        ttl: "1h",
+        ttl: system[0]?.cache_control?.ttl ?? null,
       },
-      terminal_durable_global: { chars: 0, estimatedTokens: 0, ttl: "1h" },
-      terminal_durable_audience: { chars: 0, estimatedTokens: 0, ttl: "1h" },
       terminal_turn_context: {
         chars: turnText.length,
         estimatedTokens: estimatePromptTokens(turnText),
-        ttl: "5m",
+        ttl: system[1]?.cache_control?.ttl ?? null,
       },
     },
     totalChars: totalText.length,

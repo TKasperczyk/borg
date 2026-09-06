@@ -130,12 +130,7 @@ const legacySystem = [
 const compactSystem = [
   {
     type: "text" as const,
-    text: "compact-static",
-    cache_control: { type: "ephemeral" as const, ttl: "1h" as const },
-  },
-  {
-    type: "text" as const,
-    text: "compact-global",
+    text: "compact-static-and-global",
     cache_control: { type: "ephemeral" as const, ttl: "1h" as const },
   },
   {
@@ -145,9 +140,15 @@ const compactSystem = [
   },
   {
     type: "text" as const,
-    text: "compact-turn",
+    text: "compact-slow-standing",
     cache_control: { type: "ephemeral" as const, ttl: "5m" as const },
   },
+  {
+    type: "text" as const,
+    text: "compact-slow-overlay",
+    cache_control: { type: "ephemeral" as const, ttl: "5m" as const },
+  },
+  { type: "text" as const, text: "compact-fast-turn" },
 ];
 
 function input() {
@@ -310,6 +311,10 @@ describe("finalizer context capture and replay", () => {
     const parsed = parseFinalizerContextCaptureRecord(JSON.parse(JSON.stringify(record)));
     expect(parsed.surfaces.legacy.system).toEqual(legacySystem);
     expect(parsed.surfaces.compact.system).toEqual(compactSystem);
+    expect(parsed.surfaces.compact.fingerprint).toMatchObject({
+      systemBlockCount: 5,
+      cacheBreakpointCount: 4,
+    });
     expect(parsed.configured_surface_variant).toBe("legacy");
     expect(parsed.live_surface_variant).toBe("legacy");
     expect(parsed.schema_version).toBe(2);
