@@ -3809,6 +3809,146 @@ describe("AutonomyScheduler", () => {
     expect(watermarkRepository.get("autonomy:scheduled-reflection", DEFAULT_SESSION_ID)).toBeNull();
   });
 
+  it.each(["recordOutcome", "action log"])(
+    "installs failed-turn backoff before a throwing %s write",
+    async (failureSite) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      cleanup = harness.cleanup;
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
+      const source = createTestDueSource("failed-turn-bookkeeping", "scheduled_wake");
+      const [event] = await source.scan();
+      source.scan = vi.fn(async () => [{ ...event!, id: `changing-event:${clock.now()}` }]);
+      const bookkeepingError = new Error(`${failureSite} failed`);
+      if (failureSite === "recordOutcome") {
+        vi.spyOn(wakeRepository, "recordOutcome").mockImplementation(() => {
+          throw bookkeepingError;
+        });
+      }
+      const turnRunner = { run: vi.fn().mockRejectedValue(new Error("turn failed")) };
+      const scheduler = createScheduler({
+        db: harness.db,
+        wakeRepository,
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerWindow: 20,
+        clock,
+        createStreamWriter: (sessionId) => {
+          const writer = new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+          if (failureSite === "action log") {
+            const append = writer.append.bind(writer);
+            vi.spyOn(writer, "append").mockImplementation(async (entry) => {
+              if (
+                typeof entry.content === "object" &&
+                entry.content !== null &&
+                "kind" in entry.content &&
+                entry.content.kind === "autonomous_action"
+              ) {
+                throw bookkeepingError;
+              }
+              return await append(entry);
+            });
+          }
+          return writer;
+        },
+        watermarkRepository,
+        turnOrchestrator: turnRunner,
+        toolDispatcher: new ToolDispatcher({
+          createStreamWriter: (sessionId) =>
+            new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+          clock,
+        }),
+        sources: [source],
+      });
+
+      await expect(scheduler.tick()).rejects.toThrow(bookkeepingError);
+      expect(wakeRepository.countSince(0)).toBe(1);
+
+      for (const elapsed of [1_000, 28_999]) {
+        clock.advance(elapsed);
+        expect((await scheduler.tick()).events).toEqual([]);
+        expect(turnRunner.run).toHaveBeenCalledTimes(1);
+        expect(wakeRepository.countSince(0)).toBe(1);
+      }
+      expect(source.scan).toHaveBeenCalledTimes(1);
+
+      clock.advance(1);
+      await expect(scheduler.tick()).rejects.toThrow(bookkeepingError);
+      expect(turnRunner.run).toHaveBeenCalledTimes(2);
+      expect(wakeRepository.countSince(0)).toBe(2);
+      expect(watermarkRepository.get(event!.watermarkProcessName, DEFAULT_SESSION_ID)).toBeNull();
+    },
+  );
+
+  it.each([false, true])(
+    "backs off rejected event preparation when outcome bookkeeping throws=%s",
+    async (bookkeepingThrows) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      cleanup = harness.cleanup;
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
+      const trainOfThoughtRepository = new TrainOfThoughtRepository({ db: harness.db, clock });
+      const preparationError = new Error("prior thought read failed");
+      vi.spyOn(trainOfThoughtRepository, "get").mockImplementation(() => {
+        throw preparationError;
+      });
+      if (bookkeepingThrows) {
+        vi.spyOn(wakeRepository, "recordOutcome").mockImplementation(() => {
+          throw new Error("outcome write failed");
+        });
+      }
+      const source = createTestDueSource("rejected-preparation", "scheduled_wake");
+      const turnRunner = { run: vi.fn() };
+      const onError = vi.fn();
+      const scheduler = createScheduler({
+        db: harness.db,
+        wakeRepository,
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerWindow: 20,
+        clock,
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        watermarkRepository,
+        trainOfThoughtRepository,
+        turnOrchestrator: turnRunner,
+        toolDispatcher: new ToolDispatcher({
+          createStreamWriter: (sessionId) =>
+            new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+          clock,
+        }),
+        sources: [source],
+      });
+      scheduler.setObserver({ onError });
+
+      if (bookkeepingThrows) {
+        await expect(scheduler.tick()).rejects.toThrow("outcome write failed");
+      } else {
+        expect(await scheduler.tick()).toMatchObject({ errorCount: 1, sourceErrorCount: 1 });
+        expect(onError).toHaveBeenCalledWith(expect.objectContaining({ cause: preparationError }));
+      }
+
+      for (const elapsed of [1_000, 28_999]) {
+        clock.advance(elapsed);
+        expect((await scheduler.tick()).events).toEqual([]);
+        expect(trainOfThoughtRepository.get).toHaveBeenCalledTimes(1);
+        expect(wakeRepository.countSince(0)).toBe(1);
+      }
+
+      clock.advance(1);
+      if (bookkeepingThrows) {
+        await expect(scheduler.tick()).rejects.toThrow("outcome write failed");
+      } else {
+        expect((await scheduler.tick()).sourceErrorCount).toBe(1);
+      }
+      expect(trainOfThoughtRepository.get).toHaveBeenCalledTimes(2);
+      expect(turnRunner.run).not.toHaveBeenCalled();
+      expect(wakeRepository.countSince(0)).toBe(2);
+    },
+  );
+
   it("backs off a failing trigger across event ids, admits healthy work, and resets on success", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({ clock });

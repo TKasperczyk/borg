@@ -1245,58 +1245,29 @@ export class AutonomyScheduler {
             selected_goal_id: selectedGoalIdForWake(dueEvent),
           });
 
-          const preparedEvent = await this.prepareEvent(dueEvent);
-
-          if ("toolError" in preparedEvent) {
-            errorCount += 1;
-            sourceErrorCount += 1;
-            const outcomeSummary = `Autonomous preparation failed: ${preparedEvent.toolError}`;
-            this.options.wakeRepository.recordOutcome(
-              wakeRecord.id,
-              "error",
-              outcomeSummary,
-              null,
-              ZERO_TURN_EXECUTION_COUNTS,
-            );
-            this.consumeFleetFreshnessBypass(
-              dueEvent,
-              fleetAdmission.bypassKind,
-              fleetAdmission.metadata,
-            );
-            this.scheduleSourceRetryBackoff(dueEvent.sourceName);
-            this.scheduleTriggerErrorBackoff(dueEvent.sourceName);
-            await writer.append({
-              kind: "internal_event",
-              content: {
-                kind: "autonomous_action",
-                trigger: dueEvent.sourceName,
-                outcome_summary: outcomeSummary,
-                turn_result_id: null,
-                ts: this.clock.now(),
-              },
-            });
-            eventResults.push(
-              ...this.eventResultsForBatch(wakeBatch, {
-                status: "error",
-                error: preparedEvent.toolError,
-                outcomeSummary,
-                turnResultId: null,
-              }),
-            );
-            await this.notifyError(
-              new AutonomySourcePreparationError(dueEvent.sourceName, preparedEvent.toolError),
-            );
-            continue;
-          }
-
+          let preparedEvent: { source: AutonomyWakeSource; event: DueEvent };
           let turnInput;
 
           try {
+            const preparation = await this.prepareEvent(dueEvent);
+
+            if ("toolError" in preparation) {
+              throw new AutonomySourcePreparationError(dueEvent.sourceName, preparation.toolError);
+            }
+
+            preparedEvent = preparation;
             turnInput = preparedEvent.source.buildTurn(preparedEvent.event);
           } catch (error) {
+            // Install retry state before any outcome, fleet, or stream write:
+            // bookkeeping failures must not turn a source error into a hot loop.
+            this.scheduleSourceRetryBackoff(dueEvent.sourceName);
+            this.scheduleTriggerErrorBackoff(dueEvent.sourceName);
             errorCount += 1;
             sourceErrorCount += 1;
-            const preparationError = new AutonomySourcePreparationError(dueEvent.sourceName, error);
+            const preparationError =
+              error instanceof AutonomySourcePreparationError
+                ? error
+                : new AutonomySourcePreparationError(dueEvent.sourceName, error);
             const outcomeSummary = `Autonomous source preparation failed: ${formatError(error)}`;
             this.options.wakeRepository.recordOutcome(
               wakeRecord.id,
@@ -1310,8 +1281,6 @@ export class AutonomyScheduler {
               fleetAdmission.bypassKind,
               fleetAdmission.metadata,
             );
-            this.scheduleSourceRetryBackoff(dueEvent.sourceName);
-            this.scheduleTriggerErrorBackoff(dueEvent.sourceName);
             await writer.append({
               kind: "internal_event",
               content: {
@@ -1348,6 +1317,13 @@ export class AutonomyScheduler {
             });
           } catch (error) {
             const busy = error instanceof SessionBusyError;
+            this.scheduleBatchRetryBackoff(wakeBatch);
+            if (!busy) {
+              // Failed turns leave source watermarks unlatched. Install the
+              // source-name latch before fallible bookkeeping so new event ids
+              // cannot bypass retry spacing even when logging fails.
+              this.scheduleBatchTriggerErrorBackoff(wakeBatch);
+            }
             const executionCounts =
               turnExecutionMetricsFromError(error) ?? ZERO_TURN_EXECUTION_COUNTS;
             const outcomeSummary = busy
@@ -1397,16 +1373,6 @@ export class AutonomyScheduler {
                 );
               }
             }
-            this.scheduleBatchRetryBackoff(wakeBatch);
-            if (!busy) {
-              // Failed turns intentionally do not advance source watermarks:
-              // the same concern still needs a successful pass. The
-              // trigger-level retry clock is the error latch instead, and is
-              // keyed by source name so a watermark-driven trigger cannot
-              // evade it by minting a new window/event id on the next scan.
-              this.scheduleBatchTriggerErrorBackoff(wakeBatch);
-            }
-
             eventResults.push(
               ...this.eventResultsForBatch(wakeBatch, {
                 status: busy ? "busy_skipped" : "error",
@@ -1467,6 +1433,8 @@ export class AutonomyScheduler {
               executionCountsForTurnResult(turnResult),
             );
           } catch (error) {
+            this.scheduleBatchRetryBackoff(wakeBatch);
+            this.scheduleBatchTriggerErrorBackoff(wakeBatch);
             const outcomeSummary = `Autonomous turn completed; bookkeeping failed: ${formatError(error)}`;
             let interruptedOutcomeError: unknown;
 
@@ -1484,8 +1452,6 @@ export class AutonomyScheduler {
 
             firedEvents += 1;
             bookkeepingErrorCount += 1;
-            this.scheduleBatchRetryBackoff(wakeBatch);
-            this.scheduleBatchTriggerErrorBackoff(wakeBatch);
             const bookkeepingError = new AutonomyBookkeepingError(dueEvent, error);
             eventResults.push(
               ...this.eventResultsForBatch(wakeBatch, {
