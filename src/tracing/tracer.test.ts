@@ -651,9 +651,8 @@ describe("TurnTracer", () => {
       "turn_phase.started",
       "deliberation.finalizer_context.completed",
       "llm_call.started",
-      "turn.token",
-      "turn.token",
       "llm_call.completed",
+      "turn.token",
       "turn.token.flush",
       "finalizer.completed",
       "turn_phase.completed",
@@ -696,6 +695,11 @@ describe("TurnTracer", () => {
       phase: "ingest",
     });
     expect(turnEvents.find((event) => event.event === "turn.token")).toMatchObject({
+      session_id: sessionId,
+      phase: "final",
+      sequence: 1,
+    });
+    expect(turnEvents.find((event) => event.event === "turn.token.flush")).toMatchObject({
       session_id: sessionId,
       phase: "final",
     });

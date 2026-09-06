@@ -86,6 +86,7 @@ import type {
   DeliberationResult,
   DeliberationUsage,
   DeliberatorOptions,
+  FinalizerTransport,
 } from "./types.js";
 import type { SessionParticipationPolicy } from "../../sessions/index.js";
 import { isCreatorInOperatorContext } from "../authority.js";
@@ -102,6 +103,7 @@ export type {
   DeliberationResult,
   DeliberationUsage,
   DeliberatorOptions,
+  FinalizerTransport,
   SelfSnapshot,
   TurnStakes,
 } from "./types.js";
@@ -276,6 +278,7 @@ function buildFinalizerCallOptions(
     baseSystemPrompt: context.baseSystemPrompt,
     cacheableSystemPrompt: context.cacheableSystemPrompt,
     finalizerDynamicPromptCacheEnabled: options.finalizerDynamicPromptCacheEnabled ?? true,
+    finalizerTransport: options.finalizerTransport ?? "unary",
     finalizerSurfaceVariant: configuredSurfaceVariant,
     finalizerContextCapture: options.finalizerContextCapture,
     ...(resolvedSurfaceVariant === "legacy" && options.finalizerContextCapture === undefined

@@ -50,7 +50,7 @@ import {
   type FinalizerToolAvailabilityState,
 } from "./prompt/finalizer-context.js";
 import type { BuildBaseSystemPromptOptions } from "./prompt/system-prompt.js";
-import type { DeliberationContext } from "./types.js";
+import type { DeliberationContext, FinalizerTransport } from "./types.js";
 import { toTraceJsonValue } from "../../tracing/tracer.js";
 import type {
   FinalizerCaptureOutcome,
@@ -412,6 +412,7 @@ export type RunFinalizerOptions = {
   additionalPromptSections?: readonly PromptSurfaceAdditionalSection[];
   cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
   finalizerDynamicPromptCacheEnabled?: boolean;
+  finalizerTransport?: FinalizerTransport;
   finalizerSurfaceVariant?: FinalizerSurfaceVariant;
   compactSurface?: {
     context: DeliberationContext;
@@ -1101,6 +1102,7 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
   // an emission tool so a structured emission stays guaranteed (e.g. manual
   // thinking on Opus is omitted by the client, so forcing is correct there).
   const useAutoToolChoice = willSendThinkingUnderAutoToolChoice(options.model, effectiveThinking);
+  const finalizerTransport = options.finalizerTransport ?? "unary";
   let tokenSequence = 0;
 
   let result: ToolLoopResult;
@@ -1140,7 +1142,7 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
       traceLabel: `${options.path}_finalizer`,
       terminalToolNames,
       unavailableToolNames,
-      stream: true,
+      stream: finalizerTransport === "streaming",
       onTextDelta: (chunkText) => {
         tokenSequence += 1;
         emitTurnTokenTrace({
@@ -1202,13 +1204,28 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
     result.toolCallsMade.length,
   );
 
+  const flushText = finalizerFlushText(result, decision);
+  if (finalizerTransport === "unary" && flushText.length > 0) {
+    // Buffered unary calls have no incremental deltas. Preserve the downstream
+    // live-token contract with one complete, accepted terminal-emission chunk;
+    // the authoritative flush immediately follows just as it does for streaming.
+    tokenSequence += 1;
+    emitTurnTokenTrace({
+      tracer: options.tracer,
+      turnId: options.turnId,
+      sessionId: options.sessionId,
+      phase: "final",
+      chunkText: flushText,
+      sequence: tokenSequence,
+    });
+  }
   if (tokenSequence > 0) {
     emitTurnTokenFlushTrace({
       tracer: options.tracer,
       turnId: options.turnId,
       sessionId: options.sessionId,
       phase: "final",
-      fullText: finalizerFlushText(result, decision),
+      fullText: flushText,
     });
   }
   emitFinalizerTrace(options, decision);
