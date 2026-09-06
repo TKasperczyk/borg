@@ -6180,6 +6180,135 @@ describe("AutonomyScheduler", () => {
     });
   });
 
+  it.each(["scan", "prepare"])(
+    "resets recovered %s failure history after an empty scan",
+    async (failureStage) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      cleanup = harness.cleanup;
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const trainOfThoughtRepository = new TrainOfThoughtRepository({ db: harness.db, clock });
+      let phase: "error" | "empty" | "due" = "error";
+      const source = createTestDueSource("recovered-preparation", "scheduled_wake");
+      const [event] = await source.scan();
+      source.scan = vi.fn(async () => {
+        if (phase === "empty") return [];
+        if (phase === "error" && failureStage === "scan") throw new Error("scan failed");
+        return [{ ...event!, id: `recovered:${clock.now()}` }];
+      });
+      vi.spyOn(trainOfThoughtRepository, "get").mockImplementation(() => {
+        if (phase === "error" && failureStage === "prepare") throw new Error("prepare failed");
+        return null;
+      });
+      const turnRunner = {
+        run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+      };
+      const scheduler = createScheduler({
+        db: harness.db,
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerWindow: 20,
+        clock,
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        watermarkRepository,
+        trainOfThoughtRepository,
+        turnOrchestrator: turnRunner,
+        toolDispatcher: new ToolDispatcher({
+          createStreamWriter: (sessionId) =>
+            new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+          clock,
+        }),
+        sources: [source],
+      });
+
+      expect((await scheduler.tick()).sourceErrorCount).toBe(1);
+      clock.advance(30_000);
+      phase = "empty";
+      expect(await scheduler.tick()).toMatchObject({ events: [], sourceErrorCount: 0 });
+      expect(source.scan).toHaveBeenCalledTimes(2);
+
+      clock.advance(1_000);
+      phase = "error";
+      expect((await scheduler.tick()).sourceErrorCount).toBe(1);
+      phase = "due";
+      clock.advance(29_999);
+      expect((await scheduler.tick()).events).toEqual([]);
+      expect(source.scan).toHaveBeenCalledTimes(3);
+      expect(turnRunner.run).not.toHaveBeenCalled();
+
+      clock.advance(1);
+      expect((await scheduler.tick()).firedEvents).toBe(1);
+      expect(source.scan).toHaveBeenCalledTimes(4);
+      expect(turnRunner.run).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("preserves failed-turn escalation across preparation recovery and empty scans", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    const trainOfThoughtRepository = new TrainOfThoughtRepository({ db: harness.db, clock });
+    const getThought = vi.spyOn(trainOfThoughtRepository, "get");
+    let empty = false;
+    const source = createTestDueSource("outstanding-failed-turn", "scheduled_wake");
+    const [event] = await source.scan();
+    source.scan = vi.fn(async () =>
+      empty ? [] : [{ ...event!, id: `outstanding:${clock.now()}` }],
+    );
+    const turnRunner = {
+      run: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("first turn failure"))
+        .mockRejectedValueOnce(new Error("second turn failure"))
+        .mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+    };
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 20,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+      watermarkRepository,
+      trainOfThoughtRepository,
+      turnOrchestrator: turnRunner,
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        clock,
+      }),
+      sources: [source],
+    });
+
+    expect((await scheduler.tick()).errorCount).toBe(1);
+    clock.advance(30_000);
+    getThought.mockImplementationOnce(() => {
+      throw new Error("temporary preparation failure");
+    });
+    expect((await scheduler.tick()).sourceErrorCount).toBe(1);
+
+    clock.advance(30_000);
+    empty = true;
+    expect((await scheduler.tick()).events).toEqual([]);
+    expect(source.scan).toHaveBeenCalledTimes(3);
+    clock.advance(1_000);
+    empty = false;
+    expect((await scheduler.tick()).errorCount).toBe(1);
+    expect(turnRunner.run).toHaveBeenCalledTimes(2);
+
+    clock.advance(30_000);
+    expect((await scheduler.tick()).events).toEqual([]);
+    expect(turnRunner.run).toHaveBeenCalledTimes(2);
+    clock.advance(29_999);
+    expect((await scheduler.tick()).events).toEqual([]);
+    clock.advance(1);
+    expect((await scheduler.tick()).firedEvents).toBe(1);
+    expect(turnRunner.run).toHaveBeenCalledTimes(3);
+  });
+
   it("reports source scan errors and retries only after bounded source backoff", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({

@@ -608,6 +608,8 @@ export class AutonomyScheduler {
   private readonly fleetBrakeOptions: FleetBrakeOptions;
   private readonly respectGoalFollowupStaleBackoff: boolean;
   private readonly retryBackoff = new Map<string, RetryBackoffState>();
+  // Preparation history recovers on an empty scan or successful preparation.
+  // Failed-turn history is independent and survives those recovery signals.
   private readonly sourceRetryBackoff = new Map<AutonomyWakeSource["name"], RetryBackoffState>();
   private readonly triggerErrorBackoff = new Map<AutonomyWakeSource["name"], RetryBackoffState>();
   private intervalHandle: IntervalHandle | null = null;
@@ -1261,7 +1263,6 @@ export class AutonomyScheduler {
             // Install retry state before any outcome, fleet, or stream write:
             // bookkeeping failures must not turn a source error into a hot loop.
             this.scheduleSourceRetryBackoff(dueEvent.sourceName);
-            this.scheduleTriggerErrorBackoff(dueEvent.sourceName);
             errorCount += 1;
             sourceErrorCount += 1;
             const preparationError =
@@ -1977,7 +1978,6 @@ export class AutonomyScheduler {
       } catch (error) {
         sourceErrorCount += 1;
         this.scheduleSourceRetryBackoff(source.name);
-        this.scheduleTriggerErrorBackoff(source.name);
         await this.notifyError(new AutonomySourcePreparationError(source.name, error));
         continue;
       }
