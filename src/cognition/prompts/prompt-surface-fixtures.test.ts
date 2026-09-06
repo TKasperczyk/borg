@@ -137,6 +137,40 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
       enabled: true,
     },
   ],
+  windowWakes: [
+    {
+      ts: NOW_MS - 10 * 60_000,
+      trigger_name: "scheduled_reflection",
+      outcome: "headway",
+      headway_bases: ["continued private thought"],
+      finalizer_rounds: 3,
+      stall_retries: 2,
+    },
+    {
+      ts: NOW_MS - 20 * 60_000,
+      trigger_name: "scheduled_reflection",
+      outcome: "silent",
+      headway_bases: null,
+      finalizer_rounds: 1,
+      stall_retries: 0,
+    },
+    {
+      ts: NOW_MS - 30 * 60_000,
+      trigger_name: "scheduled_reflection",
+      outcome: "silent",
+      headway_bases: null,
+      finalizer_rounds: null,
+      stall_retries: null,
+    },
+    {
+      ts: NOW_MS - 18 * 60 * 60_000,
+      trigger_name: "goal_followup_due",
+      outcome: "error",
+      headway_bases: null,
+      finalizer_rounds: 0,
+      stall_retries: 1,
+    },
+  ],
   fleetBrake: {
     enabled: true,
     empty_streak: 0,
@@ -1215,6 +1249,39 @@ describe("prompt surface fixtures", () => {
       "cacheable-base-static-prefix-sections.txt",
       parts.staticPrefixSections.join("\n"),
     );
+  });
+
+  it.each(["user", "autonomous"])("keeps %s wake changes in dynamic cache content", (origin) => {
+    const context = origin === "user" ? makeContext() : makeAutonomousRelationalContext();
+    const baseline = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
+    const changed = buildCacheableBaseSystemPromptParts(
+      {
+        ...context,
+        turnMechanismEvidence: {
+          ...context.turnMechanismEvidence!,
+          autonomySchedulerState: {
+            ...FIXTURE_AUTONOMY_SCHEDULER_STATE,
+            windowWakes: FIXTURE_AUTONOMY_SCHEDULER_STATE.windowWakes!.map((wake, index) =>
+              index === 0 ? { ...wake, finalizer_rounds: 9, stall_retries: 4 } : wake,
+            ),
+          },
+        },
+      },
+      PROMPT_OPTIONS,
+    );
+
+    expect(baseline.dynamicContent).toContain('fr="3" sr="2"');
+    expect(baseline.dynamicContent).toContain('fr="1" sr="0"');
+    expect(baseline.dynamicContent).toContain('tr="scheduled_reflection" o="silent" />');
+    expect(baseline.dynamicContent).toContain("fr or sr absent means not recorded or unknown");
+    expect(baseline.dynamicContent).toContain(
+      "Wake execution totals over those 4 row(s): fr=4 from 3/4 rows with fr recorded; sr=3 from 3/4 rows with sr recorded.",
+    );
+    expect(changed.dynamicContent).toContain('fr="9" sr="4"');
+    expect(changed.dynamicContent).not.toBe(baseline.dynamicContent);
+    expect(changed.staticPrefix).toBe(baseline.staticPrefix);
+    expect(changed.staticPrefixSections).toEqual(baseline.staticPrefixSections);
+    expect(baseline.staticPrefix).not.toContain("Wake row legend");
   });
 
   it("keeps batched autonomous goal identities out of the one-hour static prefix", () => {
