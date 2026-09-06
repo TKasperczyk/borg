@@ -624,7 +624,11 @@ export async function expandRecall(options: RecallExpansionOptions): Promise<Rec
         },
         toolName: RECALL_EXPANSION_TOOL_NAME,
         parse: (value) => schema.parse(value),
-        maxAttempts: 1,
+        // One schema-repair attempt: the planner's zod error is fed back and the
+        // request is re-issued under the same abort deadline, so a malformed
+        // plan (e.g. an array field emitted as a string) is salvaged when time
+        // remains and still degrades to the raw query when it does not.
+        maxAttempts: 2,
         trace: {
           tracer: options.tracer,
           turnId: options.turnId,

@@ -253,7 +253,7 @@ describe("Recall Core", () => {
     );
   });
 
-  it("builds exact N=1 and N=3 schemas, forces the planner tool, and never retries", async () => {
+  it("builds exact N=1 and N=3 schemas, forces the planner tool, and repairs a malformed plan once", async () => {
     const oneClient = new FakeLLMClient({
       responses: [recallExpansion({ semantic_query: "one", variant_count: 1 })],
     });
@@ -287,10 +287,29 @@ describe("Recall Core", () => {
       expect(request?.tool_choice).toEqual({ type: "tool", name: "EmitRecallQueryPlan" });
     }
 
+    // A malformed first plan is repaired once: the schema error goes back to
+    // the model and the second, valid emission is used.
+    const repairedClient = new FakeLLMClient({
+      responses: [
+        recallExpansion({ semantic_variants: [] }),
+        recallExpansion({ resolved_query: "used by the single repair attempt" }),
+      ],
+    });
+    const repaired = await expandRecall({
+      llmClient: repairedClient,
+      model: "planner",
+      focus: "invalid",
+      semanticVariantCount: 3,
+    });
+    expect(repaired.resolved_query).toBe("used by the single repair attempt");
+    expect(repairedClient.requests).toHaveLength(2);
+
+    // A second malformed emission is not retried again: the planner degrades.
     const invalidClient = new FakeLLMClient({
       responses: [
         recallExpansion({ semantic_variants: [] }),
-        recallExpansion({ semantic_query: "would only be used by a retry" }),
+        recallExpansion({ semantic_variants: [] }),
+        recallExpansion({ semantic_query: "would only be used by a third attempt" }),
       ],
     });
     await expect(
@@ -301,7 +320,7 @@ describe("Recall Core", () => {
         semanticVariantCount: 3,
       }),
     ).rejects.toThrow();
-    expect(invalidClient.requests).toHaveLength(1);
+    expect(invalidClient.requests).toHaveLength(2);
   });
 
   it("maps N=3 variants to semantic lanes without changing episode fusion", async () => {
