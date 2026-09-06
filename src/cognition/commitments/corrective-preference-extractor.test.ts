@@ -668,6 +668,68 @@ describe("CorrectivePreferenceExtractor", () => {
     expect(payload.self_identity).toBeNull();
   });
 
+  it("presents boundary grounding guidance and accepts none for a declined transport route", async () => {
+    const userMessage =
+      "Kira can hear the update. I declined the relay transport because its delivery receipts are unreliable; the direct chat route is still available.";
+    const currentEntryId = createStreamEntryId();
+    const speakerEntityId = createEntityId();
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          classification: "none",
+          reason:
+            "The operator describes a transport decision and permits sharing with Kira; no participant states a restriction.",
+          confidence: 0.95,
+        }),
+      ],
+    });
+    const extractor = new CorrectivePreferenceExtractor({
+      llmClient: llm,
+      model: "claude-sonnet-5",
+    });
+
+    await expect(
+      extractor.extractWithSlotNegations({
+        userMessage,
+        currentUserStreamEntryId: currentEntryId,
+        currentMessageEntries: [
+          {
+            id: currentEntryId,
+            timestamp: 1_700_000_000_300,
+            kind: "user_msg",
+            content: userMessage,
+            sender_entity_id: speakerEntityId,
+            reply_target_entity_id: null,
+            audience: "Operator room",
+            session_id: createSessionId(),
+            compressed: false,
+          },
+        ],
+        speakerEntityId,
+        speakerDisplayName: "Operator",
+        recentHistory: [],
+        audienceEntityId: createEntityId(),
+        activeCommitments: [],
+      }),
+    ).resolves.toEqual({ preference: null, retirement: null, slot_negations: [] });
+
+    expect(llm.requests).toHaveLength(1);
+    const request = llm.requests[0];
+    expect(request?.system).toContain(
+      "emit a boundary only when a participant explicitly states a restriction about their own content or the addressee",
+    );
+    expect(request?.system).toContain(
+      "quote the exact source span supporting that restriction in reason",
+    );
+    expect(request?.system).toContain(
+      "Never infer a restriction from a third party being mentioned or from an operator describing a decision about transport or tooling.",
+    );
+    const payload = JSON.parse(String(request?.messages[0]?.content ?? "{}")) as {
+      current_user_message: string;
+    };
+    expect(payload.current_user_message).toBe(userMessage);
+  });
+
   it("returns slot negations separately from durable corrective preferences", async () => {
     const subject = createEntityId();
     const streamEntryId = createStreamEntryId();
