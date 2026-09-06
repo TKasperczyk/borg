@@ -2228,6 +2228,7 @@ describe("demo server", () => {
     const valueAddSpy = vi.spyOn(borg.self.values, "add");
     const goalAddSpy = vi.spyOn(borg.self.goals, "add");
     const goalStatusSpy = vi.spyOn(borg.self.goals, "updateStatus");
+    const goalBlockSpy = vi.spyOn(borg.self.goals, "block");
     const goalProgressSpy = vi.spyOn(borg.self.goals, "updateProgress");
     const growthAddSpy = vi.spyOn(borg.self.growthMarkers, "add");
     const questionResolveSpy = vi.spyOn(borg.self.openQuestions, "resolve");
@@ -2320,9 +2321,16 @@ describe("demo server", () => {
       priority: 1,
       provenance: { kind: "manual" },
     });
+    const bareBlock = await requestJson(app, `/api/identity/goals/${blockedGoal.id}`, "PATCH", {
+      action: "block",
+      note: "bare block",
+    });
+    expect(bareBlock.status).toBe(400);
     const block = await requestJson(app, `/api/identity/goals/${blockedGoal.id}`, "PATCH", {
       action: "block",
       note: "blocked by test fixture",
+      attempt_status: "attempted_unavailable",
+      blocker: { kind: "until", until: blockedGoal.created_at + 60_000 },
     });
     expect(block.status).toBe(200);
     expect(await block.json()).toMatchObject({ id: blockedGoal.id, status: "blocked" });
@@ -2348,11 +2356,14 @@ describe("demo server", () => {
       { kind: "manual" },
       expect.objectContaining({ throughReview: true }),
     );
-    expect(goalStatusSpy).toHaveBeenCalledWith(
+    expect(goalBlockSpy).toHaveBeenCalledWith(
       blockedGoal.id,
-      "blocked",
+      expect.objectContaining({
+        attempt_status: "attempted_unavailable",
+        reason: "blocked by test fixture",
+        blocker: { kind: "until", until: expect.any(Number) },
+      }),
       { kind: "manual" },
-      expect.objectContaining({ throughReview: true }),
     );
     expect(goalProgressSpy).toHaveBeenCalledWith(
       progressGoal.id,

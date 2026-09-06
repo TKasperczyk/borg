@@ -1,3 +1,4 @@
+import { goalBlockStateFields } from "../../memory/self/goal-blocks.js";
 import type { RelationalSlot } from "../../memory/relational-slots/index.js";
 import type { MemoryDisclosureLabel } from "../../retrieval/index.js";
 import type { ActiveParticipant } from "../participants.js";
@@ -356,11 +357,11 @@ function buildRelationalEntries(context: BuilderSectionContext): EvidenceLedgerE
         : scopedGoalsForEntity(
             dedupeGoals([
               ...context.repos.goals.list({
-                status: "active",
+                statuses: ["active", "blocked"],
                 ownerEntityId: participant.entityId,
               }),
               ...context.repos.goals.list({
-                status: "active",
+                statuses: ["active", "blocked"],
                 visibleToAudienceEntityId: participant.entityId,
               }),
             ]),
@@ -386,6 +387,7 @@ function buildRelationalEntries(context: BuilderSectionContext): EvidenceLedgerE
             ...(goal.last_progress_ts === null
               ? {}
               : { last_progress_at: new Date(goal.last_progress_ts).toISOString() }),
+            ...goalBlockStateFields(goal),
             owner_entity_id: goal.owner_entity_id ?? null,
             audience_entity_id: goal.audience_entity_id,
             counterparty_entity_id: goal.counterparty_entity_id ?? null,

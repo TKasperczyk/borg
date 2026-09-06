@@ -1,3 +1,5 @@
+import { goalBlockStateText } from "../../../memory/self/goal-blocks.js";
+import { renderAnsweredWindowEvidence } from "../../../stream/answered-window.js";
 // Assembles the base deliberation system prompt from memory, state, and guidance sections.
 import { summarizeProvenanceForPrompt, type Provenance } from "../../../memory/common/index.js";
 import { operatorAttentionPromptRow } from "../../../memory/operator-attention/disclosure.js";
@@ -1536,7 +1538,7 @@ function summarizeSelfSnapshotGoal(goal: SelfSnapshot["goals"][number]): string 
     goalMemoryDisclosureLabel(goal),
   )}`;
 
-  return `${goal.description} counterparty_entity_id=${goal.counterparty_entity_id ?? "none"} (participant the responsibility runs toward; not owner or audience) ${summarizeProvenanceForPrompt(goal.provenance)}${disclosure}`;
+  return `${goal.description} status=${goal.status} block_state=${goalBlockStateText(goal)} counterparty_entity_id=${goal.counterparty_entity_id ?? "none"} (participant the responsibility runs toward; not owner or audience) ${summarizeProvenanceForPrompt(goal.provenance)}${disclosure}`;
 }
 
 const EXECUTIVE_FOCUS_IDENTITY_LABEL_MAX_CHARS = 120;
@@ -1570,7 +1572,7 @@ function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): stri
   );
 
   return [
-    `Current driving goal: ${focus.selected_goal.description} counterparty_entity_id=${focus.selected_goal.counterparty_entity_id ?? "none"} (participant the responsibility runs toward; not owner or audience) ${selectedGoalDisclosure}`,
+    `Current driving goal: ${focus.selected_goal.description} status=${focus.selected_goal.status} block_state=${goalBlockStateText(focus.selected_goal)} counterparty_entity_id=${focus.selected_goal.counterparty_entity_id ?? "none"} (participant the responsibility runs toward; not owner or audience) ${selectedGoalDisclosure}`,
     `Focus identity: goal_id=${focus.selected_goal.id} label=${JSON.stringify(
       compactPromptText(focus.selected_goal.description, EXECUTIVE_FOCUS_IDENTITY_LABEL_MAX_CHARS),
     )}`,
@@ -1812,10 +1814,14 @@ function renderWakeWindowRows(
     const finalizerRoundsAttribute =
       wake.finalizer_rounds === null ? "" : ` fr="${wake.finalizer_rounds}"`;
     const stallRetriesAttribute = wake.stall_retries === null ? "" : ` sr="${wake.stall_retries}"`;
+    const answeredWindowAttribute =
+      wake.answered_window === undefined
+        ? ""
+        : ` answered_window="${escapeXmlAttribute(wake.answered_window === null ? "not_applicable_no_recorded_session" : JSON.stringify(wake.answered_window))}"`;
 
     return `- <wake at="${new Date(wake.ts).toISOString()}" tr="${wake.trigger_name}" o="${
       wake.outcome ?? "in_flight"
-    }"${headwayBases}${finalizerRoundsAttribute}${stallRetriesAttribute} />`;
+    }"${headwayBases}${finalizerRoundsAttribute}${stallRetriesAttribute}${answeredWindowAttribute} />`;
   });
 
   return [
@@ -1824,6 +1830,11 @@ function renderWakeWindowRows(
       : "Wake rows in that current window, newest first:",
     ...rows,
     "Wake row legend: at=fired_at, tr=trigger_name, o=outcome (in_flight means no terminal outcome is recorded yet), hb=ordered headway bases, fr=finalizer rounds, sr=transport stall retries. hb absent means no structural headway bases were recorded. fr or sr absent means not recorded or unknown. Causes include older rows, callers that omit counts, in_flight rows awaiting outcome recording, and interrupted recording (including startup-interrupted rows).",
+    ...(wakes.some((wake) => wake.answered_window !== undefined)
+      ? [
+          "answered_window=current read of the wake's session, not a fired_at snapshot. Absent=unavailable; not_applicable_no_recorded_session=no session to join. Its counts are scope labels, not pending-response counts.",
+        ]
+      : []),
     `Wake execution totals over those ${wakes.length} row(s): fr=${finalizerRounds.reduce(
       (sum, count) => sum + count,
       0,
@@ -2525,6 +2536,11 @@ function summarizeMechanismEvidence(
   const recentRegenerations = evidence.recentRegenerations.slice(-RECENT_REGENERATIONS_LIMIT);
   const lines: string[] = [];
   const schedulerState = evidence.autonomySchedulerState;
+  lines.push(
+    evidence.answeredWindow === undefined
+      ? "Answered-window edge: evidence unavailable on this capture; absence of a basis is not evidence of zero outside entries. Labels only."
+      : renderAnsweredWindowEvidence(evidence.answeredWindow),
+  );
   // Both lists below are count-capped rings, not time windows (RECENT_*_LIMIT, capNewest): an entry
   // stays until that many newer ones displace it, however long that takes. Without an age the oldest
   // and newest read alike, so a fossil from a guard that has since been scoped off this session

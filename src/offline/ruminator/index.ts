@@ -1030,7 +1030,7 @@ async function searchResolutionEvidence(
     limit: Math.max(3, maxQuestionsPerRun),
     attentionWeights: buildReflectionWeights(ctx),
     goalDescriptions: ctx.goalsRepository
-      .list({ status: "active" })
+      .list({ statuses: ["active", "blocked"] })
       .map((goal) => goal.description),
     includeOpenQuestions: false,
     recordRetrieval: !dryRun,
@@ -1055,7 +1055,7 @@ async function searchResolutionEvidence(
 
 function buildReflectionWeights(ctx: OfflineContext) {
   return computeWeights("reflective", {
-    currentGoals: ctx.goalsRepository.list({ status: "active" }),
+    currentGoals: ctx.goalsRepository.list({ statuses: ["active", "blocked"] }),
     hasActiveValues: ctx.valuesRepository.list().some((value) => value.state === "established"),
     hasTemporalCue: false,
   });

@@ -71,7 +71,8 @@ export class EvidenceLedgerBuilder {
 
     if (disclosureResolver !== undefined) {
       const listedCommitments = commitmentRepository?.list({ activeOnly: true }) ?? [];
-      const listedGoalTrees = (goalsRepository?.list({ status: "active" }) ?? []) as GoalTreeNode[];
+      const listedGoalTrees = (goalsRepository?.list({ statuses: ["active", "blocked"] }) ??
+        []) as GoalTreeNode[];
       const commitmentsToResolve = [...applicableCommitments];
       const commitmentIdsToResolve = new Set(
         commitmentsToResolve.map((commitment) => commitment.id),

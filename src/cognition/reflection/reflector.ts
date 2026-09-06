@@ -1,3 +1,8 @@
+import {
+  artifactReferenceSchema,
+  deliveredOutboundPostArtifactOutputSchema,
+} from "../../memory/common/artifact-reference.js";
+import { goalBlockStateFields } from "../../memory/self/goal-blocks.js";
 import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
 import {
   combineMemoryDisclosureLabels,
@@ -192,40 +197,9 @@ const scheduledWakeIdSchema = z
   })
   .transform((value) => value as ScheduledWakeId);
 
-const advancedGoalArtifactReferenceSchema = z
-  .discriminatedUnion("kind", [
-    z.object({
-      kind: z.literal("journal_entry"),
-      id: z.number().int().positive(),
-    }),
-    z.object({
-      kind: z.literal("created_open_question"),
-      id: openQuestionIdSchema,
-    }),
-    z.object({
-      kind: z.literal("resolved_open_question"),
-      id: openQuestionIdSchema,
-    }),
-    z.object({
-      kind: z.literal("scheduled_wake"),
-      id: scheduledWakeIdSchema,
-    }),
-    z.object({
-      kind: z.literal("executive_step_outcome"),
-      id: executiveStepIdSchema,
-    }),
-    z.object({
-      kind: z.literal("delivered_outbound_post"),
-      id: streamEntryIdSchema,
-    }),
-    z.object({
-      kind: z.literal("stream_entry"),
-      id: streamEntryIdSchema,
-    }),
-  ])
-  .describe(
-    "The artifact this turn produced through an act distinct from its terminal emission that constitutes the movement.",
-  );
+const advancedGoalArtifactReferenceSchema = artifactReferenceSchema.describe(
+  "The artifact this turn produced through an act distinct from its terminal emission that constitutes the movement.",
+);
 
 type AdvancedGoalArtifactReference = z.infer<typeof advancedGoalArtifactReferenceSchema>;
 
@@ -246,15 +220,6 @@ const resolvedOpenQuestionArtifactOutputSchema = z.object({
   openQuestion: z.object({
     id: openQuestionIdSchema,
     status: z.literal("resolved"),
-  }),
-});
-
-const deliveredOutboundPostArtifactOutputSchema = z.object({
-  outbound: z.object({
-    delivery_outcome: z.object({
-      state: z.literal("delivered"),
-      agent_message_id: streamEntryIdSchema,
-    }),
   }),
 });
 
@@ -732,6 +697,8 @@ function summarizeExecutiveFocusForReflection(focus: ExecutiveFocus | null | und
     selected_goal: {
       goal_id: focus.selected_goal.id,
       description: focus.selected_goal.description,
+      status: focus.selected_goal.status,
+      ...goalBlockStateFields(focus.selected_goal),
       terminal_condition: focus.selected_goal.terminal_condition ?? null,
       progress_notes: renderGoalProgressNotesForReflection(focus.selected_goal.progress_notes),
       counterparty_entity_id: focus.selected_goal.counterparty_entity_id ?? null,
@@ -2155,6 +2122,7 @@ export class Reflector {
                     goal_id: goal.id,
                     description: goal.description,
                     status: goal.status,
+                    ...goalBlockStateFields(goal),
                     terminal_condition: goal.terminal_condition ?? null,
                     progress_notes: renderGoalProgressNotesForReflection(goal.progress_notes),
                     audience_entity_id: goal.audience_entity_id,

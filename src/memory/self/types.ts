@@ -24,6 +24,7 @@ import {
 import { provenanceSchema, type Provenance } from "../common/provenance.js";
 import { episodeIdSchema } from "../episodic/types.js";
 import { semanticNodeIdSchema } from "../semantic/types.js";
+import { goalBlockRecordSchema } from "./goal-blocks.js";
 
 export const goalStatusSchema = z.enum(["active", "done", "abandoned", "blocked"]);
 export const identityStateSchema = z.enum(["candidate", "established"]);
@@ -215,10 +216,12 @@ export const goalSchema = z.object({
   priority: z.number().finite(),
   parent_goal_id: goalIdSchema.nullable(),
   status: goalStatusSchema,
+  block_history: z.array(goalBlockRecordSchema).optional(),
   progress_notes: z.string().nullable(),
   last_progress_ts: z.number().finite().nullable(),
   created_at: z.number().finite(),
   target_at: z.number().finite().nullable(),
+  target_assigned_at: z.number().finite().nullable().optional(),
   audience_entity_id: goalAudienceEntityIdSchema.nullable().default(null),
   owner_entity_id: goalOwnerEntityIdSchema.nullable().optional(),
   counterparty_entity_id: goalCounterpartyEntityIdSchema.nullable().optional(),
@@ -266,6 +269,8 @@ export const goalPatchSchema = goalSchema
     id: true,
     record_version: true,
     created_at: true,
+    block_history: true,
+    target_assigned_at: true,
     audience_entity_id: true,
     owner_entity_id: true,
     counterparty_entity_id: true,

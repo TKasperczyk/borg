@@ -305,6 +305,7 @@ export type BorgValueContradictionEvent = {
 
 export type BorgGoalListOptions = {
   status?: GoalStatus;
+  statuses?: readonly GoalStatus[];
   visibleToAudienceEntityId?: EntityId | null;
   ownerEntityId?: EntityId | null;
 };
@@ -465,6 +466,12 @@ export type BorgSelfFacade = {
     listContradictionEvents(valueId: ValueId): BorgValueContradictionEvent[];
   };
   goals: {
+    block(
+      goalId: GoalId,
+      input: import("../memory/self/goal-blocks.js").GoalBlockInput,
+      provenance: Provenance,
+    ): BorgGoalWithDisclosure;
+    unblock(goalId: GoalId, reason: string, provenance: Provenance): BorgGoalWithDisclosure;
     get(goalId: GoalId): BorgGoalWithDisclosure | null;
     list(options?: BorgGoalListOptions): BorgGoalTreeWithDisclosure[];
     add(input: BorgGoalAddInput): BorgGoalWithDisclosure;

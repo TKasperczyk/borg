@@ -46,6 +46,8 @@ import {
   createEpisodicRecentTool,
   createEpisodicSearchTool,
   createGoalsRetireTool,
+  createGoalsBlockTool,
+  createGoalsUnblockTool,
   createIdentityEventsListForCognitionTool,
   createJournalAppendTool,
   createOpenQuestionsCreateTool,
@@ -280,6 +282,24 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     )
     .register(
       createGoalsRetireTool({
+        goalsRepository: options.goalsRepository,
+        disclosureLabelForGoal: (goal) =>
+          options.sourceStreamAudienceDisclosureResolver
+            .resolveLabels({ goals: [goal] })
+            .goalLabelsById.get(goal.id) ?? goalMemoryDisclosureLabel(goal),
+      }),
+    )
+    .register(
+      createGoalsBlockTool({
+        goalsRepository: options.goalsRepository,
+        disclosureLabelForGoal: (goal) =>
+          options.sourceStreamAudienceDisclosureResolver
+            .resolveLabels({ goals: [goal] })
+            .goalLabelsById.get(goal.id) ?? goalMemoryDisclosureLabel(goal),
+      }),
+    )
+    .register(
+      createGoalsUnblockTool({
         goalsRepository: options.goalsRepository,
         disclosureLabelForGoal: (goal) =>
           options.sourceStreamAudienceDisclosureResolver

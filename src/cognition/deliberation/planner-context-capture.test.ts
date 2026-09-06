@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { operatorAttentionPromptRow } from "../../memory/operator-attention/disclosure.js";
 import { unknownMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import type { LLMCompleteResult } from "../../llm/index.js";
+import { goalSchema } from "../../memory/self/types.js";
 import { FixedClock } from "../../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
@@ -316,6 +317,75 @@ describe("planner context capture", () => {
     expect(parsed.render_input.compactContext).not.toHaveProperty("reRetrieve");
     expect(repositoryGet).not.toHaveBeenCalled();
     expect(reRetrieve).not.toHaveBeenCalled();
+  });
+
+  it("preserves block history and answered-edge basis across planner capture and replay", () => {
+    const goal = goalSchema.parse({
+      id: createGoalId(),
+      description: "等待資料",
+      priority: 3,
+      parent_goal_id: null,
+      status: "blocked",
+      progress_notes: null,
+      last_progress_ts: null,
+      created_at: NOW_MS - 60_000,
+      target_at: null,
+      provenance: { kind: "manual" },
+      block_history: [
+        {
+          blocker: { kind: "until", until: NOW_MS + 60_000 },
+          attempt_status: "attempted_unavailable",
+          reason: "試しましたが、まだ利用できません。",
+          blocked_at: NOW_MS - 30_000,
+          unblocked_at: null,
+          unblock_reason: null,
+        },
+      ],
+    });
+    const source = context({
+      selfSnapshot: { values: [], goals: [goal], traits: [] },
+      turnMechanismEvidence: {
+        recentSuppressions: [],
+        recentRegenerations: [],
+        answeredWindow: {
+          session_id: DEFAULT_SESSION_ID,
+          observed_at: NOW_MS,
+          state: "recorded",
+          basis: {
+            turn_id: "turn_answered",
+            response_entry_id: "stream_response",
+            response_at: NOW_MS - 5_000,
+            response_kind: "agent_msg",
+            last_answered_entry_id: "stream_answered",
+            last_answered_at: NOW_MS - 10_000,
+            answered_entry_count: 1,
+          },
+          outside: {
+            state: "arrived_after_edge",
+            arrived_after_edge: 2,
+            unselected_within_window: 0,
+            before_window: 0,
+            without_edge: null,
+          },
+        },
+      },
+    });
+    const input = renderInput(source);
+    const parsed = parsePlannerContextCaptureRecord(JSON.parse(JSON.stringify(record(input))));
+    expect(parsed.render_input.compactContext.selfSnapshot.goals[0]?.block_history).toEqual(
+      goal.block_history,
+    );
+    expect(parsed.render_input.compactContext.turnMechanismEvidence?.answeredWindow).toEqual(
+      source.turnMechanismEvidence?.answeredWindow,
+    );
+    const replay = renderCapturedPlannerSurfacePair(parsed.render_input);
+    const live = renderCapturedPlannerSurfacePair(input);
+    expect(replay.compact.rendered.system).toEqual(live.compact.rendered.system);
+    expect(replay.legacy.rendered.system).toEqual(live.legacy.rendered.system);
+    expect(plannerSurfaceText(replay.compact.rendered.system)).toContain("stream_answered");
+    expect(plannerSurfaceText(replay.compact.rendered.system)).toContain(
+      goal.block_history![0]!.reason,
+    );
   });
 
   it("reads a pre-projection capture and safely fidelity-gates live replay", async () => {

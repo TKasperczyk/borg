@@ -45,6 +45,7 @@ export function mapGoalRow(row: Record<string, unknown>): GoalRecord {
         ? null
         : String(row.parent_goal_id),
     status: row.status,
+    block_history: row.block_history_json == null ? [] : JSON.parse(String(row.block_history_json)),
     progress_notes:
       row.progress_notes === null || row.progress_notes === undefined
         ? null
@@ -55,6 +56,7 @@ export function mapGoalRow(row: Record<string, unknown>): GoalRecord {
         : Number(row.last_progress_ts),
     created_at: Number(row.created_at),
     target_at: row.target_at === null || row.target_at === undefined ? null : Number(row.target_at),
+    target_assigned_at: row.target_assigned_at == null ? null : Number(row.target_assigned_at),
     audience_entity_id:
       row.audience_entity_id === null || row.audience_entity_id === undefined
         ? null

@@ -769,6 +769,9 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           deps.valuesRepository.listContradictionEvents(...args),
       },
       goals: {
+        block: (...args) => goalWithDisclosure(deps, deps.goalsRepository.block(...args)),
+        unblock: (goalId, reason, provenance) =>
+          goalWithDisclosure(deps, deps.goalsRepository.unblock(goalId, reason, provenance)),
         get: (...args) => {
           const goal = deps.goalsRepository.get(...args);
           return goal === null ? null : goalWithDisclosure(deps, goal);

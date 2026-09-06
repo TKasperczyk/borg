@@ -213,7 +213,10 @@ export async function buildBorgRepositories(
       clock,
       entryIndex,
       repairSession: repairSessionStreamEntryIndex,
-      onAppend: options.onStreamAppend,
+      onAppend: (entries) => {
+        goalsRepository.reconcileBlocks();
+        options.onStreamAppend?.(entries);
+      },
     });
   const createNonNotifyingStreamWriter = (sessionId: Parameters<BorgStreamWriterFactory>[0]) =>
     new StreamWriter({
@@ -222,6 +225,7 @@ export async function buildBorgRepositories(
       clock,
       entryIndex,
       repairSession: repairSessionStreamEntryIndex,
+      onAppend: () => goalsRepository.reconcileBlocks(),
     });
   const createDefaultStreamWriter = () => createStreamWriter(DEFAULT_SESSION_ID);
   let reviewQueueRepository: ReviewQueueRepository | undefined;
@@ -303,10 +307,12 @@ export async function buildBorgRepositories(
   });
   const goalsRepository = new GoalsRepository({
     db: sqlite,
+    dataDir: config.dataDir,
     clock,
     identityEventRepository,
     executiveStepsRepository,
   });
+  goalsRepository.reconcileBlocks();
   const traitsRepository = new TraitsRepository({
     db: sqlite,
     clock,

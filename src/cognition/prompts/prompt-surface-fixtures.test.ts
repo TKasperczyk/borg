@@ -1,3 +1,4 @@
+import type { AnsweredWindowEvidence } from "../../stream/answered-window.js";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -36,6 +37,7 @@ import { formatTurnPlanForPrompt } from "../deliberation/prompt/plan-rendering.j
 import {
   buildCompactPlannerSystemPrompt,
   PLANNER_GOAL_TARGET_TOKENS,
+  renderGoalDigest,
 } from "../deliberation/prompt/planner-context.js";
 import { summarizeRetrievedEvidence } from "../deliberation/prompt/retrieval.js";
 import {
@@ -68,6 +70,27 @@ import { PROMPT_BLOCKS, type PromptKey } from "./registry.js";
 const UPDATE_FIXTURES = process.env.UPDATE_PROMPT_SURFACE_FIXTURES === "1";
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), "__fixtures__", "prompt-surface");
 const NOW_MS = 1_700_000_000_000;
+const FIXTURE_ANSWERED_WINDOW: AnsweredWindowEvidence = {
+  session_id: DEFAULT_SESSION_ID,
+  observed_at: NOW_MS,
+  state: "recorded",
+  basis: {
+    turn_id: "turn_fixture_answered",
+    response_entry_id: "se_answer_fixture",
+    response_at: NOW_MS - 300,
+    response_kind: "agent_msg",
+    last_answered_entry_id: "se_input_fixture",
+    last_answered_at: NOW_MS - 900,
+    answered_entry_count: 2,
+  },
+  outside: {
+    state: "arrived_after_edge",
+    arrived_after_edge: 1,
+    unselected_within_window: 0,
+    before_window: 0,
+    without_edge: null,
+  },
+};
 const GROUP_ID = entityIdHelpers.parse("ent_aaaaaaaaaaaaaaaa");
 const CREATOR_ID = entityIdHelpers.parse("ent_bbbbbbbbbbbbbbbb");
 const MEMBER_ID = entityIdHelpers.parse("ent_cccccccccccccccc");
@@ -139,6 +162,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
   ],
   windowWakes: [
     {
+      answered_window: FIXTURE_ANSWERED_WINDOW,
       ts: NOW_MS - 10 * 60_000,
       trigger_name: "scheduled_reflection",
       outcome: "headway",
@@ -788,6 +812,7 @@ function makeContext(overrides: Partial<DeliberationContext> = {}): Deliberation
     entityRepository: makeEntityRepository(),
     workingMemory: makeWorkingMemory(),
     turnMechanismEvidence: {
+      answeredWindow: FIXTURE_ANSWERED_WINDOW,
       recentSuppressions: [
         {
           turnId: "turn_fixture_suppressed",
@@ -966,6 +991,14 @@ function makeAutonomousRelationalContext(): DeliberationContext {
         menuSummary: "Retire one of my own goals as done/superseded, with my reason.",
       },
       {
+        name: "tool.goals.block",
+        menuSummary: "Block an attempted but unavailable goal with a named blocker and reason.",
+      },
+      {
+        name: "tool.goals.unblock",
+        menuSummary: "Unblock a goal with my reason, preserving its history.",
+      },
+      {
         name: "tool.episodic.recent",
         menuSummary: "Read the most recent episodic memories.",
       },
@@ -1003,6 +1036,7 @@ function makeAutonomousRelationalContext(): DeliberationContext {
       mode: "relational",
     }),
     turnMechanismEvidence: {
+      answeredWindow: FIXTURE_ANSWERED_WINDOW,
       recentSuppressions: [],
       recentRegenerations: [],
       autonomySchedulerState: FIXTURE_AUTONOMY_SCHEDULER_STATE,
@@ -1727,4 +1761,46 @@ describe("prompt surface fixtures", () => {
 
     expect(rendered).toEqual(expected);
   });
+});
+
+it("pins blocked goal labels and visible unblock history", () => {
+  const blocked: GoalRecord = {
+    ...makeGoal(),
+    status: "blocked",
+    block_history: [
+      {
+        blocker: { kind: "entity", entity_id: CREATOR_ID },
+        attempt_status: "attempted_unavailable",
+        reason: "試しました。返答を待っています。",
+        disclosure_label: {
+          disclosure_class: "unknown",
+          origin_audience_entity_ids: [],
+          private_to_entity_ids: [],
+          public_to_entity_ids: [],
+        },
+        blocked_at: NOW_MS - 10_000,
+        unblocked_at: null,
+        unblock_reason: null,
+      },
+    ],
+  };
+  const context = makeContext();
+  const digest = renderGoalDigest({
+    ...context,
+    selfSnapshot: { ...context.selfSnapshot, goals: [blocked] },
+  });
+  const active = {
+    ...blocked,
+    status: "active" as const,
+    block_history: blocked.block_history!.map((block) => ({
+      ...block,
+      unblocked_at: NOW_MS,
+      unblock_reason: "inbound stream entry se_fixture_arrival from entity at the recorded time",
+    })),
+  };
+  const resumed = renderGoalDigest({
+    ...context,
+    selfSnapshot: { ...context.selfSnapshot, goals: [active] },
+  });
+  expectFixture("goal-block-history.txt", `${digest.text}\n\n${resumed.text}`);
 });

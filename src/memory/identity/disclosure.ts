@@ -2,6 +2,7 @@ import { legacyCommitmentSchema, type CommitmentRecord } from "../commitments/in
 import {
   isMemoryDisclosureLabelVisibleToAnyAudience,
   memoryDisclosureLabelFromMetadata,
+  unknownMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
 } from "../common/disclosure-label.js";
 import { isEpisodeAccessVisible, type Episode, type EpisodeAccessLike } from "../episodic/index.js";
@@ -279,6 +280,19 @@ function collectIdentityEventValueDisclosureSources(
       continue;
     }
     result.disclosureLabels.push(disclosureLabel);
+  }
+
+  if (recordType === "goal" && hasOwnKey(value, "block_history")) {
+    // Historical audit snapshots remain verbatim. An unlabeled block rationale
+    // cannot inherit the enclosing goal's owner when its change is rendered.
+    result.recognized = true;
+    if (!Array.isArray(value.block_history)) {
+      result.malformed = true;
+    } else if (
+      value.block_history.some((block) => !isRecord(block) || !hasOwnKey(block, "disclosure_label"))
+    ) {
+      result.disclosureLabels.push(unknownMemoryDisclosureLabel());
+    }
   }
 
   for (const key of AUDIENCE_ENTITY_ID_KEYS) {

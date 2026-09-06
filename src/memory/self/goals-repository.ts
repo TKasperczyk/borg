@@ -20,6 +20,24 @@ import {
   type IdentityCasOptions,
 } from "../common/cas.js";
 import { type IdentityEventRepository } from "../identity/repository.js";
+import {
+  artifactReferenceExists,
+  artifactReferenceDisclosureLabel,
+} from "../common/artifact-reference-validation.js";
+import {
+  combineMemoryDisclosureLabels,
+  memoryDisclosureLabelFromMetadata,
+  memoryDisclosureLabelMetadata,
+  relationshipPrivateMemoryDisclosureLabel,
+  unknownMemoryDisclosureLabel,
+} from "../common/disclosure-label.js";
+import { goalMemoryDisclosureLabel } from "../common/disclosure-serializers.js";
+import {
+  currentGoalBlock,
+  goalBlockInputSchema,
+  type GoalBlockInput,
+  type GoalBlockRecord,
+} from "./goal-blocks.js";
 
 import { recordIdentityEvent } from "./shared/identity-events.js";
 import { requireProvenance } from "./shared/provenance.js";
@@ -38,6 +56,7 @@ import {
 
 export type GoalsRepositoryOptions = {
   db: SqliteDatabase;
+  dataDir?: string;
   clock?: Clock;
   identityEventRepository?: IdentityEventRepository;
   executiveStepsRepository?: Pick<ExecutiveStepsRepository, "abandonOpenStepsForGoal">;
@@ -45,6 +64,7 @@ export type GoalsRepositoryOptions = {
 
 export type GoalListOptions = {
   status?: GoalStatus;
+  statuses?: readonly GoalStatus[];
   visibleToAudienceEntityId?: EntityId | null;
   ownerEntityId?: EntityId | null;
 };
@@ -62,7 +82,7 @@ export type GoalFollowupDueCandidateOptions = {
 
 const GOAL_SELECT_COLUMNS = `
   id, record_version, description, terminal_condition, priority, parent_goal_id, status,
-  progress_notes, last_progress_ts, created_at, target_at, audience_entity_id, owner_entity_id,
+  progress_notes, last_progress_ts, created_at, target_at, target_assigned_at, block_history_json, audience_entity_id, owner_entity_id,
   counterparty_entity_id, source_stream_entry_ids, canonicalized_by_artifact_entry_id, provenance_kind,
   provenance_episode_ids, provenance_stream_entry_ids, provenance_process
 `;
@@ -101,6 +121,7 @@ export type GoalRetirementResult =
 
 export class GoalsRepository {
   private readonly clock: Clock;
+  private reconcilingBlocks = false;
 
   constructor(private readonly options: GoalsRepositoryOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -137,10 +158,28 @@ export class GoalsRepository {
   }
 
   private abandonOpenStepsWhenClosingGoal(current: GoalRecord, nextStatus: GoalStatus): void {
-    if (current.status !== "active" || nextStatus === "active") {
+    if (
+      (current.status !== "active" && current.status !== "blocked") ||
+      (nextStatus !== "done" && nextStatus !== "abandoned")
+    ) {
       return;
     }
 
+    const block = currentGoalBlock(current);
+    if (block !== null) {
+      const history = (current.block_history ?? []).map((entry) =>
+        entry.unblocked_at === null
+          ? {
+              ...entry,
+              unblocked_at: this.clock.now(),
+              unblock_reason: `goal closed as ${nextStatus}`,
+            }
+          : entry,
+      );
+      this.db
+        .prepare("UPDATE goals SET block_history_json = ? WHERE id = ?")
+        .run(serializeJsonValue(history), current.id);
+    }
     this.options.executiveStepsRepository?.abandonOpenStepsForGoal(current.id, "goal_closed");
   }
 
@@ -174,6 +213,12 @@ export class GoalsRepository {
     counterpartyEntityId?: EntityId | null;
     sourceStreamEntryIds?: readonly StreamEntryId[];
   }): GoalRecord {
+    if (input.status === "blocked") {
+      throw new StorageError(
+        "Use goals.block with a named blocker and an attempted-unavailable declaration",
+        { code: "GOAL_BLOCKER_REQUIRED" },
+      );
+    }
     const parentGoalId = input.parentId ?? null;
 
     if (parentGoalId !== null) {
@@ -203,6 +248,7 @@ export class GoalsRepository {
         progressNotes === null || progressNotes.trim().length === 0 ? null : createdAt,
       created_at: createdAt,
       target_at: input.targetAt ?? null,
+      target_assigned_at: input.targetAt == null ? null : createdAt,
       audience_entity_id: input.audienceEntityId ?? null,
       owner_entity_id: input.ownerEntityId ?? null,
       counterparty_entity_id:
@@ -223,10 +269,10 @@ export class GoalsRepository {
           `
             INSERT INTO goals (
               id, description, terminal_condition, priority, parent_goal_id, status, progress_notes,
-              last_progress_ts, created_at, target_at, audience_entity_id, owner_entity_id,
+              last_progress_ts, created_at, target_at, target_assigned_at, audience_entity_id, owner_entity_id,
               counterparty_entity_id, source_stream_entry_ids, canonicalized_by_artifact_entry_id, provenance_kind,
               provenance_episode_ids, provenance_stream_entry_ids, provenance_process
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
         .run(
@@ -240,6 +286,7 @@ export class GoalsRepository {
           goal.last_progress_ts,
           goal.created_at,
           goal.target_at,
+          goal.target_assigned_at,
           goal.audience_entity_id,
           goal.owner_entity_id,
           goal.counterparty_entity_id,
@@ -271,6 +318,10 @@ export class GoalsRepository {
     if (options.status !== undefined) {
       filters.push("status = ?");
       values.push(goalStatusSchema.parse(options.status));
+    }
+    if (options.statuses !== undefined) {
+      filters.push(`status IN (${options.statuses.map(() => "?").join(",") || "NULL"})`);
+      values.push(...options.statuses.map((status) => goalStatusSchema.parse(status)));
     }
 
     if (options.visibleToAudienceEntityId !== undefined) {
@@ -333,14 +384,26 @@ export class GoalsRepository {
     const rows = this.db
       .prepare(
         `
+          WITH scheduling AS (
+            SELECT *,
+              COALESCE(last_progress_ts, created_at) + COALESCE((
+                SELECT SUM(MAX(0, json_extract(value, '$.unblocked_at') - MAX(COALESCE(last_progress_ts, created_at), json_extract(value, '$.blocked_at'))))
+                FROM json_each(block_history_json) WHERE json_extract(value, '$.unblocked_at') IS NOT NULL
+              ), 0) AS scheduling_progress_anchor,
+              target_at + COALESCE((
+                SELECT SUM(MAX(0, json_extract(value, '$.unblocked_at') - MAX(target_assigned_at, json_extract(value, '$.blocked_at'))))
+                FROM json_each(block_history_json) WHERE json_extract(value, '$.unblocked_at') IS NOT NULL
+              ), 0) AS scheduling_target_at
+            FROM goals WHERE status = 'active'
+          )
           SELECT ${GOAL_SELECT_COLUMNS},
             CASE
-              WHEN target_at IS NULL THEN COALESCE(last_progress_ts, created_at) + ? + 1
-              WHEN target_at - ? + 1 < COALESCE(last_progress_ts, created_at) + ? + 1
-                THEN target_at - ? + 1
-              ELSE COALESCE(last_progress_ts, created_at) + ? + 1
+              WHEN scheduling_target_at IS NULL THEN scheduling_progress_anchor + ? + 1
+              WHEN scheduling_target_at - ? + 1 < scheduling_progress_anchor + ? + 1
+                THEN scheduling_target_at - ? + 1
+              ELSE scheduling_progress_anchor + ? + 1
             END AS autonomy_due_at
-          FROM goals
+          FROM scheduling
           WHERE status = 'active'
           ORDER BY autonomy_due_at ASC, priority DESC, created_at ASC, id ASC
           LIMIT ?
@@ -404,6 +467,224 @@ export class GoalsRepository {
     });
   }
 
+  block(goalId: GoalId, input: GoalBlockInput, provenance: Provenance): GoalRecord {
+    const parsed = goalBlockInputSchema.parse(input);
+    return this.runGoalWrite(() => {
+      const goal = this.get(goalId);
+      if (goal?.status !== "active") {
+        throw new StorageError("Only an active goal may be blocked", { code: "GOAL_NOT_ACTIVE" });
+      }
+      const blocker = parsed.blocker;
+      if (
+        blocker.kind === "goal" &&
+        (blocker.goal_id === goalId || this.get(blocker.goal_id) === null)
+      ) {
+        throw new StorageError("Blocker must name another existing goal", {
+          code: "GOAL_BLOCKER_INVALID",
+        });
+      }
+      if (
+        blocker.kind === "entity" &&
+        this.db.prepare("SELECT 1 FROM entities WHERE id = ?").get(blocker.entity_id) === undefined
+      ) {
+        throw new StorageError("Blocker entity does not exist", { code: "GOAL_BLOCKER_INVALID" });
+      }
+      const nowMs = this.clock.now();
+      if (
+        parsed.attempt_evidence !== undefined &&
+        !artifactReferenceExists(this.db, parsed.attempt_evidence, nowMs, this.options.dataDir)
+      ) {
+        throw new StorageError(
+          "Attempt evidence must name an existing artifact from this or an earlier turn",
+          { code: "GOAL_ATTEMPT_EVIDENCE_INVALID" },
+        );
+      }
+      this.writeBlockTransition(
+        goal,
+        "blocked",
+        [
+          ...(goal.block_history ?? []),
+          {
+            ...parsed,
+            disclosure_label: memoryDisclosureLabelMetadata(
+              combineMemoryDisclosureLabels([
+                goalMemoryDisclosureLabel(goal),
+                // An attempt artifact is not a complete source declaration for
+                // the free-text rationale. Preserve known sources and fail closed
+                // for its unrecorded sources, instead of inheriting goal ownership.
+                unknownMemoryDisclosureLabel(),
+                ...(blocker.kind === "goal"
+                  ? [goalMemoryDisclosureLabel(this.get(blocker.goal_id)!)]
+                  : []),
+                ...(blocker.kind === "entity"
+                  ? [relationshipPrivateMemoryDisclosureLabel([blocker.entity_id])]
+                  : []),
+                ...(parsed.attempt_evidence === undefined
+                  ? []
+                  : [artifactReferenceDisclosureLabel(this.db, parsed.attempt_evidence)]),
+              ]),
+            ),
+            blocked_at: nowMs,
+            unblocked_at: null,
+            unblock_reason: null,
+          },
+        ],
+        parsed.reason,
+        provenance,
+        "block",
+      );
+      this.reconcileBlocks();
+      return this.get(goalId)!;
+    });
+  }
+
+  unblock(
+    goalId: GoalId,
+    reason: string,
+    provenance: Provenance,
+    effectiveAt = this.clock.now(),
+  ): GoalRecord {
+    const parsedReason = z.string().trim().min(1).parse(reason);
+    return this.runGoalWrite(() => {
+      const goal = this.get(goalId);
+      if (goal === null) throw new StorageError("Unknown goal", { code: "GOAL_NOT_FOUND" });
+      if (goal.status !== "blocked") return goal;
+      const history = (goal.block_history ?? []).map((block) =>
+        block.unblocked_at === null
+          ? {
+              ...block,
+              unblocked_at: Math.max(block.blocked_at ?? effectiveAt, effectiveAt),
+              unblock_reason: parsedReason,
+              disclosure_label: memoryDisclosureLabelMetadata(
+                combineMemoryDisclosureLabels([
+                  memoryDisclosureLabelFromMetadata(block.disclosure_label) ??
+                    unknownMemoryDisclosureLabel(),
+                  goalMemoryDisclosureLabel(goal),
+                  unknownMemoryDisclosureLabel(),
+                ]),
+              ),
+            }
+          : block,
+      );
+      return this.writeBlockTransition(
+        goal,
+        "active",
+        history,
+        parsedReason,
+        provenance,
+        "unblock",
+      );
+    });
+  }
+
+  private writeBlockTransition(
+    goal: GoalRecord,
+    status: GoalStatus,
+    history: GoalBlockRecord[],
+    reason: string,
+    provenance: Provenance,
+    action: string,
+  ): GoalRecord {
+    const parsedProvenance = requireProvenance(provenance, "Goal block transition");
+    const expectedVersion = expectedRecordVersion(goal);
+    const result = this.db
+      .prepare(
+        "UPDATE goals SET status = ?, block_history_json = ?, record_version = record_version + 1 WHERE id = ? AND record_version = ?",
+      )
+      .run(status, serializeJsonValue(history), goal.id, expectedVersion);
+    assertIdentityCasUpdated({ result, recordType: "goal", recordId: goal.id, expectedVersion });
+    const next = this.get(goal.id)!;
+    recordIdentityEvent(this.identityEventRepository, {
+      record_type: "goal",
+      record_id: goal.id,
+      action,
+      old_value: goal,
+      new_value: next,
+      reason,
+      provenance: parsedProvenance,
+    });
+    return next;
+  }
+
+  /** Replays durable structural facts on startup, stream append, and scheduler/turn entry. */
+  reconcileBlocks(): void {
+    if (this.reconcilingBlocks) return;
+    this.reconcilingBlocks = true;
+    try {
+      this.runGoalWrite(() => {
+        const rows = this.db
+          .prepare(`SELECT ${GOAL_SELECT_COLUMNS} FROM goals WHERE status = 'blocked'`)
+          .all() as Record<string, unknown>[];
+        for (const row of rows) {
+          const goal = mapGoalRow(row);
+          const block = currentGoalBlock(goal);
+          if (block === null || block.blocked_at === null) continue; // Legacy unknown blocks need an explicit manual release.
+          const blocker = block.blocker;
+          const nowMs = this.clock.now();
+          if (blocker.kind === "until" && nowMs >= blocker.until) {
+            this.unblock(
+              goal.id,
+              `until timestamp ${blocker.until} passed; observed at ${nowMs}`,
+              { kind: "system" },
+              blocker.until,
+            );
+          } else if (blocker.kind === "goal") {
+            // Only a terminal status releases the dependency. Becoming blocked
+            // leaves the blocker unfinished and does not resolve this wait.
+            const dependency = this.get(blocker.goal_id);
+            if (dependency?.status === "done" || dependency?.status === "abandoned") {
+              const event =
+                this.identityEventRepository === undefined
+                  ? undefined
+                  : (this.db
+                      .prepare(
+                        "SELECT id, ts FROM identity_events WHERE record_type = 'goal' AND record_id = ? AND json_extract(new_value_json, '$.status') IN ('done', 'abandoned') AND COALESCE(json_extract(old_value_json, '$.status'), '') NOT IN ('done', 'abandoned') ORDER BY id DESC LIMIT 1",
+                      )
+                      .get(dependency.id) as { id: number; ts: number } | undefined);
+              this.unblock(
+                goal.id,
+                `blocker goal ${dependency.id} is ${dependency.status}; identity event ${event?.id ?? "unrecorded"} at ${event?.ts ?? nowMs}; observed at ${nowMs}`,
+                { kind: "system" },
+                event?.ts ?? nowMs,
+              );
+            }
+          } else if (blocker.kind === "entity") {
+            const entry = this.db
+              .prepare(
+                `SELECT entry_id, timestamp FROM stream_entry_index WHERE sender_entity_id = ? AND timestamp > ? AND timestamp <= ? AND active = 1 AND receipt_pending = 0 AND kind IN ('user_msg', 'user_image_attachment', 'agent_observed') ORDER BY timestamp, byte_offset LIMIT 1`,
+              )
+              .get(blocker.entity_id, block.blocked_at, nowMs) as
+              | { entry_id: string; timestamp: number }
+              | undefined;
+            if (entry !== undefined) {
+              this.unblock(
+                goal.id,
+                `inbound stream entry ${entry.entry_id} from entity ${blocker.entity_id} at ${entry.timestamp}; observed at ${nowMs}`,
+                { kind: "system" },
+                entry.timestamp,
+              );
+            }
+          }
+        }
+      });
+    } finally {
+      this.reconcilingBlocks = false;
+    }
+  }
+
+  private assertStatusTransition(current: GoalRecord, status: GoalStatus): void {
+    if (status === "blocked" && current.status !== "blocked") {
+      throw new StorageError("Use goals.block with a named blocker", {
+        code: "GOAL_BLOCKER_REQUIRED",
+      });
+    }
+    if (current.status === "blocked" && status === "active") {
+      throw new StorageError("Use goals.unblock with a reason", {
+        code: "GOAL_UNBLOCK_REASON_REQUIRED",
+      });
+    }
+  }
+
   updateStatus(
     goalId: GoalId,
     status: GoalStatus,
@@ -419,6 +700,7 @@ export class GoalsRepository {
     }
 
     const parsedStatus = goalStatusSchema.parse(status);
+    this.assertStatusTransition(current, parsedStatus);
     const expectedVersion = expectedRecordVersion(current, options);
     const parsedProvenance = requireProvenance(provenance, "Goal status update");
     const storedProvenance = toStoredProvenance(parsedProvenance);
@@ -464,18 +746,10 @@ export class GoalsRepository {
         record_id: goalId,
         action: "update",
         old_value: current,
-        new_value: {
-          ...current,
-          record_version: nextRecordVersion(expectedVersion),
-          status: parsedStatus,
-          canonicalized_by_artifact_entry_id:
-            options.canonicalizedByArtifactEntryId === undefined
-              ? (current.canonicalized_by_artifact_entry_id ?? null)
-              : options.canonicalizedByArtifactEntryId,
-          provenance: parsedProvenance,
-        },
+        new_value: this.get(goalId)!,
         provenance: parsedProvenance,
       });
+      this.reconcileBlocks();
     });
   }
 
@@ -570,6 +844,7 @@ export class GoalsRepository {
     }
 
     const parsedPatch = goalPatchSchema.parse(patch);
+    this.assertStatusTransition(current, parsedPatch.status ?? current.status);
     const expectedVersion = expectedRecordVersion(current, options);
     const parsedProvenance = requireProvenance(provenance, "Goal update");
     const nextProgressNotes =
@@ -581,6 +856,12 @@ export class GoalsRepository {
     const next = goalSchema.parse({
       ...current,
       ...parsedPatch,
+      target_assigned_at:
+        parsedPatch.target_at !== undefined && parsedPatch.target_at !== current.target_at
+          ? parsedPatch.target_at === null
+            ? null
+            : this.clock.now()
+          : (current.target_assigned_at ?? null),
       record_version: nextRecordVersion(expectedVersion),
       progress_notes: nextProgressNotes,
       last_progress_ts: nextLastProgressTs,
@@ -594,7 +875,7 @@ export class GoalsRepository {
           `
             UPDATE goals
             SET description = ?, terminal_condition = ?, priority = ?, parent_goal_id = ?,
-                status = ?, progress_notes = ?, last_progress_ts = ?, target_at = ?,
+                status = ?, progress_notes = ?, last_progress_ts = ?, target_at = ?, target_assigned_at = ?,
                 audience_entity_id = ?, owner_entity_id = ?, counterparty_entity_id = ?,
                 source_stream_entry_ids = ?,
                 canonicalized_by_artifact_entry_id = ?,
@@ -613,6 +894,7 @@ export class GoalsRepository {
           next.progress_notes,
           next.last_progress_ts,
           next.target_at,
+          next.target_assigned_at,
           next.audience_entity_id,
           next.owner_entity_id,
           next.counterparty_entity_id,
@@ -645,15 +927,16 @@ export class GoalsRepository {
             ? "update"
             : "correction_apply",
         old_value: current,
-        new_value: next,
+        new_value: this.get(goalId)!,
         reason: options.reason ?? null,
         provenance: parsedProvenance,
         review_item_id: options.reviewItemId ?? null,
         overwrite_without_review: options.overwriteWithoutReview === true,
       });
+      this.reconcileBlocks();
     });
 
-    return next;
+    return this.get(goalId)!;
   }
 
   restore(goal: GoalRecord): GoalRecord {
@@ -668,7 +951,7 @@ export class GoalsRepository {
             UPDATE goals
             SET description = ?, terminal_condition = ?, priority = ?, parent_goal_id = ?,
                 status = ?, progress_notes = ?, last_progress_ts = ?, created_at = ?,
-                target_at = ?, audience_entity_id = ?, owner_entity_id = ?,
+                target_at = ?, target_assigned_at = ?, audience_entity_id = ?, owner_entity_id = ?,
                 counterparty_entity_id = ?, source_stream_entry_ids = ?,
                 canonicalized_by_artifact_entry_id = ?, provenance_kind = ?, provenance_episode_ids = ?,
                 provenance_stream_entry_ids = ?, provenance_process = ?
@@ -685,6 +968,7 @@ export class GoalsRepository {
           parsed.last_progress_ts,
           parsed.created_at,
           parsed.target_at,
+          parsed.target_assigned_at ?? null,
           parsed.audience_entity_id,
           parsed.owner_entity_id,
           parsed.counterparty_entity_id ?? null,
@@ -699,6 +983,9 @@ export class GoalsRepository {
           parsed.id,
         );
 
+      this.db
+        .prepare("UPDATE goals SET block_history_json = ? WHERE id = ?")
+        .run(serializeJsonValue(parsed.block_history ?? []), parsed.id);
       const restored = this.get(parsed.id);
 
       if (current === null || restored === null) {

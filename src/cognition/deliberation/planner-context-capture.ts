@@ -259,10 +259,14 @@ function projectSelfSnapshot(snapshot: SelfSnapshot) {
       terminal_condition: goal.terminal_condition,
       priority: goal.priority,
       status: goal.status,
+      ...(goal.block_history === undefined ? {} : { block_history: goal.block_history }),
       progress_notes: goal.progress_notes,
       last_progress_ts: goal.last_progress_ts,
       created_at: goal.created_at,
       target_at: goal.target_at,
+      ...(goal.target_assigned_at === undefined
+        ? {}
+        : { target_assigned_at: goal.target_assigned_at }),
       audience_entity_id: goal.audience_entity_id,
       owner_entity_id: goal.owner_entity_id,
       counterparty_entity_id: goal.counterparty_entity_id,
@@ -465,6 +469,7 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
     return undefined;
   }
   return {
+    ...(value.answeredWindow === undefined ? {} : { answeredWindow: value.answeredWindow }),
     recentSuppressions: value.recentSuppressions.map((entry) => ({
       turnId: entry.turnId,
       reason: entry.reason,

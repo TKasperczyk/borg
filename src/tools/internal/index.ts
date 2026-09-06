@@ -2,6 +2,7 @@ export { createCommitmentsListTool } from "./commitments-list.js";
 export { createEpisodicRecentTool } from "./episodic-recent.js";
 export { createEpisodicSearchTool } from "./episodic-search.js";
 export { createGoalsRetireTool } from "./goals-retire.js";
+export { createGoalsBlockTool, createGoalsUnblockTool } from "./goals-block.js";
 export { createIdentityEventsListForCognitionTool } from "./identity-events-list.js";
 export { createJournalAppendTool } from "./journal-append.js";
 export { createOpenQuestionsCreateTool } from "./open-questions-create.js";
