@@ -20,6 +20,7 @@ import type {
   MessageEnqueuer,
   StreamIngestionCoordinator,
 } from "../cognition/ingestion/index.js";
+import type { OperatorAttentionRepository } from "../memory/operator-attention/index.js";
 import type { TurnOrchestrator } from "../cognition/index.js";
 import type { PromptOverrideRepository } from "../cognition/prompts/override-repository.js";
 import type { PromptSurfaceHistoryRepository } from "../cognition/prompts/prompt-surface-history.js";
@@ -129,6 +130,7 @@ export type BorgDependencies = {
   commitmentRepository: CommitmentRepository;
   creatorDirectiveRepository: CreatorDirectiveRepository;
   sharedStateRepository: SharedStateRepository;
+  operatorAttentionRepository: OperatorAttentionRepository;
   activityRepository: ActivityRepository;
   livedExperienceDaySummaryRepository: LivedExperienceDaySummaryRepository;
   selfDecisionRepository: SelfDecisionRepository;

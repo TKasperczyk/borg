@@ -1139,6 +1139,10 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       countExpired: () => deps.commitmentRepository.countExpired(),
       countCanonicalized: () => deps.commitmentRepository.countCanonicalized(),
     },
+    operatorAttention: {
+      record: (input) => deps.operatorAttentionRepository.record(input),
+      snapshot: () => deps.operatorAttentionRepository.snapshot(),
+    },
     activity: createActivityFacade(deps),
     creatorDirectives: createCreatorDirectivesFacade(deps),
     identity: {

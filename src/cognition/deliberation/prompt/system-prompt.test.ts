@@ -2820,6 +2820,46 @@ describe("buildBaseSystemPrompt", () => {
     },
   );
 
+  it("renders the attention total, dates, filers and subjects beside wake rows on autonomous turns", () => {
+    const schedulerState = makeSchedulerStateWithSources();
+    const filer = createEntityId();
+    schedulerState.windowWakes = [];
+    schedulerState.operatorAttentionIndex = {
+      total: 125,
+      records: [
+        { record_key: "new", filed_at: NOW_MS, filer_entity_id: filer, subject: "件名 <handoff>" },
+        { record_key: "old", filed_at: NOW_MS - 1_000, filer_entity_id: filer, subject: null },
+      ],
+    };
+    const render = () =>
+      extractBlock(
+        buildBaseSystemPrompt(
+          makeContext({
+            turnOrigin: "autonomous",
+            turnMechanismEvidence: {
+              recentSuppressions: [],
+              recentRegenerations: [],
+              autonomySchedulerState: schedulerState,
+            },
+          }),
+          { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+        ),
+        "borg_mechanism_evidence",
+      );
+    const block = render();
+    expect(block).toContain("Operator attention records: total=125; latest 2 shown, newest first.");
+    expect(block).toContain(
+      `2023-11-14T22:13:20.000Z | filer=${filer} | subject="件名 &lt;handoff&gt;"`,
+    );
+    expect(block).toContain(
+      `2023-11-14T22:13:19.000Z | filer=${filer} | subject=subject unavailable`,
+    );
+    expect(block).toContain("Wake rows in that current window, newest first: none.");
+    expect(block).toContain("These records do not gate action.");
+    schedulerState.operatorAttentionIndex = { total: 0, records: [] };
+    expect(render()).toContain("Operator attention records: total=0; latest 0 shown");
+  });
+
   it("renders per-wake finalizer and stall counts, their legend, and null-safe totals", () => {
     const schedulerState = makeSchedulerStateWithSources();
     schedulerState.windowWakes = [

@@ -182,6 +182,17 @@ describe("planner context capture", () => {
           recentSuppressions: [],
           recentRegenerations: [],
           autonomySchedulerState: {
+            operatorAttentionIndex: {
+              total: 125,
+              records: [
+                {
+                  record_key: "cclink:capture",
+                  filed_at: NOW_MS,
+                  filer_entity_id: createEntityId(),
+                  subject: "Capture subject",
+                },
+              ],
+            },
             observedAt: NOW_MS,
             enabled: true,
             tickInFlight: false,
@@ -272,6 +283,8 @@ describe("planner context capture", () => {
     );
     expect(plannerSurfaceText(replayPair.compact.rendered.system)).toContain("in_flight=1");
     expect(replayPair.legacy.rendered.system).toContain("Harness scheduler state");
+    expect(replayPair.legacy.rendered.system).toContain("Operator attention records: total=125");
+    expect(plannerSurfaceText(replayPair.compact.rendered.system)).toContain("Capture subject");
     expect(replayPair.compact.fingerprint).toEqual(livePair.compact.fingerprint);
     expect(replayPair.legacy.fingerprint).toEqual(livePair.legacy.fingerprint);
     expect(parsed.expected_surfaces).toEqual({

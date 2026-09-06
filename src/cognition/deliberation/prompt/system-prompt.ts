@@ -1923,6 +1923,18 @@ export function summarizeAutonomySchedulerState(
     );
   }
 
+  if (schedulerState.operatorAttentionIndex !== undefined) {
+    const attention = schedulerState.operatorAttentionIndex;
+    lines.push(
+      `Operator attention records: total=${attention.total}; latest ${attention.records.length} shown, newest first.`,
+      "Filing metadata only: existence, date, filer, subject. Bodies remain with the operator; a filing is not a decision or an instruction. These records do not gate action. Treat this index as private to you and the operator; disclose contextually.",
+      ...attention.records.map(
+        (record) =>
+          `- ${new Date(record.filed_at).toISOString()} | filer=${record.filer_entity_id} | subject=${record.subject === null ? "subject unavailable" : escapeXmlText(JSON.stringify(record.subject))}`,
+      ),
+    );
+  }
+
   if (schedulerState.windowWakes !== undefined) {
     lines.push(...renderWakeWindowRows(schedulerState.windowWakes));
   }

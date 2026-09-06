@@ -1,5 +1,7 @@
 // Public facade property types exposed by the Borg class.
 
+import type { BorgOperatorAttentionFacade } from "../memory/operator-attention/types.js";
+
 import type { AutonomyScheduler, AutonomyWakesRepository } from "../autonomy/index.js";
 import type {
   MaintenanceScheduler,
@@ -733,6 +735,7 @@ export type BorgFacades = {
   semantic: BorgSemanticFacade;
   relationalSlots: BorgRelationalSlotsFacade;
   commitments: BorgCommitmentsFacade;
+  operatorAttention: BorgOperatorAttentionFacade;
   activity: BorgActivityFacade;
   creatorDirectives: BorgCreatorDirectivesFacade;
   identity: BorgIdentityFacade;

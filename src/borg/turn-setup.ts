@@ -1,5 +1,6 @@
 // Wires the per-turn cognitive orchestrator and its session-scoped dependencies.
 
+import type { OperatorAttentionRepository } from "../memory/operator-attention/index.js";
 import type {
   ChatResponseWatermarkCoordinator,
   StreamIngestionCoordinator,
@@ -101,6 +102,7 @@ export type BuildTurnOrchestratorOptions = {
   chatResponseWatermarkCoordinator?: ChatResponseWatermarkCoordinator;
   outboundDelivery?: Pick<OutboundDelivery, "deliver">;
   autonomousOutboundPolicy?: Pick<AutonomousOutboundPolicy, "promptContext">;
+  operatorAttentionRepository?: Pick<OperatorAttentionRepository, "snapshot">;
   autonomySchedulerStateProvider?: () => Promise<AutonomySchedulerDescription | null>;
   outboundSourceTypes?: readonly SessionSourceType[];
   createStreamWriter: BorgStreamWriterFactory;
@@ -191,6 +193,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     ...(options.autonomousOutboundPolicy === undefined
       ? {}
       : { autonomousOutboundPolicy: options.autonomousOutboundPolicy }),
+    operatorAttentionRepository: options.operatorAttentionRepository,
     ...(options.autonomySchedulerStateProvider === undefined
       ? {}
       : { autonomySchedulerStateProvider: options.autonomySchedulerStateProvider }),

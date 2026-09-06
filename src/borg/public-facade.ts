@@ -1,6 +1,8 @@
 // Public Borg facade declarations. Keep these structural and free of internal
 // repository/service/scheduler classes so generated declarations stay light.
 
+import type { BorgOperatorAttentionFacade } from "../memory/operator-attention/types.js";
+
 import type {
   AutonomyConditionName,
   AutonomySchedulerDescription,
@@ -1480,6 +1482,7 @@ export type BorgFacades = {
   semantic: BorgSemanticFacade;
   relationalSlots: BorgRelationalSlotsFacade;
   commitments: BorgCommitmentsFacade;
+  operatorAttention: BorgOperatorAttentionFacade;
   activity: BorgActivityFacade;
   creatorDirectives: BorgCreatorDirectivesFacade;
   identity: BorgIdentityFacade;

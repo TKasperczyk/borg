@@ -235,6 +235,50 @@ function runMinimalRetrievalPhase(options: TurnPhaseCoordinatorOptions, turnId: 
 }
 
 describe("autonomy scheduler mechanism-evidence provider", () => {
+  it.each([false, true])(
+    "carries attention metadata and keeps scheduler evidence when the index fails=%s",
+    async (fail) => {
+      const db = openDatabase(":memory:", { migrations: creatorDirectiveMigrations });
+      const repository = new CreatorDirectiveRepository({ db, clock: new FixedClock(2_000) });
+      const options = minimalRetrievalPhaseOptions(repository);
+      // Only the scheduler fields consumed by this phase matter for this fixture.
+      options.autonomySchedulerStateProvider = async () =>
+        ({ observed_at: 2_000, window_wakes: [] }) as never;
+      const index = {
+        total: 1,
+        records: [
+          {
+            record_key: "attention",
+            filed_at: 1_000,
+            filer_entity_id: createEntityId(),
+            subject: null,
+          },
+        ],
+      };
+      options.operatorAttentionRepository = {
+        snapshot: () => {
+          if (fail) throw new Error("index unavailable");
+          return index;
+        },
+      };
+      options.tracer = { enabled: true, includePayloads: false, emit: vi.fn() };
+      try {
+        const result = await runMinimalRetrievalPhase(options, "turn-attention-index");
+        expect(result.turnMechanismEvidence.autonomySchedulerState?.observedAt).toBe(2_000);
+        expect(result.turnMechanismEvidence.autonomySchedulerState?.operatorAttentionIndex).toEqual(
+          fail ? undefined : index,
+        );
+        if (fail)
+          expect(options.tracer.emit).toHaveBeenCalledWith(
+            "retrieval.degraded",
+            expect.objectContaining({ component: "operator_attention_index" }),
+          );
+      } finally {
+        db.close();
+      }
+    },
+  );
+
   it("continues without a scheduler section when the provider is absent", async () => {
     const db = openDatabase(":memory:", { migrations: creatorDirectiveMigrations });
     const repository = new CreatorDirectiveRepository({ db, clock: new FixedClock(2_000) });

@@ -489,6 +489,16 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
             intervalArmedAt: value.autonomySchedulerState.intervalArmedAt,
             nextTickAt: value.autonomySchedulerState.nextTickAt,
             scheduledTickAt: value.autonomySchedulerState.scheduledTickAt,
+            ...(value.autonomySchedulerState.operatorAttentionIndex === undefined
+              ? {}
+              : {
+                  operatorAttentionIndex: {
+                    total: value.autonomySchedulerState.operatorAttentionIndex.total,
+                    records: value.autonomySchedulerState.operatorAttentionIndex.records.map(
+                      (record) => ({ ...record }),
+                    ),
+                  },
+                }),
             ...(value.autonomySchedulerState.windowWakes === undefined
               ? {}
               : {
