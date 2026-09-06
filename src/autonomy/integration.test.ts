@@ -446,30 +446,60 @@ describe("autonomy integration", () => {
         createdAt: clock.now() - 10_000 - index,
       }),
     );
-    vi.spyOn(dependencies.turnOrchestrator, "run").mockRejectedValue(
-      new LLMError("simulated cognition outage"),
-    );
+    const run = vi
+      .spyOn(dependencies.turnOrchestrator, "run")
+      .mockRejectedValue(new LLMError("simulated cognition outage"));
 
     try {
-      let totalErrors = 0;
       const firstTick = await borg.autonomy.scheduler.tick();
-      totalErrors += firstTick.errorCount;
-      expect(firstTick.errorCount).toBe(3);
-      expect(firstTick.errorCircuitSkipped).toBe(15);
+      let totalErrors = firstTick.errorCount;
+      expect(firstTick.errorCount).toBe(1);
+      expect(firstTick.errorCircuitSkipped).toBe(0);
 
-      while (true) {
-        const pausedUntil = (await borg.autonomy.scheduler.describe()).fleet_brake
-          .error_paused_until;
+      while (clock.now() < horizon) {
+        const lastProbeAt = clock.now();
+        const triggerRetryAt = lastProbeAt + Math.min(30_000 * 2 ** (totalErrors - 1), 3_600_000);
+        const fleetBrake = (await borg.autonomy.scheduler.describe()).fleet_brake;
+        const pausedUntil = fleetBrake.error_paused_until;
+        expect(fleetBrake.error_streak).toBe(totalErrors);
+        expect(pausedUntil).toBe(
+          totalErrors < 3
+            ? null
+            : lastProbeAt + Math.min(300_000 * 2 ** (totalErrors - 3), 1_800_000),
+        );
+        const nextProbeAt = Math.max(triggerRetryAt, pausedUntil ?? triggerRetryAt);
 
-        if (pausedUntil === null || pausedUntil > horizon) {
+        // Exercise the earlier expiry while the other brake still holds, then
+        // the instant before both permit a probe (or the end of the outage).
+        const blockedTimes = [
+          Math.min(triggerRetryAt, pausedUntil ?? triggerRetryAt),
+          Math.min(nextProbeAt - 1, horizon),
+        ].filter((ts) => ts < nextProbeAt && ts <= horizon);
+        for (const ts of blockedTimes) {
+          clock.advance(ts - clock.now());
+          const blockedTick = await borg.autonomy.scheduler.tick();
+          expect(blockedTick.errorCount).toBe(0);
+          expect(blockedTick.firedEvents).toBe(0);
+          expect(blockedTick.errorCircuitSkipped).toBe(ts >= triggerRetryAt ? goals.length : 0);
+          expect(run).toHaveBeenCalledTimes(totalErrors);
+          expect(dependencies.autonomyWakesRepository.countSince(startedAt)).toBe(totalErrors);
+        }
+
+        if (nextProbeAt > horizon) {
           break;
         }
 
-        clock.advance(pausedUntil - clock.now());
-        totalErrors += (await borg.autonomy.scheduler.tick()).errorCount;
+        clock.advance(nextProbeAt - clock.now());
+        const probeTick = await borg.autonomy.scheduler.tick();
+        expect(probeTick.errorCount).toBe(1);
+        expect(probeTick.errorCircuitSkipped).toBe(0);
+        totalErrors += probeTick.errorCount;
       }
 
-      expect(totalErrors).toBeLessThanOrEqual(52);
+      expect(clock.now()).toBe(horizon);
+      // 8 probes by 5,910 s + floor((86,400 - 5,910) / 3,600) hourly probes = 30.
+      expect(totalErrors).toBe(30);
+      expect(run).toHaveBeenCalledTimes(totalErrors);
       expect(dependencies.autonomyWakesRepository.countSince(startedAt)).toBe(totalErrors);
       for (const goal of goals) {
         expect(
