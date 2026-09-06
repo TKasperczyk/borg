@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { formatAutonomyTriggerContext } from "./autonomy-trigger.js";
+import { createIdentityEventsListForCognitionTool } from "../tools/index.js";
+import { DEFAULT_SESSION_ID } from "../util/ids.js";
+
+import {
+  AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS,
+  formatAutonomyTriggerContext,
+} from "./autonomy-trigger.js";
 
 const BASE = {
   source_name: "goal_followup_due",
@@ -69,6 +75,54 @@ describe("formatAutonomyTriggerContext epoch annotation", () => {
 
     expect(empty).toContain("not every write a record received");
     expect(absent).not.toContain("not every write a record received");
+  });
+
+  it("bounds oversized identity changes and the complete autonomy-trigger context", async () => {
+    const tool = createIdentityEventsListForCognitionTool({
+      listEvents: () =>
+        Array.from({ length: 10 }, (_, index) => ({
+          id: index + 1,
+          record_type: "goal" as const,
+          record_id: `goal_${String(index).padStart(16, "a")}`,
+          action: "update",
+          old_value: {
+            progress_notes: `OLD_${index}_${"o".repeat(110_000)}`,
+            record_version: index + 1,
+          },
+          new_value: {
+            progress_notes: `${"n".repeat(115_000)}_NEW_${index}`,
+            record_version: index + 2,
+          },
+          reason: "Scheduled identity maintenance.",
+          provenance: { kind: "offline" as const, process: "test-reflector" },
+          review_item_id: null,
+          overwrite_without_review: false,
+          ts: 1_787_050_000_000 + index,
+        })),
+    });
+    const output = await tool.invoke(
+      { limit: 10 },
+      { sessionId: DEFAULT_SESSION_ID, origin: "autonomous" },
+    );
+    const rendered = formatAutonomyTriggerContext({
+      ...BASE,
+      source_name: "scheduled_reflection",
+      payload: {
+        interval_ms: 14_400_000,
+        recent_identity_events: output.events,
+        oversized_structural_tail: "z".repeat(100_000),
+      },
+    });
+
+    expect(rendered.length).toBe(AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS);
+    expect(rendered.match(/excerpt_notice:/g)).toHaveLength(1);
+    expect(rendered).toContain("mechanically bounded to 32000 chars");
+    expect(rendered).toContain("old-to-new change excerpt is bounded to 1500 chars");
+    expect(rendered).toContain('"record_type": "goal"');
+    expect(rendered).toContain('"excerpt_exact": false');
+    expect(rendered).toContain("not every write a record received");
+    expect(rendered).not.toContain("o".repeat(10_000));
+    expect(rendered).not.toContain("n".repeat(10_000));
   });
 
   it("names what an old sort_ts on a dormant-question wake does and does not mean", () => {

@@ -15,6 +15,10 @@ export const IDENTITY_RECORD_TYPES = [
   "open_question",
 ] as const;
 
+// Identity events can contain whole durable records. Cognition receives a
+// mechanical old-to-new excerpt per event instead of both unbounded snapshots.
+export const IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS = 1_500;
+
 export const identityRecordTypeSchema = z.enum(IDENTITY_RECORD_TYPES);
 
 export const identityEventSchema = z.object({
