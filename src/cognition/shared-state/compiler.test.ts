@@ -54,6 +54,7 @@ import { buildSharedStateArtifactMessages } from "./compiler-prompt.js";
 import { SHARED_STATE_TOOL_ENTRY_KINDS } from "./constants.js";
 import type { SemanticRevisionVerdictCache } from "./reconciliation.js";
 import { sharedStatePatchSchema } from "./types.js";
+import type { SharedStatePromptSummary } from "./summary.js";
 
 let defaultStateKeyCounter = 0;
 
@@ -431,6 +432,29 @@ describe("compileSharedStateArtifact", () => {
       postResponseLlm.requests[0]?.tools?.some((tool) => tool.cache_control !== undefined),
     ).toBe(false);
   });
+
+  it.each(["pre_answer", "post_response"] as const)(
+    "guides corrections and preserves the distinction between decisions and acts in %s",
+    (compilePass) => {
+      const prompt = buildSharedStateSystemPrompt(compilePass);
+
+      expect(prompt).toContain("A correction or contradiction of an existing entry must supersede");
+      expect(prompt).toContain("Never add a sibling entry");
+      expect(prompt).toContain("even under a different state_key");
+      expect(prompt).toContain(
+        "rather than appending commentary that leaves its false assertion in place",
+      );
+      expect(prompt).toContain(
+        "kind=locked marks a durable decision or constraint; it is not a write lock",
+      );
+      expect(prompt).toContain("preserving its stated timing and conditions");
+      expect(prompt).toContain("Deciding to act does not establish that the act occurred");
+      expect(prompt).toContain("a tool result, an identity event, or a delivered message");
+      expect(prompt).toContain(
+        "including one in a delivered assistant response, is never evidence",
+      );
+    },
+  );
 
   it("omits standing rules for a different audience while preserving current-audience rules", async () => {
     const otherAudience = createEntityId();
@@ -1719,6 +1743,117 @@ describe("compileSharedStateArtifact", () => {
     });
   });
 
+  it.each(["pre_answer", "post_response"] as const)(
+    "presents a locked correction target and applies the model's same-key supersede in %s",
+    async (compilePass) => {
+      const stateKey = "decision.migration";
+      const originalText = "La migration a été exécutée.";
+      const correctedText =
+        "La migration est décidée pour la prochaine fenêtre; elle n'a pas encore été exécutée.";
+      const originalSource = createStreamEntryId();
+      const original = repository.upsert(audience, [
+        {
+          type: "add",
+          state_key: stateKey,
+          kind: "locked",
+          text: originalText,
+          provenance_stream_entry_ids: [originalSource],
+        },
+      ])!.entries[0]!;
+      const trace = createTraceRecorder();
+      const llmClient = new FakeLLMClient({
+        responses: [
+          emitRawSharedStateArtifactPatchResponse({
+            operations: [
+              {
+                type: "supersede",
+                id: original.id,
+                replacement: {
+                  state_key: stateKey,
+                  kind: "locked",
+                  text: correctedText,
+                  source_stream_entry_ids: [priorAllowedStreamEntryId],
+                },
+                // Correcting a shared-state row requires no goal/action canonicalization.
+                canonicalizes: {},
+              },
+            ],
+          }),
+        ],
+      });
+
+      const patch = await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        compilePass,
+        currentUserMessage: "Vérifions l'état de la migration.",
+        promptVisibleLedger: `${priorAllowedStreamEntryId}: ${correctedText}`,
+        ...(compilePass === "post_response"
+          ? { assistantResponse: { streamEntryId: priorAllowedStreamEntryId, text: correctedText } }
+          : {}),
+        tracer: trace,
+      });
+
+      expect(llmClient.requests).toHaveLength(1);
+      const request = llmClient.requests[0]!;
+      const payload = JSON.parse(request.messages[0]!.content) as {
+        previous_artifact_summary: SharedStatePromptSummary;
+        existing_state_key_registry: Array<{ active_entry_ids: string[]; kinds: string[] }>;
+      };
+      expect(payload.previous_artifact_summary.active_entries_by_state_key[stateKey]).toEqual([
+        expect.objectContaining({
+          id: original.id,
+          state_key: stateKey,
+          kind: "locked",
+          text: originalText,
+          disclosure_label: expect.objectContaining({ disclosure_class: "relationship_private" }),
+        }),
+      ]);
+      expect(payload.previous_artifact_summary.active_entries.locked).toEqual(
+        payload.previous_artifact_summary.active_entries_by_state_key[stateKey],
+      );
+      expect(payload.existing_state_key_registry).toEqual([
+        expect.objectContaining({ active_entry_ids: [original.id], kinds: ["locked"] }),
+      ]);
+      for (const tool of request.tools ?? []) {
+        expect(JSON.stringify(tool.inputSchema)).toContain('"supersede"');
+        expect(tool.description).toContain(
+          "including locked entries; never add a correcting sibling",
+        );
+        expect(tool.description).toContain("never from a stated intention");
+      }
+      expect(patch.operations).toEqual([
+        expect.objectContaining({ type: "supersede", id: original.id }),
+      ]);
+      const currentEntries = activeEntries();
+      expect(currentEntries).toEqual([
+        expect.objectContaining({
+          state_key: stateKey,
+          kind: "locked",
+          text: correctedText,
+          provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+        }),
+      ]);
+      const artifact = repository.get(audience)!;
+      expect(artifact.entries).toHaveLength(2);
+      expect(artifact.entries.find((entry) => entry.id === original.id)).toMatchObject({
+        text: originalText,
+        superseded_by_id: currentEntries[0]!.id,
+        provenance_stream_entry_ids: [originalSource],
+        last_updated_stream_entry_ids: [priorAllowedStreamEntryId],
+      });
+      expect(trace.events).toContainEqual(
+        expect.objectContaining({
+          event: "shared_state.compile.completed",
+          data: expect.objectContaining({
+            applied: true,
+            rejectedCount: 0,
+            operation_counts_by_kind: { add: 0, update: 0, supersede: 1, prune: 0 },
+          }),
+        }),
+      );
+    },
+  );
+
   it("skips gracefully when the LLM call fails", async () => {
     const onDegraded = vi.fn();
     const llmClient = new FakeLLMClient({
@@ -2239,7 +2374,8 @@ describe("compileSharedStateArtifact", () => {
         (event) => event.event === "shared_state.compile.completed",
       );
       return (
-        (completed?.data as unknown as { rejections: Record<string, unknown>[] }).rejections[0] ?? {}
+        (completed?.data as unknown as { rejections: Record<string, unknown>[] }).rejections[0] ??
+        {}
       );
     };
 
@@ -2665,9 +2801,9 @@ describe("compileSharedStateArtifact", () => {
       },
     ]);
 
-    const registryFor = async (
-      summaryOptions?: { maxEntries: Partial<Record<SharedStateEntryKind, number>> },
-    ): Promise<{ active_entry_ids: string[]; text_visible_entry_ids: string[] | null }> => {
+    const registryFor = async (summaryOptions?: {
+      maxEntries: Partial<Record<SharedStateEntryKind, number>>;
+    }): Promise<{ active_entry_ids: string[]; text_visible_entry_ids: string[] | null }> => {
       const llmClient = new FakeLLMClient({
         responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
       });

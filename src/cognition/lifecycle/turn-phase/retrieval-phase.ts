@@ -2238,7 +2238,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
 
   const compileResult = await compileSharedStateArtifact({
     llmClient: sharedStateLlmClient,
-    model: input.options.config.anthropic.models.recallExpansion,
+    model: input.options.config.anthropic.models.sharedStateCompiler,
     repository: input.options.sharedStateRepository,
     audienceEntityId,
     currentAudience: {

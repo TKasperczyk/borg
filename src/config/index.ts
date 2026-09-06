@@ -346,6 +346,8 @@ const anthropicModelsConfigSchema = z
     recallExpansion: z.string().min(1).default("claude-haiku-4-5-20251001"),
     // Corrective preferences need careful interpretation of participant restrictions.
     correctivePreference: z.string().min(1).default("claude-sonnet-5"),
+    // Shared-state compilation must distinguish corrections and decisions from completed acts.
+    sharedStateCompiler: z.string().min(1).default("claude-sonnet-5"),
     creatorDirective: z.string().min(1).default("claude-sonnet-4-6"),
     imagePerception: z.string().min(1).default("claude-haiku-4-5-20251001"),
   })
@@ -1202,6 +1204,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["anthropic", "models", "correctivePreference"],
     readOptionalEnvString(env, "BORG_MODEL_CORRECTIVE_PREFERENCE"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "models", "sharedStateCompiler"],
+    readOptionalEnvString(env, "BORG_MODEL_SHARED_STATE_COMPILER"),
   );
   setConfigOverride(
     overrides,
