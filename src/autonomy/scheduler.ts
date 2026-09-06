@@ -11,6 +11,7 @@ import { DEFAULT_SESSION_ID, goalIdHelpers, type GoalId, type SessionId } from "
 import type { ToolDispatcher } from "../tools/dispatcher.js";
 import { classifySuppressionReason } from "../cognition/generation/suppression-outcome.js";
 import type { TurnOrchestrator, TurnResult } from "../cognition/index.js";
+import { turnExecutionMetricsFromError } from "../cognition/turn-execution-metrics.js";
 import { memoryDisclosurePayloadFields } from "../memory/common/disclosure-serializers.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
@@ -35,7 +36,7 @@ import {
   AUTONOMY_WAKE_SOURCE_NAMES,
   HEADWAY_EMISSION_KINDS,
 } from "./types.js";
-import type { AutonomyWakesRepository } from "./wakes-repository.js";
+import type { AutonomyWakeExecutionCounts, AutonomyWakesRepository } from "./wakes-repository.js";
 import {
   getExecutiveFocusGoalStaleBackoffProcessName,
   readExecutiveFocusGoalStaleBackoffMetadata,
@@ -112,6 +113,19 @@ const WAKE_PRUNE_SAFETY_BUFFER_MS = 7 * 24 * 60 * 60 * 1_000;
 // search under load, which made prep fail and the trigger retry-loop. Live/
 // reactive tool calls keep the 5s default; only prep gets this longer bound.
 const DEFAULT_AUTONOMY_PREP_TOOL_TIMEOUT_MS = 30_000;
+const ZERO_TURN_EXECUTION_COUNTS: AutonomyWakeExecutionCounts = {
+  finalizer_rounds: 0,
+  stall_retries: 0,
+};
+
+function executionCountsForTurnResult(
+  result: Pick<TurnResult, "finalizer_rounds" | "stall_retries">,
+): AutonomyWakeExecutionCounts {
+  return {
+    finalizer_rounds: result.finalizer_rounds,
+    stall_retries: result.stall_retries,
+  };
+}
 
 export type AutonomySchedulerObserver = {
   onTick?(result: TickResult): void | Promise<void>;
@@ -958,6 +972,14 @@ export class AutonomyScheduler {
       // preserved unfloored on the next line rather than recomputed downstream.
       next_tick_at: scheduledTickAt === null ? null : Math.max(scheduledTickAt, nowMs),
       scheduled_tick_at: scheduledTickAt,
+      window_wakes: currentWindowWakes.map((wake) => ({
+        ts: wake.ts,
+        trigger_name: wake.trigger_name,
+        outcome: wake.outcome,
+        headway_bases: wake.headway_bases,
+        finalizer_rounds: wake.finalizer_rounds,
+        stall_retries: wake.stall_retries,
+      })),
       budget: {
         max_wakes_per_window: this.options.maxWakesPerWindow,
         window_ms: this.options.budgetWindowMs,
@@ -1221,7 +1243,13 @@ export class AutonomyScheduler {
             errorCount += 1;
             sourceErrorCount += 1;
             const outcomeSummary = `Autonomous preparation failed: ${preparedEvent.toolError}`;
-            this.options.wakeRepository.recordOutcome(wakeRecord.id, "error", outcomeSummary);
+            this.options.wakeRepository.recordOutcome(
+              wakeRecord.id,
+              "error",
+              outcomeSummary,
+              null,
+              ZERO_TURN_EXECUTION_COUNTS,
+            );
             this.consumeFleetFreshnessBypass(
               dueEvent,
               fleetAdmission.bypassKind,
@@ -1261,7 +1289,13 @@ export class AutonomyScheduler {
             sourceErrorCount += 1;
             const preparationError = new AutonomySourcePreparationError(dueEvent.sourceName, error);
             const outcomeSummary = `Autonomous source preparation failed: ${formatError(error)}`;
-            this.options.wakeRepository.recordOutcome(wakeRecord.id, "error", outcomeSummary);
+            this.options.wakeRepository.recordOutcome(
+              wakeRecord.id,
+              "error",
+              outcomeSummary,
+              null,
+              ZERO_TURN_EXECUTION_COUNTS,
+            );
             this.consumeFleetFreshnessBypass(
               dueEvent,
               fleetAdmission.bypassKind,
@@ -1304,6 +1338,8 @@ export class AutonomyScheduler {
             });
           } catch (error) {
             const busy = error instanceof SessionBusyError;
+            const executionCounts =
+              turnExecutionMetricsFromError(error) ?? ZERO_TURN_EXECUTION_COUNTS;
             const outcomeSummary = busy
               ? "Skipped autonomous turn because the session was busy."
               : `Autonomous turn failed: ${formatError(error)}`;
@@ -1321,10 +1357,22 @@ export class AutonomyScheduler {
 
             if (busy) {
               busySkipped += 1;
-              this.options.wakeRepository.recordOutcome(wakeRecord.id, "busy", outcomeSummary);
+              this.options.wakeRepository.recordOutcome(
+                wakeRecord.id,
+                "busy",
+                outcomeSummary,
+                null,
+                executionCounts,
+              );
             } else {
               errorCount += 1;
-              this.options.wakeRepository.recordOutcome(wakeRecord.id, "error", outcomeSummary);
+              this.options.wakeRepository.recordOutcome(
+                wakeRecord.id,
+                "error",
+                outcomeSummary,
+                null,
+                executionCounts,
+              );
               if (isGlobalCircuitFailure(error)) {
                 this.updateFleetBrakeAfterGlobalError(
                   dueEvent,
@@ -1398,6 +1446,7 @@ export class AutonomyScheduler {
               wakeHeadway ? "headway" : "silent",
               wakeHeadway ? null : (silentOutcome?.detail ?? null),
               wakeHeadway ? wakeHeadwayBases : null,
+              executionCountsForTurnResult(turnResult),
             );
           } catch (error) {
             const outcomeSummary = `Autonomous turn completed; bookkeeping failed: ${formatError(error)}`;
@@ -1408,6 +1457,8 @@ export class AutonomyScheduler {
                 wakeRecord.id,
                 "interrupted",
                 outcomeSummary,
+                null,
+                executionCountsForTurnResult(turnResult),
               );
             } catch (recordError) {
               interruptedOutcomeError = recordError;

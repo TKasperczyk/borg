@@ -2080,6 +2080,8 @@ function mapAutonomyWake(borg: Borg, wake: AutonomyWakeRecord) {
     outcome: wake.outcome,
     outcome_detail: wake.outcome_detail,
     headway_bases: wake.headway_bases,
+    finalizer_rounds: wake.finalizer_rounds,
+    stall_retries: wake.stall_retries,
   };
 }
 

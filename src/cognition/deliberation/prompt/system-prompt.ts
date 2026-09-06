@@ -1790,6 +1790,49 @@ function formatInFlightStamps(startedAt: readonly number[]): string {
   return `(fired ${stamps}${omitted === 0 ? "" : `, ${omitted} newer not listed`})`;
 }
 
+function renderWakeWindowRows(
+  wakes: NonNullable<
+    NonNullable<
+      NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
+    >["windowWakes"]
+  >,
+): string[] {
+  const finalizerRounds = wakes.flatMap((wake) =>
+    wake.finalizer_rounds === null ? [] : [wake.finalizer_rounds],
+  );
+  const stallRetries = wakes.flatMap((wake) =>
+    wake.stall_retries === null ? [] : [wake.stall_retries],
+  );
+  const rows = wakes.map((wake) => {
+    const headwayBases =
+      wake.headway_bases === null
+        ? ""
+        : ` hb="${escapeXmlAttribute(wake.headway_bases.join("; "))}"`;
+    const finalizerRoundsAttribute =
+      wake.finalizer_rounds === null ? "" : ` fr="${wake.finalizer_rounds}"`;
+    const stallRetriesAttribute = wake.stall_retries === null ? "" : ` sr="${wake.stall_retries}"`;
+
+    return `- <wake at="${new Date(wake.ts).toISOString()}" tr="${wake.trigger_name}" o="${
+      wake.outcome ?? "in_flight"
+    }"${headwayBases}${finalizerRoundsAttribute}${stallRetriesAttribute} />`;
+  });
+
+  return [
+    wakes.length === 0
+      ? "Wake rows in that current window, newest first: none."
+      : "Wake rows in that current window, newest first:",
+    ...rows,
+    "Wake row legend: at=fired_at, tr=trigger_name, o=outcome (in_flight means no terminal outcome is recorded yet), hb=ordered headway bases, fr=finalizer rounds, sr=transport stall retries. hb absent means no structural headway bases were recorded. On a terminal row, fr or sr absent means the row predates the field; an in_flight row has not reached outcome recording, and a startup-interrupted row may have ended before those counts could be written.",
+    `Wake execution totals over those ${wakes.length} row(s): fr=${finalizerRounds.reduce(
+      (sum, count) => sum + count,
+      0,
+    )} from ${finalizerRounds.length}/${wakes.length} rows with fr recorded; sr=${stallRetries.reduce(
+      (sum, count) => sum + count,
+      0,
+    )} from ${stallRetries.length}/${wakes.length} rows with sr recorded. Absent values are excluded, not counted as zero.`,
+  ];
+}
+
 export function summarizeAutonomySchedulerState(
   schedulerState: NonNullable<
     NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
@@ -1878,6 +1921,10 @@ export function summarizeAutonomySchedulerState(
       // rather than as "none right now".
       "in_flight counts rows written when the wake fired whose terminal outcome has not yet been recorded, stamped with when each fired. A normal completion records headway, silent, error, or busy; a post-turn bookkeeping failure records interrupted, and startup reconciliation records any NULL row left by a prior process as interrupted. A non-zero in_flight count can therefore be a healthy turn currently running. It is taken over the rolling window named above, so a live row can also leave this display by ageing past the lower edge before it closes. The stamps support cross-read identity: one repeating across two reads is one row still open, one that changes is a different wake, and one that disappears either closed or left the window.",
     );
+  }
+
+  if (schedulerState.windowWakes !== undefined) {
+    lines.push(...renderWakeWindowRows(schedulerState.windowWakes));
   }
 
   lines.push(

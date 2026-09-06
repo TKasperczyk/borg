@@ -489,6 +489,14 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
             intervalArmedAt: value.autonomySchedulerState.intervalArmedAt,
             nextTickAt: value.autonomySchedulerState.nextTickAt,
             scheduledTickAt: value.autonomySchedulerState.scheduledTickAt,
+            ...(value.autonomySchedulerState.windowWakes === undefined
+              ? {}
+              : {
+                  windowWakes: value.autonomySchedulerState.windowWakes.map((wake) => ({
+                    ...wake,
+                    headway_bases: wake.headway_bases === null ? null : [...wake.headway_bases],
+                  })),
+                }),
             fleetBrake: {
               ...value.autonomySchedulerState.fleetBrake,
               window_outcomes: { ...value.autonomySchedulerState.fleetBrake.window_outcomes },
