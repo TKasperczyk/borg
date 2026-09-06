@@ -1151,7 +1151,9 @@ export class AutobiographicalRecallService {
         score: 0.5 + goal.priority * 0.16 + recencyScore(occurredAt, input.window) * 0.16,
         text: [
           `status=${goal.status}`,
-          `block_state=${sanitizePromptText(JSON.stringify(goalBlockStateFields(goal)))}`,
+          ...((goal.block_history ?? []).length === 0
+            ? []
+            : [`block_state=${sanitizePromptText(JSON.stringify(goalBlockStateFields(goal)))}`]),
           `priority=${goal.priority.toFixed(2)}`,
           `counterparty_entity_id=${goal.counterparty_entity_id ?? "none"}`,
           `description=${sanitizePromptText(goal.description)}`,

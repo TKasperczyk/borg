@@ -130,3 +130,15 @@ export function goalBlockStateText(
 ): string {
   return JSON.stringify(goalBlockStateFields(goal));
 }
+
+/**
+ * Prompt attribute for a goal's block state: empty when the goal has never
+ * been blocked (the common case carries no information worth a row's width),
+ * otherwise a leading-space `block_state=<json>` attribute.
+ */
+export function goalBlockStateAttribute(
+  goal: Pick<GoalRecord, "block_history" | "target_assigned_at">,
+): string {
+  if ((goal.block_history ?? []).length === 0) return "";
+  return ` block_state=${goalBlockStateText(goal)}`;
+}

@@ -1,4 +1,4 @@
-import { goalBlockStateText } from "../../../memory/self/goal-blocks.js";
+import { goalBlockStateAttribute } from "../../../memory/self/goal-blocks.js";
 import { renderAnsweredWindowEvidence } from "../../../stream/answered-window.js";
 // Assembles the base deliberation system prompt from memory, state, and guidance sections.
 import { summarizeProvenanceForPrompt, type Provenance } from "../../../memory/common/index.js";
@@ -1538,7 +1538,7 @@ function summarizeSelfSnapshotGoal(goal: SelfSnapshot["goals"][number]): string 
     goalMemoryDisclosureLabel(goal),
   )}`;
 
-  return `${goal.description} status=${goal.status} block_state=${goalBlockStateText(goal)} counterparty_entity_id=${goal.counterparty_entity_id ?? "none"} (participant the responsibility runs toward; not owner or audience) ${summarizeProvenanceForPrompt(goal.provenance)}${disclosure}`;
+  return `${goal.description} status=${goal.status}${goalBlockStateAttribute(goal)} counterparty_entity_id=${goal.counterparty_entity_id ?? "none"} (participant the responsibility runs toward; not owner or audience) ${summarizeProvenanceForPrompt(goal.provenance)}${disclosure}`;
 }
 
 const EXECUTIVE_FOCUS_IDENTITY_LABEL_MAX_CHARS = 120;
@@ -1572,7 +1572,7 @@ function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): stri
   );
 
   return [
-    `Current driving goal: ${focus.selected_goal.description} status=${focus.selected_goal.status} block_state=${goalBlockStateText(focus.selected_goal)} counterparty_entity_id=${focus.selected_goal.counterparty_entity_id ?? "none"} (participant the responsibility runs toward; not owner or audience) ${selectedGoalDisclosure}`,
+    `Current driving goal: ${focus.selected_goal.description} status=${focus.selected_goal.status}${goalBlockStateAttribute(focus.selected_goal)} counterparty_entity_id=${focus.selected_goal.counterparty_entity_id ?? "none"} (participant the responsibility runs toward; not owner or audience) ${selectedGoalDisclosure}`,
     `Focus identity: goal_id=${focus.selected_goal.id} label=${JSON.stringify(
       compactPromptText(focus.selected_goal.description, EXECUTIVE_FOCUS_IDENTITY_LABEL_MAX_CHARS),
     )}`,
