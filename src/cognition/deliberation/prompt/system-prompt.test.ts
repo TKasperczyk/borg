@@ -5360,7 +5360,33 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("The reading is not a function of that turn's arrived text alone");
     expect(block).toContain("up to the last ten recency strings for the session");
     expect(block).toContain(
-      "trigger= is a 120-character head slice of the arrived message and names no part of the recency half",
+      "trigger= is a 120-character head slice of the arrived message bodies with the transport envelope stripped",
+    );
+    expect(block).toContain("names no part of the recency half");
+  });
+
+  // The trigger= scope was still too generous: sliced off the rendered batch, 120
+  // characters never reached past the `<inbound_message>` attribute list, so the field
+  // named a stream id on every row a wrapping transport wrote. The write now takes the
+  // bodies, but rows stored before it keep the envelope and stay on the page until they
+  // age out -- so the legend has to describe the old shape too, or a reader checking it
+  // against a pre-change row catches the legend lying rather than the row aging.
+  it("tells a reader how to recognize a trigger written before the source changed", () => {
+    const block = extractBlock(
+      buildBaseSystemPrompt(
+        makeContext({
+          affectiveTrajectory: [makeMoodHistoryEntry(1, 2, -0.3, 0.4, "the deadline moved")],
+        }),
+        PROMPT_OPTIONS,
+      ),
+      "borg_affective_trajectory",
+    );
+
+    expect(block).toContain(
+      "a subset of what was scored rather than a prefix of it",
+    );
+    expect(block).toContain(
+      "a trigger that opens with a transport tag instead of with text is a row written before that source changed",
     );
   });
 

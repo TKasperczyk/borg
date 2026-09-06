@@ -869,6 +869,7 @@ export async function runPostGenerationPhase(input: {
         suppressionSet: input.suppressionSet,
         persistedUserEntryId: input.persistedUserEntryId,
         sourceUserEntryIds: input.sourceUserEntryIds,
+        sourceUserEntries: input.sourceUserEntries,
         persistedPerceptionEntry: input.persistedPerceptionEntry,
         persistedAgentEntry,
         currentTurnJournalEntryIds:

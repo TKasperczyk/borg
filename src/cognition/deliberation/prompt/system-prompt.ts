@@ -3177,13 +3177,20 @@ function summarizeAffectiveTrajectory(
   // text plus up to ten recency strings, self-turns included. Two blocks disagreeing about
   // what one quantity was computed from is worse than either being silent; keep them in step.
   //
-  // `trigger` is not that input under another name. Reflection stores
-  // `input.userMessage.slice(0, 120)`, a head slice of the arrived message only, so it names
-  // the start of one half of what was scored and nothing of the other. Rendering it beside
-  // valence/arousal without saying so invites reading the row as a function of the quoted
-  // string, which is the stronger form of the same error.
+  // `trigger` is not that input under another name, and naming it a head slice of the
+  // arrived message was still too generous on a wrapping transport. Reflection used to store
+  // `input.userMessage.slice(0, 120)`, and `renderInboundBatch` spends its first ~215
+  // characters on `<inbound_batch>` plus an `<inbound_message>` attribute list, so on the
+  // demo connector every stored trigger was envelope and stream id with zero characters of
+  // the message: 1324 of 1324 rows in `mood_history` at the time of the fix, across all eight
+  // sessions and the whole life of the table. It now stores the message bodies
+  // (`inboundMessageBodies` over the same entries the renderer wrapped), which is a subset of
+  // what was scored rather than a prefix of it. Rows written before that change keep the
+  // envelope, and open with a transport tag rather than with text -- said on the line, since
+  // a reader who trusts the legend against a pre-change row would otherwise catch the legend
+  // lying rather than the row aging.
   return [
-    "Affective trajectory (newest first). Each row is one turn's raw classifier reading, written after the reply: the newest row is the last scored turn, never this one. The reading is not a function of that turn's arrived text alone -- the classifier is handed that text plus up to the last ten recency strings for the session, prior turns rendered as role and content and including mine, so a row can differ from its neighbour where the arrived texts did not; trigger= is a 120-character head slice of the arrived message and names no part of the recency half. Rows exist only for undegraded user turns -- a turn missing here was autonomous or had a dead classifier, never a turn that felt nothing. Working state's mood= is not a member of this series (this turn's own raw reading on an undegraded user turn, a carried-forward blend otherwise), so comparing it against the newest row settles neither.",
+    "Affective trajectory (newest first). Each row is one turn's raw classifier reading, written after the reply: the newest row is the last scored turn, never this one. The reading is not a function of that turn's arrived text alone -- the classifier is handed that text plus up to the last ten recency strings for the session, prior turns rendered as role and content and including mine, so a row can differ from its neighbour where the arrived texts did not; trigger= is a 120-character head slice of the arrived message bodies with the transport envelope stripped, so it is a subset of what was scored rather than a prefix of it and names no part of the recency half -- and a trigger that opens with a transport tag instead of with text is a row written before that source changed, naming only the envelope that carried the message. Rows exist only for undegraded user turns -- a turn missing here was autonomous or had a dead classifier, never a turn that felt nothing. Working state's mood= is not a member of this series (this turn's own raw reading on an undegraded user turn, a carried-forward blend otherwise), so comparing it against the newest row settles neither.",
     ...entries.slice(0, 5).map((entry) => {
       const triggerText =
         entry.trigger_reason === null ? "" : compactPromptText(entry.trigger_reason, 120);
