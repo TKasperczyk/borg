@@ -606,14 +606,12 @@ function legacyFinalizerTraceSummary(
       terminal_static_head: {
         chars: staticText.length,
         estimatedTokens: estimatePromptTokens(staticText),
-        ttl: "1h",
+        ttl: system[0]?.cache_control?.ttl ?? null,
       },
-      terminal_durable_global: { chars: 0, estimatedTokens: 0, ttl: "1h" },
-      terminal_durable_audience: { chars: 0, estimatedTokens: 0, ttl: "1h" },
       terminal_turn_context: {
         chars: turnText.length,
         estimatedTokens: estimatePromptTokens(turnText),
-        ttl: "5m",
+        ttl: system[1]?.cache_control?.ttl ?? null,
       },
     },
     totalChars: totalText.length,
@@ -648,14 +646,43 @@ export function buildFinalizerSystemPrompt(options: RunFinalizerOptions): {
       path: options.path,
       additionalPromptSections: stableAdditionalSections,
     });
+    if (dynamicPrompt.regeneration === null) return compact;
+
+    // Keep the fourth marker on the final system block, including regeneration.
+    // Preserve the suffix's exact boundary bytes and include it in tier telemetry.
+    const system = compact.system.map((block, index) =>
+      index === compact.system.length - 1
+        ? { ...block, text: block.text + dynamicPrompt.regeneration }
+        : block,
+    );
+    const fastText = system[system.length - 1]!.text;
+    const totalText = system.map((block) => block.text).join("\n\n");
     return {
-      system: [
-        ...compact.system,
-        ...(dynamicPrompt.regeneration === null
-          ? []
-          : [{ type: "text" as const, text: dynamicPrompt.regeneration }]),
-      ],
-      traceSummary: compact.traceSummary,
+      system,
+      traceSummary: {
+        ...compact.traceSummary,
+        sections: {
+          ...compact.traceSummary.sections,
+          regeneration: {
+            chars: dynamicPrompt.regeneration.length,
+            estimatedTokens: estimatePromptTokens(dynamicPrompt.regeneration),
+            rowCount: 0,
+            truncationCount: 0,
+            omissionCount: 0,
+            cacheTier: "terminal_fast_turn",
+          },
+        },
+        blocks: {
+          ...compact.traceSummary.blocks,
+          terminal_fast_turn: {
+            chars: fastText.length,
+            estimatedTokens: estimatePromptTokens(fastText),
+            ttl: "5m",
+          },
+        },
+        totalChars: totalText.length,
+        totalEstimatedTokens: estimatePromptTokens(totalText),
+      },
     };
   }
 

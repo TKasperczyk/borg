@@ -5,10 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-import {
-  applyDraftFrame,
-  EMPTY_DRAFT_STATE,
-} from "../../../demo/web/src/pages/chat/draft.js";
+import { applyDraftFrame, EMPTY_DRAFT_STATE } from "../../../demo/web/src/pages/chat/draft.js";
 import { AnthropicLLMClient, type LLMClient } from "../../llm/index.js";
 import { FakeLLMClient, createFakeStreamingResponse } from "../../llm/test-support/fake-client.js";
 import { createEpisodeFixture, createRetrievalScoreFixture } from "../../offline/test-support.js";
@@ -99,7 +96,9 @@ async function runEmissionFinalizer(
     userEntryId: undefined,
     maxTokens: 256,
     path: "system_1",
-    ...(options.finalizerAttempt === undefined ? {} : { finalizerAttempt: options.finalizerAttempt }),
+    ...(options.finalizerAttempt === undefined
+      ? {}
+      : { finalizerAttempt: options.finalizerAttempt }),
     ...(options.additionalPromptSections === undefined
       ? {}
       : { additionalPromptSections: options.additionalPromptSections }),
@@ -552,7 +551,7 @@ describe("runFinalizer emission tools", () => {
         },
       },
     });
-    await runEmissionFinalizer(activeLlm, tempDirs, {
+    const activeOptions: Parameters<typeof runEmissionFinalizer>[2] = {
       turnOrigin: "autonomous",
       participationPolicy: "active",
       outboundToolAvailable: true,
@@ -566,7 +565,8 @@ describe("runFinalizer emission tools", () => {
           nowMs: secondNow,
         },
       },
-    });
+    };
+    await runEmissionFinalizer(activeLlm, tempDirs, activeOptions);
 
     const pausedRequest = pausedLlm.requests[0]!;
     const activeRequest = activeLlm.requests[0]!;
@@ -575,6 +575,14 @@ describe("runFinalizer emission tools", () => {
     expect(JSON.stringify(pausedRequest.tools)).toBe(JSON.stringify(activeRequest.tools));
     expect(JSON.stringify(pausedSystem.slice(0, 3))).toBe(JSON.stringify(activeSystem.slice(0, 3)));
     expect(JSON.stringify(pausedSystem[3])).not.toBe(JSON.stringify(activeSystem[3]));
+    expect(activeSystem.map((block) => block.cache_control?.ttl)).toEqual(["1h", "1h", "5m", "5m"]);
+    // Autonomous wakes can make five finalizer rounds with the same turn context.
+    // Every emitted request retains the complete fast prefix and its last marker.
+    for (let round = 2; round <= 5; round += 1) {
+      const laterRound = createAnsweringLlm(`toolu_compact_round_${round}`);
+      await runEmissionFinalizer(laterRound, tempDirs, activeOptions);
+      expect(laterRound.requests[0]?.system).toEqual(activeSystem);
+    }
   });
 
   it("sends each tool once when the live-turn and interior menus overlap", () => {
@@ -870,11 +878,12 @@ describe("runFinalizer emission tools", () => {
           },
         },
       });
-      return expect(runEmissionFinalizer(client, tempDirs, { finalizerTransport })).rejects
-        .toMatchObject({
-          code: "LLM_CALL_TIMED_OUT",
-          message: `Anthropic ${finalizerTransport} LLM call timed out after 720000ms`,
-        });
+      return expect(
+        runEmissionFinalizer(client, tempDirs, { finalizerTransport }),
+      ).rejects.toMatchObject({
+        code: "LLM_CALL_TIMED_OUT",
+        message: `Anthropic ${finalizerTransport} LLM call timed out after 720000ms`,
+      });
     });
 
     await vi.advanceTimersByTimeAsync(360_001);
