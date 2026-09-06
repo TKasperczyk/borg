@@ -2094,6 +2094,42 @@ describe("compact planner context", () => {
     expect(planner.traceSummary.overallOverflow).toBe(true);
   });
 
+  it.each([6_000, 100_000])(
+    "keeps the autonomy bounding notice first on the final planner surface (%i chars)",
+    (textChars) => {
+      const planner = build(
+        context({
+          turnOrigin: "autonomous",
+          autonomyTrigger: {
+            source_name: "scheduled_reflection",
+            source_type: "trigger",
+            event_id: "scheduled-reflection:1000",
+            sort_ts: NOW_MS,
+            payload: {
+              recent_identity_events: [
+                {
+                  id: 1,
+                  record_type: "goal",
+                  record_id: "goal_aaaaaaaaaaaaaaaa",
+                  action: "update",
+                  change: { excerpt_head: "old-to-new", excerpt_tail: null, excerpt_exact: false },
+                },
+              ],
+              prior_self_thought: { text: "x".repeat(textChars) },
+            },
+          },
+        }),
+      );
+      const surface = taggedBlock(allSystemText(planner), "autonomy_trigger");
+      expect(surface).toMatch(/^<autonomy_trigger[^>]*>excerpt_notice:/);
+      expect(surface).toContain("mechanically bounded to 32000 chars");
+      expect(surface).toContain("old-to-new change excerpt is bounded to 1500 chars");
+      expect(surface).toContain("recent_identity_events_omitted: 0");
+      expect(surface.match(/excerpt_notice:/g)).toHaveLength(1);
+      expect(surface).toContain("HEAD+TAIL EXCERPT");
+    },
+  );
+
   it("keeps the generic excerpt shape mechanical and announces every cut", () => {
     const source = `HEAD_${"x".repeat(500)}_TAIL`;
     const excerpt = headTailPlannerExcerpt(source, 120);

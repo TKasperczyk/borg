@@ -205,7 +205,9 @@ function boundAutonomyTriggerContext(context: AutonomyTriggerContext): string {
     ]
       .filter((part) => part !== null)
       .join(" ");
-    return `${renderAutonomyTriggerContext({ ...context, payload })}\n${notice}`;
+    // The planner applies a smaller head+tail crop to this block. Keep the
+    // bounding and omission notice on the first line so that crop retains it.
+    return `${notice}\n${renderAutonomyTriggerContext({ ...context, payload })}`;
   };
 
   const uncut = render(Number.POSITIVE_INFINITY);
