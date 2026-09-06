@@ -947,6 +947,28 @@ describe("compact planner context", () => {
     expect(allSystemText(conversational)).toContain('open_loop_rows_total="not_drawn"');
     expect(allSystemText(wake)).toContain('open_loop_rows_total="0"');
 
+    // Both origins emit the attribute, so the un-drawn case is a value and never
+    // an absence. Prose describing that case must key on the value being
+    // non-numeric: promising a missing attribute would describe a render neither
+    // origin produces, and a reader taking it literally would look for the slot
+    // to be gone, find it present, and have to invent what the third state is.
+    const openingLine = (planner: ReturnType<typeof build>) =>
+      taggedBlock(allSystemText(planner), "borg_planner_lived_experience_digest").split("\n")[0] ??
+      "";
+    for (const planner of [conversational, wake]) {
+      expect(openingLine(planner)).toMatch(/\bopen_loop_rows_total="[^"]+"/);
+    }
+    const laneProse = taggedBlock(
+      allSystemText(conversational),
+      "borg_planner_lived_experience_digest",
+    )
+      .split("\n")
+      .filter((line) => line.trim().startsWith("<lane_budget>"));
+    expect(laneProse).toHaveLength(1);
+    expect(laneProse[0]).toContain(
+      "a non-numeric value there means the lane was never queried and is not a count of zero",
+    );
+
     // Same totals, different aggregate: the trailing count sums lane residues,
     // so it moves with the caps and with which lanes were drawn at all.
     const aggregate = (planner: ReturnType<typeof build>) =>
