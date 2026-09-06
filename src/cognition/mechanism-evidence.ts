@@ -107,6 +107,8 @@ export type AutonomySchedulerMechanismEvidence = {
   intervalArmedAt: number | null;
   nextTickAt: number | null;
   scheduledTickAt: number | null;
+  /** Optional only for historical captures and direct harness fixtures. */
+  windowWakes?: AutonomySchedulerDescription["window_wakes"];
   budget: AutonomySchedulerBudgetDescription;
   fleetBrake: AutonomySchedulerFleetBrakeDescription;
   sources: AutonomySchedulerDescription["sources"];
@@ -150,6 +152,7 @@ export const AUTONOMY_SCHEDULER_DESCRIPTION_FIELD_DISPOSITION: Record<
   interval_armed_at: "carried",
   next_tick_at: "carried",
   scheduled_tick_at: "carried",
+  window_wakes: "carried",
   budget: "carried",
   fleet_brake: "carried",
   sources: "carried",

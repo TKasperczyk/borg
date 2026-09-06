@@ -197,6 +197,15 @@ export type AutonomySchedulerWakeGroupDescription = {
   outcome_counts: Record<AutonomyWakeOutcome, number>;
 };
 
+export type AutonomySchedulerWakeDescription = {
+  ts: number;
+  trigger_name: AutonomyWakeSourceName;
+  outcome: AutonomyWakeOutcome | null;
+  headway_bases: string[] | null;
+  finalizer_rounds: number | null;
+  stall_retries: number | null;
+};
+
 export type AutonomySchedulerBudgetDescription = {
   max_wakes_per_window: number;
   window_ms: number;
@@ -420,6 +429,8 @@ export type AutonomySchedulerDescription = {
    * interval handle), so the pair is never half-present.
    */
   scheduled_tick_at: number | null;
+  /** Individual rows in the rolling budget window, newest first. */
+  window_wakes: AutonomySchedulerWakeDescription[];
   budget: AutonomySchedulerBudgetDescription;
   fleet_brake: AutonomySchedulerFleetBrakeDescription;
   sources: AutonomySchedulerSourceDescription[];

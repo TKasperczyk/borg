@@ -159,6 +159,8 @@ function createStructuralTurnResult(input: {
   retiredGoalToolId?: string;
   reflectionRetiredGoalIds?: TurnResult["reflectionRetiredGoalIds"];
   suppressionReason?: Extract<TurnResult["emission"], { kind: "suppressed" }>["reason"];
+  finalizerRounds?: number;
+  stallRetries?: number;
 }): TurnResult {
   const emission: TurnResult["emission"] =
     input.emissionKind === "message"
@@ -227,6 +229,8 @@ function createStructuralTurnResult(input: {
             },
           ]),
     ],
+    finalizer_rounds: input.finalizerRounds ?? 1,
+    stall_retries: input.stallRetries ?? 0,
     ...(input.reflectionRetiredGoalIds === undefined
       ? {}
       : { reflectionRetiredGoalIds: input.reflectionRetiredGoalIds }),
@@ -1831,6 +1835,7 @@ describe("AutonomyScheduler", () => {
       db: harness.db,
       clock,
     });
+    const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
     const dispatcher = new ToolDispatcher({
       createStreamWriter: (sessionId) =>
         new StreamWriter({
@@ -1853,9 +1858,16 @@ describe("AutonomyScheduler", () => {
     });
     const turnRunner = {
       run: vi.fn().mockResolvedValue({
+        turn_id: "turn_scheduler_execution_counts",
         mode: "idle",
         path: "system_1",
         response: "Reflected on recent changes.",
+        emitted: true,
+        emission: {
+          kind: "message",
+          content: "Reflected on recent changes.",
+          agentMessageId: "strm_agent_result",
+        },
         thoughts: [],
         usage: {
           input_tokens: 1,
@@ -1866,6 +1878,8 @@ describe("AutonomyScheduler", () => {
         referencedEpisodeIds: [],
         intents: [],
         toolCalls: [],
+        finalizer_rounds: 3,
+        stall_retries: 2,
         agentMessageId: "strm_agent_result",
       }),
     };
@@ -1882,6 +1896,7 @@ describe("AutonomyScheduler", () => {
           clock,
         }),
       watermarkRepository,
+      wakeRepository,
       turnOrchestrator: turnRunner,
       toolDispatcher: dispatcher,
       sources: [trigger],
@@ -1890,6 +1905,17 @@ describe("AutonomyScheduler", () => {
     const firstTick = await scheduler.tick();
     expect(firstTick.firedEvents).toBe(1);
     expect(turnRunner.run).toHaveBeenCalledTimes(1);
+    expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
+      outcome: "headway",
+      finalizer_rounds: 3,
+      stall_retries: 2,
+    });
+    expect((await scheduler.describe()).window_wakes[0]).toMatchObject({
+      trigger_name: "scheduled_reflection",
+      outcome: "headway",
+      finalizer_rounds: 3,
+      stall_retries: 2,
+    });
     expect(
       watermarkRepository.get("autonomy:scheduled-reflection", DEFAULT_SESSION_ID),
     ).toMatchObject({
@@ -1966,6 +1992,8 @@ describe("AutonomyScheduler", () => {
         referencedEpisodeIds: [],
         intents: [],
         toolCalls: [],
+        finalizer_rounds: 1,
+        stall_retries: 0,
         agentMessageId: "strm_agent_prior_thought",
       }),
     };
@@ -2117,6 +2145,8 @@ describe("AutonomyScheduler", () => {
         referencedEpisodeIds: [],
         intents: [],
         toolCalls: [],
+        finalizer_rounds: 1,
+        stall_retries: 0,
         agentMessageId: "strm_agent_decision",
       }),
     };
@@ -2194,6 +2224,8 @@ describe("AutonomyScheduler", () => {
         referencedEpisodeIds: [],
         intents: [],
         toolCalls: [],
+        finalizer_rounds: 1,
+        stall_retries: 0,
         agentMessageId: "strm_agent_same_due_event",
       }),
     };
@@ -2265,6 +2297,8 @@ describe("AutonomyScheduler", () => {
         referencedEpisodeIds: [],
         intents: [],
         toolCalls: [],
+        finalizer_rounds: 1,
+        stall_retries: 0,
         agentMessageId: "strm_agent_suppressed",
       }),
     };
@@ -2387,6 +2421,8 @@ describe("AutonomyScheduler", () => {
                 durationMs: 1,
               },
             ],
+            finalizer_rounds: 1,
+            stall_retries: 0,
             agentMessageId: "strm_stale_goal",
           }),
         },
@@ -2730,6 +2766,8 @@ describe("AutonomyScheduler", () => {
           referencedEpisodeIds: [],
           intents: [],
           toolCalls: [],
+          finalizer_rounds: 1,
+          stall_retries: 0,
           agentMessageId: "strm_agent_watermark_failure",
         }),
       },
@@ -2953,6 +2991,8 @@ describe("AutonomyScheduler", () => {
           referencedEpisodeIds: [],
           intents: [],
           toolCalls: [],
+          finalizer_rounds: 1,
+          stall_retries: 0,
           agentMessageId: "strm_agent_budget_skip",
         },
       }),
@@ -2971,6 +3011,8 @@ describe("AutonomyScheduler", () => {
           referencedEpisodeIds: [],
           intents: [],
           toolCalls: [],
+          finalizer_rounds: 1,
+          stall_retries: 0,
           agentMessageId: "strm_agent_preparation_error",
         },
       }),
@@ -3105,6 +3147,8 @@ describe("AutonomyScheduler", () => {
           referencedEpisodeIds: [],
           intents: [],
           toolCalls: [],
+          finalizer_rounds: 1,
+          stall_retries: 0,
           agentMessageId: "strm_agent_budget",
         }),
       },
@@ -3138,6 +3182,8 @@ describe("AutonomyScheduler", () => {
         referencedEpisodeIds: [],
         intents: [],
         toolCalls: [],
+        finalizer_rounds: 1,
+        stall_retries: 0,
         agentMessageId: "strm_reserved_budget",
       }),
     };
@@ -3218,6 +3264,8 @@ describe("AutonomyScheduler", () => {
         referencedEpisodeIds: [],
         intents: [],
         toolCalls: [],
+        finalizer_rounds: 1,
+        stall_retries: 0,
         agentMessageId: "strm_should_not_run",
       }),
     };
@@ -3315,6 +3363,8 @@ describe("AutonomyScheduler", () => {
           referencedEpisodeIds: [],
           intents: [],
           toolCalls: [],
+          finalizer_rounds: 1,
+          stall_retries: 0,
           agentMessageId: "strm_process_a",
         }),
       };
@@ -5249,6 +5299,8 @@ describe("AutonomyScheduler", () => {
           referencedEpisodeIds: [];
           intents: [];
           toolCalls: [];
+          finalizer_rounds: number;
+          stall_retries: number;
           agentMessageId: string;
         }) => void)
       | undefined;
@@ -5266,6 +5318,8 @@ describe("AutonomyScheduler", () => {
       referencedEpisodeIds: [];
       intents: [];
       toolCalls: [];
+      finalizer_rounds: number;
+      stall_retries: number;
       agentMessageId: string;
     }>((resolve) => {
       resolveTurn = resolve;
@@ -5323,6 +5377,8 @@ describe("AutonomyScheduler", () => {
       referencedEpisodeIds: [],
       intents: [],
       toolCalls: [],
+      finalizer_rounds: 1,
+      stall_retries: 0,
       agentMessageId: "strm_stop_wait",
     });
 
@@ -5449,6 +5505,8 @@ describe("AutonomyScheduler", () => {
       referencedEpisodeIds: [],
       intents: [],
       toolCalls: [],
+      finalizer_rounds: 1,
+      stall_retries: 0,
       agentMessageId: "strm_dropped_fires",
     });
     await vi.waitFor(async () => {
@@ -5513,6 +5571,8 @@ describe("AutonomyScheduler", () => {
           referencedEpisodeIds: [];
           intents: [];
           toolCalls: [];
+          finalizer_rounds: number;
+          stall_retries: number;
           agentMessageId: string;
         }) => void)
       | undefined;
@@ -5530,6 +5590,8 @@ describe("AutonomyScheduler", () => {
       referencedEpisodeIds: [];
       intents: [];
       toolCalls: [];
+      finalizer_rounds: number;
+      stall_retries: number;
       agentMessageId: string;
     }>((resolve) => {
       resolveTurn = resolve;
@@ -5584,6 +5646,8 @@ describe("AutonomyScheduler", () => {
       referencedEpisodeIds: [],
       intents: [],
       toolCalls: [],
+      finalizer_rounds: 1,
+      stall_retries: 0,
       agentMessageId: "strm_direct_stop_wait",
     });
 
@@ -5636,6 +5700,8 @@ describe("AutonomyScheduler", () => {
         referencedEpisodeIds: [],
         intents: [],
         toolCalls: [],
+        finalizer_rounds: 1,
+        stall_retries: 0,
         agentMessageId: "strm_agent_result",
       }),
     };
@@ -5739,6 +5805,8 @@ describe("AutonomyScheduler", () => {
           referencedEpisodeIds: [],
           intents: [],
           toolCalls: [],
+          finalizer_rounds: 1,
+          stall_retries: 0,
           agentMessageId: "strm_event_a",
         })
         .mockRejectedValueOnce(new Error("event B failed"))
@@ -5756,6 +5824,8 @@ describe("AutonomyScheduler", () => {
           referencedEpisodeIds: [],
           intents: [],
           toolCalls: [],
+          finalizer_rounds: 1,
+          stall_retries: 0,
           agentMessageId: "strm_event_b",
         }),
     };
@@ -5874,6 +5944,8 @@ describe("AutonomyScheduler", () => {
           referencedEpisodeIds: [],
           intents: [],
           toolCalls: [],
+          finalizer_rounds: 1,
+          stall_retries: 0,
           agentMessageId: "strm_mixed_sources",
         }),
       },

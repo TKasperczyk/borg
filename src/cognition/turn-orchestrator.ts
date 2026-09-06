@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { performance } from "node:perf_hooks";
 
 import type {
@@ -94,6 +95,13 @@ import { TurnSelfContextBuilder } from "./self/turn-self-context.js";
 import { NOOP_TRACER, type TurnTerminalOutcome, type TurnTracer } from "../tracing/tracer.js";
 import type { TurnOrchestratorInput } from "./turn-input.js";
 import { isAutonomousLikeTurnOrigin, type CognitiveMode, type IntentRecord } from "./types.js";
+import {
+  associateTurnExecutionMetricsWithError,
+  createTurnExecutionMetrics,
+  observeTurnLlmClient,
+  snapshotTurnExecutionMetrics,
+  type TurnExecutionMetrics,
+} from "./turn-execution-metrics.js";
 
 export type TurnResult = {
   turn_id: string;
@@ -114,6 +122,8 @@ export type TurnResult = {
   referencedEpisodeIds: string[];
   intents: IntentRecord[];
   toolCalls: ToolLoopCallRecord[];
+  finalizer_rounds: number;
+  stall_retries: number;
   reflectionRetiredGoalIds?: GoalId[];
   agentMessageId?: string;
   outboundDelivery?: OutboundDeliveryReceipt;
@@ -205,6 +215,7 @@ export class TurnOrchestrator {
   private readonly tracer: TurnTracer;
   private readonly selfContextBuilder: TurnSelfContextBuilder;
   private readonly turnPhaseCoordinator: TurnPhaseCoordinator;
+  private readonly executionMetricsStorage = new AsyncLocalStorage<TurnExecutionMetrics>();
 
   constructor(private readonly options: TurnOrchestratorOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -215,6 +226,11 @@ export class TurnOrchestrator {
       new SessionLock({
         dataDir: options.config.dataDir,
       });
+    const createObservedLlmClient = () => {
+      const client = options.llmFactory();
+      const metrics = this.executionMetricsStorage.getStore();
+      return metrics === undefined ? client : observeTurnLlmClient(client, metrics);
+    };
     const createStreamReader =
       options.createStreamReader ??
       ((sessionId: SessionId) =>
@@ -225,7 +241,7 @@ export class TurnOrchestrator {
         }));
     const perceptionGateway = new PerceptionGateway({
       config: options.config,
-      llmFactory: () => options.llmFactory(),
+      llmFactory: createObservedLlmClient,
       clock: this.clock,
       tracer: this.tracer,
       getAffectiveSignalDetector: () => options.affectiveSignalDetector,
@@ -407,7 +423,7 @@ export class TurnOrchestrator {
       autonomousOutboundPolicy: options.autonomousOutboundPolicy,
       autonomySchedulerStateProvider: options.autonomySchedulerStateProvider,
       outboundSourceTypes: options.outboundSourceTypes,
-      llmFactory: () => options.llmFactory(),
+      llmFactory: createObservedLlmClient,
       perceptionGateway,
       turnOpeningPersistence,
       attributionLifecycleService,
@@ -543,6 +559,7 @@ export class TurnOrchestrator {
     const streamWriter = this.options.createStreamWriter(sessionId);
     const terminalStartedWallMs = performance.now();
     let terminalOutcome: TurnTerminalOutcome = "error";
+    const executionMetrics = createTurnExecutionMetrics();
     const lifecycleTracker = new TurnLifecycleTracker({
       workingMemoryStore: this.options.workingMemoryStore,
       actionRepository: this.options.actionRepository,
@@ -556,20 +573,28 @@ export class TurnOrchestrator {
 
     try {
       try {
-        const result = await this.turnPhaseCoordinator.run({
-          input: phaseInput,
-          globalTurnCounter,
-          sessionId,
-          turnId,
-          streamWriter,
-          lifecycleTracker,
-        });
+        const result = await this.executionMetricsStorage.run(
+          executionMetrics,
+          async () =>
+            await this.turnPhaseCoordinator.run({
+              input: phaseInput,
+              globalTurnCounter,
+              sessionId,
+              turnId,
+              streamWriter,
+              lifecycleTracker,
+            }),
+        );
         lifecycleTracker.commitTurnState();
         terminalOutcome =
           result.terminalOutcome ??
           (result.path === "suppressed" ? "suppressed_action" : "reflected");
-        return result;
+        return {
+          ...result,
+          ...snapshotTurnExecutionMetrics(executionMetrics),
+        };
       } catch (error) {
+        associateTurnExecutionMetricsWithError(error, executionMetrics);
         const rollbackFailures = await lifecycleTracker.cleanupAbortedTurnState({
           turnId,
           sessionId,

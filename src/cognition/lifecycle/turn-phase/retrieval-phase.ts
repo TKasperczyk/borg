@@ -834,6 +834,7 @@ export async function runRetrievalPhase(input: {
           intervalArmedAt: description.interval_armed_at,
           nextTickAt: description.next_tick_at,
           scheduledTickAt: description.scheduled_tick_at,
+          windowWakes: description.window_wakes,
           budget: description.budget,
           fleetBrake: description.fleet_brake,
           sources: description.sources,

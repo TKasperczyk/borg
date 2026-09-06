@@ -2820,6 +2820,58 @@ describe("buildBaseSystemPrompt", () => {
     },
   );
 
+  it("renders per-wake finalizer and stall counts, their legend, and null-safe totals", () => {
+    const schedulerState = makeSchedulerStateWithSources();
+    schedulerState.windowWakes = [
+      {
+        ts: NOW_MS - 11 * 60_000,
+        trigger_name: "scheduled_reflection",
+        outcome: "headway",
+        headway_bases: ["continued private thought"],
+        finalizer_rounds: 3,
+        stall_retries: 2,
+      },
+      {
+        ts: NOW_MS - 20 * 60_000,
+        trigger_name: "goal_followup_due",
+        outcome: "silent",
+        headway_bases: null,
+        finalizer_rounds: null,
+        stall_retries: null,
+      },
+    ];
+    schedulerState.budget = {
+      ...schedulerState.budget,
+      used_in_current_window: 2,
+    };
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        turnOrigin: "autonomous",
+        turnMechanismEvidence: {
+          recentSuppressions: [],
+          recentRegenerations: [],
+          autonomySchedulerState: schedulerState,
+        },
+      }),
+      { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+    );
+    const block = extractBlock(prompt, "borg_mechanism_evidence");
+    const rows = block.split("\n").filter((line) => line.startsWith("- <wake "));
+
+    expect(rows[0]).toContain(
+      'tr="scheduled_reflection" o="headway" hb="continued private thought" fr="3" sr="2"',
+    );
+    expect(rows[1]).toContain('tr="goal_followup_due" o="silent"');
+    expect(rows[1]).not.toContain(" hb=");
+    expect(rows[1]).not.toContain(" fr=");
+    expect(rows[1]).not.toContain(" sr=");
+    expect(block).toContain("fr=finalizer rounds, sr=transport stall retries");
+    expect(block).toContain("fr or sr absent means the row predates the field");
+    expect(block).toContain(
+      "Wake execution totals over those 2 row(s): fr=3 from 1/2 rows with fr recorded; sr=2 from 1/2 rows with sr recorded. Absent values are excluded, not counted as zero.",
+    );
+  });
+
   // `enabled` is the constructor flag and never a liveness fact, but the line
   // used to spend it as one ("Scheduler loop: running"). The two ways the loop
   // falls behind -- a tick still running, or the interval merely lagging --

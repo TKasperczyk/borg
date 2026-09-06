@@ -167,6 +167,8 @@ describe("executive focus due trigger", () => {
       referencedEpisodeIds: [],
       intents: [],
       toolCalls: [],
+      finalizer_rounds: 1,
+      stall_retries: 0,
       agentMessageId: "strm_agent",
       ...overrides,
     };

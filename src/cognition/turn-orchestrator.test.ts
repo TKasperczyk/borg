@@ -3380,6 +3380,10 @@ describe("TurnOrchestrator evidence ledger", () => {
       const agentEntry = borg.stream.tail(20).find((entry) => entry.kind === "agent_msg");
 
       expect(result.response).toBe(finalText);
+      expect(result).toMatchObject({
+        finalizer_rounds: 1,
+        stall_retries: 0,
+      });
       expect(result.emitted).toBe(true);
       expect(agentEntry?.content).toBe(finalText);
       expect(finalizerRequest?.tool_choice).toEqual({ type: "any" });

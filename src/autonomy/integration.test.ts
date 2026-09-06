@@ -78,6 +78,8 @@ function structuralAutonomyResult(deliveredOutbound = false): TurnResult {
           },
         ]
       : [],
+    finalizer_rounds: 1,
+    stall_retries: 0,
     agentMessageId: "strm_autonomy_simulation" as never,
   };
 }
