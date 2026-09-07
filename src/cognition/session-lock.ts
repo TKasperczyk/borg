@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { isFileLockLive, withFileLock } from "../stream/file-lock.js";
+import { acquireFileLockLease, isFileLockLive } from "../stream/file-lock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
 import { SessionBusyError, StreamError } from "../util/errors.js";
 
@@ -84,72 +84,14 @@ export class SessionLock {
     sessionId: SessionId,
     timeoutMs: number,
   ): Promise<SessionLockLease | null> {
-    const lockPath = this.lockPathFor(sessionId);
-    let releaseLock = () => {};
-
-    const releaseSignal = new Promise<void>((resolve) => {
-      releaseLock = resolve;
-    });
-
-    let entered = false;
-    let settleAcquire: ((error?: unknown) => void) | undefined;
-    const acquired = new Promise<void>((resolve, reject) => {
-      settleAcquire = (error?: unknown) => {
-        if (error === undefined) {
-          resolve();
-          return;
-        }
-
-        reject(error);
-      };
-    });
-
-    const holdLock = withFileLock(
-      lockPath,
-      async () => {
-        entered = true;
-        settleAcquire?.();
-        await releaseSignal;
-      },
-      {
+    try {
+      return await acquireFileLockLease(this.lockPathFor(sessionId), {
         timeoutMs,
         retryDelayMs: this.retryDelayMs,
-      },
-    ).catch((error) => {
-      settleAcquire?.(error);
-      throw error;
-    });
-
-    void holdLock.catch(() => undefined);
-
-    try {
-      await acquired;
-    } catch (error) {
-      if (isLockTimeoutError(error)) {
-        return null;
-      }
-
-      throw error;
-    }
-
-    if (!entered) {
-      throw new StreamError(`Failed to acquire session lock for ${sessionId}`, {
-        code: "SESSION_LOCK_ACQUIRE_FAILED",
       });
+    } catch (error) {
+      if (isLockTimeoutError(error)) return null;
+      throw error;
     }
-
-    let released = false;
-
-    return {
-      release: async () => {
-        if (released) {
-          return;
-        }
-
-        released = true;
-        releaseLock();
-        await holdLock;
-      },
-    };
   }
 }

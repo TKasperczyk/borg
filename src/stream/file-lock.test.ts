@@ -14,10 +14,32 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { isFileLockLive, withFileLock } from "./file-lock.js";
+import { acquireFileLockLease, isFileLockLive, withFileLock } from "./file-lock.js";
 
 describe("file-lock", () => {
   const tempDirs: string[] = [];
+
+  it("holds a lease across calls, propagates contention, and releases idempotently", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "file-lock-lease-"));
+    tempDirs.push(dir);
+    const path = join(dir, "lease.lock");
+    const lease = await acquireFileLockLease(path);
+    expect(isFileLockLive(path)).toBe(true);
+    await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+    await Promise.all([lease.release(), lease.release()]);
+    expect(existsSync(path)).toBe(false);
+    const next = await acquireFileLockLease(path, { timeoutMs: 0 });
+    await next.release();
+  });
+
+  it("reaps a dead lease owner and surfaces acquisition I/O errors", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "file-lock-dead-"));
+    tempDirs.push(dir);
+    const path = join(dir, "lease.lock");
+    writeFileSync(path, JSON.stringify({ pid: 999_999, host: hostname(), timestamp: Date.now() }));
+    await (await acquireFileLockLease(path, { timeoutMs: 0 })).release();
+    await expect(acquireFileLockLease(join(dir, "missing", "lease.lock"))).rejects.toThrow();
+  });
 
   afterEach(() => {
     vi.restoreAllMocks();

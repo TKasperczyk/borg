@@ -6,7 +6,7 @@ import { z } from "zod";
 
 import { readJsonFile, writeJsonFileAtomic } from "../util/atomic-write.js";
 import { StorageError } from "../util/errors.js";
-import { withFileLock } from "../stream/file-lock.js";
+import { acquireFileLockLease } from "../stream/file-lock.js";
 
 export const EMBEDDING_PROFILE_FILE = "embedding-profile.json";
 export const EMBEDDING_FENCE_FILE = "embedding-migration.lock";
@@ -187,39 +187,15 @@ export async function guardBankEmbeddingProfile(
 // writes. Migration also takes this lock, after installing its persistent fence.
 export async function acquireEmbeddingBankAccess(dataDir: string): Promise<() => Promise<void>> {
   mkdirSync(dataDir, { recursive: true });
-  let release!: () => void;
-  let acquired!: () => void;
-  let failed!: (error: unknown) => void;
-  const released = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const ready = new Promise<void>((resolve, reject) => {
-    acquired = resolve;
-    failed = reject;
-  });
-  const holding = (async () => {
-    try {
-      await withFileLock(
-        join(dataDir, EMBEDDING_ACCESS_FILE),
-        async () => {
-          acquired();
-          await released;
-        },
-        { timeoutMs: 1000 },
-      );
-    } catch (cause) {
-      const error = new EmbeddingBankError(
-        "Tenant bank is in use; drain it through /memory/admin/evict before resuming the embedding migration",
-        { code: "EMBEDDING_BANK_BUSY", cause },
-      );
-      failed(error);
-      throw error;
-    }
-  })();
-  void holding.catch(() => undefined);
-  await ready;
-  return async () => {
-    release();
-    await holding;
-  };
+  try {
+    const lease = await acquireFileLockLease(join(dataDir, EMBEDDING_ACCESS_FILE), {
+      timeoutMs: 1000,
+    });
+    return lease.release;
+  } catch (cause) {
+    throw new EmbeddingBankError(
+      "Tenant bank is in use; drain it through /memory/admin/evict before resuming the embedding migration",
+      { code: "EMBEDDING_BANK_BUSY", cause },
+    );
+  }
 }

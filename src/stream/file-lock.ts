@@ -21,6 +21,49 @@ type FileLockOptions = {
   malformedGraceMs?: number;
 };
 
+export type FileLockLease = { release(): Promise<void> };
+
+/** Hold the existing file lock across calls while retaining its owner/reaping rules. */
+export async function acquireFileLockLease(
+  lockPath: string,
+  options: FileLockOptions = {},
+): Promise<FileLockLease> {
+  let release!: () => void;
+  let acquired!: () => void;
+  let failed!: (error: unknown) => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise<void>((resolve, reject) => {
+    acquired = resolve;
+    failed = reject;
+  });
+  const holding = (async () => {
+    try {
+      await withFileLock(
+        lockPath,
+        async () => {
+          acquired();
+          await released;
+        },
+        options,
+      );
+    } catch (error) {
+      failed(error);
+      throw error;
+    }
+  })();
+  // Acquisition failures are delivered by ready; release also observes holding.
+  void holding.catch(() => undefined);
+  await ready;
+  return {
+    release: async () => {
+      release();
+      await holding;
+    },
+  };
+}
+
 type FileLockMetadata = {
   pid: number;
   host: string;
