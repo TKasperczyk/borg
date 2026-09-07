@@ -126,7 +126,7 @@ describe("semantic review service", () => {
         embedding: Float32Array.from([0.88, Math.sqrt(1 - 0.88 ** 2), 0, 0]),
       });
       await service.reviewDuplicateCandidate(
-        buildProposition(createSemanticNodeId(), "Candidate claim"),
+        createSemanticNodeFixture(buildProposition(createSemanticNodeId(), "Candidate claim")),
       );
       expect(llm.requests).toHaveLength(reviews);
     },
