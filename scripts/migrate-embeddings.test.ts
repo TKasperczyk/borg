@@ -21,6 +21,7 @@ import { LanceDbTable } from "../src/storage/lancedb/index.js";
 import { FakeEmbeddingClient } from "../src/embeddings/index.js";
 import {
   acquireEmbeddingBankAccess,
+  EMBEDDING_ACCESS_FILE,
   EMBEDDING_FENCE_FILE,
   readBankEmbeddingProfile,
 } from "../src/embeddings/bank-profile.js";
@@ -44,6 +45,8 @@ import { Borg } from "../src/borg.js";
 import { FakeLLMClient } from "../src/llm/test-support/fake-client.js";
 import { EpisodicRepository } from "../src/memory/episodic/repository.js";
 import { openDatabase } from "../src/storage/sqlite/index.js";
+import { acquireFileLockLease, FILE_LOCK_STALE_MS } from "../src/stream/file-lock.js";
+import { FILE_LOCK_GUARD_SUFFIX } from "../src/stream/file-lock-guard.js";
 import { createEpisodeFixture } from "../src/offline/test-support.js";
 
 const cleanup: string[] = [];
@@ -1190,6 +1193,66 @@ describe("storage-only embedding migration", () => {
     await expect(migrateTenant({ ...bank.options, verifyOnly: true })).rejects.toMatchObject({
       code: "EMBEDDING_MIGRATION_BACKUP_INVALID",
     });
+  });
+
+  it("recovers foreign migration leases, renews during embedding, and excludes guards from backups", async () => {
+    const bank = await fixture(1);
+    const paths = [EMBEDDING_ACCESS_FILE, ".embedding-migration-owner.lock"].map((name) =>
+      join(bank.tenantDir, name),
+    );
+    for (const path of paths) {
+      writeFileSync(
+        path,
+        JSON.stringify({
+          pid: 999_999,
+          host: "previous-pod",
+          timestamp: Date.now() - FILE_LOCK_STALE_MS - 1,
+        }),
+      );
+    }
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    const embed = bank.client.embedBatch.getMockImplementation()!;
+    bank.client.embedBatch.mockImplementationOnce(async (texts) => {
+      await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS * 3);
+      for (const path of paths) {
+        expect(readJsonFile<{ heartbeat: number }>(path)?.heartbeat).toBe(Date.now());
+        await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+        // A different process must still see the kernel lock after backup. A
+        // same-process SQLite connection alone cannot detect accidental fd-close
+        // loss of a POSIX lock caused by copying a guard with ordinary fs APIs.
+        const probe = spawnSync(
+          process.execPath,
+          [
+            "--input-type=module",
+            "-e",
+            `
+          import { DatabaseSync } from 'node:sqlite';
+          const db = new DatabaseSync(process.argv[1]);
+          try { db.exec('BEGIN IMMEDIATE'); process.exitCode = 1; }
+          catch (error) { if (error.errcode !== 5) throw error; }
+          finally { db.close(); }
+        `,
+            `${path}${FILE_LOCK_GUARD_SUFFIX}`,
+          ],
+          { encoding: "utf8", timeout: 5_000 },
+        );
+        expect(probe.status, probe.stderr).toBe(0);
+      }
+      return await embed(texts);
+    });
+    try {
+      const report = await migrateTenant(bank.options, { client: bank.client });
+      expect(report.complete).toBe(true);
+      const manifest = readJsonFile<{ files: Record<string, string> }>(
+        join(String(report.backup), ".embedding-backup.json"),
+      )!;
+      expect(
+        Object.keys(manifest.files).some((name) => name.endsWith(FILE_LOCK_GUARD_SUFFIX)),
+      ).toBe(false);
+      for (const path of paths) expect(existsSync(path)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps the fence when a live tenant must first be evicted", async () => {

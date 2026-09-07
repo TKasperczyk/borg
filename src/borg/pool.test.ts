@@ -1,5 +1,5 @@
-import { EMBEDDING_FENCE_FILE } from "../embeddings/bank-profile.js";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { EMBEDDING_ACCESS_FILE, EMBEDDING_FENCE_FILE } from "../embeddings/bank-profile.js";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,6 +13,7 @@ import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import { ConfigError } from "../util/errors.js";
 import { createSessionId } from "../util/ids.js";
+import { FILE_LOCK_STALE_MS } from "../stream/file-lock.js";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 
@@ -59,6 +60,24 @@ function recordingTracer(events: Array<{ event: TurnTraceEventName; data: TurnTr
 }
 
 describe("BorgPool", () => {
+  it("renews an idle bank beyond the stale window until pool eviction", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    const { pool, root } = makePool();
+    const path = join(root, "alpha", EMBEDDING_ACCESS_FILE);
+    try {
+      await pool.withTenant("alpha", () => undefined);
+      await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS * 3);
+      expect(JSON.parse(readFileSync(path, "utf8")).heartbeat).toBe(Date.now());
+      expect(pool.has("alpha")).toBe(true);
+      await pool.evict("alpha");
+      await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS);
+      expect(existsSync(path)).toBe(false);
+    } finally {
+      await pool.closeAll();
+      vi.useRealTimers();
+    }
+  });
+
   it("isolates tenants in separate dataDirs (no cross-tenant recall)", async () => {
     const { pool, root } = makePool();
 
