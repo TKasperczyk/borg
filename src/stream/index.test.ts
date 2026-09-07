@@ -365,6 +365,8 @@ describe("stream", () => {
     writeFileSync(
       lockPath,
       JSON.stringify({
+        heartbeat: 0,
+        owner: "test-lease-owner",
         pid: process.pid,
         host: hostname(),
         timestamp: Date.now(),

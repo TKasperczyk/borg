@@ -76,7 +76,7 @@ describe("file-lock", () => {
     const dir = mkdtempSync(join(tmpdir(), "file-lock-dead-"));
     tempDirs.push(dir);
     const path = join(dir, "lease.lock");
-    writeFileSync(path, JSON.stringify({ pid: 999_999, host: hostname(), timestamp: Date.now() }));
+    writeFileSync(path, JSON.stringify({ heartbeat: 0, owner: "test-lease-owner", pid: 999_999, host: hostname(), timestamp: Date.now() }));
     await (await acquireFileLockLease(path, { timeoutMs: 0 })).release();
     await expect(acquireFileLockLease(join(dir, "missing", "lease.lock"))).rejects.toThrow();
   });
@@ -107,6 +107,7 @@ describe("file-lock", () => {
     writeFileSync(
       path,
       JSON.stringify({
+        owner: "test-lease-owner",
         pid: process.pid,
         host: "former-pod",
         timestamp: Date.now() - FILE_LOCK_STALE_MS * 3,
@@ -124,14 +125,23 @@ describe("file-lock", () => {
     await lease.release();
   });
 
-  it.each([0, 1e30])(
-    "observes legacy foreign leases for 120 seconds (timestamp=%s)",
-    async (timestamp) => {
+  it.each(["heartbeat", "owner", "both"])(
+    "observes malformed foreign metadata missing %s for the grace period",
+    async (missing) => {
       vi.useFakeTimers();
       const path = leasePath();
-      writeFileSync(path, JSON.stringify({ pid: 999_999, host: "old-pod", timestamp }));
+      writeFileSync(path, JSON.stringify({
+        pid: 999_999,
+        host: "foreign-pod",
+        timestamp: 1e30,
+        ...(missing === "heartbeat" || missing === "both" ? {} : { heartbeat: 1e30 }),
+        ...(missing === "owner" || missing === "both" ? {} : { owner: "foreign-owner" }),
+      }));
+      expect(isFileLockLive(path)).toBe(true);
       await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
-      await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS + 1);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(isFileLockLive(path)).toBe(true);
+      await vi.advanceTimersByTimeAsync(1);
       expect(isFileLockLive(path)).toBe(false);
       await (await acquireFileLockLease(path, { timeoutMs: 0 })).release();
     },
@@ -152,6 +162,7 @@ describe("file-lock", () => {
         atomicWrite.writeFileAtomic(
           path,
           JSON.stringify({
+            owner: "test-lease-owner",
             pid: process.pid,
             host: "live-foreign-pod",
             timestamp: Date.now() + skew,
@@ -170,7 +181,7 @@ describe("file-lock", () => {
     async (change) => {
       vi.useFakeTimers();
       const path = leasePath();
-      const metadata = { pid: 999_999, host: "foreign-pod", timestamp: 0, heartbeat: 1e30 };
+      const metadata = { owner: "test-lease-owner", pid: 999_999, host: "foreign-pod", timestamp: 0, heartbeat: 1e30 };
       writeFileSync(path, JSON.stringify(metadata));
       utimesSync(path, 0, 0);
       expect(isFileLockLive(path)).toBe(true);
@@ -197,7 +208,7 @@ describe("file-lock", () => {
   it("forgets observation when the file disappears, even if the same inode returns", async () => {
     vi.useFakeTimers();
     const path = leasePath();
-    writeFileSync(path, JSON.stringify({ pid: 999_999, host: "foreign-pod", timestamp: 0 }));
+    writeFileSync(path, JSON.stringify({ heartbeat: 0, owner: "test-lease-owner", pid: 999_999, host: "foreign-pod", timestamp: 0 }));
     expect(isFileLockLive(path)).toBe(true);
     await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS);
     renameSync(path, `${path}.moved`);
@@ -211,7 +222,7 @@ describe("file-lock", () => {
   it("restarts the observation window if the contender's clock moves backward", async () => {
     vi.useFakeTimers();
     const path = leasePath();
-    writeFileSync(path, JSON.stringify({ pid: 999_999, host: "foreign-pod", timestamp: 1e30 }));
+    writeFileSync(path, JSON.stringify({ heartbeat: 0, owner: "test-lease-owner", pid: 999_999, host: "foreign-pod", timestamp: 1e30 }));
     expect(isFileLockLive(path)).toBe(true);
     await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS - 1);
     expect(isFileLockLive(path)).toBe(true);
@@ -244,9 +255,9 @@ describe("file-lock", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("retains a local live PID even when its legacy timestamp is ancient", async () => {
+  it("retains a local live PID even when its heartbeat and timestamp are ancient", async () => {
     const path = leasePath();
-    writeFileSync(path, JSON.stringify({ pid: process.pid, host: hostname(), timestamp: 0 }));
+    writeFileSync(path, JSON.stringify({ heartbeat: 0, owner: "test-lease-owner", pid: process.pid, host: hostname(), timestamp: 0 }));
     expect(isFileLockLive(path)).toBe(true);
     await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
   });
@@ -280,7 +291,7 @@ describe("file-lock", () => {
     vi.useFakeTimers();
     const path = leasePath();
     const lease = await acquireFileLockLease(path);
-    const replacement = JSON.stringify({ pid: process.pid, host: hostname(), timestamp: 42 });
+    const replacement = JSON.stringify({ heartbeat: 0, owner: "test-lease-owner", pid: process.pid, host: hostname(), timestamp: 42 });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     writeFileSync(path, replacement);
     await vi.advanceTimersByTimeAsync(FILE_LOCK_HEARTBEAT_INTERVAL_MS * 2);
@@ -295,6 +306,7 @@ describe("file-lock", () => {
     writeFileSync(
       path,
       JSON.stringify({
+        owner: "test-lease-owner",
         pid: 999_999,
         host: "dead-pod",
         timestamp: 0,
@@ -354,6 +366,8 @@ describe("file-lock", () => {
     writeFileSync(
       lockPath,
       JSON.stringify({
+        heartbeat: 0,
+        owner: "test-lease-owner",
         pid: 999_999,
         host: hostname(),
         timestamp: Date.now() - 10_000,
@@ -422,7 +436,7 @@ describe("file-lock", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const lockPath = join(tempDir, "replacement.lock");
-    const replacement = JSON.stringify({ pid: process.pid, host: hostname(), timestamp: 42 });
+    const replacement = JSON.stringify({ heartbeat: 0, owner: "test-lease-owner", pid: process.pid, host: hostname(), timestamp: 42 });
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     await withFileLock(lockPath, () => {

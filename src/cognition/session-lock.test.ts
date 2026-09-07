@@ -28,6 +28,8 @@ describe("SessionLock", () => {
     writeFileSync(
       path,
       JSON.stringify({
+        heartbeat: 0,
+        owner: "test-lease-owner",
         pid: 999_999,
         host: "former-pod",
         timestamp: Date.now() - FILE_LOCK_STALE_MS - 1,

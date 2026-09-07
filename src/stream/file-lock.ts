@@ -1,6 +1,5 @@
 import {
   closeSync,
-  existsSync,
   fsyncSync,
   lstatSync,
   openSync,
@@ -18,7 +17,7 @@ import { sleep } from "../util/clock.js";
 import { StreamError } from "../util/errors.js";
 import { isNodeError } from "../util/guards.js";
 import { serializeJsonValue } from "../util/json-value.js";
-import { FILE_LOCK_GUARD_SUFFIX, tryAcquireFileLockGuard } from "./file-lock-guard.js";
+import { tryAcquireFileLockGuard } from "./file-lock-guard.js";
 
 type FileLockOptions = {
   timeoutMs?: number;
@@ -37,8 +36,8 @@ type FileLockMetadata = {
   pid: number;
   host: string;
   timestamp: number;
-  heartbeat?: number;
-  owner?: string;
+  heartbeat: number;
+  owner: string;
 };
 
 const LOCAL_HOSTNAME = hostname();
@@ -80,7 +79,7 @@ type LockObservation = {
 };
 
 // Observations survive acquisition timeouts, but never survive process restart.
-// Writer clocks (including legacy timestamps and mtimes) are not age evidence.
+// Writer clocks (including timestamps and mtimes) are not age evidence.
 const lockObservations = new Map<string, LockObservation>();
 
 function forgetLockObservation(lockPath: string): void {
@@ -125,11 +124,10 @@ function isFileLockMetadata(value: unknown): value is FileLockMetadata {
     typeof (value as FileLockMetadata).host === "string" &&
     typeof (value as FileLockMetadata).timestamp === "number" &&
     Number.isFinite((value as FileLockMetadata).timestamp) &&
-    ((value as FileLockMetadata).heartbeat === undefined ||
-      (typeof (value as FileLockMetadata).heartbeat === "number" &&
-        Number.isFinite((value as FileLockMetadata).heartbeat))) &&
-    ((value as FileLockMetadata).owner === undefined ||
-      typeof (value as FileLockMetadata).owner === "string")
+    typeof (value as FileLockMetadata).heartbeat === "number" &&
+    Number.isFinite((value as FileLockMetadata).heartbeat) &&
+    typeof (value as FileLockMetadata).owner === "string" &&
+    (value as FileLockMetadata).owner.length > 0
   );
 }
 
@@ -217,8 +215,8 @@ function reapStaleLock(lockPath: string, malformedGraceMs: number): boolean {
   }
 
   if (metadata.host !== LOCAL_HOSTNAME) {
-    // First sighting always starts a full window, including pre-heartbeat
-    // leases. Any observed identity/content change restarts it.
+    // First sighting starts a full window. Any observed identity/content
+    // change restarts it.
     return observedUnchangedFor(lockPath, identity, metadataText) >= FILE_LOCK_STALE_MS
       ? removeLockFileIfOwned(lockPath, identity, metadataText)
       : false;
@@ -279,8 +277,6 @@ export function isFileLockLive(
       return true;
     }
     // A stopped remote holder can miss heartbeats while retaining its guard.
-    // Avoid creating files for this advisory check of a legacy lease.
-    if (!existsSync(`${lockPath}${FILE_LOCK_GUARD_SUFFIX}`)) return false;
     try {
       const guard = tryAcquireFileLockGuard(lockPath);
       if (guard === null) return true;

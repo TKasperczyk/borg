@@ -1223,7 +1223,7 @@ describe("storage-only embedding migration", () => {
       const path = join(bank.tenantDir, name);
       writeFileSync(
         path,
-        JSON.stringify({ pid: 999_999, host: "dead-pod", timestamp: 1e30, heartbeat: 1e30 }),
+        JSON.stringify({ owner: "test-lease-owner", pid: 999_999, host: "dead-pod", timestamp: 1e30, heartbeat: 1e30 }),
       );
       vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
       let finished = false;
@@ -1267,6 +1267,8 @@ describe("storage-only embedding migration", () => {
       writeFileSync(
         path,
         JSON.stringify({
+          heartbeat: 0,
+          owner: "test-lease-owner",
           pid: 999_999,
           host: "previous-pod",
           timestamp: Date.now() - FILE_LOCK_STALE_MS - 1,
