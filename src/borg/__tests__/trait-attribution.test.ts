@@ -1,3 +1,4 @@
+import { seedTestEmbeddingProfile } from "../../test-support/embedding-profile.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -36,6 +37,7 @@ describe("Borg", () => {
     tempDirs.push(tempDir);
 
     const clock = new ManualClock(1_000);
+    seedTestEmbeddingProfile(tempDir);
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
     });
@@ -177,6 +179,7 @@ describe("Borg", () => {
     tempDirs.push(tempDir);
 
     const clock = new ManualClock(1_000);
+    seedTestEmbeddingProfile(tempDir);
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
     });
@@ -298,6 +301,7 @@ describe("Borg", () => {
     tempDirs.push(tempDir);
 
     const clock = new ManualClock(1_000);
+    seedTestEmbeddingProfile(tempDir);
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
     });
@@ -428,6 +432,7 @@ describe("Borg", () => {
     tempDirs.push(tempDir);
 
     const clock = new ManualClock(1_000);
+    seedTestEmbeddingProfile(tempDir);
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
     });
@@ -617,6 +622,7 @@ describe("Borg", () => {
     tempDirs.push(tempDir);
 
     const clock = new ManualClock(1_000);
+    seedTestEmbeddingProfile(tempDir);
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
     });
@@ -749,6 +755,7 @@ describe("Borg", () => {
     tempDirs.push(tempDir);
 
     const clock = new ManualClock(1_000);
+    seedTestEmbeddingProfile(tempDir);
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
     });
