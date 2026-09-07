@@ -34,6 +34,7 @@ import {
 } from "./embedding-migration/migrate.js";
 import { parseEmbeddingMigrationArgs } from "./migrate-embeddings.js";
 import { migrationHeadroom, verifyTenantBackup } from "./embedding-migration/backup.js";
+import { preserveProtectedEpisodeTokenLines } from "../src/memory/episodic/protected-lines.js";
 
 const cleanup: string[] = [];
 afterEach(() => {
@@ -170,7 +171,149 @@ async function fixture(count = 2, sourceDimensions = 4, targetDimensions = 2) {
   return { root, tenantDir, original, client, options };
 }
 
+async function mixedLegacyConsolidations(missingInputColumn = false) {
+  const bank = await fixture(5);
+  const connection = await connect(join(bank.tenantDir, "lancedb"));
+  const table = await connection.openTable("episodes");
+  const inlineSources =
+    "First source prose OUTCOME fp=one decision=send\nSecond source prose decision=hold";
+  const standaloneSource = "OUTCOME fp=two";
+  try {
+    if (missingInputColumn) await table.dropColumns(["consolidation_embedding_input"]);
+    await table.update({ where: "id = 'episodes-0'", values: { narrative: inlineSources } });
+    await table.update({ where: "id = 'episodes-2'", values: { narrative: standaloneSource } });
+    for (const index of [1, 3, 4]) {
+      await table.update({
+        where: `id = 'episodes-${index}'`,
+        values: {
+          episode_kind: "consolidation_version",
+          narrative: preserveProtectedEpisodeTokenLines(`Synthesis ${index}`, [
+            index === 3 ? standaloneSource : inlineSources,
+          ]),
+          lineage_derived_from: JSON.stringify([index === 3 ? "episodes-2" : "episodes-0"]),
+        },
+      });
+    }
+  } finally {
+    table.close();
+    connection.close();
+  }
+  return bank;
+}
+
 describe("storage-only embedding migration", () => {
+  it("reports every ambiguous legacy input in a mixed dry-run inventory and exits zero across tenants", async () => {
+    const bank = await mixedLegacyConsolidations();
+    const report = await migrateTenant({ ...bank.options, dryRun: true });
+    expect(report).toMatchObject({
+      dry_run: true,
+      complete: false,
+      embedding_text_unrecoverable: {
+        count: 2,
+        ids: ["episodes-1", "episodes-4"],
+        rows: [1, 4].map((index) => ({
+          episode_id: `episodes-${index}`,
+          reason: "Legacy consolidation embedding input is ambiguous",
+          candidate_count: 3,
+        })),
+      },
+    });
+    const inventory = report.inventory as Awaited<ReturnType<typeof inventoryBank>>;
+    expect(inventory.tables.map((table) => table.rows.length)).toEqual(Array(7).fill(5));
+    expect(
+      inventory.tables[0]!.rows.filter((row) => row.text_hash === null).map((row) => row.id),
+    ).toEqual(["episodes-1", "episodes-4"]);
+    cpSync(bank.tenantDir, join(bank.root, "team-agent-esb"), { recursive: true });
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "scripts/migrate-embeddings.ts",
+        "--data-root",
+        bank.root,
+        "--all-tenants",
+        "--source-model",
+        bank.options.sourceModel,
+        "--target-model",
+        bank.options.target.model,
+        "--target-dims",
+        "2",
+        "--dry-run",
+      ],
+      { encoding: "utf8" },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    const reports = result.stdout
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line).report);
+    expect(reports).toHaveLength(2);
+    expect(reports.map((entry) => entry.embedding_text_unrecoverable.ids)).toEqual(
+      Array(2).fill(["episodes-1", "episodes-4"]),
+    );
+    expect(existsSync(join(bank.tenantDir, MIGRATION_JOURNAL))).toBe(false);
+    expect(existsSync(join(bank.tenantDir, EMBEDDING_FENCE_FILE))).toBe(false);
+  });
+
+  it("fails a real run only after reporting the full unrecoverable list, including missing raw sources", async () => {
+    const bank = await mixedLegacyConsolidations();
+    const connection = await connect(join(bank.tenantDir, "lancedb"));
+    const table = await connection.openTable("episodes");
+    await table.update({
+      where: "id = 'episodes-3'",
+      values: { lineage_derived_from: '["missing-source"]' },
+    });
+    table.close();
+    connection.close();
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "scripts/migrate-embeddings.ts",
+        "--data-root",
+        bank.root,
+        "--tenant",
+        "team-agent-ai",
+        "--source-model",
+        bank.options.sourceModel,
+        "--target-model",
+        bank.options.target.model,
+        "--target-dims",
+        "2",
+      ],
+      { encoding: "utf8", env: { ...process.env, LLM_API_KEY: "test-key" } },
+    );
+    expect(result.status).toBe(1);
+    const failure = JSON.parse(result.stderr.trim().split("\n").at(-1)!);
+    expect(failure).toMatchObject({
+      code: "EMBEDDING_TEXT_UNRECOVERABLE",
+      report: {
+        complete: false,
+        embedding_text_unrecoverable: {
+          count: 3,
+          ids: ["episodes-1", "episodes-3", "episodes-4"],
+          rows: expect.arrayContaining([
+            expect.objectContaining({ episode_id: "episodes-3", candidate_count: 0 }),
+          ]),
+        },
+      },
+    });
+    const events = result.stdout
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(
+      events
+        .find((event) => event.phase === "inventory")
+        .inventory.tables.map((entry: { rows: unknown[] }) => entry.rows.length),
+    ).toEqual(Array(7).fill(5));
+    expect(existsSync(bank.options.backupDir)).toBe(false);
+    expect(existsSync(join(bank.tenantDir, MIGRATION_JOURNAL))).toBe(false);
+    expect(existsSync(join(bank.tenantDir, "lancedb.staging-1"))).toBe(false);
+    expect(existsSync(join(bank.tenantDir, EMBEDDING_FENCE_FILE))).toBe(true);
+  });
   it("validates an injected migration client before fencing or backing up", async () => {
     const bank = await fixture(0);
     const delegate = new FakeEmbeddingClient(2);

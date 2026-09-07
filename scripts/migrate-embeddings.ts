@@ -10,7 +10,7 @@ import { DEFAULT_TENANT_ID_PATTERN, listBankTenantIds } from "../src/borg/tenant
 import { DEFAULT_GATEWAY_BASE_URL } from "../src/sidecar/gateway-config.js";
 import { parsePositiveIntegerValue } from "../src/util/parse.js";
 import { BorgError, ConfigError } from "../src/util/errors.js";
-import { migrateTenant } from "./embedding-migration/migrate.js";
+import { migrateTenant, MigrationInputBlockedError } from "./embedding-migration/migrate.js";
 
 export function parseEmbeddingMigrationArgs(args: string[]) {
   const { values } = parseArgs({
@@ -137,7 +137,7 @@ export async function embeddingMigrationMain(args = process.argv.slice(2)): Prom
       },
     );
     process.stdout.write(`${JSON.stringify({ report })}\n`);
-    if (report.complete !== true) return 1;
+    if (!options.dryRun && report.complete !== true) return 1;
   }
   return 0;
 }
@@ -147,7 +147,7 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
     process.exitCode = await embeddingMigrationMain();
   } catch (error) {
     process.stderr.write(
-      `${JSON.stringify({ error: error instanceof Error ? error.message : String(error), code: error instanceof BorgError ? error.code : "EMBEDDING_MIGRATION_FAILED", complete: false })}\n`,
+      `${JSON.stringify({ error: error instanceof Error ? error.message : String(error), code: error instanceof BorgError ? error.code : "EMBEDDING_MIGRATION_FAILED", complete: false, ...(error instanceof MigrationInputBlockedError ? { report: error.report } : {}) })}\n`,
     );
     process.exitCode = 1;
   }

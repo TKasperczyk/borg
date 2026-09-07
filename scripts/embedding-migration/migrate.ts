@@ -38,13 +38,14 @@ import {
   migrationRows,
   migrationSchema,
   migrationSchemaHash,
+  unrecoverableInputSchema,
   VECTOR_TABLES,
   type BankInventory,
 } from "./inventory.js";
 
 const rowIdentitySchema = z.object({
   id: z.string(),
-  text_hash: z.string(),
+  text_hash: z.string().nullable(),
   fields_hash: z.string(),
 });
 const inventorySchema = z.object({
@@ -63,6 +64,7 @@ const inventorySchema = z.object({
   sqlite_counts: z.record(z.string(), z.number()),
   serialized_vectors: z.array(z.object({ location: z.string(), paths: z.array(z.string()) })),
   problems: z.array(z.string()),
+  embedding_text_unrecoverable: z.array(unrecoverableInputSchema).optional(),
 });
 const journalSchema = z.object({
   version: z.literal(1),
@@ -178,7 +180,32 @@ export type MigrationDependencies = {
   diskSpace?: DiskSpaceReader;
 };
 
+function inputReport(inventory: BankInventory) {
+  const rows = inventory.embedding_text_unrecoverable ?? [];
+  return {
+    embedding_text_unrecoverable: {
+      count: rows.length,
+      ids: rows.map((row) => row.episode_id),
+      rows,
+    },
+  };
+}
+
+export class MigrationInputBlockedError extends EmbeddingBankError {
+  readonly report;
+  constructor(inventory: BankInventory) {
+    const report = inputReport(inventory);
+    super(
+      `Unrecoverable embedding input for ${report.embedding_text_unrecoverable.count} episodes: ${report.embedding_text_unrecoverable.ids.join(", ")}`,
+      { code: "EMBEDDING_TEXT_UNRECOVERABLE" },
+    );
+    this.report = { complete: false, inventory, ...report };
+  }
+}
+
 function requireComplete(inventory: BankInventory): void {
+  if (inventory.embedding_text_unrecoverable?.length)
+    throw new MigrationInputBlockedError(inventory);
   if (inventory.problems.length)
     throw new EmbeddingBankError(inventory.problems.join("; "), {
       code: "EMBEDDING_MIGRATION_INCOMPLETE",
@@ -330,7 +357,7 @@ async function embedStaging(
           });
         // A checkpoint is only trusted if its committed staging row still exists
         // with the recorded text, fields and a valid target vector.
-        const staged = new Map<string, string>();
+        const staged = new Map<string, string | null>();
         for await (const records of migrationRecords(
           destination,
           definition.name,
@@ -338,7 +365,12 @@ async function embedStaging(
           true,
           original,
         ))
-          for (const { row, identity } of records) {
+          for (const { row, identity, unrecoverable } of records) {
+            if (unrecoverable)
+              throw new MigrationInputBlockedError({
+                ...journal.inventory,
+                embedding_text_unrecoverable: [unrecoverable],
+              });
             assertUsableEmbedding(row.embedding as ArrayLike<number>, journal.target.dimensions);
             const committed = done.get(`${definition.name}/${identity.id}`);
             if (
@@ -366,6 +398,12 @@ async function embedStaging(
           while (!stopped && iterator) {
             const next = await iterator.next();
             if (next.done) return;
+            for (const record of next.value)
+              if (record.unrecoverable)
+                throw new MigrationInputBlockedError({
+                  ...journal.inventory,
+                  embedding_text_unrecoverable: [record.unrecoverable],
+                });
             const pending = next.value.filter(({ identity }) => {
               const committed = done.get(`${definition.name}/${identity.id}`);
               if (
@@ -384,7 +422,7 @@ async function embedStaging(
             let vectors: Float32Array[] | undefined;
             for (let attempt = 0; ; attempt += 1) {
               try {
-                vectors = await client!.embedBatch(pending.map((record) => record.text));
+                vectors = await client!.embedBatch(pending.map((record) => record.text!));
                 if (vectors.length !== pending.length)
                   throw new Error("Embedding batch response count mismatch");
                 for (const vector of vectors)
@@ -506,11 +544,12 @@ export async function migrateTenant(
     return {
       tenant: tenantDir,
       dry_run: true,
-      complete: inventory.problems.length === 0,
+      complete: inventory.problems.length === 0 && !inventory.embedding_text_unrecoverable?.length,
       provisional: true,
       source,
       target,
       inventory,
+      ...inputReport(inventory),
       headroom,
     };
   }

@@ -4,6 +4,7 @@ import {
   buildConsolidationEpisodeEmbeddingText,
   buildEpisodeEmbeddingText,
   collectProtectedEpisodeTokenLines,
+  EpisodeEmbeddingTextError,
   preserveProtectedEpisodeTokenLines,
 } from "./protected-lines.js";
 
@@ -55,6 +56,40 @@ describe("protected episode token lines", () => {
         legacyProtectedSourceTexts: [source],
       }),
     ).toThrow("Legacy consolidation embedding input is ambiguous");
+  });
+
+  it("counts every distinct legacy candidate and exposes only a narrative-preserving longest prefix", () => {
+    const sources = ["First prose OUTCOME fp=first", "Second prose decision=send"];
+    const narrative = preserveProtectedEpisodeTokenLines("Synthesis", sources);
+    for (const stored of [narrative, ` ${narrative} `]) {
+      let caught: unknown;
+      try {
+        buildEpisodeEmbeddingText({
+          title: "Title",
+          narrative: stored,
+          tags: [],
+          episode_kind: "consolidation_version",
+          legacyProtectedSourceTexts: sources,
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(EpisodeEmbeddingTextError);
+      expect(caught).toMatchObject({ candidateCount: 3, code: "EMBEDDING_TEXT_UNRECOVERABLE" });
+      const error = caught as EpisodeEmbeddingTextError;
+      if (stored === narrative) {
+        expect(error.longestPrefix).toEqual({
+          synthesized_narrative: narrative,
+          protected_source_lines: sources,
+        });
+        expect(
+          preserveProtectedEpisodeTokenLines(
+            error.longestPrefix!.synthesized_narrative,
+            error.longestPrefix!.protected_source_lines,
+          ),
+        ).toBe(narrative);
+      } else expect(error.longestPrefix).toBeUndefined();
+    }
   });
 
   it("uses recorded source order and refuses stale synthesized input", () => {

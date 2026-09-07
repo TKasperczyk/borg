@@ -13,6 +13,8 @@ import { createImagePerceptionTableSchema } from "../../src/attachments/percepti
 import {
   buildEpisodeEmbeddingText,
   consolidationEmbeddingInputSchema,
+  EpisodeEmbeddingTextError,
+  type ConsolidationEmbeddingInput,
 } from "../../src/memory/episodic/protected-lines.js";
 import { buildNodeEmbeddingText } from "../../src/memory/semantic/embedding-text.js";
 import { semanticObservationMetadataSchema } from "../../src/memory/semantic/types.js";
@@ -75,7 +77,20 @@ export const VECTOR_TABLES = [
   },
 ] as const;
 export type VectorTableName = (typeof VECTOR_TABLES)[number]["name"];
-export type RowIdentity = { id: string; text_hash: string; fields_hash: string };
+export type RowIdentity = { id: string; text_hash: string | null; fields_hash: string };
+export const unrecoverableInputSchema = z.object({
+  episode_id: z.string(),
+  reason: z.string(),
+  candidate_count: z.number().int().nonnegative(),
+});
+export type UnrecoverableInput = z.infer<typeof unrecoverableInputSchema>;
+type MigrationRecord = {
+  row: Record<string, unknown>;
+  text: string | null;
+  identity: RowIdentity;
+  unrecoverable?: UnrecoverableInput;
+  longestPrefix?: ConsolidationEmbeddingInput;
+};
 export type TableInventory = {
   name: VectorTableName;
   present: boolean;
@@ -91,6 +106,8 @@ export type BankInventory = {
   sqlite_counts: Record<string, number>;
   serialized_vectors: { location: string; paths: string[] }[];
   problems: string[];
+  // Omit when empty to retain the fingerprints of existing journals/backups.
+  embedding_text_unrecoverable?: UnrecoverableInput[];
 };
 
 export function migrationRowText(
@@ -145,7 +162,7 @@ export function migrationRowText(
 export function migrationRowIdentity(
   name: VectorTableName,
   row: Record<string, unknown>,
-  text = migrationRowText(name, row),
+  text: string | null = migrationRowText(name, row),
 ): RowIdentity {
   const { embedding: _embedding, ...fields } = row;
   return {
@@ -153,7 +170,7 @@ export function migrationRowIdentity(
       .string()
       .min(1)
       .parse(row[name === "image_perception_embeddings" ? "payload_id" : "id"]),
-    text_hash: sha256Bytes(Buffer.from(text)),
+    text_hash: text === null ? null : sha256Bytes(Buffer.from(text)),
     fields_hash: fingerprintCanonicalValue(fields).canonicalSha256,
   };
 }
@@ -218,39 +235,58 @@ export async function* migrationRecords(
   batchSize: number,
   includeVectors = false,
   sourceTable = table,
-): AsyncGenerator<{ row: Record<string, unknown>; text: string; identity: RowIdentity }[]> {
+): AsyncGenerator<MigrationRecord[]> {
   for await (const rows of migrationRows(table, batchSize, includeVectors)) {
-    const records = [];
+    const records: MigrationRecord[] = [];
     for (const row of rows) {
-      let sources: string[] | undefined;
-      if (
-        name === "episodes" &&
-        row.episode_kind === "consolidation_version" &&
-        row.consolidation_embedding_input == null
-      ) {
-        const ids = z.array(z.string()).parse(JSON.parse(String(row.lineage_derived_from ?? "[]")));
-        const rawRows =
-          ids.length === 0
-            ? []
-            : await sourceTable
-                .query()
-                .where(`id IN (${ids.map(quoteSqlString).join(", ")})`)
-                .select(["id", "narrative"])
-                .limit(ids.length)
-                .toArray();
-        const byId = new Map(
-          rawRows.map((source) => [String(source.id), z.string().parse(source.narrative)]),
-        );
-        if (byId.size !== new Set(ids).size || rawRows.length !== byId.size)
-          throw new EmbeddingBankError(`Cannot recover raw consolidation sources for ${row.id}`, {
-            code: "EMBEDDING_TEXT_UNRECOVERABLE",
-          });
-        // Production records derived_from in the same oldest-first order used
-        // for protected source lines. The persisted lineage retains that order.
-        sources = ids.map((id) => byId.get(id)!);
+      try {
+        let sources: string[] | undefined;
+        if (
+          name === "episodes" &&
+          row.episode_kind === "consolidation_version" &&
+          row.consolidation_embedding_input == null
+        ) {
+          const ids = z
+            .array(z.string())
+            .parse(JSON.parse(String(row.lineage_derived_from ?? "[]")));
+          const rawRows =
+            ids.length === 0
+              ? []
+              : await sourceTable
+                  .query()
+                  .where(`id IN (${ids.map(quoteSqlString).join(", ")})`)
+                  .select(["id", "narrative"])
+                  .limit(ids.length)
+                  .toArray();
+          const byId = new Map(
+            rawRows.map((source) => [String(source.id), z.string().parse(source.narrative)]),
+          );
+          if (byId.size !== new Set(ids).size || rawRows.length !== byId.size)
+            throw new EmbeddingBankError(`Cannot recover raw consolidation sources for ${row.id}`, {
+              code: "EMBEDDING_TEXT_UNRECOVERABLE",
+            });
+          // Production records derived_from in the same oldest-first order used
+          // for protected source lines. The persisted lineage retains that order.
+          sources = ids.map((id) => byId.get(id)!);
+        }
+        const text = migrationRowText(name, row, sources);
+        records.push({ row, text, identity: migrationRowIdentity(name, row, text) });
+      } catch (error) {
+        if (!(error instanceof EmbeddingBankError) || error.code !== "EMBEDDING_TEXT_UNRECOVERABLE")
+          throw error;
+        records.push({
+          row,
+          text: null,
+          identity: migrationRowIdentity(name, row, null),
+          unrecoverable: {
+            episode_id: String(row.id),
+            reason: error.message,
+            candidate_count: error instanceof EpisodeEmbeddingTextError ? error.candidateCount : 0,
+          },
+          longestPrefix:
+            error instanceof EpisodeEmbeddingTextError ? error.longestPrefix : undefined,
+        });
       }
-      const text = migrationRowText(name, row, sources);
-      records.push({ row, text, identity: migrationRowIdentity(name, row, text) });
     }
     yield records;
   }
@@ -318,7 +354,8 @@ export async function inventoryBank(
         const seen = new Set<string>();
         if (table)
           for await (const records of migrationRecords(table, definition.name, batchSize))
-            for (const { row, identity } of records) {
+            for (const { row, identity, unrecoverable } of records) {
+              if (unrecoverable) (result.embedding_text_unrecoverable ??= []).push(unrecoverable);
               if (seen.has(identity.id))
                 result.problems.push(`Duplicate id ${definition.name}/${identity.id}`);
               seen.add(identity.id);
@@ -377,6 +414,7 @@ export async function inventoryBank(
       }
     }
     inspectPlans(tenantDir);
+    result.embedding_text_unrecoverable?.sort((a, b) => a.episode_id.localeCompare(b.episode_id));
     return result;
   } finally {
     connection?.close();
