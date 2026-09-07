@@ -23,6 +23,7 @@ import {
   acquireEmbeddingBankAccess,
   EMBEDDING_ACCESS_FILE,
   EMBEDDING_FENCE_FILE,
+  EMBEDDING_PROFILE_FILE,
   readBankEmbeddingProfile,
 } from "../src/embeddings/bank-profile.js";
 import { readJsonFile } from "../src/util/atomic-write.js";
@@ -33,6 +34,7 @@ import {
   MIGRATION_JOURNAL,
   type MigrationDependencies,
 } from "./embedding-migration/migrate.js";
+import { seedTestEmbeddingProfile } from "../src/test-support/embedding-profile.js";
 import { parseEmbeddingMigrationArgs } from "./migrate-embeddings.js";
 import { migrationHeadroom, verifyTenantBackup } from "./embedding-migration/backup.js";
 import {
@@ -59,6 +61,10 @@ async function fixture(count = 2, sourceDimensions = 4, targetDimensions = 2) {
   cleanup.push(root);
   const tenantDir = join(root, "team-agent-ai");
   mkdirSync(tenantDir);
+  seedTestEmbeddingProfile(tenantDir, {
+    model: "generative-apis/qwen3-embedding-8b",
+    dimensions: sourceDimensions,
+  });
   const db = new DatabaseSync(join(tenantDir, "borg.db"));
   db.exec("PRAGMA journal_mode=WAL");
   const connection = await connect(join(tenantDir, "lancedb"));
@@ -705,6 +711,20 @@ describe("storage-only embedding migration", () => {
     expect(existsSync(join(bank.tenantDir, "lancedb.staging-1"))).toBe(false);
     expect(existsSync(join(bank.tenantDir, EMBEDDING_FENCE_FILE))).toBe(true);
   });
+  it.each([true, false])(
+    "requires a persisted source profile before migrating (dryRun=%s)",
+    async (dryRun) => {
+      const bank = await fixture(1);
+      rmSync(join(bank.tenantDir, EMBEDDING_PROFILE_FILE));
+      await expect(
+        migrateTenant({ ...bank.options, dryRun }, { client: bank.client }),
+      ).rejects.toMatchObject({ code: "EMBEDDING_PROFILE_REQUIRED" });
+      expect(bank.client.embedBatch).not.toHaveBeenCalled();
+      expect(readBankEmbeddingProfile(bank.tenantDir)).toBeUndefined();
+      expect(existsSync(join(bank.tenantDir, EMBEDDING_FENCE_FILE))).toBe(false);
+    },
+  );
+
   it("validates an injected migration client before fencing or backing up", async () => {
     const bank = await fixture(0);
     const delegate = new FakeEmbeddingClient(2);
@@ -855,13 +875,14 @@ describe("storage-only embedding migration", () => {
 
   it("bounds gateway retries and keeps the failed tenant fenced", async () => {
     const bank = await fixture(1);
+    const source = readBankEmbeddingProfile(bank.tenantDir);
     bank.client.embedBatch.mockRejectedValue(new Error("gateway unavailable"));
     await expect(
       migrateTenant(bank.options, { client: bank.client, retryDelaysMs: [0, 0] }),
     ).rejects.toThrow("gateway unavailable");
     expect(bank.client.embedBatch).toHaveBeenCalledTimes(3);
     expect(existsSync(join(bank.tenantDir, EMBEDDING_FENCE_FILE))).toBe(true);
-    expect(readBankEmbeddingProfile(bank.tenantDir)).toBeUndefined();
+    expect(readBankEmbeddingProfile(bank.tenantDir)).toEqual(source);
   });
 
   it("refuses insufficient disk headroom before creating a backup", async () => {

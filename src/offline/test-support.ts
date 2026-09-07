@@ -131,6 +131,8 @@ import {
   type OfflineContext,
 } from "./index.js";
 
+import { seedTestEmbeddingProfile } from "../test-support/embedding-profile.js";
+
 export class TestEmbeddingClient implements EmbeddingClient {
   get profile() {
     return { model: "fake-embed", dimensions: this.dims };
@@ -225,8 +227,6 @@ export function createTestConfig(
     },
     embedding: {
       ...DEFAULT_CONFIG.embedding,
-      // Storage fixtures created without Borg.open contain these fake vectors.
-      legacySourceModel: "fake-embed",
       ...overrides.embedding,
       dims: embeddingDimensions,
     },
@@ -583,6 +583,10 @@ export async function createOfflineTestHarness(
     },
     { embeddingDimensions },
   );
+  seedTestEmbeddingProfile(tempDir, {
+    model: embeddingClient.profile?.model ?? "fake-embed",
+    dimensions: embeddingDimensions,
+  });
   const lance = new LanceDbStore({
     uri: join(tempDir, "lancedb"),
   });

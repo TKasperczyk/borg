@@ -91,11 +91,7 @@ export async function openBorgDependencies(
         dimensions: options.embeddingDimensions,
       });
     releaseEmbeddingBankAccess = await acquireEmbeddingBankAccess(resolvedConfig.dataDir);
-    await guardBankEmbeddingProfile(
-      resolvedConfig.dataDir,
-      effectiveEmbeddingProfile,
-      options.embeddingLegacySourceModel ?? resolvedConfig.embedding.legacySourceModel,
-    );
+    await guardBankEmbeddingProfile(resolvedConfig.dataDir, effectiveEmbeddingProfile);
     const outboundConnectorRegistry = new MessageConnectorRegistry(
       options.outboundConnectors ?? [],
     );

@@ -2,15 +2,21 @@
 
 ## Preconditions
 
-Deploy this version of the sidecar **with the old embedding environment and an explicit legacy source assertion first**:
+Every existing bank must have `embedding-profile.json` matching its stored vectors. New banks with no SQLite/LanceDB storage initialize a fresh generation-zero profile from the effective client. Runtime opens and migrations reject an existing bank without a profile, even when the configured model and dimensions match its vectors.
 
-```text
-EMBEDDING_MODEL=generative-apis/qwen3-embedding-8b
-EMBEDDING_DIMS=4096
-EMBEDDING_LEGACY_SOURCE_MODEL=generative-apis/qwen3-embedding-8b
+All five production banks now use `scw/bge-m3`, 1024 dimensions, generation 1. The migration examples below show the earlier Qwen-to-BGE source and target; use the persisted source profile for any later migration. Stop direct bank-writing tools before migrating and drain the selected tenant through the sidecar.
+
+### Restored pre-profile backups
+
+Keep a restored backup offline. If it predates embedding profiles, explicitly label its externally known source model and dimensions once:
+
+```sh
+node --import tsx scripts/migrate-embeddings.ts label-source-profile \
+  --data-dir /data/example-tenant \
+  --model generative-apis/qwen3-embedding-8b --dims 4096
 ```
 
-The assertion allows an existing unlabelled bank to be adopted only when the effective shared client has that model and every existing vector table has the expected float32 vector type and dimensions. Missing or mismatched assertions leave legacy banks unavailable. New banks with no SQLite/LanceDB storage are initialized with the effective client profile. Restart the sidecar so every open bank holds the new access lease. A sidecar from before this change does not honor migration fences; stop that process before migrating. Stop other direct bank-writing tools as well.
+This subcommand takes the bank access lease, honors migration fences, verifies every stored vector table has the asserted float32 FixedSizeList dimension, and atomically writes a generation-zero profile. It requires at least one verifiable vector schema and refuses to replace an existing profile. It does not infer the model from vectors, embed text, or change bank data. After labelling, open with the matching client or run the normal migration below. There is no runtime adoption setting.
 
 The pod app directory is `/workspace/workspace/repos/app` and is read-only. Node is at `/layers/paketo-buildpacks_node-engine/node/bin/node` and is not initially on PATH. Only `/data` is writable. Run this setup in each new pod shell; the writable `TMPDIR` is required by the tsx cache. All migration commands use `nice -n 19` because the live sidecar shares the pod.
 
@@ -27,7 +33,7 @@ Use Node >= 22.18.0, the installed `tsx`, and the pod's gateway credentials/CA e
 
 Do not change the shared sidecar model while tenants have mixed profiles. After each tenant migrates, the old-configured sidecar returns HTTP 503 for that tenant until the final environment cutover. Other tenants can continue serving. Plan for this per-tenant downtime.
 
-All commands below name the source model explicitly, which is required for unlabelled legacy banks. The source dimension is read from **every existing table** and must be consistent; production should report 4096. No text is sent to an LLM. The migration uses the production embedding client directly.
+All commands below name the source model explicitly as a check against the required persisted profile. The source dimension is read from **every existing table** and must be consistent with that profile. No text is sent to an LLM. The migration uses the production embedding client directly.
 
 ## Inventory and capacity check
 
@@ -144,7 +150,7 @@ EMBEDDING_MODEL=scw/bge-m3
 EMBEDDING_DIMS=1024
 ```
 
-Remove `EMBEDDING_LEGACY_SOURCE_MODEL` from the deployment environment. Remove any temporary `BORG_EMBEDDING_LEGACY_SOURCE_MODEL` or tenant `embedding.legacySourceModel` fallback as well. Keep the assertion absent after the cutover; every existing bank must now carry its persisted target profile.
+Every migrated bank must carry its persisted target profile before the sidecar resumes serving it.
 
 The sidecar's default constants remain unchanged. Validate through the actual sidecar for **each** tenant: authenticated `GET /memory/episodes?tenant=<tenant>&limit=3` should open the bank successfully; `POST /memory/recall` with a representative query should return HTTP 200 without an embedding/profile degradation. For example:
 
@@ -163,7 +169,7 @@ for (const tenant of ['team-agent-ai', 'team-agent-esb', 'team-agent-rtm', 'team
 JS
 ```
 
-`/healthz` is liveness only and does not prove tenant compatibility. Profile mismatches (including a different model with the same dimensions), unverifiable schemas, and migration fences produce tenant-unavailable/degraded responses. Injected client identity is checked; editing `config.json` cannot bypass the effective-client guard. Legacy adoption requires the explicit source assertion as well as matching table dimensions/types. The library equivalents are `embedding.legacySourceModel` in config, `BORG_EMBEDDING_LEGACY_SOURCE_MODEL`, and the `embeddingLegacySourceModel` open option. An `embeddingProfile` option is an additional assertion, never a substitute for an injected client's own profile.
+`/healthz` is liveness only and does not prove tenant compatibility. Profile mismatches (including a different model with the same dimensions), unverifiable schemas, and migration fences produce tenant-unavailable/degraded responses. Injected client identity is checked; editing `config.json` cannot bypass the effective-client guard. An existing bank with no profile is unavailable until its restored source is labelled through the operator subcommand above. An `embeddingProfile` option is an additional assertion, never a substitute for an injected client's own profile.
 
 Queued reviews, saved plans, and semantic audit reversals keep their historical data. When materialized, their serialized vectors are recomputed from stored text using the effective client even if dimensions happen to match. A payload without recoverable text is rejected with `SERIALIZED_EMBEDDING_INCOMPATIBLE`; regenerate it or reject/dismiss the review. The migration does not automatically resolve or delete such items.
 
@@ -191,9 +197,9 @@ mv /data/team-agent-ai/lancedb "/data/team-agent-ai/lancedb.failed-$MIGRATION_GE
 mv "/data/team-agent-ai/lancedb.prev-$MIGRATION_GENERATION" /data/team-agent-ai/lancedb
 ```
 
-Restore **the matching source profile**, not just the old vector directory: copy `embedding-profile.json` from the verified backup if it existed. For a legacy source, the journal's `source` object is a valid profile to write atomically using `writeJsonFileAtomic`. Move the migration journal, checkpoints, and target report outside the tenant directory so a later run cannot mistake rollback for a completed migration; remove the fence only once the restored bank/profile pair has been checked. Restore `EMBEDDING_MODEL=generative-apis/qwen3-embedding-8b` and `EMBEDDING_DIMS=4096`, restart, and repeat per-tenant sidecar verification.
+Restore **the matching source profile**, not just the old vector directory: copy `embedding-profile.json` from the verified backup. A restored backup from before profiles must use `label-source-profile` with its known source model and dimensions before opening or migrating. Move the migration journal, checkpoints, and target report outside the tenant directory so a later run cannot mistake rollback for a completed migration; remove the fence only once the restored bank/profile pair has been checked. Restore `EMBEDDING_MODEL=generative-apis/qwen3-embedding-8b` and `EMBEDDING_DIMS=4096`, restart, and repeat per-tenant sidecar verification.
 
-Directory-only rollback is appropriate before new production writes. If target-model serving has already changed SQLite, stream data, or other memory state, restore the **entire verified tenant backup**, including its SQLite snapshot, to avoid joining old vectors to new metadata. Retain the newer bank separately; restoring a snapshot loses post-backup writes unless they are separately recovered. If a restored full snapshot has no profile, temporarily restore the legacy source assertion from the preconditions while the old-model sidecar adopts it. Do not overlay backup SQLite onto an open database or leave old WAL/SHM files beside the restored snapshot.
+Directory-only rollback is appropriate before new production writes. If target-model serving has already changed SQLite, stream data, or other memory state, restore the **entire verified tenant backup**, including its SQLite snapshot, to avoid joining old vectors to new metadata. Retain the newer bank separately; restoring a snapshot loses post-backup writes unless they are separately recovered. If a restored full snapshot has no profile, keep it offline and follow the restored-backup labelling procedure above. Do not overlay backup SQLite onto an open database or leave old WAL/SHM files beside the restored snapshot.
 
 ## Sidecar embedding environment
 
@@ -201,8 +207,7 @@ Directory-only rollback is appropriate before new production writes. If target-m
 | --- | --- | --- |
 | `EMBEDDING_MODEL` | `generative-apis/qwen3-embedding-8b` | Actual model used by the one shared injected client and its explicit profile. |
 | `EMBEDDING_DIMS` | `4096` | Positive integer dimension expected from that client and required in every bank table. |
-| `EMBEDDING_LEGACY_SOURCE_MODEL` | unset | Explicit source model assertion for adopting existing unlabelled banks; must equal the effective client model. Remove after all tenants migrate. |
 
 The gateway URL and credential for the shared sidecar client come from `KRATOS_BASE_URL` and `LLM_API_KEY`; TLS uses `NODE_EXTRA_CA_CERTS`. The three `BORG_EMBEDDING_STALL_*` controls affect transport timing, not bank identity: `BORG_EMBEDDING_STALL_TIMEOUT_MS` defaults to 1000 per single attempt, `BORG_EMBEDDING_STALL_BATCH_TIMEOUT_MS` to 20000 per batch attempt, and `BORG_EMBEDDING_STALL_RETRIES` to 1 retry. Library `BORG_EMBEDDING_MODEL`/`BORG_EMBEDDING_DIMS` settings do not override the sidecar's injected client identity.
 
-If `EMBEDDING_LEGACY_SOURCE_MODEL` is unset, the library source assertion (`BORG_EMBEDDING_LEGACY_SOURCE_MODEL` or tenant `embedding.legacySourceModel`) is the fallback. The library also parses `BORG_EMBEDDING_BASE_URL` and `BORG_EMBEDDING_API_KEY`; those do not replace the shared sidecar gateway/credential.
+The library also parses `BORG_EMBEDDING_BASE_URL` and `BORG_EMBEDDING_API_KEY`; those do not replace the shared sidecar gateway/credential.

@@ -13,6 +13,7 @@ import { BorgError, ConfigError } from "../src/util/errors.js";
 import { migrateTenant, MigrationInputBlockedError } from "./embedding-migration/migrate.js";
 import { legacyConsolidationPolicySchema } from "./embedding-migration/inventory.js";
 import { FILE_LOCK_STALE_MS } from "../src/stream/file-lock.js";
+import { labelRestoredEmbeddingBank } from "./embedding-migration/source-profile.js";
 
 export function parseEmbeddingMigrationArgs(args: string[]) {
   const { values } = parseArgs({
@@ -78,10 +79,34 @@ export function parseEmbeddingMigrationArgs(args: string[]) {
 }
 
 export async function embeddingMigrationMain(args = process.argv.slice(2)): Promise<number> {
+  if (args[0] === "label-source-profile") {
+    const { values } = parseArgs({
+      args: args.slice(1),
+      strict: true,
+      options: {
+        "data-dir": { type: "string" },
+        model: { type: "string" },
+        dims: { type: "string" },
+      },
+    });
+    if (!values["data-dir"] || !values.model || !values.dims) {
+      throw new ConfigError("label-source-profile requires --data-dir, --model and --dims");
+    }
+    const profile = await labelRestoredEmbeddingBank(
+      resolve(values["data-dir"]),
+      embeddingProfileSchema.parse({
+        model: values.model,
+        dimensions: parsePositiveIntegerValue(values.dims),
+      }),
+      { timeoutMs: FILE_LOCK_STALE_MS + 5_000 },
+    );
+    process.stdout.write(`${JSON.stringify({ profile })}\n`);
+    return 0;
+  }
   const options = parseEmbeddingMigrationArgs(args);
   if (!options) {
     process.stdout.write(
-      "Usage: node --import tsx scripts/migrate-embeddings.ts --data-root /data (--tenant ID ... | --all-tenants) --target-model MODEL --target-dims N [--source-model MODEL] [--legacy-consolidation-input longest-prefix] [--dry-run | --resume | --verify-only] [--backup-dir PATH] [--batch-size 32] [--concurrency 2]\n",
+      "Usage: node --import tsx scripts/migrate-embeddings.ts --data-root /data (--tenant ID ... | --all-tenants) --target-model MODEL --target-dims N [--source-model MODEL] [--legacy-consolidation-input longest-prefix] [--dry-run | --resume | --verify-only] [--backup-dir PATH] [--batch-size 32] [--concurrency 2]\nRestored pre-profile backup: node --import tsx scripts/migrate-embeddings.ts label-source-profile --data-dir /data/TENANT --model MODEL --dims N\n",
     );
     return 0;
   }

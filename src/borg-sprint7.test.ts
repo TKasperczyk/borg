@@ -1,3 +1,4 @@
+import { seedTestEmbeddingProfile } from "./test-support/embedding-profile.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -274,8 +275,8 @@ describe("Borg Sprint 7", () => {
         },
       ],
     });
+    seedTestEmbeddingProfile(tempDir);
     const borg = await Borg.open({
-      embeddingLegacySourceModel: "fake-embed",
       config: {
         ...DEFAULT_CONFIG,
         dataDir: tempDir,

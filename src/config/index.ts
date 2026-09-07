@@ -393,7 +393,6 @@ const configBaseSchema = z.object({
       apiKey: z.string().min(1).default("lm-studio"),
       model: z.string().min(1).default("text-embedding-qwen3-embedding-8b"),
       dims: z.number().int().positive().default(4096),
-      legacySourceModel: z.string().trim().min(1).optional(),
       // Largest array sent to the embeddings endpoint in one request. Local
       // inference servers fail hard rather than degrade on big batches -- an 8B
       // model under LM Studio returned `400 "Model has unloaded or crashed."`
@@ -1190,11 +1189,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["embedding", "model"],
     readOptionalEnvString(env, "BORG_EMBEDDING_MODEL"),
-  );
-  setConfigOverride(
-    overrides,
-    ["embedding", "legacySourceModel"],
-    readOptionalEnvString(env, "BORG_EMBEDDING_LEGACY_SOURCE_MODEL"),
   );
   setConfigOverride(
     overrides,

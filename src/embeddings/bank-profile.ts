@@ -118,18 +118,13 @@ export function embeddingDimensionsFromSchema(tableSchema: {
   );
 }
 
-export async function guardBankEmbeddingProfile(
+/** Check every stored vector schema without evolving tables or opening SQLite. */
+export async function validateBankEmbeddingSchemas(
   dataDir: string,
-  effective: EmbeddingProfile,
-  legacySourceModel?: string,
-): Promise<BankEmbeddingProfile> {
-  assertBankNotFenced(dataDir);
-  const profile = embeddingProfileSchema.parse(effective);
-  const stored = readBankEmbeddingProfile(dataDir);
-  if (stored !== undefined) assertEmbeddingProfilesMatch(stored, profile);
-  const existingBank = existsSync(join(dataDir, "borg.db")) || existsSync(join(dataDir, "lancedb"));
+  dimensions: number,
+): Promise<number> {
+  let vectorTables = 0;
   try {
-    // Direct opens only: no schema evolution, SQL migrations or reconciliation.
     if (existsSync(join(dataDir, "lancedb"))) {
       const connection = await connect(join(dataDir, "lancedb"));
       try {
@@ -142,12 +137,13 @@ export async function guardBankEmbeddingProfile(
               !tableSchema.fields.some((field) => field.name === "embedding")
             )
               continue;
-            if (embeddingDimensionsFromSchema(tableSchema) !== profile.dimensions) {
+            if (embeddingDimensionsFromSchema(tableSchema) !== dimensions) {
               throw new EmbeddingBankError(
                 `Bank embedding dimension mismatch in ${name}; migration required`,
                 { code: "EMBEDDING_PROFILE_MISMATCH" },
               );
             }
+            vectorTables += 1;
           } finally {
             table.close();
           }
@@ -163,15 +159,28 @@ export async function guardBankEmbeddingProfile(
       cause,
     });
   }
-  if (stored !== undefined) return stored;
-  if (existingBank && legacySourceModel !== profile.model) {
+  return vectorTables;
+}
+
+export async function guardBankEmbeddingProfile(
+  dataDir: string,
+  effective: EmbeddingProfile,
+): Promise<BankEmbeddingProfile> {
+  assertBankNotFenced(dataDir);
+  const profile = embeddingProfileSchema.parse(effective);
+  const stored = readBankEmbeddingProfile(dataDir);
+  const existingBank = existsSync(join(dataDir, "borg.db")) || existsSync(join(dataDir, "lancedb"));
+  if (stored === undefined && existingBank) {
     throw new EmbeddingBankError(
-      "Unlabelled bank requires an explicit legacy source model matching the effective embedding client",
-      { code: "EMBEDDING_LEGACY_SOURCE_REQUIRED" },
+      "Existing bank is missing embedding-profile.json; for a restored pre-profile backup, run scripts/migrate-embeddings.ts label-source-profile with an explicit --model and --dims before opening it",
+      { code: "EMBEDDING_PROFILE_REQUIRED" },
     );
   }
+  if (stored !== undefined) assertEmbeddingProfilesMatch(stored, profile);
+  await validateBankEmbeddingSchemas(dataDir, profile.dimensions);
+  if (stored !== undefined) return stored;
   const now = Date.now();
-  const adopted: BankEmbeddingProfile = {
+  const initialized: BankEmbeddingProfile = {
     ...profile,
     version: 1,
     generation: 0,
@@ -179,8 +188,8 @@ export async function guardBankEmbeddingProfile(
     updated_at: now,
     migrated_from: null,
   };
-  writeJsonFileAtomic(join(dataDir, EMBEDDING_PROFILE_FILE), adopted, { mode: 0o600 });
-  return adopted;
+  writeJsonFileAtomic(join(dataDir, EMBEDDING_PROFILE_FILE), initialized, { mode: 0o600 });
+  return initialized;
 }
 
 // Bank-lifetime lease: the primitive heartbeats even while an idle sidecar pool

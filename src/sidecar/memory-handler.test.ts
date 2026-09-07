@@ -6666,7 +6666,7 @@ describe("embedding migration administration", () => {
     "EMBEDDING_MIGRATION_FENCED",
     "EMBEDDING_PROFILE_MISMATCH",
     "EMBEDDING_CLIENT_PROFILE_REQUIRED",
-    "EMBEDDING_LEGACY_SOURCE_REQUIRED",
+    "EMBEDDING_PROFILE_REQUIRED",
     "EMBEDDING_SCHEMA_INVALID",
   ])("reports %s as unavailable without a stack", async (code) => {
     const base = await start({

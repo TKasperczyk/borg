@@ -91,7 +91,7 @@ Paths are relative to the repository root.
 ## Review corrections
 
 - The injected client must supply its own valid model/dimensions profile. Cache and stall wrappers preserve the inner identity; a cache cannot manufacture it from its cache-key options. Configuration/open-option profiles are assertions only.
-- Existing unlabelled banks require an explicit matching legacy source model. Brand-new banks initialize a generation-zero profile. Schema validation requires float32 FixedSizeList vectors in all registered stores before storage migrations or reconciliation.
+- Existing banks require a persisted profile. Restored pre-profile backups use the explicit `label-source-profile` operator subcommand after stored-dimension verification. Brand-new banks initialize a generation-zero profile. Schema validation requires float32 FixedSizeList vectors in all registered stores before storage migrations or reconciliation.
 - Consolidation persists `consolidation_embedding_input` (synthesized narrative and protected source lines). The migration preserves the source schema, including legacy tables without that column. Legacy recovery loads archived raw lineage in its persisted writer order and inverts the append operation only when every possible prefix renders identical embedding text. Ambiguous inline protocol prose fails with `EMBEDDING_TEXT_UNRECOVERABLE`; the persisted narrative alone cannot establish the original input. The production writer, outcome-corpus writer, saved-plan preparation, and migration all retain this provenance.
 - Backup copying excludes migration bookkeeping and previous backup manifests. Resume reuses its journal destination, checks capacity before any new backup/staging attempt, and validates committed rows before accounting for remaining work. Each unfinished table retains a full fragment allowance rather than assuming average row sizes.
 - CLI tenant discovery is strict, while the pool keeps its existing best-effort discovery behavior.
@@ -147,7 +147,7 @@ Paths are relative to the repository root.
 | Finding | Covering tests |
 | --- | --- |
 | 1. Effective injected identity | `src/embeddings/bank-profile.test.ts`: unprofiled clients (bare and cached), config-independent identity, same-dimension model mismatch; `scripts/migrate-embeddings.test.ts`: client identity before fencing; `src/sidecar/memory-handler.test.ts`: typed HTTP 503 mapping. |
-| 2. Explicit legacy adoption | `src/embeddings/bank-profile.test.ts`: missing/wrong assertion, actual dimensions, and library config/environment adoption; sidecar 503 mapping. |
+| 2. Required bank profiles | `src/embeddings/bank-profile.test.ts`: missing-profile refusal and fresh initialization; `scripts/embedding-migration/source-profile.test.ts`: explicit restored-backup labelling, dimensions, lease/fence enforcement, and overwrite refusal; sidecar 503 mapping. |
 | 3. Complete vector schema validation | `src/embeddings/bank-profile.test.ts`: missing embedding column in all seven tables, float64/int32 elements, variable lists, dimension mismatch, and no profile/SQLite writes. |
 | 4. Consolidation text parity | `src/offline/consolidator/index.test.ts`: real writer with copied/appended inline legacy lines; `src/memory/episodic/protected-lines.test.ts`: ambiguity and stale provenance; `scripts/migrate-embeddings.test.ts`: archived lineage order and unchanged legacy schema; `src/embeddings/serialized.test.ts`: saved-plan provenance. |
 | 5. Restored backup manifests | `scripts/migrate-embeddings.test.ts`: rollback to a verified snapshot followed by a new complete migration and backup verification. |
@@ -248,17 +248,15 @@ npx vitest run src/retrieval/recall-core.test.ts -t 'maps N=3 variants to semant
 | --- | --- | --- |
 | `EMBEDDING_MODEL` | `generative-apis/qwen3-embedding-8b` | Model sent by the shared OpenAI-compatible client and declared in its explicit profile. |
 | `EMBEDDING_DIMS` | `4096` | Positive integer returned-vector dimension and bank schema requirement. |
-| `EMBEDDING_LEGACY_SOURCE_MODEL` | unset | Source assertion passed directly to every tenant open; when unset the library config source assertion can still apply. Existing labelled banks always use their persisted profile. |
 | `BORG_EMBEDDING_STALL_TIMEOUT_MS` | `1000` | Timeout in milliseconds per single-text embedding attempt. |
 | `BORG_EMBEDDING_STALL_BATCH_TIMEOUT_MS` | `20000` | Timeout in milliseconds per batch attempt. |
 | `BORG_EMBEDDING_STALL_RETRIES` | `1` | Number of retries after an attempt stalls. |
-| `BORG_EMBEDDING_LEGACY_SOURCE_MODEL` | unset | Library environment override for `embedding.legacySourceModel`; a fallback assertion when no `embeddingLegacySourceModel` open option is passed. |
 | `BORG_EMBEDDING_MODEL` | config value; library default `text-embedding-qwen3-embedding-8b` | Parsed library setting; does not replace the sidecar's injected model/profile. |
 | `BORG_EMBEDDING_DIMS` | config value; library default `4096` | Parsed library setting; does not replace the sidecar's explicit injected dimensions. |
 | `BORG_EMBEDDING_BASE_URL` | config value; library default `http://localhost:1234/v1` | Parsed library setting; the shared sidecar client uses `KRATOS_BASE_URL` instead. Also a CLI fallback when `KRATOS_BASE_URL` is absent. |
 | `BORG_EMBEDDING_API_KEY` | config value; library default `lm-studio` | Parsed library setting; the shared sidecar client requires `LLM_API_KEY` instead. Also a CLI fallback when `LLM_API_KEY` is absent. |
 
-Deployment starts with the old model/dimensions and `EMBEDDING_LEGACY_SOURCE_MODEL=generative-apis/qwen3-embedding-8b`. Only after all five banks migrate and verify, set `EMBEDDING_MODEL=scw/bge-m3`, `EMBEDDING_DIMS=1024`, remove temporary legacy assertions (including any library-config fallback), and restart the shared sidecar.
+All five production banks now carry `scw/bge-m3` / 1024 generation-one profiles. Existing banks must retain their persisted profile; restored pre-profile backups must be labelled offline through the operator subcommand documented in [the migration runbook](embedding-migration.md#restored-pre-profile-backups).
 
 
 ## Legacy consolidation resolution after the production dry-run

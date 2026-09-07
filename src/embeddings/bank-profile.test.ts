@@ -9,6 +9,8 @@ import { FakeEmbeddingClient } from "./index.js";
 import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import { schema, utf8Field, vectorField } from "../storage/lancedb/index.js";
 import { loadConfig } from "../config/index.js";
+import { seedTestEmbeddingProfile } from "../test-support/embedding-profile.js";
+import { labelRestoredEmbeddingBank } from "../../scripts/embedding-migration/source-profile.js";
 import {
   BGE_SIMILARITY_MODEL,
   QWEN_SIMILARITY_MODEL,
@@ -42,9 +44,9 @@ async function bank(dimensions = 4) {
 }
 
 describe("bank embedding profile", () => {
-  it("adopts a legacy bank only after checking its actual dimension", async () => {
+  it("opens a restored bank after the operator labels its verified source profile", async () => {
     const dir = await bank();
-    await guardBankEmbeddingProfile(dir, { model: "old", dimensions: 4 }, "old");
+    await labelRestoredEmbeddingBank(dir, { model: "old", dimensions: 4 });
     expect(readBankEmbeddingProfile(dir)).toMatchObject({
       model: "old",
       dimensions: 4,
@@ -57,7 +59,7 @@ describe("bank embedding profile", () => {
   });
   it("rejects a same-dimension model mismatch before SQLite is opened", async () => {
     const dir = await bank();
-    await guardBankEmbeddingProfile(dir, { model: "old", dimensions: 4 }, "old");
+    await labelRestoredEmbeddingBank(dir, { model: "old", dimensions: 4 });
     await expect(
       Borg.open({
         dataDir: dir,
@@ -67,10 +69,10 @@ describe("bank embedding profile", () => {
     ).rejects.toMatchObject({ code: "EMBEDDING_PROFILE_MISMATCH" });
     expect(existsSync(join(dir, "borg.db"))).toBe(false);
   });
-  it("rejects legacy dimension mismatch without adopting or migrating SQL", async () => {
+  it("rejects a restored source dimension mismatch without labelling or migrating SQL", async () => {
     const dir = await bank();
     await expect(
-      guardBankEmbeddingProfile(dir, { model: "new", dimensions: 2 }),
+      labelRestoredEmbeddingBank(dir, { model: "new", dimensions: 2 }),
     ).rejects.toMatchObject({ code: "EMBEDDING_PROFILE_MISMATCH" });
     expect(existsSync(join(dir, EMBEDDING_PROFILE_FILE))).toBe(false);
   });
@@ -169,28 +171,33 @@ describe("bank embedding profile", () => {
     },
   );
 
-  it.each([undefined, "old"])(
-    "refuses unlabelled same-dimension banks without a matching assertion (%s)",
-    async (legacySourceModel) => {
+  it.each(["vector storage", "SQLite storage"])(
+    "refuses an existing bank without a profile even with matching client configuration (%s)",
+    async (storage) => {
       const dir = await bank();
+      if (storage === "SQLite storage") {
+        rmSync(join(dir, "lancedb"), { recursive: true });
+        writeFileSync(join(dir, "borg.db"), "existing storage");
+      }
       writeFileSync(
         join(dir, "config.json"),
-        JSON.stringify({ embedding: { model: "old", dims: 4 } }),
+        JSON.stringify({ embedding: { model: "fake-embed", dims: 4 } }),
       );
       await expect(
         Borg.open({
           dataDir: dir,
-          embeddingClient: new FakeEmbeddingClient(4, "new"),
-          embeddingLegacySourceModel: legacySourceModel,
+          embeddingClient: new FakeEmbeddingClient(4),
         }),
-      ).rejects.toMatchObject({ code: "EMBEDDING_LEGACY_SOURCE_REQUIRED" });
-      expect(existsSync(join(dir, "borg.db"))).toBe(false);
+      ).rejects.toMatchObject({
+        code: "EMBEDDING_PROFILE_REQUIRED",
+        message: expect.stringContaining("label-source-profile"),
+      });
       expect(readBankEmbeddingProfile(dir)).toBeUndefined();
     },
   );
 
-  it("adopts through the library config source assertion", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "embedding-adoption-config-"));
+  it("writes a fresh profile for an empty bank and preserves it on reopen", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "embedding-fresh-"));
     directories.push(dir);
     const options = {
       dataDir: dir,
@@ -198,18 +205,15 @@ describe("bank embedding profile", () => {
       llmClient: new FakeLLMClient(),
     };
     await (await Borg.open(options)).close();
-    rmSync(join(dir, EMBEDDING_PROFILE_FILE));
-    const config = loadConfig({
-      dataDir: dir,
-      env: { BORG_EMBEDDING_LEGACY_SOURCE_MODEL: "fake-embed" },
-    });
-    expect(config.embedding.legacySourceModel).toBe("fake-embed");
-    await (await Borg.open({ ...options, config })).close();
-    expect(readBankEmbeddingProfile(dir)).toMatchObject({
+    const original = readBankEmbeddingProfile(dir);
+    expect(original).toMatchObject({
       model: "fake-embed",
       dimensions: 4,
       generation: 0,
+      migrated_from: null,
     });
+    await (await Borg.open(options)).close();
+    expect(readBankEmbeddingProfile(dir)).toEqual(original);
   });
 
   it.each(VECTOR_TABLE_NAMES)(
@@ -220,15 +224,15 @@ describe("bank embedding profile", () => {
       const connection = await connect(join(dir, "lancedb"));
       (await connection.createEmptyTable(name, schema([utf8Field("id")]))).close();
       connection.close();
+      seedTestEmbeddingProfile(dir);
       await expect(
         Borg.open({
           dataDir: dir,
           embeddingClient: new FakeEmbeddingClient(4),
-          embeddingLegacySourceModel: "fake-embed",
         }),
       ).rejects.toMatchObject({ code: "EMBEDDING_SCHEMA_INVALID" });
       expect(existsSync(join(dir, "borg.db"))).toBe(false);
-      expect(readBankEmbeddingProfile(dir)).toBeUndefined();
+      expect(readBankEmbeddingProfile(dir)).toMatchObject({ model: "fake-embed", dimensions: 4 });
     },
   );
 
@@ -248,7 +252,7 @@ describe("bank embedding profile", () => {
     ).close();
     connection.close();
     await expect(
-      guardBankEmbeddingProfile(dir, { model: "old", dimensions: 4 }, "old"),
+      labelRestoredEmbeddingBank(dir, { model: "old", dimensions: 4 }),
     ).rejects.toMatchObject({ code: "EMBEDDING_SCHEMA_INVALID" });
     expect(readBankEmbeddingProfile(dir)).toBeUndefined();
   });

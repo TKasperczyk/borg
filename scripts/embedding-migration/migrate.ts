@@ -259,6 +259,11 @@ function sourceProfile(
   sourceModel: string | undefined,
 ): BankEmbeddingProfile {
   const stored = readBankEmbeddingProfile(tenantDir);
+  if (stored === undefined)
+    throw new EmbeddingBankError(
+      "Existing bank is missing embedding-profile.json; label a restored pre-profile backup with the label-source-profile subcommand before migrating",
+      { code: "EMBEDDING_PROFILE_REQUIRED" },
+    );
   const dimensions = new Set(
     inventory.tables.flatMap((table) => (table.dimensions === null ? [] : [table.dimensions])),
   );
@@ -267,25 +272,8 @@ function sourceProfile(
       code: "EMBEDDING_MIGRATION_INCOMPLETE",
     });
   const dims = [...dimensions][0]!;
-  if (stored) {
-    assertEmbeddingProfilesMatch(stored, { model: sourceModel ?? stored.model, dimensions: dims });
-    return stored;
-  }
-  if (!sourceModel)
-    throw new EmbeddingBankError(
-      "Legacy bank requires --source-model; model identity cannot be inferred from vectors",
-      { code: "EMBEDDING_MIGRATION_SOURCE_REQUIRED" },
-    );
-  const now = Date.now();
-  return bankEmbeddingProfileSchema.parse({
-    version: 1,
-    model: sourceModel,
-    dimensions: dims,
-    generation: 0,
-    created_at: now,
-    updated_at: now,
-    migrated_from: null,
-  });
+  assertEmbeddingProfilesMatch(stored, { model: sourceModel ?? stored.model, dimensions: dims });
+  return stored;
 }
 
 export async function verifyMigratedBank(
@@ -733,6 +721,11 @@ export async function migrateTenant(
         };
       }
       const labelled = readBankEmbeddingProfile(tenantDir);
+      if (!journal && labelled === undefined)
+        throw new EmbeddingBankError(
+          "Existing bank is missing embedding-profile.json; run the label-source-profile subcommand before migrating",
+          { code: "EMBEDDING_PROFILE_REQUIRED" },
+        );
       if (
         !journal &&
         labelled?.model === target.model &&

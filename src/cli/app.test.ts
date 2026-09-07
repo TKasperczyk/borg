@@ -16,6 +16,7 @@ import { createTestConfig } from "../offline/test-support.js";
 import { FixedClock } from "../util/clock.js";
 import { readJsonFile, writeFileAtomic, writeJsonFileAtomic } from "../util/atomic-write.js";
 import { createMigrations as createBorgMigrations } from "../borg/storage-setup.js";
+import { seedTestEmbeddingProfile } from "../test-support/embedding-profile.js";
 import { runCli } from "./app.js";
 
 const CONSOLIDATION_TOOL_NAME = "EmitConsolidation";
@@ -59,11 +60,11 @@ function createOutputBuffer() {
 function createCliTempDir(tempDirs: string[]): string {
   const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
   tempDirs.push(tempDir);
+  seedTestEmbeddingProfile(tempDir);
   writeJsonFileAtomic(join(tempDir, "config.json"), {
     embedding: {
       dims: 4,
       model: "fake-embed",
-      legacySourceModel: "fake-embed",
     },
   });
   return tempDir;
@@ -107,7 +108,6 @@ function openTestBorg(
     clock: new FixedClock(1_000),
     embeddingDimensions: 4,
     embeddingClient: new ScriptedEmbeddingClient(),
-    embeddingLegacySourceModel: "fake-embed",
     llmClient: llm,
     liveExtraction: false,
   });
