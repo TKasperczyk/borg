@@ -1641,6 +1641,14 @@ describe("compact terminal finalizer context", () => {
     expect(interpretation).toContain(
       "stamped when its decision was recorded at the end of its turn, not when its trigger fired",
     );
+    // "A day is carried by its day-level row while its own events are dropped" reads as
+    // one rule over one kind of day row. There are two: the density row is the fold and
+    // is emitted only past the individual window, while the day summary is drawn on the
+    // closed-day window and pushed regardless -- so the newest summarized day shows up
+    // both ways at once, and the reader needs to know that is not a dropped day.
+    expect(interpretation).toContain(
+      "a summary beside a day's individual events is not evidence that anything was dropped",
+    );
   });
 
   it("orders durable self rows by immutable keys instead of mutable ranking", () => {
