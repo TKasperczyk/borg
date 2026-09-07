@@ -3454,7 +3454,7 @@ describe("memory sidecar handler", () => {
   });
 
   it.each([
-    { label: "missing focus", fields: { context_turns: [] }, error: "focus" },
+    { label: "missing focus for episodes", fields: { context_turns: [] }, error: "focus:" },
     {
       label: "missing context turns",
       fields: { focus: "Current question" },
@@ -3463,12 +3463,22 @@ describe("memory sidecar handler", () => {
     {
       label: "opaque query only",
       fields: { query: "user: earlier\nassistant: reply" },
-      error: "focus",
+      error: "query: unrecognized field",
     },
     {
       label: "query alongside structured input",
       fields: { focus: "Current question", context_turns: [], query: "opaque" },
-      error: "query",
+      error: "query: unrecognized field",
+    },
+    {
+      label: "query on a venue-only request",
+      fields: { sections: ["venue_recent"], venue_since: 0, query: "opaque" },
+      error: "query: unrecognized field",
+    },
+    {
+      label: "query on a binding-only request",
+      fields: { sections: ["commitments", "directives"], query: "opaque" },
+      error: "query: unrecognized field",
     },
     {
       label: "opaque context",
@@ -3500,9 +3510,24 @@ describe("memory sidecar handler", () => {
       error: "semanticVariantCount",
     },
     {
-      label: "missing focus for non-episode sections",
-      fields: { context_turns: [], sections: ["audience"] },
-      error: "focus",
+      label: "missing focus for default sections",
+      fields: { context_turns: [], sections: undefined },
+      error: "focus:",
+    },
+    {
+      label: "missing context turns for default sections",
+      fields: { focus: "Current question", sections: undefined },
+      error: "context_turns:",
+    },
+    {
+      label: "missing focus for autobiographical recall",
+      fields: { context_turns: [], sections: ["episodes", "autobiographical"] },
+      error: "focus:",
+    },
+    {
+      label: "empty focus supplied for non-episode sections",
+      fields: { focus: " ", sections: ["commitments", "directives"] },
+      error: "focus:",
     },
   ])("rejects $label before opening a tenant", async ({ fields, error }) => {
     const { pool, rec } = recordingPool();
@@ -3546,6 +3571,111 @@ describe("memory sidecar handler", () => {
     await response.json();
     expect(rec.lastRecallQuery).toBe("What happened?");
     expect(rec.lastRecallOptions?.recallQueryPlannerContext).toMatchObject({ contextTurns: [] });
+  });
+
+  it("accepts the query-free team-agent chat payload with structured recall input", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const episode = testEpisode(undefined, { shared: true });
+    rec.recallEpisodes = [episode];
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "acme::shared::groupChat::conversation-1",
+        sender: { external_id: "user-1", display_name: "Alex Example", operator: false },
+        conversation: {
+          type: "groupChat",
+          name: "Example Group",
+          external_id: "conversation-1",
+        },
+        sections: ["episodes", "venue_recent", "autobiographical"],
+        focus: "What happened today?",
+        context_turns: [{ role: "assistant", text: "Earlier reply." }],
+        limit: 8,
+        exclude: {
+          title_prefixes: ["OUTCOME rollup"],
+          narrative_markers: ["OUTCOME fp=", "decision="],
+        },
+        venue_since: 1_725_000_000_000,
+        venue_limit: 12,
+        entity_terms: ["Alex Example", "Sam Example"],
+        participants: [{ external_id: "user-2", display_name: "Sam Example", operator: false }],
+      },
+      TOKEN,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      episodes: [expect.objectContaining({ id: episode.id })],
+      venue_recent: [],
+      autobiographical: null,
+      degraded: false,
+    });
+    expect(rec.recallOptionsCalls).toHaveLength(1);
+    expect(rec.lastRecallQuery).toBe("What happened today?");
+    expect(rec.lastRecallOptions?.recallQueryPlannerContext).toMatchObject({
+      contextTurns: [{ role: "assistant", content: "Earlier reply." }],
+    });
+    expect(rec.lastVenueOptions).toMatchObject({ sinceMs: 1_725_000_000_000, limit: 36 });
+  });
+
+  it.each([
+    { label: "commitments and directives", sections: ["commitments", "directives"] },
+    {
+      label: "team-agent binding",
+      sections: ["audience", "recent_activity", "commitments", "directives"],
+    },
+    {
+      label: "combined venue and binding",
+      sections: ["venue_recent", "commitments", "directives"],
+    },
+  ])("accepts $label context without recall input", async ({ sections }) => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    rec.commitments = [testCommitment({ directive: "Keep commitments visible." })];
+    const directive = testDirective({ operational_directive: "Keep answers concise." });
+    rec.directiveApplicable = [
+      {
+        directive,
+        recipient_entity_ids: [],
+        activation: { active: true, reason: "public" },
+        disclosure: { render_mode: "content", reason: "public" },
+        render_mode: "content",
+        reason: "public",
+      },
+    ];
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "acme::user-1::conversation-1",
+        sender: { external_id: "user-1", display_name: "Alex Example", operator: true },
+        conversation: { type: "personal", name: "", external_id: "conversation-1" },
+        sections,
+        ...(sections.includes("venue_recent") ? { venue_since: 1_725_000_000_000 } : {}),
+      },
+      TOKEN,
+    );
+
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      ok: true,
+      commitments: [expect.objectContaining({ directive: "Keep commitments visible." })],
+      directives: [expect.objectContaining({ id: directive.id, text: "Keep answers concise." })],
+      degraded: false,
+    });
+    expect(Object.keys(payload).sort()).toEqual(
+      [...sections, "ok", "degraded", "degraded_reason"].sort(),
+    );
+    expect(rec.recallOptionsCalls).toEqual([]);
+    expect(rec.autobiographicalRecallInputs).toEqual([]);
+    expect(rec.livedExperienceListInputs).toEqual([]);
+    expect(rec.retrievalRecords).toEqual([]);
   });
 
   it("assembles personal context from only the person and observed group audiences", async () => {
@@ -5113,7 +5243,7 @@ describe("memory sidecar handler", () => {
     ]);
   });
 
-  it("returns excluded-filtered recent episodes for only the current venue", async () => {
+  it("accepts the team-agent venue-only payload without recall input and filters exclusions", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
     const venueSince = 1_725_000_000_000;
@@ -5138,14 +5268,12 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
-        focus: "Current conversation",
-        context_turns: [],
         tenant: "acme",
         session: "venue-room",
-        sender: { external_id: "alice", display_name: "Alice" },
+        sender: { external_id: "alice", display_name: "Alice", operator: false },
         conversation: {
           type: "groupChat",
-          name: "AI Ninjas",
+          name: "Example Group",
           external_id: "group-42",
         },
         sections: ["venue_recent"],
@@ -5158,19 +5286,21 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
-        focus: "Current conversation",
-        context_turns: [],
         tenant: "acme",
         session: "venue-room",
-        sender: { external_id: "alice", display_name: "Alice" },
+        sender: { external_id: "alice", display_name: "Alice", operator: false },
         conversation: {
           type: "groupChat",
-          name: "AI Ninjas",
+          name: "Example Group",
           external_id: "group-42",
         },
         sections: ["venue_recent"],
         venue_since: venueSince,
-        exclude: { title_prefixes: ["OUTCOME rollup"], narrative_markers: [] },
+        venue_limit: 12,
+        exclude: {
+          title_prefixes: ["OUTCOME rollup"],
+          narrative_markers: ["OUTCOME fp=", "decision="],
+        },
       },
       TOKEN,
     );

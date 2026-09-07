@@ -370,12 +370,13 @@ const memoryContextBodySchema = z
       .array(z.string().trim().min(1).max(MAX_CONTEXT_ENTITY_TERM_CHARS))
       .max(MAX_CONTEXT_ENTITY_TERMS)
       .optional(),
-    focus: z.string({ error: "focus is required and must be a string" }).trim().min(1),
+    focus: z.string({ error: "focus must be a string" }).trim().min(1).optional(),
     context_turns: z
       .array(contextTurnSchema, {
-        error: "context_turns is required and must be an array of structured turns",
+        error: "context_turns must be an array of structured turns",
       })
-      .max(MAX_CONTEXT_TURNS),
+      .max(MAX_CONTEXT_TURNS)
+      .optional(),
     limit: z.number().finite().optional(),
     sections: z.array(memoryContextSectionSchema).min(1).optional(),
     time_range: episodeTimeRangeSchema.optional(),
@@ -385,9 +386,27 @@ const memoryContextBodySchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
-    const episodesRequested = value.sections === undefined || value.sections.includes("episodes");
-    const venueRecentRequested = value.sections?.includes("venue_recent") === true;
-    const autobiographicalRequested = value.sections?.includes("autobiographical") === true;
+    const requestedSections = new Set(value.sections ?? DEFAULT_MEMORY_CONTEXT_SECTIONS);
+    const episodesRequested = requestedSections.has("episodes");
+    const venueRecentRequested = requestedSections.has("venue_recent");
+    const autobiographicalRequested = requestedSections.has("autobiographical");
+
+    if (episodesRequested || autobiographicalRequested) {
+      if (value.focus === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["focus"],
+          message: "focus is required when episodes or autobiographical are requested",
+        });
+      }
+      if (value.context_turns === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["context_turns"],
+          message: "context_turns is required when episodes or autobiographical are requested",
+        });
+      }
+    }
 
     if (autobiographicalRequested && !episodesRequested) {
       ctx.addIssue({
@@ -2544,14 +2563,17 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         if (!parsed.success) {
           send(res, 400, {
             error: `invalid memory context body: ${parsed.error.issues
-              .map((issue) => `${issue.path.join(".") || "body"}: ${issue.message}`)
+              .flatMap((issue) =>
+                issue.code === "unrecognized_keys"
+                  ? issue.keys.map((key) => `${[...issue.path, key].join(".")}: unrecognized field`)
+                  : [`${issue.path.join(".") || "body"}: ${issue.message}`],
+              )
               .join("; ")}`,
           });
           return;
         }
 
         const requestedSections = new Set(parsed.data.sections ?? DEFAULT_MEMORY_CONTEXT_SECTIONS);
-        const recallFocus = parsed.data.focus;
         const episodeLimit = Math.max(
           1,
           Math.min(
@@ -2788,6 +2810,9 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         let plannerTemporalCue: TemporalCue | null = null;
 
         if (requestedSections.has("episodes")) {
+          // The schema requires both fields for sections that use recall planning.
+          const recallFocus = parsed.data.focus!;
+          const contextTurns = parsed.data.context_turns!;
           const traceTurnId =
             traceRegistry === undefined ? undefined : nextRecallTraceTurnId(tenant);
 
@@ -2812,7 +2837,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                     : { entityTerms: parsed.data.entity_terms }),
                   semanticVariantCount: recallSemanticVariantCount,
                   recallQueryPlannerContext: {
-                    contextTurns: parsed.data.context_turns.map((turn) => ({
+                    contextTurns: contextTurns.map((turn) => ({
                       role: turn.role,
                       content: turn.text,
                     })),

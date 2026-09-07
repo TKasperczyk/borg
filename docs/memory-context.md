@@ -1,6 +1,7 @@
 # Memory context contract (borg memory sidecar <-> team-agent)
 
-Status: current structured context contract. Clients send `focus` and `context_turns` on every request.
+Status: current coordinated context contract. Recall sections require `focus` and `context_turns`;
+other sections can omit them. Clients make one request and report failures without downgrading.
 
 ## Purpose
 
@@ -71,10 +72,10 @@ Request:
   "tenant": "...", "session": "<thread key>",
   "sender": {"external_id": "...", "display_name": "...", "operator": false},
   "conversation": {"type": "personal|groupChat|channel", "name": "...", "external_id": "..."},
-  "focus": "<current message>",       // required, nonempty
-  "context_turns": [],                // required; up to three structured preceding turns
+  "focus": "<current message>",       // required for recall sections, nonempty
+  "context_turns": [],                // required for recall sections; up to three preceding turns
   "limit": 8,                         // episodes cap, same bounds as /memory/recall
-  "sections": ["audience","episodes","recent_activity","commitments","directives"]  // default: all
+  "sections": ["audience","episodes","recent_activity","commitments","directives"]  // default: these five
 }
 
 Response:
@@ -103,9 +104,17 @@ Response:
 - directives: creatorDirectives.listApplicable({currentAudienceEntityId, sessionRole,
   participantEntityIds}); render_mode "omit" entries are excluded; text = operational_directive /
   canonical_fact for "content", boundary_prompt for "boundary".
-- Unknown sections -> 400. Missing/empty `focus`, missing or malformed `context_turns`,
-  or any `query` field -> 400 with a validation message identifying the invalid field.
-  These requirements apply even when episodes are not requested.
+- `focus` and `context_turns` are required when `sections` includes `episodes` or
+  `autobiographical`. Omitting `sections` selects the five defaults above, including `episodes`,
+  so both fields are required. `focus` must be nonempty; `context_turns` may be `[]`.
+- Requests excluding both recall sections may omit both fields. This includes `venue_recent`
+  alone, `commitments`/`directives` alone, and combinations with `audience` or `recent_activity`.
+  Provided fields must still satisfy their types and bounds. `venue_recent` still requires
+  `venue_since`, and `autobiographical` still requires `episodes` to produce its recall plan.
+- Unknown sections, any `query` field, or missing/invalid required recall input return 400 with
+  a validation message identifying the field. A 400 is a caller bug; fix the request contract.
+  The client sends one request, raises on failure, and never strips fields or changes endpoints
+  to downgrade the request.
 
 ## Operator rules: /memory/directives (admin surface, x-borg-token)
 
@@ -123,15 +132,15 @@ an LLM is deliberately out of scope for this version.
 - Sender and conversation context (already resolved per request in the API) must reach the place
   where ambient memory is assembled for the model, in the same style as the existing per-request
   context variables.
-- Per turn: the pre-model ambient block calls /memory/context with sections [episodes], `focus`, and `context_turns`;
-  the request-level binding-rules block calls /memory/context with sections [audience,
-  recent_activity, commitments, directives] and the same structured focus/history. Each replaces one existing call (recall, commitments),
-  so turn latency is unchanged.
+- Per turn: ordinary chat calls /memory/context with sections [episodes, venue_recent,
+  autobiographical], `focus`, and `context_turns`. Venue-only requests use [venue_recent] without
+  recall input. The request-level binding-rules block uses [audience, recent_activity, commitments,
+  directives] without recall input. No context request includes `query`.
 - Rendering: episodes keep the current "[time; venue; participants] Title: narrative" line and gain
   the disclosure tag when private (e.g. "private to Alex Example"); directives render under the
   binding rules as operator rules; recent_activity renders as a short "Elsewhere right now" block.
-- Fallback: a 404 from /memory/context means an older sidecar -> use the legacy /memory/recall and
-  /memory/commitments calls transparently. Breaker gating as for /memory/recall.
+- Each context fetch sends one request. HTTP errors, including 400 and 404, are reported to the
+  caller; there is no compatibility retry or fallback to /memory/recall or /memory/commitments.
 - sender.operator = true when the request user is a tenant operator (tenant configuration lists
   operator external ids; add it if no such notion exists).
 - Admin passthrough for directives (list/create/revoke) following the existing admin/debug API
@@ -170,8 +179,8 @@ An unsolicited group reply may add `participants` to `POST /memory/context` as a
 `{"external_id": "...", "display_name": "...", "operator": false}`. Duplicate external ids are
 removed by team-agent. The sidecar resolves these people as the current group recipient set for
 directive applicability and visibility/exclusion checks; the group conversation remains the sole
-audience, and participant entries cannot confer operator authority. A team-agent compatibility
-retry after HTTP 400 removes this field once.
+audience, and participant entries cannot confer operator authority. Invalid participant metadata
+returns HTTP 400 and must be corrected by the caller.
 
 ### Time scoping and exclusions on episodes (POST /memory/context and POST /memory/recall)
 
@@ -207,8 +216,6 @@ retry after HTTP 400 removes this field once.
   ago", ...) are no longer parsed by team-agent. Since Extension 5 the recall planner resolves them
   from FOCUS and NOW in the sidecar's configured zone and emits the temporal cue itself; team-agent
   sends no `time_range` (the field stays accepted for other clients and still takes precedence).
-
-team-agent compatibility: until a sidecar accepting the reply-only shape is live, team-agent treats an HTTP 400 on it as a one-log compatibility skip and never retries it as a full turn; a 400 caused by `participants` is retried once without the field.
 
 ## Implementation notes (sidecar)
 
@@ -338,8 +345,9 @@ team-agent compatibility: until a sidecar accepting the reply-only shape is live
   incomplete Teams identity call the corresponding legacy endpoint directly, unless assistant
   policy has suppressed commitments and recent activity for that turn; the binding legacy endpoint
   has no other section to return, so it is skipped in that case.
-- Only a structured HTTP 404 from `/memory/context` selects the legacy fallback. Transport errors,
-  malformed responses and every other HTTP status produce the section-specific unavailable marker.
+- Each context fetch sends one request and raises on transport errors, malformed responses, or
+  HTTP errors, including 400 and 404. The caller renders the section-specific unavailable marker.
+  There is no field-stripping retry or endpoint redirect; 400 identifies a caller contract bug.
 - Optional `ok` and `degraded` control fields must be booleans, `degraded_reason` must be a string,
   and `hidden_episode_count` must be a non-negative integer. `ok: false` is treated as a backend
   failure. A degraded binding response emits `binding_context_degraded` tracing and injects a
@@ -381,17 +389,14 @@ team-agent compatibility: until a sidecar accepting the reply-only shape is live
   It is transport metadata only: the append-turn sender builder drops it, so
   the sidecar still receives only `external_id`, `display_name`, and the
   server-computed `operator` sender fields.
-- Ordinary chat episodic context requests include `episodes` and `venue_recent`, start-of-
-  day `venue_since`, `venue_limit: 12`, and the documented exclusion object.
+- Ordinary chat episodic context requests include `episodes`, `venue_recent`, and `autobiographical`,
+  structured `focus` and `context_turns`, start-of-day `venue_since`, `venue_limit: 12`, and the
+  documented exclusion object.
   Assistant capability/meta turns and turns with precollected Assets evidence
   request `venue_recent` alone so same-conversation context is still present
-  without re-enabling semantic episodic recall.
-  A structured HTTP 400 receives one retry against the same endpoint with every
-  Extension 2 field removed (and `venue_recent` removed from sections). Enhanced
-  legacy recall similarly retries `/memory/recall` once without `time_range` or
-  `exclude`; a successful compatibility retry produces no unavailable marker.
-  For a venue-only request that retry uses `sections: ["audience"]` and retains the
-  required `focus` and `context_turns`, keeping semantic episodic recall suppressed.
+  without re-enabling semantic episodic recall. Those requests omit `focus` and `context_turns`
+  and still include `venue_since`. Neither request shape sends `query` or is retried with a
+  reduced payload after an error.
 
 ## Extension 1 non-goals
 
@@ -485,13 +490,11 @@ bounded to `[0, 1]`. The absent option performs no recency-prior arithmetic. Sol
 coordinator never supplies it, retains `strictTimeRange: false`, and therefore preserves its previous
 scores, ordering, and evidence.
 
-### Team-agent compatibility and rendering
+### Team-agent response handling and rendering
 
-Team-agent preserves the episode order returned by `/memory/context`; it applies its historical
-newest-first sort only after a genuine 404 fallback to legacy `/memory/recall`. A 400 compatibility
-retry to an older strict context sidecar removes `entity_terms` together with the other extension
-fields. Older team-agent versions ignore all additive response fields, and newer team-agent versions
-continue when an older sidecar omits them.
+Team-agent preserves the episode order returned by `/memory/context` and ignores unknown additive
+response fields. A failed context request is reported without retrying a reduced payload or
+redirecting to `/memory/recall`.
 
 Source messages render beneath their episode and activity excerpts render beneath their trusted
 `Elsewhere right now` event sentence. Both are escaped and enclosed in
@@ -503,7 +506,8 @@ instructions, or request tool calls. Raw excerpts are never interpolated into tr
 
 ### Structured focus and context
 
-`POST /memory/context` requires `focus` and `context_turns`:
+`POST /memory/context` requires `focus` and `context_turns` when requesting `episodes` or
+`autobiographical`, including when `sections` is omitted because its defaults include `episodes`:
 
 ```json
 {
@@ -518,14 +522,24 @@ instructions, or request tool calls. Raw excerpts are never interpolated into tr
 `focus` must be nonempty. `context_turns` is ordered oldest to newest and contains at most
 three preceding dialogue messages, each with `role` (`user` or `assistant`) and nonempty
 `text`. Use `[]` when there is no preceding dialogue. Adjacent turns with the same role remain
-separate records. Every context request requires both fields, including requests for only
-non-episode sections. Opaque `query` blobs and requests containing `query` return HTTP 400;
-Borg does not infer turns from role prefixes embedded in text.
+separate records. Non-recall requests, such as `venue_recent` alone or `commitments`/`directives`
+alone, may omit both fields. Combinations of these non-recall sections may also omit both fields.
+Any `query` field returns HTTP 400 with a field-specific validation message, even alongside
+otherwise valid structured input. Borg does not infer turns from role prefixes embedded in text.
+
+| Requested sections | Required recall input |
+| --- | --- |
+| `episodes`, optionally with `venue_recent` and `autobiographical` | Nonempty `focus` and `context_turns` (may be `[]`) |
+| Omitted `sections` (defaults include `episodes`) | Nonempty `focus` and `context_turns` (may be `[]`) |
+| `venue_recent` only | None; `venue_since` is still required |
+| `commitments` and `directives`, optionally with `audience` and `recent_activity` | None |
+| Any combination of the non-recall sections above | None; `venue_since` is required if `venue_recent` is included |
 
 The structured bundle participates in the client's per-turn memory cache key. `focus` supplies
 the entity-term collection input; time references are resolved by the sidecar's planner
-(Extension 5). Clients retain `focus` and `context_turns` when retrying after removal of optional
-extension fields. The separate `/memory/recall` contract is unchanged.
+(Extension 5). The client makes one request and raises on failure. A 400 is a caller bug, and
+there is no query-only mode, field-stripping retry, or endpoint downgrade. The separate
+`/memory/recall` contract is unchanged.
 
 Observation persistence wrappers are removed from structured turns while their decoded message
 body is retained. If the latest human body is empty, the client skips recall before cache lookup,
@@ -646,11 +660,10 @@ retrieval pass); the sidecar uses it in two ways:
   failure there sets `degraded` with reason prefix `autobiographical_recall:` and leaves the episodes
   intact; the scan itself is not cancelled on timeout, which is why the caps above are tight. Measured
   on 2026-09-05 in production the episodes pass alone took 3.5-5.3 s, so this section is frequently
-  skipped until that pass gets faster. Older sidecars reject the section name with 400;
-  team-agent's existing 400 fallback re-sends the previous shape.
-- **Context recalls overfetch.** Every context request supplies `focus`, overfetches, and defers
-  retrieval accounting, so an in-period episode found below the requested limit can still be
-  promoted by the planner cue.
+  skipped until that pass gets faster.
+- **Context recalls overfetch.** Context requests that include `episodes` supply `focus`,
+  overfetch, and defer retrieval accounting, so an in-period episode found below the requested
+  limit can still be promoted by the planner cue. Non-recall sections do not run that search.
 
 Measured limit worth knowing (2026-09-05, production bank): the pipeline's `time` lane lists in-window
 episodes by `updated_at` descending with a budget of `max(2 × limit, 8)`, so on a day with 98 episodes
