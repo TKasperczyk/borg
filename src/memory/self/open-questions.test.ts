@@ -928,6 +928,32 @@ describe("OpenQuestionsRepository", () => {
     }
   });
 
+  it("looks up exact open-question duplicates globally without an audience argument", async () => {
+    const db = openDatabase(":memory:", { migrations: selfMigrations });
+    const repository = new OpenQuestionsRepository({ db, clock: new FixedClock(10_000) });
+    try {
+      const question = repository.add({
+        question: "Which constraint is still unresolved?",
+        audience_entity_id: createEntityId(),
+        urgency: 0.5,
+        source: "user",
+        provenance: manualProvenance,
+      });
+      await expect(
+        repository.findSimilarOpenQuestion({
+          question: "Which constraint is still unresolved?",
+        }),
+      ).resolves.toMatchObject({ question: { id: question.id }, similarity: 1 });
+      await expect(
+        repository.findSimilarOpenQuestion({
+          question: "Which separate constraint is unresolved?",
+        }),
+      ).resolves.toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
   it("retrieves cosine candidates globally across audience scopes", async () => {
     const firstText = "Which private uncertainty belongs to the first audience?";
     const secondText = "¿Qué incertidumbre equivalente pertenece a la segunda audiencia?";

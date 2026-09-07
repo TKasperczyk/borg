@@ -48,9 +48,8 @@ import { summarizeSharedStateArtifactRender } from "../../shared-state/render.js
 import { SHARED_STATE_TOOL_NAME } from "../../shared-state/constants.js";
 import { SESSION_REENTRY_CONTINUITY_TAG } from "../../session-reentry-continuity.js";
 import {
-  compileSharedStateArtifactForEvidenceLedger,
   compileSharedStateArtifactForEvidenceLedgerResult,
-  buildCreatorDirectiveBriefingForTurn,
+  buildCreatorDirectiveBriefing,
   runRetrievalPhase,
 } from "./retrieval-phase.js";
 import type { TurnPhaseCoordinatorOptions } from "./types.js";
@@ -352,7 +351,7 @@ describe("creator directive retrieval briefing", () => {
         participantEntityIds: [audienceId],
         sessionRole: "participant",
       });
-      const briefing = buildCreatorDirectiveBriefingForTurn({
+      const briefing = buildCreatorDirectiveBriefing({
         applicable,
         currentUserEntryId,
         entityRepository: { get: () => null },
@@ -415,7 +414,7 @@ describe("creator directive retrieval briefing", () => {
         priority: 7,
         createdAt: 1_500,
       });
-      const operatorBriefing = buildCreatorDirectiveBriefingForTurn({
+      const operatorBriefing = buildCreatorDirectiveBriefing({
         applicable: repository.listApplicable({
           currentAudienceEntityId: audienceId,
           currentSenderBorgRole: "creator",
@@ -424,7 +423,7 @@ describe("creator directive retrieval briefing", () => {
         }),
         entityRepository: { get: () => null },
       });
-      const participantBriefing = buildCreatorDirectiveBriefingForTurn({
+      const participantBriefing = buildCreatorDirectiveBriefing({
         applicable: repository.listApplicable({
           currentAudienceEntityId: audienceId,
           participantEntityIds: [audienceId],
@@ -1348,7 +1347,7 @@ describe("creator directive retrieval briefing", () => {
         createdAt: 1_500,
       });
 
-      const briefing = buildCreatorDirectiveBriefingForTurn({
+      const briefing = buildCreatorDirectiveBriefing({
         applicable: repository.listApplicable({
           currentAudienceEntityId: audienceId,
           participantEntityIds: [audienceId],
@@ -1458,7 +1457,7 @@ describe("creator directive retrieval briefing", () => {
         createdAt: 1_500,
       });
 
-      const briefing = buildCreatorDirectiveBriefingForTurn({
+      const briefing = buildCreatorDirectiveBriefing({
         applicable: repository.listApplicable({
           currentAudienceEntityId: audienceId,
           participantEntityIds: [audienceId],
@@ -1553,7 +1552,7 @@ describe("creator directive retrieval briefing", () => {
         participantEntityIds: [aliceId],
         sessionRole: "participant",
       });
-      const briefing = buildCreatorDirectiveBriefingForTurn({
+      const briefing = buildCreatorDirectiveBriefing({
         applicable,
         entityRepository: { get: () => null },
       });
@@ -1629,7 +1628,7 @@ describe("creator directive retrieval briefing", () => {
         sessionRole: "participant",
       });
       const applicableDirective = applicable.find((item) => item.directive.id === directive.id);
-      const briefing = buildCreatorDirectiveBriefingForTurn({
+      const briefing = buildCreatorDirectiveBriefing({
         applicable,
         entityRepository: { get: () => null },
       });
@@ -1716,7 +1715,7 @@ describe("creator directive retrieval briefing", () => {
         sessionRole: "participant",
       });
       const byId = Object.fromEntries(applicable.map((item) => [item.directive.id, item]));
-      const briefing = buildCreatorDirectiveBriefingForTurn({
+      const briefing = buildCreatorDirectiveBriefing({
         applicable,
         entityRepository: { get: () => null },
       });
@@ -2990,7 +2989,7 @@ describe("creator directive retrieval briefing", () => {
   });
 });
 
-describe("compileSharedStateArtifactForEvidenceLedger", () => {
+describe("compileSharedStateArtifactForEvidenceLedgerResult", () => {
   const cleanup: Array<() => void> = [];
 
   afterEach(() => {
@@ -3182,7 +3181,7 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
         }) as StreamReader,
     } as unknown as TurnPhaseCoordinatorOptions;
 
-    await compileSharedStateArtifactForEvidenceLedger({
+    await compileSharedStateArtifactForEvidenceLedgerResult({
       options,
       input: {
         sessionId: DEFAULT_SESSION_ID,
@@ -3421,7 +3420,7 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
         }) as StreamReader,
     } as unknown as TurnPhaseCoordinatorOptions;
 
-    await compileSharedStateArtifactForEvidenceLedger({
+    await compileSharedStateArtifactForEvidenceLedgerResult({
       options,
       input: {
         sessionId: DEFAULT_SESSION_ID,

@@ -46,7 +46,7 @@ import {
 } from "../../prompts/participation.js";
 import { PROMPT_KEYS, type PromptKey } from "../../prompts/registry.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
-import { buildCreatorDirectiveBriefingForTurn } from "../../lifecycle/turn-phase/retrieval-phase.js";
+import { buildCreatorDirectiveBriefing } from "../../lifecycle/turn-phase/retrieval-phase.js";
 import type { DeliberationContext } from "../types.js";
 import { memoryDisclosurePayloadFields } from "../../../memory/common/disclosure-serializers.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
@@ -1045,7 +1045,7 @@ describe("buildBaseSystemPrompt", () => {
         createdAt: 1_000,
       });
 
-      const briefing = buildCreatorDirectiveBriefingForTurn({
+      const briefing = buildCreatorDirectiveBriefing({
         applicable: repository.listApplicable({
           currentAudienceEntityId: audienceId,
           participantEntityIds: [audienceId],

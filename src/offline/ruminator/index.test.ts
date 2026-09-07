@@ -31,7 +31,6 @@ import {
   RuminatorProcess,
   ruminatorPlanSchema,
   unwrapTensionParameterScaffolding,
-  unwrapTensionParameterScaffoldingForParse,
 } from "./index.js";
 
 const RUMINATOR_TOOL_NAME = "EmitRuminatorDecisions";
@@ -227,40 +226,6 @@ describe("unwrapTensionParameterScaffolding", () => {
     expect(() => unwrapTensionParameterScaffolding('<parameter name="item"></parameter>')).toThrow(
       /no usable payload/,
     );
-  });
-});
-
-describe("unwrapTensionParameterScaffoldingForParse", () => {
-  it("keeps the tension payloads the rejecting variant keeps", () => {
-    expect(
-      unwrapTensionParameterScaffoldingForParse(
-        '<parameter name="tensions">["First synthetic tension","Second synthetic tension"]</parameter>',
-      ),
-    ).toEqual(["First synthetic tension", "Second synthetic tension"]);
-    expect(unwrapTensionParameterScaffoldingForParse("One synthetic tension")).toEqual([
-      "One synthetic tension",
-    ]);
-  });
-
-  it("drops payloads addressed to another tool parameter instead of throwing", () => {
-    expect(
-      unwrapTensionParameterScaffoldingForParse(
-        '<parameter name="growth_marker">synthetic marker text</parameter>',
-      ),
-    ).toEqual([]);
-    expect(
-      unwrapTensionParameterScaffoldingForParse('<parameter name="growth_marker">null'),
-    ).toEqual([]);
-  });
-
-  it("keeps the tension wrappers around a dropped foreign one", () => {
-    expect(
-      unwrapTensionParameterScaffoldingForParse(
-        '<parameter name="0">First synthetic tension</parameter>\n' +
-          '<parameter name="growth_marker">null</parameter>\n' +
-          '<parameter name="1">Second synthetic tension',
-      ),
-    ).toEqual(["First synthetic tension", "Second synthetic tension"]);
   });
 });
 
@@ -590,94 +555,114 @@ describe("RuminatorProcess", () => {
     }
   });
 
-  it("unwraps parameter scaffolding from a string tensions value", async () => {
-    const clock = new FixedClock(3_000_000);
-    const questionText = "What still explains the Atlas rollout tension?";
-    const tensionText = "Timing is visible but ownership of the rollout is not.";
-    const warn = vi.fn();
-    const llm = new FakeLLMClient();
-    const harness = await createOfflineTestHarness({
-      llmClient: llm,
-      clock,
-      embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
-    });
-    const process = new RuminatorProcess({
-      openQuestionsRepository: harness.openQuestionsRepository,
-      growthMarkersRepository: harness.growthMarkersRepository,
-      registry: harness.registry,
-      logger: { warn },
-    });
-
-    try {
-      const episode = createEpisodeFixture(
-        {
-          title: "Atlas rollout tension",
-          narrative: "Atlas rollout evidence clarified timing but did not settle ownership.",
-          tags: ["atlas", "rollout"],
-          significance: 0.95,
-          created_at: 2_000_000,
-          updated_at: 2_000_000,
-        },
-        [1, 0, 0, 0],
-      );
-      await harness.episodicRepository.createEpisode(episode);
-      const question = harness.openQuestionsRepository.add({
-        question: questionText,
-        urgency: 0.5,
-        source: "reflection",
-        created_at: 1_000_000,
-        last_touched: 1_000_000,
-        provenance: { kind: "manual" },
+  it.each([
+    {
+      label: "an item wrapper",
+      tensions: '<parameter name="item">Timing is visible but ownership of the rollout is not.',
+      expectedTensions: ["Timing is visible but ownership of the rollout is not."],
+    },
+    {
+      label: "a wrapped JSON array",
+      tensions:
+        '<parameter name="tensions">["First synthetic tension","Second synthetic tension"]</parameter>',
+      expectedTensions: ["First synthetic tension", "Second synthetic tension"],
+    },
+    {
+      label: "plain text",
+      tensions: "One synthetic tension",
+      expectedTensions: ["One synthetic tension"],
+    },
+  ])(
+    "parses tensions from $label through the live process",
+    async ({ tensions, expectedTensions }) => {
+      const clock = new FixedClock(3_000_000);
+      const questionText = "What still explains the Atlas rollout tension?";
+      const warn = vi.fn();
+      const llm = new FakeLLMClient();
+      const harness = await createOfflineTestHarness({
+        llmClient: llm,
+        clock,
+        embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
       });
-      // The model returns one array item serialized as a parameter-wrapped string.
-      llm.pushResponse({
-        text: "",
-        input_tokens: 50,
-        output_tokens: 40,
-        stop_reason: "tool_use" as const,
-        tool_calls: [
+      const process = new RuminatorProcess({
+        openQuestionsRepository: harness.openQuestionsRepository,
+        growthMarkersRepository: harness.growthMarkersRepository,
+        registry: harness.registry,
+        logger: { warn },
+      });
+
+      try {
+        const episode = createEpisodeFixture(
           {
-            id: "toolu_1",
-            name: RUMINATOR_TOOL_NAME,
-            input: {
-              outcome: "still_open",
-              reasoning: "The evidence narrows the tension but does not settle the question.",
-              tensions: `<parameter name="item">${tensionText}`,
-              connected_open_question_ids: [],
-            },
+            title: "Atlas rollout tension",
+            narrative: "Atlas rollout evidence clarified timing but did not settle ownership.",
+            tags: ["atlas", "rollout"],
+            significance: 0.95,
+            created_at: 2_000_000,
+            updated_at: 2_000_000,
           },
-        ],
-      });
+          [1, 0, 0, 0],
+        );
+        await harness.episodicRepository.createEpisode(episode);
+        const question = harness.openQuestionsRepository.add({
+          question: questionText,
+          urgency: 0.5,
+          source: "reflection",
+          created_at: 1_000_000,
+          last_touched: 1_000_000,
+          provenance: { kind: "manual" },
+        });
+        // The model returns one array item serialized as a parameter-wrapped string.
+        llm.pushResponse({
+          text: "",
+          input_tokens: 50,
+          output_tokens: 40,
+          stop_reason: "tool_use" as const,
+          tool_calls: [
+            {
+              id: "toolu_1",
+              name: RUMINATOR_TOOL_NAME,
+              input: {
+                outcome: "still_open",
+                reasoning: "The evidence narrows the tension but does not settle the question.",
+                tensions,
+                connected_open_question_ids: [],
+              },
+            },
+          ],
+        });
 
-      const context = harness.createContext();
-      const plan = await process.plan(context, {});
+        const context = harness.createContext();
+        const plan = await process.plan(context, {});
 
-      expect(plan.errors).toEqual([]);
-      expect(plan.tension_scaffolding_drops).toEqual([]);
-      expect(plan.items).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            action: "mark_unresolved",
-            question_id: question.id,
-            tensions: [tensionText],
-          }),
-        ]),
-      );
-      const result = await process.apply(context, plan);
-      expect(result.notes).toEqual(expect.arrayContaining(["tension scaffolding dropped: 0"]));
-      expect(warn).not.toHaveBeenCalled();
-      expect(
-        harness.openQuestionsRepository.listRecentRuminations(question.id)[0]?.tensions,
-      ).toEqual([tensionText]);
-    } finally {
-      await harness.cleanup();
-    }
-  });
+        expect(plan.errors).toEqual([]);
+        expect(plan.tension_scaffolding_drops).toEqual([]);
+        expect(plan.items).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              action: "mark_unresolved",
+              question_id: question.id,
+              tensions: expectedTensions,
+            }),
+          ]),
+        );
+        const result = await process.apply(context, plan);
+        expect(result.notes).toEqual(expect.arrayContaining(["tension scaffolding dropped: 0"]));
+        expect(warn).not.toHaveBeenCalled();
+        expect(
+          harness.openQuestionsRepository.listRecentRuminations(question.id)[0]?.tensions,
+        ).toEqual(expectedTensions);
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
 
   it.each([
     {
       label: "an array element",
       tensions: ['<parameter name="growth_marker">null'],
+      expectedTensions: [] as string[],
       expectedDrop: {
         kind: "foreign_parameter_payload" as const,
         parameter_name: "growth_marker",
@@ -686,6 +671,7 @@ describe("RuminatorProcess", () => {
     {
       label: "the whole tensions value",
       tensions: '<parameter name="growth_marker">null</parameter>',
+      expectedTensions: [] as string[],
       expectedDrop: {
         kind: "foreign_parameter_payload" as const,
         parameter_name: "growth_marker",
@@ -694,13 +680,35 @@ describe("RuminatorProcess", () => {
     {
       label: "a wire-delimited tension element",
       tensions: '<parameter name="item">synthetic tension <parameter residue',
+      expectedTensions: [] as string[],
       expectedDrop: {
         kind: "wire_delimited_element" as const,
       },
     },
+    {
+      label: "another parameter's text",
+      tensions: '<parameter name="growth_marker">synthetic marker text</parameter>',
+      expectedTensions: [],
+      expectedDrop: {
+        kind: "foreign_parameter_payload" as const,
+        parameter_name: "growth_marker",
+      },
+    },
+    {
+      label: "tension wrappers around another parameter",
+      tensions:
+        '<parameter name="0">First synthetic tension</parameter>\n' +
+        '<parameter name="growth_marker">null</parameter>\n' +
+        '<parameter name="1">Second synthetic tension',
+      expectedTensions: ["First synthetic tension", "Second synthetic tension"],
+      expectedDrop: {
+        kind: "foreign_parameter_payload" as const,
+        parameter_name: "growth_marker",
+      },
+    },
   ])(
     "keeps the rumination when discardable parameter scaffolding arrives as $label",
-    async ({ tensions, expectedDrop }) => {
+    async ({ tensions, expectedTensions, expectedDrop }) => {
       const clock = new FixedClock(3_000_000);
       const questionText = "What still explains the Atlas rollout tension?";
       const reasoningText = "The evidence narrows the tension but does not settle the question.";
@@ -777,7 +785,7 @@ describe("RuminatorProcess", () => {
               action: "mark_unresolved",
               question_id: question.id,
               rumination_note: reasoningText,
-              tensions: [],
+              tensions: expectedTensions,
             }),
           ]),
         );
@@ -796,7 +804,7 @@ describe("RuminatorProcess", () => {
           ]),
         );
         expect(stored?.note).toBe(reasoningText);
-        expect(stored?.tensions).toEqual([]);
+        expect(stored?.tensions).toEqual(expectedTensions);
         expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
           status: "open",
           unresolved_rumination_ticks: 1,

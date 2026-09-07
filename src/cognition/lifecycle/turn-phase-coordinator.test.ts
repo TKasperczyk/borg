@@ -48,7 +48,7 @@ import {
   TurnPhaseCoordinator,
 } from "./turn-phase-coordinator.js";
 import type { TurnPhaseCoordinatorOptions } from "./turn-phase-coordinator.js";
-import { compileSharedStateArtifactForEvidenceLedger } from "./turn-phase/retrieval-phase.js";
+import { compileSharedStateArtifactForEvidenceLedgerResult } from "./turn-phase/retrieval-phase.js";
 
 const PROMISE_COMMITMENT_TYPE = "promise" as const;
 const RULE_COMMITMENT_TYPE = "rule" as const;
@@ -429,12 +429,13 @@ async function compileSharedStateArtifactForEvidenceLedgerForTest(
     promptVisibleLedger: string;
   },
 ): Promise<SharedStateArtifact | null> {
-  return compileSharedStateArtifactForEvidenceLedger({
+  const result = await compileSharedStateArtifactForEvidenceLedgerResult({
     options: (coordinator as unknown as { options: TurnPhaseCoordinatorOptions }).options,
     input: input.input as never,
     ledger: input.ledger,
     promptVisibleLedger: input.promptVisibleLedger,
   });
+  return result.artifact;
 }
 
 describe("buildContradictionRoutingOverride", () => {

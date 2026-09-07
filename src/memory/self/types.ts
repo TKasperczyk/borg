@@ -402,6 +402,4 @@ export type OpenQuestionGoalLookupOptions = {
 
 export type OpenQuestionSimilarLookupOptions = {
   question: string;
-  /** Retained for API compatibility; duplicate lookup is intentionally global. */
-  audienceEntityId?: EntityId | null;
 };

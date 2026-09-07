@@ -282,10 +282,6 @@ export function unwrapTensionParameterScaffolding(value: string): string[] {
  * addressed to a different field, so it is not tension content. Same structural
  * predicate as the rejecting variant, different cost when it fires.
  */
-export function unwrapTensionParameterScaffoldingForParse(value: string): string[] {
-  return unwrapTensionParameterScaffoldingForParseWithDrops(value);
-}
-
 function unwrapTensionParameterScaffoldingForParseWithDrops(
   value: string,
   onDrop?: TensionScaffoldingDropObserver,

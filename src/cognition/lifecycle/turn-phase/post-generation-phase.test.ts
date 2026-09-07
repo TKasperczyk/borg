@@ -33,7 +33,7 @@ import {
 import { StreamReader, StreamWriter, type StreamResponseTo } from "../../../stream/index.js";
 import { SHARED_STATE_TOOL_NAME } from "../../shared-state/constants.js";
 import type { PerceptionResult } from "../../types.js";
-import { compileSharedStateArtifactForEvidenceLedger } from "./retrieval-phase.js";
+import { compileSharedStateArtifactForEvidenceLedgerResult } from "./retrieval-phase.js";
 import { runPostGenerationPhase } from "./post-generation-phase.js";
 import type { TurnPhaseCoordinatorOptions } from "./types.js";
 
@@ -445,7 +445,7 @@ describe("runPostGenerationPhase", () => {
       temporalCue: null,
     } satisfies PerceptionResult;
 
-    await compileSharedStateArtifactForEvidenceLedger({
+    await compileSharedStateArtifactForEvidenceLedgerResult({
       options: makeBaseOptions(preAnswerLlm),
       input: {
         sessionId,

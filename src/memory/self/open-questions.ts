@@ -822,7 +822,7 @@ export class OpenQuestionsRepository {
   // Insert-time dedup is exact-normalized-text only -- semantic merging is the
   // ruminator's job. Vector matching here would risk collapsing distinct
   // questions that share wording but differ on a numeric/entity specific
-  // (e.g. two ceiling-amount questions). Scans all visible open questions, not
+  // (e.g. two ceiling-amount questions). Scans all open questions, not
   // a top-N urgency window, so exact matches can't slip through outside the cap.
   async findSimilarOpenQuestion(
     input: OpenQuestionSimilarLookupOptions,

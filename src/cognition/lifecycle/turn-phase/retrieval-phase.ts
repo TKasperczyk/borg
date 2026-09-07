@@ -419,8 +419,11 @@ function creatorDirectiveBriefingLane(
 
 export function buildCreatorDirectiveBriefing(input: {
   applicable: readonly CreatorDirectiveApplicable[];
+  currentUserEntryId?: StreamEntryId;
+  currentUserEntryIds?: readonly StreamEntryId[];
   entityRepository: Pick<EntityRepository, "get">;
 }): CreatorDirectiveBriefing | null {
+  const applicable = currentTurnEligibleCreatorDirectives(input);
   const briefingScope = (item: CreatorDirectiveApplicable) => ({
     directiveId: item.directive.id,
     createdByEntityId: item.directive.created_by_entity_id,
@@ -435,7 +438,7 @@ export function buildCreatorDirectiveBriefing(input: {
     activationAllowedEntityIds: [...item.directive.activation_policy.allowed_entity_ids],
     activationExcludedEntityIds: [...item.directive.activation_policy.excluded_entity_ids],
   });
-  const contentDirectives = input.applicable
+  const contentDirectives = applicable
     .flatMap((item) => {
       if (item.render_mode !== "content") {
         return [];
@@ -470,7 +473,7 @@ export function buildCreatorDirectiveBriefing(input: {
     })
     .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt);
   const privateDirectives = [
-    ...input.applicable
+    ...applicable
       .filter(canRenderCreatorDirectivePrivateKnowledge)
       .flatMap((item) => {
         const payload = contentPayloadForCreatorDirective(item.directive);
@@ -497,7 +500,7 @@ export function buildCreatorDirectiveBriefing(input: {
         ];
       })
       .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt),
-    ...input.applicable
+    ...applicable
       .filter(canRenderCreatorDirectivePrivateOperation)
       .map((item) => ({
         renderMode: "private" as const,
@@ -510,7 +513,7 @@ export function buildCreatorDirectiveBriefing(input: {
       }))
       .sort((left, right) => right.priority - left.priority || left.createdAt - right.createdAt),
   ];
-  const boundaryDirectives = input.applicable
+  const boundaryDirectives = applicable
     .filter(
       (item) =>
         item.activation.active &&
@@ -605,22 +608,6 @@ function traceCreatorDirectiveRendered(input: {
       disclosure_reason: item.disclosure.reason,
     });
   }
-}
-
-export function buildCreatorDirectiveBriefingForTurn(input: {
-  applicable: readonly CreatorDirectiveApplicable[];
-  currentUserEntryId?: StreamEntryId;
-  currentUserEntryIds?: readonly StreamEntryId[];
-  entityRepository: Pick<EntityRepository, "get">;
-}): CreatorDirectiveBriefing | null {
-  return buildCreatorDirectiveBriefing({
-    applicable: currentTurnEligibleCreatorDirectives({
-      applicable: input.applicable,
-      currentUserEntryId: input.currentUserEntryId,
-      currentUserEntryIds: input.currentUserEntryIds,
-    }),
-    entityRepository: input.entityRepository,
-  });
 }
 
 function retrievedStreamEntryIds(
@@ -908,11 +895,9 @@ export async function runRetrievalPhase(input: {
     participantEntityIds: creatorDirectiveParticipantEntityIds,
   });
   const creatorDirectiveBriefing = buildCreatorDirectiveBriefing({
-    applicable: currentTurnEligibleCreatorDirectives({
-      applicable: creatorDirectiveApplicable,
-      currentUserEntryId: input.persistedUserEntry?.id,
-      currentUserEntryIds: input.currentUserEntries?.map((entry) => entry.id),
-    }),
+    applicable: creatorDirectiveApplicable,
+    currentUserEntryId: input.persistedUserEntry?.id,
+    currentUserEntryIds: input.currentUserEntries?.map((entry) => entry.id),
     entityRepository: input.options.entityRepository,
   });
   const recentLivedExperienceConfig =
@@ -1843,19 +1828,6 @@ function emitSessionReentryContinuityTrace(input: {
   if (summary.status === "rendered") {
     input.options.tracer.emit("session_reentry.continuity.rendered", traceData);
   }
-}
-
-export async function compileSharedStateArtifactForEvidenceLedger(input: {
-  options: TurnPhaseCoordinatorOptions;
-  input: EvidenceLedgerFinalizerBuildInput;
-  previousArtifact?: SharedStateArtifact | null;
-  ledger: EvidenceLedger;
-  promptVisibleLedger: string;
-  compilePass?: SharedStateCompilePass;
-  assistantResponse?: SharedStateCompilerAssistantResponse | null;
-  compileAnchorStreamEntryId?: StreamEntryId;
-}): Promise<SharedStateArtifact | null> {
-  return (await compileSharedStateArtifactForEvidenceLedgerResult(input)).artifact;
 }
 
 export async function compileSharedStateArtifactForEvidenceLedgerResult(input: {

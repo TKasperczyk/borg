@@ -14,7 +14,7 @@ import {
   type EntityId,
 } from "../../util/ids.js";
 import { createWorkingMemory } from "../../memory/working/index.js";
-import { buildCreatorDirectiveBriefingForTurn } from "../lifecycle/turn-phase/retrieval-phase.js";
+import { buildCreatorDirectiveBriefing } from "../lifecycle/turn-phase/retrieval-phase.js";
 import {
   buildStandingWithAudienceSection,
   INTERIM_CREATOR_DIRECTIVE_BOUNDARY_PROMPT,
@@ -115,7 +115,7 @@ function createScenario(): {
           input.participantEntityIds === undefined ? undefined : [...input.participantEntityIds],
         sessionRole: input.sessionRole ?? "participant",
       });
-      const briefing = buildCreatorDirectiveBriefingForTurn({
+      const briefing = buildCreatorDirectiveBriefing({
         applicable,
         entityRepository,
       });
