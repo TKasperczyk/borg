@@ -1,29 +1,29 @@
 # Embedding model migration
 
-Opus 5.0: in-scope because embedding compatibility and crash-safe migration are structural storage correctness requirements.
-
-## Implementation utility searches
-
-- Searched for atomic file writes -> found `src/util/atomic-write.ts`; reuse `writeJsonFileAtomic` and `syncDirectory`.
-- Searched for durable JSONL and interruption recovery -> found `src/util/durable-jsonl.ts` and `eval/embedding-ab/cache.ts`; reuse the append helper and committed-record pattern.
-- Searched for cross-process locks -> found `src/stream/file-lock.ts` and the lifetime lease pattern in `src/cognition/session-lock.ts`; use those ownership rules for bank access. A separate persistent migration fence is necessary because ordinary locks are reaped after crashes.
-- Searched for parsing -> found Zod and `src/util/parse.ts`; reuse those and Node's CLI parser rather than another argument parser.
-- Searched for hashing -> found `sha256Bytes` and `fingerprintCanonicalValue` in `src/cognition/deliberation/request-fingerprint.ts`; reuse those for text, row and schema identities.
-- Searched for retries/backoff -> found transport-specific loops and `src/util/clock.ts:sleep`, but no suitable shared migration retry policy; use the existing sleep with bounded embedding batch attempts.
-- Searched for progress -> found `eval/embedding-ab/embed-items.ts:onBatch`; use the same completed/total reporting pattern, with durable checkpoints after LanceDB commits.
-- Searched for backup and disk headroom -> found the manual recipe in `WORKFLOW.md`, no coordinated Node bank backup; use Node's SQLite backup API and filesystem APIs.
-- Searched for streaming file checksums -> found buffer/text hashes but no streaming file hash; the migration's `fileChecksum` uses `createReadStream` + `createHash` to verify large files with bounded memory.
-- Searched for filesystem walkers -> found unrelated snapshot/capture scripts, no suitable whole-bank walker; `bankFiles` counts bank bytes and rejects symlinks and special files before copying.
-- Searched for tenant discovery -> found `BorgPool.listTenantIds`; extracted it to `src/borg/tenant-directories.ts` for the pool and CLI. The default `backups` directory is always excluded.
-- Searched for read-only SQLite opens -> found `eval/embedding-ab/bank.ts:openReadOnlyDatabase`; moved it into the SQLite module and reused it from the harness and migration. `SqliteRawDatabase.backup` exposes the Node backup API without running SQL migrations.
-- Searched for JSONL readers -> found the A/B cache's interrupted-tail reader; moved `parseJsonLines` into `durable-jsonl.ts`. Checkpoints store committed batch identities, not a second in-memory vector cache.
-- Searched for Arrow/vector conversion -> found `toFloat32Array`, schema factories, and `LanceDbTable.upsert`; reuse them. The new vector validator additionally requires the expected length and nonzero norm. All-null Boolean batches expose an Arrow 18 IPC bug: staging alone temporarily writes Boolean values and restores nulls using Lance SQL before checkpointing. It never exposes those intermediate rows.
-
 ## Preconditions
 
-Deploy this version of the sidecar **with the old embedding environment first**. Restart it so every open bank holds the new access lease. A sidecar from before this change does not honor migration fences; stop that process before migrating. Stop other direct bank-writing tools as well.
+Deploy this version of the sidecar **with the old embedding environment and an explicit legacy source assertion first**:
 
-Run from `/app` in the pod, with Node >= 22.18.0, installed `tsx`, access to `/data`, and the pod's gateway credentials/CA environment. No `pnpm` is needed. The CLI uses `LLM_API_KEY` and `KRATOS_BASE_URL`, including the sidecar's existing default gateway URL. `BORG_EMBEDDING_API_KEY` and `BORG_EMBEDDING_BASE_URL` are fallbacks. It uses a 60-second request timeout and at most four attempts per batch (backoff 1, 4, 10 seconds). Batch size defaults to 32 and embedding concurrency to 2. Tenant processing is always sequential.
+```text
+EMBEDDING_MODEL=generative-apis/qwen3-embedding-8b
+EMBEDDING_DIMS=4096
+EMBEDDING_LEGACY_SOURCE_MODEL=generative-apis/qwen3-embedding-8b
+```
+
+The assertion allows an existing unlabelled bank to be adopted only when the effective shared client has that model and every existing vector table has the expected float32 vector type and dimensions. Missing or mismatched assertions leave legacy banks unavailable. New banks with no SQLite/LanceDB storage are initialized with the effective client profile. Restart the sidecar so every open bank holds the new access lease. A sidecar from before this change does not honor migration fences; stop that process before migrating. Stop other direct bank-writing tools as well.
+
+The pod app directory is `/workspace/workspace/repos/app` and is read-only. Node is at `/layers/paketo-buildpacks_node-engine/node/bin/node` and is not initially on PATH. Only `/data` is writable. Run this setup in each new pod shell; the writable `TMPDIR` is required by the tsx cache. All migration commands use `nice -n 19` because the live sidecar shares the pod.
+
+```sh
+# Pod shell setup
+export PATH=/layers/paketo-buildpacks_node-engine/node/bin:$PATH
+export TMPDIR=/data/tmp
+mkdir -p "$TMPDIR"
+cd /workspace/workspace/repos/app
+nice -n 19 node --import tsx scripts/migrate-embeddings.ts --help
+```
+
+Use Node >= 22.18.0, the installed `tsx`, and the pod's gateway credentials/CA environment. No `pnpm` is needed. The CLI uses `LLM_API_KEY` and `KRATOS_BASE_URL`, including the sidecar's existing default gateway URL. `BORG_EMBEDDING_API_KEY` and `BORG_EMBEDDING_BASE_URL` are fallbacks. It uses a 60-second request timeout and at most four attempts per batch (backoff 1, 4, 10 seconds). Batch size defaults to 32 and embedding concurrency to 2. Tenant processing is always sequential.
 
 Do not change the shared sidecar model while tenants have mixed profiles. After each tenant migrates, the old-configured sidecar returns HTTP 503 for that tenant until the final environment cutover. Other tenants can continue serving. Plan for this per-tenant downtime.
 
@@ -32,26 +32,26 @@ All commands below name the source model explicitly, which is required for unlab
 ## Inventory and capacity check
 
 ```sh
-node --import tsx scripts/migrate-embeddings.ts \
+nice -n 19 node --import tsx scripts/migrate-embeddings.ts \
   --data-root /data --tenant team-agent-ai \
   --source-model generative-apis/qwen3-embedding-8b \
   --target-model scw/bge-m3 --target-dims 1024 --dry-run
 ```
 
-Repeat for `team-agent-esb`, `team-agent-rtm`, `team-agent-tn`, and `team-agent-tni`, or use `--all-tenants` instead of `--tenant team-agent-ai`. `--tenant` is repeatable. Discovery requires a valid tenant directory containing `borg.db`; backups, quarantines, and non-bank directories are excluded.
+Repeat for `team-agent-esb`, `team-agent-rtm`, `team-agent-tn`, and `team-agent-tni`, or use `--all-tenants` instead of `--tenant team-agent-ai`. `--tenant` is repeatable. Discovery requires a valid tenant directory containing `borg.db`; backups, quarantines, and non-bank directories are excluded. CLI discovery is strict: unreadable candidates, unreadable bank files, or symlink candidates cause a nonzero exit before any tenant is migrated. `--all-tenants` cannot silently skip an inaccessible bank.
 
 The JSON report includes all seven tables: `episodes`, `semantic_nodes`, `skills`, `open_questions`, `action_records`, `image_perception_embeddings`, and `observed_events`. It includes archived/superseded rows, source dimensions, exact row identities, SQL-only/vector-only ids, text disagreements, and serialized-vector locations in review refs, audit reversals/targets, and JSON files under the tenant. Saved plans outside the tenant cannot be inventoried; their application is still protected by the runtime payload guard.
 
 A dry-run writes no profile, fence, backup, checkpoint, or staging table and makes no gateway request. SQLite's read-only WAL handling can create `borg.db-wal`/`borg.db-shm` coordination files. A live dry-run is **provisional**; the authoritative inventory runs after draining. SQL/vector discrepancies and unknown LanceDB tables block migration rather than silently discarding data. Resolve them with the old sidecar/appropriate repair operation before proceeding.
 
-The capacity check is conservative: whole-bank backup bytes plus twice the bank's current size, three copies of target vector bytes, and 64 MiB for staging/metadata. It checks available blocks on both filesystems when the backup is elsewhere. Previous generations also count. Use `--backup-dir /mounted-backups/borg` to move backup storage; the destination must be outside every tenant directory. Symlinks and special files in a bank are refused. Incomplete backups remain as `.partial-*` directories for inspection; they are never silently reused or removed.
+The capacity check is conservative: whole-bank backup bytes plus twice the source LanceDB bytes of unfinished tables, three copies of remaining target vector bytes, and 64 MiB for staging/metadata. It checks available blocks on both filesystems when the backup is elsewhere. Previous generations also count toward the whole-bank backup. A table retains its full staging allowance until complete, since individual row sizes and fragment rewrite costs can vary. Capacity is checked before every backup and staging attempt, including resume. Resume uses the destination recorded in the journal, excludes completed backup work, and accounts for staging rows with valid committed checkpoints. Changing `--backup-dir` does not relocate an existing attempt. Use `--backup-dir /data/embedding-backups` to choose a different backup directory in this pod; the destination must be outside every tenant directory. Symlinks and special files in a bank are refused. Incomplete backups remain as `.partial-*` directories for inspection; they are never silently reused or removed.
 
 ## Fence, drain, back up, migrate
 
 Start the migration for one tenant:
 
 ```sh
-node --import tsx scripts/migrate-embeddings.ts \
+nice -n 19 node --import tsx scripts/migrate-embeddings.ts \
   --data-root /data --tenant team-agent-ai \
   --source-model generative-apis/qwen3-embedding-8b \
   --target-model scw/bge-m3 --target-dims 1024
@@ -60,7 +60,7 @@ node --import tsx scripts/migrate-embeddings.ts \
 The first action installs `embedding-migration.lock`. If the sidecar has that bank open, the CLI exits nonzero with `EMBEDDING_BANK_BUSY` and **leaves the fence in place**. Drain it through the authenticated route (Node's fetch works in the slim pod without curl):
 
 ```sh
-node --input-type=module - <<'JS'
+nice -n 19 node --input-type=module - <<'JS'
 const tenant = 'team-agent-ai';
 const response = await fetch(`http://127.0.0.1:8088/memory/admin/evict?tenant=${tenant}`, {
   method: 'POST',
@@ -76,18 +76,20 @@ Wait for HTTP 200 with `status: "closed"`. The route waits for in-flight work, s
 Under exclusive bank access, the CLI:
 
 1. Inventories every current row without calling `Borg.open`, schema migrations, reconciliation, or backfills.
-2. Copies the whole tenant into `/data/backups/<tenant>/generation-<N>-<timestamp>`. It copies `borg.db` with SQLite's backup API, not a live file copy. It checks SQLite integrity and table counts, exact inventory equality, file checksums, and fsyncs the copy before marking it complete.
-3. Builds `lancedb.staging-<N>` beside `lancedb`, preserving all non-vector schema fields and row values. Embedding inputs use the production recipe for each table, including consolidation episodes and semantic observation metadata. Image `model` fields describe perception models and remain unchanged.
+2. Copies the tenant data, excluding migration locks, journals, checkpoints, reports, and prior backup manifests, into `/data/backups/<tenant>/generation-<N>-<timestamp>`. It copies `borg.db` with SQLite's backup API, not a live file copy. It checks SQLite integrity and table counts, exact inventory equality, file checksums, and fsyncs the copy before marking it complete.
+3. Builds `lancedb.staging-<N>` beside `lancedb`, preserving all non-vector schema fields and row values. Embedding inputs use the production recipe for each table, including consolidation episodes and semantic observation metadata. Image `model` fields describe perception models and remain unchanged. New consolidation episodes retain `consolidation_embedding_input`, containing the synthesized narrative and protected source lines used by the writer. Existing rows recover the input from their persisted raw lineage in source order, including archived rows, only when all possible append boundaries yield byte-identical input.
 4. Commits bounded batches and fsyncs `.embedding-migration-g<N>.jsonl` checkpoints keyed by table/id/text hash (also recording non-vector field hashes and the target profile). Resume validates the staging rows before skipping them. A table commit interrupted before its checkpoint is safely replayed by id.
 5. Verifies exact id coverage and unchanged non-vector fields/schema, SQLite integrity/counts, finite nonzero target-dimensional vectors, and up to three nearest-neighbour self-probes per nonempty table. These are storage/retrieval sanity checks, not a semantic-quality benchmark; use `eval/embedding-ab` for quality comparisons.
 6. Journals cutover intent, renames `lancedb` to `lancedb.prev-<N>`, renames staging to `lancedb`, atomically writes `embedding-profile.json`, and removes the fence only after verification succeeds. It keeps the previous directory and writes `.embedding-migration-report-<N>.json`.
+
+`EMBEDDING_TEXT_UNRECOVERABLE` blocks a bank whose legacy consolidation input is ambiguous, missing its raw sources, or inconsistent with its recorded input. Inline legacy protocol lines can make the original synthesized prose impossible to recover from the final narrative alone. Recover the original synthesis from retained authoritative records before retrying; do not guess a boundary or strip prose to force completion. A dry-run detects this before backup or target embedding calls.
 
 Progress and the final report are JSON lines on stdout; failures are JSON on stderr with a distinct code and a nonzero exit status. Keep the report and backup location with the deployment record. Backup files and reports contain private bank data; preserve their access controls.
 
 For the five tenants in one sequential command:
 
 ```sh
-node --import tsx scripts/migrate-embeddings.ts \
+nice -n 19 node --import tsx scripts/migrate-embeddings.ts \
   --data-root /data --all-tenants \
   --source-model generative-apis/qwen3-embedding-8b \
   --target-model scw/bge-m3 --target-dims 1024
@@ -100,7 +102,7 @@ This stops at the first failure. For a busy tenant, drain that tenant and rerun 
 Before restoring writes, verify the migrated banks independently:
 
 ```sh
-node --import tsx scripts/migrate-embeddings.ts \
+nice -n 19 node --import tsx scripts/migrate-embeddings.ts \
   --data-root /data --all-tenants \
   --target-model scw/bge-m3 --target-dims 1024 --verify-only
 ```
@@ -114,10 +116,12 @@ EMBEDDING_MODEL=scw/bge-m3
 EMBEDDING_DIMS=1024
 ```
 
+Remove `EMBEDDING_LEGACY_SOURCE_MODEL` from the deployment environment. Keep the assertion absent after the cutover; every existing bank must now carry its persisted target profile.
+
 The sidecar's default constants remain unchanged. Validate through the actual sidecar for **each** tenant: authenticated `GET /memory/episodes?tenant=<tenant>&limit=3` should open the bank successfully; `POST /memory/recall` with a representative query should return HTTP 200 without an embedding/profile degradation. For example:
 
 ```sh
-node --input-type=module - <<'JS'
+nice -n 19 node --input-type=module - <<'JS'
 for (const tenant of ['team-agent-ai', 'team-agent-esb', 'team-agent-rtm', 'team-agent-tn', 'team-agent-tni']) {
   const response = await fetch('http://127.0.0.1:8088/memory/recall', {
     method: 'POST',
@@ -131,7 +135,7 @@ for (const tenant of ['team-agent-ai', 'team-agent-esb', 'team-agent-rtm', 'team
 JS
 ```
 
-`/healthz` is liveness only and does not prove tenant compatibility. Profile mismatches (including a different model with the same dimensions), unverifiable schemas, and migration fences produce tenant-unavailable/degraded responses. Injected client identity is checked; editing `config.json` cannot bypass the effective-client guard. Legacy adoption happens only after actual table dimensions match the effective client.
+`/healthz` is liveness only and does not prove tenant compatibility. Profile mismatches (including a different model with the same dimensions), unverifiable schemas, and migration fences produce tenant-unavailable/degraded responses. Injected client identity is checked; editing `config.json` cannot bypass the effective-client guard. Legacy adoption requires the explicit source assertion as well as matching table dimensions/types. The library equivalents are `embedding.legacySourceModel` in config, `BORG_EMBEDDING_LEGACY_SOURCE_MODEL`, and the `embeddingLegacySourceModel` open option. An `embeddingProfile` option is an additional assertion, never a substitute for an injected client's own profile.
 
 Queued reviews, saved plans, and semantic audit reversals keep their historical data. When materialized, their serialized vectors are recomputed from stored text using the effective client even if dimensions happen to match. A payload without recoverable text is rejected with `SERIALIZED_EMBEDDING_INCOMPATIBLE`; regenerate it or reject/dismiss the review. The migration does not automatically resolve or delete such items.
 
@@ -144,75 +148,21 @@ Ordinary owner/access locks are reaped automatically for dead local PIDs. If a p
 For rollback, stop the sidecar and other bank writers. Preserve the failed target directories and journals for diagnosis. For each tenant, with `<N>` taken from its migration report:
 
 ```sh
-mv /data/team-agent-ai/lancedb /data/team-agent-ai/lancedb.failed-<N>
-mv /data/team-agent-ai/lancedb.prev-<N> /data/team-agent-ai/lancedb
+MIGRATION_GENERATION=1 # Set this to N from the report.
+mv /data/team-agent-ai/lancedb "/data/team-agent-ai/lancedb.failed-$MIGRATION_GENERATION"
+mv "/data/team-agent-ai/lancedb.prev-$MIGRATION_GENERATION" /data/team-agent-ai/lancedb
 ```
 
-Restore **the matching source profile**, not just the old vector directory: copy `embedding-profile.json` from the verified backup if it existed. For a legacy source, the journal's `source` object is a valid profile to write atomically using `writeJsonFileAtomic`. Archive the migration journal and target report so a later run cannot mistake rollback for a completed migration; remove the fence only once the restored bank/profile pair has been checked. Restore `EMBEDDING_MODEL=generative-apis/qwen3-embedding-8b` and `EMBEDDING_DIMS=4096`, restart, and repeat per-tenant sidecar verification.
+Restore **the matching source profile**, not just the old vector directory: copy `embedding-profile.json` from the verified backup if it existed. For a legacy source, the journal's `source` object is a valid profile to write atomically using `writeJsonFileAtomic`. Move the migration journal, checkpoints, and target report outside the tenant directory so a later run cannot mistake rollback for a completed migration; remove the fence only once the restored bank/profile pair has been checked. Restore `EMBEDDING_MODEL=generative-apis/qwen3-embedding-8b` and `EMBEDDING_DIMS=4096`, restart, and repeat per-tenant sidecar verification.
 
-Directory-only rollback is appropriate before new production writes. If target-model serving has already changed SQLite, stream data, or other memory state, restore the **entire verified tenant backup**, including its SQLite snapshot, to avoid joining old vectors to new metadata. Retain the newer bank separately; restoring a snapshot loses post-backup writes unless they are separately recovered. Do not overlay backup SQLite onto an open database or leave old WAL/SHM files beside the restored snapshot.
+Directory-only rollback is appropriate before new production writes. If target-model serving has already changed SQLite, stream data, or other memory state, restore the **entire verified tenant backup**, including its SQLite snapshot, to avoid joining old vectors to new metadata. Retain the newer bank separately; restoring a snapshot loses post-backup writes unless they are separately recovered. If a restored full snapshot has no profile, temporarily restore the legacy source assertion from the preconditions while the old-model sidecar adopts it. Do not overlay backup SQLite onto an open database or leave old WAL/SHM files beside the restored snapshot.
 
-## Implementation validation
+## Sidecar embedding environment
 
-Validation used Node 22.23.2 and `TMPDIR=$HOME/.cache/borg-bge-m3/tmp`, with logs under `$HOME/.cache/borg-bge-m3/logs`; no test cache used the small `/tmp` tmpfs. Embeddings were mocked. No production bank or gateway was accessed.
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `EMBEDDING_MODEL` | `generative-apis/qwen3-embedding-8b` | Actual model used by the one shared injected client and its explicit profile. |
+| `EMBEDDING_DIMS` | `4096` | Positive integer dimension expected from that client and required in every bank table. |
+| `EMBEDDING_LEGACY_SOURCE_MODEL` | unset | Explicit source model assertion for adopting existing unlabelled banks; must equal the effective client model. Remove after all tenants migrate. |
 
-- `npm run typecheck`: all five TypeScript projects pass.
-- Focused guard, pool, sidecar, payload, repository, migration, and eval coverage: 19 files / 377 tests passed. The final migration suite separately passed all 16 tests, including actual 4096-to-1024 schemas, all seven tables, complete row preservation, empty tables, dry-run, bounded retries/concurrency, interrupted batches, and recovery after either cutover rename. The final embedding client suite passed 13 tests.
-- The required full run, `npx vitest run --maxWorkers=2`, ran once: 369 files passed, 6 failed; 4,443 tests passed, 6 failed, 1 todo (1,104.45 seconds). Two failures were Borg fixtures that needed the new opening order/model identity; those fixtures were corrected and both complete files passed (28 tests). Three failures exceeded the default 15-second test timeout; all three passed individually with `--maxWorkers=1 --testTimeout=60000`.
-- The remaining full-run failure is an exact floating-point comparison in `src/retrieval/recall-core.test.ts`, "maps N=3 variants to semantic lanes without changing episode fusion": `0.0038047635709747476` versus `0.0038047635709747467`. Running that test on the original `dev` commit `b1e37f5a` with the same Node version reproduces the identical failure. It was left unchanged. The full suite was not rerun after the fixture corrections.
-
-The CLI help invocation was checked under Node 22. Production gateway credentials, BGE-M3 semantic quality/latency, actual pod volume capacity, and live Kubernetes drain/restart/rollback remain operator verification steps. Fault injection tests exercise process interruption around commits/renames; they cannot establish the persistence guarantees of the production storage device during power loss.
-
-## Implementation file inventory
-
-Paths are relative to the repository root.
-
-| Change | File |
-| --- | --- |
-| Modified | `README.md` |
-| Created | `docs/embedding-migration.md` |
-| Modified | `eval/embedding-ab/bank.ts` |
-| Modified | `eval/embedding-ab/cache.ts` |
-| Created | `scripts/embedding-migration/backup.ts` |
-| Created | `scripts/embedding-migration/inventory.ts` |
-| Created | `scripts/embedding-migration/migrate.ts` |
-| Modified | `scripts/memory-sidecar-main.ts` |
-| Created | `scripts/migrate-embeddings.test.ts` |
-| Created | `scripts/migrate-embeddings.ts` |
-| Modified | `src/borg/__tests__/config-and-facade.test.ts` |
-| Modified | `src/borg/__tests__/turn-ingestion.test.ts` |
-| Modified | `src/borg/lifecycle.ts` |
-| Modified | `src/borg/offline-setup.ts` |
-| Modified | `src/borg/open.ts` |
-| Modified | `src/borg/pool.test.ts` |
-| Modified | `src/borg/pool.ts` |
-| Modified | `src/borg/repositories.ts` |
-| Created | `src/borg/tenant-directories.ts` |
-| Modified | `src/borg/types.ts` |
-| Created | `src/embeddings/bank-profile.test.ts` |
-| Created | `src/embeddings/bank-profile.ts` |
-| Modified | `src/embeddings/cache.ts` |
-| Modified | `src/embeddings/index.test.ts` |
-| Modified | `src/embeddings/index.ts` |
-| Created | `src/embeddings/serialized.test.ts` |
-| Created | `src/embeddings/serialized.ts` |
-| Modified | `src/embeddings/stall-guard.ts` |
-| Modified | `src/memory/episodic/extractor.ts` |
-| Modified | `src/memory/episodic/protected-lines.test.ts` |
-| Modified | `src/memory/episodic/protected-lines.ts` |
-| Modified | `src/memory/observed-events/repository.ts` |
-| Modified | `src/memory/review-queue/review-queue.test.ts` |
-| Modified | `src/memory/review-queue/review-queue.ts` |
-| Modified | `src/memory/self/open-questions.ts` |
-| Created | `src/memory/semantic/embedding-text.ts` |
-| Modified | `src/memory/semantic/extractor.ts` |
-| Modified | `src/offline/audit-log.test.ts` |
-| Modified | `src/offline/audit-log.ts` |
-| Modified | `src/offline/orchestrator.test.ts` |
-| Modified | `src/offline/orchestrator.ts` |
-| Created | `src/sidecar/gateway-config.ts` |
-| Modified | `src/sidecar/memory-handler.test.ts` |
-| Modified | `src/sidecar/memory-handler.ts` |
-| Modified | `src/storage/sqlite/index.ts` |
-| Modified | `src/util/durable-jsonl.ts` |
-| Modified | `tsconfig.test.json` |
+The gateway URL and credential for the shared sidecar client come from `KRATOS_BASE_URL` and `LLM_API_KEY`; TLS uses `NODE_EXTRA_CA_CERTS`. The three `BORG_EMBEDDING_STALL_*` controls affect transport timing, not bank identity: `BORG_EMBEDDING_STALL_TIMEOUT_MS` defaults to 1000 per single attempt, `BORG_EMBEDDING_STALL_BATCH_TIMEOUT_MS` to 20000 per batch attempt, and `BORG_EMBEDDING_STALL_RETRIES` to 1 retry. Library `BORG_EMBEDDING_MODEL`/`BORG_EMBEDDING_DIMS` settings do not override the sidecar's injected client identity.
