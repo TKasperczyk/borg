@@ -275,6 +275,7 @@ describe("Borg Sprint 7", () => {
       ],
     });
     const borg = await Borg.open({
+      embeddingLegacySourceModel: "fake-embed",
       config: {
         ...DEFAULT_CONFIG,
         dataDir: tempDir,

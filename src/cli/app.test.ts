@@ -62,6 +62,8 @@ function createCliTempDir(tempDirs: string[]): string {
   writeJsonFileAtomic(join(tempDir, "config.json"), {
     embedding: {
       dims: 4,
+      model: "fake-embed",
+      legacySourceModel: "fake-embed",
     },
   });
   return tempDir;
@@ -105,6 +107,7 @@ function openTestBorg(
     clock: new FixedClock(1_000),
     embeddingDimensions: 4,
     embeddingClient: new ScriptedEmbeddingClient(),
+    embeddingLegacySourceModel: "fake-embed",
     llmClient: llm,
     liveExtraction: false,
   });
