@@ -23,6 +23,7 @@ import {
 } from "../../src/embeddings/bank-profile.js";
 import { fingerprintCanonicalValue } from "../../src/cognition/deliberation/request-fingerprint.js";
 import { inventoryBank, type BankInventory } from "./inventory.js";
+import { FILE_LOCK_GUARD_SUFFIX } from "../../src/stream/file-lock-guard.js";
 
 const backupMarkerSchema = z.object({
   version: z.literal(1),
@@ -38,7 +39,9 @@ function isMigrationBookkeeping(name: string): boolean {
   return (
     name === ".embedding-backup.json" ||
     name.startsWith(".embedding-migration") ||
+    name.startsWith("..embedding-migration-owner.lock.") ||
     name === EMBEDDING_ACCESS_FILE ||
+    name.startsWith(`.${EMBEDDING_ACCESS_FILE}.`) ||
     name === EMBEDDING_FENCE_FILE
   );
 }
@@ -145,6 +148,9 @@ export async function backupTenant(
     force: false,
     preserveTimestamps: true,
     filter: (path) =>
+      // Empty advisory-lock anchors are process state, not backup data. Opening
+      // and closing one via fs in this process would release its POSIX lock.
+      !basename(path).endsWith(FILE_LOCK_GUARD_SUFFIX) &&
       !(
         dirname(path) === tenantDir &&
         (sqliteFiles.has(basename(path)) || isMigrationBookkeeping(basename(path)))

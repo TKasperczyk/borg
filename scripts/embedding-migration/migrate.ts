@@ -625,6 +625,8 @@ export async function migrateTenant(
       headroom,
     };
   }
+  // The primitive renews this owner lock throughout backup, embedding,
+  // verification and cutover, including migrations lasting many minutes.
   return withFileLock(
     join(tenantDir, ".embedding-migration-owner.lock"),
     async () => {

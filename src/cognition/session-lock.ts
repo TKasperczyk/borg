@@ -67,8 +67,9 @@ export class SessionLock {
     return this.acquireWithTimeout(sessionId, 0);
   }
 
-  // Advisory check: returns true if the session lock is held by a live process
-  // on this host. Stale locks (owner crashed) return false so maintenance and
+  // Advisory check: local PID liveness or a foreign heartbeat/held guard.
+  // The primitive renews throughout a turn, however long it takes.
+  // Stale locks (owner crashed) return false so maintenance and
   // other opt-in consumers aren't blocked indefinitely after a crash. Callers
   // should treat this as a hint, not a correctness boundary -- acquiring the
   // lock is still the only way to safely perform writes.

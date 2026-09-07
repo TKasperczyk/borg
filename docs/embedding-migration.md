@@ -167,11 +167,17 @@ JS
 
 Queued reviews, saved plans, and semantic audit reversals keep their historical data. When materialized, their serialized vectors are recomputed from stored text using the effective client even if dimensions happen to match. A payload without recoverable text is rejected with `SERIALIZED_EMBEDDING_INCOMPATIBLE`; regenerate it or reject/dismiss the review. The migration does not automatically resolve or delete such items.
 
-## Interrupted runs and rollback
+## Interrupted runs
 
 Do not remove `embedding-migration.lock` to clear an error. Use the same tenant and target arguments with `--resume`. `.embedding-migration.json` records the source/target profiles, immutable backup location, source inventory, any consolidation policy/choices and expected target inventory, and phase. A crash between renames leaves either old+staging, previous+staging with no live directory, or previous+new live; the fence prevents any sidecar open until recovery verifies and completes cutover. Corrupted checkpoints, changed source data, backup checksum failures, or unexpected directory combinations stop recovery for investigation.
 
-Ordinary owner/access locks are reaped automatically for dead local PIDs. If a pod restart changes the hostname, their ownership cannot safely be inferred. After confirming the former pod is gone and no process is using the tenant, remove only its stale `.embedding-migration-owner.lock` / `embedding-bank-access.lock` (and a stale checkpoint append `.lock`, if present), then resume. Keep the persistent migration fence. Never delete a live process's ownership lock.
+The primitive refreshes ordinary owner/access/session locks every **10 seconds**, atomically updating `timestamp` and `heartbeat`. After a pod dies on another hostname, the next acquisition reaps its lease when the last heartbeat is **more than 120 seconds old**. Twelve heartbeat intervals allow transient scheduling and storage delays without limiting legitimate holds: an idle sidecar bank can stay open for hours, and turns/migrations can run for minutes. Retry the request or `--resume` after the window; acquisition does not itself wait two minutes. Legacy files without `heartbeat` age from `timestamp`. Local locks still require a dead PID, irrespective of age; a stopped process may resume with open storage handles.
+
+Each lease also retains a SQLite advisory lock on an empty `<lock-path>.guard.sqlite` companion. This serializes reaping, acquisition, refresh and release: a competing reaper cannot unlink a new owner's lock, and a live upgraded holder remains protected even if heartbeats fail or the process pauses. The guard is released on process death and is never TTL-reaped. This requires working SQLite/POSIX advisory locking across PVC clients; timestamps alone cannot prove remote death. The guard uses rollback mode, not WAL, and stores no bank data. Backups exclude these companions. Never delete/replace them, or open/copy them using ordinary filesystem APIs inside a holder process; closing such a file descriptor can release that process's POSIX locks.
+
+Drain old sidecars and operator tools when deploying this version: a legacy remote holder has neither heartbeat nor advisory guard and cannot be distinguished from a dead legacy pod. A live or stopped holder must be drained/resumed/stopped normally, not have its lock deleted. If filesystem permissions, corruption, or broken advisory locking prevent recovery, stop every writer and investigate the storage before manual repair. The persistent `embedding-migration.lock` is intentionally **not** a lease: interrupted migrations still require `--resume` to verify and complete cutover; never delete that fence just to reopen the tenant.
+
+## Rollback
 
 For rollback, stop the sidecar and other bank writers. Preserve the failed target directories and journals for diagnosis. For each tenant, with `<N>` taken from its migration report:
 

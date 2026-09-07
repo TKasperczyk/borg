@@ -183,8 +183,9 @@ export async function guardBankEmbeddingProfile(
   return adopted;
 }
 
-// Bank-lifetime lease. Uses the same lock ownership/stale-owner rules as stream
-// writes. Migration also takes this lock, after installing its persistent fence.
+// Bank-lifetime lease: the primitive heartbeats even while an idle sidecar pool
+// keeps this bank open for hours. Migration takes the same renewable lease after
+// installing its persistent fence; only close/release stops the heartbeat.
 export async function acquireEmbeddingBankAccess(dataDir: string): Promise<() => Promise<void>> {
   mkdirSync(dataDir, { recursive: true });
   try {
