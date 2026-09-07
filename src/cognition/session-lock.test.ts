@@ -33,6 +33,9 @@ describe("SessionLock", () => {
         timestamp: Date.now() - FILE_LOCK_STALE_MS - 1,
       }),
     );
+    expect(lock.isHeld()).toBe(true);
+    expect(await lock.tryAcquire()).toBeNull();
+    await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS);
     expect(lock.isHeld()).toBe(false);
     const lease = await lock.tryAcquire();
     expect(lease).not.toBeNull();

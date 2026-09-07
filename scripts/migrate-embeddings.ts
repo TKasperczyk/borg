@@ -12,6 +12,7 @@ import { parsePositiveIntegerValue } from "../src/util/parse.js";
 import { BorgError, ConfigError } from "../src/util/errors.js";
 import { migrateTenant, MigrationInputBlockedError } from "./embedding-migration/migrate.js";
 import { legacyConsolidationPolicySchema } from "./embedding-migration/inventory.js";
+import { FILE_LOCK_STALE_MS } from "../src/stream/file-lock.js";
 
 export function parseEmbeddingMigrationArgs(args: string[]) {
   const { values } = parseArgs({
@@ -134,8 +135,11 @@ export async function embeddingMigrationMain(args = process.argv.slice(2)): Prom
         });
   // Always migrate one tenant at a time, even with --all-tenants.
   for (const tenant of tenants) {
+    // Each fresh CLI process needs its own complete observation window. Short
+    // retries in separate invocations could otherwise never reap a remote lease.
+    const lockTimeoutMs = FILE_LOCK_STALE_MS + 5_000;
     const report = await migrateTenant(
-      { ...options, tenantDir: join(options.dataRoot, tenant) },
+      { ...options, tenantDir: join(options.dataRoot, tenant), lockTimeoutMs },
       {
         client,
         progress: (event) => process.stdout.write(`${JSON.stringify({ tenant, ...event })}\n`),

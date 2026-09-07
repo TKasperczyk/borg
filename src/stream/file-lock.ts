@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 
 import { writeFileAtomic } from "../util/atomic-write.js";
@@ -29,8 +29,8 @@ type FileLockOptions = {
 export type FileLockLease = { release(): Promise<void> };
 
 export const FILE_LOCK_HEARTBEAT_INTERVAL_MS = 10_000;
-// Twelve missed refreshes tolerate transient scheduling/I/O delays. Age alone
-// never overrides the OS-backed guard of a participating live holder.
+// Twelve missed refreshes, observed by this contender, tolerate scheduling/I/O
+// delays and remote clock skew. Silence never overrides a live holder's guard.
 export const FILE_LOCK_STALE_MS = 120_000;
 
 type FileLockMetadata = {
@@ -70,6 +70,49 @@ function sameLockFileIdentity(left: LockFileIdentity, right: LockFileIdentity): 
     left.size === right.size &&
     left.mtimeMs === right.mtimeMs
   );
+}
+
+type LockObservation = {
+  identity: LockFileIdentity;
+  contents: string;
+  unchangedSince: number;
+  lastObservedAt: number;
+};
+
+// Observations survive acquisition timeouts, but never survive process restart.
+// Writer clocks (including legacy timestamps and mtimes) are not age evidence.
+const lockObservations = new Map<string, LockObservation>();
+
+function forgetLockObservation(lockPath: string): void {
+  lockObservations.delete(resolve(lockPath));
+}
+
+function observedUnchangedFor(
+  lockPath: string,
+  identity: LockFileIdentity,
+  contents: string,
+): number {
+  const key = resolve(lockPath);
+  const now = Date.now();
+  // Advisory readers can overlap an atomic heartbeat replacement. Only start
+  // counting from a snapshot whose identity stayed stable across the read.
+  const afterRead = lockFileIdentity(lockPath);
+  if (afterRead === null || !sameLockFileIdentity(identity, afterRead)) {
+    lockObservations.delete(key);
+    return 0;
+  }
+  const previous = lockObservations.get(key);
+  if (
+    previous === undefined ||
+    !sameLockFileIdentity(previous.identity, identity) ||
+    previous.contents !== contents ||
+    now < previous.lastObservedAt
+  ) {
+    lockObservations.set(key, { identity, contents, unchangedSince: now, lastObservedAt: now });
+    return 0;
+  }
+  previous.lastObservedAt = now;
+  return now - previous.unchangedSince;
 }
 
 function isFileLockMetadata(value: unknown): value is FileLockMetadata {
@@ -121,13 +164,16 @@ function removeLockFileIfOwned(
       !sameLockFileIdentity(currentIdentity, expectedIdentity) ||
       readFileSync(lockPath, "utf8") !== expectedContents
     ) {
+      if (currentIdentity === null) forgetLockObservation(lockPath);
       return currentIdentity === null;
     }
 
     unlinkSync(lockPath);
+    forgetLockObservation(lockPath);
     return true;
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") {
+      forgetLockObservation(lockPath);
       return true;
     }
 
@@ -138,6 +184,7 @@ function removeLockFileIfOwned(
 function reapStaleLock(lockPath: string, malformedGraceMs: number): boolean {
   const identity = lockFileIdentity(lockPath);
   if (identity === null) {
+    forgetLockObservation(lockPath);
     return true;
   }
   let metadataText: string;
@@ -145,6 +192,7 @@ function reapStaleLock(lockPath: string, malformedGraceMs: number): boolean {
   try {
     metadataText = readFileSync(lockPath, "utf8");
   } catch (error) {
+    forgetLockObservation(lockPath);
     if (isNodeError(error) && error.code === "ENOENT") {
       return true;
     }
@@ -157,26 +205,28 @@ function reapStaleLock(lockPath: string, malformedGraceMs: number): boolean {
   try {
     metadata = JSON.parse(metadataText) as unknown;
   } catch {
-    return Date.now() - identity.mtimeMs < malformedGraceMs
+    return observedUnchangedFor(lockPath, identity, metadataText) < malformedGraceMs
       ? false
       : removeLockFileIfOwned(lockPath, identity, metadataText);
   }
 
   if (!isFileLockMetadata(metadata)) {
-    return Date.now() - identity.mtimeMs < malformedGraceMs
+    return observedUnchangedFor(lockPath, identity, metadataText) < malformedGraceMs
       ? false
       : removeLockFileIfOwned(lockPath, identity, metadataText);
   }
 
   if (metadata.host !== LOCAL_HOSTNAME) {
-    // Pre-heartbeat files age from their original acquisition timestamp.
-    return Date.now() - (metadata.heartbeat ?? metadata.timestamp) > FILE_LOCK_STALE_MS
+    // First sighting always starts a full window, including pre-heartbeat
+    // leases. Any observed identity/content change restarts it.
+    return observedUnchangedFor(lockPath, identity, metadataText) >= FILE_LOCK_STALE_MS
       ? removeLockFileIfOwned(lockPath, identity, metadataText)
       : false;
   }
 
   // SIGSTOP/event-loop stalls are not death. A local live PID may still resume
   // work with open storage handles, regardless of the timestamp's age.
+  forgetLockObservation(lockPath);
   if (isProcessAlive(metadata.pid)) {
     return false;
   }
@@ -184,7 +234,7 @@ function reapStaleLock(lockPath: string, malformedGraceMs: number): boolean {
   return removeLockFileIfOwned(lockPath, identity, metadataText);
 }
 
-// Advisory check: local PID liveness or fresh foreign heartbeat/held guard.
+// Advisory check: local PID liveness or observed foreign activity/held guard.
 // Used by callers (e.g., MaintenanceScheduler)
 // that want to skip work when a session is busy without racing to acquire the
 // lock. Stale locks (crashed owner) return false so maintenance isn't blocked
@@ -195,11 +245,16 @@ export function isFileLockLive(
 ): boolean {
   const malformedGraceMs = options.malformedGraceMs ?? DEFAULT_MALFORMED_LOCK_GRACE_MS;
   const identity = lockFileIdentity(lockPath);
+  if (identity === null) {
+    forgetLockObservation(lockPath);
+    return false;
+  }
   let metadataText: string;
 
   try {
     metadataText = readFileSync(lockPath, "utf8");
   } catch (error) {
+    forgetLockObservation(lockPath);
     if (isNodeError(error) && error.code === "ENOENT") {
       return false;
     }
@@ -212,15 +267,15 @@ export function isFileLockLive(
   try {
     metadata = JSON.parse(metadataText) as unknown;
   } catch {
-    return identity !== null && Date.now() - identity.mtimeMs < malformedGraceMs;
+    return observedUnchangedFor(lockPath, identity, metadataText) < malformedGraceMs;
   }
 
   if (!isFileLockMetadata(metadata)) {
-    return identity !== null && Date.now() - identity.mtimeMs < malformedGraceMs;
+    return observedUnchangedFor(lockPath, identity, metadataText) < malformedGraceMs;
   }
 
   if (metadata.host !== LOCAL_HOSTNAME) {
-    if (Date.now() - (metadata.heartbeat ?? metadata.timestamp) <= FILE_LOCK_STALE_MS) {
+    if (observedUnchangedFor(lockPath, identity, metadataText) < FILE_LOCK_STALE_MS) {
       return true;
     }
     // A stopped remote holder can miss heartbeats while retaining its guard.
@@ -236,6 +291,7 @@ export function isFileLockLive(
     }
   }
 
+  forgetLockObservation(lockPath);
   return isProcessAlive(metadata.pid);
 }
 

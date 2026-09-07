@@ -1195,6 +1195,48 @@ describe("storage-only embedding migration", () => {
     });
   });
 
+  it.each([EMBEDDING_ACCESS_FILE, ".embedding-migration-owner.lock"])(
+    "waits through its own observation window for %s with a future heartbeat",
+    async (name) => {
+      const bank = await fixture(0);
+      const path = join(bank.tenantDir, name);
+      writeFileSync(
+        path,
+        JSON.stringify({ pid: 999_999, host: "dead-pod", timestamp: 1e30, heartbeat: 1e30 }),
+      );
+      vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+      let finished = false;
+      const result = migrateTenant(
+        { ...bank.options, lockTimeoutMs: FILE_LOCK_STALE_MS + 5_000 },
+        { client: bank.client },
+      ).then(
+        (report) => {
+          finished = true;
+          return { report };
+        },
+        (error: unknown) => {
+          finished = true;
+          return { error };
+        },
+      );
+      try {
+        // Start observing inside migrateTenant, not by priming a test-side read.
+        await vi.waitFor(() => expect(existsSync(`${path}${FILE_LOCK_GUARD_SUFFIX}`)).toBe(true));
+        vi.setSystemTime(Date.now() + 1_001);
+        // Leave the retry timer real so native migration I/O can progress.
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(finished).toBe(false);
+        vi.setSystemTime(Date.now() + FILE_LOCK_STALE_MS);
+        expect(await result).toMatchObject({ report: { complete: true } });
+        expect(existsSync(path)).toBe(false);
+      } finally {
+        vi.setSystemTime(Date.now() + FILE_LOCK_STALE_MS + 5_000);
+        await result;
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("recovers foreign migration leases, renews during embedding, and excludes guards from backups", async () => {
     const bank = await fixture(1);
     const paths = [EMBEDDING_ACCESS_FILE, ".embedding-migration-owner.lock"].map((name) =>
@@ -1211,6 +1253,10 @@ describe("storage-only embedding migration", () => {
       );
     }
     vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    for (const path of paths) {
+      await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+    }
+    await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS);
     const embed = bank.client.embedBatch.getMockImplementation()!;
     bank.client.embedBatch.mockImplementationOnce(async (texts) => {
       await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS * 3);

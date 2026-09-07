@@ -186,11 +186,15 @@ export async function guardBankEmbeddingProfile(
 // Bank-lifetime lease: the primitive heartbeats even while an idle sidecar pool
 // keeps this bank open for hours. Migration takes the same renewable lease after
 // installing its persistent fence; only close/release stops the heartbeat.
-export async function acquireEmbeddingBankAccess(dataDir: string): Promise<() => Promise<void>> {
+export async function acquireEmbeddingBankAccess(
+  dataDir: string,
+  options: { timeoutMs?: number; retryDelayMs?: number } = {},
+): Promise<() => Promise<void>> {
   mkdirSync(dataDir, { recursive: true });
   try {
     const lease = await acquireFileLockLease(join(dataDir, EMBEDDING_ACCESS_FILE), {
-      timeoutMs: 1000,
+      ...options,
+      timeoutMs: options.timeoutMs ?? 1000,
     });
     return lease.release;
   } catch (cause) {

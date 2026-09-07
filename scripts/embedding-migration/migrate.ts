@@ -181,6 +181,8 @@ export type MigrationOptions = {
   verifyOnly?: boolean;
   batchSize?: number;
   concurrency?: number;
+  /** Allow a CLI invocation to observe remote leases before it times out. */
+  lockTimeoutMs?: number;
   legacyConsolidationInput?: z.infer<typeof legacyConsolidationPolicySchema>;
 };
 export type MigrationDependencies = {
@@ -627,6 +629,11 @@ export async function migrateTenant(
   }
   // The primitive renews this owner lock throughout backup, embedding,
   // verification and cutover, including migrations lasting many minutes.
+  const lockOptions = {
+    timeoutMs: options.lockTimeoutMs ?? 1000,
+    // A long CLI wait does not need to open a guard every 20 milliseconds.
+    retryDelayMs: 250,
+  };
   return withFileLock(
     join(tenantDir, ".embedding-migration-owner.lock"),
     async () => {
@@ -679,7 +686,7 @@ export async function migrateTenant(
             "Full verification requires the migration journal and backup",
             { code: "EMBEDDING_MIGRATION_VERIFY_FAILED" },
           );
-        const release = await acquireEmbeddingBankAccess(tenantDir);
+        const release = await acquireEmbeddingBankAccess(tenantDir, lockOptions);
         try {
           await verifyTenantBackup(journal.backup, journal.inventory, target.dimensions);
           const staging = join(tenantDir, `lancedb.staging-${journal.target.generation}`);
@@ -752,7 +759,7 @@ export async function migrateTenant(
         );
         deps.progress?.({ phase: "fenced", tenant: tenantDir, drain_route: "/memory/admin/evict" });
       }
-      const release = await acquireEmbeddingBankAccess(tenantDir);
+      const release = await acquireEmbeddingBankAccess(tenantDir, lockOptions);
       try {
         if (!journal) {
           const inventory = await inventoryBank(tenantDir, target.dimensions);
@@ -948,6 +955,6 @@ export async function migrateTenant(
         await release();
       }
     },
-    { timeoutMs: 1000 },
+    lockOptions,
   );
 }
