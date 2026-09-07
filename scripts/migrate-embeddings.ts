@@ -79,7 +79,9 @@ export async function embeddingMigrationMain(args = process.argv.slice(2)): Prom
     );
     return 0;
   }
-  const banked = await listBankTenantIds(options.dataRoot);
+  const banked = await listBankTenantIds(options.dataRoot, DEFAULT_TENANT_ID_PATTERN, {
+    strict: true,
+  });
   const tenants = options.allTenants ? banked : options.tenants;
   if (tenants.length === 0) throw new ConfigError("No tenant banks selected");
   for (const tenant of tenants) {
