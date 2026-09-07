@@ -1,3 +1,4 @@
+import { EmbeddingBankError } from "../embeddings/bank-profile.js";
 // HTTP request handler for the borg memory sidecar: a thin, tenant-routed wrapper
 // over BorgPool that exposes long-term memory to an external (e.g. Python) service.
 //
@@ -153,6 +154,7 @@ export type MemoryPool = {
     opts?: { exclusive?: boolean },
   ): Promise<T>;
   listTenantIds(): Promise<string[]>;
+  evict?(tenantId: string): Promise<void>;
 };
 
 export type MemoryHandlerOptions = {
@@ -1375,6 +1377,17 @@ function scheduleIngestion(pool: MemoryPool, tenant: string, session: SessionId)
     });
 }
 
+function sendEmbeddingBankUnavailable(res: ServerResponse, error: unknown): boolean {
+  if (!(error instanceof EmbeddingBankError)) return false;
+  send(res, 503, {
+    error: "tenant unavailable",
+    code: error.code,
+    degraded: true,
+    degraded_reason: error.message,
+  });
+  return true;
+}
+
 export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandler {
   const { pool, token, traceRegistry, maintenanceCoordinator, inboxWaiters, deliveryWaiters } =
     options;
@@ -1428,6 +1441,18 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       return;
     }
 
+    if (method === "POST" && rawPath === "/memory/admin/evict") {
+      const tenant = requiredSingleQueryValue(res, searchParams, "tenant");
+      if (tenant === null || !validateTenantForResponse(res, tenant)) return;
+      if (pool.evict === undefined) {
+        send(res, 503, { error: "tenant eviction unavailable" });
+        return;
+      }
+      await pool.evict(tenant);
+      send(res, 200, { ok: true, tenant, status: "closed" });
+      return;
+    }
+
     if (
       method === "POST" &&
       (rawPath === "/memory/agent-events" ||
@@ -1460,6 +1485,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           if (result === null) send(res, 404, { error: "Teams inbox session not found" });
           else send(res, 200, result);
         } catch (error) {
+          if (sendEmbeddingBankUnavailable(res, error)) return;
           console.error(`memory-sidecar: ${rawPath} failed for tenant "${tenant}"`, error);
           send(res, 503, { error: "tenant unavailable" });
         }
@@ -1479,6 +1505,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           if (status === null) send(res, 404, { error: "delivery not found" });
           else send(res, 200, { status });
         } catch (error) {
+          if (sendEmbeddingBankUnavailable(res, error)) return;
           console.error(`memory-sidecar: ${rawPath} failed for tenant "${tenant}"`, error);
           send(res, 503, { error: "tenant unavailable" });
         }
@@ -1560,6 +1587,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           }
         }
       } catch (error) {
+        if (sendEmbeddingBankUnavailable(res, error)) return;
         console.error(`memory-sidecar: ${rawPath} failed for tenant "${input.tenant}"`, error);
         if (!disconnected) send(res, 503, { error: "tenant unavailable" });
       } finally {
@@ -1598,6 +1626,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         );
         send(res, 200, { ok: true, tenant: input.tenant, ...result });
       } catch (error) {
+        if (sendEmbeddingBankUnavailable(res, error)) return;
         console.error(`memory-sidecar: ${rawPath} failed for tenant "${input.tenant}"`, error);
         send(res, 503, { error: "tenant unavailable" });
       }
@@ -1691,6 +1720,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             entry_id: result.streamEntryId,
           });
         } catch (error) {
+          if (sendEmbeddingBankUnavailable(res, error)) return;
           console.error(`memory-sidecar: ${rawPath} failed for tenant "${input.tenant}"`, error);
           send(res, 503, { error: "tenant unavailable" });
         }
@@ -1720,6 +1750,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           });
           send(res, 200, { ok: true });
         } catch (error) {
+          if (sendEmbeddingBankUnavailable(res, error)) return;
           console.error(`memory-sidecar: ${rawPath} failed for tenant "${input.tenant}"`, error);
           send(res, 503, { error: "tenant unavailable" });
         }
@@ -1933,6 +1964,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           directive: projectCreatorDirectiveForAdmin(result.directive),
         });
       } catch (error) {
+        if (sendEmbeddingBankUnavailable(res, error)) return;
         console.error(`memory-sidecar: ${rawPath} failed for tenant "${tenant}"`, error);
         send(res, 500, { error: "internal error" });
       }
@@ -2006,6 +2038,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           commitment: projectCommitment(result.commitment),
         });
       } catch (error) {
+        if (sendEmbeddingBankUnavailable(res, error)) return;
         console.error(`memory-sidecar: ${rawPath} failed for tenant "${tenant}"`, error);
         send(res, 500, { error: "internal error" });
       }
@@ -2186,6 +2219,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         }
         send(res, 200, { ok: true, tenant, audit });
       } catch (error) {
+        if (sendEmbeddingBankUnavailable(res, error)) return;
         console.error(`memory-sidecar: ${rawPath} failed for tenant "${tenant}"`, error);
         send(res, 500, { error: "internal error" });
       }
@@ -3704,6 +3738,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         episodes: hits.projected,
       });
     } catch (error) {
+      if (sendEmbeddingBankUnavailable(res, error)) return;
       // Tenant id is validated above, so anything thrown here is an internal
       // failure (open / storage / provider) that may carry sensitive detail —
       // log server-side, return a generic error.
@@ -3727,6 +3762,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
 
   return (req, res) => {
     void handle(req, res).catch((error: unknown) => {
+      if (sendEmbeddingBankUnavailable(res, error)) return;
       console.error("memory-sidecar: unhandled request error", error);
       send(res, 500, { error: "internal error" });
     });

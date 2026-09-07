@@ -566,7 +566,7 @@ function openQuestionMergeTombstoneDedupeKey(
 
 export class OpenQuestionsRepository {
   private readonly clock: Clock;
-  private readonly pendingEmbeddingTasks = new Set<Promise<void>>();
+  private readonly pendingEmbeddingTasks = new Set<Promise<unknown>>();
 
   constructor(private readonly options: OpenQuestionsRepositoryOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -852,6 +852,18 @@ export class OpenQuestionsRepository {
   async backfillMissingEmbeddings(
     options: { limit?: number } = {},
   ): Promise<OpenQuestionEmbeddingBackfillReport> {
+    const task = this.runEmbeddingBackfill(options);
+    this.pendingEmbeddingTasks.add(task);
+    try {
+      return await task;
+    } finally {
+      this.pendingEmbeddingTasks.delete(task);
+    }
+  }
+
+  private async runEmbeddingBackfill(options: {
+    limit?: number;
+  }): Promise<OpenQuestionEmbeddingBackfillReport> {
     const table = this.table;
     const embeddingClient = this.embeddingClient;
     const report: OpenQuestionEmbeddingBackfillReport = {

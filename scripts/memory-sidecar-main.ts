@@ -199,6 +199,7 @@ pool = new BorgPool({
   maxOpen,
   openOptions: {
     embeddingDimensions: embeddingDims,
+    embeddingProfile: { model: embeddingModel, dimensions: embeddingDims },
     embeddingClient,
     llmClient,
     clock: sidecarClock,

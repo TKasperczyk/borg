@@ -1,3 +1,4 @@
+import { EmbeddingBankError } from "../embeddings/bank-profile.js";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { AddressInfo } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -6591,4 +6592,46 @@ describe("memory sidecar handler", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+describe("embedding migration administration", () => {
+  it("requires the token and drains a tenant without reopening it", async () => {
+    const evict = vi.fn(async () => {});
+    const withTenant = vi.fn(async () => {
+      throw new Error("must not open");
+    });
+    const base = await start({ withTenant, evict, listTenantIds: async () => [] });
+    expect((await post(base, "/memory/admin/evict?tenant=acme", {})).status).toBe(401);
+    expect(evict).not.toHaveBeenCalled();
+    const response = await post(base, "/memory/admin/evict?tenant=acme", {}, TOKEN);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ tenant: "acme", status: "closed" });
+    expect(evict).toHaveBeenCalledWith("acme");
+    expect(withTenant).not.toHaveBeenCalled();
+  });
+  it.each(["EMBEDDING_MIGRATION_FENCED", "EMBEDDING_PROFILE_MISMATCH"])(
+    "reports %s as unavailable without a stack",
+    async (code) => {
+      const base = await start({
+        withTenant: async () => {
+          throw new EmbeddingBankError("embedding migration unavailable", { code });
+        },
+        listTenantIds: async () => [],
+      });
+      const response = await post(
+        base,
+        "/memory/recall",
+        { tenant: "acme", query: "memory" },
+        TOKEN,
+      );
+      expect(response.status).toBe(503);
+      const body = await response.json();
+      expect(body).toMatchObject({
+        code,
+        degraded: true,
+        degraded_reason: "embedding migration unavailable",
+      });
+      expect(body).not.toHaveProperty("stack");
+    },
+  );
 });

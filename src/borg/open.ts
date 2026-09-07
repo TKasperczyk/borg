@@ -1,3 +1,9 @@
+import {
+  acquireEmbeddingBankAccess,
+  assertBankNotFenced,
+  assertEmbeddingProfilesMatch,
+  guardBankEmbeddingProfile,
+} from "../embeddings/bank-profile.js";
 // Borg.open composition root: orders storage, repositories, tools, offline work, turns, and autonomy.
 import { AgentDeliveryRepository } from "../cognition/ingestion/agent-deliveries.js";
 import { TaskEventService } from "../cognition/ingestion/task-events.js";
@@ -66,10 +72,27 @@ export async function openBorgDependencies(
   const clock = options.clock ?? new SystemClock();
   let sqlite: SqliteDatabase | undefined;
   let lance: LanceDbStore | undefined;
+  let releaseEmbeddingBankAccess: (() => Promise<void>) | undefined;
   let catchUpWorker: ChatResponseCatchUpWorker | undefined;
 
   try {
     const resolvedConfig = resolveBorgConfig(options);
+    assertBankNotFenced(resolvedConfig.dataDir);
+    const embeddingClient = options.embeddingClient ?? createEmbeddingClient(resolvedConfig);
+    const effectiveEmbeddingProfile = options.embeddingProfile ??
+      embeddingClient.profile ?? {
+        model: resolvedConfig.embedding.model,
+        dimensions: options.embeddingDimensions ?? resolvedConfig.embedding.dims,
+      };
+    if (embeddingClient.profile !== undefined)
+      assertEmbeddingProfilesMatch(embeddingClient.profile, effectiveEmbeddingProfile);
+    if (options.embeddingDimensions !== undefined)
+      assertEmbeddingProfilesMatch(effectiveEmbeddingProfile, {
+        ...effectiveEmbeddingProfile,
+        dimensions: options.embeddingDimensions,
+      });
+    releaseEmbeddingBankAccess = await acquireEmbeddingBankAccess(resolvedConfig.dataDir);
+    await guardBankEmbeddingProfile(resolvedConfig.dataDir, effectiveEmbeddingProfile);
     const outboundConnectorRegistry = new MessageConnectorRegistry(
       options.outboundConnectors ?? [],
     );
@@ -93,7 +116,7 @@ export async function openBorgDependencies(
     lance = storage.lance;
     const tables: BorgLanceTables = await openBorgLanceTables({
       lance,
-      embeddingDimensions: options.embeddingDimensions ?? config.embedding.dims,
+      embeddingDimensions: effectiveEmbeddingProfile.dimensions,
     });
     const attachmentRepository = new AttachmentRepository(sqlite);
     const entryIndex = new StreamEntryIndexRepository({
@@ -119,7 +142,6 @@ export async function openBorgDependencies(
       lifecycle: imageAttachmentLifecycleService,
       tracer,
     });
-    const embeddingClient = options.embeddingClient ?? createEmbeddingClient(config);
     const llmFactory = createLlmFactory(
       config,
       options.llmClient,
@@ -624,11 +646,13 @@ export async function openBorgDependencies(
       createStreamWriter: repositories.createStreamWriter,
       llmFactory,
       embeddingClient,
+      releaseEmbeddingBankAccess,
       tracer,
       clock,
     };
   } catch (error) {
     await closeBestEffort(sqlite, lance);
+    await releaseEmbeddingBankAccess?.();
     throw error;
   }
 }

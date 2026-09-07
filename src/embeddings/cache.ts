@@ -55,6 +55,10 @@ class CachingEmbeddingClient implements EmbeddingClient {
     this.maxEntries = normalizeMaxEntries(options.maxEntries);
   }
 
+  get profile() {
+    return { model: this.options.model, dimensions: this.options.dims };
+  }
+
   async embed(text: string): Promise<Float32Array> {
     const promise = this.getOrCreate(text, () => this.inner.embed(text));
     const embedding = await promise;

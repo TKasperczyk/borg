@@ -101,6 +101,10 @@ export class StallGuardEmbeddingClient implements EmbeddingClient {
     );
   }
 
+  get profile() {
+    return this.inner.profile;
+  }
+
   async embed(text: string): Promise<Float32Array> {
     return this.runGuarded(() => this.inner.embed(text), this.timeoutMs);
   }

@@ -1,3 +1,4 @@
+import type { EmbeddingProfile } from "./bank-profile.js";
 import OpenAI from "openai";
 
 import { sleep } from "../util/clock.js";
@@ -19,6 +20,7 @@ type OpenAIEmbeddingsClient = {
 };
 
 export type EmbeddingClient = {
+  readonly profile?: EmbeddingProfile;
   embed(text: string): Promise<Float32Array>;
   embedBatch(texts: readonly string[]): Promise<Float32Array[]>;
 };
@@ -93,7 +95,9 @@ function isModelNotLoadedError(error: unknown): boolean {
   // model in passing does not get retried forever.
   return (
     message.includes("model") &&
-    (message.includes("unloaded") || message.includes("crashed") || message.includes("does not exist"))
+    (message.includes("unloaded") ||
+      message.includes("crashed") ||
+      message.includes("does not exist"))
   );
 }
 
@@ -193,6 +197,10 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
     this.maxBatchSize = requestedBatchSize;
   }
 
+  get profile(): EmbeddingProfile {
+    return { model: this.model, dimensions: this.dims };
+  }
+
   async embed(text: string): Promise<Float32Array> {
     const [embedding] = await this.embedBatch([text]);
 
@@ -223,7 +231,6 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
   }
 
   private async embedChunk(texts: readonly string[]): Promise<Float32Array[]> {
-
     try {
       const response = await this.createWithModelReloadRetry(texts);
 
@@ -242,10 +249,9 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
         throw error;
       }
 
-      throw new EmbeddingError(
-        `Failed to generate embeddings (${describeEmbeddingCause(error)})`,
-        { cause: error },
-      );
+      throw new EmbeddingError(`Failed to generate embeddings (${describeEmbeddingCause(error)})`, {
+        cause: error,
+      });
     }
   }
 

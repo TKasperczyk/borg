@@ -1,3 +1,4 @@
+import { assertBankNotFenced } from "../embeddings/bank-profile.js";
 // A pool of per-tenant Borg "beings", each rooted at its own dataDir under one
 // shared root (<root>/<tenantId>). This is how multi-tenancy is achieved WITHOUT
 // any change to borg's storage/identity model: one being == one tenant == one
@@ -166,14 +167,20 @@ export class BorgPool {
       // escapes the shutdown drain (or get killed mid-write at process exit).
       throw new Error("BorgPool is shutting down; not accepting new operations");
     }
-    const { entry, created } = this.acquire(tenantId);
+    const validatedTenant = this.validateTenantId(tenantId);
+    assertBankNotFenced(join(this.root, validatedTenant));
+    const { entry, created } = this.acquire(validatedTenant);
     entry.inUse += 1;
     try {
       if (created) {
         await this.enforceMaxOpen(entry.tenantId);
       }
       const borg = await entry.promise;
-      return await (opts?.exclusive ? this.runExclusive(entry.tenantId, () => fn(borg)) : fn(borg));
+      const run = () => {
+        assertBankNotFenced(join(this.root, validatedTenant));
+        return fn(borg);
+      };
+      return await (opts?.exclusive ? this.runExclusive(entry.tenantId, run) : run());
     } finally {
       entry.inUse -= 1;
       entry.lastUsed = this.seq += 1;
@@ -334,7 +341,10 @@ export class BorgPool {
   async listTenantIds(): Promise<string[]> {
     const entries = await readdir(this.root, { withFileTypes: true });
     const candidates = entries
-      .filter((entry) => entry.isDirectory() && this.isValidTenantId(entry.name))
+      .filter(
+        (entry) =>
+          entry.isDirectory() && entry.name !== "backups" && this.isValidTenantId(entry.name),
+      )
       .map((entry) => entry.name);
     const banked = await Promise.all(
       candidates.map(async (tenantId) => {

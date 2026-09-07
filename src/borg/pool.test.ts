@@ -1,3 +1,4 @@
+import { EMBEDDING_FENCE_FILE } from "../embeddings/bank-profile.js";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -698,5 +699,22 @@ describe("BorgPool.listTenantIds", () => {
     bank(root, "acme");
 
     expect(await pool.listTenantIds()).toEqual(["team-agent-ai"]);
+  });
+});
+
+describe("embedding migration fence", () => {
+  it("rejects fenced tenants already open or unopened, but permits eviction and other tenants", async () => {
+    const { pool, root } = makePool();
+    await pool.withTenant("alpha", append("retained"));
+    writeFileSync(join(root, "alpha", EMBEDDING_FENCE_FILE), "{}");
+    await expect(pool.withTenant("alpha", tailContents)).rejects.toMatchObject({
+      code: "EMBEDDING_MIGRATION_FENCED",
+    });
+    await pool.evict("alpha");
+    expect(pool.has("alpha")).toBe(false);
+    await expect(pool.withTenant("alpha", tailContents)).rejects.toMatchObject({
+      code: "EMBEDDING_MIGRATION_FENCED",
+    });
+    await pool.withTenant("beta", append("available"));
   });
 });

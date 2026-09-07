@@ -1,3 +1,4 @@
+import type { EmbeddingProfile } from "../embeddings/bank-profile.js";
 // Shared public and internal Borg composition types used by the facade and setup modules.
 import type { AgentDeliveryRepository } from "../cognition/ingestion/agent-deliveries.js";
 import type {
@@ -175,6 +176,7 @@ export type BorgDependencies = {
   createStreamWriter: BorgStreamWriterFactory;
   llmFactory: () => LLMClient;
   embeddingClient: EmbeddingClient;
+  releaseEmbeddingBankAccess?: () => Promise<void>;
   tracer: TurnTracer;
   clock: Clock;
 };
@@ -184,6 +186,7 @@ export type BorgOpenOptions = {
   env?: NodeJS.ProcessEnv;
   dataDir?: string;
   embeddingDimensions?: number;
+  embeddingProfile?: EmbeddingProfile;
   embeddingClient?: EmbeddingClient;
   llmClient?: LLMClient;
   clock?: Clock;

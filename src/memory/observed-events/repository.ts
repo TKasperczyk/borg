@@ -265,7 +265,7 @@ function vectorRowFromObservedEvent(
 
 export class ObservedEventRepository {
   private readonly clock: Clock;
-  private readonly pendingEmbeddingTasks = new Set<Promise<void>>();
+  private readonly pendingEmbeddingTasks = new Set<Promise<unknown>>();
 
   constructor(private readonly options: ObservedEventRepositoryOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -401,6 +401,18 @@ export class ObservedEventRepository {
   async backfillMissingEmbeddings(
     options: { limit?: number } = {},
   ): Promise<ObservedEventEmbeddingBackfillReport> {
+    const task = this.runEmbeddingBackfill(options);
+    this.pendingEmbeddingTasks.add(task);
+    try {
+      return await task;
+    } finally {
+      this.pendingEmbeddingTasks.delete(task);
+    }
+  }
+
+  private async runEmbeddingBackfill(options: {
+    limit?: number;
+  }): Promise<ObservedEventEmbeddingBackfillReport> {
     const table = this.table;
     const embeddingClient = this.embeddingClient;
     const report: ObservedEventEmbeddingBackfillReport = {
