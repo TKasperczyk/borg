@@ -18,7 +18,6 @@ type EvalConfigOverrides = {
   anthropic?: Partial<Omit<Config["anthropic"], "models">> & {
     models?: Partial<Config["anthropic"]["models"]>;
   };
-  procedural?: Partial<Config["procedural"]>;
   retrieval?: Partial<Omit<Config["retrieval"], "semantic">> & {
     semantic?: Partial<Config["retrieval"]["semantic"]>;
   };

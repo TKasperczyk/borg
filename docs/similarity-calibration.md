@@ -68,6 +68,10 @@ unknown keys, and out-of-range values fail configuration loading. Per-threshold 
 variables and the former scattered config fields are no longer read. Runtime deployments
 without overrides need only the explicit embedding model and dimensions.
 
+Measurement reports retain `BORG_RECALL_ABSTAIN_THRESHOLD` as a stable gate identifier.
+Its runtime configuration is `similarity.overrides.recallAbstain`, including through the JSON
+environment input above.
+
 ## Re-measure and add a model
 
 Follow the [measurement pod recipe](../scripts/similarity-distributions/README.md#run-inside-the-pod)
