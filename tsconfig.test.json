@@ -7,7 +7,9 @@
     "src/**/*",
     "tests/**/*",
     "scripts/migrate-embeddings*.ts",
-    "scripts/embedding-migration/**/*.ts"
+    "scripts/embedding-migration/**/*.ts",
+    "scripts/measure-similarity-distributions.ts",
+    "scripts/similarity-distributions/**/*.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }
