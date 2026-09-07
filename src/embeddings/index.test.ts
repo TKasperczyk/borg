@@ -4,6 +4,25 @@ import { ConfigError, EmbeddingError } from "../util/errors.js";
 import { FakeEmbeddingClient, OpenAICompatibleEmbeddingClient } from "./index.js";
 
 describe("embeddings", () => {
+  it("rejects duplicate or missing response indices instead of assigning vectors to wrong texts", async () => {
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 2,
+      client: {
+        embeddings: {
+          create: async () => ({
+            data: [
+              { index: 0, embedding: [1, 0] },
+              { index: 0, embedding: [0, 1] },
+            ],
+          }),
+        },
+      },
+    });
+    await expect(client.embedBatch(["one", "two"])).rejects.toThrow(
+      "indices do not uniquely cover",
+    );
+  });
   it("wraps an OpenAI-compatible embeddings client", async () => {
     const create = vi.fn().mockResolvedValue({
       data: [

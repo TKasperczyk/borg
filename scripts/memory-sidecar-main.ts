@@ -1,3 +1,4 @@
+import { DEFAULT_GATEWAY_BASE_URL } from "../src/sidecar/gateway-config.js";
 // borg memory sidecar: a long-lived HTTP service exposing per-tenant long-term
 // memory (one being per tenant via BorgPool) to an external consumer such as the
 // Python "team-agent" service.
@@ -60,7 +61,7 @@ function requireEnv(name: string): string {
 
 const token = requireEnv("BORG_MEMORY_TOKEN");
 const apiKey = requireEnv("LLM_API_KEY");
-const baseUrl = process.env.KRATOS_BASE_URL ?? "https://inference.kratos.omc.hdp.it.p4/v1";
+const baseUrl = process.env.KRATOS_BASE_URL ?? DEFAULT_GATEWAY_BASE_URL;
 const llmModel = process.env.LLM_MODEL ?? "generative-apis/qwen3-235b-a22b-instruct-2507";
 const embeddingModel = process.env.EMBEDDING_MODEL ?? "generative-apis/qwen3-embedding-8b";
 const embeddingDims = Number(process.env.EMBEDDING_DIMS ?? 4096);

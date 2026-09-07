@@ -243,7 +243,14 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
       return response.data
         .slice()
         .sort((left, right) => left.index - right.index)
-        .map((item) => validateDimensions(item.embedding, this.dims, this.model));
+        .map((item, index) => {
+          if (item.index !== index) {
+            throw new EmbeddingError(
+              "Embedding response indices do not uniquely cover the input batch",
+            );
+          }
+          return validateDimensions(item.embedding, this.dims, this.model);
+        });
     } catch (error) {
       if (error instanceof EmbeddingError || error instanceof ConfigError) {
         throw error;

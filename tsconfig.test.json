@@ -3,6 +3,11 @@
   "compilerOptions": {
     "rootDir": "."
   },
-  "include": ["src/**/*", "tests/**/*"],
+  "include": [
+    "src/**/*",
+    "tests/**/*",
+    "scripts/migrate-embeddings*.ts",
+    "scripts/embedding-migration/**/*.ts"
+  ],
   "exclude": ["node_modules", "dist"]
 }

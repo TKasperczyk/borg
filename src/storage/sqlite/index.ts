@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, backup } from "node:sqlite";
 import type { StatementSync } from "node:sqlite";
 
 import { StorageError } from "../../util/errors.js";
@@ -83,6 +83,10 @@ export class SqliteRawDatabase {
   private savepointCounter = 0;
 
   constructor(private readonly database: DatabaseSync) {}
+
+  async backup(path: string): Promise<void> {
+    await backup(this.database, path);
+  }
 
   get inTransaction(): boolean {
     return this.database.isTransaction;
@@ -340,9 +344,7 @@ export function openDatabase(path: string, options: OpenDatabaseOptions = {}): S
   try {
     mkdirSync(dirname(path), { recursive: true });
 
-    raw = new SqliteRawDatabase(
-      new DatabaseSync(path, { enableDoubleQuotedStringLiterals: true }),
-    );
+    raw = new SqliteRawDatabase(new DatabaseSync(path, { enableDoubleQuotedStringLiterals: true }));
     const db = new SqliteDatabase(raw);
 
     try {
@@ -368,5 +370,30 @@ export function openDatabase(path: string, options: OpenDatabaseOptions = {}): S
     throw new StorageError(`Failed to open SQLite database at ${path}`, {
       cause: error,
     });
+  }
+}
+
+export function openReadOnlyDatabase(path: string): SqliteDatabase {
+  let raw: SqliteRawDatabase | undefined;
+
+  try {
+    raw = new SqliteRawDatabase(
+      new DatabaseSync(path, {
+        enableDoubleQuotedStringLiterals: true,
+        readOnly: true,
+      }),
+    );
+    const db = new SqliteDatabase(raw);
+    db.pragma("busy_timeout = 5000");
+    db.pragma("foreign_keys = ON");
+    db.pragma("query_only = ON");
+    return db;
+  } catch (error) {
+    try {
+      raw?.close();
+    } catch {
+      // Preserve the original open failure.
+    }
+    throw error;
   }
 }

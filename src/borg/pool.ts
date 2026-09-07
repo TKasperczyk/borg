@@ -20,18 +20,16 @@ import { assertBankNotFenced } from "../embeddings/bank-profile.js";
 // is intentionally no get() that hands back a bare being -- that would let a
 // caller hold a reference the pool later closes (use-after-close).
 
-import { readdir } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 
 import { Borg } from "../borg.js";
 import { compositeTracer, type TurnTracer } from "../tracing/tracer.js";
 import { ConfigError } from "../util/errors.js";
-import { BANK_DB_FILENAME } from "./storage-setup.js";
+import { DEFAULT_TENANT_ID_PATTERN, listBankTenantIds } from "./tenant-directories.js";
 import type { BorgOpenOptions } from "./types.js";
 
 // Conservative tenant-id slug: lowercase alnum start, then alnum / _ / - up to
 // 64 chars. Blocks "/", ".", ".." and anything else that could escape the root.
-const DEFAULT_TENANT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 export type BorgPoolOptions = {
   // Root directory under which every tenant's dataDir lives: <root>/<tenantId>.
@@ -339,28 +337,7 @@ export class BorgPool {
    * the volume (lost+found). Sorted for deterministic fan-out order.
    */
   async listTenantIds(): Promise<string[]> {
-    const entries = await readdir(this.root, { withFileTypes: true });
-    const candidates = entries
-      .filter(
-        (entry) =>
-          entry.isDirectory() && entry.name !== "backups" && this.isValidTenantId(entry.name),
-      )
-      .map((entry) => entry.name);
-    const banked = await Promise.all(
-      candidates.map(async (tenantId) => {
-        // A bank is identified by its sqlite file; readdir of the tenant dir
-        // (rather than stat of the file) keeps this to one syscall class and
-        // treats an unreadable directory as "not a bank" instead of throwing.
-        try {
-          const files = await readdir(join(this.root, tenantId));
-          return files.includes(BANK_DB_FILENAME) ? tenantId : null;
-        } catch {
-          return null;
-        }
-      }),
-    );
-
-    return banked.filter((tenantId): tenantId is string => tenantId !== null).sort();
+    return listBankTenantIds(this.root, this.tenantIdPattern);
   }
 
   private acquire(tenantId: string): { entry: PoolEntry; created: boolean } {
