@@ -237,7 +237,10 @@ describe("retrieval confidence prompt rendering", () => {
     // is a quantity with no scale: a reader cannot tell 0.69 from 0.44 in
     // consequence. Rendered floor-or-no-floor, because printing the floor only
     // on turns that cross it would make crossing look like the only way the
-    // path is ever decided -- it is the fourth test of four.
+    // path is ever decided. The ladder is stated in outcomes rather than by
+    // index: each clause names a test and the side it lands on, so the sentence
+    // is checkable against what it enumerates, and reordering the ladder cannot
+    // leave a true count standing beside a false position.
     const high = summarizeRetrievalConfidence(
       makeRetrievalConfidence({ overall: 0.69, sampleSize: 21 }),
     );
@@ -248,7 +251,12 @@ describe("retrieval confidence prompt rendering", () => {
     expect(high).toContain("overall=0.69(s2_floor=0.45)");
     expect(low).toContain("overall=0.31(s2_floor=0.45)");
     for (const rendered of [high, low]) {
-      expect(rendered).toContain("fourth test in the path ladder");
+      expect(rendered).toContain("not the only test in the path ladder");
+      // Each clause names a test and the side it lands on, and "all four"
+      // counts referents this same sentence enumerates.
+      expect(rendered).toContain("reflective mode and high stakes take S2 above the floor");
+      expect(rendered).toContain("idle mode takes S1 below it");
+      expect(rendered).toContain("operational-contradiction override outranks all four");
     }
   });
 

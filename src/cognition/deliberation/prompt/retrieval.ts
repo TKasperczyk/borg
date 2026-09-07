@@ -148,9 +148,14 @@ export function summarizeRetrievalConfidence(
       " signatures by the top-N episode slice plus the semantic matches.",
     // Rendered every turn, floor or no floor: the ladder's shape is what makes
     // the floor readable, and stating it only on turns that cross would make
-    // the crossing look like the only way the path is ever decided.
-    "`s2_floor` is where `overall` alone takes this turn to S2. It is the fourth test in the path" +
-      " ladder, not the only one: reflective mode and high stakes take S2 above the floor, idle mode" +
+    // the crossing look like the only way the path is ever decided. The shape
+    // is stated in outcomes, not in an index: every clause names a test and the
+    // side it lands on, so the sentence can be checked against the tests it
+    // enumerates. An ordinal ("the fourth test") cannot be -- no enumeration
+    // supplies evaluation order, so reordering the ladder would leave "all
+    // four" true and the ordinal silently false.
+    "`s2_floor` is where `overall` alone takes this turn to S2. It is not the only test in the path" +
+      " ladder: reflective mode and high stakes take S2 above the floor, idle mode" +
       " takes S1 below it, and an operational-contradiction override outranks all four.",
   ];
 

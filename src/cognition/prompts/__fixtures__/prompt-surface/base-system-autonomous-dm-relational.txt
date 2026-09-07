@@ -84,7 +84,7 @@ Retrieved evidence:
 Retrieval confidence (internal, for calibrating certainty in my response):
 overall=0.74(s2_floor=0.45) evidence=0.70(ep=0.55/1.00+sem=0.15/0.30) coverage=0.40(2/5) diversity=0.50(1/2) samples=2(episodes=2+semantic=0) contradictions=present
 `samples` is every projected episode plus every supported semantic match. `coverage` divides only the episode count by a stable expected-episode target; semantic matches are excluded because they already contribute to `evidence`. `diversity` divides distinct source signatures by the top-N episode slice plus the semantic matches.
-`s2_floor` is where `overall` alone takes this turn to S2. It is the fourth test in the path ladder, not the only one: reflective mode and high stakes take S2 above the floor, idle mode takes S1 below it, and an operational-contradiction override outranks all four.
+`s2_floor` is where `overall` alone takes this turn to S2. It is not the only test in the path ladder: reflective mode and high stakes take S2 above the floor, idle mode takes S1 below it, and an operational-contradiction override outranks all four.
 </borg_retrieval_confidence>
 
 <borg_pending_corrections>
